@@ -837,13 +837,13 @@ setInterval(cleanupExpiredSessions, 5 * 60 * 1000);
 
 function logStartup() {
     console.log(`🚀 即时传输隧道服务器运行中 (安全版本)`);
-    console.log(`📱 Web/API upstream: http://127.0.0.1:${WEB_PORT}`);
+    console.log(`📱 Web/API: http://127.0.0.1:${WEB_PORT} and http://<LAN-IP>:${WEB_PORT}`);
     console.log(`🔌 Socket.IO: 与 Web/API 共用 ${WEB_PORT} 端口`);
     console.log(`🔒 Nginx should proxy public HTTP/HTTPS traffic to this upstream`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
 }
 
-webServer.listen(WEB_PORT, '127.0.0.1', logStartup);
+webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
 
 // 优雅关闭
 function shutdown(signal) {
