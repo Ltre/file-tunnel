@@ -77,7 +77,8 @@ async function initStorage() {
         }
 
         console.log('Opening IndexedDB...');
-        const request = indexedDB.open('TunnelDB', 1);
+        // 增加数据库版本号以强制升级，确保所有对象存储都存在
+        const request = indexedDB.open('TunnelDB', 2); // 从1升级到2
 
         request.onerror = (event) => {
             console.error('IndexedDB open error:', event.target.error);
@@ -87,38 +88,75 @@ async function initStorage() {
         request.onsuccess = (event) => {
             state.db = event.target.result;
             console.log('IndexedDB opened successfully, version:', state.db.version);
-            resolve();
+            
+            // 检查是否所有必需的对象存储都存在
+            const requiredStores = ['sessions', 'messages', 'files', 'editorContent'];
+            const existingStores = Array.from(state.db.objectStoreNames);
+            
+            let missingStores = [];
+            requiredStores.forEach(store => {
+                if (!existingStores.includes(store)) {
+                    missingStores.push(store);
+                }
+            });
+            
+            if (missingStores.length > 0) {
+                console.log('Found missing stores, recreating database...');
+                // 如果有任何必需的存储缺失，删除数据库并重新创建
+                state.db.close();
+                indexedDB.deleteDatabase('TunnelDB');
+                
+                // 重新打开数据库
+                const recreateRequest = indexedDB.open('TunnelDB', 2);
+                
+                recreateRequest.onerror = (e) => reject(e.target.error);
+                recreateRequest.onsuccess = (e) => {
+                    state.db = e.target.result;
+                    console.log('IndexedDB recreated with all stores');
+                    resolve();
+                };
+                recreateRequest.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    createRequiredStores(db);
+                };
+            } else {
+                resolve();
+            }
         };
 
         request.onupgradeneeded = (event) => {
             const db = event.target.result;
-
-            // 会话存储
-            if (!db.objectStoreNames.contains('sessions')) {
-                const sessionStore = db.createObjectStore('sessions', { keyPath: 'sessionId' });
-                sessionStore.createIndex('lastActive', 'lastActive', { unique: false });
-            }
-
-            // 消息存储
-            if (!db.objectStoreNames.contains('messages')) {
-                const msgStore = db.createObjectStore('messages', { keyPath: 'id' });
-                msgStore.createIndex('sessionId', 'sessionId', { unique: false });
-                msgStore.createIndex('timestamp', 'timestamp', { unique: false });
-            }
-
-            // 文件存储
-            if (!db.objectStoreNames.contains('files')) {
-                const fileStore = db.createObjectStore('files', { keyPath: 'id' });
-                fileStore.createIndex('sessionId', 'sessionId', { unique: false });
-            }
-            
-            // 编辑器内容存储
-            if (!db.objectStoreNames.contains('editorContent')) {
-                const editorStore = db.createObjectStore('editorContent', { keyPath: 'id' });
-                editorStore.createIndex('sessionId', 'sessionId', { unique: false });
-            }
+            createRequiredStores(db);
         };
     });
+}
+
+// 辅助函数：创建所有必需的对象存储
+function createRequiredStores(db) {
+    // 会话存储
+    if (!db.objectStoreNames.contains('sessions')) {
+        const sessionStore = db.createObjectStore('sessions', { keyPath: 'sessionId' });
+        sessionStore.createIndex('lastActive', 'lastActive', { unique: false });
+    }
+
+    // 消息存储
+    if (!db.objectStoreNames.contains('messages')) {
+        const msgStore = db.createObjectStore('messages', { keyPath: 'id' });
+        msgStore.createIndex('sessionId', 'sessionId', { unique: false });
+        msgStore.createIndex('timestamp', 'timestamp', { unique: false });
+    }
+
+    // 文件存储
+    if (!db.objectStoreNames.contains('files')) {
+        const fileStore = db.createObjectStore('files', { keyPath: 'id' });
+        fileStore.createIndex('sessionId', 'sessionId', { unique: false });
+    }
+    
+    // 编辑器内容存储
+    if (!db.objectStoreNames.contains('editorContent')) {
+        const editorStore = db.createObjectStore('editorContent', { keyPath: 'id' });
+        editorStore.createIndex('sessionId', 'sessionId', { unique: false });
+    }
 }
 
 async function saveToStore(storeName, data) {
