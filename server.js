@@ -24,8 +24,6 @@ const DEFAULT_WEB_PORT = process.env.NODE_ENV === 'development' || process.env.n
 const WEB_PORT = Number(process.env.WEB_PORT || process.env.PORT || DEFAULT_WEB_PORT);
 const webServer = createWebServer();
 
-const TEST_HOST_PATTERN = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.0\.0\.\d{1,3})$/;
-
 function splitEnvList(value) {
     return value.split(',').map(item => item.trim()).filter(Boolean);
 }
@@ -41,40 +39,16 @@ function createWebServer() {
     return http.createServer(app);
 }
 
-// 允许的域名
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
     ? splitEnvList(process.env.ALLOWED_ORIGINS)
-    : [
-        'http://localhost',
-        'http://localhost:3000',
-        'http://127.0.0.1',
-        'http://127.0.0.1:3000',
-        'http://0.0.0.0:3000',
-        'https://localhost:3000',
-        'https://127.0.0.1:3000',
-        'https://0.0.0.0:3000',
-        'https://x-tx-sl.miku.us',
-        'http://x-tx-sl.miku.us',
-        'https://x-tx-sl.miku.us:3000',
-        'http://x-tx-sl.miku.us:3000',
-		'http://10.0.0.40:3000',
-        'http://tun.miku.us',
-		'https://tun.miku.us',  //正式生产环境（WEB，非socket）
-        'http://tun-socket.miku.us',
-        'https://tun-socket.miku.us'
-      ];
+    : ['*'];
 
 function isAllowedOrigin(origin) {
-    if (ALLOWED_ORIGINS.includes('*') || ALLOWED_ORIGINS.includes(origin)) {
+    if (ALLOWED_ORIGINS.includes('*')) {
         return true;
     }
 
-    try {
-        const url = new URL(origin);
-        return url.port === '3000' && TEST_HOST_PATTERN.test(url.hostname);
-    } catch (err) {
-        return false;
-    }
+    return ALLOWED_ORIGINS.includes(origin);
 }
 
 // 速率限制配置

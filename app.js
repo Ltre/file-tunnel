@@ -4,11 +4,6 @@
  */
 
 // ==================== 配置 ====================
-const SOCKET_HOST_OVERRIDES = {
-    'tun.miku.us': 'tun-socket.miku.us'
-};
-const TEST_SOCKET_HOST_PATTERN = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.0\.0\.\d{1,3})$/;
-
 function getRuntimeConfig() {
     return window.TUNNEL_CONFIG || {};
 }
@@ -20,13 +15,7 @@ function buildSocketServerUrl() {
         return runtimeConfig.SOCKET_SERVER;
     }
 
-    const pageProtocol = ['http:', 'https:'].includes(window.location.protocol) ? window.location.protocol : 'http:';
-    const protocol = runtimeConfig.SOCKET_PROTOCOL || pageProtocol;
-    const host = runtimeConfig.SOCKET_HOST || SOCKET_HOST_OVERRIDES[window.location.hostname] || window.location.hostname;
-    const defaultPort = TEST_SOCKET_HOST_PATTERN.test(host) ? '3000' : '';
-    const port = runtimeConfig.SOCKET_PORT !== undefined ? runtimeConfig.SOCKET_PORT : defaultPort;
-
-    return `${protocol}//${host}${port ? `:${port}` : ''}`;
+    return window.location.origin;
 }
 
 const CONFIG = {
