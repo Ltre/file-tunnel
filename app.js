@@ -27,8 +27,8 @@ const CONFIG = {
     // 备用服务器地址 (当自动检测失败时使用)
     // 例如: 'http://10.8.0.16:3000'
     FALLBACK_SERVER: null,
-    // 小文件大小阈值 (5MB)
-    SMALL_FILE_THRESHOLD: 5 * 1024 * 1024,
+    // 小文件大小阈值。Base64 和消息元数据也会占用 Socket.IO 的 1MB 上限。
+    SMALL_FILE_THRESHOLD: 512 * 1024,
     // 分块大小 (64KB)
     CHUNK_SIZE: 64 * 1024,
     // 存储键前缀
@@ -775,10 +775,18 @@ async function sendFile(file, targetDeviceId = null) {
             message: summarizeHistoryMessage(message)
         });
 
+        await saveToStore('messages', {
+            ...message,
+            sessionId: state.sessionId
+        });
+        historyLog('small-file-message-stored-locally', {
+            message: summarizeHistoryMessage(message)
+        });
+
         await addMessageToChat(message, true);
         historyLog('small-file-message-rendered-locally', {
             message: summarizeHistoryMessage(message),
-            persistedToMessagesStore: false
+            persistedToMessagesStore: true
         });
     } else {
         // 大文件通过P2P发送
@@ -1127,6 +1135,38 @@ async function handleDataChannelMessage(deviceId, data) {
 }
 
 // ==================== 消息处理 ====================
+async function storeInlineFileData(message, source) {
+    if (message.type !== 'file' || !message.fileInfo?.isSmall || !message.fileInfo.data) {
+        return false;
+    }
+
+    const base64Data = message.fileInfo.data.split(',')[1];
+    if (!base64Data) {
+        throw new Error('Invalid inline file data');
+    }
+
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    await saveToStore('files', {
+        id: message.fileInfo.id,
+        name: message.fileInfo.name,
+        size: message.fileInfo.size,
+        type: message.fileInfo.type,
+        sessionId: state.sessionId,
+        data: bytes.buffer,
+        timestamp: message.timestamp
+    });
+    historyLog('inline-file-stored', {
+        source,
+        message: summarizeHistoryMessage(message)
+    });
+    return true;
+}
+
 async function handleMessage(data) {
     const { message } = data;
 
@@ -1145,24 +1185,7 @@ async function handleMessage(data) {
     // 如果是小文件消息，提取base64数据保存到files存储
     if (message.type === 'file' && message.fileInfo && message.fileInfo.isSmall && message.fileInfo.data) {
         try {
-            // 从base64提取二进制数据 - 兼容性处理
-            const base64Data = message.fileInfo.data.split(',')[1];
-            const binaryString = atob(base64Data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-
-            // 保存文件数据到IndexedDB
-            await saveToStore('files', {
-                id: message.fileInfo.id,
-                name: message.fileInfo.name,
-                size: message.fileInfo.size,
-                type: message.fileInfo.type,
-                sessionId: state.sessionId,
-                data: bytes.buffer,
-                timestamp: message.timestamp
-            });
+            await storeInlineFileData(message, 'realtime');
             console.log('Saved received file to IndexedDB:', message.fileInfo.id);
             historyLog('realtime-file-stored', {
                 message: summarizeHistoryMessage(message)
@@ -1225,6 +1248,13 @@ async function handleSessionHistory(data) {
                     message: summarizeHistoryMessage(message)
                 });
                 continue;
+            }
+
+            if (message.type === 'file' && message.fileInfo?.isSmall && message.fileInfo.data) {
+                await storeInlineFileData(message, 'snapshot');
+                historyLog('snapshot-inline-file-stored', {
+                    message: summarizeHistoryMessage(message)
+                });
             }
 
             await saveToStore('messages', {
@@ -1346,12 +1376,15 @@ async function addMessageToChat(message, isOwn) {
             const clickHandler = canDownload ? `onclick="downloadFile('${fileInfo.id}')"` : '';
             const opacity = canDownload ? '' : 'opacity: 0.6;';
 
+            const unavailableLabel = fileInfo.isP2P || !fileInfo.isSmall
+                ? ' (未同步到本机)'
+                : ' (文件数据不可用)';
             contentHtml = `
                 <div class="message-bubble file-message" ${clickHandler} style="${opacity}">
                     <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
                     <div class="file-info">
                         <div class="file-name">${fileInfo.name}</div>
-                        <div class="file-size">${sizeStr}${!canDownload ? ' (数据不可用)' : ''}</div>
+                        <div class="file-size">${sizeStr}${!canDownload ? unavailableLabel : ''}</div>
                     </div>
                 </div>
             `;

@@ -255,7 +255,9 @@ function isEditorContentEmpty(content) {
 function createHistoryMessage(message) {
     const historyMessage = JSON.parse(JSON.stringify(message));
 
-    if (historyMessage.type === 'file' && historyMessage.fileInfo) {
+    // Inline small files are deliberately capped below the Socket.IO limit, so
+    // their bytes can travel with a session snapshot. P2P file bytes remain local.
+    if (historyMessage.type === 'file' && historyMessage.fileInfo && !historyMessage.fileInfo.isSmall) {
         delete historyMessage.fileInfo.data;
     }
 
