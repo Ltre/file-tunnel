@@ -65,6 +65,7 @@ const MAX_SESSION_AGE = 2 * 60 * 60 * 1000; // 2小时
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
+const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
 
 // ==================== Express 中间件 ====================
 
@@ -193,21 +194,71 @@ function createHistoryMessage(message) {
     return historyMessage;
 }
 
-function addToSessionHistory(session, message) {
-    if (session.history.some(entry => entry.message.id === message.id)) return;
+function summarizeHistoryMessage(message) {
+    const fileInfo = message.fileInfo;
+    return {
+        id: message.id,
+        type: message.type,
+        sender: message.sender,
+        timestamp: message.timestamp,
+        file: fileInfo ? {
+            id: fileInfo.id,
+            name: fileInfo.name,
+            size: fileInfo.size,
+            isSmall: fileInfo.isSmall,
+            hasInlineData: Boolean(fileInfo.data)
+        } : undefined
+    };
+}
+
+function historyLog(event, details) {
+    if (HISTORY_DEBUG) {
+        console.log(`[history][${event}]`, details);
+    }
+}
+
+function addToSessionHistory(sessionId, session, message) {
+    if (session.history.some(entry => entry.message.id === message.id)) {
+        historyLog('store-skipped', {
+            sessionId,
+            reason: 'duplicate',
+            message: summarizeHistoryMessage(message),
+            historyCount: session.history.length
+        });
+        return { stored: false, reason: 'duplicate', evicted: 0 };
+    }
 
     const historyMessage = createHistoryMessage(message);
     const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
-    if (size > MAX_HISTORY_SIZE) return;
+    if (size > MAX_HISTORY_SIZE) {
+        historyLog('store-skipped', {
+            sessionId,
+            reason: 'message-too-large',
+            size,
+            message: summarizeHistoryMessage(message)
+        });
+        return { stored: false, reason: 'message-too-large', evicted: 0 };
+    }
 
+    let evicted = 0;
     while (session.history.length >= MAX_HISTORY_MESSAGES ||
            session.historySize + size > MAX_HISTORY_SIZE) {
         const removed = session.history.shift();
         session.historySize -= removed.size;
+        evicted++;
     }
 
     session.history.push({ message: historyMessage, size });
     session.historySize += size;
+    historyLog('stored', {
+        sessionId,
+        message: summarizeHistoryMessage(historyMessage),
+        size,
+        historyCount: session.history.length,
+        historySize: session.historySize,
+        evicted
+    });
+    return { stored: true, reason: null, evicted };
 }
 
 // ==================== Socket.io 连接处理 ====================
@@ -318,6 +369,16 @@ io.on('connection', (socket) => {
                 editorContent: existingDevice ? existingDevice.editorContent : '',
                 editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
             });
+
+            historyLog('join-ready', {
+                sessionId,
+                deviceId,
+                socketId: socket.id,
+                reconnect: Boolean(existingDevice),
+                onlineDeviceCount: session.devices.size,
+                historyCount: session.history.length,
+                historySize: session.historySize
+            });
             
             session.lastActivity = Date.now();
             
@@ -368,9 +429,15 @@ io.on('connection', (socket) => {
                 content: latestRemoteEditor ? latestRemoteEditor.content : ''
             });
 
-            socket.emit('session-history', {
-                messages: session.history.map(entry => entry.message)
+            const historyMessages = session.history.map(entry => entry.message);
+            historyLog('snapshot-sent', {
+                sessionId,
+                targetDeviceId: deviceId,
+                targetSocketId: socket.id,
+                messageCount: historyMessages.length,
+                messages: historyMessages.map(summarizeHistoryMessage)
             });
+            socket.emit('session-history', { messages: historyMessages });
         } catch (err) {
             console.error('join-session error:', err);
             socket.emit('error', { message: '服务器内部错误' });
@@ -443,13 +510,37 @@ io.on('connection', (socket) => {
                 return socket.emit('error', { message: '消息过大' });
             }
 
-            addToSessionHistory(session, message);
+            const historyResult = addToSessionHistory(sessionId, session, message);
+            historyLog('message-received', {
+                sessionId,
+                fromDeviceId: currentDevice,
+                message: summarizeHistoryMessage(message),
+                historyResult,
+                broadcastRecipients: Math.max(session.devices.size - 1, 0)
+            });
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('message', { message });
         } catch (err) {
             console.error('message error:', err);
         }
+    });
+
+    socket.on('session-history-ack', (data) => {
+        if (!data || typeof data !== 'object') return;
+
+        const { sessionId, deviceId, receivedCount, restoredCount, duplicateCount, failedCount } = data;
+        if (sessionId !== currentSession || deviceId !== currentDevice) return;
+
+        historyLog('snapshot-acknowledged', {
+            sessionId,
+            deviceId,
+            socketId: socket.id,
+            receivedCount,
+            restoredCount,
+            duplicateCount,
+            failedCount
+        });
     });
     
     // 编辑器同步

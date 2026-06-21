@@ -54,6 +54,35 @@ const state = {
     db: null // IndexedDB实例
 };
 
+const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
+
+function summarizeHistoryMessage(message) {
+    const fileInfo = message && message.fileInfo;
+    return {
+        id: message && message.id,
+        type: message && message.type,
+        sender: message && message.sender,
+        timestamp: message && message.timestamp,
+        file: fileInfo ? {
+            id: fileInfo.id,
+            name: fileInfo.name,
+            size: fileInfo.size,
+            isSmall: fileInfo.isSmall,
+            hasInlineData: Boolean(fileInfo.data)
+        } : undefined
+    };
+}
+
+function historyLog(event, details = {}) {
+    if (!HISTORY_DEBUG) return;
+
+    console.log(`[history][${event}]`, {
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        ...details
+    });
+}
+
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
     await initStorage();
@@ -332,6 +361,14 @@ function initSocket() {
 
     state.socket.on('connect', () => {
         console.log('Socket connected');
+        historyLog('socket-connected', {
+            socketId: state.socket.id,
+            socketServer: CONFIG.SOCKET_SERVER
+        });
+        historyLog('join-emitted', {
+            socketId: state.socket.id,
+            deviceName: state.deviceName
+        });
         state.socket.emit('join-session', {
             sessionId: state.sessionId,
             deviceId: state.deviceId,
@@ -356,10 +393,18 @@ function initSocket() {
     });
 
     state.socket.on('message', (data) => {
+        historyLog('realtime-message-event', {
+            message: summarizeHistoryMessage(data && data.message)
+        });
         handleMessage(data);
     });
 
     state.socket.on('session-history', (data) => {
+        const messages = data && Array.isArray(data.messages) ? data.messages : [];
+        historyLog('snapshot-received', {
+            messageCount: messages.length,
+            messages: messages.map(summarizeHistoryMessage)
+        });
         handleSessionHistory(data);
     });
 
@@ -644,8 +689,15 @@ async function sendFile(file, targetDeviceId = null) {
             sessionId: state.sessionId,
             message
         });
+        historyLog('small-file-message-emitted', {
+            message: summarizeHistoryMessage(message)
+        });
 
         await addMessageToChat(message, true);
+        historyLog('small-file-message-rendered-locally', {
+            message: summarizeHistoryMessage(message),
+            persistedToMessagesStore: false
+        });
     } else {
         // 大文件通过P2P发送
         sendFileOffer(fileInfo, file, targetDeviceId);
@@ -870,6 +922,10 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
         });
 
         console.log('File message saved to chat');
+        historyLog('p2p-file-message-stored-locally', {
+            message: summarizeHistoryMessage(message),
+            emittedToSocketHistory: false
+        });
     } catch (err) {
         console.error('Error sending file:', err);
         alert('文件传输失败: ' + err.message);
@@ -950,6 +1006,10 @@ async function handleDataChannelMessage(deviceId, data) {
                     hideProgress(msg.fileId);
                     fileTransfers.delete(msg.fileId);
                     console.log('File receive and save complete');
+                    historyLog('p2p-file-message-stored-on-receiver', {
+                        message: summarizeHistoryMessage(message),
+                        emittedToSocketHistory: false
+                    });
                 } else {
                     console.warn('No transfer found for file-complete:', msg.fileId);
                 }
@@ -988,7 +1048,17 @@ async function handleDataChannelMessage(deviceId, data) {
 async function handleMessage(data) {
     const { message } = data;
 
-    if (message.sender === state.deviceId) return;
+    if (message.sender === state.deviceId) {
+        historyLog('realtime-message-skipped', {
+            reason: 'own-message',
+            message: summarizeHistoryMessage(message)
+        });
+        return;
+    }
+
+    historyLog('realtime-message-processing', {
+        message: summarizeHistoryMessage(message)
+    });
 
     // 如果是小文件消息，提取base64数据保存到files存储
     if (message.type === 'file' && message.fileInfo && message.fileInfo.isSmall && message.fileInfo.data) {
@@ -1012,8 +1082,15 @@ async function handleMessage(data) {
                 timestamp: message.timestamp
             });
             console.log('Saved received file to IndexedDB:', message.fileInfo.id);
+            historyLog('realtime-file-stored', {
+                message: summarizeHistoryMessage(message)
+            });
         } catch (err) {
             console.error('保存接收的文件失败:', err);
+            historyLog('realtime-file-store-failed', {
+                message: summarizeHistoryMessage(message),
+                error: err.message
+            });
         }
     }
 
@@ -1022,31 +1099,91 @@ async function handleMessage(data) {
         ...message,
         sessionId: state.sessionId
     });
+    historyLog('realtime-message-stored', {
+        message: summarizeHistoryMessage(message)
+    });
 
     await addMessageToChat(message, false);
+    historyLog('realtime-message-rendered', {
+        message: summarizeHistoryMessage(message)
+    });
 }
 
 async function handleSessionHistory(data) {
-    if (!data || !Array.isArray(data.messages)) return;
+    if (!data || !Array.isArray(data.messages)) {
+        historyLog('snapshot-skipped', { reason: 'invalid-payload' });
+        return;
+    }
 
     const messages = [...data.messages].sort((a, b) => a.timestamp - b.timestamp);
     let restored = 0;
+    let duplicates = 0;
+    let failed = 0;
+
+    historyLog('snapshot-processing-started', {
+        messageCount: messages.length
+    });
 
     for (const message of messages) {
-        if (!message || typeof message.id !== 'string') continue;
+        if (!message || typeof message.id !== 'string') {
+            failed++;
+            historyLog('snapshot-message-skipped', {
+                reason: 'missing-message-id',
+                message: summarizeHistoryMessage(message)
+            });
+            continue;
+        }
 
-        const existing = await getFromStore('messages', message.id);
-        if (existing) continue;
+        try {
+            const existing = await getFromStore('messages', message.id);
+            if (existing) {
+                duplicates++;
+                historyLog('snapshot-message-skipped', {
+                    reason: 'already-in-indexeddb',
+                    message: summarizeHistoryMessage(message)
+                });
+                continue;
+            }
 
-        await saveToStore('messages', {
-            ...message,
-            sessionId: state.sessionId
-        });
-        await addMessageToChat(message, message.sender === state.deviceId);
-        restored++;
+            await saveToStore('messages', {
+                ...message,
+                sessionId: state.sessionId
+            });
+            historyLog('snapshot-message-stored', {
+                message: summarizeHistoryMessage(message)
+            });
+
+            await addMessageToChat(message, message.sender === state.deviceId);
+            historyLog('snapshot-message-rendered', {
+                message: summarizeHistoryMessage(message)
+            });
+            restored++;
+        } catch (err) {
+            failed++;
+            console.error('Failed to restore session history message:', err);
+            historyLog('snapshot-message-failed', {
+                message: summarizeHistoryMessage(message),
+                error: err.message
+            });
+        }
     }
 
-    console.log('Restored session history messages:', restored);
+    const result = {
+        receivedCount: messages.length,
+        restoredCount: restored,
+        duplicateCount: duplicates,
+        failedCount: failed
+    };
+    historyLog('snapshot-processing-completed', result);
+
+    if (state.socket) {
+        state.socket.emit('session-history-ack', {
+            sessionId: state.sessionId,
+            deviceId: state.deviceId,
+            ...result
+        });
+        historyLog('snapshot-ack-emitted', result);
+    }
 }
 
 async function addMessageToChat(message, isOwn) {
@@ -1184,7 +1321,14 @@ async function sendText() {
         sessionId: state.sessionId
     });
 
+    historyLog('local-message-stored', {
+        message: summarizeHistoryMessage(message)
+    });
+
     // 发送到其他设备
+    historyLog('realtime-message-emitted', {
+        message: summarizeHistoryMessage(message)
+    });
     state.socket.emit('message', {
         sessionId: state.sessionId,
         message
@@ -1351,7 +1495,14 @@ function initEditor() {
             sessionId: state.sessionId
         });
 
+        historyLog('local-message-stored', {
+            message: summarizeHistoryMessage(message)
+        });
+
         // 发送到其他设备
+        historyLog('realtime-message-emitted', {
+            message: summarizeHistoryMessage(message)
+        });
         state.socket.emit('message', {
             sessionId: state.sessionId,
             message
@@ -1704,12 +1855,19 @@ async function loadSessionData() {
 
         console.log('Loaded messages:', messages.length);
         messages.sort((a, b) => a.timestamp - b.timestamp);
+        historyLog('indexeddb-history-loaded', {
+            messageCount: messages.length,
+            messages: messages.map(summarizeHistoryMessage)
+        });
 
         // 使用 for...of 确保按顺序异步处理
         for (const msg of messages) {
             const isOwn = msg.sender === state.deviceId;
             await addMessageToChat(msg, isOwn);
         }
+        historyLog('indexeddb-history-rendered', {
+            messageCount: messages.length
+        });
 
         // 加载协同编辑内容
         console.log('Loading editor content...');
