@@ -4,28 +4,58 @@
  */
 
 const express = require('express');
+const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
-const server = http.createServer(app);
+const webServer = http.createServer(app);
 
 // ==================== 安全配置 ====================
 
+const DEFAULT_WEB_PORT = process.env.NODE_ENV === 'development' || process.env.npm_lifecycle_event === 'dev' ? 3000 : 80;
+const WEB_PORT = Number(process.env.WEB_PORT || process.env.PORT || DEFAULT_WEB_PORT);
+const SOCKET_PORT = Number(process.env.SOCKET_PORT || 3333);
+const SOCKET_SSL_KEY = process.env.SOCKET_SSL_KEY || process.env.SSL_KEY_PATH;
+const SOCKET_SSL_CERT = process.env.SOCKET_SSL_CERT || process.env.SSL_CERT_PATH;
+
+const socketServer = SOCKET_PORT === WEB_PORT ? webServer : createSocketServer();
+
+function splitEnvList(value) {
+    return value.split(',').map(item => item.trim()).filter(Boolean);
+}
+
+function createSocketServer() {
+    if (SOCKET_SSL_KEY && SOCKET_SSL_CERT) {
+        return https.createServer({
+            key: fs.readFileSync(SOCKET_SSL_KEY),
+            cert: fs.readFileSync(SOCKET_SSL_CERT)
+        });
+    }
+
+    return http.createServer();
+}
+
 // 允许的域名
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',') 
+    ? splitEnvList(process.env.ALLOWED_ORIGINS)
     : [
+        'http://localhost',
         'http://localhost:3000',
+        'http://127.0.0.1',
         'http://127.0.0.1:3000',
         'https://x-tx-sl.miku.us',
         'http://x-tx-sl.miku.us',
         'https://x-tx-sl.miku.us:3000',
         'http://x-tx-sl.miku.us:3000',
 		'http://10.0.0.40:3000',
-		'https://tun.miku.us'  //正式生产环境（WEB，非socket）
+        'http://tun.miku.us',
+		'https://tun.miku.us',  //正式生产环境（WEB，非socket）
+        'http://tun-socket.miku.us',
+        'https://tun-socket.miku.us'
       ];
 
 // 速率限制配置
@@ -100,7 +130,7 @@ app.get('/api/sessions', (req, res) => {
 
 // ==================== Socket.io 配置 ====================
 
-const io = new Server(server, {
+const io = new Server(socketServer, {
     cors: {
         origin: (origin, callback) => {
             // 允许无origin的请求 (如移动应用)
@@ -517,29 +547,54 @@ setInterval(cleanupExpiredSessions, 5 * 60 * 1000);
 
 // ==================== 启动 ====================
 
-const PORT = process.env.PORT || 3000;
+function formatLocalUrl(protocol, port) {
+    const defaultPort = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);
+    return `${protocol}://localhost${defaultPort ? '' : `:${port}`}`;
+}
 
-server.listen(PORT, '0.0.0.0', () => {
+function logStartup() {
+    const socketProtocol = SOCKET_SSL_KEY && SOCKET_SSL_CERT ? 'https' : 'http';
+
     console.log(`🚀 即时传输隧道服务器运行中 (安全版本)`);
-    console.log(`📱 本机访问: http://localhost:${PORT}`);
-    console.log(`🌐 局域网访问: http://10.8.0.16:${PORT}`);
+    console.log(`📱 Web/API: ${formatLocalUrl('http', WEB_PORT)}`);
+    console.log(`🔌 Socket.IO: ${formatLocalUrl(socketProtocol, SOCKET_PORT)}`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
-    console.log(`⚠️  安全提示: 生产环境应配置具体域名，不要开放给所有来源`);
+
+    if (socketProtocol === 'http' && ALLOWED_ORIGINS.some(origin => origin.startsWith('https://'))) {
+        console.warn('⚠️  HTTPS 页面直连 Socket.IO 时需要为 3333 端口配置 TLS 证书或前置 TLS 代理');
+    }
+}
+
+webServer.listen(WEB_PORT, '0.0.0.0', () => {
+    if (socketServer === webServer) {
+        logStartup();
+    } else {
+        console.log(`📱 Web/API: ${formatLocalUrl('http', WEB_PORT)}`);
+    }
 });
+
+if (socketServer !== webServer) {
+    socketServer.listen(SOCKET_PORT, '0.0.0.0', logStartup);
+}
 
 // 优雅关闭
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, shutting down gracefully');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
-});
+function shutdown(signal) {
+    console.log(`${signal} received, shutting down gracefully`);
+    const servers = socketServer === webServer ? [webServer] : [webServer, socketServer];
+    let pending = servers.length;
 
-process.on('SIGINT', () => {
-    console.log('SIGINT received, shutting down gracefully');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
+    servers.forEach(item => {
+        item.close(() => {
+            pending--;
+            if (pending === 0) {
+                console.log('Servers closed');
+                process.exit(0);
+            }
+        });
     });
-});
+
+    setTimeout(() => process.exit(1), 10000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

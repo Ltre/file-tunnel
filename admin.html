@@ -307,9 +307,33 @@
     
     <button class="refresh-btn" onclick="loadData()" title="刷新">🔄</button>
     
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script>
-        const socket = io();
+        const SOCKET_HOST_OVERRIDES = {
+            'tun.miku.us': 'tun-socket.miku.us'
+        };
+
+        function getRuntimeConfig() {
+            return window.TUNNEL_CONFIG || {};
+        }
+
+        function buildSocketServerUrl() {
+            const runtimeConfig = getRuntimeConfig();
+
+            if (runtimeConfig.SOCKET_SERVER) {
+                return runtimeConfig.SOCKET_SERVER;
+            }
+
+            const protocol = runtimeConfig.SOCKET_PROTOCOL || window.location.protocol || 'http:';
+            const host = runtimeConfig.SOCKET_HOST || SOCKET_HOST_OVERRIDES[window.location.hostname] || window.location.hostname;
+            const port = runtimeConfig.SOCKET_PORT || '3333';
+
+            return `${protocol}//${host}${port ? `:${port}` : ''}`;
+        }
+
+        const socket = io(buildSocketServerUrl(), {
+            transports: ['websocket', 'polling']
+        });
         const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{8,64}$/;
         
         // 加载数据

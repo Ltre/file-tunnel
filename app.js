@@ -4,11 +4,33 @@
  */
 
 // ==================== 配置 ====================
+const SOCKET_HOST_OVERRIDES = {
+    'tun.miku.us': 'tun-socket.miku.us'
+};
+
+function getRuntimeConfig() {
+    return window.TUNNEL_CONFIG || {};
+}
+
+function buildSocketServerUrl() {
+    const runtimeConfig = getRuntimeConfig();
+
+    if (runtimeConfig.SOCKET_SERVER) {
+        return runtimeConfig.SOCKET_SERVER;
+    }
+
+    const protocol = runtimeConfig.SOCKET_PROTOCOL || window.location.protocol || 'http:';
+    const host = runtimeConfig.SOCKET_HOST || SOCKET_HOST_OVERRIDES[window.location.hostname] || window.location.hostname;
+    const port = runtimeConfig.SOCKET_PORT || '3333';
+
+    return `${protocol}//${host}${port ? `:${port}` : ''}`;
+}
+
 const CONFIG = {
     // Socket.io 服务器地址 (自动检测)
     // 开发环境: 使用当前页面地址
     // 生产环境: 可配置为固定地址
-    SOCKET_SERVER: window.location.origin,
+    SOCKET_SERVER: buildSocketServerUrl(),
     
     // 备用服务器地址 (当自动检测失败时使用)
     // 例如: 'http://10.8.0.16:3000'
