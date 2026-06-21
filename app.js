@@ -45,6 +45,7 @@ const state = {
     socket: null,
     peers: new Map(), // deviceId -> RTCPeerConnection
     dataChannels: new Map(), // deviceId -> RTCDataChannel
+    pendingIceCandidates: new Map(), // deviceId -> RTCIceCandidate[]
     devices: new Map(), // deviceId -> deviceInfo
     messages: [],
     pendingFiles: new Map(), // fileId -> fileInfo
@@ -358,6 +359,10 @@ function initSocket() {
         handleMessage(data);
     });
 
+    state.socket.on('session-history', (data) => {
+        handleSessionHistory(data);
+    });
+
     state.socket.on('editor-sync', (data) => {
         handleEditorSync(data);
     });
@@ -476,6 +481,11 @@ async function connectToPeer(deviceId) {
 
     const pc = await createPeerConnection(deviceId);
 
+    if (!shouldInitiatePeerConnection(deviceId)) {
+        console.log('Waiting for peer to initiate connection:', deviceId);
+        return pc;
+    }
+
     // 创建数据通道
     const channel = pc.createDataChannel('fileTransfer', {
         ordered: true,
@@ -503,6 +513,27 @@ async function connectToPeer(deviceId) {
     return pc;
 }
 
+function shouldInitiatePeerConnection(deviceId) {
+    return state.deviceId.localeCompare(deviceId) < 0;
+}
+
+function queueIceCandidate(deviceId, candidate) {
+    if (!state.pendingIceCandidates.has(deviceId)) {
+        state.pendingIceCandidates.set(deviceId, []);
+    }
+
+    state.pendingIceCandidates.get(deviceId).push(candidate);
+}
+
+async function flushPendingIceCandidates(deviceId, pc) {
+    const candidates = state.pendingIceCandidates.get(deviceId) || [];
+    state.pendingIceCandidates.delete(deviceId);
+
+    for (const candidate of candidates) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+}
+
 async function handleSignal(data) {
     const { from, type, sdp, candidate } = data;
 
@@ -513,13 +544,17 @@ async function handleSignal(data) {
 
     try {
         if (type === 'offer') {
-            // 检查连接状态
             if (pc.signalingState === 'have-local-offer') {
-                console.warn('Already have local offer, ignoring incoming offer');
-                return;
+                if (shouldInitiatePeerConnection(from)) {
+                    console.warn('Ignoring competing offer from', from);
+                    return;
+                }
+
+                await pc.setLocalDescription({ type: 'rollback' });
             }
             
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            await flushPendingIceCandidates(from, pc);
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
@@ -537,12 +572,12 @@ async function handleSignal(data) {
             }
             
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            await flushPendingIceCandidates(from, pc);
         } else if (type === 'ice-candidate') {
             if (pc.remoteDescription) {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
             } else {
-                // 候选者可能早于描述到达，缓存它们
-                pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+                queueIceCandidate(from, candidate);
             }
         }
     } catch (err) {
@@ -991,6 +1026,29 @@ async function handleMessage(data) {
     await addMessageToChat(message, false);
 }
 
+async function handleSessionHistory(data) {
+    if (!data || !Array.isArray(data.messages)) return;
+
+    const messages = [...data.messages].sort((a, b) => a.timestamp - b.timestamp);
+    let restored = 0;
+
+    for (const message of messages) {
+        if (!message || typeof message.id !== 'string') continue;
+
+        const existing = await getFromStore('messages', message.id);
+        if (existing) continue;
+
+        await saveToStore('messages', {
+            ...message,
+            sessionId: state.sessionId
+        });
+        await addMessageToChat(message, message.sender === state.deviceId);
+        restored++;
+    }
+
+    console.log('Restored session history messages:', restored);
+}
+
 async function addMessageToChat(message, isOwn) {
     const container = document.getElementById('chatMessages');
 
@@ -1065,7 +1123,7 @@ async function addMessageToChat(message, isOwn) {
         } else {
             // 文件消息（大文件、无法预览的文件，或文件数据已丢失）
             const sizeStr = formatFileSize(fileInfo.size);
-            const canDownload = fileInfo.id && (fileData || fileInfo.isSmall);
+            const canDownload = fileInfo.id && Boolean(fileData);
             const clickHandler = canDownload ? `onclick="downloadFile('${fileInfo.id}')"` : '';
             const opacity = canDownload ? '' : 'opacity: 0.6;';
 
@@ -1386,6 +1444,7 @@ function handleDeviceLeft(data) {
     }
 
     state.dataChannels.delete(deviceId);
+    state.pendingIceCandidates.delete(deviceId);
     updateDeviceList();
 }
 

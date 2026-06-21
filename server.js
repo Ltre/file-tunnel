@@ -63,6 +63,8 @@ const MAX_SESSIONS = 1000;
 const MAX_DEVICES_PER_SESSION = 10;
 const MAX_SESSION_AGE = 2 * 60 * 60 * 1000; // 2小时
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
+const MAX_HISTORY_MESSAGES = 100;
+const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
 
 // ==================== Express 中间件 ====================
 
@@ -181,6 +183,33 @@ function isEditorContentEmpty(content) {
         .trim() === '';
 }
 
+function createHistoryMessage(message) {
+    const historyMessage = JSON.parse(JSON.stringify(message));
+
+    if (historyMessage.type === 'file' && historyMessage.fileInfo) {
+        delete historyMessage.fileInfo.data;
+    }
+
+    return historyMessage;
+}
+
+function addToSessionHistory(session, message) {
+    if (session.history.some(entry => entry.message.id === message.id)) return;
+
+    const historyMessage = createHistoryMessage(message);
+    const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
+    if (size > MAX_HISTORY_SIZE) return;
+
+    while (session.history.length >= MAX_HISTORY_MESSAGES ||
+           session.historySize + size > MAX_HISTORY_SIZE) {
+        const removed = session.history.shift();
+        session.historySize -= removed.size;
+    }
+
+    session.history.push({ message: historyMessage, size });
+    session.historySize += size;
+}
+
 // ==================== Socket.io 连接处理 ====================
 
 io.on('connection', (socket) => {
@@ -264,6 +293,8 @@ io.on('connection', (socket) => {
             if (!sessions.has(sessionId)) {
                 sessions.set(sessionId, {
                     devices: new Map(),
+                    history: [],
+                    historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
                 });
@@ -336,6 +367,10 @@ io.on('connection', (socket) => {
                 hasRemoteContent: Boolean(latestRemoteEditor),
                 content: latestRemoteEditor ? latestRemoteEditor.content : ''
             });
+
+            socket.emit('session-history', {
+                messages: session.history.map(entry => entry.message)
+            });
         } catch (err) {
             console.error('join-session error:', err);
             socket.emit('error', { message: '服务器内部错误' });
@@ -407,6 +442,8 @@ io.on('connection', (socket) => {
             if (messageStr.length > MAX_MESSAGE_SIZE) {
                 return socket.emit('error', { message: '消息过大' });
             }
+
+            addToSessionHistory(session, message);
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('message', { message });
@@ -541,8 +578,7 @@ io.on('connection', (socket) => {
 
                     // 如果会话为空，清理会话
                     if (session.devices.size === 0) {
-                        sessions.delete(currentSession);
-                        console.log(`Session ${currentSession} removed (empty)`);
+                        session.lastActivity = Date.now();
                     }
                 }
             }
@@ -566,10 +602,9 @@ function cleanupExpiredSessions() {
     let cleaned = 0;
     
     for (const [sessionId, session] of sessions) {
-        // 清理空会话或过期会话
-        if (session.devices.size === 0 && 
-            (now - session.createdAt > 60000 || // 空会话1分钟后清理
-             now - session.lastActivity > MAX_SESSION_AGE)) { // 活跃会话2小时后清理
+        // Keep an empty session long enough for reconnecting devices to recover history.
+        if (session.devices.size === 0 &&
+            now - session.lastActivity > MAX_SESSION_AGE) {
             sessions.delete(sessionId);
             cleaned++;
         }
