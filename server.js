@@ -24,7 +24,8 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
         'http://x-tx-sl.miku.us',
         'https://x-tx-sl.miku.us:3000',
         'http://x-tx-sl.miku.us:3000',
-		'http://10.0.0.40:3000'
+		'http://10.0.0.40:3000',
+		'https://tun.miku.us'  //正式生产环境（WEB，非socket）
       ];
 
 // 速率限制配置
