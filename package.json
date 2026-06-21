@@ -1,0 +1,23 @@
+{
+  "name": "instant-tunnel",
+  "version": "1.0.0",
+  "description": "即时传输隧道 - 安全的设备间P2P文件传输和协同编辑",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "p2p",
+    "file-transfer",
+    "webrtc",
+    "collaboration",
+    "real-time"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}

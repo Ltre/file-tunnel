@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即时传输隧道</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/uuid/8.3.2/uuid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            padding: 30px 0;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .main-layout {
+            display: grid;
+            grid-template-columns: 300px 1fr 400px;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        @media (max-width: 1200px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .panel-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .panel-content {
+            padding: 20px;
+        }
+        
+        /* 二维码区域 */
+        .qr-section {
+            text-align: center;
+        }
+        
+        #qrcode {
+            margin: 20px auto;
+            padding: 15px;
+            background: white;
+            border-radius: 12px;
+            display: inline-block;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .session-info {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #666;
+        }
+        
+        .device-list {
+            margin-top: 15px;
+        }
+        
+        .device-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .device-item .icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.1rem;
+        }
+        
+        .device-item .info {
+            flex: 1;
+        }
+        
+        .device-item .name {
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .device-item .status {
+            font-size: 0.75rem;
+            color: #28a745;
+        }
+        
+        /* 聊天记录区域 */
+        .chat-messages {
+            height: 400px;
+            overflow-y: auto;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 12px;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 5px;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        
+        .message-bubble {
+            background: white;
+            padding: 12px 15px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            max-width: 85%;
+        }
+        
+        .message.own .message-bubble {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin-left: auto;
+        }
+        
+        .message.own {
+            text-align: right;
+        }
+        
+        .message.own .message-header {
+            justify-content: flex-end;
+        }
+        
+        /* 文件消息 */
+        .file-message {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .file-message:hover {
+            transform: scale(1.02);
+        }
+        
+        .file-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
+        
+        .file-info {
+            flex: 1;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            margin-bottom: 3px;
+        }
+        
+        .file-size {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+        
+        /* 富文本预览气泡 */
+        .rich-preview {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .rich-preview:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(245, 87, 108, 0.3);
+        }
+        
+        .rich-preview-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .rich-preview-content {
+            font-size: 0.9rem;
+            opacity: 0.95;
+            max-height: 60px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        /* 媒体预览 */
+        .media-preview {
+            max-width: 200px;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .media-preview img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        
+        .media-preview video,
+        .media-preview audio {
+            width: 100%;
+            max-width: 250px;
+        }
+        
+        /* 输入区域 */
+        .input-area {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .input-area input[type="text"] {
+            flex: 1;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        
+        .input-area input[type="text"]:focus {
+            border-color: #667eea;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #f8f9fa;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e9ecef;
+        }
+        
+        /* 协同编辑区域 */
+        .collab-editor {
+            min-height: 300px;
+        }
+        
+        .editor-toolbar {
+            display: flex;
+            gap: 5px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .toolbar-btn {
+            padding: 8px 12px;
+            border: none;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        
+        .toolbar-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .editor-content {
+            min-height: 200px;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            outline: none;
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+        
+        .editor-content:focus {
+            border-color: #667eea;
+        }
+        
+        .editor-content img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        
+        .editor-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        /* 文件上传 */
+        .file-upload-area {
+            border: 3px dashed #ddd;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 15px;
+        }
+        
+        .file-upload-area:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .file-upload-area.dragover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .file-upload-area i {
+            font-size: 3rem;
+            color: #999;
+            margin-bottom: 10px;
+        }
+        
+        /* 传输进度 */
+        .transfer-progress {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            min-width: 300px;
+            z-index: 1000;
+        }
+        
+        .progress-item {
+            margin-bottom: 15px;
+        }
+        
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        
+        .progress-bar {
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        
+        /* 大文件确认对话框 */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .modal {
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+        }
+        
+        .modal h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .modal p {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        
+        /* 富文本查看器 */
+        .rich-viewer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 3000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s;
+        }
+        
+        .rich-viewer-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .rich-viewer {
+            background: white;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        
+        .rich-viewer-header {
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .rich-viewer-content {
+            padding: 30px;
+            max-height: calc(90vh - 80px);
+            overflow-y: auto;
+        }
+        
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        /* 隐藏的文件输入 */
+        #fileInput {
+            display: none;
+        }
+        
+        /* 在线指示器 */
+        .online-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+            margin-left: 5px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 即时传输隧道</h1>
+            <p>安全、快速、去中心化的设备间文件传输</p>
+        </div>
+        
+        <div class="main-layout">
+            <!-- 左侧：会话信息和设备列表 -->
+            <div class="left-panel">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>📱</span>
+                        <span>连接设备</span>
+                    </div>
+                    <div class="panel-content qr-section">
+                        <div id="qrcode"></div>
+                        <div class="session-info">
+                            <div>会话ID: <span id="sessionId">-</span></div>
+                            <div>设备ID: <span id="deviceId">-</span></div>
+                            <div>在线设备: <span id="onlineCount">1</span> 台</div>
+                        </div>
+                        <div class="device-list" id="deviceList">
+                            <!-- 动态生成设备列表 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 中间：聊天记录 -->
+            <div class="center-panel">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>💬</span>
+                        <span>聊天记录</span>
+                        <span class="online-indicator"></span>
+                    </div>
+                    <div class="panel-content">
+                        <div class="chat-messages" id="chatMessages">
+                            <div class="empty-state">
+                                <div style="font-size: 3rem; margin-bottom: 10px;">📭</div>
+                                <div>暂无消息</div>
+                                <div style="font-size: 0.85rem; margin-top: 10px;">发送文件或文本来开始对话</div>
+                            </div>
+                        </div>
+                        <div class="file-upload-area" id="dropZone">
+                            <div style="font-size: 2.5rem; margin-bottom: 10px;">📁</div>
+                            <div>拖拽文件到这里</div>
+                            <div style="font-size: 0.85rem; color: #999; margin-top: 5px;">或点击选择文件</div>
+                        </div>
+                        <div class="input-area">
+                            <input type="text" id="textInput" placeholder="输入消息..." maxlength="1000">
+                            <button class="btn btn-primary" id="sendTextBtn">
+                                <span>📤</span>
+                                <span>发送</span>
+                            </button>
+                        </div>
+                        <input type="file" id="fileInput" multiple>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 右侧：协同编辑 -->
+            <div class="right-panel">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>📝</span>
+                        <span>协同编辑</span>
+                        <span id="collabStatus" style="font-size: 0.8rem; opacity: 0.8;">同步中...</span>
+                    </div>
+                    <div class="panel-content collab-editor">
+                        <div class="editor-toolbar">
+                            <button class="toolbar-btn" data-cmd="bold" title="粗体"><b>B</b></button>
+                            <button class="toolbar-btn" data-cmd="italic" title="斜体"><i>I</i></button>
+                            <button class="toolbar-btn" data-cmd="underline" title="下划线"><u>U</u></button>
+                            <button class="toolbar-btn" data-cmd="insertUnorderedList" title="列表">☰</button>
+                            <button class="toolbar-btn" id="insertImageBtn" title="插入图片">🖼️</button>
+                            <button class="toolbar-btn" id="insertFileBtn" title="引用文件">📎</button>
+                        </div>
+                        <div class="editor-content" id="editor" contenteditable="true" placeholder="开始协同编辑..."></div>
+                        <div class="editor-actions">
+                            <button class="btn btn-secondary" id="clearEditorBtn">
+                                <span>🗑️</span>
+                                <span>清空</span>
+                            </button>
+                            <button class="btn btn-primary" id="sendRichBtn">
+                                <span>📨</span>
+                                <span>发送富文本</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 传输进度 -->
+    <div class="transfer-progress" id="transferProgress" style="display: none;">
+        <h4 style="margin-bottom: 15px;">📤 传输进度</h4>
+        <div id="progressList"></div>
+    </div>
+    
+    <!-- 大文件确认对话框 -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal">
+            <h3>📦 接收文件</h3>
+            <p id="confirmFileInfo"></p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="rejectFileBtn">拒绝</button>
+                <button class="btn btn-primary" id="acceptFileBtn">接收</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 富文本查看器 -->
+    <div class="rich-viewer-overlay" id="richViewer">
+        <div class="rich-viewer">
+            <div class="rich-viewer-header">
+                <h3 style="margin: 0;">📝 富文本内容</h3>
+                <button class="close-btn" id="closeRichViewer">&times;</button>
+            </div>
+            <div class="rich-viewer-content" id="richViewerContent"></div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
