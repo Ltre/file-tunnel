@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即时传输隧道 - 管理后台</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            padding: 30px 0;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+        
+        .panel-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .panel-content {
+            padding: 20px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            color: #666;
+            margin-top: 5px;
+        }
+        
+        .session-list {
+            display: grid;
+            gap: 15px;
+        }
+        
+        .session-item {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .session-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .session-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
+        
+        .session-info {
+            flex: 1;
+        }
+        
+        .session-id {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .session-meta {
+            font-size: 0.85rem;
+            color: #666;
+        }
+        
+        .session-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+        
+        .btn-secondary {
+            background: #e9ecef;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #dee2e6;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+        
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 15px;
+        }
+        
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            transition: transform 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-inactive {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .device-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: #e9ecef;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+        
+        @media (max-width: 768px) {
+            .session-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .session-actions {
+                width: 100%;
+                justify-content: flex-end;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔧 管理后台</h1>
+            <p>即时传输隧道会话管理</p>
+        </div>
+        
+        <div class="panel">
+            <div class="panel-header">
+                <span>📊 统计信息</span>
+                <span id="lastUpdate">更新于: --</span>
+            </div>
+            <div class="panel-content">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalSessions">0</div>
+                        <div class="stat-label">活跃会话</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalDevices">0</div>
+                        <div class="stat-label">在线设备</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalMessages">0</div>
+                        <div class="stat-label">消息总数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalFiles">0</div>
+                        <div class="stat-label">文件总数</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <div class="panel-header">
+                <span>🔗 会话列表</span>
+                <button class="btn btn-secondary" onclick="exportSessions()">📥 导出</button>
+            </div>
+            <div class="panel-content">
+                <div id="sessionList" class="session-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div>暂无会话</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <button class="refresh-btn" onclick="loadData()" title="刷新">🔄</button>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        
+        // 加载数据
+        async function loadData() {
+            try {
+                // 从服务器获取会话信息
+                const response = await fetch('/api/sessions');
+                const data = await response.json();
+                
+                updateStats(data);
+                renderSessions(data.sessions);
+                
+                document.getElementById('lastUpdate').textContent = 
+                    '更新于: ' + new Date().toLocaleTimeString('zh-CN');
+            } catch (err) {
+                console.error('Failed to load data:', err);
+                // 如果API不可用，从本地存储读取
+                loadFromLocalStorage();
+            }
+        }
+        
+        // 从本地存储加载（备用）
+        function loadFromLocalStorage() {
+            try {
+                const sessions = [];
+                const sessionIds = new Set();
+                
+                // 从消息中提取会话
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith('tunnel_')) {
+                        try {
+                            const data = JSON.parse(localStorage.getItem(key));
+                            if (data && data.sessionId) {
+                                sessionIds.add(data.sessionId);
+                            }
+                        } catch (e) {}
+                    }
+                }
+                
+                // 模拟会话数据
+                sessionIds.forEach(id => {
+                    sessions.push({
+                        id: id,
+                        deviceCount: 1,
+                        createdAt: Date.now(),
+                        lastActivity: Date.now(),
+                        isActive: true
+                    });
+                });
+                
+                updateStats({ sessions, totalDevices: sessions.length, totalMessages: 0, totalFiles: 0 });
+                renderSessions(sessions);
+            } catch (err) {
+                console.error('Failed to load from localStorage:', err);
+            }
+        }
+        
+        // 更新统计
+        function updateStats(data) {
+            document.getElementById('totalSessions').textContent = data.sessions?.length || 0;
+            document.getElementById('totalDevices').textContent = data.totalDevices || 0;
+            document.getElementById('totalMessages').textContent = data.totalMessages || 0;
+            document.getElementById('totalFiles').textContent = data.totalFiles || 0;
+        }
+        
+        // 渲染会话列表
+        function renderSessions(sessions) {
+            const container = document.getElementById('sessionList');
+            
+            if (!sessions || sessions.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div>暂无会话</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = sessions.map(session => {
+                const shortId = session.id.substring(0, 8) + '...';
+                const createdTime = new Date(session.createdAt).toLocaleString('zh-CN');
+                const lastActivity = new Date(session.lastActivity).toLocaleString('zh-CN');
+                const isActive = session.isActive || (Date.now() - session.lastActivity < 5 * 60 * 1000);
+                
+                return `
+                    <div class="session-item">
+                        <div class="session-icon">🔗</div>
+                        <div class="session-info">
+                            <div class="session-id">
+                                会话 ${shortId}
+                                <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">
+                                    ${isActive ? '活跃' : '离线'}
+                                </span>
+                            </div>
+                            <div class="session-meta">
+                                <div>设备数: <span class="device-count">📱 ${session.deviceCount || 1}</span></div>
+                                <div>创建: ${createdTime}</div>
+                                <div>最后活动: ${lastActivity}</div>
+                            </div>
+                        </div>
+                        <div class="session-actions">
+                            <a href="/${session.id}" target="_blank" class="btn btn-primary">
+                                <span>🔗</span>
+                                <span>进入会话</span>
+                            </a>
+                            <button class="btn btn-secondary" onclick="copyLink('${session.id}')">
+                                <span>📋</span>
+                                <span>复制链接</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        // 复制链接
+        function copyLink(sessionId) {
+            const url = `${window.location.origin}/${sessionId}`;
+            navigator.clipboard.writeText(url).then(() => {
+                alert('链接已复制: ' + url);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                // 备用方案
+                const textarea = document.createElement('textarea');
+                textarea.value = url;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                alert('链接已复制: ' + url);
+            });
+        }
+        
+        // 导出会话列表
+        function exportSessions() {
+            const sessions = [];
+            document.querySelectorAll('.session-item').forEach(item => {
+                const id = item.querySelector('.btn-primary')?.href?.split('/').pop();
+                if (id) {
+                    sessions.push({
+                        id: id,
+                        url: `${window.location.origin}/${id}`
+                    });
+                }
+            });
+            
+            const data = JSON.stringify(sessions, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sessions-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        
+        // 初始加载
+        loadData();
+        
+        // 自动刷新（每30秒）
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>

@@ -50,80 +50,173 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadSessionData();
 });
 
-// ==================== 存储管理 (IndexedDB) ====================
+// ==================== 存储管理 (IndexedDB + 内存备用) ====================
+
+// 内存存储备用方案 (当 IndexedDB 不可用时)
+const memoryStorage = new Map();
+
+function createMemoryDB() {
+    console.log('Creating memory storage fallback');
+    return {
+        _isMemory: true,
+        objectStoreNames: {
+            contains: (name) => ['sessions', 'messages', 'files'].includes(name)
+        }
+    };
+}
+
 async function initStorage() {
     return new Promise((resolve, reject) => {
+        // 检查 IndexedDB 支持
+        if (!window.indexedDB) {
+            console.warn('IndexedDB not supported, falling back to memory storage');
+            // 创建一个内存中的模拟对象
+            state.db = createMemoryDB();
+            resolve();
+            return;
+        }
+
+        console.log('Opening IndexedDB...');
         const request = indexedDB.open('TunnelDB', 1);
-        
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            state.db = request.result;
+
+        request.onerror = (event) => {
+            console.error('IndexedDB open error:', event.target.error);
+            reject(event.target.error);
+        };
+
+        request.onsuccess = (event) => {
+            state.db = event.target.result;
+            console.log('IndexedDB opened successfully, version:', state.db.version);
             resolve();
         };
-        
+
         request.onupgradeneeded = (event) => {
             const db = event.target.result;
-            
+
             // 会话存储
             if (!db.objectStoreNames.contains('sessions')) {
                 const sessionStore = db.createObjectStore('sessions', { keyPath: 'sessionId' });
                 sessionStore.createIndex('lastActive', 'lastActive', { unique: false });
             }
-            
+
             // 消息存储
             if (!db.objectStoreNames.contains('messages')) {
                 const msgStore = db.createObjectStore('messages', { keyPath: 'id' });
                 msgStore.createIndex('sessionId', 'sessionId', { unique: false });
                 msgStore.createIndex('timestamp', 'timestamp', { unique: false });
             }
-            
+
             // 文件存储
             if (!db.objectStoreNames.contains('files')) {
                 const fileStore = db.createObjectStore('files', { keyPath: 'id' });
                 fileStore.createIndex('sessionId', 'sessionId', { unique: false });
+            }
+            
+            // 编辑器内容存储
+            if (!db.objectStoreNames.contains('editorContent')) {
+                const editorStore = db.createObjectStore('editorContent', { keyPath: 'id' });
+                editorStore.createIndex('sessionId', 'sessionId', { unique: false });
             }
         };
     });
 }
 
 async function saveToStore(storeName, data) {
+    // 如果使用内存存储
+    if (state.db._isMemory) {
+        if (!memoryStorage.has(storeName)) {
+            memoryStorage.set(storeName, new Map());
+        }
+        const key = data.id || data.sessionId || Date.now();
+        memoryStorage.get(storeName).set(key, data);
+        return;
+    }
+
     return new Promise((resolve, reject) => {
-        const transaction = state.db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.put(data);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
+        try {
+            const transaction = state.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.put(data);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        } catch (err) {
+            console.error('saveToStore error:', err);
+            reject(err);
+        }
     });
 }
 
 async function getFromStore(storeName, key) {
+    // 如果使用内存存储
+    if (state.db._isMemory) {
+        const store = memoryStorage.get(storeName);
+        return store ? store.get(key) : undefined;
+    }
+
     return new Promise((resolve, reject) => {
-        const transaction = state.db.transaction([storeName], 'readonly');
-        const store = transaction.objectStore(storeName);
-        const request = store.get(key);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        try {
+            const transaction = state.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.get(key);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        } catch (err) {
+            console.error('getFromStore error:', err);
+            reject(err);
+        }
     });
 }
 
 async function getAllFromStore(storeName, indexName, keyRange) {
+    // 如果使用内存存储
+    if (state.db._isMemory) {
+        const store = memoryStorage.get(storeName);
+        if (!store) return [];
+
+        let results = Array.from(store.values());
+
+        // 简单的过滤 (模拟索引)
+        if (keyRange && keyRange.lower === state.sessionId) {
+            results = results.filter(item => item.sessionId === state.sessionId);
+        }
+
+        return results;
+    }
+
     return new Promise((resolve, reject) => {
-        const transaction = state.db.transaction([storeName], 'readonly');
-        const store = transaction.objectStore(storeName);
-        const source = indexName ? store.index(indexName) : store;
-        const request = keyRange ? source.getAll(keyRange) : source.getAll();
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        try {
+            const transaction = state.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+            const source = indexName ? store.index(indexName) : store;
+            const request = keyRange ? source.getAll(keyRange) : source.getAll();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        } catch (err) {
+            console.error('getAllFromStore error:', err);
+            reject(err);
+        }
     });
 }
 
 async function deleteFromStore(storeName, key) {
+    // 如果使用内存存储
+    if (state.db._isMemory) {
+        const store = memoryStorage.get(storeName);
+        if (store) store.delete(key);
+        return;
+    }
+
     return new Promise((resolve, reject) => {
-        const transaction = state.db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.delete(key);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
+        try {
+            const transaction = state.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.delete(key);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+        } catch (err) {
+            console.error('deleteFromStore error:', err);
+            reject(err);
+        }
     });
 }
 
@@ -132,12 +225,12 @@ function initSession() {
     // 生成或获取设备ID
     state.deviceId = localStorage.getItem('deviceId') || generateId();
     localStorage.setItem('deviceId', state.deviceId);
-    
+
     // 生成设备名称
     const deviceTypes = ['📱', '💻', '🖥️', '⌚', '📱'];
     const type = /Mobile|Android|iPhone|iPad/i.test(navigator.userAgent) ? 0 : 1;
     state.deviceName = `${deviceTypes[type]} 设备-${state.deviceId.slice(-4)}`;
-    
+
     // 从URL hash获取或创建会话ID
     const hash = window.location.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
@@ -146,11 +239,11 @@ function initSession() {
         state.sessionId = generateId();
         window.location.hash = state.sessionId;
     }
-    
+
     // 更新UI
     document.getElementById('sessionId').textContent = state.sessionId.slice(0, 8) + '...';
     document.getElementById('deviceId').textContent = state.deviceId.slice(0, 8) + '...';
-    
+
     // 生成二维码
     generateQRCode();
 }
@@ -166,7 +259,7 @@ function generateId() {
 function generateQRCode() {
     const qrContainer = document.getElementById('qrcode');
     qrContainer.innerHTML = '';
-    
+
     const currentUrl = window.location.href;
     new QRCode(qrContainer, {
         text: currentUrl,
@@ -183,7 +276,7 @@ function initSocket() {
     state.socket = io(CONFIG.SOCKET_SERVER, {
         transports: ['websocket', 'polling']
     });
-    
+
     state.socket.on('connect', () => {
         console.log('Socket connected');
         state.socket.emit('join-session', {
@@ -192,39 +285,39 @@ function initSocket() {
             deviceName: state.deviceName
         });
     });
-    
+
     state.socket.on('device-joined', (data) => {
         handleDeviceJoined(data);
     });
-    
+
     state.socket.on('device-left', (data) => {
         handleDeviceLeft(data);
     });
-    
+
     state.socket.on('session-devices', (data) => {
         handleSessionDevices(data);
     });
-    
+
     state.socket.on('signal', (data) => {
         handleSignal(data);
     });
-    
+
     state.socket.on('message', (data) => {
         handleMessage(data);
     });
-    
+
     state.socket.on('editor-sync', (data) => {
         handleEditorSync(data);
     });
-    
+
     state.socket.on('file-offer', (data) => {
         handleFileOffer(data);
     });
-    
+
     state.socket.on('file-answer', (data) => {
         handleFileAnswer(data);
     });
-    
+
     state.socket.on('disconnect', () => {
         console.log('Socket disconnected');
     });
@@ -232,15 +325,28 @@ function initSocket() {
 
 // ==================== WebRTC P2P ====================
 async function createPeerConnection(deviceId) {
-    const pc = new RTCPeerConnection({
+    const config = {
         iceServers: [
+            // Google STUN servers
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-    });
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // Other public STUN servers
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:stun.stunprotocol.org:3478' }
+        ],
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        // Enable DTLS for secure connections
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 10 // Pre-generate candidates
+    };
     
+    const pc = new RTCPeerConnection(config);
+
     pc.onicecandidate = (event) => {
         if (event.candidate) {
+            console.log('Sending ICE candidate to', deviceId);
             state.socket.emit('signal', {
                 to: deviceId,
                 from: state.deviceId,
@@ -249,53 +355,118 @@ async function createPeerConnection(deviceId) {
             });
         }
     };
-    
+
+    pc.oniceconnectionstatechange = () => {
+        console.log('ICE connection state for', deviceId, ':', pc.iceConnectionState);
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            console.log('P2P connection established with', deviceId);
+        } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+            console.warn('P2P connection failed/disconnected with', deviceId);
+            // Attempt to restart ICE
+            if (pc.iceConnectionState === 'failed') {
+                console.log('Attempting ICE restart...');
+                try {
+                    pc.restartIce();
+                } catch (e) {
+                    console.error('Failed to restart ICE:', e);
+                }
+            }
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        console.log('Connection state for', deviceId, ':', pc.connectionState);
+        if (pc.connectionState === 'failed') {
+            console.warn('Connection failed, attempting to reconnect...');
+            // Remove the failed connection so it can be recreated
+            state.peers.delete(deviceId);
+        }
+    };
+
     pc.ondatachannel = (event) => {
         const channel = event.channel;
+        console.log('Received data channel from', deviceId);
         setupDataChannel(deviceId, channel);
     };
-    
+
     state.peers.set(deviceId, pc);
     return pc;
 }
 
 async function connectToPeer(deviceId) {
-    if (state.peers.has(deviceId)) return;
+    console.log('Connecting to peer:', deviceId);
     
+    // 检查是否已有连接
+    if (state.peers.has(deviceId)) {
+        const existingPC = state.peers.get(deviceId);
+        
+        // 检查连接状态
+        if (existingPC.connectionState === 'connected' || existingPC.iceConnectionState === 'connected' || existingPC.iceConnectionState === 'completed') {
+            console.log('Already connected to', deviceId);
+            return existingPC;
+        }
+        
+        // 如果连接失败，关闭旧连接
+        if (existingPC.connectionState === 'failed' || existingPC.iceConnectionState === 'failed' || existingPC.iceConnectionState === 'disconnected') {
+            console.log('Existing connection in failed state, closing it');
+            existingPC.close();
+            state.peers.delete(deviceId);
+        } else {
+            // 如果连接正在进行中，等待其完成
+            console.log('Connection already in progress with', deviceId);
+            return existingPC;
+        }
+    }
+
     const pc = await createPeerConnection(deviceId);
-    
+
     // 创建数据通道
     const channel = pc.createDataChannel('fileTransfer', {
-        ordered: true
+        ordered: true,
+        maxRetransmits: 0  // 使用可靠传输
     });
     setupDataChannel(deviceId, channel);
-    
+
     // 创建offer
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+        iceRestart: false
+    });
     
+    await pc.setLocalDescription(offer);
+    console.log('Set local description, sending offer to', deviceId);
+
     state.socket.emit('signal', {
         to: deviceId,
         from: state.deviceId,
         type: 'offer',
         sdp: offer
     });
+    
+    return pc;
 }
 
 async function handleSignal(data) {
     const { from, type, sdp, candidate } = data;
-    
+
     let pc = state.peers.get(from);
     if (!pc) {
         pc = await createPeerConnection(from);
     }
-    
+
     try {
         if (type === 'offer') {
+            // 检查连接状态
+            if (pc.signalingState === 'have-local-offer') {
+                console.warn('Already have local offer, ignoring incoming offer');
+                return;
+            }
+            
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            
+
             state.socket.emit('signal', {
                 to: from,
                 from: state.deviceId,
@@ -303,9 +474,20 @@ async function handleSignal(data) {
                 sdp: answer
             });
         } else if (type === 'answer') {
+            // 检查连接状态
+            if (pc.signalingState === 'stable') {
+                console.warn('Connection already stable, ignoring answer');
+                return;
+            }
+            
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         } else if (type === 'ice-candidate') {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            if (pc.remoteDescription) {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } else {
+                // 候选者可能早于描述到达，缓存它们
+                pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+            }
         }
     } catch (err) {
         console.error('Signal handling error:', err);
@@ -314,15 +496,15 @@ async function handleSignal(data) {
 
 function setupDataChannel(deviceId, channel) {
     state.dataChannels.set(deviceId, channel);
-    
+
     channel.onopen = () => {
         console.log('Data channel opened with', deviceId);
     };
-    
+
     channel.onmessage = (event) => {
         handleDataChannelMessage(deviceId, event.data);
     };
-    
+
     channel.onclose = () => {
         console.log('Data channel closed with', deviceId);
         state.dataChannels.delete(deviceId);
@@ -343,14 +525,14 @@ async function sendFile(file, targetDeviceId = null) {
         sender: state.deviceId,
         senderName: state.deviceName
     };
-    
+
     // 保存文件到本地存储
     await saveToStore('files', {
         ...fileInfo,
         sessionId: state.sessionId,
         data: await fileToArrayBuffer(file)
     });
-    
+
     // 小文件直接通过socket发送
     if (file.size <= CONFIG.SMALL_FILE_THRESHOLD) {
         const base64Data = await fileToBase64(file);
@@ -366,18 +548,18 @@ async function sendFile(file, targetDeviceId = null) {
             sender: state.deviceId,
             senderName: state.deviceName
         };
-        
+
         state.socket.emit('message', {
             sessionId: state.sessionId,
             message
         });
-        
-        addMessageToChat(message, true);
+
+        await addMessageToChat(message, true);
     } else {
         // 大文件通过P2P发送
         sendFileOffer(fileInfo, file, targetDeviceId);
     }
-    
+
     return fileId;
 }
 
@@ -393,7 +575,7 @@ async function sendFileOffer(fileInfo, file, targetDeviceId) {
             type: fileInfo.type
         }
     });
-    
+
     // 等待接受后通过P2P发送
     fileTransfers.set(fileInfo.id, {
         file,
@@ -404,9 +586,47 @@ async function sendFileOffer(fileInfo, file, targetDeviceId) {
 
 async function handleFileOffer(data) {
     const { from, fileInfo } = data;
-    
+    console.log('Received file offer from', from, 'file:', fileInfo.name);
+
     // 显示确认对话框
     showConfirmModal(fileInfo, async (accepted) => {
+        console.log('File offer response:', accepted ? 'accepted' : 'rejected');
+
+        if (accepted) {
+            console.log('Connecting to peer for file transfer...');
+            
+            // 先建立P2P连接
+            await connectToPeer(from);
+            
+            // 等待DataChannel就绪
+            const ready = await waitForDataChannel(from, 15000);
+            
+            if (ready) {
+                // 准备接收文件
+                fileTransfers.set(fileInfo.id, {
+                    chunks: [],
+                    receivedSize: 0,
+                    fileInfo,
+                    from,
+                    status: 'receiving'
+                });
+
+                showProgress(fileInfo.id, fileInfo.name, 0);
+            } else {
+                console.error('Data channel not ready after timeout');
+                alert('连接超时，无法接收文件');
+                state.socket.emit('file-answer', {
+                    sessionId: state.sessionId,
+                    to: from,
+                    from: state.deviceId,
+                    fileId: fileInfo.id,
+                    accepted: false
+                });
+                return;
+            }
+        }
+
+        // 发送响应
         state.socket.emit('file-answer', {
             sessionId: state.sessionId,
             to: from,
@@ -414,38 +634,65 @@ async function handleFileOffer(data) {
             fileId: fileInfo.id,
             accepted
         });
-        
-        if (accepted) {
-            // 初始化P2P连接
-            await connectToPeer(from);
-            
-            // 准备接收文件
-            fileTransfers.set(fileInfo.id, {
-                chunks: [],
-                receivedSize: 0,
-                fileInfo,
-                from
-            });
-            
-            showProgress(fileInfo.id, fileInfo.name, 0);
+
+        if (!accepted) {
+            console.log('File offer rejected');
         }
+    });
+}
+
+// 等待DataChannel建立
+async function waitForDataChannel(deviceId, timeout) {
+    return new Promise((resolve) => {
+        const checkInterval = 100;
+        const maxAttempts = timeout / checkInterval;
+        let attempts = 0;
+
+        const check = () => {
+            const channel = state.dataChannels.get(deviceId);
+            if (channel && channel.readyState === 'open') {
+                console.log('Data channel ready for', deviceId);
+                resolve(true);
+            } else if (attempts >= maxAttempts) {
+                console.warn('Data channel timeout for', deviceId);
+                resolve(false);
+            } else {
+                attempts++;
+                setTimeout(check, checkInterval);
+            }
+        };
+
+        check();
     });
 }
 
 async function handleFileAnswer(data) {
     const { from, fileId, accepted } = data;
-    
+    console.log('Received file answer from', from, 'fileId:', fileId, 'accepted:', accepted);
+
     const transfer = fileTransfers.get(fileId);
-    if (!transfer) return;
-    
+    if (!transfer) {
+        console.warn('No transfer found for fileId:', fileId);
+        return;
+    }
+
     if (accepted) {
-        // 建立P2P连接并开始发送
+        console.log('File accepted, waiting for P2P connection...');
+
+        // 确保P2P连接已建立
         await connectToPeer(from);
-        
-        // 等待数据通道就绪
-        setTimeout(() => {
-            sendFileViaDataChannel(from, transfer.file, transfer.fileInfo);
-        }, 1000);
+
+        // 等待DataChannel就绪
+        const ready = await waitForDataChannel(from, 20000);
+
+        if (ready) {
+            console.log('Starting file transfer via DataChannel');
+            await sendFileViaDataChannel(from, transfer.file, transfer.fileInfo);
+        } else {
+            console.error('Data channel not ready, cannot send file');
+            alert('连接超时，文件传输失败');
+            hideProgress(fileId);
+        }
     } else {
         fileTransfers.delete(fileId);
         alert(`对方拒绝了文件: ${transfer.fileInfo.name}`);
@@ -455,193 +702,323 @@ async function handleFileAnswer(data) {
 async function sendFileViaDataChannel(deviceId, file, fileInfo) {
     const channel = state.dataChannels.get(deviceId);
     if (!channel || channel.readyState !== 'open') {
-        console.error('Data channel not ready');
+        console.error('Data channel not ready for device:', deviceId);
+        console.log('Available channels:', Array.from(state.dataChannels.keys()));
+        alert('数据传输通道未就绪');
         return;
     }
-    
-    // 发送文件元数据
-    channel.send(JSON.stringify({
-        type: 'file-start',
-        fileId: fileInfo.id,
-        fileInfo
-    }));
-    
-    // 分块发送文件
-    const buffer = await fileToArrayBuffer(file);
-    const totalChunks = Math.ceil(buffer.byteLength / CONFIG.CHUNK_SIZE);
-    
-    showProgress(fileInfo.id, fileInfo.name, 0);
-    
-    for (let i = 0; i < totalChunks; i++) {
-        const start = i * CONFIG.CHUNK_SIZE;
-        const end = Math.min(start + CONFIG.CHUNK_SIZE, buffer.byteLength);
-        const chunk = buffer.slice(start, end);
-        
-        channel.send(chunk);
-        
-        const progress = Math.round(((i + 1) / totalChunks) * 100);
-        updateProgress(fileInfo.id, progress);
-        
-        // 避免阻塞，每发送一块稍微延迟
-        await new Promise(r => setTimeout(r, 10));
+
+    console.log('Starting file transfer via DataChannel:', fileInfo.name, 'size:', fileInfo.size);
+
+    try {
+        // 发送文件元数据
+        channel.send(JSON.stringify({
+            type: 'file-start',
+            fileId: fileInfo.id,
+            fileInfo
+        }));
+        console.log('Sent file-start metadata');
+
+        // 分块发送文件
+        const buffer = await fileToArrayBuffer(file);
+        const totalChunks = Math.ceil(buffer.byteLength / CONFIG.CHUNK_SIZE);
+
+        console.log('File split into', totalChunks, 'chunks');
+        showProgress(fileInfo.id, fileInfo.name, 0);
+
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CONFIG.CHUNK_SIZE;
+            const end = Math.min(start + CONFIG.CHUNK_SIZE, buffer.byteLength);
+            const chunk = buffer.slice(start, end);
+
+            // 检查channel状态
+            if (channel.readyState !== 'open') {
+                console.error('Data channel closed during transfer');
+                alert('传输中断：数据通道已关闭');
+                hideProgress(fileInfo.id);
+                return;
+            }
+
+            channel.send(chunk);
+
+            const progress = Math.round(((i + 1) / totalChunks) * 100);
+            updateProgress(fileInfo.id, progress);
+
+            // 避免阻塞，每发送一块稍微延迟
+            await new Promise(r => setTimeout(r, 5));
+        }
+
+        // 发送完成标记
+        channel.send(JSON.stringify({
+            type: 'file-complete',
+            fileId: fileInfo.id
+        }));
+        console.log('File transfer complete:', fileInfo.name);
+
+        hideProgress(fileInfo.id);
+
+        // 添加消息到聊天记录
+        const message = {
+            id: generateId(),
+            type: 'file',
+            fileInfo: {
+                ...fileInfo,
+                isP2P: true
+            },
+            timestamp: Date.now(),
+            sender: state.deviceId,
+            senderName: state.deviceName
+        };
+
+        await addMessageToChat(message, true);
+
+        // 保存消息
+        await saveToStore('messages', {
+            ...message,
+            sessionId: state.sessionId
+        });
+
+        console.log('File message saved to chat');
+    } catch (err) {
+        console.error('Error sending file:', err);
+        alert('文件传输失败: ' + err.message);
+        hideProgress(fileInfo.id);
     }
-    
-    // 发送完成标记
-    channel.send(JSON.stringify({
-        type: 'file-complete',
-        fileId: fileInfo.id
-    }));
-    
-    hideProgress(fileInfo.id);
-    
-    // 添加消息到聊天记录
-    const message = {
-        id: generateId(),
-        type: 'file',
-        fileInfo: {
-            ...fileInfo,
-            isP2P: true
-        },
-        timestamp: Date.now(),
-        sender: state.deviceId,
-        senderName: state.deviceName
-    };
-    
-    addMessageToChat(message, true);
 }
 
 async function handleDataChannelMessage(deviceId, data) {
     if (typeof data === 'string') {
-        const msg = JSON.parse(data);
-        
-        if (msg.type === 'file-start') {
-            // 初始化接收
-            const transfer = fileTransfers.get(msg.fileId);
-            if (transfer) {
-                transfer.chunks = [];
-                transfer.receivedSize = 0;
-            }
-        } else if (msg.type === 'file-complete') {
-            // 文件接收完成
-            const transfer = fileTransfers.get(msg.fileId);
-            if (transfer) {
-                // 合并块
-                const totalSize = transfer.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-                const combined = new Uint8Array(totalSize);
-                let offset = 0;
-                
-                for (const chunk of transfer.chunks) {
-                    combined.set(new Uint8Array(chunk), offset);
-                    offset += chunk.byteLength;
+        try {
+            const msg = JSON.parse(data);
+            console.log('Received control message:', msg.type, 'fileId:', msg.fileId);
+
+            if (msg.type === 'file-start') {
+                // 初始化接收
+                console.log('Starting file receive:', msg.fileInfo.name);
+                const transfer = fileTransfers.get(msg.fileId);
+                if (transfer) {
+                    transfer.chunks = [];
+                    transfer.receivedSize = 0;
+                    transfer.totalSize = msg.fileInfo.size;
+                    transfer.status = 'receiving';
+                    showProgress(msg.fileId, msg.fileInfo.name, 0);
+                } else {
+                    // 如果没有transfer记录，创建一个
+                    console.log('Creating new transfer record for file');
+                    fileTransfers.set(msg.fileId, {
+                        chunks: [],
+                        receivedSize: 0,
+                        totalSize: msg.fileInfo.size,
+                        fileInfo: msg.fileInfo,
+                        from: deviceId,
+                        status: 'receiving'
+                    });
+                    showProgress(msg.fileId, msg.fileInfo.name, 0);
                 }
-                
-                // 保存文件
-                await saveToStore('files', {
-                    ...transfer.fileInfo,
-                    sessionId: state.sessionId,
-                    data: combined.buffer
-                });
-                
-                // 添加消息
-                const message = {
-                    id: generateId(),
-                    type: 'file',
-                    fileInfo: transfer.fileInfo,
-                    timestamp: Date.now(),
-                    sender: transfer.from,
-                    senderName: state.devices.get(transfer.from)?.name || '未知设备'
-                };
-                
-                addMessageToChat(message, false);
-                hideProgress(msg.fileId);
-                fileTransfers.delete(msg.fileId);
+            } else if (msg.type === 'file-complete') {
+                // 文件接收完成
+                console.log('File receive complete:', msg.fileId);
+                const transfer = fileTransfers.get(msg.fileId);
+                if (transfer) {
+                    // 合并块
+                    const totalSize = transfer.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+                    console.log('Merging', transfer.chunks.length, 'chunks, total size:', totalSize);
+
+                    const combined = new Uint8Array(totalSize);
+                    let offset = 0;
+
+                    for (const chunk of transfer.chunks) {
+                        combined.set(new Uint8Array(chunk), offset);
+                        offset += chunk.byteLength;
+                    }
+
+                    // 保存文件
+                    console.log('Saving received file to storage');
+                    await saveToStore('files', {
+                        ...transfer.fileInfo,
+                        sessionId: state.sessionId,
+                        data: combined.buffer
+                    });
+
+                    // 添加消息
+                    const message = {
+                        id: generateId(),
+                        type: 'file',
+                        fileInfo: transfer.fileInfo,
+                        timestamp: Date.now(),
+                        sender: transfer.from,
+                        senderName: state.devices.get(transfer.from)?.name || '未知设备'
+                    };
+
+                    await addMessageToChat(message, false);
+                    await saveToStore('messages', {
+                        ...message,
+                        sessionId: state.sessionId
+                    });
+
+                    hideProgress(msg.fileId);
+                    fileTransfers.delete(msg.fileId);
+                    console.log('File receive and save complete');
+                } else {
+                    console.warn('No transfer found for file-complete:', msg.fileId);
+                }
             }
+        } catch (err) {
+            console.error('Error parsing control message:', err);
         }
     } else {
         // 接收文件块
+        let found = false;
         for (const [fileId, transfer] of fileTransfers) {
-            if (transfer.from === deviceId) {
+            if (transfer.from === deviceId && transfer.status === 'receiving') {
                 transfer.chunks.push(data);
                 transfer.receivedSize += data.byteLength;
-                
-                const progress = Math.round((transfer.receivedSize / transfer.fileInfo.size) * 100);
+
+                const progress = Math.round((transfer.receivedSize / transfer.totalSize) * 100);
                 updateProgress(fileId, progress);
+                found = true;
+
+                // 每10%打印一次日志
+                if (progress % 10 === 0) {
+                    console.log('Receiving file:', fileId, 'progress:', progress + '%');
+                }
                 break;
             }
+        }
+
+        if (!found) {
+            console.warn('Received chunk but no matching transfer found for device:', deviceId);
+            console.log('Active transfers:', Array.from(fileTransfers.keys()));
         }
     }
 }
 
 // ==================== 消息处理 ====================
-function handleMessage(data) {
+async function handleMessage(data) {
     const { message } = data;
-    
+
     if (message.sender === state.deviceId) return;
-    
+
+    // 如果是小文件消息，提取base64数据保存到files存储
+    if (message.type === 'file' && message.fileInfo && message.fileInfo.isSmall && message.fileInfo.data) {
+        try {
+            // 从base64提取二进制数据 - 兼容性处理
+            const base64Data = message.fileInfo.data.split(',')[1];
+            const binaryString = atob(base64Data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            // 保存文件数据到IndexedDB
+            await saveToStore('files', {
+                id: message.fileInfo.id,
+                name: message.fileInfo.name,
+                size: message.fileInfo.size,
+                type: message.fileInfo.type,
+                sessionId: state.sessionId,
+                data: bytes.buffer,
+                timestamp: message.timestamp
+            });
+            console.log('Saved received file to IndexedDB:', message.fileInfo.id);
+        } catch (err) {
+            console.error('保存接收的文件失败:', err);
+        }
+    }
+
     // 保存消息
-    saveToStore('messages', {
+    await saveToStore('messages', {
         ...message,
         sessionId: state.sessionId
     });
-    
-    addMessageToChat(message, false);
+
+    await addMessageToChat(message, false);
 }
 
-function addMessageToChat(message, isOwn) {
+async function addMessageToChat(message, isOwn) {
     const container = document.getElementById('chatMessages');
-    
+
     // 移除空状态
     const emptyState = container.querySelector('.empty-state');
     if (emptyState) emptyState.remove();
-    
+
     const messageEl = document.createElement('div');
     messageEl.className = `message ${isOwn ? 'own' : ''}`;
-    
+
     let contentHtml = '';
-    
+
     if (message.type === 'text') {
         contentHtml = `<div class="message-bubble">${escapeHtml(message.text)}</div>`;
     } else if (message.type === 'file') {
         const fileInfo = message.fileInfo;
+        console.log('Rendering file message:', fileInfo.id, fileInfo.name, 'isSmall:', fileInfo.isSmall);
+
         const isImage = fileInfo.type.startsWith('image/');
         const isVideo = fileInfo.type.startsWith('video/');
         const isAudio = fileInfo.type.startsWith('audio/');
-        
-        if (isImage && fileInfo.isSmall) {
-            // 直接显示小图片
+
+        // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
+        let fileData = fileInfo.data;
+        let isStoredFile = false;
+
+        if (!fileData && fileInfo.id) {
+            console.log('No file data in message, trying to load from IndexedDB:', fileInfo.id);
+            try {
+                // 尝试从IndexedDB加载文件数据
+                const storedFile = await getFromStore('files', fileInfo.id);
+                console.log('Loaded from IndexedDB:', storedFile ? 'found' : 'not found');
+
+                if (storedFile && storedFile.data) {
+                    // 转换为base64用于显示
+                    const blob = new Blob([storedFile.data], { type: storedFile.type });
+                    fileData = await blobToBase64(blob);
+                    isStoredFile = true;
+                    console.log('Converted to base64, length:', fileData ? fileData.length : 0);
+                }
+            } catch (err) {
+                console.error('Error loading file from IndexedDB:', err);
+            }
+        }
+
+        if (isImage && (fileInfo.isSmall || isStoredFile) && fileData) {
+            // 直接显示小图片或已存储的图片
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <img src="${fileInfo.data}" alt="${fileInfo.name}" 
-                             onclick="downloadFile('${fileInfo.id}')">
+                        <img src="${fileData}" alt="${fileInfo.name}" 
+                             onclick="downloadFile('${fileInfo.id}')" style="cursor: pointer;">
                     </div>
                 </div>
             `;
-        } else if (isVideo && fileInfo.isSmall) {
+        } else if (isVideo && (fileInfo.isSmall || isStoredFile) && fileData) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <video controls src="${fileInfo.data}"></video>
+                        <video controls src="${fileData}"></video>
                     </div>
                 </div>
             `;
-        } else if (isAudio && fileInfo.isSmall) {
+        } else if (isAudio && (fileInfo.isSmall || isStoredFile) && fileData) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <audio controls src="${fileInfo.data}"></audio>
+                        <audio controls src="${fileData}"></audio>
                     </div>
                 </div>
             `;
         } else {
-            // 文件消息
+            // 文件消息（大文件、无法预览的文件，或文件数据已丢失）
             const sizeStr = formatFileSize(fileInfo.size);
+            const canDownload = fileInfo.id && (fileData || fileInfo.isSmall);
+            const clickHandler = canDownload ? `onclick="downloadFile('${fileInfo.id}')"` : '';
+            const opacity = canDownload ? '' : 'opacity: 0.6;';
+
             contentHtml = `
-                <div class="message-bubble file-message" onclick="downloadFile('${fileInfo.id}')">
+                <div class="message-bubble file-message" ${clickHandler} style="${opacity}">
                     <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
                     <div class="file-info">
                         <div class="file-name">${fileInfo.name}</div>
-                        <div class="file-size">${sizeStr}</div>
+                        <div class="file-size">${sizeStr}${!canDownload ? ' (数据不可用)' : ''}</div>
                     </div>
                 </div>
             `;
@@ -659,7 +1036,7 @@ function addMessageToChat(message, isOwn) {
             </div>
         `;
     }
-    
+
     messageEl.innerHTML = `
         <div class="message-header">
             <span>${message.senderName}</span>
@@ -667,7 +1044,7 @@ function addMessageToChat(message, isOwn) {
         </div>
         ${contentHtml}
     `;
-    
+
     container.appendChild(messageEl);
     container.scrollTop = container.scrollHeight;
 }
@@ -675,9 +1052,9 @@ function addMessageToChat(message, isOwn) {
 async function sendText() {
     const input = document.getElementById('textInput');
     const text = input.value.trim();
-    
+
     if (!text) return;
-    
+
     const message = {
         id: generateId(),
         type: 'text',
@@ -686,19 +1063,19 @@ async function sendText() {
         sender: state.deviceId,
         senderName: state.deviceName
     };
-    
+
     // 保存到本地
     await saveToStore('messages', {
         ...message,
         sessionId: state.sessionId
     });
-    
+
     // 发送到其他设备
     state.socket.emit('message', {
         sessionId: state.sessionId,
         message
     });
-    
+
     addMessageToChat(message, true);
     input.value = '';
 }
@@ -707,7 +1084,7 @@ async function sendText() {
 function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
-    
+
     // 工具栏按钮
     document.querySelectorAll('.toolbar-btn[data-cmd]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -716,7 +1093,7 @@ function initEditor() {
             editor.focus();
         });
     });
-    
+
     // 插入图片
     document.getElementById('insertImageBtn').addEventListener('click', async () => {
         const input = document.createElement('input');
@@ -732,22 +1109,31 @@ function initEditor() {
         };
         input.click();
     });
-    
+
     // 引用文件
     document.getElementById('insertFileBtn').addEventListener('click', async () => {
-        // 获取当前会话的所有文件
-        const files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
+        // 获取当前会话的所有文件 - 兼容性处理
+        let files = [];
         
+        if (typeof IDBKeyRange !== 'undefined') {
+            // 现代浏览器
+            files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
+        } else {
+            // 旧版浏览器回退
+            const allFiles = await getAllFromStore('files');
+            files = allFiles.filter(f => f.sessionId === state.sessionId);
+        }
+
         if (files.length === 0) {
             alert('暂无文件可引用');
             return;
         }
-        
+
         // 创建文件选择对话框
         const fileList = files.map(f => 
             `<option value="${f.id}">${f.name} (${formatFileSize(f.size)})</option>`
         ).join('');
-        
+
         const dialog = document.createElement('div');
         dialog.className = 'modal-overlay active';
         dialog.innerHTML = `
@@ -763,11 +1149,11 @@ function initEditor() {
             </div>
         `;
         document.body.appendChild(dialog);
-        
+
         document.getElementById('confirmInsertFile').addEventListener('click', async () => {
             const fileId = document.getElementById('fileSelect').value;
             const file = await getFromStore('files', fileId);
-            
+
             if (file) {
                 let refHtml = '';
                 if (file.type.startsWith('image/')) {
@@ -779,19 +1165,29 @@ function initEditor() {
                 }
                 document.execCommand('insertHTML', false, refHtml);
             }
-            
+
             dialog.remove();
         });
     });
-    
-    // 内容变化同步
+
+    // 内容变化同步 + 本地持久化
     editor.addEventListener('input', () => {
         state.isSyncing = true;
         document.getElementById('collabStatus').textContent = '编辑中...';
-        
+
         clearTimeout(syncTimeout);
-        syncTimeout = setTimeout(() => {
+        syncTimeout = setTimeout(async () => {
             const content = editor.innerHTML;
+
+            // 保存到本地存储（持久化）
+            await saveToStore('editorContent', {
+                id: 'current',
+                sessionId: state.sessionId,
+                content: content,
+                timestamp: Date.now()
+            });
+
+            // 同步到其他设备
             state.socket.emit('editor-sync', {
                 sessionId: state.sessionId,
                 from: state.deviceId,
@@ -801,7 +1197,7 @@ function initEditor() {
             document.getElementById('collabStatus').textContent = '已同步';
         }, 500);
     });
-    
+
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
         const content = editor.innerHTML;
@@ -809,7 +1205,7 @@ function initEditor() {
             alert('请输入内容');
             return;
         }
-        
+
         const message = {
             id: generateId(),
             type: 'rich',
@@ -818,23 +1214,23 @@ function initEditor() {
             sender: state.deviceId,
             senderName: state.deviceName
         };
-        
+
         // 保存到本地
         await saveToStore('messages', {
             ...message,
             sessionId: state.sessionId
         });
-        
+
         // 发送到其他设备
         state.socket.emit('message', {
             sessionId: state.sessionId,
             message
         });
-        
+
         addMessageToChat(message, true);
         editor.innerHTML = '';
     });
-    
+
     // 清空编辑器
     document.getElementById('clearEditorBtn').addEventListener('click', () => {
         editor.innerHTML = '';
@@ -843,56 +1239,58 @@ function initEditor() {
 
 function handleEditorSync(data) {
     const { from, content } = data;
-    
+
     if (from === state.deviceId) return;
+
+    console.log('Received editor sync from', from, 'content length:', content.length);
     
     const editor = document.getElementById('editor');
-    const currentContent = editor.innerHTML;
     
-    // 简单的内容合并策略
-    if (content !== currentContent) {
+    // 避免不必要的更新
+    if (editor.innerHTML !== content) {
         editor.innerHTML = content;
         document.getElementById('collabStatus').textContent = '已同步';
+        console.log('Editor updated from sync');
     }
 }
 
 // ==================== 设备管理 ====================
 function handleDeviceJoined(data) {
     const { deviceId, deviceName } = data;
-    
+
     if (deviceId === state.deviceId) return;
-    
+
     state.devices.set(deviceId, {
         id: deviceId,
         name: deviceName,
         joinedAt: Date.now()
     });
-    
+
     updateDeviceList();
-    
+
     // 尝试建立P2P连接
     connectToPeer(deviceId);
 }
 
 function handleDeviceLeft(data) {
     const { deviceId } = data;
-    
+
     state.devices.delete(deviceId);
-    
+
     // 清理P2P连接
     const pc = state.peers.get(deviceId);
     if (pc) {
         pc.close();
         state.peers.delete(deviceId);
     }
-    
+
     state.dataChannels.delete(deviceId);
     updateDeviceList();
 }
 
 function handleSessionDevices(data) {
     const { devices } = data;
-    
+
     devices.forEach(device => {
         if (device.deviceId !== state.deviceId) {
             state.devices.set(device.deviceId, {
@@ -900,12 +1298,12 @@ function handleSessionDevices(data) {
                 name: device.deviceName,
                 joinedAt: device.joinedAt
             });
-            
+
             // 建立P2P连接
             connectToPeer(device.deviceId);
         }
     });
-    
+
     updateDeviceList();
 }
 
@@ -913,9 +1311,9 @@ function updateDeviceList() {
     const container = document.getElementById('deviceList');
     const count = state.devices.size + 1;
     document.getElementById('onlineCount').textContent = count;
-    
+
     container.innerHTML = '';
-    
+
     // 添加自己
     const selfEl = document.createElement('div');
     selfEl.className = 'device-item';
@@ -927,7 +1325,7 @@ function updateDeviceList() {
         </div>
     `;
     container.appendChild(selfEl);
-    
+
     // 添加其他设备
     state.devices.forEach(device => {
         const el = document.createElement('div');
@@ -950,12 +1348,12 @@ function initUI() {
     document.getElementById('textInput').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendText();
     });
-    
+
     // 文件上传
     document.getElementById('dropZone').addEventListener('click', () => {
         document.getElementById('fileInput').click();
     });
-    
+
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const files = e.target.files;
         for (const file of files) {
@@ -963,16 +1361,16 @@ function initUI() {
         }
         e.target.value = '';
     });
-    
+
     // 模态框关闭
     document.getElementById('rejectFileBtn').addEventListener('click', () => {
         document.getElementById('confirmModal').classList.remove('active');
     });
-    
+
     document.getElementById('closeRichViewer').addEventListener('click', () => {
         document.getElementById('richViewer').classList.remove('active');
     });
-    
+
     // 点击遮罩关闭
     document.getElementById('richViewer').addEventListener('click', (e) => {
         if (e.target === e.currentTarget) {
@@ -984,28 +1382,28 @@ function initUI() {
 // ==================== 拖拽上传 ====================
 function initDragDrop() {
     const dropZone = document.getElementById('dropZone');
-    
+
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         dropZone.addEventListener(eventName, preventDefaults, false);
     });
-    
+
     function preventDefaults(e) {
         e.preventDefault();
         e.stopPropagation();
     }
-    
+
     ['dragenter', 'dragover'].forEach(eventName => {
         dropZone.addEventListener(eventName, () => {
             dropZone.classList.add('dragover');
         }, false);
     });
-    
+
     ['dragleave', 'drop'].forEach(eventName => {
         dropZone.addEventListener(eventName, () => {
             dropZone.classList.remove('dragover');
         }, false);
     });
-    
+
     dropZone.addEventListener('drop', async (e) => {
         const files = e.dataTransfer.files;
         for (const file of files) {
@@ -1018,9 +1416,9 @@ function initDragDrop() {
 function showProgress(fileId, fileName, progress) {
     const container = document.getElementById('transferProgress');
     const list = document.getElementById('progressList');
-    
+
     container.style.display = 'block';
-    
+
     let item = document.getElementById(`progress-${fileId}`);
     if (!item) {
         item = document.createElement('div');
@@ -1052,7 +1450,7 @@ function hideProgress(fileId) {
     if (item) {
         item.remove();
     }
-    
+
     const list = document.getElementById('progressList');
     if (list.children.length === 0) {
         document.getElementById('transferProgress').style.display = 'none';
@@ -1064,13 +1462,13 @@ let confirmCallback = null;
 
 function showConfirmModal(fileInfo, callback) {
     confirmCallback = callback;
-    
+
     document.getElementById('confirmFileInfo').innerHTML = `
         <strong>${fileInfo.name}</strong><br>
         大小: ${formatFileSize(fileInfo.size)}<br>
         来自: 其他设备
     `;
-    
+
     document.getElementById('confirmModal').classList.add('active');
 }
 
@@ -1109,17 +1507,17 @@ async function downloadFile(fileId) {
         alert('文件不存在');
         return;
     }
-    
+
     const blob = new Blob([file.data], { type: file.type });
     const url = URL.createObjectURL(blob);
-    
+
     const a = document.createElement('a');
     a.href = url;
     a.download = file.name;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    
+
     URL.revokeObjectURL(url);
 }
 
@@ -1128,21 +1526,51 @@ window.downloadFile = downloadFile;
 
 // ==================== 会话数据加载 ====================
 async function loadSessionData() {
-    // 加载历史消息
-    const messages = await getAllFromStore('messages', 'sessionId', IDBKeyRange.only(state.sessionId));
-    messages.sort((a, b) => a.timestamp - b.timestamp);
-    
-    messages.forEach(msg => {
-        const isOwn = msg.sender === state.deviceId;
-        addMessageToChat(msg, isOwn);
-    });
-    
-    // 更新会话活动时间
-    await saveToStore('sessions', {
-        sessionId: state.sessionId,
-        lastActive: Date.now(),
-        deviceId: state.deviceId
-    });
+    console.log('Loading session data for:', state.sessionId);
+
+    try {
+        // 加载历史消息 - 兼容性处理
+        let messages = [];
+
+        if (typeof IDBKeyRange !== 'undefined') {
+            // 现代浏览器
+            messages = await getAllFromStore('messages', 'sessionId', IDBKeyRange.only(state.sessionId));
+        } else {
+            // 旧版浏览器回退
+            console.log('IDBKeyRange not available, using fallback');
+            const allMessages = await getAllFromStore('messages');
+            messages = allMessages.filter(msg => msg.sessionId === state.sessionId);
+        }
+
+        console.log('Loaded messages:', messages.length);
+        messages.sort((a, b) => a.timestamp - b.timestamp);
+
+        // 使用 for...of 确保按顺序异步处理
+        for (const msg of messages) {
+            const isOwn = msg.sender === state.deviceId;
+            await addMessageToChat(msg, isOwn);
+        }
+
+        // 加载协同编辑内容
+        console.log('Loading editor content...');
+        const editorContent = await getFromStore('editorContent', 'current');
+        if (editorContent && editorContent.sessionId === state.sessionId && editorContent.content) {
+            console.log('Restoring editor content');
+            const editor = document.getElementById('editor');
+            if (editor && editorContent.content.trim() && editorContent.content !== '<br>') {
+                editor.innerHTML = editorContent.content;
+            }
+        }
+
+        // 更新会话活动时间
+        await saveToStore('sessions', {
+            sessionId: state.sessionId,
+            lastActive: Date.now(),
+            deviceId: state.deviceId
+        });
+    } catch (err) {
+        console.error('Error loading session data:', err);
+    }
 }
 
 // ==================== 工具函数 ====================
@@ -1151,6 +1579,14 @@ function fileToBase64(file) {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result);
         reader.readAsDataURL(file);
+    });
+}
+
+function blobToBase64(blob) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
     });
 }
 
