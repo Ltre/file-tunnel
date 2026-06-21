@@ -12,31 +12,33 @@ const path = require('path');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
-const webServer = http.createServer(app);
 
 // ==================== 安全配置 ====================
 
-const DEFAULT_WEB_PORT = process.env.NODE_ENV === 'development' || process.env.npm_lifecycle_event === 'dev' ? 3000 : 80;
+const SSL_KEY = process.env.SSL_KEY_PATH;
+const SSL_CERT = process.env.SSL_CERT_PATH;
+const SERVER_PROTOCOL = SSL_KEY && SSL_CERT ? 'https' : 'http';
+const DEFAULT_WEB_PORT = process.env.NODE_ENV === 'development' || process.env.npm_lifecycle_event === 'dev'
+    ? 3000
+    : (SERVER_PROTOCOL === 'https' ? 443 : 80);
 const WEB_PORT = Number(process.env.WEB_PORT || process.env.PORT || DEFAULT_WEB_PORT);
-const SOCKET_PORT = Number(process.env.SOCKET_PORT || 3333);
-const SOCKET_SSL_KEY = process.env.SOCKET_SSL_KEY || process.env.SSL_KEY_PATH;
-const SOCKET_SSL_CERT = process.env.SOCKET_SSL_CERT || process.env.SSL_CERT_PATH;
+const webServer = createWebServer();
 
-const socketServer = SOCKET_PORT === WEB_PORT ? webServer : createSocketServer();
+const TEST_HOST_PATTERN = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.0\.0\.\d{1,3})$/;
 
 function splitEnvList(value) {
     return value.split(',').map(item => item.trim()).filter(Boolean);
 }
 
-function createSocketServer() {
-    if (SOCKET_SSL_KEY && SOCKET_SSL_CERT) {
+function createWebServer() {
+    if (SERVER_PROTOCOL === 'https') {
         return https.createServer({
-            key: fs.readFileSync(SOCKET_SSL_KEY),
-            cert: fs.readFileSync(SOCKET_SSL_CERT)
-        });
+            key: fs.readFileSync(SSL_KEY),
+            cert: fs.readFileSync(SSL_CERT)
+        }, app);
     }
 
-    return http.createServer();
+    return http.createServer(app);
 }
 
 // 允许的域名
@@ -47,6 +49,10 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
         'http://localhost:3000',
         'http://127.0.0.1',
         'http://127.0.0.1:3000',
+        'http://0.0.0.0:3000',
+        'https://localhost:3000',
+        'https://127.0.0.1:3000',
+        'https://0.0.0.0:3000',
         'https://x-tx-sl.miku.us',
         'http://x-tx-sl.miku.us',
         'https://x-tx-sl.miku.us:3000',
@@ -57,6 +63,19 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
         'http://tun-socket.miku.us',
         'https://tun-socket.miku.us'
       ];
+
+function isAllowedOrigin(origin) {
+    if (ALLOWED_ORIGINS.includes('*') || ALLOWED_ORIGINS.includes(origin)) {
+        return true;
+    }
+
+    try {
+        const url = new URL(origin);
+        return url.port === '3000' && TEST_HOST_PATTERN.test(url.hostname);
+    } catch (err) {
+        return false;
+    }
+}
 
 // 速率限制配置
 const RATE_LIMIT = {
@@ -130,13 +149,13 @@ app.get('/api/sessions', (req, res) => {
 
 // ==================== Socket.io 配置 ====================
 
-const io = new Server(socketServer, {
+const io = new Server(webServer, {
     cors: {
         origin: (origin, callback) => {
             // 允许无origin的请求 (如移动应用)
             if (!origin) return callback(null, true);
             
-            if (ALLOWED_ORIGINS.includes(origin) || ALLOWED_ORIGINS.includes('*')) {
+            if (isAllowedOrigin(origin)) {
                 callback(null, true);
             } else {
                 console.warn(`CORS blocked: ${origin}`);
@@ -553,44 +572,20 @@ function formatLocalUrl(protocol, port) {
 }
 
 function logStartup() {
-    const socketProtocol = SOCKET_SSL_KEY && SOCKET_SSL_CERT ? 'https' : 'http';
-
     console.log(`🚀 即时传输隧道服务器运行中 (安全版本)`);
-    console.log(`📱 Web/API: ${formatLocalUrl('http', WEB_PORT)}`);
-    console.log(`🔌 Socket.IO: ${formatLocalUrl(socketProtocol, SOCKET_PORT)}`);
+    console.log(`📱 Web/API: ${formatLocalUrl(SERVER_PROTOCOL, WEB_PORT)}`);
+    console.log(`🔌 Socket.IO: 与 Web/API 共用 ${WEB_PORT} 端口`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
-
-    if (socketProtocol === 'http' && ALLOWED_ORIGINS.some(origin => origin.startsWith('https://'))) {
-        console.warn('⚠️  HTTPS 页面直连 Socket.IO 时需要为 3333 端口配置 TLS 证书或前置 TLS 代理');
-    }
 }
 
-webServer.listen(WEB_PORT, '0.0.0.0', () => {
-    if (socketServer === webServer) {
-        logStartup();
-    } else {
-        console.log(`📱 Web/API: ${formatLocalUrl('http', WEB_PORT)}`);
-    }
-});
-
-if (socketServer !== webServer) {
-    socketServer.listen(SOCKET_PORT, '0.0.0.0', logStartup);
-}
+webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
 
 // 优雅关闭
 function shutdown(signal) {
     console.log(`${signal} received, shutting down gracefully`);
-    const servers = socketServer === webServer ? [webServer] : [webServer, socketServer];
-    let pending = servers.length;
-
-    servers.forEach(item => {
-        item.close(() => {
-            pending--;
-            if (pending === 0) {
-                console.log('Servers closed');
-                process.exit(0);
-            }
-        });
+    webServer.close(() => {
+        console.log('Server closed');
+        process.exit(0);
     });
 
     setTimeout(() => process.exit(1), 10000).unref();
