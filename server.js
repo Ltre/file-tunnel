@@ -4,9 +4,7 @@
  */
 
 const express = require('express');
-const fs = require('fs');
 const http = require('http');
-const https = require('https');
 const { Server } = require('socket.io');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
@@ -15,26 +13,11 @@ const app = express();
 
 // ==================== 安全配置 ====================
 
-const SSL_KEY = process.env.SSL_KEY_PATH;
-const SSL_CERT = process.env.SSL_CERT_PATH;
-const SERVER_PROTOCOL = SSL_KEY && SSL_CERT ? 'https' : 'http';
-const DEFAULT_WEB_PORT = SERVER_PROTOCOL === 'https' ? 443 : 80;
-const WEB_PORT = Number(process.env.WEB_PORT || process.env.PORT || DEFAULT_WEB_PORT);
-const webServer = createWebServer();
+const WEB_PORT = 3000;
+const webServer = http.createServer(app);
 
 function splitEnvList(value) {
     return value.split(',').map(item => item.trim()).filter(Boolean);
-}
-
-function createWebServer() {
-    if (SERVER_PROTOCOL === 'https') {
-        return https.createServer({
-            key: fs.readFileSync(SSL_KEY),
-            cert: fs.readFileSync(SSL_CERT)
-        }, app);
-    }
-
-    return http.createServer(app);
 }
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS 
@@ -852,19 +835,15 @@ setInterval(cleanupExpiredSessions, 5 * 60 * 1000);
 
 // ==================== 启动 ====================
 
-function formatLocalUrl(protocol, port) {
-    const defaultPort = (protocol === 'http' && port === 80) || (protocol === 'https' && port === 443);
-    return `${protocol}://localhost${defaultPort ? '' : `:${port}`}`;
-}
-
 function logStartup() {
     console.log(`🚀 即时传输隧道服务器运行中 (安全版本)`);
-    console.log(`📱 Web/API: ${formatLocalUrl(SERVER_PROTOCOL, WEB_PORT)}`);
+    console.log(`📱 Web/API upstream: http://127.0.0.1:${WEB_PORT}`);
     console.log(`🔌 Socket.IO: 与 Web/API 共用 ${WEB_PORT} 端口`);
+    console.log(`🔒 Nginx should proxy public HTTP/HTTPS traffic to this upstream`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
 }
 
-webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
+webServer.listen(WEB_PORT, '127.0.0.1', logStartup);
 
 // 优雅关闭
 function shutdown(signal) {
