@@ -44,12 +44,12 @@ npm start
 
 ### 访问应用
 
-打开浏览器访问 `http://localhost:3000`
+打开浏览器访问 `http://localhost`
 
 ## 使用方法
 
 ### 1. 建立连接
-1. 在电脑上打开 `http://localhost:3000`
+1. 在电脑上打开 `http://localhost`
 2. 页面会显示二维码和会话ID
 3. 用手机扫描二维码，或手动输入带hash的URL
 4. 两台设备自动建立连接

@@ -18,9 +18,7 @@ const app = express();
 const SSL_KEY = process.env.SSL_KEY_PATH;
 const SSL_CERT = process.env.SSL_CERT_PATH;
 const SERVER_PROTOCOL = SSL_KEY && SSL_CERT ? 'https' : 'http';
-const DEFAULT_WEB_PORT = process.env.NODE_ENV === 'development' || process.env.npm_lifecycle_event === 'dev'
-    ? 3000
-    : (SERVER_PROTOCOL === 'https' ? 443 : 80);
+const DEFAULT_WEB_PORT = SERVER_PROTOCOL === 'https' ? 443 : 80;
 const WEB_PORT = Number(process.env.WEB_PORT || process.env.PORT || DEFAULT_WEB_PORT);
 const webServer = createWebServer();
 
