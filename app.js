@@ -51,10 +51,13 @@ const state = {
     pendingFiles: new Map(), // fileId -> fileInfo
     editorContent: '',
     isSyncing: false,
+    debugLogQueue: [],
+    debugLogReady: false,
     db: null // IndexedDB实例
 };
 
 const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
+const MAX_CLIENT_DEBUG_LOGS = 1000;
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
@@ -76,11 +79,50 @@ function summarizeHistoryMessage(message) {
 function historyLog(event, details = {}) {
     if (!HISTORY_DEBUG) return;
 
-    console.log(`[history][${event}]`, {
+    const entry = {
+        event,
+        details,
+        clientTimestamp: new Date().toISOString()
+    };
+
+    console.log(`[debug][client][${event}]`, {
         sessionId: state.sessionId,
         deviceId: state.deviceId,
+        clientTimestamp: entry.clientTimestamp,
         ...details
     });
+
+    if (!sendClientDebugLog(entry)) {
+        state.debugLogQueue.push(entry);
+        if (state.debugLogQueue.length > MAX_CLIENT_DEBUG_LOGS) {
+            state.debugLogQueue.splice(0, state.debugLogQueue.length - MAX_CLIENT_DEBUG_LOGS);
+        }
+    }
+}
+
+function sendClientDebugLog(entry) {
+    if (!state.socket || !state.socket.connected || !state.debugLogReady) {
+        return false;
+    }
+
+    state.socket.emit('debug-log', {
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        event: entry.event,
+        details: entry.details,
+        clientTimestamp: entry.clientTimestamp
+    });
+    return true;
+}
+
+function flushClientDebugLogs() {
+    const queuedLogs = state.debugLogQueue.splice(0);
+    for (let index = 0; index < queuedLogs.length; index++) {
+        if (!sendClientDebugLog(queuedLogs[index])) {
+            state.debugLogQueue.unshift(...queuedLogs.slice(index));
+            return;
+        }
+    }
 }
 
 // ==================== 初始化 ====================
@@ -360,6 +402,7 @@ function initSocket() {
     });
 
     state.socket.on('connect', () => {
+        state.debugLogReady = false;
         console.log('Socket connected');
         historyLog('socket-connected', {
             socketId: state.socket.id,
@@ -374,6 +417,8 @@ function initSocket() {
             deviceId: state.deviceId,
             deviceName: state.deviceName
         });
+        state.debugLogReady = true;
+        flushClientDebugLogs();
     });
 
     state.socket.on('device-joined', (data) => {
@@ -425,7 +470,9 @@ function initSocket() {
     });
 
     state.socket.on('disconnect', () => {
+        state.debugLogReady = false;
         console.log('Socket disconnected');
+        historyLog('socket-disconnected');
     });
 }
 
@@ -464,6 +511,10 @@ async function createPeerConnection(deviceId) {
 
     pc.oniceconnectionstatechange = () => {
         console.log('ICE connection state for', deviceId, ':', pc.iceConnectionState);
+        historyLog('p2p-ice-state', {
+            peerDeviceId: deviceId,
+            iceConnectionState: pc.iceConnectionState
+        });
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             console.log('P2P connection established with', deviceId);
         } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
@@ -482,6 +533,10 @@ async function createPeerConnection(deviceId) {
 
     pc.onconnectionstatechange = () => {
         console.log('Connection state for', deviceId, ':', pc.connectionState);
+        historyLog('p2p-connection-state', {
+            peerDeviceId: deviceId,
+            connectionState: pc.connectionState
+        });
         if (pc.connectionState === 'failed') {
             console.warn('Connection failed, attempting to reconnect...');
             // Remove the failed connection so it can be recreated
@@ -568,11 +623,20 @@ function queueIceCandidate(deviceId, candidate) {
     }
 
     state.pendingIceCandidates.get(deviceId).push(candidate);
+    historyLog('p2p-ice-queued', {
+        peerDeviceId: deviceId,
+        pendingCandidateCount: state.pendingIceCandidates.get(deviceId).length
+    });
 }
 
 async function flushPendingIceCandidates(deviceId, pc) {
     const candidates = state.pendingIceCandidates.get(deviceId) || [];
     state.pendingIceCandidates.delete(deviceId);
+
+    historyLog('p2p-ice-flushing', {
+        peerDeviceId: deviceId,
+        candidateCount: candidates.length
+    });
 
     for (const candidate of candidates) {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
@@ -581,6 +645,13 @@ async function flushPendingIceCandidates(deviceId, pc) {
 
 async function handleSignal(data) {
     const { from, type, sdp, candidate } = data;
+
+    historyLog('p2p-signal-received', {
+        peerDeviceId: from,
+        signalType: type,
+        hasSdp: Boolean(sdp),
+        hasCandidate: Boolean(candidate)
+    });
 
     let pc = state.peers.get(from);
     if (!pc) {
@@ -592,6 +663,10 @@ async function handleSignal(data) {
             if (pc.signalingState === 'have-local-offer') {
                 if (shouldInitiatePeerConnection(from)) {
                     console.warn('Ignoring competing offer from', from);
+                    historyLog('p2p-offer-ignored', {
+                        peerDeviceId: from,
+                        reason: 'local-device-is-designated-initiator'
+                    });
                     return;
                 }
 
@@ -627,6 +702,11 @@ async function handleSignal(data) {
         }
     } catch (err) {
         console.error('Signal handling error:', err);
+        historyLog('p2p-signal-failed', {
+            peerDeviceId: from,
+            signalType: type,
+            error: err.message
+        });
     }
 }
 
@@ -635,6 +715,7 @@ function setupDataChannel(deviceId, channel) {
 
     channel.onopen = () => {
         console.log('Data channel opened with', deviceId);
+        historyLog('p2p-data-channel-opened', { peerDeviceId: deviceId });
     };
 
     channel.onmessage = (event) => {
@@ -643,6 +724,7 @@ function setupDataChannel(deviceId, channel) {
 
     channel.onclose = () => {
         console.log('Data channel closed with', deviceId);
+        historyLog('p2p-data-channel-closed', { peerDeviceId: deviceId });
         state.dataChannels.delete(deviceId);
     };
 }

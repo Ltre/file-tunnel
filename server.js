@@ -66,6 +66,9 @@ const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
 const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
+const MAX_DEBUG_LOGS = 5000;
+const MAX_DEBUG_STRING_LENGTH = 500;
+const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 
 // ==================== Express 中间件 ====================
 
@@ -124,6 +127,31 @@ app.get('/api/sessions', (req, res) => {
     }
 });
 
+app.get('/api/debug-logs', (req, res) => {
+    if (DEBUG_LOG_TOKEN && req.get('x-debug-log-token') !== DEBUG_LOG_TOKEN) {
+        return res.status(403).json({ error: 'Debug log access denied' });
+    }
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+    const since = Date.parse(req.query.since || '');
+    const { sessionId, deviceId, source } = req.query;
+
+    const logs = debugLogs.filter(entry => {
+        if (!Number.isNaN(since) && Date.parse(entry.timestamp) < since) return false;
+        if (sessionId && entry.sessionId !== sessionId) return false;
+        if (deviceId && entry.deviceId !== deviceId) return false;
+        if (source && entry.source !== source) return false;
+        return true;
+    });
+
+    res.json({
+        generatedAt: new Date().toISOString(),
+        retainedCount: debugLogs.length,
+        returnedCount: Math.min(logs.length, limit),
+        logs: logs.slice(-limit)
+    });
+});
+
 // ==================== Socket.io 配置 ====================
 
 const io = new Server(webServer, {
@@ -153,12 +181,71 @@ const io = new Server(webServer, {
 const sessions = new Map();
 const deviceSockets = new Map();
 const ipConnections = new Map(); // IP -> Set<socketId>
+const debugLogs = [];
 
 // ==================== 验证函数 ====================
 
 function sanitizeString(str, maxLength = 100) {
     if (typeof str !== 'string') return '';
     return str.slice(0, maxLength).replace(/[<>"']/g, '');
+}
+
+function sanitizeDebugValue(value, depth = 0) {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return value.slice(0, MAX_DEBUG_STRING_LENGTH);
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (depth >= 4) return '[max-depth]';
+
+    if (Array.isArray(value)) {
+        return value.slice(0, 50).map(item => sanitizeDebugValue(item, depth + 1));
+    }
+
+    if (typeof value === 'object') {
+        const result = {};
+        const sensitiveKeys = new Set(['content', 'data', 'sdp', 'candidate', 'text', 'token', 'password']);
+
+        Object.entries(value).slice(0, 50).forEach(([key, item]) => {
+            result[key] = sensitiveKeys.has(key) ? '[redacted]' : sanitizeDebugValue(item, depth + 1);
+        });
+        return result;
+    }
+
+    return String(value).slice(0, MAX_DEBUG_STRING_LENGTH);
+}
+
+function recordDebugLog({ source, event, details, sessionId = null, deviceId = null, deviceName = null, socketId = null, clientIp = null, clientTimestamp = null }) {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        source,
+        event: sanitizeString(event, 120),
+        sessionId,
+        deviceId,
+        deviceName: deviceName ? sanitizeString(deviceName, 50) : null,
+        socketId,
+        clientIp,
+        clientTimestamp,
+        details: sanitizeDebugValue(details || {})
+    };
+
+    debugLogs.push(entry);
+    if (debugLogs.length > MAX_DEBUG_LOGS) {
+        debugLogs.splice(0, debugLogs.length - MAX_DEBUG_LOGS);
+    }
+
+    if (HISTORY_DEBUG) {
+        console.log(`[debug][${entry.source}][${entry.event}]`, entry);
+    }
+
+    return entry;
+}
+
+function getSocketClientIp(socket) {
+    const headers = socket.handshake.headers || {};
+    const forwardedFor = headers['x-forwarded-for'];
+    return headers['cf-connecting-ip'] ||
+        (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : null) ||
+        socket.handshake.address ||
+        'unknown';
 }
 
 function isValidSessionId(id) {
@@ -213,14 +300,23 @@ function summarizeHistoryMessage(message) {
 
 function historyLog(event, details) {
     if (HISTORY_DEBUG) {
-        console.log(`[history][${event}]`, details);
+        recordDebugLog({
+            source: 'server',
+            event,
+            sessionId: details && details.sessionId,
+            deviceId: details && (details.deviceId || details.targetDeviceId || details.fromDeviceId),
+            socketId: details && (details.socketId || details.targetSocketId),
+            clientIp: details && details.clientIp,
+            details
+        });
     }
 }
 
-function addToSessionHistory(sessionId, session, message) {
+function addToSessionHistory(sessionId, session, message, context = {}) {
     if (session.history.some(entry => entry.message.id === message.id)) {
         historyLog('store-skipped', {
             sessionId,
+            ...context,
             reason: 'duplicate',
             message: summarizeHistoryMessage(message),
             historyCount: session.history.length
@@ -233,6 +329,7 @@ function addToSessionHistory(sessionId, session, message) {
     if (size > MAX_HISTORY_SIZE) {
         historyLog('store-skipped', {
             sessionId,
+            ...context,
             reason: 'message-too-large',
             size,
             message: summarizeHistoryMessage(message)
@@ -252,6 +349,7 @@ function addToSessionHistory(sessionId, session, message) {
     session.historySize += size;
     historyLog('stored', {
         sessionId,
+        ...context,
         message: summarizeHistoryMessage(historyMessage),
         size,
         historyCount: session.history.length,
@@ -264,11 +362,16 @@ function addToSessionHistory(sessionId, session, message) {
 // ==================== Socket.io 连接处理 ====================
 
 io.on('connection', (socket) => {
-    const clientIp = socket.handshake.address || 
-                     socket.handshake.headers['x-forwarded-for'] || 
-                     'unknown';
+    const clientIp = getSocketClientIp(socket);
     
     console.log(`Client connected: ${socket.id} from ${clientIp}`);
+    recordDebugLog({
+        source: 'server',
+        event: 'socket-connected',
+        socketId: socket.id,
+        clientIp,
+        details: { transport: socket.conn.transport.name }
+    });
     
     // IP连接数限制
     if (!ipConnections.has(clientIp)) {
@@ -377,7 +480,8 @@ io.on('connection', (socket) => {
                 reconnect: Boolean(existingDevice),
                 onlineDeviceCount: session.devices.size,
                 historyCount: session.history.length,
-                historySize: session.historySize
+                historySize: session.historySize,
+                clientIp
             });
             
             session.lastActivity = Date.now();
@@ -434,6 +538,7 @@ io.on('connection', (socket) => {
                 sessionId,
                 targetDeviceId: deviceId,
                 targetSocketId: socket.id,
+                clientIp,
                 messageCount: historyMessages.length,
                 messages: historyMessages.map(summarizeHistoryMessage)
             });
@@ -510,12 +615,18 @@ io.on('connection', (socket) => {
                 return socket.emit('error', { message: '消息过大' });
             }
 
-            const historyResult = addToSessionHistory(sessionId, session, message);
+            const historyResult = addToSessionHistory(sessionId, session, message, {
+                fromDeviceId: currentDevice,
+                socketId: socket.id,
+                clientIp
+            });
             historyLog('message-received', {
                 sessionId,
                 fromDeviceId: currentDevice,
                 message: summarizeHistoryMessage(message),
                 historyResult,
+                socketId: socket.id,
+                clientIp,
                 broadcastRecipients: Math.max(session.devices.size - 1, 0)
             });
             
@@ -536,10 +647,42 @@ io.on('connection', (socket) => {
             sessionId,
             deviceId,
             socketId: socket.id,
+            clientIp,
             receivedCount,
             restoredCount,
             duplicateCount,
             failedCount
+        });
+    });
+
+    socket.on('debug-log', (data) => {
+        if (!data || typeof data !== 'object') return;
+
+        const { event, details, sessionId, deviceId, clientTimestamp } = data;
+        if (sessionId !== currentSession || deviceId !== currentDevice || typeof event !== 'string') {
+            recordDebugLog({
+                source: 'server',
+                event: 'client-debug-log-rejected',
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                details: { reportedSessionId: sessionId, reportedDeviceId: deviceId }
+            });
+            return;
+        }
+
+        const device = sessions.get(currentSession)?.devices.get(currentDevice);
+        recordDebugLog({
+            source: 'client',
+            event,
+            details,
+            sessionId: currentSession,
+            deviceId: currentDevice,
+            deviceName: device && device.deviceName,
+            socketId: socket.id,
+            clientIp,
+            clientTimestamp
         });
     });
     
