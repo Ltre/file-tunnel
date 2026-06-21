@@ -226,6 +226,11 @@
             background: #f8d7da;
             color: #721c24;
         }
+
+        .status-local {
+            background: #fff3cd;
+            color: #856404;
+        }
         
         .device-count {
             display: inline-flex;
@@ -305,6 +310,7 @@
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
+        const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{8,64}$/;
         
         // 加载数据
         async function loadData() {
@@ -313,8 +319,15 @@
                 const response = await fetch('/api/sessions');
                 const data = await response.json();
                 
-                updateStats(data);
-                renderSessions(data.sessions);
+                const localData = await loadLocalHistory();
+                const sessions = mergeSessions(data.sessions || [], localData.sessions);
+                updateStats({
+                    sessions,
+                    totalDevices: data.totalDevices || 0,
+                    totalMessages: localData.totalMessages,
+                    totalFiles: localData.totalFiles
+                });
+                renderSessions(sessions);
                 
                 document.getElementById('lastUpdate').textContent = 
                     '更新于: ' + new Date().toLocaleTimeString('zh-CN');
@@ -324,12 +337,172 @@
                 loadFromLocalStorage();
             }
         }
+
+        function isValidSessionId(id) {
+            return typeof id === 'string' && SESSION_ID_PATTERN.test(id);
+        }
+
+        function makeSessionUrl(sessionId) {
+            return `${window.location.origin}/#${sessionId}`;
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, char => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[char]));
+        }
+
+        function openTunnelDb() {
+            return new Promise((resolve) => {
+                if (!window.indexedDB) {
+                    resolve(null);
+                    return;
+                }
+
+                const request = indexedDB.open('TunnelDB');
+                request.onerror = () => resolve(null);
+                request.onblocked = () => resolve(null);
+                request.onsuccess = (event) => resolve(event.target.result);
+            });
+        }
+
+        function readAllFromDb(db, storeName) {
+            return new Promise((resolve) => {
+                if (!db || !db.objectStoreNames.contains(storeName)) {
+                    resolve([]);
+                    return;
+                }
+
+                try {
+                    const transaction = db.transaction([storeName], 'readonly');
+                    const request = transaction.objectStore(storeName).getAll();
+                    request.onsuccess = () => resolve(request.result || []);
+                    request.onerror = () => resolve([]);
+                } catch (err) {
+                    console.warn(`Failed to read ${storeName}:`, err);
+                    resolve([]);
+                }
+            });
+        }
+
+        function upsertLocalSession(sessionMap, sessionId, timestamp) {
+            if (!isValidSessionId(sessionId)) return;
+
+            const time = Number(timestamp) || Date.now();
+            const current = sessionMap.get(sessionId);
+            if (!current) {
+                sessionMap.set(sessionId, {
+                    id: sessionId,
+                    deviceCount: 0,
+                    createdAt: time,
+                    lastActivity: time,
+                    isActive: false,
+                    isLocalHistory: true,
+                    messageCount: 0,
+                    fileCount: 0
+                });
+                return;
+            }
+
+            current.createdAt = Math.min(current.createdAt || time, time);
+            current.lastActivity = Math.max(current.lastActivity || time, time);
+        }
+
+        async function loadLocalHistory() {
+            const db = await openTunnelDb();
+            if (!db) {
+                return { sessions: [], totalMessages: 0, totalFiles: 0 };
+            }
+
+            try {
+                const [storedSessions, messages, files, editorContents] = await Promise.all([
+                    readAllFromDb(db, 'sessions'),
+                    readAllFromDb(db, 'messages'),
+                    readAllFromDb(db, 'files'),
+                    readAllFromDb(db, 'editorContent')
+                ]);
+
+                const sessionMap = new Map();
+                storedSessions.forEach(item => {
+                    upsertLocalSession(sessionMap, item.sessionId, item.lastActive || item.createdAt);
+                    const session = sessionMap.get(item.sessionId);
+                    if (session && item.deviceId) {
+                        session.deviceCount = Math.max(session.deviceCount, 1);
+                    }
+                });
+
+                messages.forEach(message => {
+                    upsertLocalSession(sessionMap, message.sessionId, message.timestamp);
+                    const session = sessionMap.get(message.sessionId);
+                    if (session) session.messageCount += 1;
+                });
+
+                files.forEach(file => {
+                    upsertLocalSession(sessionMap, file.sessionId, file.timestamp || file.lastModified);
+                    const session = sessionMap.get(file.sessionId);
+                    if (session) session.fileCount += 1;
+                });
+
+                editorContents.forEach(content => {
+                    upsertLocalSession(sessionMap, content.sessionId, content.updatedAt || content.timestamp);
+                });
+
+                return {
+                    sessions: Array.from(sessionMap.values()),
+                    totalMessages: messages.length,
+                    totalFiles: files.length
+                };
+            } finally {
+                db.close();
+            }
+        }
+
+        function mergeSessions(serverSessions, localSessions) {
+            const sessionMap = new Map();
+
+            serverSessions.forEach(session => {
+                if (!isValidSessionId(session.id)) return;
+                sessionMap.set(session.id, {
+                    ...session,
+                    isLocalHistory: false,
+                    messageCount: 0,
+                    fileCount: 0
+                });
+            });
+
+            localSessions.forEach(localSession => {
+                if (!isValidSessionId(localSession.id)) return;
+
+                const existing = sessionMap.get(localSession.id);
+                if (existing) {
+                    existing.createdAt = Math.min(existing.createdAt || localSession.createdAt, localSession.createdAt);
+                    existing.lastActivity = Math.max(existing.lastActivity || localSession.lastActivity, localSession.lastActivity);
+                    existing.messageCount = localSession.messageCount || 0;
+                    existing.fileCount = localSession.fileCount || 0;
+                    existing.hasLocalHistory = true;
+                    return;
+                }
+
+                sessionMap.set(localSession.id, {
+                    ...localSession,
+                    isActive: false,
+                    isLocalHistory: true
+                });
+            });
+
+            return Array.from(sessionMap.values())
+                .sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+        }
         
         // 从本地存储加载（备用）
-        function loadFromLocalStorage() {
+        async function loadFromLocalStorage() {
             try {
-                const sessions = [];
-                const sessionIds = new Set();
+                const localData = await loadLocalHistory();
+                const sessions = localData.sessions;
                 
                 // 从消息中提取会话
                 for (let i = 0; i < localStorage.length; i++) {
@@ -337,25 +510,29 @@
                     if (key && key.startsWith('tunnel_')) {
                         try {
                             const data = JSON.parse(localStorage.getItem(key));
-                            if (data && data.sessionId) {
-                                sessionIds.add(data.sessionId);
+                            if (data && isValidSessionId(data.sessionId) && !sessions.some(session => session.id === data.sessionId)) {
+                                sessions.push({
+                                    id: data.sessionId,
+                                    deviceCount: 1,
+                                    createdAt: data.timestamp || Date.now(),
+                                    lastActivity: data.timestamp || Date.now(),
+                                    isActive: false,
+                                    isLocalHistory: true,
+                                    messageCount: 0,
+                                    fileCount: 0
+                                });
                             }
                         } catch (e) {}
                     }
                 }
-                
-                // 模拟会话数据
-                sessionIds.forEach(id => {
-                    sessions.push({
-                        id: id,
-                        deviceCount: 1,
-                        createdAt: Date.now(),
-                        lastActivity: Date.now(),
-                        isActive: true
-                    });
+
+                sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+                updateStats({
+                    sessions,
+                    totalDevices: 0,
+                    totalMessages: localData.totalMessages,
+                    totalFiles: localData.totalFiles
                 });
-                
-                updateStats({ sessions, totalDevices: sessions.length, totalMessages: 0, totalFiles: 0 });
                 renderSessions(sessions);
             } catch (err) {
                 console.error('Failed to load from localStorage:', err);
@@ -385,33 +562,37 @@
             }
             
             container.innerHTML = sessions.map(session => {
-                const shortId = session.id.substring(0, 8) + '...';
-                const createdTime = new Date(session.createdAt).toLocaleString('zh-CN');
-                const lastActivity = new Date(session.lastActivity).toLocaleString('zh-CN');
-                const isActive = session.isActive || (Date.now() - session.lastActivity < 5 * 60 * 1000);
+                const safeId = escapeHtml(session.id);
+                const shortId = escapeHtml(session.id.substring(0, 8) + '...');
+                const createdTime = new Date(session.createdAt || Date.now()).toLocaleString('zh-CN');
+                const lastActivity = new Date(session.lastActivity || session.createdAt || Date.now()).toLocaleString('zh-CN');
+                const isActive = session.isActive === true;
+                const statusClass = isActive ? 'status-active' : (session.isLocalHistory ? 'status-local' : 'status-inactive');
+                const statusText = isActive ? '活跃' : (session.isLocalHistory ? '离线历史' : '离线');
                 
                 return `
-                    <div class="session-item">
+                    <div class="session-item" data-session-id="${safeId}">
                         <div class="session-icon">🔗</div>
                         <div class="session-info">
                             <div class="session-id">
                                 会话 ${shortId}
-                                <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">
-                                    ${isActive ? '活跃' : '离线'}
+                                <span class="status-badge ${statusClass}">
+                                    ${statusText}
                                 </span>
                             </div>
                             <div class="session-meta">
                                 <div>设备数: <span class="device-count">📱 ${session.deviceCount || 1}</span></div>
+                                <div>历史: ${session.messageCount || 0} messages / ${session.fileCount || 0} files</div>
                                 <div>创建: ${createdTime}</div>
                                 <div>最后活动: ${lastActivity}</div>
                             </div>
                         </div>
                         <div class="session-actions">
-                            <a href="/#${session.id}" target="_blank" class="btn btn-primary">
+                            <a href="/#${safeId}" target="_blank" class="btn btn-primary">
                                 <span>🔗</span>
                                 <span>进入会话</span>
                             </a>
-                            <button class="btn btn-secondary" onclick="copyLink('${session.id}')">
+                            <button class="btn btn-secondary" onclick="copyLink('${safeId}')">
                                 <span>📋</span>
                                 <span>复制链接</span>
                             </button>
@@ -423,7 +604,9 @@
         
         // 复制链接
         function copyLink(sessionId) {
-            const url = `${window.location.origin}/${sessionId}`;
+            if (!isValidSessionId(sessionId)) return;
+
+            const url = makeSessionUrl(sessionId);
             navigator.clipboard.writeText(url).then(() => {
                 alert('链接已复制: ' + url);
             }).catch(err => {
@@ -443,11 +626,11 @@
         function exportSessions() {
             const sessions = [];
             document.querySelectorAll('.session-item').forEach(item => {
-                const id = item.querySelector('.btn-primary')?.href?.split('/').pop();
+                const id = item.dataset.sessionId;
                 if (id) {
                     sessions.push({
                         id: id,
-                        url: `${window.location.origin}/${id}`
+                        url: makeSessionUrl(id)
                     });
                 }
             });
