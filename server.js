@@ -174,6 +174,13 @@ function isValidDeviceName(name) {
            name.length <= 50;
 }
 
+function isEditorContentEmpty(content) {
+    return !content || content
+        .replace(/<br\s*\/?\s*>/gi, '')
+        .replace(/&nbsp;/gi, '')
+        .trim() === '';
+}
+
 // ==================== Socket.io 连接处理 ====================
 
 io.on('connection', (socket) => {
@@ -265,7 +272,9 @@ io.on('connection', (socket) => {
             const session = sessions.get(sessionId);
             
             // 设备数量限制
-            if (session.devices.size >= MAX_DEVICES_PER_SESSION) {
+            const existingDevice = session.devices.get(deviceId);
+
+            if (session.devices.size >= MAX_DEVICES_PER_SESSION && !existingDevice) {
                 return socket.emit('error', { message: '会话设备数已满' });
             }
             
@@ -274,7 +283,9 @@ io.on('connection', (socket) => {
                 deviceId,
                 deviceName: sanitizeString(deviceName),
                 socketId: socket.id,
-                joinedAt: Date.now()
+                joinedAt: Date.now(),
+                editorContent: existingDevice ? existingDevice.editorContent : '',
+                editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
             });
             
             session.lastActivity = Date.now();
@@ -285,11 +296,13 @@ io.on('connection', (socket) => {
             console.log(`Device ${deviceName} (${deviceId}) joined session ${sessionId}`);
             
             // 通知会话中的其他设备
-            socket.to(sessionId).emit('device-joined', {
-                deviceId,
-                deviceName: sanitizeString(deviceName),
-                joinedAt: Date.now()
-            });
+            if (!existingDevice) {
+                socket.to(sessionId).emit('device-joined', {
+                    deviceId,
+                    deviceName: sanitizeString(deviceName),
+                    joinedAt: Date.now()
+                });
+            }
             
             // 发送当前会话中的所有设备信息给新设备
             const deviceList = [];
@@ -305,6 +318,23 @@ io.on('connection', (socket) => {
             
             socket.emit('session-devices', {
                 devices: deviceList
+            });
+
+            let latestRemoteEditor = null;
+            session.devices.forEach((device, id) => {
+                if (id === deviceId || isEditorContentEmpty(device.editorContent)) return;
+
+                if (!latestRemoteEditor || device.editorUpdatedAt > latestRemoteEditor.updatedAt) {
+                    latestRemoteEditor = {
+                        content: device.editorContent,
+                        updatedAt: device.editorUpdatedAt
+                    };
+                }
+            });
+
+            socket.emit('editor-state', {
+                hasRemoteContent: Boolean(latestRemoteEditor),
+                content: latestRemoteEditor ? latestRemoteEditor.content : ''
             });
         } catch (err) {
             console.error('join-session error:', err);
@@ -403,8 +433,16 @@ io.on('connection', (socket) => {
             
             const session = sessions.get(sessionId);
             if (!session) return;
+
+            const device = session.devices.get(currentDevice);
+            if (!device || device.socketId !== socket.id) return;
             
             session.lastActivity = Date.now();
+            const editorUpdatedAt = Date.now();
+            session.devices.forEach((sessionDevice) => {
+                sessionDevice.editorContent = content;
+                sessionDevice.editorUpdatedAt = editorUpdatedAt;
+            });
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('editor-sync', { from, content });
@@ -490,21 +528,28 @@ io.on('connection', (socket) => {
         if (currentSession && currentDevice) {
             const session = sessions.get(currentSession);
             if (session) {
-                session.devices.delete(currentDevice);
-                
-                // 通知会话中的其他设备
-                socket.to(currentSession).emit('device-left', {
-                    deviceId: currentDevice
-                });
-                
-                // 如果会话为空，清理会话
-                if (session.devices.size === 0) {
-                    sessions.delete(currentSession);
-                    console.log(`Session ${currentSession} removed (empty)`);
+                const device = session.devices.get(currentDevice);
+
+                // A reloaded page may already have replaced this socket.
+                if (device && device.socketId === socket.id) {
+                    session.devices.delete(currentDevice);
+
+                    // 通知会话中的其他设备
+                    socket.to(currentSession).emit('device-left', {
+                        deviceId: currentDevice
+                    });
+
+                    // 如果会话为空，清理会话
+                    if (session.devices.size === 0) {
+                        sessions.delete(currentSession);
+                        console.log(`Session ${currentSession} removed (empty)`);
+                    }
                 }
             }
             
-            deviceSockets.delete(currentDevice);
+            if (deviceSockets.get(currentDevice) === socket) {
+                deviceSockets.delete(currentDevice);
+            }
         }
     });
     

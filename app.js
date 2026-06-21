@@ -57,11 +57,11 @@ const state = {
 document.addEventListener('DOMContentLoaded', async () => {
     await initStorage();
     initSession();
-    initSocket();
     initUI();
     initEditor();
     initDragDrop();
-    loadSessionData();
+    await loadSessionData();
+    initSocket();
 });
 
 // ==================== 存储管理 (IndexedDB + 内存备用) ====================
@@ -360,6 +360,10 @@ function initSocket() {
 
     state.socket.on('editor-sync', (data) => {
         handleEditorSync(data);
+    });
+
+    state.socket.on('editor-state', (data) => {
+        handleEditorState(data);
     });
 
     state.socket.on('file-offer', (data) => {
@@ -1133,6 +1137,35 @@ async function sendText() {
 }
 
 // ==================== 协同编辑 ====================
+function isEditorContentEmpty(content) {
+    return !content || content
+        .replace(/<br\s*\/?\s*>/gi, '')
+        .replace(/&nbsp;/gi, '')
+        .trim() === '';
+}
+
+async function persistEditorContent(content) {
+    state.editorContent = content;
+    await saveToStore('editorContent', {
+        id: 'current',
+        sessionId: state.sessionId,
+        content,
+        timestamp: Date.now()
+    });
+}
+
+async function syncEditorContent(content) {
+    await persistEditorContent(content);
+
+    if (state.socket) {
+        state.socket.emit('editor-sync', {
+            sessionId: state.sessionId,
+            from: state.deviceId,
+            content
+        });
+    }
+}
+
 function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
@@ -1231,20 +1264,7 @@ function initEditor() {
         syncTimeout = setTimeout(async () => {
             const content = editor.innerHTML;
 
-            // 保存到本地存储（持久化）
-            await saveToStore('editorContent', {
-                id: 'current',
-                sessionId: state.sessionId,
-                content: content,
-                timestamp: Date.now()
-            });
-
-            // 同步到其他设备
-            state.socket.emit('editor-sync', {
-                sessionId: state.sessionId,
-                from: state.deviceId,
-                content
-            });
+            await syncEditorContent(content);
             state.isSyncing = false;
             document.getElementById('collabStatus').textContent = '已同步';
         }, 500);
@@ -1280,7 +1300,10 @@ function initEditor() {
         });
 
         addMessageToChat(message, true);
+        clearTimeout(syncTimeout);
         editor.innerHTML = '';
+        await syncEditorContent('');
+        document.getElementById('collabStatus').textContent = '已发送';
     });
 
     // 清空编辑器
@@ -1289,7 +1312,7 @@ function initEditor() {
     });
 }
 
-function handleEditorSync(data) {
+async function handleEditorSync(data) {
     const { from, content } = data;
 
     if (from === state.deviceId) return;
@@ -1299,11 +1322,37 @@ function handleEditorSync(data) {
     const editor = document.getElementById('editor');
     
     // 避免不必要的更新
-    if (editor.innerHTML !== content) {
+    const changed = editor.innerHTML !== content;
+    if (changed) {
         editor.innerHTML = content;
+    }
+
+    await persistEditorContent(content);
+    if (changed) {
         document.getElementById('collabStatus').textContent = '已同步';
         console.log('Editor updated from sync');
     }
+}
+
+async function handleEditorState(data) {
+    if (!data || typeof data !== 'object') return;
+
+    const editor = document.getElementById('editor');
+    if (!editor) return;
+
+    if (data.hasRemoteContent && !isEditorContentEmpty(data.content)) {
+        const changed = editor.innerHTML !== data.content;
+        if (changed) {
+            editor.innerHTML = data.content;
+        }
+        await persistEditorContent(data.content);
+        document.getElementById('collabStatus').textContent = '已同步';
+        return;
+    }
+
+    // Other online devices are empty, so this device's draft is authoritative.
+    await syncEditorContent(editor.innerHTML);
+    document.getElementById('collabStatus').textContent = '已同步';
 }
 
 // ==================== 设备管理 ====================
@@ -1611,6 +1660,7 @@ async function loadSessionData() {
             const editor = document.getElementById('editor');
             if (editor && editorContent.content.trim() && editorContent.content !== '<br>') {
                 editor.innerHTML = editorContent.content;
+                state.editorContent = editorContent.content;
             }
         }
 
