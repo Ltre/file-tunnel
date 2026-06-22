@@ -87,5 +87,10 @@ Base64 仅保留作极小图片兜底
 改动在 app.js、server.js；data:image 仍可能用于原有的普通小文件聊天消息，但协同编辑插图路径已完全摒弃它。
 验证完成：两文件语法检查通过、差异检查通过、本地服务返回 HTTP 200。真实的两设备 WebRTC 自动拉取还需要在你的设备环境实测。
 
+问：
+再次测试协同编辑框，发现：
+1、在windows的chrome和firefox插入的图，都可以在别的windows的chrome和firefox同步图片，但在android手机的chrome和firefox都是先显示“正在获取图片”，接着显示“图片暂时不可用”
+2、在android手机的chrome和firefox插入的图，在别的设备（不论是windows还是android）的chrome和firefox都是先显示“正在获取图片”，接着显示“图片暂时不可用”
+
 ---------------------------------------------------------
 
