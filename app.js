@@ -2152,19 +2152,28 @@ function initEditor() {
         editor.focus();
     };
 
-    const queueEditorSync = () => {
+    const syncEditorNow = async (reason) => {
+        clearTimeout(syncTimeout);
         state.isSyncing = true;
         document.getElementById('collabStatus').textContent = '编辑中...';
 
+        const assetIds = Array.from(editor.querySelectorAll('img[data-tunnel-asset-id]'))
+            .map(image => image.dataset.tunnelAssetId);
+        historyLog('editor-sync-started', { reason, assetIds });
+        const result = await syncEditorContent(editor.innerHTML);
+        state.isSyncing = false;
+        document.getElementById('collabStatus').textContent = result.emitted
+            ? '已同步'
+            : result.reason === 'content-too-large'
+                ? '内容过大，未同步'
+                : '等待连接后同步';
+        return result;
+    };
+
+    const queueEditorSync = () => {
         clearTimeout(syncTimeout);
-        syncTimeout = setTimeout(async () => {
-            const result = await syncEditorContent(editor.innerHTML);
-            state.isSyncing = false;
-            document.getElementById('collabStatus').textContent = result.emitted
-                ? '已同步'
-                : result.reason === 'content-too-large'
-                    ? '内容过大，未同步'
-                    : '等待连接后同步';
+        syncTimeout = setTimeout(() => {
+            syncEditorNow('input-debounced');
         }, 500);
     };
 
@@ -2192,7 +2201,7 @@ function initEditor() {
                     const asset = await createEditorAssetFromFile(file);
                     insertEditorHtml(createEditorAssetHtml(asset), savedRange);
                     await hydrateEditorAssets(editor);
-                    queueEditorSync();
+                    await syncEditorNow('image-inserted');
                 } catch (err) {
                     alert(`图片无法插入: ${err.message}`);
                     historyLog('editor-image-rejected', {
@@ -2278,7 +2287,7 @@ function initEditor() {
 
                 insertEditorHtml(refHtml, savedRange);
                 await hydrateEditorAssets(editor);
-                queueEditorSync();
+                await syncEditorNow(file.type.startsWith('image/') ? 'image-reference-inserted' : 'file-reference-inserted');
             }
 
             dialog.remove();
@@ -2345,6 +2354,12 @@ async function handleEditorSync(data) {
     if (from === state.deviceId) return;
 
     console.log('Received editor sync from', from, 'content length:', content.length);
+    const syncedAssetIds = Array.from(content.matchAll(/data-tunnel-asset-id="([^"]+)"/g), match => match[1]);
+    historyLog('editor-sync-received', {
+        from,
+        contentSize: getEditorContentSize(content),
+        assetIds: syncedAssetIds
+    });
     
     const editor = document.getElementById('editor');
     
