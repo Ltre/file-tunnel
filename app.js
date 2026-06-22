@@ -2422,7 +2422,14 @@ async function handleEditorState(data) {
         return;
     }
 
-    // Other online devices are empty, so this device's draft is authoritative.
+    // Other online devices are empty, so only a non-empty local draft is authoritative.
+    // Never broadcast an empty draft during session initialization: a reconnecting
+    // device must not erase an image another device just inserted.
+    if (isEditorContentEmpty(editor.innerHTML)) {
+        historyLog('editor-state-empty-local-draft-ignored');
+        return;
+    }
+
     const result = await syncEditorContent(editor.innerHTML);
     document.getElementById('collabStatus').textContent = result.emitted
         ? '已同步'
