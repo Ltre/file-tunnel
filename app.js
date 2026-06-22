@@ -59,6 +59,16 @@ const state = {
 const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
 const MAX_CLIENT_DEBUG_LOGS = 1000;
 const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
+const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
+const EDITOR_ASSET_CHUNK_SIZE = 64 * 1024;
+const EDITOR_ASSET_BUFFER_LIMIT = 512 * 1024;
+const editorAssetUrls = new Map();
+const editorAssetRequests = new Map();
+const editorAssetTransfers = new Map();
+
+window.addEventListener('beforeunload', () => {
+    editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
+});
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
@@ -420,6 +430,8 @@ function initSocket() {
         });
         state.debugLogReady = true;
         flushClientDebugLogs();
+        announceStoredEditorAssets();
+        hydrateEditorAssets(document.getElementById('editor'));
     });
 
     state.socket.on('device-joined', (data) => {
@@ -460,6 +472,18 @@ function initSocket() {
 
     state.socket.on('editor-state', (data) => {
         handleEditorState(data);
+    });
+
+    state.socket.on('editor-asset-request', (data) => {
+        handleEditorAssetRequest(data);
+    });
+
+    state.socket.on('editor-asset-available', (data) => {
+        handleEditorAssetAvailable(data);
+    });
+
+    state.socket.on('editor-asset-unavailable', (data) => {
+        handleEditorAssetUnavailable(data);
     });
 
     state.socket.on('error', (data) => {
@@ -722,6 +746,12 @@ async function handleSignal(data) {
 }
 
 function setupDataChannel(deviceId, channel) {
+    if (channel.label && channel.label.startsWith('editor-asset:')) {
+        const assetId = channel.label.slice('editor-asset:'.length);
+        setupEditorAssetDataChannel(deviceId, assetId, channel);
+        return;
+    }
+
     state.dataChannels.set(deviceId, channel);
 
     channel.onopen = () => {
@@ -738,6 +768,332 @@ function setupDataChannel(deviceId, channel) {
         historyLog('p2p-data-channel-closed', { peerDeviceId: deviceId });
         state.dataChannels.delete(deviceId);
     };
+}
+
+// ==================== Editor image assets ====================
+function getEditorAssetMetadata(asset) {
+    return {
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        size: asset.size,
+        ownerDeviceId: asset.ownerDeviceId
+    };
+}
+
+function createEditorAssetHtml(asset) {
+    return `<img data-tunnel-asset-id="${asset.id}" data-tunnel-asset-owner="${asset.ownerDeviceId}" data-tunnel-asset-name="${escapeHtml(asset.name)}" data-tunnel-asset-type="${escapeHtml(asset.type)}" data-tunnel-asset-size="${asset.size}" alt="${escapeHtml(asset.name)}" style="max-width: 100%; border-radius: 8px;">`;
+}
+
+function serializeEditorContent(content) {
+    const container = document.createElement('div');
+    container.innerHTML = content;
+    container.querySelectorAll('img[data-tunnel-asset-id]').forEach(image => {
+        image.removeAttribute('src');
+        image.removeAttribute('data-tunnel-asset-state');
+    });
+    return container.innerHTML;
+}
+
+async function createEditorAsset(name, type, data) {
+    const size = data.byteLength;
+    if (!type.startsWith('image/')) {
+        throw new Error('Only image files can be inserted into the editor');
+    }
+    if (size <= 0 || size > MAX_EDITOR_ASSET_SIZE) {
+        throw new Error('Image exceeds the editor asset size limit');
+    }
+
+    const asset = {
+        id: generateId(),
+        name,
+        type,
+        size,
+        ownerDeviceId: state.deviceId,
+        isEditorAsset: true,
+        sessionId: state.sessionId,
+        data,
+        timestamp: Date.now()
+    };
+    await saveToStore('files', asset);
+    announceEditorAsset(asset);
+    historyLog('editor-asset-created', { asset: getEditorAssetMetadata(asset) });
+    return asset;
+}
+
+async function createEditorAssetFromFile(file) {
+    return createEditorAsset(file.name, file.type, await fileToArrayBuffer(file));
+}
+
+async function createEditorAssetFromStoredFile(file) {
+    return createEditorAsset(file.name, file.type, file.data.slice(0));
+}
+
+function announceEditorAsset(asset) {
+    if (!state.socket || !state.socket.connected) return;
+    state.socket.emit('editor-asset-available', {
+        sessionId: state.sessionId,
+        asset: getEditorAssetMetadata(asset)
+    });
+    historyLog('editor-asset-announced', { asset: getEditorAssetMetadata(asset) });
+}
+
+async function announceStoredEditorAssets() {
+    try {
+        let files = [];
+        if (typeof IDBKeyRange !== 'undefined') {
+            files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
+        } else {
+            files = (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+        }
+        files.filter(file => file.isEditorAsset && file.data).forEach(announceEditorAsset);
+    } catch (err) {
+        console.error('Failed to announce editor assets:', err);
+        historyLog('editor-asset-announce-failed', { error: err.message });
+    }
+}
+
+function setEditorAssetUnavailable(assetId, reason) {
+    document.querySelectorAll(`img[data-tunnel-asset-id="${assetId}"]`).forEach(image => {
+        image.removeAttribute('src');
+        image.dataset.tunnelAssetState = 'unavailable';
+        image.alt = reason === 'no-online-provider' ? '图片来源设备不在线' : '图片暂时不可用';
+    });
+}
+
+async function hydrateEditorAssetImage(image) {
+    const assetId = image.dataset.tunnelAssetId;
+    if (!assetId) return;
+
+    const asset = await getFromStore('files', assetId);
+    if (asset && asset.data) {
+        let url = editorAssetUrls.get(assetId);
+        if (!url) {
+            url = URL.createObjectURL(new Blob([asset.data], { type: asset.type }));
+            editorAssetUrls.set(assetId, url);
+        }
+        image.src = url;
+        image.dataset.tunnelAssetState = 'ready';
+        return;
+    }
+
+    image.removeAttribute('src');
+    image.dataset.tunnelAssetState = 'loading';
+    image.alt = '正在获取图片...';
+    requestEditorAsset(assetId, image.dataset.tunnelAssetOwner);
+}
+
+async function hydrateEditorAssets(container) {
+    if (!container) return;
+    const images = Array.from(container.querySelectorAll('img[data-tunnel-asset-id]'));
+    await Promise.all(images.map(hydrateEditorAssetImage));
+}
+
+function requestEditorAsset(assetId, preferredProviderId) {
+    if (!state.socket || !state.socket.connected || editorAssetRequests.has(assetId)) return;
+
+    editorAssetRequests.set(assetId, Date.now());
+    state.socket.emit('editor-asset-request', {
+        sessionId: state.sessionId,
+        assetId,
+        preferredProviderId
+    });
+    historyLog('editor-asset-requested', { assetId, preferredProviderId });
+
+    setTimeout(() => {
+        if (editorAssetRequests.has(assetId)) {
+            editorAssetRequests.delete(assetId);
+        }
+    }, 30000);
+}
+
+function setupEditorAssetDataChannel(deviceId, assetId, channel) {
+    channel.binaryType = 'arraybuffer';
+    channel.onopen = () => {
+        historyLog('editor-asset-channel-opened', { assetId, peerDeviceId: deviceId });
+    };
+    channel.onmessage = event => {
+        handleEditorAssetDataChannelMessage(deviceId, assetId, event.data, channel).catch(err => {
+            console.error('Editor asset channel message failed:', err);
+            editorAssetTransfers.delete(assetId);
+            historyLog('editor-asset-receive-failed', { assetId, peerDeviceId: deviceId, error: err.message });
+            channel.close();
+        });
+    };
+    channel.onclose = () => {
+        historyLog('editor-asset-channel-closed', { assetId, peerDeviceId: deviceId });
+    };
+    channel.onerror = () => {
+        historyLog('editor-asset-channel-failed', { assetId, peerDeviceId: deviceId });
+    };
+}
+
+function waitForEditorAssetChannel(channel, timeout = 20000) {
+    if (channel.readyState === 'open') return Promise.resolve(true);
+    return new Promise(resolve => {
+        const timer = setTimeout(() => resolve(false), timeout);
+        channel.addEventListener('open', () => {
+            clearTimeout(timer);
+            resolve(true);
+        }, { once: true });
+        channel.addEventListener('close', () => {
+            clearTimeout(timer);
+            resolve(false);
+        }, { once: true });
+    });
+}
+
+async function waitForEditorAssetBuffer(channel) {
+    if (channel.bufferedAmount <= EDITOR_ASSET_BUFFER_LIMIT) return;
+    await new Promise(resolve => {
+        const timer = setTimeout(resolve, 1000);
+        channel.bufferedAmountLowThreshold = EDITOR_ASSET_BUFFER_LIMIT / 2;
+        channel.addEventListener('bufferedamountlow', () => {
+            clearTimeout(timer);
+            resolve();
+        }, { once: true });
+    });
+}
+
+async function sendEditorAssetViaDataChannel(channel, asset) {
+    const metadata = getEditorAssetMetadata(asset);
+    channel.send(JSON.stringify({ type: 'editor-asset-start', asset: metadata }));
+
+    for (let offset = 0; offset < asset.data.byteLength; offset += EDITOR_ASSET_CHUNK_SIZE) {
+        if (channel.readyState !== 'open') throw new Error('Editor asset channel closed');
+        await waitForEditorAssetBuffer(channel);
+        channel.send(asset.data.slice(offset, Math.min(offset + EDITOR_ASSET_CHUNK_SIZE, asset.data.byteLength)));
+    }
+
+    channel.send(JSON.stringify({ type: 'editor-asset-complete', assetId: asset.id }));
+    historyLog('editor-asset-sent', { asset: metadata });
+}
+
+async function handleEditorAssetRequest(data) {
+    const { asset, from } = data || {};
+    if (!asset || !asset.id || !from) return;
+
+    const storedAsset = await getFromStore('files', asset.id);
+    if (!storedAsset || !storedAsset.data) {
+        state.socket.emit('editor-asset-unavailable', {
+            sessionId: state.sessionId,
+            assetId: asset.id,
+            to: from,
+            reason: 'provider-missing-local-data'
+        });
+        return;
+    }
+
+    try {
+        await connectToPeer(from);
+        if (!await waitForDataChannel(from, 20000)) {
+            throw new Error('Peer connection timed out');
+        }
+
+        const peer = state.peers.get(from);
+        if (!peer || peer.connectionState !== 'connected') {
+            throw new Error('Peer connection is not ready');
+        }
+
+        const channel = peer.createDataChannel(`editor-asset:${asset.id}`, { ordered: true });
+        setupEditorAssetDataChannel(from, asset.id, channel);
+        if (!await waitForEditorAssetChannel(channel)) {
+            throw new Error('Editor asset channel timed out');
+        }
+
+        await sendEditorAssetViaDataChannel(channel, storedAsset);
+    } catch (err) {
+        console.error('Failed to provide editor asset:', err);
+        historyLog('editor-asset-send-failed', { assetId: asset.id, peerDeviceId: from, error: err.message });
+        state.socket.emit('editor-asset-unavailable', {
+            sessionId: state.sessionId,
+            assetId: asset.id,
+            to: from,
+            reason: 'p2p-transfer-failed'
+        });
+    }
+}
+
+async function handleEditorAssetDataChannelMessage(deviceId, assetId, data, channel) {
+    if (typeof data === 'string') {
+        let message;
+        try {
+            message = JSON.parse(data);
+        } catch (err) {
+            channel.close();
+            return;
+        }
+        if (message.type === 'editor-asset-start') {
+            const asset = message.asset;
+            if (!asset || asset.id !== assetId || typeof asset.type !== 'string' ||
+                !asset.type.startsWith('image/') || typeof asset.size !== 'number' ||
+                asset.size <= 0 || asset.size > MAX_EDITOR_ASSET_SIZE) {
+                channel.close();
+                return;
+            }
+            editorAssetTransfers.set(assetId, { asset, chunks: [], receivedSize: 0, from: deviceId });
+            historyLog('editor-asset-receiving', { asset, peerDeviceId: deviceId });
+            return;
+        }
+
+        if (message.type === 'editor-asset-complete' && message.assetId === assetId) {
+            const transfer = editorAssetTransfers.get(assetId);
+            if (!transfer || transfer.receivedSize !== transfer.asset.size) {
+                throw new Error('Editor asset size mismatch');
+            }
+
+            const combined = new Uint8Array(transfer.receivedSize);
+            let offset = 0;
+            transfer.chunks.forEach(chunk => {
+                combined.set(new Uint8Array(chunk), offset);
+                offset += chunk.byteLength;
+            });
+            const storedAsset = {
+                ...transfer.asset,
+                isEditorAsset: true,
+                sessionId: state.sessionId,
+                data: combined.buffer,
+                timestamp: Date.now()
+            };
+            await saveToStore('files', storedAsset);
+            editorAssetTransfers.delete(assetId);
+            editorAssetRequests.delete(assetId);
+            announceEditorAsset(storedAsset);
+            await hydrateEditorAssets(document.getElementById('editor'));
+            await hydrateEditorAssets(document.getElementById('richViewerContent'));
+            historyLog('editor-asset-received', { asset: getEditorAssetMetadata(storedAsset), peerDeviceId: deviceId });
+            channel.close();
+        }
+        return;
+    }
+
+    const transfer = editorAssetTransfers.get(assetId);
+    if (!transfer) return;
+    const chunk = data instanceof Blob ? await data.arrayBuffer() : data;
+    transfer.chunks.push(chunk);
+    transfer.receivedSize += chunk.byteLength;
+    if (transfer.receivedSize > transfer.asset.size) {
+        editorAssetTransfers.delete(assetId);
+        channel.close();
+        throw new Error('Editor asset exceeded advertised size');
+    }
+}
+
+function handleEditorAssetUnavailable(data) {
+    const { assetId, reason } = data || {};
+    if (!assetId) return;
+    editorAssetRequests.delete(assetId);
+    setEditorAssetUnavailable(assetId, reason);
+    historyLog('editor-asset-unavailable', { assetId, reason });
+}
+
+function handleEditorAssetAvailable(data) {
+    const asset = data && data.asset;
+    if (!asset || !asset.id) return;
+
+    document.querySelectorAll(`img[data-tunnel-asset-id="${asset.id}"]`).forEach(image => {
+        hydrateEditorAssetImage(image);
+    });
 }
 
 // ==================== 文件传输 ====================
@@ -1487,6 +1843,7 @@ function getEditorContentSize(content) {
 }
 
 async function syncEditorContent(content) {
+    content = serializeEditorContent(content);
     await persistEditorContent(content);
 
     const contentSize = getEditorContentSize(content);
@@ -1584,21 +1941,19 @@ function initEditor() {
         input.onchange = async (e) => {
             const file = e.target.files[0];
             if (file) {
-                const base64 = await fileToBase64(file);
-                const img = `<img src="${base64}" style="max-width: 100%; border-radius: 8px;">`;
-
-                if (getEditorContentSize(editor.innerHTML + img) > MAX_EDITOR_CONTENT_SIZE) {
-                    alert('图片过大，无法同步到其他设备');
+                try {
+                    const asset = await createEditorAssetFromFile(file);
+                    insertEditorHtml(createEditorAssetHtml(asset), savedRange);
+                    await hydrateEditorAssets(editor);
+                    queueEditorSync();
+                } catch (err) {
+                    alert(`图片无法插入: ${err.message}`);
                     historyLog('editor-image-rejected', {
-                        reason: 'content-too-large',
                         fileName: file.name,
-                        fileSize: file.size
+                        fileSize: file.size,
+                        error: err.message
                     });
-                    return;
                 }
-
-                insertEditorHtml(img, savedRange);
-                queueEditorSync();
             }
         };
         input.click();
@@ -1653,9 +2008,13 @@ function initEditor() {
             if (file) {
                 let refHtml = '';
                 if (file.type.startsWith('image/')) {
-                    const blob = new Blob([file.data], { type: file.type });
-                    const base64 = await blobToBase64(blob);
-                    refHtml = `<img src="${base64}" style="max-width: 200px; border-radius: 8px; cursor: pointer;" onclick="downloadFile('${fileId}')">`;
+                    try {
+                        const asset = await createEditorAssetFromStoredFile(file);
+                        refHtml = createEditorAssetHtml(asset);
+                    } catch (err) {
+                        alert(`图片无法引用: ${err.message}`);
+                        return;
+                    }
                 } else {
                     refHtml = `<span style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${fileId}')">📎 ${file.name}</span>`;
                 }
@@ -1671,6 +2030,7 @@ function initEditor() {
                 }
 
                 insertEditorHtml(refHtml, savedRange);
+                await hydrateEditorAssets(editor);
                 queueEditorSync();
             }
 
@@ -1683,7 +2043,7 @@ function initEditor() {
 
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
-        const content = editor.innerHTML;
+        const content = serializeEditorContent(editor.innerHTML);
         if (!content.trim() || content === '<br>') {
             alert('请输入内容');
             return;
@@ -1742,12 +2102,13 @@ async function handleEditorSync(data) {
     const editor = document.getElementById('editor');
     
     // 避免不必要的更新
-    const changed = editor.innerHTML !== content;
+    const changed = serializeEditorContent(editor.innerHTML) !== content;
     if (changed) {
         editor.innerHTML = content;
     }
 
     await persistEditorContent(content);
+    await hydrateEditorAssets(editor);
     if (changed) {
         document.getElementById('collabStatus').textContent = '已同步';
         console.log('Editor updated from sync');
@@ -1761,11 +2122,12 @@ async function handleEditorState(data) {
     if (!editor) return;
 
     if (data.hasRemoteContent && !isEditorContentEmpty(data.content)) {
-        const changed = editor.innerHTML !== data.content;
+        const changed = serializeEditorContent(editor.innerHTML) !== data.content;
         if (changed) {
             editor.innerHTML = data.content;
         }
         await persistEditorContent(data.content);
+        await hydrateEditorAssets(editor);
         document.getElementById('collabStatus').textContent = '已同步';
         return;
     }
@@ -2018,7 +2380,9 @@ document.getElementById('rejectFileBtn').addEventListener('click', () => {
 async function viewRichContent(messageId) {
     const message = await getFromStore('messages', messageId);
     if (message && message.type === 'rich') {
-        document.getElementById('richViewerContent').innerHTML = message.content;
+        const container = document.getElementById('richViewerContent');
+        container.innerHTML = message.content;
+        await hydrateEditorAssets(container);
         document.getElementById('richViewer').classList.add('active');
     }
 }
@@ -2093,6 +2457,7 @@ async function loadSessionData() {
             if (editor && editorContent.content.trim() && editorContent.content !== '<br>') {
                 editor.innerHTML = editorContent.content;
                 state.editorContent = editorContent.content;
+                await hydrateEditorAssets(editor);
             }
         }
 

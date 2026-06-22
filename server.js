@@ -45,6 +45,8 @@ const MAX_DEVICES_PER_SESSION = 10;
 const MAX_SESSION_AGE = 2 * 60 * 60 * 1000; // 2小时
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const MAX_EDITOR_CONTENT_SIZE = 512 * 1024; // Keep editor updates well below Socket.IO's 1MB buffer.
+const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
+const MAX_EDITOR_ASSETS_PER_SESSION = 100;
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
 const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
@@ -240,6 +242,31 @@ function isValidDeviceId(id) {
            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 }
 
+function isValidEditorAsset(asset) {
+    return asset &&
+        isValidDeviceId(asset.id) &&
+        typeof asset.name === 'string' && asset.name.length > 0 && asset.name.length <= 255 &&
+        typeof asset.type === 'string' && asset.type.startsWith('image/') && asset.type.length <= 100 &&
+        typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_EDITOR_ASSET_SIZE;
+}
+
+function getAvailableEditorAssetProvider(session, assetId, requesterDeviceId, preferredProviderId) {
+    const asset = session.editorAssets && session.editorAssets.get(assetId);
+    if (!asset) return null;
+
+    const providers = Array.from(asset.providers);
+    const preferred = providers.find(deviceId =>
+        deviceId === preferredProviderId &&
+        deviceId !== requesterDeviceId &&
+        session.devices.has(deviceId)
+    );
+    if (preferred) return preferred;
+
+    return providers.find(deviceId =>
+        deviceId !== requesterDeviceId && session.devices.has(deviceId)
+    ) || null;
+}
+
 function isValidDeviceName(name) {
     return typeof name === 'string' && 
            name.length > 0 && 
@@ -431,6 +458,7 @@ io.on('connection', (socket) => {
             if (!sessions.has(sessionId)) {
                 sessions.set(sessionId, {
                     devices: new Map(),
+                    editorAssets: new Map(),
                     history: [],
                     historySize: 0,
                     createdAt: Date.now(),
@@ -744,6 +772,143 @@ io.on('connection', (socket) => {
             });
         }
     });
+
+    socket.on('editor-asset-available', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, asset } = data;
+            if (sessionId !== currentSession || !isValidEditorAsset(asset)) return;
+
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+            if (!session.editorAssets) session.editorAssets = new Map();
+
+            let record = session.editorAssets.get(asset.id);
+            if (!record) {
+                if (session.editorAssets.size >= MAX_EDITOR_ASSETS_PER_SESSION) {
+                    return socket.emit('error', {
+                        message: '协同编辑图片数量已达上限',
+                        code: 'EDITOR_ASSET_LIMIT_REACHED'
+                    });
+                }
+                record = {
+                    metadata: {
+                        id: asset.id,
+                        name: sanitizeString(asset.name, 255),
+                        type: sanitizeString(asset.type, 100),
+                        size: asset.size
+                    },
+                    providers: new Set()
+                };
+                session.editorAssets.set(asset.id, record);
+            }
+
+            record.providers.add(currentDevice);
+            session.lastActivity = Date.now();
+            socket.to(sessionId).emit('editor-asset-available', {
+                asset: record.metadata,
+                from: currentDevice
+            });
+            historyLog('editor-asset-available', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                asset: record.metadata,
+                providerCount: record.providers.size
+            });
+        } catch (err) {
+            console.error('editor-asset-available error:', err);
+        }
+    });
+
+    socket.on('editor-asset-request', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, assetId, preferredProviderId } = data;
+            if (sessionId !== currentSession || !isValidDeviceId(assetId)) return;
+
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+
+            const providerDeviceId = getAvailableEditorAssetProvider(
+                session,
+                assetId,
+                currentDevice,
+                preferredProviderId
+            );
+            if (!providerDeviceId) {
+                historyLog('editor-asset-unavailable', {
+                    sessionId,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    assetId,
+                    reason: 'no-online-provider'
+                });
+                return socket.emit('editor-asset-unavailable', {
+                    assetId,
+                    reason: 'no-online-provider'
+                });
+            }
+
+            const providerSocket = deviceSockets.get(providerDeviceId);
+            const record = session.editorAssets.get(assetId);
+            if (!providerSocket || !record) return;
+
+            providerSocket.emit('editor-asset-request', {
+                asset: record.metadata,
+                from: currentDevice
+            });
+            historyLog('editor-asset-request-forwarded', {
+                sessionId,
+                deviceId: currentDevice,
+                targetDeviceId: providerDeviceId,
+                socketId: socket.id,
+                clientIp,
+                asset: record.metadata
+            });
+        } catch (err) {
+            console.error('editor-asset-request error:', err);
+        }
+    });
+
+    socket.on('editor-asset-unavailable', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, assetId, to, reason } = data;
+            if (sessionId !== currentSession || !isValidDeviceId(assetId) || !isValidDeviceId(to)) return;
+
+            const session = sessions.get(sessionId);
+            const record = session && session.editorAssets && session.editorAssets.get(assetId);
+            if (record) {
+                record.providers.delete(currentDevice);
+                const alternativeProviderId = getAvailableEditorAssetProvider(session, assetId, to, null);
+                const alternativeSocket = alternativeProviderId && deviceSockets.get(alternativeProviderId);
+                if (alternativeSocket) {
+                    alternativeSocket.emit('editor-asset-request', {
+                        asset: record.metadata,
+                        from: to
+                    });
+                    return;
+                }
+                if (record.providers.size === 0) {
+                    session.editorAssets.delete(assetId);
+                }
+            }
+
+            const targetSocket = deviceSockets.get(to);
+            if (targetSocket) {
+                targetSocket.emit('editor-asset-unavailable', {
+                    assetId,
+                    from: currentDevice,
+                    reason: sanitizeString(reason || 'provider-unavailable', 80)
+                });
+            }
+        } catch (err) {
+            console.error('editor-asset-unavailable error:', err);
+        }
+    });
     
     // 文件传输offer
     socket.on('file-offer', (data) => {
@@ -827,6 +992,15 @@ io.on('connection', (socket) => {
                 // A reloaded page may already have replaced this socket.
                 if (device && device.socketId === socket.id) {
                     session.devices.delete(currentDevice);
+
+                    if (session.editorAssets) {
+                        for (const [assetId, asset] of session.editorAssets) {
+                            asset.providers.delete(currentDevice);
+                            if (asset.providers.size === 0) {
+                                session.editorAssets.delete(assetId);
+                            }
+                        }
+                    }
 
                     // 通知会话中的其他设备
                     socket.to(currentSession).emit('device-left', {
