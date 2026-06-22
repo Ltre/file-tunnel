@@ -856,6 +856,10 @@ io.on('connection', (socket) => {
             const record = session.editorAssets.get(assetId);
             if (!providerSocket || !record) return;
 
+            socket.emit('editor-asset-provider', {
+                assetId,
+                providerDeviceId
+            });
             providerSocket.emit('editor-asset-request', {
                 asset: record.metadata,
                 from: currentDevice
@@ -881,7 +885,7 @@ io.on('connection', (socket) => {
 
             const session = sessions.get(sessionId);
             const record = session && session.editorAssets && session.editorAssets.get(assetId);
-            if (record) {
+            if (record && reason === 'provider-missing-local-data') {
                 record.providers.delete(currentDevice);
                 const alternativeProviderId = getAvailableEditorAssetProvider(session, assetId, to, null);
                 const alternativeSocket = alternativeProviderId && deviceSockets.get(alternativeProviderId);

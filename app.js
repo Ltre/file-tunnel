@@ -65,6 +65,7 @@ const EDITOR_ASSET_BUFFER_LIMIT = 512 * 1024;
 const editorAssetUrls = new Map();
 const editorAssetRequests = new Map();
 const editorAssetTransfers = new Map();
+const editorAssetRetryCounts = new Map();
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
@@ -480,6 +481,10 @@ function initSocket() {
 
     state.socket.on('editor-asset-available', (data) => {
         handleEditorAssetAvailable(data);
+    });
+
+    state.socket.on('editor-asset-provider', (data) => {
+        handleEditorAssetProvider(data);
     });
 
     state.socket.on('editor-asset-unavailable', (data) => {
@@ -1058,6 +1063,7 @@ async function handleEditorAssetDataChannelMessage(deviceId, assetId, data, chan
             await saveToStore('files', storedAsset);
             editorAssetTransfers.delete(assetId);
             editorAssetRequests.delete(assetId);
+            editorAssetRetryCounts.delete(assetId);
             announceEditorAsset(storedAsset);
             await hydrateEditorAssets(document.getElementById('editor'));
             await hydrateEditorAssets(document.getElementById('richViewerContent'));
@@ -1085,6 +1091,15 @@ function handleEditorAssetUnavailable(data) {
     editorAssetRequests.delete(assetId);
     setEditorAssetUnavailable(assetId, reason);
     historyLog('editor-asset-unavailable', { assetId, reason });
+
+    const retryCount = editorAssetRetryCounts.get(assetId) || 0;
+    if (reason === 'p2p-transfer-failed' && retryCount < 2) {
+        editorAssetRetryCounts.set(assetId, retryCount + 1);
+        setTimeout(() => {
+            const image = document.querySelector(`img[data-tunnel-asset-id="${assetId}"]`);
+            requestEditorAsset(assetId, image && image.dataset.tunnelAssetOwner);
+        }, 2000);
+    }
 }
 
 function handleEditorAssetAvailable(data) {
@@ -1093,6 +1108,16 @@ function handleEditorAssetAvailable(data) {
 
     document.querySelectorAll(`img[data-tunnel-asset-id="${asset.id}"]`).forEach(image => {
         hydrateEditorAssetImage(image);
+    });
+}
+
+function handleEditorAssetProvider(data) {
+    const { assetId, providerDeviceId } = data || {};
+    if (!assetId || !providerDeviceId) return;
+
+    historyLog('editor-asset-provider-selected', { assetId, providerDeviceId });
+    connectToPeer(providerDeviceId).catch(err => {
+        historyLog('editor-asset-peer-connect-failed', { assetId, providerDeviceId, error: err.message });
     });
 }
 
