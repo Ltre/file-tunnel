@@ -810,12 +810,62 @@ function createEditorAssetHtml(asset) {
     return `<img data-tunnel-asset-id="${asset.id}" data-tunnel-asset-owner="${asset.ownerDeviceId}" data-tunnel-asset-name="${escapeHtml(asset.name)}" data-tunnel-asset-type="${escapeHtml(asset.type)}" data-tunnel-asset-size="${asset.size}" alt="${escapeHtml(asset.name)}" style="max-width: 100%; border-radius: 8px;">`;
 }
 
+function getEditorAssetTransportLabel(transport) {
+    return transport === 'p2p' ? 'P2P 直连' : 'Socket.IO 中继';
+}
+
+function getEditorAssetPlaceholder(image) {
+    const assetId = image.dataset.tunnelAssetId;
+    let placeholder = image.nextElementSibling;
+    if (!placeholder || placeholder.dataset.tunnelAssetPlaceholder !== assetId) {
+        placeholder = document.createElement('span');
+        placeholder.dataset.tunnelAssetPlaceholder = assetId;
+        placeholder.contentEditable = 'false';
+        placeholder.setAttribute('role', 'status');
+        placeholder.style.cssText = 'display: inline-flex; align-items: center; max-width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; background: #f8fafc; font-size: 13px; line-height: 1.4;';
+        image.insertAdjacentElement('afterend', placeholder);
+    }
+    return placeholder;
+}
+
+function setEditorAssetStatus(assetId, message, state = 'loading') {
+    document.querySelectorAll(`img[data-tunnel-asset-id="${assetId}"]`).forEach(image => {
+        image.removeAttribute('src');
+        if (!image.dataset.tunnelAssetDisplay) {
+            image.dataset.tunnelAssetDisplay = image.style.display || '';
+        }
+        image.style.display = 'none';
+        image.dataset.tunnelAssetState = state;
+        image.alt = message;
+        image.title = message;
+        getEditorAssetPlaceholder(image).textContent = message;
+    });
+}
+
+function setEditorAssetReady(image) {
+    image.style.display = image.dataset.tunnelAssetDisplay || '';
+    delete image.dataset.tunnelAssetDisplay;
+    delete image.dataset.tunnelAssetState;
+    image.removeAttribute('title');
+    image.alt = image.dataset.tunnelAssetName || '';
+
+    const placeholder = image.nextElementSibling;
+    if (placeholder && placeholder.dataset.tunnelAssetPlaceholder === image.dataset.tunnelAssetId) {
+        placeholder.remove();
+    }
+}
+
 function serializeEditorContent(content) {
     const container = document.createElement('div');
     container.innerHTML = content;
+    container.querySelectorAll('[data-tunnel-asset-placeholder]').forEach(placeholder => placeholder.remove());
     container.querySelectorAll('img[data-tunnel-asset-id]').forEach(image => {
         image.removeAttribute('src');
         image.removeAttribute('data-tunnel-asset-state');
+        image.removeAttribute('data-tunnel-asset-display');
+        image.style.removeProperty('display');
+        image.removeAttribute('title');
+        image.alt = image.dataset.tunnelAssetName || '';
     });
     return container.innerHTML;
 }
@@ -879,11 +929,10 @@ async function announceStoredEditorAssets() {
 }
 
 function setEditorAssetUnavailable(assetId, reason) {
-    document.querySelectorAll(`img[data-tunnel-asset-id="${assetId}"]`).forEach(image => {
-        image.removeAttribute('src');
-        image.dataset.tunnelAssetState = 'unavailable';
-        image.alt = reason === 'no-online-provider' ? '图片来源设备不在线' : '图片暂时不可用';
-    });
+    const message = reason === 'no-online-provider'
+        ? '图片暂时不可用（来源设备不在线）'
+        : '图片暂时不可用（传输失败）';
+    setEditorAssetStatus(assetId, message, 'unavailable');
 }
 
 async function hydrateEditorAssetImage(image) {
@@ -898,13 +947,11 @@ async function hydrateEditorAssetImage(image) {
             editorAssetUrls.set(assetId, url);
         }
         image.src = url;
-        image.dataset.tunnelAssetState = 'ready';
+        setEditorAssetReady(image);
         return;
     }
 
-    image.removeAttribute('src');
-    image.dataset.tunnelAssetState = 'loading';
-    image.alt = '正在获取图片...';
+    setEditorAssetStatus(assetId, '正在获取图片（正在选择传输链路）');
     requestEditorAsset(assetId, image.dataset.tunnelAssetOwner);
 }
 
@@ -917,6 +964,7 @@ async function hydrateEditorAssets(container) {
 function requestEditorAsset(assetId, preferredProviderId) {
     if (!state.socket || !state.socket.connected || editorAssetRequests.has(assetId)) return;
 
+    setEditorAssetStatus(assetId, '正在获取图片（正在寻找来源设备）');
     editorAssetRequests.set(assetId, Date.now());
     state.socket.emit('editor-asset-request', {
         sessionId: state.sessionId,
@@ -1089,6 +1137,7 @@ function beginEditorAssetTransfer(assetId, asset, deviceId, transport) {
         transport,
         pendingChunks: Promise.resolve()
     });
+    setEditorAssetStatus(assetId, `正在获取图片（${getEditorAssetTransportLabel(transport)}，0%）`, 'transferring');
     historyLog('editor-asset-receiving', { asset, peerDeviceId: deviceId, transport });
 }
 
@@ -1110,6 +1159,13 @@ async function appendEditorAssetChunk(assetId, data) {
         editorAssetTransfers.delete(assetId);
         throw new Error('Editor asset exceeded advertised size');
     }
+
+    const progress = Math.min(99, Math.floor((transfer.receivedSize / transfer.asset.size) * 100));
+    setEditorAssetStatus(
+        assetId,
+        `正在获取图片（${getEditorAssetTransportLabel(transfer.transport)}，${progress}%）`,
+        'transferring'
+    );
 }
 
 function queueEditorAssetChunk(assetId, data) {
@@ -1129,6 +1185,8 @@ async function completeEditorAssetTransfer(assetId, deviceId, transport) {
     if (editorAssetTransfers.get(assetId) !== transfer || transfer.receivedSize !== transfer.asset.size) {
         throw new Error('Editor asset size mismatch');
     }
+
+    setEditorAssetStatus(assetId, `正在获取图片（${getEditorAssetTransportLabel(transport)}，100%）`, 'transferring');
 
     const combined = new Uint8Array(transfer.receivedSize);
     let offset = 0;
@@ -1248,6 +1306,11 @@ function handleEditorAssetProvider(data) {
     const { assetId, providerDeviceId } = data || {};
     if (!assetId || !providerDeviceId) return;
 
+    const unavailableUntil = editorAssetP2PUnavailablePeers.get(providerDeviceId);
+    const status = unavailableUntil && unavailableUntil > Date.now()
+        ? '正在获取图片（Socket.IO 中继，P2P 直连暂不可用）'
+        : '正在获取图片（P2P 直连，正在建立连接）';
+    setEditorAssetStatus(assetId, status);
     historyLog('editor-asset-provider-selected', { assetId, providerDeviceId });
     connectToPeer(providerDeviceId).catch(err => {
         historyLog('editor-asset-peer-connect-failed', { assetId, providerDeviceId, error: err.message });
