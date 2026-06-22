@@ -491,6 +491,18 @@ function initSocket() {
         handleEditorAssetUnavailable(data);
     });
 
+    state.socket.on('editor-asset-relay-start', (data) => {
+        handleEditorAssetRelayStart(data);
+    });
+
+    state.socket.on('editor-asset-relay-chunk', (data) => {
+        handleEditorAssetRelayChunk(data);
+    });
+
+    state.socket.on('editor-asset-relay-complete', (data) => {
+        handleEditorAssetRelayComplete(data);
+    });
+
     state.socket.on('error', (data) => {
         const message = data && data.message ? data.message : '服务器返回错误';
         console.error('Socket error:', data);
@@ -974,6 +986,32 @@ async function sendEditorAssetViaDataChannel(channel, asset) {
     historyLog('editor-asset-sent', { asset: metadata });
 }
 
+async function sendEditorAssetViaSocketRelay(deviceId, asset) {
+    const metadata = getEditorAssetMetadata(asset);
+    state.socket.emit('editor-asset-relay-start', {
+        sessionId: state.sessionId,
+        to: deviceId,
+        asset: metadata
+    });
+
+    for (let offset = 0; offset < asset.data.byteLength; offset += EDITOR_ASSET_CHUNK_SIZE) {
+        state.socket.emit('editor-asset-relay-chunk', {
+            sessionId: state.sessionId,
+            to: deviceId,
+            assetId: asset.id,
+            chunk: asset.data.slice(offset, Math.min(offset + EDITOR_ASSET_CHUNK_SIZE, asset.data.byteLength))
+        });
+        await new Promise(resolve => setTimeout(resolve, 1));
+    }
+
+    state.socket.emit('editor-asset-relay-complete', {
+        sessionId: state.sessionId,
+        to: deviceId,
+        assetId: asset.id
+    });
+    historyLog('editor-asset-relayed', { asset: metadata, peerDeviceId: deviceId });
+}
+
 async function handleEditorAssetRequest(data) {
     const { asset, from } = data || {};
     if (!asset || !asset.id || !from) return;
@@ -1010,13 +1048,101 @@ async function handleEditorAssetRequest(data) {
     } catch (err) {
         console.error('Failed to provide editor asset:', err);
         historyLog('editor-asset-send-failed', { assetId: asset.id, peerDeviceId: from, error: err.message });
-        state.socket.emit('editor-asset-unavailable', {
-            sessionId: state.sessionId,
-            assetId: asset.id,
-            to: from,
-            reason: 'p2p-transfer-failed'
-        });
+        try {
+            await sendEditorAssetViaSocketRelay(from, storedAsset);
+        } catch (relayError) {
+            console.error('Failed to relay editor asset:', relayError);
+            state.socket.emit('editor-asset-unavailable', {
+                sessionId: state.sessionId,
+                assetId: asset.id,
+                to: from,
+                reason: 'asset-transfer-failed'
+            });
+        }
     }
+}
+
+function beginEditorAssetTransfer(assetId, asset, deviceId, transport) {
+    if (!asset || asset.id !== assetId || typeof asset.type !== 'string' ||
+        !asset.type.startsWith('image/') || typeof asset.size !== 'number' ||
+        asset.size <= 0 || asset.size > MAX_EDITOR_ASSET_SIZE) {
+        throw new Error('Invalid editor asset metadata');
+    }
+
+    editorAssetTransfers.set(assetId, {
+        asset,
+        chunks: [],
+        receivedSize: 0,
+        from: deviceId,
+        transport,
+        pendingChunks: Promise.resolve()
+    });
+    historyLog('editor-asset-receiving', { asset, peerDeviceId: deviceId, transport });
+}
+
+async function appendEditorAssetChunk(assetId, data) {
+    const transfer = editorAssetTransfers.get(assetId);
+    if (!transfer) return;
+
+    let chunk = data instanceof Blob ? await data.arrayBuffer() : data;
+    if (ArrayBuffer.isView(chunk)) {
+        chunk = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+    }
+    if (!(chunk instanceof ArrayBuffer)) {
+        throw new Error('Invalid editor asset chunk');
+    }
+
+    transfer.chunks.push(chunk);
+    transfer.receivedSize += chunk.byteLength;
+    if (transfer.receivedSize > transfer.asset.size) {
+        editorAssetTransfers.delete(assetId);
+        throw new Error('Editor asset exceeded advertised size');
+    }
+}
+
+function queueEditorAssetChunk(assetId, data) {
+    const transfer = editorAssetTransfers.get(assetId);
+    if (!transfer) return Promise.resolve();
+
+    transfer.pendingChunks = transfer.pendingChunks.then(() => appendEditorAssetChunk(assetId, data));
+    return transfer.pendingChunks;
+}
+
+async function completeEditorAssetTransfer(assetId, deviceId, transport) {
+    const transfer = editorAssetTransfers.get(assetId);
+    if (!transfer || transfer.from !== deviceId) {
+        throw new Error('Editor asset size mismatch');
+    }
+    await transfer.pendingChunks;
+    if (editorAssetTransfers.get(assetId) !== transfer || transfer.receivedSize !== transfer.asset.size) {
+        throw new Error('Editor asset size mismatch');
+    }
+
+    const combined = new Uint8Array(transfer.receivedSize);
+    let offset = 0;
+    transfer.chunks.forEach(chunk => {
+        combined.set(new Uint8Array(chunk), offset);
+        offset += chunk.byteLength;
+    });
+    const storedAsset = {
+        ...transfer.asset,
+        isEditorAsset: true,
+        sessionId: state.sessionId,
+        data: combined.buffer,
+        timestamp: Date.now()
+    };
+    await saveToStore('files', storedAsset);
+    editorAssetTransfers.delete(assetId);
+    editorAssetRequests.delete(assetId);
+    editorAssetRetryCounts.delete(assetId);
+    announceEditorAsset(storedAsset);
+    await hydrateEditorAssets(document.getElementById('editor'));
+    await hydrateEditorAssets(document.getElementById('richViewerContent'));
+    historyLog('editor-asset-received', {
+        asset: getEditorAssetMetadata(storedAsset),
+        peerDeviceId: deviceId,
+        transport
+    });
 }
 
 async function handleEditorAssetDataChannelMessage(deviceId, assetId, data, channel) {
@@ -1029,60 +1155,55 @@ async function handleEditorAssetDataChannelMessage(deviceId, assetId, data, chan
             return;
         }
         if (message.type === 'editor-asset-start') {
-            const asset = message.asset;
-            if (!asset || asset.id !== assetId || typeof asset.type !== 'string' ||
-                !asset.type.startsWith('image/') || typeof asset.size !== 'number' ||
-                asset.size <= 0 || asset.size > MAX_EDITOR_ASSET_SIZE) {
+            try {
+                beginEditorAssetTransfer(assetId, message.asset, deviceId, 'p2p');
+            } catch (err) {
                 channel.close();
-                return;
             }
-            editorAssetTransfers.set(assetId, { asset, chunks: [], receivedSize: 0, from: deviceId });
-            historyLog('editor-asset-receiving', { asset, peerDeviceId: deviceId });
             return;
         }
 
         if (message.type === 'editor-asset-complete' && message.assetId === assetId) {
-            const transfer = editorAssetTransfers.get(assetId);
-            if (!transfer || transfer.receivedSize !== transfer.asset.size) {
-                throw new Error('Editor asset size mismatch');
-            }
-
-            const combined = new Uint8Array(transfer.receivedSize);
-            let offset = 0;
-            transfer.chunks.forEach(chunk => {
-                combined.set(new Uint8Array(chunk), offset);
-                offset += chunk.byteLength;
-            });
-            const storedAsset = {
-                ...transfer.asset,
-                isEditorAsset: true,
-                sessionId: state.sessionId,
-                data: combined.buffer,
-                timestamp: Date.now()
-            };
-            await saveToStore('files', storedAsset);
-            editorAssetTransfers.delete(assetId);
-            editorAssetRequests.delete(assetId);
-            editorAssetRetryCounts.delete(assetId);
-            announceEditorAsset(storedAsset);
-            await hydrateEditorAssets(document.getElementById('editor'));
-            await hydrateEditorAssets(document.getElementById('richViewerContent'));
-            historyLog('editor-asset-received', { asset: getEditorAssetMetadata(storedAsset), peerDeviceId: deviceId });
+            await completeEditorAssetTransfer(assetId, deviceId, 'p2p');
             channel.close();
         }
         return;
     }
 
-    const transfer = editorAssetTransfers.get(assetId);
-    if (!transfer) return;
-    const chunk = data instanceof Blob ? await data.arrayBuffer() : data;
-    transfer.chunks.push(chunk);
-    transfer.receivedSize += chunk.byteLength;
-    if (transfer.receivedSize > transfer.asset.size) {
-        editorAssetTransfers.delete(assetId);
+    try {
+        await queueEditorAssetChunk(assetId, data);
+    } catch (err) {
         channel.close();
-        throw new Error('Editor asset exceeded advertised size');
+        throw err;
     }
+}
+
+function handleEditorAssetRelayStart(data) {
+    const { asset, from } = data || {};
+    if (!asset || !asset.id || !from) return;
+    try {
+        beginEditorAssetTransfer(asset.id, asset, from, 'socket-relay');
+    } catch (err) {
+        historyLog('editor-asset-relay-rejected', { assetId: asset.id, error: err.message });
+    }
+}
+
+function handleEditorAssetRelayChunk(data) {
+    const { assetId, chunk } = data || {};
+    if (!assetId || !chunk) return;
+    queueEditorAssetChunk(assetId, chunk).catch(err => {
+        editorAssetTransfers.delete(assetId);
+        historyLog('editor-asset-relay-failed', { assetId, error: err.message });
+    });
+}
+
+function handleEditorAssetRelayComplete(data) {
+    const { assetId, from } = data || {};
+    if (!assetId || !from) return;
+    completeEditorAssetTransfer(assetId, from, 'socket-relay').catch(err => {
+        editorAssetTransfers.delete(assetId);
+        historyLog('editor-asset-relay-failed', { assetId, error: err.message });
+    });
 }
 
 function handleEditorAssetUnavailable(data) {
@@ -1278,7 +1399,17 @@ async function waitForDataChannel(deviceId, timeout) {
             if (channel && channel.readyState === 'open') {
                 console.log('Data channel ready for', deviceId);
                 resolve(true);
-            } else if (attempts >= maxAttempts) {
+            } else {
+                const peer = state.peers.get(deviceId);
+                if (peer && (peer.connectionState === 'failed' || peer.connectionState === 'closed' ||
+                    peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'closed')) {
+                    console.warn('Data channel unavailable because the peer connection failed:', deviceId);
+                    resolve(false);
+                    return;
+                }
+            }
+
+            if (attempts >= maxAttempts) {
                 console.warn('Data channel timeout for', deviceId);
                 resolve(false);
             } else {

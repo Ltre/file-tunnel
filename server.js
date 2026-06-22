@@ -47,6 +47,7 @@ const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const MAX_EDITOR_CONTENT_SIZE = 512 * 1024; // Keep editor updates well below Socket.IO's 1MB buffer.
 const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
 const MAX_EDITOR_ASSETS_PER_SESSION = 100;
+const MAX_EDITOR_ASSET_RELAY_CHUNK_SIZE = 64 * 1024;
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
 const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
@@ -166,6 +167,7 @@ const sessions = new Map();
 const deviceSockets = new Map();
 const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
+const editorAssetRelays = new Map();
 
 // ==================== 验证函数 ====================
 
@@ -265,6 +267,17 @@ function getAvailableEditorAssetProvider(session, assetId, requesterDeviceId, pr
     return providers.find(deviceId =>
         deviceId !== requesterDeviceId && session.devices.has(deviceId)
     ) || null;
+}
+
+function getEditorAssetRelayKey(sessionId, from, to, assetId) {
+    return `${sessionId}:${from}:${to}:${assetId}`;
+}
+
+function getBinaryDataSize(value) {
+    if (Buffer.isBuffer(value)) return value.length;
+    if (value instanceof ArrayBuffer) return value.byteLength;
+    if (ArrayBuffer.isView(value)) return value.byteLength;
+    return -1;
 }
 
 function isValidDeviceName(name) {
@@ -913,6 +926,106 @@ io.on('connection', (socket) => {
             console.error('editor-asset-unavailable error:', err);
         }
     });
+
+    socket.on('editor-asset-relay-start', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, to, asset } = data;
+            if (sessionId !== currentSession || !isValidDeviceId(to) || !isValidEditorAsset(asset)) return;
+
+            const session = sessions.get(sessionId);
+            const target = session && session.devices.get(to);
+            const targetSocket = target && deviceSockets.get(to);
+            if (!targetSocket || to === currentDevice) return;
+
+            const key = getEditorAssetRelayKey(sessionId, currentDevice, to, asset.id);
+            editorAssetRelays.set(key, {
+                sessionId,
+                from: currentDevice,
+                to,
+                asset: {
+                    id: asset.id,
+                    name: sanitizeString(asset.name, 255),
+                    type: sanitizeString(asset.type, 100),
+                    size: asset.size
+                },
+                receivedSize: 0
+            });
+            targetSocket.emit('editor-asset-relay-start', {
+                asset,
+                from: currentDevice
+            });
+            historyLog('editor-asset-relay-started', {
+                sessionId,
+                deviceId: currentDevice,
+                targetDeviceId: to,
+                socketId: socket.id,
+                clientIp,
+                asset: { id: asset.id, name: asset.name, type: asset.type, size: asset.size }
+            });
+        } catch (err) {
+            console.error('editor-asset-relay-start error:', err);
+        }
+    });
+
+    socket.on('editor-asset-relay-chunk', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, to, assetId, chunk } = data;
+            if (sessionId !== currentSession || !isValidDeviceId(to) || !isValidDeviceId(assetId)) return;
+
+            const key = getEditorAssetRelayKey(sessionId, currentDevice, to, assetId);
+            const relay = editorAssetRelays.get(key);
+            const size = getBinaryDataSize(chunk);
+            if (!relay || size <= 0 || size > MAX_EDITOR_ASSET_RELAY_CHUNK_SIZE ||
+                relay.receivedSize + size > relay.asset.size) {
+                editorAssetRelays.delete(key);
+                return;
+            }
+
+            const targetSocket = deviceSockets.get(to);
+            if (!targetSocket) return;
+            relay.receivedSize += size;
+            targetSocket.emit('editor-asset-relay-chunk', {
+                assetId,
+                from: currentDevice,
+                chunk
+            });
+        } catch (err) {
+            console.error('editor-asset-relay-chunk error:', err);
+        }
+    });
+
+    socket.on('editor-asset-relay-complete', (data) => {
+        try {
+            if (!data || typeof data !== 'object') return;
+            const { sessionId, to, assetId } = data;
+            if (sessionId !== currentSession || !isValidDeviceId(to) || !isValidDeviceId(assetId)) return;
+
+            const key = getEditorAssetRelayKey(sessionId, currentDevice, to, assetId);
+            const relay = editorAssetRelays.get(key);
+            editorAssetRelays.delete(key);
+            if (!relay || relay.receivedSize !== relay.asset.size) return;
+
+            const targetSocket = deviceSockets.get(to);
+            if (targetSocket) {
+                targetSocket.emit('editor-asset-relay-complete', {
+                    assetId,
+                    from: currentDevice
+                });
+            }
+            historyLog('editor-asset-relay-completed', {
+                sessionId,
+                deviceId: currentDevice,
+                targetDeviceId: to,
+                socketId: socket.id,
+                clientIp,
+                asset: relay.asset
+            });
+        } catch (err) {
+            console.error('editor-asset-relay-complete error:', err);
+        }
+    });
     
     // 文件传输offer
     socket.on('file-offer', (data) => {
@@ -989,6 +1102,11 @@ io.on('connection', (socket) => {
         }
         
         if (currentSession && currentDevice) {
+            for (const [key, relay] of editorAssetRelays) {
+                if (relay.sessionId === currentSession && (relay.from === currentDevice || relay.to === currentDevice)) {
+                    editorAssetRelays.delete(key);
+                }
+            }
             const session = sessions.get(currentSession);
             if (session) {
                 const device = session.devices.get(currentDevice);

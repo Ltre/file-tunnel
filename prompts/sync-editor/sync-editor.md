@@ -226,14 +226,4 @@ app.js:1011:17
 
 ---------------------------------------------------------
 
-fix(editor): add Socket.IO relay fallback for failed P2P asset transfer
 
-fix(editor): add Socket.IO relay fallback for failed P2P asset transfer
-
-Add an automatic fallback path for collaborative editor image/asset transfer when WebRTC P2P fails.
-
-The editor now still prefers WebRTC DataChannel for direct P2P transfer, but if ICE/peer connection enters failed or times out, the asset provider splits the image into 64KB chunks and relays them through the existing Socket.IO connection. The server only keeps transfer metadata and byte counters during relay, without persisting image bytes to disk.
-
-This fixes Android/Windows image sync failures where devices could connect to Node/Socket.IO but could not establish a UDP WebRTC DataChannel due to NAT, Wi-Fi client isolation, or firewall restrictions. Instead of showing "image temporarily unavailable", the receiving client can now fetch the asset through the relay fallback, save it to IndexedDB, and generate its own blob URL.
-
-Also adds relay-related debug events such as editor-asset-relayed, editor-asset-relay-completed, and editor-asset-received with transport: socket-relay.
