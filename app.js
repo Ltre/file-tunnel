@@ -2217,6 +2217,28 @@ function initEditor() {
         editor.focus();
     };
 
+    const getEditorDropRange = (event) => {
+        let range = null;
+        if (document.caretRangeFromPoint) {
+            range = document.caretRangeFromPoint(event.clientX, event.clientY);
+        } else if (document.caretPositionFromPoint) {
+            const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+            if (position) {
+                range = document.createRange();
+                range.setStart(position.offsetNode, position.offset);
+                range.collapse(true);
+            }
+        }
+        return range && editor.contains(range.commonAncestorContainer) ? range : null;
+    };
+
+    const insertEditorImageFile = async (file, savedRange, reason) => {
+        const asset = await createEditorAssetFromFile(file);
+        insertEditorHtml(createEditorAssetHtml(asset), savedRange);
+        await hydrateEditorAssets(editor);
+        await syncEditorNow(reason);
+    };
+
     const syncEditorNow = async (reason) => {
         clearTimeout(syncTimeout);
         state.isSyncing = true;
@@ -2263,10 +2285,7 @@ function initEditor() {
             const file = e.target.files[0];
             if (file) {
                 try {
-                    const asset = await createEditorAssetFromFile(file);
-                    insertEditorHtml(createEditorAssetHtml(asset), savedRange);
-                    await hydrateEditorAssets(editor);
-                    await syncEditorNow('image-inserted');
+                    await insertEditorImageFile(file, savedRange, 'image-inserted');
                 } catch (err) {
                     alert(`图片无法插入: ${err.message}`);
                     historyLog('editor-image-rejected', {
@@ -2278,6 +2297,33 @@ function initEditor() {
             }
         };
         input.click();
+    });
+
+    editor.addEventListener('dragover', (event) => {
+        if (Array.from(event.dataTransfer?.files || []).some(file => file.type.startsWith('image/'))) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+        }
+    });
+
+    editor.addEventListener('drop', async (event) => {
+        const imageFile = Array.from(event.dataTransfer?.files || [])
+            .find(file => file.type.startsWith('image/'));
+        if (!imageFile) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        const dropRange = getEditorDropRange(event);
+        try {
+            await insertEditorImageFile(imageFile, dropRange, 'image-dropped');
+        } catch (err) {
+            alert(`图片无法插入: ${err.message}`);
+            historyLog('editor-image-drop-rejected', {
+                fileName: imageFile.name,
+                fileSize: imageFile.size,
+                error: err.message
+            });
+        }
     });
 
     // 引用文件
