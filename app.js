@@ -856,6 +856,35 @@ function setEditorAssetReady(image) {
     }
 }
 
+function renderEditorAssetImage(image, assetId, url) {
+    let rendered = false;
+    const finishRendering = () => {
+        if (rendered) return;
+        rendered = true;
+        image.onload = null;
+        image.onerror = null;
+        setEditorAssetReady(image);
+        historyLog('editor-asset-rendered', {
+            assetId,
+            naturalWidth: image.naturalWidth,
+            naturalHeight: image.naturalHeight
+        });
+    };
+
+    image.onload = finishRendering;
+    image.onerror = () => {
+        image.onload = null;
+        image.onerror = null;
+        historyLog('editor-asset-render-failed', { assetId });
+        setEditorAssetStatus(assetId, '图片暂时不可用（本地渲染失败）', 'unavailable');
+    };
+    image.src = url;
+
+    if (image.complete && image.naturalWidth > 0) {
+        finishRendering();
+    }
+}
+
 function serializeEditorContent(content) {
     const container = document.createElement('div');
     container.innerHTML = content;
@@ -952,8 +981,7 @@ async function hydrateEditorAssetImage(image) {
             url = URL.createObjectURL(new Blob([asset.data], { type: asset.type }));
             editorAssetUrls.set(assetId, url);
         }
-        image.src = url;
-        setEditorAssetReady(image);
+        renderEditorAssetImage(image, assetId, url);
         return;
     }
 
