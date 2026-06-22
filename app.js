@@ -73,6 +73,8 @@ const editorAssetCacheVersions = new Map();
 let fileAssetTransfer = null;
 let mediaController = null;
 const fileObjectUrls = new Map();
+const pendingHistoryMessageIds = new Set();
+let sessionHistoryQueue = Promise.resolve();
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
@@ -470,13 +472,23 @@ function initSocket() {
         handleMessage(data);
     });
 
+    state.socket.on('message-deleted', (data) => {
+        if (data?.messageId) {
+            deleteHistoryMessageLocal(data.messageId).catch(err => {
+                historyLog('message-delete-sync-failed', { messageId: data.messageId, error: err.message });
+            });
+        }
+    });
+
     state.socket.on('session-history', (data) => {
         const messages = data && Array.isArray(data.messages) ? data.messages : [];
         historyLog('snapshot-received', {
             messageCount: messages.length,
             messages: messages.map(summarizeHistoryMessage)
         });
-        handleSessionHistory(data);
+        sessionHistoryQueue = sessionHistoryQueue
+            .then(() => handleSessionHistory(data))
+            .catch(err => historyLog('snapshot-processing-failed', { error: err.message }));
     });
 
     state.socket.on('editor-sync', (data) => {
@@ -1517,7 +1529,14 @@ async function announceStoredFileAssets() {
             ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
             : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
         for (const file of files) {
-            if (file.isFileAsset && file.data) await fileAssetTransfer.announce(file);
+            const isCachedChatAsset = file.data && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+            if (!isCachedChatAsset) continue;
+            if (!file.isFileAsset) {
+                file.isFileAsset = true;
+                await saveToStore('files', file);
+                historyLog('file-asset-cache-migrated', { fileId: file.id });
+            }
+            await fileAssetTransfer.announce(file);
         }
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
@@ -1562,6 +1581,7 @@ async function sendFile(file, targetDeviceId = null) {
 
     await saveToStore('messages', { ...message, sessionId: state.sessionId });
     await addMessageToChat(message, true);
+    pendingHistoryMessageIds.add(message.id);
     state.socket.emit('message', { sessionId: state.sessionId, message });
     historyLog('file-asset-message-emitted', {
         message: summarizeHistoryMessage(message),
@@ -2021,6 +2041,13 @@ async function handleSessionHistory(data) {
         return;
     }
 
+    const deletedMessageIds = Array.isArray(data.deletedMessageIds)
+        ? data.deletedMessageIds.filter(id => typeof id === 'string')
+        : [];
+    for (const messageId of deletedMessageIds) {
+        await deleteHistoryMessageLocal(messageId);
+    }
+
     const messages = [...data.messages].sort((a, b) => a.timestamp - b.timestamp);
     let restored = 0;
     let duplicates = 0;
@@ -2050,7 +2077,7 @@ async function handleSessionHistory(data) {
                 });
                 if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
                     const storedFile = await getFromStore('files', message.fileInfo.id);
-                    if (!storedFile?.data) {
+                    if (!storedFile?.data && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
                         await fileAssetTransfer.request(
                             message.fileInfo.id,
                             message.fileInfo.ownerDeviceId || message.sender
@@ -2083,10 +2110,13 @@ async function handleSessionHistory(data) {
                 message: summarizeHistoryMessage(message)
             });
             if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
-                await fileAssetTransfer.request(
-                    message.fileInfo.id,
-                    message.fileInfo.ownerDeviceId || message.sender
-                );
+                const storedFile = await getFromStore('files', message.fileInfo.id);
+                if (!storedFile?.cacheCleared || storedFile.restoreRequested) {
+                    await fileAssetTransfer.request(
+                        message.fileInfo.id,
+                        message.fileInfo.ownerDeviceId || message.sender
+                    );
+                }
             }
             restored++;
         } catch (err) {
@@ -2107,6 +2137,12 @@ async function handleSessionHistory(data) {
     };
     historyLog('snapshot-processing-completed', result);
 
+    if (data.authoritative) {
+        await pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds);
+    } else {
+        await reconcileLocalHistory(messages, deletedMessageIds);
+    }
+
     if (state.socket) {
         state.socket.emit('session-history-ack', {
             sessionId: state.sessionId,
@@ -2115,6 +2151,54 @@ async function handleSessionHistory(data) {
         });
         historyLog('snapshot-ack-emitted', result);
     }
+}
+
+async function getCurrentSessionMessages() {
+    if (typeof IDBKeyRange !== 'undefined') {
+        return getAllFromStore('messages', 'sessionId', IDBKeyRange.only(state.sessionId));
+    }
+    return (await getAllFromStore('messages')).filter(message => message.sessionId === state.sessionId);
+}
+
+function createHistoryReconcileMessage(message) {
+    const copy = JSON.parse(JSON.stringify(message));
+    if (copy.fileInfo) delete copy.fileInfo.data;
+    return copy;
+}
+
+async function reconcileLocalHistory(serverMessages, deletedMessageIds) {
+    if (!state.socket?.connected) return;
+    const localMessages = await getCurrentSessionMessages();
+    const messages = localMessages
+        .filter(message => message?.id && !deletedIds.has(message.id))
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .slice(-100)
+        .map(createHistoryReconcileMessage);
+
+    state.socket.emit('history-reconcile', { sessionId: state.sessionId, messages });
+    historyLog('history-reconcile-emitted', {
+        localMessageCount: localMessages.length,
+        serverMessageCount: serverMessages.length,
+        submittedMessageCount: messages.length
+    });
+}
+
+async function pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds) {
+    const canonicalIds = new Set(messages.map(message => message?.id).filter(Boolean));
+    const deletedIds = new Set(deletedMessageIds);
+    const localMessages = await getCurrentSessionMessages();
+    let removedCount = 0;
+
+    for (const message of localMessages) {
+        if (!message?.id || canonicalIds.has(message.id) || pendingHistoryMessageIds.has(message.id)) continue;
+        await deleteHistoryMessageLocal(message.id);
+        removedCount++;
+    }
+    messages.forEach(message => pendingHistoryMessageIds.delete(message?.id));
+    historyLog('history-canonical-applied', {
+        canonicalMessageCount: canonicalIds.size,
+        removedCount
+    });
 }
 
 async function addMessageToChat(message, isOwn) {
@@ -2131,9 +2215,13 @@ async function addMessageToChat(message, isOwn) {
         messageEl.dataset.fileId = message.fileInfo.id;
         messageEl.dataset.fileName = message.fileInfo.name;
         messageEl.dataset.fileType = message.fileInfo.type;
+        messageEl.dataset.fileSize = String(message.fileInfo.size || 0);
+        messageEl.dataset.fileOwnerId = message.fileInfo.ownerDeviceId || message.sender || '';
+        messageEl.dataset.fileIsAsset = String(Boolean(message.fileInfo.isAsset));
     }
 
     let contentHtml = '';
+    let fileRenderState = null;
 
     if (message.type === 'text') {
         contentHtml = `<div class="message-bubble">${escapeHtml(message.text)}</div>`;
@@ -2147,15 +2235,13 @@ async function addMessageToChat(message, isOwn) {
 
         // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
         let fileUrl = fileInfo.data || null;
+        let storedFile = null;
 
-        if (!fileUrl && fileInfo.id) {
-            console.log('No file data in message, trying to load from IndexedDB:', fileInfo.id);
+        if (fileInfo.id) {
             try {
-                // 尝试从IndexedDB加载文件数据
-                const storedFile = await getFromStore('files', fileInfo.id);
-                console.log('Loaded from IndexedDB:', storedFile ? 'found' : 'not found');
+                storedFile = await getFromStore('files', fileInfo.id);
 
-                if (storedFile && storedFile.data) {
+                if (!fileUrl && storedFile?.data) {
                     fileUrl = fileObjectUrls.get(fileInfo.id);
                     if (!fileUrl) {
                         fileUrl = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
@@ -2175,6 +2261,7 @@ async function addMessageToChat(message, isOwn) {
                         <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}"
                              onclick="downloadFile('${fileInfo.id}')" style="cursor: pointer;">
                     </div>
+                    <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
             `;
         } else if (isVideo && fileUrl) {
@@ -2183,6 +2270,7 @@ async function addMessageToChat(message, isOwn) {
                     <div class="media-preview">
                         <video controls src="${fileUrl}"></video>
                     </div>
+                    <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
             `;
         } else if (isAudio && fileUrl) {
@@ -2191,6 +2279,7 @@ async function addMessageToChat(message, isOwn) {
                     <div class="media-preview">
                         <audio controls src="${fileUrl}"></audio>
                     </div>
+                    <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
             `;
         } else {
@@ -2215,6 +2304,11 @@ async function addMessageToChat(message, isOwn) {
                 </div>
             `;
         }
+        fileRenderState = {
+            fileInfo,
+            hasLocalData: Boolean(fileUrl),
+            cacheCleared: Boolean(storedFile?.cacheCleared)
+        };
     } else if (message.type === 'rich') {
         // 富文本消息
         const preview = message.content.replace(/<[^>]+>/g, '').slice(0, 100);
@@ -2237,8 +2331,73 @@ async function addMessageToChat(message, isOwn) {
         ${contentHtml}
     `;
 
+    if (fileRenderState) {
+        renderFileMessageActions(messageEl, fileRenderState.fileInfo, fileRenderState);
+    }
+
     container.appendChild(messageEl);
     container.scrollTop = container.scrollHeight;
+}
+
+function getFileInfoFromMessageElement(messageEl) {
+    return {
+        id: messageEl.dataset.fileId,
+        name: messageEl.dataset.fileName || '未知文件',
+        type: messageEl.dataset.fileType || 'application/octet-stream',
+        size: Number(messageEl.dataset.fileSize || 0),
+        ownerDeviceId: messageEl.dataset.fileOwnerId || '',
+        isAsset: messageEl.dataset.fileIsAsset === 'true'
+    };
+}
+
+function createFileActionButton(label, title, handler) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'history-action';
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener('click', handler);
+    return button;
+}
+
+function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
+    messageEl.querySelector('.file-actions')?.remove();
+    const actions = document.createElement('div');
+    actions.className = 'file-actions';
+
+    if (cacheState.hasLocalData) {
+        actions.appendChild(createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
+            clearFileCache(messageEl.dataset.messageId);
+        }));
+    }
+    if (cacheState.cacheCleared) {
+        actions.appendChild(createFileActionButton('还原文件', '从当前在线设备重新获取文件内容', () => {
+            restoreFileCache(messageEl.dataset.messageId);
+        }));
+    }
+    actions.appendChild(createFileActionButton('删除', '从会话中删除此记录及所有设备的文件缓存', () => {
+        deleteHistoryMessage(messageEl.dataset.messageId);
+    }));
+    messageEl.appendChild(actions);
+}
+
+function showFileMessagePlaceholder(fileId, label, cacheCleared = false) {
+    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+        const fileInfo = getFileInfoFromMessageElement(messageEl);
+        const bubble = messageEl.querySelector('.message-bubble');
+        if (!bubble) return;
+        bubble.className = 'message-bubble file-message';
+        bubble.removeAttribute('onclick');
+        bubble.style.opacity = '0.6';
+        bubble.innerHTML = `
+            <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
+            <div class="file-info">
+                <div class="file-name">${escapeHtml(fileInfo.name)}</div>
+                <div class="file-size">${formatFileSize(fileInfo.size)} (${label})</div>
+            </div>
+        `;
+        renderFileMessageActions(messageEl, fileInfo, { hasLocalData: false, cacheCleared });
+    });
 }
 
 async function refreshFileMessage(fileId) {
@@ -2252,21 +2411,22 @@ async function refreshFileMessage(fileId) {
     }
 
     document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
-        const type = messageEl.dataset.fileType || storedFile.type;
-        const name = escapeHtml(messageEl.dataset.fileName || storedFile.name);
+        const fileInfo = getFileInfoFromMessageElement(messageEl);
+        const type = fileInfo.type || storedFile.type;
+        const name = escapeHtml(fileInfo.name || storedFile.name);
         const bubble = messageEl.querySelector('.message-bubble');
         if (!bubble) return;
 
         if (type.startsWith('image/')) {
-            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" onclick="downloadFile('${fileId}')" style="cursor: pointer;"></div>`;
+            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" onclick="downloadFile('${fileId}')" style="cursor: pointer;"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('video/')) {
-            bubble.innerHTML = `<div class="media-preview"><video controls src="${url}"></video></div>`;
+            bubble.innerHTML = `<div class="media-preview"><video controls src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('audio/')) {
-            bubble.innerHTML = `<div class="media-preview"><audio controls src="${url}"></audio></div>`;
+            bubble.innerHTML = `<div class="media-preview"><audio controls src="${url}"></audio></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else {
@@ -2275,13 +2435,100 @@ async function refreshFileMessage(fileId) {
             const size = bubble.querySelector('.file-size');
             if (size) size.textContent = formatFileSize(storedFile.size);
         }
+        renderFileMessageActions(messageEl, fileInfo, { hasLocalData: true, cacheCleared: false });
     });
 }
 
 function updateFileMessageAvailability(fileId, reason) {
-    document.querySelectorAll(`.message[data-file-id="${fileId}"] .file-size`).forEach(size => {
-        size.textContent = reason === 'no-online-provider' ? '文件来源设备不在线' : '文件暂时不可用';
+    const label = reason === 'no-online-provider' ? '文件来源设备不在线' : '文件暂时不可用';
+    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+        const size = messageEl.querySelector('.file-size');
+        if (size) size.textContent = `${formatFileSize(Number(messageEl.dataset.fileSize || 0))} (${label})`;
     });
+}
+
+async function clearFileCache(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+
+    fileAssetTransfer?.cancel(fileInfo.id);
+    const storedFile = await getFromStore('files', fileInfo.id);
+    const { data, ...metadata } = storedFile || {};
+    await saveToStore('files', {
+        ...metadata,
+        id: fileInfo.id,
+        name: fileInfo.name,
+        type: fileInfo.type,
+        size: fileInfo.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: fileInfo.ownerDeviceId || message.sender,
+        isFileAsset: Boolean(fileInfo.isAsset),
+        cacheCleared: true,
+        restoreRequested: false
+    });
+
+    if (Object.hasOwn(fileInfo, 'data')) {
+        delete fileInfo.data;
+        await saveToStore('messages', message);
+    }
+    const objectUrl = fileObjectUrls.get(fileInfo.id);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    fileObjectUrls.delete(fileInfo.id);
+    showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true);
+    historyLog('file-cache-cleared', { messageId, fileId: fileInfo.id });
+}
+
+async function restoreFileCache(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id || !fileInfo.isAsset) {
+        alert('此历史文件没有可用的远程文件来源，无法还原。');
+        return;
+    }
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    await saveToStore('files', {
+        ...(storedFile || {}),
+        id: fileInfo.id,
+        name: fileInfo.name,
+        type: fileInfo.type,
+        size: fileInfo.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: fileInfo.ownerDeviceId || message.sender,
+        isFileAsset: true,
+        cacheCleared: true,
+        restoreRequested: true
+    });
+    showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true);
+    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender);
+    historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
+}
+
+async function deleteHistoryMessage(messageId) {
+    if (!state.socket?.connected) {
+        alert('当前未连接到会话，无法同步删除记录。');
+        return;
+    }
+    if (!confirm('删除会同步移除所有设备中的这条传输记录，并清理其文件缓存。此操作不可撤销，继续吗？')) return;
+    await deleteHistoryMessageLocal(messageId);
+    state.socket.emit('delete-message', { sessionId: state.sessionId, messageId });
+}
+
+async function deleteHistoryMessageLocal(messageId) {
+    const message = await getFromStore('messages', messageId);
+    if (message?.fileInfo?.id) {
+        const fileId = message.fileInfo.id;
+        fileAssetTransfer?.cancel(fileId);
+        await deleteFromStore('files', fileId);
+        const objectUrl = fileObjectUrls.get(fileId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        fileObjectUrls.delete(fileId);
+    }
+    await deleteFromStore('messages', messageId);
+    pendingHistoryMessageIds.delete(messageId);
+    document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
+    historyLog('history-message-deleted-locally', { messageId, fileId: message?.fileInfo?.id });
 }
 
 async function sendText() {
@@ -2313,6 +2560,7 @@ async function sendText() {
     historyLog('realtime-message-emitted', {
         message: summarizeHistoryMessage(message)
     });
+    pendingHistoryMessageIds.add(message.id);
     state.socket.emit('message', {
         sessionId: state.sessionId,
         message
@@ -2629,6 +2877,7 @@ function initEditor() {
         historyLog('realtime-message-emitted', {
             message: summarizeHistoryMessage(message)
         });
+        pendingHistoryMessageIds.add(message.id);
         state.socket.emit('message', {
             sessionId: state.sessionId,
             message
@@ -2954,6 +3203,8 @@ function showProgress(fileId, fileName, progress) {
             </div>
         `;
         list.appendChild(item);
+    } else {
+        updateProgress(fileId, progress);
     }
 }
 
@@ -3073,8 +3324,16 @@ async function loadSessionData() {
 
         // 使用 for...of 确保按顺序异步处理
         for (const msg of messages) {
-            const isOwn = msg.sender === state.deviceId;
-            await addMessageToChat(msg, isOwn);
+            try {
+                const isOwn = msg.sender === state.deviceId;
+                await addMessageToChat(msg, isOwn);
+            } catch (err) {
+                console.error('Failed to render stored message:', msg && msg.id, err);
+                historyLog('indexeddb-history-message-render-failed', {
+                    message: summarizeHistoryMessage(msg),
+                    error: err.message
+                });
+            }
         }
         historyLog('indexeddb-history-rendered', {
             messageCount: messages.length

@@ -1156,3 +1156,395 @@ Clean up browser check
 5、测试了对讲机，提示”无法启动对讲机: 当前浏览器不支持媒体采集“，在windows和android的chrome/firefox都这样提示。
 6、测试了摄像头，提示”无法启动摄像头: 当前浏览器不支持媒体采集“，在windows和android的chrome/firefox都这样提示。
 7、测试了语音聊天，提示”无法加入语音聊天: 当前浏览器不支持媒体采集“，在windows和android的chrome/firefox都这样提示。
+
+
+--------------------------------------
+
+
+
+
+
+我会先从传输进度组件和文件历史的本地数据模型入手。媒体报错的根因很可能不是 Chrome/Firefox 缺能力，而是直接用 http://10.0.0.*:3000 时浏览器按安全策略禁用了摄像头/麦克风；我会把这个判断做成明确提示，同时核对是否还有代码层的兼容问题。
+
+
+
+
+已运行 8 条命令已运行 rg -n -C 5 "function addMessageToChat|refreshFileMessage|updateFileMessageAvailability|sendFile\(|handleSessionHistory|handleMessage|deleteFromStore|saveToStore" app.js
+
+
+
+
+
+
+
+已运行 rg -n -C 5 "file-asset|session-history|message.*delete|delete-message|clear" server.js server\file-assets.js
+
+
+
+
+
+
+
+已运行 git status --short --branch; rg -n -C 5 "function showProgress|function hideProgress|transferProgress|progressList|progress-bar|progress-fill" app.js index.html
+
+
+
+
+
+
+
+已运行 rg -n -C 5 "getMedia|startCamera|joinVoice|startIntercom|navigator\.mediaDevices" client\media.js
+
+
+
+
+
+
+
+已运行 $lines = Get-Content index.html; $lines[330..470]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content server.js; $lines[230..410]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2120..2300]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2930..2985]
+
+
+
+
+
+
+
+
+
+
+
+
+进度问题找到了，是很直接的 UI 漏调：同一传输项首次创建后，后续百分比没有写回已有进度条，所以只会停在初始值。缓存需求会用一个本地“已清理”标记保存，而不是单纯删除 Blob；这样刷新后不会自动回拉，只有点“还原文件”才重新请求。删除记录则由服务端维护删除标记并广播，离线设备下次加入也会一起删除。
+
+
+
+
+编辑了 3 个文件执行了 5 条命令已编辑app.js+6-0
+
+
+
+
+
+
+已编辑media.js+3-0
+
+
+
+
+
+
+
+
+
+已运行 $lines = Get-Content index.html; $lines[200..335]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content server.js; $lines[460..585]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2115..2250]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2010..2120]
+
+
+
+
+
+
+
+已编辑app.js+22-7
+
+
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2230..2315]
+
+
+
+
+
+
+
+已编辑app.js+157-7
+
+
+
+
+
+
+
+
+
+已编辑file-assets.js+8-0
+
+
+
+
+
+
+
+
+
+已编辑app.js+0-2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+文件记录的“删除”和“清缓存”语义我区分开了：清缓存只影响当前设备，并写入禁止自动回拉的标记；删除记录则通过会话服务器广播并保留删除清单，在线设备立即清理，之后加入的设备也不会把旧记录重新带回来。
+
+
+
+
+编辑了 3 个文件执行了 4 条命令已编辑server.js+44-2
+
+
+
+
+
+
+
+
+
+已编辑index.html+28-0
+
+
+
+
+
+
+
+
+
+已运行 $lines = Get-Content client\file-assets.js; $lines[250..340]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content server.js; $lines[470..590]; $lines[650..750]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2105..2405]
+
+
+
+
+
+
+
+已运行 $lines = Get-Content app.js; $lines[2005..2115]
+
+
+
+
+
+
+
+已编辑file-assets.js+2-0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+媒体三项在 Windows 与 Android 的 Chrome/Firefox 同时报同一错误，符合 HTTP 非安全上下文的行为：http://10.0.0.16:3000 不具备摄像头/麦克风权限，代码无法绕过浏览器的安全边界。现在会明确提示必须使用 HTTPS 域名；http://localhost:3000 作为浏览器特例仍可采集。生产环境经 Nginx/Cloudflare 对浏览器呈现 HTTPS 时可用。
+
+
+
+
+已运行命令，已持续 1s
+
+
+Shell
+$ $paths = @('app.js','server.js','index.html','client\file-assets.js','client\media.js','server\file-assets.js','server\media-session.js'); foreach ($relativePath in $paths) { $path = Join-Path (Get-Location) $relativePath; $content = [System.IO.File]::ReadAllText($path); $content = $content.Replace("`r`n", "`n"); [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false)) }; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check app.js; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check server.js; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check client\file-assets.js; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check client\media.js; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check server\file-assets.js; & 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check server\media-session.js; git diff --check; $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:3000/' -TimeoutSec 3; if ($response.StatusCode -ne 200) { throw 'Local smoke check failed' }; Write-Output 'Static checks and local HTTP smoke check passed.
+
+
+Static checks and local HTTP smoke check passed.
+. : File C:\Users\Dell\Documents\WindowsPowerShell\profile.ps1 cannot be loaded because running scripts is disabled on 
+this system. For more information, see about_Execution_Policies at https:/go.microsoft.com/fwlink/?LinkID=135170.
+At line:1 char:3
++ . 'C:\Users\Dell\Documents\WindowsPowerShell\profile.ps1'
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : SecurityError: (:) [], PSSecurityException
+    + FullyQualifiedErrorId : UnauthorizedAccess
+
+
+
+
+
+成功
+
+
+
+
+
+
+
+本轮代码已通过语法与 diff 检查。为了让本机 3000 服务实际加载刚加的删除/缓存逻辑和新的媒体提示，我会只重启我刚才启动的那一个 Node 进程，然后再做一次 HTTP 冒烟验证。
+
+
+
+
+已运行 4 条命令已运行 $existing = Get-Process -Id 5692 -ErrorAction SilentlyContinue; if ($existing) { Stop-Process -Id 5692 }; $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; $process = Start-Process -FilePath $node -ArgumentList 'server.js' -WorkingDirectory (Get-Location) -WindowStyle Hidden -PassThru; Start-Sleep -Milliseconds 700; $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:3000/' -TimeoutSec 3; if ($response.StatusCode -ne 200) { throw 'Restarted server did not respond with HTTP 200' }; "Restarted Node server PID=$($process.Id), HTTP=$($response.StatusCode)"，已持续 1s
+
+
+
+
+
+
+
+已运行 rg -n "showProgress\(|cacheCleared|restoreFileCache|deleteHistoryMessage|delete-message|isSecureContext" app.js server.js client\file-assets.js client\media.js
+
+
+
+
+
+
+
+已运行 git diff --stat; git diff --check
+
+
+
+
+
+
+
+已运行 git status --short --branch
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+已在 dev-260623-new-functions 改好，未暂存、未提交。
+修复传输进度：已有进度项现在会持续更新百分比，不再只停在初始值。
+每条文件历史显示文件大小，并增加右侧操作：清除缓存、还原文件、删除。
+清除缓存只影响本机，并持久记录“已清理”，刷新后不会自动重新下载；点“还原文件”才会重新从在线设备拉取。
+删除会提示确认，并同步删除所有在线设备的同一历史记录及本地文件缓存；服务端还会保存删除标记，离线设备下次加入也会清理。
+摄像头、语音、对讲机的报错已改为明确说明 HTTPS 要求。[app.js](D:\\Workspace\\github\\Ltre\\file-tunnel\\app.js) [server.js](D:\\Workspace\\github\\Ltre\\file-tunnel\\server.js) [media.js](D:\\Workspace\\github\\Ltre\\file-tunnel\\client\\media.js)
+第 5/6/7 项的根因是浏览器安全策略：http://10.0.0.16:3000 属于非安全上下文，Chrome 和 Firefox 会禁用 getUserMedia，代码不能绕过。测试摄像头/麦克风时：
+Windows 本机可用 http://localhost:3000
+Android 和其它局域网设备必须用 HTTPS 域名访问
+生产环境经 Cloudflare/Nginx 对浏览器提供 HTTPS 时，摄像头、语音、对讲机可以请求权限并工作
+已完成 JS 语法检查、git diff --check，并重启本地 Node 服务；http://127.0.0.1:3000/ 返回正常。
+
+即时传输隧道网站在 Codex 浏览器中打开打开方式
+
+已编辑 5 个文件+282-20查看更改撤销审核
+
+app.js+197-18
+client/file-assets.js+10-0
+client/media.js+3-0
+index.html+28-0
+server.js+44-2
+
+
+
+-----------------------------
+
+你把聊天记录区域的列表改坏了。列表期望加载三种类型：普通文本消息、富文本消息、任意文件。
+但现在列表只有富文本消息类型。即便发送了普通文本消息，只要刷新页面，就消失。
+文件发送功能好像坏了，拖拽或选择文件发送后没有反应。
+
+另外一件事，局域网IP如何快速弄可信证书来测试多媒体采集功能？
+
+
+-----------------------------
+
+
+问：
+聊天记录列表清除文件缓存后，确实可以从某些设备还原回来。不过有时好像还原不回来（例如A/B/C/D四个设备，A和B删了缓存，C关闭了页面，D留着文件且开着页面，但是A死活无法从D还原文件，即便重新刷新A页面和D页面也不行，但是打开了C页面，那么A就能从C还原文件。你检查下到底是某些BUG导致没有找到在线有文件缓存资源的设备，还是有其它的问题）
+另一个问题是各个设备的聊天记录还是没有同步对齐。
+
+答：
+查到了一个确定问题：接收端缓存文件后没有稳定标记为“可提供资产”。因此设备 D 虽有文件，刷新后却不会重新向服务端登记；C 能恢复通常是它恰好是原发送者或已重新登记。已修复：
+接收完成的文件明确保存为 isFileAsset。
+旧缓存也会在设备连接时自动迁移并重新公告。
+服务端日志现在包含候选提供者、实际转发目标、失效后备选设备。
+同时补了聊天历史的会话级对账：设备加入后会把本地文本、富文本、文件记录提交给服务端合并，服务端再向所有设备广播权威历史快照，使各设备逐步收敛一致。
+请让 A、B、D 都刷新一次，再保持 C 关闭，随后在 A 点“还原文件”。这次应能从 D 获取。若仍失败，查看：
+http://10.0.0.16:3000/api/debug-logs?limit=1000
+重点搜索 file-asset-request-forwarded、file-asset-provider-removed、file-asset-request-unavailable、history-reconciled。
+
+
+-----------------------------
+

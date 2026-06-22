@@ -65,7 +65,8 @@ function registerFileAssetHandlers(socket, context) {
             session.lastActivity = Date.now();
             socket.to(sessionId).emit('file-asset-available', { asset: record.metadata, from: deviceId });
             historyLog('file-asset-available', {
-                sessionId, deviceId, socketId: socket.id, clientIp, asset: record.metadata, providerCount: record.providers.size
+                sessionId, deviceId, socketId: socket.id, clientIp, asset: record.metadata,
+                providerCount: record.providers.size, providerDeviceIds: Array.from(record.providers)
             });
         } catch (err) {
             console.error('file-asset-available error:', err);
@@ -82,6 +83,10 @@ function registerFileAssetHandlers(socket, context) {
             const providerId = findProvider(session, assetId, deviceId, preferredProviderId);
             if (!providerId) {
                 socket.emit('file-asset-unavailable', { assetId, reason: 'no-online-provider' });
+                historyLog('file-asset-request-unavailable', {
+                    sessionId, deviceId, socketId: socket.id, clientIp, assetId, preferredProviderId,
+                    knownProviderDeviceIds: Array.from(session.fileAssets?.get(assetId)?.providers || [])
+                });
                 return;
             }
             const providerSocket = deviceSockets.get(providerId);
@@ -89,7 +94,8 @@ function registerFileAssetHandlers(socket, context) {
             if (!providerSocket || !record) return;
             providerSocket.emit('file-asset-request', { asset: record.metadata, from: deviceId });
             historyLog('file-asset-request-forwarded', {
-                sessionId, deviceId, targetDeviceId: providerId, socketId: socket.id, clientIp, asset: record.metadata
+                sessionId, deviceId, targetDeviceId: providerId, socketId: socket.id, clientIp, asset: record.metadata,
+                knownProviderDeviceIds: Array.from(record.providers)
             });
         } catch (err) {
             console.error('file-asset-request error:', err);
@@ -107,6 +113,10 @@ function registerFileAssetHandlers(socket, context) {
                 record.providers.delete(deviceId);
                 const alternative = findProvider(session, assetId, to, null);
                 const alternativeSocket = alternative && deviceSockets.get(alternative);
+                historyLog('file-asset-provider-removed', {
+                    sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId,
+                    alternativeProviderId: alternative, remainingProviderDeviceIds: Array.from(record.providers)
+                });
                 if (alternativeSocket) {
                     alternativeSocket.emit('file-asset-request', { asset: record.metadata, from: to });
                     return;

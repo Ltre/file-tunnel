@@ -225,6 +225,7 @@
             const stored = {
                 ...transfer.asset,
                 sessionId: this.deps.getSessionId(),
+                isFileAsset: true,
                 data: merged.buffer,
                 timestamp: Date.now()
             };
@@ -267,9 +268,19 @@
         handleUnavailable(data) {
             const { assetId, reason } = data || {};
             if (!assetId) return;
+            const requested = this.desiredAssets.has(assetId);
             this.requests.delete(assetId);
+            if (!requested) return;
             this.deps.onUnavailable(assetId, reason);
             this.log('unavailable', { assetId, reason });
+        }
+
+        cancel(assetId) {
+            if (!assetId) return;
+            this.requests.delete(assetId);
+            this.desiredAssets.delete(assetId);
+            this.transfers.delete(assetId);
+            this.log('cancelled', { assetId });
         }
     }
 

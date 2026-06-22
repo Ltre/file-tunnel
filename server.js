@@ -476,13 +476,15 @@ io.on('connection', (socket) => {
                 editorAssets: new Map(),
                 fileAssets: new Map(),
                 history: [],
-                    historySize: 0,
+                deletedMessageIds: [],
+                historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
                 });
             }
             
             const session = sessions.get(sessionId);
+            if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -570,7 +572,10 @@ io.on('connection', (socket) => {
                 messageCount: historyMessages.length,
                 messages: historyMessages.map(summarizeHistoryMessage)
             });
-            socket.emit('session-history', { messages: historyMessages });
+            socket.emit('session-history', {
+                messages: historyMessages,
+                deletedMessageIds: session.deletedMessageIds
+            });
             if (session.media?.camera) {
                 socket.emit('camera-broadcast-start', {
                     broadcastId: session.media.camera.broadcastId,
@@ -668,6 +673,98 @@ io.on('connection', (socket) => {
             socket.to(sessionId).emit('message', { message });
         } catch (err) {
             console.error('message error:', err);
+        }
+    });
+
+    socket.on('delete-message', data => {
+        try {
+            const { sessionId, messageId } = data || {};
+            if (sessionId !== currentSession || !isValidDeviceId(messageId)) return;
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+
+            const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
+            let fileId = null;
+            if (historyIndex >= 0) {
+                const [removed] = session.history.splice(historyIndex, 1);
+                session.historySize = Math.max(0, session.historySize - removed.size);
+                fileId = removed.message?.fileInfo?.id || null;
+                if (fileId) session.fileAssets?.delete(fileId);
+            }
+
+            if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
+            if (!session.deletedMessageIds.includes(messageId)) {
+                session.deletedMessageIds.push(messageId);
+                if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) session.deletedMessageIds.shift();
+            }
+            session.lastActivity = Date.now();
+            socket.to(sessionId).emit('message-deleted', { messageId });
+            historyLog('message-deleted', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                messageId,
+                fileId,
+                historyCount: session.history.length
+            });
+        } catch (err) {
+            console.error('delete-message error:', err);
+        }
+    });
+
+    socket.on('history-reconcile', data => {
+        try {
+            const { sessionId, messages } = data || {};
+            if (sessionId !== currentSession || !Array.isArray(messages)) return;
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+
+            const deletedMessageIds = new Set(session.deletedMessageIds || []);
+            let mergedCount = 0;
+            let rejectedCount = 0;
+            const candidates = messages.slice(-MAX_HISTORY_MESSAGES);
+
+            for (const message of candidates) {
+                if (!message || !isValidDeviceId(message.id) ||
+                    !['text', 'rich', 'file'].includes(message.type) ||
+                    deletedMessageIds.has(message.id)) {
+                    rejectedCount++;
+                    continue;
+                }
+                const encoded = JSON.stringify(message);
+                if (encoded.length > MAX_MESSAGE_SIZE) {
+                    rejectedCount++;
+                    continue;
+                }
+                const result = addToSessionHistory(sessionId, session, message, {
+                    fromDeviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    source: 'history-reconcile'
+                });
+                if (result.stored) mergedCount++;
+            }
+
+            session.lastActivity = Date.now();
+            const canonicalMessages = session.history.map(entry => entry.message);
+            io.to(sessionId).emit('session-history', {
+                messages: canonicalMessages,
+                deletedMessageIds: session.deletedMessageIds || [],
+                authoritative: true
+            });
+            historyLog('history-reconciled', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                submittedCount: candidates.length,
+                mergedCount,
+                rejectedCount,
+                canonicalMessageCount: canonicalMessages.length
+            });
+        } catch (err) {
+            console.error('history-reconcile error:', err);
         }
     });
 
