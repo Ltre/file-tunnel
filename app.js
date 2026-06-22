@@ -69,6 +69,7 @@ const editorAssetRequests = new Map();
 const editorAssetTransfers = new Map();
 const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
+const editorAssetCacheVersions = new Map();
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
@@ -856,6 +857,16 @@ function setEditorAssetReady(image) {
     }
 }
 
+function getEditorAssetRenderTarget(image) {
+    if (image.closest('#editor')) return 'editor';
+    if (image.closest('#richViewerContent')) return 'rich-viewer';
+    return image.isConnected ? 'other' : 'detached';
+}
+
+function getEditorAssetIdsFromContent(content) {
+    return Array.from(String(content || '').matchAll(/data-tunnel-asset-id="([^"]+)"/g), match => match[1]);
+}
+
 function renderEditorAssetImage(image, assetId, url) {
     let rendered = false;
     const finishRendering = () => {
@@ -866,6 +877,8 @@ function renderEditorAssetImage(image, assetId, url) {
         setEditorAssetReady(image);
         historyLog('editor-asset-rendered', {
             assetId,
+            target: getEditorAssetRenderTarget(image),
+            connected: image.isConnected,
             naturalWidth: image.naturalWidth,
             naturalHeight: image.naturalHeight
         });
@@ -875,7 +888,11 @@ function renderEditorAssetImage(image, assetId, url) {
     image.onerror = () => {
         image.onload = null;
         image.onerror = null;
-        historyLog('editor-asset-render-failed', { assetId });
+        historyLog('editor-asset-render-failed', {
+            assetId,
+            target: getEditorAssetRenderTarget(image),
+            connected: image.isConnected
+        });
         setEditorAssetStatus(assetId, '图片暂时不可用（本地渲染失败）', 'unavailable');
     };
     image.src = url;
@@ -969,7 +986,16 @@ async function hydrateEditorAssetImage(image) {
     const assetId = image.dataset.tunnelAssetId;
     if (!assetId) return;
 
+    const cacheVersion = editorAssetCacheVersions.get(assetId) || 0;
     const asset = await getFromStore('files', assetId);
+    if (cacheVersion !== (editorAssetCacheVersions.get(assetId) || 0)) {
+        historyLog('editor-asset-hydration-stale', {
+            assetId,
+            target: getEditorAssetRenderTarget(image)
+        });
+        return hydrateEditorAssetImage(image);
+    }
+
     if (asset && asset.data) {
         historyLog('editor-asset-cache-hit', {
             assetId,
@@ -993,6 +1019,10 @@ async function hydrateEditorAssetImage(image) {
 async function hydrateEditorAssets(container) {
     if (!container) return;
     const images = Array.from(container.querySelectorAll('img[data-tunnel-asset-id]'));
+    historyLog('editor-asset-hydration-started', {
+        target: container.id || container.className || 'other',
+        assetIds: images.map(image => image.dataset.tunnelAssetId)
+    });
     await Promise.all(images.map(hydrateEditorAssetImage));
 }
 
@@ -1246,12 +1276,18 @@ async function completeEditorAssetTransfer(assetId, deviceId, transport) {
         size: cachedAsset.data.byteLength,
         sessionId: cachedAsset.sessionId
     });
+    editorAssetCacheVersions.set(assetId, (editorAssetCacheVersions.get(assetId) || 0) + 1);
     editorAssetTransfers.delete(assetId);
     editorAssetRequests.delete(assetId);
     editorAssetRetryCounts.delete(assetId);
     announceEditorAsset(storedAsset);
     await hydrateEditorAssets(document.getElementById('editor'));
     await hydrateEditorAssets(document.getElementById('richViewerContent'));
+    historyLog('editor-asset-post-hydration', {
+        assetId,
+        editorAssetIds: getEditorAssetIdsFromContent(document.getElementById('editor')?.innerHTML),
+        richViewerAssetIds: getEditorAssetIdsFromContent(document.getElementById('richViewerContent')?.innerHTML)
+    });
     historyLog('editor-asset-received', {
         asset: getEditorAssetMetadata(storedAsset),
         peerDeviceId: deviceId,
@@ -2411,11 +2447,21 @@ async function handleEditorState(data) {
     const editor = document.getElementById('editor');
     if (!editor) return;
 
+    historyLog('editor-state-received', {
+        hasRemoteContent: Boolean(data.hasRemoteContent),
+        contentSize: getEditorContentSize(data.content || ''),
+        assetIds: getEditorAssetIdsFromContent(data.content)
+    });
+
     if (data.hasRemoteContent && !isEditorContentEmpty(data.content)) {
         const changed = serializeEditorContent(editor.innerHTML) !== data.content;
         if (changed) {
             editor.innerHTML = data.content;
         }
+        historyLog('editor-state-applied', {
+            changed,
+            editorAssetIds: getEditorAssetIdsFromContent(editor.innerHTML)
+        });
         await persistEditorContent(data.content);
         await hydrateEditorAssets(editor);
         document.getElementById('collabStatus').textContent = '已同步';
