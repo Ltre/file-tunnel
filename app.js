@@ -62,10 +62,13 @@ const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
 const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
 const EDITOR_ASSET_CHUNK_SIZE = 64 * 1024;
 const EDITOR_ASSET_BUFFER_LIMIT = 512 * 1024;
+const EDITOR_ASSET_P2P_TIMEOUT = 1500;
+const EDITOR_ASSET_P2P_COOLDOWN = 5 * 60 * 1000;
 const editorAssetUrls = new Map();
 const editorAssetRequests = new Map();
 const editorAssetTransfers = new Map();
 const editorAssetRetryCounts = new Map();
+const editorAssetP2PUnavailablePeers = new Map();
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
@@ -571,6 +574,9 @@ async function createPeerConnection(deviceId) {
             console.log('P2P connection established with', deviceId);
         } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
             console.warn('P2P connection failed/disconnected with', deviceId);
+            if (pc.iceConnectionState === 'failed') {
+                editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
+            }
             // Attempt to restart ICE
             if (pc.iceConnectionState === 'failed') {
                 console.log('Attempting ICE restart...');
@@ -591,6 +597,7 @@ async function createPeerConnection(deviceId) {
         });
         if (pc.connectionState === 'failed') {
             console.warn('Connection failed, attempting to reconnect...');
+            editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             // Remove the failed connection so it can be recreated
             state.peers.delete(deviceId);
         }
@@ -773,6 +780,7 @@ function setupDataChannel(deviceId, channel) {
 
     channel.onopen = () => {
         console.log('Data channel opened with', deviceId);
+        editorAssetP2PUnavailablePeers.delete(deviceId);
         historyLog('p2p-data-channel-opened', { peerDeviceId: deviceId });
     };
 
@@ -1028,8 +1036,12 @@ async function handleEditorAssetRequest(data) {
     }
 
     try {
+        const unavailableUntil = editorAssetP2PUnavailablePeers.get(from);
+        if (unavailableUntil && unavailableUntil > Date.now()) {
+            throw new Error('Peer is in editor asset P2P cooldown');
+        }
         await connectToPeer(from);
-        if (!await waitForDataChannel(from, 20000)) {
+        if (!await waitForDataChannel(from, EDITOR_ASSET_P2P_TIMEOUT)) {
             throw new Error('Peer connection timed out');
         }
 
