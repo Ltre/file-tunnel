@@ -275,9 +275,10 @@ async function saveToStore(storeName, data) {
         try {
             const transaction = state.db.transaction([storeName], 'readwrite');
             const store = transaction.objectStore(storeName);
-            const request = store.put(data);
-            request.onsuccess = () => resolve();
-            request.onerror = () => reject(request.error);
+            store.put(data);
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error(`IndexedDB ${storeName} write aborted`));
         } catch (err) {
             console.error('saveToStore error:', err);
             reject(err);
@@ -941,6 +942,11 @@ async function hydrateEditorAssetImage(image) {
 
     const asset = await getFromStore('files', assetId);
     if (asset && asset.data) {
+        historyLog('editor-asset-cache-hit', {
+            assetId,
+            storedSessionId: asset.sessionId,
+            size: asset.data.byteLength || asset.size
+        });
         let url = editorAssetUrls.get(assetId);
         if (!url) {
             url = URL.createObjectURL(new Blob([asset.data], { type: asset.type }));
@@ -951,6 +957,7 @@ async function hydrateEditorAssetImage(image) {
         return;
     }
 
+    historyLog('editor-asset-cache-miss', { assetId });
     setEditorAssetStatus(assetId, '正在获取图片（正在选择传输链路）');
     requestEditorAsset(assetId, image.dataset.tunnelAssetOwner);
 }
@@ -1202,6 +1209,15 @@ async function completeEditorAssetTransfer(assetId, deviceId, transport) {
         timestamp: Date.now()
     };
     await saveToStore('files', storedAsset);
+    const cachedAsset = await getFromStore('files', assetId);
+    if (!cachedAsset || !cachedAsset.data || cachedAsset.data.byteLength !== storedAsset.data.byteLength) {
+        throw new Error('Editor asset was not persisted to IndexedDB');
+    }
+    historyLog('editor-asset-cache-verified', {
+        assetId,
+        size: cachedAsset.data.byteLength,
+        sessionId: cachedAsset.sessionId
+    });
     editorAssetTransfers.delete(assetId);
     editorAssetRequests.delete(assetId);
     editorAssetRetryCounts.delete(assetId);
