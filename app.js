@@ -58,6 +58,7 @@ const state = {
 
 const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
 const MAX_CLIENT_DEBUG_LOGS = 1000;
+const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
@@ -459,6 +460,16 @@ function initSocket() {
 
     state.socket.on('editor-state', (data) => {
         handleEditorState(data);
+    });
+
+    state.socket.on('error', (data) => {
+        const message = data && data.message ? data.message : '服务器返回错误';
+        console.error('Socket error:', data);
+        historyLog('socket-error-received', { code: data && data.code, message });
+
+        if (data && typeof data.code === 'string' && data.code.startsWith('EDITOR_')) {
+            document.getElementById('collabStatus').textContent = message;
+        }
     });
 
     state.socket.on('file-offer', (data) => {
@@ -1471,21 +1482,56 @@ async function persistEditorContent(content) {
     });
 }
 
+function getEditorContentSize(content) {
+    return new TextEncoder().encode(content).length;
+}
+
 async function syncEditorContent(content) {
     await persistEditorContent(content);
 
-    if (state.socket) {
-        state.socket.emit('editor-sync', {
-            sessionId: state.sessionId,
-            from: state.deviceId,
-            content
+    const contentSize = getEditorContentSize(content);
+    if (contentSize > MAX_EDITOR_CONTENT_SIZE) {
+        historyLog('editor-sync-skipped', {
+            reason: 'content-too-large',
+            contentSize,
+            maxContentSize: MAX_EDITOR_CONTENT_SIZE
         });
+        return { emitted: false, contentSize, reason: 'content-too-large' };
     }
+
+    if (!state.socket || !state.socket.connected) {
+        historyLog('editor-sync-skipped', { reason: 'socket-not-connected', contentSize });
+        return { emitted: false, contentSize, reason: 'socket-not-connected' };
+    }
+
+    state.socket.emit('editor-sync', {
+        sessionId: state.sessionId,
+        from: state.deviceId,
+        content
+    });
+    historyLog('editor-sync-emitted', { contentSize });
+    return { emitted: true, contentSize };
 }
 
 function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
+
+    const queueEditorSync = () => {
+        state.isSyncing = true;
+        document.getElementById('collabStatus').textContent = '编辑中...';
+
+        clearTimeout(syncTimeout);
+        syncTimeout = setTimeout(async () => {
+            const result = await syncEditorContent(editor.innerHTML);
+            state.isSyncing = false;
+            document.getElementById('collabStatus').textContent = result.emitted
+                ? '已同步'
+                : result.reason === 'content-too-large'
+                    ? '内容过大，未同步'
+                    : '等待连接后同步';
+        }, 500);
+    };
 
     // 工具栏按钮
     document.querySelectorAll('.toolbar-btn[data-cmd]').forEach(btn => {
@@ -1493,6 +1539,7 @@ function initEditor() {
             const cmd = btn.dataset.cmd;
             document.execCommand(cmd, false, null);
             editor.focus();
+            queueEditorSync();
         });
     });
 
@@ -1506,7 +1553,19 @@ function initEditor() {
             if (file) {
                 const base64 = await fileToBase64(file);
                 const img = `<img src="${base64}" style="max-width: 100%; border-radius: 8px;">`;
+
+                if (getEditorContentSize(editor.innerHTML + img) > MAX_EDITOR_CONTENT_SIZE) {
+                    alert('图片过大，无法同步到其他设备');
+                    historyLog('editor-image-rejected', {
+                        reason: 'content-too-large',
+                        fileName: file.name,
+                        fileSize: file.size
+                    });
+                    return;
+                }
+
                 document.execCommand('insertHTML', false, img);
+                queueEditorSync();
             }
         };
         input.click();
@@ -1559,13 +1618,25 @@ function initEditor() {
             if (file) {
                 let refHtml = '';
                 if (file.type.startsWith('image/')) {
-                    const blob = new Blob([file.data]);
-                    const url = URL.createObjectURL(blob);
-                    refHtml = `<img src="${url}" style="max-width: 200px; border-radius: 8px; cursor: pointer;" onclick="downloadFile('${fileId}')">`;
+                    const blob = new Blob([file.data], { type: file.type });
+                    const base64 = await blobToBase64(blob);
+                    refHtml = `<img src="${base64}" style="max-width: 200px; border-radius: 8px; cursor: pointer;" onclick="downloadFile('${fileId}')">`;
                 } else {
                     refHtml = `<span style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${fileId}')">📎 ${file.name}</span>`;
                 }
+
+                if (getEditorContentSize(editor.innerHTML + refHtml) > MAX_EDITOR_CONTENT_SIZE) {
+                    alert('引用的内容过大，无法同步到其他设备');
+                    historyLog('editor-file-reference-rejected', {
+                        reason: 'content-too-large',
+                        fileId,
+                        fileSize: file.size
+                    });
+                    return;
+                }
+
                 document.execCommand('insertHTML', false, refHtml);
+                queueEditorSync();
             }
 
             dialog.remove();
@@ -1573,19 +1644,7 @@ function initEditor() {
     });
 
     // 内容变化同步 + 本地持久化
-    editor.addEventListener('input', () => {
-        state.isSyncing = true;
-        document.getElementById('collabStatus').textContent = '编辑中...';
-
-        clearTimeout(syncTimeout);
-        syncTimeout = setTimeout(async () => {
-            const content = editor.innerHTML;
-
-            await syncEditorContent(content);
-            state.isSyncing = false;
-            document.getElementById('collabStatus').textContent = '已同步';
-        }, 500);
-    });
+    editor.addEventListener('input', queueEditorSync);
 
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
@@ -1675,8 +1734,12 @@ async function handleEditorState(data) {
     }
 
     // Other online devices are empty, so this device's draft is authoritative.
-    await syncEditorContent(editor.innerHTML);
-    document.getElementById('collabStatus').textContent = '已同步';
+    const result = await syncEditorContent(editor.innerHTML);
+    document.getElementById('collabStatus').textContent = result.emitted
+        ? '已同步'
+        : result.reason === 'content-too-large'
+            ? '内容过大，未同步'
+            : '等待连接后同步';
 }
 
 // ==================== 设备管理 ====================

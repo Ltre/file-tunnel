@@ -44,6 +44,7 @@ const MAX_SESSIONS = 1000;
 const MAX_DEVICES_PER_SESSION = 10;
 const MAX_SESSION_AGE = 2 * 60 * 60 * 1000; // 2小时
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
+const MAX_EDITOR_CONTENT_SIZE = 512 * 1024; // Keep editor updates well below Socket.IO's 1MB buffer.
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
 const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
@@ -672,7 +673,14 @@ io.on('connection', (socket) => {
     // 编辑器同步
     socket.on('editor-sync', (data) => {
         if (!checkMessageRate()) {
-            return socket.emit('error', { message: '同步过于频繁' });
+            historyLog('editor-sync-rejected', {
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                reason: 'rate-limited'
+            });
+            return socket.emit('error', { message: '同步过于频繁', code: 'EDITOR_SYNC_RATE_LIMITED' });
         }
         
         try {
@@ -683,7 +691,24 @@ io.on('connection', (socket) => {
             if (!isValidSessionId(sessionId)) return;
             if (from !== currentDevice) return;
             if (typeof content !== 'string') return;
-            if (content.length > 100000) return; // 限制内容大小
+            const contentSize = Buffer.byteLength(content, 'utf8');
+            if (contentSize > MAX_EDITOR_CONTENT_SIZE) {
+                historyLog('editor-sync-rejected', {
+                    sessionId,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    reason: 'content-too-large',
+                    contentSize,
+                    maxContentSize: MAX_EDITOR_CONTENT_SIZE
+                });
+                return socket.emit('error', {
+                    message: '协同编辑内容过大，无法同步',
+                    code: 'EDITOR_CONTENT_TOO_LARGE',
+                    contentSize,
+                    maxContentSize: MAX_EDITOR_CONTENT_SIZE
+                });
+            }
             
             const session = sessions.get(sessionId);
             if (!session) return;
@@ -700,8 +725,23 @@ io.on('connection', (socket) => {
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('editor-sync', { from, content });
+            historyLog('editor-sync-accepted', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                contentSize,
+                recipientCount: Math.max(session.devices.size - 1, 0)
+            });
         } catch (err) {
             console.error('editor-sync error:', err);
+            historyLog('editor-sync-failed', {
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                error: err.message
+            });
         }
     });
     
