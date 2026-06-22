@@ -8,6 +8,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
+const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 
 const app = express();
 
@@ -470,9 +472,10 @@ io.on('connection', (socket) => {
             // 获取或创建会话
             if (!sessions.has(sessionId)) {
                 sessions.set(sessionId, {
-                    devices: new Map(),
-                    editorAssets: new Map(),
-                    history: [],
+                devices: new Map(),
+                editorAssets: new Map(),
+                fileAssets: new Map(),
+                history: [],
                     historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -568,6 +571,12 @@ io.on('connection', (socket) => {
                 messages: historyMessages.map(summarizeHistoryMessage)
             });
             socket.emit('session-history', { messages: historyMessages });
+            if (session.media?.camera) {
+                socket.emit('camera-broadcast-start', {
+                    broadcastId: session.media.camera.broadcastId,
+                    from: session.media.camera.ownerDeviceId
+                });
+            }
         } catch (err) {
             console.error('join-session error:', err);
             socket.emit('error', { message: '服务器内部错误' });
@@ -1090,6 +1099,27 @@ io.on('connection', (socket) => {
             console.error('file-answer error:', err);
         }
     });
+
+    registerFileAssetHandlers(socket, {
+        sessions,
+        deviceSockets,
+        getSessionId: () => currentSession,
+        getDeviceId: () => currentDevice,
+        isValidId: isValidDeviceId,
+        sanitize: sanitizeString,
+        historyLog,
+        clientIp
+    });
+
+    registerMediaHandlers(socket, {
+        sessions,
+        deviceSockets,
+        getSessionId: () => currentSession,
+        getDeviceId: () => currentDevice,
+        isValidId: isValidDeviceId,
+        historyLog,
+        clientIp
+    });
     
     // 断开连接
     socket.on('disconnect', (reason) => {
@@ -1102,6 +1132,7 @@ io.on('connection', (socket) => {
         }
         
         if (currentSession && currentDevice) {
+            cleanupFileAssetRelays(currentSession, currentDevice);
             for (const [key, relay] of editorAssetRelays) {
                 if (relay.sessionId === currentSession && (relay.from === currentDevice || relay.to === currentDevice)) {
                     editorAssetRelays.delete(key);
@@ -1123,6 +1154,15 @@ io.on('connection', (socket) => {
                             }
                         }
                     }
+
+                    if (session.fileAssets) {
+                        for (const [assetId, asset] of session.fileAssets) {
+                            asset.providers.delete(currentDevice);
+                            if (asset.providers.size === 0) session.fileAssets.delete(assetId);
+                        }
+                    }
+
+                    cleanupMediaDevice(session, currentDevice, (event, payload) => socket.to(currentSession).emit(event, payload));
 
                     // 通知会话中的其他设备
                     socket.to(currentSession).emit('device-left', {

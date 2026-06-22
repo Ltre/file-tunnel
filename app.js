@@ -70,9 +70,13 @@ const editorAssetTransfers = new Map();
 const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
+let fileAssetTransfer = null;
+let mediaController = null;
+const fileObjectUrls = new Map();
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
+    fileObjectUrls.forEach(url => URL.revokeObjectURL(url));
 });
 
 function summarizeHistoryMessage(message) {
@@ -145,6 +149,8 @@ function flushClientDebugLogs() {
 document.addEventListener('DOMContentLoaded', async () => {
     await initStorage();
     initSession();
+    initFileAssetTransfer();
+    initMediaController();
     initUI();
     initEditor();
     initDragDrop();
@@ -437,6 +443,7 @@ function initSocket() {
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
+        announceStoredFileAssets();
         hydrateEditorAssets(document.getElementById('editor'));
     });
 
@@ -507,6 +514,22 @@ function initSocket() {
     state.socket.on('editor-asset-relay-complete', (data) => {
         handleEditorAssetRelayComplete(data);
     });
+
+    state.socket.on('file-asset-request', (data) => fileAssetTransfer?.handleRequest(data));
+    state.socket.on('file-asset-available', (data) => fileAssetTransfer?.handleAvailable(data));
+    state.socket.on('file-asset-unavailable', (data) => fileAssetTransfer?.handleUnavailable(data));
+    state.socket.on('file-asset-relay-start', (data) => fileAssetTransfer?.handleRelayStart(data));
+    state.socket.on('file-asset-relay-chunk', (data) => fileAssetTransfer?.handleRelayChunk(data));
+    state.socket.on('file-asset-relay-complete', (data) => fileAssetTransfer?.handleRelayComplete(data));
+
+    state.socket.on('camera-broadcast-start', (data) => mediaController?.handleCameraBroadcastStart(data));
+    state.socket.on('camera-broadcast-stop', (data) => mediaController?.handleCameraBroadcastStop(data));
+    state.socket.on('camera-viewer-ready', (data) => mediaController?.handleCameraViewerReady(data));
+    state.socket.on('voice-state', (data) => mediaController?.handleVoiceState(data));
+    state.socket.on('voice-peer-joined', (data) => mediaController?.handleVoicePeerJoined(data));
+    state.socket.on('voice-peer-left', (data) => mediaController?.handleVoicePeerLeft(data));
+    state.socket.on('media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('media-signal-failed', { error: err.message })));
+    state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
 
     state.socket.on('error', (data) => {
         const message = data && data.message ? data.message : '服务器返回错误';
@@ -608,6 +631,7 @@ async function createPeerConnection(deviceId) {
     pc.ondatachannel = (event) => {
         const channel = event.channel;
         console.log('Received data channel from', deviceId);
+        if (fileAssetTransfer?.handleIncomingChannel(deviceId, channel)) return;
         setupDataChannel(deviceId, channel);
     };
 
@@ -777,6 +801,7 @@ function setupDataChannel(deviceId, channel) {
         setupEditorAssetDataChannel(deviceId, assetId, channel);
         return;
     }
+    if (fileAssetTransfer?.handleIncomingChannel(deviceId, channel)) return;
 
     state.dataChannels.set(deviceId, channel);
 
@@ -1401,6 +1426,104 @@ function handleEditorAssetProvider(data) {
 // ==================== 文件传输 ====================
 const fileTransfers = new Map(); // fileId -> transferInfo
 
+function initFileAssetTransfer() {
+    if (!window.FileAssetTransfer) {
+        throw new Error('File asset transfer module failed to load');
+    }
+
+    fileAssetTransfer = new window.FileAssetTransfer({
+        getSocket: () => state.socket,
+        getSessionId: () => state.sessionId,
+        getPeer: deviceId => state.peers.get(deviceId),
+        connectPeer: connectToPeer,
+        waitForDataChannel,
+        load: fileId => getFromStore('files', fileId),
+        store: file => saveToStore('files', file),
+        log: historyLog,
+        onProgress: (fileId, fileName, progress) => {
+            showProgress(fileId, fileName, progress);
+            if (progress >= 100) setTimeout(() => hideProgress(fileId), 800);
+        },
+        onReceived: async (asset) => {
+            await refreshFileMessage(asset.id);
+        },
+        onUnavailable: (fileId, reason) => {
+            updateFileMessageAvailability(fileId, reason);
+        }
+    });
+}
+
+function initMediaController() {
+    if (!window.MediaController) {
+        throw new Error('Media module failed to load');
+    }
+
+    mediaController = new window.MediaController({
+        getSocket: () => state.socket,
+        getSessionId: () => state.sessionId,
+        getDeviceId: () => state.deviceId,
+        log: historyLog,
+        onLocalCamera: (stream, active) => showCameraStream(stream, active, true),
+        onRemoteCamera: stream => showCameraStream(stream, Boolean(stream), false),
+        onRemoteAudio: (kind, sessionKey, peerId, stream) => playRemoteAudio(kind, sessionKey, peerId, stream),
+        onVoiceState: active => updateMediaButtons({ voice: active }),
+        onIntercomState: active => updateMediaButtons({ intercom: active })
+    });
+}
+
+function showCameraStream(stream, active, isLocal) {
+    const stage = document.getElementById('cameraStage');
+    const video = document.getElementById('cameraVideo');
+    video.srcObject = stream || null;
+    video.muted = Boolean(isLocal);
+    stage.style.display = active ? 'block' : 'none';
+    updateMediaButtons({ camera: active });
+}
+
+function playRemoteAudio(kind, sessionKey, peerId, stream) {
+    const container = document.getElementById('remoteAudio');
+    const id = `remote-audio-${kind}-${sessionKey}-${peerId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+    let audio = document.getElementById(id);
+    if (!audio) {
+        audio = document.createElement('audio');
+        audio.id = id;
+        audio.autoplay = true;
+        audio.playsInline = true;
+        container.appendChild(audio);
+    }
+    audio.srcObject = stream;
+    audio.play().catch(() => {});
+}
+
+function updateMediaButtons(stateUpdate = {}) {
+    const camera = document.getElementById('cameraBroadcastBtn');
+    const voice = document.getElementById('voiceChatBtn');
+    const intercom = document.getElementById('globalIntercomBtn');
+    if (camera && Object.hasOwn(stateUpdate, 'camera')) {
+        camera.textContent = stateUpdate.camera ? '关闭摄像头' : '摄像头';
+    }
+    if (voice && Object.hasOwn(stateUpdate, 'voice')) {
+        voice.textContent = stateUpdate.voice ? '退出语音' : '语音聊天';
+    }
+    if (intercom && Object.hasOwn(stateUpdate, 'intercom')) {
+        intercom.textContent = stateUpdate.intercom ? '关闭对讲机' : '全局对讲';
+    }
+}
+
+async function announceStoredFileAssets() {
+    if (!fileAssetTransfer) return;
+    try {
+        const files = typeof IDBKeyRange !== 'undefined'
+            ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+            : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+        for (const file of files) {
+            if (file.isFileAsset && file.data) await fileAssetTransfer.announce(file);
+        }
+    } catch (err) {
+        historyLog('file-asset-announce-failed', { error: err.message });
+    }
+}
+
 async function sendFile(file, targetDeviceId = null) {
     const fileId = generateId();
     const fileInfo = {
@@ -1413,54 +1536,37 @@ async function sendFile(file, targetDeviceId = null) {
         senderName: state.deviceName
     };
 
-    // 保存文件到本地存储
-    await saveToStore('files', {
+    const data = await fileToArrayBuffer(file);
+    const asset = {
         ...fileInfo,
         sessionId: state.sessionId,
-        data: await fileToArrayBuffer(file)
+        ownerDeviceId: state.deviceId,
+        isFileAsset: true,
+        data
+    };
+    await saveToStore('files', asset);
+    await fileAssetTransfer.announce(asset);
+
+    const message = {
+        id: generateId(),
+        type: 'file',
+        fileInfo: {
+            ...fileInfo,
+            ownerDeviceId: state.deviceId,
+            isAsset: true
+        },
+        timestamp: Date.now(),
+        sender: state.deviceId,
+        senderName: state.deviceName
+    };
+
+    await saveToStore('messages', { ...message, sessionId: state.sessionId });
+    await addMessageToChat(message, true);
+    state.socket.emit('message', { sessionId: state.sessionId, message });
+    historyLog('file-asset-message-emitted', {
+        message: summarizeHistoryMessage(message),
+        targetDeviceId
     });
-
-    // 小文件直接通过socket发送
-    if (file.size <= CONFIG.SMALL_FILE_THRESHOLD) {
-        const base64Data = await fileToBase64(file);
-        const message = {
-            id: generateId(),
-            type: 'file',
-            fileInfo: {
-                ...fileInfo,
-                data: base64Data,
-                isSmall: true
-            },
-            timestamp: Date.now(),
-            sender: state.deviceId,
-            senderName: state.deviceName
-        };
-
-        state.socket.emit('message', {
-            sessionId: state.sessionId,
-            message
-        });
-        historyLog('small-file-message-emitted', {
-            message: summarizeHistoryMessage(message)
-        });
-
-        await saveToStore('messages', {
-            ...message,
-            sessionId: state.sessionId
-        });
-        historyLog('small-file-message-stored-locally', {
-            message: summarizeHistoryMessage(message)
-        });
-
-        await addMessageToChat(message, true);
-        historyLog('small-file-message-rendered-locally', {
-            message: summarizeHistoryMessage(message),
-            persistedToMessagesStore: true
-        });
-    } else {
-        // 大文件通过P2P发送
-        sendFileOffer(fileInfo, file, targetDeviceId);
-    }
 
     return fileId;
 }
@@ -1891,6 +1997,22 @@ async function handleMessage(data) {
     historyLog('realtime-message-rendered', {
         message: summarizeHistoryMessage(message)
     });
+
+    if (message.type === 'file' && message.fileInfo?.isAsset) {
+        const requestAsset = async () => {
+            await fileAssetTransfer.request(
+                message.fileInfo.id,
+                message.fileInfo.ownerDeviceId || message.sender
+            );
+        };
+        if (message.fileInfo.size <= CONFIG.SMALL_FILE_THRESHOLD) {
+            await requestAsset();
+        } else {
+            showConfirmModal(message.fileInfo, async (accepted) => {
+                if (accepted) await requestAsset();
+            });
+        }
+    }
 }
 
 async function handleSessionHistory(data) {
@@ -1926,6 +2048,18 @@ async function handleSessionHistory(data) {
                     reason: 'already-in-indexeddb',
                     message: summarizeHistoryMessage(message)
                 });
+                if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
+                    const storedFile = await getFromStore('files', message.fileInfo.id);
+                    if (!storedFile?.data) {
+                        await fileAssetTransfer.request(
+                            message.fileInfo.id,
+                            message.fileInfo.ownerDeviceId || message.sender
+                        );
+                        historyLog('snapshot-file-asset-backfill-requested', {
+                            message: summarizeHistoryMessage(message)
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -1948,6 +2082,12 @@ async function handleSessionHistory(data) {
             historyLog('snapshot-message-rendered', {
                 message: summarizeHistoryMessage(message)
             });
+            if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
+                await fileAssetTransfer.request(
+                    message.fileInfo.id,
+                    message.fileInfo.ownerDeviceId || message.sender
+                );
+            }
             restored++;
         } catch (err) {
             failed++;
@@ -1986,6 +2126,12 @@ async function addMessageToChat(message, isOwn) {
 
     const messageEl = document.createElement('div');
     messageEl.className = `message ${isOwn ? 'own' : ''}`;
+    messageEl.dataset.messageId = message.id;
+    if (message.type === 'file' && message.fileInfo?.id) {
+        messageEl.dataset.fileId = message.fileInfo.id;
+        messageEl.dataset.fileName = message.fileInfo.name;
+        messageEl.dataset.fileType = message.fileInfo.type;
+    }
 
     let contentHtml = '';
 
@@ -2000,10 +2146,9 @@ async function addMessageToChat(message, isOwn) {
         const isAudio = fileInfo.type.startsWith('audio/');
 
         // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
-        let fileData = fileInfo.data;
-        let isStoredFile = false;
+        let fileUrl = fileInfo.data || null;
 
-        if (!fileData && fileInfo.id) {
+        if (!fileUrl && fileInfo.id) {
             console.log('No file data in message, trying to load from IndexedDB:', fileInfo.id);
             try {
                 // 尝试从IndexedDB加载文件数据
@@ -2011,53 +2156,55 @@ async function addMessageToChat(message, isOwn) {
                 console.log('Loaded from IndexedDB:', storedFile ? 'found' : 'not found');
 
                 if (storedFile && storedFile.data) {
-                    // 转换为base64用于显示
-                    const blob = new Blob([storedFile.data], { type: storedFile.type });
-                    fileData = await blobToBase64(blob);
-                    isStoredFile = true;
-                    console.log('Converted to base64, length:', fileData ? fileData.length : 0);
+                    fileUrl = fileObjectUrls.get(fileInfo.id);
+                    if (!fileUrl) {
+                        fileUrl = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
+                        fileObjectUrls.set(fileInfo.id, fileUrl);
+                    }
                 }
             } catch (err) {
                 console.error('Error loading file from IndexedDB:', err);
             }
         }
 
-        if (isImage && (fileInfo.isSmall || isStoredFile) && fileData) {
+        if (isImage && fileUrl) {
             // 直接显示小图片或已存储的图片
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <img src="${fileData}" alt="${fileInfo.name}" 
+                        <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}"
                              onclick="downloadFile('${fileInfo.id}')" style="cursor: pointer;">
                     </div>
                 </div>
             `;
-        } else if (isVideo && (fileInfo.isSmall || isStoredFile) && fileData) {
+        } else if (isVideo && fileUrl) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <video controls src="${fileData}"></video>
+                        <video controls src="${fileUrl}"></video>
                     </div>
                 </div>
             `;
-        } else if (isAudio && (fileInfo.isSmall || isStoredFile) && fileData) {
+        } else if (isAudio && fileUrl) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <audio controls src="${fileData}"></audio>
+                        <audio controls src="${fileUrl}"></audio>
                     </div>
                 </div>
             `;
         } else {
             // 文件消息（大文件、无法预览的文件，或文件数据已丢失）
             const sizeStr = formatFileSize(fileInfo.size);
-            const canDownload = fileInfo.id && Boolean(fileData);
+            const canDownload = fileInfo.id && Boolean(fileUrl);
             const clickHandler = canDownload ? `onclick="downloadFile('${fileInfo.id}')"` : '';
             const opacity = canDownload ? '' : 'opacity: 0.6;';
 
-            const unavailableLabel = fileInfo.isP2P || !fileInfo.isSmall
-                ? ' (未同步到本机)'
-                : ' (文件数据不可用)';
+            const unavailableLabel = fileInfo.isAsset
+                ? ' (等待接收)'
+                : fileInfo.isP2P || !fileInfo.isSmall
+                    ? ' (未同步到本机)'
+                    : ' (文件数据不可用)';
             contentHtml = `
                 <div class="message-bubble file-message" ${clickHandler} style="${opacity}">
                     <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
@@ -2092,6 +2239,49 @@ async function addMessageToChat(message, isOwn) {
 
     container.appendChild(messageEl);
     container.scrollTop = container.scrollHeight;
+}
+
+async function refreshFileMessage(fileId) {
+    const storedFile = await getFromStore('files', fileId);
+    if (!storedFile?.data) return;
+
+    let url = fileObjectUrls.get(fileId);
+    if (!url) {
+        url = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
+        fileObjectUrls.set(fileId, url);
+    }
+
+    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+        const type = messageEl.dataset.fileType || storedFile.type;
+        const name = escapeHtml(messageEl.dataset.fileName || storedFile.name);
+        const bubble = messageEl.querySelector('.message-bubble');
+        if (!bubble) return;
+
+        if (type.startsWith('image/')) {
+            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" onclick="downloadFile('${fileId}')" style="cursor: pointer;"></div>`;
+            bubble.classList.remove('file-message');
+            bubble.style.opacity = '';
+        } else if (type.startsWith('video/')) {
+            bubble.innerHTML = `<div class="media-preview"><video controls src="${url}"></video></div>`;
+            bubble.classList.remove('file-message');
+            bubble.style.opacity = '';
+        } else if (type.startsWith('audio/')) {
+            bubble.innerHTML = `<div class="media-preview"><audio controls src="${url}"></audio></div>`;
+            bubble.classList.remove('file-message');
+            bubble.style.opacity = '';
+        } else {
+            bubble.style.opacity = '';
+            bubble.setAttribute('onclick', `downloadFile('${fileId}')`);
+            const size = bubble.querySelector('.file-size');
+            if (size) size.textContent = formatFileSize(storedFile.size);
+        }
+    });
+}
+
+function updateFileMessageAvailability(fileId, reason) {
+    document.querySelectorAll(`.message[data-file-id="${fileId}"] .file-size`).forEach(size => {
+        size.textContent = reason === 'no-online-provider' ? '文件来源设备不在线' : '文件暂时不可用';
+    });
 }
 
 async function sendText() {
@@ -2615,12 +2805,64 @@ function updateDeviceList() {
                 <div class="status">在线 · P2P${state.dataChannels.has(device.id) ? '已连接' : '连接中'}</div>
             </div>
         `;
+        const intercomButton = document.createElement('button');
+        intercomButton.className = 'toolbar-btn';
+        intercomButton.type = 'button';
+        intercomButton.title = `与 ${device.name} 对讲`;
+        intercomButton.textContent = '对讲机';
+        intercomButton.addEventListener('click', async () => {
+            try {
+                if (mediaController.intercom) mediaController.stopIntercom();
+                else await mediaController.startIntercom([device.id]);
+            } catch (err) {
+                alert(`无法启动对讲机: ${err.message}`);
+                historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
+            }
+        });
+        el.appendChild(intercomButton);
         container.appendChild(el);
     });
 }
 
 // ==================== UI 初始化 ====================
 function initUI() {
+    document.getElementById('cameraBroadcastBtn').addEventListener('click', async () => {
+        try {
+            if (mediaController.camera) {
+                mediaController.stopCamera();
+                return;
+            }
+            if (mediaController.cameraBroadcast && !confirm('发起新的摄像头广播会中止其它正在进行的广播。是否继续？')) return;
+            await mediaController.startCamera();
+        } catch (err) {
+            alert(`无法启动摄像头: ${err.message}`);
+            historyLog('camera-start-failed', { error: err.message });
+        }
+    });
+
+    document.getElementById('voiceChatBtn').addEventListener('click', async () => {
+        try {
+            if (mediaController.voice) mediaController.leaveVoice();
+            else await mediaController.joinVoice();
+        } catch (err) {
+            alert(`无法加入语音聊天: ${err.message}`);
+            historyLog('voice-join-failed', { error: err.message });
+        }
+    });
+
+    document.getElementById('globalIntercomBtn').addEventListener('click', async () => {
+        try {
+            if (mediaController.intercom) {
+                mediaController.stopIntercom();
+            } else {
+                await mediaController.startIntercom(Array.from(state.devices.keys()));
+            }
+        } catch (err) {
+            alert(`无法启动对讲机: ${err.message}`);
+            historyLog('intercom-start-failed', { error: err.message });
+        }
+    });
+
     // 发送文本
     document.getElementById('sendTextBtn').addEventListener('click', sendText);
     document.getElementById('textInput').addEventListener('keypress', (e) => {
