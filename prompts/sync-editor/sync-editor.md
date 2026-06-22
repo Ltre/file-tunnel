@@ -50,5 +50,42 @@ Base64 仅保留作极小图片兜底
 那就大胆点尝试 【资源 ID + 本地 blob 渲染 + 独立 P2P 拉取】，摒弃data:image。
 改动的代码请新建分支 dev-260622-syncEditorBlobP2P，但不要急着提交代码
 
+答：
+好，走这条彻底一点的路线。实现会把编辑器中的图片改成轻量资源引用：编辑器状态只同步资源元数据，接收端再按需通过 P2P 拉取二进制、保存到 IndexedDB、生成自己的 blob: 地址显示。我会在新分支完成一套最小可用协议，不提交。
+
+已运行 2 条命令
+
+实现分四步进行：  
+编辑 HTML 改为保存 data-tunnel-asset-id，不再写入 data:image 或 blob: 地址。  
+增加资源发布、请求、提供端选择和 P2P 传输控制消息。  
+接收端将二进制写入 IndexedDB，并以自己的 blob: URL 渲染图片。  
+加入重载后按需补齐、发送端不在线时的占位，以及调试日志。
+我会先完整读现有 DataChannel 和编辑器渲染路径，尽量复用成熟的分块发送。
+
+已运行 5 条命令
+
+现有 P2P 通道可以复用连接和分块能力，但不能直接复用“聊天文件”流程，因为它依赖人工确认、并且同一通道的裸二进制块无法区分并发任务。我会为编辑器资源建立独立 DataChannel，并由服务端只维护“哪个在线设备可提供哪个资源”的轻量目录；文件字节不会经过服务端。
+
+编辑了 2 个文件执行了 4 条命令
+
+协议主体已接上：编辑器 HTML 现在只保存资源 ID 与元数据，资源字节进入现有 IndexedDB；服务端只转发请求并维护在线提供者目录，P2P 专用通道发送文件分块。正在补最后的恢复细节，包括资源提供者重连、传输失败改由其他已缓存设备接力，以及异常通道清理。
+
+编辑了 2 个文件执行了 3 条命令
+
+实现和基础验证已完成：Node 语法检查通过，服务启动后 http://127.0.0.1:3000/ 返回 200，验证进程已停止。多设备 WebRTC 的真实传输仍需要你用两台设备实测，因为这里的浏览器自动化连接没有完成可用的双端会话；代码保持未提交。
+
+已运行 rg -n "MAX_EDITOR_ASSET_SIZE|createEditorAssetFromFile|serializeEditorContent|handleEditorAssetRequest|handleEditorAssetDataChannelMessage|editor-asset-available|editor-asset-request" app.js server.js; git diff --stat -- app.js server.js; git status --short --branch
+
+已在新分支 dev-260622-syncEditorBlobP2P 实现，未暂存、未提交。
+现在协同编辑图片不再写入 data:image：
+编辑器 HTML 只同步资源 ID、名称、MIME、大小和原始来源设备。
+本机图片二进制保存到 IndexedDB，页面用本机生成的 blob: URL 渲染。
+其他设备收到图片引用后，自动向在线资源提供者请求；文件走专用 WebRTC DataChannel 分块传输，不经过 Node 服务端。
+接收端保存图片后也成为提供者。原设备传输失败时，服务端会尝试改由其他已缓存设备提供。
+重载页面会从 IndexedDB 恢复本机图片；无本地数据时重新 P2P 拉取。没有在线提供者时显示占位状态。
+编辑器图片当前单张上限为 20MB，HTML 本身保持很小。
+改动在 app.js、server.js；data:image 仍可能用于原有的普通小文件聊天消息，但协同编辑插图路径已完全摒弃它。
+验证完成：两文件语法检查通过、差异检查通过、本地服务返回 HTTP 200。真实的两设备 WebRTC 自动拉取还需要在你的设备环境实测。
+
 ---------------------------------------------------------
 
