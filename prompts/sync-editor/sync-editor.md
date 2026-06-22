@@ -255,6 +255,21 @@ editor-sync-received，其中含图片资源 ID
 测试2：在设备A的协同编辑框（不论有没有文本或图片）中，插入图片(此处临时成为"图片T")后，在设备B的协同编辑框中会在刚才所新插入图的位置一闪而过一个图片占位符即消失，这时在设备B的协同编辑框内的任意位置随便添加一个字符，可以看到设备A的协同编辑框同步显示了这个来自于B的字符，且设备A的协同编辑框的其它内容不受B的字符输入而影响，回到设备A的协同编辑框，在任意位置插入一个任意字符(此处临时称为"字符Z")，就看到设备B的协同编辑框中同步显示了"图片T"以及"字符Z"。
 注意：这已经不仅仅是在空的协同编辑框插图产生的BUG了。你详细参考下最近10.0.0.16的日志
 
+问：
+算了。以上这两个测试的问题挺诡异的，有时复现，有时死活不复现。先关注一个新问题：拖放图片到协同编辑框里，感觉跟点击图片按钮插入的底层逻辑不同，在设备A拖放一个图进协同编辑器，不会被同步到设备B，右键审查看了设备A的协同编辑框，看到这个拖放到图是采用data:image形式。在设备A的console看到日志：Editor updated from sync [app.js:2441:17](http://10.0.0.16:3000/app.js)
+[debug][client][editor-sync-started] 
+Object { sessionId: "3a3de710-ab01-45ec-92c6-5c957bc3cdb9", deviceId: "d63cebc3-77ee-4376-8374-5076677fc4c3", clientTimestamp: "2026-06-22T17:20:11.001Z", reason: "input-debounced", assetIds: (1) […] }
+[app.js:104:13](http://10.0.0.16:3000/app.js)
+[debug][client][editor-sync-skipped] 
+Object { sessionId: "3a3de710-ab01-45ec-92c6-5c957bc3cdb9", deviceId: "d63cebc3-77ee-4376-8374-5076677fc4c3", clientTimestamp: "2026-06-22T17:20:11.028Z", reason: "content-too-large", contentSize: 804968, maxContentSize: 524288 }
+[app.js:104:13](http://10.0.0.16:3000/app.js)
+[debug][client][editor-sync-started] 
+Object { sessionId: "3a3de710-ab01-45ec-92c6-5c957bc3cdb9", deviceId: "d63cebc3-77ee-4376-8374-5076677fc4c3", clientTimestamp: "2026-06-22T17:20:17.124Z", reason: "input-debounced", assetIds: (1) […] }
+[app.js:104:13](http://10.0.0.16:3000/app.js)
+[debug][client][editor-sync-skipped] 
+Object { sessionId: "3a3de710-ab01-45ec-92c6-5c957bc3cdb9", deviceId: "d63cebc3-77ee-4376-8374-5076677fc4c3", clientTimestamp: "2026-06-22T17:20:17.156Z", reason: "content-too-large", contentSize: 804969, maxContentSize: 524288 }
+
+
 ---------------------------------------------------------
 
 

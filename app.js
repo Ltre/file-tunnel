@@ -833,7 +833,7 @@ function getEditorAssetPlaceholder(image) {
 function setEditorAssetStatus(assetId, message, state = 'loading') {
     document.querySelectorAll(`img[data-tunnel-asset-id="${assetId}"]`).forEach(image => {
         image.removeAttribute('src');
-        if (!image.dataset.tunnelAssetDisplay) {
+        if (!image.hasAttribute('data-tunnel-asset-display')) {
             image.dataset.tunnelAssetDisplay = image.style.display || '';
         }
         image.style.display = 'none';
@@ -845,7 +845,8 @@ function setEditorAssetStatus(assetId, message, state = 'loading') {
 }
 
 function setEditorAssetReady(image) {
-    image.style.display = image.dataset.tunnelAssetDisplay || '';
+    // Older clients could record their own temporary "none" as the original display.
+    image.style.display = image.dataset.tunnelAssetDisplay === 'none' ? '' : (image.dataset.tunnelAssetDisplay || '');
     delete image.dataset.tunnelAssetDisplay;
     delete image.dataset.tunnelAssetState;
     image.removeAttribute('title');
