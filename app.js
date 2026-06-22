@@ -1517,6 +1517,37 @@ function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
 
+    const getEditorSelectionRange = () => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return null;
+
+        const range = selection.getRangeAt(0);
+        return editor.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+    };
+
+    const insertEditorHtml = (html, savedRange = null) => {
+        const range = savedRange || getEditorSelectionRange();
+        if (!range) {
+            editor.insertAdjacentHTML('beforeend', html);
+            return;
+        }
+
+        const template = document.createElement('template');
+        template.innerHTML = html;
+        const lastNode = template.content.lastChild;
+
+        range.deleteContents();
+        range.insertNode(template.content);
+        if (lastNode) {
+            range.setStartAfter(lastNode);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+        editor.focus();
+    };
+
     const queueEditorSync = () => {
         state.isSyncing = true;
         document.getElementById('collabStatus').textContent = '编辑中...';
@@ -1545,6 +1576,8 @@ function initEditor() {
 
     // 插入图片
     document.getElementById('insertImageBtn').addEventListener('click', async () => {
+        editor.focus();
+        const savedRange = getEditorSelectionRange();
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = 'image/*';
@@ -1564,7 +1597,7 @@ function initEditor() {
                     return;
                 }
 
-                document.execCommand('insertHTML', false, img);
+                insertEditorHtml(img, savedRange);
                 queueEditorSync();
             }
         };
@@ -1573,6 +1606,8 @@ function initEditor() {
 
     // 引用文件
     document.getElementById('insertFileBtn').addEventListener('click', async () => {
+        editor.focus();
+        const savedRange = getEditorSelectionRange();
         // 获取当前会话的所有文件 - 兼容性处理
         let files = [];
         
@@ -1635,7 +1670,7 @@ function initEditor() {
                     return;
                 }
 
-                document.execCommand('insertHTML', false, refHtml);
+                insertEditorHtml(refHtml, savedRange);
                 queueEditorSync();
             }
 
@@ -1692,6 +1727,8 @@ function initEditor() {
     // 清空编辑器
     document.getElementById('clearEditorBtn').addEventListener('click', () => {
         editor.innerHTML = '';
+        editor.focus();
+        queueEditorSync();
     });
 }
 
