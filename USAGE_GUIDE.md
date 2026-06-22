@@ -117,3 +117,7 @@ GET /admin
 - Edge 80+
 
 注意: 部分功能在 HTTP 环境下可能受限，建议使用 HTTPS。
+
+## 日志
+
+http://10.0.0.16:3000/api/debug-logs?limit=1000
