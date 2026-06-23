@@ -929,20 +929,49 @@
             top: 14px;
             right: 14px;
             z-index: 3600;
-            width: 34px;
-            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 38px;
+            height: 38px;
             border: 1px solid rgba(255, 255, 255, 0.72);
-            border-radius: 5px;
+            border-radius: 6px;
             background: rgba(255, 255, 255, 0.92);
             color: #52617e;
             cursor: pointer;
-            font-size: 1.35rem;
-            line-height: 1;
+            box-shadow: 0 4px 12px rgba(33, 44, 72, 0.14);
+        }
+
+        .leave-tunnel-btn::before {
+            width: 19px;
+            height: 12px;
+            border: 2px solid currentColor;
+            border-radius: 50% / 65%;
+            content: '';
+        }
+
+        .leave-tunnel-btn::after {
+            position: absolute;
+            width: 24px;
+            height: 2px;
+            border-radius: 2px;
+            background: currentColor;
+            content: '';
+            transform: rotate(-42deg);
+        }
+
+        .leave-tunnel-eye-pupil {
+            position: absolute;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: currentColor;
         }
 
         .leave-tunnel-btn:hover {
             border-color: #667eea;
             color: #4f5ec2;
+            box-shadow: 0 6px 16px rgba(54, 72, 135, 0.2);
         }
 
         .tunnel-landing-main {
@@ -1238,7 +1267,7 @@
         </main>
     </div>
 
-    <button class="leave-tunnel-btn" id="leaveTunnelBtn" title="暂时离开当前隧道" aria-label="暂时离开当前隧道" hidden>&times;</button>
+    <button class="leave-tunnel-btn" id="leaveTunnelBtn" title="暂时离开当前隧道" aria-label="暂时离开当前隧道" hidden><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     <button class="mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源" hidden>↻</button>
 
     <div class="container" id="appShell" hidden>
