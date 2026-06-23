@@ -88,6 +88,31 @@
             throw new Error('Invalid file asset data');
         }
 
+        async markInterruptedAsset(assetId, asset, reason) {
+            const metadata = asset || this.transfers.get(assetId)?.asset || this.requestedMetadata.get(assetId);
+            if (!assetId || !metadata?.id) return;
+
+            try {
+                const existing = await this.deps.load(assetId);
+                if (this.hasCompleteCache(existing, metadata)) return;
+                const { data, ...previous } = existing || {};
+                await this.deps.store({
+                    ...previous,
+                    ...this.metadata(metadata),
+                    id: assetId,
+                    sessionId: this.deps.getSessionId(),
+                    isFileAsset: true,
+                    isPartial: true,
+                    transferInterrupted: true,
+                    transferInterruptedAt: Date.now(),
+                    transferInterruptedReason: String(reason || 'transfer-interrupted').slice(0, 80)
+                });
+                this.log('interrupted-cache-marked', { assetId, reason });
+            } catch (err) {
+                this.log('interrupted-cache-mark-failed', { assetId, reason, error: err.message });
+            }
+        }
+
         async request(assetId, preferredProviderId, metadata = null) {
             if (!assetId) return;
             if (metadata?.id === assetId) this.requestedMetadata.set(assetId, metadata);
@@ -352,11 +377,13 @@
             const providerIndex = transfer.providers.indexOf(providerId || range.providerId);
             range.providerCursor = (providerIndex >= 0 ? providerIndex + 1 : range.providerCursor + 1) % transfer.providers.length;
             if (range.retryCount > MAX_RETRIES) {
+                const interruptedAsset = transfer.asset;
                 this.clearRangeTimers(assetId);
                 this.multiSourceTransfers.delete(assetId);
                 this.releaseDownload(assetId);
                 this.desiredAssets.delete(assetId);
                 this.requestedMetadata.delete(assetId);
+                this.markInterruptedAsset(assetId, interruptedAsset, reason);
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
                 this.log('range-retry-exhausted', { assetId, transferId, providerId, reason, error });
                 return;
@@ -803,10 +830,14 @@
         retryDownload(assetId, providerId, reason, error) {
             if (!this.desiredAssets.has(assetId)) return;
             const attempts = (this.retryCounts.get(assetId) || 0) + 1;
+            const interruptedAsset = this.transfers.get(assetId)?.asset || this.requestedMetadata.get(assetId);
             this.retryCounts.set(assetId, attempts);
             this.transfers.delete(assetId);
             this.releaseDownload(assetId);
             if (attempts > MAX_RETRIES) {
+                this.markInterruptedAsset(assetId, interruptedAsset, reason);
+                this.desiredAssets.delete(assetId);
+                this.requestedMetadata.delete(assetId);
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
                 this.log('retry-exhausted', { assetId, providerId, reason, error });
                 return;

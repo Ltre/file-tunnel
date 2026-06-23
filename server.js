@@ -141,6 +141,19 @@ app.get('/api/debug-logs', (req, res) => {
 
 // ==================== Socket.io 配置 ====================
 
+app.get('/api/short-codes/:shortCode', (req, res) => {
+    const shortCode = normalizeShortCode(req.params.shortCode);
+    if (!shortCode) return res.status(400).json({ error: 'Invalid short code' });
+
+    const sessionId = shortCodes.get(shortCode);
+    if (!sessionId || !sessions.has(sessionId)) {
+        shortCodes.delete(shortCode);
+        return res.status(404).json({ error: 'Short code not found' });
+    }
+
+    res.json({ sessionId });
+});
+
 const io = new Server(webServer, {
     cors: {
         origin: (origin, callback) => {
@@ -171,6 +184,7 @@ const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
 const editorAssetRelays = new Map();
 const shortCodes = new Map();
+const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 // ==================== 验证函数 ====================
 
@@ -242,13 +256,29 @@ function isValidSessionId(id) {
            /^[a-zA-Z0-9_-]{8,64}$/.test(id);
 }
 
-function createShortCode(sessionId) {
+function normalizeShortCode(value) {
+    const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
+    return /^[A-Z0-9]{5}$/.test(code) ? code : '';
+}
+
+function reserveShortCode(code, sessionId) {
+    if (!code) return null;
+    const existingSessionId = shortCodes.get(code);
+    if (existingSessionId && existingSessionId !== sessionId) return null;
+    shortCodes.set(code, sessionId);
+    return code;
+}
+
+function createShortCode(sessionId, preferredCode = '') {
+    const reservedPreferred = reserveShortCode(normalizeShortCode(preferredCode), sessionId);
+    if (reservedPreferred) return reservedPreferred;
+
     for (let attempt = 0; attempt < 100; attempt++) {
-        const code = String(Math.floor(10000 + Math.random() * 90000));
-        if (!shortCodes.has(code)) {
-            shortCodes.set(code, sessionId);
-            return code;
+        let code = '';
+        for (let index = 0; index < 5; index++) {
+            code += SHORT_CODE_ALPHABET[Math.floor(Math.random() * SHORT_CODE_ALPHABET.length)];
         }
+        if (reserveShortCode(code, sessionId)) return code;
     }
     return null;
 }
@@ -305,6 +335,25 @@ function isEditorContentEmpty(content) {
         .replace(/<br\s*\/?\s*>/gi, '')
         .replace(/&nbsp;/gi, '')
         .trim() === '';
+}
+
+function extractFileReferenceIds(content) {
+    const html = String(content || '');
+    return new Set([
+        ...Array.from(html.matchAll(/data-tunnel-file-ref-id="([^"]+)"/g), match => match[1]),
+        ...Array.from(html.matchAll(/downloadFile\(['"]([^'"]+)['"]\)/g), match => match[1])
+    ]);
+}
+
+function isFileAssetStillReferenced(session, fileId) {
+    if (!fileId) return false;
+    const referencedByHistory = session.history.some(entry =>
+        entry.message?.type === 'rich' && extractFileReferenceIds(entry.message.content).has(fileId)
+    );
+    if (referencedByHistory) return true;
+    return Array.from(session.devices.values()).some(device =>
+        extractFileReferenceIds(device.editorContent).has(fileId)
+    );
 }
 
 function createHistoryMessage(message) {
@@ -451,6 +500,7 @@ io.on('connection', (socket) => {
             }
             
             const { sessionId, deviceId, deviceName } = data;
+            const requestedShortCode = normalizeShortCode(data.shortCode);
             
             // 验证 sessionId
             if (!isValidSessionId(sessionId)) {
@@ -489,7 +539,7 @@ io.on('connection', (socket) => {
                 fileAssets: new Map(),
                 history: [],
                 deletedMessageIds: [],
-                shortCode: createShortCode(sessionId),
+                shortCode: createShortCode(sessionId, requestedShortCode),
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -498,7 +548,7 @@ io.on('connection', (socket) => {
             
             const session = sessions.get(sessionId);
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
-            if (!session.shortCode) session.shortCode = createShortCode(sessionId);
+            if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -604,8 +654,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join-by-short-code', data => {
-        const shortCode = typeof data?.shortCode === 'string' ? data.shortCode.trim() : '';
-        if (!/^\d{5}$/.test(shortCode)) return socket.emit('short-code-error', { message: '短码应为 5 位数字' });
+        const shortCode = normalizeShortCode(data?.shortCode);
+        if (!shortCode) return socket.emit('short-code-error', { message: '短码应为 5 位字母或数字' });
         const sessionId = shortCodes.get(shortCode);
         if (!sessionId || !sessions.has(sessionId)) {
             shortCodes.delete(shortCode);
@@ -731,11 +781,13 @@ io.on('connection', (socket) => {
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
             let fileId = null;
+            let fileStillReferenced = false;
             if (historyIndex >= 0) {
                 const [removed] = session.history.splice(historyIndex, 1);
                 session.historySize = Math.max(0, session.historySize - removed.size);
                 fileId = removed.message?.fileInfo?.id || null;
-                if (fileId) session.fileAssets?.delete(fileId);
+                fileStillReferenced = isFileAssetStillReferenced(session, fileId);
+                if (fileId && !fileStillReferenced) session.fileAssets?.delete(fileId);
             }
 
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
@@ -752,6 +804,7 @@ io.on('connection', (socket) => {
                 clientIp,
                 messageId,
                 fileId,
+                fileStillReferenced,
                 historyCount: session.history.length
             });
         } catch (err) {

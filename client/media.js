@@ -27,23 +27,77 @@
             if (socket?.connected) socket.emit(event, { sessionId: this.deps.getSessionId(), ...data });
         }
 
+        async getMediaDeviceSummary() {
+            if (!navigator.mediaDevices?.enumerateDevices) return {};
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                return devices.reduce((summary, device) => {
+                    summary[device.kind] = (summary[device.kind] || 0) + 1;
+                    return summary;
+                }, {});
+            } catch {
+                return {};
+            }
+        }
+
+        getMediaErrorMessage(error, constraints) {
+            const needsAudio = Boolean(constraints?.audio);
+            const needsVideo = Boolean(constraints?.video);
+            if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+                const deviceName = needsAudio && needsVideo ? '摄像头或麦克风' : (needsVideo ? '摄像头' : '麦克风');
+                return `未找到可用的${deviceName}。请检查设备连接、系统隐私设置和浏览器站点权限。`;
+            }
+            if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+                return '浏览器或系统拒绝了媒体权限。请在地址栏的站点设置中允许摄像头和麦克风。';
+            }
+            if (error?.name === 'NotReadableError' || error?.name === 'TrackStartError') {
+                return '摄像头或麦克风正被其它程序占用，或设备驱动无法访问。';
+            }
+            if (error?.name === 'OverconstrainedError') {
+                return '当前媒体设备不满足浏览器请求的条件。';
+            }
+            return `无法启动媒体采集：${error?.message || '未知错误'}`;
+        }
+
         async getMedia(constraints) {
             if (!global.isSecureContext) {
                 throw new Error('摄像头和麦克风只能通过 HTTPS 使用；请改用 HTTPS 域名，或仅在本机使用 http://localhost:3000');
             }
             if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器不支持媒体采集');
-            return navigator.mediaDevices.getUserMedia(constraints);
+            try {
+                return await navigator.mediaDevices.getUserMedia(constraints);
+            } catch (error) {
+                this.log('capture-failed', {
+                    errorName: error?.name,
+                    errorMessage: error?.message,
+                    constraints,
+                    deviceSummary: await this.getMediaDeviceSummary(),
+                    secureContext: global.isSecureContext
+                });
+                const wrapped = new Error(this.getMediaErrorMessage(error, constraints));
+                wrapped.name = error?.name || 'MediaCaptureError';
+                throw wrapped;
+            }
         }
 
         async startCamera() {
             if (this.camera) return;
-            const stream = await this.getMedia({ video: true, audio: true });
+            let stream;
+            let includesAudio = true;
+            try {
+                stream = await this.getMedia({ video: true, audio: true });
+            } catch (error) {
+                if (error?.name !== 'NotFoundError' && error?.name !== 'DevicesNotFoundError') throw error;
+                stream = await this.getMedia({ video: true, audio: false });
+                includesAudio = false;
+                this.log('camera-audio-fallback', { reason: 'audio-device-not-found' });
+            }
             const broadcastId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
             this.camera = { broadcastId, stream };
             this.cameraBroadcast = { broadcastId, ownerDeviceId: this.deps.getDeviceId(), local: true };
             this.deps.onLocalCamera(stream, true);
             this.emit('camera-broadcast-start', { broadcastId });
-            this.log('camera-started', { broadcastId });
+            this.log('camera-started', { broadcastId, includesAudio });
         }
 
         stopCamera() {

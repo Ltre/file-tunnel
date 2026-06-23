@@ -1134,12 +1134,14 @@ function getEditorAssetMetadata(asset) {
         name: asset.name,
         type: asset.type,
         size: asset.size,
-        ownerDeviceId: asset.ownerDeviceId
+        ownerDeviceId: asset.ownerDeviceId,
+        sourceFileId: asset.sourceFileId
     };
 }
 
 function createEditorAssetHtml(asset) {
-    return `<img data-tunnel-asset-id="${asset.id}" data-tunnel-asset-owner="${asset.ownerDeviceId}" data-tunnel-asset-name="${escapeHtml(asset.name)}" data-tunnel-asset-type="${escapeHtml(asset.type)}" data-tunnel-asset-size="${asset.size}" alt="${escapeHtml(asset.name)}" style="max-width: 100%; border-radius: 8px;">`;
+    const sourceFileAttr = asset.sourceFileId ? ` data-tunnel-source-file-id="${escapeHtml(asset.sourceFileId)}"` : '';
+    return `<img data-tunnel-asset-id="${asset.id}" data-tunnel-asset-owner="${asset.ownerDeviceId}" data-tunnel-asset-name="${escapeHtml(asset.name)}" data-tunnel-asset-type="${escapeHtml(asset.type)}" data-tunnel-asset-size="${asset.size}"${sourceFileAttr} alt="${escapeHtml(asset.name)}" style="max-width: 100%; border-radius: 8px;">`;
 }
 
 function getEditorAssetTransportLabel(transport) {
@@ -1248,8 +1250,15 @@ function serializeEditorContent(content) {
     return container.innerHTML;
 }
 
-async function createEditorAsset(name, type, data) {
-    const size = data.byteLength;
+async function cloneBinaryData(data) {
+    if (data instanceof ArrayBuffer) return data.slice(0);
+    if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    if (typeof Blob !== 'undefined' && data instanceof Blob) return data.arrayBuffer();
+    throw new Error('File data is unavailable');
+}
+
+async function createEditorAsset(name, type, data, options = {}) {
+    const size = getBinaryDataSize(data);
     if (!type.startsWith('image/')) {
         throw new Error('Only image files can be inserted into the editor');
     }
@@ -1265,6 +1274,7 @@ async function createEditorAsset(name, type, data) {
         ownerDeviceId: state.deviceId,
         isEditorAsset: true,
         sessionId: state.sessionId,
+        sourceFileId: options.sourceFileId,
         data,
         timestamp: Date.now()
     };
@@ -1279,7 +1289,31 @@ async function createEditorAssetFromFile(file) {
 }
 
 async function createEditorAssetFromStoredFile(file) {
-    return createEditorAsset(file.name, file.type, file.data.slice(0));
+    if (file?.isEditorAsset) return file;
+    if (!hasCompleteFileCache(file, file)) {
+        throw new Error('Referenced file is not cached on this device');
+    }
+
+    const files = typeof IDBKeyRange !== 'undefined'
+        ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+        : (await getAllFromStore('files')).filter(item => item.sessionId === state.sessionId);
+    const existing = files.find(item =>
+        item.isEditorAsset &&
+        item.sourceFileId === file.id &&
+        item.type === file.type &&
+        item.size === file.size &&
+        hasCompleteFileCache(item, item)
+    );
+    if (existing) {
+        announceEditorAsset(existing);
+        historyLog('editor-asset-reference-reused', {
+            sourceFileId: file.id,
+            asset: getEditorAssetMetadata(existing)
+        });
+        return existing;
+    }
+
+    return createEditorAsset(file.name, file.type, await cloneBinaryData(file.data), { sourceFileId: file.id });
 }
 
 function announceEditorAsset(asset) {
@@ -2533,7 +2567,15 @@ async function handleSessionHistory(data) {
     historyLog('snapshot-processing-completed', result);
 
     if (data.authoritative) {
-        await pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds);
+        const localMessages = await getCurrentSessionMessages();
+        if (messages.length === 0 && deletedMessageIds.length === 0 && localMessages.length > 0) {
+            historyLog('history-canonical-empty-ignored', {
+                localMessageCount: localMessages.length
+            });
+            await reconcileLocalHistory(messages, deletedMessageIds);
+        } else {
+            await pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds);
+        }
     } else {
         await reconcileLocalHistory(messages, deletedMessageIds);
     }
@@ -2916,10 +2958,23 @@ async function deleteHistoryMessageLocal(messageId) {
     if (message?.fileInfo?.id) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
-        await deleteFromStore('files', fileId);
-        const objectUrl = fileObjectUrls.get(fileId);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        fileObjectUrls.delete(fileId);
+        const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
+        if (stillReferenced) {
+            const storedFile = await getFromStore('files', fileId);
+            if (storedFile) {
+                await saveToStore('files', {
+                    ...storedFile,
+                    referencedAfterHistoryDelete: true,
+                    isFileAsset: false,
+                    timestamp: storedFile.timestamp || Date.now()
+                });
+            }
+        } else {
+            await deleteFromStore('files', fileId);
+            const objectUrl = fileObjectUrls.get(fileId);
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            fileObjectUrls.delete(fileId);
+        }
     }
     await deleteFromStore('messages', messageId);
     pendingHistoryMessageIds.delete(messageId);
@@ -2929,6 +2984,32 @@ async function deleteHistoryMessageLocal(messageId) {
 
 function extractAssetIds(content) {
     return Array.from(String(content || '').matchAll(/data-tunnel-asset-id="([^"]+)"/g), match => match[1]);
+}
+
+function extractFileRefIds(content) {
+    const html = String(content || '');
+    const ids = new Set([
+        ...Array.from(html.matchAll(/data-tunnel-file-ref-id="([^"]+)"/g), match => match[1]),
+        ...Array.from(html.matchAll(/downloadFile\(['"]([^'"]+)['"]\)/g), match => match[1])
+    ]);
+    return Array.from(ids);
+}
+
+async function isFileReferencedByRichContent(fileId, excludingMessageId = null) {
+    const [messages, editorContent] = await Promise.all([
+        getCurrentSessionMessages(),
+        getFromStore('editorContent', 'current')
+    ]);
+    for (const message of messages) {
+        if (!message || message.id === excludingMessageId || message.type !== 'rich') continue;
+        if (extractFileRefIds(message.content).includes(fileId)) return true;
+    }
+    if (editorContent?.sessionId === state.sessionId &&
+        extractFileRefIds(editorContent.content).includes(fileId)) {
+        return true;
+    }
+    const editor = document.getElementById('editor');
+    return Boolean(editor && extractFileRefIds(editor.innerHTML).includes(fileId));
 }
 
 async function findGarbageFileCaches() {
@@ -2942,10 +3023,14 @@ async function findGarbageFileCaches() {
     const referenced = new Set();
     messages.forEach(message => {
         if (message.fileInfo?.id) referenced.add(message.fileInfo.id);
-        if (message.type === 'rich') extractAssetIds(message.content).forEach(id => referenced.add(id));
+        if (message.type === 'rich') {
+            extractAssetIds(message.content).forEach(id => referenced.add(id));
+            extractFileRefIds(message.content).forEach(id => referenced.add(id));
+        }
     });
     if (editorContent?.sessionId === state.sessionId) {
         extractAssetIds(editorContent.content).forEach(id => referenced.add(id));
+        extractFileRefIds(editorContent.content).forEach(id => referenced.add(id));
     }
     return files.filter(file => !referenced.has(file.id) || file.isPartial || file.transferInterrupted);
 }
@@ -3243,6 +3328,17 @@ function initEditor() {
             files = allFiles.filter(f => f.sessionId === state.sessionId);
         }
 
+        files = files
+            .filter(file =>
+                file &&
+                !file.isEditorAsset &&
+                !file.isPartial &&
+                !file.transferInterrupted &&
+                !file.cacheCleared &&
+                hasCompleteFileCache(file, file)
+            )
+            .filter((file, index, list) => list.findIndex(item => item.id === file.id) === index);
+
         if (files.length === 0) {
             alert('暂无文件可引用');
             return;
@@ -3284,7 +3380,7 @@ function initEditor() {
                         return;
                     }
                 } else {
-                    refHtml = `<span style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${fileId}')">📎 ${file.name}</span>`;
+                    refHtml = `<span data-tunnel-file-ref-id="${escapeHtml(fileId)}" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${fileId}')">📎 ${escapeHtml(file.name)}</span>`;
                 }
 
                 if (getEditorContentSize(editor.innerHTML + refHtml) > MAX_EDITOR_CONTENT_SIZE) {
