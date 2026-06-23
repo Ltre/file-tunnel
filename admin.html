@@ -340,8 +340,8 @@
                 updateStats({
                     sessions,
                     totalDevices: data.totalDevices || 0,
-                    totalMessages: localData.totalMessages,
-                    totalFiles: localData.totalFiles
+                    totalMessages: sessions.reduce((total, session) => total + (session.messageCount || 0), 0),
+                    totalFiles: sessions.reduce((total, session) => total + (session.fileCount || 0), 0)
                 });
                 renderSessions(sessions);
                 
@@ -485,8 +485,8 @@
                 sessionMap.set(session.id, {
                     ...session,
                     isLocalHistory: false,
-                    messageCount: 0,
-                    fileCount: 0
+                    messageCount: Number(session.messageCount) || 0,
+                    fileCount: Number(session.fileCount) || 0
                 });
             });
 
@@ -497,8 +497,6 @@
                 if (existing) {
                     existing.createdAt = Math.min(existing.createdAt || localSession.createdAt, localSession.createdAt);
                     existing.lastActivity = Math.max(existing.lastActivity || localSession.lastActivity, localSession.lastActivity);
-                    existing.messageCount = localSession.messageCount || 0;
-                    existing.fileCount = localSession.fileCount || 0;
                     existing.hasLocalHistory = true;
                     return;
                 }
@@ -511,7 +509,7 @@
             });
 
             return Array.from(sessionMap.values())
-                .sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+                .sort((a, b) => Number(b.isOnline) - Number(a.isOnline) || (b.lastActivity || 0) - (a.lastActivity || 0));
         }
         
         // 从本地存储加载（备用）
@@ -583,8 +581,10 @@
                 const createdTime = new Date(session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const lastActivity = new Date(session.lastActivity || session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const isActive = session.isActive === true;
-                const statusClass = isActive ? 'status-active' : (session.isLocalHistory ? 'status-local' : 'status-inactive');
-                const statusText = isActive ? '活跃' : (session.isLocalHistory ? '离线历史' : '离线');
+                const isOnline = session.isOnline === true;
+                const statusClass = isOnline ? 'status-active' : (session.isLocalHistory ? 'status-local' : 'status-inactive');
+                const statusText = isOnline ? '在线' : (session.isLocalHistory ? '离线历史' : '离线');
+                const activityText = isActive ? '活跃' : '非活跃';
                 
                 return `
                     <div class="session-item" data-session-id="${safeId}">
@@ -594,6 +594,9 @@
                                 会话 ${shortId}
                                 <span class="status-badge ${statusClass}">
                                     ${statusText}
+                                </span>
+                                <span class="status-badge ${isActive ? 'status-active' : 'status-inactive'}">
+                                    ${activityText}
                                 </span>
                             </div>
                             <div class="session-meta">
@@ -611,6 +614,9 @@
                             <button class="btn btn-secondary" onclick="copyLink('${safeId}')">
                                 <span>📋</span>
                                 <span>复制链接</span>
+                            </button>
+                            <button class="btn btn-danger" onclick="deleteSession('${safeId}')">
+                                <span>删除</span>
                             </button>
                         </div>
                     </div>
@@ -636,6 +642,17 @@
                 document.body.removeChild(textarea);
                 alert('链接已复制: ' + url);
             });
+        }
+
+        async function deleteSession(sessionId) {
+            if (!isValidSessionId(sessionId) || !confirm(`删除会话 ${sessionId}？这会断开在线设备，并释放对应的隧道暗号。`)) return;
+            try {
+                const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('删除会话失败');
+                await loadData();
+            } catch (err) {
+                alert(err.message);
+            }
         }
         
         // 导出会话列表

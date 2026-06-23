@@ -42,6 +42,9 @@ const state = {
     sessionId: null,
     deviceId: null,
     deviceName: null,
+    deviceModel: null,
+    reportedLanIp: null,
+    selfNetworkInfo: null,
     socket: null,
     peers: new Map(), // deviceId -> RTCPeerConnection
     dataChannels: new Map(), // deviceId -> RTCDataChannel
@@ -53,6 +56,11 @@ const state = {
     isSyncing: false,
     debugLogQueue: [],
     debugLogReady: false,
+    shortCode: '',
+    remoteClipboardText: '',
+    clipboardShareEnabled: false,
+    recentSessionId: null,
+    pendingSharedFileCount: 0,
     db: null // IndexedDB实例
 };
 
@@ -75,11 +83,58 @@ let mediaController = null;
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
+let clipboardShareTimer = null;
+let lastClipboardText = null;
+let sharedFileImportInProgress = false;
+const completedFileProgress = new Set();
+const activeFileProgress = new Set();
+const progressHideTimers = new Map();
+const directoryMirror = {
+    handle: null,
+    timer: null,
+    signature: '',
+    skipSignature: '',
+    busy: false
+};
 
 window.addEventListener('beforeunload', () => {
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
     fileObjectUrls.forEach(url => URL.revokeObjectURL(url));
 });
+
+function getFileProgressKey(fileId, transport = '') {
+    const route = String(transport || '');
+    if (!route.startsWith('sending')) return fileId;
+    return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function progressElementId(progressKey) {
+    return `progress-${String(progressKey).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function getFileProgressStatus(transport = '') {
+    const route = String(transport || '');
+    if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
+    if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return 'multi-source P2P';
+    if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
+    if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
+    return '';
+}
+
+function getBinaryDataSize(data) {
+    if (!data) return 0;
+    if (typeof Blob !== 'undefined' && data instanceof Blob) return data.size;
+    if (data instanceof ArrayBuffer) return data.byteLength;
+    if (ArrayBuffer.isView(data)) return data.byteLength;
+    return 0;
+}
+
+function hasCompleteFileCache(storedFile, fileInfo = null) {
+    const size = getBinaryDataSize(storedFile?.data);
+    if (size <= 0) return false;
+    const expectedSize = Number(fileInfo?.size ?? storedFile?.size);
+    return !Number.isFinite(expectedSize) || expectedSize <= 0 || size === expectedSize;
+}
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
@@ -150,7 +205,17 @@ function flushClientDebugLogs() {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
     await initStorage();
-    initSession();
+    registerServiceWorker();
+    if (!await initSession()) {
+        initSessionLanding();
+        return;
+    }
+    await startTunnelApplication();
+});
+
+async function startTunnelApplication() {
+    document.getElementById('appShell').hidden = false;
+    document.getElementById('leaveTunnelBtn').hidden = false;
     initFileAssetTransfer();
     initMediaController();
     initUI();
@@ -158,7 +223,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     initDragDrop();
     await loadSessionData();
     initSocket();
-});
+}
+
+function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('/service-worker.js').catch(err => {
+        console.warn('Service worker registration failed:', err);
+    });
+}
 
 // ==================== 存储管理 (IndexedDB + 内存备用) ====================
 
@@ -170,7 +242,7 @@ function createMemoryDB() {
     return {
         _isMemory: true,
         objectStoreNames: {
-            contains: (name) => ['sessions', 'messages', 'files'].includes(name)
+            contains: (name) => ['sessions', 'messages', 'files', 'editorContent', 'shareQueue'].includes(name)
         }
     };
 }
@@ -188,7 +260,7 @@ async function initStorage() {
 
         console.log('Opening IndexedDB...');
         // 增加数据库版本号以强制升级，确保所有对象存储都存在
-        const request = indexedDB.open('TunnelDB', 2); // 从1升级到2
+        const request = indexedDB.open('TunnelDB', 3);
 
         request.onerror = (event) => {
             console.error('IndexedDB open error:', event.target.error);
@@ -200,7 +272,7 @@ async function initStorage() {
             console.log('IndexedDB opened successfully, version:', state.db.version);
             
             // 检查是否所有必需的对象存储都存在
-            const requiredStores = ['sessions', 'messages', 'files', 'editorContent'];
+            const requiredStores = ['sessions', 'messages', 'files', 'editorContent', 'shareQueue'];
             const existingStores = Array.from(state.db.objectStoreNames);
             
             let missingStores = [];
@@ -217,7 +289,7 @@ async function initStorage() {
                 indexedDB.deleteDatabase('TunnelDB');
                 
                 // 重新打开数据库
-                const recreateRequest = indexedDB.open('TunnelDB', 2);
+                const recreateRequest = indexedDB.open('TunnelDB', 3);
                 
                 recreateRequest.onerror = (e) => reject(e.target.error);
                 recreateRequest.onsuccess = (e) => {
@@ -266,6 +338,11 @@ function createRequiredStores(db) {
     if (!db.objectStoreNames.contains('editorContent')) {
         const editorStore = db.createObjectStore('editorContent', { keyPath: 'id' });
         editorStore.createIndex('sessionId', 'sessionId', { unique: false });
+    }
+
+    if (!db.objectStoreNames.contains('shareQueue')) {
+        const shareStore = db.createObjectStore('shareQueue', { keyPath: 'id' });
+        shareStore.createIndex('createdAt', 'createdAt', { unique: false });
     }
 }
 
@@ -370,7 +447,7 @@ async function deleteFromStore(storeName, key) {
 }
 
 // ==================== 会话管理 ====================
-function initSession() {
+async function initSession() {
     // 生成或获取设备ID
     state.deviceId = localStorage.getItem('deviceId') || generateId();
     localStorage.setItem('deviceId', state.deviceId);
@@ -379,22 +456,141 @@ function initSession() {
     const deviceTypes = ['📱', '💻', '🖥️', '⌚', '📱'];
     const type = /Mobile|Android|iPhone|iPad/i.test(navigator.userAgent) ? 0 : 1;
     state.deviceName = `${deviceTypes[type]} 设备-${state.deviceId.slice(-4)}`;
+    state.deviceModel = detectDeviceModel();
 
-    // 从URL hash获取或创建会话ID
-    const hash = window.location.hash.slice(1);
+    // A shared hash always wins. A plain home page resumes the most recent local
+    // session, unless it was opened as a PWA share target and needs a destination.
+    const entryUrl = new URL(window.location.href);
+    const hash = entryUrl.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
         state.sessionId = hash;
+        const storedSession = await getFromStore('sessions', state.sessionId).catch(() => null);
+        state.shortCode = normalizeLocalShortCode(storedSession?.shortCode);
+        if (entryUrl.search) {
+            history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
+        }
     } else {
-        state.sessionId = generateId();
-        window.location.hash = state.sessionId;
+        const [storedSessions, sharedFiles] = await Promise.all([
+            getAllFromStore('sessions'),
+            getAllFromStore('shareQueue').catch(() => [])
+        ]);
+        const recent = storedSessions
+            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
+            .sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0];
+        state.recentSessionId = recent?.sessionId || null;
+        state.pendingSharedFileCount = sharedFiles.length;
+
+        if (entryUrl.searchParams.has('leave') || state.pendingSharedFileCount > 0 || !state.recentSessionId) return false;
+
+        state.sessionId = state.recentSessionId;
+        state.shortCode = normalizeLocalShortCode(recent.shortCode);
+        history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
     }
 
-    // 更新UI
+    updateSessionIdentityUi();
+    return true;
+}
+
+function normalizeLocalShortCode(value) {
+    const shortCode = typeof value === 'string' ? value.trim().toUpperCase() : '';
+    return /^[A-Z0-9]{5}$/.test(shortCode) ? shortCode : '';
+}
+
+function updateSessionIdentityUi() {
     document.getElementById('sessionId').textContent = state.sessionId.slice(0, 8) + '...';
     document.getElementById('deviceId').textContent = state.deviceId.slice(0, 8) + '...';
-
-    // 生成二维码
     generateQRCode();
+}
+
+function initSessionLanding() {
+    const landing = document.getElementById('sessionLanding');
+    const note = document.getElementById('landingNote');
+    const recentButton = document.getElementById('landingRecentBtn');
+    const sharedFilesNotice = document.getElementById('sharedFilesNotice');
+    const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
+    landing.hidden = false;
+    document.getElementById('leaveTunnelBtn').hidden = true;
+    if (!window.location.hash && window.location.search) {
+        history.replaceState(null, '', window.location.pathname);
+    }
+
+    if (state.pendingSharedFileCount > 0) {
+        sharedFilesNotice.hidden = false;
+        sharedFilesNotice.textContent = `已收到 ${state.pendingSharedFileCount} 个分享文件，请选择要发送到的传输隧道。`;
+    }
+    if (state.recentSessionId) {
+        recentButton.hidden = false;
+        recentButton.addEventListener('click', () => openSession(state.recentSessionId));
+    }
+
+    const fillCode = value => {
+        const characters = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, inputs.length);
+        characters.split('').forEach((character, index) => { inputs[index].value = character; });
+        const focusIndex = Math.min(characters.length, inputs.length - 1);
+        inputs[focusIndex].focus();
+    };
+    const join = async () => {
+        const shortCode = inputs.map(input => input.value).join('').toUpperCase();
+        if (!/^[A-Z0-9]{5}$/.test(shortCode)) {
+            note.textContent = '请输入完整的 5 位隧道暗号。';
+            return;
+        }
+        note.textContent = '正在查找传输隧道...';
+        try {
+            const response = await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`);
+            if (!response.ok) throw new Error('没有找到该传输隧道，或它已经被删除。');
+            const data = await response.json();
+            if (!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId || '')) throw new Error('传输隧道响应无效。');
+            openSession(data.sessionId);
+        } catch (err) {
+            note.textContent = err.message;
+        }
+    };
+
+    inputs.forEach((input, index) => {
+        input.addEventListener('input', event => {
+            const value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            event.target.value = value.slice(-1);
+            if (value.length > 1) fillCode(value);
+            else if (event.target.value && inputs[index + 1]) inputs[index + 1].focus();
+        });
+        input.addEventListener('keydown', event => {
+            if (event.key === 'Backspace' && !input.value && inputs[index - 1]) inputs[index - 1].focus();
+            if (event.key === 'Enter') join();
+        });
+        input.addEventListener('paste', event => {
+            event.preventDefault();
+            fillCode(event.clipboardData?.getData('text'));
+        });
+    });
+    document.getElementById('landingJoinBtn').addEventListener('click', join);
+    document.getElementById('landingCreateBtn').addEventListener('click', () => openSession(generateId()));
+    inputs[0].focus();
+}
+
+function openSession(sessionId) {
+    if (!/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) return;
+    const target = new URL(`${window.location.origin}${window.location.pathname}`);
+    // A changed query forces a new document load. A hash-only assignment would
+    // otherwise keep the chooser page alive without running application startup.
+    target.searchParams.set('open', '1');
+    target.hash = sessionId;
+    window.location.assign(target.href);
+}
+
+async function leaveTunnel() {
+    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
+    await saveToStore('sessions', {
+        ...(existing || {}),
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        entryState: 'left',
+        lastLeftAt: Date.now()
+    }).catch(err => historyLog('session-leave-state-failed', { error: err.message }));
+    state.socket?.disconnect();
+    const target = new URL(`${window.location.origin}${window.location.pathname}`);
+    target.searchParams.set('leave', '1');
+    window.location.assign(target.href);
 }
 
 function generateId() {
@@ -402,6 +598,50 @@ function generateId() {
         const r = Math.random() * 16 | 0;
         const v = c === 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
+    });
+}
+
+function detectDeviceModel() {
+    const userAgent = navigator.userAgent || '';
+    const androidModel = /Android[^;]*;\s*([^;)]+?)(?:\s+Build\/|;|\))/i.exec(userAgent);
+    if (androidModel?.[1]) return androidModel[1].trim().slice(0, 120);
+    if (/iPhone/i.test(userAgent)) return 'iPhone';
+    if (/iPad/i.test(userAgent)) return 'iPad';
+    if (/Macintosh/i.test(userAgent)) return 'Mac';
+    if (/Windows/i.test(userAgent)) return 'Windows PC';
+    if (/Linux/i.test(userAgent)) return 'Linux device';
+    return navigator.platform || '未知设备';
+}
+
+function isPrivateNetworkIp(value) {
+    const ip = String(value || '').replace(/^::ffff:/i, '');
+    return /^10\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip) ||
+        /^127\./.test(ip) || /^169\.254\./.test(ip) || /^fc/i.test(ip) || /^fd/i.test(ip) || /^fe80:/i.test(ip);
+}
+
+function discoverLocalNetworkIp(timeout = 1200) {
+    if (!window.RTCPeerConnection) return Promise.resolve(null);
+    return new Promise(resolve => {
+        const connection = new RTCPeerConnection({ iceServers: [] });
+        let finished = false;
+        const finish = value => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            connection.close();
+            resolve(value || null);
+        };
+        const timer = setTimeout(() => finish(null), timeout);
+        connection.createDataChannel('network-probe');
+        connection.onicecandidate = event => {
+            const candidate = event.candidate?.candidate || '';
+            const match = /candidate:\S+\s+\d+\s+\S+\s+([0-9a-f:.]+)\s+\d+\s+typ\s+host/i.exec(candidate);
+            if (match && isPrivateNetworkIp(match[1])) finish(match[1]);
+            if (!event.candidate) finish(null);
+        };
+        connection.createOffer()
+            .then(offer => connection.setLocalDescription(offer))
+            .catch(() => finish(null));
     });
 }
 
@@ -426,13 +666,14 @@ function initSocket() {
         transports: ['websocket', 'polling']
     });
 
-    state.socket.on('connect', () => {
+    state.socket.on('connect', async () => {
         state.debugLogReady = false;
         console.log('Socket connected');
         historyLog('socket-connected', {
             socketId: state.socket.id,
             socketServer: CONFIG.SOCKET_SERVER
         });
+        await announceKnownSessionCodes();
         historyLog('join-emitted', {
             socketId: state.socket.id,
             deviceName: state.deviceName
@@ -440,13 +681,28 @@ function initSocket() {
         state.socket.emit('join-session', {
             sessionId: state.sessionId,
             deviceId: state.deviceId,
-            deviceName: state.deviceName
+            deviceName: state.deviceName,
+            deviceModel: state.deviceModel,
+            localIp: state.reportedLanIp,
+            shortCode: state.shortCode
         });
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
         announceStoredFileAssets();
         hydrateEditorAssets(document.getElementById('editor'));
+        consumePendingSharedFiles().catch(err => {
+            historyLog('shared-file-import-failed', { error: err.message });
+        });
+        discoverLocalNetworkIp().then(localIp => {
+            if (!localIp || localIp === state.reportedLanIp || !state.socket?.connected) return;
+            state.reportedLanIp = localIp;
+            state.socket.emit('device-profile-update', {
+                sessionId: state.sessionId,
+                deviceModel: state.deviceModel,
+                localIp
+            });
+        });
     });
 
     state.socket.on('device-joined', (data) => {
@@ -460,6 +716,29 @@ function initSocket() {
     state.socket.on('session-devices', (data) => {
         handleSessionDevices(data);
     });
+    state.socket.on('session-deleted', async data => {
+        if (data?.sessionId !== state.sessionId) return;
+        await purgeLocalSession(data.sessionId);
+        alert('当前传输隧道已由管理员删除。');
+        window.location.href = `${window.location.origin}${window.location.pathname}`;
+    });
+    state.socket.on('device-profile', data => {
+        state.selfNetworkInfo = data || null;
+        updateDeviceList();
+    });
+    state.socket.on('device-updated', handleDeviceUpdated);
+
+    state.socket.on('session-short-code', (data) => {
+        updateShortCode(data?.shortCode).catch(err => historyLog('short-code-persist-failed', { error: err.message }));
+    });
+    state.socket.on('short-code-session', (data) => {
+        if (data?.sessionId && data.sessionId !== state.sessionId) {
+            window.location.hash = data.sessionId;
+            window.location.reload();
+        }
+    });
+    state.socket.on('short-code-error', (data) => alert(data?.message || '短码无法加入会话'));
+    state.socket.on('clipboard-update', (data) => receiveSharedClipboard(data));
 
     state.socket.on('signal', (data) => {
         handleSignal(data);
@@ -529,13 +808,27 @@ function initSocket() {
 
     state.socket.on('file-asset-request', (data) => fileAssetTransfer?.handleRequest(data));
     state.socket.on('file-asset-available', (data) => fileAssetTransfer?.handleAvailable(data));
+    state.socket.on('file-asset-manifest', (data) => fileAssetTransfer?.handleManifest(data));
     state.socket.on('file-asset-unavailable', (data) => fileAssetTransfer?.handleUnavailable(data));
     state.socket.on('file-asset-relay-start', (data) => fileAssetTransfer?.handleRelayStart(data));
     state.socket.on('file-asset-relay-chunk', (data) => fileAssetTransfer?.handleRelayChunk(data));
     state.socket.on('file-asset-relay-complete', (data) => fileAssetTransfer?.handleRelayComplete(data));
+    state.socket.on('directory-mirror-asset', data => {
+        const asset = data?.asset;
+        if (asset?.id && data.from !== state.deviceId) {
+            fileAssetTransfer?.request(asset.id, asset.ownerDeviceId || data.from, asset);
+            historyLog('directory-mirror-requested', { assetId: asset.id, from: data.from, folderName: asset.folderName });
+        }
+    });
 
-    state.socket.on('camera-broadcast-start', (data) => mediaController?.handleCameraBroadcastStart(data));
-    state.socket.on('camera-broadcast-stop', (data) => mediaController?.handleCameraBroadcastStop(data));
+    state.socket.on('camera-broadcast-start', (data) => {
+        mediaController?.handleCameraBroadcastStart(data);
+        if (data?.from && data.from !== state.deviceId) updateMediaButtons({ cameraMode: 'remote' });
+    });
+    state.socket.on('camera-broadcast-stop', (data) => {
+        mediaController?.handleCameraBroadcastStop(data);
+        if (!mediaController?.camera && !mediaController?.cameraBroadcast) updateMediaButtons({ cameraMode: 'idle' });
+    });
     state.socket.on('camera-viewer-ready', (data) => mediaController?.handleCameraViewerReady(data));
     state.socket.on('voice-state', (data) => mediaController?.handleVoiceState(data));
     state.socket.on('voice-peer-joined', (data) => mediaController?.handleVoicePeerJoined(data));
@@ -1452,12 +1745,45 @@ function initFileAssetTransfer() {
         load: fileId => getFromStore('files', fileId),
         store: file => saveToStore('files', file),
         log: historyLog,
-        onProgress: (fileId, fileName, progress) => {
-            showProgress(fileId, fileName, progress);
-            if (progress >= 100) setTimeout(() => hideProgress(fileId), 800);
+        onProgress: (fileId, fileName, progress, transport) => {
+            const route = String(transport || '');
+            const progressKey = getFileProgressKey(fileId, route);
+            const status = getFileProgressStatus(route);
+            const terminal = progress >= 100;
+            if (progress < 100) {
+                activeFileProgress.add(progressKey);
+                completedFileProgress.delete(progressKey);
+                const timer = progressHideTimers.get(progressKey);
+                if (timer) clearTimeout(timer);
+                progressHideTimers.delete(progressKey);
+            } else if (terminal && completedFileProgress.has(progressKey)) {
+                return;
+            } else if (terminal && !activeFileProgress.has(progressKey)) {
+                completedFileProgress.add(progressKey);
+                hideProgress(progressKey);
+                historyLog('file-progress-terminal-suppressed', {
+                    fileId,
+                    fileName,
+                    transport: route,
+                    reason: 'no-active-progress'
+                });
+                return;
+            }
+            showProgress(progressKey, fileName, progress, status);
+            if (terminal) {
+                activeFileProgress.delete(progressKey);
+                completedFileProgress.add(progressKey);
+                const timer = setTimeout(() => {
+                    hideProgress(progressKey);
+                    progressHideTimers.delete(progressKey);
+                }, 800);
+                progressHideTimers.set(progressKey, timer);
+            }
         },
+        onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onReceived: async (asset) => {
-            await refreshFileMessage(asset.id);
+            if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
+            else await refreshFileMessage(asset.id);
         },
         onUnavailable: (fileId, reason) => {
             updateFileMessageAvailability(fileId, reason);
@@ -1479,7 +1805,10 @@ function initMediaController() {
         onRemoteCamera: stream => showCameraStream(stream, Boolean(stream), false),
         onRemoteAudio: (kind, sessionKey, peerId, stream) => playRemoteAudio(kind, sessionKey, peerId, stream),
         onVoiceState: active => updateMediaButtons({ voice: active }),
-        onIntercomState: active => updateMediaButtons({ intercom: active })
+        onIntercomState: active => {
+            updateMediaButtons({ intercom: active });
+            updateDeviceList();
+        }
     });
 }
 
@@ -1489,7 +1818,7 @@ function showCameraStream(stream, active, isLocal) {
     video.srcObject = stream || null;
     video.muted = Boolean(isLocal);
     stage.style.display = active ? 'block' : 'none';
-    updateMediaButtons({ camera: active });
+    updateMediaButtons({ cameraMode: active ? (isLocal ? 'local' : 'remote') : 'idle' });
 }
 
 function playRemoteAudio(kind, sessionKey, peerId, stream) {
@@ -1511,8 +1840,12 @@ function updateMediaButtons(stateUpdate = {}) {
     const camera = document.getElementById('cameraBroadcastBtn');
     const voice = document.getElementById('voiceChatBtn');
     const intercom = document.getElementById('globalIntercomBtn');
-    if (camera && Object.hasOwn(stateUpdate, 'camera')) {
-        camera.textContent = stateUpdate.camera ? '关闭摄像头' : '摄像头';
+    if (camera && Object.hasOwn(stateUpdate, 'cameraMode')) {
+        camera.textContent = stateUpdate.cameraMode === 'local'
+            ? '关闭摄像头'
+            : stateUpdate.cameraMode === 'remote'
+                ? '顶号开播'
+                : '摄像头';
     }
     if (voice && Object.hasOwn(stateUpdate, 'voice')) {
         voice.textContent = stateUpdate.voice ? '退出语音' : '语音聊天';
@@ -1529,7 +1862,7 @@ async function announceStoredFileAssets() {
             ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
             : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
         for (const file of files) {
-            const isCachedChatAsset = file.data && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+            const isCachedChatAsset = hasCompleteFileCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
             if (!isCachedChatAsset) continue;
             if (!file.isFileAsset) {
                 file.isFileAsset = true;
@@ -1538,12 +1871,13 @@ async function announceStoredFileAssets() {
             }
             await fileAssetTransfer.announce(file);
         }
+        fileAssetTransfer.resumePending();
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
 }
 
-async function sendFile(file, targetDeviceId = null) {
+async function sendFile(file, targetDeviceId = null, options = {}) {
     const fileId = generateId();
     const fileInfo = {
         id: fileId,
@@ -1552,7 +1886,8 @@ async function sendFile(file, targetDeviceId = null) {
         type: file.type,
         timestamp: Date.now(),
         sender: state.deviceId,
-        senderName: state.deviceName
+        senderName: state.deviceName,
+        ...options
     };
 
     const data = await fileToArrayBuffer(file);
@@ -1565,6 +1900,12 @@ async function sendFile(file, targetDeviceId = null) {
     };
     await saveToStore('files', asset);
     await fileAssetTransfer.announce(asset);
+
+    if (options.silent) {
+        state.socket.emit('directory-mirror-asset', { sessionId: state.sessionId, assetId: fileId });
+        historyLog('directory-mirror-asset-emitted', { assetId: fileId, folderName: options.folderName, entryCount: options.entryCount });
+        return fileId;
+    }
 
     const message = {
         id: generateId(),
@@ -1589,6 +1930,57 @@ async function sendFile(file, targetDeviceId = null) {
     });
 
     return fileId;
+}
+
+async function consumePendingSharedFiles() {
+    if (sharedFileImportInProgress || !state.sessionId) return;
+    const queued = await getAllFromStore('shareQueue').catch(() => []);
+    if (!queued.length) return;
+
+    sharedFileImportInProgress = true;
+    try {
+        for (const item of queued.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+            if (!(item.data instanceof ArrayBuffer) && !ArrayBuffer.isView(item.data)) continue;
+            const bytes = item.data instanceof ArrayBuffer
+                ? item.data
+                : item.data.buffer.slice(item.data.byteOffset, item.data.byteOffset + item.data.byteLength);
+            let file;
+            try {
+                file = new File([bytes], item.name || 'shared-file', {
+                    type: item.type || 'application/octet-stream',
+                    lastModified: item.lastModified || Date.now()
+                });
+            } catch (err) {
+                file = new Blob([bytes], { type: item.type || 'application/octet-stream' });
+                file.name = item.name || 'shared-file';
+                file.lastModified = item.lastModified || Date.now();
+            }
+            await sendFile(file);
+            await deleteFromStore('shareQueue', item.id);
+            historyLog('shared-file-imported', { name: item.name, size: item.size, sessionId: state.sessionId });
+        }
+        state.pendingSharedFileCount = 0;
+    } finally {
+        sharedFileImportInProgress = false;
+    }
+}
+
+async function purgeLocalSession(sessionId) {
+    const [messages, files, editorContent] = await Promise.all([
+        typeof IDBKeyRange !== 'undefined'
+            ? getAllFromStore('messages', 'sessionId', IDBKeyRange.only(sessionId))
+            : getAllFromStore('messages').then(items => items.filter(item => item.sessionId === sessionId)),
+        typeof IDBKeyRange !== 'undefined'
+            ? getAllFromStore('files', 'sessionId', IDBKeyRange.only(sessionId))
+            : getAllFromStore('files').then(items => items.filter(item => item.sessionId === sessionId)),
+        getFromStore('editorContent', 'current')
+    ]);
+    await Promise.all([
+        ...messages.map(message => deleteFromStore('messages', message.id)),
+        ...files.map(file => deleteFromStore('files', file.id)),
+        deleteFromStore('sessions', sessionId),
+        editorContent?.sessionId === sessionId ? deleteFromStore('editorContent', 'current') : Promise.resolve()
+    ]);
 }
 
 async function sendFileOffer(fileInfo, file, targetDeviceId) {
@@ -2022,7 +2414,8 @@ async function handleMessage(data) {
         const requestAsset = async () => {
             await fileAssetTransfer.request(
                 message.fileInfo.id,
-                message.fileInfo.ownerDeviceId || message.sender
+                message.fileInfo.ownerDeviceId || message.sender,
+                message.fileInfo
             );
         };
         if (message.fileInfo.size <= CONFIG.SMALL_FILE_THRESHOLD) {
@@ -2077,10 +2470,11 @@ async function handleSessionHistory(data) {
                 });
                 if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
                     const storedFile = await getFromStore('files', message.fileInfo.id);
-                    if (!storedFile?.data && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
+                    if (!hasCompleteFileCache(storedFile, message.fileInfo) && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
                         await fileAssetTransfer.request(
                             message.fileInfo.id,
-                            message.fileInfo.ownerDeviceId || message.sender
+                            message.fileInfo.ownerDeviceId || message.sender,
+                            message.fileInfo
                         );
                         historyLog('snapshot-file-asset-backfill-requested', {
                             message: summarizeHistoryMessage(message)
@@ -2111,10 +2505,11 @@ async function handleSessionHistory(data) {
             });
             if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
                 const storedFile = await getFromStore('files', message.fileInfo.id);
-                if (!storedFile?.cacheCleared || storedFile.restoreRequested) {
+                if (!hasCompleteFileCache(storedFile, message.fileInfo) && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
                     await fileAssetTransfer.request(
                         message.fileInfo.id,
-                        message.fileInfo.ownerDeviceId || message.sender
+                        message.fileInfo.ownerDeviceId || message.sender,
+                        message.fileInfo
                     );
                 }
             }
@@ -2168,6 +2563,7 @@ function createHistoryReconcileMessage(message) {
 
 async function reconcileLocalHistory(serverMessages, deletedMessageIds) {
     if (!state.socket?.connected) return;
+    const deletedIds = new Set(Array.isArray(deletedMessageIds) ? deletedMessageIds : []);
     const localMessages = await getCurrentSessionMessages();
     const messages = localMessages
         .filter(message => message?.id && !deletedIds.has(message.id))
@@ -2241,10 +2637,10 @@ async function addMessageToChat(message, isOwn) {
             try {
                 storedFile = await getFromStore('files', fileInfo.id);
 
-                if (!fileUrl && storedFile?.data) {
+                if (!fileUrl && hasCompleteFileCache(storedFile, fileInfo)) {
                     fileUrl = fileObjectUrls.get(fileInfo.id);
                     if (!fileUrl) {
-                        fileUrl = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
+                        fileUrl = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type || fileInfo.type }));
                         fileObjectUrls.set(fileInfo.id, fileUrl);
                     }
                 }
@@ -2402,7 +2798,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false) {
 
 async function refreshFileMessage(fileId) {
     const storedFile = await getFromStore('files', fileId);
-    if (!storedFile?.data) return;
+    if (!hasCompleteFileCache(storedFile)) return;
 
     let url = fileObjectUrls.get(fileId);
     if (!url) {
@@ -2501,7 +2897,7 @@ async function restoreFileCache(messageId) {
         restoreRequested: true
     });
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true);
-    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender);
+    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo);
     historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
 }
 
@@ -2529,6 +2925,73 @@ async function deleteHistoryMessageLocal(messageId) {
     pendingHistoryMessageIds.delete(messageId);
     document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
     historyLog('history-message-deleted-locally', { messageId, fileId: message?.fileInfo?.id });
+}
+
+function extractAssetIds(content) {
+    return Array.from(String(content || '').matchAll(/data-tunnel-asset-id="([^"]+)"/g), match => match[1]);
+}
+
+async function findGarbageFileCaches() {
+    const [messages, files, editorContent] = await Promise.all([
+        getCurrentSessionMessages(),
+        typeof IDBKeyRange !== 'undefined'
+            ? getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+            : getAllFromStore('files').then(items => items.filter(item => item.sessionId === state.sessionId)),
+        getFromStore('editorContent', 'current')
+    ]);
+    const referenced = new Set();
+    messages.forEach(message => {
+        if (message.fileInfo?.id) referenced.add(message.fileInfo.id);
+        if (message.type === 'rich') extractAssetIds(message.content).forEach(id => referenced.add(id));
+    });
+    if (editorContent?.sessionId === state.sessionId) {
+        extractAssetIds(editorContent.content).forEach(id => referenced.add(id));
+    }
+    return files.filter(file => !referenced.has(file.id) || file.isPartial || file.transferInterrupted);
+}
+
+async function clearGarbageFileCaches(files) {
+    for (const file of files) {
+        fileAssetTransfer?.cancel(file.id);
+        await deleteFromStore('files', file.id);
+        const objectUrl = fileObjectUrls.get(file.id);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        fileObjectUrls.delete(file.id);
+    }
+    historyLog('garbage-file-caches-cleared', { count: files.length, fileIds: files.map(file => file.id) });
+}
+
+async function showGarbageCleanupDialog() {
+    const files = await findGarbageFileCaches();
+    if (!files.length) {
+        alert('没有发现可清理的游离文件缓存或中断传输缓存。');
+        return;
+    }
+    const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    const preview = files.slice(0, 20)
+        .map(file => `<li>${escapeHtml(file.name || file.id)} (${formatFileSize(Number(file.size) || 0)})</li>`)
+        .join('');
+    const remaining = files.length > 20 ? `<p>另有 ${files.length - 20} 项未展开。</p>` : '';
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    dialog.innerHTML = `
+        <div class="modal">
+            <h3>清理垃圾缓存</h3>
+            <p>发现 ${files.length} 项未被聊天记录、富文本或当前协同编辑引用的缓存，共 ${formatFileSize(totalSize)}。</p>
+            <ul style="max-height: 200px; overflow: auto; padding-left: 20px; text-align: left;">${preview}</ul>
+            ${remaining}
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelGarbageCleanup">取消</button>
+                <button class="btn btn-primary" id="confirmGarbageCleanup">清理 ${files.length} 项</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
+    dialog.querySelector('#confirmGarbageCleanup').addEventListener('click', async () => {
+        await clearGarbageFileCaches(files);
+        dialog.remove();
+    });
 }
 
 async function sendText() {
@@ -2979,6 +3442,9 @@ function handleDeviceJoined(data) {
     state.devices.set(deviceId, {
         id: deviceId,
         name: deviceName,
+        model: data.deviceModel,
+        internalIp: data.internalIp,
+        externalIp: data.externalIp,
         joinedAt: Date.now()
     });
 
@@ -3013,6 +3479,9 @@ function handleSessionDevices(data) {
             state.devices.set(device.deviceId, {
                 id: device.deviceId,
                 name: device.deviceName,
+                model: device.deviceModel,
+                internalIp: device.internalIp,
+                externalIp: device.externalIp,
                 joinedAt: device.joinedAt
             });
 
@@ -3024,9 +3493,61 @@ function handleSessionDevices(data) {
     updateDeviceList();
 }
 
+function handleDeviceUpdated(data) {
+    if (!data?.deviceId || data.deviceId === state.deviceId) return;
+    const existing = state.devices.get(data.deviceId);
+    if (!existing) return;
+    state.devices.set(data.deviceId, {
+        ...existing,
+        name: data.deviceName || existing.name,
+        model: data.deviceModel || existing.model,
+        internalIp: data.internalIp || null,
+        externalIp: data.externalIp || null
+    });
+    updateDeviceList();
+}
+
+function showDeviceDetailsToast(device, anchor) {
+    document.getElementById('deviceDetailsToast')?.remove();
+    const toast = document.createElement('div');
+    toast.id = 'deviceDetailsToast';
+    toast.className = 'device-details-toast';
+    const lines = [
+        `型号：${device.model || '未知设备'}`,
+        `内网 IP：${device.internalIp || '浏览器未提供'}`,
+        `外网 IP：${device.externalIp || '服务器未观察到'}`
+    ];
+    lines.forEach(line => {
+        const item = document.createElement('div');
+        item.textContent = line;
+        toast.appendChild(item);
+    });
+    document.body.appendChild(toast);
+    const rect = anchor.getBoundingClientRect();
+    toast.style.top = `${Math.min(window.innerHeight - toast.offsetHeight - 12, Math.max(12, rect.bottom + 6))}px`;
+    toast.style.left = `${Math.min(window.innerWidth - toast.offsetWidth - 12, Math.max(12, rect.left))}px`;
+    setTimeout(() => toast.remove(), 4000);
+}
+
+function makeDeviceNameInteractive(element, device) {
+    element.classList.add('device-name-interactive');
+    element.tabIndex = 0;
+    element.title = '查看设备信息';
+    const show = () => showDeviceDetailsToast(device, element);
+    element.addEventListener('click', show);
+    element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            show();
+        }
+    });
+}
+
 function updateDeviceList() {
     const container = document.getElementById('deviceList');
     const count = state.devices.size + 1;
+    const intercomRecipients = mediaController?.intercom?.recipients || [];
+    const directIntercomTargetId = intercomRecipients.length === 1 ? intercomRecipients[0] : null;
     document.getElementById('onlineCount').textContent = count;
 
     container.innerHTML = '';
@@ -3041,6 +3562,11 @@ function updateDeviceList() {
             <div class="status">在线</div>
         </div>
     `;
+    makeDeviceNameInteractive(selfEl.querySelector('.name'), {
+        model: state.selfNetworkInfo?.deviceModel || state.deviceModel,
+        internalIp: state.selfNetworkInfo?.internalIp || state.reportedLanIp,
+        externalIp: state.selfNetworkInfo?.externalIp
+    });
     container.appendChild(selfEl);
 
     // 添加其他设备
@@ -3054,15 +3580,20 @@ function updateDeviceList() {
                 <div class="status">在线 · P2P${state.dataChannels.has(device.id) ? '已连接' : '连接中'}</div>
             </div>
         `;
+        makeDeviceNameInteractive(el.querySelector('.name'), device);
         const intercomButton = document.createElement('button');
         intercomButton.className = 'toolbar-btn';
         intercomButton.type = 'button';
         intercomButton.title = `与 ${device.name} 对讲`;
-        intercomButton.textContent = '对讲机';
+        intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
         intercomButton.addEventListener('click', async () => {
             try {
-                if (mediaController.intercom) mediaController.stopIntercom();
-                else await mediaController.startIntercom([device.id]);
+                if (device.id === directIntercomTargetId) {
+                    mediaController.stopIntercom();
+                } else {
+                    if (mediaController.intercom) mediaController.stopIntercom();
+                    await mediaController.startIntercom([device.id]);
+                }
             } catch (err) {
                 alert(`无法启动对讲机: ${err.message}`);
                 historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
@@ -3075,6 +3606,29 @@ function updateDeviceList() {
 
 // ==================== UI 初始化 ====================
 function initUI() {
+    document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
+    document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
+    document.getElementById('shortCodeInput').addEventListener('keydown', event => {
+        if (event.key === 'Enter') joinByShortCode();
+    });
+    document.getElementById('clipboardShareBtn').addEventListener('click', toggleClipboardShare);
+    document.getElementById('copySharedClipboardBtn').addEventListener('click', copySharedClipboard);
+    document.getElementById('garbageCleanupBtn').addEventListener('click', showGarbageCleanupDialog);
+    document.getElementById('folderUploadBtn').addEventListener('click', () => document.getElementById('folderInput').click());
+    document.getElementById('folderInput').addEventListener('change', async event => {
+        const files = Array.from(event.target.files || []);
+        if (!files.length) return;
+        try {
+            await sendFolder(files);
+        } catch (err) {
+            alert(`文件夹发送失败：${err.message}`);
+            historyLog('folder-archive-failed', { error: err.message });
+        } finally {
+            event.target.value = '';
+        }
+    });
+    document.getElementById('directorySyncBtn').addEventListener('click', startDirectoryMirror);
+
     document.getElementById('cameraBroadcastBtn').addEventListener('click', async () => {
         try {
             if (mediaController.camera) {
@@ -3182,21 +3736,243 @@ function initDragDrop() {
 }
 
 // ==================== 进度显示 ====================
-function showProgress(fileId, fileName, progress) {
+function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
+    const messageEl = document.querySelector(`.message[data-file-id="${fileId}"]`);
+    const fileName = messageEl?.dataset.fileName || '文件';
+    showProgress(fileId, fileName, 0, `等待队列（进行中 ${activeDownloads}，排队 ${queueLength}）`);
+}
+
+async function updateShortCode(shortCode) {
+    state.shortCode = normalizeLocalShortCode(shortCode);
+    const element = document.getElementById('shortCode');
+    if (element) element.textContent = state.shortCode || '-';
+    if (!state.sessionId || !state.shortCode) return;
+    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
+    await saveToStore('sessions', {
+        ...(existing || {}),
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        shortCode: state.shortCode,
+        lastActive: existing?.lastActive || Date.now()
+    });
+}
+
+async function announceKnownSessionCodes() {
+    const socket = state.socket;
+    if (!socket?.connected) return;
+    const sessions = await getAllFromStore('sessions').catch(() => []);
+    const entries = sessions
+        .map(session => ({
+            sessionId: session.sessionId,
+            shortCode: normalizeLocalShortCode(session.shortCode)
+        }))
+        .filter(entry => /^[a-zA-Z0-9_-]{8,64}$/.test(entry.sessionId || '') && entry.shortCode);
+
+    if (state.sessionId && state.shortCode && !entries.some(entry => entry.sessionId === state.sessionId)) {
+        entries.push({ sessionId: state.sessionId, shortCode: state.shortCode });
+    }
+    socket.emit('register-session-codes', { entries });
+    historyLog('session-code-directory-announced', { entryCount: entries.length });
+}
+
+function joinByShortCode() {
+    const input = document.getElementById('shortCodeInput');
+    const shortCode = input.value.trim().toUpperCase();
+    if (!/^[A-Z0-9]{5}$/.test(shortCode)) {
+        alert('请输入 5 位字母或数字组成的隧道暗号。');
+        return;
+    }
+    state.socket?.emit('join-by-short-code', { shortCode });
+}
+
+async function pollClipboard() {
+    if (!state.clipboardShareEnabled || !navigator.clipboard?.readText) return;
+    try {
+        const text = await navigator.clipboard.readText();
+        if (!text || text === lastClipboardText) return;
+        lastClipboardText = text;
+        state.socket?.emit('clipboard-update', { sessionId: state.sessionId, text });
+        historyLog('clipboard-shared', { textLength: text.length });
+    } catch (err) {
+        historyLog('clipboard-read-failed', { error: err.message });
+    }
+}
+
+async function toggleClipboardShare() {
+    const button = document.getElementById('clipboardShareBtn');
+    if (state.clipboardShareEnabled) {
+        state.clipboardShareEnabled = false;
+        clearInterval(clipboardShareTimer);
+        clipboardShareTimer = null;
+        button.textContent = '启用粘贴板共享';
+        return;
+    }
+    if (!window.isSecureContext || !navigator.clipboard?.readText) {
+        alert('粘贴板共享需要 HTTPS（或 localhost）以及浏览器粘贴板权限。');
+        return;
+    }
+    state.clipboardShareEnabled = true;
+    lastClipboardText = null;
+    button.textContent = '关闭粘贴板共享';
+    await pollClipboard();
+    clipboardShareTimer = setInterval(pollClipboard, 1500);
+}
+
+function receiveSharedClipboard(data) {
+    if (!data?.text || data.from === state.deviceId) return;
+    state.remoteClipboardText = data.text;
+    const notice = document.getElementById('clipboardNotice');
+    const text = document.getElementById('clipboardNoticeText');
+    text.textContent = `${data.deviceName || '设备'}：${data.text}`;
+    notice.style.display = 'flex';
+    historyLog('clipboard-received', { from: data.from, textLength: data.text.length });
+}
+
+async function copySharedClipboard() {
+    if (!state.remoteClipboardText) return;
+    try {
+        await navigator.clipboard.writeText(state.remoteClipboardText);
+    } catch (err) {
+        alert(state.remoteClipboardText);
+    }
+}
+
+async function sendFolder(files) {
+    if (!files.length || !window.FolderArchive) return;
+    const paths = Array.from(files, file => file.webkitRelativePath || file.name);
+    const folderName = (paths[0] || 'folder').split('/')[0] || 'folder';
+    const zipBlob = await window.FolderArchive.createZip(Array.from(files));
+    const zipFile = new File([zipBlob], `${folderName}.zip`, { type: 'application/zip' });
+    await sendFile(zipFile, null, {
+        isFolderArchive: true,
+        folderName,
+        entryCount: files.length
+    });
+    historyLog('folder-archive-sent', { folderName, entryCount: files.length, size: zipFile.size });
+}
+
+async function collectDirectoryFiles(handle, prefix = '') {
+    const files = [];
+    for await (const [name, entry] of handle.entries()) {
+        const path = `${prefix}${name}`;
+        if (entry.kind === 'directory') {
+            files.push(...await collectDirectoryFiles(entry, `${path}/`));
+        } else if (entry.kind === 'file') {
+            const file = await entry.getFile();
+            files.push({
+                name: file.name,
+                path,
+                size: file.size,
+                lastModified: file.lastModified,
+                arrayBuffer: () => file.arrayBuffer()
+            });
+        }
+    }
+    return files;
+}
+
+async function startDirectoryMirror() {
+    const button = document.getElementById('directorySyncBtn');
+    if (directoryMirror.handle) {
+        clearInterval(directoryMirror.timer);
+        directoryMirror.handle = null;
+        directoryMirror.timer = null;
+        directoryMirror.signature = '';
+        button.textContent = '同步目录';
+        return;
+    }
+    if (!window.showDirectoryPicker || !window.FolderArchive) {
+        alert('目录镜像需要 Chromium 的 File System Access API。Firefox 和移动浏览器请使用“发送文件夹”。');
+        return;
+    }
+    directoryMirror.handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    button.textContent = '关闭目录同步';
+    await syncDirectoryMirror(true);
+    directoryMirror.timer = setInterval(() => syncDirectoryMirror(false), 5000);
+}
+
+function getDirectorySignature(files) {
+    return files
+        .map(file => `${file.path}:${file.size}:${file.lastModified || 0}`)
+        .sort()
+        .join('|');
+}
+
+async function syncDirectoryMirror(force) {
+    if (!directoryMirror.handle || directoryMirror.busy) return;
+    directoryMirror.busy = true;
+    try {
+        const files = await collectDirectoryFiles(directoryMirror.handle);
+        const signature = getDirectorySignature(files);
+        if (!force && signature === directoryMirror.signature) return;
+        directoryMirror.signature = signature;
+        if (!force && signature === directoryMirror.skipSignature) {
+            directoryMirror.skipSignature = '';
+            return;
+        }
+        if (!files.length) return;
+        const archive = await window.FolderArchive.createZip(files);
+        const archiveFile = new File([archive], `${directoryMirror.handle.name}-snapshot.zip`, { type: 'application/zip' });
+        await sendFile(archiveFile, null, {
+            isFolderArchive: true,
+            isDirectoryMirror: true,
+            folderName: directoryMirror.handle.name,
+            entryCount: files.length,
+            silent: true
+        });
+        historyLog('directory-mirror-snapshot-sent', {
+            directoryName: directoryMirror.handle.name, entryCount: files.length, size: archiveFile.size
+        });
+    } catch (err) {
+        historyLog('directory-mirror-sync-failed', { error: err.message });
+    } finally {
+        directoryMirror.busy = false;
+    }
+}
+
+async function applyDirectoryMirrorAsset(asset) {
+    if (!directoryMirror.handle || asset.folderName !== directoryMirror.handle.name || !window.FolderArchive) return;
+    directoryMirror.busy = true;
+    try {
+        const entries = await window.FolderArchive.extractZip(new Blob([asset.data], { type: asset.type }));
+        for (const entry of entries) {
+            const parts = entry.path.split('/').filter(part => part && part !== '.' && part !== '..');
+            if (!parts.length) continue;
+            const fileName = parts.pop();
+            let parent = directoryMirror.handle;
+            for (const part of parts) parent = await parent.getDirectoryHandle(part, { create: true });
+            const fileHandle = await parent.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(entry.data);
+            await writable.close();
+        }
+        const files = await collectDirectoryFiles(directoryMirror.handle);
+        directoryMirror.signature = getDirectorySignature(files);
+        directoryMirror.skipSignature = directoryMirror.signature;
+        historyLog('directory-mirror-applied', { assetId: asset.id, entryCount: entries.length, folderName: asset.folderName });
+    } catch (err) {
+        historyLog('directory-mirror-apply-failed', { assetId: asset.id, error: err.message });
+    } finally {
+        directoryMirror.busy = false;
+    }
+}
+
+function showProgress(fileId, fileName, progress, status = '') {
     const container = document.getElementById('transferProgress');
     const list = document.getElementById('progressList');
+    const elementId = progressElementId(fileId);
 
     container.style.display = 'block';
 
-    let item = document.getElementById(`progress-${fileId}`);
+    let item = document.getElementById(elementId);
     if (!item) {
         item = document.createElement('div');
-        item.id = `progress-${fileId}`;
+        item.id = elementId;
         item.className = 'progress-item';
         item.innerHTML = `
             <div class="progress-info">
                 <span>${fileName}</span>
-                <span class="progress-text">${progress}%</span>
+                <span class="progress-text">${progress}%${status ? ` · ${status}` : ''}</span>
             </div>
             <div class="progress-bar">
                 <div class="progress-fill" style="width: ${progress}%"></div>
@@ -3204,20 +3980,27 @@ function showProgress(fileId, fileName, progress) {
         `;
         list.appendChild(item);
     } else {
-        updateProgress(fileId, progress);
+        updateProgress(fileId, progress, status);
     }
 }
 
-function updateProgress(fileId, progress) {
-    const item = document.getElementById(`progress-${fileId}`);
+function updateProgress(fileId, progress, status = '') {
+    const item = document.getElementById(progressElementId(fileId));
     if (item) {
-        item.querySelector('.progress-text').textContent = `${progress}%`;
+        item.querySelector('.progress-text').textContent = `${progress}%${status ? ` · ${status}` : ''}`;
         item.querySelector('.progress-fill').style.width = `${progress}%`;
     }
 }
 
 function hideProgress(fileId) {
-    const item = document.getElementById(`progress-${fileId}`);
+    activeFileProgress.delete(fileId);
+    const timer = progressHideTimers.get(fileId);
+    if (timer) {
+        clearTimeout(timer);
+        progressHideTimers.delete(fileId);
+    }
+
+    const item = document.getElementById(progressElementId(fileId));
     if (item) {
         item.remove();
     }
@@ -3276,7 +4059,7 @@ window.viewRichContent = viewRichContent;
 // ==================== 文件下载 ====================
 async function downloadFile(fileId) {
     const file = await getFromStore('files', fileId);
-    if (!file) {
+    if (!hasCompleteFileCache(file)) {
         alert('文件不存在');
         return;
     }
@@ -3353,9 +4136,13 @@ async function loadSessionData() {
         }
 
         // 更新会话活动时间
+        const storedSession = await getFromStore('sessions', state.sessionId);
         await saveToStore('sessions', {
+            ...(storedSession || {}),
             sessionId: state.sessionId,
             lastActive: Date.now(),
+            lastJoinedAt: Date.now(),
+            entryState: 'joined',
             deviceId: state.deviceId
         });
     } catch (err) {

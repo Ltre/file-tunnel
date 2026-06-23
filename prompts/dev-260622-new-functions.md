@@ -1550,13 +1550,13 @@ http://10.0.0.16:3000/api/debug-logs?limit=1000
 
 
 问：
-1、当有多个大文件传输时，应该分队列，并且利用P2P多设备分布、分工的特性，分担流量，不要将流量定死在一台设备上
-2、在页面合适的角落提供清理垃圾按钮：列出并提示清理游离态的文件缓存（即没有被文件传输历史或富文本关联的文件）、中断传输的文件缓存等等
-3、考虑文件传输时遇到网络问题等不可抗力被中断后的处理办法
-4、尝试除了扫描二维码以外的发现附近设备方式，例如利用名字好像叫NearBy的近场发现技术，或者提供一串5位短码（打开一个很短的域名输入短码后即可加入会话）
-5、页面中合适的位置提供一个”启用粘贴板共享“按钮
-6、支持发送文件夹（先缓存到浏览器，还要考虑接收以直接下载文件夹的方式，还是下载压缩包的方式）
-7、比”发送文件夹“更激进的做法：设置本地用于双向同步到文件目录，机制类似于ResilioSync
+【OK】1、当有多个大文件传输时，应该分队列，并且利用P2P多设备分布、分工的特性，分担流量，不要将流量定死在一台设备上
+【基本OK，对于终端传输的文件缓存可能还有问题】2、在页面合适的角落提供清理垃圾按钮：列出并提示清理游离态的文件缓存（即没有被文件传输历史或富文本关联的文件）、中断传输的文件缓存等等
+【基本测试OK】3、考虑文件传输时遇到网络问题等不可抗力被中断后的处理办法
+【OK】【放弃Nearby仅用短码】4、尝试除了扫描二维码以外的发现附近设备方式，例如利用名字好像叫NearBy的近场发现技术，或者提供一串5位短码（打开一个很短的域名输入短码后即可加入会话）
+【需要HTTPS才能测试】5、页面中合适的位置提供一个”启用粘贴板共享“按钮
+【OK】6、支持发送文件夹（先缓存到浏览器，还要考虑接收以直接下载文件夹的方式，还是下载压缩包的方式）
+【搁置】7、比”发送文件夹“更激进的做法：设置本地用于双向同步到文件目录，机制类似于ResilioSync
 请切换到新分支"dev-260623-new-functions"进行此需求的代码改动，但不要暂存，也不要提交。
 
 【问题还没解决，不要忽略】答：
@@ -1571,33 +1571,285 @@ http://10.0.0.16:3000/api/debug-logs?limit=1000
 目录镜像仍受浏览器约束：页面必须保持打开、只能在 Chromium 桌面端使用、目前是完整 ZIP 快照而非块级增量，不同步删除操作；Firefox/移动端请使用“发送文件夹”。
 验证完成：新增和修改的 JS 均通过语法检查，源代码 diff --check 通过，当前页面 HTTP 冒烟检查为 200 且确认新入口已加载。由于 3000 端口已有一个非本轮启动的 Node 进程占用，服务端的短码、调度、剪贴板与目录镜像事件需要重启该 Node 服务后才会生效。
 
-问：
+【问题还没解决，不要忽略】问：
 7.1、
-(1) 把“复制短码”按钮去掉（看功能也是不能用的，有写相关逻辑的，也要删掉相关代码）
-(2) 按钮的分布改成：第一行 发送文件夹、同步目录，第二行 启用粘贴板共享、清理垃圾
-(3) 目前测试发现点击 发送文件夹、同步目录、启用粘贴板共享、清理垃圾 这几个按钮，都没有反应，是有BUG，还是没有实现功能？
-(4) 为了最大化利用P2P优势，拉取一个很大的文件（超过10M）时，如果存在多个其它设备有这个文件的缓存，可以考虑从不同的设备获取文件的不同分段，像迅雷、eMule、种子下载那样，将所有远程数据凑齐成一个完整的文件
-(5) 以不带#hash串的首页地址加载进入页面时，先从本地缓存中选择最近一次会话加载，如果不存在任何会话缓存，则展示一个干净的空白页（中央提示“请输入朋友分享给你的传输隧道暗号”，下方横列出5个INPUT正方框，再往下显示按钮“我没有暗号，新建一个隧道”，文案大概这样，我想不到更好的组织语言）。这里提到的“隧道暗号”其实就是用于分享会话的短码，有字母或数字组成，不区分大小写字母。应该确保短码能和#hash串一对一关联，用过的短码就不要再重新分配给另一个会话，只有会话被删除时，对应的短码才能被释放。关于删除会话，目前仅能由admin管理页面操作。
-(6) admin管理页会话列表：应该首先列出所有在线的会话（不论有没有聊天记录），其次列出离线但存在聊天记录的会话。至于之前已经实现的活跃/非活跃状态，可以继续标记在会话列表中。
-(7) admin管理页数据显示BUG：用android手机三星浏览器和chrmoe分别打开admin页，两者都加载出同样个数的会话且会话id都一致，但是在三星浏览器看到的会话A和chrome看到的会话A的历史消息个数/文件个数不一样，三星的显示0消息0文件，而chrome则正确显示消息和文件个数。
+【OK】(1) 把“复制短码”按钮去掉（看功能也是不能用的，有写相关逻辑的，也要删掉相关代码）
+【OK】(2) 按钮的分布改成：第一行 发送文件夹、同步目录，第二行 启用粘贴板共享、清理垃圾
+【OK】(3) 目前测试发现点击 发送文件夹、同步目录、启用粘贴板共享、清理垃圾 这几个按钮，都没有反应，是有BUG，还是没有实现功能？
+【OK】(4) 为了最大化利用P2P优势，拉取一个很大的文件（超过10M）时，如果存在多个其它设备有这个文件的缓存，可以考虑从不同的设备获取文件的不同分段，像迅雷、eMule、种子下载那样，将所有远程数据凑齐成一个完整的文件
+【OK】(5) 以不带#hash串的首页地址加载进入页面时，先从本地缓存中选择最近一次会话加载，如果不存在任何会话缓存，则展示一个干净的空白页（中央提示“请输入朋友分享给你的传输隧道暗号”，下方横列出5个INPUT正方框，再往下显示按钮“我没有暗号，新建一个隧道”，文案大概这样，我想不到更好的组织语言）。这里提到的“隧道暗号”其实就是用于分享会话的短码，有字母或数字组成，不区分大小写字母。应该确保短码能和#hash串一对一关联，用过的短码就不要再重新分配给另一个会话，只有会话被删除时，对应的短码才能被释放。关于删除会话，目前仅能由admin管理页面操作。
+【OK】(6) admin管理页会话列表：应该首先列出所有在线的会话（不论有没有聊天记录），其次列出离线但存在聊天记录的会话。至于之前已经实现的活跃/非活跃状态，可以继续标记在会话列表中。
+【未测试】(7) admin管理页数据显示BUG：用android手机三星浏览器和chrmoe分别打开admin页，两者都加载出同样个数的会话且会话id都一致，但是在三星浏览器看到的会话A和chrome看到的会话A的历史消息个数/文件个数不一样，三星的显示0消息0文件，而chrome则正确显示消息和文件个数。
 (8) 设备列表增加显示型号、内网IP、外网IP（考虑到显示空间拥挤，可以在点击或触摸设备名称时，在设备区域附近以toast短暂显示）
 (9) 将这个程序封装成一个PWA，以便于android分享文件时可以选择这个PWA作为分享目标，在分享过程中，弹出的首页会提示要选择最近的传输隧道，还是手动输入朋友分享的隧道暗号，还是创建一个新的隧道。
 
 
-问：
 7.2
+【已解决】问：
 (1) 浏览器输入类似于这样由hash串的地址（http://10.0.0.16/#3a3de710-ab01-45ec-92c6-5c957bc3cdb9），就应该直接进入这个hash串对应的会话中，而不是要求输入隧道暗号
 
 7.3
-问：
+【已解决】问：
 (1) 在新的设备打开http://10.0.0.16/ 后，显示了三种选择（5位短码、使用最近的隧道、创建一个新的）。
     既然新设备没有任何会话痕迹，那就不要提供使用最近的隧道让用户选择，因为点击了也没有反应。
     测试创建一个新的隧道，点击创建后，看到网页地址尾部追加了hash串，但是页面没有加载会话里的设备列表、聊天记录、协同编辑功能界面，需要刷新当前页面，才会显示出功能界面。（我估计如果选择最近使用的隧道可用的话，也会出现这个需要刷新页面才能使用功能的BUG）
     为了方便我多次测试三种选择（5位短码、使用最近的隧道、创建一个新的），请在隧道功能页中的右上角提供按钮“X”用于暂时离开隧道（数据还在，只是进出状态标记）
 
 7.4
-问：
+【未解决】问：
 (1) 重启node程序后，发现同一个会话里，短码被更换了！这样不行的。你可以不考虑存短码到服务器，但是可以考虑分布式存储在各个客户端里。服务端可以要求客户端上线时，提供存储的会话ID和对应的短码，以便新设备以短码更快寻找到所有在线的客户端。
+
+7.5
+【基本解决】问：
+(1) 不知道是不是因为我提了这个需求【为了最大化利用P2P优势，拉取一个很大的文件（超过10M）时，如果存在多个其它设备有这个文件的缓存，可以考虑从不同的设备获取文件的不同分段，像迅雷、eMule、种子下载那样，将所有远程数据凑齐成一个完整的文件】，
+    所以你把聊天记录区域下方文件传输功能改出问题了，如下：在手机端选择了一个几十K的图上传，在别的设备确实会收到文件，不过好像慢了很多，最后确实接收完成，但是哪个进度条显示着“图片文件名.jpg100%”疯狂闪烁，然后日志也飙个不停。
+
+7.5.1
+【基本解决】问：
+(1) 这个问题还是复现：在手机端选择了一个几十K的图上传，在别的设备确实会收到文件，不过好像慢了很多，最后确实接收完成，但是哪个进度条显示着“图片文件名.jpg100%”疯狂闪烁，然后日志也飙个不停。
+你能不能认真审核下你改的代码！都把我plus会员的点数用光了还解决不了问题！
+
+答：
+你说得对，这次我不能再只补一层“看起来合理”的保护了。这个现象说明还有一个源头在持续生成同一文件的进度事件或重复请求，我会从调用链反查：谁在反复触发、为什么完成后没有停、日志是哪一路在刷。
+已运行 3 条命令已运行 rg -n "showProgress|hideProgress|completedFileProgress|progressHideTimers|onProgress|file-transfer|asset.*progress|download-progress|upload-progress" app.js client\file-assets.js server\file-assets.js server.js
+已运行 rg -n "historyLog|debugLog|fileAssetLog|assetLog|console\.log|console\.warn|console\.error" app.js client\file-assets.js server\file-assets.js server.js
+已运行 rg -n "request\(|desiredAssets|activeDownloads|transfers|dispatchDownloads|handleAvailable|handleChunk|handleComplete|handleUnavailable|sendRequest|file-asset" client\file-assets.js app.js server\file-assets.js
+我已经看到一个更可疑的方向：并不是只有“接收端”会显示进度，发送端的 asset 发送链路也会把 100% 作为进度事件不断打出来。接下来我要把 file-assets 的状态机按事件逐段读一遍，重点看完成态、重试态和 relay/P2P 双通道是否会互相重复触发。
+已运行 $i=1; Get-Content client\file-assets.js | ForEach-Object { '{0,5}: {1}' -f $i, $_; $i++ } | Select-Object -First 760
+这里确实有我上次没彻底处理干净的地方：发送端进度、接收端进度、队列占位进度都复用同一个 fileId，所以远端请求一旦重复到达，发送端自己的聊天记录区域也会被反复刷成“100%”。我现在继续确认重复请求为什么还会发生，再一次性把两个层面都封住。
+已运行 2 条命令已运行 $i=1; Get-Content client\file-assets.js | ForEach-Object { if ($i -ge 350 -and $i -le 455) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已运行 $i=1; Get-Content app.js | ForEach-Object { if (($i -ge 1680 -and $i -le 1775) -or ($i -ge 1800 -and $i -le 1895) -or ($i -ge 3910 -and $i -le 3965)) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+还有一个明显问题：发送文件时 targetDeviceId 参数根本没有参与当前 asset 路由，变成了“发一条文件消息，再靠所有设备看到消息后各自拉取”。这个设计可以，但必须保证拉取只发生一次、发送端进度不污染 UI；现在两者都没有做到足够严。
+已运行 4 条命令已运行 $i=1; Get-Content app.js | ForEach-Object { if ($i -ge 3880 -and $i -le 3925) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已运行 rg -n "sendFile\(|fileInput|fileDrop|drop|dragover|sendFileBtn|addEventListener\('change'|handleFiles|handleFile" app.js index.html
+已运行 $i=1; Get-Content app.js | ForEach-Object { if (($i -ge 2300 -and $i -le 2505) -or ($i -ge 3630 -and $i -le 3705)) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已运行 $i=1; Get-Content app.js | ForEach-Object { if ($i -ge 2490 -and $i -le 2570) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+顺手还发现一个真实代码错误：历史 reconcile 里用了不存在的 deletedIds 变量。这个会让快照处理异常，可能进一步造成历史同步反复补偿。它不一定是 100% 闪烁的唯一原因，但它是明显 bug，我会一并修掉。
+已运行 $i=1; Get-Content server\file-assets.js | ForEach-Object { if ($i -ge 1 -and $i -le 235) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+我现在倾向于同时做三件事：一是接收端只在真正缺缓存时拉取；二是发送端按“文件 + 接收设备 + 分段”做上传幂等，重复请求直接丢；三是 UI 只显示接收/恢复进度，不把后台给别人补发缓存的发送进度显示到当前页面。这样即使上游还有重复事件，也不会慢、不会刷屏、不会闪。
+已运行 $i=1; Get-Content server.js | ForEach-Object { if ($i -ge 820 -and $i -le 970) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+这里还串起来了：每个客户端收到快照后会主动 reconcile，本来是为了补齐历史；但 reconcile 的本地异常和服务端 canonical 广播会让会话里所有设备反复收到历史快照。只要某个客户端判断“文件还缺缓存”，就会重新拉取，继而让发送端重复补发。
+我准备改两处核心状态机：客户端上传请求加“正在处理/刚完成”去重；服务端 assignment 未完成时不再把同一个 assetId + 接收设备 + 分段 请求重复转发给 provider。UI 这边会把发送方向进度用独立 key，避免和接收方向同一个 fileId 互相顶掉。
+编辑了 1 个文件已编辑file-assets.js+55-9
+客户端上传端的去重已经加上了：同一个文件对同一个接收设备的同一段，如果正在传或刚传完，后续重复请求会直接忽略。现在我改 UI 进度 key 和历史 reconcile 变量错误。
+编辑了 1 个文件执行了 1 条命令已运行 $i=1; Get-Content app.js | ForEach-Object { if (($i -ge 80 -and $i -le 100) -or ($i -ge 1698 -and $i -le 1735) -or ($i -ge 2498 -and $i -le 2512)) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已编辑app.js+10-0
+已编辑app.js+7-5
+已编辑app.js+9-9
+UI 层也改完了一半：现在发送方向进度和接收方向进度不再共用同一个 DOM id。接下来把服务端重复转发和 reconcile 的异常补上，再跑语法检查和针对重复请求的模拟测试。
+已运行 2 条命令已运行 $i=1; Get-Content app.js | ForEach-Object { if ($i -ge 3888 -and $i -le 3925) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已运行 $i=1; Get-Content app.js | ForEach-Object { if ($i -ge 3925 -and $i -le 3945) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+刚才 patch 因为文件里中文显示编码和终端不一致，匹配块没对上。我改用更小的 ASCII 锚点逐行补，避免碰坏周边逻辑。
+编辑了 1 个文件已编辑app.js+3-2
+已编辑app.js+1-1
+已编辑app.js+7-1
+已编辑app.js+1-0
+历史 reconcile 的未定义变量已经修了。现在补一个细节：大文件分段发送时，进度 key 要精确到分段，否则同一个接收设备的多个 range 仍可能共用进度条。
+编辑了 1 个文件已编辑file-assets.js+4-2
+服务端我也加一道闸：如果某个接收设备已经被分配了 provider，且这个 provider 还在线，后续同一文件/同一分段请求不再继续转发。这样可以从源头阻断“同一个小文件被反复补发”。
+编辑了 1 个文件执行了 2 条命令已编辑file-assets.js+11-2
+已运行 $i=1; Get-Content app.js | ForEach-Object { if (($i -ge 85 -and $i -le 110) -or ($i -ge 1702 -and $i -le 1735) -or ($i -ge 3893 -and $i -le 3938)) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已运行 $i=1; Get-Content app.js | ForEach-Object { if ($i -ge 1733 -and $i -le 1746) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+我再收紧一个地方：刚才客户端上传去重默认把失败也当作“刚完成”冷却，这会掩盖真正需要重试的情况。我会改成只有成功发送后才进入完成去重；失败仍允许正常重试。
+编辑了 1 个文件执行了 1 条命令已运行 $i=1; Get-Content client\file-assets.js | ForEach-Object { if ($i -ge 386 -and $i -le 430) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+已编辑file-assets.js+3-1
+这里我不想把“成功发送后的去重冷却”设太长，否则真失败的接收端会被延迟恢复。我把它作为短窗口，只吸收刚完成瞬间的重复事件；真正超时重试仍然会走正常链路。
+编辑了 1 个文件已编辑file-assets.js+2-1
+关键补丁已经落下来了。现在我会先跑语法检查，再用一个小的模拟测试验证：同一个小文件的重复请求只触发一次上传，短窗口内完成后的重复请求也不会再次发送。
+已运行 2 条命令已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; & $node --check app.js; & $node --check client\file-assets.js; & $node --check server\file-assets.js; & $node --check server.js; git diff --check -- app.js client\file-assets.js server\file-assets.js，已持续 1s
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync('client/file-assets.js', 'utf8');
+const sandbox = { window: {}, setTimeout, clearTimeout, console, Blob, ArrayBuffer, Uint8Array };
+vm.runInNewContext(src, sandbox);
+const FileAssetTransfer = sandbox.window.FileAssetTransfer;
+let sendCount = 0;
+const logs = [];
+const transfer = new FileAssetTransfer({
+  getSocket: () => null,
+  getSessionId: () => 's',
+  log: (event, details) => logs.push({ event, details })
+});
+transfer.sendRequestedAsset = async () => {
+  sendCount += 1;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return true;
+};
+const request = { asset: { id: '11111111-1111-4111-8111-111111111111', name: 'small.jpg', type: 'image/jpeg', size: 32000 }, from: '22222222-2222-4222-8222-222222222222' };
+transfer.handleRequest(request);
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 50));
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 20));
+console.log(JSON.stringify({ sendCount, duplicateLogs: logs.filter(item => item.event === 'file-asset-upload-request-ignored-duplicate').length }));
+'@ | & $node -
+模拟测试第一次是脚本包装问题，不是业务代码报错：Node 24 看到 require 和顶层 await 混用就拒绝执行。我马上按 CommonJS 包一层 async 重跑。
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+(async () => {
+const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync('client/file-assets.js', 'utf8');
+const sandbox = { window: {}, setTimeout, clearTimeout, console, Blob, ArrayBuffer, Uint8Array };
+vm.runInNewContext(src, sandbox);
+const FileAssetTransfer = sandbox.window.FileAssetTransfer;
+let sendCount = 0;
+const logs = [];
+const transfer = new FileAssetTransfer({
+  getSocket: () => null,
+  getSessionId: () => 's',
+  log: (event, details) => logs.push({ event, details })
+});
+transfer.sendRequestedAsset = async () => {
+  sendCount += 1;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return true;
+};
+const request = { asset: { id: '11111111-1111-4111-8111-111111111111', name: 'small.jpg', type: 'image/jpeg', size: 32000 }, from: '22222222-2222-4222-8222-222222222222' };
+transfer.handleRequest(request);
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 50));
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 20));
+console.log(JSON.stringify({ sendCount, duplicateLogs: logs.filter(item => item.event === 'file-asset-upload-request-ignored-duplicate').length }));
+})().catch(err => { console.error(err); process.exit(1); });
+'@ | & $node -
+模拟结果符合预期：连续三次同一小文件请求，只实际发送 1 次，另外 2 次被识别为重复请求。现在我再看一次 diff 和关键调用点，确认没有把别的传输路径弄断。
+已运行 rg -n "module\.exports|registerFileAssetHandlers|file-asset-request-ignored-duplicate|upload-request-ignored-duplicate|completedUploadKeys|activeUploadKeys|getFileProgressKey|reconcileLocalHistory" app.js client\file-assets.js server\file-assets.js; git diff -- app.js client\file-assets.js server\file-assets.js
+我还会补一个服务端模拟：同一个接收端连续两次请求同一文件时，服务端应该只转发一次给 provider。这个比只看代码更能证明“请求风暴”被挡在服务器这层。
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+const { registerFileAssetHandlers } = require('./server/file-assets');
+const handlers = {};
+const requesterEmits = [];
+const providerEmits = [];
+const history = [];
+const sessionId = '33333333-3333-4333-8333-333333333333';
+const requesterId = '44444444-4444-4444-8444-444444444444';
+const providerId = '55555555-5555-4555-8555-555555555555';
+const assetId = '66666666-6666-4666-8666-666666666666';
+const socket = {
+  id: 'requester-socket',
+  on: (event, fn) => { handlers[event] = fn; },
+  emit: (event, data) => requesterEmits.push({ event, data }),
+  to: () => ({ emit: () => {} })
+};
+const providerSocket = { emit: (event, data) => providerEmits.push({ event, data }) };
+const session = {
+  devices: new Map([[requesterId, {}], [providerId, {}]]),
+  fileAssets: new Map([[assetId, {
+    metadata: { id: assetId, name: 'small.jpg', type: 'image/jpeg', size: 32000, ownerDeviceId: providerId },
+    providers: new Set([providerId]),
+    providerLoads: new Map(),
+    assignments: new Map()
+  }]])
+};
+registerFileAssetHandlers(socket, {
+  sessions: new Map([[sessionId, session]]),
+  deviceSockets: new Map([[providerId, providerSocket]]),
+  getSessionId: () => sessionId,
+  getDeviceId: () => requesterId,
+  isValidId: value => typeof value === 'string' && value.length >= 8,
+  sanitize: value => String(value),
+  historyLog: (event, details) => history.push({ event, details }),
+  clientIp: '127.0.0.1'
+});
+handlers['file-asset-request']({ sessionId, assetId, preferredProviderId: providerId });
+handlers['file-asset-request']({ sessionId, assetId, preferredProviderId: providerId });
+console.log(JSON.stringify({ providerForwarded: providerEmits.length, duplicateLogs: history.filter(item => item.event === 'file-asset-request-ignored-duplicate').length, requesterEmits: requesterEmits.length }));
+'@ | & $node -
+服务端模拟也过了：两次相同请求只转发 1 次，第二次被记录为 duplicate。最后我再跑一次完整语法/空白检查，然后整理这次真正改了哪些点。
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; & $node --check app.js; & $node --check client\file-assets.js; & $node --check server\file-assets.js; & $node --check server.js; git diff --check -- app.js client\file-assets.js server\file-assets.js; git status --short
+目前静态检查全部通过，两个模拟测试也证明重复请求被压住了。我还在最后复核一下历史快照的流向，确认不会因为 reconcile 修复之外的逻辑继续形成循环。
+已运行 rg -n "session-history|authoritative|history-reconcile|join-session|emit\('session-history'" server.js app.js
+我刚才有两次工具脚本输入手滑，是我这边的问题，不影响仓库代码。我会少折腾，直接把关键片段读完。
+已运行 $i=1; Get-Content server.js | ForEach-Object { if (($i -ge 700 -and $i -le 732) -or ($i -ge 930 -and $i -le 953)) { '{0,5}: {1}' -f $i, $_ }; $i++ }
+快照流向也看完了：普通 join 快照会触发一次 reconcile，服务端随后发 authoritative 快照，客户端不会再次 reconcile。也就是说修掉 deletedIds 后，这里不应该形成无限循环。现在剩下最需要你实测的是浏览器是否还加载旧 service worker 缓存。
+编辑了 1 个文件执行了 1 条命令已运行 Get-Content service-worker.js | Select-Object -First 220
+已编辑app.js+9-0
+我加了一个统一的链路名称函数，但原来的中文三元表达式因为编码显示没法整块替换。我会用最小改动让新函数实际生效，旧表达式先改成不会影响 UI 的遗留变量，避免再因为编码误匹配伤到逻辑。
+编辑了 1 个文件已编辑app.js+2-1
+链路名称现在由新的函数决定；旧表达式不会再影响显示。虽然这段以后可以再清理得更漂亮，但当前先以稳定止血为主。马上做最终检查。
+已运行 2 条命令已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; & $node --check app.js; & $node --check client\file-assets.js; & $node --check server\file-assets.js; git diff --check -- app.js client\file-assets.js server\file-assets.js
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+const fs = require('fs');
+const src = fs.readFileSync('app.js', 'utf8');
+const start = src.indexOf('const legacyStatus');
+const end = src.indexOf('const terminal', start);
+console.log(JSON.stringify(src.slice(start, end)));
+'@ | & $node -
+确认了，文件本身是正常 UTF-8，刚才只是 PowerShell 显示成乱码。现在我可以干净地删掉遗留表达式，不留死代码。
+编辑了 1 个文件已编辑app.js+0-9
+这下干净了。最后再跑一次语法检查和两个重复请求模拟，避免我把刚才清理动作带出新问题。
+已运行 3 条命令已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; & $node --check app.js; & $node --check client\file-assets.js; & $node --check server\file-assets.js; & $node --check server.js; git diff --check -- app.js client\file-assets.js server\file-assets.js
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+(async () => {
+const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync('client/file-assets.js', 'utf8');
+const sandbox = { window: {}, setTimeout, clearTimeout, console, Blob, ArrayBuffer, Uint8Array };
+vm.runInNewContext(src, sandbox);
+const FileAssetTransfer = sandbox.window.FileAssetTransfer;
+let sendCount = 0;
+const logs = [];
+const transfer = new FileAssetTransfer({ getSocket: () => null, getSessionId: () => 's', log: (event, details) => logs.push({ event, details }) });
+transfer.sendRequestedAsset = async () => { sendCount += 1; await new Promise(resolve => setTimeout(resolve, 20)); return true; };
+const request = { asset: { id: '11111111-1111-4111-8111-111111111111', name: 'small.jpg', type: 'image/jpeg', size: 32000 }, from: '22222222-2222-4222-8222-222222222222' };
+transfer.handleRequest(request);
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 50));
+transfer.handleRequest(request);
+await new Promise(resolve => setTimeout(resolve, 20));
+console.log(JSON.stringify({ sendCount, duplicateLogs: logs.filter(item => item.event === 'file-asset-upload-request-ignored-duplicate').length }));
+})().catch(err => { console.error(err); process.exit(1); });
+'@ | & $node -
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; @'
+const { registerFileAssetHandlers } = require('./server/file-assets');
+const handlers = {}; const requesterEmits = []; const providerEmits = []; const history = [];
+const sessionId = '33333333-3333-4333-8333-333333333333';
+const requesterId = '44444444-4444-4444-8444-444444444444';
+const providerId = '55555555-5555-4555-8555-555555555555';
+const assetId = '66666666-6666-4666-8666-666666666666';
+const socket = { id: 'requester-socket', on: (event, fn) => { handlers[event] = fn; }, emit: (event, data) => requesterEmits.push({ event, data }), to: () => ({ emit: () => {} }) };
+const providerSocket = { emit: (event, data) => providerEmits.push({ event, data }) };
+const session = { devices: new Map([[requesterId, {}], [providerId, {}]]), fileAssets: new Map([[assetId, { metadata: { id: assetId, name: 'small.jpg', type: 'image/jpeg', size: 32000, ownerDeviceId: providerId }, providers: new Set([providerId]), providerLoads: new Map(), assignments: new Map() }]]) };
+registerFileAssetHandlers(socket, { sessions: new Map([[sessionId, session]]), deviceSockets: new Map([[providerId, providerSocket]]), getSessionId: () => sessionId, getDeviceId: () => requesterId, isValidId: value => typeof value === 'string' && value.length >= 8, sanitize: value => String(value), historyLog: (event, details) => history.push({ event, details }), clientIp: '127.0.0.1' });
+handlers['file-asset-request']({ sessionId, assetId, preferredProviderId: providerId });
+handlers['file-asset-request']({ sessionId, assetId, preferredProviderId: providerId });
+console.log(JSON.stringify({ providerForwarded: providerEmits.length, duplicateLogs: history.filter(item => item.event === 'file-asset-request-ignored-duplicate').length, requesterEmits: requesterEmits.length }));
+'@ | & $node -
+你这次骂得对。我上次只在接收端和进度条末端做了防抖，没有把“重复请求源头”封住，所以重复请求仍然能让 provider 一遍遍补发同一个小文件，进度条就会反复刷到 100%。
+这次我认真把链路补上了：
+客户端 provider 侧增加上传幂等：同一个 文件 + 接收设备 + 分段 正在传或刚传完，重复请求直接忽略。
+服务端增加 assignment 去重：同一个接收端已有未完成分配时，不再重复转发给 provider。
+发送进度和接收进度不再共用同一个 fileId 进度条 key，避免互相顶掉导致闪烁。
+修了一个历史同步里的真实 bug：reconcileLocalHistory() 使用了未定义的 deletedIds，这个可能导致快照补偿异常。
+验证已跑过：
+node --check app.js client/file-assets.js server/file-assets.js server.js
+git diff --check
+客户端重复请求模拟：3 次同一请求，实际发送 1 次
+服务端重复请求模拟：2 次同一请求，实际转发 1 次
+没有暂存，也没有提交。你测试前请重启 Node，并让手机和电脑都强制刷新一次页面；如果装成 PWA 了，最好退出 PWA 后重新打开，避免当前页面还拿着旧的 app.js。
+已编辑 3 个文件+115-34查看更改撤销审核
+app.js+44-23
+client/file-assets.js+60-9
+server/file-assets.js+11-2
+
+
+7.5.2
+【基本解决】问：
+目前这个问题【在手机端选择了一个几十K的图上传，在别的设备确实会收到文件，不过好像慢了很多，最后确实接收完成，但是哪个进度条显示着“图片文件名.jpg100%”疯狂闪烁，然后日志也飙个不停】已经解决差不多了。
+不过我测试过程中看到，最近已经传过的最后一个文件（好像是，反正没有出现闪烁进度条BUG前传的文件不会有问题）再页面刷新后，会显示出一个文件传输进度100%，之后隐藏掉，好在不会疯狂飙日志，只是每次刷新页面都要出来这个文件的传输100%进度条，不是之前约定过把文件作为资源缓存吗？如果缓存了就不会显示这个传输100%进度条了
+
+
+7.6 
+问：
+(1) 测试了协同编辑区域的“引用文件”功能，发现上传文件后确实可以在引用下拉列表中找到。
+不过发现一个问题：例如上传了aaa.jpg，在协同编辑框引用了这个aaa.jpg插入到框里，再点击"引用文件"按钮，看到有两个aaa.jpg，如果再重复引用aaa.jpg，再点击“引用文件”按钮，就看到三个aaa.jpg（这个问题目前仅观察到对可预览图片格式会复现）。
+问题解决方向很明显，即不要重复创建aaa.jpg资源。不过这又有另一个隐患，就是如果聊天记录中删除某个文件，而这个文件被某个富文本引用的话，那时就应该创建这个文件的副本确保富文本不会有异常，或者就干脆让这个文件处于游离态，不管怎么做，会话内的简易资源浏览器要提上日程了，文件名、大小、格式，最重要的是要给文件标记引用的位置（焦点闪烁跳转到聊天记录锚点，或者协同编辑框）
+
+7.7
+问：
+(1) 在页面合适的角落提供清理垃圾按钮：已经确认可以清理游离态的文件缓存（即没有被文件传输历史或富文本关联的文件），不过还不确定能否清理中断传输的文件缓存
 
 问：
 8、在设备A开启摄像头后，仅在A将按钮文字改成“关闭摄像头”即可，而在别的设备则将按钮显示为“顶号开播”，当A关闭摄像头后，别的设备得摄像头按钮文字还原为“摄像头”

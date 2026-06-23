@@ -15,7 +15,7 @@ const app = express();
 
 // ==================== 安全配置 ====================
 
-const WEB_PORT = 3000;
+const WEB_PORT = 80; // 暂时不用3000测了
 const webServer = http.createServer(app);
 
 function splitEnvList(value) {
@@ -37,7 +37,7 @@ function isAllowedOrigin(origin) {
 // 速率限制配置
 const RATE_LIMIT = {
     windowMs: 15 * 60 * 1000, // 15分钟
-    max: 100, // 每个IP最多100个请求
+    max: 1000, // 每个IP最多100个请求
     message: { error: '请求过于频繁，请稍后再试' }
 };
 
@@ -170,6 +170,7 @@ const deviceSockets = new Map();
 const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
 const editorAssetRelays = new Map();
+const shortCodes = new Map();
 
 // ==================== 验证函数 ====================
 
@@ -239,6 +240,17 @@ function getSocketClientIp(socket) {
 function isValidSessionId(id) {
     return typeof id === 'string' && 
            /^[a-zA-Z0-9_-]{8,64}$/.test(id);
+}
+
+function createShortCode(sessionId) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        const code = String(Math.floor(10000 + Math.random() * 90000));
+        if (!shortCodes.has(code)) {
+            shortCodes.set(code, sessionId);
+            return code;
+        }
+    }
+    return null;
 }
 
 function isValidDeviceId(id) {
@@ -477,6 +489,7 @@ io.on('connection', (socket) => {
                 fileAssets: new Map(),
                 history: [],
                 deletedMessageIds: [],
+                shortCode: createShortCode(sessionId),
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -485,6 +498,7 @@ io.on('connection', (socket) => {
             
             const session = sessions.get(sessionId);
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
+            if (!session.shortCode) session.shortCode = createShortCode(sessionId);
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -545,6 +559,7 @@ io.on('connection', (socket) => {
             socket.emit('session-devices', {
                 devices: deviceList
             });
+            socket.emit('session-short-code', { shortCode: session.shortCode });
 
             let latestRemoteEditor = null;
             session.devices.forEach((device, id) => {
@@ -586,6 +601,17 @@ io.on('connection', (socket) => {
             console.error('join-session error:', err);
             socket.emit('error', { message: '服务器内部错误' });
         }
+    });
+
+    socket.on('join-by-short-code', data => {
+        const shortCode = typeof data?.shortCode === 'string' ? data.shortCode.trim() : '';
+        if (!/^\d{5}$/.test(shortCode)) return socket.emit('short-code-error', { message: '短码应为 5 位数字' });
+        const sessionId = shortCodes.get(shortCode);
+        if (!sessionId || !sessions.has(sessionId)) {
+            shortCodes.delete(shortCode);
+            return socket.emit('short-code-error', { message: '短码无效或会话已结束' });
+        }
+        socket.emit('short-code-session', { sessionId });
     });
     
     // 信令转发 (WebRTC)
@@ -673,6 +699,26 @@ io.on('connection', (socket) => {
             socket.to(sessionId).emit('message', { message });
         } catch (err) {
             console.error('message error:', err);
+        }
+    });
+
+    socket.on('clipboard-update', data => {
+        try {
+            const { sessionId, text } = data || {};
+            if (sessionId !== currentSession || typeof text !== 'string' || text.length > 50000) return;
+            const session = sessions.get(sessionId);
+            if (!session?.devices.has(currentDevice)) return;
+            socket.to(sessionId).emit('clipboard-update', {
+                from: currentDevice,
+                deviceName: session.devices.get(currentDevice)?.deviceName || '设备',
+                text,
+                timestamp: Date.now()
+            });
+            historyLog('clipboard-updated', {
+                sessionId, deviceId: currentDevice, socketId: socket.id, clientIp, textLength: text.length
+            });
+        } catch (err) {
+            console.error('clipboard-update error:', err);
         }
     });
 
@@ -1254,6 +1300,18 @@ io.on('connection', (socket) => {
 
                     if (session.fileAssets) {
                         for (const [assetId, asset] of session.fileAssets) {
+                            if (asset.assignments) {
+                                for (const [key, providerId] of asset.assignments) {
+                                    if (providerId === currentDevice || key.endsWith(`:${currentDevice}`)) {
+                                        const requesterId = key.slice(key.lastIndexOf(':') + 1);
+                                        const provider = asset.assignments.get(key);
+                                        asset.assignments.delete(key);
+                                        const nextLoad = Math.max(0, (asset.providerLoads?.get(provider) || 1) - 1);
+                                        if (nextLoad === 0) asset.providerLoads?.delete(provider);
+                                        else asset.providerLoads?.set(provider, nextLoad);
+                                    }
+                                }
+                            }
                             asset.providers.delete(currentDevice);
                             if (asset.providers.size === 0) session.fileAssets.delete(assetId);
                         }
@@ -1295,6 +1353,7 @@ function cleanupExpiredSessions() {
         // Keep an empty session long enough for reconnecting devices to recover history.
         if (session.devices.size === 0 &&
             now - session.lastActivity > MAX_SESSION_AGE) {
+            if (session.shortCode) shortCodes.delete(session.shortCode);
             sessions.delete(sessionId);
             cleaned++;
         }

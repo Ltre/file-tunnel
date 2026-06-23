@@ -1,0 +1,34 @@
+{
+  "name": "即时传输隧道",
+  "short_name": "传输隧道",
+  "description": "在同一传输隧道中的设备间发送文件、消息和协同内容。",
+  "start_url": "/?pwa=1",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#4f5ec2",
+  "icons": [
+    {
+      "src": "/tunnel-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "share_target": {
+    "action": "/share/",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "shared_file",
+          "accept": ["*/*"]
+        }
+      ]
+    }
+  }
+}
