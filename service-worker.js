@@ -23,6 +23,18 @@ self.addEventListener('activate', event => {
     );
 });
 
+self.addEventListener('message', event => {
+    if (event.data?.type !== 'tunnel-force-refresh') return;
+    event.waitUntil(
+        self.registration.update()
+            .catch(() => undefined)
+            .then(() => caches.keys())
+            .then(keys => Promise.all(keys
+                .filter(key => key.startsWith('instant-tunnel-'))
+                .map(key => caches.delete(key))))
+    );
+});
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
     if (event.request.method === 'POST' && url.pathname === '/share/') {

@@ -80,6 +80,7 @@ const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 let fileAssetTransfer = null;
 let mediaController = null;
+let currentMobileWorkspaceView = 'chat';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
@@ -216,6 +217,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function startTunnelApplication() {
     document.getElementById('appShell').hidden = false;
     document.getElementById('leaveTunnelBtn').hidden = false;
+    document.getElementById('mobileForceRefreshBtn').hidden = false;
     initFileAssetTransfer();
     initMediaController();
     initUI();
@@ -227,7 +229,7 @@ async function startTunnelApplication() {
 
 function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/service-worker.js').catch(err => {
+    navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).catch(err => {
         console.warn('Service worker registration failed:', err);
     });
 }
@@ -3242,6 +3244,18 @@ function flashResourceTarget(target) {
     setTimeout(() => target.classList.remove('resource-focus-flash'), 1700);
 }
 
+function openSentRichRecord(messageId) {
+    if (window.matchMedia('(max-width: 767px)').matches) {
+        setMobileWorkspaceView('chat');
+    }
+    requestAnimationFrame(() => {
+        const message = document.querySelector(`.message[data-message-id="${messageId}"]`);
+        if (!message) return;
+        message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        flashResourceTarget(message);
+    });
+}
+
 function getResourceTargetInEditor(editor, assetId) {
     return Array.from(editor.querySelectorAll('[data-tunnel-asset-id], [data-tunnel-file-ref-id]'))
         .find(element => element.dataset.tunnelAssetId === assetId || element.dataset.tunnelFileRefId === assetId);
@@ -3918,7 +3932,8 @@ function initEditor() {
             message
         });
 
-        addMessageToChat(message, true);
+        await addMessageToChat(message, true);
+        openSentRichRecord(message.id);
         clearTimeout(syncTimeout);
         editor.innerHTML = '';
         await syncEditorContent('');
@@ -4177,8 +4192,78 @@ function updateDeviceList() {
 }
 
 // ==================== UI 初始化 ====================
+function setMobileWorkspaceView(view, options = {}) {
+    if (!['chat', 'devices', 'editor'].includes(view)) return;
+    const appShell = document.getElementById('appShell');
+    if (!appShell) return;
+
+    currentMobileWorkspaceView = view;
+    appShell.dataset.mobileView = view;
+    document.querySelectorAll('.mobile-workspace-button[data-mobile-view]').forEach(button => {
+        const active = button.dataset.mobileView === view;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+    });
+
+    if (options.log !== false) {
+        historyLog('mobile-workspace-view-changed', { view });
+    }
+}
+
+function initMobileWorkspace() {
+    const viewButtons = Array.from(document.querySelectorAll('.mobile-workspace-button[data-mobile-view]'));
+    viewButtons.forEach(button => {
+        button.addEventListener('click', () => setMobileWorkspaceView(button.dataset.mobileView));
+    });
+
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const syncViewport = () => setMobileWorkspaceView(currentMobileWorkspaceView, { log: false });
+    if (mediaQuery.addEventListener) mediaQuery.addEventListener('change', syncViewport);
+    else mediaQuery.addListener(syncViewport);
+    syncViewport();
+}
+
+async function forceMobileRefresh() {
+    const button = document.getElementById('mobileForceRefreshBtn');
+    if (button?.disabled) return;
+    button?.classList.add('is-refreshing');
+    if (button) button.disabled = true;
+
+    if (!navigator.onLine) {
+        historyLog('mobile-force-refresh-offline-reload');
+        window.location.reload();
+        return;
+    }
+
+    const version = Date.now().toString(36);
+    try {
+        if ('serviceWorker' in navigator) {
+            const registration = await navigator.serviceWorker.getRegistration();
+            await registration?.update();
+            [navigator.serviceWorker.controller, registration?.waiting, registration?.active]
+                .filter(Boolean)
+                .forEach(worker => worker.postMessage({ type: 'tunnel-force-refresh' }));
+        }
+        if ('caches' in window) {
+            const cacheNames = await caches.keys();
+            await Promise.all(cacheNames
+                .filter(name => name.startsWith('instant-tunnel-'))
+                .map(name => caches.delete(name)));
+        }
+    } catch (err) {
+        historyLog('mobile-force-refresh-cache-clear-failed', { error: err.message });
+    }
+
+    historyLog('mobile-force-refresh-requested', { version });
+    const target = new URL(window.location.href);
+    target.searchParams.set('_reload', version);
+    window.location.replace(target.href);
+}
+
 function initUI() {
+    initMobileWorkspace();
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
+    document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
     document.getElementById('shortCodeInput').addEventListener('keydown', event => {
         if (event.key === 'Enter') joinByShortCode();
