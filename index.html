@@ -83,6 +83,7 @@
         
         /* 二维码区域 */
         .qr-section {
+            position: relative;
             text-align: center;
         }
         
@@ -522,6 +523,221 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+
+        .left-panel .panel {
+            position: relative;
+        }
+
+        .resource-browser-layer {
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            display: flex;
+            background: #fff;
+        }
+
+        .resource-browser-modal {
+            width: 100%;
+            max-width: none;
+            height: 100%;
+            max-height: none;
+            padding: 0;
+            border-radius: 0;
+            box-shadow: none;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .resource-browser-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 18px;
+            border-bottom: 1px solid #e4e8f0;
+        }
+
+        .resource-browser-header h3 {
+            margin: 0;
+            color: #26324d;
+            font-size: 1.05rem;
+        }
+
+        .resource-browser-close {
+            width: 30px;
+            height: 30px;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: #58637a;
+            cursor: pointer;
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+
+        .resource-browser-close:hover {
+            background: #f1f3f8;
+            color: #26324d;
+        }
+
+        .resource-browser-controls {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 132px;
+            gap: 8px;
+            padding: 12px 18px;
+            border-bottom: 1px solid #e4e8f0;
+        }
+
+        .resource-browser-controls input,
+        .resource-browser-controls select {
+            min-width: 0;
+            height: 34px;
+            border: 1px solid #d7dce8;
+            border-radius: 5px;
+            background: #fff;
+            color: #36415a;
+            padding: 0 9px;
+        }
+
+        .resource-browser-summary {
+            padding: 0 18px 10px;
+            color: #68748b;
+            font-size: 0.78rem;
+        }
+
+        .resource-browser-list {
+            display: grid;
+            flex: 1;
+            gap: 8px;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 0 18px 18px;
+        }
+
+        .resource-browser-item {
+            border: 1px solid #dfe4ee;
+            border-radius: 6px;
+            background: #fff;
+            padding: 12px;
+        }
+
+        .resource-browser-main {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .resource-browser-name {
+            min-width: 0;
+            overflow: hidden;
+            color: #26324d;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .resource-browser-meta {
+            margin-top: 4px;
+            color: #69758c;
+            font-size: 0.78rem;
+            line-height: 1.45;
+        }
+
+        .resource-browser-tags,
+        .resource-browser-actions,
+        .resource-reference-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .resource-browser-tags {
+            justify-content: flex-end;
+        }
+
+        .resource-tag {
+            border-radius: 999px;
+            background: #eef1f7;
+            color: #53617b;
+            font-size: 0.7rem;
+            line-height: 1.7;
+            padding: 0 7px;
+            white-space: nowrap;
+        }
+
+        .resource-tag.warning {
+            background: #fff3db;
+            color: #9a5c00;
+        }
+
+        .resource-tag.protected {
+            background: #e5f4ec;
+            color: #267047;
+        }
+
+        .resource-browser-references {
+            margin-top: 10px;
+            border-top: 1px solid #edf0f5;
+            padding-top: 9px;
+        }
+
+        .resource-reference-title {
+            margin-bottom: 6px;
+            color: #68748b;
+            font-size: 0.76rem;
+        }
+
+        .resource-reference-button,
+        .resource-action {
+            min-height: 28px;
+            border: 1px solid #d7dce8;
+            border-radius: 5px;
+            background: #fff;
+            color: #46516a;
+            cursor: pointer;
+            font-size: 0.75rem;
+            padding: 3px 7px;
+        }
+
+        .resource-reference-button:hover,
+        .resource-action:hover {
+            border-color: #667eea;
+            color: #4f5ec2;
+        }
+
+        .resource-action.danger {
+            border-color: #e7bcbc;
+            color: #a13b3b;
+        }
+
+        .resource-browser-actions {
+            margin-top: 10px;
+        }
+
+        .resource-browser-empty {
+            padding: 36px 12px;
+            color: #69758c;
+            text-align: center;
+        }
+
+        .resource-focus-flash {
+            animation: resource-focus-flash 1.6s ease-out;
+            outline: 3px solid rgba(102, 126, 234, 0.7);
+            outline-offset: 3px;
+        }
+
+        @keyframes resource-focus-flash {
+            0%, 35% { outline-color: rgba(102, 126, 234, 0.9); }
+            100% { outline-color: transparent; }
+        }
+
+        @media (max-width: 560px) {
+            .resource-browser-controls { grid-template-columns: 1fr; }
+            .resource-browser-main { display: block; }
+            .resource-browser-tags { justify-content: flex-start; margin-top: 8px; }
+        }
         
         /* 传输进度 */
         .transfer-progress {
@@ -850,6 +1066,7 @@
                             <button class="session-tool" id="directorySyncBtn" title="实验性目录镜像，需 Chromium 文件系统权限">同步目录</button>
                             <button class="session-tool" id="clipboardShareBtn" title="读取并共享本机剪贴板文本">启用粘贴板共享</button>
                             <button class="session-tool" id="garbageCleanupBtn" title="扫描并清理未关联的本地文件缓存">清理垃圾</button>
+                            <button class="session-tool" id="resourceBrowserBtn" title="查看会话文件资源及其引用位置">资源浏览器</button>
                         </div>
                         <div class="clipboard-notice" id="clipboardNotice" style="display: none;">
                             <span id="clipboardNoticeText"></span>
@@ -868,6 +1085,7 @@
                         </div>
                         <div id="remoteAudio" aria-live="polite"></div>
                     </div>
+                    <aside id="resourceBrowserLayer" class="resource-browser-layer" aria-label="会话资源浏览器" hidden></aside>
                 </div>
             </div>
             

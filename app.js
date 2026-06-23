@@ -3079,6 +3079,482 @@ async function showGarbageCleanupDialog() {
     });
 }
 
+async function getCurrentSessionFiles() {
+    if (typeof IDBKeyRange !== 'undefined') {
+        return getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
+    }
+    return (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+}
+
+function getEditorAssetEntries(content) {
+    const container = document.createElement('div');
+    container.innerHTML = String(content || '');
+    return Array.from(container.querySelectorAll('img[data-tunnel-asset-id]')).map(image => ({
+        id: image.dataset.tunnelAssetId,
+        name: image.dataset.tunnelAssetName || '',
+        type: image.dataset.tunnelAssetType || 'image/*',
+        size: Number(image.dataset.tunnelAssetSize || 0),
+        ownerDeviceId: image.dataset.tunnelAssetOwner || '',
+        isEditorAsset: true
+    })).filter(asset => asset.id);
+}
+
+function getResourceReferenceKey(reference) {
+    return [
+        reference.kind,
+        reference.messageId || '',
+        reference.targetAssetId || '',
+        reference.resourceId || ''
+    ].join(':');
+}
+
+function getResourceReferenceLabel(reference) {
+    const time = reference.timestamp ? ` ${formatTime(reference.timestamp)}` : '';
+    if (reference.kind === 'chat-file') return `聊天文件${time}`;
+    if (reference.kind === 'rich-message') return `富文本消息${time}`;
+    return '协同编辑器';
+}
+
+async function getSessionResourceInventory() {
+    const [messages, files, editorContent] = await Promise.all([
+        getCurrentSessionMessages(),
+        getCurrentSessionFiles(),
+        getFromStore('editorContent', 'current')
+    ]);
+    const resources = new Map();
+
+    const upsertResource = (candidate, storedFile = false) => {
+        const id = candidate?.id;
+        if (!id) return null;
+        let resource = resources.get(id);
+        if (!resource) {
+            resource = {
+                id,
+                name: '',
+                type: 'application/octet-stream',
+                size: 0,
+                ownerDeviceId: '',
+                sourceFileId: '',
+                isEditorAsset: false,
+                isFileAsset: false,
+                file: null,
+                references: [],
+                derivedCopies: [],
+                referenceKeys: new Set()
+            };
+            resources.set(id, resource);
+        }
+        if (candidate.name) resource.name = candidate.name;
+        if (candidate.type) resource.type = candidate.type;
+        if (Number.isFinite(Number(candidate.size)) && Number(candidate.size) >= 0) resource.size = Number(candidate.size);
+        if (candidate.ownerDeviceId) resource.ownerDeviceId = candidate.ownerDeviceId;
+        if (candidate.sourceFileId) resource.sourceFileId = candidate.sourceFileId;
+        resource.isEditorAsset = resource.isEditorAsset || candidate.isEditorAsset === true;
+        resource.isFileAsset = resource.isFileAsset || candidate.isFileAsset === true || candidate.isAsset === true;
+        if (storedFile) resource.file = candidate;
+        return resource;
+    };
+
+    const addReference = (resourceId, reference) => {
+        const resource = upsertResource({ id: resourceId });
+        if (!resource) return;
+        const normalized = { ...reference, resourceId };
+        const key = getResourceReferenceKey(normalized);
+        if (resource.referenceKeys.has(key)) return;
+        resource.referenceKeys.add(key);
+        resource.references.push(normalized);
+    };
+
+    files.forEach(file => upsertResource(file, true));
+
+    messages.forEach(message => {
+        if (message.fileInfo?.id) {
+            upsertResource(message.fileInfo);
+            addReference(message.fileInfo.id, {
+                kind: 'chat-file',
+                messageId: message.id,
+                timestamp: message.timestamp
+            });
+        }
+        if (message.type !== 'rich') return;
+
+        getEditorAssetEntries(message.content).forEach(asset => {
+            upsertResource(asset);
+            addReference(asset.id, {
+                kind: 'rich-message',
+                messageId: message.id,
+                timestamp: message.timestamp,
+                targetAssetId: asset.id
+            });
+        });
+        extractFileRefIds(message.content).forEach(fileId => {
+            addReference(fileId, {
+                kind: 'rich-message',
+                messageId: message.id,
+                timestamp: message.timestamp,
+                targetAssetId: fileId
+            });
+        });
+    });
+
+    const editor = document.getElementById('editor');
+    const currentEditorContent = editor?.innerHTML ||
+        (editorContent?.sessionId === state.sessionId ? editorContent.content : '');
+    getEditorAssetEntries(currentEditorContent).forEach(asset => {
+        upsertResource(asset);
+        addReference(asset.id, { kind: 'editor', targetAssetId: asset.id });
+    });
+    extractFileRefIds(currentEditorContent).forEach(fileId => {
+        addReference(fileId, { kind: 'editor', targetAssetId: fileId });
+    });
+
+    Array.from(resources.values()).forEach(resource => {
+        if (!resource.sourceFileId || resource.references.length === 0) return;
+        const source = resources.get(resource.sourceFileId);
+        if (!source || source.derivedCopies.some(copy => copy.id === resource.id)) return;
+        source.derivedCopies.push({
+            id: resource.id,
+            name: resource.name,
+            referenceCount: resource.references.length
+        });
+    });
+
+    return Array.from(resources.values()).map(resource => {
+        resource.name = resource.name || `未命名资源 ${resource.id.slice(0, 8)}`;
+        resource.hasLocalData = hasCompleteFileCache(resource.file, resource);
+        resource.cacheCleared = Boolean(resource.file?.cacheCleared);
+        resource.isPartial = Boolean(resource.file?.isPartial || resource.file?.transferInterrupted);
+        resource.timestamp = Number(resource.file?.timestamp || 0);
+        resource.references.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        delete resource.referenceKeys;
+        return resource;
+    }).sort((a, b) => {
+        if (a.references.length !== b.references.length) return b.references.length - a.references.length;
+        return b.timestamp - a.timestamp || a.name.localeCompare(b.name, 'zh-CN');
+    });
+}
+
+function flashResourceTarget(target) {
+    if (!target) return;
+    target.classList.remove('resource-focus-flash');
+    void target.offsetWidth;
+    target.classList.add('resource-focus-flash');
+    setTimeout(() => target.classList.remove('resource-focus-flash'), 1700);
+}
+
+function getResourceTargetInEditor(editor, assetId) {
+    return Array.from(editor.querySelectorAll('[data-tunnel-asset-id], [data-tunnel-file-ref-id]'))
+        .find(element => element.dataset.tunnelAssetId === assetId || element.dataset.tunnelFileRefId === assetId);
+}
+
+function focusResourceReference(reference) {
+    if (reference.kind === 'editor') {
+        const editor = document.getElementById('editor');
+        if (!editor) return;
+        editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const target = getResourceTargetInEditor(editor, reference.targetAssetId || reference.resourceId);
+        if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            flashResourceTarget(target);
+        } else {
+            editor.focus();
+            flashResourceTarget(editor);
+        }
+        return;
+    }
+
+    const message = document.querySelector(`.message[data-message-id="${reference.messageId}"]`);
+    if (!message) return;
+    message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    message.tabIndex = -1;
+    message.focus({ preventScroll: true });
+    flashResourceTarget(message);
+}
+
+function closeResourceBrowser() {
+    const layer = document.getElementById('resourceBrowserLayer');
+    if (!layer) return;
+    layer.replaceChildren();
+    layer.hidden = true;
+}
+
+async function clearResourceCache(resource) {
+    const file = await getFromStore('files', resource.id);
+    if (!file || !hasCompleteFileCache(file, resource)) return;
+    if (!confirm(`仅清除此设备保存的“${resource.name}”内容吗？引用与传输记录会保留。`)) return;
+
+    fileAssetTransfer?.cancel(resource.id);
+    const { data, ...metadata } = file;
+    await saveToStore('files', {
+        ...metadata,
+        id: resource.id,
+        name: resource.name,
+        type: resource.type,
+        size: resource.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: resource.ownerDeviceId,
+        isFileAsset: resource.isFileAsset,
+        cacheCleared: true,
+        restoreRequested: false,
+        isPartial: false,
+        transferInterrupted: false
+    });
+
+    const fileUrl = fileObjectUrls.get(resource.id);
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    fileObjectUrls.delete(resource.id);
+    const editorUrl = editorAssetUrls.get(resource.id);
+    if (editorUrl) URL.revokeObjectURL(editorUrl);
+    editorAssetUrls.delete(resource.id);
+
+    if (resource.isEditorAsset) {
+        editorAssetCacheVersions.set(resource.id, (editorAssetCacheVersions.get(resource.id) || 0) + 1);
+        setEditorAssetStatus(resource.id, '本地缓存已清理，可在资源浏览器中还原图片', 'unavailable');
+    } else {
+        showFileMessagePlaceholder(resource.id, '本地缓存已清理', true);
+    }
+    historyLog('resource-cache-cleared', { resourceId: resource.id, isEditorAsset: resource.isEditorAsset });
+}
+
+async function restoreResourceCache(resource) {
+    const file = await getFromStore('files', resource.id);
+    const metadata = {
+        ...(file || {}),
+        id: resource.id,
+        name: resource.name,
+        type: resource.type,
+        size: resource.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: resource.ownerDeviceId,
+        cacheCleared: true,
+        restoreRequested: true
+    };
+    await saveToStore('files', metadata);
+
+    if (resource.isEditorAsset) {
+        requestEditorAsset(resource.id, resource.ownerDeviceId);
+        historyLog('resource-editor-asset-restore-requested', { resourceId: resource.id });
+        return;
+    }
+
+    if (!fileAssetTransfer) {
+        alert('文件传输尚未初始化。');
+        return;
+    }
+    metadata.isFileAsset = true;
+    await saveToStore('files', metadata);
+    showFileMessagePlaceholder(resource.id, '正在请求还原', true);
+    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata);
+    historyLog('resource-file-restore-requested', { resourceId: resource.id });
+}
+
+async function deleteUnreferencedResource(resource) {
+    if (resource.references.length > 0) {
+        alert('该资源仍有引用，不能从资源浏览器删除。请先删除引用位置，或只清除本机缓存。');
+        return;
+    }
+    if (!confirm(`从本设备移除未引用资源“${resource.name}”吗？此操作不会删除其它设备的缓存。`)) return;
+
+    fileAssetTransfer?.cancel(resource.id);
+    await deleteFromStore('files', resource.id);
+    const fileUrl = fileObjectUrls.get(resource.id);
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    fileObjectUrls.delete(resource.id);
+    const editorUrl = editorAssetUrls.get(resource.id);
+    if (editorUrl) URL.revokeObjectURL(editorUrl);
+    editorAssetUrls.delete(resource.id);
+    historyLog('unreferenced-resource-deleted', { resourceId: resource.id });
+}
+
+function createResourceBrowserButton(label, title, handler, className = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `resource-action ${className}`.trim();
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener('click', handler);
+    return button;
+}
+
+async function showResourceBrowser() {
+    const layer = document.getElementById('resourceBrowserLayer');
+    if (!layer) throw new Error('资源浏览器容器不存在');
+    layer.replaceChildren();
+    layer.hidden = false;
+    const modal = document.createElement('section');
+    modal.className = 'modal resource-browser-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-label', '会话资源浏览器');
+
+    const header = document.createElement('div');
+    header.className = 'resource-browser-header';
+    const title = document.createElement('h3');
+    title.textContent = '会话资源浏览器';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'resource-browser-close';
+    closeButton.textContent = '×';
+    closeButton.title = '关闭资源浏览器';
+    closeButton.addEventListener('click', closeResourceBrowser);
+    header.append(title, closeButton);
+
+    const controls = document.createElement('div');
+    controls.className = 'resource-browser-controls';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.placeholder = '按名称或格式筛选资源';
+    searchInput.setAttribute('aria-label', '筛选资源');
+    const filter = document.createElement('select');
+    filter.setAttribute('aria-label', '资源状态筛选');
+    [
+        ['all', '全部资源'],
+        ['referenced', '有引用'],
+        ['orphaned', '未引用'],
+        ['missing', '缓存缺失']
+    ].forEach(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        filter.appendChild(option);
+    });
+    controls.append(searchInput, filter);
+
+    const summary = document.createElement('div');
+    summary.className = 'resource-browser-summary';
+    const list = document.createElement('div');
+    list.className = 'resource-browser-list';
+    modal.append(header, controls, summary, list);
+    layer.appendChild(modal);
+
+    const render = async () => {
+        const resources = await getSessionResourceInventory();
+        const query = searchInput.value.trim().toLocaleLowerCase('zh-CN');
+        const mode = filter.value;
+        const visible = resources.filter(resource => {
+            const matchesQuery = !query || `${resource.name} ${resource.type}`.toLocaleLowerCase('zh-CN').includes(query);
+            if (!matchesQuery) return false;
+            if (mode === 'referenced') return resource.references.length > 0;
+            if (mode === 'orphaned') return resource.references.length === 0;
+            if (mode === 'missing') return !resource.hasLocalData;
+            return true;
+        });
+        const cachedSize = resources.reduce((sum, resource) => sum + (resource.hasLocalData ? resource.size : 0), 0);
+        summary.textContent = `共 ${resources.length} 项资源，本机缓存 ${formatFileSize(cachedSize)}，当前显示 ${visible.length} 项。`;
+        list.replaceChildren();
+
+        if (!visible.length) {
+            const empty = document.createElement('div');
+            empty.className = 'resource-browser-empty';
+            empty.textContent = '没有符合条件的资源。';
+            list.appendChild(empty);
+            return;
+        }
+
+        visible.forEach(resource => {
+            const item = document.createElement('article');
+            item.className = 'resource-browser-item';
+            const main = document.createElement('div');
+            main.className = 'resource-browser-main';
+            const detail = document.createElement('div');
+            detail.style.minWidth = '0';
+            const name = document.createElement('div');
+            name.className = 'resource-browser-name';
+            name.textContent = resource.name;
+            name.title = resource.name;
+            const meta = document.createElement('div');
+            meta.className = 'resource-browser-meta';
+            meta.textContent = `${formatFileSize(resource.size)} · ${resource.type || '未知格式'}`;
+            detail.append(name, meta);
+
+            const tags = document.createElement('div');
+            tags.className = 'resource-browser-tags';
+            const addTag = (text, className = '') => {
+                const tag = document.createElement('span');
+                tag.className = `resource-tag ${className}`.trim();
+                tag.textContent = text;
+                tags.appendChild(tag);
+            };
+            addTag(resource.isEditorAsset ? '协同图片' : '文件');
+            if (resource.references.length) addTag(`引用 ${resource.references.length}`, 'protected');
+            else addTag('未引用', 'warning');
+            if (resource.derivedCopies.length) addTag(`引用副本 ${resource.derivedCopies.length}`, 'protected');
+            if (resource.hasLocalData) addTag('已缓存');
+            else if (resource.isPartial) addTag('传输中断', 'warning');
+            else if (resource.cacheCleared) addTag('缓存已清理', 'warning');
+            else addTag('本机无缓存', 'warning');
+            main.append(detail, tags);
+            item.appendChild(main);
+
+            if (resource.references.length) {
+                const references = document.createElement('div');
+                references.className = 'resource-browser-references';
+                const referenceTitle = document.createElement('div');
+                referenceTitle.className = 'resource-reference-title';
+                referenceTitle.textContent = '引用位置';
+                const referenceList = document.createElement('div');
+                referenceList.className = 'resource-reference-list';
+                resource.references.forEach(reference => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'resource-reference-button';
+                    button.textContent = getResourceReferenceLabel(reference);
+                    button.title = '定位到引用位置';
+                    button.addEventListener('click', () => focusResourceReference(reference));
+                    referenceList.appendChild(button);
+                });
+                references.append(referenceTitle, referenceList);
+                item.appendChild(references);
+            }
+
+            if (resource.derivedCopies.length) {
+                const copies = document.createElement('div');
+                copies.className = 'resource-browser-references';
+                const copyTitle = document.createElement('div');
+                copyTitle.className = 'resource-reference-title';
+                copyTitle.textContent = `已生成 ${resource.derivedCopies.length} 个独立协同图片副本；删除原聊天记录不会影响这些副本。`;
+                copies.appendChild(copyTitle);
+                item.appendChild(copies);
+            }
+
+            const actions = document.createElement('div');
+            actions.className = 'resource-browser-actions';
+            if (resource.hasLocalData) {
+                actions.appendChild(createResourceBrowserButton('下载', '下载本机已缓存的资源', () => downloadFile(resource.id)));
+                actions.appendChild(createResourceBrowserButton('清除缓存', '仅清理本设备保存的文件内容', async () => {
+                    await clearResourceCache(resource);
+                    await render();
+                }));
+            } else if (resource.cacheCleared || resource.isPartial) {
+                actions.appendChild(createResourceBrowserButton(
+                    resource.isEditorAsset ? '还原图片' : '还原文件',
+                    '从当前在线设备重新获取资源内容',
+                    async () => {
+                        await restoreResourceCache(resource);
+                        await render();
+                    }
+                ));
+            }
+            if (resource.references.length === 0) {
+                actions.appendChild(createResourceBrowserButton('移除资源', '仅从本设备移除未引用资源', async () => {
+                    await deleteUnreferencedResource(resource);
+                    await render();
+                }, 'danger'));
+            }
+            if (actions.childElementCount) item.appendChild(actions);
+            list.appendChild(item);
+        });
+    };
+
+    searchInput.addEventListener('input', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
+    filter.addEventListener('change', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
+    try {
+        await render();
+    } catch (err) {
+        closeResourceBrowser();
+        throw err;
+    }
+}
+
 async function sendText() {
     const input = document.getElementById('textInput');
     const text = input.value.trim();
@@ -3710,6 +4186,12 @@ function initUI() {
     document.getElementById('clipboardShareBtn').addEventListener('click', toggleClipboardShare);
     document.getElementById('copySharedClipboardBtn').addEventListener('click', copySharedClipboard);
     document.getElementById('garbageCleanupBtn').addEventListener('click', showGarbageCleanupDialog);
+    document.getElementById('resourceBrowserBtn').addEventListener('click', () => {
+        showResourceBrowser().catch(err => {
+            historyLog('resource-browser-open-failed', { error: err.message });
+            alert(`无法打开资源浏览器: ${err.message}`);
+        });
+    });
     document.getElementById('folderUploadBtn').addEventListener('click', () => document.getElementById('folderInput').click());
     document.getElementById('folderInput').addEventListener('change', async event => {
         const files = Array.from(event.target.files || []);
