@@ -1851,6 +1851,108 @@ server/file-assets.js+11-2
 问：
 (1) 在页面合适的角落提供清理垃圾按钮：已经确认可以清理游离态的文件缓存（即没有被文件传输历史或富文本关联的文件），不过还不确定能否清理中断传输的文件缓存
 
+7.8
+问：
+(1) 发现隧道暗号（短码）怎么一直被初始化为5个数字，不是同时支持数字或字母(不区分大小写)吗
+
+7.9
+问：
+把代码部署到了生产环境（HTTPS、公网域名、证书正常），在windows的EDGE浏览器只加载了页面背景颜色，任何功能视图都没有加载，而在window的chrome则正常加载。
+截取到windows的EDGE浏览器consoler日志如下：
+Opening IndexedDB...
+app.js:200 IndexedDB opened successfully, version: 2
+app.js:3302 Loading session data for: 846c3b21-0a6a-42e0-8077-1ddbb79f3aa9
+app.js:3318 Loaded messages: 10
+app.js:110 [debug][client][indexeddb-history-loaded] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:00.636Z', messageCount: 10, messages: Array(10)}
+app.js:2230 Rendering file message: ab262aa6-8505-47e7-a51f-9badc3bfdaec da4be00fb79a09d708582c481ac35cba40f48d84.jpg isSmall: undefined
+app.js:2230 Rendering file message: 6d65504d-6716-42d8-9d35-26e2886a3518 F8UIKzbbYAA2e8o.jpg isSmall: undefined
+app.js:2230 Rendering file message: 9a5244a3-e18b-44a3-8b22-1fcda4d431c4 IMG_20260601_203648.jpg isSmall: undefined
+app.js:2230 Rendering file message: 95033b68-1c8d-479a-9988-c41a53ecca76 奔驰车钥匙？.jpg isSmall: undefined
+app.js:2230 Rendering file message: 5e695b97-af79-45bd-ab02-d04aaa6ae1c3 Screenshot_20260413192020.jpg isSmall: undefined
+app.js:110 [debug][client][indexeddb-history-rendered] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:00.795Z', messageCount: 10}
+app.js:3343 Loading editor content...
+app.js:3346 Restoring editor content
+app.js:110 [debug][client][editor-asset-hydration-started] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:00.810Z', target: 'editor', assetIds: Array(1)}
+app.js:110 [debug][client][editor-asset-cache-hit] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:00.815Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', storedSessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', …}
+app.js:110 [debug][client][editor-asset-rendered] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:00.840Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', target: 'editor', …}
+app.js:431 Socket connected
+app.js:110 [debug][client][socket-connected] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.194Z', socketId: 'll2ZJB4oKuy5w2ugAAAH', socketServer: 'https://tun.miku.us'}
+app.js:110 [debug][client][join-emitted] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.195Z', socketId: 'll2ZJB4oKuy5w2ugAAAH', deviceName: '💻 设备-7c33'}
+app.js:110 [debug][client][editor-asset-hydration-started] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.199Z', target: 'editor', assetIds: Array(1)}
+app.js:110 [debug][client][editor-asset-cache-hit] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.216Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', storedSessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', …}
+app.js:110 [debug][client][editor-asset-rendered] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.218Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', target: 'editor', …}
+app.js:110 [debug][client][editor-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.303Z', asset: {…}}
+app.js:110 [debug][client][file-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.316Z', asset: {…}}
+app.js:110 [debug][client][file-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.317Z', asset: {…}}
+app.js:110 [debug][client][file-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.319Z', asset: {…}}
+app.js:110 [debug][client][file-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.320Z', asset: {…}}
+app.js:110 [debug][client][file-asset-announced] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:01.322Z', asset: {…}}
+app.js:110 [debug][client][editor-state-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.063Z', hasRemoteContent: false, contentSize: 0, …}
+app.js:110 [debug][client][snapshot-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.069Z', messageCount: 0, messages: Array(0)}
+app.js:110 [debug][client][snapshot-processing-started] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.071Z', messageCount: 0}
+app.js:110 [debug][client][snapshot-processing-completed] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.072Z', receivedCount: 0, restoredCount: 0, …}
+app.js:110 [debug][client][editor-sync-emitted] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.075Z', contentSize: 339}
+app.js:110 [debug][client][snapshot-processing-failed] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:56:03.078Z', error: 'deletedIds is not defined'}
+app.js:655 Connecting to peer: 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:110 [debug][client][snapshot-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.604Z', messageCount: 0, messages: Array(0)}
+app.js:110 [debug][client][snapshot-processing-started] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.634Z', messageCount: 0}
+app.js:110 [debug][client][snapshot-processing-completed] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.638Z', receivedCount: 0, restoredCount: 0, …}
+app.js:110 [debug][client][file-asset-cancelled] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.690Z', assetId: 'ab262aa6-8505-47e7-a51f-9badc3bfdaec'}
+app.js:655 Connecting to peer: 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:674 Connection already in progress with 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.709Z', messageId: '11d5a097-194a-4479-849f-7556ef5643b2', fileId: 'ab262aa6-8505-47e7-a51f-9badc3bfdaec'}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.759Z', messageId: '38a34fb3-c5c3-4b78-9b44-9f898f4185ef', fileId: undefined}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.853Z', messageId: '40c0f7f8-adbe-43e4-984e-eca115211fa6', fileId: undefined}
+app.js:110 [debug][client][file-asset-cancelled] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.857Z', assetId: '95033b68-1c8d-479a-9988-c41a53ecca76'}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.893Z', messageId: '643a4c97-8b3e-4745-b4bb-659889af033e', fileId: '95033b68-1c8d-479a-9988-c41a53ecca76'}
+app.js:110 [debug][client][file-asset-cancelled] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.897Z', assetId: '5e695b97-af79-45bd-ab02-d04aaa6ae1c3'}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.938Z', messageId: '678b1865-1357-4a0c-bd72-0429834c0e9f', fileId: '5e695b97-af79-45bd-ab02-d04aaa6ae1c3'}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.950Z', messageId: '8245e5e6-5e6e-4c72-99b8-1ad2323d314b', fileId: undefined}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.974Z', messageId: '97a741b1-c84c-423b-9a56-e53eb2fef11f', fileId: undefined}
+app.js:110 [debug][client][file-asset-cancelled] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:08.998Z', assetId: '6d65504d-6716-42d8-9d35-26e2886a3518'}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.009Z', messageId: 'a094604c-faef-4354-a702-4811c0d63635', fileId: '6d65504d-6716-42d8-9d35-26e2886a3518'}
+app.js:110 [debug][client][file-asset-cancelled] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.058Z', assetId: '9a5244a3-e18b-44a3-8b22-1fcda4d431c4'}
+app.js:701 Set local description, sending offer to 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.192Z', messageId: 'eb6aaa9c-2932-4a8e-87dc-c23d3f355b82', fileId: '9a5244a3-e18b-44a3-8b22-1fcda4d431c4'}
+app.js:110 [debug][client][p2p-signal-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.217Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', signalType: 'answer', …}
+app.js:110 [debug][client][p2p-signal-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.231Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', signalType: 'ice-candidate', …}
+app.js:110 [debug][client][p2p-ice-queued] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.248Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', pendingCandidateCount: 1}
+app.js:110 [debug][client][p2p-signal-received] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.255Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', signalType: 'ice-candidate', …}
+app.js:110 [debug][client][p2p-ice-queued] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.262Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', pendingCandidateCount: 2}
+app.js:110 [debug][client][history-message-deleted-locally] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.265Z', messageId: 'f25c2ea6-aa7d-413d-a195-b4af35a205c7', fileId: undefined}
+app.js:110 [debug][client][history-canonical-applied] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.270Z', canonicalMessageCount: 0, removedCount: 10}
+app.js:110 [debug][client][snapshot-ack-emitted] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.283Z', receivedCount: 0, restoredCount: 0, …}
+app.js:110 [debug][client][p2p-ice-flushing] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:09.601Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', candidateCount: 2}
+app.js:594 Sending ICE candidate to 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:630 Connection state for 5f38cf18-c7d7-4e75-b290-cad6711fb2db : connecting
+app.js:110 [debug][client][p2p-connection-state] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:10.264Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', connectionState: 'connecting'}
+app.js:605 ICE connection state for 5f38cf18-c7d7-4e75-b290-cad6711fb2db : checking
+app.js:110 [debug][client][p2p-ice-state] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:10.278Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', iceConnectionState: 'checking'}
+app.js:594 Sending ICE candidate to 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:605 ICE connection state for 5f38cf18-c7d7-4e75-b290-cad6711fb2db : connected
+app.js:110 [debug][client][p2p-ice-state] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:10.516Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', iceConnectionState: 'connected'}
+app.js:611 P2P connection established with 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:821 Data channel opened with 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:110 [debug][client][p2p-data-channel-opened] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:10.956Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db'}
+app.js:630 Connection state for 5f38cf18-c7d7-4e75-b290-cad6711fb2db : connected
+app.js:110 [debug][client][p2p-connection-state] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:11.017Z', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db', connectionState: 'connected'}
+app.js:1682 Data channel ready for 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:110 [debug][client][editor-asset-channel-opened] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:11.657Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db'}
+app.js:110 [debug][client][editor-asset-sent] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:11.990Z', asset: {…}}
+app.js:110 [debug][client][editor-asset-channel-closed] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:12.330Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', peerDeviceId: '5f38cf18-c7d7-4e75-b290-cad6711fb2db'}
+app.js:110 [debug][client][editor-asset-cache-hit] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:12.425Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', storedSessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', …}
+app.js:110 [debug][client][editor-asset-rendered] {sessionId: '846c3b21-0a6a-42e0-8077-1ddbb79f3aa9', deviceId: '57e14dec-362a-4bec-add1-a39e44487c33', clientTimestamp: '2026-06-23T18:57:17.358Z', assetId: '3ad75aaf-9f2b-472e-aefd-1a91b628a67c', target: 'editor', …}
+12app.js:1682 Data channel ready for 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+app.js:1695 Data channel timeout for 5f38cf18-c7d7-4e75-b290-cad6711fb2db
+发现在EDGE浏览器打开测试环境所用的地址http://10.0.0.16/，能正常加载功能。
+
+
+7.10
+问：
+是不是因为最近封装了PWA，导致在电脑各个浏览器无法启动对讲机（提示Requested device not found），也提示无法加入语音聊天（提示Requested device not found）。
+手机上的chrome对于PWA录音和录像时，就没有要求不能有别的app浮窗。
+
+
 问：
 8、在设备A开启摄像头后，仅在A将按钮文字改成“关闭摄像头”即可，而在别的设备则将按钮显示为“顶号开播”，当A关闭摄像头后，别的设备得摄像头按钮文字还原为“摄像头”
 
