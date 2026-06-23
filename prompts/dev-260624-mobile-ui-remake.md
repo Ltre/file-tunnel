@@ -175,7 +175,162 @@
 
 在传输历史区域，点击图片不要直接下载。对于所有类型文件的传输记录一视同仁，点击任何区域，一律弹出浮层，并显示这个文件的明细数据（文件名含扩展名、时间、最初上传设备、大小等）。在PC/MAC/linux等电脑端，右键弹出上下文菜单点击下载；在android/ios/ipad等移动端，长按弹出上下文菜单点击下载
 
+答：
 
+我会把文件传输记录的交互统一成“点击查看详情”，不再让图片预览直接下载；电脑端右键、移动端长按打开同一套上下文菜单，其中提供下载。先梳理现有图片/文件的点击路径和缓存状态，避免影响还原、清除缓存等动作。
+
+
+
+
+已运行 3 条命令
+
+
+我会统一文件记录本身的事件层：预览、文件卡片、标题区域都只打开详情；现有清缓存、还原、删除按钮仍保留各自行为。下载入口只放到自定义右键/长按菜单中，缓存未就绪时会显示为不可下载。
+
+
+
+
+编辑了 1 个文件
+
+
+详情浮层与下载菜单我会做成两个独立层：详情只读展示元数据；上下文菜单只负责下载。这样所有文件类型保持同一主交互，不会再因为预览类型不同而出现不同的点击行为。
+
+
+
+
+编辑了 2 个文件
+
+
+主交互和详情/上下文菜单都接好了。我现在重点检查三件事：旧的图片直下链接是否已清除、更新缓存后的记录仍保留统一交互、长按菜单不会被点击外部关闭逻辑误关。
+
+
+
+
+已运行 5 条命令
+
+
+刚才的检查命令被 PowerShell 引号解析拦住了，代码本身尚未执行。换成分开的语法检查和静态断言继续验证。
+
+
+
+
+已运行 $node = 'C:\Users\Dell\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'; & $node --check app.js; git diff --check -- app.js index.html; git status --short
+
+
+
+
+
+
+
+
+上下文已自动压缩
+
+
+
+已运行 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+foreach ($file in @('app.js', 'index.html')) {
+  $path = Resolve-Path $file
+  $content = [System.IO.File]::ReadAllText($path)
+  $normalized = $content.Replace("`r`n", "`n").Replace("`r", "`n")
+  [System.IO.File]::WriteAllText($path, $normalized, $utf8NoBom)
+}
+& 'C:\Program Files\nodejs\node.exe' --check app.js
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+git diff --check -- app.js index.html
+git status --short
+
+
+
+
+
+
+
+行尾已统一，git diff --check 不会再被格式噪声淹没。当前机器的 Node 不在默认安装路径，我会定位工作区实际使用的运行时，再做语法和交互静态检查；随后补一处小清理并复核改动范围。
+
+
+
+
+已运行 6 条命令
+
+
+主交互已经落在所有文件记录的外层，图片、视频和普通文件不会再各走一套下载路径。再收紧两点：移除已无用途的类型判断，并让文件名继续走原有的 HTML 转义，之后进行语法与静态回归检查。
+
+
+
+
+编辑了 1 个文件执行了 1 条命令
+
+
+语法检查已通过；静态断言里有一项把动态创建的菜单误当成静态 HTML 结构了，不是功能缺失。我会改成检查对应 CSS 与动态创建逻辑，再完成最终检查。
+
+
+
+
+已运行 @'
+const fs = require('fs');
+const app = fs.readFileSync('app.js', 'utf8');
+const html = fs.readFileSync('index.html', 'utf8');
+if (/<img[^>]+onclick\s*=\s*["']downloadFile/.test(app)) throw new Error('Image preview still downloads on click');
+for (const marker of ['function showFileDetails(messageId)', 'function showFileContextMenu(messageId, clientX, clientY)', 'function attachFileRecordInteractions(messageEl)', "document.getElementById('fileDetailsViewer').classList.add('active')", "menu.className = 'file-context-menu'", "downloadFile(fileInfo.id)"]) {
+  if (!app.includes(marker)) throw new Error(`Missing ${marker}`);
+}
+for (const marker of ['id="fileDetailsViewer"', '.file-context-menu', '.message.file-record']) {
+  if (!html.includes(marker)) throw new Error(`Missing ${marker}`);
+}
+console.log('file record interaction static checks passed');
+'@ | & 'D:\InstalledApps\nodejs\node.exe' -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+git diff --check -- app.js index.html
+git diff --stat -- app.js index.html
+git status --short
+
+
+
+
+
+
+
+静态检查、JavaScript 语法检查和差异格式检查都已通过。我再用浏览器技能做一次实际页面加载核验，重点看详情浮层和菜单样式是否能随现有页面正常装载。
+
+
+
+
+已运行 1 条命令已运行 1 条命令used 浏览器
+
+
+浏览器页面加载在本机连接阶段没有返回，我已经停止这次验证，避免它继续占用会话；这不影响已通过的代码语法与静态交互检查。我现在做最后一次差异审阅，确认没有把原来的缓存清理、还原和删除按钮卷进新的点击行为。
+
+
+
+
+已运行 git diff --unified=3 -- app.js index.html | Select-String -Pattern '^@@|^[-+].*(downloadFile|file-actions|file-record|showFileDetails|showFileContextMenu|attachFileRecordInteractions|fileDetailsViewer|file-context-menu|isAudio|file-name)' -Context 1,1
+git diff --check -- app.js index.html
+git branch --show-current
+git status --short
+
+
+
+
+
+
+
+
+
+
+已完成，当前分支是 dev-260624-mobile-ui-remake，未暂存、未提交。
+传输记录中的任何文件现在点击都会弹出文件详情浮层，包含文件名、扩展名、MIME 类型、大小、上传时间、最初上传设备及本机缓存状态；图片不会再点击即下载。
+电脑端右键、移动端长按文件记录会弹出菜单，可在文件已缓存时下载。原有“清除缓存 / 还原文件 / 删除记录”按钮保持独立行为。
+改动位于 [app.js](D:\\Workspace\\github\\Ltre\\file-tunnel\\app.js) 和 [index.html](D:\\Workspace\\github\\Ltre\\file-tunnel\\index.html)。
+
+--------------------------------
+
+
+发现移动端底部切换栏遮挡了“设备连接”、“传输记录”、“协同编辑”区域的UI组件，这在部分设备（荣耀20手机android13 chrome）会出现
+
+答：
+已修正移动端底部栏遮挡问题。
+现在三个工作区的高度会自动扣除底部“连接 / 隧道 / 协同”切换栏及安全区，不再依赖容易失效的内容底部补白；荣耀 20 的 Android Chrome 这类动态视口环境也会使用 100dvh 计算可见区域。
+改动在 [index.html](D:\\Workspace\\github\\Ltre\\file-tunnel\\index.html)，已通过布局静态检查和 git diff --check。
 
 --------------------------------
 

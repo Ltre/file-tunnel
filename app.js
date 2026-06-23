@@ -2654,6 +2654,7 @@ async function addMessageToChat(message, isOwn) {
     messageEl.className = `message ${isOwn ? 'own' : ''}`;
     messageEl.dataset.messageId = message.id;
     if (message.type === 'file' && message.fileInfo?.id) {
+        messageEl.classList.add('file-record');
         messageEl.dataset.fileId = message.fileInfo.id;
         messageEl.dataset.fileName = message.fileInfo.name;
         messageEl.dataset.fileType = message.fileInfo.type;
@@ -2673,7 +2674,6 @@ async function addMessageToChat(message, isOwn) {
 
         const isImage = fileInfo.type.startsWith('image/');
         const isVideo = fileInfo.type.startsWith('video/');
-        const isAudio = fileInfo.type.startsWith('audio/');
 
         // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
         let fileUrl = fileInfo.data || null;
@@ -2700,8 +2700,7 @@ async function addMessageToChat(message, isOwn) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}"
-                             onclick="downloadFile('${fileInfo.id}')" style="cursor: pointer;">
+                        <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}">
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -2710,16 +2709,7 @@ async function addMessageToChat(message, isOwn) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <video controls src="${fileUrl}"></video>
-                    </div>
-                    <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
-                </div>
-            `;
-        } else if (isAudio && fileUrl) {
-            contentHtml = `
-                <div class="message-bubble">
-                    <div class="media-preview">
-                        <audio controls src="${fileUrl}"></audio>
+                        <video muted playsinline preload="metadata" src="${fileUrl}"></video>
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -2727,9 +2717,8 @@ async function addMessageToChat(message, isOwn) {
         } else {
             // 文件消息（大文件、无法预览的文件，或文件数据已丢失）
             const sizeStr = formatFileSize(fileInfo.size);
-            const canDownload = fileInfo.id && Boolean(fileUrl);
-            const clickHandler = canDownload ? `onclick="downloadFile('${fileInfo.id}')"` : '';
-            const opacity = canDownload ? '' : 'opacity: 0.6;';
+            const hasLocalData = fileInfo.id && Boolean(fileUrl);
+            const opacity = hasLocalData ? '' : 'opacity: 0.6;';
 
             const unavailableLabel = fileInfo.isAsset
                 ? ' (等待接收)'
@@ -2737,11 +2726,11 @@ async function addMessageToChat(message, isOwn) {
                     ? ' (未同步到本机)'
                     : ' (文件数据不可用)';
             contentHtml = `
-                <div class="message-bubble file-message" ${clickHandler} style="${opacity}">
+                <div class="message-bubble file-message" style="${opacity}">
                     <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
                     <div class="file-info">
-                        <div class="file-name">${fileInfo.name}</div>
-                        <div class="file-size">${sizeStr}${!canDownload ? unavailableLabel : ''}</div>
+                        <div class="file-name">${escapeHtml(fileInfo.name)}</div>
+                        <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
                     </div>
                 </div>
             `;
@@ -2775,6 +2764,7 @@ async function addMessageToChat(message, isOwn) {
 
     if (fileRenderState) {
         renderFileMessageActions(messageEl, fileRenderState.fileInfo, fileRenderState);
+        attachFileRecordInteractions(messageEl);
     }
 
     container.appendChild(messageEl);
@@ -2823,6 +2813,141 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.appendChild(actions);
 }
 
+let fileContextMenu = null;
+
+function closeFileContextMenu() {
+    fileContextMenu?.remove();
+    fileContextMenu = null;
+}
+
+function getFileExtension(fileName) {
+    const name = String(fileName || '');
+    const index = name.lastIndexOf('.');
+    return index > 0 && index < name.length - 1 ? name.slice(index + 1).toUpperCase() : '无扩展名';
+}
+
+function formatDateTime(timestamp) {
+    return new Date(timestamp || Date.now()).toLocaleString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+}
+
+function closeFileDetails() {
+    document.getElementById('fileDetailsViewer').classList.remove('active');
+}
+
+async function showFileDetails(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
+    const details = [
+        ['文件名', fileInfo.name || '未知文件'],
+        ['扩展名', getFileExtension(fileInfo.name)],
+        ['MIME 类型', fileInfo.type || 'application/octet-stream'],
+        ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
+        ['上传时间', formatDateTime(message.timestamp)],
+        ['最初上传设备', message.senderName || '未知设备'],
+        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
+        ['本机状态', hasLocalData ? '已缓存，可通过上下文菜单下载' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
+    ];
+    const list = document.getElementById('fileDetailsList');
+    list.replaceChildren();
+    details.forEach(([label, value]) => {
+        const row = document.createElement('div');
+        row.className = 'file-details-row';
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const description = document.createElement('dd');
+        description.textContent = value;
+        description.title = value;
+        row.append(term, description);
+        list.appendChild(row);
+    });
+    document.getElementById('fileDetailsViewer').classList.add('active');
+    historyLog('file-details-opened', { messageId, fileId: fileInfo.id, hasLocalData });
+}
+
+async function showFileContextMenu(messageId, clientX, clientY) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    const canDownload = hasCompleteFileCache(storedFile, fileInfo);
+    closeFileContextMenu();
+
+    const menu = document.createElement('div');
+    menu.className = 'file-context-menu';
+    menu.setAttribute('role', 'menu');
+    const download = document.createElement('button');
+    download.type = 'button';
+    download.className = 'file-context-action';
+    download.textContent = canDownload ? '下载文件' : '文件未缓存';
+    download.disabled = !canDownload;
+    download.title = canDownload ? `下载 ${fileInfo.name}` : '请先还原文件缓存后再下载';
+    download.addEventListener('click', () => {
+        closeFileContextMenu();
+        downloadFile(fileInfo.id);
+    });
+    menu.appendChild(download);
+    document.body.appendChild(menu);
+
+    const bounds = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(clientX || window.innerWidth / 2, window.innerWidth - bounds.width - 8));
+    const top = Math.max(8, Math.min(clientY || window.innerHeight / 2, window.innerHeight - bounds.height - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    fileContextMenu = menu;
+    historyLog('file-context-menu-opened', { messageId, fileId: fileInfo.id, canDownload });
+}
+
+function attachFileRecordInteractions(messageEl) {
+    let longPressTimer = null;
+    let suppressClickUntil = 0;
+    let startPoint = null;
+    const messageId = messageEl.dataset.messageId;
+    const isAction = target => Boolean(target.closest('.file-actions'));
+    const cancelLongPress = () => {
+        if (longPressTimer) clearTimeout(longPressTimer);
+        longPressTimer = null;
+        startPoint = null;
+    };
+
+    messageEl.addEventListener('click', event => {
+        if (isAction(event.target) || Date.now() < suppressClickUntil) return;
+        showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
+    });
+    messageEl.addEventListener('contextmenu', event => {
+        if (isAction(event.target)) return;
+        event.preventDefault();
+        suppressClickUntil = Date.now() + 500;
+        showFileContextMenu(messageId, event.clientX, event.clientY)
+            .catch(err => historyLog('file-context-menu-open-failed', { messageId, error: err.message }));
+    });
+    messageEl.addEventListener('pointerdown', event => {
+        if (event.pointerType !== 'touch' || isAction(event.target)) return;
+        startPoint = { x: event.clientX, y: event.clientY };
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            suppressClickUntil = Date.now() + 700;
+            navigator.vibrate?.(12);
+            showFileContextMenu(messageId, event.clientX, event.clientY)
+                .catch(err => historyLog('file-context-menu-open-failed', { messageId, error: err.message }));
+        }, 550);
+    });
+    messageEl.addEventListener('pointermove', event => {
+        if (!startPoint || event.pointerType !== 'touch') return;
+        if (Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) > 12) cancelLongPress();
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(eventName => {
+        messageEl.addEventListener(eventName, cancelLongPress);
+    });
+}
+
 function showFileMessagePlaceholder(fileId, label, cacheCleared = false) {
     document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
@@ -2860,20 +2985,16 @@ async function refreshFileMessage(fileId) {
         if (!bubble) return;
 
         if (type.startsWith('image/')) {
-            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" onclick="downloadFile('${fileId}')" style="cursor: pointer;"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('video/')) {
-            bubble.innerHTML = `<div class="media-preview"><video controls src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
-            bubble.classList.remove('file-message');
-            bubble.style.opacity = '';
-        } else if (type.startsWith('audio/')) {
-            bubble.innerHTML = `<div class="media-preview"><audio controls src="${url}"></audio></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview"><video muted playsinline preload="metadata" src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else {
             bubble.style.opacity = '';
-            bubble.setAttribute('onclick', `downloadFile('${fileId}')`);
+            bubble.removeAttribute('onclick');
             const size = bubble.querySelector('.file-size');
             if (size) size.textContent = formatFileSize(storedFile.size);
         }
@@ -4353,6 +4474,14 @@ function initUI() {
     // 模态框关闭
     document.getElementById('rejectFileBtn').addEventListener('click', () => {
         document.getElementById('confirmModal').classList.remove('active');
+    });
+
+    document.getElementById('closeFileDetailsBtn').addEventListener('click', closeFileDetails);
+    document.getElementById('fileDetailsViewer').addEventListener('click', event => {
+        if (event.target === event.currentTarget) closeFileDetails();
+    });
+    document.addEventListener('pointerdown', event => {
+        if (fileContextMenu && !fileContextMenu.contains(event.target)) closeFileContextMenu();
     });
 
     document.getElementById('closeRichViewer').addEventListener('click', () => {

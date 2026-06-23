@@ -230,6 +230,20 @@
         .file-message:hover {
             transform: scale(1.02);
         }
+
+        .message.file-record {
+            cursor: pointer;
+            -webkit-touch-callout: none;
+            user-select: none;
+        }
+
+        .message.file-record .file-actions {
+            cursor: default;
+        }
+
+        .message.file-record video {
+            pointer-events: none;
+        }
         
         .file-icon {
             width: 48px;
@@ -823,6 +837,79 @@
             gap: 10px;
             justify-content: center;
         }
+
+        .file-details-modal {
+            width: min(92vw, 480px);
+            max-width: 480px;
+            text-align: left;
+        }
+
+        .file-details-modal h3 {
+            margin-bottom: 16px;
+            color: #26324d;
+            font-size: 1rem;
+        }
+
+        .file-details-list {
+            display: grid;
+            gap: 8px;
+            margin: 0 0 20px;
+        }
+
+        .file-details-row {
+            display: grid;
+            grid-template-columns: 92px minmax(0, 1fr);
+            gap: 10px;
+            border-bottom: 1px solid #edf0f5;
+            padding-bottom: 8px;
+        }
+
+        .file-details-row dt {
+            color: #68748b;
+            font-size: 0.8rem;
+        }
+
+        .file-details-row dd {
+            overflow: hidden;
+            margin: 0;
+            color: #35415c;
+            font-size: 0.82rem;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-context-menu {
+            position: fixed;
+            z-index: 3900;
+            min-width: 132px;
+            border: 1px solid #d7dce8;
+            border-radius: 6px;
+            background: #fff;
+            box-shadow: 0 10px 28px rgba(25, 35, 60, 0.2);
+            overflow: hidden;
+        }
+
+        .file-context-action {
+            width: 100%;
+            min-height: 38px;
+            border: 0;
+            background: #fff;
+            color: #35415c;
+            cursor: pointer;
+            font-size: 0.84rem;
+            text-align: left;
+            padding: 0 12px;
+        }
+
+        .file-context-action:hover:not(:disabled) {
+            background: #f3f5fb;
+            color: #4d5dbd;
+        }
+
+        .file-context-action:disabled {
+            color: #9ba4b5;
+            cursor: not-allowed;
+        }
         
         /* 富文本查看器 */
         .rich-viewer-overlay {
@@ -1041,6 +1128,10 @@
         }
 
         @media (max-width: 767px) {
+            :root {
+                --mobile-workspace-nav-height: calc(70px + env(safe-area-inset-bottom));
+            }
+
             body {
                 overflow: hidden;
                 background: #f4f6fb;
@@ -1048,6 +1139,7 @@
 
             .container {
                 width: 100%;
+                min-height: 100vh;
                 min-height: 100dvh;
                 padding: 0;
             }
@@ -1058,7 +1150,8 @@
 
             .main-layout {
                 display: block;
-                height: 100dvh;
+                height: calc(100vh - var(--mobile-workspace-nav-height));
+                height: calc(100dvh - var(--mobile-workspace-nav-height));
                 margin: 0;
             }
 
@@ -1093,7 +1186,7 @@
                 flex: 1;
                 min-height: 0;
                 overflow-y: auto;
-                padding: 16px 14px calc(80px + env(safe-area-inset-bottom));
+                padding: 16px 14px calc(16px + env(safe-area-inset-bottom));
             }
 
             .left-panel .panel-content {
@@ -1115,7 +1208,7 @@
                 min-height: 0;
                 flex-direction: column;
                 gap: 10px;
-                padding: calc(12px + env(safe-area-inset-top)) 12px calc(80px + env(safe-area-inset-bottom));
+                padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
             }
 
             .chat-messages {
@@ -1162,7 +1255,7 @@
                 z-index: 3500;
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
-                min-height: calc(62px + env(safe-area-inset-bottom));
+                height: var(--mobile-workspace-nav-height);
                 padding-bottom: env(safe-area-inset-bottom);
                 border-top: 1px solid #dfe4ee;
                 background: rgba(255, 255, 255, 0.96);
@@ -1417,6 +1510,16 @@
             <div class="modal-actions">
                 <button class="btn btn-secondary" id="rejectFileBtn">稍后接收</button>
                 <button class="btn btn-primary" id="acceptFileBtn">接收</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="fileDetailsViewer">
+        <div class="modal file-details-modal" role="dialog" aria-modal="true" aria-label="文件详情">
+            <h3>文件详情</h3>
+            <dl class="file-details-list" id="fileDetailsList"></dl>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="closeFileDetailsBtn">关闭</button>
             </div>
         </div>
     </div>
