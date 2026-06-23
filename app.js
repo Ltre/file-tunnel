@@ -81,6 +81,8 @@ const editorAssetCacheVersions = new Map();
 let fileAssetTransfer = null;
 let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
+let richViewerHistoryOpen = false;
+const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
@@ -4354,13 +4356,13 @@ function initUI() {
     });
 
     document.getElementById('closeRichViewer').addEventListener('click', () => {
-        document.getElementById('richViewer').classList.remove('active');
+        closeRichViewer();
     });
 
     // 点击遮罩关闭
     document.getElementById('richViewer').addEventListener('click', (e) => {
         if (e.target === e.currentTarget) {
-            e.target.classList.remove('active');
+            closeRichViewer();
         }
     });
 }
@@ -4706,13 +4708,36 @@ document.getElementById('rejectFileBtn').addEventListener('click', () => {
 });
 
 // ==================== 富文本查看 ====================
+function closeRichViewer(options = {}) {
+    const viewer = document.getElementById('richViewer');
+    if (!viewer?.classList.contains('active')) return;
+    viewer.classList.remove('active');
+
+    const shouldGoBack = richViewerHistoryOpen && !options.fromHistory &&
+        history.state?.[RICH_VIEWER_HISTORY_KEY] === true;
+    richViewerHistoryOpen = false;
+    if (shouldGoBack) history.back();
+}
+
+window.addEventListener('popstate', () => {
+    if (!richViewerHistoryOpen) return;
+    richViewerHistoryOpen = false;
+    closeRichViewer({ fromHistory: true });
+});
+
 async function viewRichContent(messageId) {
     const message = await getFromStore('messages', messageId);
     if (message && message.type === 'rich') {
         const container = document.getElementById('richViewerContent');
         container.innerHTML = message.content;
         await hydrateEditorAssets(container);
-        document.getElementById('richViewer').classList.add('active');
+        const viewer = document.getElementById('richViewer');
+        if (!viewer.classList.contains('active')) {
+            const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+            history.pushState({ ...baseState, [RICH_VIEWER_HISTORY_KEY]: true }, '', window.location.href);
+            richViewerHistoryOpen = true;
+            viewer.classList.add('active');
+        }
     }
 }
 
