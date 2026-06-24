@@ -87,15 +87,25 @@ app.get('/api/sessions', (req, res) => {
     try {
         const sessionList = [];
         let totalDevices = 0;
+        let totalMessages = 0;
+        let totalFiles = 0;
         
         sessions.forEach((session, sessionId) => {
             totalDevices += session.devices.size;
+            const messages = Array.isArray(session.history) ? session.history.map(entry => entry && entry.message).filter(Boolean) : [];
+            const messageCount = messages.length;
+            const fileCount = messages.filter(message => message.type === 'file' || message.fileInfo).length;
+            totalMessages += messageCount;
+            totalFiles += fileCount;
             sessionList.push({
                 id: sessionId,
                 deviceCount: session.devices.size,
                 createdAt: session.createdAt,
                 lastActivity: session.lastActivity,
-                isActive: Date.now() - session.lastActivity < 5 * 60 * 1000
+                isActive: Date.now() - session.lastActivity < 5 * 60 * 1000,
+                isOnline: session.devices.size > 0,
+                messageCount,
+                fileCount
             });
         });
         
@@ -105,8 +115,8 @@ app.get('/api/sessions', (req, res) => {
         res.json({
             sessions: sessionList,
             totalDevices,
-            totalMessages: 0, // 服务器不存储消息
-            totalFiles: 0     // 服务器不存储文件
+            totalMessages,
+            totalFiles
         });
     } catch (err) {
         console.error('API error:', err);

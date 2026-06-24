@@ -259,7 +259,7 @@
     <div class="container">
         <div class="header">
             <h1>🔧 管理后台</h1>
-            <p>即时传输隧道会话管理</p>
+            <p>即时传输隧道管理</p>
         </div>
         
         <div class="panel">
@@ -291,7 +291,7 @@
         
         <div class="panel">
             <div class="panel-header">
-                <span>🔗 会话列表</span>
+                <span>🔗 隧道列表</span>
                 <button class="btn btn-secondary" onclick="exportSessions()">📥 导出</button>
             </div>
             <div class="panel-content">
@@ -497,6 +497,8 @@
                 if (existing) {
                     existing.createdAt = Math.min(existing.createdAt || localSession.createdAt, localSession.createdAt);
                     existing.lastActivity = Math.max(existing.lastActivity || localSession.lastActivity, localSession.lastActivity);
+                    existing.messageCount = Math.max(Number(existing.messageCount) || 0, Number(localSession.messageCount) || 0);
+                    existing.fileCount = Math.max(Number(existing.fileCount) || 0, Number(localSession.fileCount) || 0);
                     existing.hasLocalHistory = true;
                     return;
                 }
@@ -561,7 +563,7 @@
             document.getElementById('totalFiles').textContent = data.totalFiles || 0;
         }
         
-        // 渲染会话列表
+        // 渲染隧道列表（会话列表）
         function renderSessions(sessions) {
             const container = document.getElementById('sessionList');
             
@@ -609,7 +611,7 @@
                         <div class="session-actions">
                             <a href="/#${safeId}" target="_blank" class="btn btn-primary">
                                 <span>🔗</span>
-                                <span>进入会话</span>
+                                <span>进入隧道</span>
                             </a>
                             <button class="btn btn-secondary" onclick="copyLink('${safeId}')">
                                 <span>📋</span>
@@ -655,7 +657,7 @@
             }
         }
         
-        // 导出会话列表
+        // 导出隧道列表（会话列表）
         function exportSessions() {
             const sessions = [];
             document.querySelectorAll('.session-item').forEach(item => {

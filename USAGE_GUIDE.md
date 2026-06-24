@@ -69,9 +69,9 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
 
 访问 `http://your-domain:3000/admin` 查看：
 
-- 当前活跃会话列表
+- 当前活跃隧道列表（会话列表）
 - 在线设备统计
-- 会话管理功能
+- 隧道管理功能（会话管理功能）
 
 ## 故障排除
 
