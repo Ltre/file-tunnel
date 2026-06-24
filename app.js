@@ -84,6 +84,8 @@ let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
 let filePreviewHistoryOpen = false;
 let progressDrawerCollapsed = false;
+let progressDrawerDragState = null;
+let progressDrawerSuppressClick = false;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const fileObjectUrls = new Map();
@@ -2013,7 +2015,7 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
     };
 
     await saveToStore('messages', { ...message, sessionId: state.sessionId });
-    await addMessageToChat(message, true);
+    await addMessageToChat(message, true, { forceScroll: true });
     pendingHistoryMessageIds.add(message.id);
     state.socket.emit('message', { sessionId: state.sessionId, message });
     historyLog('file-asset-message-emitted', {
@@ -2292,7 +2294,7 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
             senderName: state.deviceName
         };
 
-        await addMessageToChat(message, true);
+        await addMessageToChat(message, true, { forceScroll: true });
 
         // 保存消息
         await saveToStore('messages', {
@@ -2697,8 +2699,13 @@ async function pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds)
     });
 }
 
-async function addMessageToChat(message, isOwn) {
+function isChatNearBottom(container) {
+    return !container || container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+}
+
+async function addMessageToChat(message, isOwn, options = {}) {
     const container = document.getElementById('chatMessages');
+    const shouldScroll = options.forceScroll || (options.scroll !== false && isChatNearBottom(container));
 
     // 移除空状态
     const emptyState = container.querySelector('.empty-state');
@@ -2823,7 +2830,9 @@ async function addMessageToChat(message, isOwn) {
     }
 
     container.appendChild(messageEl);
-    container.scrollTop = container.scrollHeight;
+    if (shouldScroll) {
+        container.scrollTop = container.scrollHeight;
+    }
 }
 
 function getFileInfoFromMessageElement(messageEl) {
@@ -3261,7 +3270,9 @@ async function restoreFileCache(messageId, options = {}) {
         transferInterrupted: false
     });
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
-    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo);
+    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo, {
+        force: Boolean(options.force)
+    });
     historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
 }
 
@@ -3678,7 +3689,7 @@ async function restoreResourceCache(resource) {
     metadata.isFileAsset = true;
     await saveToStore('files', metadata);
     showFileMessagePlaceholder(resource.id, '正在请求还原', true, true);
-    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata);
+    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata, { force: true });
     historyLog('resource-file-restore-requested', { resourceId: resource.id });
 }
 
@@ -3889,6 +3900,28 @@ async function showResourceBrowser() {
     }
 }
 
+async function publishHistoryMessage(message, options = {}) {
+    await saveToStore('messages', {
+        ...message,
+        sessionId: state.sessionId
+    });
+
+    historyLog('local-message-stored', {
+        message: summarizeHistoryMessage(message)
+    });
+
+    historyLog('realtime-message-emitted', {
+        message: summarizeHistoryMessage(message)
+    });
+    pendingHistoryMessageIds.add(message.id);
+    state.socket.emit('message', {
+        sessionId: state.sessionId,
+        message
+    });
+
+    await addMessageToChat(message, true, { forceScroll: options.forceScroll !== false });
+}
+
 async function sendText() {
     const input = document.getElementById('textInput');
     const text = input.value.trim();
@@ -3904,27 +3937,7 @@ async function sendText() {
         senderName: state.deviceName
     };
 
-    // 保存到本地
-    await saveToStore('messages', {
-        ...message,
-        sessionId: state.sessionId
-    });
-
-    historyLog('local-message-stored', {
-        message: summarizeHistoryMessage(message)
-    });
-
-    // 发送到其他设备
-    historyLog('realtime-message-emitted', {
-        message: summarizeHistoryMessage(message)
-    });
-    pendingHistoryMessageIds.add(message.id);
-    state.socket.emit('message', {
-        sessionId: state.sessionId,
-        message
-    });
-
-    addMessageToChat(message, true);
+    await publishHistoryMessage(message);
     input.value = '';
 }
 
@@ -3934,6 +3947,46 @@ function isEditorContentEmpty(content) {
         .replace(/<br\s*\/?\s*>/gi, '')
         .replace(/&nbsp;/gi, '')
         .trim() === '';
+}
+
+function getPlainTextEditorMessage(content) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = content || '';
+    const allowedTags = new Set(['DIV', 'P', 'BR']);
+    const walker = document.createTreeWalker(wrapper, NodeFilter.SHOW_ELEMENT);
+    let node = walker.nextNode();
+    while (node) {
+        if (!allowedTags.has(node.tagName) || node.attributes.length > 0) {
+            return null;
+        }
+        node = walker.nextNode();
+    }
+
+    const lines = [];
+    let currentLine = '';
+    const appendNode = item => {
+        if (item.nodeType === Node.TEXT_NODE) {
+            currentLine += item.nodeValue || '';
+            return;
+        }
+        if (item.nodeType !== Node.ELEMENT_NODE) return;
+        if (item.tagName === 'BR') {
+            lines.push(currentLine);
+            currentLine = '';
+            return;
+        }
+        const isBlock = item.tagName === 'DIV' || item.tagName === 'P';
+        const beforeLength = currentLine.length;
+        Array.from(item.childNodes).forEach(appendNode);
+        if (isBlock && (currentLine.length > beforeLength || item.childNodes.length === 0)) {
+            lines.push(currentLine);
+            currentLine = '';
+        }
+    };
+    Array.from(wrapper.childNodes).forEach(appendNode);
+    if (currentLine) lines.push(currentLine);
+    const text = lines.join('\n').replace(/\u00a0/g, ' ').trim();
+    return text ? text : null;
 }
 
 async function persistEditorContent(content) {
@@ -4218,12 +4271,20 @@ function initEditor() {
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
         const content = serializeEditorContent(editor.innerHTML);
-        if (!content.trim() || content === '<br>') {
+        if (isEditorContentEmpty(content)) {
             alert('请输入内容');
             return;
         }
 
-        const message = {
+        const plainText = getPlainTextEditorMessage(content);
+        const message = plainText ? {
+            id: generateId(),
+            type: 'text',
+            text: plainText,
+            timestamp: Date.now(),
+            sender: state.deviceId,
+            senderName: state.deviceName
+        } : {
             id: generateId(),
             type: 'rich',
             content,
@@ -4232,28 +4293,8 @@ function initEditor() {
             senderName: state.deviceName
         };
 
-        // 保存到本地
-        await saveToStore('messages', {
-            ...message,
-            sessionId: state.sessionId
-        });
-
-        historyLog('local-message-stored', {
-            message: summarizeHistoryMessage(message)
-        });
-
-        // 发送到其他设备
-        historyLog('realtime-message-emitted', {
-            message: summarizeHistoryMessage(message)
-        });
-        pendingHistoryMessageIds.add(message.id);
-        state.socket.emit('message', {
-            sessionId: state.sessionId,
-            message
-        });
-
-        await addMessageToChat(message, true);
-        openSentRichRecord(message.id);
+        await publishHistoryMessage(message);
+        if (message.type === 'rich') openSentRichRecord(message.id);
         clearTimeout(syncTimeout);
         editor.innerHTML = '';
         await syncEditorContent('');
@@ -4757,15 +4798,79 @@ function setProgressDrawerCollapsed(collapsed) {
 
     container.classList.toggle('collapsed', progressDrawerCollapsed);
     toggle.setAttribute('aria-expanded', String(!progressDrawerCollapsed));
+    toggle.title = progressDrawerCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
+    if (!progressDrawerCollapsed) {
+        container.style.left = '';
+        container.style.top = '';
+        container.style.right = '';
+        container.style.bottom = '';
+        container.removeAttribute('data-dragged');
+    }
 }
 
 function initProgressDrawer() {
     const toggle = document.getElementById('progressDrawerToggle');
-    if (!toggle) return;
+    const container = document.getElementById('transferProgress');
+    if (!toggle || !container) return;
 
     toggle.addEventListener('click', () => {
+        if (progressDrawerSuppressClick) {
+            progressDrawerSuppressClick = false;
+            return;
+        }
         setProgressDrawerCollapsed(!progressDrawerCollapsed);
     });
+    toggle.addEventListener('pointerdown', event => {
+        if (!progressDrawerCollapsed || event.button > 0) return;
+        const rect = container.getBoundingClientRect();
+        progressDrawerDragState = {
+            pointerId: event.pointerId,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            width: rect.width,
+            height: rect.height,
+            startX: event.clientX,
+            startY: event.clientY,
+            moved: false
+        };
+        container.classList.add('dragging');
+        try {
+            toggle.setPointerCapture?.(event.pointerId);
+        } catch {}
+    });
+    toggle.addEventListener('pointermove', event => {
+        const drag = progressDrawerDragState;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
+        const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
+        const nextLeft = Math.min(maxLeft, Math.max(8, event.clientX - drag.offsetX));
+        const nextTop = Math.min(maxTop, Math.max(8, event.clientY - drag.offsetY));
+        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) {
+            drag.moved = true;
+            progressDrawerSuppressClick = true;
+        }
+        container.style.left = `${nextLeft}px`;
+        container.style.top = `${nextTop}px`;
+        container.style.right = 'auto';
+        container.style.bottom = 'auto';
+        container.dataset.dragged = 'true';
+        event.preventDefault();
+    });
+    const endDrag = event => {
+        const drag = progressDrawerDragState;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        progressDrawerDragState = null;
+        container.classList.remove('dragging');
+        try {
+            toggle.releasePointerCapture?.(event.pointerId);
+        } catch {}
+        if (drag.moved) {
+            progressDrawerSuppressClick = true;
+            setTimeout(() => { progressDrawerSuppressClick = false; }, 0);
+        }
+    };
+    toggle.addEventListener('pointerup', endDrag);
+    toggle.addEventListener('pointercancel', endDrag);
     setProgressDrawerCollapsed(progressDrawerCollapsed);
     updateProgressDrawerSummary();
 }
@@ -5175,17 +5280,26 @@ async function loadSessionData() {
             messages: messages.map(summarizeHistoryMessage)
         });
 
-        // 使用 for...of 确保按顺序异步处理
-        for (const msg of messages) {
-            try {
-                const isOwn = msg.sender === state.deviceId;
-                await addMessageToChat(msg, isOwn);
-            } catch (err) {
-                console.error('Failed to render stored message:', msg && msg.id, err);
-                historyLog('indexeddb-history-message-render-failed', {
-                    message: summarizeHistoryMessage(msg),
-                    error: err.message
-                });
+        const chatMessages = document.getElementById('chatMessages');
+        chatMessages?.classList.add('history-loading');
+        try {
+            // 使用 for...of 确保按顺序异步处理，但不要每条都滚动，避免刷新时列表抖动。
+            for (const msg of messages) {
+                try {
+                    const isOwn = msg.sender === state.deviceId;
+                    await addMessageToChat(msg, isOwn, { scroll: false });
+                } catch (err) {
+                    console.error('Failed to render stored message:', msg && msg.id, err);
+                    historyLog('indexeddb-history-message-render-failed', {
+                        message: summarizeHistoryMessage(msg),
+                        error: err.message
+                    });
+                }
+            }
+        } finally {
+            if (chatMessages) {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+                requestAnimationFrame(() => chatMessages.classList.remove('history-loading'));
             }
         }
         historyLog('indexeddb-history-rendered', {

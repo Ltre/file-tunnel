@@ -180,6 +180,10 @@
             margin-bottom: 15px;
             animation: fadeIn 0.3s ease;
         }
+
+        .chat-messages.history-loading .message {
+            animation: none;
+        }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -244,6 +248,10 @@
             user-select: none;
         }
 
+        .message.file-record .message-bubble {
+            position: relative;
+        }
+
         .message.file-record .file-actions {
             cursor: default;
         }
@@ -256,6 +264,7 @@
             position: absolute;
             top: 50%;
             left: 50%;
+            z-index: 2;
             display: grid;
             width: 48px;
             height: 48px;
@@ -346,17 +355,21 @@
         
         /* 富文本预览气泡 */
         .rich-preview {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            color: white;
-            padding: 15px;
-            border-radius: 12px;
+            border: 1px solid #dfe5f1;
+            border-left: 4px solid #667eea;
+            background: #fff;
+            color: #26324d;
+            padding: 13px 14px;
+            border-radius: 8px;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 2px 8px rgba(33, 45, 75, 0.08);
+            transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
         }
         
         .rich-preview:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(245, 87, 108, 0.3);
+            border-color: #cdd6ea;
+            box-shadow: 0 8px 18px rgba(33, 45, 75, 0.14);
         }
         
         .rich-preview-title {
@@ -369,7 +382,7 @@
         
         .rich-preview-content {
             font-size: 0.9rem;
-            opacity: 0.95;
+            color: #5b667d;
             max-height: 60px;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -819,11 +832,24 @@
             min-height: 48px;
             padding: 10px 14px;
             border: 0;
-            background: #fff;
+            gap: 8px;
+            background: linear-gradient(180deg, #ffffff 0%, #f7f9fd 100%);
             color: #26304a;
             cursor: pointer;
             font: inherit;
             text-align: left;
+            touch-action: none;
+        }
+
+        .transfer-progress-toggle::before {
+            content: "";
+            width: 18px;
+            height: 18px;
+            flex: 0 0 auto;
+            border-radius: 5px;
+            background:
+                radial-gradient(circle, #7a859d 1.4px, transparent 1.8px) 0 0 / 6px 6px;
+            opacity: 0.75;
         }
 
         .transfer-progress-title { font-weight: 700; }
@@ -846,6 +872,23 @@
             transition: transform 0.18s ease;
         }
 
+        .transfer-progress.collapsed {
+            min-width: 210px;
+            max-width: min(280px, calc(100vw - 24px));
+            border-radius: 999px;
+            box-shadow: 0 8px 28px rgba(25, 35, 60, 0.24);
+        }
+
+        .transfer-progress.collapsed .transfer-progress-toggle {
+            min-height: 46px;
+            border-radius: 999px;
+            cursor: grab;
+        }
+
+        .transfer-progress.dragging .transfer-progress-toggle {
+            cursor: grabbing;
+        }
+
         .transfer-progress.collapsed .transfer-progress-chevron { transform: rotate(-90deg); }
         .transfer-progress.collapsed #progressList { display: none; }
 
@@ -853,6 +896,7 @@
             max-height: min(46vh, 360px);
             overflow-y: auto;
             overscroll-behavior: contain;
+            touch-action: pan-y;
         }
         
         .progress-item {
@@ -1163,6 +1207,7 @@
         }
 
         .tunnel-topbar-action {
+            position: relative;
             display: inline-flex;
             width: 38px;
             height: 38px;

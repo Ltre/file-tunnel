@@ -124,6 +124,43 @@ app.get('/api/sessions', (req, res) => {
     }
 });
 
+app.delete('/api/sessions/:sessionId', (req, res) => {
+    try {
+        const sessionId = req.params.sessionId;
+        if (!isValidSessionId(sessionId)) {
+            return res.status(400).json({ error: 'Invalid session id' });
+        }
+
+        const session = sessions.get(sessionId);
+        if (!session) {
+            return res.json({ ok: true, deleted: false, reason: 'not-found' });
+        }
+
+        if (session.shortCode) shortCodes.delete(session.shortCode);
+        for (const deviceId of session.devices.keys()) {
+            const socket = deviceSockets.get(deviceId);
+            if (socket) {
+                socket.emit('session-deleted', { sessionId });
+                deviceSockets.delete(deviceId);
+            }
+        }
+        cleanupFileAssetRelays(sessionId, null);
+        for (const key of editorAssetRelays.keys()) {
+            if (key.startsWith(`${sessionId}:`)) editorAssetRelays.delete(key);
+        }
+        sessions.delete(sessionId);
+        historyLog('session-deleted-by-admin', {
+            sessionId,
+            deviceId: null,
+            clientIp: getSocketClientIp({ handshake: { headers: req.headers, address: req.ip } })
+        });
+        res.json({ ok: true, deleted: true });
+    } catch (err) {
+        console.error('delete session error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 app.get('/api/debug-logs', (req, res) => {
     if (DEBUG_LOG_TOKEN && req.get('x-debug-log-token') !== DEBUG_LOG_TOKEN) {
         return res.status(403).json({ error: 'Debug log access denied' });

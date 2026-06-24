@@ -27,6 +27,7 @@
             this.multiSourceTransfers = new Map();
             this.rangeTimers = new Map();
             this.requestedMetadata = new Map();
+            this.forceRequests = new Map();
             this.activeUploadKeys = new Set();
             this.completedUploadKeys = new Map();
         }
@@ -113,8 +114,12 @@
             }
         }
 
-        async request(assetId, preferredProviderId, metadata = null) {
+        async request(assetId, preferredProviderId, metadata = null, options = {}) {
             if (!assetId) return;
+            if (options.force) {
+                this.cancel(assetId);
+                this.forceRequests.set(assetId, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+            }
             if (metadata?.id === assetId) this.requestedMetadata.set(assetId, metadata);
             if (this.desiredAssets.has(assetId)) {
                 if (preferredProviderId) this.desiredAssets.set(assetId, preferredProviderId);
@@ -138,6 +143,7 @@
                 }
                 this.desiredAssets.delete(assetId);
                 this.requestedMetadata.delete(assetId);
+                this.forceRequests.delete(assetId);
                 this.log('request-skipped-local-cache', { assetId, size: this.dataSize(local.data) });
                 return;
             }
@@ -161,15 +167,19 @@
                 this.activeDownloads.add(assetId);
                 this.requests.set(assetId, Date.now());
                 const metadata = this.requestedMetadata.get(assetId);
+                const requestId = this.forceRequests.get(assetId);
                 const needsManifest = Number(metadata?.size) > MULTI_SOURCE_THRESHOLD;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     assetId,
                     mode: needsManifest ? 'manifest' : undefined,
-                    preferredProviderId: this.desiredAssets.get(assetId)
+                    preferredProviderId: this.desiredAssets.get(assetId),
+                    force: Boolean(requestId),
+                    requestId
                 });
                 this.log(needsManifest ? 'manifest-requested' : 'requested', {
-                    assetId, preferredProviderId: this.desiredAssets.get(assetId), activeDownloads: this.activeDownloads.size
+                    assetId, preferredProviderId: this.desiredAssets.get(assetId), activeDownloads: this.activeDownloads.size,
+                    forced: Boolean(requestId)
                 });
             }
         }
@@ -182,8 +192,9 @@
                 this.handleUnavailable({ assetId: asset.id, reason: 'no-online-provider' });
                 return;
             }
+            const requestId = this.forceRequests.get(asset.id);
             if (asset.size > MULTI_SOURCE_THRESHOLD && providers.length >= 2) {
-                this.beginMultiSourceDownload(asset, providers);
+                this.beginMultiSourceDownload(asset, providers, requestId);
                 return;
             }
             const socket = this.socket();
@@ -191,12 +202,14 @@
             socket.emit('file-asset-request', {
                 sessionId: this.deps.getSessionId(),
                 assetId: asset.id,
-                preferredProviderId: this.desiredAssets.get(asset.id) || providers[0]
+                preferredProviderId: this.desiredAssets.get(asset.id) || providers[0],
+                force: Boolean(requestId),
+                requestId
             });
-            this.log('requested', { assetId: asset.id, preferredProviderId: this.desiredAssets.get(asset.id) || providers[0] });
+            this.log('requested', { assetId: asset.id, preferredProviderId: this.desiredAssets.get(asset.id) || providers[0], forced: Boolean(requestId) });
         }
 
-        beginMultiSourceDownload(asset, providers) {
+        beginMultiSourceDownload(asset, providers, forceRequestId = null) {
             if (this.multiSourceTransfers.has(asset.id)) return;
             let buffer;
             try {
@@ -234,10 +247,11 @@
                 ranges,
                 queuedRangeIds: Array.from(ranges.keys()),
                 activeRangeIds: new Set(),
-                completedBytes: 0
+                completedBytes: 0,
+                forceRequestId
             });
             this.deps.onProgress(asset.id, asset.name, 0, 'receiving-multi-source');
-            this.log('multi-source-started', { asset: this.metadata(asset), providers, rangeCount: ranges.size });
+            this.log('multi-source-started', { asset: this.metadata(asset), providers, rangeCount: ranges.size, forced: Boolean(forceRequestId) });
             this.dispatchMultiSourceRanges(asset.id);
         }
 
@@ -258,17 +272,23 @@
                 range.pendingChunks = Promise.resolve();
                 transfer.activeRangeIds.add(transferId);
                 this.resetRangeTimer(assetId, transferId);
+                const requestId = transfer.forceRequestId
+                    ? `${transfer.forceRequestId}:${transferId}:${range.retryCount}`
+                    : undefined;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     assetId,
                     preferredProviderId,
                     transferId,
                     rangeStart: range.rangeStart,
-                    rangeEnd: range.rangeEnd
+                    rangeEnd: range.rangeEnd,
+                    force: Boolean(requestId),
+                    requestId
                 });
                 this.log('range-requested', {
                     assetId, transferId, preferredProviderId,
-                    rangeStart: range.rangeStart, rangeEnd: range.rangeEnd
+                    rangeStart: range.rangeStart, rangeEnd: range.rangeEnd,
+                    forced: Boolean(requestId)
                 });
             }
         }
@@ -356,6 +376,7 @@
             this.releaseDownload(assetId);
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);
+            this.forceRequests.delete(assetId);
             this.retryCounts.delete(assetId);
             this.deps.onProgress(assetId, stored.name, 100, 'received-multi-source');
             await this.announce(stored);
@@ -383,6 +404,7 @@
                 this.releaseDownload(assetId);
                 this.desiredAssets.delete(assetId);
                 this.requestedMetadata.delete(assetId);
+                this.forceRequests.delete(assetId);
                 this.markInterruptedAsset(assetId, interruptedAsset, reason);
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
                 this.log('range-retry-exhausted', { assetId, transferId, providerId, reason, error });
@@ -460,7 +482,8 @@
                 this.log('upload-request-ignored-duplicate', {
                     assetId: data.asset.id,
                     peerDeviceId: data.from,
-                    transferId: data.transfer?.transferId || null
+                    transferId: data.transfer?.transferId || null,
+                    requestId: data.requestId || null
                 });
                 return;
             }
@@ -498,6 +521,7 @@
             return [
                 assetId,
                 from,
+                data?.requestId || '',
                 transfer.transferId || 'full',
                 Number.isInteger(transfer.rangeStart) ? transfer.rangeStart : 0,
                 Number.isInteger(transfer.rangeEnd) ? transfer.rangeEnd : 'end'
@@ -728,6 +752,7 @@
             this.releaseDownload(assetId);
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);
+            this.forceRequests.delete(assetId);
             this.retryCounts.delete(assetId);
             this.deps.onProgress(assetId, stored.name, 100, 'received');
             await this.announce(stored);
@@ -808,6 +833,7 @@
             this.releaseDownload(assetId);
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);
+            this.forceRequests.delete(assetId);
             this.transfers.delete(assetId);
             this.multiSourceTransfers.delete(assetId);
             this.clearRangeTimers(assetId);

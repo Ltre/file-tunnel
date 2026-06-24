@@ -405,6 +405,68 @@
             });
         }
 
+        function deleteLocalSessionHistory(sessionId) {
+            return new Promise(async (resolve) => {
+                const db = await openTunnelDb();
+                if (!db) {
+                    resolve(false);
+                    return;
+                }
+
+                const stores = ['sessions', 'messages', 'files', 'editorContent']
+                    .filter(storeName => db.objectStoreNames.contains(storeName));
+                if (!stores.length) {
+                    db.close();
+                    resolve(false);
+                    return;
+                }
+
+                try {
+                    const transaction = db.transaction(stores, 'readwrite');
+                    if (stores.includes('sessions')) {
+                        transaction.objectStore('sessions').delete(sessionId);
+                    }
+                    if (stores.includes('messages')) {
+                        const store = transaction.objectStore('messages');
+                        const request = store.getAll();
+                        request.onsuccess = () => {
+                            (request.result || [])
+                                .filter(item => item.sessionId === sessionId)
+                                .forEach(item => store.delete(item.id));
+                        };
+                    }
+                    if (stores.includes('files')) {
+                        const store = transaction.objectStore('files');
+                        const request = store.getAll();
+                        request.onsuccess = () => {
+                            (request.result || [])
+                                .filter(item => item.sessionId === sessionId)
+                                .forEach(item => store.delete(item.id));
+                        };
+                    }
+                    if (stores.includes('editorContent')) {
+                        const store = transaction.objectStore('editorContent');
+                        const request = store.get('current');
+                        request.onsuccess = () => {
+                            if (request.result?.sessionId === sessionId) store.delete('current');
+                        };
+                    }
+                    transaction.oncomplete = () => {
+                        db.close();
+                        resolve(true);
+                    };
+                    transaction.onerror = () => {
+                        db.close();
+                        resolve(false);
+                    };
+                } catch (err) {
+                    console.warn('Failed to delete local session history:', err);
+                    db.close();
+                    resolve(false);
+                }
+            });
+        }
+
         function upsertLocalSession(sessionMap, sessionId, timestamp) {
             if (!isValidSessionId(sessionId)) return;
 
@@ -631,15 +693,14 @@
             if (!isValidSessionId(sessionId)) return;
 
             const url = makeSessionUrl(sessionId);
-            try {
-                if (!navigator.clipboard?.writeText || !window.isSecureContext) {
-                    throw new Error('Clipboard API unavailable');
+            if (navigator.clipboard?.writeText && window.isSecureContext) {
+                try {
+                    await navigator.clipboard.writeText(url);
+                    alert('链接已复制: ' + url);
+                    return;
+                } catch (err) {
+                    console.warn('Clipboard API copy failed, trying legacy copy:', err);
                 }
-                await navigator.clipboard.writeText(url);
-                alert('链接已复制: ' + url);
-                return;
-            } catch (err) {
-                console.error('Failed to copy:', err);
             }
 
             try {
@@ -664,7 +725,8 @@
             if (!isValidSessionId(sessionId) || !confirm(`删除会话 ${sessionId}？这会断开在线设备，并释放对应的隧道暗号。`)) return;
             try {
                 const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
-                if (!response.ok) throw new Error('删除会话失败');
+                if (!response.ok && response.status !== 404) throw new Error('删除会话失败');
+                await deleteLocalSessionHistory(sessionId);
                 await loadData();
             } catch (err) {
                 alert(err.message);

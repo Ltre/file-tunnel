@@ -142,8 +142,12 @@ function registerFileAssetHandlers(socket, context) {
             if (hasTransferFields && !transfer) return;
             if (!record.providerLoads) record.providerLoads = new Map();
             if (!record.assignments) record.assignments = new Map();
+            const forced = data?.force === true;
+            const requestId = typeof data?.requestId === 'string' && data.requestId.length <= 120
+                ? sanitize(data.requestId, 120)
+                : undefined;
             const existingProviderId = record.assignments.get(assignmentKey(assetId, deviceId, transfer?.transferId));
-            if (existingProviderId && session.devices.has(existingProviderId) && deviceSockets.has(existingProviderId)) {
+            if (existingProviderId && !forced && session.devices.has(existingProviderId) && deviceSockets.has(existingProviderId)) {
                 historyLog('file-asset-request-ignored-duplicate', {
                     sessionId, deviceId, targetDeviceId: existingProviderId, socketId: socket.id, clientIp,
                     assetId, transfer
@@ -166,11 +170,13 @@ function registerFileAssetHandlers(socket, context) {
             releaseAssignment(record, assetId, deviceId, transfer?.transferId);
             record.assignments.set(assignmentKey(assetId, deviceId, transfer?.transferId), providerId);
             record.providerLoads.set(providerId, (record.providerLoads.get(providerId) || 0) + 1);
-            providerSocket.emit('file-asset-request', { asset: record.metadata, from: deviceId, transfer });
+            providerSocket.emit('file-asset-request', { asset: record.metadata, from: deviceId, transfer, requestId });
             historyLog('file-asset-request-forwarded', {
                 sessionId, deviceId, targetDeviceId: providerId, socketId: socket.id, clientIp, asset: record.metadata,
                 transfer, knownProviderDeviceIds: Array.from(record.providers),
-                providerLoads: Object.fromEntries(record.providerLoads)
+                providerLoads: Object.fromEntries(record.providerLoads),
+                forced,
+                requestId
             });
         } catch (err) {
             console.error('file-asset-request error:', err);
@@ -317,7 +323,7 @@ function registerFileAssetHandlers(socket, context) {
 
 function cleanupFileAssetRelays(sessionId, deviceId) {
     for (const [key, relay] of relays) {
-        if (relay.sessionId === sessionId && (relay.from === deviceId || relay.to === deviceId)) relays.delete(key);
+        if (relay.sessionId === sessionId && (!deviceId || relay.from === deviceId || relay.to === deviceId)) relays.delete(key);
     }
 }
 
