@@ -334,3 +334,135 @@ git status --short
 
 --------------------------------
 
+传输记录区域的交互再微调一下：
+    聚焦点击/触摸文件本身，是图片就放大，是视频就播放，是音乐就播放，是文档能打开就打开，打不开的就弹出是否下载，对于其他类型文件弹出是否下载。
+    长按文件本身，弹出文件详细信息（之前提过有哪些），并在详细信息底部添加一个“下载”按钮。
+
+答：
+
+我会把文件记录的主操作改为“按文件类型预览或打开”，并把详细信息移到长按里：图片放大预览、视频和音频在浮层播放；浏览器可预览的文档直接打开，否则确认下载。先复用现有预览、缓存与下载逻辑，避免重新引入文件传输分支。
+
+
+
+
+已运行 3 条命令
+
+
+实现上我会去掉“右键/长按即下载”的菜单，统一为右键或长按打开详情；详情底部的下载按钮只在文件已经完整缓存到本机时可用。点击则根据 MIME 类型走预览：图片、视频、音频使用应用内查看器，PDF 与文本类文档使用浏览器可预览容器，其余格式进入下载确认。
+
+
+
+
+已运行 $lines = Get-Content index.html
+$lines[320..365]
+$lines[786..930]
+$lines[1496..1545]
+$lines = Get-Content app.js
+$lines[2800..2960]
+$lines[4868..4905]
+
+
+
+
+
+
+
+我会新增一个专用的文件预览层，不把媒体预览塞回聊天列表本身；列表仍保持紧凑。详情浮层会新增下载按钮，并根据本机缓存状态自动禁用，避免点了以后才发现资源不在当前设备。
+
+
+
+
+编辑了 2 个文件执行了 2 条命令
+
+
+点击与长按的职责已经调换完成。接下来我会清理旧菜单引用，并检查预览层关闭时是否正确释放播放器节点、详情下载按钮是否只在缓存完整时可用。
+
+
+
+
+已运行 2 条命令
+
+
+再补两处移动端细节：文件详情和预览层会提升到切换栏之上，避免底部下载/关闭按钮再次被遮住；文本类文档也会限制预览体积，过大的文本直接询问下载，避免把页面卡住。
+
+
+
+
+编辑了 2 个文件
+
+
+交互路径已完整落位：点击文件按类型预览或确认下载，长按和桌面右键均打开详情；详情底部下载按钮根据本机缓存状态启用。现在跑语法、静态交互和差异检查，确保旧的上下文下载菜单没有残留引用。
+
+
+
+
+已运行 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+foreach ($file in @('app.js', 'index.html')) {
+  $path = Resolve-Path $file
+  $content = [System.IO.File]::ReadAllText($path)
+  $normalized = $content.Replace("`r`n", "`n").Replace("`r", "`n")
+  [System.IO.File]::WriteAllText($path, $normalized, $utf8NoBom)
+}
+& 'D:\InstalledApps\nodejs\node.exe' --check app.js
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+@'
+const fs = require('fs');
+const app = fs.readFileSync('app.js', 'utf8');
+const html = fs.readFileSync('index.html', 'utf8');
+for (const marker of [
+  'async function openFileRecord(messageId)',
+  'function closeFilePreview()',
+  "type.startsWith('image/')",
+  "type.startsWith('video/')",
+  "type.startsWith('audio/')",
+  'isInlineDocument({ type })',
+  "downloadFileDetailsBtn",
+  "showFileDetails(messageId)"
+]) {
+  if (!app.includes(marker)) throw new Error(`Missing ${marker}`);
+}
+for (const removed of ['showFileContextMenu', 'fileContextMenu', 'closeFileContextMenu']) {
+  if (app.includes(removed)) throw new Error(`Legacy context menu remains: ${removed}`);
+}
+for (const marker of ['id="filePreviewViewer"', 'id="downloadFileDetailsBtn"', '#filePreviewViewer {']) {
+  if (!html.includes(marker)) throw new Error(`Missing ${marker}`);
+}
+console.log('file preview interaction checks passed');
+'@ | & 'D:\InstalledApps\nodejs\node.exe' -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+git diff --check -- app.js index.html
+git status --short
+
+
+
+
+
+
+
+语法检查发现预览函数附近多出了一处闭合括号，我马上定位并修正；这是刚才替换旧菜单函数时留下的结构问题，尚未进入可用状态。
+
+
+
+
+编辑了 1 个文件执行了 2 条命令
+
+
+
+
+
+已完成这次交互调整，未暂存、未提交。
+点击/触摸文件：图片：在浮层中放大预览。
+视频、音频：在浮层中打开播放器。
+PDF、文本、JSON、XML、JavaScript 等浏览器可读文档：直接预览。
+其他格式，或过大的文本文件：弹出“是否下载”确认。
+
+长按文件，或电脑端右键文件：打开文件详细信息。
+详情浮层保留文件名、扩展名、类型、大小、上传时间、初始上传设备、设备 ID、本机缓存状态，并新增“下载”按钮；未缓存时自动禁用。
+文件详情和预览浮层层级已高于移动端底部切换栏。
+已通过 node --check、静态交互检查和 git diff --check。改动在 [app.js](D:\\Workspace\\github\\Ltre\\file-tunnel\\app.js) 与 [index.html](D:\\Workspace\\github\\Ltre\\file-tunnel\\index.html)。
+
+--------------------------------
+
+再在传输记录的每个文件下方，添加两个按钮：下载、详情。这样之后的每条文件记录的按钮排列是：详情、下载、清除缓存、删除。
+
+--------------------------------

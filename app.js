@@ -2813,12 +2813,7 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.appendChild(actions);
 }
 
-let fileContextMenu = null;
-
-function closeFileContextMenu() {
-    fileContextMenu?.remove();
-    fileContextMenu = null;
-}
+let activeFileDetailsMessageId = null;
 
 function getFileExtension(fileName) {
     const name = String(fileName || '');
@@ -2835,6 +2830,90 @@ function formatDateTime(timestamp) {
 
 function closeFileDetails() {
     document.getElementById('fileDetailsViewer').classList.remove('active');
+    activeFileDetailsMessageId = null;
+}
+
+function closeFilePreview() {
+    const viewer = document.getElementById('filePreviewViewer');
+    viewer.classList.remove('active');
+    document.getElementById('filePreviewContent').replaceChildren();
+}
+
+function getStoredFileUrl(fileId, storedFile) {
+    let url = fileObjectUrls.get(fileId);
+    if (!url) {
+        url = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
+        fileObjectUrls.set(fileId, url);
+    }
+    return url;
+}
+
+function isInlineDocument(fileInfo) {
+    const type = String(fileInfo.type || '').toLowerCase();
+    return type === 'application/pdf' || type.startsWith('text/') ||
+        ['application/json', 'application/xml', 'application/javascript'].includes(type);
+}
+
+async function openFileRecord(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (!hasCompleteFileCache(storedFile, fileInfo)) {
+        alert('文件尚未缓存到本机，请先使用“还原文件”获取内容。');
+        return;
+    }
+
+    const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
+    const canPreviewDocument = isInlineDocument({ type });
+    const textPreviewTooLarge = type !== 'application/pdf' && canPreviewDocument &&
+        getBinaryDataSize(storedFile.data) > 5 * 1024 * 1024;
+    if (!type.startsWith('image/') && !type.startsWith('video/') && !type.startsWith('audio/') && (!canPreviewDocument || textPreviewTooLarge)) {
+        const shouldDownload = window.confirm(`“${fileInfo.name}”无法在当前浏览器中直接打开。是否下载？`);
+        if (shouldDownload) await downloadFile(fileInfo.id);
+        return;
+    }
+
+    const title = document.getElementById('filePreviewTitle');
+    const content = document.getElementById('filePreviewContent');
+    title.textContent = fileInfo.name || '文件预览';
+    content.replaceChildren();
+
+    const url = getStoredFileUrl(fileInfo.id, storedFile);
+    if (type.startsWith('image/')) {
+        const image = document.createElement('img');
+        image.src = url;
+        image.alt = fileInfo.name || '图片预览';
+        content.appendChild(image);
+    } else if (type.startsWith('video/')) {
+        const video = document.createElement('video');
+        video.src = url;
+        video.controls = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        content.appendChild(video);
+        video.play().catch(() => {});
+    } else if (type.startsWith('audio/')) {
+        const audio = document.createElement('audio');
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        content.appendChild(audio);
+        audio.play().catch(() => {});
+    } else if (type === 'application/pdf') {
+        const frame = document.createElement('iframe');
+        frame.src = url;
+        frame.title = fileInfo.name || 'PDF 文档';
+        content.appendChild(frame);
+    } else {
+        const text = document.createElement('pre');
+        text.textContent = await new Blob([storedFile.data], { type: storedFile.type }).text();
+        content.appendChild(text);
+    }
+
+    document.getElementById('filePreviewViewer').classList.add('active');
+    historyLog('file-preview-opened', { messageId, fileId: fileInfo.id, type });
 }
 
 async function showFileDetails(messageId) {
@@ -2844,6 +2923,7 @@ async function showFileDetails(messageId) {
 
     const storedFile = await getFromStore('files', fileInfo.id);
     const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
+    activeFileDetailsMessageId = messageId;
     const details = [
         ['文件名', fileInfo.name || '未知文件'],
         ['扩展名', getFileExtension(fileInfo.name)],
@@ -2852,7 +2932,7 @@ async function showFileDetails(messageId) {
         ['上传时间', formatDateTime(message.timestamp)],
         ['最初上传设备', message.senderName || '未知设备'],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
-        ['本机状态', hasLocalData ? '已缓存，可通过上下文菜单下载' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
@@ -2867,42 +2947,11 @@ async function showFileDetails(messageId) {
         row.append(term, description);
         list.appendChild(row);
     });
+    const downloadButton = document.getElementById('downloadFileDetailsBtn');
+    downloadButton.disabled = !hasLocalData;
+    downloadButton.title = hasLocalData ? `下载 ${fileInfo.name}` : '请先还原文件缓存后再下载';
     document.getElementById('fileDetailsViewer').classList.add('active');
     historyLog('file-details-opened', { messageId, fileId: fileInfo.id, hasLocalData });
-}
-
-async function showFileContextMenu(messageId, clientX, clientY) {
-    const message = await getFromStore('messages', messageId);
-    const fileInfo = message?.fileInfo;
-    if (!fileInfo?.id) return;
-
-    const storedFile = await getFromStore('files', fileInfo.id);
-    const canDownload = hasCompleteFileCache(storedFile, fileInfo);
-    closeFileContextMenu();
-
-    const menu = document.createElement('div');
-    menu.className = 'file-context-menu';
-    menu.setAttribute('role', 'menu');
-    const download = document.createElement('button');
-    download.type = 'button';
-    download.className = 'file-context-action';
-    download.textContent = canDownload ? '下载文件' : '文件未缓存';
-    download.disabled = !canDownload;
-    download.title = canDownload ? `下载 ${fileInfo.name}` : '请先还原文件缓存后再下载';
-    download.addEventListener('click', () => {
-        closeFileContextMenu();
-        downloadFile(fileInfo.id);
-    });
-    menu.appendChild(download);
-    document.body.appendChild(menu);
-
-    const bounds = menu.getBoundingClientRect();
-    const left = Math.max(8, Math.min(clientX || window.innerWidth / 2, window.innerWidth - bounds.width - 8));
-    const top = Math.max(8, Math.min(clientY || window.innerHeight / 2, window.innerHeight - bounds.height - 8));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    fileContextMenu = menu;
-    historyLog('file-context-menu-opened', { messageId, fileId: fileInfo.id, canDownload });
 }
 
 function attachFileRecordInteractions(messageEl) {
@@ -2919,14 +2968,13 @@ function attachFileRecordInteractions(messageEl) {
 
     messageEl.addEventListener('click', event => {
         if (isAction(event.target) || Date.now() < suppressClickUntil) return;
-        showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
+        openFileRecord(messageId).catch(err => historyLog('file-record-open-failed', { messageId, error: err.message }));
     });
     messageEl.addEventListener('contextmenu', event => {
         if (isAction(event.target)) return;
         event.preventDefault();
         suppressClickUntil = Date.now() + 500;
-        showFileContextMenu(messageId, event.clientX, event.clientY)
-            .catch(err => historyLog('file-context-menu-open-failed', { messageId, error: err.message }));
+        showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
     });
     messageEl.addEventListener('pointerdown', event => {
         if (event.pointerType !== 'touch' || isAction(event.target)) return;
@@ -2935,8 +2983,7 @@ function attachFileRecordInteractions(messageEl) {
             longPressTimer = null;
             suppressClickUntil = Date.now() + 700;
             navigator.vibrate?.(12);
-            showFileContextMenu(messageId, event.clientX, event.clientY)
-                .catch(err => historyLog('file-context-menu-open-failed', { messageId, error: err.message }));
+            showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
         }, 550);
     });
     messageEl.addEventListener('pointermove', event => {
@@ -4480,8 +4527,15 @@ function initUI() {
     document.getElementById('fileDetailsViewer').addEventListener('click', event => {
         if (event.target === event.currentTarget) closeFileDetails();
     });
-    document.addEventListener('pointerdown', event => {
-        if (fileContextMenu && !fileContextMenu.contains(event.target)) closeFileContextMenu();
+    document.getElementById('downloadFileDetailsBtn').addEventListener('click', async () => {
+        const message = activeFileDetailsMessageId && await getFromStore('messages', activeFileDetailsMessageId);
+        const fileId = message?.fileInfo?.id;
+        if (!fileId) return;
+        await downloadFile(fileId);
+    });
+    document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
+    document.getElementById('filePreviewViewer').addEventListener('click', event => {
+        if (event.target === event.currentTarget) closeFilePreview();
     });
 
     document.getElementById('closeRichViewer').addEventListener('click', () => {
