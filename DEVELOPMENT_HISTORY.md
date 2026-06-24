@@ -43,3 +43,10 @@
 - **问题**: P2P 传输不稳定
 - **原因**: WebRTC 连接状态处理不当
 - **解决方案**: 增强连接状态检查和错误处理
+
+
+## codex无法登录的问题
+【CODEX常见问题】登录codex失败，提示：登录失败：failed to start login server: 以一种访问权限不允许的方式做了一个访问套接字的尝试。 (os error 10013)
+https://ltre.notion.site/CODEX-codex-failed-to-start-login-server-os-error-10013-38605e692b4e80b58c76cbd91f91e098?source=copy_link
+net stop winnat
+net start winnat
