@@ -82,12 +82,16 @@ let fileAssetTransfer = null;
 let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
+let filePreviewHistoryOpen = false;
+let progressDrawerCollapsed = false;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
+const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
 let clipboardShareTimer = null;
 let lastClipboardText = null;
+let remoteAudioContext = null;
 let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
 const activeFileProgress = new Set();
@@ -218,6 +222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function startTunnelApplication() {
     document.getElementById('appShell').hidden = false;
+    document.getElementById('tunnelTopbar')?.removeAttribute('hidden');
     document.getElementById('leaveTunnelBtn').hidden = false;
     document.getElementById('mobileForceRefreshBtn').hidden = false;
     initFileAssetTransfer();
@@ -513,7 +518,9 @@ function initSessionLanding() {
     const sharedFilesNotice = document.getElementById('sharedFilesNotice');
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
     landing.hidden = false;
+    document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
     document.getElementById('leaveTunnelBtn').hidden = true;
+    document.getElementById('mobileForceRefreshBtn').hidden = true;
     if (!window.location.hash && window.location.search) {
         history.replaceState(null, '', window.location.pathname);
     }
@@ -1859,6 +1866,47 @@ function showCameraStream(stream, active, isLocal) {
     updateMediaButtons({ cameraMode: active ? (isLocal ? 'local' : 'remote') : 'idle' });
 }
 
+async function unlockRemoteAudioPlayback() {
+    try {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextCtor) {
+            if (!remoteAudioContext) remoteAudioContext = new AudioContextCtor();
+            if (remoteAudioContext.state === 'suspended') await remoteAudioContext.resume();
+        }
+    } catch (err) {
+        historyLog('remote-audio-context-unlock-failed', { error: err.message });
+    }
+
+    const audioElements = Array.from(document.querySelectorAll('#remoteAudio audio'));
+    await Promise.all(audioElements.map(audio => audio.play().catch(() => {})));
+    document.getElementById('remoteAudioUnlockBtn')?.remove();
+}
+
+function showRemoteAudioUnlockButton(reason = '') {
+    const container = document.getElementById('remoteAudio');
+    if (!container || document.getElementById('remoteAudioUnlockBtn')) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = 'remoteAudioUnlockBtn';
+    button.className = 'remote-audio-unlock';
+    button.textContent = '启用声音';
+    button.title = reason || '浏览器阻止了自动播放，点击后播放对讲音频';
+    button.addEventListener('click', () => {
+        unlockRemoteAudioPlayback().catch(err => historyLog('remote-audio-unlock-click-failed', { error: err.message }));
+    });
+    container.appendChild(button);
+}
+
+function initRemoteAudioUnlock() {
+    const unlock = () => {
+        unlockRemoteAudioPlayback().catch(err => historyLog('remote-audio-unlock-failed', { error: err.message }));
+    };
+    ['pointerdown', 'touchend', 'keydown'].forEach(eventName => {
+        window.addEventListener(eventName, unlock, { passive: true });
+    });
+}
+
 function playRemoteAudio(kind, sessionKey, peerId, stream) {
     const container = document.getElementById('remoteAudio');
     const id = `remote-audio-${kind}-${sessionKey}-${peerId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -1868,10 +1916,16 @@ function playRemoteAudio(kind, sessionKey, peerId, stream) {
         audio.id = id;
         audio.autoplay = true;
         audio.playsInline = true;
+        audio.setAttribute('webkit-playsinline', '');
         container.appendChild(audio);
     }
     audio.srcObject = stream;
-    audio.play().catch(() => {});
+    audio.play()
+        .then(() => document.getElementById('remoteAudioUnlockBtn')?.remove())
+        .catch(err => {
+            historyLog('remote-audio-play-blocked', { kind, sessionKey, peerId, error: err.message });
+            showRemoteAudioUnlockButton(err.message);
+        });
 }
 
 function updateMediaButtons(stateUpdate = {}) {
@@ -2700,7 +2754,7 @@ async function addMessageToChat(message, isOwn) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}">
+                        <img src="${fileUrl}" alt="${escapeHtml(fileInfo.name)}" loading="lazy" decoding="async">
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -2709,7 +2763,7 @@ async function addMessageToChat(message, isOwn) {
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <video muted playsinline preload="metadata" src="${fileUrl}"></video>
+                        <video muted playsinline preload="none" src="${fileUrl}"></video>
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -2738,7 +2792,8 @@ async function addMessageToChat(message, isOwn) {
         fileRenderState = {
             fileInfo,
             hasLocalData: Boolean(fileUrl),
-            cacheCleared: Boolean(storedFile?.cacheCleared)
+            cacheCleared: Boolean(storedFile?.cacheCleared),
+            restoreRequested: Boolean(storedFile?.restoreRequested)
         };
     } else if (message.type === 'rich') {
         // 富文本消息
@@ -2814,6 +2869,7 @@ async function downloadFileFromMessage(messageId) {
 
 function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.querySelector('.file-actions')?.remove();
+    messageEl.querySelector('.file-cache-retry')?.remove();
     const actions = document.createElement('div');
     actions.className = 'file-actions';
 
@@ -2831,18 +2887,48 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
             error: err.message
         }));
     }));
-    const clearCacheButton = createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
-        clearFileCache(messageEl.dataset.messageId);
-    });
-    if (!cacheState.hasLocalData) {
-        clearCacheButton.disabled = true;
-        clearCacheButton.title = cacheState.cacheCleared ? '本机缓存已清理' : '本机暂无可清理的文件缓存';
+    const cacheButton = cacheState.hasLocalData
+        ? createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
+            clearFileCache(messageEl.dataset.messageId);
+        })
+        : createFileActionButton('还原文件', '重新从在线设备拉取文件缓存', () => {
+            restoreFileCache(messageEl.dataset.messageId, { force: true }).catch(err => historyLog('file-cache-restore-failed', {
+                messageId: messageEl.dataset.messageId,
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+        });
+    if (!cacheState.hasLocalData && !fileInfo.isAsset) {
+        cacheButton.disabled = true;
+        cacheButton.title = cacheState.cacheCleared ? '本机缓存已清理，但此历史文件没有可用远程来源' : '本机暂无可清理的文件缓存';
     }
-    actions.appendChild(clearCacheButton);
+    actions.appendChild(cacheButton);
     actions.appendChild(createFileActionButton('删除', '从会话中删除此记录及所有设备的文件缓存', () => {
         deleteHistoryMessage(messageEl.dataset.messageId);
     }));
     messageEl.appendChild(actions);
+
+    if (!cacheState.hasLocalData && fileInfo.isAsset) {
+        const bubble = messageEl.querySelector('.message-bubble');
+        if (bubble) {
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'file-cache-retry';
+            retry.title = cacheState.restoreRequested ? '正在拉取缓存，点击可重新请求' : '重新请求拉取缓存';
+            retry.setAttribute('aria-label', retry.title);
+            retry.innerHTML = '<span aria-hidden="true">↻</span>';
+            retry.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                restoreFileCache(messageEl.dataset.messageId, { force: true }).catch(err => historyLog('file-cache-retry-failed', {
+                    messageId: messageEl.dataset.messageId,
+                    fileId: fileInfo.id,
+                    error: err.message
+                }));
+            });
+            bubble.appendChild(retry);
+        }
+    }
 }
 
 let activeFileDetailsMessageId = null;
@@ -2869,10 +2955,15 @@ function closeFileDetails() {
     activeFileDetailsMessageId = null;
 }
 
-function closeFilePreview() {
+function closeFilePreview(options = {}) {
     const viewer = document.getElementById('filePreviewViewer');
+    const wasActive = viewer?.classList.contains('active');
+    const shouldGoBack = wasActive && filePreviewHistoryOpen && !options.fromHistory &&
+        history.state?.[FILE_PREVIEW_HISTORY_KEY] === true;
+    filePreviewHistoryOpen = false;
     viewer.classList.remove('active');
     document.getElementById('filePreviewContent').replaceChildren();
+    if (shouldGoBack) history.back();
 }
 
 function getStoredFileUrl(fileId, storedFile) {
@@ -2948,7 +3039,13 @@ async function openFileRecord(messageId) {
         content.appendChild(text);
     }
 
-    document.getElementById('filePreviewViewer').classList.add('active');
+    const viewer = document.getElementById('filePreviewViewer');
+    if (!viewer.classList.contains('active')) {
+        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+        history.pushState({ ...baseState, [FILE_PREVIEW_HISTORY_KEY]: true }, '', window.location.href);
+        filePreviewHistoryOpen = true;
+        viewer.classList.add('active');
+    }
     historyLog('file-preview-opened', { messageId, fileId: fileInfo.id, type });
 }
 
@@ -3002,6 +3099,11 @@ function attachFileRecordInteractions(messageEl) {
         longPressTimer = null;
         startPoint = null;
     };
+    const clearSelection = () => {
+        try {
+            window.getSelection?.()?.removeAllRanges();
+        } catch {}
+    };
 
     messageEl.addEventListener('click', event => {
         if (isAction(event.target) || Date.now() < suppressClickUntil) return;
@@ -3010,8 +3112,12 @@ function attachFileRecordInteractions(messageEl) {
     messageEl.addEventListener('contextmenu', event => {
         if (isAction(event.target)) return;
         event.preventDefault();
+        clearSelection();
         suppressClickUntil = Date.now() + 500;
         showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
+    });
+    messageEl.addEventListener('selectstart', event => {
+        if (!isAction(event.target)) event.preventDefault();
     });
     messageEl.addEventListener('pointerdown', event => {
         if (event.pointerType !== 'touch' || isAction(event.target)) return;
@@ -3019,6 +3125,7 @@ function attachFileRecordInteractions(messageEl) {
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
             suppressClickUntil = Date.now() + 700;
+            clearSelection();
             navigator.vibrate?.(12);
             showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
         }, 550);
@@ -3032,7 +3139,7 @@ function attachFileRecordInteractions(messageEl) {
     });
 }
 
-function showFileMessagePlaceholder(fileId, label, cacheCleared = false) {
+function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restoreRequested = false) {
     document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const bubble = messageEl.querySelector('.message-bubble');
@@ -3047,7 +3154,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false) {
                 <div class="file-size">${formatFileSize(fileInfo.size)} (${label})</div>
             </div>
         `;
-        renderFileMessageActions(messageEl, fileInfo, { hasLocalData: false, cacheCleared });
+        renderFileMessageActions(messageEl, fileInfo, { hasLocalData: false, cacheCleared, restoreRequested });
     });
 }
 
@@ -3069,11 +3176,11 @@ async function refreshFileMessage(fileId) {
         if (!bubble) return;
 
         if (type.startsWith('image/')) {
-            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" loading="lazy" decoding="async"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('video/')) {
-            bubble.innerHTML = `<div class="media-preview"><video muted playsinline preload="metadata" src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview"><video muted playsinline preload="none" src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else {
@@ -3122,16 +3229,21 @@ async function clearFileCache(messageId) {
     const objectUrl = fileObjectUrls.get(fileInfo.id);
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     fileObjectUrls.delete(fileInfo.id);
-    showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true);
+    showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true, false);
     historyLog('file-cache-cleared', { messageId, fileId: fileInfo.id });
 }
 
-async function restoreFileCache(messageId) {
+async function restoreFileCache(messageId, options = {}) {
     const message = await getFromStore('messages', messageId);
     const fileInfo = message?.fileInfo;
     if (!fileInfo?.id || !fileInfo.isAsset) {
         alert('此历史文件没有可用的远程文件来源，无法还原。');
         return;
+    }
+
+    if (options.force) {
+        fileAssetTransfer?.cancel(fileInfo.id);
+        hideProgress(fileInfo.id);
     }
 
     const storedFile = await getFromStore('files', fileInfo.id);
@@ -3145,9 +3257,10 @@ async function restoreFileCache(messageId) {
         ownerDeviceId: fileInfo.ownerDeviceId || message.sender,
         isFileAsset: true,
         cacheCleared: true,
-        restoreRequested: true
+        restoreRequested: true,
+        transferInterrupted: false
     });
-    showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true);
+    showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
     await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo);
     historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
 }
@@ -3564,7 +3677,7 @@ async function restoreResourceCache(resource) {
     }
     metadata.isFileAsset = true;
     await saveToStore('files', metadata);
-    showFileMessagePlaceholder(resource.id, '正在请求还原', true);
+    showFileMessagePlaceholder(resource.id, '正在请求还原', true, true);
     await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata);
     historyLog('resource-file-restore-requested', { resourceId: resource.id });
 }
@@ -4469,6 +4582,8 @@ async function forceMobileRefresh() {
 
 function initUI() {
     initMobileWorkspace();
+    initProgressDrawer();
+    initRemoteAudioUnlock();
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
@@ -4623,6 +4738,36 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
     const messageEl = document.querySelector(`.message[data-file-id="${fileId}"]`);
     const fileName = messageEl?.dataset.fileName || '文件';
     showProgress(fileId, fileName, 0, `等待队列（进行中 ${activeDownloads}，排队 ${queueLength}）`);
+}
+
+function updateProgressDrawerSummary() {
+    const list = document.getElementById('progressList');
+    const summary = document.getElementById('progressDrawerSummary');
+    if (!list || !summary) return;
+
+    const count = list.children.length;
+    summary.textContent = count > 0 ? `${count} 个传输中` : '';
+}
+
+function setProgressDrawerCollapsed(collapsed) {
+    progressDrawerCollapsed = Boolean(collapsed);
+    const container = document.getElementById('transferProgress');
+    const toggle = document.getElementById('progressDrawerToggle');
+    if (!container || !toggle) return;
+
+    container.classList.toggle('collapsed', progressDrawerCollapsed);
+    toggle.setAttribute('aria-expanded', String(!progressDrawerCollapsed));
+}
+
+function initProgressDrawer() {
+    const toggle = document.getElementById('progressDrawerToggle');
+    if (!toggle) return;
+
+    toggle.addEventListener('click', () => {
+        setProgressDrawerCollapsed(!progressDrawerCollapsed);
+    });
+    setProgressDrawerCollapsed(progressDrawerCollapsed);
+    updateProgressDrawerSummary();
 }
 
 async function updateShortCode(shortCode) {
@@ -4846,22 +4991,34 @@ function showProgress(fileId, fileName, progress, status = '') {
     const elementId = progressElementId(fileId);
 
     container.style.display = 'block';
+    setProgressDrawerCollapsed(progressDrawerCollapsed);
 
     let item = document.getElementById(elementId);
     if (!item) {
         item = document.createElement('div');
         item.id = elementId;
         item.className = 'progress-item';
-        item.innerHTML = `
-            <div class="progress-info">
-                <span>${fileName}</span>
-                <span class="progress-text">${progress}%${status ? ` · ${status}` : ''}</span>
-            </div>
-            <div class="progress-bar">
-                <div class="progress-fill" style="width: ${progress}%"></div>
-            </div>
-        `;
+
+        const info = document.createElement('div');
+        info.className = 'progress-info';
+        const name = document.createElement('span');
+        name.className = 'progress-name';
+        name.textContent = fileName;
+        const text = document.createElement('span');
+        text.className = 'progress-text';
+        text.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
+        info.append(name, text);
+
+        const bar = document.createElement('div');
+        bar.className = 'progress-bar';
+        const fill = document.createElement('div');
+        fill.className = 'progress-fill';
+        fill.style.width = `${progress}%`;
+        bar.appendChild(fill);
+
+        item.append(info, bar);
         list.appendChild(item);
+        updateProgressDrawerSummary();
     } else {
         updateProgress(fileId, progress, status);
     }
@@ -4873,6 +5030,7 @@ function updateProgress(fileId, progress, status = '') {
         item.querySelector('.progress-text').textContent = `${progress}%${status ? ` · ${status}` : ''}`;
         item.querySelector('.progress-fill').style.width = `${progress}%`;
     }
+    updateProgressDrawerSummary();
 }
 
 function hideProgress(fileId) {
@@ -4887,6 +5045,7 @@ function hideProgress(fileId) {
     if (item) {
         item.remove();
     }
+    updateProgressDrawerSummary();
 
     const list = document.getElementById('progressList');
     if (list.children.length === 0) {
@@ -4938,6 +5097,11 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', () => {
+    if (filePreviewHistoryOpen) {
+        filePreviewHistoryOpen = false;
+        closeFilePreview({ fromHistory: true });
+        return;
+    }
     if (!richViewerHistoryOpen) return;
     richViewerHistoryOpen = false;
     closeRichViewer({ fromHistory: true });
