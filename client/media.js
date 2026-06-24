@@ -229,7 +229,10 @@
                     to: peerId, kind, sessionKey, type: 'ice-candidate', candidate: event.candidate
                 });
             };
-            pc.ontrack = event => this.handleRemoteTrack(kind, sessionKey, peerId, event.streams[0]);
+            pc.ontrack = event => {
+                const stream = event.streams?.[0] || new MediaStream([event.track]);
+                this.handleRemoteTrack(kind, sessionKey, peerId, stream);
+            };
             pc.onconnectionstatechange = () => {
                 if (['failed', 'closed'].includes(pc.connectionState)) this.closeConnection(key, false);
             };

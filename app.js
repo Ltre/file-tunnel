@@ -83,8 +83,6 @@ let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
-let fileOverlayHistoryOpen = false;
-const FILE_OVERLAY_HISTORY_KEY = 'tunnelFileOverlay';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
@@ -2833,24 +2831,14 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
             error: err.message
         }));
     }));
-    const cacheButtonLabel = cacheState.cacheCleared ? '还原文件' : '清除缓存';
-    const cacheButtonTitle = cacheState.cacheCleared ? '从当前在线设备重新获取文件内容' : '仅清理本设备保存的文件内容';
-    const cacheButton = createFileActionButton(cacheButtonLabel, cacheButtonTitle, () => {
-        if (cacheState.cacheCleared) {
-            restoreFileCache(messageEl.dataset.messageId);
-            return;
-        }
+    const clearCacheButton = createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
         clearFileCache(messageEl.dataset.messageId);
     });
-    if (!cacheState.hasLocalData && !cacheState.cacheCleared) {
-        cacheButton.disabled = true;
-        cacheButton.title = '本机暂无可清理的文件缓存';
+    if (!cacheState.hasLocalData) {
+        clearCacheButton.disabled = true;
+        clearCacheButton.title = cacheState.cacheCleared ? '本机缓存已清理' : '本机暂无可清理的文件缓存';
     }
-    if (cacheState.cacheCleared && !fileInfo.isAsset) {
-        cacheButton.disabled = true;
-        cacheButton.title = '此记录没有可用的远程文件来源';
-    }
-    actions.appendChild(cacheButton);
+    actions.appendChild(clearCacheButton);
     actions.appendChild(createFileActionButton('删除', '从会话中删除此记录及所有设备的文件缓存', () => {
         deleteHistoryMessage(messageEl.dataset.messageId);
     }));
@@ -2876,37 +2864,15 @@ function isLikelyTouchDevice() {
     return window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 }
 
-function hasActiveFileOverlay() {
-    return document.getElementById('fileDetailsViewer')?.classList.contains('active') ||
-        document.getElementById('filePreviewViewer')?.classList.contains('active');
-}
-
-function ensureFileOverlayHistory() {
-    if (fileOverlayHistoryOpen) return;
-    const baseState = history.state && typeof history.state === 'object' ? history.state : {};
-    history.pushState({ ...baseState, [FILE_OVERLAY_HISTORY_KEY]: true }, '', window.location.href);
-    fileOverlayHistoryOpen = true;
-}
-
-function settleFileOverlayHistory(options = {}) {
-    if (hasActiveFileOverlay()) return;
-    const shouldGoBack = fileOverlayHistoryOpen && !options.fromHistory &&
-        history.state?.[FILE_OVERLAY_HISTORY_KEY] === true;
-    fileOverlayHistoryOpen = false;
-    if (shouldGoBack) history.back();
-}
-
-function closeFileDetails(options = {}) {
+function closeFileDetails() {
     document.getElementById('fileDetailsViewer').classList.remove('active');
     activeFileDetailsMessageId = null;
-    settleFileOverlayHistory(options);
 }
 
-function closeFilePreview(options = {}) {
+function closeFilePreview() {
     const viewer = document.getElementById('filePreviewViewer');
     viewer.classList.remove('active');
     document.getElementById('filePreviewContent').replaceChildren();
-    settleFileOverlayHistory(options);
 }
 
 function getStoredFileUrl(fileId, storedFile) {
@@ -2982,7 +2948,6 @@ async function openFileRecord(messageId) {
         content.appendChild(text);
     }
 
-    ensureFileOverlayHistory();
     document.getElementById('filePreviewViewer').classList.add('active');
     historyLog('file-preview-opened', { messageId, fileId: fileInfo.id, type });
 }
@@ -3003,8 +2968,8 @@ async function showFileDetails(messageId) {
         ['上传时间', formatDateTime(message.timestamp)],
         ['最初上传设备', message.senderName || '未知设备'],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
-        ['查看详情提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情'],
-        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
+        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
@@ -3022,7 +2987,6 @@ async function showFileDetails(messageId) {
     const downloadButton = document.getElementById('downloadFileDetailsBtn');
     downloadButton.disabled = false;
     downloadButton.title = hasLocalData ? `下载 ${fileInfo.name}` : '本机无缓存时会先尝试还原文件';
-    ensureFileOverlayHistory();
     document.getElementById('fileDetailsViewer').classList.add('active');
     historyLog('file-details-opened', { messageId, fileId: fileInfo.id, hasLocalData });
 }
@@ -4974,12 +4938,6 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', () => {
-    if (fileOverlayHistoryOpen) {
-        fileOverlayHistoryOpen = false;
-        closeFileDetails({ fromHistory: true });
-        closeFilePreview({ fromHistory: true });
-        return;
-    }
     if (!richViewerHistoryOpen) return;
     richViewerHistoryOpen = false;
     closeRichViewer({ fromHistory: true });

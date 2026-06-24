@@ -7,9 +7,8 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/tunnel-icon.svg" type="image/svg+xml">
     <title>即时传输隧道</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/uuid/8.3.2/uuid.min.js"></script>
+    <script defer src="/socket.io/socket.io.js"></script>
+    <script defer src="/client/qrcode-1.0.0.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -234,6 +233,14 @@
         .message.file-record {
             cursor: pointer;
             -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+
+        .message.file-record .message-bubble,
+        .message.file-record .message-bubble * {
+            -webkit-user-select: none;
             user-select: none;
         }
 
@@ -243,6 +250,39 @@
 
         .message.file-record video {
             pointer-events: none;
+        }
+
+        .file-cache-retry {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            display: grid;
+            width: 48px;
+            height: 48px;
+            place-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.78);
+            border-radius: 50%;
+            background: rgba(39, 52, 81, 0.32);
+            box-shadow: 0 2px 10px rgba(20, 28, 48, 0.2);
+            color: #fff;
+            cursor: pointer;
+            font-size: 1.7rem;
+            line-height: 1;
+            transform: translate(-50%, -50%);
+        }
+
+        .file-cache-retry span {
+            display: block;
+            animation: file-cache-retry-spin 1.5s linear infinite;
+        }
+
+        .file-cache-retry:focus-visible {
+            outline: 3px solid #79a8ff;
+            outline-offset: 2px;
+        }
+
+        @keyframes file-cache-retry-spin {
+            to { transform: rotate(360deg); }
         }
         
         .file-icon {
@@ -764,15 +804,59 @@
             bottom: 20px;
             right: 20px;
             background: white;
-            padding: 20px;
-            border-radius: 12px;
+            border-radius: 8px;
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
             min-width: 300px;
+            max-width: min(420px, calc(100vw - 40px));
             z-index: 1000;
+            overflow: hidden;
+        }
+
+        .transfer-progress-toggle {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            min-height: 48px;
+            padding: 10px 14px;
+            border: 0;
+            background: #fff;
+            color: #26304a;
+            cursor: pointer;
+            font: inherit;
+            text-align: left;
+        }
+
+        .transfer-progress-title { font-weight: 700; }
+
+        .transfer-progress-summary {
+            flex: 1;
+            margin-left: 8px;
+            overflow: hidden;
+            color: #65718a;
+            font-size: 0.82rem;
+            text-align: right;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .transfer-progress-chevron {
+            margin-left: 10px;
+            color: #52617f;
+            font-size: 1rem;
+            transition: transform 0.18s ease;
+        }
+
+        .transfer-progress.collapsed .transfer-progress-chevron { transform: rotate(-90deg); }
+        .transfer-progress.collapsed #progressList { display: none; }
+
+        #progressList {
+            max-height: min(46vh, 360px);
+            overflow-y: auto;
+            overscroll-behavior: contain;
         }
         
         .progress-item {
-            margin-bottom: 15px;
+            margin: 0 14px 14px;
         }
         
         .progress-info {
@@ -807,7 +891,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 2000;
+            z-index: 4000;
             opacity: 0;
             visibility: hidden;
             transition: all 0.3s;
@@ -964,7 +1048,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 3000;
+            z-index: 4000;
             opacity: 0;
             visibility: hidden;
             transition: all 0.3s;
@@ -1053,16 +1137,37 @@
             display: none !important;
         }
 
-        .leave-tunnel-btn {
+        :root {
+            --tunnel-topbar-height: 54px;
+        }
+
+        .tunnel-topbar {
             position: fixed;
-            top: 14px;
-            right: 14px;
+            top: 0;
+            right: 0;
+            left: 0;
             z-index: 3600;
-            display: inline-flex;
+            display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: space-between;
+            height: var(--tunnel-topbar-height);
+            padding: 8px 14px;
+            border-bottom: 1px solid rgba(214, 220, 233, 0.9);
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 3px 14px rgba(33, 44, 72, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        #appShell {
+            padding-top: calc(20px + var(--tunnel-topbar-height));
+        }
+
+        .tunnel-topbar-action {
+            display: inline-flex;
             width: 38px;
             height: 38px;
+            align-items: center;
+            justify-content: center;
             border: 1px solid rgba(255, 255, 255, 0.72);
             border-radius: 6px;
             background: rgba(255, 255, 255, 0.92);
@@ -1097,10 +1202,15 @@
             background: currentColor;
         }
 
-        .leave-tunnel-btn:hover {
+        .tunnel-topbar-action:hover {
             border-color: #667eea;
             color: #4f5ec2;
             box-shadow: 0 6px 16px rgba(54, 72, 135, 0.2);
+        }
+
+        .mobile-force-refresh {
+            font-size: 1.3rem;
+            line-height: 1;
         }
 
         .tunnel-landing-main {
@@ -1164,26 +1274,30 @@
             font-size: 0.82rem;
         }
 
-        .mobile-workspace-nav,
-        .mobile-force-refresh {
+        .mobile-workspace-nav {
             display: none;
         }
 
         @media (max-width: 767px) {
             :root {
                 --mobile-workspace-nav-height: calc(70px + env(safe-area-inset-bottom));
+                --tunnel-topbar-height: calc(54px + env(safe-area-inset-top));
             }
 
+            html,
             body {
+                height: 100%;
                 overflow: hidden;
                 background: #f4f6fb;
             }
 
-            .container {
+            #appShell.container {
+                position: fixed;
+                inset: var(--tunnel-topbar-height) 0 var(--mobile-workspace-nav-height) 0;
                 width: 100%;
-                min-height: 100vh;
-                min-height: 100dvh;
+                min-height: 0;
                 padding: 0;
+                overflow: hidden;
             }
 
             .header {
@@ -1192,8 +1306,8 @@
 
             .main-layout {
                 display: block;
-                height: calc(100vh - var(--mobile-workspace-nav-height));
-                height: calc(100dvh - var(--mobile-workspace-nav-height));
+                height: 100%;
+                min-height: 0;
                 margin: 0;
             }
 
@@ -1202,6 +1316,7 @@
             .main-layout > .right-panel {
                 display: none;
                 height: 100%;
+                min-height: 0;
             }
 
             #appShell[data-mobile-view="devices"] .left-panel,
@@ -1213,9 +1328,11 @@
             .panel {
                 display: flex;
                 height: 100%;
+                min-height: 0;
                 flex-direction: column;
                 border-radius: 0;
                 box-shadow: none;
+                overflow: hidden;
             }
 
             .panel-header {
@@ -1228,6 +1345,9 @@
                 flex: 1;
                 min-height: 0;
                 overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                overscroll-behavior: contain;
+                touch-action: pan-y;
                 padding: 16px 14px calc(16px + env(safe-area-inset-bottom));
             }
 
@@ -1259,7 +1379,21 @@
                 flex: 1;
                 padding: 12px;
                 border-radius: 8px;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                overscroll-behavior: contain;
+                touch-action: pan-y;
             }
+
+            .transfer-progress {
+                right: 10px;
+                bottom: calc(var(--mobile-workspace-nav-height) + 10px);
+                left: 10px;
+                min-width: 0;
+                max-width: none;
+            }
+
+            #progressList { max-height: min(38dvh, 300px); }
 
             .file-upload-area {
                 display: flex;
@@ -1302,26 +1436,6 @@
                 border-top: 1px solid #dfe4ee;
                 background: rgba(255, 255, 255, 0.96);
                 box-shadow: 0 -5px 18px rgba(35, 47, 77, 0.1);
-            }
-
-            .mobile-force-refresh {
-                position: fixed;
-                top: calc(10px + env(safe-area-inset-top));
-                left: 12px;
-                z-index: 3600;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 38px;
-                height: 38px;
-                border: 1px solid rgba(215, 220, 232, 0.96);
-                border-radius: 6px;
-                background: rgba(255, 255, 255, 0.96);
-                color: #4d5dbd;
-                box-shadow: 0 4px 12px rgba(33, 44, 72, 0.12);
-                cursor: pointer;
-                font-size: 1.3rem;
-                line-height: 1;
             }
 
             .mobile-force-refresh.is-refreshing {
@@ -1369,9 +1483,8 @@
                 margin-top: 10px;
             }
 
-            .leave-tunnel-btn {
-                top: calc(10px + env(safe-area-inset-top));
-                right: 12px;
+            .tunnel-topbar {
+                padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
             }
         }
 
@@ -1402,8 +1515,10 @@
         </main>
     </div>
 
-    <button class="leave-tunnel-btn" id="leaveTunnelBtn" title="暂时离开当前隧道" aria-label="暂时离开当前隧道" hidden><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
-    <button class="mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源" hidden>↻</button>
+    <header class="tunnel-topbar" id="tunnelTopbar" hidden>
+        <button class="tunnel-topbar-action mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源">↻</button>
+        <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
+    </header>
 
     <div class="container" id="appShell" hidden>
         <div class="header">
@@ -1540,7 +1655,11 @@
     
     <!-- 传输进度 -->
     <div class="transfer-progress" id="transferProgress" style="display: none;">
-        <h4 style="margin-bottom: 15px;">📤 传输进度</h4>
+        <button class="transfer-progress-toggle" id="progressDrawerToggle" type="button" aria-expanded="true" aria-controls="progressList">
+            <span class="transfer-progress-title">传输进度</span>
+            <span class="transfer-progress-summary" id="progressDrawerSummary"></span>
+            <span class="transfer-progress-chevron" aria-hidden="true">⌄</span>
+        </button>
         <div id="progressList"></div>
     </div>
     
@@ -1571,7 +1690,7 @@
         <div class="modal file-preview-modal" role="dialog" aria-modal="true" aria-label="文件预览">
             <div class="file-preview-header">
                 <h3 id="filePreviewTitle"></h3>
-                <button class="close-btn" id="closeFilePreviewBtn" type="button" aria-label="关闭文件预览">&times;</button>
+                <button class="btn btn-secondary" id="closeFilePreviewBtn" type="button">关闭</button>
             </div>
             <div class="file-preview-content" id="filePreviewContent"></div>
         </div>
@@ -1582,7 +1701,7 @@
         <div class="rich-viewer">
             <div class="rich-viewer-header">
                 <h3 style="margin: 0;">📝 富文本内容</h3>
-                <button class="close-btn" id="closeRichViewer">&times;</button>
+                <button class="btn btn-secondary" id="closeRichViewer" type="button">关闭</button>
             </div>
             <div class="rich-viewer-content" id="richViewerContent"></div>
         </div>

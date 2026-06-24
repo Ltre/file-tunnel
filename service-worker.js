@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v3';
+const CACHE_NAME = 'instant-tunnel-v5';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -6,6 +6,7 @@ const APP_SHELL = [
     '/client/file-assets.js',
     '/client/folder-archive.js',
     '/client/media.js',
+    '/client/qrcode-1.0.0.min.js',
     '/manifest.webmanifest',
     '/tunnel-icon.svg'
 ];
