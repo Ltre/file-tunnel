@@ -2792,21 +2792,53 @@ function createFileActionButton(label, title, handler) {
     return button;
 }
 
+async function downloadFileFromMessage(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (hasCompleteFileCache(storedFile, fileInfo)) {
+        await downloadFile(fileInfo.id);
+        return;
+    }
+
+    if (fileInfo.isAsset) {
+        await restoreFileCache(messageId);
+        alert('文件缓存正在还原，完成后请再次点击下载。');
+        return;
+    }
+
+    alert('文件尚未缓存到本机，且没有可用的远程文件来源。');
+}
+
 function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.querySelector('.file-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'file-actions';
 
-    if (cacheState.hasLocalData) {
-        actions.appendChild(createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
-            clearFileCache(messageEl.dataset.messageId);
+    actions.appendChild(createFileActionButton('详情', '查看文件名、大小、来源设备等详细信息', () => {
+        showFileDetails(messageEl.dataset.messageId).catch(err => historyLog('file-details-open-failed', {
+            messageId: messageEl.dataset.messageId,
+            fileId: fileInfo.id,
+            error: err.message
         }));
-    }
-    if (cacheState.cacheCleared) {
-        actions.appendChild(createFileActionButton('还原文件', '从当前在线设备重新获取文件内容', () => {
-            restoreFileCache(messageEl.dataset.messageId);
+    }));
+    actions.appendChild(createFileActionButton('下载', '下载此文件；本机无缓存时会先尝试还原', () => {
+        downloadFileFromMessage(messageEl.dataset.messageId).catch(err => historyLog('file-download-from-message-failed', {
+            messageId: messageEl.dataset.messageId,
+            fileId: fileInfo.id,
+            error: err.message
         }));
+    }));
+    const clearCacheButton = createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
+        clearFileCache(messageEl.dataset.messageId);
+    });
+    if (!cacheState.hasLocalData) {
+        clearCacheButton.disabled = true;
+        clearCacheButton.title = cacheState.cacheCleared ? '本机缓存已清理' : '本机暂无可清理的文件缓存';
     }
+    actions.appendChild(clearCacheButton);
     actions.appendChild(createFileActionButton('删除', '从会话中删除此记录及所有设备的文件缓存', () => {
         deleteHistoryMessage(messageEl.dataset.messageId);
     }));
@@ -2826,6 +2858,10 @@ function formatDateTime(timestamp) {
         year: 'numeric', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
+}
+
+function isLikelyTouchDevice() {
+    return window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
 }
 
 function closeFileDetails() {
@@ -2932,6 +2968,7 @@ async function showFileDetails(messageId) {
         ['上传时间', formatDateTime(message.timestamp)],
         ['最初上传设备', message.senderName || '未知设备'],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
+        ['查看详情提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情'],
         ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
@@ -2948,8 +2985,8 @@ async function showFileDetails(messageId) {
         list.appendChild(row);
     });
     const downloadButton = document.getElementById('downloadFileDetailsBtn');
-    downloadButton.disabled = !hasLocalData;
-    downloadButton.title = hasLocalData ? `下载 ${fileInfo.name}` : '请先还原文件缓存后再下载';
+    downloadButton.disabled = false;
+    downloadButton.title = hasLocalData ? `下载 ${fileInfo.name}` : '本机无缓存时会先尝试还原文件';
     document.getElementById('fileDetailsViewer').classList.add('active');
     historyLog('file-details-opened', { messageId, fileId: fileInfo.id, hasLocalData });
 }
@@ -4528,10 +4565,8 @@ function initUI() {
         if (event.target === event.currentTarget) closeFileDetails();
     });
     document.getElementById('downloadFileDetailsBtn').addEventListener('click', async () => {
-        const message = activeFileDetailsMessageId && await getFromStore('messages', activeFileDetailsMessageId);
-        const fileId = message?.fileInfo?.id;
-        if (!fileId) return;
-        await downloadFile(fileId);
+        if (!activeFileDetailsMessageId) return;
+        await downloadFileFromMessage(activeFileDetailsMessageId);
     });
     document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
     document.getElementById('filePreviewViewer').addEventListener('click', event => {
