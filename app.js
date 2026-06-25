@@ -5011,12 +5011,7 @@ function setMobileWorkspaceView(view, options = {}) {
 async function showJoinedSessionSwitcher() {
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
-        .sort((a, b) => {
-            const leftJoinedAt = Number(a.createdAt || a.firstJoinedAt || a.lastJoinedAt || 0);
-            const rightJoinedAt = Number(b.createdAt || b.firstJoinedAt || b.lastJoinedAt || 0);
-            if (leftJoinedAt && rightJoinedAt && leftJoinedAt !== rightJoinedAt) return leftJoinedAt - rightJoinedAt;
-            return String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true });
-        });
+        .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true }));
     const dialog = document.createElement('div');
     dialog.className = 'modal-overlay active';
     const list = sessions.length
