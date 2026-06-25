@@ -122,7 +122,7 @@ GET /admin
 
 http://10.0.0.16:3000/api/debug-logs?limit=1000
 服务端日志开关位于 tunnel.config.json，
-前端日志位于 runtime-config.js 
+前端日志位于 下发的 runtime-config.js 
 默认关闭详细 debug，这样页面不会再因为大量 historyLog/debug-log 走 IPC 和 console。
 服务端仍保留启动/错误这类少量日志。
 
