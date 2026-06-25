@@ -121,6 +121,10 @@ GET /admin
 ## 日志
 
 http://10.0.0.16:3000/api/debug-logs?limit=1000
+服务端日志开关位于 tunnel.config.json，
+前端日志位于 runtime-config.js 
+默认关闭详细 debug，这样页面不会再因为大量 historyLog/debug-log 走 IPC 和 console。
+服务端仍保留启动/错误这类少量日志。
 
 ## 管理页身份校验规划：Google Authenticator
 
