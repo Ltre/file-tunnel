@@ -1,11 +1,14 @@
-const CACHE_NAME = 'instant-tunnel-v9';
+const CACHE_NAME = 'instant-tunnel-v11';
 const APP_SHELL = [
     '/',
     '/index.html',
+    '/admin',
+    '/admin.html',
     '/downloader',
     '/downloader.html',
     '/downloadList',
     '/downloadList.html',
+    '/runtime-config.js',
     '/app.js',
     '/client/file-assets.js',
     '/client/folder-archive.js',

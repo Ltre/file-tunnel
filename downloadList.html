@@ -75,6 +75,22 @@
             flex-wrap: wrap;
             justify-content: flex-end;
         }
+        .magnet-loader {
+            display: flex;
+            gap: 8px;
+            margin: 0 0 14px;
+        }
+        .magnet-loader input {
+            flex: 1;
+            min-width: 0;
+            min-height: 38px;
+            padding: 0 12px;
+            border: 1px solid #cad3e2;
+            border-radius: 8px;
+            background: #fff;
+            color: #24304a;
+            font: inherit;
+        }
         .empty {
             padding: 42px 20px;
             border: 1px dashed #cad3e2;
@@ -88,6 +104,7 @@
                 grid-template-columns: 1fr;
                 display: grid;
             }
+            .magnet-loader { grid-template-columns: 1fr; display: grid; }
             .actions { justify-content: flex-start; }
         }
     </style>
@@ -99,6 +116,10 @@
         <!-- 注释代码原因：点击后没有参数，显示页异常，因此无意义 -->
         <!-- <a class="secondary" href="/downloader">返回下载页</a> -->
     </header>
+    <form id="magnetLoadForm" class="magnet-loader">
+        <input id="magnetIdInput" type="text" inputmode="text" autocomplete="off" placeholder="输入磁链ID加载文件">
+        <button type="submit">加载文件</button>
+    </form>
     <div id="list" class="list">
         <div class="empty">正在读取缓存...</div>
     </div>
@@ -110,8 +131,17 @@
     const DB_VERSION = 1;
     const STORE_NAME = 'magnetFiles';
     const list = document.getElementById('list');
+    const magnetLoadForm = document.getElementById('magnetLoadForm');
+    const magnetIdInput = document.getElementById('magnetIdInput');
     const embedded = new URLSearchParams(location.search).get('embedded') === '1';
     if (embedded) document.querySelector('header a.secondary')?.remove();
+
+    magnetLoadForm.addEventListener('submit', event => {
+        event.preventDefault();
+        const magnetId = magnetIdInput.value.trim();
+        if (!magnetId) return;
+        window.location.href = `/downloader?magnet=${encodeURIComponent(magnetId)}`;
+    });
 
     function formatSize(bytes) {
         if (!bytes) return '0 B';

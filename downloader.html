@@ -304,11 +304,7 @@
     function mergeSeedDevices(payload) {
         const seedKey = `tunnel_magnet_seeds_${payload.id}`;
         const serverSeeds = Array.isArray(payload.seedDevices) ? payload.seedDevices : [];
-        const localSeeds = JSON.parse(localStorage.getItem(seedKey) || '[]').filter(seed => seed && seed.deviceId);
-        const merged = new Map();
-        localSeeds.forEach(seed => merged.set(seed.deviceId, seed));
-        serverSeeds.forEach(seed => merged.set(seed.deviceId, seed));
-        payload.seedDevices = Array.from(merged.values());
+        payload.seedDevices = serverSeeds;
         localStorage.setItem(seedKey, JSON.stringify(payload.seedDevices));
         return payload;
     }

@@ -806,7 +806,8 @@
         .resource-browser-header {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-start;
+            gap: 10px;
             gap: 12px;
             padding: 16px 18px;
             border-bottom: 1px solid #e4e8f0;
@@ -1163,6 +1164,59 @@
             justify-content: center;
         }
 
+        #fileDetailsViewer .modal,
+        #fileDetailsViewer .modal * {
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .download-cache-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 4100;
+            display: grid;
+            place-items: center;
+            padding: calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+            background: rgba(20, 28, 48, 0.45);
+        }
+
+        .download-cache-overlay[hidden] {
+            display: none;
+        }
+
+        .download-cache-panel {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            width: min(96vw, 980px);
+            height: min(88dvh, 760px);
+            overflow: hidden;
+            border-radius: 12px;
+            background: #fff;
+            box-shadow: 0 22px 60px rgba(20, 28, 48, 0.28);
+        }
+
+        .download-cache-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #e2e7f1;
+        }
+
+        .download-cache-header h3 {
+            margin: 0;
+            color: #26324d;
+            font-size: 1rem;
+        }
+
+        .download-cache-panel iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            background: #f4f6fb;
+        }
+
         .file-details-modal {
             width: min(92vw, 480px);
             max-width: 480px;
@@ -1447,6 +1501,46 @@
             border-color: #667eea;
             color: #4f5ec2;
             box-shadow: 0 6px 16px rgba(54, 72, 135, 0.2);
+        }
+
+        .magnet-cache-topbar-btn {
+            margin-left: 2px;
+        }
+
+        .leave-tunnel-btn {
+            margin-left: auto;
+        }
+
+        .session-switch-item.is-current {
+            border-color: #5e72d8;
+            background: #eef2ff;
+            color: #3341a4;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.14);
+        }
+
+        .directory-sync-status {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border: 1px solid #dfe5f1;
+            border-radius: 6px;
+            background: #f7f9fd;
+            color: #52617e;
+            font-size: 0.82rem;
+            line-height: 1.45;
+        }
+
+        .exit-tunnel-danger {
+            width: 100%;
+            margin: 14px auto 0;
+            border: 0;
+            border-radius: 6px;
+            background: #d92d20;
+            color: #fff;
+            box-shadow: 0 6px 16px rgba(217, 45, 32, 0.22);
+        }
+
+        .exit-tunnel-danger:hover {
+            background: #b42318;
         }
 
         .mobile-force-refresh {
@@ -1768,7 +1862,7 @@
 
     <header class="tunnel-topbar" id="tunnelTopbar" hidden>
         <button class="tunnel-topbar-action mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源">↻</button>
-        <button class="tunnel-topbar-action" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
+        <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
 
@@ -1805,6 +1899,7 @@
                             <button class="session-tool" id="garbageCleanupBtn" title="扫描并清理未关联的本地文件缓存">清理垃圾</button>
                             <button class="session-tool" id="resourceBrowserBtn" title="查看会话文件资源及其引用位置">资源浏览器</button>
                         </div>
+                        <div class="directory-sync-status" id="directorySyncStatus" hidden></div>
                         <div class="clipboard-notice" id="clipboardNotice" style="display: none;">
                             <span id="clipboardNoticeText"></span>
                             <button class="session-tool" id="copySharedClipboardBtn" title="复制收到的剪贴板内容">复制</button>
@@ -1821,6 +1916,7 @@
                             <video id="cameraVideo" autoplay playsinline muted style="width: 100%; max-height: 240px; background: #111; object-fit: contain;"></video>
                         </div>
                         <div id="remoteAudio" aria-live="polite"></div>
+                        <button class="btn exit-tunnel-danger" id="exitTunnelBtn" type="button">退出隧道</button>
                     </div>
                     <aside id="resourceBrowserLayer" class="resource-browser-layer" aria-label="会话资源浏览器" hidden></aside>
                 </div>
@@ -1958,11 +2054,22 @@
             <div class="rich-viewer-content" id="richViewerContent"></div>
         </div>
     </div>
-    
+
+    <div class="download-cache-overlay" id="downloadCacheOverlay" hidden>
+        <div class="download-cache-panel" role="dialog" aria-modal="true" aria-label="磁链缓存列表">
+            <div class="download-cache-header">
+                <h3>磁链缓存列表</h3>
+                <button class="btn btn-secondary" id="closeDownloadCacheOverlayBtn" type="button">关闭</button>
+            </div>
+            <iframe id="downloadCacheFrame" title="磁链缓存列表"></iframe>
+        </div>
+    </div>
+
     <script>
         (function loadVersionedClientScripts() {
             const version = new URLSearchParams(window.location.search).get('_reload');
             const suffix = version ? `?v=${encodeURIComponent(version)}` : '';
+            document.write(`<script src="runtime-config.js${suffix}"><\/script>`);
             document.write(`<script src="client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script src="client/folder-archive.js${suffix}"><\/script>`);
             document.write(`<script src="client/media.js${suffix}"><\/script>`);

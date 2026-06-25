@@ -25,7 +25,6 @@ const CONFIG = {
     SOCKET_SERVER: buildSocketServerUrl(),
     
     // 备用服务器地址 (当自动检测失败时使用)
-    // 例如: 'http://10.8.0.16:3000'
     FALLBACK_SERVER: null,
     // 小文件大小阈值。Base64 和消息元数据也会占用 Socket.IO 的 1MB 上限。
     SMALL_FILE_THRESHOLD: 512 * 1024,
@@ -88,6 +87,7 @@ let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
 let adminTapCount = 0;
 let adminTapResetTimer = null;
+let lastAdminTapAt = 0;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const fileObjectUrls = new Map();
@@ -124,19 +124,6 @@ function getFileProgressKey(fileId, transport = '') {
 
 function progressElementId(progressKey) {
     return `progress-${String(progressKey).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-}
-
-function clearFileProgressForAsset(fileId) {
-    if (!fileId) return;
-    const prefix = `${fileId}::`;
-    const keys = new Set([
-        fileId,
-        ...Array.from(activeFileProgress).filter(key => key === fileId || String(key).startsWith(prefix)),
-        ...Array.from(completedFileProgress).filter(key => key === fileId || String(key).startsWith(prefix)),
-        ...Array.from(progressHideTimers.keys()).filter(key => key === fileId || String(key).startsWith(prefix))
-    ]);
-    keys.forEach(key => hideProgress(key));
-    fileTransferProgressStates.delete(fileId);
 }
 
 function getFileProgressStatus(transport = '') {
@@ -1889,12 +1876,10 @@ function initFileAssetTransfer() {
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onReceived: async (asset) => {
-            clearFileProgressForAsset(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
         },
         onUnavailable: (fileId, reason) => {
-            clearFileProgressForAsset(fileId);
             updateFileMessageAvailability(fileId, reason);
         }
     });
@@ -3022,8 +3007,7 @@ async function shareFileMagnet(messageId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: state.sessionId,
-                fileId: fileInfo.id,
-                deviceId: state.deviceId
+                fileId: fileInfo.id
             })
         });
         result = await response.json().catch(() => ({}));
@@ -3394,8 +3378,12 @@ async function clearFileCache(messageId) {
     const fileInfo = message?.fileInfo;
     if (!fileInfo?.id) return;
 
+    if (state.devices.size === 0) {
+        const ok = confirm('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
+        if (!ok) return;
+    }
+
     fileAssetTransfer?.cancel(fileInfo.id);
-    clearFileProgressForAsset(fileInfo.id);
     const storedFile = await getFromStore('files', fileInfo.id);
     const { data, ...metadata } = storedFile || {};
     await saveToStore('files', {
@@ -3485,7 +3473,6 @@ async function deleteHistoryMessageLocal(messageId) {
     if (message?.fileInfo?.id) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
-        clearFileProgressForAsset(fileId);
         const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
         if (stillReferenced) {
             const storedFile = await getFromStore('files', fileId);
@@ -3575,31 +3562,9 @@ async function clearGarbageFileCaches(files) {
 }
 
 async function showGarbageCleanupDialog() {
-    const dialog = document.createElement('div');
-    dialog.className = 'modal-overlay active';
-    dialog.innerHTML = `
-        <div class="modal">
-            <h3>清理垃圾缓存</h3>
-            <p>正在扫描本机会话缓存...</p>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(dialog);
-    dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
-
-    await new Promise(resolve => requestAnimationFrame(resolve));
     const files = await findGarbageFileCaches();
     if (!files.length) {
-        dialog.querySelector('.modal').innerHTML = `
-            <h3>清理垃圾缓存</h3>
-            <p>没有发现可清理的游离文件缓存或中断传输缓存。</p>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
-            </div>
-        `;
-        dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
+        alert('没有发现可清理的游离文件缓存或中断传输缓存。');
         return;
     }
     const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
@@ -3607,6 +3572,8 @@ async function showGarbageCleanupDialog() {
         .map(file => `<li>${escapeHtml(file.name || file.id)} (${formatFileSize(Number(file.size) || 0)})</li>`)
         .join('');
     const remaining = files.length > 20 ? `<p>另有 ${files.length - 20} 项未展开。</p>` : '';
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
     dialog.innerHTML = `
         <div class="modal">
             <h3>清理垃圾缓存</h3>
@@ -4979,27 +4946,25 @@ function updateDeviceList() {
             </div>
         `;
         makeDeviceNameInteractive(el.querySelector('.name'), device);
-        if (device.name !== '磁链下载器') {
-            const intercomButton = document.createElement('button');
-            intercomButton.className = 'toolbar-btn';
-            intercomButton.type = 'button';
-            intercomButton.title = `与 ${device.name} 对讲`;
-            intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
-            intercomButton.addEventListener('click', async () => {
-                try {
-                    if (device.id === directIntercomTargetId) {
-                        mediaController.stopIntercom();
-                    } else {
-                        if (mediaController.intercom) mediaController.stopIntercom();
-                        await mediaController.startIntercom([device.id]);
-                    }
-                } catch (err) {
-                    alert(`无法启动对讲机: ${err.message}`);
-                    historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
+        const intercomButton = document.createElement('button');
+        intercomButton.className = 'toolbar-btn';
+        intercomButton.type = 'button';
+        intercomButton.title = `与 ${device.name} 对讲`;
+        intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
+        intercomButton.addEventListener('click', async () => {
+            try {
+                if (device.id === directIntercomTargetId) {
+                    mediaController.stopIntercom();
+                } else {
+                    if (mediaController.intercom) mediaController.stopIntercom();
+                    await mediaController.startIntercom([device.id]);
                 }
-            });
-            el.appendChild(intercomButton);
-        }
+            } catch (err) {
+                alert(`无法启动对讲机: ${err.message}`);
+                historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
+            }
+        });
+        el.appendChild(intercomButton);
         container.appendChild(el);
     });
 }
@@ -5033,8 +4998,8 @@ async function showJoinedSessionSwitcher() {
         ? sessions.map(session => {
             const id = escapeHtml(session.sessionId);
             const time = new Date(session.lastActive || session.createdAt || Date.now()).toLocaleString('zh-CN');
-            const active = session.sessionId === state.sessionId ? '（当前）' : '';
-            return `<button class="session-tool session-switch-item" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;">${id} ${active}<br><small>${time}</small></button>`;
+            const currentClass = session.sessionId === state.sessionId ? ' is-current' : '';
+            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;">${id}<br><small>${time}</small></button>`;
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
@@ -5051,8 +5016,12 @@ async function showJoinedSessionSwitcher() {
     dialog.querySelectorAll('[data-session-id]').forEach(button => {
         button.addEventListener('click', () => {
             const sessionId = button.dataset.sessionId;
-            if (sessionId && sessionId !== state.sessionId) window.location.href = `/#${sessionId}`;
-            else dialog.remove();
+            if (sessionId && sessionId !== state.sessionId) {
+                window.location.href = `${window.location.origin}/#${sessionId}`;
+                setTimeout(() => window.location.reload(), 80);
+            } else {
+                dialog.remove();
+            }
         });
     });
 }
@@ -5130,24 +5099,68 @@ async function forceMobileRefresh() {
     window.location.replace(target.href);
 }
 
+function openDownloadCacheOverlay() {
+    const overlay = document.getElementById('downloadCacheOverlay');
+    const frame = document.getElementById('downloadCacheFrame');
+    if (!overlay || !frame) {
+        window.open('/downloadList', '_blank', 'noopener');
+        return;
+    }
+    frame.src = `/downloadList?embedded=1&_=${Date.now().toString(36)}`;
+    overlay.hidden = false;
+}
+
+function closeDownloadCacheOverlay() {
+    const overlay = document.getElementById('downloadCacheOverlay');
+    const frame = document.getElementById('downloadCacheFrame');
+    if (overlay) overlay.hidden = true;
+    if (frame) frame.src = 'about:blank';
+}
+
+async function exitTunnelAndClearCache() {
+    const ok = confirm('退出当前隧道，将清理这个隧道的所有缓存数据。\n如需再进此隧道，将重新拉取全部远程文件。\n确定退出吗？');
+    if (!ok) return;
+    try {
+        state.socket?.disconnect();
+        await purgeLocalSession(state.sessionId);
+        window.location.href = `${window.location.origin}${window.location.pathname}`;
+    } catch (err) {
+        historyLog('exit-tunnel-clear-failed', { error: err.message });
+        alert(`退出隧道失败：${err.message}`);
+    }
+}
+
+function handleTopbarAdminTap(event) {
+    if (event.target.closest('button')) return;
+    const now = Date.now();
+    adminTapCount = lastAdminTapAt && now - lastAdminTapAt <= 520 ? adminTapCount + 1 : 1;
+    lastAdminTapAt = now;
+    clearTimeout(adminTapResetTimer);
+    adminTapResetTimer = setTimeout(() => {
+        adminTapCount = 0;
+        lastAdminTapAt = 0;
+    }, 700);
+    if (adminTapCount >= 7) {
+        adminTapCount = 0;
+        lastAdminTapAt = 0;
+        window.open('/admin', '_blank', 'noopener');
+    }
+}
+
 function initUI() {
     initMobileWorkspace();
     initProgressDrawer();
     initRemoteAudioUnlock();
-    document.getElementById('tunnelTopbar').addEventListener('click', event => {
-        if (event.target.closest('button')) return;
-        adminTapCount += 1;
-        clearTimeout(adminTapResetTimer);
-        adminTapResetTimer = setTimeout(() => { adminTapCount = 0; }, 1800);
-        if (adminTapCount >= 7) {
-            adminTapCount = 0;
-            window.open('/admin', '_blank', 'noopener');
-        }
-    });
+    document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
-    document.getElementById('magnetCacheBtn').addEventListener('click', () => {
-        window.open('/downloadList', '_blank', 'noopener');
+    document.getElementById('magnetCacheBtn').addEventListener('click', openDownloadCacheOverlay);
+    document.getElementById('closeDownloadCacheOverlayBtn')?.addEventListener('click', closeDownloadCacheOverlay);
+    document.getElementById('downloadCacheOverlay')?.addEventListener('click', event => {
+        if (event.target.id === 'downloadCacheOverlay') closeDownloadCacheOverlay();
+    });
+    document.getElementById('exitTunnelBtn')?.addEventListener('click', () => {
+        exitTunnelAndClearCache().catch(err => historyLog('exit-tunnel-failed', { error: err.message }));
     });
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
     document.getElementById('shortCodeInput').addEventListener('keydown', event => {

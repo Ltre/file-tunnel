@@ -8,15 +8,18 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 
 const app = express();
+const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
+const projectConfig = loadProjectConfig();
 
 // ==================== 安全配置 ====================
 
-const WEB_PORT = 80; // 暂时不用3000测了
+const WEB_PORT = Number(projectConfig.serverPort || 80);
 const webServer = http.createServer(app);
 
 function splitEnvList(value) {
@@ -53,17 +56,29 @@ const MAX_EDITOR_ASSETS_PER_SESSION = 100;
 const MAX_EDITOR_ASSET_RELAY_CHUNK_SIZE = 64 * 1024;
 const MAX_HISTORY_MESSAGES = 100;
 const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
-const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== 'false';
+const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== undefined
+    ? process.env.HISTORY_DEBUG !== 'false'
+    : projectConfig.debugLogsEnabled === true;
 const MAX_DEBUG_LOGS = 5000;
 const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
+
+function loadProjectConfig() {
+    try {
+        const raw = fs.readFileSync(PROJECT_CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
 
 // ==================== Express 中间件 ====================
 
 // 基础安全头
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
@@ -72,6 +87,12 @@ app.use((req, res, next) => {
 // 速率限制
 app.use(rateLimit(RATE_LIMIT));
 app.use(express.json({ limit: '64kb' }));
+
+app.get('/runtime-config.js', (req, res) => {
+    res.type('application/javascript').send(
+        `window.TUNNEL_CONFIG=${JSON.stringify({ HISTORY_DEBUG })};`
+    );
+});
 
 // 静态文件服务 (限制目录遍历)
 app.use(express.static(path.join(__dirname), {
@@ -1306,6 +1327,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('debug-log', (data) => {
+        if (!HISTORY_DEBUG) return;
         if (!data || typeof data !== 'object') return;
 
         const { event, details, sessionId, deviceId, clientTimestamp } = data;

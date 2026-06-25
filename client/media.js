@@ -61,7 +61,7 @@
 
         async getMedia(constraints) {
             if (!global.isSecureContext) {
-                throw new Error('摄像头和麦克风只能通过 HTTPS 使用；请改用 HTTPS 域名，或仅在本机使用 http://localhost:3000');
+                throw new Error('摄像头和麦克风只能通过 HTTPS 使用；请改用 HTTPS 域名，或仅在本机使用 http://localhost');
             }
             if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器不支持媒体采集');
             try {
