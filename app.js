@@ -3562,9 +3562,31 @@ async function clearGarbageFileCaches(files) {
 }
 
 async function showGarbageCleanupDialog() {
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    dialog.innerHTML = `
+        <div class="modal">
+            <h3>清理垃圾缓存</h3>
+            <p>正在扫描本机会话缓存...</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
     const files = await findGarbageFileCaches();
     if (!files.length) {
-        alert('没有发现可清理的游离文件缓存或中断传输缓存。');
+        dialog.querySelector('.modal').innerHTML = `
+            <h3>清理垃圾缓存</h3>
+            <p>没有发现可清理的游离文件缓存或中断传输缓存。</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
+            </div>
+        `;
+        dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
         return;
     }
     const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
@@ -3572,8 +3594,6 @@ async function showGarbageCleanupDialog() {
         .map(file => `<li>${escapeHtml(file.name || file.id)} (${formatFileSize(Number(file.size) || 0)})</li>`)
         .join('');
     const remaining = files.length > 20 ? `<p>另有 ${files.length - 20} 项未展开。</p>` : '';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal-overlay active';
     dialog.innerHTML = `
         <div class="modal">
             <h3>清理垃圾缓存</h3>
@@ -4991,7 +5011,12 @@ function setMobileWorkspaceView(view, options = {}) {
 async function showJoinedSessionSwitcher() {
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
-        .sort((a, b) => (b.lastActive || b.createdAt || 0) - (a.lastActive || a.createdAt || 0));
+        .sort((a, b) => {
+            const leftJoinedAt = Number(a.createdAt || a.firstJoinedAt || a.lastJoinedAt || 0);
+            const rightJoinedAt = Number(b.createdAt || b.firstJoinedAt || b.lastJoinedAt || 0);
+            if (leftJoinedAt && rightJoinedAt && leftJoinedAt !== rightJoinedAt) return leftJoinedAt - rightJoinedAt;
+            return String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true });
+        });
     const dialog = document.createElement('div');
     dialog.className = 'modal-overlay active';
     const list = sessions.length
@@ -5123,7 +5148,7 @@ async function exitTunnelAndClearCache() {
     try {
         state.socket?.disconnect();
         await purgeLocalSession(state.sessionId);
-        window.location.href = `${window.location.origin}${window.location.pathname}`;
+        window.location.href = `${window.location.origin}${window.location.pathname}?leave=1`;
     } catch (err) {
         historyLog('exit-tunnel-clear-failed', { error: err.message });
         alert(`退出隧道失败：${err.message}`);
