@@ -258,13 +258,18 @@ function flushClientDebugLogs() {
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
-    await initStorage();
-    registerServiceWorker();
-    if (!await initSession()) {
-        initSessionLanding();
-        return;
+    try {
+        await initStorage();
+        registerServiceWorker();
+        if (!await initSession()) {
+            initSessionLanding();
+            return;
+        }
+        await startTunnelApplication();
+    } catch (err) {
+        console.error('Application startup failed:', err);
+        showStartupFailure(err);
     }
-    await startTunnelApplication();
 });
 
 async function startTunnelApplication() {
@@ -286,6 +291,51 @@ function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
     navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).catch(err => {
         console.warn('Service worker registration failed:', err);
+    });
+}
+
+function showStartupFailure(err) {
+    const message = err?.message || '未知错误';
+    const shell = document.getElementById('appShell');
+    const landing = document.getElementById('sessionLanding');
+    if (shell) shell.hidden = true;
+    if (landing) landing.hidden = true;
+    const panel = document.createElement('div');
+    panel.style.cssText = [
+        'position:fixed',
+        'inset:0',
+        'z-index:9999',
+        'display:grid',
+        'place-items:center',
+        'padding:22px',
+        'background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)',
+        'color:#26324d'
+    ].join(';');
+    panel.innerHTML = `
+        <div style="width:min(92vw,420px);border-radius:12px;background:#fff;padding:22px;box-shadow:0 18px 48px rgba(25,32,56,.24);text-align:center;">
+            <h2 style="margin:0 0 10px;font-size:1.2rem;">页面启动失败</h2>
+            <p style="margin:0 0 16px;color:#62708a;line-height:1.6;">可能是浏览器缓存了旧资源。请先强制刷新应用资源。</p>
+            <pre style="max-height:120px;overflow:auto;margin:0 0 16px;padding:10px;border-radius:6px;background:#f4f6fb;color:#a13f3f;text-align:left;white-space:pre-wrap;">${escapeHtml(message)}</pre>
+            <button id="startupForceRefreshBtn" style="min-height:40px;border:0;border-radius:6px;background:#667eea;color:#fff;padding:0 16px;font-weight:700;">强制刷新</button>
+        </div>
+    `;
+    document.body.appendChild(panel);
+    document.getElementById('startupForceRefreshBtn')?.addEventListener('click', async () => {
+        try {
+            if ('serviceWorker' in navigator) {
+                const registration = await navigator.serviceWorker.getRegistration();
+                await registration?.unregister();
+            }
+            if ('caches' in window) {
+                const names = await caches.keys();
+                await Promise.all(names.filter(name => name.startsWith('instant-tunnel-')).map(name => caches.delete(name)));
+            }
+        } catch (refreshErr) {
+            console.warn('Startup force refresh cleanup failed:', refreshErr);
+        }
+        const target = new URL(window.location.href);
+        target.searchParams.set('_reload', Date.now().toString(36));
+        window.location.replace(target.href);
     });
 }
 
@@ -5046,6 +5096,59 @@ async function showJoinedSessionSwitcher() {
     });
 }
 
+async function renderShortCodeSwitchMenu() {
+    const menu = document.getElementById('shortCodeSwitchMenu');
+    if (!menu) return;
+    const sessions = (await getAllFromStore('sessions').catch(() => []))
+        .filter(session => session?.sessionId)
+        .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true }));
+
+    if (!sessions.length) {
+        menu.innerHTML = '<div class="short-code-switch-item">暂无可切换隧道</div>';
+        return;
+    }
+
+    menu.replaceChildren(...sessions.map(session => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `short-code-switch-item${session.sessionId === state.sessionId ? ' is-current' : ''}`;
+        button.dataset.sessionId = session.sessionId;
+        const code = normalizeLocalShortCode(session.shortCode) || '-----';
+        button.innerHTML = `<strong>${escapeHtml(code)}</strong><small>${escapeHtml(session.sessionId)}</small>`;
+        button.addEventListener('click', () => {
+            if (session.sessionId === state.sessionId) {
+                closeShortCodeSwitchMenu();
+                return;
+            }
+            window.location.href = `${window.location.origin}/#${session.sessionId}`;
+            setTimeout(() => window.location.reload(), 80);
+        });
+        return button;
+    }));
+}
+
+function closeShortCodeSwitchMenu() {
+    const button = document.getElementById('shortCodeSwitchBtn');
+    const menu = document.getElementById('shortCodeSwitchMenu');
+    if (button) button.setAttribute('aria-expanded', 'false');
+    if (menu) menu.hidden = true;
+}
+
+async function toggleShortCodeSwitchMenu(event) {
+    event?.stopPropagation();
+    const button = document.getElementById('shortCodeSwitchBtn');
+    const menu = document.getElementById('shortCodeSwitchMenu');
+    if (!button || !menu) return;
+    const willOpen = menu.hidden;
+    if (!willOpen) {
+        closeShortCodeSwitchMenu();
+        return;
+    }
+    await renderShortCodeSwitchMenu();
+    menu.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+}
+
 function initMobileWorkspace() {
     const viewButtons = Array.from(document.querySelectorAll('.mobile-workspace-button[data-mobile-view]'));
     viewButtons.forEach(button => {
@@ -5181,6 +5284,15 @@ function initUI() {
     });
     document.getElementById('exitTunnelBtn')?.addEventListener('click', () => {
         exitTunnelAndClearCache().catch(err => historyLog('exit-tunnel-failed', { error: err.message }));
+    });
+    document.getElementById('shortCodeSwitchBtn')?.addEventListener('click', event => {
+        toggleShortCodeSwitchMenu(event).catch(err => historyLog('short-code-switch-open-failed', { error: err.message }));
+    });
+    document.addEventListener('click', event => {
+        if (!event.target.closest?.('.short-code-switch')) closeShortCodeSwitchMenu();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeShortCodeSwitchMenu();
     });
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
     document.getElementById('shortCodeInput').addEventListener('keydown', event => {

@@ -103,6 +103,90 @@
             font-size: 0.85rem;
             color: #666;
         }
+
+        .short-code-switch {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+
+        .short-code-switch-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            min-height: 30px;
+            margin-left: 4px;
+            padding: 4px 8px;
+            border: 1px solid #d7dce8;
+            border-radius: 6px;
+            background: #fff;
+            color: #31405f;
+            cursor: pointer;
+            font: inherit;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .short-code-switch-button:hover,
+        .short-code-switch-button[aria-expanded="true"] {
+            border-color: #667eea;
+            color: #4f5ec2;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.14);
+        }
+
+        .short-code-switch-menu {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 50%;
+            z-index: 45;
+            width: min(300px, 88vw);
+            max-height: 260px;
+            overflow: auto;
+            padding: 6px;
+            border: 1px solid #dfe5f1;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 14px 32px rgba(31, 45, 77, 0.18);
+            transform: translateX(-50%);
+        }
+
+        .short-code-switch-menu[hidden] {
+            display: none;
+        }
+
+        .short-code-switch-item {
+            display: grid;
+            width: 100%;
+            gap: 2px;
+            padding: 8px 10px;
+            border: 0;
+            border-radius: 6px;
+            background: transparent;
+            color: #35415c;
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .short-code-switch-item:hover,
+        .short-code-switch-item.is-current {
+            background: #eef2ff;
+            color: #3341a4;
+        }
+
+        .short-code-switch-item strong {
+            font-size: 0.95rem;
+            letter-spacing: 1px;
+        }
+
+        .short-code-switch-item small {
+            overflow: hidden;
+            color: #68758f;
+            font-size: 0.72rem;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         
         .device-list {
             margin-top: 15px;
@@ -1887,7 +1971,14 @@
                             <div>设备ID: <span id="deviceId">-</span></div>
                             <div>在线设备: <span id="onlineCount">1</span> 台</div>
                         </div>
-                        <div style="margin-top: 10px; font-size: 0.9rem;">本隧道暗号: <strong id="shortCode">-</strong></div>
+                        <div class="short-code-switch">
+                            <span>本隧道暗号:</span>
+                            <button class="short-code-switch-button" id="shortCodeSwitchBtn" type="button" aria-expanded="false" aria-controls="shortCodeSwitchMenu">
+                                <span id="shortCode">-</span>
+                                <span aria-hidden="true">▾</span>
+                            </button>
+                            <div class="short-code-switch-menu" id="shortCodeSwitchMenu" hidden></div>
+                        </div>
                         <div class="short-code-join">
                             <input id="shortCodeInput" inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="5" placeholder="输入 5 位隧道暗号">
                             <button class="session-tool" id="joinShortCodeBtn" title="通过短码加入会话">进入别的隧道</button>

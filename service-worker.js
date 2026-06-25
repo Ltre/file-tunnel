@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v12';
+const CACHE_NAME = 'instant-tunnel-v14';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -55,8 +55,10 @@ self.addEventListener('fetch', event => {
         return;
     }
 
+    const shouldReload = APP_SHELL.includes(url.pathname) || url.pathname === '/service-worker.js';
+    const request = shouldReload ? new Request(event.request, { cache: 'reload' }) : event.request;
     event.respondWith(
-        fetch(event.request)
+        fetch(request)
             .then(response => {
                 const copy = response.clone();
                 caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
