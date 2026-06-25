@@ -88,6 +88,10 @@ app.get('/downloader', (req, res) => {
     res.sendFile(path.join(__dirname, 'downloader.html'));
 });
 
+app.get('/downloadList', (req, res) => {
+    res.sendFile(path.join(__dirname, 'downloadList.html'));
+});
+
 app.get('/wasted', (req, res) => {
     const sessionId = sanitizeString(req.query.sessionId || '', 80);
     res.type('html').send(`<!doctype html>
@@ -226,6 +230,29 @@ app.get('/api/sessions', (req, res) => {
     }
 });
 
+app.get('/api/devices', (req, res) => {
+    try {
+        const now = Date.now();
+        const devices = Array.from(accessDevices.values())
+            .map(device => ({
+                ...device,
+                active: device.online === true && now - (device.lastAccess || 0) < 5 * 60 * 1000
+            }))
+            .sort((a, b) => Number(b.online) - Number(a.online) || (b.lastAccess || 0) - (a.lastAccess || 0));
+
+        res.json({
+            generatedAt: new Date().toISOString(),
+            totalDevices: devices.length,
+            onlineDevices: devices.filter(device => device.online).length,
+            activeDevices: devices.filter(device => device.active).length,
+            devices
+        });
+    } catch (err) {
+        console.error('devices API error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 app.delete('/api/sessions/:sessionId', (req, res) => {
     try {
         const sessionId = req.params.sessionId;
@@ -337,9 +364,12 @@ const debugLogs = [];
 const editorAssetRelays = new Map();
 const shortCodes = new Map();
 const magnets = new Map();
+const accessDevices = new Map();
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const MAX_MAGNETS = 1000;
 const MAGNET_TTL = 24 * 60 * 60 * 1000;
+const MAX_ACCESS_DEVICES = 2000;
+const ACCESS_DEVICE_TTL = 7 * 24 * 60 * 60 * 1000;
 
 // ==================== 验证函数 ====================
 
@@ -500,6 +530,47 @@ function getMagnetPayload(magnetId) {
         createdAt: magnet.createdAt,
         seedDevices
     };
+}
+
+function touchAccessDevice(key, patch = {}) {
+    if (!key) return null;
+    const now = Date.now();
+    const previous = accessDevices.get(key) || {};
+    const record = {
+        ...previous,
+        ...patch,
+        key,
+        firstSeen: previous.firstSeen || patch.firstSeen || now,
+        lastAccess: patch.lastAccess || now
+    };
+    accessDevices.set(key, record);
+    pruneAccessDevices();
+    return record;
+}
+
+function markAccessDeviceOffline(key, patch = {}) {
+    if (!key) return;
+    touchAccessDevice(key, {
+        ...patch,
+        online: false,
+        active: false,
+        disconnectedAt: Date.now()
+    });
+}
+
+function pruneAccessDevices() {
+    const now = Date.now();
+    for (const [key, device] of accessDevices) {
+        if (!device.online && now - (device.lastAccess || device.firstSeen || 0) > ACCESS_DEVICE_TTL) {
+            accessDevices.delete(key);
+        }
+    }
+
+    if (accessDevices.size <= MAX_ACCESS_DEVICES) return;
+    Array.from(accessDevices.entries())
+        .sort((a, b) => (a[1].lastAccess || 0) - (b[1].lastAccess || 0))
+        .slice(0, accessDevices.size - MAX_ACCESS_DEVICES)
+        .forEach(([key]) => accessDevices.delete(key));
 }
 
 function isValidDeviceId(id) {
@@ -669,6 +740,7 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
 
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
+    const socketAccessKey = `socket:${socket.id}`;
     
     console.log(`Client connected: ${socket.id} from ${clientIp}`);
     recordDebugLog({
@@ -677,6 +749,19 @@ io.on('connection', (socket) => {
         socketId: socket.id,
         clientIp,
         details: { transport: socket.conn.transport.name }
+    });
+    touchAccessDevice(socketAccessKey, {
+        deviceId: '',
+        sessionId: '',
+        deviceName: '未加入隧道',
+        deviceModel: '',
+        localIp: '',
+        externalIp: clientIp,
+        ip: clientIp,
+        socketId: socket.id,
+        userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
+        online: true,
+        active: true
     });
     
     // IP连接数限制
@@ -787,6 +872,20 @@ io.on('connection', (socket) => {
                 externalIp: clientIp,
                 editorContent: existingDevice ? existingDevice.editorContent : '',
                 editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
+            });
+            accessDevices.delete(socketAccessKey);
+            touchAccessDevice(deviceId, {
+                deviceId,
+                sessionId,
+                deviceName: sanitizeString(deviceName),
+                deviceModel: session.devices.get(deviceId)?.deviceModel || '',
+                localIp: session.devices.get(deviceId)?.localIp || '',
+                externalIp: clientIp,
+                ip: clientIp,
+                socketId: socket.id,
+                userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
+                online: true,
+                active: true
             });
 
             historyLog('join-ready', {
@@ -1129,6 +1228,19 @@ io.on('connection', (socket) => {
             device.deviceModel = sanitizeString(data.deviceModel || device.deviceModel || '', 80);
             device.localIp = sanitizeString(data.localIp || device.localIp || '', 80);
             device.externalIp = clientIp;
+            touchAccessDevice(currentDevice, {
+                deviceId: currentDevice,
+                sessionId: currentSession,
+                deviceName: device.deviceName || '',
+                deviceModel: device.deviceModel,
+                localIp: device.localIp,
+                externalIp: device.externalIp,
+                ip: clientIp,
+                socketId: socket.id,
+                userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
+                online: true,
+                active: true
+            });
             socket.emit('device-profile', {
                 deviceId: currentDevice,
                 deviceModel: device.deviceModel,
@@ -1610,6 +1722,16 @@ io.on('connection', (socket) => {
 
                 // A reloaded page may already have replaced this socket.
                 if (device && device.socketId === socket.id) {
+                    markAccessDeviceOffline(currentDevice, {
+                        deviceId: currentDevice,
+                        sessionId: currentSession,
+                        deviceName: device.deviceName || '',
+                        deviceModel: device.deviceModel || '',
+                        localIp: device.localIp || '',
+                        externalIp: clientIp,
+                        ip: clientIp,
+                        socketId: socket.id
+                    });
                     session.devices.delete(currentDevice);
 
                     if (session.editorAssets) {
@@ -1657,6 +1779,12 @@ io.on('connection', (socket) => {
             if (deviceSockets.get(currentDevice) === socket) {
                 deviceSockets.delete(currentDevice);
             }
+        } else {
+            markAccessDeviceOffline(socketAccessKey, {
+                ip: clientIp,
+                externalIp: clientIp,
+                socketId: socket.id
+            });
         }
     });
     
@@ -1672,6 +1800,7 @@ function cleanupExpiredSessions() {
     const now = Date.now();
     let cleaned = 0;
     cleanupExpiredMagnets();
+    pruneAccessDevices();
     
     for (const [sessionId, session] of sessions) {
         // Keep an empty session long enough for reconnecting devices to recover history.

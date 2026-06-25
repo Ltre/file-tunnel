@@ -61,6 +61,24 @@
             font-weight: 700;
         }
         button:disabled { cursor: not-allowed; opacity: 0.55; }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .link-button {
+            min-height: 42px;
+            padding: 0 18px;
+            border-radius: 8px;
+            background: #edf1f7;
+            color: #36445f;
+            cursor: pointer;
+            font-weight: 700;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
@@ -69,7 +87,10 @@
     <div class="meta" id="meta">正在读取磁链...</div>
     <div class="progress"><div class="bar" id="bar"></div></div>
     <div class="status" id="status">等待开始</div>
-    <button id="downloadBtn" disabled>下载文件</button>
+    <div class="actions">
+        <button id="downloadBtn" disabled>下载文件</button>
+        <a class="link-button" href="/downloadList">缓存列表</a>
+    </div>
 </main>
 
 <script src="/socket.io/socket.io.js"></script>
@@ -80,7 +101,9 @@
     const status = document.getElementById('status');
     const bar = document.getElementById('bar');
     const downloadBtn = document.getElementById('downloadBtn');
-    const store = new Map();
+    const DB_NAME = 'TunnelDownloaderDB';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'magnetFiles';
     let magnet = null;
     let socket = null;
     let transfer = null;
@@ -112,6 +135,82 @@
             localStorage.setItem(key, id);
         }
         return id;
+    }
+
+    function dataSize(data) {
+        if (!data) return 0;
+        if (data instanceof ArrayBuffer) return data.byteLength;
+        if (ArrayBuffer.isView(data)) return data.byteLength;
+        if (data instanceof Blob) return data.size;
+        return 0;
+    }
+
+    function hasCompleteCache(file, asset) {
+        const size = dataSize(file?.data);
+        const expectedSize = Number(asset?.size ?? file?.size);
+        return size > 0 && (!Number.isFinite(expectedSize) || expectedSize <= 0 || size === expectedSize);
+    }
+
+    function openDb() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onupgradeneeded = event => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    store.createIndex('updatedAt', 'updatedAt');
+                    store.createIndex('magnetId', 'magnetId');
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('无法打开下载缓存'));
+        });
+    }
+
+    function requestToPromise(request) {
+        return new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('IndexedDB 请求失败'));
+        });
+    }
+
+    async function withFileStore(mode, callback) {
+        const db = await openDb();
+        try {
+            return await new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], mode);
+                const store = transaction.objectStore(STORE_NAME);
+                let result;
+                transaction.oncomplete = () => resolve(result);
+                transaction.onerror = () => reject(transaction.error || new Error('缓存操作失败'));
+                transaction.onabort = () => reject(transaction.error || new Error('缓存操作中断'));
+                try {
+                    Promise.resolve(callback(store)).then(value => {
+                        result = value;
+                    }, reject);
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function loadCachedFile(fileId) {
+        return withFileStore('readonly', store => requestToPromise(store.get(fileId)));
+    }
+
+    async function storeCachedFile(file) {
+        const record = {
+            ...file,
+            magnetId: magnet?.id || '',
+            magnetUrl: location.href,
+            sourceSessionId: magnet?.sessionId || file.sessionId || '',
+            updatedAt: Date.now(),
+            cachedBy: deviceId()
+        };
+        await withFileStore('readwrite', store => requestToPromise(store.put(record)));
     }
 
     async function loadMagnet() {
@@ -148,8 +247,8 @@
             getPeer: () => null,
             connectPeer: async () => { throw new Error('Downloader uses relay first'); },
             waitForDataChannel: async () => false,
-            load: async fileId => store.get(fileId),
-            store: async file => { store.set(file.id, file); },
+            load: loadCachedFile,
+            store: storeCachedFile,
             log: () => {},
             onProgress: (fileId, fileName, progress, transport) => {
                 bar.style.width = `${Math.max(0, Math.min(100, progress))}%`;
@@ -157,6 +256,7 @@
                 setStatus(`正在获取文件 ${progress}% · ${route}`);
             },
             onReceived: async file => {
+                await storeCachedFile(file);
                 bar.style.width = '100%';
                 setStatus('已缓存到本机');
                 downloadBtn.disabled = false;
@@ -170,6 +270,7 @@
                     a.click();
                     a.remove();
                     setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');
                 };
             },
             onUnavailable: (fileId, reason) => {
@@ -188,6 +289,27 @@
     async function start() {
         magnet = await loadMagnet();
         renderMeta();
+
+        const cached = await loadCachedFile(magnet.asset.id);
+        if (hasCompleteCache(cached, magnet.asset)) {
+            bar.style.width = '100%';
+            setStatus('已命中本地缓存，可直接下载');
+            downloadBtn.disabled = false;
+            downloadBtn.onclick = () => {
+                const blob = new Blob([cached.data], { type: cached.type || 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = cached.name || magnet.asset.name || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');
+            };
+            return;
+        }
+
         socket = io(location.origin);
         initTransfer();
 

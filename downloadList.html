@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>磁链缓存列表</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #f4f6fb;
+            color: #24304a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        main {
+            width: min(94vw, 900px);
+            margin: 0 auto;
+            padding: 28px 0 42px;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        h1 { margin: 0; font-size: 1.35rem; }
+        a, button {
+            min-height: 38px;
+            padding: 0 14px;
+            border: 0;
+            border-radius: 8px;
+            background: #667eea;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 700;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }
+        button.secondary, a.secondary {
+            background: #edf1f7;
+            color: #36445f;
+        }
+        .list {
+            display: grid;
+            gap: 12px;
+        }
+        .item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+            padding: 16px;
+            border: 1px solid #dfe5f1;
+            border-radius: 10px;
+            background: #fff;
+            box-shadow: 0 10px 28px rgba(31, 45, 77, 0.08);
+        }
+        .name {
+            font-weight: 800;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+        .meta {
+            color: #61708d;
+            font-size: 0.9rem;
+            line-height: 1.7;
+            word-break: break-all;
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .empty {
+            padding: 42px 20px;
+            border: 1px dashed #cad3e2;
+            border-radius: 10px;
+            background: #fff;
+            text-align: center;
+            color: #61708d;
+        }
+        @media (max-width: 640px) {
+            header, .item {
+                grid-template-columns: 1fr;
+                display: grid;
+            }
+            .actions { justify-content: flex-start; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>磁链缓存列表</h1>
+        <a class="secondary" href="/downloader">返回下载页</a>
+    </header>
+    <div id="list" class="list">
+        <div class="empty">正在读取缓存...</div>
+    </div>
+</main>
+
+<script>
+(() => {
+    const DB_NAME = 'TunnelDownloaderDB';
+    const DB_VERSION = 1;
+    const STORE_NAME = 'magnetFiles';
+    const list = document.getElementById('list');
+
+    function formatSize(bytes) {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        return `${(bytes / Math.pow(1024, index)).toFixed(index ? 2 : 0)} ${units[index]}`;
+    }
+
+    function dataSize(data) {
+        if (!data) return 0;
+        if (data instanceof ArrayBuffer) return data.byteLength;
+        if (ArrayBuffer.isView(data)) return data.byteLength;
+        if (data instanceof Blob) return data.size;
+        return 0;
+    }
+
+    function openDb() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onupgradeneeded = event => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    store.createIndex('updatedAt', 'updatedAt');
+                    store.createIndex('magnetId', 'magnetId');
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('无法打开缓存数据库'));
+        });
+    }
+
+    function requestToPromise(request) {
+        return new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('IndexedDB 请求失败'));
+        });
+    }
+
+    async function withStore(mode, callback) {
+        const db = await openDb();
+        try {
+            return await new Promise((resolve, reject) => {
+                const transaction = db.transaction([STORE_NAME], mode);
+                const store = transaction.objectStore(STORE_NAME);
+                let result;
+                transaction.oncomplete = () => resolve(result);
+                transaction.onerror = () => reject(transaction.error || new Error('缓存操作失败'));
+                transaction.onabort = () => reject(transaction.error || new Error('缓存操作中断'));
+                try {
+                    Promise.resolve(callback(store)).then(value => {
+                        result = value;
+                    }, reject);
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        } finally {
+            db.close();
+        }
+    }
+
+    async function getAllFiles() {
+        return withStore('readonly', store => requestToPromise(store.getAll()));
+    }
+
+    async function deleteFile(id) {
+        await withStore('readwrite', store => requestToPromise(store.delete(id)));
+    }
+
+    function triggerDownload(file) {
+        const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function render() {
+        const files = (await getAllFiles())
+            .filter(file => dataSize(file.data) > 0)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+        if (!files.length) {
+            list.innerHTML = '<div class="empty">暂无磁链文件缓存</div>';
+            return;
+        }
+
+        list.replaceChildren(...files.map(file => {
+            const item = document.createElement('div');
+            item.className = 'item';
+
+            const info = document.createElement('div');
+            const name = document.createElement('div');
+            name.className = 'name';
+            name.textContent = file.name || file.id;
+            const meta = document.createElement('div');
+            meta.className = 'meta';
+            meta.textContent = `大小：${formatSize(file.size || dataSize(file.data))} · 类型：${file.type || 'application/octet-stream'} · 缓存时间：${new Date(file.updatedAt || Date.now()).toLocaleString('zh-CN')}`;
+            const source = document.createElement('div');
+            source.className = 'meta';
+            source.textContent = `磁链：${file.magnetId || '-'} · 隧道：${file.sourceSessionId || '-'}`;
+            info.append(name, meta, source);
+
+            const actions = document.createElement('div');
+            actions.className = 'actions';
+            const download = document.createElement('button');
+            download.textContent = '下载';
+            download.onclick = () => triggerDownload(file);
+            const remove = document.createElement('button');
+            remove.className = 'secondary';
+            remove.textContent = '删除缓存';
+            remove.onclick = async () => {
+                if (!confirm(`删除本机缓存：${file.name || file.id}？`)) return;
+                await deleteFile(file.id);
+                await render();
+            };
+            actions.append(download, remove);
+
+            item.append(info, actions);
+            return item;
+        }));
+    }
+
+    render().catch(err => {
+        list.innerHTML = `<div class="empty">读取缓存失败：${err.message}</div>`;
+    });
+})();
+</script>
+</body>
+</html>

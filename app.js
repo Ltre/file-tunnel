@@ -124,6 +124,19 @@ function progressElementId(progressKey) {
     return `progress-${String(progressKey).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
 
+function clearFileProgressForAsset(fileId) {
+    if (!fileId) return;
+    const prefix = `${fileId}::`;
+    const keys = new Set([
+        fileId,
+        ...Array.from(activeFileProgress).filter(key => key === fileId || String(key).startsWith(prefix)),
+        ...Array.from(completedFileProgress).filter(key => key === fileId || String(key).startsWith(prefix)),
+        ...Array.from(progressHideTimers.keys()).filter(key => key === fileId || String(key).startsWith(prefix))
+    ]);
+    keys.forEach(key => hideProgress(key));
+    fileTransferProgressStates.delete(fileId);
+}
+
 function getFileProgressStatus(transport = '') {
     const route = String(transport || '');
     if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
@@ -1874,10 +1887,12 @@ function initFileAssetTransfer() {
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onReceived: async (asset) => {
+            clearFileProgressForAsset(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
         },
         onUnavailable: (fileId, reason) => {
+            clearFileProgressForAsset(fileId);
             updateFileMessageAvailability(fileId, reason);
         }
     });

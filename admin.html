@@ -90,6 +90,11 @@
             display: grid;
             gap: 15px;
         }
+
+        .device-list {
+            display: grid;
+            gap: 12px;
+        }
         
         .session-item {
             background: #f8f9fa;
@@ -104,6 +109,29 @@
         .session-item:hover {
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .device-item {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 14px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .device-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+
+        .device-meta {
+            color: #666;
+            font-size: 0.85rem;
+            line-height: 1.7;
+            word-break: break-all;
         }
         
         .session-icon {
@@ -303,6 +331,21 @@
                 </div>
             </div>
         </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span>📡 所有访问设备</span>
+                <button class="btn btn-secondary" onclick="loadData()">刷新</button>
+            </div>
+            <div class="panel-content">
+                <div id="deviceList" class="device-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📱</div>
+                        <div>暂无访问设备</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     
     <button class="refresh-btn" onclick="loadData()" title="刷新">🔄</button>
@@ -332,18 +375,23 @@
         async function loadData() {
             try {
                 // 从服务器获取会话信息
-                const response = await fetch('/api/sessions');
-                const data = await response.json();
+                const [sessionsResponse, devicesResponse] = await Promise.all([
+                    fetch('/api/sessions'),
+                    fetch('/api/devices')
+                ]);
+                const data = await sessionsResponse.json();
+                const deviceData = devicesResponse.ok ? await devicesResponse.json() : { devices: [] };
                 
                 const localData = await loadLocalHistory();
                 const sessions = mergeSessions(data.sessions || [], localData.sessions);
                 updateStats({
                     sessions,
-                    totalDevices: data.totalDevices || 0,
+                    totalDevices: deviceData.onlineDevices ?? data.totalDevices ?? 0,
                     totalMessages: sessions.reduce((total, session) => total + (session.messageCount || 0), 0),
                     totalFiles: sessions.reduce((total, session) => total + (session.fileCount || 0), 0)
                 });
                 renderSessions(sessions);
+                renderDevices(deviceData.devices || []);
                 
                 document.getElementById('lastUpdate').textContent = 
                     '更新于: ' + new Date().toLocaleTimeString('zh-CN');
@@ -612,6 +660,7 @@
                     totalFiles: localData.totalFiles
                 });
                 renderSessions(sessions);
+                renderDevices([]);
             } catch (err) {
                 console.error('Failed to load from localStorage:', err);
             }
@@ -682,6 +731,54 @@
                             <button class="btn btn-danger" onclick="deleteSession('${safeId}')">
                                 <span>删除</span>
                             </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderDevices(devices) {
+            const container = document.getElementById('deviceList');
+            if (!container) return;
+
+            if (!devices || devices.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📱</div>
+                        <div>暂无访问设备</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = devices.map(device => {
+                const deviceId = escapeHtml(device.deviceId || device.key || 'unknown');
+                const shortId = escapeHtml(deviceId.length > 18 ? `${deviceId.slice(0, 18)}...` : deviceId);
+                const sessionId = device.sessionId ? escapeHtml(device.sessionId) : '未加入';
+                const ip = escapeHtml(device.ip || device.externalIp || 'unknown');
+                const localIp = escapeHtml(device.localIp || '-');
+                const model = escapeHtml(device.deviceModel || device.userAgent || '-');
+                const name = escapeHtml(device.deviceName || '未命名设备');
+                const lastAccess = new Date(device.lastAccess || Date.now()).toLocaleString('zh-CN');
+                const statusClass = device.online ? 'status-active' : 'status-inactive';
+                const activeClass = device.active ? 'status-active' : 'status-inactive';
+                const statusText = device.online ? '在线' : '离线';
+                const activeText = device.active ? '活跃' : '不活跃';
+
+                return `
+                    <div class="device-item" data-device-id="${deviceId}">
+                        <div>
+                            <div class="device-title">
+                                ${name} · ${shortId}
+                                <span class="status-badge ${statusClass}">${statusText}</span>
+                                <span class="status-badge ${activeClass}">${activeText}</span>
+                            </div>
+                            <div class="device-meta">
+                                <div>所在隧道: ${sessionId}</div>
+                                <div>外网/IP: ${ip} · 内网: ${localIp}</div>
+                                <div>型号/UA: ${model}</div>
+                                <div>最后访问: ${lastAccess}</div>
+                            </div>
                         </div>
                     </div>
                 `;
