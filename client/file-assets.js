@@ -2,7 +2,8 @@
     const CHUNK_SIZE = 64 * 1024;
     const BUFFER_LIMIT = 512 * 1024;
     const P2P_TIMEOUT = 1500;
-    const MAX_CONCURRENT_DOWNLOADS = 2;
+    const MAX_CONCURRENT_FULL_DOWNLOADS = 2;
+    const MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS = 4;
     const MAX_CONCURRENT_UPLOADS = 2;
     const RECEIVE_TIMEOUT = 30000;
     const MAX_RETRIES = 3;
@@ -30,6 +31,7 @@
             this.forceRequests = new Map();
             this.activeUploadKeys = new Set();
             this.completedUploadKeys = new Map();
+            this.cancelledAssets = new Set();
         }
 
         log(event, details) {
@@ -120,6 +122,7 @@
                 this.cancel(assetId);
                 this.forceRequests.set(assetId, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
             }
+            this.cancelledAssets.delete(assetId);
             if (metadata?.id === assetId) this.requestedMetadata.set(assetId, metadata);
             if (this.desiredAssets.has(assetId)) {
                 if (preferredProviderId) this.desiredAssets.set(assetId, preferredProviderId);
@@ -158,11 +161,30 @@
             this.dispatchDownloads();
         }
 
+        downloadMode(assetId) {
+            const metadata = this.requestedMetadata.get(assetId);
+            return Number(metadata?.size) > MULTI_SOURCE_THRESHOLD ? 'multi-source' : 'full';
+        }
+
+        activeDownloadCount(mode) {
+            return Array.from(this.activeDownloads)
+                .filter(assetId => this.downloadMode(assetId) === mode)
+                .length;
+        }
+
+        canStartDownload(assetId) {
+            const mode = this.downloadMode(assetId);
+            const limit = mode === 'multi-source' ? MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS : MAX_CONCURRENT_FULL_DOWNLOADS;
+            return this.activeDownloadCount(mode) < limit;
+        }
+
         dispatchDownloads() {
             const socket = this.socket();
             if (!socket?.connected) return;
-            while (this.activeDownloads.size < MAX_CONCURRENT_DOWNLOADS && this.downloadQueue.length) {
-                const assetId = this.downloadQueue.shift();
+            while (this.downloadQueue.length) {
+                const nextIndex = this.downloadQueue.findIndex(assetId => this.canStartDownload(assetId));
+                if (nextIndex < 0) break;
+                const [assetId] = this.downloadQueue.splice(nextIndex, 1);
                 if (!this.desiredAssets.has(assetId) || this.activeDownloads.has(assetId)) continue;
                 this.activeDownloads.add(assetId);
                 this.requests.set(assetId, Date.now());
@@ -552,6 +574,7 @@
 
             this.emitTransferStatus(asset.id, from, 'started', transfer?.transferId);
             try {
+                if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 const unavailableUntil = this.p2pUnavailablePeers.get(from);
                 if (unavailableUntil && unavailableUntil > Date.now()) {
                     throw new Error('Peer is in P2P cooldown');
@@ -658,6 +681,7 @@
             const transport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
             channel.send(JSON.stringify({ type: 'file-asset-start', asset: metadata, transfer }));
             for (let offset = rangeStart; offset < rangeEnd; offset += CHUNK_SIZE) {
+                if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 if (channel.readyState !== 'open') throw new Error('File asset channel closed');
                 await this.waitForBuffer(channel);
                 channel.send(this.sliceData(asset.data, offset, Math.min(offset + CHUNK_SIZE, rangeEnd)));
@@ -682,6 +706,7 @@
                 transferId: transfer?.transferId, rangeStart: transfer?.rangeStart, rangeEnd: transfer?.rangeEnd
             });
             for (let offset = rangeStart; offset < rangeEnd; offset += CHUNK_SIZE) {
+                if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 socket.emit('file-asset-relay-chunk', {
                     sessionId: this.deps.getSessionId(), to: deviceId, assetId: asset.id, transferId: transfer?.transferId,
                     chunk: this.sliceData(asset.data, offset, Math.min(offset + CHUNK_SIZE, rangeEnd))
@@ -835,6 +860,7 @@
 
         cancel(assetId) {
             if (!assetId) return;
+            this.cancelledAssets.add(assetId);
             this.releaseDownload(assetId);
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);

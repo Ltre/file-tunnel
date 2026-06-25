@@ -120,7 +120,7 @@ app.get('/magnet/:magnetId', (req, res) => {
 app.post('/api/magnets', (req, res) => {
     try {
         cleanupExpiredMagnets();
-        const { sessionId, fileId } = req.body || {};
+        const { sessionId, fileId, deviceId } = req.body || {};
         if (!isValidSessionId(sessionId) || !isValidDeviceId(fileId)) {
             return res.status(400).json({ error: 'Invalid magnet payload' });
         }
@@ -150,18 +150,23 @@ app.post('/api/magnets', (req, res) => {
         }
 
         const id = existingId || createMagnetId();
+        const existingMagnet = magnets.get(id);
+        const createdByDeviceId = isValidDeviceId(deviceId) ? deviceId : existingMagnet?.createdByDeviceId || null;
+        const createdByDevice = createdByDeviceId ? session.devices.get(createdByDeviceId) : null;
         magnets.set(id, {
             id,
             sessionId,
             assetId: fileId,
             asset: record.metadata,
-            createdAt: magnets.get(id)?.createdAt || Date.now()
+            createdByDeviceId,
+            createdByDeviceName: createdByDevice?.deviceName || existingMagnet?.createdByDeviceName || '',
+            createdAt: existingMagnet?.createdAt || Date.now()
         });
 
         const url = `${getRequestBaseUrl(req)}/magnet/${id}`;
         historyLog('magnet-created', {
             sessionId,
-            deviceId: null,
+            deviceId: createdByDeviceId,
             clientIp: getHttpClientIp(req),
             magnetId: id,
             asset: record.metadata,
@@ -170,6 +175,37 @@ app.post('/api/magnets', (req, res) => {
         res.json({ id, url, seedDevices, asset: record.metadata });
     } catch (err) {
         console.error('create magnet error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get('/api/magnets', (req, res) => {
+    try {
+        cleanupExpiredMagnets();
+        const baseUrl = getRequestBaseUrl(req);
+        const items = Array.from(magnets.values())
+            .map(magnet => {
+                const session = sessions.get(magnet.sessionId);
+                const record = session?.fileAssets?.get(magnet.assetId);
+                const seedDevices = getLiveSeedDevices(session, record);
+                return {
+                    id: magnet.id,
+                    url: `${baseUrl}/magnet/${magnet.id}`,
+                    sessionId: magnet.sessionId,
+                    assetId: magnet.assetId,
+                    asset: record?.metadata || magnet.asset,
+                    createdAt: magnet.createdAt,
+                    createdByDeviceId: magnet.createdByDeviceId || '',
+                    createdByDeviceName: magnet.createdByDeviceName || '',
+                    seedCount: seedDevices.length,
+                    seedDevices
+                };
+            })
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+        res.json({ generatedAt: new Date().toISOString(), magnets: items });
+    } catch (err) {
+        console.error('list magnets error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -528,6 +564,8 @@ function getMagnetPayload(magnetId) {
         assetId: magnet.assetId,
         asset: record?.metadata || magnet.asset,
         createdAt: magnet.createdAt,
+        createdByDeviceId: magnet.createdByDeviceId || '',
+        createdByDeviceName: magnet.createdByDeviceName || '',
         seedDevices
     };
 }

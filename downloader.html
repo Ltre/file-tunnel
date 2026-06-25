@@ -79,6 +79,44 @@
             display: inline-flex;
             align-items: center;
         }
+        .cache-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 20;
+            display: none;
+            background: rgba(20, 28, 43, 0.46);
+            padding: 20px;
+        }
+        .cache-overlay.open {
+            display: grid;
+            place-items: center;
+        }
+        .cache-panel {
+            width: min(96vw, 980px);
+            height: min(88vh, 720px);
+            border-radius: 12px;
+            overflow: hidden;
+            background: #fff;
+            box-shadow: 0 24px 70px rgba(21, 30, 51, 0.28);
+            display: grid;
+            grid-template-rows: auto 1fr;
+        }
+        .cache-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #e4e9f3;
+        }
+        .cache-panel-title {
+            font-weight: 800;
+        }
+        .cache-panel iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+        }
     </style>
 </head>
 <body>
@@ -89,9 +127,18 @@
     <div class="status" id="status">等待开始</div>
     <div class="actions">
         <button id="downloadBtn" disabled>下载文件</button>
-        <a class="link-button" href="/downloadList">缓存列表</a>
+        <button class="link-button" id="cacheListBtn" type="button">缓存列表</button>
     </div>
 </main>
+<div class="cache-overlay" id="cacheOverlay" aria-hidden="true">
+    <div class="cache-panel" role="dialog" aria-modal="true" aria-label="磁链缓存列表">
+        <div class="cache-panel-header">
+            <div class="cache-panel-title">磁链缓存列表</div>
+            <button id="cacheOverlayClose" type="button">关闭</button>
+        </div>
+        <iframe id="cacheListFrame" title="磁链缓存列表"></iframe>
+    </div>
+</div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/client/file-assets.js"></script>
@@ -101,12 +148,18 @@
     const status = document.getElementById('status');
     const bar = document.getElementById('bar');
     const downloadBtn = document.getElementById('downloadBtn');
+    const cacheListBtn = document.getElementById('cacheListBtn');
+    const cacheOverlay = document.getElementById('cacheOverlay');
+    const cacheOverlayClose = document.getElementById('cacheOverlayClose');
+    const cacheListFrame = document.getElementById('cacheListFrame');
     const DB_NAME = 'TunnelDownloaderDB';
     const DB_VERSION = 1;
     const STORE_NAME = 'magnetFiles';
+    const TUNNEL_DB_NAME = 'TunnelDB';
     let magnet = null;
     let socket = null;
     let transfer = null;
+    let seedRefreshTimer = null;
 
     function setStatus(text) {
         status.textContent = text;
@@ -149,6 +202,17 @@
         const size = dataSize(file?.data);
         const expectedSize = Number(asset?.size ?? file?.size);
         return size > 0 && (!Number.isFinite(expectedSize) || expectedSize <= 0 || size === expectedSize);
+    }
+
+    function openCacheOverlay() {
+        cacheListFrame.src = `/downloadList?embedded=1&magnet=${encodeURIComponent(magnet?.id || '')}`;
+        cacheOverlay.classList.add('open');
+        cacheOverlay.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeCacheOverlay() {
+        cacheOverlay.classList.remove('open');
+        cacheOverlay.setAttribute('aria-hidden', 'true');
     }
 
     function openDb() {
@@ -213,14 +277,32 @@
         await withFileStore('readwrite', store => requestToPromise(store.put(record)));
     }
 
-    async function loadMagnet() {
-        const magnetId = new URLSearchParams(location.search).get('magnet');
-        if (!magnetId) throw new Error('缺少磁链 ID');
-        const response = await fetch(`/api/magnets/${encodeURIComponent(magnetId)}`);
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '磁链不存在或已过期');
+    function openTunnelDb() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(TUNNEL_DB_NAME);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('无法打开隧道本地缓存'));
+        });
+    }
 
-        const seedKey = `tunnel_magnet_seeds_${magnetId}`;
+    async function loadTunnelCachedFile(fileId, sessionId) {
+        const db = await openTunnelDb();
+        try {
+            if (!db.objectStoreNames.contains('files')) return null;
+            const file = await new Promise((resolve, reject) => {
+                const transaction = db.transaction(['files'], 'readonly');
+                const request = transaction.objectStore('files').get(fileId);
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error || new Error('读取隧道缓存失败'));
+            });
+            return file && file.sessionId === sessionId ? file : null;
+        } finally {
+            db.close();
+        }
+    }
+
+    function mergeSeedDevices(payload) {
+        const seedKey = `tunnel_magnet_seeds_${payload.id}`;
         const serverSeeds = Array.isArray(payload.seedDevices) ? payload.seedDevices : [];
         const localSeeds = JSON.parse(localStorage.getItem(seedKey) || '[]').filter(seed => seed && seed.deviceId);
         const merged = new Map();
@@ -231,6 +313,16 @@
         return payload;
     }
 
+    async function loadMagnet() {
+        const magnetId = new URLSearchParams(location.search).get('magnet');
+        if (!magnetId) throw new Error('缺少磁链 ID');
+        const response = await fetch(`/api/magnets/${encodeURIComponent(magnetId)}`);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '磁链不存在或已过期');
+
+        return mergeSeedDevices(payload);
+    }
+
     function renderMeta() {
         const seedCount = Array.isArray(magnet.seedDevices) ? magnet.seedDevices.length : 0;
         meta.replaceChildren(
@@ -238,6 +330,58 @@
             Object.assign(document.createElement('div'), { textContent: `大小：${formatSize(magnet.asset.size)}` }),
             Object.assign(document.createElement('div'), { textContent: `种子设备：${seedCount} 台在线` })
         );
+    }
+
+    function stopSeedRefresh() {
+        if (seedRefreshTimer) clearInterval(seedRefreshTimer);
+        seedRefreshTimer = null;
+    }
+
+    function startSeedRefresh() {
+        stopSeedRefresh();
+        seedRefreshTimer = setInterval(async () => {
+            if (!magnet?.id) return;
+            try {
+                const response = await fetch(`/api/magnets/${encodeURIComponent(magnet.id)}`, { cache: 'no-store' });
+                if (!response.ok) return;
+                const next = mergeSeedDevices(await response.json());
+                magnet = {
+                    ...magnet,
+                    ...next,
+                    asset: next.asset || magnet.asset
+                };
+                renderMeta();
+                if (transfer && socket?.connected && downloadBtn.disabled) {
+                    transfer.handleManifest({
+                        asset: magnet.asset,
+                        providers: (magnet.seedDevices || []).map(seed => seed.deviceId).filter(Boolean)
+                    });
+                }
+            } catch (err) {
+                console.warn('Failed to refresh magnet seeds:', err);
+            }
+        }, 5000);
+    }
+
+    function triggerDownload(file) {
+        const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name || magnet?.asset?.name || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');
+    }
+
+    function enableDownload(file, label = '已缓存到本机') {
+        stopSeedRefresh();
+        bar.style.width = '100%';
+        setStatus(label);
+        downloadBtn.disabled = false;
+        downloadBtn.onclick = () => triggerDownload(file);
     }
 
     function initTransfer() {
@@ -257,21 +401,7 @@
             },
             onReceived: async file => {
                 await storeCachedFile(file);
-                bar.style.width = '100%';
-                setStatus('已缓存到本机');
-                downloadBtn.disabled = false;
-                downloadBtn.onclick = () => {
-                    const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = file.name || 'download';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    setTimeout(() => URL.revokeObjectURL(url), 1000);
-                    setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');
-                };
+                enableDownload(file);
             },
             onUnavailable: (fileId, reason) => {
                 setStatus(`暂时没有可用种子或传输中断：${reason || 'unknown'}`);
@@ -289,27 +419,35 @@
     async function start() {
         magnet = await loadMagnet();
         renderMeta();
+        cacheListBtn.addEventListener('click', openCacheOverlay);
+        cacheOverlayClose.addEventListener('click', closeCacheOverlay);
+        cacheOverlay.addEventListener('click', event => {
+            if (event.target === cacheOverlay) closeCacheOverlay();
+        });
+        window.addEventListener('beforeunload', stopSeedRefresh);
 
         const cached = await loadCachedFile(magnet.asset.id);
         if (hasCompleteCache(cached, magnet.asset)) {
-            bar.style.width = '100%';
-            setStatus('已命中本地缓存，可直接下载');
-            downloadBtn.disabled = false;
-            downloadBtn.onclick = () => {
-                const blob = new Blob([cached.data], { type: cached.type || 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = cached.name || magnet.asset.name || 'download';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-                setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');
-            };
+            enableDownload(cached, '已命中本地缓存，可直接下载');
             return;
         }
 
+        const tunnelCached = await loadTunnelCachedFile(magnet.asset.id, magnet.sessionId).catch(() => null);
+        if (hasCompleteCache(tunnelCached, magnet.asset)) {
+            setStatus('本地快速提取中...');
+            await storeCachedFile({
+                ...tunnelCached,
+                ...magnet.asset,
+                id: magnet.asset.id,
+                data: tunnelCached.data,
+                sessionId: magnet.sessionId
+            });
+            const copied = await loadCachedFile(magnet.asset.id);
+            enableDownload(copied || tunnelCached, '已缓存到本机');
+            return;
+        }
+
+        startSeedRefresh();
         socket = io(location.origin);
         initTransfer();
 

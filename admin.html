@@ -95,6 +95,11 @@
             display: grid;
             gap: 12px;
         }
+
+        .magnet-list {
+            display: grid;
+            gap: 12px;
+        }
         
         .session-item {
             background: #f8f9fa;
@@ -121,13 +126,36 @@
             align-items: center;
         }
 
+        .magnet-item {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 14px;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+        }
+
         .device-title {
             font-weight: 700;
             margin-bottom: 6px;
             word-break: break-all;
         }
 
+        .magnet-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+
         .device-meta {
+            color: #666;
+            font-size: 0.85rem;
+            line-height: 1.7;
+            word-break: break-all;
+        }
+
+        .magnet-meta {
             color: #666;
             font-size: 0.85rem;
             line-height: 1.7;
@@ -346,6 +374,21 @@
                 </div>
             </div>
         </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <span>🧲 已分享磁链</span>
+                <button class="btn btn-secondary" onclick="loadData()">刷新</button>
+            </div>
+            <div class="panel-content">
+                <div id="magnetList" class="magnet-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🧲</div>
+                        <div>暂无已分享磁链</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     
     <button class="refresh-btn" onclick="loadData()" title="刷新">🔄</button>
@@ -375,12 +418,14 @@
         async function loadData() {
             try {
                 // 从服务器获取会话信息
-                const [sessionsResponse, devicesResponse] = await Promise.all([
+                const [sessionsResponse, devicesResponse, magnetsResponse] = await Promise.all([
                     fetch('/api/sessions'),
-                    fetch('/api/devices')
+                    fetch('/api/devices'),
+                    fetch('/api/magnets')
                 ]);
                 const data = await sessionsResponse.json();
                 const deviceData = devicesResponse.ok ? await devicesResponse.json() : { devices: [] };
+                const magnetData = magnetsResponse.ok ? await magnetsResponse.json() : { magnets: [] };
                 
                 const localData = await loadLocalHistory();
                 const sessions = mergeSessions(data.sessions || [], localData.sessions);
@@ -392,6 +437,7 @@
                 });
                 renderSessions(sessions);
                 renderDevices(deviceData.devices || []);
+                renderMagnets(magnetData.magnets || []);
                 
                 document.getElementById('lastUpdate').textContent = 
                     '更新于: ' + new Date().toLocaleTimeString('zh-CN');
@@ -661,6 +707,7 @@
                 });
                 renderSessions(sessions);
                 renderDevices([]);
+                renderMagnets([]);
             } catch (err) {
                 console.error('Failed to load from localStorage:', err);
             }
@@ -783,6 +830,90 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        function formatFileSize(bytes) {
+            const value = Number(bytes) || 0;
+            if (value <= 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024)));
+            return `${(value / Math.pow(1024, index)).toFixed(index ? 2 : 0)} ${units[index]}`;
+        }
+
+        function renderMagnets(magnets) {
+            const container = document.getElementById('magnetList');
+            if (!container) return;
+
+            if (!magnets || magnets.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🧲</div>
+                        <div>暂无已分享磁链</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = magnets.map(magnet => {
+                const asset = magnet.asset || {};
+                const id = escapeHtml(magnet.id);
+                const name = escapeHtml(asset.name || magnet.assetId || '未命名文件');
+                const url = escapeHtml(magnet.url || makeMagnetUrl(magnet.id));
+                const sessionId = escapeHtml(magnet.sessionId || '-');
+                const size = formatFileSize(asset.size);
+                const type = escapeHtml(asset.type || 'application/octet-stream');
+                const createdAt = new Date(magnet.createdAt || Date.now()).toLocaleString('zh-CN');
+                const creator = escapeHtml(magnet.createdByDeviceName || magnet.createdByDeviceId || '-');
+                const seedCount = Number(magnet.seedCount) || 0;
+
+                return `
+                    <div class="magnet-item" data-magnet-id="${id}">
+                        <div>
+                            <div class="magnet-title">${name}</div>
+                            <div class="magnet-meta">
+                                <div>大小: ${size} · 类型: ${type} · 在线种子: ${seedCount}</div>
+                                <div>隧道: ${sessionId}</div>
+                                <div>分享设备: ${creator} · 创建: ${createdAt}</div>
+                                <div>${url}</div>
+                            </div>
+                        </div>
+                        <div class="session-actions">
+                            <a class="btn btn-primary" href="${url}" target="_blank">打开</a>
+                            <button class="btn btn-secondary" onclick="copyMagnetLink('${id}', '${url}')">复制磁链</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function makeMagnetUrl(magnetId) {
+            return `${window.location.origin}/magnet/${encodeURIComponent(magnetId)}`;
+        }
+
+        async function copyPlainText(text) {
+            if (navigator.clipboard?.writeText && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.readOnly = true;
+            textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const copied = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            return copied;
+        }
+
+        async function copyMagnetLink(magnetId, url) {
+            try {
+                if (!await copyPlainText(url)) throw new Error('copy failed');
+                alert('磁链已复制: ' + url);
+            } catch (err) {
+                window.prompt('请手动复制磁链', url);
+            }
         }
         
         // 复制链接

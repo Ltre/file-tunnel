@@ -86,6 +86,8 @@ let filePreviewHistoryOpen = false;
 let progressDrawerCollapsed = false;
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
+let adminTapCount = 0;
+let adminTapResetTimer = null;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const fileObjectUrls = new Map();
@@ -3020,7 +3022,8 @@ async function shareFileMagnet(messageId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: state.sessionId,
-                fileId: fileInfo.id
+                fileId: fileInfo.id,
+                deviceId: state.deviceId
             })
         });
         result = await response.json().catch(() => ({}));
@@ -3392,6 +3395,7 @@ async function clearFileCache(messageId) {
     if (!fileInfo?.id) return;
 
     fileAssetTransfer?.cancel(fileInfo.id);
+    clearFileProgressForAsset(fileInfo.id);
     const storedFile = await getFromStore('files', fileInfo.id);
     const { data, ...metadata } = storedFile || {};
     await saveToStore('files', {
@@ -3481,6 +3485,7 @@ async function deleteHistoryMessageLocal(messageId) {
     if (message?.fileInfo?.id) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
+        clearFileProgressForAsset(fileId);
         const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
         if (stillReferenced) {
             const storedFile = await getFromStore('files', fileId);
@@ -3570,9 +3575,31 @@ async function clearGarbageFileCaches(files) {
 }
 
 async function showGarbageCleanupDialog() {
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    dialog.innerHTML = `
+        <div class="modal">
+            <h3>清理垃圾缓存</h3>
+            <p>正在扫描本机会话缓存...</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
     const files = await findGarbageFileCaches();
     if (!files.length) {
-        alert('没有发现可清理的游离文件缓存或中断传输缓存。');
+        dialog.querySelector('.modal').innerHTML = `
+            <h3>清理垃圾缓存</h3>
+            <p>没有发现可清理的游离文件缓存或中断传输缓存。</p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelGarbageCleanup">关闭</button>
+            </div>
+        `;
+        dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
         return;
     }
     const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
@@ -3580,8 +3607,6 @@ async function showGarbageCleanupDialog() {
         .map(file => `<li>${escapeHtml(file.name || file.id)} (${formatFileSize(Number(file.size) || 0)})</li>`)
         .join('');
     const remaining = files.length > 20 ? `<p>另有 ${files.length - 20} 项未展开。</p>` : '';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal-overlay active';
     dialog.innerHTML = `
         <div class="modal">
             <h3>清理垃圾缓存</h3>
@@ -4954,25 +4979,27 @@ function updateDeviceList() {
             </div>
         `;
         makeDeviceNameInteractive(el.querySelector('.name'), device);
-        const intercomButton = document.createElement('button');
-        intercomButton.className = 'toolbar-btn';
-        intercomButton.type = 'button';
-        intercomButton.title = `与 ${device.name} 对讲`;
-        intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
-        intercomButton.addEventListener('click', async () => {
-            try {
-                if (device.id === directIntercomTargetId) {
-                    mediaController.stopIntercom();
-                } else {
-                    if (mediaController.intercom) mediaController.stopIntercom();
-                    await mediaController.startIntercom([device.id]);
+        if (device.name !== '磁链下载器') {
+            const intercomButton = document.createElement('button');
+            intercomButton.className = 'toolbar-btn';
+            intercomButton.type = 'button';
+            intercomButton.title = `与 ${device.name} 对讲`;
+            intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
+            intercomButton.addEventListener('click', async () => {
+                try {
+                    if (device.id === directIntercomTargetId) {
+                        mediaController.stopIntercom();
+                    } else {
+                        if (mediaController.intercom) mediaController.stopIntercom();
+                        await mediaController.startIntercom([device.id]);
+                    }
+                } catch (err) {
+                    alert(`无法启动对讲机: ${err.message}`);
+                    historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
                 }
-            } catch (err) {
-                alert(`无法启动对讲机: ${err.message}`);
-                historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
-            }
-        });
-        el.appendChild(intercomButton);
+            });
+            el.appendChild(intercomButton);
+        }
         container.appendChild(el);
     });
 }
@@ -4996,11 +5023,68 @@ function setMobileWorkspaceView(view, options = {}) {
     }
 }
 
+async function showJoinedSessionSwitcher() {
+    const sessions = (await getAllFromStore('sessions').catch(() => []))
+        .filter(session => session?.sessionId)
+        .sort((a, b) => (b.lastActive || b.createdAt || 0) - (a.lastActive || a.createdAt || 0));
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    const list = sessions.length
+        ? sessions.map(session => {
+            const id = escapeHtml(session.sessionId);
+            const time = new Date(session.lastActive || session.createdAt || Date.now()).toLocaleString('zh-CN');
+            const active = session.sessionId === state.sessionId ? '（当前）' : '';
+            return `<button class="session-tool session-switch-item" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;">${id} ${active}<br><small>${time}</small></button>`;
+        }).join('')
+        : '<p>本设备还没有加入过其它隧道。</p>';
+    dialog.innerHTML = `
+        <div class="modal">
+            <h3>切换隧道</h3>
+            <div style="max-height: 55vh; overflow: auto; text-align: left;">${list}</div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="closeSessionSwitcher">关闭</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
+    dialog.querySelectorAll('[data-session-id]').forEach(button => {
+        button.addEventListener('click', () => {
+            const sessionId = button.dataset.sessionId;
+            if (sessionId && sessionId !== state.sessionId) window.location.href = `/#${sessionId}`;
+            else dialog.remove();
+        });
+    });
+}
+
 function initMobileWorkspace() {
     const viewButtons = Array.from(document.querySelectorAll('.mobile-workspace-button[data-mobile-view]'));
     viewButtons.forEach(button => {
         button.addEventListener('click', () => setMobileWorkspaceView(button.dataset.mobileView));
     });
+    const tunnelButton = document.querySelector('.mobile-workspace-button[data-mobile-view="chat"]');
+    if (tunnelButton) {
+        let longPressTimer = null;
+        const cancel = () => {
+            if (longPressTimer) clearTimeout(longPressTimer);
+            longPressTimer = null;
+        };
+        tunnelButton.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+        });
+        tunnelButton.addEventListener('pointerdown', event => {
+            if (event.pointerType !== 'touch') return;
+            cancel();
+            longPressTimer = setTimeout(() => {
+                longPressTimer = null;
+                showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+            }, 600);
+        });
+        ['pointerup', 'pointercancel', 'pointerleave', 'pointermove'].forEach(eventName => {
+            tunnelButton.addEventListener(eventName, cancel);
+        });
+    }
 
     const mediaQuery = window.matchMedia('(max-width: 767px)');
     const syncViewport = () => setMobileWorkspaceView(currentMobileWorkspaceView, { log: false });
@@ -5050,8 +5134,21 @@ function initUI() {
     initMobileWorkspace();
     initProgressDrawer();
     initRemoteAudioUnlock();
+    document.getElementById('tunnelTopbar').addEventListener('click', event => {
+        if (event.target.closest('button')) return;
+        adminTapCount += 1;
+        clearTimeout(adminTapResetTimer);
+        adminTapResetTimer = setTimeout(() => { adminTapCount = 0; }, 1800);
+        if (adminTapCount >= 7) {
+            adminTapCount = 0;
+            window.open('/admin', '_blank', 'noopener');
+        }
+    });
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
+    document.getElementById('magnetCacheBtn').addEventListener('click', () => {
+        window.open('/downloadList', '_blank', 'noopener');
+    });
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
     document.getElementById('shortCodeInput').addEventListener('keydown', event => {
         if (event.key === 'Enter') joinByShortCode();

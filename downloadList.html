@@ -96,7 +96,8 @@
 <main>
     <header>
         <h1>磁链缓存列表</h1>
-        <a class="secondary" href="/downloader">返回下载页</a>
+        <!-- 注释代码原因：点击后没有参数，显示页异常，因此无意义 -->
+        <!-- <a class="secondary" href="/downloader">返回下载页</a> -->
     </header>
     <div id="list" class="list">
         <div class="empty">正在读取缓存...</div>
@@ -109,6 +110,8 @@
     const DB_VERSION = 1;
     const STORE_NAME = 'magnetFiles';
     const list = document.getElementById('list');
+    const embedded = new URLSearchParams(location.search).get('embedded') === '1';
+    if (embedded) document.querySelector('header a.secondary')?.remove();
 
     function formatSize(bytes) {
         if (!bytes) return '0 B';
@@ -191,6 +194,37 @@
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    async function copyText(text) {
+        if (navigator.clipboard?.writeText && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.readOnly = true;
+        textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('复制失败');
+    }
+
+    async function copyMagnet(file) {
+        const url = file.magnetUrl || (file.magnetId ? `${location.origin}/magnet/${file.magnetId}` : '');
+        if (!url) {
+            alert('这个缓存没有对应的磁链记录');
+            return;
+        }
+        try {
+            await copyText(url);
+            alert('磁链已复制');
+        } catch (err) {
+            window.prompt('请手动复制磁链', url);
+        }
+    }
+
     async function render() {
         const files = (await getAllFiles())
             .filter(file => dataSize(file.data) > 0)
@@ -222,15 +256,19 @@
             const download = document.createElement('button');
             download.textContent = '下载';
             download.onclick = () => triggerDownload(file);
+            const copy = document.createElement('button');
+            copy.className = 'secondary';
+            copy.textContent = '复制磁链';
+            copy.onclick = () => copyMagnet(file);
             const remove = document.createElement('button');
             remove.className = 'secondary';
-            remove.textContent = '删除缓存';
+            remove.textContent = '删除';
             remove.onclick = async () => {
                 if (!confirm(`删除本机缓存：${file.name || file.id}？`)) return;
                 await deleteFile(file.id);
                 await render();
             };
-            actions.append(download, remove);
+            actions.append(download, copy, remove);
 
             item.append(info, actions);
             return item;
