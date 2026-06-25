@@ -37,11 +37,11 @@ function normalizeTransfer(data, asset) {
     return { transferId, rangeStart, rangeEnd };
 }
 
-function findProvider(session, assetId, requesterId, preferredProviderId) {
+function findProvider(session, assetId, requesterId, preferredProviderId, deviceSockets) {
     const record = session.fileAssets && session.fileAssets.get(assetId);
     if (!record) return null;
     const providers = Array.from(record.providers);
-    const candidates = providers.filter(id => id !== requesterId && session.devices.has(id));
+    const candidates = providers.filter(id => id !== requesterId && session.devices.has(id) && (!deviceSockets || deviceSockets.has(id)));
     const preferred = candidates.find(id => id === preferredProviderId);
     if (preferred && (record.providerLoads?.get(preferred) || 0) === 0) return preferred;
     return candidates.sort((a, b) =>
@@ -128,7 +128,7 @@ function registerFileAssetHandlers(socket, context) {
 
             if (mode === 'manifest') {
                 const providers = Array.from(record.providers)
-                    .filter(id => id !== deviceId && session.devices.has(id))
+                    .filter(id => id !== deviceId && session.devices.has(id) && deviceSockets.has(id))
                     .sort((a, b) => (record.providerLoads?.get(a) || 0) - (record.providerLoads?.get(b) || 0));
                 socket.emit('file-asset-manifest', { asset: record.metadata, providers });
                 historyLog('file-asset-manifest-sent', {
@@ -155,7 +155,7 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             if (existingProviderId) releaseAssignment(record, assetId, deviceId, transfer?.transferId);
-            const providerId = findProvider(session, assetId, deviceId, preferredProviderId);
+            const providerId = findProvider(session, assetId, deviceId, preferredProviderId, deviceSockets);
             if (!providerId) {
                 releaseAssignment(record, assetId, deviceId, transfer?.transferId);
                 socket.emit('file-asset-unavailable', { assetId, transferId: transfer?.transferId, reason: 'no-online-provider' });
@@ -166,7 +166,17 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             const providerSocket = deviceSockets.get(providerId);
-            if (!providerSocket || !record) return;
+            if (!providerSocket || !record) {
+                if (record) {
+                    releaseAssignment(record, assetId, deviceId, transfer?.transferId);
+                    record.providers.delete(providerId);
+                }
+                socket.emit('file-asset-unavailable', { assetId, transferId: transfer?.transferId, reason: 'provider-socket-unavailable' });
+                historyLog('file-asset-provider-socket-missing', {
+                    sessionId, deviceId, targetDeviceId: providerId, socketId: socket.id, clientIp, assetId, transfer
+                });
+                return;
+            }
             releaseAssignment(record, assetId, deviceId, transfer?.transferId);
             record.assignments.set(assignmentKey(assetId, deviceId, transfer?.transferId), providerId);
             record.providerLoads.set(providerId, (record.providerLoads.get(providerId) || 0) + 1);
@@ -195,7 +205,7 @@ function registerFileAssetHandlers(socket, context) {
             if (record && reason === 'provider-missing-local-data') {
                 releaseAssignment(record, assetId, to, transfer?.transferId);
                 record.providers.delete(deviceId);
-                const alternative = findProvider(session, assetId, to, null);
+                const alternative = findProvider(session, assetId, to, null, deviceSockets);
                 const alternativeSocket = alternative && deviceSockets.get(alternative);
                 historyLog('file-asset-provider-removed', {
                     sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId,

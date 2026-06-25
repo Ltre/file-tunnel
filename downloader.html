@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>磁链下载</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #f4f6fb;
+            color: #24304a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        main {
+            width: min(92vw, 620px);
+            padding: 28px;
+            border: 1px solid #dfe5f1;
+            border-radius: 10px;
+            background: #fff;
+            box-shadow: 0 18px 45px rgba(31, 45, 77, 0.12);
+        }
+        h1 { margin: 0 0 18px; font-size: 1.35rem; }
+        .meta {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 22px;
+            color: #61708d;
+            font-size: 0.92rem;
+            word-break: break-all;
+        }
+        .progress {
+            height: 12px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #edf1f7;
+        }
+        .bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #3dbf93);
+            transition: width 0.25s ease;
+        }
+        .status {
+            min-height: 1.5em;
+            margin: 12px 0 20px;
+            color: #3f4e6b;
+            font-size: 0.92rem;
+        }
+        button {
+            min-height: 42px;
+            padding: 0 18px;
+            border: 0;
+            border-radius: 8px;
+            background: #667eea;
+            color: #fff;
+            cursor: pointer;
+            font-weight: 700;
+        }
+        button:disabled { cursor: not-allowed; opacity: 0.55; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>磁链下载</h1>
+    <div class="meta" id="meta">正在读取磁链...</div>
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <div class="status" id="status">等待开始</div>
+    <button id="downloadBtn" disabled>下载文件</button>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/client/file-assets.js"></script>
+<script>
+(() => {
+    const meta = document.getElementById('meta');
+    const status = document.getElementById('status');
+    const bar = document.getElementById('bar');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const store = new Map();
+    let magnet = null;
+    let socket = null;
+    let transfer = null;
+
+    function setStatus(text) {
+        status.textContent = text;
+    }
+
+    function formatSize(bytes) {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        return `${(bytes / Math.pow(1024, index)).toFixed(index ? 2 : 0)} ${units[index]}`;
+    }
+
+    function createUuid() {
+        if (crypto.randomUUID) return crypto.randomUUID();
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
+            const value = Math.random() * 16 | 0;
+            return (char === 'x' ? value : (value & 0x3 | 0x8)).toString(16);
+        });
+    }
+
+    function deviceId() {
+        const key = 'tunnel_downloader_device_id';
+        let id = localStorage.getItem(key);
+        if (!id) {
+            id = createUuid();
+            localStorage.setItem(key, id);
+        }
+        return id;
+    }
+
+    async function loadMagnet() {
+        const magnetId = new URLSearchParams(location.search).get('magnet');
+        if (!magnetId) throw new Error('缺少磁链 ID');
+        const response = await fetch(`/api/magnets/${encodeURIComponent(magnetId)}`);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '磁链不存在或已过期');
+
+        const seedKey = `tunnel_magnet_seeds_${magnetId}`;
+        const serverSeeds = Array.isArray(payload.seedDevices) ? payload.seedDevices : [];
+        const localSeeds = JSON.parse(localStorage.getItem(seedKey) || '[]').filter(seed => seed && seed.deviceId);
+        const merged = new Map();
+        localSeeds.forEach(seed => merged.set(seed.deviceId, seed));
+        serverSeeds.forEach(seed => merged.set(seed.deviceId, seed));
+        payload.seedDevices = Array.from(merged.values());
+        localStorage.setItem(seedKey, JSON.stringify(payload.seedDevices));
+        return payload;
+    }
+
+    function renderMeta() {
+        const seedCount = Array.isArray(magnet.seedDevices) ? magnet.seedDevices.length : 0;
+        meta.replaceChildren(
+            Object.assign(document.createElement('div'), { textContent: `文件：${magnet.asset.name}` }),
+            Object.assign(document.createElement('div'), { textContent: `大小：${formatSize(magnet.asset.size)}` }),
+            Object.assign(document.createElement('div'), { textContent: `种子设备：${seedCount} 台在线` })
+        );
+    }
+
+    function initTransfer() {
+        transfer = new window.FileAssetTransfer({
+            getSocket: () => socket,
+            getSessionId: () => magnet.sessionId,
+            getPeer: () => null,
+            connectPeer: async () => { throw new Error('Downloader uses relay first'); },
+            waitForDataChannel: async () => false,
+            load: async fileId => store.get(fileId),
+            store: async file => { store.set(file.id, file); },
+            log: () => {},
+            onProgress: (fileId, fileName, progress, transport) => {
+                bar.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+                const route = String(transport || '').includes('multi-source') ? '多源分片' : '中继/直连';
+                setStatus(`正在获取文件 ${progress}% · ${route}`);
+            },
+            onReceived: async file => {
+                bar.style.width = '100%';
+                setStatus('已缓存到本机');
+                downloadBtn.disabled = false;
+                downloadBtn.onclick = () => {
+                    const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = file.name || 'download';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                };
+            },
+            onUnavailable: (fileId, reason) => {
+                setStatus(`暂时没有可用种子或传输中断：${reason || 'unknown'}`);
+            }
+        });
+
+        socket.on('file-asset-manifest', data => transfer.handleManifest(data));
+        socket.on('file-asset-unavailable', data => transfer.handleUnavailable(data));
+        socket.on('file-asset-available', data => transfer.handleAvailable(data));
+        socket.on('file-asset-relay-start', data => transfer.handleRelayStart(data));
+        socket.on('file-asset-relay-chunk', data => transfer.handleRelayChunk(data));
+        socket.on('file-asset-relay-complete', data => transfer.handleRelayComplete(data));
+    }
+
+    async function start() {
+        magnet = await loadMagnet();
+        renderMeta();
+        socket = io(location.origin);
+        initTransfer();
+
+        socket.on('connect', () => {
+            setStatus('已连接服务器，正在加入种子隧道...');
+            socket.emit('join-session', {
+                sessionId: magnet.sessionId,
+                deviceId: deviceId(),
+                deviceName: '磁链下载器',
+                deviceModel: navigator.userAgent.slice(0, 80)
+            });
+        });
+        socket.once('session-history', async () => {
+            const seed = (magnet.seedDevices || [])[0];
+            setStatus('正在寻找种子设备...');
+            await transfer.request(magnet.asset.id, seed && seed.deviceId, magnet.asset, { force: true });
+        });
+        socket.on('connect_error', err => setStatus(`连接失败：${err.message}`));
+        socket.on('error', err => setStatus(`服务端错误：${err && err.message || 'unknown'}`));
+    }
+
+    start().catch(err => {
+        meta.textContent = '磁链加载失败';
+        setStatus(err.message);
+    });
+})();
+</script>
+</body>
+</html>

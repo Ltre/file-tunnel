@@ -7,6 +7,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
@@ -70,6 +71,7 @@ app.use((req, res, next) => {
 
 // 速率限制
 app.use(rateLimit(RATE_LIMIT));
+app.use(express.json({ limit: '64kb' }));
 
 // 静态文件服务 (限制目录遍历)
 app.use(express.static(path.join(__dirname), {
@@ -80,6 +82,106 @@ app.use(express.static(path.join(__dirname), {
 // 管理后台API
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+app.get('/downloader', (req, res) => {
+    res.sendFile(path.join(__dirname, 'downloader.html'));
+});
+
+app.get('/wasted', (req, res) => {
+    const sessionId = sanitizeString(req.query.sessionId || '', 80);
+    res.type('html').send(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>传输隧道已删除</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f6fb; color: #24304a; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width: min(92vw, 680px); text-align: center; }
+    h1 { margin: 0 0 14px; font-size: clamp(1.8rem, 6vw, 3.2rem); }
+    p { margin: 0; color: #66718a; font-size: 1rem; line-height: 1.8; word-break: break-all; }
+  </style>
+</head>
+<body><main><h1>这个传输隧道已被删除</h1><p>刚才删除的传输隧道 ID：${sessionId || '未知'}</p></main></body>
+</html>`);
+});
+
+app.get('/magnet/:magnetId', (req, res) => {
+    const magnetId = req.params.magnetId;
+    if (!isValidMagnetId(magnetId)) return res.status(400).send('Invalid magnet id');
+    res.redirect(`/downloader?magnet=${encodeURIComponent(magnetId)}`);
+});
+
+app.post('/api/magnets', (req, res) => {
+    try {
+        cleanupExpiredMagnets();
+        const { sessionId, fileId } = req.body || {};
+        if (!isValidSessionId(sessionId) || !isValidDeviceId(fileId)) {
+            return res.status(400).json({ error: 'Invalid magnet payload' });
+        }
+
+        const session = sessions.get(sessionId);
+        const record = session?.fileAssets?.get(fileId);
+        if (!session || !record) {
+            return res.status(404).json({ error: 'File asset is not registered online' });
+        }
+
+        const seedDevices = getLiveSeedDevices(session, record);
+        if (!seedDevices.length) {
+            return res.status(409).json({ error: 'No online seed device for this file' });
+        }
+
+        if (magnets.size >= MAX_MAGNETS) cleanupExpiredMagnets();
+        if (magnets.size >= MAX_MAGNETS) {
+            return res.status(429).json({ error: 'Magnet registry is full' });
+        }
+
+        let existingId = null;
+        for (const [id, magnet] of magnets) {
+            if (magnet.sessionId === sessionId && magnet.assetId === fileId) {
+                existingId = id;
+                break;
+            }
+        }
+
+        const id = existingId || createMagnetId();
+        magnets.set(id, {
+            id,
+            sessionId,
+            assetId: fileId,
+            asset: record.metadata,
+            createdAt: magnets.get(id)?.createdAt || Date.now()
+        });
+
+        const url = `${getRequestBaseUrl(req)}/magnet/${id}`;
+        historyLog('magnet-created', {
+            sessionId,
+            deviceId: null,
+            clientIp: getHttpClientIp(req),
+            magnetId: id,
+            asset: record.metadata,
+            seedDeviceIds: seedDevices.map(seed => seed.deviceId)
+        });
+        res.json({ id, url, seedDevices, asset: record.metadata });
+    } catch (err) {
+        console.error('create magnet error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get('/api/magnets/:magnetId', (req, res) => {
+    try {
+        cleanupExpiredMagnets();
+        const { magnetId } = req.params;
+        if (!isValidMagnetId(magnetId)) return res.status(400).json({ error: 'Invalid magnet id' });
+        const payload = getMagnetPayload(magnetId);
+        if (!payload) return res.status(404).json({ error: 'Magnet not found' });
+        res.json(payload);
+    } catch (err) {
+        console.error('get magnet error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
 });
 
 // API: 获取所有会话信息
@@ -147,6 +249,9 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
         cleanupFileAssetRelays(sessionId, null);
         for (const key of editorAssetRelays.keys()) {
             if (key.startsWith(`${sessionId}:`)) editorAssetRelays.delete(key);
+        }
+        for (const [magnetId, magnet] of magnets) {
+            if (magnet.sessionId === sessionId) magnets.delete(magnetId);
         }
         sessions.delete(sessionId);
         historyLog('session-deleted-by-admin', {
@@ -231,7 +336,10 @@ const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
 const editorAssetRelays = new Map();
 const shortCodes = new Map();
+const magnets = new Map();
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const MAX_MAGNETS = 1000;
+const MAGNET_TTL = 24 * 60 * 60 * 1000;
 
 // ==================== 验证函数 ====================
 
@@ -298,6 +406,14 @@ function getSocketClientIp(socket) {
         'unknown';
 }
 
+function getHttpClientIp(req) {
+    const forwardedFor = req.get('x-forwarded-for');
+    return req.get('cf-connecting-ip') ||
+        (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : null) ||
+        req.ip ||
+        'unknown';
+}
+
 function isValidSessionId(id) {
     return typeof id === 'string' && 
            /^[a-zA-Z0-9_-]{8,64}$/.test(id);
@@ -328,6 +444,62 @@ function createShortCode(sessionId, preferredCode = '') {
         if (reserveShortCode(code, sessionId)) return code;
     }
     return null;
+}
+
+function createMagnetId() {
+    return crypto.randomBytes(12).toString('base64url');
+}
+
+function isValidMagnetId(id) {
+    return typeof id === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(id);
+}
+
+function getRequestBaseUrl(req) {
+    const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+    const host = req.get('host');
+    return `${proto}://${host}`;
+}
+
+function getLiveSeedDevices(session, record) {
+    if (!session || !record) return [];
+    return Array.from(record.providers || [])
+        .filter(deviceId => session.devices.has(deviceId) && deviceSockets.has(deviceId))
+        .map(deviceId => {
+            const device = session.devices.get(deviceId) || {};
+            return {
+                deviceId,
+                deviceName: device.deviceName || '',
+                socketId: device.socketId || '',
+                deviceModel: device.deviceModel || '',
+                localIp: device.localIp || '',
+                externalIp: device.externalIp || ''
+            };
+        });
+}
+
+function cleanupExpiredMagnets() {
+    const now = Date.now();
+    for (const [magnetId, magnet] of magnets) {
+        if (now - magnet.createdAt > MAGNET_TTL || !sessions.has(magnet.sessionId)) {
+            magnets.delete(magnetId);
+        }
+    }
+}
+
+function getMagnetPayload(magnetId) {
+    const magnet = magnets.get(magnetId);
+    if (!magnet) return null;
+    const session = sessions.get(magnet.sessionId);
+    const record = session?.fileAssets?.get(magnet.assetId);
+    const seedDevices = getLiveSeedDevices(session, record);
+    return {
+        id: magnetId,
+        sessionId: magnet.sessionId,
+        assetId: magnet.assetId,
+        asset: record?.metadata || magnet.asset,
+        createdAt: magnet.createdAt,
+        seedDevices
+    };
 }
 
 function isValidDeviceId(id) {
@@ -610,6 +782,9 @@ io.on('connection', (socket) => {
                 deviceName: sanitizeString(deviceName),
                 socketId: socket.id,
                 joinedAt: Date.now(),
+                deviceModel: sanitizeString(data.deviceModel || existingDevice?.deviceModel || '', 80),
+                localIp: sanitizeString(data.localIp || existingDevice?.localIp || '', 80),
+                externalIp: clientIp,
                 editorContent: existingDevice ? existingDevice.editorContent : '',
                 editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
             });
@@ -637,7 +812,10 @@ io.on('connection', (socket) => {
                 socket.to(sessionId).emit('device-joined', {
                     deviceId,
                     deviceName: sanitizeString(deviceName),
-                    joinedAt: Date.now()
+                    joinedAt: Date.now(),
+                    deviceModel: session.devices.get(deviceId)?.deviceModel || '',
+                    localIp: session.devices.get(deviceId)?.localIp || '',
+                    externalIp: clientIp
                 });
             }
             
@@ -648,7 +826,10 @@ io.on('connection', (socket) => {
                     deviceList.push({
                         deviceId: d.deviceId,
                         deviceName: d.deviceName,
-                        joinedAt: d.joinedAt
+                        joinedAt: d.joinedAt,
+                        deviceModel: d.deviceModel,
+                        localIp: d.localIp,
+                        externalIp: d.externalIp
                     });
                 }
             });
@@ -657,6 +838,12 @@ io.on('connection', (socket) => {
                 devices: deviceList
             });
             socket.emit('session-short-code', { shortCode: session.shortCode });
+            socket.emit('device-profile', {
+                deviceId,
+                deviceModel: session.devices.get(deviceId)?.deviceModel || '',
+                internalIp: session.devices.get(deviceId)?.localIp || '',
+                externalIp: clientIp
+            });
 
             let latestRemoteEditor = null;
             session.devices.forEach((device, id) => {
@@ -930,6 +1117,42 @@ io.on('connection', (socket) => {
             duplicateCount,
             failedCount
         });
+    });
+
+    socket.on('device-profile-update', data => {
+        try {
+            if (!data || data.sessionId !== currentSession || !currentDevice) return;
+            const session = sessions.get(currentSession);
+            const device = session?.devices.get(currentDevice);
+            if (!session || !device) return;
+
+            device.deviceModel = sanitizeString(data.deviceModel || device.deviceModel || '', 80);
+            device.localIp = sanitizeString(data.localIp || device.localIp || '', 80);
+            device.externalIp = clientIp;
+            socket.emit('device-profile', {
+                deviceId: currentDevice,
+                deviceModel: device.deviceModel,
+                internalIp: device.localIp,
+                externalIp: device.externalIp
+            });
+            socket.to(currentSession).emit('device-updated', {
+                deviceId: currentDevice,
+                deviceName: device.deviceName,
+                deviceModel: device.deviceModel,
+                localIp: device.localIp,
+                externalIp: device.externalIp
+            });
+            historyLog('device-profile-updated', {
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                deviceModel: device.deviceModel,
+                localIp: device.localIp
+            });
+        } catch (err) {
+            console.error('device-profile-update error:', err);
+        }
     });
 
     socket.on('debug-log', (data) => {
@@ -1448,6 +1671,7 @@ io.on('connection', (socket) => {
 function cleanupExpiredSessions() {
     const now = Date.now();
     let cleaned = 0;
+    cleanupExpiredMagnets();
     
     for (const [sessionId, session] of sessions) {
         // Keep an empty session long enough for reconnecting devices to recover history.

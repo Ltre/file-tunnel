@@ -822,6 +822,11 @@
                 return;
             }
             const requested = this.desiredAssets.has(assetId);
+            const retryable = ['provider-socket-unavailable', 'provider-missing-local-data', 'asset-transfer-failed', 'provider-unavailable'];
+            if (requested && retryable.includes(reason)) {
+                this.retryDownload(assetId, from, reason || 'provider-unavailable');
+                return;
+            }
             this.releaseDownload(assetId);
             if (!requested) return;
             this.deps.onUnavailable(assetId, reason);

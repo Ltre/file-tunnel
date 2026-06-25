@@ -98,6 +98,9 @@ let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
 const activeFileProgress = new Set();
 const progressHideTimers = new Map();
+const fileTransferProgressStates = new Map();
+const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
+const FORCE_RESTORE_STALL_MS = 12000;
 const directoryMirror = {
     handle: null,
     timer: null,
@@ -128,6 +131,46 @@ function getFileProgressStatus(transport = '') {
     if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
     if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
     return '';
+}
+
+function trackFileReceiveProgress(fileId, fileName, progress, transport, progressKey) {
+    const route = String(transport || '');
+    if (!fileId || (!route.includes('receiving') && !route.startsWith('received'))) return;
+    if (progress >= 100) {
+        fileTransferProgressStates.delete(fileId);
+        return;
+    }
+
+    const now = Date.now();
+    const previous = fileTransferProgressStates.get(fileId);
+    const progressed = !previous || progress > previous.progress;
+    fileTransferProgressStates.set(fileId, {
+        fileId,
+        fileName,
+        progress,
+        transport: route,
+        progressKey,
+        updatedAt: now,
+        lastProgressAt: progressed ? now : (previous.lastProgressAt || now)
+    });
+}
+
+function getFileReceiveProgressState(fileId) {
+    const progressState = fileTransferProgressStates.get(fileId);
+    if (!progressState) return null;
+    const staleForMs = Date.now() - progressState.updatedAt;
+    return {
+        ...progressState,
+        staleForMs,
+        stalled: staleForMs >= FORCE_RESTORE_STALL_MS
+    };
+}
+
+function shouldBlockForceRestore(fileId) {
+    const progressState = getFileReceiveProgressState(fileId);
+    return progressState &&
+        progressState.progress >= FORCE_RESTORE_PROGRESS_THRESHOLD &&
+        !progressState.stalled;
 }
 
 function getBinaryDataSize(data) {
@@ -234,6 +277,7 @@ async function startTunnelApplication() {
     initDragDrop();
     await loadSessionData();
     initSocket();
+    initAssetPresenceRefresh();
 }
 
 function registerServiceWorker() {
@@ -733,7 +777,7 @@ function initSocket() {
         if (data?.sessionId !== state.sessionId) return;
         await purgeLocalSession(data.sessionId);
         alert('当前传输隧道已由管理员删除。');
-        window.location.href = `${window.location.origin}${window.location.pathname}`;
+        window.location.href = `${window.location.origin}/wasted?sessionId=${encodeURIComponent(data.sessionId)}`;
     });
     state.socket.on('device-profile', data => {
         state.selfNetworkInfo = data || null;
@@ -1797,6 +1841,7 @@ function initFileAssetTransfer() {
             const progressKey = getFileProgressKey(fileId, route);
             const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
+            trackFileReceiveProgress(fileId, fileName, progress, route, progressKey);
             if (progress < 100) {
                 activeFileProgress.add(progressKey);
                 completedFileProgress.delete(progressKey);
@@ -1969,6 +2014,24 @@ async function announceStoredFileAssets() {
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
+}
+
+function initAssetPresenceRefresh() {
+    let lastRefreshAt = 0;
+    const refresh = reason => {
+        if (document.hidden || !state.socket?.connected) return;
+        const now = Date.now();
+        if (now - lastRefreshAt < 5000) return;
+        lastRefreshAt = now;
+        announceStoredFileAssets().catch(err => historyLog('file-asset-presence-refresh-failed', {
+            reason,
+            error: err.message
+        }));
+        historyLog('file-asset-presence-refresh-requested', { reason });
+    };
+    document.addEventListener('visibilitychange', () => refresh('visibilitychange'));
+    window.addEventListener('pageshow', () => refresh('pageshow'));
+    window.addEventListener('focus', () => refresh('window-focus'));
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
@@ -2703,6 +2766,24 @@ function isChatNearBottom(container) {
     return !container || container.scrollHeight - container.scrollTop - container.clientHeight < 120;
 }
 
+function preserveChatScroll(callback) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return callback();
+
+    const wasNearBottom = isChatNearBottom(container);
+    const distanceFromBottom = container.scrollHeight - container.scrollTop;
+    const restore = () => {
+        if (wasNearBottom) {
+            container.scrollTop = container.scrollHeight;
+        } else {
+            container.scrollTop = Math.max(0, container.scrollHeight - distanceFromBottom);
+        }
+    };
+    const result = callback();
+    requestAnimationFrame(restore);
+    return result;
+}
+
 async function addMessageToChat(message, isOwn, options = {}) {
     const container = document.getElementById('chatMessages');
     const shouldScroll = options.forceScroll || (options.scroll !== false && isChatNearBottom(container));
@@ -2876,6 +2957,75 @@ async function downloadFileFromMessage(messageId) {
     alert('文件尚未缓存到本机，且没有可用的远程文件来源。');
 }
 
+async function copyTextToClipboard(text) {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try {
+        copied = document.execCommand('copy');
+    } finally {
+        document.body.removeChild(textarea);
+    }
+    return copied;
+}
+
+async function shareFileMagnet(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) throw new Error('文件记录不存在');
+
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (!hasCompleteFileCache(storedFile, fileInfo)) {
+        throw new Error('本设备没有完整缓存，不能注册为种子设备');
+    }
+
+    if (fileAssetTransfer) {
+        await fileAssetTransfer.announce({
+            ...storedFile,
+            ownerDeviceId: storedFile.ownerDeviceId || fileInfo.ownerDeviceId || state.deviceId,
+            isFileAsset: true
+        });
+    }
+
+    let response = null;
+    let result = {};
+    for (let attempt = 0; attempt < 2; attempt++) {
+        response = await fetch('/api/magnets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sessionId: state.sessionId,
+                fileId: fileInfo.id
+            })
+        });
+        result = await response.json().catch(() => ({}));
+        if (response.ok || attempt === 1) break;
+        await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    if (!response.ok || !result.url) {
+        throw new Error(result.error || '服务端未返回磁链');
+    }
+
+    const copied = await copyTextToClipboard(result.url).catch(() => false);
+    alert(copied ? `磁链已复制:\n${result.url}` : `磁链已生成，请手动复制:\n${result.url}`);
+    historyLog('file-magnet-shared', {
+        messageId,
+        fileId: fileInfo.id,
+        magnetId: result.id,
+        copied
+    });
+}
+
 function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.querySelector('.file-actions')?.remove();
     messageEl.querySelector('.file-cache-retry')?.remove();
@@ -2895,6 +3045,16 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
             fileId: fileInfo.id,
             error: err.message
         }));
+    }));
+    actions.appendChild(createFileActionButton('分享磁链', '生成可分享的磁力下载链接', () => {
+        shareFileMagnet(messageEl.dataset.messageId).catch(err => {
+            alert(`磁链生成失败: ${err.message}`);
+            historyLog('file-magnet-share-failed', {
+                messageId: messageEl.dataset.messageId,
+                fileId: fileInfo.id,
+                error: err.message
+            });
+        });
     }));
     const cacheButton = cacheState.hasLocalData
         ? createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
@@ -2920,12 +3080,13 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     if (!cacheState.hasLocalData && fileInfo.isAsset) {
         const bubble = messageEl.querySelector('.message-bubble');
         if (bubble) {
+            bubble.classList.add('file-cache-retry-target');
             const retry = document.createElement('button');
             retry.type = 'button';
             retry.className = 'file-cache-retry';
             retry.title = cacheState.restoreRequested ? '正在拉取缓存，点击可重新请求' : '重新请求拉取缓存';
             retry.setAttribute('aria-label', retry.title);
-            retry.innerHTML = '<span aria-hidden="true">↻</span>';
+            retry.innerHTML = '<span aria-hidden="true"></span>';
             retry.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -3149,11 +3310,11 @@ function attachFileRecordInteractions(messageEl) {
 }
 
 function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restoreRequested = false) {
-    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+    preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const bubble = messageEl.querySelector('.message-bubble');
         if (!bubble) return;
-        bubble.className = 'message-bubble file-message';
+        bubble.className = 'message-bubble file-message file-cache-retry-target';
         bubble.removeAttribute('onclick');
         bubble.style.opacity = '0.6';
         bubble.innerHTML = `
@@ -3164,7 +3325,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
             </div>
         `;
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: false, cacheCleared, restoreRequested });
-    });
+    }));
 }
 
 async function refreshFileMessage(fileId) {
@@ -3177,7 +3338,7 @@ async function refreshFileMessage(fileId) {
         fileObjectUrls.set(fileId, url);
     }
 
-    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+    preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const type = fileInfo.type || storedFile.type;
         const name = escapeHtml(fileInfo.name || storedFile.name);
@@ -3199,7 +3360,7 @@ async function refreshFileMessage(fileId) {
             if (size) size.textContent = formatFileSize(storedFile.size);
         }
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: true, cacheCleared: false });
-    });
+    }));
 }
 
 function updateFileMessageAvailability(fileId, reason) {
@@ -3250,9 +3411,23 @@ async function restoreFileCache(messageId, options = {}) {
         return;
     }
 
+    if (options.force && shouldBlockForceRestore(fileInfo.id)) {
+        const progressState = getFileReceiveProgressState(fileInfo.id);
+        alert(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
+        historyLog('file-cache-force-restore-blocked', {
+            messageId,
+            fileId: fileInfo.id,
+            progress: progressState.progress,
+            staleForMs: progressState.staleForMs,
+            transport: progressState.transport
+        });
+        return;
+    }
+
     if (options.force) {
         fileAssetTransfer?.cancel(fileInfo.id);
         hideProgress(fileInfo.id);
+        fileTransferProgressStates.delete(fileInfo.id);
     }
 
     const storedFile = await getFromStore('files', fileInfo.id);
@@ -4031,6 +4206,234 @@ async function syncEditorContent(content) {
     return { emitted: true, contentSize };
 }
 
+async function getReferenceableSessionFiles() {
+    let files = [];
+
+    if (typeof IDBKeyRange !== 'undefined') {
+        files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
+    } else {
+        const allFiles = await getAllFromStore('files');
+        files = allFiles.filter(f => f.sessionId === state.sessionId);
+    }
+
+    return files
+        .filter(file =>
+            file &&
+            !file.isEditorAsset &&
+            !file.isPartial &&
+            !file.transferInterrupted &&
+            !file.cacheCleared &&
+            hasCompleteFileCache(file, file)
+        )
+        .filter((file, index, list) => list.findIndex(item => item.id === file.id) === index);
+}
+
+function getFilePreviewObjectUrl(file) {
+    if (!file?.id || !hasCompleteFileCache(file, file)) return '';
+    let url = fileObjectUrls.get(file.id);
+    if (!url) {
+        url = URL.createObjectURL(new Blob([file.data], { type: file.type || 'application/octet-stream' }));
+        fileObjectUrls.set(file.id, url);
+    }
+    return url;
+}
+
+function createEditorFilePickerIcon(file) {
+    const icon = document.createElement('span');
+    icon.className = 'editor-file-picker-icon';
+    icon.textContent = getFileIcon(file?.type || '');
+    return icon;
+}
+
+function updateEditorFileSelectButton(button, file) {
+    button.replaceChildren();
+    button.appendChild(createEditorFilePickerIcon(file));
+    const name = document.createElement('span');
+    name.className = 'editor-file-picker-name';
+    name.textContent = `${file.name} (${formatFileSize(file.size)})`;
+    name.title = name.textContent;
+    const arrow = document.createElement('span');
+    arrow.textContent = '▾';
+    button.append(name, arrow);
+}
+
+function createEditorFileTile(file, selectedId, onSelect) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = `editor-file-tile ${file.id === selectedId ? 'active' : ''}`.trim();
+    tile.title = file.name;
+
+    const preview = document.createElement('div');
+    preview.className = 'editor-file-tile-preview';
+    const type = String(file.type || '').toLowerCase();
+    const url = getFilePreviewObjectUrl(file);
+    if (url && type.startsWith('image/')) {
+        const image = document.createElement('img');
+        image.src = url;
+        image.alt = file.name || 'preview';
+        image.loading = 'lazy';
+        preview.appendChild(image);
+    } else if (url && type.startsWith('video/')) {
+        const video = document.createElement('video');
+        video.src = url;
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+        preview.appendChild(video);
+    } else {
+        preview.textContent = getFileIcon(file.type || '');
+    }
+
+    const name = document.createElement('div');
+    name.className = 'editor-file-tile-name';
+    name.textContent = file.name;
+    tile.append(preview, name);
+    tile.addEventListener('click', () => onSelect(file));
+    return tile;
+}
+
+function openEditorFileGrid(files, selectedId, onSelect) {
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.maxWidth = '760px';
+    modal.style.width = 'min(94vw, 760px)';
+    modal.style.textAlign = 'left';
+
+    const title = document.createElement('h3');
+    title.textContent = '选择引用文件';
+    const grid = document.createElement('div');
+    grid.className = 'editor-file-grid';
+    files.forEach(file => {
+        grid.appendChild(createEditorFileTile(file, selectedId, selected => {
+            onSelect(selected);
+            dialog.remove();
+        }));
+    });
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn btn-secondary';
+    close.textContent = '关闭';
+    close.addEventListener('click', () => dialog.remove());
+    actions.appendChild(close);
+    modal.append(title, grid, actions);
+    dialog.appendChild(modal);
+    document.body.appendChild(dialog);
+}
+
+async function insertEditorReferencedFile(file, savedRange, insertEditorHtml, editor, syncEditorNow) {
+    let refHtml = '';
+    if (file.type.startsWith('image/')) {
+        const asset = await createEditorAssetFromStoredFile(file);
+        refHtml = createEditorAssetHtml(asset);
+    } else {
+        refHtml = `<span data-tunnel-file-ref-id="${escapeHtml(file.id)}" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${file.id}')">${getFileIcon(file.type)} ${escapeHtml(file.name)}</span>`;
+    }
+
+    if (getEditorContentSize(editor.innerHTML + refHtml) > MAX_EDITOR_CONTENT_SIZE) {
+        historyLog('editor-file-reference-rejected', {
+            reason: 'content-too-large',
+            fileId: file.id,
+            fileSize: file.size
+        });
+        throw new Error('引用内容过大，无法同步到其它设备');
+    }
+
+    insertEditorHtml(refHtml, savedRange);
+    await hydrateEditorAssets(editor);
+    await syncEditorNow(file.type.startsWith('image/') ? 'image-reference-inserted' : 'file-reference-inserted');
+}
+
+function openEditorFileReferenceDialog(files, savedRange, insertEditorHtml, editor, syncEditorNow) {
+    let selectedFile = files[0];
+    const dialog = document.createElement('div');
+    dialog.className = 'modal-overlay active';
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+
+    const title = document.createElement('h3');
+    title.textContent = '引用文件';
+
+    const picker = document.createElement('div');
+    picker.className = 'editor-file-reference-picker';
+    const select = document.createElement('div');
+    select.className = 'editor-file-select';
+    const selectButton = document.createElement('button');
+    selectButton.type = 'button';
+    selectButton.className = 'editor-file-select-button';
+    const menu = document.createElement('div');
+    menu.className = 'editor-file-select-menu';
+
+    const renderOptions = () => {
+        menu.replaceChildren();
+        files.forEach(file => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = `editor-file-option ${file.id === selectedFile.id ? 'active' : ''}`.trim();
+            option.appendChild(createEditorFilePickerIcon(file));
+            const name = document.createElement('span');
+            name.className = 'editor-file-picker-name';
+            name.textContent = `${file.name} (${formatFileSize(file.size)})`;
+            name.title = name.textContent;
+            option.appendChild(name);
+            option.addEventListener('click', () => {
+                selectedFile = file;
+                updateEditorFileSelectButton(selectButton, selectedFile);
+                renderOptions();
+                select.classList.remove('open');
+            });
+            menu.appendChild(option);
+        });
+    };
+
+    updateEditorFileSelectButton(selectButton, selectedFile);
+    renderOptions();
+    selectButton.addEventListener('click', () => select.classList.toggle('open'));
+    select.append(selectButton, menu);
+
+    const gridButton = document.createElement('button');
+    gridButton.type = 'button';
+    gridButton.className = 'editor-file-grid-button';
+    gridButton.title = '以方阵查看文件';
+    gridButton.setAttribute('aria-label', '以方阵查看文件');
+    gridButton.textContent = '▦';
+    gridButton.addEventListener('click', () => {
+        openEditorFileGrid(files, selectedFile.id, file => {
+            selectedFile = file;
+            updateEditorFileSelectButton(selectButton, selectedFile);
+            renderOptions();
+        });
+    });
+    picker.append(select, gridButton);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-secondary';
+    cancel.textContent = '取消';
+    cancel.addEventListener('click', () => dialog.remove());
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'btn btn-primary';
+    confirm.textContent = '插入';
+    confirm.addEventListener('click', async () => {
+        try {
+            await insertEditorReferencedFile(selectedFile, savedRange, insertEditorHtml, editor, syncEditorNow);
+            dialog.remove();
+        } catch (err) {
+            alert(err.message);
+        }
+    });
+    actions.append(cancel, confirm);
+    modal.append(title, picker, actions);
+    dialog.appendChild(modal);
+    document.body.appendChild(dialog);
+}
+
 function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
@@ -4179,6 +4582,13 @@ function initEditor() {
     document.getElementById('insertFileBtn').addEventListener('click', async () => {
         editor.focus();
         const savedRange = getEditorSelectionRange();
+        const referenceFiles = await getReferenceableSessionFiles();
+        if (referenceFiles.length === 0) {
+            alert('暂无文件可引用');
+            return;
+        }
+        openEditorFileReferenceDialog(referenceFiles, savedRange, insertEditorHtml, editor, syncEditorNow);
+        return;
         // 获取当前会话的所有文件 - 兼容性处理
         let files = [];
         

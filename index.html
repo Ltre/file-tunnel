@@ -252,6 +252,11 @@
             position: relative;
         }
 
+        .message.file-record .message-bubble.file-cache-retry-target {
+            overflow: hidden;
+            min-height: 72px;
+        }
+
         .message.file-record .file-actions {
             cursor: default;
         }
@@ -282,7 +287,36 @@
 
         .file-cache-retry span {
             display: block;
+            position: relative;
+            width: 28px;
+            height: 28px;
+            border: 3px solid rgba(255, 255, 255, 0.86);
+            border-left-color: transparent;
+            border-bottom-color: transparent;
+            border-radius: 50%;
             animation: file-cache-retry-spin 1.5s linear infinite;
+        }
+
+        .file-cache-retry span::before,
+        .file-cache-retry span::after {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            border-top: 3px solid rgba(255, 255, 255, 0.9);
+            border-right: 3px solid rgba(255, 255, 255, 0.9);
+            content: "";
+        }
+
+        .file-cache-retry span::before {
+            top: -4px;
+            right: 1px;
+            transform: rotate(36deg);
+        }
+
+        .file-cache-retry span::after {
+            bottom: -4px;
+            left: 1px;
+            transform: rotate(216deg);
         }
 
         .file-cache-retry:focus-visible {
@@ -308,6 +342,154 @@
         
         .file-info {
             flex: 1;
+        }
+
+        .editor-file-reference-picker {
+            display: flex;
+            align-items: stretch;
+            gap: 8px;
+            margin: 15px 0;
+        }
+
+        .editor-file-select {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            text-align: left;
+        }
+
+        .editor-file-select-button,
+        .editor-file-grid-button {
+            width: 100%;
+            min-height: 46px;
+            border: 1px solid #d8dfec;
+            border-radius: 8px;
+            background: #fff;
+            color: #273451;
+            cursor: pointer;
+        }
+
+        .editor-file-select-button {
+            display: grid;
+            grid-template-columns: 34px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+        }
+
+        .editor-file-grid-button {
+            display: grid;
+            width: 46px;
+            flex: 0 0 46px;
+            place-items: center;
+            font-size: 1.25rem;
+        }
+
+        .editor-file-select-menu {
+            position: absolute;
+            right: 0;
+            left: 0;
+            z-index: 10;
+            display: none;
+            max-height: 230px;
+            margin-top: 6px;
+            overflow: auto;
+            border: 1px solid #d8dfec;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 12px 28px rgba(29, 42, 73, 0.16);
+        }
+
+        .editor-file-select.open .editor-file-select-menu {
+            display: block;
+        }
+
+        .editor-file-option {
+            display: grid;
+            width: 100%;
+            grid-template-columns: 34px minmax(0, 1fr);
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border: 0;
+            background: transparent;
+            color: #273451;
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .editor-file-option:hover,
+        .editor-file-option.active {
+            background: #f0f4ff;
+        }
+
+        .editor-file-picker-icon {
+            display: grid;
+            width: 30px;
+            height: 30px;
+            place-items: center;
+            border-radius: 7px;
+            background: #eef3ff;
+            font-size: 1rem;
+        }
+
+        .editor-file-picker-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .editor-file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+            gap: 10px;
+            max-height: min(62vh, 520px);
+            margin: 14px 0;
+            overflow: auto;
+        }
+
+        .editor-file-tile {
+            display: grid;
+            grid-template-rows: 1fr auto;
+            min-height: 126px;
+            overflow: hidden;
+            border: 1px solid #dfe5f1;
+            border-radius: 8px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .editor-file-tile:hover,
+        .editor-file-tile.active {
+            border-color: #667eea;
+            box-shadow: 0 8px 18px rgba(74, 92, 170, 0.14);
+        }
+
+        .editor-file-tile-preview {
+            display: grid;
+            aspect-ratio: 1 / 1;
+            place-items: center;
+            overflow: hidden;
+            background: #f5f7fb;
+            color: #5e6a83;
+            font-size: 2rem;
+        }
+
+        .editor-file-tile-preview img,
+        .editor-file-tile-preview video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .editor-file-tile-name {
+            overflow: hidden;
+            padding: 7px 8px;
+            color: #273451;
+            font-size: 0.78rem;
+            text-align: left;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         
         .file-name {
@@ -885,6 +1067,16 @@
             cursor: grab;
         }
 
+        .transfer-progress.collapsed .transfer-progress-toggle::after {
+            content: "拖动";
+            border: 1px solid #d8deeb;
+            border-radius: 999px;
+            color: #68748b;
+            font-size: 0.72rem;
+            line-height: 1;
+            padding: 4px 7px;
+        }
+
         .transfer-progress.dragging .transfer-progress-toggle {
             cursor: grabbing;
         }
@@ -975,6 +1167,10 @@
             width: min(92vw, 480px);
             max-width: 480px;
             text-align: left;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
         }
 
         .file-details-modal h3 {
@@ -1325,7 +1521,7 @@
 
         @media (max-width: 767px) {
             :root {
-                --mobile-workspace-nav-height: calc(70px + env(safe-area-inset-bottom));
+                --mobile-workspace-nav-height: calc(82px + env(safe-area-inset-bottom));
                 --tunnel-topbar-height: calc(54px + env(safe-area-inset-top));
             }
 
@@ -1334,6 +1530,13 @@
                 height: 100%;
                 overflow: hidden;
                 background: #f4f6fb;
+            }
+
+            @supports (height: 100dvh) {
+                html,
+                body {
+                    height: 100dvh;
+                }
             }
 
             #appShell.container {
@@ -1393,7 +1596,8 @@
                 -webkit-overflow-scrolling: touch;
                 overscroll-behavior: contain;
                 touch-action: pan-y;
-                padding: 16px 14px calc(16px + env(safe-area-inset-bottom));
+                padding: 16px 14px calc(28px + env(safe-area-inset-bottom));
+                scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
             }
 
             .left-panel .panel-content {
@@ -1415,7 +1619,7 @@
                 min-height: 0;
                 flex-direction: column;
                 gap: 10px;
-                padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+                padding: calc(12px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
             }
 
             .chat-messages {
@@ -1428,6 +1632,7 @@
                 -webkit-overflow-scrolling: touch;
                 overscroll-behavior: contain;
                 touch-action: pan-y;
+                scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
             }
 
             .transfer-progress {
@@ -1477,6 +1682,7 @@
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
                 height: var(--mobile-workspace-nav-height);
+                min-height: 74px;
                 padding-bottom: env(safe-area-inset-bottom);
                 border-top: 1px solid #dfe4ee;
                 background: rgba(255, 255, 255, 0.96);
