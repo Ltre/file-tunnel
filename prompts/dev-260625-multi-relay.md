@@ -648,6 +648,541 @@ admin.html、app.js、downloader.html、server.js、service-worker.js，新增 d
  - BUG：从不同的设备访问admin管理页的隧道列表，哪台设备加入隧道越多，那么在admin页显示的隧道列表越多。admin页的隧道列表不是应该在哪里打开都应该一致吗？是不是获取算法有问题，导致在不同的设备访问admin无法获取全面，这我就有点怀疑代码里的嗅探算法了！如果不好做，交给服务器存！不过尽量先不要考虑服务器存，实在做不到再考虑。
  - BUG：我拿了一台新设备，输入了一个已经被多台其它设备玩到烂的隧道短码，结果在这台设备提示短码无效，接着我就把这个被玩烂的隧道完整链接，发给这台新设备打开，于是就真的能进入隧道了！一定要让短码靠谱，一定要能让全新的设备成功进隧道！
 
+
+答：
+
+我先把这两个问题当成同一个根因排查：短码和 admin 隧道列表现在很可能混入了“本机 IndexedDB 视角”，而不是纯服务器全局视角；短码映射也可能只靠某些客户端上线后上报，导致新设备查不到。先看 admin 和短码服务端逻辑。
+
+
+
+
+已运行 4 条命令
+
+
+admin 列表的 BUG 基本确定了：admin 页把“服务器返回的隧道”跟“当前浏览器本机 IndexedDB 里的隧道历史”合并了，所以哪台设备本地进过的隧道多，admin 就显示越多。这不该发生。我会把 admin 隧道列表改成以服务器 /api/sessions 为唯一来源，本地 IndexedDB 只在 API 失败时兜底，避免不同设备看到不同列表。短码问题继续看服务端映射。
+
+
+
+
+已运行 4 条命令
+
+
+短码这里也看到风险：join-by-short-code 只查服务器当前 shortCodes 内存表；如果这张表没有被某台在线设备提前上报，短码就无效，但完整链接能直接 join-session 创建/进入隧道。修法是：当任何设备通过完整链接进入隧道并带着本地短码时，服务器要可靠地注册；同时新设备查短码时，如果内存表没有，服务端要有一个“已知短码目录”的兜底。继续定位 register-session-codes。
+
+
+
+
+已运行 2 条命令
+
+
+服务端确实没有处理客户端发来的 register-session-codes，所以客户端虽然“上报已知短码目录”，服务端根本没接。这个会导致短码可靠性差。我要补服务端接收，并让 /api/short-codes/:code 只要服务端已知映射就返回 sessionId，不再因为当前 sessions map 一时没有而直接判无效。
+
+
+
+
+编辑了 1 个文件
+
+
+admin 隧道列表已经改为只用服务器返回的 /api/sessions，本地 IndexedDB 不再参与合并；只有 API 整体失败时才会走原来的本地兜底。接着补短码服务端。
+
+
+
+
+编辑了 1 个文件
+
+
+HTTP 短码查询不再要求 sessions.has(sessionId)，避免“服务器已知短码但会话对象短暂不存在”时误判无效。现在补 Socket 上报目录的处理。
+
+
+
+
+编辑了 1 个文件
+
+
+我再补一个小保险：删除/过期隧道时，不只删 session.shortCode，而是清掉所有指向该 sessionId 的短码映射，避免旧短码残留。
+
+
+
+
+编辑了 1 个文件
+
+
+现在把已有的删除点替换成清理所有映射。
+
+
+
+
+编辑了 1 个文件
+
+
+再把注册逻辑稍微收紧：如果服务端已经有这个隧道且官方短码不同，就拒绝旧短码，避免历史客户端把过期短码重新塞回来。
+
+
+
+
+编辑了 1 个文件
+
+
+代码改完了。现在跑语法和定点 diff 检查。
+
+
+
+
+已运行 4 条命令
+
+
+
+上下文已自动压缩
+
+
+
+我先把刚才已经动过的两处重新验一下，重点确认没有语法问题、也没有把其它旧逻辑误碰掉。这个问题的根子很像“admin 用了本机 IndexedDB 补数据”和“服务端没接住客户端上报短码目录”两条线叠在一起。
+
+
+
+
+已运行 3 条命令
+
+
+git diff --check 被 admin.html 既有的行尾空白/换行格式噪声刷屏了，不适合作为这次小改的判断依据。我再用更聚焦的 diff 看看实际改动范围，避免把文件格式问题误当成业务改动。
+
+
+
+
+已运行 3 条命令
+
+
+我看到 admin.html 的 diff 被换行格式放大成了整文件改动，这种东西最容易埋雷。我先把它收回到“只有业务改动”的状态，再继续验收，这样后面你看 diff 也不会像被炸过一样。
+
+
+
+
+已运行 2 条命令
+
+
+业务 diff 本身只有一小段，但普通 diff 被行尾差异污染了。我现在只做换行格式修正，不改业务逻辑。
+
+
+
+
+已运行 2 条命令
+
+
+admin.html 现在是混合换行，994 行 CRLF、少数 LF，这就是 diff 爆炸的原因。我会把它统一回仓库里的 LF，随后只留下那几行业务改动。
+
+
+
+
+已运行 node -e "const fs=require('fs'); const f='admin.html'; const s=fs.readFileSync(f,'utf8').replace(/\r\n/g,'\n'); fs.writeFileSync(f,s,'utf8');"
+
+
+
+
+
+
+
+行尾已经整理完了；接下来我再做最后一轮小范围验证，确认 admin 列表和短码相关改动就是我们预期的几处。
+
+
+
+
+已运行 4 条命令
+
+
+验证结果干净了：server.js 语法检查通过，git diff --check 也没有新增空白问题。最后我看一下实际 diff 内容，确认没有多余改动。
+
+
+【插句话：作为这种即时传输隧道的应用，打着分布式的口号，虽然不存文件，但是像隧道、设备ID、短码等基础设施，是不是在服务器保存很合理呢？】
+
+实际 diff 现在已经很小：admin.html 只改 admin 列表来源，server.js 只改短码注册/解析和删除清理。没有暂存、没有提交。
+
+
+
+
+已运行 2 条命令
+
+
+已引导对话
+
+
+
+
+合理，而且我觉得应该这么做。
+“分布式 / P2P”重点应该放在文件内容、媒体流、富文本资源、大文件分片这些高成本/隐私敏感数据不落服务器；但下面这些属于基础设施元数据，放服务器反而更稳：
+隧道 ID 与短码映射
+短码占用/释放状态
+设备 ID、设备名称、最后上线时间、IP 摘要
+隧道在线设备列表
+已分享磁链索引、种子设备索引
+admin 页面需要看的全局隧道列表
+尤其是你现在遇到的两个问题，本质上都说明“完全靠客户端分布式上报基础索引”不够可靠：
+admin 页在哪台设备打开结果不一致
+说明它不该依赖本机 IndexedDB 或本机看到过的隧道。
+
+新设备输入短码失败，但完整 hash 链接能进
+说明短码映射这种入口级数据不应该只靠在线客户端临时广播恢复。
+
+我建议架构边界这样定：
+服务器保存：轻量元数据索引。
+不保存文件正文，不保存聊天正文也可以，但至少保存隧道、短码、设备、磁链索引。
+浏览器保存：文件缓存、富文本资源、历史记录副本。
+用于离线恢复、P2P 供种、减少重复拉取。
+P2P 负责：文件内容传输、多源分片、实时媒体。
+这样并不违背“分布式”，反而是更成熟的混合架构：服务器做协调平面，客户端做数据平面。你这个应用发展到现在，短码、隧道、设备索引已经明显属于“协调平面”，该让服务器兜底了。
+
+我刚才已经把那两个 BUG 的代码改完并验证过了，当前还停在 dev-260625-multi-relay-NEWCODE，没有暂存、没有提交。
+已处理：
+admin 页隧道列表不一致
+现在 admin 页不再把本机 IndexedDB 的隧道历史混进列表，只展示服务器 /api/sessions 返回的隧道，所以不同设备打开 admin 页应该一致。
+
+新设备输入旧短码无效
+服务端现在接收客户端上线时上报的“会话 ID ↔ 短码”目录，且短码解析不再因为服务端内存里暂时没有该会话对象就判无效。
+
+已验证：
+node --check server.js 通过
+git diff --check -- server.js admin.html 通过
+diff 范围已控制在 admin.html 和 server.js
+但我也要明确说一句：如果你希望“服务器重启后、所有老设备都不在线时，新设备仍然能用短码进隧道”，那就需要服务器持久化保存短码映射。现在这个版本是按你之前“尽量先不要服务器存”的思路做的分布式上报增强。
+
+
+【“服务器重启后、所有老设备都不在线时，新设备仍然能用短码进隧道” 这是必要的】
+
+
+明白，那这就不能再靠“在线客户端上报”兜底了，短码映射必须落到服务器本地持久化。我要按最小改动处理：只给短码目录加一个服务器端小型 JSON 存储，让重启后仍能解析旧短码，同时保留现有客户端上报作为补充同步。
+
+
+
+
+已运行 3 条命令
+
+
+现在服务端已经有 fs/path，没有现成数据库。我会加一个隐藏目录里的 short-codes.json，启动时加载，创建/注册/删除短码时原子写回；这样不引入新依赖，风险也小。
+
+
+
+
+已运行 3 条命令
+
+
+这里还有一个关键点：不能再让“空会话过期清理”释放短码。你之前已经定过“只有会话被删除时短码才能释放”，所以我会让过期清理只清内存会话，不删持久短码；admin 删除会话才释放对应短码。
+
+
+
+
+编辑了 1 个文件
+
+
+持久化函数已经加上了。接下来把原来几处 shortCodes.delete(...) 换成会写回磁盘的删除函数，并调整过期清理不再释放短码。
+
+
+
+
+编辑了 1 个文件
+
+
+还有一个边界：如果服务端重启后内存里没有这个会话，但管理员删除这个会话 ID，也应该释放持久化短码。我顺手把这个边界补上，否则“只有删除会话才释放短码”会在重启后失效。
+
+
+
+
+编辑了 1 个文件执行了 3 条命令
+
+
+我发现一个必须补的点：仅持久化还不够。重启后如果用户用旧短码进来，join-session 不能再给这个隧道重新生成新短码，必须先查“这个 sessionId 已经有没有短码”。我会把短码关系收紧成一对一：一个隧道只保留一个短码，一个短码只指向一个隧道。
+
+
+
+
+编辑了 1 个文件
+
+
+短码稳定性这块补好了。为了避免服务器运行后生成的 .tunnel-data/short-codes.json 被误提交，我再检查一下忽略规则；如果没有，就加一条。
+
+
+
+
+已运行 2 条命令
+
+
+.gitignore 里还没有运行期数据目录，我加一条 .tunnel-data/，这样生产服务器的短码存储不会被误纳入源码。
+
+
+
+
+编辑了 1 个文件执行了 4 条命令
+
+
+.gitignore 也被 Windows 换行放大了 diff，我会像刚才一样把它统一回 LF，只留下新增 .tunnel-data/ 这一行。
+
+
+
+
+已运行 5 条命令
+
+
+语法和空白检查都过了。现在我再看一遍 diff，重点确认：短码会写入 .tunnel-data/short-codes.json，重启后会读取，过期清理不会释放短码，admin 删除才释放。
+
+
+
+
+已运行 3 条命令
+
+
+我已经把“必要”落实成代码了：短码映射现在是服务器持久化数据，不再只是内存数据。最后我取一下行号，方便你核对。
+
+
+
+
+已运行 2 条命令
+
+
+
+
+
+已经补上了，没暂存、没提交。
+这次改动要点：
+[server.js (line 18)](/D:/Workspace/github/Ltre/file-tunnel/server.js:18) 新增服务器本地持久化目录 .tunnel-data/short-codes.json。
+[server.js (line 532)](/D:/Workspace/github/Ltre/file-tunnel/server.js:532) 启动时读取短码映射。
+[server.js (line 547)](/D:/Workspace/github/Ltre/file-tunnel/server.js:547) 创建、注册、删除短码时原子写回 JSON。
+[server.js (line 579)](/D:/Workspace/github/Ltre/file-tunnel/server.js:579) 如果某个隧道已有短码，重启后重新加入也不会生成新短码。
+[server.js (line 1977)](/D:/Workspace/github/Ltre/file-tunnel/server.js:1977) 空会话过期清理不再释放短码，只有 admin 删除会话才释放。
+[.gitignore (line 17)](/D:/Workspace/github/Ltre/file-tunnel/.gitignore:17) 忽略 .tunnel-data/，避免运行期短码数据被提交。
+[admin.html (line 430)](/D:/Workspace/github/Ltre/file-tunnel/admin.html:430) 保留上一轮修复：admin 隧道列表只按服务器数据展示，不再混入本机 IndexedDB。
+已验证：
+node --check server.js 通过
+git diff --check -- .gitignore admin.html server.js 通过
+现在满足你说的必要条件：服务器重启后，即使所有老设备都不在线，只要 .tunnel-data/short-codes.json 还在，新设备输入旧短码仍应能解析到原来的隧道 ID。
+
+
+【那有没有考虑高并发情况下，存储这些基础设施有没有可能出现数据保存错误、崩溃等等】
+
+考虑了基础版，但还不是“高并发生产级”的最终形态。
+现在这版的短码持久化是：
+单 Node 进程内：相对安全。Node 事件循环是单线程，fs.writeFileSync + renameSync 是同步写入，同一进程内不会两个写同时穿插。
+崩溃场景：比直接覆盖 JSON 安全一些，因为先写临时文件，再 rename 替换正式文件。进程中途崩溃通常最多留下一个 .tmp，不太会写坏正式文件。
+低并发/中小规模：够用，尤其你这个基础设施数据量很小。
+但它确实有几个高并发风险：
+多进程部署会有竞争
+如果以后用 PM2 cluster、多个 Node 进程、Docker 多副本，就可能多个进程同时写 .tunnel-data/short-codes.json，最后写入者覆盖前一个写入者。
+
+同步写文件会短暂阻塞服务
+短码创建/注册很频繁时，writeFileSync 会阻塞事件循环。现在短码数据很小，影响不大，但不是无限扩展方案。
+
+磁盘异常仍会失败
+比如磁盘满、权限错误、杀毒软件锁文件、目录不可写，当前只会 console.error，不会进一步告警或回滚业务动作。
+
+JSON 文件损坏时没有恢复机制
+当前读取失败会当作空表。严格来说应该保留 .bak 或做校验，避免一次文件损坏导致短码目录丢失。
+
+更稳的下一步我建议这样分级：
+短期增强：JSON 文件加 .bak 备份、写失败时拒绝创建新短码、启动时坏文件自动从 .bak 恢复。
+中期稳妥：改用 SQLite。单机服务器最合适，支持事务、唯一索引、并发读写，比手写 JSON 靠谱很多。
+长期多机：Redis/PostgreSQL，把短码、设备索引、磁链索引都作为协调平面数据存进去。
+如果你问“现在这版会不会高并发下保存错”，答案是：单进程基本不会乱写；多进程/多副本不可靠。
+你目前如果只是一个 Node 进程跑在 Windows Server 上，先能用；如果要长期生产，我建议下一步把基础设施元数据迁到 SQLite。
+
+
+【我建议现在就用sqlite，且选择一个适合多平台、稳定的sqlite库，确保在何处都能顺利npm install】
+
+
+同意，基础设施元数据现在就上 SQLite 更稳。库选择我会先看项目当前依赖和 Node 版本约束，再选“安装成功率”优先的方案；这类 Windows Server 部署场景，我会尽量避开需要本机编译的 native 包。
+
+
+
+
+已运行 4 条命令已搜索网页
+
+
+我这边判断下来，better-sqlite3/sqlite3 这类 native 包性能最好，但在 Windows Server、不同 Node ABI、无编译工具链环境下最容易卡安装。为了“到哪里都能 npm install”，我会用 sql.js：SQLite 官方引擎编译成 WASM，纯 npm 包，不需要 node-gyp 和本机 SQLite。基础设施元数据很小，够用且部署摩擦最低。
+
+
+
+
+已运行 npm install sql.js
+
+
+
+
+
+
+
+PowerShell 的执行策略拦了 npm.ps1，这是 Windows 常见坑。我改用 npm.cmd，同一个 npm，不绕权限。
+
+
+
+
+已运行 npm.cmd install sql.js
+
+
+
+
+
+
+
+当前 npm 被配置成离线缓存模式，sql.js 本地缓存里没有，所以需要临时联网拉一次依赖和更新 lockfile。我会请求一次 npm 安装授权。
+
+
+
+
+已运行 2 条命令
+
+
+这里我不只迁短码。既然问题已经扩展到“admin 隧道列表”和“新设备短码入口”，SQLite 里会放三类协调平面数据：隧道、短码映射、访问设备索引。文件内容仍然不落服务器。
+
+
+
+
+已创建 1 个文件执行了 2 条命令
+
+
+现在开始把 server 里的 JSON/内存短码逻辑接到 SQLite。为了控制风险，我会保留一层内存 cache 给现有调用用，但真正的权威数据来自 .tunnel-data/infra.sqlite。
+
+
+
+
+编辑了 2 个文件
+
+
+接下来我会替换短码函数实现，并把 admin 列表改为“SQLite 隧道表 + 当前内存在线状态/消息计数”的合并视图。这样在哪台设备打开 admin 都看同一份服务器协调数据。
+
+
+
+
+编辑了 1 个文件
+
+
+短码函数已经接到 SQLite。现在处理 /api/sessions：不再只扫内存 sessions，而是以 SQLite 隧道表为基准，再叠加当前在线设备数和内存历史计数。
+
+
+
+
+正在编辑 1 个文件执行了 1 条命令正在编辑 1 个文件执行了 1 条命令
+
+
+这里源码里有一段注释和 app.get 挤在同一行，之前就存在；我会只替换 handler 内部，不动周边编码噪声。
+
+
+
+
+编辑了 1 个文件
+
+
+设备索引也接上了：每次设备上线/离线会写 SQLite，admin 的设备列表就不再只依赖当前浏览器/当前内存。接下来把隧道 join 时也写入 SQLite。
+
+
+
+
+正在编辑 1 个文件执行了 2 条命令正在编辑 1 个文件执行了 2 条命令
+
+
+这一段有不可见字符/编码导致 patch 精准匹配失败，我换一种更局部的方式插入，不改变周边已有文本。
+
+
+
+
+编辑了 1 个文件执行了 1 条命令
+
+
+接下来处理启动顺序：服务器要先打开/迁移 SQLite，再开始监听端口。否则刚启动瞬间的请求可能碰到存储未就绪。
+
+
+
+
+编辑了 1 个文件正在编辑 1 个文件执行了 1 条命令编辑了 1 个文件正在编辑 1 个文件执行了 1 条命令
+
+
+我还要补一个兼容：上一版刚说过 .tunnel-data/short-codes.json，如果你已经跑过那版，不能升级 SQLite 后丢掉旧短码。我会在启动时自动迁移这个旧 JSON 到 SQLite。
+
+
+
+
+编辑了 1 个文件
+
+
+我会用非常保守的迁移方式：读旧 JSON，逐条 reserve 到 SQLite，成功后把旧文件改名为 .migrated，不直接删除。
+
+
+
+
+编辑了 1 个文件
+
+
+迁移函数加好了；接下来把它接进启动链路。
+
+
+
+
+编辑了 1 个文件
+
+
+现在做验证：先跑语法检查，再用临时目录实际打开一次 sql.js 数据库、写入短码、读回短码，确认 WASM SQLite 在当前环境能启动。
+
+
+
+
+已运行 3 条命令
+
+
+SQLite smoke test通过了，说明依赖和 WASM 加载没问题。我再检查 diff 和空白，尤其 package-lock 经 npm 修改后可能会有格式变化。
+
+
+
+
+已运行 4 条命令
+
+
+检查通过了，server/infra-store.js 是新文件，所以 git diff --stat 默认没算它。我再看完整状态和关键 diff，确认 package 只新增了 sql.js。
+
+
+
+
+已运行 3 条命令
+
+
+我再补一个更贴近真实场景的 smoke test：写入 SQLite 文件、关闭当前实例、重新打开同一个文件并读回短码，模拟服务端重启后的行为。
+
+
+
+
+已运行 node -e "const fs=require('fs'); const os=require('os'); const path=require('path'); const {createInfraStore}=require('./server/infra-store'); (async()=>{ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'file-tunnel-infra-')); try { let s=await createInfraStore({dataDir:dir}); s.reserveShortCode('Z9Y8X','3a3de710-ab01-45ec-92c6-5c957bc3cdb9'); s=null; const reopened=await createInfraStore({dataDir:dir}); const sid=reopened.findSessionIdByShortCode('Z9Y8X'); if(sid!=='3a3de710-ab01-45ec-92c6-5c957bc3cdb9') throw new Error('sqlite reopen smoke failed'); console.log('sqlite reopen smoke ok'); } finally { fs.rmSync(dir,{recursive:true,force:true}); } })().catch(err=>{ console.error(err); process.exit(1); });"
+
+
+
+
+
+
+
+重启模拟也通过了：写入短码后重新打开 SQLite 文件，可以读回同一个隧道 ID。最后收尾看状态。
+
+
+
+
+已运行 3 条命令
+
+
+
+
+
+已按你的建议改成 SQLite 方案，且选了 sql.js，原因是它是 SQLite 的 WASM 版本，不依赖 node-gyp、Python、C++ 编译工具链或本机 SQLite，Windows Server / Linux / macOS 上 npm install 成功率更高。
+这次完成的改动：
+新增 [server/infra-store.js](/D:/Workspace/github/Ltre/file-tunnel/server/infra-store.js)，负责 SQLite 基础设施存储。
+新增依赖 sql.js，已更新 [package.json](/D:/Workspace/github/Ltre/file-tunnel/package.json) 和 [package-lock.json](/D:/Workspace/github/Ltre/file-tunnel/package-lock.json)。
+SQLite 文件落在 .tunnel-data/infra.sqlite，已在 [.gitignore (line 17)](/D:/Workspace/github/Ltre/file-tunnel/.gitignore:17) 忽略。
+服务端启动时先初始化 SQLite，再监听端口。
+隧道、短码、设备访问索引开始写入 SQLite。
+/api/sessions 现在以 SQLite 隧道表为基准，再叠加当前在线状态。
+/api/devices 现在会合并 SQLite 中的历史设备和当前在线设备。
+兼容上一版 .tunnel-data/short-codes.json，启动时会自动迁移到 SQLite，并把旧文件改名为 .migrated。
+已验证：
+node --check server.js 通过
+node --check server/infra-store.js 通过
+SQLite 写入短码、读回短码 smoke test 通过
+模拟重启后重新打开 SQLite 文件，仍能读回短码映射
+git diff --check 通过
+没有暂存、没有提交。当前改动文件包括 .gitignore、admin.html、package.json、package-lock.json、server.js，以及新文件 server/infra-store.js。
+
+
+
 --------------------------------
 
 
