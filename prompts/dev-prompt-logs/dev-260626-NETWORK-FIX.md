@@ -662,3 +662,7 @@ PWA 缓存版本升到 instant-tunnel-v20。
  - 那就做 HTTP Range/WebTransport relay，不要让Socket.IO relay 作为最后兜底存在。
  - 请加入设备对设备的网络画像：记录上次成功 route、RTT、是否 IPv6、是否 TURN，并作为下一次传输的链路排序依据。
 
+
+
+
+.
