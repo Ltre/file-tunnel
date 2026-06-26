@@ -2187,8 +2187,9 @@ function scheduleStoredFileAssetAnnounce(reason, delay = 700) {
 
 function initAssetPresenceRefresh() {
     let lastRefreshAt = 0;
-    const refresh = reason => {
-        if (document.hidden || !state.socket?.connected) return;
+    const refresh = (reason, options = {}) => {
+        if (document.hidden && !options.allowHidden) return;
+        if (!state.socket?.connected) return;
         const now = Date.now();
         if (now - lastRefreshAt < 5000) return;
         lastRefreshAt = now;
@@ -2201,6 +2202,7 @@ function initAssetPresenceRefresh() {
     document.addEventListener('visibilitychange', () => refresh('visibilitychange'));
     window.addEventListener('pageshow', () => refresh('pageshow'));
     window.addEventListener('focus', () => refresh('window-focus'));
+    setInterval(() => refresh('presence-heartbeat', { allowHidden: true }), 30000);
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
@@ -2690,6 +2692,28 @@ async function storeInlineFileData(message, source) {
     return true;
 }
 
+function shouldAutoRequestFileAssetCache(storedFile, fileInfo) {
+    return fileInfo?.isAsset &&
+        !hasCompleteFileCache(storedFile, fileInfo) &&
+        (!storedFile?.cacheCleared || storedFile.restoreRequested);
+}
+
+async function requestMissingFileAssetCache(message, reason) {
+    const fileInfo = message?.fileInfo;
+    if (!fileAssetTransfer || !fileInfo?.id || !fileInfo.isAsset) return;
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (!shouldAutoRequestFileAssetCache(storedFile, fileInfo)) return;
+    await fileAssetTransfer.request(
+        fileInfo.id,
+        fileInfo.ownerDeviceId || message.sender,
+        fileInfo
+    );
+    historyLog('file-asset-cache-backfill-requested', {
+        reason,
+        message: summarizeHistoryMessage(message)
+    });
+}
+
 async function handleMessage(data) {
     const { message } = data;
 
@@ -2731,7 +2755,7 @@ async function handleMessage(data) {
         message: summarizeHistoryMessage(message)
     });
 
-    await addMessageToChat(message, false);
+    await addMessageToChat(message, false, { autoRequestAsset: false });
     historyLog('realtime-message-rendered', {
         message: summarizeHistoryMessage(message)
     });
@@ -2794,18 +2818,8 @@ async function handleSessionHistory(data) {
                     reason: 'already-in-indexeddb',
                     message: summarizeHistoryMessage(message)
                 });
-                if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
-                    const storedFile = await getFromStore('files', message.fileInfo.id);
-                    if (!hasCompleteFileCache(storedFile, message.fileInfo) && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
-                        await fileAssetTransfer.request(
-                            message.fileInfo.id,
-                            message.fileInfo.ownerDeviceId || message.sender,
-                            message.fileInfo
-                        );
-                        historyLog('snapshot-file-asset-backfill-requested', {
-                            message: summarizeHistoryMessage(message)
-                        });
-                    }
+                if (message.type === 'file' && message.fileInfo?.isAsset) {
+                    await requestMissingFileAssetCache(message, 'snapshot-duplicate');
                 }
                 continue;
             }
@@ -2829,15 +2843,8 @@ async function handleSessionHistory(data) {
             historyLog('snapshot-message-rendered', {
                 message: summarizeHistoryMessage(message)
             });
-            if (message.type === 'file' && message.fileInfo?.isAsset && message.sender !== state.deviceId) {
-                const storedFile = await getFromStore('files', message.fileInfo.id);
-                if (!hasCompleteFileCache(storedFile, message.fileInfo) && (!storedFile?.cacheCleared || storedFile.restoreRequested)) {
-                    await fileAssetTransfer.request(
-                        message.fileInfo.id,
-                        message.fileInfo.ownerDeviceId || message.sender,
-                        message.fileInfo
-                    );
-                }
+            if (message.type === 'file' && message.fileInfo?.isAsset) {
+                await requestMissingFileAssetCache(message, 'snapshot-new');
             }
             restored++;
         } catch (err) {
@@ -3082,6 +3089,14 @@ async function addMessageToChat(message, isOwn, options = {}) {
     container.appendChild(messageEl);
     if (shouldScroll) {
         container.scrollTop = container.scrollHeight;
+    }
+    if (options.autoRequestAsset !== false && message.type === 'file' && message.fileInfo?.isAsset) {
+        requestMissingFileAssetCache(message, 'message-rendered')
+            .catch(err => historyLog('file-asset-cache-backfill-failed', {
+                reason: 'message-rendered',
+                message: summarizeHistoryMessage(message),
+                error: err.message
+            }));
     }
 }
 
@@ -5044,6 +5059,7 @@ function handleSessionDevices(data) {
     });
 
     updateDeviceList();
+    scheduleStoredFileAssetAnnounce('session-devices', 1200);
 }
 
 function handleDeviceUpdated(data) {

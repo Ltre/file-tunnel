@@ -12,6 +12,8 @@
     const MULTI_SOURCE_RANGE_SIZE = 2 * 1024 * 1024;
     const MAX_CONCURRENT_RANGES = 4;
     const SMALL_TRANSFER_PRIORITY_SIZE = 1024 * 1024;
+    const MULTI_SOURCE_WATCHDOG_INTERVAL = 5000;
+    const MULTI_SOURCE_STALL_MS = 12000;
 
     class FileAssetTransfer {
         constructor(deps) {
@@ -290,7 +292,8 @@
                     retryCount: 0,
                     active: false,
                     completed: false,
-                    retryScheduled: false
+                    retryScheduled: false,
+                    lastActivityAt: 0
                 });
             }
             this.multiSourceTransfers.set(asset.id, {
@@ -301,10 +304,14 @@
                 queuedRangeIds: Array.from(ranges.keys()),
                 activeRangeIds: new Set(),
                 completedBytes: 0,
-                forceRequestId
+                forceRequestId,
+                startedAt: Date.now(),
+                lastProgressAt: Date.now(),
+                watchdogTimer: null
             });
             this.deps.onProgress(asset.id, asset.name, 0, 'receiving-multi-source');
             this.log('multi-source-started', { asset: this.metadata(asset), providers, rangeCount: ranges.size, forced: Boolean(forceRequestId) });
+            this.startMultiSourceWatchdog(asset.id);
             this.dispatchMultiSourceRanges(asset.id);
         }
 
@@ -323,11 +330,15 @@
                 range.transport = null;
                 range.receivedSize = 0;
                 range.pendingChunks = Promise.resolve();
+                range.lastActivityAt = Date.now();
                 transfer.activeRangeIds.add(transferId);
                 this.resetRangeTimer(assetId, transferId);
+                const retryRequestId = range.retryCount > 0
+                    ? `retry:${assetId}:${transferId}:${range.retryCount}:${Date.now()}`
+                    : null;
                 const requestId = transfer.forceRequestId
                     ? `${transfer.forceRequestId}:${transferId}:${range.retryCount}`
-                    : undefined;
+                    : retryRequestId;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     assetId,
@@ -358,6 +369,7 @@
             range.transport = transport;
             range.receivedSize = 0;
             range.pendingChunks = Promise.resolve();
+            range.lastActivityAt = Date.now();
             this.resetRangeTimer(assetId, range.transferId);
             this.log('range-receiving', { assetId, transferId: range.transferId, peerDeviceId: deviceId, transport });
         }
@@ -365,7 +377,7 @@
         async appendMultiSourceRange(assetId, transferId, deviceId, data) {
             const transfer = this.multiSourceTransfers.get(assetId);
             const range = transfer?.ranges.get(transferId);
-            if (!transfer || !range || range.completed || range.from !== deviceId) return;
+            if (!transfer || !range || range.completed || !range.active || range.retryScheduled || range.from !== deviceId) return;
             let chunk = data instanceof Blob ? await data.arrayBuffer() : data;
             if (ArrayBuffer.isView(chunk)) chunk = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
             if (!(chunk instanceof ArrayBuffer)) throw new Error('Invalid multi-source chunk');
@@ -374,6 +386,8 @@
             }
             transfer.buffer.set(new Uint8Array(chunk), range.rangeStart + range.receivedSize);
             range.receivedSize += chunk.byteLength;
+            range.lastActivityAt = Date.now();
+            transfer.lastProgressAt = Date.now();
             this.resetRangeTimer(assetId, transferId);
             this.reportMultiSourceProgress(transfer);
         }
@@ -397,6 +411,7 @@
             this.clearRangeTimer(assetId, transferId);
             transfer.activeRangeIds.delete(transferId);
             transfer.completedBytes += range.receivedSize;
+            transfer.lastProgressAt = Date.now();
             this.reportMultiSourceProgress(transfer);
             this.log('range-completed', { assetId, transferId, peerDeviceId: deviceId, transport });
 
@@ -423,6 +438,7 @@
                 data: transfer.buffer.buffer,
                 timestamp: Date.now()
             };
+            this.stopMultiSourceWatchdog(transfer);
             this.clearRangeTimers(assetId);
             this.multiSourceTransfers.delete(assetId);
             await this.deps.store(stored);
@@ -443,8 +459,11 @@
             if (!transfer || !range || range.completed || range.retryScheduled) return;
             range.retryScheduled = true;
             range.active = false;
+            range.from = null;
+            range.transport = null;
             range.receivedSize = 0;
             range.pendingChunks = Promise.resolve();
+            range.lastActivityAt = Date.now();
             transfer.activeRangeIds.delete(transferId);
             this.clearRangeTimer(assetId, transferId);
             range.retryCount++;
@@ -452,6 +471,7 @@
             range.providerCursor = (providerIndex >= 0 ? providerIndex + 1 : range.providerCursor + 1) % transfer.providers.length;
             if (range.retryCount > MAX_RETRIES) {
                 const interruptedAsset = transfer.asset;
+                this.stopMultiSourceWatchdog(transfer);
                 this.clearRangeTimers(assetId);
                 this.multiSourceTransfers.delete(assetId);
                 this.releaseDownload(assetId);
@@ -471,6 +491,58 @@
                 this.multiSourceTransfers.get(assetId).queuedRangeIds.push(transferId);
                 this.dispatchMultiSourceRanges(assetId);
             }, range.retryCount * 500);
+        }
+
+        startMultiSourceWatchdog(assetId) {
+            const transfer = this.multiSourceTransfers.get(assetId);
+            if (!transfer || transfer.watchdogTimer) return;
+            transfer.watchdogTimer = setInterval(() => this.checkMultiSourceStall(assetId), MULTI_SOURCE_WATCHDOG_INTERVAL);
+        }
+
+        stopMultiSourceWatchdog(transfer) {
+            if (transfer?.watchdogTimer) clearInterval(transfer.watchdogTimer);
+            if (transfer) transfer.watchdogTimer = null;
+        }
+
+        checkMultiSourceStall(assetId) {
+            const transfer = this.multiSourceTransfers.get(assetId);
+            if (!transfer) return;
+            const now = Date.now();
+            const activeRanges = Array.from(transfer.activeRangeIds)
+                .map(transferId => transfer.ranges.get(transferId))
+                .filter(range => range && !range.completed && range.active && !range.retryScheduled);
+            const stalledRanges = activeRanges
+                .filter(range => now - (range.lastActivityAt || transfer.lastProgressAt || transfer.startedAt) >= MULTI_SOURCE_STALL_MS)
+                .sort((a, b) => (a.lastActivityAt || 0) - (b.lastActivityAt || 0));
+
+            if (stalledRanges.length) {
+                const range = stalledRanges[0];
+                this.log('range-watchdog-stalled', {
+                    assetId,
+                    transferId: range.transferId,
+                    providerId: range.providerId,
+                    receivedSize: range.receivedSize,
+                    staleForMs: now - (range.lastActivityAt || transfer.lastProgressAt || transfer.startedAt)
+                });
+                this.retryMultiSourceRange(assetId, range.transferId, range.providerId, 'watchdog-stalled');
+                return;
+            }
+
+            const incompleteQueued = transfer.queuedRangeIds.some(transferId => {
+                const range = transfer.ranges.get(transferId);
+                return range && !range.completed && !range.active;
+            });
+            if (!transfer.activeRangeIds.size && !incompleteQueued) {
+                for (const range of transfer.ranges.values()) {
+                    if (!range.completed && !range.active && !range.retryScheduled) {
+                        transfer.queuedRangeIds.push(range.transferId);
+                    }
+                }
+                if (transfer.queuedRangeIds.length) {
+                    this.log('range-watchdog-requeued', { assetId, queuedRangeCount: transfer.queuedRangeIds.length });
+                    this.dispatchMultiSourceRanges(assetId);
+                }
+            }
         }
 
         rangeTimerKey(assetId, transferId) {
@@ -947,6 +1019,7 @@
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);
             this.forceRequests.delete(assetId);
+            this.stopMultiSourceWatchdog(this.multiSourceTransfers.get(assetId));
             this.transfers.delete(assetId);
             this.multiSourceTransfers.delete(assetId);
             this.clearRangeTimers(assetId);
@@ -981,6 +1054,7 @@
                 this.log('retry-exhausted', { assetId, providerId, reason, error });
                 return;
             }
+            this.forceRequests.set(assetId, `retry:${assetId}:${attempts}:${Date.now()}`);
             this.log('retry-scheduled', { assetId, providerId, reason, error, attempts });
             setTimeout(() => {
                 if (!this.desiredAssets.has(assetId)) return;
