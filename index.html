@@ -362,6 +362,11 @@
             background: color-mix(in srgb, var(--surface-soft) 82%, transparent);
         }
 
+        .contact-item.device-item {
+            display: flex;
+            margin-bottom: 0;
+        }
+
         .contact-name {
             overflow: hidden;
             color: var(--text-main);
@@ -380,31 +385,80 @@
 
         .profile-modal-body {
             display: grid;
-            grid-template-columns: 132px minmax(0, 1fr);
+            gap: 14px;
+        }
+
+        .device-profile-modal {
+            width: min(92vw, 560px);
+        }
+
+        .device-profile-header {
+            display: grid;
+            grid-template-columns: 116px minmax(0, 1fr);
             gap: 16px;
-            align-items: start;
+            align-items: stretch;
+            margin-bottom: 14px;
+        }
+
+        .device-profile-title {
+            display: grid;
+            align-content: center;
+            min-width: 0;
+            padding: 14px 16px;
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            background: var(--surface-soft);
+        }
+
+        .device-profile-name {
+            overflow: hidden;
+            color: var(--text-main);
+            font-size: 1.35rem;
+            font-weight: 850;
+            line-height: 1.25;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .profile-qr {
-            width: 132px;
-            min-height: 132px;
+            width: 116px;
+            min-height: 116px;
             display: grid;
             place-items: center;
             border: 1px solid var(--panel-border);
-            border-radius: 8px;
+            border-radius: 10px;
             background: #fff;
         }
 
         .profile-fields {
             display: grid;
-            gap: 8px;
+            gap: 9px;
             min-width: 0;
             color: var(--text-muted);
             font-size: 0.88rem;
         }
 
+        .profile-field {
+            display: grid;
+            gap: 4px;
+            padding: 10px 12px;
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            background: color-mix(in srgb, var(--surface-soft) 84%, transparent);
+        }
+
         .profile-fields strong {
             color: var(--text-main);
+        }
+
+        .profile-field a {
+            color: var(--accent);
+            word-break: break-all;
+        }
+
+        .profile-field-value {
+            color: var(--text-main);
+            word-break: break-all;
         }
 
         .contact-call-overlay {
@@ -451,8 +505,13 @@
                 grid-template-columns: 1fr;
             }
 
+            .device-profile-header {
+                grid-template-columns: 96px minmax(0, 1fr);
+            }
+
             .profile-qr {
-                margin: 0 auto;
+                width: 96px;
+                min-height: 96px;
             }
 
             .contact-call-card {
@@ -2412,10 +2471,14 @@
     </div>
 
     <div class="modal-overlay" id="deviceProfileModal">
-        <div class="modal" role="dialog" aria-modal="true" aria-label="设备资料">
-            <h3 id="deviceProfileTitle">设备资料</h3>
+        <div class="modal device-profile-modal" role="dialog" aria-modal="true" aria-label="设备资料">
             <div class="profile-modal-body">
-                <div class="profile-qr" id="deviceProfileQr"></div>
+                <div class="device-profile-header">
+                    <div class="profile-qr" id="deviceProfileQr"></div>
+                    <div class="device-profile-title">
+                        <div class="device-profile-name" id="deviceProfileTitle">设备资料</div>
+                    </div>
+                </div>
                 <div class="profile-fields" id="deviceProfileFields"></div>
             </div>
             <div class="modal-actions">

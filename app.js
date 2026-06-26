@@ -60,6 +60,7 @@ const state = {
     clipboardShareEnabled: false,
     contacts: new Map(),
     activeContactCall: null,
+    pendingTunnelInviteReceipt: null,
     recentSessionId: null,
     pendingSharedFileCount: 0,
     db: null // IndexedDB实例
@@ -580,6 +581,16 @@ async function initSession() {
     const hash = entryUrl.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
         state.sessionId = hash;
+        const inviteId = entryUrl.searchParams.get('invite');
+        const inviteFrom = entryUrl.searchParams.get('from');
+        if (inviteId && inviteFrom) {
+            state.pendingTunnelInviteReceipt = {
+                invitationId: inviteId,
+                to: inviteFrom,
+                sessionId: hash,
+                link: window.location.href
+            };
+        }
         const storedSession = await getFromStore('sessions', state.sessionId).catch(() => null);
         state.shortCode = normalizeLocalShortCode(storedSession?.shortCode);
         if (entryUrl.search) {
@@ -812,6 +823,8 @@ function initSocket() {
         consumePendingSharedFiles().catch(err => {
             historyLog('shared-file-import-failed', { error: err.message });
         });
+        flushPendingTunnelInvites();
+        sendPendingTunnelInviteReceipt();
         discoverLocalNetworkIp().then(localIp => {
             if (!localIp || localIp === state.reportedLanIp || !state.socket?.connected) return;
             state.reportedLanIp = localIp;
@@ -958,6 +971,8 @@ function initSocket() {
     state.socket.on('contact-media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('contact-media-signal-failed', { error: err.message })));
     state.socket.on('media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('media-signal-failed', { error: err.message })));
     state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
+    state.socket.on('device-tunnel-invite', handleDeviceTunnelInvite);
+    state.socket.on('device-tunnel-invite-ack', handleDeviceTunnelInviteAck);
 
     state.socket.on('error', (data) => {
         const message = data && data.message ? data.message : '服务器返回错误';
@@ -5018,6 +5033,72 @@ async function followDevice(device) {
     historyLog('contact-followed', { contactDeviceId: merged.deviceId });
 }
 
+async function unfollowDevice(deviceId) {
+    if (!deviceId) return;
+    await deleteFromStore('contacts', deviceId);
+    state.contacts.delete(deviceId);
+    renderContacts();
+    updateDeviceList();
+    historyLog('contact-unfollowed', { contactDeviceId: deviceId });
+}
+
+async function startIntercomWithDevice(device) {
+    try {
+        if (!device?.deviceId) return;
+        const recipients = mediaController?.intercom?.recipients || [];
+        const directIntercomTargetId = recipients.length === 1 ? recipients[0] : null;
+        if (device.deviceId === directIntercomTargetId) {
+            mediaController.stopIntercom();
+        } else {
+            if (mediaController.intercom) mediaController.stopIntercom();
+            await mediaController.startIntercom([device.deviceId]);
+        }
+    } catch (err) {
+        alert(`无法启动对讲机: ${err.message}`);
+        historyLog('intercom-start-failed', { peerDeviceId: device?.deviceId, error: err.message });
+    }
+}
+
+function renderDeviceRow(device, options = {}) {
+    const normalized = normalizeContactProfile(device);
+    const isSelf = normalized.deviceId === state.deviceId;
+    const dataChannelId = device.id || normalized.deviceId;
+    const recipients = mediaController?.intercom?.recipients || [];
+    const directIntercomTargetId = recipients.length === 1 ? recipients[0] : null;
+    const el = document.createElement('div');
+    el.className = options.contact ? 'contact-item device-item' : 'device-item';
+    el.innerHTML = `
+        <div class="icon">${isSelf ? '👤' : '📱'}</div>
+        <div class="info">
+            <div class="name"></div>
+            <div class="status"></div>
+        </div>
+    `;
+    const name = el.querySelector('.name');
+    name.textContent = `${normalized.name || normalized.deviceId}${isSelf ? ' (我)' : ''}`;
+    makeDeviceNameInteractive(name, normalized);
+    const status = el.querySelector('.status');
+    status.textContent = isSelf
+        ? '在线'
+        : (options.contact
+            ? `${normalized.model || '未知设备'} · ${normalized.deviceId.slice(0, 8)}...`
+            : `在线 · P2P${state.dataChannels.has(dataChannelId) ? '已连接' : '连接中'}`);
+
+    if (!isSelf) {
+        const actions = document.createElement('div');
+        actions.className = 'device-actions';
+        const intercomButton = document.createElement('button');
+        intercomButton.className = 'icon-action';
+        intercomButton.type = 'button';
+        intercomButton.title = `${normalized.deviceId === directIntercomTargetId ? '关闭' : '发起'}对讲`;
+        intercomButton.textContent = normalized.deviceId === directIntercomTargetId ? '×' : '📢';
+        intercomButton.addEventListener('click', () => startIntercomWithDevice(normalized));
+        actions.appendChild(intercomButton);
+        el.appendChild(actions);
+    }
+    return el;
+}
+
 function renderContacts() {
     const container = document.getElementById('contactList');
     if (!container) return;
@@ -5031,31 +5112,7 @@ function renderContacts() {
         return;
     }
     contacts.forEach(contact => {
-        const row = document.createElement('div');
-        row.className = 'contact-item';
-        row.innerHTML = `
-            <div>
-                <div class="contact-name"></div>
-                <div class="contact-meta"></div>
-            </div>
-            <div class="device-actions">
-                <button class="icon-action" type="button" data-action="profile" title="资料">i</button>
-                <button class="icon-action" type="button" data-action="call" title="语音通话">☎</button>
-                <button class="icon-action" type="button" data-action="intercom" title="对讲机">▰</button>
-            </div>
-        `;
-        row.querySelector('.contact-name').textContent = contact.name || contact.deviceId;
-        row.querySelector('.contact-meta').textContent = `${contact.model || 'Unknown'} · ${contact.deviceId.slice(0, 8)}...`;
-        row.querySelector('[data-action="profile"]').addEventListener('click', () => showDeviceProfile(contact, { contact: true }));
-        row.querySelector('[data-action="call"]').addEventListener('click', () => startContactVoiceCall(contact));
-        row.querySelector('[data-action="intercom"]').addEventListener('click', async () => {
-            try {
-                await mediaController.startIntercom([contact.deviceId]);
-            } catch (err) {
-                alert(`无法启动对讲机: ${err.message}`);
-            }
-        });
-        container.appendChild(row);
+        container.appendChild(renderDeviceRow(contact, { contact: true }));
     });
 }
 
@@ -5075,12 +5132,26 @@ function showDeviceProfile(device, options = {}) {
         ['型号', profile.model || '-'],
         ['内网IP', profile.internalIp || '-'],
         ['外网IP', profile.externalIp || '-'],
-        ['所在隧道', profile.shortCode || profile.sessionId || '-'],
-        ['主页链接', profile.profileUrl || '-']
-    ].forEach(([label, value]) => {
+        ['主页链接', profile.profileUrl || '-', 'link']
+    ].forEach(([label, value, type]) => {
         const item = document.createElement('div');
-        item.innerHTML = `<strong>${label}</strong><br>`;
-        item.appendChild(document.createTextNode(value));
+        item.className = 'profile-field';
+        const labelEl = document.createElement('strong');
+        labelEl.textContent = label;
+        item.appendChild(labelEl);
+        if (type === 'link' && value && value !== '-') {
+            const link = document.createElement('a');
+            link.href = value;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = value;
+            item.appendChild(link);
+        } else {
+            const valueEl = document.createElement('div');
+            valueEl.className = 'profile-field-value';
+            valueEl.textContent = value;
+            item.appendChild(valueEl);
+        }
         fields.appendChild(item);
     });
     qr.innerHTML = '';
@@ -5090,12 +5161,16 @@ function showDeviceProfile(device, options = {}) {
         qr.textContent = 'QR';
     }
     const followed = state.contacts.has(profile.deviceId);
-    followButton.textContent = followed ? '已关注' : '关注';
-    followButton.disabled = followed || profile.deviceId === state.deviceId;
+    followButton.textContent = followed ? '取消关注' : '关注';
+    followButton.disabled = profile.deviceId === state.deviceId;
     followButton.onclick = async () => {
-        await followDevice(profile);
-        followButton.textContent = '已关注';
-        followButton.disabled = true;
+        if (state.contacts.has(profile.deviceId)) {
+            await unfollowDevice(profile.deviceId);
+            followButton.textContent = '关注';
+        } else {
+            await followDevice(profile);
+            followButton.textContent = '取消关注';
+        }
     };
     modal.classList.add('active');
     historyLog('device-profile-opened', { contactDeviceId: profile.deviceId, fromContactList: Boolean(options.contact) });
@@ -5204,6 +5279,89 @@ function handleIncomingContactCall(data) {
     });
 }
 
+const TUNNEL_INVITE_QUEUE_KEY = 'deviceTunnelInviteQueue';
+
+function getQueuedTunnelInvites() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TUNNEL_INVITE_QUEUE_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed.filter(item => item?.to && item?.sessionId && item?.invitationId) : [];
+    } catch {
+        return [];
+    }
+}
+
+function setQueuedTunnelInvites(items) {
+    localStorage.setItem(TUNNEL_INVITE_QUEUE_KEY, JSON.stringify(items.slice(-50)));
+}
+
+function sendTunnelInvite(invite) {
+    return new Promise(resolve => {
+        if (!state.socket?.connected) return resolve({ ok: false, delivered: false });
+        state.socket.emit('device-tunnel-invite', invite, response => resolve(response || { ok: false, delivered: false }));
+    });
+}
+
+async function flushPendingTunnelInvites() {
+    const queued = getQueuedTunnelInvites();
+    if (!queued.length || !state.socket?.connected) return;
+    const remaining = [];
+    for (const invite of queued) {
+        const response = await sendTunnelInvite(invite);
+        if (!response?.delivered) remaining.push(invite);
+    }
+    setQueuedTunnelInvites(remaining);
+}
+
+function sendPendingTunnelInviteReceipt() {
+    const receipt = state.pendingTunnelInviteReceipt;
+    if (!receipt || !state.socket?.connected) return;
+    state.socket.emit('device-tunnel-invite-ack', {
+        ...receipt,
+        from: state.deviceId,
+        accepted: true
+    });
+    state.pendingTunnelInviteReceipt = null;
+}
+
+function handleDeviceTunnelInvite(invite) {
+    if (!invite?.link || !invite?.from || !invite?.invitationId) return;
+    const name = invite.sender?.name || invite.sender?.deviceName || invite.from.slice(0, 8);
+    if (!confirm(`${name} 邀请你开始一个传输隧道，是否进入？`)) {
+        state.socket?.emit('device-tunnel-invite-ack', {
+            invitationId: invite.invitationId,
+            from: state.deviceId,
+            to: invite.from,
+            sessionId: invite.sessionId,
+            accepted: false,
+            link: invite.link
+        });
+        return;
+    }
+    state.socket?.emit('device-tunnel-invite-ack', {
+        invitationId: invite.invitationId,
+        from: state.deviceId,
+        to: invite.from,
+        sessionId: invite.sessionId,
+        accepted: true,
+        link: invite.link
+    });
+    window.location.href = invite.link;
+}
+
+function handleDeviceTunnelInviteAck(data) {
+    if (!data?.invitationId) return;
+    const status = data.accepted === false ? '对方拒绝了隧道邀请' : '对方已收到并打开隧道邀请';
+    historyLog('device-tunnel-invite-ack', {
+        invitationId: data.invitationId,
+        fromDeviceId: data.from,
+        accepted: data.accepted !== false,
+        sessionId: data.sessionId
+    });
+    if (data.accepted !== false) {
+        console.info(status, data);
+    }
+}
+
 function showDeviceDetailsToast(device, anchor) {
     document.getElementById('deviceDetailsToast')?.remove();
     const toast = document.createElement('div');
@@ -5243,23 +5401,11 @@ function makeDeviceNameInteractive(element, device) {
 function updateDeviceList() {
     const container = document.getElementById('deviceList');
     const count = state.devices.size + 1;
-    const intercomRecipients = mediaController?.intercom?.recipients || [];
-    const directIntercomTargetId = intercomRecipients.length === 1 ? intercomRecipients[0] : null;
     document.getElementById('onlineCount').textContent = count;
 
     container.innerHTML = '';
 
-    // 添加自己
-    const selfEl = document.createElement('div');
-    selfEl.className = 'device-item';
-    selfEl.innerHTML = `
-        <div class="icon">👤</div>
-        <div class="info">
-            <div class="name">${state.deviceName} (我)</div>
-            <div class="status">在线</div>
-        </div>
-    `;
-    makeDeviceNameInteractive(selfEl.querySelector('.name'), {
+    container.appendChild(renderDeviceRow({
         deviceId: state.deviceId,
         name: state.deviceName,
         model: state.selfNetworkInfo?.deviceModel || state.deviceModel,
@@ -5267,50 +5413,10 @@ function updateDeviceList() {
         externalIp: state.selfNetworkInfo?.externalIp,
         sessionId: state.sessionId,
         shortCode: state.shortCode
-    });
-    container.appendChild(selfEl);
+    }));
 
-    // 添加其他设备
     state.devices.forEach(device => {
-        const el = document.createElement('div');
-        el.className = 'device-item';
-        el.innerHTML = `
-            <div class="icon">📱</div>
-            <div class="info">
-                <div class="name">${device.name}</div>
-                <div class="status">在线 · P2P${state.dataChannels.has(device.id) ? '已连接' : '连接中'}</div>
-            </div>
-        `;
-        makeDeviceNameInteractive(el.querySelector('.name'), device);
-        const actions = document.createElement('div');
-        actions.className = 'device-actions';
-        const profileButton = document.createElement('button');
-        profileButton.className = 'icon-action';
-        profileButton.type = 'button';
-        profileButton.title = `查看 ${device.name} 的资料`;
-        profileButton.textContent = 'i';
-        profileButton.addEventListener('click', () => showDeviceProfile(device));
-        const intercomButton = document.createElement('button');
-        intercomButton.className = 'icon-action';
-        intercomButton.type = 'button';
-        intercomButton.title = `与 ${device.name} 对讲`;
-        intercomButton.textContent = device.id === directIntercomTargetId ? '×' : '▰';
-        intercomButton.addEventListener('click', async () => {
-            try {
-                if (device.id === directIntercomTargetId) {
-                    mediaController.stopIntercom();
-                } else {
-                    if (mediaController.intercom) mediaController.stopIntercom();
-                    await mediaController.startIntercom([device.id]);
-                }
-            } catch (err) {
-                alert(`无法启动对讲机: ${err.message}`);
-                historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
-            }
-        });
-        actions.append(profileButton, intercomButton);
-        el.appendChild(actions);
-        container.appendChild(el);
+        container.appendChild(renderDeviceRow(device));
     });
     renderContacts();
 }

@@ -1078,6 +1078,7 @@ io.on('connection', (socket) => {
     
     let currentSession = null;
     let currentDevice = null;
+    let profileDevice = null;
     let messageCount = 0;
     const MESSAGE_LIMIT = 100; // 每分钟最多100条消息
     let messageResetTime = Date.now() + 60000;
@@ -1092,6 +1093,83 @@ io.on('connection', (socket) => {
         messageCount++;
         return messageCount <= MESSAGE_LIMIT;
     }
+
+    socket.on('register-profile-device', (data, ack) => {
+        try {
+            const deviceId = data?.deviceId;
+            if (!isValidDeviceId(deviceId)) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'Invalid device id' });
+                return;
+            }
+            const deviceName = isValidDeviceName(data.deviceName || '') ? sanitizeString(data.deviceName) : `设备-${deviceId.slice(-4)}`;
+            profileDevice = deviceId;
+            deviceSockets.set(deviceId, socket);
+            accessDevices.delete(socketAccessKey);
+            touchAccessDevice(deviceId, {
+                deviceId,
+                sessionId: sanitizeString(data.sessionId || '', 80),
+                deviceName,
+                deviceModel: sanitizeString(data.deviceModel || '', 80),
+                localIp: sanitizeString(data.localIp || '', 80),
+                externalIp: clientIp,
+                ip: clientIp,
+                socketId: socket.id,
+                userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
+                online: true,
+                active: true
+            });
+            if (typeof ack === 'function') ack({ ok: true });
+        } catch (err) {
+            if (typeof ack === 'function') ack({ ok: false, error: 'Register failed' });
+        }
+    });
+
+    socket.on('device-tunnel-invite', (data, ack) => {
+        try {
+            const from = data?.from;
+            const to = data?.to;
+            const sessionId = data?.sessionId;
+            const invitationId = sanitizeString(data?.invitationId || '', 80);
+            const link = sanitizeString(data?.link || '', 500);
+            if (!isValidDeviceId(from) || !isValidDeviceId(to) || !isValidSessionId(sessionId) || !invitationId || !link) {
+                if (typeof ack === 'function') ack({ ok: false, delivered: false, error: 'Invalid invite' });
+                return;
+            }
+            const target = deviceSockets.get(to);
+            const payload = {
+                invitationId,
+                from,
+                to,
+                sessionId,
+                link,
+                sender: data?.sender || {}
+            };
+            if (target) {
+                target.emit('device-tunnel-invite', payload);
+                if (typeof ack === 'function') ack({ ok: true, delivered: true });
+            } else if (typeof ack === 'function') {
+                ack({ ok: true, delivered: false });
+            }
+            historyLog('device-tunnel-invite', { deviceId: from, targetDeviceId: to, sessionId, delivered: Boolean(target), socketId: socket.id, clientIp });
+        } catch (err) {
+            if (typeof ack === 'function') ack({ ok: false, delivered: false, error: 'Invite failed' });
+        }
+    });
+
+    socket.on('device-tunnel-invite-ack', data => {
+        const to = data?.to;
+        const from = data?.from;
+        if (!isValidDeviceId(to) || !isValidDeviceId(from)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('device-tunnel-invite-ack', {
+            invitationId: sanitizeString(data.invitationId || '', 80),
+            from,
+            to,
+            sessionId: sanitizeString(data.sessionId || '', 80),
+            accepted: data.accepted !== false,
+            link: sanitizeString(data.link || '', 500)
+        });
+    });
     
     // 加入会话
     socket.on('join-session', (data) => {
@@ -2124,6 +2202,16 @@ io.on('connection', (socket) => {
             if (deviceSockets.get(currentDevice) === socket) {
                 deviceSockets.delete(currentDevice);
             }
+        } else if (profileDevice) {
+            if (deviceSockets.get(profileDevice) === socket) {
+                deviceSockets.delete(profileDevice);
+            }
+            markAccessDeviceOffline(profileDevice, {
+                deviceId: profileDevice,
+                ip: clientIp,
+                externalIp: clientIp,
+                socketId: socket.id
+            });
         } else {
             markAccessDeviceOffline(socketAccessKey, {
                 ip: clientIp,

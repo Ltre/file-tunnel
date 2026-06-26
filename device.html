@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设备主页</title>
     <script defer src="/client/qrcode-1.0.0.min.js"></script>
+    <script defer src="/socket.io/socket.io.js"></script>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -27,10 +28,26 @@
             overflow: hidden;
         }
         header {
+            display: flex;
+            align-items: center;
+            gap: 18px;
             padding: 22px;
             border-bottom: 1px solid #e6ebf3;
             background: linear-gradient(135deg, #2f405e 0%, #52627f 100%);
             color: #fff;
+        }
+        .header-copy {
+            min-width: 0;
+        }
+        .device-logo {
+            display: inline-grid;
+            width: 38px;
+            height: 38px;
+            place-items: center;
+            margin-bottom: 8px;
+            border-radius: 10px;
+            background: rgba(255,255,255,.14);
+            font-size: 1.35rem;
         }
         h1 {
             margin: 0 0 6px;
@@ -43,19 +60,40 @@
         }
         .content {
             display: grid;
-            grid-template-columns: 156px minmax(0, 1fr);
+            grid-template-columns: 176px minmax(0, 1fr);
             gap: 20px;
             padding: 22px;
         }
         .qr {
             display: grid;
-            width: 156px;
-            min-height: 156px;
+            flex: 0 0 auto;
+            width: 132px;
+            min-height: 132px;
             place-items: center;
             border: 1px solid #dfe5f1;
             border-radius: 10px;
             background: #fff;
             color: #69758d;
+        }
+        .quick-actions {
+            display: grid;
+            gap: 12px;
+        }
+        .quick-actions button {
+            display: grid;
+            min-height: 96px;
+            place-items: center;
+            gap: 6px;
+            padding: 12px;
+            border: 1px solid #dfe5f1;
+            border-radius: 10px;
+            background: #f8fafd;
+            color: #26324a;
+            box-shadow: none;
+        }
+        .quick-actions .action-icon {
+            font-size: 1.75rem;
+            line-height: 1;
         }
         .fields {
             display: grid;
@@ -129,11 +167,16 @@
             color: #a13f3f;
         }
         @media (max-width: 640px) {
-            .content {
-                grid-template-columns: 1fr;
+            header {
+                align-items: flex-start;
+                gap: 12px;
             }
             .qr {
-                margin: 0 auto;
+                width: 96px;
+                min-height: 96px;
+            }
+            .content {
+                grid-template-columns: 1fr;
             }
             .actions a,
             .actions button {
@@ -146,16 +189,24 @@
 <main>
     <section class="card">
         <header>
-            <h1 id="deviceName">设备主页</h1>
-            <div class="subtitle" id="deviceIdText">正在加载设备资料...</div>
+            <div class="qr" id="profileQr">QR</div>
+            <div class="header-copy">
+                <!-- <div class="device-logo" aria-hidden="true">📱</div> --> <!-- 为何注释这行？因为多余，下方的设备名称左侧也自带logo -->
+                <h1 id="deviceName">设备主页</h1>
+                <div class="subtitle" id="deviceIdText">正在加载设备资料...</div>
+            </div>
         </header>
         <div class="content" id="profileContent">
-            <div class="qr" id="profileQr">QR</div>
+            <div class="quick-actions">
+                <button type="button" id="profileVoiceBtn"><span class="action-icon">☎</span><span>语音通话</span></button>
+                <button type="button" id="profileIntercomBtn"><span class="action-icon">📢</span><span>对讲机</span></button>
+                <button type="button" id="profileTunnelBtn"><span class="action-icon">⇄</span><span>开始隧道传输</span></button>
+            </div>
             <div class="fields" id="profileFields"></div>
         </div>
         <div class="actions" id="profileActions">
             <a class="secondary" href="/">返回首页</a>
-            <button class="secondary" type="button" id="copyProfileBtn">复制主页链接</button>
+            <button class="secondary" type="button" id="copyProfileBtn">复制设备链接</button>
         </div>
     </section>
     <p class="notice">设备主页只展示连接所需的基础资料，不存储或展示设备中的文件内容。</p>
@@ -165,6 +216,117 @@
     const fields = document.getElementById('profileFields');
     const actions = document.getElementById('profileActions');
     const qr = document.getElementById('profileQr');
+    let currentDeviceProfile = null;
+    let inviteSocket = null;
+
+    function generateId() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    function getSelfDeviceId() {
+        let selfId = localStorage.getItem('deviceId');
+        if (!/^[0-9a-f-]{36}$/i.test(selfId || '')) {
+            selfId = generateId();
+            localStorage.setItem('deviceId', selfId);
+        }
+        return selfId;
+    }
+
+    function getSelfDeviceName() {
+        const selfId = getSelfDeviceId();
+        return localStorage.getItem('deviceName') || `设备-${selfId.slice(-4)}`;
+    }
+
+    function getQueuedTunnelInvites() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem('deviceTunnelInviteQueue') || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function queueTunnelInvite(invite) {
+        const queued = getQueuedTunnelInvites().filter(item => item.invitationId !== invite.invitationId);
+        queued.push(invite);
+        localStorage.setItem('deviceTunnelInviteQueue', JSON.stringify(queued.slice(-50)));
+    }
+
+    function getDirectTunnelSessionId(targetDeviceId) {
+        const key = 'directTunnelPool';
+        let pool = {};
+        try {
+            pool = JSON.parse(localStorage.getItem(key) || '{}') || {};
+        } catch {
+            pool = {};
+        }
+        let sessionId = pool[targetDeviceId];
+        if (!/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId || '')) {
+            sessionId = generateId();
+            pool[targetDeviceId] = sessionId;
+            localStorage.setItem(key, JSON.stringify(pool));
+        }
+        return sessionId;
+    }
+
+    function connectInviteSocket() {
+        if (inviteSocket || !window.io) return inviteSocket;
+        inviteSocket = io(window.location.origin, { transports: ['websocket', 'polling'] });
+        inviteSocket.on('connect', () => {
+            inviteSocket.emit('register-profile-device', {
+                deviceId: getSelfDeviceId(),
+                deviceName: getSelfDeviceName()
+            });
+        });
+        inviteSocket.on('device-tunnel-invite-ack', data => {
+            if (data?.accepted === false) alert('对方拒绝了隧道邀请');
+        });
+        return inviteSocket;
+    }
+
+    function emitInvite(socket, invite) {
+        return new Promise(resolve => {
+            if (!socket?.connected) return resolve({ ok: false, delivered: false });
+            socket.emit('device-tunnel-invite', invite, response => resolve(response || { ok: false, delivered: false }));
+        });
+    }
+
+    async function startTunnelTransfer() {
+        const target = currentDeviceProfile;
+        if (!target?.deviceId) return;
+        const from = getSelfDeviceId();
+        if (from === target.deviceId) {
+            alert('这是本机设备主页，不需要发起设备间隧道。');
+            return;
+        }
+        const sessionId = getDirectTunnelSessionId(target.deviceId);
+        const invitationId = generateId();
+        const link = `${window.location.origin}/?invite=${encodeURIComponent(invitationId)}&from=${encodeURIComponent(from)}#${sessionId}`;
+        const invite = {
+            invitationId,
+            from,
+            to: target.deviceId,
+            sessionId,
+            link,
+            sender: {
+                deviceId: from,
+                name: getSelfDeviceName(),
+                profileUrl: `${window.location.origin}/device/${encodeURIComponent(from)}`
+            },
+            createdAt: Date.now()
+        };
+        const socket = connectInviteSocket();
+        const response = socket?.connected ? await emitInvite(socket, invite) : { ok: false, delivered: false };
+        if (!response?.delivered) {
+            queueTunnelInvite(invite);
+            alert('对方暂时不在线，已加入本机待发送队列。现在先打开你的隧道页。');
+        }
+        window.location.href = link;
+    }
 
     function formatTime(value) {
         const timestamp = Number(value);
@@ -186,6 +348,7 @@
     }
 
     function renderProfile(device) {
+        currentDeviceProfile = device;
         document.title = `${device.deviceName || '设备'} - 设备主页`;
         document.getElementById('deviceName').textContent = device.deviceName || '未命名设备';
         document.getElementById('deviceIdText').textContent = device.deviceId;
@@ -207,13 +370,6 @@
             qr.textContent = 'QR';
         }
 
-        if (device.tunnelUrl) {
-            const tunnelLink = document.createElement('a');
-            tunnelLink.href = device.tunnelUrl;
-            tunnelLink.textContent = '进入所在隧道';
-            actions.prepend(tunnelLink);
-        }
-
         document.getElementById('copyProfileBtn').onclick = async () => {
             const link = device.profileUrl || location.href;
             try {
@@ -223,6 +379,10 @@
                 prompt('复制设备主页链接', link);
             }
         };
+        document.getElementById('profileVoiceBtn').onclick = () => alert('语音通话请先在功能首页关注设备后发起。');
+        document.getElementById('profileIntercomBtn').onclick = () => alert('对讲机请先在功能首页关注设备后发起。');
+        document.getElementById('profileTunnelBtn').onclick = startTunnelTransfer;
+        connectInviteSocket();
     }
 
     function renderError(message) {
