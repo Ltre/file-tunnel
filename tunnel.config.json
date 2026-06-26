@@ -1,4 +1,12 @@
 {
   "debugLogsEnabled": false,
-  "serverPort": 80
+  "serverPort": 80,
+  "rtc": {
+    "turnServers": [],
+    "p2pTimeoutMs": {
+      "small": 2500,
+      "medium": 8000,
+      "large": 15000
+    }
+  }
 }

@@ -1,11 +1,28 @@
 (function attachMediaController(global) {
-    const rtcConfig = {
-        iceServers: [
+    function normalizeIceServers(value) {
+        return Array.isArray(value)
+            ? value.filter(item => item && typeof item === 'object' && item.urls)
+            : [];
+    }
+
+    function getRtcConfig() {
+        const runtime = global.TUNNEL_CONFIG?.RTC || {};
+        const defaults = [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' }
-        ]
-    };
+        ];
+        const configured = [
+            ...normalizeIceServers(runtime.iceServers),
+            ...normalizeIceServers(runtime.turnServers)
+        ];
+        return {
+            iceServers: runtime.replaceDefaultIceServers === true ? configured : [...defaults, ...configured],
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require'
+        };
+    }
 
     class MediaController {
         constructor(deps) {
@@ -295,7 +312,7 @@
 
         createConnection(kind, sessionKey, peerId, stream) {
             const key = this.key(kind, sessionKey, peerId);
-            const pc = new RTCPeerConnection(rtcConfig);
+            const pc = new RTCPeerConnection(getRtcConfig());
             this.connections.set(key, pc);
             if (stream) stream.getTracks().forEach(track => pc.addTrack(track, stream));
             pc.onicecandidate = event => {

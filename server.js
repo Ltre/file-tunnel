@@ -98,7 +98,7 @@ app.use(express.json({ limit: '64kb' }));
 app.get('/runtime-config.js', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.type('application/javascript').send(
-        `window.TUNNEL_CONFIG=${JSON.stringify({ HISTORY_DEBUG })};`
+        `window.TUNNEL_CONFIG=${JSON.stringify({ HISTORY_DEBUG, RTC: projectConfig.rtc || {} })};`
     );
 });
 

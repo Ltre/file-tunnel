@@ -1,7 +1,11 @@
 (function attachFileAssetTransfer(global) {
     const CHUNK_SIZE = 64 * 1024;
     const BUFFER_LIMIT = 512 * 1024;
-    const P2P_TIMEOUT = 1500;
+    const P2P_TIMEOUT_SMALL = 2500;
+    const P2P_TIMEOUT_MEDIUM = 8000;
+    const P2P_TIMEOUT_LARGE = 15000;
+    const P2P_TIMEOUT_COOLDOWN = 5000;
+    const P2P_FAILED_COOLDOWN = 30000;
     const MAX_CONCURRENT_FULL_DOWNLOADS = 2;
     const MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS = 4;
     const MAX_CONCURRENT_UPLOADS = 2;
@@ -72,6 +76,40 @@
             if (data instanceof ArrayBuffer) return data.byteLength;
             if (ArrayBuffer.isView(data)) return data.byteLength;
             return 0;
+        }
+
+        transferSize(asset, transfer = null) {
+            if (transfer && Number.isInteger(transfer.rangeStart) && Number.isInteger(transfer.rangeEnd)) {
+                return Math.max(0, transfer.rangeEnd - transfer.rangeStart);
+            }
+            return Number(asset?.size || 0);
+        }
+
+        p2pTimeout(asset, transfer = null) {
+            if (typeof this.deps.getP2PTimeout === 'function') {
+                const configured = Number(this.deps.getP2PTimeout(asset, transfer));
+                if (Number.isFinite(configured) && configured > 0) return configured;
+            }
+            const size = this.transferSize(asset, transfer);
+            if (size > 20 * 1024 * 1024) return P2P_TIMEOUT_LARGE;
+            if (size > 512 * 1024) return P2P_TIMEOUT_MEDIUM;
+            return P2P_TIMEOUT_SMALL;
+        }
+
+        p2pCooldown(error) {
+            const message = String(error?.message || '');
+            if (/cooldown/i.test(message)) return P2P_TIMEOUT_COOLDOWN;
+            return /timed out|timeout/i.test(message) ? P2P_TIMEOUT_COOLDOWN : P2P_FAILED_COOLDOWN;
+        }
+
+        async getRouteInfo(peerDeviceId) {
+            if (typeof this.deps.getPeerRouteInfo !== 'function') return { route: 'p2p', candidateInfo: null };
+            try {
+                return await this.deps.getPeerRouteInfo(peerDeviceId);
+            } catch (err) {
+                this.log('route-info-failed', { peerDeviceId, error: err.message });
+                return { route: 'p2p', candidateInfo: null };
+            }
         }
 
         hasCompleteCache(file, metadata = null) {
@@ -191,6 +229,12 @@
                 const metadata = this.requestedMetadata.get(assetId);
                 const requestId = this.forceRequests.get(assetId);
                 const needsManifest = Number(metadata?.size) > MULTI_SOURCE_THRESHOLD;
+                this.deps.onProgress(
+                    assetId,
+                    metadata?.name || '文件',
+                    0,
+                    needsManifest ? 'receiving-route-search-multi-source' : 'receiving-route-search'
+                );
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     assetId,
@@ -272,7 +316,7 @@
                 completedBytes: 0,
                 forceRequestId
             });
-            this.deps.onProgress(asset.id, asset.name, 0, 'receiving-multi-source');
+            this.deps.onProgress(asset.id, asset.name, 0, 'receiving-multi-source-probing');
             this.log('multi-source-started', { asset: this.metadata(asset), providers, rangeCount: ranges.size, forced: Boolean(forceRequestId) });
             this.dispatchMultiSourceRanges(asset.id);
         }
@@ -381,7 +425,13 @@
                 .filter(range => !range.completed)
                 .reduce((total, range) => total + range.receivedSize, 0);
             const progress = Math.min(99, Math.floor((transfer.completedBytes + activeBytes) * 100 / transfer.asset.size));
-            this.deps.onProgress(transfer.asset.id, transfer.asset.name, progress, 'receiving-multi-source');
+            const activeRoute = Array.from(transfer.ranges.values()).find(range => range.transport)?.transport;
+            this.deps.onProgress(
+                transfer.asset.id,
+                transfer.asset.name,
+                progress,
+                activeRoute === 'socket-relay' ? 'receiving-multi-source-relay' : `receiving-multi-source:${activeRoute || 'probing'}`
+            );
         }
 
         async completeMultiSourceDownload(assetId, transfer) {
@@ -579,8 +629,17 @@
                 if (unavailableUntil && unavailableUntil > Date.now()) {
                     throw new Error('Peer is in P2P cooldown');
                 }
+                const p2pTimeout = this.p2pTimeout(asset, transfer);
+                const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
+                this.deps.onProgress(
+                    asset.id,
+                    asset.name,
+                    0,
+                    transfer ? `sending-multi-source-probing:${routeId}` : `sending-probing:${routeId}`
+                );
+                this.log('p2p-probing', { assetId: asset.id, peerDeviceId: from, transferId: transfer?.transferId, timeout: p2pTimeout });
                 await this.deps.connectPeer(from);
-                if (!await this.deps.waitForDataChannel(from, P2P_TIMEOUT)) {
+                if (!await this.deps.waitForDataChannel(from, p2pTimeout)) {
                     throw new Error('Peer connection timed out');
                 }
                 const peer = this.deps.getPeer(from);
@@ -597,8 +656,9 @@
                 this.emitTransferStatus(asset.id, from, 'completed', transfer?.transferId);
                 return true;
             } catch (err) {
-                this.p2pUnavailablePeers.set(from, Date.now() + 30000);
-                this.log('send-p2p-failed', { assetId: asset.id, peerDeviceId: from, transferId: transfer?.transferId, error: err.message });
+                const cooldown = this.p2pCooldown(err);
+                this.p2pUnavailablePeers.set(from, Date.now() + cooldown);
+                this.log('send-p2p-failed', { assetId: asset.id, peerDeviceId: from, transferId: transfer?.transferId, cooldown, error: err.message });
                 try {
                     await this.sendViaSocketRelay(from, stored, transfer);
                     this.emitTransferStatus(asset.id, from, 'completed', transfer?.transferId);
@@ -678,8 +738,10 @@
             const rangeStart = transfer ? transfer.rangeStart : 0;
             const rangeEnd = transfer ? transfer.rangeEnd : this.dataSize(asset.data);
             const routeId = transfer?.transferId ? `${peerDeviceId}:${transfer.transferId}` : peerDeviceId;
-            const transport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
-            channel.send(JSON.stringify({ type: 'file-asset-start', asset: metadata, transfer }));
+            const routeInfo = await this.getRouteInfo(peerDeviceId);
+            const route = routeInfo.route || 'p2p';
+            const transport = transfer ? `sending-multi-source:${route}:${routeId}` : `sending:${route}:${routeId}`;
+            channel.send(JSON.stringify({ type: 'file-asset-start', asset: metadata, transfer, route, routeInfo }));
             for (let offset = rangeStart; offset < rangeEnd; offset += CHUNK_SIZE) {
                 if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 if (channel.readyState !== 'open') throw new Error('File asset channel closed');
@@ -690,7 +752,7 @@
             }
             channel.send(JSON.stringify({ type: 'file-asset-complete', assetId: asset.id, transferId: transfer?.transferId }));
             this.deps.onProgress(asset.id, asset.name, 100, transport);
-            this.log('sent-p2p', { asset: metadata, transfer });
+            this.log('sent-p2p', { asset: metadata, transfer, routeInfo });
         }
 
         async sendViaSocketRelay(deviceId, asset, transfer = null) {
@@ -726,11 +788,12 @@
             if (!asset || asset.id !== assetId || !Number.isFinite(asset.size) || asset.size <= 0) {
                 throw new Error('Invalid file asset metadata');
             }
+            const progressTransport = transport === 'socket-relay' ? 'receiving-relay' : `receiving:${transport}`;
             this.transfers.set(assetId, {
-                asset, from: deviceId, transport, chunks: [], receivedSize: 0, pendingChunks: Promise.resolve()
+                asset, from: deviceId, transport: progressTransport, route: transport, chunks: [], receivedSize: 0, pendingChunks: Promise.resolve()
             });
             this.resetReceiveTimer(assetId, deviceId);
-            this.deps.onProgress(assetId, asset.name, 0, transport === 'p2p' ? 'receiving' : 'receiving-relay');
+            this.deps.onProgress(assetId, asset.name, 0, progressTransport);
             this.log('receiving', { asset, peerDeviceId: deviceId, transport });
         }
 
@@ -779,7 +842,7 @@
             this.requestedMetadata.delete(assetId);
             this.forceRequests.delete(assetId);
             this.retryCounts.delete(assetId);
-            this.deps.onProgress(assetId, stored.name, 100, 'received');
+            this.deps.onProgress(assetId, stored.name, 100, transport === 'socket-relay' ? 'received-relay' : `received:${transport}`);
             await this.announce(stored);
             await this.deps.onReceived(stored);
             this.log('received', { asset: this.metadata(stored), peerDeviceId: deviceId, transport });
@@ -794,8 +857,9 @@
             }
             const message = JSON.parse(data);
             if (message.type === 'file-asset-start') {
-                if (message.transfer?.transferId) return this.beginMultiSourceRange(assetId, message.asset, deviceId, 'p2p', message.transfer);
-                return this.begin(assetId, message.asset, deviceId, 'p2p');
+                const route = message.route || 'p2p';
+                if (message.transfer?.transferId) return this.beginMultiSourceRange(assetId, message.asset, deviceId, route, message.transfer);
+                return this.begin(assetId, message.asset, deviceId, route);
             }
             if (message.type === 'file-asset-complete' && message.assetId === assetId) {
                 if (message.transferId && this.multiSourceTransfers.has(assetId)) {
