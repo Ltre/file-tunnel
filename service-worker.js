@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v14';
+const CACHE_NAME = 'instant-tunnel-v16';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -8,6 +8,7 @@ const APP_SHELL = [
     '/downloader.html',
     '/downloadList',
     '/downloadList.html',
+    '/device.html',
     '/runtime-config.js',
     '/app.js',
     '/client/file-assets.js',
@@ -89,7 +90,7 @@ async function handleSharedFiles(request) {
 
 function openTunnelDb() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('TunnelDB', 3);
+        const request = indexedDB.open('TunnelDB', 4);
         request.onupgradeneeded = event => {
             const db = event.target.result;
             if (!db.objectStoreNames.contains('sessions')) {
@@ -112,6 +113,11 @@ function openTunnelDb() {
             if (!db.objectStoreNames.contains('shareQueue')) {
                 const store = db.createObjectStore('shareQueue', { keyPath: 'id' });
                 store.createIndex('createdAt', 'createdAt', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('contacts')) {
+                const store = db.createObjectStore('contacts', { keyPath: 'deviceId' });
+                store.createIndex('followedAt', 'followedAt', { unique: false });
+                store.createIndex('lastSeenAt', 'lastSeenAt', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);

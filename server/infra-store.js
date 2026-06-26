@@ -81,7 +81,11 @@ class InfraStore {
             if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) {
                 try {
                     fs.copyFileSync(tempPath, this.dbPath);
-                    fs.unlinkSync(tempPath);
+                    try {
+                        fs.unlinkSync(tempPath);
+                    } catch {
+                        // Windows may keep the temp handle briefly; the persisted copy is already valid.
+                    }
                     return;
                 } catch (copyErr) {
                     try {
@@ -249,6 +253,15 @@ class InfraStore {
             ORDER BY online DESC, last_access DESC
             LIMIT ?
         `, [limit]);
+    }
+
+    getDevice(deviceId) {
+        return this.get(`
+            SELECT device_id, session_id, device_name, device_model, local_ip, external_ip,
+                   ip, socket_id, user_agent, first_seen, last_access, online, active
+            FROM devices
+            WHERE device_id = ?
+        `, [deviceId]);
     }
 }
 

@@ -135,6 +135,11 @@ app.get('/downloadList', (req, res) => {
     res.sendFile(path.join(__dirname, 'downloadList.html'));
 });
 
+app.get('/device/:deviceId', (req, res) => {
+    if (!isValidDeviceId(req.params.deviceId)) return res.status(400).send('Invalid device id');
+    res.sendFile(path.join(__dirname, 'device.html'));
+});
+
 app.get('/wasted', (req, res) => {
     const sessionId = sanitizeString(req.query.sessionId || '', 80);
     res.type('html').send(`<!doctype html>
@@ -377,6 +382,25 @@ app.get('/api/devices', (req, res) => {
         });
     } catch (err) {
         console.error('devices API error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get('/api/devices/:deviceId', (req, res) => {
+    try {
+        const deviceId = req.params.deviceId;
+        if (!isValidDeviceId(deviceId)) {
+            return res.status(400).json({ error: 'Invalid device id' });
+        }
+
+        const device = getPublicDeviceProfile(deviceId, req);
+        if (!device) {
+            return res.status(404).json({ error: 'Device not found' });
+        }
+
+        res.json({ generatedAt: new Date().toISOString(), device });
+    } catch (err) {
+        console.error('device profile API error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -726,6 +750,80 @@ function getMagnetPayload(magnetId) {
         createdByDeviceId: magnet.createdByDeviceId || '',
         createdByDeviceName: magnet.createdByDeviceName || '',
         seedDevices
+    };
+}
+
+function normalizeStoredDevice(row = {}) {
+    if (!row.device_id) return null;
+    return {
+        deviceId: row.device_id,
+        sessionId: row.session_id || '',
+        deviceName: row.device_name || '',
+        deviceModel: row.device_model || '',
+        localIp: row.local_ip || '',
+        externalIp: row.external_ip || '',
+        ip: row.ip || row.external_ip || '',
+        userAgent: row.user_agent || '',
+        firstSeen: Number(row.first_seen) || 0,
+        lastAccess: Number(row.last_access) || 0,
+        online: Number(row.online) === 1,
+        active: Number(row.active) === 1
+    };
+}
+
+function getPublicDeviceProfile(deviceId, req) {
+    if (!isValidDeviceId(deviceId)) return null;
+    const now = Date.now();
+    let device = normalizeStoredDevice(infraStore?.getDevice(deviceId) || {});
+    const memoryDevice = accessDevices.get(deviceId);
+    if (memoryDevice) {
+        device = {
+            ...(device || {}),
+            ...memoryDevice,
+            deviceId: memoryDevice.deviceId || deviceId
+        };
+    }
+
+    for (const [liveSessionId, session] of sessions) {
+        const liveDevice = session.devices.get(deviceId);
+        if (!liveDevice) continue;
+        device = {
+            ...(device || {}),
+            deviceId,
+            sessionId: liveSessionId || device?.sessionId || memoryDevice?.sessionId || '',
+            deviceName: liveDevice.deviceName || device?.deviceName || '',
+            deviceModel: liveDevice.deviceModel || device?.deviceModel || '',
+            localIp: liveDevice.localIp || device?.localIp || '',
+            externalIp: liveDevice.externalIp || device?.externalIp || '',
+            ip: liveDevice.externalIp || device?.ip || '',
+            online: deviceSockets.has(deviceId),
+            active: deviceSockets.has(deviceId),
+            lastAccess: now
+        };
+        break;
+    }
+
+    if (!device?.deviceId) return null;
+    const sessionId = device.sessionId || '';
+    const shortCode = sessionId && isValidSessionId(sessionId) ? findShortCodeForSession(sessionId) : '';
+    const active = deviceSockets.has(deviceId) || (device.online === true && now - (device.lastAccess || 0) < 5 * 60 * 1000);
+    const online = deviceSockets.has(deviceId) || (memoryDevice?.online === true && active);
+    return {
+        deviceId,
+        deviceName: sanitizeString(device.deviceName || device.name || '', 100),
+        deviceModel: sanitizeString(device.deviceModel || device.model || '', 100),
+        localIp: sanitizeString(device.localIp || device.internalIp || '', 80),
+        externalIp: sanitizeString(device.externalIp || '', 80),
+        ip: sanitizeString(device.ip || device.externalIp || '', 80),
+        userAgent: sanitizeString(device.userAgent || '', 180),
+        sessionId,
+        shortCode,
+        firstSeen: Number(device.firstSeen) || Number(device.first_seen) || 0,
+        lastAccess: Number(device.lastAccess) || Number(device.last_access) || 0,
+        online,
+        active,
+        profileUrl: `${getRequestBaseUrl(req)}/device/${encodeURIComponent(deviceId)}`,
+        tunnelUrl: sessionId ? `${getRequestBaseUrl(req)}/#${encodeURIComponent(sessionId)}` : ''
     };
 }
 

@@ -4959,6 +4959,7 @@ function handleDeviceUpdated(data) {
 }
 
 function getSelfContactProfile() {
+    const profileUrl = getDeviceProfileUrl(state.deviceId);
     return {
         deviceId: state.deviceId,
         name: state.deviceName,
@@ -4967,20 +4968,25 @@ function getSelfContactProfile() {
         externalIp: state.selfNetworkInfo?.externalIp || '',
         sessionId: state.sessionId,
         shortCode: state.shortCode || '',
-        profileUrl: `${window.location.origin}/#${state.sessionId}`
+        profileUrl
     };
 }
 
+function getDeviceProfileUrl(deviceId) {
+    return deviceId ? `${window.location.origin}/device/${encodeURIComponent(deviceId)}` : '';
+}
+
 function normalizeContactProfile(device = {}) {
+    const deviceId = device.deviceId || device.id;
     return {
-        deviceId: device.deviceId || device.id,
+        deviceId,
         name: device.name || device.deviceName || 'Unknown device',
         model: device.model || device.deviceModel || '',
         internalIp: device.internalIp || device.localIp || '',
         externalIp: device.externalIp || '',
         sessionId: device.sessionId || state.sessionId || '',
         shortCode: device.shortCode || state.shortCode || '',
-        profileUrl: device.profileUrl || `${window.location.origin}/#${device.sessionId || state.sessionId || ''}`,
+        profileUrl: getDeviceProfileUrl(deviceId) || device.profileUrl || '',
         followedAt: device.followedAt || Date.now(),
         lastSeenAt: Date.now()
     };

@@ -1828,6 +1828,10 @@
             margin-left: 2px;
         }
 
+        #cycleThemeBtn {
+            margin-left: 2px;
+        }
+
         .leave-tunnel-btn {
             margin-left: auto;
         }
@@ -1982,6 +1986,7 @@
                 min-height: 0;
             }
 
+            #appShell:not([data-mobile-view]) .center-panel,
             #appShell[data-mobile-view="devices"] .left-panel,
             #appShell[data-mobile-view="chat"] .center-panel,
             #appShell[data-mobile-view="editor"] .right-panel {
@@ -2188,7 +2193,7 @@
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
 
-    <div class="container" id="appShell" hidden>
+    <div class="container" id="appShell" data-mobile-view="chat" hidden>
         <div class="header">
             <h1>🚀 即时传输隧道</h1>
             <p>安全、快速、去中心化的设备间文件传输</p>
