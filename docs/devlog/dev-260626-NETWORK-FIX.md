@@ -71,3 +71,12 @@
 - 还没有实现 TURN-only retry 的独立 PeerConnection；当前是默认 `iceTransportPolicy: all`，由 ICE 自己在 host/srflx/relay candidate 中选路。
 - 还没有做 HTTP Range/WebTransport relay。Socket.IO relay 仍作为最后兜底存在。
 - 后续可以加入设备对设备的网络画像：记录上次成功 route、RTT、是否 IPv6、是否 TURN，并作为下一次传输的链路排序依据。
+
+## 2026-06-26 PWA 慢网启动修复
+
+- 现象：大陆环境中使用 ctExcel 英国流量卡漫游打开 PWA，强刷缓存后首页启动失败，报错 `QRCode is not defined`。
+- 判断：这是二维码库加载和 `app.js` 启动之间的竞态。慢网、漫游网络、PWA 缓存重建时，`app.js` 可能先于 `/client/qrcode-1.0.0.min.js` 执行。
+- 调整：
+  - `index.html` 将二维码库从 `defer` 改为普通脚本，尽量保证它先于首页应用脚本执行。
+  - `app.js` 的 `generateQRCode()` 改为可降级逻辑：二维码库未就绪时显示“二维码加载中...”，并主动补载本地二维码库；补载失败时显示当前隧道链接文本，不再抛异常阻断首页启动。
+  - `service-worker.js` 缓存版本升级到 `instant-tunnel-v21`，确保 PWA 能刷新到新启动逻辑。

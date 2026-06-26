@@ -821,19 +821,91 @@ function discoverLocalNetworkIp(timeout = 1200) {
     });
 }
 
+let qrCodeLibraryPromise = null;
+
+function ensureQRCodeLibrary() {
+    if (window.QRCode) return Promise.resolve(window.QRCode);
+    if (qrCodeLibraryPromise) return qrCodeLibraryPromise;
+
+    qrCodeLibraryPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        const timer = setTimeout(() => {
+            reject(new Error('QRCode library load timed out'));
+        }, 10000);
+        const finish = () => {
+            clearTimeout(timer);
+            if (window.QRCode) resolve(window.QRCode);
+            else reject(new Error('QRCode library did not expose window.QRCode'));
+        };
+        script.src = '/client/qrcode-1.0.0.min.js';
+        script.async = true;
+        script.dataset.qrcodeRetry = 'true';
+        script.onload = finish;
+        script.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('QRCode library request failed'));
+        };
+        document.head.appendChild(script);
+    }).catch(err => {
+        qrCodeLibraryPromise = null;
+        throw err;
+    });
+
+    return qrCodeLibraryPromise;
+}
+
+function renderQRCodeFallback(qrContainer, message) {
+    qrContainer.innerHTML = '';
+    const fallback = document.createElement('div');
+    fallback.style.cssText = [
+        'display:grid',
+        'place-items:center',
+        'width:180px',
+        'min-height:180px',
+        'padding:12px',
+        'border:1px dashed rgba(102,126,234,.45)',
+        'border-radius:10px',
+        'background:#fff',
+        'color:#526079',
+        'font-size:.86rem',
+        'line-height:1.5',
+        'text-align:center',
+        'word-break:break-all'
+    ].join(';');
+    fallback.textContent = message;
+    qrContainer.appendChild(fallback);
+}
+
 function generateQRCode() {
     const qrContainer = document.getElementById('qrcode');
+    if (!qrContainer) return;
     qrContainer.innerHTML = '';
 
     const currentUrl = window.location.href;
-    new QRCode(qrContainer, {
-        text: currentUrl,
-        width: 180,
-        height: 180,
-        colorDark: '#667eea',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M
-    });
+    if (!window.QRCode) {
+        renderQRCodeFallback(qrContainer, '二维码加载中...');
+        ensureQRCodeLibrary()
+            .then(() => generateQRCode())
+            .catch(err => {
+                historyLog('qrcode-library-load-failed', { error: err.message });
+                renderQRCodeFallback(qrContainer, `二维码暂不可用\n${currentUrl}`);
+            });
+        return;
+    }
+
+    try {
+        new window.QRCode(qrContainer, {
+            text: currentUrl,
+            width: 180,
+            height: 180,
+            colorDark: '#667eea',
+            colorLight: '#ffffff',
+            correctLevel: window.QRCode.CorrectLevel?.M
+        });
+    } catch (err) {
+        historyLog('qrcode-render-failed', { error: err.message });
+        renderQRCodeFallback(qrContainer, `二维码暂不可用\n${currentUrl}`);
+    }
 }
 
 // ==================== Socket.io 连接 ====================
