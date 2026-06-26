@@ -518,6 +518,29 @@ const editorAssetRelays = new Map();
 const shortCodes = new Map();
 const magnets = new Map();
 const accessDevices = new Map();
+
+function bindSocketToDevice(socket, deviceId) {
+    socket.data.deviceId = deviceId;
+    deviceSockets.set(deviceId, socket);
+}
+
+function getDeviceSockets(deviceId) {
+    const sockets = new Map();
+    const primary = deviceSockets.get(deviceId);
+    if (primary?.connected) sockets.set(primary.id, primary);
+    for (const candidate of io.sockets.sockets.values()) {
+        if (candidate.connected && candidate.data?.deviceId === deviceId) {
+            sockets.set(candidate.id, candidate);
+        }
+    }
+    return Array.from(sockets.values());
+}
+
+function emitToDevice(deviceId, eventName, payload) {
+    const targets = getDeviceSockets(deviceId);
+    targets.forEach(target => target.emit(eventName, payload));
+    return targets;
+}
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const MAX_MAGNETS = 1000;
 const MAGNET_TTL = 24 * 60 * 60 * 1000;
@@ -1103,7 +1126,7 @@ io.on('connection', (socket) => {
             }
             const deviceName = isValidDeviceName(data.deviceName || '') ? sanitizeString(data.deviceName) : `设备-${deviceId.slice(-4)}`;
             profileDevice = deviceId;
-            deviceSockets.set(deviceId, socket);
+            bindSocketToDevice(socket, deviceId);
             accessDevices.delete(socketAccessKey);
             touchAccessDevice(deviceId, {
                 deviceId,
@@ -1135,7 +1158,6 @@ io.on('connection', (socket) => {
                 if (typeof ack === 'function') ack({ ok: false, delivered: false, error: 'Invalid invite' });
                 return;
             }
-            const target = deviceSockets.get(to);
             const payload = {
                 invitationId,
                 from,
@@ -1144,13 +1166,13 @@ io.on('connection', (socket) => {
                 link,
                 sender: data?.sender || {}
             };
-            if (target) {
-                target.emit('device-tunnel-invite', payload);
+            const targets = emitToDevice(to, 'device-tunnel-invite', payload);
+            if (targets.length) {
                 if (typeof ack === 'function') ack({ ok: true, delivered: true });
             } else if (typeof ack === 'function') {
                 ack({ ok: true, delivered: false });
             }
-            historyLog('device-tunnel-invite', { deviceId: from, targetDeviceId: to, sessionId, delivered: Boolean(target), socketId: socket.id, clientIp });
+            historyLog('device-tunnel-invite', { deviceId: from, targetDeviceId: to, sessionId, delivered: targets.length > 0, targetSocketCount: targets.length, socketId: socket.id, clientIp });
         } catch (err) {
             if (typeof ack === 'function') ack({ ok: false, delivered: false, error: 'Invite failed' });
         }
@@ -1160,8 +1182,7 @@ io.on('connection', (socket) => {
         const to = data?.to;
         const from = data?.from;
         if (!isValidDeviceId(to) || !isValidDeviceId(from)) return;
-        const target = deviceSockets.get(to);
-        if (target) target.emit('device-tunnel-invite-ack', {
+        emitToDevice(to, 'device-tunnel-invite-ack', {
             invitationId: sanitizeString(data.invitationId || '', 80),
             from,
             to,
@@ -1209,7 +1230,7 @@ io.on('connection', (socket) => {
             currentDevice = deviceId;
             
             // 存储设备socket映射
-            deviceSockets.set(deviceId, socket);
+            bindSocketToDevice(socket, deviceId);
             
             // 获取或创建会话
             if (!sessions.has(sessionId)) {

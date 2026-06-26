@@ -403,8 +403,16 @@
     function emitInvite(socket, invite) {
         return new Promise(resolve => {
             if (!socket?.connected) return resolve({ ok: false, delivered: false });
-            socket.emit('device-tunnel-invite', invite, response => resolve(response || { ok: false, delivered: false }));
-            setTimeout(() => resolve({ ok: false, delivered: false, timeout: true }), 1200);
+            let settled = false;
+            let timer = null;
+            const finish = response => {
+                if (settled) return;
+                settled = true;
+                if (timer) clearTimeout(timer);
+                resolve(response || { ok: false, delivered: false });
+            };
+            timer = setTimeout(() => finish({ ok: false, delivered: false, timeout: true }), 3000);
+            socket.emit('device-tunnel-invite', invite, finish);
         });
     }
 
