@@ -655,8 +655,10 @@ PWA 缓存版本升到 instant-tunnel-v20。
 
 --------------------------------
 
-- 当前只是让前端支持 TURN 配置入口，并未部署 TURN 服务。为了让真实跨蜂窝网络要明显改善，那就部署 coturn 或等价 TURN 服务。
-- 当前是默认 `iceTransportPolicy: all`，由 ICE 自己在 host/srflx/relay candidate 中选路。那请实现 TURN-only retry 的独立 PeerConnection。
-- 那就做 HTTP Range/WebTransport relay，不要让Socket.IO relay 作为最后兜底存在。
-- 请加入设备对设备的网络画像：记录上次成功 route、RTT、是否 IPv6、是否 TURN，并作为下一次传输的链路排序依据。
+那么接着处理以下问题：
+
+ - 当前只是让前端支持 TURN 配置入口，并未部署 TURN 服务。为了让真实跨蜂窝网络要明显改善，那就部署 coturn 或等价 TURN 服务。
+ - 当前是默认 `iceTransportPolicy: all`，由 ICE 自己在 host/srflx/relay candidate 中选路。那请实现 TURN-only retry 的独立 PeerConnection。
+ - 那就做 HTTP Range/WebTransport relay，不要让Socket.IO relay 作为最后兜底存在。
+ - 请加入设备对设备的网络画像：记录上次成功 route、RTT、是否 IPv6、是否 TURN，并作为下一次传输的链路排序依据。
 
