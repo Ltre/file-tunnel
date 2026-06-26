@@ -1,16 +1,12 @@
 我向chatgpt5.5最高模型提了个问题：”测试了让两台设备处于不同网路，例如电脑连着家里wifi，手机断开WIFI使用蜂窝数据，几乎没看到采用P2P传输，而是用socket.io中继。socket.io中继太慢了！有没有办法尽可能想办法成功建立P2P，想想有没有偏门的方案找到一条两个设备所处环境能最快直达的“
 
-
 模型经过深度调研后，提到”已经看到一个很可能影响判断的点：你的前端 P2P 资源传输模块里，P2P 尝试超时常量是 1500ms；跨蜂窝网建立 ICE/DataChannel 经常不止这个时间，太早降级会让你“几乎看不到 P2P”。另外你的 ICE 配置目前只有 STUN，没有 TURN。不要用 Socket.IO relay 当主要兜底。应该改成：host/srflx P2P 优先；失败后用 TURN over WebRTC relay；最后才 Socket.IO relay。“
 
 我的看法是，确实不能太早降级，但是也要让用户看着界面没什么动静（而实际后台在寻找最优链路中，没那么快有结果）以为有BUG了，想想怎么找到解决方案的平衡点，让设备处于几乎任何网络情况下都能看起来传输能力游刃有余。
 
 那么你有什么高见？
 
-
-
 大模型的完整回答如下：
-
 
 有办法提高，但要先把边界说清楚：
 
@@ -494,7 +490,173 @@ async function sendAssetSmart(asset, peerId) {
 
 
 
-
-
 本次修改的需求以及改动的明细要分门别类整理好章节，存放到项目的docs目录中，具体文件路径是 docs/devlog/dev-260626-NETWORK-FIX.md （请用尾行追加的方式写入）
 请切换到分支"dev-260626-NETWORK-FIX-NEWCODE"进行此需求的代码改动，但不要暂存，也不要提交。
+
+
+答：
+
+我先把附件和当前分支状态读一下，再切到你指定的新分支。这里有未提交改动的概率很高，我会先确认，不会把上一轮工作不小心带到新分支里。
+
+已运行 3 条命令
+
+我已经在目标分支 dev-260626-NETWORK-FIX-NEWCODE 上了。附件的核心建议我会先落一版“不会假死、也不会太早放弃 P2P”的改动：延长并按文件大小动态等待、把链路状态说清楚、为后续 TURN 接入留配置入口，同时把明细追加到指定 devlog。
+
+已运行 4 条命令
+
+我读到当前代码确实有 client/file-assets.js 的 P2P_TIMEOUT = 1500，而且主连接 ICE 只有 STUN；这正好对应附件里提到的“过早降级”。我会先在现有架构内做可验证的小步：资源传输按文件大小动态等待 P2P，等待期间 UI 明确显示“正在寻找最优链路”，超时后也不把 peer 冷却太久。
+
+已运行 4 条命令
+
+另外我看到旧 fileTransfer DataChannel 还写着 maxRetransmits: 0，注释说可靠传输，但这个配置实际是不重传。这个坑会影响旧文件链路，我会把它改成只设 ordered: true。这属于“网络稳定性”范围内的小修。
+
+已运行 12 条命令
+
+我会把 TURN 做成配置能力，而不是硬编码：tunnel.config.json 里预留 rtc.turnServers，服务端通过 runtime-config.js 下发，前端把它追加到默认 STUN 后面。这样现在没 TURN 也能运行；你部署 coturn 后只改配置即可。
+
+编辑了 2 个文件
+
+现在先落配置和候选链路识别。接下来要把 WebRTC 选中的 candidate pair 记录下来，进度条才能显示“直连 / TURN / Socket.IO”，否则用户看到的“P2P”会很含糊。
+
+编辑了 1 个文件
+
+协同编辑图片的 P2P 等待也从 1.5 秒提高到 8 秒，并把失败冷却从 5 分钟降到 30 秒，避免一次蜂窝网络慢握手就长期退回 Socket.IO。
+
+编辑了 1 个文件正在编辑 1 个文件执行了 2 条命令编辑了 1 个文件正在编辑 1 个文件执行了 2 条命令
+
+旧文件通道的 maxRetransmits: 0 已确认就在这里，我会把它移除，恢复可靠有序 DataChannel。
+
+正在编辑 1 个文件正在编辑 1 个文件
+
+还是编码上下文问题，我改成只锚定 maxRetransmits 那一行。
+
+正在编辑 1 个文件正在编辑 1 个文件
+
+这行里有不可见/编码异常字符，普通 patch 匹配不到。我先用 Node 只打印这几行的 JSON 形式确认字面量，再决定最小改法。
+
+已运行 node -e "const fs=require('fs');const lines=fs.readFileSync('app.js','utf8').split(/\r?\n/);for(let i=1148;i<=1152;i++)console.log(i+1, JSON.stringify(lines[i]));"
+
+确认实际文件是正常中文，只是 PowerShell 显示乱码。现在用真实内容 patch。
+
+编辑了 1 个文件
+
+接下来加 selected candidate pair 的读取和分类，这样文件资源模块能知道当前 WebRTC 是 host/srflx 直连还是 TURN relay。
+
+编辑了 1 个文件
+
+现在把这个路由识别接到文件传输模块里，并把进度文字改成更像“正在调度链路”的表达，避免用户看到 0% 不动误以为坏了。
+
+编辑了 1 个文件
+
+进度文字我会把 “P2P / Socket.IO” 这种粗分类改细一点：直连、NAT 打洞、TURN、Socket.IO，并给链路探测期一个明确状态。
+
+编辑了 1 个文件
+
+开始改 client/file-assets.js：动态 P2P 等待、短冷却、链路探测进度、以及把真实 route 带给接收端。
+
+编辑了 1 个文件
+
+动态等待规则会按实际传输范围大小算：小文件快一点、中等文件等 8 秒、大文件等 15 秒；分片传输则按分片大小算，避免每个 2MB 分片都等超大文件级别。
+
+编辑了 1 个文件
+
+现在调整发送端：先显示“寻找最优链路”，连接等待按文件大小动态计算；如果只是等待超时，冷却 5 秒就允许再试，不再 30 秒内一律放弃 P2P。
+
+编辑了 1 个文件
+
+接着把 DataChannel 成功后的真实 route 写进传输开始消息，这样接收端也能显示“TURN UDP / NAT 打洞直连”等，而不只是泛泛的 P2P。
+
+编辑了 1 个文件
+
+接收完成时我也会保留当次实际 transport，避免最后一跳又退成泛泛的“P2P”。
+
+编辑了 2 个文件
+
+多源分片下载也尽量带链路状态：如果某些分片已经开始，会优先显示当前活跃分片使用的 WebRTC/TURN/Socket.IO 类型。
+
+编辑了 1 个文件
+
+我还要避免一个小反作用：如果 peer 已在短冷却中，不应该因为“冷却中”这个错误又把冷却拉长到 30 秒。
+
+编辑了 1 个文件
+
+媒体通话/摄像头也使用 WebRTC，我顺手让它读取同一份 ICE/TURN 配置，避免文件传输能用 TURN、语音视频却还是只有 STUN。
+
+编辑了 2 个文件
+
+我会在 tunnel.config.json 预留 TURN 配置结构，但默认空数组，不影响你现在直接运行。后续部署 coturn 后填进去就能让前端拿到 TURN。
+
+编辑了 1 个文件
+
+我注意到接收端后续分片进度沿用的是 transfer.transport，如果只保存原始 p2p-srflx 会让“正在接收”状态追踪不够完整。顺手把接收态 transport 规范化一下。
+
+编辑了 1 个文件
+
+代码改动主体已经完成；接下来写 devlog，按“链路策略、配置、UI 反馈、已知边界/下一步”分章节追加。
+
+已运行 Test-Path docs\devlog\dev-260626-NETWORK-FIX.md
+
+目标 devlog 文件还不存在，所以我会新建它；后续如果继续补充，再按你要求尾行追加。
+
+已创建 1 个文件
+
+现在跑语法和 JSON 检查。这个改动牵涉前端模块、服务端 runtime 配置和 PWA 缓存，检查要覆盖这些点。
+
+已运行 4 条命令
+
+四个 JS 语法检查都过了。再检查 service worker、JSON 和 diff 空白。
+
+已运行 4 条命令
+
+检查发现一个麻烦点：补丁工具把几个原本 CRLF 的文件改成 LF，导致 diff 看起来像全文件重写。这不是业务改动，我会把行尾恢复成原来的 CRLF，避免制造巨大无意义差异。
+
+已运行 2 条命令
+
+git ls-files --eol 显示索引是 LF，工作区这些文件混入了 CRLF。我要做一次纯机械行尾归一化到 LF，只处理这次碰过的文本文件，不改内容。
+
+已运行 node -e "const fs=require('fs'); for (const file of ['app.js','client/file-assets.js','client/media.js','server.js','service-worker.js','tunnel.config.json','docs/devlog/dev-260626-NETWORK-FIX.md']) { if (!fs.existsSync(file)) continue; const text=fs.readFileSync(file,'utf8'); fs.writeFileSync(file, text.replace(/\r\n/g,'\n'), 'utf8'); }"
+
+行尾已归一化。再跑一遍检查，确认 diff 回到正常规模。
+
+已运行 3 条命令
+
+现在 diff 规模恢复正常，空白检查通过。再跑一次语法检查，确保行尾归一化后没有意外。
+
+已运行 4 条命令
+
+核心检查通过。再补查 service worker 和配置 JSON，然后看一下最终工作区状态，确认没有暂存/提交。
+
+已运行 4 条命令
+
+状态里还有一个 prompts/dev-260626.md 是当前工作区原本已有的未提交改动，我没有碰它；本次网络修复改动集中在 app.js、client/file-assets.js、client/media.js、server.js、service-worker.js、tunnel.config.json 和新增 devlog。
+
+已运行 2 条命令
+
+你前一条还问了 dev-260625 上两个 commit 之间的合计差异，我顺手用这两个 SHA 直接算一下 shortstat；不切分支，不影响当前改动。
+
+已运行 2 条命令
+
+两个 commit 的累计差异也算出来了：22 个文件，5080 行新增，222 行删除。现在我最后确认一下当前分支状态。
+
+已运行 2 条命令
+
+
+已完成，当前在 dev-260626-NETWORK-FIX-NEWCODE，没有暂存、没有提交。
+这次网络链路改动主要做了：
+文件资源 P2P 等待从固定 1500ms 改成按大小动态等待：小文件 2500ms，中等文件 8000ms，大文件 15000ms。
+等待期间进度条显示“正在寻找最优链路”，避免用户觉得卡死。
+P2P 超时后只短冷却 5s，明确失败才冷却 30s，避免太早长期降级到 Socket.IO。
+新增 WebRTC selected candidate pair 识别，进度可区分：局域网/IPv6直连、NAT 打洞直连、WebRTC TURN UDP/TCP/TLS、Socket.IO 中继。
+tunnel.config.json 新增 rtc.turnServers 配置入口；当前默认空，不影响现有运行，部署 coturn 后可直接填。
+媒体通话/摄像头/对讲机也复用同一套 ICE/TURN 配置。
+修正旧 fileTransfer DataChannel 的 maxRetransmits: 0，恢复可靠有序传输。
+PWA 缓存版本升到 instant-tunnel-v20。
+已新增 devlog：[docs/devlog/dev-260626-NETWORK-FIX.md](D:\\Workspace\\github\\Ltre\\file-tunnel\\docs\\devlog\\dev-260626-NETWORK-FIX.md)。
+
+--------------------------------
+
+- 当前只是让前端支持 TURN 配置入口，并未部署 TURN 服务。为了让真实跨蜂窝网络要明显改善，那就部署 coturn 或等价 TURN 服务。
+- 当前是默认 `iceTransportPolicy: all`，由 ICE 自己在 host/srflx/relay candidate 中选路。那请实现 TURN-only retry 的独立 PeerConnection。
+- 那就做 HTTP Range/WebTransport relay，不要让Socket.IO relay 作为最后兜底存在。
+- 请加入设备对设备的网络画像：记录上次成功 route、RTT、是否 IPv6、是否 TURN，并作为下一次传输的链路排序依据。
+
