@@ -166,6 +166,24 @@
             padding: 22px;
             color: #a13f3f;
         }
+        .toast {
+            position: fixed;
+            right: 18px;
+            bottom: 18px;
+            z-index: 1000;
+            max-width: min(360px, calc(100vw - 36px));
+            padding: 11px 14px;
+            border: 1px solid #dfe5f1;
+            border-radius: 10px;
+            background: rgba(36, 48, 74, 0.94);
+            color: #fff;
+            box-shadow: 0 12px 32px rgba(31, 45, 77, 0.22);
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+        .toast.info {
+            background: rgba(79, 94, 194, 0.96);
+        }
         @media (max-width: 640px) {
             header {
                 align-items: flex-start;
@@ -218,6 +236,19 @@
     const qr = document.getElementById('profileQr');
     let currentDeviceProfile = null;
     let inviteSocket = null;
+    let toastTimer = null;
+    const pendingIncomingInvites = new Map();
+
+    function showToast(message, type = '') {
+        document.getElementById('devicePageToast')?.remove();
+        clearTimeout(toastTimer);
+        const toast = document.createElement('div');
+        toast.id = 'devicePageToast';
+        toast.className = `toast ${type}`.trim();
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        toastTimer = setTimeout(() => toast.remove(), 2400);
+    }
 
     function generateId() {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -285,13 +316,111 @@
         inviteSocket.on('device-tunnel-invite-ack', data => {
             if (data?.accepted === false) alert('对方拒绝了隧道邀请');
         });
+        inviteSocket.on('device-tunnel-invite', handleIncomingTunnelInvite);
         return inviteSocket;
     }
+
+    function getInviteSenderName(invite) {
+        return invite?.sender?.name || invite?.sender?.deviceName || invite?.from?.slice(0, 8) || '对方设备';
+    }
+
+    function sendInviteAck(invite, accepted) {
+        inviteSocket?.emit('device-tunnel-invite-ack', {
+            invitationId: invite.invitationId,
+            from: getSelfDeviceId(),
+            to: invite.from,
+            sessionId: invite.sessionId,
+            accepted,
+            link: invite.link
+        });
+    }
+
+    function acceptIncomingInvite(invite) {
+        pendingIncomingInvites.delete(invite.invitationId);
+        sendInviteAck(invite, true);
+        window.location.href = invite.link;
+    }
+
+    function promptIncomingInvite(invite) {
+        const accepted = confirm(`${getInviteSenderName(invite)} 邀请你开始一个传输隧道，是否进入？`);
+        if (accepted) acceptIncomingInvite(invite);
+        else {
+            pendingIncomingInvites.delete(invite.invitationId);
+            sendInviteAck(invite, false);
+        }
+    }
+
+    async function showInviteNotification(invite) {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+        const title = '传输隧道邀请';
+        const options = {
+            body: `${getInviteSenderName(invite)} 想和你建立一个传输隧道`,
+            tag: `device-tunnel-invite-${invite.invitationId}`,
+            renotify: true,
+            requireInteraction: true,
+            icon: '/tunnel-icon.svg',
+            badge: '/tunnel-icon.svg',
+            data: { url: invite.link, invitationId: invite.invitationId }
+        };
+        try {
+            if (navigator.serviceWorker?.ready) {
+                const registration = await navigator.serviceWorker.ready;
+                await registration.showNotification(title, options);
+                return true;
+            }
+        } catch {
+            // Fall through to the page notification API.
+        }
+        try {
+            const notification = new Notification(title, options);
+            notification.onclick = () => {
+                window.focus();
+                acceptIncomingInvite(invite);
+                notification.close();
+            };
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    async function handleIncomingTunnelInvite(invite) {
+        if (!invite?.link || !invite?.from || !invite?.invitationId) return;
+        if (document.hidden) {
+            pendingIncomingInvites.set(invite.invitationId, invite);
+            const notified = await showInviteNotification(invite);
+            if (notified) return;
+        }
+        promptIncomingInvite(invite);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden || pendingIncomingInvites.size === 0) return;
+        const invite = pendingIncomingInvites.values().next().value;
+        if (invite) promptIncomingInvite(invite);
+    });
 
     function emitInvite(socket, invite) {
         return new Promise(resolve => {
             if (!socket?.connected) return resolve({ ok: false, delivered: false });
             socket.emit('device-tunnel-invite', invite, response => resolve(response || { ok: false, delivered: false }));
+            setTimeout(() => resolve({ ok: false, delivered: false, timeout: true }), 1200);
+        });
+    }
+
+    function waitForInviteSocket(socket, timeout = 1000) {
+        return new Promise(resolve => {
+            if (!socket) return resolve(null);
+            if (socket.connected) return resolve(socket);
+            const timer = setTimeout(() => {
+                socket.off?.('connect', onConnect);
+                resolve(socket);
+            }, timeout);
+            function onConnect() {
+                clearTimeout(timer);
+                resolve(socket);
+            }
+            socket.once('connect', onConnect);
         });
     }
 
@@ -305,7 +434,7 @@
         }
         const sessionId = getDirectTunnelSessionId(target.deviceId);
         const invitationId = generateId();
-        const link = `${window.location.origin}/?invite=${encodeURIComponent(invitationId)}&from=${encodeURIComponent(from)}#${sessionId}`;
+        const link = `${window.location.origin}/?open=1&invite=${encodeURIComponent(invitationId)}&from=${encodeURIComponent(from)}#${sessionId}`;
         const invite = {
             invitationId,
             from,
@@ -319,13 +448,21 @@
             },
             createdAt: Date.now()
         };
-        const socket = connectInviteSocket();
+        const button = document.getElementById('profileTunnelBtn');
+        if (button) {
+            button.disabled = true;
+            button.querySelector('span:last-child').textContent = '正在准备隧道...';
+        }
+        showToast('正在准备传输隧道...', 'info');
+        const socket = await waitForInviteSocket(connectInviteSocket());
         const response = socket?.connected ? await emitInvite(socket, invite) : { ok: false, delivered: false };
         if (!response?.delivered) {
             queueTunnelInvite(invite);
-            alert('对方暂时不在线，已加入本机待发送队列。现在先打开你的隧道页。');
+            showToast('对方暂时不在线，已加入本机待发送队列。');
+        } else {
+            showToast('邀请已推送，正在进入隧道。', 'info');
         }
-        window.location.href = link;
+        setTimeout(() => { window.location.href = link; }, 650);
     }
 
     function formatTime(value) {
@@ -356,7 +493,6 @@
         addField('在线状态', device.online ? '在线' : '离线');
         addField('活跃状态', device.active ? '活跃' : '不活跃');
         addField('设备型号', device.deviceModel);
-        addField('所在隧道', device.shortCode || device.sessionId);
         addField('内网 IP', device.localIp);
         addField('外网 IP', device.externalIp || device.ip);
         addField('首次访问', formatTime(device.firstSeen));
@@ -374,9 +510,9 @@
             const link = device.profileUrl || location.href;
             try {
                 await navigator.clipboard.writeText(link);
-                alert('已复制设备主页链接');
+                showToast('已复制设备链接', 'info');
             } catch {
-                prompt('复制设备主页链接', link);
+                prompt('复制设备链接', link);
             }
         };
         document.getElementById('profileVoiceBtn').onclick = () => alert('语音通话请先在功能首页关注设备后发起。');

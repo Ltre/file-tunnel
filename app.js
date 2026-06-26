@@ -5323,30 +5323,90 @@ function sendPendingTunnelInviteReceipt() {
     state.pendingTunnelInviteReceipt = null;
 }
 
-function handleDeviceTunnelInvite(invite) {
-    if (!invite?.link || !invite?.from || !invite?.invitationId) return;
-    const name = invite.sender?.name || invite.sender?.deviceName || invite.from.slice(0, 8);
-    if (!confirm(`${name} 邀请你开始一个传输隧道，是否进入？`)) {
-        state.socket?.emit('device-tunnel-invite-ack', {
-            invitationId: invite.invitationId,
-            from: state.deviceId,
-            to: invite.from,
-            sessionId: invite.sessionId,
-            accepted: false,
-            link: invite.link
-        });
-        return;
-    }
+const pendingDeviceTunnelInvites = new Map();
+
+function getDeviceTunnelInviteSenderName(invite) {
+    return invite?.sender?.name || invite?.sender?.deviceName || invite?.from?.slice(0, 8) || '对方设备';
+}
+
+function sendDeviceTunnelInviteAck(invite, accepted) {
     state.socket?.emit('device-tunnel-invite-ack', {
         invitationId: invite.invitationId,
         from: state.deviceId,
         to: invite.from,
         sessionId: invite.sessionId,
-        accepted: true,
+        accepted,
         link: invite.link
     });
+}
+
+function acceptDeviceTunnelInvite(invite) {
+    pendingDeviceTunnelInvites.delete(invite.invitationId);
+    sendDeviceTunnelInviteAck(invite, true);
     window.location.href = invite.link;
 }
+
+function promptDeviceTunnelInvite(invite) {
+    const name = getDeviceTunnelInviteSenderName(invite);
+    const accepted = confirm(`${name} 邀请你开始一个传输隧道，是否进入？`);
+    if (accepted) acceptDeviceTunnelInvite(invite);
+    else {
+        pendingDeviceTunnelInvites.delete(invite.invitationId);
+        sendDeviceTunnelInviteAck(invite, false);
+    }
+}
+
+async function showDeviceTunnelInviteNotification(invite) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+    const name = getDeviceTunnelInviteSenderName(invite);
+    const title = '传输隧道邀请';
+    const options = {
+        body: `${name} 想和你建立一个传输隧道`,
+        tag: `device-tunnel-invite-${invite.invitationId}`,
+        renotify: true,
+        requireInteraction: true,
+        icon: '/tunnel-icon.svg',
+        badge: '/tunnel-icon.svg',
+        data: { url: invite.link, invitationId: invite.invitationId }
+    };
+    try {
+        if (navigator.serviceWorker?.ready) {
+            const registration = await navigator.serviceWorker.ready;
+            await registration.showNotification(title, options);
+            return true;
+        }
+    } catch (err) {
+        historyLog('device-tunnel-notification-sw-failed', { error: err.message });
+    }
+    try {
+        const notification = new Notification(title, options);
+        notification.onclick = () => {
+            window.focus();
+            acceptDeviceTunnelInvite(invite);
+            notification.close();
+        };
+        return true;
+    } catch (err) {
+        historyLog('device-tunnel-notification-failed', { error: err.message });
+        return false;
+    }
+}
+
+async function handleDeviceTunnelInvite(invite) {
+    if (!invite?.link || !invite?.from || !invite?.invitationId) return;
+    if (document.hidden) {
+        pendingDeviceTunnelInvites.set(invite.invitationId, invite);
+        const notified = await showDeviceTunnelInviteNotification(invite);
+        if (notified) return;
+    }
+    promptDeviceTunnelInvite(invite);
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden || pendingDeviceTunnelInvites.size === 0) return;
+    const invite = pendingDeviceTunnelInvites.values().next().value;
+    if (invite) promptDeviceTunnelInvite(invite);
+});
 
 function handleDeviceTunnelInviteAck(data) {
     if (!data?.invitationId) return;

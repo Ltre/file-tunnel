@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v17';
+const CACHE_NAME = 'instant-tunnel-v19';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -41,6 +41,25 @@ self.addEventListener('message', event => {
             .then(keys => Promise.all(keys
                 .filter(key => key.startsWith('instant-tunnel-'))
                 .map(key => caches.delete(key))))
+    );
+});
+
+self.addEventListener('notificationclick', event => {
+    const targetUrl = event.notification.data?.url || '/';
+    const absoluteUrl = new URL(targetUrl, self.location.origin).href;
+    event.notification.close();
+    event.waitUntil(
+        clients.matchAll({ type: 'window', includeUncontrolled: true })
+            .then(clientList => {
+                const sameOriginClient = clientList.find(client => new URL(client.url).origin === self.location.origin);
+                if (sameOriginClient) {
+                    if ('navigate' in sameOriginClient) {
+                        return sameOriginClient.navigate(absoluteUrl).then(client => client?.focus?.());
+                    }
+                    return sameOriginClient.focus();
+                }
+                return clients.openWindow(absoluteUrl);
+            })
     );
 });
 
