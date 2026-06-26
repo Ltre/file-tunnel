@@ -12,10 +12,14 @@ const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
+const { createInfraStore } = require('./server/infra-store');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
+const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
+const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
+let infraStore = null;
 
 // ==================== 安全配置 ====================
 
@@ -263,10 +267,26 @@ app.get('/api/magnets/:magnetId', (req, res) => {
 // API: 获取所有会话信息
 app.get('/api/sessions', (req, res) => {
     try {
-        const sessionList = [];
+        const sessionMap = new Map();
         let totalDevices = 0;
         let totalMessages = 0;
         let totalFiles = 0;
+
+        for (const tunnel of infraStore?.listTunnels() || []) {
+            const sessionId = tunnel.session_id;
+            if (!isValidSessionId(sessionId)) continue;
+            sessionMap.set(sessionId, {
+                id: sessionId,
+                shortCode: tunnel.short_code || '',
+                deviceCount: 0,
+                createdAt: Number(tunnel.created_at) || Date.now(),
+                lastActivity: Number(tunnel.last_activity) || Date.now(),
+                isActive: false,
+                isOnline: false,
+                messageCount: 0,
+                fileCount: 0
+            });
+        }
         
         sessions.forEach((session, sessionId) => {
             totalDevices += session.devices.size;
@@ -275,10 +295,17 @@ app.get('/api/sessions', (req, res) => {
             const fileCount = messages.filter(message => message.type === 'file' || message.fileInfo).length;
             totalMessages += messageCount;
             totalFiles += fileCount;
-            sessionList.push({
+            const current = sessionMap.get(sessionId) || {
                 id: sessionId,
-                deviceCount: session.devices.size,
                 createdAt: session.createdAt,
+                shortCode: session.shortCode || '',
+                messageCount: 0,
+                fileCount: 0
+            };
+            sessionMap.set(sessionId, {
+                ...current,
+                deviceCount: session.devices.size,
+                createdAt: current.createdAt || session.createdAt,
                 lastActivity: session.lastActivity,
                 isActive: Date.now() - session.lastActivity < 5 * 60 * 1000,
                 isOnline: session.devices.size > 0,
@@ -287,6 +314,8 @@ app.get('/api/sessions', (req, res) => {
             });
         });
         
+        const sessionList = Array.from(sessionMap.values());
+
         // 按最后活动时间排序
         sessionList.sort((a, b) => b.lastActivity - a.lastActivity);
         
@@ -305,7 +334,31 @@ app.get('/api/sessions', (req, res) => {
 app.get('/api/devices', (req, res) => {
     try {
         const now = Date.now();
-        const devices = Array.from(accessDevices.values())
+        const deviceMap = new Map();
+        for (const device of infraStore?.listDevices(MAX_ACCESS_DEVICES) || []) {
+            const deviceId = device.device_id;
+            if (!deviceId) continue;
+            deviceMap.set(deviceId, {
+                key: deviceId,
+                deviceId,
+                sessionId: device.session_id || '',
+                deviceName: device.device_name || '',
+                deviceModel: device.device_model || '',
+                localIp: device.local_ip || '',
+                externalIp: device.external_ip || '',
+                ip: device.ip || device.external_ip || '',
+                socketId: device.socket_id || '',
+                userAgent: device.user_agent || '',
+                firstSeen: Number(device.first_seen) || now,
+                lastAccess: Number(device.last_access) || now,
+                online: Number(device.online) === 1,
+                active: Number(device.active) === 1
+            });
+        }
+        for (const device of accessDevices.values()) {
+            if (device.deviceId || device.key) deviceMap.set(device.deviceId || device.key, device);
+        }
+        const devices = Array.from(deviceMap.values())
             .map(device => ({
                 ...device,
                 active: device.online === true && now - (device.lastAccess || 0) < 5 * 60 * 1000
@@ -334,10 +387,11 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
 
         const session = sessions.get(sessionId);
         if (!session) {
+            deleteShortCodesForSession(sessionId);
             return res.json({ ok: true, deleted: false, reason: 'not-found' });
         }
 
-        if (session.shortCode) shortCodes.delete(session.shortCode);
+        deleteShortCodesForSession(sessionId);
         for (const deviceId of session.devices.keys()) {
             const socket = deviceSockets.get(deviceId);
             if (socket) {
@@ -396,9 +450,9 @@ app.get('/api/short-codes/:shortCode', (req, res) => {
     const shortCode = normalizeShortCode(req.params.shortCode);
     if (!shortCode) return res.status(400).json({ error: 'Invalid short code' });
 
-    const sessionId = shortCodes.get(shortCode);
-    if (!sessionId || !sessions.has(sessionId)) {
-        shortCodes.delete(shortCode);
+    const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
+    if (!sessionId || !isValidSessionId(sessionId)) {
+        deleteShortCode(shortCode);
         return res.status(404).json({ error: 'Short code not found' });
     }
 
@@ -526,15 +580,34 @@ function normalizeShortCode(value) {
     return /^[A-Z0-9]{5}$/.test(code) ? code : '';
 }
 
+function findShortCodeForSession(sessionId) {
+    const storedCode = infraStore?.findShortCodeForSession(sessionId);
+    if (storedCode) {
+        shortCodes.set(storedCode, sessionId);
+        return storedCode;
+    }
+    for (const [code, mappedSessionId] of shortCodes) {
+        if (mappedSessionId === sessionId) return code;
+    }
+    return '';
+}
+
 function reserveShortCode(code, sessionId) {
-    if (!code) return null;
-    const existingSessionId = shortCodes.get(code);
+    if (!code || !isValidSessionId(sessionId)) return null;
+    const existingSessionId = infraStore?.findSessionIdByShortCode(code) || shortCodes.get(code);
     if (existingSessionId && existingSessionId !== sessionId) return null;
+    const existingCode = findShortCodeForSession(sessionId);
+    if (existingCode && existingCode !== code) return null;
+    const reserved = infraStore?.reserveShortCode(code, sessionId);
+    if (!reserved && infraStore) return null;
     shortCodes.set(code, sessionId);
     return code;
 }
 
 function createShortCode(sessionId, preferredCode = '') {
+    const existingCode = findShortCodeForSession(sessionId);
+    if (existingCode) return existingCode;
+
     const reservedPreferred = reserveShortCode(normalizeShortCode(preferredCode), sessionId);
     if (reservedPreferred) return reservedPreferred;
 
@@ -546,6 +619,53 @@ function createShortCode(sessionId, preferredCode = '') {
         if (reserveShortCode(code, sessionId)) return code;
     }
     return null;
+}
+
+function deleteShortCodesForSession(sessionId) {
+    for (const [code, mappedSessionId] of shortCodes) {
+        if (mappedSessionId === sessionId) {
+            shortCodes.delete(code);
+        }
+    }
+    infraStore?.deleteTunnel(sessionId);
+}
+
+function deleteShortCode(shortCode) {
+    const removedFromCache = shortCodes.delete(shortCode);
+    infraStore?.deleteShortCode(shortCode);
+    return removedFromCache;
+}
+
+function hydrateShortCodeCache() {
+    shortCodes.clear();
+    for (const tunnel of infraStore?.listTunnels() || []) {
+        const shortCode = normalizeShortCode(tunnel.short_code);
+        if (shortCode && isValidSessionId(tunnel.session_id)) {
+            shortCodes.set(shortCode, tunnel.session_id);
+        }
+    }
+}
+
+function migrateLegacyShortCodeStore() {
+    if (!infraStore || !fs.existsSync(LEGACY_SHORT_CODE_STORE_PATH)) return;
+    try {
+        const raw = fs.readFileSync(LEGACY_SHORT_CODE_STORE_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        const entries = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? Object.entries(parsed)
+            : [];
+        let migrated = 0;
+        for (const [code, sessionId] of entries) {
+            const shortCode = normalizeShortCode(code);
+            if (!shortCode || !isValidSessionId(sessionId)) continue;
+            if (infraStore.reserveShortCode(shortCode, sessionId)) migrated++;
+        }
+        const migratedPath = `${LEGACY_SHORT_CODE_STORE_PATH}.migrated`;
+        fs.renameSync(LEGACY_SHORT_CODE_STORE_PATH, migratedPath);
+        console.log(`Migrated ${migrated} legacy short codes to SQLite`);
+    } catch (err) {
+        console.error('Failed to migrate legacy short code store:', err);
+    }
 }
 
 function createMagnetId() {
@@ -618,6 +738,9 @@ function touchAccessDevice(key, patch = {}) {
         lastAccess: patch.lastAccess || now
     };
     accessDevices.set(key, record);
+    if (record.deviceId) {
+        infraStore?.upsertDevice(record);
+    }
     pruneAccessDevices();
     return record;
 }
@@ -927,6 +1050,11 @@ io.on('connection', (socket) => {
             const session = sessions.get(sessionId);
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
+            infraStore?.touchTunnel(sessionId, {
+                shortCode: session.shortCode || '',
+                createdAt: session.createdAt || Date.now(),
+                lastActivity: Date.now()
+            });
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -1063,12 +1191,53 @@ io.on('connection', (socket) => {
     socket.on('join-by-short-code', data => {
         const shortCode = normalizeShortCode(data?.shortCode);
         if (!shortCode) return socket.emit('short-code-error', { message: '短码应为 5 位字母或数字' });
-        const sessionId = shortCodes.get(shortCode);
-        if (!sessionId || !sessions.has(sessionId)) {
-            shortCodes.delete(shortCode);
+        const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
+        if (!sessionId || !isValidSessionId(sessionId)) {
+            deleteShortCode(shortCode);
             return socket.emit('short-code-error', { message: '短码无效或会话已结束' });
         }
         socket.emit('short-code-session', { sessionId });
+    });
+
+    socket.on('register-session-codes', data => {
+        try {
+            const entries = Array.isArray(data?.entries) ? data.entries.slice(0, 200) : [];
+            let acceptedCount = 0;
+            let rejectedCount = 0;
+            for (const entry of entries) {
+                const sessionId = entry && entry.sessionId;
+                const shortCode = normalizeShortCode(entry && entry.shortCode);
+                if (!isValidSessionId(sessionId) || !shortCode) {
+                    rejectedCount++;
+                    continue;
+                }
+                const session = sessions.get(sessionId);
+                if (session?.shortCode && session.shortCode !== shortCode) {
+                    rejectedCount++;
+                    continue;
+                }
+                const reserved = reserveShortCode(shortCode, sessionId);
+                if (!reserved) {
+                    rejectedCount++;
+                    continue;
+                }
+                if (session && !session.shortCode) {
+                    session.shortCode = shortCode;
+                }
+                acceptedCount++;
+            }
+            historyLog('session-codes-registered', {
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                submittedCount: entries.length,
+                acceptedCount,
+                rejectedCount
+            });
+        } catch (err) {
+            console.error('register-session-codes error:', err);
+        }
     });
     
     // 信令转发 (WebRTC)
@@ -1881,7 +2050,6 @@ function cleanupExpiredSessions() {
         // Keep an empty session long enough for reconnecting devices to recover history.
         if (session.devices.size === 0 &&
             now - session.lastActivity > MAX_SESSION_AGE) {
-            if (session.shortCode) shortCodes.delete(session.shortCode);
             sessions.delete(sessionId);
             cleaned++;
         }
@@ -1905,7 +2073,17 @@ function logStartup() {
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
 }
 
-webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
+async function startServer() {
+    infraStore = await createInfraStore({ dataDir: SERVER_DATA_DIR });
+    migrateLegacyShortCodeStore();
+    hydrateShortCodeCache();
+    webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
+}
+
+startServer().catch(err => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+});
 
 // 优雅关闭
 function shutdown(signal) {

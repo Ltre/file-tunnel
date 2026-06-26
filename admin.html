@@ -427,8 +427,14 @@
                 const deviceData = devicesResponse.ok ? await devicesResponse.json() : { devices: [] };
                 const magnetData = magnetsResponse.ok ? await magnetsResponse.json() : { magnets: [] };
                 
-                const localData = await loadLocalHistory();
-                const sessions = mergeSessions(data.sessions || [], localData.sessions);
+                const sessions = (data.sessions || [])
+                    .filter(session => isValidSessionId(session.id))
+                    .map(session => ({
+                        ...session,
+                        source: 'server',
+                        messageCount: Number(session.messageCount) || 0,
+                        fileCount: Number(session.fileCount) || 0
+                    }));
                 updateStats({
                     sessions,
                     totalDevices: deviceData.onlineDevices ?? data.totalDevices ?? 0,
