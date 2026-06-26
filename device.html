@@ -238,6 +238,8 @@
     let inviteSocket = null;
     let toastTimer = null;
     const pendingIncomingInvites = new Map();
+    const invitePageId = `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const INVITE_CLAIM_TTL = 10 * 60 * 1000;
 
     function showToast(message, type = '') {
         document.getElementById('devicePageToast')?.remove();
@@ -324,6 +326,32 @@
         return invite?.sender?.name || invite?.sender?.deviceName || invite?.from?.slice(0, 8) || '对方设备';
     }
 
+    async function claimIncomingInvite(invite) {
+        const invitationId = invite?.invitationId;
+        if (!invitationId) return false;
+        const key = `deviceTunnelInviteClaim:${invitationId}`;
+        const now = Date.now();
+        try {
+            const existing = JSON.parse(localStorage.getItem(key) || 'null');
+            if (existing?.owner && existing.owner !== invitePageId && existing.expiresAt > now) {
+                return false;
+            }
+            localStorage.setItem(key, JSON.stringify({
+                owner: invitePageId,
+                expiresAt: now + INVITE_CLAIM_TTL
+            }));
+            await new Promise(resolve => setTimeout(resolve, 45 + Math.random() * 80));
+            const confirmed = JSON.parse(localStorage.getItem(key) || 'null');
+            return confirmed?.owner === invitePageId;
+        } catch {
+            return true;
+        }
+    }
+
+    function isInvitePageInteractive() {
+        return document.visibilityState === 'visible' && document.hasFocus();
+    }
+
     function sendInviteAck(invite, accepted) {
         inviteSocket?.emit('device-tunnel-invite-ack', {
             invitationId: invite.invitationId,
@@ -335,13 +363,72 @@
         });
     }
 
-    function acceptIncomingInvite(invite) {
-        pendingIncomingInvites.delete(invite.invitationId);
-        sendInviteAck(invite, true);
+function acceptIncomingInvite(invite) {
+    pendingIncomingInvites.delete(invite.invitationId);
+    document.getElementById(`incomingTunnelInvitePrompt-${invite.invitationId}`)?.remove();
+    sendInviteAck(invite, true);
         window.location.href = invite.link;
     }
 
+    function showIncomingInvitePrompt(invite) {
+        if (!invite?.invitationId) return;
+        const name = getInviteSenderName(invite);
+        pendingIncomingInvites.set(invite.invitationId, invite);
+        document.getElementById(`incomingTunnelInvitePrompt-${invite.invitationId}`)?.remove();
+
+        const prompt = document.createElement('div');
+        prompt.id = `incomingTunnelInvitePrompt-${invite.invitationId}`;
+        prompt.style.cssText = [
+            'position:fixed',
+            'right:18px',
+            'top:18px',
+            'z-index:10020',
+            'width:min(360px, calc(100vw - 32px))',
+            'padding:14px',
+            'border:1px solid rgba(134,148,178,.28)',
+            'border-radius:14px',
+            'background:rgba(255,255,255,.96)',
+            'box-shadow:0 18px 48px rgba(20,27,45,.18)',
+            'backdrop-filter:blur(14px)',
+            'color:#24304a',
+            'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+        ].join(';');
+        const title = document.createElement('div');
+        title.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:6px;';
+        title.textContent = '传输隧道邀请';
+        const body = document.createElement('div');
+        body.style.cssText = 'color:#526079;margin-bottom:12px;';
+        body.textContent = `${name} 想和你建立一个传输隧道`;
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;';
+        const rejectButton = document.createElement('button');
+        rejectButton.type = 'button';
+        rejectButton.textContent = '暂不进入';
+        rejectButton.className = 'secondary';
+        const acceptButton = document.createElement('button');
+        acceptButton.type = 'button';
+        acceptButton.textContent = '进入隧道';
+        rejectButton.addEventListener('click', () => {
+            pendingIncomingInvites.delete(invite.invitationId);
+            prompt.remove();
+            sendInviteAck(invite, false);
+        });
+        acceptButton.addEventListener('click', () => acceptIncomingInvite(invite));
+        actions.append(rejectButton, acceptButton);
+        if ('Notification' in window && Notification.permission === 'default') {
+            const notifyButton = document.createElement('button');
+            notifyButton.type = 'button';
+            notifyButton.textContent = '开启后台通知';
+            notifyButton.className = 'secondary';
+            notifyButton.addEventListener('click', () => Notification.requestPermission().catch(() => null));
+            actions.prepend(notifyButton);
+        }
+        prompt.append(title, body, actions);
+        document.body.appendChild(prompt);
+    }
+
     function promptIncomingInvite(invite) {
+        return showIncomingInvitePrompt(invite);
         const accepted = confirm(`${getInviteSenderName(invite)} 邀请你开始一个传输隧道，是否进入？`);
         if (accepted) acceptIncomingInvite(invite);
         else {
@@ -386,19 +473,24 @@
 
     async function handleIncomingTunnelInvite(invite) {
         if (!invite?.link || !invite?.from || !invite?.invitationId) return;
-        if (document.hidden) {
+        if (!(await claimIncomingInvite(invite))) return;
+        if (!isInvitePageInteractive()) {
             pendingIncomingInvites.set(invite.invitationId, invite);
             const notified = await showInviteNotification(invite);
             if (notified) return;
+            return;
         }
         promptIncomingInvite(invite);
     }
 
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden || pendingIncomingInvites.size === 0) return;
+    function flushPendingIncomingInvitePrompt() {
+        if (!isInvitePageInteractive() || pendingIncomingInvites.size === 0) return;
         const invite = pendingIncomingInvites.values().next().value;
         if (invite) promptIncomingInvite(invite);
-    });
+    }
+
+    document.addEventListener('visibilitychange', flushPendingIncomingInvitePrompt);
+    window.addEventListener('focus', flushPendingIncomingInvitePrompt);
 
     function emitInvite(socket, invite) {
         return new Promise(resolve => {

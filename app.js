@@ -5324,9 +5324,37 @@ function sendPendingTunnelInviteReceipt() {
 }
 
 const pendingDeviceTunnelInvites = new Map();
+const deviceTunnelInvitePageId = `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const DEVICE_TUNNEL_INVITE_CLAIM_TTL = 10 * 60 * 1000;
 
 function getDeviceTunnelInviteSenderName(invite) {
     return invite?.sender?.name || invite?.sender?.deviceName || invite?.from?.slice(0, 8) || '对方设备';
+}
+
+async function claimDeviceTunnelInvite(invite) {
+    const invitationId = invite?.invitationId;
+    if (!invitationId) return false;
+    const key = `deviceTunnelInviteClaim:${invitationId}`;
+    const now = Date.now();
+    try {
+        const existing = JSON.parse(localStorage.getItem(key) || 'null');
+        if (existing?.owner && existing.owner !== deviceTunnelInvitePageId && existing.expiresAt > now) {
+            return false;
+        }
+        localStorage.setItem(key, JSON.stringify({
+            owner: deviceTunnelInvitePageId,
+            expiresAt: now + DEVICE_TUNNEL_INVITE_CLAIM_TTL
+        }));
+        await new Promise(resolve => setTimeout(resolve, 45 + Math.random() * 80));
+        const confirmed = JSON.parse(localStorage.getItem(key) || 'null');
+        return confirmed?.owner === deviceTunnelInvitePageId;
+    } catch {
+        return true;
+    }
+}
+
+function isDeviceTunnelInviteInteractive() {
+    return document.visibilityState === 'visible' && document.hasFocus();
 }
 
 function sendDeviceTunnelInviteAck(invite, accepted) {
@@ -5342,11 +5370,71 @@ function sendDeviceTunnelInviteAck(invite, accepted) {
 
 function acceptDeviceTunnelInvite(invite) {
     pendingDeviceTunnelInvites.delete(invite.invitationId);
+    document.getElementById(`deviceTunnelInvitePrompt-${invite.invitationId}`)?.remove();
     sendDeviceTunnelInviteAck(invite, true);
     window.location.href = invite.link;
 }
 
+function showDeviceTunnelInvitePrompt(invite) {
+    if (!invite?.invitationId) return;
+    const name = getDeviceTunnelInviteSenderName(invite);
+    pendingDeviceTunnelInvites.set(invite.invitationId, invite);
+    document.getElementById(`deviceTunnelInvitePrompt-${invite.invitationId}`)?.remove();
+
+    const prompt = document.createElement('div');
+    prompt.id = `deviceTunnelInvitePrompt-${invite.invitationId}`;
+    prompt.style.cssText = [
+        'position:fixed',
+        'right:18px',
+        'top:calc(var(--app-header-height, 56px) + 16px)',
+        'z-index:10020',
+        'width:min(360px, calc(100vw - 32px))',
+        'padding:14px',
+        'border:1px solid rgba(134,148,178,.28)',
+        'border-radius:14px',
+        'background:rgba(255,255,255,.96)',
+        'box-shadow:0 18px 48px rgba(20,27,45,.18)',
+        'backdrop-filter:blur(14px)',
+        'color:#24304a',
+        'font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+    ].join(';');
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:6px;';
+    title.textContent = '传输隧道邀请';
+    const body = document.createElement('div');
+    body.style.cssText = 'color:#526079;margin-bottom:12px;';
+    body.textContent = `${name} 想和你建立一个传输隧道`;
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;';
+    const rejectButton = document.createElement('button');
+    rejectButton.type = 'button';
+    rejectButton.textContent = '暂不进入';
+    rejectButton.className = 'btn btn-secondary';
+    const acceptButton = document.createElement('button');
+    acceptButton.type = 'button';
+    acceptButton.textContent = '进入隧道';
+    acceptButton.className = 'btn';
+    rejectButton.addEventListener('click', () => {
+        pendingDeviceTunnelInvites.delete(invite.invitationId);
+        prompt.remove();
+        sendDeviceTunnelInviteAck(invite, false);
+    });
+    acceptButton.addEventListener('click', () => acceptDeviceTunnelInvite(invite));
+    actions.append(rejectButton, acceptButton);
+    if ('Notification' in window && Notification.permission === 'default') {
+        const notifyButton = document.createElement('button');
+        notifyButton.type = 'button';
+        notifyButton.textContent = '开启后台通知';
+        notifyButton.className = 'btn btn-secondary';
+        notifyButton.addEventListener('click', () => Notification.requestPermission().catch(() => null));
+        actions.prepend(notifyButton);
+    }
+    prompt.append(title, body, actions);
+    document.body.appendChild(prompt);
+}
+
 function promptDeviceTunnelInvite(invite) {
+    return showDeviceTunnelInvitePrompt(invite);
     const name = getDeviceTunnelInviteSenderName(invite);
     const accepted = confirm(`${name} 邀请你开始一个传输隧道，是否进入？`);
     if (accepted) acceptDeviceTunnelInvite(invite);
@@ -5394,19 +5482,29 @@ async function showDeviceTunnelInviteNotification(invite) {
 
 async function handleDeviceTunnelInvite(invite) {
     if (!invite?.link || !invite?.from || !invite?.invitationId) return;
-    if (document.hidden) {
+    if (!(await claimDeviceTunnelInvite(invite))) return;
+    if (!isDeviceTunnelInviteInteractive()) {
         pendingDeviceTunnelInvites.set(invite.invitationId, invite);
         const notified = await showDeviceTunnelInviteNotification(invite);
         if (notified) return;
+        historyLog('device-tunnel-invite-pending-unfocused', {
+            invitationId: invite.invitationId,
+            fromDeviceId: invite.from,
+            notificationPermission: 'Notification' in window ? Notification.permission : 'unsupported'
+        });
+        return;
     }
     promptDeviceTunnelInvite(invite);
 }
 
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden || pendingDeviceTunnelInvites.size === 0) return;
+function flushPendingDeviceTunnelInvitePrompt() {
+    if (!isDeviceTunnelInviteInteractive() || pendingDeviceTunnelInvites.size === 0) return;
     const invite = pendingDeviceTunnelInvites.values().next().value;
     if (invite) promptDeviceTunnelInvite(invite);
-});
+}
+
+document.addEventListener('visibilitychange', flushPendingDeviceTunnelInvitePrompt);
+window.addEventListener('focus', flushPendingDeviceTunnelInvitePrompt);
 
 function handleDeviceTunnelInviteAck(data) {
     if (!data?.invitationId) return;
