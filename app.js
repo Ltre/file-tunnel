@@ -36,46 +36,6 @@ const CONFIG = {
     SESSION_TIMEOUT: 30 * 60 * 1000
 };
 
-function getRtcRuntimeConfig() {
-    const rtc = getRuntimeConfig().RTC || {};
-    return rtc && typeof rtc === 'object' ? rtc : {};
-}
-
-function getDefaultIceServers() {
-    return [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun.cloudflare.com:3478' },
-        { urls: 'stun:stun.stunprotocol.org:3478' }
-    ];
-}
-
-function normalizeIceServerList(value) {
-    return Array.isArray(value)
-        ? value.filter(item => item && typeof item === 'object' && item.urls)
-        : [];
-}
-
-function getConfiguredIceServers() {
-    const rtc = getRtcRuntimeConfig();
-    const configured = [
-        ...normalizeIceServerList(rtc.iceServers),
-        ...normalizeIceServerList(rtc.turnServers)
-    ];
-    return rtc.replaceDefaultIceServers === true ? configured : [...getDefaultIceServers(), ...configured];
-}
-
-function getConfiguredP2PTimeout(asset = null, transfer = null) {
-    const rtc = getRtcRuntimeConfig();
-    const timeouts = rtc.p2pTimeoutMs || {};
-    const rangeSize = transfer && Number.isFinite(transfer.rangeStart) && Number.isFinite(transfer.rangeEnd)
-        ? Math.max(0, transfer.rangeEnd - transfer.rangeStart)
-        : Number(asset?.size || 0);
-    if (rangeSize > 20 * 1024 * 1024) return Number(timeouts.large || 15000);
-    if (rangeSize > 512 * 1024) return Number(timeouts.medium || 8000);
-    return Number(timeouts.small || 2500);
-}
-
 // ==================== 全局状态 ====================
 const state = {
     sessionId: null,
@@ -112,8 +72,8 @@ const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
 const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
 const EDITOR_ASSET_CHUNK_SIZE = 64 * 1024;
 const EDITOR_ASSET_BUFFER_LIMIT = 512 * 1024;
-const EDITOR_ASSET_P2P_TIMEOUT = 8000;
-const EDITOR_ASSET_P2P_COOLDOWN = 30000;
+const EDITOR_ASSET_P2P_TIMEOUT = 1500;
+const EDITOR_ASSET_P2P_COOLDOWN = 5 * 60 * 1000;
 const editorAssetUrls = new Map();
 const editorAssetRequests = new Map();
 const editorAssetTransfers = new Map();
@@ -171,17 +131,10 @@ function progressElementId(progressKey) {
 
 function getFileProgressStatus(transport = '') {
     const route = String(transport || '');
-    const lowerRoute = route.toLowerCase();
-    if (lowerRoute.includes('route-search') || lowerRoute.includes('probing')) return '正在寻找最优链路';
-    if (lowerRoute.includes('turn-udp')) return route.includes('multi-source') ? '多源 WebRTC TURN UDP' : 'WebRTC TURN UDP';
-    if (lowerRoute.includes('turn-tcp')) return route.includes('multi-source') ? '多源 WebRTC TURN TCP' : 'WebRTC TURN TCP';
-    if (lowerRoute.includes('turn-tls')) return route.includes('multi-source') ? '多源 WebRTC TURN TLS' : 'WebRTC TURN TLS';
-    if (lowerRoute.includes('p2p-host')) return route.includes('multi-source') ? '多源局域网/IPv6直连' : '局域网/IPv6直连';
-    if (lowerRoute.includes('p2p-srflx')) return route.includes('multi-source') ? '多源 NAT 打洞直连' : 'NAT 打洞直连';
-    if (route.startsWith('sending-multi-source-relay')) return '多源 Socket.IO 中继';
-    if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return '多源 WebRTC';
-    if (route.startsWith('sending-relay') || route.startsWith('receiving-relay') || route.startsWith('received-relay')) return 'Socket.IO 中继';
-    if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'WebRTC P2P';
+    if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
+    if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return 'multi-source P2P';
+    if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
+    if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
     return '';
 }
 
@@ -1121,9 +1074,18 @@ function initSocket() {
 // ==================== WebRTC P2P ====================
 async function createPeerConnection(deviceId) {
     const config = {
-        iceServers: getConfiguredIceServers(),
+        iceServers: [
+            // Google STUN servers
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // Other public STUN servers
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:stun.stunprotocol.org:3478' }
+        ],
         iceTransportPolicy: 'all',
         bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        // Enable DTLS for secure connections
         rtcpMuxPolicy: 'require',
         iceCandidatePoolSize: 10 // Pre-generate candidates
     };
@@ -1192,66 +1154,6 @@ async function createPeerConnection(deviceId) {
     return pc;
 }
 
-async function getSelectedCandidateInfo(pc) {
-    if (!pc?.getStats) return null;
-    try {
-        const stats = await pc.getStats();
-        let selectedPair = null;
-
-        stats.forEach(report => {
-            if (report.type === 'transport' && report.selectedCandidatePairId) {
-                selectedPair = stats.get(report.selectedCandidatePairId);
-            }
-        });
-
-        if (!selectedPair) {
-            stats.forEach(report => {
-                if (report.type === 'candidate-pair' &&
-                    report.state === 'succeeded' &&
-                    (report.nominated || report.selected)) {
-                    selectedPair = report;
-                }
-            });
-        }
-
-        if (!selectedPair) return null;
-        const local = stats.get(selectedPair.localCandidateId);
-        const remote = stats.get(selectedPair.remoteCandidateId);
-        return {
-            localType: local?.candidateType || '',
-            remoteType: remote?.candidateType || '',
-            protocol: local?.protocol || '',
-            relayProtocol: local?.relayProtocol || '',
-            currentRoundTripTime: selectedPair.currentRoundTripTime,
-            availableOutgoingBitrate: selectedPair.availableOutgoingBitrate
-        };
-    } catch (err) {
-        historyLog('p2p-selected-candidate-read-failed', { error: err.message });
-        return null;
-    }
-}
-
-function classifyWebRtcRoute(candidateInfo) {
-    const localType = candidateInfo?.localType || '';
-    const remoteType = candidateInfo?.remoteType || '';
-    const protocol = String(candidateInfo?.relayProtocol || candidateInfo?.protocol || '').toLowerCase();
-    if (localType === 'relay' || remoteType === 'relay') {
-        if (protocol.includes('tcp')) return 'turn-tcp';
-        if (protocol.includes('tls')) return 'turn-tls';
-        return 'turn-udp';
-    }
-    if (localType === 'host' && remoteType === 'host') return 'p2p-host';
-    if ([localType, remoteType].some(type => type === 'srflx' || type === 'prflx')) return 'p2p-srflx';
-    return 'p2p';
-}
-
-async function getPeerRouteInfo(deviceId) {
-    const pc = state.peers.get(deviceId);
-    const candidateInfo = await getSelectedCandidateInfo(pc);
-    const route = classifyWebRtcRoute(candidateInfo);
-    return { route, candidateInfo };
-}
-
 async function connectToPeer(deviceId) {
     console.log('Connecting to peer:', deviceId);
     
@@ -1286,7 +1188,8 @@ async function connectToPeer(deviceId) {
 
     // 创建数据通道
     const channel = pc.createDataChannel('fileTransfer', {
-        ordered: true
+        ordered: true,
+        maxRetransmits: 0  // 使用可靠传输
     });
     setupDataChannel(deviceId, channel);
 
@@ -2083,8 +1986,6 @@ function initFileAssetTransfer() {
         getPeer: deviceId => state.peers.get(deviceId),
         connectPeer: connectToPeer,
         waitForDataChannel,
-        getP2PTimeout: getConfiguredP2PTimeout,
-        getPeerRouteInfo,
         load: fileId => getFromStore('files', fileId),
         store: file => saveToStore('files', file),
         log: historyLog,
