@@ -58,6 +58,8 @@ const state = {
     shortCode: '',
     remoteClipboardText: '',
     clipboardShareEnabled: false,
+    contacts: new Map(),
+    activeContactCall: null,
     recentSessionId: null,
     pendingSharedFileCount: 0,
     db: null // IndexedDB实例
@@ -282,6 +284,7 @@ async function startTunnelApplication() {
     initUI();
     initEditor();
     initDragDrop();
+    await loadContacts();
     await loadSessionData();
     initSocket();
     initAssetPresenceRefresh();
@@ -349,7 +352,7 @@ function createMemoryDB() {
     return {
         _isMemory: true,
         objectStoreNames: {
-            contains: (name) => ['sessions', 'messages', 'files', 'editorContent', 'shareQueue'].includes(name)
+            contains: (name) => ['sessions', 'messages', 'files', 'editorContent', 'shareQueue', 'contacts'].includes(name)
         }
     };
 }
@@ -367,7 +370,7 @@ async function initStorage() {
 
         console.log('Opening IndexedDB...');
         // 增加数据库版本号以强制升级，确保所有对象存储都存在
-        const request = indexedDB.open('TunnelDB', 3);
+        const request = indexedDB.open('TunnelDB', 4);
 
         request.onerror = (event) => {
             console.error('IndexedDB open error:', event.target.error);
@@ -379,7 +382,7 @@ async function initStorage() {
             console.log('IndexedDB opened successfully, version:', state.db.version);
             
             // 检查是否所有必需的对象存储都存在
-            const requiredStores = ['sessions', 'messages', 'files', 'editorContent', 'shareQueue'];
+            const requiredStores = ['sessions', 'messages', 'files', 'editorContent', 'shareQueue', 'contacts'];
             const existingStores = Array.from(state.db.objectStoreNames);
             
             let missingStores = [];
@@ -396,7 +399,7 @@ async function initStorage() {
                 indexedDB.deleteDatabase('TunnelDB');
                 
                 // 重新打开数据库
-                const recreateRequest = indexedDB.open('TunnelDB', 3);
+                const recreateRequest = indexedDB.open('TunnelDB', 4);
                 
                 recreateRequest.onerror = (e) => reject(e.target.error);
                 recreateRequest.onsuccess = (e) => {
@@ -451,6 +454,12 @@ function createRequiredStores(db) {
         const shareStore = db.createObjectStore('shareQueue', { keyPath: 'id' });
         shareStore.createIndex('createdAt', 'createdAt', { unique: false });
     }
+
+    if (!db.objectStoreNames.contains('contacts')) {
+        const contactStore = db.createObjectStore('contacts', { keyPath: 'deviceId' });
+        contactStore.createIndex('followedAt', 'followedAt', { unique: false });
+        contactStore.createIndex('lastSeenAt', 'lastSeenAt', { unique: false });
+    }
 }
 
 async function saveToStore(storeName, data) {
@@ -459,7 +468,7 @@ async function saveToStore(storeName, data) {
         if (!memoryStorage.has(storeName)) {
             memoryStorage.set(storeName, new Map());
         }
-        const key = data.id || data.sessionId || Date.now();
+        const key = data.id || data.sessionId || data.deviceId || Date.now();
         memoryStorage.get(storeName).set(key, data);
         return;
     }
@@ -942,6 +951,11 @@ function initSocket() {
     state.socket.on('voice-state', (data) => mediaController?.handleVoiceState(data));
     state.socket.on('voice-peer-joined', (data) => mediaController?.handleVoicePeerJoined(data));
     state.socket.on('voice-peer-left', (data) => mediaController?.handleVoicePeerLeft(data));
+    state.socket.on('contact-call-request', handleIncomingContactCall);
+    state.socket.on('contact-call-accepted', (data) => mediaController?.handleContactCallAccepted(data).catch(err => historyLog('contact-call-accept-failed', { error: err.message })));
+    state.socket.on('contact-call-rejected', (data) => mediaController?.handleContactCallRejected(data));
+    state.socket.on('contact-call-ended', (data) => mediaController?.handleContactCallEnded(data));
+    state.socket.on('contact-media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('contact-media-signal-failed', { error: err.message })));
     state.socket.on('media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('media-signal-failed', { error: err.message })));
     state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
 
@@ -1952,7 +1966,9 @@ function initMediaController() {
         onIntercomState: active => {
             updateMediaButtons({ intercom: active });
             updateDeviceList();
-        }
+        },
+        getContactSelfProfile: () => getSelfContactProfile(),
+        onContactCallState: updateContactCallOverlay
     });
 }
 
@@ -4942,6 +4958,246 @@ function handleDeviceUpdated(data) {
     updateDeviceList();
 }
 
+function getSelfContactProfile() {
+    return {
+        deviceId: state.deviceId,
+        name: state.deviceName,
+        model: state.selfNetworkInfo?.deviceModel || state.deviceModel || '',
+        internalIp: state.selfNetworkInfo?.internalIp || state.reportedLanIp || '',
+        externalIp: state.selfNetworkInfo?.externalIp || '',
+        sessionId: state.sessionId,
+        shortCode: state.shortCode || '',
+        profileUrl: `${window.location.origin}/#${state.sessionId}`
+    };
+}
+
+function normalizeContactProfile(device = {}) {
+    return {
+        deviceId: device.deviceId || device.id,
+        name: device.name || device.deviceName || 'Unknown device',
+        model: device.model || device.deviceModel || '',
+        internalIp: device.internalIp || device.localIp || '',
+        externalIp: device.externalIp || '',
+        sessionId: device.sessionId || state.sessionId || '',
+        shortCode: device.shortCode || state.shortCode || '',
+        profileUrl: device.profileUrl || `${window.location.origin}/#${device.sessionId || state.sessionId || ''}`,
+        followedAt: device.followedAt || Date.now(),
+        lastSeenAt: Date.now()
+    };
+}
+
+async function loadContacts() {
+    const contacts = await getAllFromStore('contacts').catch(() => []);
+    state.contacts.clear();
+    contacts
+        .filter(contact => contact?.deviceId)
+        .sort((a, b) => (b.lastSeenAt || b.followedAt || 0) - (a.lastSeenAt || a.followedAt || 0))
+        .forEach(contact => state.contacts.set(contact.deviceId, contact));
+    renderContacts();
+}
+
+async function followDevice(device) {
+    const contact = normalizeContactProfile(device);
+    if (!contact.deviceId || contact.deviceId === state.deviceId) return;
+    const existing = await getFromStore('contacts', contact.deviceId).catch(() => null);
+    const merged = {
+        ...(existing || {}),
+        ...contact,
+        followedAt: existing?.followedAt || Date.now(),
+        lastSeenAt: Date.now()
+    };
+    await saveToStore('contacts', merged);
+    state.contacts.set(merged.deviceId, merged);
+    renderContacts();
+    historyLog('contact-followed', { contactDeviceId: merged.deviceId });
+}
+
+function renderContacts() {
+    const container = document.getElementById('contactList');
+    if (!container) return;
+    container.innerHTML = '';
+    const contacts = Array.from(state.contacts.values());
+    if (!contacts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'contact-meta';
+        empty.textContent = '还没有关注设备。点击设备名称可查看资料并关注。';
+        container.appendChild(empty);
+        return;
+    }
+    contacts.forEach(contact => {
+        const row = document.createElement('div');
+        row.className = 'contact-item';
+        row.innerHTML = `
+            <div>
+                <div class="contact-name"></div>
+                <div class="contact-meta"></div>
+            </div>
+            <div class="device-actions">
+                <button class="icon-action" type="button" data-action="profile" title="资料">i</button>
+                <button class="icon-action" type="button" data-action="call" title="语音通话">☎</button>
+                <button class="icon-action" type="button" data-action="intercom" title="对讲机">▰</button>
+            </div>
+        `;
+        row.querySelector('.contact-name').textContent = contact.name || contact.deviceId;
+        row.querySelector('.contact-meta').textContent = `${contact.model || 'Unknown'} · ${contact.deviceId.slice(0, 8)}...`;
+        row.querySelector('[data-action="profile"]').addEventListener('click', () => showDeviceProfile(contact, { contact: true }));
+        row.querySelector('[data-action="call"]').addEventListener('click', () => startContactVoiceCall(contact));
+        row.querySelector('[data-action="intercom"]').addEventListener('click', async () => {
+            try {
+                await mediaController.startIntercom([contact.deviceId]);
+            } catch (err) {
+                alert(`无法启动对讲机: ${err.message}`);
+            }
+        });
+        container.appendChild(row);
+    });
+}
+
+function showDeviceProfile(device, options = {}) {
+    const profile = normalizeContactProfile(device);
+    const modal = document.getElementById('deviceProfileModal');
+    const title = document.getElementById('deviceProfileTitle');
+    const fields = document.getElementById('deviceProfileFields');
+    const qr = document.getElementById('deviceProfileQr');
+    const followButton = document.getElementById('followDeviceBtn');
+    if (!modal || !title || !fields || !qr || !followButton) return;
+
+    title.textContent = profile.name || '设备资料';
+    fields.innerHTML = '';
+    [
+        ['设备ID', profile.deviceId || '-'],
+        ['型号', profile.model || '-'],
+        ['内网IP', profile.internalIp || '-'],
+        ['外网IP', profile.externalIp || '-'],
+        ['所在隧道', profile.shortCode || profile.sessionId || '-'],
+        ['主页链接', profile.profileUrl || '-']
+    ].forEach(([label, value]) => {
+        const item = document.createElement('div');
+        item.innerHTML = `<strong>${label}</strong><br>`;
+        item.appendChild(document.createTextNode(value));
+        fields.appendChild(item);
+    });
+    qr.innerHTML = '';
+    if (window.QRCode && profile.profileUrl) {
+        new QRCode(qr, { text: profile.profileUrl, width: 112, height: 112, correctLevel: QRCode.CorrectLevel.M });
+    } else {
+        qr.textContent = 'QR';
+    }
+    const followed = state.contacts.has(profile.deviceId);
+    followButton.textContent = followed ? '已关注' : '关注';
+    followButton.disabled = followed || profile.deviceId === state.deviceId;
+    followButton.onclick = async () => {
+        await followDevice(profile);
+        followButton.textContent = '已关注';
+        followButton.disabled = true;
+    };
+    modal.classList.add('active');
+    historyLog('device-profile-opened', { contactDeviceId: profile.deviceId, fromContactList: Boolean(options.contact) });
+}
+
+function closeDeviceProfile() {
+    document.getElementById('deviceProfileModal')?.classList.remove('active');
+}
+
+async function startContactVoiceCall(contact) {
+    try {
+        await mediaController.startContactCall(contact);
+    } catch (err) {
+        alert(`无法发起语音通话: ${err.message}`);
+        historyLog('contact-call-start-failed', { contactDeviceId: contact.deviceId, error: err.message });
+    }
+}
+
+let contactCallTimer = null;
+
+function setContactCallActions(buttons = []) {
+    const actions = document.getElementById('contactCallActions');
+    if (!actions) return;
+    actions.innerHTML = '';
+    buttons.forEach(button => actions.appendChild(button));
+}
+
+function makeCallButton(label, className, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.textContent = label;
+    button.addEventListener('click', onClick);
+    return button;
+}
+
+function formatCallDuration(startedAt) {
+    const total = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const minutes = String(Math.floor(total / 60)).padStart(2, '0');
+    const seconds = String(total % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+}
+
+function updateContactCallOverlay(call) {
+    const overlay = document.getElementById('contactCallOverlay');
+    const title = document.getElementById('contactCallTitle');
+    const subtitle = document.getElementById('contactCallSubtitle');
+    if (!overlay || !title || !subtitle) return;
+    clearInterval(contactCallTimer);
+    contactCallTimer = null;
+
+    if (!call || call.state === 'idle') {
+        overlay.hidden = true;
+        state.activeContactCall = null;
+        setContactCallActions([]);
+        return;
+    }
+
+    state.activeContactCall = call;
+    overlay.hidden = false;
+    const contact = call.contact || call.caller || {};
+    const name = contact.name || contact.deviceName || contact.deviceId || call.from || '联系人';
+
+    if (call.state === 'incoming') {
+        title.textContent = `${name} 正在呼叫`;
+        subtitle.textContent = '不经过当前隧道的联系人语音通话';
+        setContactCallActions([
+            makeCallButton('拒接', 'btn btn-secondary', () => mediaController.rejectContactCall(call, 'rejected')),
+            makeCallButton('接听', 'btn btn-primary', () => mediaController.acceptContactCall(call).catch(err => {
+                alert(`无法接听: ${err.message}`);
+                mediaController.rejectContactCall(call, 'failed');
+            }))
+        ]);
+        return;
+    }
+
+    if (call.state === 'dialing') {
+        title.textContent = `正在呼叫 ${name}`;
+        subtitle.textContent = '等待对方接听...';
+        setContactCallActions([
+            makeCallButton('取消', 'btn btn-secondary', () => mediaController.endContactCall('cancelled'))
+        ]);
+        return;
+    }
+
+    if (call.state === 'active') {
+        title.textContent = `正在与 ${name} 通话`;
+        const startedAt = call.startedAt || Date.now();
+        const tick = () => { subtitle.textContent = `通话时长 ${formatCallDuration(startedAt)}`; };
+        tick();
+        contactCallTimer = setInterval(tick, 1000);
+        setContactCallActions([
+            makeCallButton('挂断', 'btn btn-danger', () => mediaController.endContactCall('ended'))
+        ]);
+    }
+}
+
+function handleIncomingContactCall(data) {
+    if (!data?.callId || !data?.from) return;
+    updateContactCallOverlay({
+        state: 'incoming',
+        callId: data.callId,
+        from: data.from,
+        caller: data.caller || { deviceId: data.from },
+        contact: data.caller || { deviceId: data.from }
+    });
+}
+
 function showDeviceDetailsToast(device, anchor) {
     document.getElementById('deviceDetailsToast')?.remove();
     const toast = document.createElement('div');
@@ -4967,8 +5223,8 @@ function showDeviceDetailsToast(device, anchor) {
 function makeDeviceNameInteractive(element, device) {
     element.classList.add('device-name-interactive');
     element.tabIndex = 0;
-    element.title = '查看设备信息';
-    const show = () => showDeviceDetailsToast(device, element);
+    element.title = '查看设备资料';
+    const show = () => showDeviceProfile(device);
     element.addEventListener('click', show);
     element.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -4998,9 +5254,13 @@ function updateDeviceList() {
         </div>
     `;
     makeDeviceNameInteractive(selfEl.querySelector('.name'), {
+        deviceId: state.deviceId,
+        name: state.deviceName,
         model: state.selfNetworkInfo?.deviceModel || state.deviceModel,
         internalIp: state.selfNetworkInfo?.internalIp || state.reportedLanIp,
-        externalIp: state.selfNetworkInfo?.externalIp
+        externalIp: state.selfNetworkInfo?.externalIp,
+        sessionId: state.sessionId,
+        shortCode: state.shortCode
     });
     container.appendChild(selfEl);
 
@@ -5016,11 +5276,19 @@ function updateDeviceList() {
             </div>
         `;
         makeDeviceNameInteractive(el.querySelector('.name'), device);
+        const actions = document.createElement('div');
+        actions.className = 'device-actions';
+        const profileButton = document.createElement('button');
+        profileButton.className = 'icon-action';
+        profileButton.type = 'button';
+        profileButton.title = `查看 ${device.name} 的资料`;
+        profileButton.textContent = 'i';
+        profileButton.addEventListener('click', () => showDeviceProfile(device));
         const intercomButton = document.createElement('button');
-        intercomButton.className = 'toolbar-btn';
+        intercomButton.className = 'icon-action';
         intercomButton.type = 'button';
         intercomButton.title = `与 ${device.name} 对讲`;
-        intercomButton.textContent = device.id === directIntercomTargetId ? '关闭对讲' : '对讲机';
+        intercomButton.textContent = device.id === directIntercomTargetId ? '×' : '▰';
         intercomButton.addEventListener('click', async () => {
             try {
                 if (device.id === directIntercomTargetId) {
@@ -5034,9 +5302,11 @@ function updateDeviceList() {
                 historyLog('intercom-start-failed', { peerDeviceId: device.id, error: err.message });
             }
         });
-        el.appendChild(intercomButton);
+        actions.append(profileButton, intercomButton);
+        el.appendChild(actions);
         container.appendChild(el);
     });
+    renderContacts();
 }
 
 // ==================== UI 初始化 ====================
@@ -5270,7 +5540,34 @@ function handleTopbarAdminTap(event) {
     }
 }
 
+function applyTheme(theme) {
+    const selected = ['classic', 'graphite', 'atelier'].includes(theme) ? theme : 'classic';
+    document.body.dataset.theme = selected;
+    localStorage.setItem('uiTheme', selected);
+    document.querySelectorAll('.theme-option[data-theme]').forEach(button => {
+        button.classList.toggle('active', button.dataset.theme === selected);
+    });
+}
+
+function initThemeSwitcher() {
+    applyTheme(localStorage.getItem('uiTheme') || 'classic');
+    document.getElementById('themeSwitcher')?.addEventListener('click', event => {
+        const button = event.target.closest?.('.theme-option[data-theme]');
+        if (!button) return;
+        applyTheme(button.dataset.theme);
+        historyLog('theme-changed', { theme: button.dataset.theme });
+    });
+    document.getElementById('cycleThemeBtn')?.addEventListener('click', () => {
+        const themes = ['classic', 'graphite', 'atelier'];
+        const current = document.body.dataset.theme || 'classic';
+        const next = themes[(themes.indexOf(current) + 1) % themes.length];
+        applyTheme(next);
+        historyLog('theme-changed', { theme: next, source: 'topbar-cycle' });
+    });
+}
+
 function initUI() {
+    initThemeSwitcher();
     initMobileWorkspace();
     initProgressDrawer();
     initRemoteAudioUnlock();
@@ -5281,6 +5578,11 @@ function initUI() {
     document.getElementById('closeDownloadCacheOverlayBtn')?.addEventListener('click', closeDownloadCacheOverlay);
     document.getElementById('downloadCacheOverlay')?.addEventListener('click', event => {
         if (event.target.id === 'downloadCacheOverlay') closeDownloadCacheOverlay();
+    });
+    document.getElementById('refreshContactsBtn')?.addEventListener('click', () => loadContacts());
+    document.getElementById('closeDeviceProfileBtn')?.addEventListener('click', closeDeviceProfile);
+    document.getElementById('deviceProfileModal')?.addEventListener('click', event => {
+        if (event.target.id === 'deviceProfileModal') closeDeviceProfile();
     });
     document.getElementById('exitTunnelBtn')?.addEventListener('click', () => {
         exitTunnelAndClearCache().catch(err => historyLog('exit-tunnel-failed', { error: err.message }));

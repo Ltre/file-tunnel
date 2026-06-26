@@ -96,6 +96,50 @@ function registerMediaHandlers(socket, context) {
             if (target) target.emit('intercom-stop', { intercomId, from: deviceId });
         });
     });
+
+    socket.on('contact-call-request', data => {
+        const { deviceId } = current();
+        const { to, callId, caller } = data || {};
+        if (!isValidId(deviceId) || !isValidId(to) || !isValidId(callId)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('contact-call-request', { callId, from: deviceId, caller });
+        else socket.emit('contact-call-rejected', { callId, from: to, reason: 'offline' });
+        historyLog('contact-call-requested', { deviceId, targetDeviceId: to, callId, socketId: socket.id, clientIp });
+    });
+
+    socket.on('contact-call-accepted', data => {
+        const { deviceId } = current();
+        const { to, callId, callee } = data || {};
+        if (!isValidId(deviceId) || !isValidId(to) || !isValidId(callId)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('contact-call-accepted', { callId, from: deviceId, callee });
+        historyLog('contact-call-accepted', { deviceId, targetDeviceId: to, callId, socketId: socket.id, clientIp });
+    });
+
+    socket.on('contact-call-rejected', data => {
+        const { deviceId } = current();
+        const { to, callId, reason } = data || {};
+        if (!isValidId(deviceId) || !isValidId(to) || !isValidId(callId)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('contact-call-rejected', { callId, from: deviceId, reason: String(reason || 'rejected').slice(0, 40) });
+    });
+
+    socket.on('contact-call-ended', data => {
+        const { deviceId } = current();
+        const { to, callId, reason } = data || {};
+        if (!isValidId(deviceId) || !isValidId(to) || !isValidId(callId)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('contact-call-ended', { callId, from: deviceId, reason: String(reason || 'ended').slice(0, 40) });
+    });
+
+    socket.on('contact-media-signal', data => {
+        const { deviceId } = current();
+        const { to, kind, sessionKey, type } = data || {};
+        if (!isValidId(deviceId) || !isValidId(to) || kind !== 'contactVoice' ||
+            typeof sessionKey !== 'string' || !['offer', 'answer', 'ice-candidate'].includes(type)) return;
+        const target = deviceSockets.get(to);
+        if (target) target.emit('contact-media-signal', { ...data, from: deviceId });
+    });
 }
 
 function cleanupMediaDevice(session, deviceId, emit) {

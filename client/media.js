@@ -16,6 +16,7 @@
             this.voice = null;
             this.intercom = null;
             this.cameraBroadcast = null;
+            this.contactCall = null;
         }
 
         socket() { return this.deps.getSocket(); }
@@ -25,6 +26,11 @@
         emit(event, data) {
             const socket = this.socket();
             if (socket?.connected) socket.emit(event, { sessionId: this.deps.getSessionId(), ...data });
+        }
+
+        emitGlobal(event, data) {
+            const socket = this.socket();
+            if (socket?.connected) socket.emit(event, data);
         }
 
         async getMediaDeviceSummary() {
@@ -206,6 +212,74 @@
             this.closeConnection(this.key('intercom', data.intercomId, data.from));
         }
 
+        async startContactCall(contact) {
+            if (!contact?.deviceId) throw new Error('联系人设备无效');
+            if (this.contactCall) this.endContactCall('replaced');
+            const callId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+            const stream = await this.getMedia({ audio: true, video: false });
+            this.contactCall = { callId, peerId: contact.deviceId, stream, state: 'dialing', startedAt: Date.now(), contact };
+            this.emitGlobal('contact-call-request', {
+                callId,
+                to: contact.deviceId,
+                caller: this.deps.getContactSelfProfile()
+            });
+            this.deps.onContactCallState({ state: 'dialing', callId, contact });
+            this.log('contact-call-dialing', { callId, peerId: contact.deviceId });
+        }
+
+        async acceptContactCall(call) {
+            if (!call?.callId || !call?.from) return;
+            if (this.contactCall) this.endContactCall('replaced');
+            const stream = await this.getMedia({ audio: true, video: false });
+            this.contactCall = {
+                callId: call.callId,
+                peerId: call.from,
+                stream,
+                state: 'active',
+                startedAt: Date.now(),
+                contact: call.caller || { deviceId: call.from }
+            };
+            this.emitGlobal('contact-call-accepted', { callId: call.callId, to: call.from, callee: this.deps.getContactSelfProfile() });
+            this.deps.onContactCallState({ state: 'active', callId: call.callId, contact: this.contactCall.contact, startedAt: this.contactCall.startedAt });
+            this.log('contact-call-accepted', { callId: call.callId, peerId: call.from });
+        }
+
+        rejectContactCall(call, reason = 'rejected') {
+            if (!call?.callId || !call?.from) return;
+            this.emitGlobal('contact-call-rejected', { callId: call.callId, to: call.from, reason });
+            this.deps.onContactCallState({ state: 'idle' });
+        }
+
+        async handleContactCallAccepted(data) {
+            if (!this.contactCall || data?.callId !== this.contactCall.callId || data?.from !== this.contactCall.peerId) return;
+            this.contactCall.state = 'active';
+            this.contactCall.startedAt = Date.now();
+            if (data.callee) this.contactCall.contact = { ...this.contactCall.contact, ...data.callee, deviceId: data.from };
+            await this.createOffer('contactVoice', data.callId, data.from, this.contactCall.stream);
+            this.deps.onContactCallState({ state: 'active', callId: data.callId, contact: this.contactCall.contact, startedAt: this.contactCall.startedAt });
+        }
+
+        handleContactCallRejected(data) {
+            if (!this.contactCall || data?.callId !== this.contactCall.callId) return;
+            this.endContactCall(data?.reason || 'rejected', false);
+        }
+
+        endContactCall(reason = 'ended', notify = true) {
+            if (!this.contactCall) return;
+            const { callId, peerId, stream } = this.contactCall;
+            stream?.getTracks().forEach(track => track.stop());
+            this.closeConnection(this.key('contactVoice', callId, peerId));
+            if (notify) this.emitGlobal('contact-call-ended', { callId, to: peerId, reason });
+            this.contactCall = null;
+            this.deps.onContactCallState({ state: 'idle', reason });
+            this.log('contact-call-ended', { callId, peerId, reason });
+        }
+
+        handleContactCallEnded(data) {
+            if (!this.contactCall || data?.callId !== this.contactCall.callId) return;
+            this.endContactCall(data?.reason || 'remote-ended', false);
+        }
+
         shouldInitiate(peerId) {
             return peerId && this.deps.getDeviceId().localeCompare(peerId) < 0;
         }
@@ -216,7 +290,7 @@
             const pc = this.createConnection(kind, sessionKey, peerId, stream);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            this.emit('media-signal', { to: peerId, kind, sessionKey, type: 'offer', sdp: offer });
+                this.sendMediaSignal({ to: peerId, kind, sessionKey, type: 'offer', sdp: offer });
         }
 
         createConnection(kind, sessionKey, peerId, stream) {
@@ -225,7 +299,7 @@
             this.connections.set(key, pc);
             if (stream) stream.getTracks().forEach(track => pc.addTrack(track, stream));
             pc.onicecandidate = event => {
-                if (event.candidate) this.emit('media-signal', {
+                if (event.candidate) this.sendMediaSignal({
                     to: peerId, kind, sessionKey, type: 'ice-candidate', candidate: event.candidate
                 });
             };
@@ -251,7 +325,9 @@
             const key = this.key(kind, sessionKey, from);
             let pc = this.connections.get(key);
             if (!pc) {
-                const stream = kind === 'voice' ? this.voice?.stream : null;
+                const stream = kind === 'voice'
+                    ? this.voice?.stream
+                    : (kind === 'contactVoice' ? this.contactCall?.stream : null);
                 pc = this.createConnection(kind, sessionKey, from, stream);
             }
             if (type === 'offer') {
@@ -259,7 +335,7 @@
                 await this.flushCandidates(key, pc);
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
-                this.emit('media-signal', { to: from, kind, sessionKey, type: 'answer', sdp: answer });
+                this.sendMediaSignal({ to: from, kind, sessionKey, type: 'answer', sdp: answer });
             } else if (type === 'answer') {
                 await pc.setRemoteDescription(new RTCSessionDescription(sdp));
                 await this.flushCandidates(key, pc);
@@ -270,6 +346,14 @@
                     pending.push(candidate);
                     this.pendingCandidates.set(key, pending);
                 }
+            }
+        }
+
+        sendMediaSignal(data) {
+            if (data.kind === 'contactVoice') {
+                this.emitGlobal('contact-media-signal', data);
+            } else {
+                this.emit('media-signal', data);
             }
         }
 
