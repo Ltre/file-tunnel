@@ -11,6 +11,7 @@
     const MULTI_SOURCE_THRESHOLD = 10 * 1024 * 1024;
     const MULTI_SOURCE_RANGE_SIZE = 2 * 1024 * 1024;
     const MAX_CONCURRENT_RANGES = 4;
+    const SMALL_TRANSFER_PRIORITY_SIZE = 1024 * 1024;
 
     class FileAssetTransfer {
         constructor(deps) {
@@ -30,8 +31,10 @@
             this.requestedMetadata = new Map();
             this.forceRequests = new Map();
             this.activeUploadKeys = new Set();
+            this.activeUploadTasks = new Map();
             this.completedUploadKeys = new Map();
             this.cancelledAssets = new Set();
+            this.uploadQueueSeq = 0;
         }
 
         log(event, details) {
@@ -166,6 +169,16 @@
             return Number(metadata?.size) > MULTI_SOURCE_THRESHOLD ? 'multi-source' : 'full';
         }
 
+        assetSize(assetId) {
+            return Number(this.requestedMetadata.get(assetId)?.size) || 0;
+        }
+
+        downloadPriority(assetId) {
+            const size = this.assetSize(assetId);
+            if (size > 0 && size <= SMALL_TRANSFER_PRIORITY_SIZE) return 0;
+            return this.downloadMode(assetId) === 'multi-source' ? 2 : 1;
+        }
+
         activeDownloadCount(mode) {
             return Array.from(this.activeDownloads)
                 .filter(assetId => this.downloadMode(assetId) === mode)
@@ -178,11 +191,29 @@
             return this.activeDownloadCount(mode) < limit;
         }
 
+        nextDownloadIndex() {
+            let bestIndex = -1;
+            let bestPriority = Infinity;
+            let bestSize = Infinity;
+            for (let index = 0; index < this.downloadQueue.length; index++) {
+                const assetId = this.downloadQueue[index];
+                if (!this.canStartDownload(assetId)) continue;
+                const priority = this.downloadPriority(assetId);
+                const size = this.assetSize(assetId) || Infinity;
+                if (priority < bestPriority || (priority === bestPriority && size < bestSize)) {
+                    bestIndex = index;
+                    bestPriority = priority;
+                    bestSize = size;
+                }
+            }
+            return bestIndex;
+        }
+
         dispatchDownloads() {
             const socket = this.socket();
             if (!socket?.connected) return;
             while (this.downloadQueue.length) {
-                const nextIndex = this.downloadQueue.findIndex(assetId => this.canStartDownload(assetId));
+                const nextIndex = this.nextDownloadIndex();
                 if (nextIndex < 0) break;
                 const [assetId] = this.downloadQueue.splice(nextIndex, 1);
                 if (!this.desiredAssets.has(assetId) || this.activeDownloads.has(assetId)) continue;
@@ -510,6 +541,7 @@
                 return;
             }
             data._uploadKey = key;
+            data._queueSeq = this.uploadQueueSeq++;
             this.uploadQueue.push(data);
             this.log('upload-queued', { assetId: data.asset.id, peerDeviceId: data.from, queueLength: this.uploadQueue.length });
             this.dispatchUploads();
@@ -517,11 +549,14 @@
 
         dispatchUploads() {
             while (this.activeUploads < MAX_CONCURRENT_UPLOADS && this.uploadQueue.length) {
-                const data = this.uploadQueue.shift();
+                const nextIndex = this.nextUploadIndex();
+                if (nextIndex < 0) break;
+                const [data] = this.uploadQueue.splice(nextIndex, 1);
                 const key = data._uploadKey || this.uploadKey(data);
                 if (this.activeUploadKeys.has(key)) continue;
                 this.activeUploads++;
                 this.activeUploadKeys.add(key);
+                this.activeUploadTasks.set(key, data);
                 this.sendRequestedAsset(data)
                     .then(success => {
                         if (success) this.completedUploadKeys.set(key, Date.now());
@@ -529,11 +564,58 @@
                     .catch(err => this.log('send-failed', { assetId: data?.asset?.id, peerDeviceId: data?.from, error: err.message }))
                     .finally(() => {
                         this.activeUploadKeys.delete(key);
+                        this.activeUploadTasks.delete(key);
                         this.cleanupCompletedUploads();
                         this.activeUploads--;
                         this.dispatchUploads();
                     });
             }
+        }
+
+        isRangeUpload(data) {
+            return Boolean(data?.transfer?.transferId);
+        }
+
+        uploadPriority(data) {
+            const size = Number(data?.asset?.size) || 0;
+            if (!this.isRangeUpload(data) && size > 0 && size <= SMALL_TRANSFER_PRIORITY_SIZE) return 0;
+            if (!this.isRangeUpload(data)) return 1;
+            return 2;
+        }
+
+        canStartUpload(data) {
+            if (!this.isRangeUpload(data)) return true;
+            const hasFullUploadQueued = this.uploadQueue.some(item => !this.isRangeUpload(item));
+            if (!hasFullUploadQueued) return true;
+            const activeRangeUploads = Array.from(this.activeUploadTasks.values())
+                .filter(item => this.isRangeUpload(item))
+                .length;
+            return activeRangeUploads < 1;
+        }
+
+        nextUploadIndex() {
+            let bestIndex = -1;
+            let bestPriority = Infinity;
+            let bestSize = Infinity;
+            let bestSeq = Infinity;
+            for (let index = 0; index < this.uploadQueue.length; index++) {
+                const item = this.uploadQueue[index];
+                if (!this.canStartUpload(item)) continue;
+                const priority = this.uploadPriority(item);
+                const size = Number(item?.asset?.size) || Infinity;
+                const seq = Number.isFinite(item?._queueSeq) ? item._queueSeq : Infinity;
+                if (
+                    priority < bestPriority ||
+                    (priority === bestPriority && size < bestSize) ||
+                    (priority === bestPriority && size === bestSize && seq < bestSeq)
+                ) {
+                    bestIndex = index;
+                    bestPriority = priority;
+                    bestSize = size;
+                    bestSeq = seq;
+                }
+            }
+            return bestIndex;
         }
 
         uploadKey(data) {

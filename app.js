@@ -81,6 +81,7 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 let fileAssetTransfer = null;
+let fileAssetPresenceRefreshTimer = null;
 let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
@@ -2169,6 +2170,19 @@ async function announceStoredFileAssets() {
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
+}
+
+function scheduleStoredFileAssetAnnounce(reason, delay = 700) {
+    if (fileAssetPresenceRefreshTimer) return;
+    fileAssetPresenceRefreshTimer = setTimeout(() => {
+        fileAssetPresenceRefreshTimer = null;
+        if (!state.socket?.connected) return;
+        announceStoredFileAssets().catch(err => historyLog('file-asset-presence-refresh-failed', {
+            reason,
+            error: err.message
+        }));
+        historyLog('file-asset-presence-refresh-requested', { reason });
+    }, delay);
 }
 
 function initAssetPresenceRefresh() {
@@ -4990,6 +5004,7 @@ function handleDeviceJoined(data) {
 
     // 尝试建立P2P连接
     connectToPeer(deviceId);
+    scheduleStoredFileAssetAnnounce('device-joined');
 }
 
 function handleDeviceLeft(data) {
@@ -5043,6 +5058,7 @@ function handleDeviceUpdated(data) {
         externalIp: data.externalIp || null
     });
     updateDeviceList();
+    scheduleStoredFileAssetAnnounce('device-updated');
 }
 
 function getSelfContactProfile() {

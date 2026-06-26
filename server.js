@@ -1318,6 +1318,16 @@ io.on('connection', (socket) => {
                     localIp: session.devices.get(deviceId)?.localIp || '',
                     externalIp: clientIp
                 });
+            } else {
+                socket.to(sessionId).emit('device-updated', {
+                    deviceId,
+                    deviceName: sanitizeString(deviceName),
+                    deviceModel: session.devices.get(deviceId)?.deviceModel || '',
+                    localIp: session.devices.get(deviceId)?.localIp || '',
+                    internalIp: session.devices.get(deviceId)?.localIp || '',
+                    externalIp: clientIp,
+                    refreshedAt: Date.now()
+                });
             }
             
             // 发送当前会话中的所有设备信息给新设备
