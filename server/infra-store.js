@@ -22,6 +22,8 @@ class InfraStore {
     constructor(db, dbPath) {
         this.db = db;
         this.dbPath = dbPath;
+        this.saveRetryTimer = null;
+        this.lastSaveError = null;
     }
 
     migrate() {
@@ -56,10 +58,56 @@ class InfraStore {
     }
 
     save() {
-        const bytes = Buffer.from(this.db.export());
-        const tempPath = `${this.dbPath}.${process.pid}.tmp`;
+        try {
+            const bytes = Buffer.from(this.db.export());
+            this.writeDatabaseFile(bytes);
+            this.lastSaveError = null;
+            return true;
+        } catch (err) {
+            this.lastSaveError = err;
+            console.error('Failed to persist SQLite infra store:', err);
+            this.scheduleSaveRetry();
+            return false;
+        }
+    }
+
+    writeDatabaseFile(bytes) {
+        const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+        const tempPath = `${this.dbPath}.${suffix}.tmp`;
         fs.writeFileSync(tempPath, bytes);
-        fs.renameSync(tempPath, this.dbPath);
+        try {
+            fs.renameSync(tempPath, this.dbPath);
+        } catch (err) {
+            if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) {
+                try {
+                    fs.copyFileSync(tempPath, this.dbPath);
+                    fs.unlinkSync(tempPath);
+                    return;
+                } catch (copyErr) {
+                    try {
+                        fs.unlinkSync(tempPath);
+                    } catch {
+                        // Ignore cleanup errors; the next successful save writes a fresh temp file.
+                    }
+                    throw copyErr;
+                }
+            }
+            try {
+                fs.unlinkSync(tempPath);
+            } catch {
+                // Ignore cleanup errors; the next successful save writes a fresh temp file.
+            }
+            throw err;
+        }
+    }
+
+    scheduleSaveRetry() {
+        if (this.saveRetryTimer) return;
+        this.saveRetryTimer = setTimeout(() => {
+            this.saveRetryTimer = null;
+            this.save();
+        }, 1000);
+        this.saveRetryTimer.unref?.();
     }
 
     run(sql, params = []) {

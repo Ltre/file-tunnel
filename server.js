@@ -46,7 +46,10 @@ function isAllowedOrigin(origin) {
 const RATE_LIMIT = {
     windowMs: 15 * 60 * 1000, // 15分钟
     max: 1000, // 每个IP最多100个请求
-    message: { error: '请求过于频繁，请稍后再试' }
+    message: { error: '请求过于频繁，请稍后再试' },
+    validate: {
+        xForwardedForHeader: false
+    }
 };
 
 // 会话限制
