@@ -2028,6 +2028,7 @@ function initFileAssetTransfer() {
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onReceived: async (asset) => {
+            //hideAllProgressForFile(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
         },
@@ -3515,6 +3516,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
 async function refreshFileMessage(fileId) {
     const storedFile = await getFromStore('files', fileId);
     if (!hasCompleteFileCache(storedFile)) return;
+    //hideAllProgressForFile(fileId);
 
     let url = fileObjectUrls.get(fileId);
     if (!url) {
@@ -6497,6 +6499,41 @@ function hideProgress(fileId) {
 
     const list = document.getElementById('progressList');
     if (list.children.length === 0) {
+        document.getElementById('transferProgress').style.display = 'none';
+    }
+}
+
+function hideAllProgressForFile(fileId) {
+    if (!fileId) return;
+    fileTransferProgressStates.delete(fileId);
+    const relatedKeys = new Set([fileId]);
+    const collect = key => {
+        if (key === fileId || String(key).startsWith(`${fileId}::`)) relatedKeys.add(key);
+    };
+    activeFileProgress.forEach(collect);
+    completedFileProgress.forEach(collect);
+    progressHideTimers.forEach((_, key) => collect(key));
+
+    const list = document.getElementById('progressList');
+    if (list) {
+        const baseElementId = progressElementId(fileId);
+        Array.from(list.children).forEach(item => {
+            if (item.id === baseElementId || item.id.startsWith(`${baseElementId}-`)) {
+                item.remove();
+            }
+        });
+    }
+
+    relatedKeys.forEach(key => {
+        activeFileProgress.delete(key);
+        completedFileProgress.delete(key);
+        const timer = progressHideTimers.get(key);
+        if (timer) clearTimeout(timer);
+        progressHideTimers.delete(key);
+    });
+
+    updateProgressDrawerSummary();
+    if (list && list.children.length === 0) {
         document.getElementById('transferProgress').style.display = 'none';
     }
 }
