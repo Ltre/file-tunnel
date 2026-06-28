@@ -79,6 +79,7 @@
             display: flex;
             gap: 8px;
             margin: 0 0 14px;
+            align-items: center;
         }
         .magnet-loader input {
             flex: 1;
@@ -99,12 +100,42 @@
             text-align: center;
             color: #61708d;
         }
+        .inline-downloader {
+            display: none;
+            margin: 0 0 14px;
+            border: 1px solid #dfe5f1;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #fff;
+            box-shadow: 0 10px 28px rgba(31, 45, 77, 0.08);
+        }
+        .inline-downloader.open { display: grid; grid-template-rows: auto minmax(360px, 62vh); }
+        .inline-downloader.minimized { grid-template-rows: auto; }
+        .inline-downloader.minimized iframe { display: none; }
+        .inline-downloader-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid #e6ebf4;
+            color: #36445f;
+            font-weight: 800;
+        }
+        .inline-downloader-actions { display: inline-flex; gap: 6px; }
+        .inline-downloader-actions button { min-height: 30px; padding: 0 10px; }
+        .inline-downloader iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+        }
         @media (max-width: 640px) {
             header, .item {
                 grid-template-columns: 1fr;
                 display: grid;
             }
-            .magnet-loader { grid-template-columns: 1fr; display: grid; }
+            .magnet-loader { display: flex; }
+            .magnet-loader button { padding: 0 10px; white-space: nowrap; }
             .actions { justify-content: flex-start; }
         }
     </style>
@@ -117,9 +148,19 @@
         <!-- <a class="secondary" href="/downloader">返回下载页</a> -->
     </header>
     <form id="magnetLoadForm" class="magnet-loader">
-        <input id="magnetIdInput" type="text" inputmode="text" autocomplete="off" placeholder="输入磁链ID加载文件">
+        <input id="magnetIdInput" type="text" inputmode="text" autocomplete="off" placeholder="输入完整磁链或磁链ID">
         <button type="submit">加载文件</button>
     </form>
+    <section id="inlineDownloader" class="inline-downloader" aria-live="polite">
+        <div class="inline-downloader-header">
+            <span id="inlineDownloaderTitle">磁链下载</span>
+            <span class="inline-downloader-actions">
+                <button id="inlineDownloaderMinimize" type="button" title="隐藏下载页">-</button>
+                <button id="inlineDownloaderClose" type="button" title="关闭下载页">x</button>
+            </span>
+        </div>
+        <iframe id="inlineDownloaderFrame" title="磁链下载"></iframe>
+    </section>
     <div id="list" class="list">
         <div class="empty">正在读取缓存...</div>
     </div>
@@ -134,13 +175,60 @@
     const magnetLoadForm = document.getElementById('magnetLoadForm');
     const magnetIdInput = document.getElementById('magnetIdInput');
     const embedded = new URLSearchParams(location.search).get('embedded') === '1';
+    const inlineDownloader = document.getElementById('inlineDownloader');
+    const inlineDownloaderFrame = document.getElementById('inlineDownloaderFrame');
+    const inlineDownloaderTitle = document.getElementById('inlineDownloaderTitle');
+    const inlineDownloaderMinimize = document.getElementById('inlineDownloaderMinimize');
+    const inlineDownloaderClose = document.getElementById('inlineDownloaderClose');
     if (embedded) document.querySelector('header a.secondary')?.remove();
+
+    function normalizeMagnetInput(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        try {
+            const url = new URL(raw, location.origin);
+            const queryId = url.searchParams.get('magnet');
+            if (queryId) return queryId.trim();
+            const match = url.pathname.match(/\/magnet\/([a-zA-Z0-9_-]{12,64})/);
+            if (match) return match[1];
+        } catch {}
+        return raw.replace(/^magnet:/i, '').trim();
+    }
+
+    async function openInlineDownloader(magnetId) {
+        inlineDownloader.classList.add('open');
+        inlineDownloader.classList.remove('minimized');
+        inlineDownloaderMinimize.textContent = '-';
+        inlineDownloaderTitle.textContent = '正在校验磁链...';
+        const response = await fetch(`/api/magnets/${encodeURIComponent(magnetId)}`, { cache: 'no-store' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '磁链无效或已过期');
+        inlineDownloaderTitle.textContent = `磁链下载：${payload.asset?.name || magnetId}`;
+        inlineDownloaderFrame.src = `/downloader?embedded=1&magnet=${encodeURIComponent(magnetId)}`;
+    }
+
+    inlineDownloaderMinimize.addEventListener('click', () => {
+        inlineDownloader.classList.toggle('minimized');
+        inlineDownloaderMinimize.textContent = inlineDownloader.classList.contains('minimized') ? '+' : '-';
+    });
+
+    inlineDownloaderClose.addEventListener('click', () => {
+        inlineDownloader.classList.remove('open', 'minimized');
+        inlineDownloaderFrame.removeAttribute('src');
+        inlineDownloaderMinimize.textContent = '-';
+    });
 
     magnetLoadForm.addEventListener('submit', event => {
         event.preventDefault();
-        const magnetId = magnetIdInput.value.trim();
-        if (!magnetId) return;
-        window.location.href = `/downloader?magnet=${encodeURIComponent(magnetId)}`;
+        const magnetId = normalizeMagnetInput(magnetIdInput.value);
+        if (!/^[a-zA-Z0-9_-]{12,64}$/.test(magnetId)) {
+            alert('请输入有效的磁链ID或完整磁链地址');
+            return;
+        }
+        openInlineDownloader(magnetId).catch(err => {
+            inlineDownloader.classList.remove('open', 'minimized');
+            alert(`磁链校验失败：${err.message}`);
+        });
     });
 
     function formatSize(bytes) {

@@ -168,14 +168,33 @@ app.get('/magnet/:magnetId', (req, res) => {
 app.post('/api/magnets', (req, res) => {
     try {
         cleanupExpiredMagnets();
-        const { sessionId, fileId, deviceId } = req.body || {};
+        const { sessionId, fileId, deviceId, asset } = req.body || {};
         if (!isValidSessionId(sessionId) || !isValidDeviceId(fileId)) {
             return res.status(400).json({ error: 'Invalid magnet payload' });
         }
 
         const session = sessions.get(sessionId);
-        const record = session?.fileAssets?.get(fileId);
-        if (!session || !record) {
+        if (!session) {
+            return res.status(404).json({ error: 'Session is not online' });
+        }
+
+        if (!session.fileAssets) session.fileAssets = new Map();
+        let record = session.fileAssets.get(fileId);
+        const canRegisterRequester = isValidDeviceId(deviceId) && session.devices.has(deviceId) && deviceSockets.has(deviceId);
+        if (!record && canRegisterRequester && isValidMagnetAssetPayload(asset, fileId)) {
+            record = createMagnetFileAssetRecord(asset, deviceId);
+            session.fileAssets.set(fileId, record);
+            historyLog('magnet-file-asset-registered-from-request', {
+                sessionId,
+                deviceId,
+                clientIp: getHttpClientIp(req),
+                asset: record.metadata
+            });
+        } else if (record && canRegisterRequester && (!asset || isValidMagnetAssetPayload(asset, fileId))) {
+            record.providers.add(deviceId);
+        }
+
+        if (!record) {
             return res.status(404).json({ error: 'File asset is not registered online' });
         }
 
@@ -543,6 +562,7 @@ function emitToDevice(deviceId, eventName, payload) {
 }
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const MAX_MAGNETS = 1000;
+const MAX_MAGNET_FILE_ASSET_SIZE = 1024 * 1024 * 1024;
 const MAGNET_TTL = 24 * 60 * 60 * 1000;
 const MAX_ACCESS_DEVICES = 2000;
 const ACCESS_DEVICE_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -724,6 +744,34 @@ function createMagnetId() {
 
 function isValidMagnetId(id) {
     return typeof id === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(id);
+}
+
+function isValidMagnetAssetPayload(asset, fileId) {
+    return asset &&
+        asset.id === fileId &&
+        isValidDeviceId(asset.id) &&
+        typeof asset.name === 'string' && asset.name.length > 0 && asset.name.length <= 255 &&
+        typeof asset.type === 'string' && asset.type.length > 0 && asset.type.length <= 100 &&
+        typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_MAGNET_FILE_ASSET_SIZE;
+}
+
+function createMagnetFileAssetRecord(asset, providerDeviceId) {
+    return {
+        metadata: {
+            id: asset.id,
+            name: sanitizeString(asset.name, 255),
+            type: sanitizeString(asset.type || 'application/octet-stream', 100),
+            size: asset.size,
+            ownerDeviceId: isValidDeviceId(asset.ownerDeviceId) ? asset.ownerDeviceId : providerDeviceId,
+            isFolderArchive: asset.isFolderArchive === true,
+            isDirectoryMirror: asset.isDirectoryMirror === true,
+            folderName: typeof asset.folderName === 'string' ? sanitizeString(asset.folderName, 120) : undefined,
+            entryCount: Number.isInteger(asset.entryCount) ? asset.entryCount : undefined
+        },
+        providers: new Set([providerDeviceId]),
+        providerLoads: new Map(),
+        assignments: new Map()
+    };
 }
 
 function getRequestBaseUrl(req) {

@@ -23,6 +23,11 @@ function relayKey(sessionId, from, to, assetId, transferId = 'full') {
     return `${sessionId}:${from}:${to}:${assetId}:${transferId}`;
 }
 
+function relayTransferToken(transferId, attemptId = '') {
+    if (transferId) return attemptId ? `${transferId}:${attemptId}` : transferId;
+    return attemptId || 'full';
+}
+
 function isValidTransferId(value) {
     return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 }
@@ -271,20 +276,23 @@ function registerFileAssetHandlers(socket, context) {
 
     socket.on('file-asset-relay-start', data => {
         try {
-            const { sessionId, to, asset, transferId, rangeStart, rangeEnd } = data || {};
+            const { sessionId, to, asset, transferId, rangeStart, rangeEnd, attemptId } = data || {};
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(to) || !isValidFileAsset(asset, isValidId) || to === deviceId) return;
+            const relayAttemptId = typeof attemptId === 'string' && attemptId
+                ? sanitize(attemptId, 120)
+                : '';
             const transfer = normalizeTransfer({ transferId, rangeStart, rangeEnd }, asset);
             if ((transferId || rangeStart !== undefined || rangeEnd !== undefined) && !transfer) return;
             const target = deviceSockets.get(to);
             if (!target) return;
-            const key = relayKey(sessionId, deviceId, to, asset.id, transfer?.transferId);
+            const key = relayKey(sessionId, deviceId, to, asset.id, relayTransferToken(transfer?.transferId, relayAttemptId));
             relays.set(key, {
-                sessionId, from: deviceId, to, asset, transfer, receivedSize: 0,
+                sessionId, from: deviceId, to, asset, transfer, attemptId: relayAttemptId, receivedSize: 0,
                 expectedSize: transfer ? transfer.rangeEnd - transfer.rangeStart : asset.size
             });
-            target.emit('file-asset-relay-start', { asset, from: deviceId, transfer });
-            historyLog('file-asset-relay-started', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset, transfer });
+            target.emit('file-asset-relay-start', { asset, from: deviceId, transfer, attemptId: relayAttemptId });
+            historyLog('file-asset-relay-started', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset, transfer, attemptId: relayAttemptId });
         } catch (err) {
             console.error('file-asset-relay-start error:', err);
         }
@@ -292,11 +300,14 @@ function registerFileAssetHandlers(socket, context) {
 
     socket.on('file-asset-relay-chunk', data => {
         try {
-            const { sessionId, to, assetId, chunk, transferId } = data || {};
+            const { sessionId, to, assetId, chunk, transferId, attemptId } = data || {};
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(to) || !isValidId(assetId) ||
                 (transferId !== undefined && !isValidTransferId(transferId))) return;
-            const key = relayKey(sessionId, deviceId, to, assetId, transferId);
+            const relayAttemptId = typeof attemptId === 'string' && attemptId
+                ? sanitize(attemptId, 120)
+                : '';
+            const key = relayKey(sessionId, deviceId, to, assetId, relayTransferToken(transferId, relayAttemptId));
             const relay = relays.get(key);
             const size = binarySize(chunk);
             if (!relay || size <= 0 || size > MAX_RELAY_CHUNK_SIZE || relay.receivedSize + size > relay.expectedSize) {
@@ -306,7 +317,7 @@ function registerFileAssetHandlers(socket, context) {
             const target = deviceSockets.get(to);
             if (!target) return;
             relay.receivedSize += size;
-            target.emit('file-asset-relay-chunk', { assetId, from: deviceId, transferId, chunk });
+            target.emit('file-asset-relay-chunk', { assetId, from: deviceId, transferId, attemptId: relay.attemptId || relayAttemptId, chunk });
         } catch (err) {
             console.error('file-asset-relay-chunk error:', err);
         }
@@ -314,17 +325,20 @@ function registerFileAssetHandlers(socket, context) {
 
     socket.on('file-asset-relay-complete', data => {
         try {
-            const { sessionId, to, assetId, transferId } = data || {};
+            const { sessionId, to, assetId, transferId, attemptId } = data || {};
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(to) || !isValidId(assetId) ||
                 (transferId !== undefined && !isValidTransferId(transferId))) return;
-            const key = relayKey(sessionId, deviceId, to, assetId, transferId);
+            const relayAttemptId = typeof attemptId === 'string' && attemptId
+                ? sanitize(attemptId, 120)
+                : '';
+            const key = relayKey(sessionId, deviceId, to, assetId, relayTransferToken(transferId, relayAttemptId));
             const relay = relays.get(key);
             relays.delete(key);
             if (!relay || relay.receivedSize !== relay.expectedSize) return;
             const target = deviceSockets.get(to);
-            if (target) target.emit('file-asset-relay-complete', { assetId, from: deviceId, transferId });
-            historyLog('file-asset-relay-completed', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset: relay.asset, transfer: relay.transfer });
+            if (target) target.emit('file-asset-relay-complete', { assetId, from: deviceId, transferId, attemptId: relay.attemptId || relayAttemptId });
+            historyLog('file-asset-relay-completed', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset: relay.asset, transfer: relay.transfer, attemptId: relay.attemptId || relayAttemptId });
         } catch (err) {
             console.error('file-asset-relay-complete error:', err);
         }

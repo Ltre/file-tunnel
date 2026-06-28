@@ -86,7 +86,7 @@ let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
 let filePreviewHistoryOpen = false;
-let progressDrawerCollapsed = false;
+let progressDrawerCollapsed = true;
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
 let adminTapCount = 0;
@@ -104,7 +104,9 @@ let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
 const activeFileProgress = new Set();
 const progressHideTimers = new Map();
+const progressUiLastPaint = new Map();
 const fileTransferProgressStates = new Map();
+const PROGRESS_UI_MIN_INTERVAL = 120;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
 const directoryMirror = {
@@ -1573,6 +1575,17 @@ async function hydrateEditorAssetImage(image) {
     }
 
     if (asset && asset.data) {
+        const assetType = String(asset.type || '');
+        if (!assetType.startsWith('image/')) {
+            historyLog('editor-asset-invalid-mime', {
+                assetId,
+                storedType: asset.type,
+                storedSessionId: asset.sessionId,
+                size: asset.data.byteLength || asset.size
+            });
+            setEditorAssetStatus(assetId, '图片暂时不可用（资源类型异常）', 'unavailable');
+            return;
+        }
         historyLog('editor-asset-cache-hit', {
             assetId,
             storedSessionId: asset.sessionId,
@@ -1580,7 +1593,7 @@ async function hydrateEditorAssetImage(image) {
         });
         let url = editorAssetUrls.get(assetId);
         if (!url) {
-            url = URL.createObjectURL(new Blob([asset.data], { type: asset.type }));
+            url = URL.createObjectURL(new Blob([asset.data], { type: assetType }));
             editorAssetUrls.set(assetId, url);
         }
         renderEditorAssetImage(image, assetId, url);
@@ -2015,7 +2028,15 @@ function initFileAssetTransfer() {
                 });
                 return;
             }
-            showProgress(progressKey, fileName, progress, status, { route });
+            const now = Date.now();
+            const lastPaintAt = progressUiLastPaint.get(progressKey) || 0;
+            const shouldPaintProgress = terminal || progress === 0 ||
+                now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL ||
+                !document.getElementById(progressElementId(progressKey));
+            if (shouldPaintProgress) {
+                showProgress(progressKey, fileName, progress, status, { route });
+                progressUiLastPaint.set(progressKey, now);
+            }
             if (terminal) {
                 activeFileProgress.delete(progressKey);
                 completedFileProgress.add(progressKey);
@@ -2033,6 +2054,7 @@ function initFileAssetTransfer() {
             else await refreshFileMessage(asset.id);
         },
         onUnavailable: (fileId, reason) => {
+            hideCompletedFileReceiveProgress(fileId);
             updateFileMessageAvailability(fileId, reason);
         }
     });
@@ -2102,6 +2124,10 @@ function showRemoteAudioUnlockButton(reason = '') {
     container.appendChild(button);
 }
 
+function shouldShowPersistentAudioUnlock() {
+    return /iPhone|iPad|iPod|MicroMessenger|OPR\//i.test(navigator.userAgent || '');
+}
+
 function initRemoteAudioUnlock() {
     const unlock = () => {
         unlockRemoteAudioPlayback().catch(err => historyLog('remote-audio-unlock-failed', { error: err.message }));
@@ -2123,7 +2149,12 @@ function playRemoteAudio(kind, sessionKey, peerId, stream) {
         audio.setAttribute('webkit-playsinline', '');
         container.appendChild(audio);
     }
+    audio.muted = false;
+    audio.volume = 1;
     audio.srcObject = stream;
+    if (shouldShowPersistentAudioUnlock()) {
+        showRemoteAudioUnlockButton('移动浏览器可能需要点按一次才能播放对讲声音');
+    }
     audio.play()
         .then(() => document.getElementById('remoteAudioUnlockBtn')?.remove())
         .catch(err => {
@@ -3190,7 +3221,19 @@ async function shareFileMagnet(messageId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sessionId: state.sessionId,
-                fileId: fileInfo.id
+                fileId: fileInfo.id,
+                deviceId: state.deviceId,
+                asset: {
+                    id: fileInfo.id,
+                    name: fileInfo.name || storedFile.name || 'file',
+                    type: fileInfo.type || storedFile.type || 'application/octet-stream',
+                    size: Number(fileInfo.size || storedFile.size || getBinaryDataSize(storedFile.data)),
+                    ownerDeviceId: storedFile.ownerDeviceId || fileInfo.ownerDeviceId || state.deviceId,
+                    isFolderArchive: fileInfo.isFolderArchive === true || storedFile.isFolderArchive === true,
+                    isDirectoryMirror: fileInfo.isDirectoryMirror === true || storedFile.isDirectoryMirror === true,
+                    folderName: fileInfo.folderName || storedFile.folderName,
+                    entryCount: Number.isInteger(fileInfo.entryCount) ? fileInfo.entryCount : storedFile.entryCount
+                }
             })
         });
         result = await response.json().catch(() => ({}));
@@ -6594,6 +6637,7 @@ function updateProgress(fileId, progress, status = '', meta = {}) {
 
 function hideProgress(fileId) {
     activeFileProgress.delete(fileId);
+    progressUiLastPaint.delete(fileId);
     const timer = progressHideTimers.get(fileId);
     if (timer) {
         clearTimeout(timer);
