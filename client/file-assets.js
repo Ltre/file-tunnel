@@ -241,7 +241,9 @@
         canStartDownload(assetId) {
             const mode = this.downloadMode(assetId);
             const limit = mode === 'multi-source' ? MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS : MAX_CONCURRENT_FULL_DOWNLOADS;
-            return this.activeDownloadCount(mode) < limit;
+            const activeCount = this.activeDownloadCount(mode);
+            if (activeCount < limit) return true;
+            return this.priorityDownloads.has(assetId) && activeCount < limit + 1;
         }
 
         nextDownloadIndex() {

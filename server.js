@@ -1105,6 +1105,42 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
     return { stored: true, reason: null, evicted };
 }
 
+function getSessionDeviceList(session, excludeDeviceId = '') {
+    const deviceList = [];
+    if (!session?.devices) return deviceList;
+    session.devices.forEach((d, id) => {
+        if (id === excludeDeviceId) return;
+        deviceList.push({
+            deviceId: d.deviceId,
+            deviceName: d.deviceName,
+            joinedAt: d.joinedAt,
+            deviceModel: d.deviceModel,
+            localIp: d.localIp,
+            internalIp: d.localIp,
+            externalIp: d.externalIp
+        });
+    });
+    return deviceList;
+}
+
+function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context = {}) {
+    const historyMessages = session.history.map(entry => entry.message);
+    socket.emit('session-history', {
+        messages: historyMessages,
+        deletedMessageIds: session.deletedMessageIds || [],
+        reason: context.reason || 'snapshot'
+    });
+    historyLog('snapshot-sent', {
+        sessionId,
+        targetDeviceId,
+        targetSocketId: socket.id,
+        clientIp: context.clientIp,
+        reason: context.reason || 'snapshot',
+        messageCount: historyMessages.length,
+        messages: historyMessages.map(summarizeHistoryMessage)
+    });
+}
+
 // ==================== Socket.io 连接处理 ====================
 
 io.on('connection', (socket) => {
@@ -1379,19 +1415,7 @@ io.on('connection', (socket) => {
             }
             
             // 发送当前会话中的所有设备信息给新设备
-            const deviceList = [];
-            session.devices.forEach((d, id) => {
-                if (id !== deviceId) {
-                    deviceList.push({
-                        deviceId: d.deviceId,
-                        deviceName: d.deviceName,
-                        joinedAt: d.joinedAt,
-                        deviceModel: d.deviceModel,
-                        localIp: d.localIp,
-                        externalIp: d.externalIp
-                    });
-                }
-            });
+            const deviceList = getSessionDeviceList(session, deviceId);
             
             socket.emit('session-devices', {
                 devices: deviceList
@@ -1421,19 +1445,7 @@ io.on('connection', (socket) => {
                 content: latestRemoteEditor ? latestRemoteEditor.content : ''
             });
 
-            const historyMessages = session.history.map(entry => entry.message);
-            historyLog('snapshot-sent', {
-                sessionId,
-                targetDeviceId: deviceId,
-                targetSocketId: socket.id,
-                clientIp,
-                messageCount: historyMessages.length,
-                messages: historyMessages.map(summarizeHistoryMessage)
-            });
-            socket.emit('session-history', {
-                messages: historyMessages,
-                deletedMessageIds: session.deletedMessageIds
-            });
+            emitSessionSnapshot(socket, sessionId, session, deviceId, { clientIp, reason: 'join' });
             if (session.media?.camera) {
                 socket.emit('camera-broadcast-start', {
                     broadcastId: session.media.camera.broadcastId,
@@ -1499,6 +1511,80 @@ io.on('connection', (socket) => {
     });
     
     // 信令转发 (WebRTC)
+    socket.on('session-history-request', data => {
+        try {
+            const { sessionId, reason } = data || {};
+            if (sessionId !== currentSession || !currentDevice) return;
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+            emitSessionSnapshot(socket, sessionId, session, currentDevice, {
+                clientIp,
+                reason: sanitizeString(reason || 'client-request', 80)
+            });
+            socket.emit('session-devices', {
+                devices: getSessionDeviceList(session, currentDevice),
+                reason: 'history-request'
+            });
+        } catch (err) {
+            console.error('session-history-request error:', err);
+        }
+    });
+
+    socket.on('tunnel-heartbeat', data => {
+        try {
+            const { sessionId } = data || {};
+            if (sessionId !== currentSession || !currentDevice) return;
+            const session = sessions.get(sessionId);
+            const device = session?.devices.get(currentDevice);
+            if (!session || !device) return;
+
+            device.lastSeenAt = Date.now();
+            device.socketId = socket.id;
+            device.deviceName = sanitizeString(data.deviceName || device.deviceName || '', 80);
+            device.deviceModel = sanitizeString(data.deviceModel || device.deviceModel || '', 80);
+            device.localIp = sanitizeString(data.localIp || device.localIp || '', 80);
+            device.externalIp = clientIp;
+            session.lastActivity = Date.now();
+            bindSocketToDevice(socket, currentDevice);
+            touchAccessDevice(currentDevice, {
+                deviceId: currentDevice,
+                sessionId,
+                deviceName: device.deviceName || '',
+                deviceModel: device.deviceModel,
+                localIp: device.localIp,
+                externalIp: device.externalIp,
+                ip: clientIp,
+                socketId: socket.id,
+                userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
+                online: true,
+                active: true
+            });
+            socket.emit('session-devices', {
+                devices: getSessionDeviceList(session, currentDevice),
+                reason: 'heartbeat'
+            });
+            socket.to(sessionId).emit('device-updated', {
+                deviceId: currentDevice,
+                deviceName: device.deviceName,
+                deviceModel: device.deviceModel,
+                localIp: device.localIp,
+                internalIp: device.localIp,
+                externalIp: device.externalIp,
+                refreshedAt: Date.now()
+            });
+            historyLog('tunnel-heartbeat', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                reason: sanitizeString(data.reason || '', 80),
+                onlineDeviceCount: session.devices.size
+            });
+        } catch (err) {
+            console.error('tunnel-heartbeat error:', err);
+        }
+    });
+
     socket.on('signal', (data) => {
         if (!checkMessageRate()) {
             return socket.emit('error', { message: '消息发送过于频繁' });
@@ -1568,6 +1654,12 @@ io.on('connection', (socket) => {
                 fromDeviceId: currentDevice,
                 socketId: socket.id,
                 clientIp
+            });
+            socket.emit('message-ack', {
+                messageId: message.id,
+                stored: Boolean(historyResult.stored),
+                reason: historyResult.reason || null,
+                serverTimestamp: Date.now()
             });
             historyLog('message-received', {
                 sessionId,

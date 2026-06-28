@@ -97,6 +97,8 @@ const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let sessionHistoryQueue = Promise.resolve();
+let sessionHistoryFallbackTimers = [];
+let tunnelHeartbeatTimer = null;
 let clipboardShareTimer = null;
 let lastClipboardText = null;
 let remoteAudioContext = null;
@@ -890,6 +892,8 @@ function initSocket() {
             localIp: state.reportedLanIp,
             shortCode: state.shortCode
         });
+        scheduleSessionHistoryFallbacks();
+        startTunnelHeartbeat();
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
@@ -957,6 +961,15 @@ function initSocket() {
         handleMessage(data);
     });
 
+    state.socket.on('message-ack', (data) => {
+        if (data?.messageId) pendingHistoryMessageIds.delete(data.messageId);
+        historyLog('realtime-message-ack', {
+            messageId: data?.messageId,
+            stored: data?.stored,
+            reason: data?.reason
+        });
+    });
+
     state.socket.on('message-deleted', (data) => {
         if (data?.messageId) {
             deleteHistoryMessageLocal(data.messageId).catch(err => {
@@ -966,6 +979,7 @@ function initSocket() {
     });
 
     state.socket.on('session-history', (data) => {
+        clearSessionHistoryFallbacks();
         const messages = data && Array.isArray(data.messages) ? data.messages : [];
         historyLog('snapshot-received', {
             messageCount: messages.length,
@@ -1069,9 +1083,59 @@ function initSocket() {
 
     state.socket.on('disconnect', () => {
         state.debugLogReady = false;
+        stopTunnelHeartbeat();
         console.log('Socket disconnected');
         historyLog('socket-disconnected');
     });
+}
+
+function requestSessionHistory(reason = 'manual') {
+    if (!state.socket?.connected || !state.sessionId) return;
+    state.socket.emit('session-history-request', {
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        reason
+    });
+    historyLog('snapshot-requested', { reason });
+}
+
+function clearSessionHistoryFallbacks() {
+    sessionHistoryFallbackTimers.forEach(timer => clearTimeout(timer));
+    sessionHistoryFallbackTimers = [];
+}
+
+function scheduleSessionHistoryFallbacks() {
+    clearSessionHistoryFallbacks();
+    [0, 3000, 12000].forEach((delay, index) => {
+        const timer = setTimeout(() => {
+            requestSessionHistory(index === 0 ? 'join-immediate' : `join-fallback-${index}`);
+        }, delay);
+        sessionHistoryFallbackTimers.push(timer);
+    });
+}
+
+function sendTunnelHeartbeat(reason = 'interval') {
+    if (!state.socket?.connected || !state.sessionId || !state.deviceId) return;
+    state.socket.emit('tunnel-heartbeat', {
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        deviceName: state.deviceName,
+        deviceModel: state.deviceModel,
+        localIp: state.reportedLanIp,
+        reason
+    });
+    historyLog('tunnel-heartbeat-emitted', { reason, knownDeviceCount: state.devices.size });
+}
+
+function startTunnelHeartbeat() {
+    stopTunnelHeartbeat();
+    sendTunnelHeartbeat('join');
+    tunnelHeartbeatTimer = setInterval(() => sendTunnelHeartbeat('interval'), 15000);
+}
+
+function stopTunnelHeartbeat() {
+    if (tunnelHeartbeatTimer) clearInterval(tunnelHeartbeatTimer);
+    tunnelHeartbeatTimer = null;
 }
 
 // ==================== WebRTC P2P ====================
@@ -2748,6 +2812,7 @@ async function requestMissingFileAssetCache(message, reason) {
 
 async function handleMessage(data) {
     const { message } = data;
+    if (!message || typeof message.id !== 'string') return;
 
     if (message.sender === state.deviceId) {
         historyLog('realtime-message-skipped', {
@@ -2762,6 +2827,21 @@ async function handleMessage(data) {
     });
 
     // 如果是小文件消息，提取base64数据保存到files存储
+    const existing = await getFromStore('messages', message.id).catch(() => null);
+    if (existing && existing.sessionId === state.sessionId) {
+        if (!getMessageElement(message.id)) {
+            await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
+        }
+        if (message.type === 'file' && message.fileInfo?.isAsset) {
+            await requestMissingFileAssetCache(message, 'realtime-duplicate');
+        }
+        historyLog('realtime-message-skipped', {
+            reason: 'already-in-indexeddb',
+            message: summarizeHistoryMessage(message)
+        });
+        return;
+    }
+
     if (message.type === 'file' && message.fileInfo && message.fileInfo.isSmall && message.fileInfo.data) {
         try {
             await storeInlineFileData(message, 'realtime');
@@ -2850,6 +2930,13 @@ async function handleSessionHistory(data) {
                     reason: 'already-in-indexeddb',
                     message: summarizeHistoryMessage(message)
                 });
+                if (!getMessageElement(message.id)) {
+                    await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
+                    historyLog('snapshot-message-rendered', {
+                        reason: 'existing-not-rendered',
+                        message: summarizeHistoryMessage(existing)
+                    });
+                }
                 if (message.type === 'file' && message.fileInfo?.isAsset) {
                     await requestMissingFileAssetCache(message, 'snapshot-duplicate');
                 }
@@ -2974,6 +3061,12 @@ function isChatNearBottom(container) {
     return !container || container.scrollHeight - container.scrollTop - container.clientHeight < 120;
 }
 
+function getMessageElement(messageId) {
+    if (!messageId) return null;
+    return Array.from(document.querySelectorAll('.message[data-message-id]'))
+        .find(element => element.dataset.messageId === messageId) || null;
+}
+
 function preserveChatScroll(callback) {
     const container = document.getElementById('chatMessages');
     if (!container) return callback();
@@ -2995,6 +3088,15 @@ function preserveChatScroll(callback) {
 async function addMessageToChat(message, isOwn, options = {}) {
     const container = document.getElementById('chatMessages');
     const shouldScroll = options.forceScroll || (options.scroll !== false && isChatNearBottom(container));
+    const existingElement = getMessageElement(message?.id);
+    if (existingElement) {
+        if (shouldScroll) container.scrollTop = container.scrollHeight;
+        historyLog('message-render-skipped', {
+            reason: 'already-rendered',
+            message: summarizeHistoryMessage(message)
+        });
+        return existingElement;
+    }
 
     // 移除空状态
     const emptyState = container.querySelector('.empty-state');
@@ -3130,6 +3232,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
                 error: err.message
             }));
     }
+    return messageEl;
 }
 
 function getFileInfoFromMessageElement(messageEl) {
@@ -4347,6 +4450,13 @@ async function publishHistoryMessage(message, options = {}) {
         sessionId: state.sessionId,
         message
     });
+    setTimeout(() => {
+        if (!pendingHistoryMessageIds.has(message.id)) return;
+        historyLog('realtime-message-ack-timeout', {
+            message: summarizeHistoryMessage(message)
+        });
+        requestSessionHistory('message-ack-timeout');
+    }, 5000);
 
     await addMessageToChat(message, true, { forceScroll: options.forceScroll !== false });
 }
@@ -5055,7 +5165,7 @@ function handleDeviceJoined(data) {
         id: deviceId,
         name: deviceName,
         model: data.deviceModel,
-        internalIp: data.internalIp,
+        internalIp: data.internalIp || data.localIp,
         externalIp: data.externalIp,
         joinedAt: Date.now()
     });
@@ -5065,6 +5175,13 @@ function handleDeviceJoined(data) {
     // 尝试建立P2P连接
     connectToPeer(deviceId);
     scheduleStoredFileAssetAnnounce('device-joined');
+    setTimeout(() => {
+        reconcileLocalHistory([], [])
+            .catch(err => historyLog('history-reconcile-on-device-joined-failed', {
+                peerDeviceId: deviceId,
+                error: err.message
+            }));
+    }, 600);
 }
 
 function handleDeviceLeft(data) {
@@ -5085,21 +5202,33 @@ function handleDeviceLeft(data) {
 }
 
 function handleSessionDevices(data) {
-    const { devices } = data;
+    const devices = Array.isArray(data?.devices) ? data.devices : [];
+    const seenDeviceIds = new Set();
 
     devices.forEach(device => {
         if (device.deviceId !== state.deviceId) {
+            seenDeviceIds.add(device.deviceId);
             state.devices.set(device.deviceId, {
                 id: device.deviceId,
                 name: device.deviceName,
                 model: device.deviceModel,
-                internalIp: device.internalIp,
+                internalIp: device.internalIp || device.localIp,
                 externalIp: device.externalIp,
                 joinedAt: device.joinedAt
             });
 
             // 建立P2P连接
             connectToPeer(device.deviceId);
+        }
+    });
+    Array.from(state.devices.keys()).forEach(deviceId => {
+        if (!seenDeviceIds.has(deviceId)) {
+            const pc = state.peers.get(deviceId);
+            if (pc) pc.close();
+            state.peers.delete(deviceId);
+            state.dataChannels.delete(deviceId);
+            state.pendingIceCandidates.delete(deviceId);
+            state.devices.delete(deviceId);
         }
     });
 
@@ -5110,14 +5239,15 @@ function handleSessionDevices(data) {
 function handleDeviceUpdated(data) {
     if (!data?.deviceId || data.deviceId === state.deviceId) return;
     const existing = state.devices.get(data.deviceId);
-    if (!existing) return;
     state.devices.set(data.deviceId, {
-        ...existing,
-        name: data.deviceName || existing.name,
-        model: data.deviceModel || existing.model,
-        internalIp: data.internalIp || null,
-        externalIp: data.externalIp || null
+        ...(existing || {}),
+        id: data.deviceId,
+        name: data.deviceName || existing?.name || '未知设备',
+        model: data.deviceModel || existing?.model || '',
+        internalIp: data.internalIp || data.localIp || existing?.internalIp || null,
+        externalIp: data.externalIp || existing?.externalIp || null
     });
+    if (!existing) connectToPeer(data.deviceId);
     updateDeviceList();
     scheduleStoredFileAssetAnnounce('device-updated');
 }
@@ -6246,6 +6376,12 @@ function updateProgressItemState(item, progress, status = '', meta = {}) {
     const route = String(meta.route || '');
     const direction = meta.direction || getProgressDirection(route, item.dataset.progressKey);
     const activity = resolveProgressActivity(item, normalizedProgress, status, meta);
+    const directionIcon = item.querySelector('.progress-direction-icon');
+    if (directionIcon) {
+        directionIcon.dataset.direction = direction;
+        directionIcon.textContent = direction === 'send' ? '▲' : direction === 'receive' ? '▼' : '';
+        directionIcon.title = direction === 'send' ? '上传' : direction === 'receive' ? '下载' : '';
+    }
 
     item.dataset.progressValue = String(normalizedProgress);
     item.dataset.progressStatus = String(status || '');
@@ -6601,13 +6737,19 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
 
         const info = document.createElement('div');
         info.className = 'progress-info';
+        const left = document.createElement('span');
+        left.className = 'progress-info-left';
+        const directionIcon = document.createElement('span');
+        directionIcon.className = 'progress-direction-icon';
+        directionIcon.setAttribute('aria-hidden', 'true');
         const name = document.createElement('span');
         name.className = 'progress-name';
         name.textContent = fileName;
         const text = document.createElement('span');
         text.className = 'progress-text';
         text.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
-        info.append(name, text);
+        left.append(directionIcon, name);
+        info.append(left, text);
 
         const bar = document.createElement('div');
         bar.className = 'progress-bar';

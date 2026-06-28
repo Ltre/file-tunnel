@@ -6,6 +6,10 @@
     <title>磁链缓存列表</title>
     <style>
         * { box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            overflow-x: hidden;
+        }
         body {
             margin: 0;
             min-height: 100vh;
@@ -15,6 +19,7 @@
         }
         main {
             width: min(94vw, 900px);
+            max-width: 100%;
             margin: 0 auto;
             padding: 28px 0 42px;
         }
@@ -102,6 +107,9 @@
         }
         .inline-downloader {
             display: none;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
             margin: 0 0 14px;
             border: 1px solid #dfe5f1;
             border-radius: 10px;
@@ -109,7 +117,11 @@
             background: #fff;
             box-shadow: 0 10px 28px rgba(31, 45, 77, 0.08);
         }
-        .inline-downloader.open { display: grid; grid-template-rows: auto minmax(360px, 62vh); }
+        .inline-downloader.open {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            grid-template-rows: auto minmax(360px, 62vh);
+        }
         .inline-downloader.minimized { grid-template-rows: auto; }
         .inline-downloader.minimized iframe { display: none; }
         .inline-downloader-header {
@@ -117,15 +129,25 @@
             align-items: center;
             justify-content: space-between;
             gap: 8px;
+            min-width: 0;
             padding: 8px 10px;
             border-bottom: 1px solid #e6ebf4;
             color: #36445f;
             font-weight: 800;
         }
-        .inline-downloader-actions { display: inline-flex; gap: 6px; }
+        #inlineDownloaderTitle {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .inline-downloader-actions { display: inline-flex; flex: 0 0 auto; gap: 6px; }
         .inline-downloader-actions button { min-height: 30px; padding: 0 10px; }
         .inline-downloader iframe {
+            display: block;
             width: 100%;
+            max-width: 100%;
+            min-width: 0;
             height: 100%;
             border: 0;
         }
