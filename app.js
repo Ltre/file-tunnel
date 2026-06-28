@@ -2015,7 +2015,7 @@ function initFileAssetTransfer() {
                 });
                 return;
             }
-            showProgress(progressKey, fileName, progress, status);
+            showProgress(progressKey, fileName, progress, status, { route });
             if (terminal) {
                 activeFileProgress.delete(progressKey);
                 completedFileProgress.add(progressKey);
@@ -2028,7 +2028,7 @@ function initFileAssetTransfer() {
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onReceived: async (asset) => {
-            //hideAllProgressForFile(asset.id);
+            hideCompletedFileReceiveProgress(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
         },
@@ -3516,7 +3516,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
 async function refreshFileMessage(fileId) {
     const storedFile = await getFromStore('files', fileId);
     if (!hasCompleteFileCache(storedFile)) return;
-    //hideAllProgressForFile(fileId);
+    hideCompletedFileReceiveProgress(fileId);
 
     let url = fileObjectUrls.get(fileId);
     if (!url) {
@@ -6123,7 +6123,97 @@ function initDragDrop() {
 function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
     const messageEl = document.querySelector(`.message[data-file-id="${fileId}"]`);
     const fileName = messageEl?.dataset.fileName || '文件';
-    showProgress(fileId, fileName, 0, `等待队列（进行中 ${activeDownloads}，排队 ${queueLength}）`);
+    showProgress(fileId, fileName, 0, `等待队列（进行中 ${activeDownloads}，排队 ${queueLength}）`, {
+        activity: 'queued',
+        direction: 'receive',
+        route: 'queued'
+    });
+}
+
+const PROGRESS_ACTIVITY_RANK = {
+    moving: 0,
+    starting: 1,
+    queued: 2,
+    sending: 3,
+    completed: 4,
+    idle: 5
+};
+const PROGRESS_MOVING_RECENT_MS = 15000;
+
+function getProgressDirection(route, progressKey) {
+    const normalizedRoute = String(route || '');
+    if (normalizedRoute.startsWith('sending') || String(progressKey || '').includes('::sending')) return 'send';
+    if (normalizedRoute.includes('receiving') || normalizedRoute.startsWith('received') || normalizedRoute === 'queued') return 'receive';
+    return 'unknown';
+}
+
+function resolveProgressActivity(item, progress, status = '', meta = {}) {
+    if (meta.activity) return meta.activity;
+
+    const route = String(meta.route || '');
+    const progressKey = item?.dataset.progressKey || '';
+    const statusText = String(status || '');
+    const direction = getProgressDirection(route, progressKey);
+
+    if (progress >= 100) return 'completed';
+    if (route === 'queued' || /queued|queue|等待|排队/.test(statusText)) return 'queued';
+    if (direction === 'receive' || direction === 'send') {
+        return progress > 0 ? 'moving' : 'starting';
+    }
+    return progress > 0 ? 'moving' : 'starting';
+}
+
+function getProgressItemRank(item) {
+    const activity = item?.dataset.progressActivity || 'idle';
+    if (activity === 'moving' && !isProgressItemActivelyMoving(item)) {
+        return PROGRESS_ACTIVITY_RANK.starting;
+    }
+    return PROGRESS_ACTIVITY_RANK[activity] ?? PROGRESS_ACTIVITY_RANK.idle;
+}
+
+function isProgressItemActivelyMoving(item) {
+    if (!item || item.dataset.progressActivity !== 'moving') return false;
+    const lastMovedAt = Number(item.dataset.progressLastMovedAt || 0);
+    return lastMovedAt > 0 && Date.now() - lastMovedAt <= PROGRESS_MOVING_RECENT_MS;
+}
+
+function positionProgressItem(item) {
+    const list = item?.parentElement;
+    if (!list) return;
+
+    const rank = getProgressItemRank(item);
+    const lastMovedAt = Number(item.dataset.progressLastMovedAt || item.dataset.progressUpdatedAt || 0);
+    const siblings = Array.from(list.children).filter(child => child !== item);
+    const next = siblings.find(other => {
+        const otherRank = getProgressItemRank(other);
+        if (rank < otherRank) return true;
+        if (rank !== otherRank || rank !== PROGRESS_ACTIVITY_RANK.moving) return false;
+        const otherMovedAt = Number(other.dataset.progressLastMovedAt || other.dataset.progressUpdatedAt || 0);
+        return lastMovedAt > otherMovedAt;
+    });
+
+    if (next) list.insertBefore(item, next);
+    else list.appendChild(item);
+}
+
+function updateProgressItemState(item, progress, status = '', meta = {}) {
+    const normalizedProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+    const previousProgress = Number(item.dataset.progressValue || 0);
+    const now = Date.now();
+    const route = String(meta.route || '');
+    const direction = meta.direction || getProgressDirection(route, item.dataset.progressKey);
+    const activity = resolveProgressActivity(item, normalizedProgress, status, meta);
+
+    item.dataset.progressValue = String(normalizedProgress);
+    item.dataset.progressStatus = String(status || '');
+    item.dataset.progressRoute = route;
+    item.dataset.progressDirection = direction;
+    item.dataset.progressActivity = activity;
+    item.dataset.progressUpdatedAt = String(now);
+    if ((direction === 'receive' || direction === 'send') && activity === 'moving' && normalizedProgress > previousProgress) {
+        item.dataset.progressLastMovedAt = String(now);
+    }
+    positionProgressItem(item);
 }
 
 function updateProgressDrawerSummary() {
@@ -6131,8 +6221,23 @@ function updateProgressDrawerSummary() {
     const summary = document.getElementById('progressDrawerSummary');
     if (!list || !summary) return;
 
-    const count = list.children.length;
-    summary.textContent = count > 0 ? `${count} 个传输中` : '';
+    const items = Array.from(list.children);
+    const count = items.length;
+    if (!count) {
+        summary.textContent = '';
+        return;
+    }
+
+    const moving = items.filter(isProgressItemActivelyMoving).length;
+    const stalled = items.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
+    const starting = items.filter(item => item.dataset.progressActivity === 'starting').length;
+    const queued = items.filter(item => item.dataset.progressActivity === 'queued').length;
+    const parts = [`${count} 个任务`];
+    if (moving) parts.push(`进行中 ${moving}`);
+    if (stalled) parts.push(`${stalled} 个停滞`);
+    if (starting) parts.push(`${starting} 个建链中`);
+    if (queued) parts.push(`${queued} 个等待`);
+    summary.textContent = parts.join(' · ');
 }
 
 function setProgressDrawerCollapsed(collapsed) {
@@ -6435,7 +6540,7 @@ async function applyDirectoryMirrorAsset(asset) {
     }
 }
 
-function showProgress(fileId, fileName, progress, status = '') {
+function showProgress(fileId, fileName, progress, status = '', meta = {}) {
     const container = document.getElementById('transferProgress');
     const list = document.getElementById('progressList');
     const elementId = progressElementId(fileId);
@@ -6448,6 +6553,8 @@ function showProgress(fileId, fileName, progress, status = '') {
         item = document.createElement('div');
         item.id = elementId;
         item.className = 'progress-item';
+        item.dataset.progressKey = String(fileId);
+        item.dataset.progressCreatedAt = String(Date.now());
 
         const info = document.createElement('div');
         info.className = 'progress-info';
@@ -6468,17 +6575,19 @@ function showProgress(fileId, fileName, progress, status = '') {
 
         item.append(info, bar);
         list.appendChild(item);
+        updateProgressItemState(item, progress, status, meta);
         updateProgressDrawerSummary();
     } else {
-        updateProgress(fileId, progress, status);
+        updateProgress(fileId, progress, status, meta);
     }
 }
 
-function updateProgress(fileId, progress, status = '') {
+function updateProgress(fileId, progress, status = '', meta = {}) {
     const item = document.getElementById(progressElementId(fileId));
     if (item) {
         item.querySelector('.progress-text').textContent = `${progress}%${status ? ` · ${status}` : ''}`;
         item.querySelector('.progress-fill').style.width = `${progress}%`;
+        updateProgressItemState(item, progress, status, meta);
     }
     updateProgressDrawerSummary();
 }
@@ -6503,39 +6612,11 @@ function hideProgress(fileId) {
     }
 }
 
-function hideAllProgressForFile(fileId) {
+function hideCompletedFileReceiveProgress(fileId) {
     if (!fileId) return;
     fileTransferProgressStates.delete(fileId);
-    const relatedKeys = new Set([fileId]);
-    const collect = key => {
-        if (key === fileId || String(key).startsWith(`${fileId}::`)) relatedKeys.add(key);
-    };
-    activeFileProgress.forEach(collect);
-    completedFileProgress.forEach(collect);
-    progressHideTimers.forEach((_, key) => collect(key));
-
-    const list = document.getElementById('progressList');
-    if (list) {
-        const baseElementId = progressElementId(fileId);
-        Array.from(list.children).forEach(item => {
-            if (item.id === baseElementId || item.id.startsWith(`${baseElementId}-`)) {
-                item.remove();
-            }
-        });
-    }
-
-    relatedKeys.forEach(key => {
-        activeFileProgress.delete(key);
-        completedFileProgress.delete(key);
-        const timer = progressHideTimers.get(key);
-        if (timer) clearTimeout(timer);
-        progressHideTimers.delete(key);
-    });
-
-    updateProgressDrawerSummary();
-    if (list && list.children.length === 0) {
-        document.getElementById('transferProgress').style.display = 'none';
-    }
+    completedFileProgress.add(fileId);
+    hideProgress(fileId);
 }
 
 // ==================== 模态框 ====================
