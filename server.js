@@ -537,6 +537,7 @@ const editorAssetRelays = new Map();
 const shortCodes = new Map();
 const magnets = new Map();
 const accessDevices = new Map();
+const sessionHistoryBroadcastTimers = new Map();
 
 function bindSocketToDevice(socket, deviceId) {
     socket.data.deviceId = deviceId;
@@ -1069,6 +1070,17 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
         });
         return { stored: false, reason: 'duplicate', evicted: 0 };
     }
+    const fileId = message?.type === 'file' ? message.fileInfo?.id : null;
+    if (fileId && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
+        historyLog('store-skipped', {
+            sessionId,
+            ...context,
+            reason: 'duplicate-file',
+            message: summarizeHistoryMessage(message),
+            historyCount: session.history.length
+        });
+        return { stored: false, reason: 'duplicate-file', evicted: 0 };
+    }
 
     const historyMessage = createHistoryMessage(message);
     const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
@@ -1139,6 +1151,30 @@ function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context
         messageCount: historyMessages.length,
         messages: historyMessages.map(summarizeHistoryMessage)
     });
+}
+
+function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast', delay = 800) {
+    if (!isValidSessionId(sessionId)) return;
+    const existing = sessionHistoryBroadcastTimers.get(sessionId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+        sessionHistoryBroadcastTimers.delete(sessionId);
+        const session = sessions.get(sessionId);
+        if (!session) return;
+        const historyMessages = session.history.map(entry => entry.message);
+        io.to(sessionId).emit('session-history', {
+            messages: historyMessages,
+            deletedMessageIds: session.deletedMessageIds || [],
+            authoritative: true,
+            reason
+        });
+        historyLog('snapshot-broadcast', {
+            sessionId,
+            reason,
+            messageCount: historyMessages.length
+        });
+    }, delay);
+    sessionHistoryBroadcastTimers.set(sessionId, timer);
 }
 
 // ==================== Socket.io 连接处理 ====================
@@ -1356,6 +1392,7 @@ io.on('connection', (socket) => {
                 deviceModel: sanitizeString(data.deviceModel || existingDevice?.deviceModel || '', 80),
                 localIp: sanitizeString(data.localIp || existingDevice?.localIp || '', 80),
                 externalIp: clientIp,
+                lastSeenAt: Date.now(),
                 editorContent: existingDevice ? existingDevice.editorContent : '',
                 editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
             });
@@ -1673,6 +1710,7 @@ io.on('connection', (socket) => {
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('message', { message });
+            scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
         } catch (err) {
             console.error('message error:', err);
         }

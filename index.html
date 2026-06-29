@@ -1401,7 +1401,7 @@
             cursor: pointer;
             font: inherit;
             text-align: left;
-            touch-action: none;
+            touch-action: manipulation;
         }
 
         .transfer-progress-toggle::before {
@@ -1446,6 +1446,7 @@
             min-height: 46px;
             border-radius: 999px;
             cursor: grab;
+            touch-action: none;
         }
 
         .transfer-progress.collapsed .transfer-progress-toggle::after {
@@ -1470,6 +1471,14 @@
             overflow-y: auto;
             overscroll-behavior: contain;
             touch-action: pan-y;
+        }
+
+        .transfer-progress:not(.collapsed) #progressList:empty::before {
+            content: "等待传输任务启动…";
+            display: block;
+            padding: 0 14px 14px;
+            color: #68748b;
+            font-size: 0.86rem;
         }
         
         .progress-item {

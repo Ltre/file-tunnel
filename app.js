@@ -107,6 +107,13 @@ const completedFileProgress = new Set();
 const activeFileProgress = new Set();
 const progressHideTimers = new Map();
 const progressUiLastPaint = new Map();
+const progressQueueSnapshot = {
+    queueLength: 0,
+    activeDownloads: 0,
+    updatedAt: 0,
+    expireTimer: null
+};
+const PROGRESS_QUEUE_SNAPSHOT_TTL = 15000;
 const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
@@ -469,6 +476,20 @@ function createRequiredStores(db) {
 }
 
 async function saveToStore(storeName, data) {
+    if (storeName === 'files' && data?.id && !Object.hasOwn(data, 'data') && data.cacheCleared !== true) {
+        const existing = await getFromStore('files', data.id).catch(() => null);
+        if (hasCompleteFileCache(existing, data)) {
+            data = {
+                ...data,
+                data: existing.data,
+                cacheCleared: false,
+                restoreRequested: false,
+                transferInterrupted: false,
+                isPartial: false
+            };
+        }
+    }
+
     // 如果使用内存存储
     if (state.db._isMemory) {
         if (!memoryStorage.has(storeName)) {
@@ -1030,9 +1051,32 @@ function initSocket() {
     state.socket.on('file-asset-available', (data) => fileAssetTransfer?.handleAvailable(data));
     state.socket.on('file-asset-manifest', (data) => fileAssetTransfer?.handleManifest(data));
     state.socket.on('file-asset-unavailable', (data) => fileAssetTransfer?.handleUnavailable(data));
-    state.socket.on('file-asset-relay-start', (data) => fileAssetTransfer?.handleRelayStart(data));
-    state.socket.on('file-asset-relay-chunk', (data) => fileAssetTransfer?.handleRelayChunk(data));
-    state.socket.on('file-asset-relay-complete', (data) => fileAssetTransfer?.handleRelayComplete(data));
+    state.socket.on('file-asset-transfer-status', (data) => fileAssetTransfer?.handleTransferStatus(data));
+    state.socket.on('file-asset-discovery', (data) => handleFileAssetDiscovery(data));
+    state.socket.on('file-asset-relay-start', (data, ack) => {
+        Promise.resolve(fileAssetTransfer?.handleRelayStart(data))
+            .then(result => ack?.(result || { ok: true }))
+            .catch(err => {
+                historyLog('file-asset-relay-start-failed', { error: err.message });
+                ack?.({ ok: false, reason: err.message });
+            });
+    });
+    state.socket.on('file-asset-relay-chunk', (data, ack) => {
+        Promise.resolve(fileAssetTransfer?.handleRelayChunk(data))
+            .then(result => ack?.(result || { ok: true }))
+            .catch(err => {
+                historyLog('file-asset-relay-chunk-failed', { error: err.message });
+                ack?.({ ok: false, reason: err.message });
+            });
+    });
+    state.socket.on('file-asset-relay-complete', (data, ack) => {
+        Promise.resolve(fileAssetTransfer?.handleRelayComplete(data))
+            .then(result => ack?.(result || { ok: true }))
+            .catch(err => {
+                historyLog('file-asset-relay-complete-failed', { error: err.message });
+                ack?.({ ok: false, reason: err.message });
+            });
+    });
     state.socket.on('directory-mirror-asset', data => {
         const asset = data?.asset;
         if (asset?.id && data.from !== state.deviceId) {
@@ -2268,6 +2312,34 @@ async function announceStoredFileAssets() {
     }
 }
 
+async function handleFileAssetDiscovery(data) {
+    const { assetId, from, reason } = data || {};
+    if (!fileAssetTransfer || !assetId || from === state.deviceId) return;
+    try {
+        const file = await getFromStore('files', assetId);
+        const isCachedChatAsset = hasCompleteFileCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+        if (!isCachedChatAsset) return;
+        const asset = {
+            ...file,
+            isFileAsset: true,
+            ownerDeviceId: file.ownerDeviceId || state.deviceId
+        };
+        await fileAssetTransfer.announce(asset);
+        historyLog('file-asset-discovery-announced', {
+            fileId: assetId,
+            requesterDeviceId: from,
+            reason
+        });
+    } catch (err) {
+        historyLog('file-asset-discovery-announce-failed', {
+            fileId: assetId,
+            requesterDeviceId: from,
+            reason,
+            error: err.message
+        });
+    }
+}
+
 function scheduleStoredFileAssetAnnounce(reason, delay = 700) {
     if (fileAssetPresenceRefreshTimer) return;
     fileAssetPresenceRefreshTimer = setTimeout(() => {
@@ -2611,32 +2683,41 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
 
         hideProgress(fileInfo.id);
 
-        // 添加消息到聊天记录
-        const message = {
-            id: generateId(),
-            type: 'file',
-            fileInfo: {
-                ...fileInfo,
-                isP2P: true
-            },
-            timestamp: Date.now(),
-            sender: state.deviceId,
-            senderName: state.deviceName
-        };
+        const existingMessage = await findCurrentSessionMessageByFileId(fileInfo.id);
+        if (existingMessage) {
+            await refreshFileMessage(fileInfo.id);
+            historyLog('p2p-file-message-reused-locally', {
+                message: summarizeHistoryMessage(existingMessage),
+                emittedToSocketHistory: false
+            });
+        } else {
+            // 添加消息到聊天记录
+            const message = {
+                id: generateId(),
+                type: 'file',
+                fileInfo: {
+                    ...fileInfo,
+                    isP2P: true
+                },
+                timestamp: Date.now(),
+                sender: state.deviceId,
+                senderName: state.deviceName
+            };
 
-        await addMessageToChat(message, true, { forceScroll: true });
+            await addMessageToChat(message, true, { forceScroll: true });
 
-        // 保存消息
-        await saveToStore('messages', {
-            ...message,
-            sessionId: state.sessionId
-        });
+            // 保存消息
+            await saveToStore('messages', {
+                ...message,
+                sessionId: state.sessionId
+            });
 
-        console.log('File message saved to chat');
-        historyLog('p2p-file-message-stored-locally', {
-            message: summarizeHistoryMessage(message),
-            emittedToSocketHistory: false
-        });
+            console.log('File message saved to chat');
+            historyLog('p2p-file-message-stored-locally', {
+                message: summarizeHistoryMessage(message),
+                emittedToSocketHistory: false
+            });
+        }
     } catch (err) {
         console.error('Error sending file:', err);
         alert('文件传输失败: ' + err.message);
@@ -2698,27 +2779,32 @@ async function handleDataChannelMessage(deviceId, data) {
                         data: combined.buffer
                     });
 
-                    // 添加消息
-                    const message = {
-                        id: generateId(),
-                        type: 'file',
-                        fileInfo: transfer.fileInfo,
-                        timestamp: Date.now(),
-                        sender: transfer.from,
-                        senderName: state.devices.get(transfer.from)?.name || '未知设备'
-                    };
+                    const existingMessage = await findCurrentSessionMessageByFileId(msg.fileId);
+                    if (existingMessage) {
+                        await refreshFileMessage(msg.fileId);
+                    } else {
+                        // 添加消息
+                        const message = {
+                            id: generateId(),
+                            type: 'file',
+                            fileInfo: transfer.fileInfo,
+                            timestamp: Date.now(),
+                            sender: transfer.from,
+                            senderName: state.devices.get(transfer.from)?.name || '未知设备'
+                        };
 
-                    await addMessageToChat(message, false);
-                    await saveToStore('messages', {
-                        ...message,
-                        sessionId: state.sessionId
-                    });
+                        await addMessageToChat(message, false);
+                        await saveToStore('messages', {
+                            ...message,
+                            sessionId: state.sessionId
+                        });
+                    }
 
                     hideProgress(msg.fileId);
                     fileTransfers.delete(msg.fileId);
                     console.log('File receive and save complete');
                     historyLog('p2p-file-message-stored-on-receiver', {
-                        message: summarizeHistoryMessage(message),
+                        message: summarizeHistoryMessage(existingMessage || { type: 'file', fileInfo: transfer.fileInfo, sender: transfer.from }),
                         emittedToSocketHistory: false
                     });
                 } else {
@@ -3015,6 +3101,12 @@ async function getCurrentSessionMessages() {
     return (await getAllFromStore('messages')).filter(message => message.sessionId === state.sessionId);
 }
 
+async function findCurrentSessionMessageByFileId(fileId) {
+    if (!fileId) return null;
+    const messages = await getCurrentSessionMessages();
+    return messages.find(message => message?.type === 'file' && message.fileInfo?.id === fileId) || null;
+}
+
 function createHistoryReconcileMessage(message) {
     const copy = JSON.parse(JSON.stringify(message));
     if (copy.fileInfo) delete copy.fileInfo.data;
@@ -3044,16 +3136,22 @@ async function pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds)
     const deletedIds = new Set(deletedMessageIds);
     const localMessages = await getCurrentSessionMessages();
     let removedCount = 0;
+    let retainedMissingCount = 0;
 
     for (const message of localMessages) {
         if (!message?.id || canonicalIds.has(message.id) || pendingHistoryMessageIds.has(message.id)) continue;
-        await deleteHistoryMessageLocal(message.id);
-        removedCount++;
+        if (deletedIds.has(message.id)) {
+            await deleteHistoryMessageLocal(message.id);
+            removedCount++;
+        } else {
+            retainedMissingCount++;
+        }
     }
     messages.forEach(message => pendingHistoryMessageIds.delete(message?.id));
     historyLog('history-canonical-applied', {
         canonicalMessageCount: canonicalIds.size,
-        removedCount
+        removedCount,
+        retainedMissingCount
     });
 }
 
@@ -3096,6 +3194,18 @@ async function addMessageToChat(message, isOwn, options = {}) {
             message: summarizeHistoryMessage(message)
         });
         return existingElement;
+    }
+    const existingFileElement = message?.type === 'file' && message.fileInfo?.id
+        ? Array.from(container.querySelectorAll('.message[data-file-id]'))
+            .find(element => element.dataset.fileId === message.fileInfo.id)
+        : null;
+    if (existingFileElement) {
+        if (shouldScroll) container.scrollTop = container.scrollHeight;
+        historyLog('message-render-skipped', {
+            reason: 'file-already-rendered',
+            message: summarizeHistoryMessage(message)
+        });
+        return existingFileElement;
     }
 
     // 移除空状态
@@ -3768,6 +3878,18 @@ async function restoreFileCache(messageId, options = {}) {
     }
 
     const storedFile = await getFromStore('files', fileInfo.id);
+    if (hasCompleteFileCache(storedFile, fileInfo)) {
+        await saveToStore('files', {
+            ...storedFile,
+            cacheCleared: false,
+            restoreRequested: false,
+            transferInterrupted: false,
+            isPartial: false
+        });
+        await refreshFileMessage(fileInfo.id);
+        historyLog('file-cache-restore-skipped-local-complete', { messageId, fileId: fileInfo.id });
+        return;
+    }
     await saveToStore('files', {
         ...(storedFile || {}),
         id: fileInfo.id,
@@ -3783,7 +3905,8 @@ async function restoreFileCache(messageId, options = {}) {
     });
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
     await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo, {
-        force: Boolean(options.force)
+        force: Boolean(options.force),
+        priority: true
     });
     historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
 }
@@ -4195,6 +4318,22 @@ async function clearResourceCache(resource) {
 
 async function restoreResourceCache(resource) {
     const file = await getFromStore('files', resource.id);
+    if (hasCompleteFileCache(file, resource)) {
+        await saveToStore('files', {
+            ...file,
+            cacheCleared: false,
+            restoreRequested: false,
+            transferInterrupted: false,
+            isPartial: false
+        });
+        if (resource.isEditorAsset) {
+            hydrateEditorAssets(document.getElementById('editor')).catch(() => {});
+        } else {
+            await refreshFileMessage(resource.id);
+        }
+        historyLog('resource-restore-skipped-local-complete', { resourceId: resource.id });
+        return;
+    }
     const metadata = {
         ...(file || {}),
         id: resource.id,
@@ -4221,7 +4360,7 @@ async function restoreResourceCache(resource) {
     metadata.isFileAsset = true;
     await saveToStore('files', metadata);
     showFileMessagePlaceholder(resource.id, '正在请求还原', true, true);
-    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata, { force: true });
+    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata, { force: true, priority: true });
     historyLog('resource-file-restore-requested', { resourceId: resource.id });
 }
 
@@ -6294,13 +6433,48 @@ function initDragDrop() {
 
 // ==================== 进度显示 ====================
 function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
-    const messageEl = document.querySelector(`.message[data-file-id="${fileId}"]`);
-    const fileName = messageEl?.dataset.fileName || '文件';
-    showProgress(fileId, fileName, 0, `等待队列（进行中 ${activeDownloads}，排队 ${queueLength}）`, {
-        activity: 'queued',
-        direction: 'receive',
-        route: 'queued'
-    });
+    progressQueueSnapshot.queueLength = Math.max(0, Number(queueLength) || 0);
+    progressQueueSnapshot.activeDownloads = Math.max(0, Number(activeDownloads) || 0);
+    progressQueueSnapshot.updatedAt = Date.now();
+    scheduleProgressQueueSnapshotExpiry();
+    const list = document.getElementById('progressList');
+    const container = document.getElementById('transferProgress');
+    if (progressQueueSnapshot.activeDownloads <= 0 && (!list || list.children.length === 0)) {
+        updateProgressDrawerSummary();
+        return;
+    }
+    if (container) {
+        container.style.display = 'block';
+        setProgressDrawerCollapsed(progressDrawerCollapsed);
+    }
+    updateProgressDrawerSummary();
+}
+
+function clearProgressQueueSnapshot() {
+    progressQueueSnapshot.queueLength = 0;
+    progressQueueSnapshot.activeDownloads = 0;
+    progressQueueSnapshot.updatedAt = 0;
+    if (progressQueueSnapshot.expireTimer) {
+        clearTimeout(progressQueueSnapshot.expireTimer);
+        progressQueueSnapshot.expireTimer = null;
+    }
+}
+
+function scheduleProgressQueueSnapshotExpiry() {
+    if (progressQueueSnapshot.expireTimer) clearTimeout(progressQueueSnapshot.expireTimer);
+    progressQueueSnapshot.expireTimer = setTimeout(() => {
+        if (Date.now() - progressQueueSnapshot.updatedAt < PROGRESS_QUEUE_SNAPSHOT_TTL) {
+            scheduleProgressQueueSnapshotExpiry();
+            return;
+        }
+        clearProgressQueueSnapshot();
+        updateProgressDrawerSummary();
+        const list = document.getElementById('progressList');
+        const container = document.getElementById('transferProgress');
+        if (list && container && list.children.length === 0) {
+            container.style.display = 'none';
+        }
+    }, PROGRESS_QUEUE_SNAPSHOT_TTL + 50);
 }
 
 const PROGRESS_ACTIVITY_RANK = {
@@ -6316,7 +6490,17 @@ const PROGRESS_MOVING_RECENT_MS = 15000;
 function getProgressDirection(route, progressKey) {
     const normalizedRoute = String(route || '');
     if (normalizedRoute.startsWith('sending') || String(progressKey || '').includes('::sending')) return 'send';
-    if (normalizedRoute.includes('receiving') || normalizedRoute.startsWith('received') || normalizedRoute === 'queued') return 'receive';
+    if (
+        normalizedRoute.includes('receiving') ||
+        normalizedRoute.startsWith('received') ||
+        normalizedRoute === 'queued' ||
+        normalizedRoute === 'p2p' ||
+        normalizedRoute === 'socket-relay' ||
+        normalizedRoute.includes('relay') ||
+        normalizedRoute.includes('multi-source')
+    ) {
+        return 'receive';
+    }
     return 'unknown';
 }
 
@@ -6400,17 +6584,21 @@ function updateProgressDrawerSummary() {
     const summary = document.getElementById('progressDrawerSummary');
     if (!list || !summary) return;
 
+    const snapshotFresh = Date.now() - progressQueueSnapshot.updatedAt <= PROGRESS_QUEUE_SNAPSHOT_TTL;
+    const queuedSnapshot = snapshotFresh ? progressQueueSnapshot.queueLength : 0;
+
     const items = Array.from(list.children);
-    const count = items.length;
+    const taskItems = items;
+    const count = taskItems.length + queuedSnapshot;
     if (!count) {
         summary.textContent = '';
         return;
     }
 
-    const moving = items.filter(isProgressItemActivelyMoving).length;
-    const stalled = items.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
-    const starting = items.filter(item => item.dataset.progressActivity === 'starting').length;
-    const queued = items.filter(item => item.dataset.progressActivity === 'queued').length;
+    const moving = taskItems.filter(isProgressItemActivelyMoving).length;
+    const stalled = taskItems.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
+    const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length;
+    const queued = queuedSnapshot;
     const parts = [`${count} 个任务`];
     if (moving) parts.push(`进行中 ${moving}`);
     if (stalled) parts.push(`${stalled} 个停滞`);
@@ -6462,7 +6650,6 @@ function initProgressDrawer() {
             startY: event.clientY,
             moved: false
         };
-        container.classList.add('dragging');
         try {
             toggle.setPointerCapture?.(event.pointerId);
         } catch {}
@@ -6470,14 +6657,20 @@ function initProgressDrawer() {
     toggle.addEventListener('pointermove', event => {
         const drag = progressDrawerDragState;
         if (!drag || drag.pointerId !== event.pointerId) return;
+        const movedDistance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+        if (movedDistance <= 6 && !drag.moved) return;
+        if (!drag.moved) {
+            drag.moved = true;
+            progressDrawerSuppressClick = true;
+            container.classList.add('dragging');
+            try {
+                toggle.setPointerCapture?.(event.pointerId);
+            } catch {}
+        }
         const maxLeft = Math.max(8, window.innerWidth - drag.width - 8);
         const maxTop = Math.max(8, window.innerHeight - drag.height - 8);
         const nextLeft = Math.min(maxLeft, Math.max(8, event.clientX - drag.offsetX));
         const nextTop = Math.min(maxTop, Math.max(8, event.clientY - drag.offsetY));
-        if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 4) {
-            drag.moved = true;
-            progressDrawerSuppressClick = true;
-        }
         container.style.left = `${nextLeft}px`;
         container.style.top = `${nextTop}px`;
         container.style.right = 'auto';
@@ -6495,7 +6688,13 @@ function initProgressDrawer() {
         } catch {}
         if (drag.moved) {
             progressDrawerSuppressClick = true;
-            setTimeout(() => { progressDrawerSuppressClick = false; }, 0);
+            setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
+            return;
+        }
+        if (progressDrawerCollapsed) {
+            progressDrawerSuppressClick = true;
+            setProgressDrawerCollapsed(false);
+            setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
         }
     };
     toggle.addEventListener('pointerup', endDrag);
@@ -6794,6 +6993,8 @@ function hideProgress(fileId) {
 
     const list = document.getElementById('progressList');
     if (list.children.length === 0) {
+        clearProgressQueueSnapshot();
+        updateProgressDrawerSummary();
         document.getElementById('transferProgress').style.display = 'none';
     }
 }
