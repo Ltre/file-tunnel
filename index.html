@@ -1464,7 +1464,13 @@
         }
 
         .transfer-progress.collapsed .transfer-progress-chevron { transform: rotate(-90deg); }
-        .transfer-progress.collapsed #progressList { display: none; }
+        .transfer-progress.collapsed #progressList {
+            display: none;
+            max-height: 0;
+            overflow: hidden;
+            pointer-events: none;
+            visibility: hidden;
+        }
 
         #progressList {
             max-height: min(46vh, 360px);
@@ -1483,6 +1489,7 @@
         
         .progress-item {
             margin: 0 14px 14px;
+            cursor: pointer;
         }
         
         .progress-info {
@@ -1968,6 +1975,85 @@
             background: #b42318;
         }
 
+        .tunnel-exit-actions {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            width: 100%;
+            margin: 14px auto 0;
+            filter: drop-shadow(0 8px 18px rgba(26, 35, 58, 0.16));
+        }
+
+        .tunnel-exit-actions .btn {
+            min-height: 44px;
+            margin: 0;
+            border: 0;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .leave-tunnel-panel-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            padding-right: 22px;
+            clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
+            background: #f3f6ff;
+            color: #485778;
+        }
+
+        .leave-tunnel-panel-btn:hover {
+            background: #e8edff;
+            color: #3442a1;
+        }
+
+        .exit-tunnel-panel-btn {
+            padding-left: 22px;
+            clip-path: polygon(12px 0, 100% 0, 100% 100%, 0 100%);
+            background: #d92d20;
+            color: #fff;
+        }
+
+        .exit-tunnel-panel-btn:hover {
+            background: #b42318;
+        }
+
+        .leave-tunnel-panel-icon {
+            position: relative;
+            display: inline-flex;
+            width: 24px;
+            height: 16px;
+            align-items: center;
+            justify-content: center;
+            color: currentColor;
+        }
+
+        .leave-tunnel-panel-icon::before {
+            width: 19px;
+            height: 12px;
+            border: 2px solid currentColor;
+            border-radius: 50% / 65%;
+            content: '';
+        }
+
+        .leave-tunnel-panel-icon::after {
+            position: absolute;
+            width: 24px;
+            height: 2px;
+            border-radius: 2px;
+            background: currentColor;
+            content: '';
+            transform: rotate(-42deg);
+        }
+
+        .leave-tunnel-panel-icon span {
+            position: absolute;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
         .mobile-force-refresh {
             font-size: 1.3rem;
             line-height: 1;
@@ -2362,7 +2448,13 @@
                             <video id="cameraVideo" autoplay playsinline muted style="width: 100%; max-height: 240px; background: #111; object-fit: contain;"></video>
                         </div>
                         <div id="remoteAudio" aria-live="polite"></div>
-                        <button class="btn exit-tunnel-danger" id="exitTunnelBtn" type="button">退出隧道</button>
+                        <div class="tunnel-exit-actions">
+                            <button class="btn leave-tunnel-panel-btn" id="leaveTunnelPanelBtn" type="button" title="暂时离开当前隧道">
+                                <span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>
+                                <span>暂时离开</span>
+                            </button>
+                            <button class="btn exit-tunnel-panel-btn" id="exitTunnelBtn" type="button">退出</button>
+                        </div>
                     </div>
                     <aside id="resourceBrowserLayer" class="resource-browser-layer" aria-label="会话资源浏览器" hidden></aside>
                 </div>

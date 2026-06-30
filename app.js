@@ -89,6 +89,8 @@ let filePreviewHistoryOpen = false;
 let progressDrawerCollapsed = true;
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
+let progressDrawerIgnoreItemClicksUntil = 0;
+let progressDrawerBlockPageClicksUntil = 0;
 let adminTapCount = 0;
 let adminTapResetTimer = null;
 let lastAdminTapAt = 0;
@@ -118,6 +120,7 @@ const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
+const HISTORY_RECONCILE_MESSAGE_LIMIT = 1000;
 const directoryMirror = {
     handle: null,
     timer: null,
@@ -135,6 +138,15 @@ function getFileProgressKey(fileId, transport = '') {
     const route = String(transport || '');
     if (!route.startsWith('sending')) return fileId;
     return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function getProgressBaseFileId(progressKey) {
+    return String(progressKey || '').split('::')[0];
+}
+
+function cssEscape(value) {
+    if (window.CSS?.escape) return CSS.escape(String(value));
+    return String(value).replace(/["\\]/g, '\\$&');
 }
 
 function progressElementId(progressKey) {
@@ -3120,7 +3132,7 @@ async function reconcileLocalHistory(serverMessages, deletedMessageIds) {
     const messages = localMessages
         .filter(message => message?.id && !deletedIds.has(message.id))
         .sort((a, b) => a.timestamp - b.timestamp)
-        .slice(-100)
+        .slice(-HISTORY_RECONCILE_MESSAGE_LIMIT)
         .map(createHistoryReconcileMessage);
 
     state.socket.emit('history-reconcile', { sessionId: state.sessionId, messages });
@@ -6261,6 +6273,7 @@ function initUI() {
     initRemoteAudioUnlock();
     document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
+    document.getElementById('leaveTunnelPanelBtn')?.addEventListener('click', leaveTunnel);
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
     document.getElementById('magnetCacheBtn').addEventListener('click', openDownloadCacheOverlay);
     document.getElementById('closeDownloadCacheOverlayBtn')?.addEventListener('click', closeDownloadCacheOverlay);
@@ -6572,6 +6585,7 @@ function updateProgressItemState(item, progress, status = '', meta = {}) {
     item.dataset.progressRoute = route;
     item.dataset.progressDirection = direction;
     item.dataset.progressActivity = activity;
+    item.dataset.fileId = getProgressBaseFileId(item.dataset.progressKey);
     item.dataset.progressUpdatedAt = String(now);
     if ((direction === 'receive' || direction === 'send') && activity === 'moving' && normalizedProgress > previousProgress) {
         item.dataset.progressLastMovedAt = String(now);
@@ -6608,6 +6622,7 @@ function updateProgressDrawerSummary() {
 }
 
 function setProgressDrawerCollapsed(collapsed) {
+    const wasCollapsed = progressDrawerCollapsed;
     progressDrawerCollapsed = Boolean(collapsed);
     const container = document.getElementById('transferProgress');
     const toggle = document.getElementById('progressDrawerToggle');
@@ -6616,6 +6631,10 @@ function setProgressDrawerCollapsed(collapsed) {
     container.classList.toggle('collapsed', progressDrawerCollapsed);
     toggle.setAttribute('aria-expanded', String(!progressDrawerCollapsed));
     toggle.title = progressDrawerCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
+    if (wasCollapsed && !progressDrawerCollapsed) {
+        progressDrawerIgnoreItemClicksUntil = Date.now() + 450;
+        progressDrawerBlockPageClicksUntil = Date.now() + 450;
+    }
     if (!progressDrawerCollapsed) {
         container.style.left = '';
         container.style.top = '';
@@ -6629,6 +6648,13 @@ function initProgressDrawer() {
     const toggle = document.getElementById('progressDrawerToggle');
     const container = document.getElementById('transferProgress');
     if (!toggle || !container) return;
+
+    document.addEventListener('click', event => {
+        if (Date.now() >= progressDrawerBlockPageClicksUntil) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+    }, true);
 
     toggle.addEventListener('click', () => {
         if (progressDrawerSuppressClick) {
@@ -6932,7 +6958,17 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
         item.id = elementId;
         item.className = 'progress-item';
         item.dataset.progressKey = String(fileId);
+        item.dataset.fileId = getProgressBaseFileId(fileId);
         item.dataset.progressCreatedAt = String(Date.now());
+        item.title = '点击定位到传输记录';
+        item.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (progressDrawerCollapsed || Date.now() < progressDrawerIgnoreItemClicksUntil) {
+                return;
+            }
+            locateProgressFile(item.dataset.progressKey);
+        });
 
         const info = document.createElement('div');
         info.className = 'progress-info';
@@ -6974,6 +7010,24 @@ function updateProgress(fileId, progress, status = '', meta = {}) {
         updateProgressItemState(item, progress, status, meta);
     }
     updateProgressDrawerSummary();
+}
+
+function locateProgressFile(progressKey) {
+    const fileId = getProgressBaseFileId(progressKey);
+    if (!fileId) return;
+    const message = document.querySelector(`.message[data-file-id="${cssEscape(fileId)}"]`);
+    if (!message) {
+        historyLog('progress-anchor-missing', { progressKey, fileId });
+        if (typeof showToast === 'function') {
+            showToast('传输记录尚未渲染到列表中，请稍后再试');
+        }
+        return;
+    }
+    setMobileWorkspaceView('chat', { log: false });
+    message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    message.classList.add('progress-anchor-highlight');
+    setTimeout(() => message.classList.remove('progress-anchor-highlight'), 1600);
+    historyLog('progress-anchor-located', { progressKey, fileId });
 }
 
 function hideProgress(fileId) {

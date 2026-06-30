@@ -61,8 +61,8 @@ const MAX_EDITOR_CONTENT_SIZE = 512 * 1024; // Keep editor updates well below So
 const MAX_EDITOR_ASSET_SIZE = 20 * 1024 * 1024;
 const MAX_EDITOR_ASSETS_PER_SESSION = 100;
 const MAX_EDITOR_ASSET_RELAY_CHUNK_SIZE = 64 * 1024;
-const MAX_HISTORY_MESSAGES = 100;
-const MAX_HISTORY_SIZE = 2 * 1024 * 1024; // 2MB per session
+const MAX_HISTORY_MESSAGES = 1000;
+const MAX_HISTORY_SIZE = 16 * 1024 * 1024; // metadata-only history window per session
 const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== undefined
     ? process.env.HISTORY_DEBUG !== 'false'
     : projectConfig.debugLogsEnabled === true;
