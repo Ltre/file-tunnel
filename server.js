@@ -16,9 +16,11 @@ const { createInfraStore } = require('./server/infra-store');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
+const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
+const manifestHostMap = loadManifestHostMap();
 let infraStore = null;
 
 // ==================== 安全配置 ====================
@@ -80,6 +82,66 @@ function loadProjectConfig() {
     }
 }
 
+function createDefaultManifest() {
+    return {
+        name: '即时传输隧道(啊HK)',
+        short_name: '传输隧道(啊HK)',
+        description: '在同一个传输隧道中的设备间发送文件、消息和协同内容。',
+        start_url: '/?pwa=1',
+        scope: '/',
+        display: 'standalone',
+        background_color: '#f4f6fb',
+        theme_color: '#4f5ec2',
+        icons: [
+            {
+                src: '/tunnel-icon.svg',
+                sizes: 'any',
+                type: 'image/svg+xml',
+                purpose: 'any maskable'
+            }
+        ],
+        share_target: {
+            action: '/share/',
+            method: 'POST',
+            enctype: 'multipart/form-data',
+            params: {
+                title: 'title',
+                text: 'text',
+                url: 'url',
+                files: [
+                    {
+                        name: 'shared_file',
+                        accept: ['*/*']
+                    }
+                ]
+            }
+        }
+    };
+}
+
+function loadManifestHostMap() {
+    try {
+        const raw = fs.readFileSync(MANIFEST_HOSTS_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+        console.warn(`Manifest host map unavailable: ${err.message}`);
+        return {};
+    }
+}
+
+function getRequestHostname(req) {
+    return String(req.hostname || req.headers.host || '')
+        .split(':')[0]
+        .trim()
+        .toLowerCase();
+}
+
+function getManifestForHost(hostname) {
+    const manifest = manifestHostMap[hostname] || manifestHostMap.default || createDefaultManifest();
+    return JSON.parse(JSON.stringify(manifest));
+}
+
 // ==================== Express 中间件 ====================
 
 // 基础安全头
@@ -99,6 +161,13 @@ app.get('/runtime-config.js', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.type('application/javascript').send(
         `window.TUNNEL_CONFIG=${JSON.stringify({ HISTORY_DEBUG, RTC: projectConfig.rtc || {} })};`
+    );
+});
+
+app.get('/manifest.webmanifest', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.type('application/manifest+json').send(
+        JSON.stringify(getManifestForHost(getRequestHostname(req)), null, 2)
     );
 });
 

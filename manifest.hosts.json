@@ -1,0 +1,138 @@
+{
+  "tun.miku.us": {
+    "name": "即时传输隧道(韩大狗)",
+    "short_name": "传输隧道(韩大狗)",
+    "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
+    "start_url": "/?pwa=1",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#f4f6fb",
+    "theme_color": "#4f5ec2",
+    "icons": [
+      {
+        "src": "/tunnel-icon.svg",
+        "sizes": "any",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+      }
+    ],
+    "share_target": {
+      "action": "/share/",
+      "method": "POST",
+      "enctype": "multipart/form-data",
+      "params": {
+        "title": "title",
+        "text": "text",
+        "url": "url",
+        "files": [
+          {
+            "name": "shared_file",
+            "accept": ["*/*"]
+          }
+        ]
+      }
+    }
+  },
+  "tun-txhk.miku.us": {
+    "name": "即时传输隧道(疼HK)",
+    "short_name": "传输隧道(疼HK)",
+    "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
+    "start_url": "/?pwa=1",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#f4f6fb",
+    "theme_color": "#4f5ec2",
+    "icons": [
+      {
+        "src": "/tunnel-icon.svg",
+        "sizes": "any",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+      }
+    ],
+    "share_target": {
+      "action": "/share/",
+      "method": "POST",
+      "enctype": "multipart/form-data",
+      "params": {
+        "title": "title",
+        "text": "text",
+        "url": "url",
+        "files": [
+          {
+            "name": "shared_file",
+            "accept": ["*/*"]
+          }
+        ]
+      }
+    }
+  },
+  "tun-alyhk.miku.us": {
+    "name": "即时传输隧道(啊HK)",
+    "short_name": "传输隧道(啊HK)",
+    "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
+    "start_url": "/?pwa=1",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#f4f6fb",
+    "theme_color": "#4f5ec2",
+    "icons": [
+      {
+        "src": "/tunnel-icon.svg",
+        "sizes": "any",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+      }
+    ],
+    "share_target": {
+      "action": "/share/",
+      "method": "POST",
+      "enctype": "multipart/form-data",
+      "params": {
+        "title": "title",
+        "text": "text",
+        "url": "url",
+        "files": [
+          {
+            "name": "shared_file",
+            "accept": ["*/*"]
+          }
+        ]
+      }
+    }
+  },
+  "default": {
+    "name": "即时传输隧道",
+    "short_name": "传输隧道",
+    "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
+    "start_url": "/?pwa=1",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#f4f6fb",
+    "theme_color": "#4f5ec2",
+    "icons": [
+      {
+        "src": "/tunnel-icon.svg",
+        "sizes": "any",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+      }
+    ],
+    "share_target": {
+      "action": "/share/",
+      "method": "POST",
+      "enctype": "multipart/form-data",
+      "params": {
+        "title": "title",
+        "text": "text",
+        "url": "url",
+        "files": [
+          {
+            "name": "shared_file",
+            "accept": ["*/*"]
+          }
+        ]
+      }
+    }
+  }
+}

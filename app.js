@@ -715,6 +715,18 @@ function initSessionLanding() {
     };
 
     inputs.forEach((input, index) => {
+        input.addEventListener('beforeinput', event => {
+            if (event.inputType !== 'insertText' || !event.data) return;
+            const value = event.data.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            event.preventDefault();
+            if (!value) return;
+            if (value.length > 1) {
+                fillCode(value);
+                return;
+            }
+            input.value = value;
+            if (inputs[index + 1]) inputs[index + 1].focus();
+        });
         input.addEventListener('input', event => {
             const value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
             event.target.value = value.slice(-1);
