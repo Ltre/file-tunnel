@@ -86,6 +86,15 @@ let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
 let filePreviewHistoryOpen = false;
+let filePreviewNestedHistoryOpen = false;
+let mediaFullscreenHistoryOpen = false;
+let mediaFullscreenItems = [];
+let mediaFullscreenIndex = 0;
+let mediaFullscreenPointerStart = null;
+let mediaFullscreenMovedMedia = null;
+let mediaFullscreenMovedParent = null;
+let mediaFullscreenMovedNextSibling = null;
+let mediaFullscreenMovedPlaceholder = null;
 let progressDrawerCollapsed = true;
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
@@ -96,8 +105,41 @@ let adminTapResetTimer = null;
 let lastAdminTapAt = 0;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
+const MEDIA_FULLSCREEN_HISTORY_KEY = 'tunnelMediaFullscreen';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
+let lastLocalHistoryTimestamp = 0;
+
+function nextHistoryTimestamp() {
+    const now = Date.now();
+    lastLocalHistoryTimestamp = Math.max(now, lastLocalHistoryTimestamp + 1);
+    return lastLocalHistoryTimestamp;
+}
+
+function getHistorySortValue(messageOrElement) {
+    if (!messageOrElement) return { timestamp: 0, localOrder: 0, id: '' };
+    if (messageOrElement.dataset) {
+        return {
+            timestamp: Number(messageOrElement.dataset.messageTimestamp || 0),
+            localOrder: Number(messageOrElement.dataset.messageLocalOrder || 0),
+            id: messageOrElement.dataset.messageId || ''
+        };
+    }
+    return {
+        timestamp: Number(messageOrElement.timestamp || 0),
+        localOrder: Number(messageOrElement.localOrder || messageOrElement.fileInfo?.localOrder || 0),
+        id: messageOrElement.id || ''
+    };
+}
+
+function compareHistoryMessages(a, b) {
+    const left = getHistorySortValue(a);
+    const right = getHistorySortValue(b);
+    if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp;
+    if (left.localOrder !== right.localOrder) return left.localOrder - right.localOrder;
+    return String(left.id).localeCompare(String(right.id));
+}
+
 let sessionHistoryQueue = Promise.resolve();
 let sessionHistoryFallbackTimers = [];
 let tunnelHeartbeatTimer = null;
@@ -219,6 +261,7 @@ function hasCompleteFileCache(storedFile, fileInfo = null) {
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
+    const collectionFiles = Array.isArray(message?.collection?.files) ? message.collection.files : [];
     return {
         id: message && message.id,
         type: message && message.type,
@@ -230,6 +273,11 @@ function summarizeHistoryMessage(message) {
             size: fileInfo.size,
             isSmall: fileInfo.isSmall,
             hasInlineData: Boolean(fileInfo.data)
+        } : undefined,
+        collection: collectionFiles.length ? {
+            id: message.collection?.id,
+            count: collectionFiles.length,
+            totalSize: collectionFiles.reduce((sum, file) => sum + (Number(file?.size) || 0), 0)
         } : undefined
     };
 }
@@ -1019,6 +1067,17 @@ function initSocket() {
         if (data?.messageId) {
             deleteHistoryMessageLocal(data.messageId).catch(err => {
                 historyLog('message-delete-sync-failed', { messageId: data.messageId, error: err.message });
+            });
+        }
+    });
+
+    state.socket.on('message-updated', (data) => {
+        if (data?.message) {
+            applyHistoryMessageUpdate(data.message, { remote: true }).catch(err => {
+                historyLog('message-update-sync-failed', {
+                    messageId: data.message?.id,
+                    error: err.message
+                });
             });
         }
     });
@@ -2398,33 +2457,18 @@ function initAssetPresenceRefresh() {
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
-    const fileId = generateId();
-    const fileInfo = {
-        id: fileId,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        timestamp: Date.now(),
-        sender: state.deviceId,
-        senderName: state.deviceName,
-        ...options
-    };
-
-    const data = await fileToArrayBuffer(file);
-    const asset = {
-        ...fileInfo,
-        sessionId: state.sessionId,
-        ownerDeviceId: state.deviceId,
-        isFileAsset: true,
-        data
-    };
+    const { asset, fileInfo } = await createFileAsset(file, options);
     await saveToStore('files', asset);
     await fileAssetTransfer.announce(asset);
 
+    if (options.collectionMessageId) {
+        return fileInfo;
+    }
+
     if (options.silent) {
-        state.socket.emit('directory-mirror-asset', { sessionId: state.sessionId, assetId: fileId });
-        historyLog('directory-mirror-asset-emitted', { assetId: fileId, folderName: options.folderName, entryCount: options.entryCount });
-        return fileId;
+        state.socket.emit('directory-mirror-asset', { sessionId: state.sessionId, assetId: fileInfo.id });
+        historyLog('directory-mirror-asset-emitted', { assetId: fileInfo.id, folderName: options.folderName, entryCount: options.entryCount });
+        return fileInfo.id;
     }
 
     const message = {
@@ -2435,21 +2479,144 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
             ownerDeviceId: state.deviceId,
             isAsset: true
         },
-        timestamp: Date.now(),
+        timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
         senderName: state.deviceName
     };
 
-    await saveToStore('messages', { ...message, sessionId: state.sessionId });
-    await addMessageToChat(message, true, { forceScroll: true });
-    pendingHistoryMessageIds.add(message.id);
-    state.socket.emit('message', { sessionId: state.sessionId, message });
+    await publishHistoryMessage(message);
     historyLog('file-asset-message-emitted', {
         message: summarizeHistoryMessage(message),
         targetDeviceId
     });
 
-    return fileId;
+    return fileInfo.id;
+}
+
+async function createFileAsset(file, options = {}) {
+    const {
+        fileId: optionFileId,
+        silent,
+        collectionMessageId,
+        ...metadataOptions
+    } = options;
+    const fileId = optionFileId || generateId();
+    const fileInfo = {
+        id: fileId,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        timestamp: nextHistoryTimestamp(),
+        sender: state.deviceId,
+        senderName: state.deviceName,
+        ...metadataOptions
+    };
+
+    const data = await fileToArrayBuffer(file);
+    const asset = {
+        ...fileInfo,
+        sessionId: state.sessionId,
+        ownerDeviceId: state.deviceId,
+        isFileAsset: true,
+        data
+    };
+    return {
+        asset,
+        fileInfo: {
+            ...fileInfo,
+            ownerDeviceId: state.deviceId,
+            isAsset: true
+        }
+    };
+}
+
+async function sendFileCollection(files, options = {}) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    if (list.length === 1) {
+        await sendFile(list[0], null, options);
+        return;
+    }
+
+    const collectionId = generateId();
+    const fileInfos = [];
+    for (const file of list) {
+        fileInfos.push(await sendFile(file, null, {
+            ...options,
+            collectionId,
+            collectionMessageId: collectionId
+        }));
+    }
+
+    const totalSize = fileInfos.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    const message = {
+        id: generateId(),
+        type: 'collection',
+        collection: {
+            id: collectionId,
+            files: fileInfos,
+            count: fileInfos.length,
+            totalSize
+        },
+        timestamp: nextHistoryTimestamp(),
+        sender: state.deviceId,
+        senderName: state.deviceName
+    };
+
+    await publishHistoryMessage(message);
+    historyLog('file-collection-message-emitted', {
+        messageId: message.id,
+        collectionId,
+        fileCount: fileInfos.length,
+        totalSize
+    });
+}
+
+function askFileCollectionMode(files) {
+    const list = Array.from(files || []);
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'send-mode-overlay';
+        overlay.innerHTML = `
+            <div class="send-mode-dialog" role="dialog" aria-modal="true" aria-label="多文件发送方式">
+                <h3>发送 ${list.length} 个文件</h3>
+                <p>以合辑发送会在传输记录里合并成一条，方便预览和批量保存；拆分发送则保持每个文件一条记录。</p>
+                <div class="send-mode-actions">
+                    <button class="btn btn-secondary" type="button" data-mode="split">拆分成多条</button>
+                    <button class="btn btn-primary" type="button" data-mode="collection">以合辑发送</button>
+                </div>
+            </div>
+        `;
+        const finish = mode => {
+            overlay.remove();
+            resolve(mode);
+        };
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) finish('split');
+            const button = event.target.closest('[data-mode]');
+            if (button) finish(button.dataset.mode);
+        });
+        document.body.appendChild(overlay);
+        overlay.querySelector('[data-mode="collection"]')?.focus();
+    });
+}
+
+async function sendSelectedFiles(files, options = {}) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    if (list.length === 1) {
+        await sendFile(list[0], null, options);
+        return;
+    }
+
+    const mode = await askFileCollectionMode(list);
+    if (mode === 'collection') {
+        await sendFileCollection(list, options);
+        return;
+    }
+    for (const file of list) {
+        await sendFile(file, null, options);
+    }
 }
 
 async function consumePendingSharedFiles() {
@@ -2723,7 +2890,7 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
                     ...fileInfo,
                     isP2P: true
                 },
-                timestamp: Date.now(),
+                timestamp: nextHistoryTimestamp(),
                 sender: state.deviceId,
                 senderName: state.deviceName
             };
@@ -2812,7 +2979,7 @@ async function handleDataChannelMessage(deviceId, data) {
                             id: generateId(),
                             type: 'file',
                             fileInfo: transfer.fileInfo,
-                            timestamp: Date.now(),
+                            timestamp: nextHistoryTimestamp(),
                             sender: transfer.from,
                             senderName: state.devices.get(transfer.from)?.name || '未知设备'
                         };
@@ -2920,6 +3087,31 @@ async function requestMissingFileAssetCache(message, reason) {
     });
 }
 
+async function requestMissingCollectionAssetCaches(message, reason) {
+    if (!fileAssetTransfer) return;
+    const files = getCollectionFiles(message);
+    for (const fileInfo of files) {
+        if (!fileInfo?.id || !fileInfo.isAsset) continue;
+        const storedFile = await getFromStore('files', fileInfo.id);
+        if (!shouldAutoRequestFileAssetCache(storedFile, fileInfo)) continue;
+        await fileAssetTransfer.request(
+            fileInfo.id,
+            fileInfo.ownerDeviceId || message.sender,
+            fileInfo
+        ).catch(err => historyLog('collection-asset-cache-request-failed', {
+            reason,
+            messageId: message?.id,
+            fileId: fileInfo.id,
+            error: err.message
+        }));
+    }
+    historyLog('collection-asset-cache-backfill-requested', {
+        reason,
+        messageId: message?.id,
+        fileCount: files.length
+    });
+}
+
 async function handleMessage(data) {
     const { message } = data;
     if (!message || typeof message.id !== 'string') return;
@@ -2944,6 +3136,9 @@ async function handleMessage(data) {
         }
         if (message.type === 'file' && message.fileInfo?.isAsset) {
             await requestMissingFileAssetCache(message, 'realtime-duplicate');
+        }
+        if (message.type === 'collection') {
+            await requestMissingCollectionAssetCaches(existing, 'realtime-collection-duplicate');
         }
         historyLog('realtime-message-skipped', {
             reason: 'already-in-indexeddb',
@@ -2998,6 +3193,9 @@ async function handleMessage(data) {
             });
         }
     }
+    if (message.type === 'collection') {
+        await requestMissingCollectionAssetCaches(message, 'realtime-collection');
+    }
 }
 
 async function handleSessionHistory(data) {
@@ -3013,7 +3211,7 @@ async function handleSessionHistory(data) {
         await deleteHistoryMessageLocal(messageId);
     }
 
-    const messages = [...data.messages].sort((a, b) => a.timestamp - b.timestamp);
+    const messages = [...data.messages].sort(compareHistoryMessages);
     let restored = 0;
     let duplicates = 0;
     let failed = 0;
@@ -3040,7 +3238,16 @@ async function handleSessionHistory(data) {
                     reason: 'already-in-indexeddb',
                     message: summarizeHistoryMessage(message)
                 });
-                if (!getMessageElement(message.id)) {
+                if (isAuthoritativeHistoryMessageChanged(existing, message)) {
+                    await applyHistoryMessageUpdate(message, {
+                        remote: true,
+                        snapshot: true
+                    });
+                    historyLog('snapshot-message-updated', {
+                        reason: 'authoritative-message-changed',
+                        message: summarizeHistoryMessage(message)
+                    });
+                } else if (!getMessageElement(message.id)) {
                     await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
                     historyLog('snapshot-message-rendered', {
                         reason: 'existing-not-rendered',
@@ -3049,6 +3256,9 @@ async function handleSessionHistory(data) {
                 }
                 if (message.type === 'file' && message.fileInfo?.isAsset) {
                     await requestMissingFileAssetCache(message, 'snapshot-duplicate');
+                }
+                if (message.type === 'collection') {
+                    await requestMissingCollectionAssetCaches(message, 'snapshot-collection-duplicate');
                 }
                 continue;
             }
@@ -3075,6 +3285,9 @@ async function handleSessionHistory(data) {
             if (message.type === 'file' && message.fileInfo?.isAsset) {
                 await requestMissingFileAssetCache(message, 'snapshot-new');
             }
+            if (message.type === 'collection') {
+                await requestMissingCollectionAssetCaches(message, 'snapshot-collection-new');
+            }
             restored++;
         } catch (err) {
             failed++;
@@ -3085,6 +3298,8 @@ async function handleSessionHistory(data) {
             });
         }
     }
+
+    reorderRenderedMessages();
 
     const result = {
         receivedCount: messages.length,
@@ -3128,13 +3343,27 @@ async function getCurrentSessionMessages() {
 async function findCurrentSessionMessageByFileId(fileId) {
     if (!fileId) return null;
     const messages = await getCurrentSessionMessages();
-    return messages.find(message => message?.type === 'file' && message.fileInfo?.id === fileId) || null;
+    return messages.find(message => message?.type === 'file' && message.fileInfo?.id === fileId) ||
+        messages.find(message => message?.type === 'collection' && getCollectionFiles(message).some(file => file.id === fileId)) ||
+        null;
 }
 
 function createHistoryReconcileMessage(message) {
     const copy = JSON.parse(JSON.stringify(message));
+    delete copy.sessionId;
     if (copy.fileInfo) delete copy.fileInfo.data;
+    if (Array.isArray(copy.collection?.files)) {
+        copy.collection.files.forEach(file => {
+            if (file && typeof file === 'object') delete file.data;
+        });
+    }
     return copy;
+}
+
+function isAuthoritativeHistoryMessageChanged(existing, incoming) {
+    if (!existing || !incoming || existing.id !== incoming.id) return false;
+    return JSON.stringify(createHistoryReconcileMessage(existing)) !==
+        JSON.stringify(createHistoryReconcileMessage(incoming));
 }
 
 async function reconcileLocalHistory(serverMessages, deletedMessageIds) {
@@ -3143,7 +3372,7 @@ async function reconcileLocalHistory(serverMessages, deletedMessageIds) {
     const localMessages = await getCurrentSessionMessages();
     const messages = localMessages
         .filter(message => message?.id && !deletedIds.has(message.id))
-        .sort((a, b) => a.timestamp - b.timestamp)
+        .sort(compareHistoryMessages)
         .slice(-HISTORY_RECONCILE_MESSAGE_LIMIT)
         .map(createHistoryReconcileMessage);
 
@@ -3207,6 +3436,73 @@ function preserveChatScroll(callback) {
     return result;
 }
 
+function insertMessageElementByTimestamp(container, messageEl) {
+    const messages = Array.from(container.querySelectorAll('.message'));
+    const next = messages.find(element => compareHistoryMessages(element, messageEl) > 0);
+    if (next) {
+        container.insertBefore(messageEl, next);
+    } else {
+        container.appendChild(messageEl);
+    }
+}
+
+function reorderRenderedMessages(container = document.getElementById('chatMessages')) {
+    if (!container) return;
+    const messages = Array.from(container.querySelectorAll('.message'));
+    if (messages.length < 2) return;
+    const ordered = [...messages].sort(compareHistoryMessages);
+    const alreadyOrdered = ordered.every((element, index) => element === messages[index]);
+    if (alreadyOrdered) return;
+    preserveChatScroll(() => {
+        const fragment = document.createDocumentFragment();
+        ordered.forEach(element => fragment.appendChild(element));
+        container.appendChild(fragment);
+    });
+}
+
+function getCollectionFiles(message) {
+    return Array.isArray(message?.collection?.files) ? message.collection.files.filter(file => file?.id) : [];
+}
+
+async function createCollectionTileHtml(fileInfo, index, total) {
+    const type = String(fileInfo.type || '').toLowerCase();
+    let body = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(storedFile, fileInfo)) {
+        const resolvedType = String(fileInfo.type || storedFile.type || '').toLowerCase();
+        if (resolvedType.startsWith('image/')) {
+            const url = getStoredFileUrl(fileInfo.id, storedFile);
+            body = `<img src="${url}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">`;
+        } else if (resolvedType.startsWith('video/')) {
+            body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
+        } else if (resolvedType.startsWith('audio/')) {
+            body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`;
+        }
+    } else if (type.startsWith('video/')) {
+        body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
+    } else if (type.startsWith('audio/')) {
+        body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`;
+    }
+    const remaining = total > 4 && index === 3 ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
+    return `<div class="collection-preview-tile">${body}${remaining}</div>`;
+}
+
+async function renderCollectionPreviewHtml(message) {
+    const files = getCollectionFiles(message);
+    const visible = files.slice(0, Math.min(files.length, 4));
+    const tiles = [];
+    for (let index = 0; index < visible.length; index++) {
+        tiles.push(await createCollectionTileHtml(visible[index], index, files.length));
+    }
+    const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    return `
+        <div class="message-bubble collection-message">
+            <div class="collection-preview">${tiles.join('')}</div>
+            <div class="collection-meta">${files.length} 个文件 · ${formatFileSize(totalSize)}</div>
+        </div>
+    `;
+}
+
 async function addMessageToChat(message, isOwn, options = {}) {
     const container = document.getElementById('chatMessages');
     const shouldScroll = options.forceScroll || (options.scroll !== false && isChatNearBottom(container));
@@ -3239,6 +3535,8 @@ async function addMessageToChat(message, isOwn, options = {}) {
     const messageEl = document.createElement('div');
     messageEl.className = `message ${isOwn ? 'own' : ''}`;
     messageEl.dataset.messageId = message.id;
+    messageEl.dataset.messageTimestamp = String(message.timestamp || Date.now());
+    messageEl.dataset.messageLocalOrder = String(message.localOrder || message.fileInfo?.localOrder || 0);
     if (message.type === 'file' && message.fileInfo?.id) {
         messageEl.classList.add('file-record');
         messageEl.dataset.fileId = message.fileInfo.id;
@@ -3327,6 +3625,13 @@ async function addMessageToChat(message, isOwn, options = {}) {
             cacheCleared: Boolean(storedFile?.cacheCleared),
             restoreRequested: Boolean(storedFile?.restoreRequested)
         };
+    } else if (message.type === 'collection') {
+        const files = getCollectionFiles(message);
+        messageEl.classList.add('collection-record');
+        messageEl.dataset.collectionId = message.collection?.id || message.id;
+        messageEl.dataset.collectionCount = String(files.length);
+        messageEl.dataset.collectionFileIds = files.map(file => file.id).join(',');
+        contentHtml = await renderCollectionPreviewHtml(message);
     } else if (message.type === 'rich') {
         // 富文本消息
         const preview = message.content.replace(/<[^>]+>/g, '').slice(0, 100);
@@ -3352,9 +3657,15 @@ async function addMessageToChat(message, isOwn, options = {}) {
     if (fileRenderState) {
         renderFileMessageActions(messageEl, fileRenderState.fileInfo, fileRenderState);
         attachFileRecordInteractions(messageEl);
+        renderMessageRecordActions(messageEl, message);
+    } else if (message.type === 'collection') {
+        attachCollectionRecordInteractions(messageEl);
+        renderMessageRecordActions(messageEl, message);
+    } else if (message.type === 'text' || message.type === 'rich') {
+        renderMessageRecordActions(messageEl, message);
     }
 
-    container.appendChild(messageEl);
+    insertMessageElementByTimestamp(container, messageEl);
     if (shouldScroll) {
         container.scrollTop = container.scrollHeight;
     }
@@ -3363,6 +3674,14 @@ async function addMessageToChat(message, isOwn, options = {}) {
             .catch(err => historyLog('file-asset-cache-backfill-failed', {
                 reason: 'message-rendered',
                 message: summarizeHistoryMessage(message),
+                error: err.message
+            }));
+    }
+    if (options.autoRequestAsset !== false && message.type === 'collection') {
+        requestMissingCollectionAssetCaches(message, 'collection-rendered')
+            .catch(err => historyLog('collection-asset-cache-backfill-failed', {
+                reason: 'collection-rendered',
+                messageId: message.id,
                 error: err.message
             }));
     }
@@ -3386,8 +3705,22 @@ function createFileActionButton(label, title, handler) {
     button.className = 'history-action';
     button.textContent = label;
     button.title = title;
-    button.addEventListener('click', handler);
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        handler(event);
+    });
     return button;
+}
+
+function renderMessageRecordActions(messageEl, message) {
+    messageEl.querySelector('.message-record-actions')?.remove();
+    const actions = document.createElement('div');
+    actions.className = 'message-record-actions';
+    actions.appendChild(createFileActionButton('删除', '从会话中删除此记录', () => {
+        deleteHistoryMessage(message.id);
+    }));
+    messageEl.appendChild(actions);
 }
 
 async function downloadFileFromMessage(messageId) {
@@ -3494,53 +3827,6 @@ async function shareFileMagnet(messageId) {
 function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.querySelector('.file-actions')?.remove();
     messageEl.querySelector('.file-cache-retry')?.remove();
-    const actions = document.createElement('div');
-    actions.className = 'file-actions';
-
-    actions.appendChild(createFileActionButton('详情', '查看文件名、大小、来源设备等详细信息', () => {
-        showFileDetails(messageEl.dataset.messageId).catch(err => historyLog('file-details-open-failed', {
-            messageId: messageEl.dataset.messageId,
-            fileId: fileInfo.id,
-            error: err.message
-        }));
-    }));
-    actions.appendChild(createFileActionButton('下载', '下载此文件；本机无缓存时会先尝试还原', () => {
-        downloadFileFromMessage(messageEl.dataset.messageId).catch(err => historyLog('file-download-from-message-failed', {
-            messageId: messageEl.dataset.messageId,
-            fileId: fileInfo.id,
-            error: err.message
-        }));
-    }));
-    actions.appendChild(createFileActionButton('分享磁链', '生成可分享的磁力下载链接', () => {
-        shareFileMagnet(messageEl.dataset.messageId).catch(err => {
-            alert(`磁链生成失败: ${err.message}`);
-            historyLog('file-magnet-share-failed', {
-                messageId: messageEl.dataset.messageId,
-                fileId: fileInfo.id,
-                error: err.message
-            });
-        });
-    }));
-    const cacheButton = cacheState.hasLocalData
-        ? createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
-            clearFileCache(messageEl.dataset.messageId);
-        })
-        : createFileActionButton('还原文件', '重新从在线设备拉取文件缓存', () => {
-            restoreFileCache(messageEl.dataset.messageId, { force: true }).catch(err => historyLog('file-cache-restore-failed', {
-                messageId: messageEl.dataset.messageId,
-                fileId: fileInfo.id,
-                error: err.message
-            }));
-        });
-    if (!cacheState.hasLocalData && !fileInfo.isAsset) {
-        cacheButton.disabled = true;
-        cacheButton.title = cacheState.cacheCleared ? '本机缓存已清理，但此历史文件没有可用远程来源' : '本机暂无可清理的文件缓存';
-    }
-    actions.appendChild(cacheButton);
-    actions.appendChild(createFileActionButton('删除', '从会话中删除此记录及所有设备的文件缓存', () => {
-        deleteHistoryMessage(messageEl.dataset.messageId);
-    }));
-    messageEl.appendChild(actions);
 
     if (!cacheState.hasLocalData && fileInfo.isAsset) {
         const bubble = messageEl.querySelector('.message-bubble');
@@ -3567,6 +3853,16 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
 }
 
 let activeFileDetailsMessageId = null;
+let activeFileDetailsFileId = null;
+let filePreviewReturnCollectionMessageId = '';
+let collectionPreviewReturnState = null;
+let activeFilePreviewMode = '';
+let activeCollectionPreviewMessageId = '';
+let activeFilePreviewFileId = '';
+let activeFilePreviewMessageId = '';
+let activeFilePreviewOwnerDeviceId = '';
+let activeFilePreviewCanFullscreen = false;
+let activeFilePreviewMediaType = '';
 
 function getFileExtension(fileName) {
     const name = String(fileName || '');
@@ -3588,17 +3884,561 @@ function isLikelyTouchDevice() {
 function closeFileDetails() {
     document.getElementById('fileDetailsViewer').classList.remove('active');
     activeFileDetailsMessageId = null;
+    activeFileDetailsFileId = null;
 }
 
 function closeFilePreview(options = {}) {
+    if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
+        closeMediaFullscreen({ fromHistory: true, forceClose: true });
+    }
+    if (filePreviewReturnCollectionMessageId && !options.forceClose) {
+        if (!options.fromHistory && filePreviewNestedHistoryOpen && history.state?.[FILE_PREVIEW_HISTORY_KEY] === true) {
+            history.back();
+            return;
+        }
+        const collectionMessageId = filePreviewReturnCollectionMessageId;
+        filePreviewReturnCollectionMessageId = '';
+        filePreviewNestedHistoryOpen = false;
+        const restored = restoreCollectionPreviewReturnState(collectionMessageId);
+        if (!restored) {
+            openCollectionRecord(collectionMessageId, collectionPreviewReturnState || {}).catch(err => historyLog('collection-preview-restore-failed', {
+                messageId: collectionMessageId,
+                error: err.message
+            }));
+        }
+        return;
+    }
     const viewer = document.getElementById('filePreviewViewer');
     const wasActive = viewer?.classList.contains('active');
     const shouldGoBack = wasActive && filePreviewHistoryOpen && !options.fromHistory &&
         history.state?.[FILE_PREVIEW_HISTORY_KEY] === true;
     filePreviewHistoryOpen = false;
+    filePreviewNestedHistoryOpen = false;
+    filePreviewReturnCollectionMessageId = '';
+    collectionPreviewReturnState = null;
+    activeFilePreviewMode = '';
+    activeCollectionPreviewMessageId = '';
+    activeFilePreviewFileId = '';
+    activeFilePreviewMessageId = '';
+    activeFilePreviewOwnerDeviceId = '';
+    activeFilePreviewCanFullscreen = false;
+    activeFilePreviewMediaType = '';
+    setFilePreviewFullscreenButton(false);
     viewer.classList.remove('active');
-    document.getElementById('filePreviewContent').replaceChildren();
+    const content = document.getElementById('filePreviewContent');
+    content?.replaceChildren();
+    resetFilePreviewContentStage(content);
+    document.getElementById('filePreviewActions')?.replaceChildren();
     if (shouldGoBack) history.back();
+}
+
+function captureCollectionPreviewReturnState(collectionMessageId, anchorFileId = '') {
+    const content = document.getElementById('filePreviewContent');
+    const actions = document.getElementById('filePreviewActions');
+    const grid = content?.querySelector('.collection-file-grid');
+    const contentFragment = document.createDocumentFragment();
+    const actionsFragment = document.createDocumentFragment();
+    if (content) {
+        while (content.firstChild) contentFragment.appendChild(content.firstChild);
+    }
+    if (actions) {
+        while (actions.firstChild) actionsFragment.appendChild(actions.firstChild);
+    }
+    collectionPreviewReturnState = {
+        messageId: collectionMessageId,
+        anchorFileId,
+        scrollTop: grid ? grid.scrollTop : 0,
+        title: document.getElementById('filePreviewTitle')?.textContent || '',
+        contentFragment,
+        actionsFragment,
+        capturedAt: Date.now()
+    };
+}
+
+function restoreCollectionPreviewReturnState(collectionMessageId) {
+    const stateToRestore = collectionPreviewReturnState;
+    if (!stateToRestore || stateToRestore.messageId !== collectionMessageId || !stateToRestore.contentFragment) return false;
+    const title = document.getElementById('filePreviewTitle');
+    const content = document.getElementById('filePreviewContent');
+    const actions = document.getElementById('filePreviewActions');
+    if (title) title.textContent = stateToRestore.title || '合辑';
+    content?.replaceChildren(stateToRestore.contentFragment);
+    actions?.replaceChildren(stateToRestore.actionsFragment);
+    activeFilePreviewMode = 'collection';
+    activeCollectionPreviewMessageId = collectionMessageId;
+    activeFilePreviewFileId = '';
+    activeFilePreviewMessageId = '';
+    activeFilePreviewOwnerDeviceId = '';
+    collectionPreviewReturnState = null;
+    requestAnimationFrame(() => {
+        const grid = content?.querySelector('.collection-file-grid');
+        if (!grid) return;
+        const anchor = stateToRestore.anchorFileId
+            ? grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(stateToRestore.anchorFileId)}"]`)
+            : null;
+        if (anchor) {
+            anchor.scrollIntoView({ block: 'center' });
+            anchor.classList.add('collection-file-card--focused');
+            setTimeout(() => anchor.classList.remove('collection-file-card--focused'), 900);
+        } else {
+            grid.scrollTop = stateToRestore.scrollTop || 0;
+        }
+    });
+    historyLog('collection-preview-return-restored', { messageId: collectionMessageId, anchorFileId: stateToRestore.anchorFileId });
+    return true;
+}
+
+function setFilePreviewActions(actions = []) {
+    const container = document.getElementById('filePreviewActions');
+    if (!container) return;
+    container.replaceChildren();
+    actions.forEach(action => container.appendChild(action));
+}
+
+function openFilePreviewHistory(viewer, options = {}) {
+    if (!viewer) return;
+    if (options.nested && viewer.classList.contains('active')) {
+        if (!filePreviewNestedHistoryOpen) {
+            const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+            history.pushState({ ...baseState, [FILE_PREVIEW_HISTORY_KEY]: true, filePreviewStage: 'file' }, '', window.location.href);
+            filePreviewNestedHistoryOpen = true;
+        }
+        return;
+    }
+    if (!viewer.classList.contains('active')) {
+        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+        history.pushState({ ...baseState, [FILE_PREVIEW_HISTORY_KEY]: true, filePreviewStage: options.stage || 'preview' }, '', window.location.href);
+        filePreviewHistoryOpen = true;
+        viewer.classList.add('active');
+    }
+}
+
+function resetFilePreviewContentStage(content = document.getElementById('filePreviewContent')) {
+    content?.classList.remove('collection-stage', 'preview-media-stage', 'preview-metadata-stage', 'preview-loading-stage');
+}
+
+function setFilePreviewContentStage(stage) {
+    const content = document.getElementById('filePreviewContent');
+    if (!content) return null;
+    resetFilePreviewContentStage(content);
+    if (stage) content.classList.add(stage);
+    return content;
+}
+
+function renderFilePreviewLoading(content, fileInfo) {
+    content.replaceChildren();
+    const loading = document.createElement('div');
+    loading.className = 'file-preview-loading';
+    loading.innerHTML = `
+        <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+        <div>
+            <div class="file-name">${escapeHtml(fileInfo.name || '文件预览')}</div>
+            <div class="file-size">正在准备预览...</div>
+        </div>
+    `;
+    content.appendChild(loading);
+}
+
+function isPreviewableFileType(type) {
+    const value = String(type || '').toLowerCase();
+    return value.startsWith('image/') || value.startsWith('video/') || value.startsWith('audio/');
+}
+
+function isVisualPreviewableType(type) {
+    const value = String(type || '').toLowerCase();
+    return value.startsWith('image/') || value.startsWith('video/');
+}
+
+function isFullscreenPreviewableType(type) {
+    return isVisualPreviewableType(type);
+}
+
+function setFilePreviewFullscreenButton(visible) {
+    const button = document.getElementById('filePreviewFullscreenBtn');
+    if (!button) return;
+    button.hidden = !visible;
+    button.disabled = !visible;
+}
+
+function renderFileMetadataPreview(content, fileInfo, stateLabel = '') {
+    setFilePreviewContentStage('preview-metadata-stage');
+    content.replaceChildren();
+    const panel = document.createElement('div');
+    panel.className = 'file-preview-metadata';
+    panel.innerHTML = `
+        <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+        <div class="file-info">
+            <div class="file-name">${escapeHtml(fileInfo.name || '未知文件')}</div>
+            <div class="file-size">${formatFileSize(Number(fileInfo.size) || 0)}${stateLabel ? ` (${escapeHtml(stateLabel)})` : ''}</div>
+        </div>
+    `;
+    content.appendChild(panel);
+}
+
+function getMissingFileStateLabel(storedFile) {
+    if (storedFile?.restoreRequested) return '正在还原';
+    if (storedFile?.cacheCleared) return '缓存已清理';
+    if (storedFile?.isPartial || storedFile?.transferInterrupted) return '传输中断';
+    return '本机未缓存';
+}
+
+async function getActivePreviewFileInfo(fileId = activeFilePreviewFileId) {
+    if (!fileId) return null;
+    if (activeCollectionPreviewMessageId) {
+        const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
+        const fileInfo = getCollectionFiles(message).find(file => file.id === fileId);
+        if (fileInfo) return fileInfo;
+    }
+    if (activeFilePreviewMessageId) {
+        const message = await getFromStore('messages', activeFilePreviewMessageId).catch(() => null);
+        if (message?.fileInfo?.id === fileId) return message.fileInfo;
+    }
+    const messageEl = document.querySelector(`.message[data-file-id="${CSS.escape(fileId)}"]`);
+    if (messageEl) return getFileInfoFromMessageElement(messageEl);
+    const storedFile = await getFromStore('files', fileId).catch(() => null);
+    return storedFile?.id ? storedFile : null;
+}
+
+function findCollectionPreviewRoot() {
+    const roots = [];
+    const liveContent = document.getElementById('filePreviewContent');
+    if (liveContent) roots.push(liveContent);
+    if (collectionPreviewReturnState?.contentFragment) roots.push(collectionPreviewReturnState.contentFragment);
+    return roots;
+}
+
+async function refreshCollectionPreviewCardForFile(fileId, collectionMessageId = activeCollectionPreviewMessageId || collectionPreviewReturnState?.messageId || '') {
+    if (!fileId || !collectionMessageId) return;
+    const message = await getFromStore('messages', collectionMessageId).catch(() => null);
+    const fileInfo = getCollectionFiles(message).find(file => file.id === fileId);
+    if (!fileInfo) return;
+    for (const root of findCollectionPreviewRoot()) {
+        const card = root.querySelector?.(`.collection-file-card[data-file-id="${CSS.escape(fileId)}"]`);
+        if (!card) continue;
+        const nextCard = await createCollectionFileCard(fileInfo, collectionMessageId);
+        card.replaceWith(nextCard);
+    }
+}
+
+
+function getCollectionPreviewRootsForMessage(collectionMessageId) {
+    const roots = [];
+    const liveContent = document.getElementById('filePreviewContent');
+    if (activeCollectionPreviewMessageId === collectionMessageId && liveContent) roots.push(liveContent);
+    if (collectionPreviewReturnState?.messageId === collectionMessageId && collectionPreviewReturnState.contentFragment) {
+        roots.push(collectionPreviewReturnState.contentFragment);
+    }
+    return roots;
+}
+
+async function updateCollectionMessageElement(message) {
+    const messageEl = getMessageElement(message.id);
+    if (!messageEl) {
+        await addMessageToChat(message, message.sender === state.deviceId, { autoRequestAsset: false, scroll: false });
+        return;
+    }
+    const files = getCollectionFiles(message);
+    messageEl.classList.add('collection-record');
+    messageEl.dataset.collectionId = message.collection?.id || message.id;
+    messageEl.dataset.collectionCount = String(files.length);
+    messageEl.dataset.collectionFileIds = files.map(file => file.id).join(',');
+    const html = await renderCollectionPreviewHtml(message);
+    preserveChatScroll(() => {
+        const bubble = messageEl.querySelector('.message-bubble');
+        if (bubble) bubble.outerHTML = html;
+    });
+}
+
+async function applyCollectionPreviewIncrementalUpdate(previousMessage, nextMessage) {
+    if (!previousMessage?.id || previousMessage.id !== nextMessage?.id) return;
+    const collectionMessageId = nextMessage.id;
+    const previousFiles = getCollectionFiles(previousMessage);
+    const nextFiles = getCollectionFiles(nextMessage);
+    const nextById = new Map(nextFiles.map(file => [file.id, file]));
+    const nextIds = new Set(nextById.keys());
+    const removedIds = previousFiles.map(file => file.id).filter(id => !nextIds.has(id));
+
+    if (activeFilePreviewMode === 'file' && activeCollectionPreviewMessageId === collectionMessageId &&
+        activeFilePreviewFileId && removedIds.includes(activeFilePreviewFileId)) {
+        closeFilePreview();
+        await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+
+    const roots = getCollectionPreviewRootsForMessage(collectionMessageId);
+    for (const root of roots) {
+        const grid = root.querySelector?.('.collection-file-grid');
+        if (!grid) continue;
+        const scrollTop = grid.scrollTop;
+        for (const fileId of removedIds) {
+            grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(fileId)}"]`)?.remove();
+        }
+        for (let index = 0; index < nextFiles.length; index++) {
+            const fileInfo = nextFiles[index];
+            if (!fileInfo?.id || grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(fileInfo.id)}"]`)) continue;
+            const card = await createCollectionFileCard(fileInfo, collectionMessageId);
+            let before = null;
+            for (let j = index + 1; j < nextFiles.length; j++) {
+                before = grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(nextFiles[j].id)}"]`);
+                if (before) break;
+            }
+            grid.insertBefore(card, before);
+        }
+        grid.dataset.collectionCount = String(nextFiles.length);
+        requestAnimationFrame(() => {
+            grid.scrollTop = Math.min(scrollTop, Math.max(0, grid.scrollHeight - grid.clientHeight));
+        });
+    }
+
+    if (activeCollectionPreviewMessageId === collectionMessageId) {
+        const title = document.getElementById('filePreviewTitle');
+        if (title && (activeFilePreviewMode === 'collection' || !activeFilePreviewMode)) {
+            title.textContent = `合辑 · ${nextFiles.length} 个文件`;
+        }
+    }
+    historyLog('collection-preview-incrementally-updated', {
+        messageId: collectionMessageId,
+        removedCount: removedIds.length,
+        nextCount: nextFiles.length,
+        roots: roots.length
+    });
+}
+
+async function refreshActiveFilePreviewForFile(fileId) {
+    if (activeFilePreviewMode !== 'file' || activeFilePreviewFileId !== fileId) return;
+    const fileInfo = await getActivePreviewFileInfo(fileId);
+    if (!fileInfo?.id) return;
+    await openFilePreviewForInfo(fileInfo, {
+        messageId: activeFilePreviewMessageId || activeCollectionPreviewMessageId || '',
+        collectionMessageId: activeCollectionPreviewMessageId || '',
+        ownerDeviceId: activeFilePreviewOwnerDeviceId || fileInfo.ownerDeviceId || '',
+        requestMissing: false
+    });
+}
+
+async function cancelClearedCollectionDownloadsExcept(collectionMessageId, allowedFileId) {
+    if (!collectionMessageId || !fileAssetTransfer) return;
+    const message = await getFromStore('messages', collectionMessageId).catch(() => null);
+    for (const fileInfo of getCollectionFiles(message)) {
+        if (!fileInfo?.id || fileInfo.id === allowedFileId) continue;
+        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (!hasCompleteFileCache(storedFile, fileInfo) && storedFile?.cacheCleared && !storedFile.restoreRequested) {
+            fileAssetTransfer.cancel(fileInfo.id);
+        }
+    }
+}
+
+async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(storedFile, fileInfo)) {
+        await downloadFile(fileInfo.id);
+        return;
+    }
+    if (fileInfo.isAsset && fileAssetTransfer) {
+        await cancelClearedCollectionDownloadsExcept(options.collectionMessageId || '', fileInfo.id);
+        await saveToStore('files', {
+            ...(storedFile || {}),
+            id: fileInfo.id,
+            name: fileInfo.name,
+            type: fileInfo.type,
+            size: fileInfo.size,
+            sessionId: state.sessionId,
+            ownerDeviceId: ownerDeviceId || fileInfo.ownerDeviceId,
+            isFileAsset: true,
+            cacheCleared: Boolean(storedFile?.cacheCleared),
+            restoreRequested: true,
+            transferInterrupted: false
+        });
+        await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
+        await refreshActiveFilePreviewForFile(fileInfo.id);
+        await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'manual-download');
+        await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || fileInfo.ownerDeviceId || null, fileInfo, { priority: true, force: true })
+            .catch(err => historyLog('file-download-cache-request-failed', {
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+        alert('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
+        return;
+    }
+    alert('文件尚未缓存到本机，且没有可用的远程文件来源。');
+}
+
+async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = '', options = {}) {
+    if (!fileInfo?.id || !fileInfo.isAsset || !fileAssetTransfer) {
+        alert('此文件没有可用的远程文件来源，无法还原。');
+        return;
+    }
+    if (options.force && shouldBlockForceRestore(fileInfo.id)) {
+        const progressState = getFileReceiveProgressState(fileInfo.id);
+        alert(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
+        return;
+    }
+    if (options.force) {
+        fileAssetTransfer.cancel(fileInfo.id);
+        hideProgress(fileInfo.id);
+        fileTransferProgressStates.delete(fileInfo.id);
+    }
+    await cancelClearedCollectionDownloadsExcept(options.collectionMessageId || '', fileInfo.id);
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(storedFile, fileInfo)) {
+        await saveToStore('files', {
+            ...storedFile,
+            cacheCleared: false,
+            restoreRequested: false,
+            transferInterrupted: false,
+            isPartial: false
+        });
+        await refreshFileMessage(fileInfo.id);
+        return;
+    }
+    await saveToStore('files', {
+        ...(storedFile || {}),
+        id: fileInfo.id,
+        name: fileInfo.name,
+        type: fileInfo.type,
+        size: fileInfo.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: ownerDeviceId || fileInfo.ownerDeviceId || state.deviceId,
+        isFileAsset: true,
+        cacheCleared: true,
+        restoreRequested: true,
+        transferInterrupted: false,
+        isPartial: false
+    });
+    showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
+    await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
+    await refreshActiveFilePreviewForFile(fileInfo.id);
+    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'manual-force-restore' : 'manual-restore');
+    await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || fileInfo.ownerDeviceId || null, fileInfo, {
+        force: Boolean(options.force),
+        priority: true
+    });
+    historyLog('file-cache-restore-requested-by-info', { messageId, fileId: fileInfo.id });
+}
+
+async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', options = {}) {
+    if (!fileInfo?.id) return;
+    if (state.devices.size === 0) {
+        const ok = confirm('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
+        if (!ok) return;
+    }
+    fileAssetTransfer?.cancel(fileInfo.id);
+    const storedFile = await getFromStore('files', fileInfo.id);
+    const { data, ...metadata } = storedFile || {};
+    await saveToStore('files', {
+        ...metadata,
+        id: fileInfo.id,
+        name: fileInfo.name,
+        type: fileInfo.type,
+        size: fileInfo.size,
+        sessionId: state.sessionId,
+        ownerDeviceId: ownerDeviceId || fileInfo.ownerDeviceId || state.deviceId,
+        isFileAsset: Boolean(fileInfo.isAsset),
+        cacheCleared: true,
+        restoreRequested: false
+    });
+    const objectUrl = fileObjectUrls.get(fileInfo.id);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    fileObjectUrls.delete(fileInfo.id);
+    showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true, false);
+    await refreshCollectionMessagesForFile(fileInfo.id);
+    await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
+    await openFilePreviewForInfo(fileInfo, {
+        messageId,
+        collectionMessageId: options.collectionMessageId || '',
+        ownerDeviceId,
+        requestMissing: false
+    });
+    historyLog('file-cache-cleared', { messageId, fileId: fileInfo.id });
+}
+
+async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (!hasCompleteFileCache(storedFile, fileInfo)) {
+        throw new Error('本设备没有完整缓存，不能注册为种子设备');
+    }
+    if (fileAssetTransfer) {
+        await fileAssetTransfer.announce({
+            ...storedFile,
+            ownerDeviceId: storedFile.ownerDeviceId || fileInfo.ownerDeviceId || ownerDeviceId || state.deviceId,
+            isFileAsset: true
+        });
+    }
+    const response = await fetch('/api/magnets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            sessionId: state.sessionId,
+            fileId: fileInfo.id,
+            deviceId: state.deviceId,
+            asset: {
+                id: fileInfo.id,
+                name: fileInfo.name || storedFile.name || 'file',
+                type: fileInfo.type || storedFile.type || 'application/octet-stream',
+                size: Number(fileInfo.size || storedFile.size || getBinaryDataSize(storedFile.data)),
+                ownerDeviceId: storedFile.ownerDeviceId || fileInfo.ownerDeviceId || ownerDeviceId || state.deviceId,
+                isFolderArchive: fileInfo.isFolderArchive === true || storedFile.isFolderArchive === true,
+                isDirectoryMirror: fileInfo.isDirectoryMirror === true || storedFile.isDirectoryMirror === true,
+                folderName: fileInfo.folderName || storedFile.folderName,
+                entryCount: Number.isInteger(fileInfo.entryCount) ? fileInfo.entryCount : storedFile.entryCount
+            }
+        })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.url) throw new Error(result.error || '服务端未返回磁链');
+    const copied = await copyTextToClipboard(result.url).catch(() => false);
+    alert(copied ? `磁链已复制\n${result.url}` : `磁链已生成，请手动复制\n${result.url}`);
+    historyLog('file-magnet-shared', { messageId, fileId: fileInfo.id, magnetId: result.id, copied });
+}
+
+async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false }) {
+    const isCollectionFile = Boolean(collectionMessageId);
+    const deleteTitle = isCollectionFile ? '仅从合辑中删除此文件，并清理其缓存' : '从会话中删除此记录及所有设备的文件缓存';
+    const cacheAction = hasLocalData
+        ? createFileActionButton('清除缓存', '仅清理本设备保存的文件内容', () => {
+            clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId, { collectionMessageId });
+        })
+        : createFileActionButton(restoreRequested ? '正在还原' : '还原文件', restoreRequested ? '文件正在拉取，点击可重新请求' : '从其它在线设备还原此文件', () => {
+            restoreFileCacheByInfo(fileInfo, ownerDeviceId, messageId, { collectionMessageId, force: true })
+                .catch(err => {
+                    alert(`还原文件失败: ${err.message}`);
+                    historyLog('file-cache-restore-by-info-failed', { messageId, collectionMessageId, fileId: fileInfo.id, error: err.message });
+                });
+        });
+    setFilePreviewActions([
+        createFileActionButton('详情', '查看文件名、大小、来源设备等详细信息', () => {
+            showFileDetailsForInfo(fileInfo, { messageId, sender: ownerDeviceId, senderName: '' })
+                .catch(err => historyLog('file-details-open-failed', { messageId, fileId: fileInfo.id, error: err.message }));
+        }),
+        createFileActionButton('下载', '下载此文件', () => downloadFileByInfo(fileInfo, ownerDeviceId, { collectionMessageId })),
+        createFileActionButton('分享链接', '生成可分享的磁力下载链接', () => {
+            shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId).catch(err => {
+                alert(`磁链生成失败: ${err.message}`);
+                historyLog('file-magnet-share-failed', { messageId, fileId: fileInfo.id, error: err.message });
+            });
+        }),
+        cacheAction,
+        createFileActionButton('删除', deleteTitle, () => {
+            (async () => {
+                if (isCollectionFile) {
+                    await deleteFileFromCollection(collectionMessageId, fileInfo.id);
+                    return;
+                }
+
+                const maybeCollection = await getFromStore('messages', messageId).catch(() => null);
+                if (maybeCollection?.type === 'collection' && getCollectionFiles(maybeCollection).some(file => file.id === fileInfo.id)) {
+                    await deleteFileFromCollection(messageId, fileInfo.id);
+                    return;
+                }
+
+                closeFilePreview({ forceClose: true });
+                await deleteHistoryMessage(messageId);
+            })().catch(err => historyLog(isCollectionFile ? 'collection-file-delete-failed' : 'file-delete-failed', {
+                messageId: isCollectionFile ? collectionMessageId : messageId,
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+        })
+    ]);
 }
 
 function getStoredFileUrl(fileId, storedFile) {
@@ -3610,36 +4450,87 @@ function getStoredFileUrl(fileId, storedFile) {
     return url;
 }
 
-function isInlineDocument(fileInfo) {
-    const type = String(fileInfo.type || '').toLowerCase();
-    return type === 'application/pdf' || type.startsWith('text/') ||
-        ['application/json', 'application/xml', 'application/javascript'].includes(type);
+function isInlineDocument() {
+    // 传输记录中只有图片、视频、音频允许网页内预览；文本/PDF/CSV/JSON 等统一走元信息视图。
+    return false;
 }
 
-async function openFileRecord(messageId) {
-    const message = await getFromStore('messages', messageId);
-    const fileInfo = message?.fileInfo;
-    if (!fileInfo?.id) return;
+async function openFilePreviewForInfo(fileInfo, options = {}) {
+    if (!fileInfo?.id) return false;
+    const title = document.getElementById('filePreviewTitle');
+    const content = setFilePreviewContentStage('preview-loading-stage');
+    if (!content || !title) return false;
+
+    activeFilePreviewMode = 'file';
+    activeCollectionPreviewMessageId = options.collectionMessageId || '';
+    activeFilePreviewFileId = fileInfo.id;
+    activeFilePreviewMessageId = options.messageId || '';
+    const ownerDeviceId = options.ownerDeviceId || fileInfo.ownerDeviceId || options.sender || '';
+    activeFilePreviewOwnerDeviceId = ownerDeviceId;
+    activeFilePreviewCanFullscreen = false;
+    activeFilePreviewMediaType = '';
+    setFilePreviewFullscreenButton(false);
+
+    title.textContent = fileInfo.name || '文件预览';
+    renderFilePreviewLoading(content, fileInfo);
+    const viewer = document.getElementById('filePreviewViewer');
+    openFilePreviewHistory(viewer, {
+        nested: Boolean(options.collectionMessageId),
+        stage: options.collectionMessageId ? 'file' : 'file-root'
+    });
+    filePreviewReturnCollectionMessageId = options.collectionMessageId || '';
 
     const storedFile = await getFromStore('files', fileInfo.id);
     if (!hasCompleteFileCache(storedFile, fileInfo)) {
-        alert('文件尚未缓存到本机，请先使用“还原文件”获取内容。');
-        return;
+        if (options.requestMissing === true && fileInfo.isAsset && fileAssetTransfer) {
+            await fileAssetTransfer.request(
+                fileInfo.id,
+                ownerDeviceId,
+                fileInfo
+            ).catch(err => historyLog('file-preview-cache-request-failed', {
+                messageId: options.messageId,
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+        }
+        renderFileMetadataPreview(content, fileInfo, getMissingFileStateLabel(storedFile));
+        await renderSingleFilePreviewActions({
+            messageId: options.messageId || '',
+            fileInfo,
+            ownerDeviceId,
+            collectionMessageId: options.collectionMessageId || '',
+            hasLocalData: false,
+            cacheCleared: Boolean(storedFile?.cacheCleared),
+            restoreRequested: Boolean(storedFile?.restoreRequested)
+        });
+        historyLog('file-preview-opened-without-cache', {
+            messageId: options.messageId,
+            collectionMessageId: options.collectionMessageId,
+            fileId: fileInfo.id
+        });
+        return true;
     }
 
     const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
-    const canPreviewDocument = isInlineDocument({ type });
-    const textPreviewTooLarge = type !== 'application/pdf' && canPreviewDocument &&
-        getBinaryDataSize(storedFile.data) > 5 * 1024 * 1024;
-    if (!type.startsWith('image/') && !type.startsWith('video/') && !type.startsWith('audio/') && (!canPreviewDocument || textPreviewTooLarge)) {
-        const shouldDownload = window.confirm(`“${fileInfo.name}”无法在当前浏览器中直接打开。是否下载？`);
-        if (shouldDownload) await downloadFile(fileInfo.id);
-        return;
+    if (!isPreviewableFileType(type)) {
+        renderFileMetadataPreview(content, fileInfo, '不可直接预览');
+        await renderSingleFilePreviewActions({
+            messageId: options.messageId || '',
+            fileInfo,
+            ownerDeviceId,
+            collectionMessageId: options.collectionMessageId || '',
+            hasLocalData: true
+        });
+        historyLog('file-preview-opened-as-metadata', {
+            messageId: options.messageId,
+            collectionMessageId: options.collectionMessageId,
+            fileId: fileInfo.id,
+            type
+        });
+        return true;
     }
 
-    const title = document.getElementById('filePreviewTitle');
-    const content = document.getElementById('filePreviewContent');
-    title.textContent = fileInfo.name || '文件预览';
+    setFilePreviewContentStage(isVisualPreviewableType(type) ? 'preview-media-stage' : 'preview-metadata-stage');
     content.replaceChildren();
 
     const url = getStoredFileUrl(fileInfo.id, storedFile);
@@ -3647,6 +4538,8 @@ async function openFileRecord(messageId) {
         const image = document.createElement('img');
         image.src = url;
         image.alt = fileInfo.name || '图片预览';
+        image.dataset.previewFileId = fileInfo.id;
+        image.className = 'file-preview-media file-preview-media-image';
         content.appendChild(image);
     } else if (type.startsWith('video/')) {
         const video = document.createElement('video');
@@ -3654,6 +4547,9 @@ async function openFileRecord(messageId) {
         video.controls = true;
         video.autoplay = true;
         video.playsInline = true;
+        video.preload = 'metadata';
+        video.dataset.previewFileId = fileInfo.id;
+        video.className = 'file-preview-media file-preview-media-video';
         content.appendChild(video);
         video.play().catch(() => {});
     } else if (type.startsWith('audio/')) {
@@ -3661,32 +4557,272 @@ async function openFileRecord(messageId) {
         audio.src = url;
         audio.controls = true;
         audio.autoplay = true;
+        audio.dataset.previewFileId = fileInfo.id;
+        audio.className = 'file-preview-media-audio';
         content.appendChild(audio);
         audio.play().catch(() => {});
-    } else if (type === 'application/pdf') {
-        const frame = document.createElement('iframe');
-        frame.src = url;
-        frame.title = fileInfo.name || 'PDF 文档';
-        content.appendChild(frame);
-    } else {
-        const text = document.createElement('pre');
-        text.textContent = await new Blob([storedFile.data], { type: storedFile.type }).text();
-        content.appendChild(text);
     }
 
-    const viewer = document.getElementById('filePreviewViewer');
-    if (!viewer.classList.contains('active')) {
-        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
-        history.pushState({ ...baseState, [FILE_PREVIEW_HISTORY_KEY]: true }, '', window.location.href);
-        filePreviewHistoryOpen = true;
-        viewer.classList.add('active');
+    activeFilePreviewCanFullscreen = isFullscreenPreviewableType(type);
+    activeFilePreviewMediaType = type;
+    setFilePreviewFullscreenButton(activeFilePreviewCanFullscreen);
+    await renderSingleFilePreviewActions({
+        messageId: options.messageId || '',
+        fileInfo,
+        ownerDeviceId,
+        collectionMessageId: options.collectionMessageId || '',
+        hasLocalData: true
+    });
+    historyLog('file-preview-opened', {
+        messageId: options.messageId,
+        collectionMessageId: options.collectionMessageId,
+        fileId: fileInfo.id,
+        type
+    });
+    return true;
+}
+
+async function openFileRecord(messageId) {
+    const message = await getFromStore('messages', messageId);
+    const fileInfo = message?.fileInfo;
+    if (!fileInfo?.id) return;
+    await openFilePreviewForInfo(fileInfo, {
+        messageId,
+        ownerDeviceId: fileInfo.ownerDeviceId || message?.sender,
+        sender: message?.sender
+    });
+}
+
+async function getFullscreenPreviewItems() {
+    const items = [];
+    if (activeCollectionPreviewMessageId) {
+        const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
+        for (const fileInfo of getCollectionFiles(message)) {
+            const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+            if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
+            const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
+            if (!isFullscreenPreviewableType(type)) continue;
+            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile) });
+        }
+    } else if (activeFilePreviewFileId) {
+        const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
+        const storedFile = await getFromStore('files', activeFilePreviewFileId).catch(() => null);
+        const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
+        if (fileInfo?.id && hasCompleteFileCache(storedFile, fileInfo) && isFullscreenPreviewableType(type)) {
+            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile) });
+        }
     }
-    historyLog('file-preview-opened', { messageId, fileId: fileInfo.id, type });
+    return items;
+}
+
+function getActivePreviewMediaElement(fileId = activeFilePreviewFileId) {
+    if (!fileId) return null;
+    const content = document.getElementById('filePreviewContent');
+    if (!content) return null;
+    return content.querySelector(`img[data-preview-file-id="${CSS.escape(fileId)}"], video[data-preview-file-id="${CSS.escape(fileId)}"]`);
+}
+
+function restoreMovedFullscreenMedia(options = {}) {
+    if (!mediaFullscreenMovedMedia) return;
+    const media = mediaFullscreenMovedMedia;
+    media.classList.remove('media-fullscreen-active-item');
+    if (options.pause) {
+        try { media.pause?.(); } catch (_) {}
+    }
+    if (mediaFullscreenMovedParent?.isConnected) {
+        if (mediaFullscreenMovedPlaceholder?.parentNode === mediaFullscreenMovedParent) {
+            mediaFullscreenMovedParent.insertBefore(media, mediaFullscreenMovedPlaceholder);
+            mediaFullscreenMovedPlaceholder.remove();
+        } else if (mediaFullscreenMovedNextSibling?.parentNode === mediaFullscreenMovedParent) {
+            mediaFullscreenMovedParent.insertBefore(media, mediaFullscreenMovedNextSibling);
+        } else {
+            mediaFullscreenMovedParent.appendChild(media);
+        }
+    }
+    mediaFullscreenMovedMedia = null;
+    mediaFullscreenMovedParent = null;
+    mediaFullscreenMovedNextSibling = null;
+    mediaFullscreenMovedPlaceholder = null;
+}
+
+function createFullscreenMediaElement(item) {
+    if (item.type.startsWith('image/')) {
+        const image = document.createElement('img');
+        image.src = item.url;
+        image.alt = item.fileInfo.name || '图片预览';
+        image.className = 'media-fullscreen-generated-item';
+        return image;
+    }
+    if (item.type.startsWith('video/')) {
+        const video = document.createElement('video');
+        video.src = item.url;
+        video.controls = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+        video.className = 'media-fullscreen-generated-item';
+        video.addEventListener('canplay', () => video.play().catch(() => {}), { once: true });
+        return video;
+    }
+    return null;
+}
+
+function renderMediaFullscreenItem() {
+    const overlay = document.getElementById('mediaFullscreenViewer');
+    const content = document.getElementById('mediaFullscreenContent');
+    const title = document.getElementById('mediaFullscreenTitle');
+    const counter = document.getElementById('mediaFullscreenCounter');
+    const prevButton = document.getElementById('mediaFullscreenPrevBtn');
+    const nextButton = document.getElementById('mediaFullscreenNextBtn');
+    if (!overlay || !content) return;
+    const item = mediaFullscreenItems[mediaFullscreenIndex];
+    if (!item) {
+        restoreMovedFullscreenMedia({ pause: true });
+        content.replaceChildren();
+        title.textContent = '没有可预览文件';
+        counter.textContent = '';
+        prevButton.hidden = true;
+        nextButton.hidden = true;
+        return;
+    }
+    title.textContent = item.fileInfo.name || '文件预览';
+    counter.textContent = mediaFullscreenItems.length > 1 ? `${mediaFullscreenIndex + 1} / ${mediaFullscreenItems.length}` : '';
+    prevButton.hidden = mediaFullscreenItems.length <= 1;
+    nextButton.hidden = mediaFullscreenItems.length <= 1;
+
+    const canReuseActiveMedia = item.fileInfo.id === activeFilePreviewFileId;
+    const reusableMedia = canReuseActiveMedia
+        ? (mediaFullscreenMovedMedia || getActivePreviewMediaElement(item.fileInfo.id))
+        : null;
+
+    if (reusableMedia) {
+        if (mediaFullscreenMovedMedia && mediaFullscreenMovedMedia !== reusableMedia) {
+            restoreMovedFullscreenMedia({ pause: true });
+        }
+        if (reusableMedia.parentNode !== content) {
+            mediaFullscreenMovedParent = reusableMedia.parentNode;
+            mediaFullscreenMovedNextSibling = reusableMedia.nextSibling;
+            mediaFullscreenMovedPlaceholder = document.createElement('div');
+            mediaFullscreenMovedPlaceholder.className = 'media-fullscreen-return-placeholder';
+            mediaFullscreenMovedParent?.insertBefore(mediaFullscreenMovedPlaceholder, reusableMedia);
+            content.replaceChildren();
+            content.appendChild(reusableMedia);
+            mediaFullscreenMovedMedia = reusableMedia;
+        } else {
+            Array.from(content.childNodes).forEach(node => {
+                if (node !== reusableMedia) node.remove();
+            });
+        }
+        reusableMedia.classList.add('media-fullscreen-active-item');
+    } else {
+        restoreMovedFullscreenMedia({ pause: true });
+        content.replaceChildren();
+        const media = createFullscreenMediaElement(item);
+        if (media) {
+            content.appendChild(media);
+            if (media.tagName === 'VIDEO') media.play().catch(() => {});
+        }
+    }
+
+    historyLog('media-fullscreen-rendered', {
+        fileId: item.fileInfo.id,
+        index: mediaFullscreenIndex,
+        count: mediaFullscreenItems.length,
+        reusedActivePreviewMedia: Boolean(reusableMedia)
+    });
+}
+
+function navigateMediaFullscreen(delta) {
+    if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
+    if (mediaFullscreenItems.length <= 1) return;
+    mediaFullscreenIndex = (mediaFullscreenIndex + delta + mediaFullscreenItems.length) % mediaFullscreenItems.length;
+    renderMediaFullscreenItem();
+}
+
+async function openActivePreviewFullscreen() {
+    if (!activeFilePreviewCanFullscreen || !activeFilePreviewFileId) return;
+    mediaFullscreenItems = await getFullscreenPreviewItems();
+    mediaFullscreenIndex = Math.max(0, mediaFullscreenItems.findIndex(item => item.fileInfo.id === activeFilePreviewFileId));
+    if (!mediaFullscreenItems.length || mediaFullscreenIndex < 0) {
+        alert('当前文件尚未缓存到本机，不能全屏预览。');
+        return;
+    }
+    const overlay = document.getElementById('mediaFullscreenViewer');
+    if (!overlay) return;
+    overlay.classList.add('active');
+    renderMediaFullscreenItem();
+    if (!mediaFullscreenHistoryOpen) {
+        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+        history.pushState({ ...baseState, [MEDIA_FULLSCREEN_HISTORY_KEY]: true }, '', window.location.href);
+        mediaFullscreenHistoryOpen = true;
+    }
+}
+
+function closeMediaFullscreen(options = {}) {
+    const overlay = document.getElementById('mediaFullscreenViewer');
+    if (!overlay?.classList.contains('active') && !mediaFullscreenHistoryOpen) return;
+    const shouldGoBack = mediaFullscreenHistoryOpen && !options.fromHistory && !options.forceClose &&
+        history.state?.[MEDIA_FULLSCREEN_HISTORY_KEY] === true;
+    mediaFullscreenHistoryOpen = false;
+    overlay?.classList.remove('active');
+    restoreMovedFullscreenMedia({ pause: false });
+    const content = document.getElementById('mediaFullscreenContent');
+    content?.querySelectorAll('video, audio').forEach(media => {
+        try { media.pause(); } catch (_) {}
+    });
+    content?.replaceChildren();
+    mediaFullscreenPointerStart = null;
+    if (shouldGoBack) history.back();
+}
+
+async function showFileDetailsForInfo(fileInfo, message = {}) {
+    if (!fileInfo?.id) return;
+    const storedFile = await getFromStore('files', fileInfo.id);
+    const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
+    activeFileDetailsMessageId = message.messageId || message.id || '';
+    activeFileDetailsFileId = fileInfo.id;
+    const details = [
+        ['文件名', fileInfo.name || '未知文件'],
+        ['扩展名', getFileExtension(fileInfo.name)],
+        ['MIME 类型', fileInfo.type || 'application/octet-stream'],
+        ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
+        ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now())],
+        ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备'],
+        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
+        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
+    ];
+    const list = document.getElementById('fileDetailsList');
+    list.replaceChildren();
+    details.forEach(([label, value]) => {
+        const row = document.createElement('div');
+        row.className = 'file-details-row';
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const description = document.createElement('dd');
+        description.textContent = value;
+        description.title = value;
+        row.append(term, description);
+        list.appendChild(row);
+    });
+    const downloadButton = document.getElementById('downloadFileDetailsBtn');
+    downloadButton.disabled = false;
+    downloadButton.title = hasLocalData ? `下载 ${fileInfo.name}` : '本机无缓存时会先尝试还原文件';
+    document.getElementById('fileDetailsViewer').classList.add('active');
+    historyLog('file-details-opened', {
+        messageId: activeFileDetailsMessageId,
+        fileId: fileInfo.id,
+        hasLocalData
+    });
 }
 
 async function showFileDetails(messageId) {
     const message = await getFromStore('messages', messageId);
     const fileInfo = message?.fileInfo;
+    if (fileInfo?.id) {
+        await showFileDetailsForInfo(fileInfo, { ...message, messageId });
+        return;
+    }
     if (!fileInfo?.id) return;
 
     const storedFile = await getFromStore('files', fileInfo.id);
@@ -3723,12 +4859,317 @@ async function showFileDetails(messageId) {
     historyLog('file-details-opened', { messageId, fileId: fileInfo.id, hasLocalData });
 }
 
+async function createCollectionFileCard(fileInfo, collectionMessageId) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'collection-file-card';
+    card.dataset.fileId = fileInfo.id;
+
+    const thumb = document.createElement('div');
+    thumb.className = 'collection-file-thumb';
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    if (hasLocalData && type.startsWith('image/')) {
+        const url = getStoredFileUrl(fileInfo.id, storedFile);
+        const image = document.createElement('img');
+        image.src = url;
+        image.alt = fileInfo.name || '';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        thumb.appendChild(image);
+    }
+    if (!thumb.childNodes.length) {
+        thumb.classList.add('collection-file-thumb--metadata');
+        const stateLabel = hasLocalData
+            ? (type.startsWith('video/') ? '视频' : type.startsWith('audio/') ? '音频' : '不可预览')
+            : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存');
+        thumb.innerHTML = `
+            <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+            <div class="collection-file-state">${stateLabel}</div>
+        `;
+    }
+
+    const name = document.createElement('div');
+    name.className = 'collection-file-name';
+    name.textContent = fileInfo.name || '未知文件';
+    const size = document.createElement('div');
+    size.className = 'collection-file-size';
+    size.textContent = formatFileSize(Number(fileInfo.size) || 0);
+    card.append(thumb, name, size);
+    card.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        captureCollectionPreviewReturnState(collectionMessageId, fileInfo.id);
+        openFilePreviewForInfo(fileInfo, {
+            messageId: collectionMessageId,
+            collectionMessageId,
+            ownerDeviceId: fileInfo.ownerDeviceId,
+            requestMissing: false
+        }).catch(err => historyLog('collection-file-open-failed', {
+            messageId: collectionMessageId,
+            fileId: fileInfo.id,
+            error: err.message
+        }));
+    });
+    return card;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createCollectionDownloadDialog(totalCount, missingCount) {
+    const overlay = document.createElement('div');
+    overlay.className = 'collection-download-wait-overlay';
+    overlay.innerHTML = `
+        <div class="collection-download-wait-dialog" role="dialog" aria-modal="true" aria-label="合辑下载等待">
+            <h3>正在准备合辑下载</h3>
+            <p class="collection-download-wait-status">发现 ${missingCount} 个文件缺少本机缓存，正在拉取后打包。</p>
+            <div class="collection-download-wait-bar"><span></span></div>
+            <div class="collection-download-wait-detail"></div>
+            <div class="collection-download-wait-actions">
+                <button type="button" class="btn btn-secondary" data-action="cancel">取消</button>
+                <button type="button" class="btn btn-primary" data-action="skip">不等了，先下载再说</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    const status = overlay.querySelector('.collection-download-wait-status');
+    const detail = overlay.querySelector('.collection-download-wait-detail');
+    const bar = overlay.querySelector('.collection-download-wait-bar span');
+    let skipRequested = false;
+    let cancelRequested = false;
+    const waiters = [];
+    const wakeWaiters = () => {
+        while (waiters.length) waiters.pop()();
+    };
+    overlay.querySelector('[data-action="skip"]').addEventListener('click', () => {
+        skipRequested = true;
+        wakeWaiters();
+    });
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+        cancelRequested = true;
+        wakeWaiters();
+    });
+    return {
+        get skipRequested() { return skipRequested; },
+        get cancelRequested() { return cancelRequested; },
+        update(cachedCount) {
+            const percent = totalCount > 0 ? Math.round((cachedCount / totalCount) * 100) : 100;
+            status.textContent = cachedCount >= totalCount
+                ? '缓存已就绪，正在生成 ZIP 压缩包。'
+                : `正在拉取缺失缓存：${cachedCount}/${totalCount} 个文件已就绪。`;
+            detail.textContent = cachedCount >= totalCount ? '请稍候，正在打包。' : '你也可以先下载当前已缓存的文件，ZIP 内可能不完整。';
+            bar.style.width = `${Math.max(4, Math.min(100, percent))}%`;
+        },
+        setPacking() {
+            status.textContent = '正在生成 ZIP 压缩包。';
+            detail.textContent = '文件越多或越大，打包耗时越长。';
+            bar.style.width = '100%';
+        },
+        async wait(ms) {
+            if (skipRequested || cancelRequested) return;
+            await Promise.race([
+                sleep(ms),
+                new Promise(resolve => waiters.push(resolve))
+            ]);
+        },
+        close() {
+            overlay.remove();
+        }
+    };
+}
+
+function uniqueZipPath(fileName, usedNames, index) {
+    const rawName = String(fileName || `file-${index + 1}`).replace(/\\/g, '/').split('/').filter(Boolean).pop() || `file-${index + 1}`;
+    if (!usedNames.has(rawName)) {
+        usedNames.add(rawName);
+        return rawName;
+    }
+    const dot = rawName.lastIndexOf('.');
+    const base = dot > 0 ? rawName.slice(0, dot) : rawName;
+    const ext = dot > 0 ? rawName.slice(dot) : '';
+    let counter = 2;
+    let next = `${base} (${counter})${ext}`;
+    while (usedNames.has(next)) {
+        counter++;
+        next = `${base} (${counter})${ext}`;
+    }
+    usedNames.add(next);
+    return next;
+}
+
+async function getCachedCollectionEntries(files) {
+    const usedNames = new Set();
+    const entries = [];
+    for (let index = 0; index < files.length; index++) {
+        const fileInfo = files[index];
+        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
+        const blob = new Blob([storedFile.data], { type: storedFile.type || fileInfo.type || 'application/octet-stream' });
+        entries.push({
+            name: fileInfo.name || storedFile.name || `file-${index + 1}`,
+            path: uniqueZipPath(fileInfo.name || storedFile.name, usedNames, index),
+            async arrayBuffer() { return blob.arrayBuffer(); }
+        });
+    }
+    return entries;
+}
+
+function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function requestMissingCollectionFiles(files) {
+    if (!fileAssetTransfer) return 0;
+    let requested = 0;
+    for (const fileInfo of files) {
+        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (hasCompleteFileCache(storedFile, fileInfo) || !fileInfo.isAsset) continue;
+        await saveToStore('files', {
+            ...(storedFile || {}),
+            id: fileInfo.id,
+            name: fileInfo.name,
+            type: fileInfo.type,
+            size: fileInfo.size,
+            sessionId: state.sessionId,
+            ownerDeviceId: fileInfo.ownerDeviceId,
+            isFileAsset: true,
+            cacheCleared: Boolean(storedFile?.cacheCleared),
+            restoreRequested: true,
+            transferInterrupted: false,
+            isPartial: false
+        });
+        fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'collection-download');
+        fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || null, fileInfo, { priority: true, force: true })
+            .catch(err => historyLog('collection-download-cache-request-failed', {
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+        requested++;
+    }
+    return requested;
+}
+
+async function downloadCollectionFiles(files, collectionMessageId = '') {
+    if (!window.FolderArchive?.createZip) {
+        alert('当前页面缺少 ZIP 打包模块，无法下载合辑压缩包。');
+        return;
+    }
+    const initialEntries = await getCachedCollectionEntries(files);
+    const missingCount = Math.max(0, files.length - initialEntries.length);
+    let entries = initialEntries;
+    let dialog = null;
+    if (missingCount > 0) {
+        dialog = createCollectionDownloadDialog(files.length, missingCount);
+        dialog.update(entries.length);
+        await requestMissingCollectionFiles(files);
+        const startedAt = Date.now();
+        const maxWaitMs = 2 * 60 * 1000;
+        while (!dialog.skipRequested && !dialog.cancelRequested && Date.now() - startedAt < maxWaitMs) {
+            entries = await getCachedCollectionEntries(files);
+            dialog.update(entries.length);
+            if (entries.length >= files.length) break;
+            await dialog.wait(500);
+        }
+        if (dialog.cancelRequested) {
+            dialog.close();
+            historyLog('collection-zip-download-cancelled', {
+                messageId: collectionMessageId,
+                totalCount: files.length,
+                cachedCount: entries.length
+            });
+            return;
+        }
+        entries = await getCachedCollectionEntries(files);
+        dialog.update(entries.length);
+    }
+    if (!entries.length) {
+        dialog?.close();
+        alert('当前没有任何已缓存文件可打包下载。');
+        return;
+    }
+    dialog?.setPacking();
+    const zipBlob = await window.FolderArchive.createZip(entries);
+    dialog?.close();
+    const suffix = entries.length === files.length ? '' : `-部分${entries.length}of${files.length}`;
+    downloadBlob(zipBlob, `合辑-${collectionMessageId || Date.now()}${suffix}.zip`);
+    if (entries.length < files.length) {
+        alert(`已打包下载 ${entries.length} 个已缓存文件，另有 ${files.length - entries.length} 个文件仍未完成缓存。`);
+    }
+    historyLog('collection-zip-downloaded', { messageId: collectionMessageId, totalCount: files.length, zippedCount: entries.length });
+}
+
+async function openCollectionRecord(messageId, options = {}) {
+    setFilePreviewFullscreenButton(false);
+    activeFilePreviewCanFullscreen = false;
+    activeFilePreviewMediaType = '';
+    const message = await getFromStore('messages', messageId);
+    const files = getCollectionFiles(message);
+    if (!files.length) return;
+    filePreviewReturnCollectionMessageId = '';
+    activeFilePreviewMode = 'collection';
+    activeCollectionPreviewMessageId = messageId;
+    activeFilePreviewFileId = '';
+
+    const title = document.getElementById('filePreviewTitle');
+    const content = setFilePreviewContentStage('collection-stage');
+    title.textContent = `合辑 · ${files.length} 个文件`;
+    content.replaceChildren();
+    const grid = document.createElement('div');
+    grid.className = 'collection-file-grid';
+    for (const fileInfo of files) {
+        grid.appendChild(await createCollectionFileCard(fileInfo, messageId));
+    }
+    content.appendChild(grid);
+    requestAnimationFrame(() => {
+        const anchorFileId = options.anchorFileId || '';
+        const anchor = anchorFileId ? grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(anchorFileId)}"]`) : null;
+        if (anchor) {
+            anchor.scrollIntoView({ block: 'center' });
+            anchor.classList.add('collection-file-card--focused');
+            setTimeout(() => anchor.classList.remove('collection-file-card--focused'), 900);
+        } else if (Number.isFinite(Number(options.scrollTop))) {
+            grid.scrollTop = Number(options.scrollTop) || 0;
+        }
+    });
+    setFilePreviewActions([
+        createFileActionButton('下载全部', '拉取缺失缓存后打包下载整个合辑 ZIP', () => {
+            downloadCollectionFiles(files, messageId).catch(err => {
+                alert(`合辑下载失败: ${err.message}`);
+                historyLog('collection-download-failed', { messageId, error: err.message });
+            });
+        })
+    ]);
+    openFilePreviewHistory(document.getElementById('filePreviewViewer'), { stage: 'collection' });
+    historyLog('collection-preview-opened', { messageId, fileCount: files.length });
+}
+
+function attachCollectionRecordInteractions(messageEl) {
+    const messageId = messageEl.dataset.messageId;
+    messageEl.addEventListener('click', event => {
+        if (event.target.closest('.file-cache-retry, .message-record-actions')) return;
+        openCollectionRecord(messageId).catch(err => historyLog('collection-record-open-failed', {
+            messageId,
+            error: err.message
+        }));
+    });
+}
+
 function attachFileRecordInteractions(messageEl) {
     let longPressTimer = null;
     let suppressClickUntil = 0;
     let startPoint = null;
     const messageId = messageEl.dataset.messageId;
-    const isAction = target => Boolean(target.closest('.file-actions'));
+    const isAction = target => Boolean(target.closest('.file-actions, .file-cache-retry'));
     const cancelLongPress = () => {
         if (longPressTimer) clearTimeout(longPressTimer);
         longPressTimer = null;
@@ -3827,6 +5268,23 @@ async function refreshFileMessage(fileId) {
         }
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: true, cacheCleared: false });
     }));
+    await refreshCollectionMessagesForFile(fileId);
+    await refreshCollectionPreviewCardForFile(fileId);
+    await refreshActiveFilePreviewForFile(fileId);
+}
+
+async function refreshCollectionMessagesForFile(fileId) {
+    const messageEls = Array.from(document.querySelectorAll('.message.collection-record'));
+    for (const messageEl of messageEls) {
+        const messageId = messageEl.dataset.messageId;
+        const message = await getFromStore('messages', messageId).catch(() => null);
+        if (!getCollectionFiles(message).some(file => file.id === fileId)) continue;
+        const html = await renderCollectionPreviewHtml(message);
+        preserveChatScroll(() => {
+            const bubble = messageEl.querySelector('.message-bubble');
+            if (bubble) bubble.outerHTML = html;
+        });
+    }
 }
 
 function updateFileMessageAvailability(fileId, reason) {
@@ -3928,7 +5386,8 @@ async function restoreFileCache(messageId, options = {}) {
         transferInterrupted: false
     });
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
-    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender, fileInfo, {
+    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'message-force-restore' : 'message-restore');
+    await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender || null, fileInfo, {
         force: Boolean(options.force),
         priority: true
     });
@@ -3945,8 +5404,137 @@ async function deleteHistoryMessage(messageId) {
     state.socket.emit('delete-message', { sessionId: state.sessionId, messageId });
 }
 
+async function applyHistoryMessageUpdate(message, options = {}) {
+    if (!message?.id) return;
+    const previous = await getFromStore('messages', message.id).catch(() => null);
+    if (previous?.type === 'collection' && message.type === 'collection') {
+        const nextIds = new Set(getCollectionFiles(message).map(file => file.id));
+        const removedFiles = getCollectionFiles(previous).filter(file => !nextIds.has(file.id));
+        for (const fileInfo of removedFiles) {
+            await deleteFileCacheIfUnreferenced(fileInfo.id, message.id);
+        }
+    }
+    await saveToStore('messages', {
+        ...message,
+        sessionId: state.sessionId
+    });
+
+    const wasOwn = message.sender === state.deviceId;
+    if (previous?.type === 'collection' && message.type === 'collection') {
+        await updateCollectionMessageElement(message);
+        await applyCollectionPreviewIncrementalUpdate(previous, message);
+    } else {
+        const existingElement = getMessageElement(message.id);
+        const shouldScroll = Boolean(existingElement && isChatNearBottom(document.getElementById('chatMessages')));
+        existingElement?.remove();
+        await addMessageToChat(message, wasOwn, {
+            scroll: shouldScroll,
+            autoRequestAsset: !options.remote
+        });
+        if (activeCollectionPreviewMessageId === message.id) {
+            if (activeFilePreviewMode === 'collection' ||
+                (activeFilePreviewMode === 'file' && activeFilePreviewFileId && !getCollectionFiles(message).some(file => file.id === activeFilePreviewFileId))) {
+                await openCollectionRecord(message.id).catch(err => historyLog('collection-preview-refresh-after-update-failed', {
+                    messageId: message.id,
+                    error: err.message
+                }));
+            }
+        }
+    }
+    historyLog('history-message-updated-locally', {
+        message: summarizeHistoryMessage(message),
+        remote: Boolean(options.remote)
+    });
+}
+
+async function updateHistoryMessage(message) {
+    await applyHistoryMessageUpdate(message);
+    state.socket?.emit('update-message', {
+        sessionId: state.sessionId,
+        message
+    });
+}
+
+async function deleteFileCacheIfUnreferenced(fileId, excludingMessageId = null) {
+    if (!fileId) return;
+    fileAssetTransfer?.cancel(fileId);
+    const stillReferenced = await isFileReferencedByRichContent(fileId, excludingMessageId);
+    if (stillReferenced) return;
+    await deleteFromStore('files', fileId);
+    const objectUrl = fileObjectUrls.get(fileId);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    fileObjectUrls.delete(fileId);
+}
+
+async function deleteFileFromCollection(collectionMessageId, fileId) {
+    const message = await getFromStore('messages', collectionMessageId);
+    const files = getCollectionFiles(message);
+    const removedFile = files.find(file => file.id === fileId);
+    if (!message || !removedFile) return;
+    if (!confirm('删除会同步移除所有设备中合辑里的这个文件，并清理其文件缓存。继续吗？')) return;
+
+    const nextFiles = files.filter(file => file.id !== fileId);
+    await deleteFileCacheIfUnreferenced(fileId, collectionMessageId);
+    if (!nextFiles.length) {
+        closeFilePreview({ forceClose: true });
+        await deleteHistoryMessageLocal(collectionMessageId);
+        state.socket?.emit('delete-message', { sessionId: state.sessionId, messageId: collectionMessageId });
+        return;
+    }
+
+    const nextMessage = {
+        ...message,
+        collection: {
+            ...message.collection,
+            files: nextFiles,
+            count: nextFiles.length,
+            totalSize: nextFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0)
+        },
+        updatedAt: Date.now()
+    };
+    await updateHistoryMessage(nextMessage);
+    filePreviewReturnCollectionMessageId = '';
+    historyLog('collection-file-deleted', {
+        messageId: collectionMessageId,
+        fileId,
+        remainingCount: nextFiles.length
+    });
+}
+
 async function deleteHistoryMessageLocal(messageId) {
     const message = await getFromStore('messages', messageId);
+    if (message?.type === 'collection') {
+        for (const fileInfo of getCollectionFiles(message)) {
+            const fileId = fileInfo.id;
+            fileAssetTransfer?.cancel(fileId);
+            const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
+            if (stillReferenced) {
+                const storedFile = await getFromStore('files', fileId);
+                if (storedFile) {
+                    await saveToStore('files', {
+                        ...storedFile,
+                        referencedAfterHistoryDelete: true,
+                        isFileAsset: false,
+                        timestamp: storedFile.timestamp || Date.now()
+                    });
+                }
+            } else {
+                await deleteFromStore('files', fileId);
+                const objectUrl = fileObjectUrls.get(fileId);
+                if (objectUrl) URL.revokeObjectURL(objectUrl);
+                fileObjectUrls.delete(fileId);
+            }
+        }
+    }
+    if (message?.type === 'rich') {
+        const richFileIds = new Set([
+            ...extractAssetIds(message.content),
+            ...extractFileRefIds(message.content)
+        ]);
+        for (const fileId of richFileIds) {
+            await deleteFileCacheIfUnreferenced(fileId, messageId);
+        }
+    }
     if (message?.fileInfo?.id) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
@@ -3971,6 +5559,10 @@ async function deleteHistoryMessageLocal(messageId) {
     await deleteFromStore('messages', messageId);
     pendingHistoryMessageIds.delete(messageId);
     document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
+    if (activeCollectionPreviewMessageId === messageId || activeFileDetailsMessageId === messageId) {
+        closeFileDetails();
+        closeFilePreview({ forceClose: true, fromHistory: true });
+    }
     historyLog('history-message-deleted-locally', { messageId, fileId: message?.fileInfo?.id });
 }
 
@@ -3993,8 +5585,10 @@ async function isFileReferencedByRichContent(fileId, excludingMessageId = null) 
         getFromStore('editorContent', 'current')
     ]);
     for (const message of messages) {
-        if (!message || message.id === excludingMessageId || message.type !== 'rich') continue;
-        if (extractFileRefIds(message.content).includes(fileId)) return true;
+        if (!message || message.id === excludingMessageId) continue;
+        if (message.type === 'rich' && extractFileRefIds(message.content).includes(fileId)) return true;
+        if (message.type === 'file' && message.fileInfo?.id === fileId) return true;
+        if (message.type === 'collection' && getCollectionFiles(message).some(file => file.id === fileId)) return true;
     }
     if (editorContent?.sessionId === state.sessionId &&
         extractFileRefIds(editorContent.content).includes(fileId)) {
@@ -4015,6 +5609,9 @@ async function findGarbageFileCaches() {
     const referenced = new Set();
     messages.forEach(message => {
         if (message.fileInfo?.id) referenced.add(message.fileInfo.id);
+        if (message.type === 'collection') {
+            getCollectionFiles(message).forEach(file => referenced.add(file.id));
+        }
         if (message.type === 'rich') {
             extractAssetIds(message.content).forEach(id => referenced.add(id));
             extractFileRefIds(message.content).forEach(id => referenced.add(id));
@@ -4123,6 +5720,7 @@ function getResourceReferenceKey(reference) {
 function getResourceReferenceLabel(reference) {
     const time = reference.timestamp ? ` ${formatTime(reference.timestamp)}` : '';
     if (reference.kind === 'chat-file') return `聊天文件${time}`;
+    if (reference.kind === 'collection-file') return `合辑文件${time}`;
     if (reference.kind === 'rich-message') return `富文本消息${time}`;
     return '协同编辑器';
 }
@@ -4186,6 +5784,18 @@ async function getSessionResourceInventory() {
                 kind: 'chat-file',
                 messageId: message.id,
                 timestamp: message.timestamp
+            });
+        }
+        if (message.type === 'collection') {
+            getCollectionFiles(message).forEach(fileInfo => {
+                if (!fileInfo?.id) return;
+                upsertResource(fileInfo);
+                addReference(fileInfo.id, {
+                    kind: 'collection-file',
+                    messageId: message.id,
+                    timestamp: message.timestamp,
+                    targetAssetId: fileInfo.id
+                });
             });
         }
         if (message.type !== 'rich') return;
@@ -4596,6 +6206,8 @@ async function showResourceBrowser() {
 }
 
 async function publishHistoryMessage(message, options = {}) {
+    if (!message.timestamp) message.timestamp = nextHistoryTimestamp();
+    lastLocalHistoryTimestamp = Math.max(lastLocalHistoryTimestamp, Number(message.timestamp) || 0);
     await saveToStore('messages', {
         ...message,
         sessionId: state.sessionId
@@ -4634,7 +6246,7 @@ async function sendText() {
         id: generateId(),
         type: 'text',
         text,
-        timestamp: Date.now(),
+        timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
         senderName: state.deviceName
     };
@@ -5218,14 +6830,14 @@ function initEditor() {
             id: generateId(),
             type: 'text',
             text: plainText,
-            timestamp: Date.now(),
+            timestamp: nextHistoryTimestamp(),
             sender: state.deviceId,
             senderName: state.deviceName
         } : {
             id: generateId(),
             type: 'rich',
             content,
-            timestamp: Date.now(),
+            timestamp: nextHistoryTimestamp(),
             sender: state.deviceId,
             senderName: state.deviceName
         };
@@ -6386,10 +7998,8 @@ function initUI() {
     });
 
     document.getElementById('fileInput').addEventListener('change', async (e) => {
-        const files = e.target.files;
-        for (const file of files) {
-            await sendFile(file);
-        }
+        const files = Array.from(e.target.files || []);
+        await sendSelectedFiles(files);
         e.target.value = '';
     });
 
@@ -6403,12 +8013,47 @@ function initUI() {
         if (event.target === event.currentTarget) closeFileDetails();
     });
     document.getElementById('downloadFileDetailsBtn').addEventListener('click', async () => {
+        if (activeFileDetailsFileId) {
+            await downloadFile(activeFileDetailsFileId);
+            return;
+        }
         if (!activeFileDetailsMessageId) return;
         await downloadFileFromMessage(activeFileDetailsMessageId);
     });
     document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
+    document.getElementById('filePreviewFullscreenBtn')?.addEventListener('click', () => {
+        openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
+    });
     document.getElementById('filePreviewViewer').addEventListener('click', event => {
         if (event.target === event.currentTarget) closeFilePreview();
+    });
+    document.getElementById('mediaFullscreenCloseBtn')?.addEventListener('click', () => closeMediaFullscreen());
+    document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
+    document.getElementById('mediaFullscreenNextBtn')?.addEventListener('click', () => navigateMediaFullscreen(1));
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
+        mediaFullscreenPointerStart = { x: event.clientX, y: event.clientY };
+    });
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerup', event => {
+        if (!mediaFullscreenPointerStart) return;
+        const dx = event.clientX - mediaFullscreenPointerStart.x;
+        const dy = event.clientY - mediaFullscreenPointerStart.y;
+        mediaFullscreenPointerStart = null;
+        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            navigateMediaFullscreen(dx < 0 ? 1 : -1);
+        }
+    });
+    document.addEventListener('keydown', event => {
+        if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeMediaFullscreen();
+        } else if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            navigateMediaFullscreen(-1);
+        } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            navigateMediaFullscreen(1);
+        }
     });
 
     document.getElementById('closeRichViewer').addEventListener('click', () => {
@@ -6449,10 +8094,8 @@ function initDragDrop() {
     });
 
     dropZone.addEventListener('drop', async (e) => {
-        const files = e.dataTransfer.files;
-        for (const file of files) {
-            await sendFile(file);
-        }
+        const files = Array.from(e.dataTransfer.files || []);
+        await sendSelectedFiles(files);
     }, false);
 }
 
@@ -7027,7 +8670,14 @@ function updateProgress(fileId, progress, status = '', meta = {}) {
 function locateProgressFile(progressKey) {
     const fileId = getProgressBaseFileId(progressKey);
     if (!fileId) return;
-    const message = document.querySelector(`.message[data-file-id="${cssEscape(fileId)}"]`);
+    let message = document.querySelector(`.message[data-file-id="${cssEscape(fileId)}"]`);
+    if (!message) {
+        message = Array.from(document.querySelectorAll('.message.collection-record'))
+            .find(messageEl => {
+                const fileIds = (messageEl.dataset.collectionFileIds || '').split(',').filter(Boolean);
+                return fileIds.includes(fileId);
+            });
+    }
     if (!message) {
         historyLog('progress-anchor-missing', { progressKey, fileId });
         if (typeof showToast === 'function') {
@@ -7116,8 +8766,11 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', () => {
-    if (filePreviewHistoryOpen) {
-        filePreviewHistoryOpen = false;
+    if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
+        closeMediaFullscreen({ fromHistory: true });
+        return;
+    }
+    if (filePreviewHistoryOpen || document.getElementById('filePreviewViewer')?.classList.contains('active')) {
         closeFilePreview({ fromHistory: true });
         return;
     }
@@ -7188,7 +8841,7 @@ async function loadSessionData() {
         }
 
         console.log('Loaded messages:', messages.length);
-        messages.sort((a, b) => a.timestamp - b.timestamp);
+        messages.sort(compareHistoryMessages);
         historyLog('indexeddb-history-loaded', {
             messageCount: messages.length,
             messages: messages.map(summarizeHistoryMessage)

@@ -388,7 +388,12 @@ app.get('/api/sessions', (req, res) => {
             totalDevices += session.devices.size;
             const messages = Array.isArray(session.history) ? session.history.map(entry => entry && entry.message).filter(Boolean) : [];
             const messageCount = messages.length;
-            const fileCount = messages.filter(message => message.type === 'file' || message.fileInfo).length;
+            const fileCount = messages.reduce((count, message) => {
+                if (message.type === 'collection' && Array.isArray(message.collection?.files)) {
+                    return count + message.collection.files.length;
+                }
+                return count + ((message.type === 'file' || message.fileInfo) ? 1 : 0);
+            }, 0);
             totalMessages += messageCount;
             totalFiles += fileCount;
             const current = sessionMap.get(sessionId) || {
@@ -1077,7 +1082,10 @@ function extractFileReferenceIds(content) {
 function isFileAssetStillReferenced(session, fileId) {
     if (!fileId) return false;
     const referencedByHistory = session.history.some(entry =>
-        entry.message?.type === 'rich' && extractFileReferenceIds(entry.message.content).has(fileId)
+        (entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId) ||
+        (entry.message?.type === 'rich' && extractFileReferenceIds(entry.message.content).has(fileId)) ||
+        (entry.message?.type === 'collection' && Array.isArray(entry.message.collection?.files) &&
+            entry.message.collection.files.some(file => file?.id === fileId))
     );
     if (referencedByHistory) return true;
     return Array.from(session.devices.values()).some(device =>
@@ -1093,12 +1101,18 @@ function createHistoryMessage(message) {
     if (historyMessage.type === 'file' && historyMessage.fileInfo && !historyMessage.fileInfo.isSmall) {
         delete historyMessage.fileInfo.data;
     }
+    if (historyMessage.type === 'collection' && Array.isArray(historyMessage.collection?.files)) {
+        historyMessage.collection.files.forEach(file => {
+            if (file && typeof file === 'object') delete file.data;
+        });
+    }
 
     return historyMessage;
 }
 
 function summarizeHistoryMessage(message) {
     const fileInfo = message.fileInfo;
+    const collectionFiles = Array.isArray(message.collection?.files) ? message.collection.files : [];
     return {
         id: message.id,
         type: message.type,
@@ -1110,6 +1124,11 @@ function summarizeHistoryMessage(message) {
             size: fileInfo.size,
             isSmall: fileInfo.isSmall,
             hasInlineData: Boolean(fileInfo.data)
+        } : undefined,
+        collection: collectionFiles.length ? {
+            id: message.collection?.id,
+            count: collectionFiles.length,
+            totalSize: collectionFiles.reduce((sum, file) => sum + (Number(file?.size) || 0), 0)
         } : undefined
     };
 }
@@ -1814,13 +1833,20 @@ io.on('connection', (socket) => {
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
             let fileId = null;
+            let fileIds = [];
             let fileStillReferenced = false;
             if (historyIndex >= 0) {
                 const [removed] = session.history.splice(historyIndex, 1);
                 session.historySize = Math.max(0, session.historySize - removed.size);
-                fileId = removed.message?.fileInfo?.id || null;
-                fileStillReferenced = isFileAssetStillReferenced(session, fileId);
-                if (fileId && !fileStillReferenced) session.fileAssets?.delete(fileId);
+                fileIds = removed.message?.type === 'collection' && Array.isArray(removed.message.collection?.files)
+                    ? removed.message.collection.files.map(file => file?.id).filter(Boolean)
+                    : [removed.message?.fileInfo?.id].filter(Boolean);
+                fileId = fileIds[0] || null;
+                for (const currentFileId of fileIds) {
+                    const stillReferenced = isFileAssetStillReferenced(session, currentFileId);
+                    fileStillReferenced = fileStillReferenced || stillReferenced;
+                    if (!stillReferenced) session.fileAssets?.delete(currentFileId);
+                }
             }
 
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
@@ -1837,11 +1863,54 @@ io.on('connection', (socket) => {
                 clientIp,
                 messageId,
                 fileId,
+                fileIds,
                 fileStillReferenced,
                 historyCount: session.history.length
             });
         } catch (err) {
             console.error('delete-message error:', err);
+        }
+    });
+
+    socket.on('update-message', data => {
+        try {
+            const { sessionId, message } = data || {};
+            if (sessionId !== currentSession || !message || !isValidDeviceId(message.id)) return;
+            if (!['text', 'rich', 'file', 'collection'].includes(message.type)) return;
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+
+            const historyIndex = session.history.findIndex(entry => entry.message.id === message.id);
+            if (historyIndex < 0) return;
+            const historyMessage = createHistoryMessage(message);
+            const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
+            if (size > MAX_HISTORY_SIZE) return;
+
+            const previous = session.history[historyIndex];
+            session.history[historyIndex] = { message: historyMessage, size };
+            session.historySize = Math.max(0, session.historySize - previous.size + size);
+            if (previous.message?.type === 'collection' && historyMessage.type === 'collection') {
+                const nextIds = new Set((historyMessage.collection?.files || []).map(file => file?.id).filter(Boolean));
+                const removedFileIds = (previous.message.collection?.files || [])
+                    .map(file => file?.id)
+                    .filter(fileId => fileId && !nextIds.has(fileId));
+                removedFileIds.forEach(fileId => {
+                    if (!isFileAssetStillReferenced(session, fileId)) session.fileAssets?.delete(fileId);
+                });
+            }
+            session.lastActivity = Date.now();
+            socket.to(sessionId).emit('message-updated', { message: historyMessage });
+            scheduleSessionHistoryBroadcast(sessionId, 'message-updated');
+            historyLog('message-updated', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                message: summarizeHistoryMessage(historyMessage),
+                historyCount: session.history.length
+            });
+        } catch (err) {
+            console.error('update-message error:', err);
         }
     });
 
@@ -1859,7 +1928,7 @@ io.on('connection', (socket) => {
 
             for (const message of candidates) {
                 if (!message || !isValidDeviceId(message.id) ||
-                    !['text', 'rich', 'file'].includes(message.type) ||
+                    !['text', 'rich', 'file', 'collection'].includes(message.type) ||
                     deletedMessageIds.has(message.id)) {
                     rejectedCount++;
                     continue;
