@@ -151,3 +151,27 @@
 ### 合辑宫格轻量化
 - P 层合辑预览和 F 层合辑宫格不再为视频文件创建 video 标签，也不再为视频缩略图提前生成 Blob URL。
 - 视频/音频文件在宫格中使用轻量图标和状态文案，只有点击进入 G 层时才真正加载媒体。
+
+## 2026-07-01 Collection Preview Media Fixes v7
+
+### Preview Sizing
+- File preview media now keeps image/video width on intrinsic aspect ratio and caps media by the fixed preview container height, preventing the late-loading video element from filling the container width after the loading placeholder has already used the expected height.
+- The same preview sizing rule is shared by single-file preview and collection child-file preview.
+
+### Video Poster Cache
+- Video files now generate a local poster from the cached video blob and store it beside the file cache.
+- Collection grids, collection file cards, single-file records, and refreshed file records use the cached poster when available, avoiding eager `<video>` creation in list/grid UI.
+- Poster data is stored only in the local file cache, not in lightweight message metadata, to avoid bloating transfer history snapshots.
+
+### Relay Error Handling
+- Socket.IO relay chunk forwarding now treats receiver-side transfer cancellation, such as `receiver-transfer-missing`, as an expected rejected transfer state.
+- The relay state is still cleaned up and the sender still receives a failed ack, but the server no longer prints a misleading full error stack for this expected race.
+
+## 2026-07-01 Preview Fit and Record Action Alignment
+
+### Transfer Record Actions
+- Message record action rows now reserve a consistent right-aligned row for both incoming and outgoing records, so the delete button no longer sits awkwardly near the left side on incoming messages.
+
+### Deterministic Preview Fit
+- Image/video preview sizing no longer relies only on CSS `auto` sizing. After media metadata is available, the client computes a concrete pixel size from the preview container and the media's natural aspect ratio.
+- The preview layer writes the computed width/height through CSS variables, keeping media centered and constrained to 90% of the fixed preview container height while respecting the available width.

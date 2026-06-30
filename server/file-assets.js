@@ -448,10 +448,23 @@ function registerFileAssetHandlers(socket, context) {
             relay.receivedSize += size;
             ackOk(ack, { receivedSize: relay.receivedSize, expectedSize: relay.expectedSize });
         } catch (err) {
-            console.error('file-asset-relay-chunk error:', err);
             const { sessionId, to, assetId, transferId } = data || {};
             const { deviceId } = current();
             if (sessionId && to && assetId) cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId);
+            const reason = err.message || 'relay-chunk-failed';
+            if (reason.startsWith('receiver-')) {
+                historyLog('file-asset-relay-receiver-rejected', {
+                    sessionId,
+                    deviceId,
+                    targetDeviceId: to,
+                    assetId,
+                    transferId,
+                    reason
+                });
+                ackFail(ack, reason);
+                return;
+            }
+            console.error('file-asset-relay-chunk error:', err);
             ackFail(ack, err.message || 'relay-chunk-failed');
         }
     });

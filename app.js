@@ -2493,6 +2493,79 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
     return fileInfo.id;
 }
 
+function waitForMediaEvent(element, eventName, timeout = 8000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => cleanup(() => reject(new Error(`${eventName}-timeout`))), timeout);
+        const cleanup = (done) => {
+            clearTimeout(timer);
+            element.removeEventListener(eventName, onEvent);
+            element.removeEventListener('error', onError);
+            done();
+        };
+        const onEvent = () => cleanup(resolve);
+        const onError = () => cleanup(() => reject(new Error(`${eventName}-error`)));
+        element.addEventListener(eventName, onEvent, { once: true });
+        element.addEventListener('error', onError, { once: true });
+    });
+}
+
+async function createVideoPosterFromBlob(blob, options = {}) {
+    if (!blob || !String(blob.type || '').toLowerCase().startsWith('video/')) return '';
+    if (typeof document === 'undefined') return '';
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    video.src = url;
+    try {
+        await waitForMediaEvent(video, 'loadedmetadata', options.metadataTimeout || 9000);
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        if (duration > 0.4) {
+            video.currentTime = Math.min(Math.max(0.12, duration * 0.08), Math.max(0.12, duration - 0.1));
+            await waitForMediaEvent(video, 'seeked', options.seekTimeout || 9000).catch(() => {});
+        } else {
+            await waitForMediaEvent(video, 'loadeddata', options.dataTimeout || 9000).catch(() => {});
+        }
+        const width = video.videoWidth || 320;
+        const height = video.videoHeight || 180;
+        const maxSide = options.maxSide || 480;
+        const scale = Math.min(1, maxSide / Math.max(width, height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) return '';
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg', options.quality || 0.72);
+    } finally {
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(url);
+    }
+}
+
+async function ensureVideoPosterCache(storedFile, fileInfo = {}) {
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    if (!type.startsWith('video/') || !hasCompleteFileCache(storedFile, fileInfo)) return '';
+    if (storedFile.videoPoster) return storedFile.videoPoster;
+    const poster = await createVideoPosterFromBlob(new Blob([storedFile.data], { type }))
+        .catch(err => {
+            historyLog('video-poster-cache-failed', {
+                fileId: fileInfo.id || storedFile.id,
+                fileName: fileInfo.name || storedFile.name,
+                error: err.message
+            });
+            return '';
+        });
+    if (!poster) return '';
+    await saveToStore('files', {
+        ...storedFile,
+        videoPoster: poster
+    });
+    return poster;
+}
+
 async function createFileAsset(file, options = {}) {
     const {
         fileId: optionFileId,
@@ -2512,12 +2585,23 @@ async function createFileAsset(file, options = {}) {
         ...metadataOptions
     };
 
-    const data = await fileToArrayBuffer(file);
+    const [data, videoPoster] = await Promise.all([
+        fileToArrayBuffer(file),
+        createVideoPosterFromBlob(file).catch(err => {
+            historyLog('video-poster-create-failed', {
+                fileName: file.name,
+                fileSize: file.size,
+                error: err.message
+            });
+            return '';
+        })
+    ]);
     const asset = {
         ...fileInfo,
         sessionId: state.sessionId,
         ownerDeviceId: state.deviceId,
         isFileAsset: true,
+        ...(videoPoster ? { videoPoster } : {}),
         data
     };
     return {
@@ -3474,7 +3558,10 @@ async function createCollectionTileHtml(fileInfo, index, total) {
             const url = getStoredFileUrl(fileInfo.id, storedFile);
             body = `<img src="${url}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">`;
         } else if (resolvedType.startsWith('video/')) {
-            body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
+            const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+            body = poster
+                ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">`
+                : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
         } else if (resolvedType.startsWith('audio/')) {
             body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`;
         }
@@ -3590,10 +3677,13 @@ async function addMessageToChat(message, isOwn, options = {}) {
                 </div>
             `;
         } else if (isVideo && fileUrl) {
+            const poster = storedFile ? await ensureVideoPosterCache(storedFile, fileInfo) : '';
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
-                        <video muted playsinline preload="none" src="${fileUrl}"></video>
+                        ${poster
+                            ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name)}" loading="lazy" decoding="async">`
+                            : `<video muted playsinline preload="none" src="${fileUrl}"></video>`}
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -4023,6 +4113,58 @@ function setFilePreviewContentStage(stage) {
     resetFilePreviewContentStage(content);
     if (stage) content.classList.add(stage);
     return content;
+}
+
+function getPreviewMediaNaturalSize(media) {
+    if (!media) return null;
+    if (media.tagName === 'IMG') {
+        const width = media.naturalWidth || 0;
+        const height = media.naturalHeight || 0;
+        return width > 0 && height > 0 ? { width, height } : null;
+    }
+    if (media.tagName === 'VIDEO') {
+        const width = media.videoWidth || 0;
+        const height = media.videoHeight || 0;
+        return width > 0 && height > 0 ? { width, height } : null;
+    }
+    return null;
+}
+
+function fitPreviewMediaElement(media, content = document.getElementById('filePreviewContent')) {
+    if (!media || !content) return;
+    const applyFit = () => {
+        const natural = getPreviewMediaNaturalSize(media);
+        const rect = content.getBoundingClientRect();
+        if (!natural || rect.width <= 0 || rect.height <= 0) return;
+        const maxWidth = Math.max(120, rect.width - 16);
+        const maxHeight = Math.max(120, rect.height * 0.9);
+        const scale = Math.min(1, maxWidth / natural.width, maxHeight / natural.height);
+        const width = Math.max(1, Math.floor(natural.width * scale));
+        const height = Math.max(1, Math.floor(natural.height * scale));
+        media.style.setProperty('--preview-media-width', `${width}px`);
+        media.style.setProperty('--preview-media-height', `${height}px`);
+        media.classList.add('preview-media-fit-ready');
+    };
+
+    requestAnimationFrame(applyFit);
+    if (media.tagName === 'IMG' && !media.complete) {
+        media.addEventListener('load', applyFit, { once: true });
+    } else if (media.tagName === 'VIDEO' && !(media.videoWidth > 0 && media.videoHeight > 0)) {
+        media.addEventListener('loadedmetadata', applyFit, { once: true });
+        media.addEventListener('loadeddata', applyFit, { once: true });
+    }
+
+    if (typeof ResizeObserver === 'function') {
+        const observer = new ResizeObserver(() => {
+            if (!media.isConnected || !content.isConnected || !content.contains(media)) {
+                observer.disconnect();
+                return;
+            }
+            requestAnimationFrame(applyFit);
+        });
+        observer.observe(content);
+        media.addEventListener('emptied', () => observer.disconnect(), { once: true });
+    }
 }
 
 function renderFilePreviewLoading(content, fileInfo) {
@@ -4541,6 +4683,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         image.dataset.previewFileId = fileInfo.id;
         image.className = 'file-preview-media file-preview-media-image';
         content.appendChild(image);
+        fitPreviewMediaElement(image, content);
     } else if (type.startsWith('video/')) {
         const video = document.createElement('video');
         video.src = url;
@@ -4548,9 +4691,12 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         video.autoplay = true;
         video.playsInline = true;
         video.preload = 'metadata';
+        const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+        if (poster) video.poster = poster;
         video.dataset.previewFileId = fileInfo.id;
         video.className = 'file-preview-media file-preview-media-video';
         content.appendChild(video);
+        fitPreviewMediaElement(video, content);
         video.play().catch(() => {});
     } else if (type.startsWith('audio/')) {
         const audio = document.createElement('audio');
@@ -4878,6 +5024,16 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
         image.loading = 'lazy';
         image.decoding = 'async';
         thumb.appendChild(image);
+    } else if (hasLocalData && type.startsWith('video/')) {
+        const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+        if (poster) {
+            const image = document.createElement('img');
+            image.src = poster;
+            image.alt = fileInfo.name || '';
+            image.loading = 'lazy';
+            image.decoding = 'async';
+            thumb.appendChild(image);
+        }
     }
     if (!thumb.childNodes.length) {
         thumb.classList.add('collection-file-thumb--metadata');
@@ -5245,6 +5401,10 @@ async function refreshFileMessage(fileId) {
         fileObjectUrls.set(fileId, url);
     }
 
+    const poster = String(storedFile.type || '').toLowerCase().startsWith('video/')
+        ? await ensureVideoPosterCache(storedFile, storedFile)
+        : '';
+
     preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const type = fileInfo.type || storedFile.type;
@@ -5257,7 +5417,7 @@ async function refreshFileMessage(fileId) {
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('video/')) {
-            bubble.innerHTML = `<div class="media-preview"><video muted playsinline preload="none" src="${url}"></video></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<video muted playsinline preload="none" src="${url}"></video>`}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else {

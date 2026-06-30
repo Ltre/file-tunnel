@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#4f5ec2">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/tunnel-icon.svg" type="image/svg+xml">
-    <title>即时传输隧道</title>
+    <title>Drop2Tunnel - 即时传输隧道</title>
     <script defer src="/socket.io/socket.io.js"></script>
     <script src="/client/qrcode-1.0.0.min.js"></script>
     <style>
@@ -647,7 +647,9 @@
         .message-record-actions {
             display: flex;
             justify-content: flex-end;
-            max-width: 85%;
+            width: min(85%, 100%);
+            max-width: none;
+            margin-left: auto;
             margin-top: 6px;
             gap: 6px;
         }
@@ -1807,6 +1809,11 @@
             overflow: hidden;
         }
 
+        .file-preview-content.preview-media-stage {
+            align-items: center;
+            justify-items: center;
+        }
+
         .file-preview-content.collection-stage {
             overflow: auto;
         }
@@ -1818,11 +1825,17 @@
 
         .file-preview-content.preview-media-stage > img,
         .file-preview-content.preview-media-stage > video {
-            width: auto !important;
-            height: 90% !important;
-            max-width: calc(100% - 16px);
-            max-height: 90%;
+            width: var(--preview-media-width, auto) !important;
+            height: var(--preview-media-height, 90%) !important;
+            max-width: calc(100% - 16px) !important;
+            max-height: 90% !important;
             object-fit: contain;
+            align-self: center;
+            justify-self: center;
+        }
+
+        .file-preview-content.preview-media-stage > video {
+            aspect-ratio: auto;
         }
 
         .file-preview-loading {
