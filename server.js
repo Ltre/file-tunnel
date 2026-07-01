@@ -951,9 +951,15 @@ async function telegramSendMessage(chatId, text) {
     });
 }
 
-async function downloadTelegramFile(fileId) {
+async function downloadTelegramFile(fileId, maxSize = TELEGRAM_MAX_FILE_SIZE) {
     const file = await telegramApi('getFile', { file_id: fileId });
     if (!file?.file_path) throw new Error('telegram-file-path-missing');
+    const expectedSize = Number(file.file_size) || 0;
+    if (expectedSize > maxSize) {
+        const err = new Error('telegram-file-too-large-before-download');
+        err.fileSize = expectedSize;
+        throw err;
+    }
     const response = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`);
     if (!response.ok) throw new Error(`telegram-file-download-${response.status}`);
     return Buffer.from(await response.arrayBuffer());
@@ -991,7 +997,16 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
         return false;
     }
-    const data = await downloadTelegramFile(telegramFile.fileId);
+    let data;
+    try {
+        data = await downloadTelegramFile(telegramFile.fileId, TELEGRAM_MAX_FILE_SIZE);
+    } catch (err) {
+        if (err.message === 'telegram-file-too-large-before-download') {
+            await telegramSendMessage(chatId, `文件太大，Telegram 显示该文件约 ${Math.round((err.fileSize || 0) / 1024 / 1024)}MB，超过当前接收上限 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+            return false;
+        }
+        throw err;
+    }
     if (data.length > TELEGRAM_MAX_FILE_SIZE) {
         await telegramSendMessage(chatId, `文件太大，下载后超过 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
         return false;

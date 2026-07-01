@@ -102,6 +102,9 @@ let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
 let progressDrawerIgnoreItemClicksUntil = 0;
 let progressDrawerBlockPageClicksUntil = 0;
+let chatScrollAnchorMessageId = '';
+let chatScrollAnchorHoldUntil = 0;
+let chatScrollAnchorSaveTimer = null;
 let adminTapCount = 0;
 let adminTapResetTimer = null;
 let lastAdminTapAt = 0;
@@ -716,6 +719,12 @@ function normalizeLocalShortCode(value) {
 function updateSessionIdentityUi() {
     document.getElementById('sessionId').textContent = state.sessionId.slice(0, 8) + '...';
     document.getElementById('deviceId').textContent = state.deviceId.slice(0, 8) + '...';
+    const row = document.getElementById('sessionRemarkRow');
+    const value = document.getElementById('sessionRemark');
+    if (row && value) {
+        value.textContent = state.sessionRemark || '-';
+        row.hidden = !state.sessionRemark;
+    }
     generateQRCode();
 }
 
@@ -2573,6 +2582,79 @@ async function ensureVideoPosterCache(storedFile, fileInfo = {}) {
     return poster;
 }
 
+function readSynchsafeInteger(bytes, offset) {
+    return ((bytes[offset] & 0x7f) << 21) |
+        ((bytes[offset + 1] & 0x7f) << 14) |
+        ((bytes[offset + 2] & 0x7f) << 7) |
+        (bytes[offset + 3] & 0x7f);
+}
+
+function readId3FrameSize(bytes, offset, version) {
+    if (version >= 4) return readSynchsafeInteger(bytes, offset);
+    return (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+}
+
+async function extractAudioPosterFromId3(storedFile) {
+    const type = String(storedFile?.type || '').toLowerCase();
+    if (!type.includes('mpeg') && !String(storedFile?.name || '').toLowerCase().endsWith('.mp3')) return '';
+    const bytes = new Uint8Array(storedFile.data || []);
+    if (bytes.length < 20 || bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) return '';
+    const version = bytes[3];
+    const tagSize = readSynchsafeInteger(bytes, 6);
+    let offset = 10;
+    const end = Math.min(bytes.length, 10 + tagSize);
+    const decoder = new TextDecoder('iso-8859-1');
+    while (offset + 10 <= end) {
+        const frameId = decoder.decode(bytes.slice(offset, offset + 4)).replace(/\0/g, '');
+        const frameSize = readId3FrameSize(bytes, offset + 4, version);
+        if (!frameId || frameSize <= 0) break;
+        const frameStart = offset + 10;
+        const frameEnd = Math.min(end, frameStart + frameSize);
+        if (frameId === 'APIC' && frameEnd > frameStart + 8) {
+            let cursor = frameStart + 1;
+            const mimeEnd = bytes.indexOf(0, cursor);
+            if (mimeEnd < 0 || mimeEnd >= frameEnd) break;
+            const mime = decoder.decode(bytes.slice(cursor, mimeEnd)) || 'image/jpeg';
+            cursor = mimeEnd + 2;
+            while (cursor < frameEnd && bytes[cursor] !== 0) cursor++;
+            cursor++;
+            if (cursor < frameEnd) {
+                const blob = new Blob([bytes.slice(cursor, frameEnd)], { type: mime });
+                return await blobToBase64(blob);
+            }
+        }
+        offset = frameEnd;
+    }
+    return '';
+}
+
+async function ensureAudioPosterCache(storedFile, fileInfo = {}) {
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    if (!type.startsWith('audio/') || !hasCompleteFileCache(storedFile, fileInfo)) return '';
+    if (storedFile.audioPoster) return storedFile.audioPoster;
+    const poster = await extractAudioPosterFromId3(storedFile)
+        .catch(err => {
+            historyLog('audio-poster-cache-failed', {
+                fileId: fileInfo.id || storedFile.id,
+                fileName: fileInfo.name || storedFile.name,
+                error: err.message
+            });
+            return '';
+        });
+    if (!poster) return '';
+    await saveToStore('files', {
+        ...storedFile,
+        audioPoster: poster
+    });
+    return poster;
+}
+
+function renderMediaKindBadge(kind) {
+    if (kind === 'video') return '<span class="media-kind-badge" aria-label="视频文件">▶</span>';
+    if (kind === 'audio') return '<span class="media-kind-badge" aria-label="音频文件">♪</span>';
+    return '';
+}
+
 async function createFileAsset(file, options = {}) {
     const {
         fileId: optionFileId,
@@ -2611,6 +2693,8 @@ async function createFileAsset(file, options = {}) {
         ...(videoPoster ? { videoPoster } : {}),
         data
     };
+    const audioPoster = await ensureAudioPosterCache(asset, fileInfo);
+    if (audioPoster) asset.audioPoster = audioPoster;
     return {
         asset,
         fileInfo: {
@@ -2717,7 +2801,10 @@ async function consumePendingSharedFiles() {
 
     sharedFileImportInProgress = true;
     try {
-        for (const item of queued.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+        const sorted = queued.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        const files = [];
+        const importedItems = [];
+        for (const item of sorted) {
             if (!(item.data instanceof ArrayBuffer) && !ArrayBuffer.isView(item.data)) continue;
             const bytes = item.data instanceof ArrayBuffer
                 ? item.data
@@ -2733,9 +2820,15 @@ async function consumePendingSharedFiles() {
                 file.name = item.name || 'shared-file';
                 file.lastModified = item.lastModified || Date.now();
             }
-            await sendFile(file);
-            await deleteFromStore('shareQueue', item.id);
-            historyLog('shared-file-imported', { name: item.name, size: item.size, sessionId: state.sessionId });
+            files.push(file);
+            importedItems.push(item);
+        }
+        if (files.length) {
+            await sendSelectedFiles(files);
+            for (const item of importedItems) {
+                await deleteFromStore('shareQueue', item.id);
+                historyLog('shared-file-imported', { name: item.name, size: item.size, sessionId: state.sessionId });
+            }
         }
         state.pendingSharedFileCount = 0;
     } finally {
@@ -3191,6 +3284,8 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
     };
     const videoPoster = await ensureVideoPosterCache(nextFile, fileInfo);
     if (videoPoster) nextFile.videoPoster = videoPoster;
+    const audioPoster = await ensureAudioPosterCache(nextFile, fileInfo);
+    if (audioPoster) nextFile.audioPoster = audioPoster;
     await saveToStore('files', nextFile);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
@@ -3575,8 +3670,14 @@ function preserveChatScroll(callback) {
 
     const wasNearBottom = isChatNearBottom(container);
     const distanceFromBottom = container.scrollHeight - container.scrollTop;
+    const pinnedAnchor = chatScrollAnchorHoldUntil > Date.now() && chatScrollAnchorMessageId
+        ? getMessageElement(chatScrollAnchorMessageId)
+        : null;
+    const pinnedTop = pinnedAnchor ? pinnedAnchor.offsetTop : 0;
     const restore = () => {
-        if (wasNearBottom) {
+        if (pinnedAnchor?.isConnected) {
+            container.scrollTop += pinnedAnchor.offsetTop - pinnedTop;
+        } else if (wasNearBottom) {
             container.scrollTop = container.scrollHeight;
         } else {
             container.scrollTop = Math.max(0, container.scrollHeight - distanceFromBottom);
@@ -3585,6 +3686,61 @@ function preserveChatScroll(callback) {
     const result = callback();
     requestAnimationFrame(restore);
     return result;
+}
+
+function getCurrentChatScrollAnchorId() {
+    const container = document.getElementById('chatMessages');
+    if (!container) return '';
+    const containerRect = container.getBoundingClientRect();
+    const targetY = containerRect.top + containerRect.height * 0.46;
+    let best = null;
+    let bestDistance = Infinity;
+    document.querySelectorAll('#chatMessages .message[data-message-id]').forEach(message => {
+        const rect = message.getBoundingClientRect();
+        if (rect.bottom < containerRect.top || rect.top > containerRect.bottom) return;
+        const center = rect.top + rect.height / 2;
+        const distance = Math.abs(center - targetY);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = message;
+        }
+    });
+    return best?.dataset.messageId || '';
+}
+
+async function saveChatScrollAnchor() {
+    const anchorId = getCurrentChatScrollAnchorId();
+    if (!anchorId || !state.sessionId) return;
+    chatScrollAnchorMessageId = anchorId;
+    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
+    await saveToStore('sessions', {
+        ...(existing || {}),
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        shortCode: state.shortCode || existing?.shortCode || '',
+        remark: state.sessionRemark || existing?.remark || '',
+        scrollAnchorMessageId: anchorId,
+        scrollAnchorSavedAt: Date.now(),
+        lastActive: existing?.lastActive || Date.now()
+    });
+}
+
+function scheduleChatScrollAnchorSave() {
+    if (chatScrollAnchorSaveTimer) clearTimeout(chatScrollAnchorSaveTimer);
+    chatScrollAnchorSaveTimer = setTimeout(() => {
+        chatScrollAnchorSaveTimer = null;
+        saveChatScrollAnchor().catch(err => historyLog('chat-scroll-anchor-save-failed', { error: err.message }));
+    }, 300);
+}
+
+function initChatScrollAnchorTracking() {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    container.addEventListener('scroll', () => {
+        if (document.getElementById('chatMessages')?.classList.contains('history-loading')) return;
+        chatScrollAnchorHoldUntil = 0;
+        scheduleChatScrollAnchorSave();
+    }, { passive: true });
 }
 
 function insertMessageElementByTimestamp(container, messageEl) {
@@ -3627,15 +3783,18 @@ async function createCollectionTileHtml(fileInfo, index, total) {
         } else if (resolvedType.startsWith('video/')) {
             const poster = await ensureVideoPosterCache(storedFile, fileInfo);
             body = poster
-                ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">`
-                : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
+                ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('video')}`
+                : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>${renderMediaKindBadge('video')}`;
         } else if (resolvedType.startsWith('audio/')) {
-            body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`;
+            const poster = await ensureAudioPosterCache(storedFile, fileInfo);
+            body = poster
+                ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('audio')}`
+                : `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
         }
     } else if (type.startsWith('video/')) {
-        body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`;
+        body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>${renderMediaKindBadge('video')}`;
     } else if (type.startsWith('audio/')) {
-        body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`;
+        body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
     }
     const remaining = total > 4 && index === 3 ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
     return `<div class="collection-preview-tile">${body}${remaining}</div>`;
@@ -3712,6 +3871,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
 
         const isImage = fileInfo.type.startsWith('image/');
         const isVideo = fileInfo.type.startsWith('video/');
+        const isAudio = fileInfo.type.startsWith('audio/');
 
         // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
         let fileUrl = fileInfo.data || null;
@@ -3750,7 +3910,21 @@ async function addMessageToChat(message, isOwn, options = {}) {
                     <div class="media-preview">
                         ${poster
                             ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name)}" loading="lazy" decoding="async">`
-                            : `<video muted playsinline preload="none" src="${fileUrl}"></video>`}
+                            : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`}
+                        ${renderMediaKindBadge('video')}
+                    </div>
+                    <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
+                </div>
+            `;
+        } else if (isAudio && fileUrl) {
+            const poster = storedFile ? await ensureAudioPosterCache(storedFile, fileInfo) : '';
+            contentHtml = `
+                <div class="message-bubble">
+                    <div class="media-preview">
+                        ${poster
+                            ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name)}" loading="lazy" decoding="async">`
+                            : `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`}
+                        ${renderMediaKindBadge('audio')}
                     </div>
                     <div class="file-size media-file-size">${formatFileSize(fileInfo.size)}</div>
                 </div>
@@ -4279,6 +4453,14 @@ function setFilePreviewFullscreenButton(visible) {
     if (!button) return;
     button.hidden = !visible;
     button.disabled = !visible;
+}
+
+function shouldIgnorePreviewGestureTarget(target) {
+    return Boolean(target?.closest?.('button, input, textarea, select, a, .file-preview-actions'));
+}
+
+function isPreviewMediaTarget(target) {
+    return Boolean(target?.closest?.('#filePreviewContent img, #filePreviewContent video'));
 }
 
 function renderFileMetadataPreview(content, fileInfo, stateLabel = '') {
@@ -5179,6 +5361,18 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             image.loading = 'lazy';
             image.decoding = 'async';
             thumb.appendChild(image);
+            thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
+        }
+    } else if (hasLocalData && type.startsWith('audio/')) {
+        const poster = await ensureAudioPosterCache(storedFile, fileInfo);
+        if (poster) {
+            const image = document.createElement('img');
+            image.src = poster;
+            image.alt = fileInfo.name || '';
+            image.loading = 'lazy';
+            image.decoding = 'async';
+            thumb.appendChild(image);
+            thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('audio'));
         }
     }
     if (!thumb.childNodes.length) {
@@ -5190,6 +5384,8 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
             <div class="collection-file-state">${stateLabel}</div>
         `;
+        if (type.startsWith('video/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
+        if (type.startsWith('audio/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('audio'));
     }
 
     const name = document.createElement('div');
@@ -5552,6 +5748,8 @@ async function refreshFileMessage(fileId) {
 
     const poster = String(storedFile.type || '').toLowerCase().startsWith('video/')
         ? await ensureVideoPosterCache(storedFile, storedFile)
+        : String(storedFile.type || '').toLowerCase().startsWith('audio/')
+            ? await ensureAudioPosterCache(storedFile, storedFile)
         : '';
 
     preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
@@ -5566,7 +5764,11 @@ async function refreshFileMessage(fileId) {
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else if (type.startsWith('video/')) {
-            bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<video muted playsinline preload="none" src="${url}"></video>`}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`}${renderMediaKindBadge('video')}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
+            bubble.classList.remove('file-message');
+            bubble.style.opacity = '';
+        } else if (type.startsWith('audio/')) {
+            bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`}${renderMediaKindBadge('audio')}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
         } else {
@@ -5824,6 +6026,7 @@ async function deleteHistoryMessageLocal(messageId) {
         for (const fileInfo of getCollectionFiles(message)) {
             const fileId = fileInfo.id;
             fileAssetTransfer?.cancel(fileId);
+            cleanupProgressForDeletedFile(fileId);
             const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
             if (stillReferenced) {
                 const storedFile = await getFromStore('files', fileId);
@@ -5855,6 +6058,7 @@ async function deleteHistoryMessageLocal(messageId) {
     if (message?.fileInfo?.id) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
+        cleanupProgressForDeletedFile(fileId);
         const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
         if (stillReferenced) {
             const storedFile = await getFromStore('files', fileId);
@@ -7982,7 +8186,7 @@ function isAnyBlockingOverlayOpen() {
 
 function shouldIgnoreWorkspaceSwipeTarget(target) {
     return Boolean(target?.closest?.(
-        '#editor, [contenteditable="true"], input, textarea, select, button, a, .toolbar, .editor-toolbar, .file-preview-actions, .mobile-workspace-nav, .tunnel-topbar'
+        'input, textarea, select, button, a, .toolbar, .editor-toolbar, .file-preview-actions, .mobile-workspace-nav, .tunnel-topbar'
     ));
 }
 
@@ -8037,20 +8241,39 @@ async function showJoinedSessionSwitcher() {
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
-        <div class="modal">
+        <div class="modal session-switcher-modal">
+            <button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button>
             <h3>切换隧道</h3>
-            <div style="max-height: 55vh; overflow: auto; text-align: left;">${list}</div>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" id="closeSessionSwitcher">关闭</button>
-            </div>
+            <button class="session-switch-scroll" type="button" data-scroll="-1" aria-label="向上滚动">⌃</button>
+            <div class="session-switcher-list" id="sessionSwitcherList">${list}</div>
+            <button class="session-switch-scroll" type="button" data-scroll="1" aria-label="向下滚动">⌄</button>
         </div>
     `;
     document.body.appendChild(dialog);
+    dialog.addEventListener('click', event => {
+        if (event.target === dialog) dialog.remove();
+    });
     dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
+    const scroller = dialog.querySelector('#sessionSwitcherList');
+    dialog.querySelectorAll('[data-scroll]').forEach(button => {
+        button.addEventListener('click', () => {
+            const direction = Number(button.dataset.scroll) || 1;
+            scroller?.scrollBy({ top: direction * Math.max(120, scroller.clientHeight * 0.75), behavior: 'smooth' });
+        });
+    });
+    requestAnimationFrame(() => {
+        const current = scroller?.querySelector('.session-switch-item.is-current');
+        if (!current || !scroller) return;
+        current.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
     dialog.querySelectorAll('[data-session-id]').forEach(button => {
         button.addEventListener('click', () => {
             const sessionId = button.dataset.sessionId;
             if (sessionId && sessionId !== state.sessionId) {
+                if (hasActiveTransferTasks()) {
+                    const ok = confirm('切换到别的隧道，将停止当前正在进行的数据传输任务，是否切换？');
+                    if (!ok) return;
+                }
                 window.location.href = `${window.location.origin}/#${sessionId}`;
                 setTimeout(() => window.location.reload(), 80);
             } else {
@@ -8318,6 +8541,7 @@ function initUI() {
     initThemeSwitcher();
     initMobileWorkspace();
     initProgressDrawer();
+    initChatScrollAnchorTracking();
     initRemoteAudioUnlock();
     document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
@@ -8457,35 +8681,66 @@ function initUI() {
     document.getElementById('filePreviewViewer').addEventListener('click', event => {
         if (event.target === event.currentTarget) closeFilePreview();
     });
+    document.getElementById('filePreviewContent')?.addEventListener('dblclick', event => {
+        if (!activeFilePreviewCanFullscreen || !isPreviewMediaTarget(event.target)) return;
+        event.preventDefault();
+        openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
+    });
     document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
         if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
-        if (event.target.closest?.('button, input, textarea, select, a, .file-preview-actions')) return;
-        filePreviewPointerStart = { x: event.clientX, y: event.clientY };
-    });
+        if (shouldIgnorePreviewGestureTarget(event.target)) return;
+        filePreviewPointerStart = { x: event.clientX, y: event.clientY, target: event.target, pointerType: event.pointerType };
+    }, true);
     document.getElementById('filePreviewViewer')?.addEventListener('pointerup', event => {
         if (!filePreviewPointerStart) return;
         const dx = event.clientX - filePreviewPointerStart.x;
         const dy = event.clientY - filePreviewPointerStart.y;
+        const startTarget = filePreviewPointerStart.target;
+        const pointerType = filePreviewPointerStart.pointerType;
         filePreviewPointerStart = null;
+        if (shouldIgnorePreviewGestureTarget(startTarget)) return;
         if (Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+            event.preventDefault();
             navigateFilePreview(dx < 0 ? 1 : -1).catch(err => historyLog('file-preview-swipe-navigate-failed', { error: err.message }));
+            return;
         }
-    });
+        if (pointerType === 'touch' && Math.abs(dy) > 74 && Math.abs(dy) > Math.abs(dx) * 1.45) {
+            event.preventDefault();
+            if (dy < 0 && activeFilePreviewCanFullscreen && isPreviewMediaTarget(startTarget)) {
+                openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
+            } else if (dy > 0) {
+                closeFilePreview();
+            }
+        }
+    }, true);
     document.getElementById('mediaFullscreenCloseBtn')?.addEventListener('click', () => closeMediaFullscreen());
     document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
     document.getElementById('mediaFullscreenNextBtn')?.addEventListener('click', () => navigateMediaFullscreen(1));
-    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
-        mediaFullscreenPointerStart = { x: event.clientX, y: event.clientY };
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('click', event => {
+        if (event.target?.id === 'mediaFullscreenViewer' || event.target?.id === 'mediaFullscreenContent') {
+            closeMediaFullscreen();
+        }
     });
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
+        if (event.target.closest?.('button')) return;
+        mediaFullscreenPointerStart = { x: event.clientX, y: event.clientY, pointerType: event.pointerType };
+    }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerup', event => {
         if (!mediaFullscreenPointerStart) return;
         const dx = event.clientX - mediaFullscreenPointerStart.x;
         const dy = event.clientY - mediaFullscreenPointerStart.y;
+        const pointerType = mediaFullscreenPointerStart.pointerType;
         mediaFullscreenPointerStart = null;
         if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            event.preventDefault();
             navigateMediaFullscreen(dx < 0 ? 1 : -1);
+            return;
         }
-    });
+        if (pointerType === 'touch' && dy > 78 && Math.abs(dy) > Math.abs(dx) * 1.45) {
+            event.preventDefault();
+            closeMediaFullscreen();
+        }
+    }, true);
     document.addEventListener('keydown', event => {
         if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
         if (event.key === 'Escape') {
@@ -8732,6 +8987,14 @@ function updateProgressDrawerSummary() {
     summary.textContent = parts.join(' · ');
 }
 
+function hasActiveTransferTasks() {
+    const list = document.getElementById('progressList');
+    const visibleItems = list ? Array.from(list.children).filter(item => item.isConnected) : [];
+    const snapshotFresh = Date.now() - progressQueueSnapshot.updatedAt <= PROGRESS_QUEUE_SNAPSHOT_TTL;
+    return visibleItems.length > 0 ||
+        (snapshotFresh && (progressQueueSnapshot.queueLength > 0 || progressQueueSnapshot.activeDownloads > 0));
+}
+
 function setProgressDrawerCollapsed(collapsed) {
     const wasCollapsed = progressDrawerCollapsed;
     progressDrawerCollapsed = Boolean(collapsed);
@@ -8857,6 +9120,12 @@ async function updateShortCode(shortCode) {
 
 async function updateSessionRemark(remark) {
     state.sessionRemark = String(remark || '').trim().slice(0, 60);
+    const row = document.getElementById('sessionRemarkRow');
+    const value = document.getElementById('sessionRemark');
+    if (row && value) {
+        value.textContent = state.sessionRemark || '-';
+        row.hidden = !state.sessionRemark;
+    }
     if (!state.sessionId) return;
     const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
     await saveToStore('sessions', {
@@ -9185,6 +9454,34 @@ function hideProgress(fileId) {
     }
 }
 
+function cleanupProgressForDeletedFile(fileId) {
+    if (!fileId) return;
+    const baseFileId = String(fileId);
+    fileTransferProgressStates.delete(baseFileId);
+    activeFileProgress.delete(baseFileId);
+    completedFileProgress.add(baseFileId);
+    Array.from(progressHideTimers.keys()).forEach(key => {
+        if (getProgressBaseFileId(key) !== baseFileId) return;
+        const timer = progressHideTimers.get(key);
+        if (timer) clearTimeout(timer);
+        progressHideTimers.delete(key);
+        activeFileProgress.delete(key);
+        progressUiLastPaint.delete(key);
+        document.getElementById(progressElementId(key))?.remove();
+    });
+    document.querySelectorAll('#progressList .progress-item').forEach(item => {
+        if (item.dataset.fileId === baseFileId || getProgressBaseFileId(item.dataset.progressKey) === baseFileId) {
+            item.remove();
+        }
+    });
+    const list = document.getElementById('progressList');
+    if (!list || list.children.length === 0) {
+        clearProgressQueueSnapshot();
+        document.getElementById('transferProgress').style.display = 'none';
+    }
+    updateProgressDrawerSummary();
+}
+
 function hideCompletedFileReceiveProgress(fileId) {
     if (!fileId) return;
     fileTransferProgressStates.delete(fileId);
@@ -9318,6 +9615,8 @@ async function loadSessionData() {
         });
 
         const chatMessages = document.getElementById('chatMessages');
+        const storedSessionForAnchor = await getFromStore('sessions', state.sessionId).catch(() => null);
+        chatScrollAnchorMessageId = storedSessionForAnchor?.scrollAnchorMessageId || '';
         chatMessages?.classList.add('history-loading');
         try {
             // 使用 for...of 确保按顺序异步处理，但不要每条都滚动，避免刷新时列表抖动。
@@ -9335,8 +9634,16 @@ async function loadSessionData() {
             }
         } finally {
             if (chatMessages) {
-                chatMessages.scrollTop = chatMessages.scrollHeight;
-                requestAnimationFrame(() => chatMessages.classList.remove('history-loading'));
+                requestAnimationFrame(() => {
+                    const anchor = chatScrollAnchorMessageId ? getMessageElement(chatScrollAnchorMessageId) : null;
+                    if (anchor) {
+                        anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
+                        chatScrollAnchorHoldUntil = Date.now() + 2600;
+                    } else {
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                    requestAnimationFrame(() => chatMessages.classList.remove('history-loading'));
+                });
             }
         }
         historyLog('indexeddb-history-rendered', {
