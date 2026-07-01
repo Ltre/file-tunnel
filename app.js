@@ -106,6 +106,10 @@ let chatScrollAnchorMessageId = '';
 let chatScrollAnchorHoldUntil = 0;
 let chatScrollAnchorSaveTimer = null;
 let chatScrollPinnedToBottom = false;
+let chatScrollAnchorPinFrame = 0;
+let chatScrollAnchorPinMode = '';
+let chatScrollAnchorPinnedTop = 0;
+let chatScrollSuppressUntil = 0;
 let adminTapCount = 0;
 let adminTapResetTimer = null;
 let lastAdminTapAt = 0;
@@ -3691,6 +3695,73 @@ function preserveChatScroll(callback) {
     return result;
 }
 
+function stopChatScrollAnchorPin() {
+    if (chatScrollAnchorPinFrame) {
+        cancelAnimationFrame(chatScrollAnchorPinFrame);
+        chatScrollAnchorPinFrame = 0;
+    }
+    chatScrollAnchorPinMode = '';
+}
+
+function pinChatScrollToDomAnchor(messageId, duration = 9000) {
+    const container = document.getElementById('chatMessages');
+    const anchor = getMessageElement(messageId);
+    if (!container || !anchor) return false;
+    stopChatScrollAnchorPin();
+    chatScrollAnchorMessageId = messageId;
+    chatScrollPinnedToBottom = false;
+    chatScrollAnchorHoldUntil = Date.now() + duration;
+    chatScrollAnchorPinMode = 'message';
+    chatScrollAnchorPinnedTop = anchor.getBoundingClientRect().top - container.getBoundingClientRect().top;
+
+    const keepPinned = () => {
+        if (chatScrollAnchorHoldUntil <= Date.now() || chatScrollAnchorPinMode !== 'message') {
+            stopChatScrollAnchorPin();
+            return;
+        }
+        const liveContainer = document.getElementById('chatMessages');
+        const liveAnchor = getMessageElement(chatScrollAnchorMessageId);
+        if (!liveContainer || !liveAnchor) {
+            stopChatScrollAnchorPin();
+            return;
+        }
+        const currentTop = liveAnchor.getBoundingClientRect().top - liveContainer.getBoundingClientRect().top;
+        const delta = currentTop - chatScrollAnchorPinnedTop;
+        if (Math.abs(delta) > 0.5) {
+            chatScrollSuppressUntil = Date.now() + 120;
+            liveContainer.scrollTop += delta;
+        }
+        chatScrollAnchorPinFrame = requestAnimationFrame(keepPinned);
+    };
+    chatScrollAnchorPinFrame = requestAnimationFrame(keepPinned);
+    return true;
+}
+
+function pinChatScrollToBottom(duration = 9000) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    stopChatScrollAnchorPin();
+    chatScrollAnchorMessageId = '';
+    chatScrollPinnedToBottom = true;
+    chatScrollAnchorHoldUntil = Date.now() + duration;
+    chatScrollAnchorPinMode = 'bottom';
+    const keepPinned = () => {
+        if (chatScrollAnchorHoldUntil <= Date.now() || chatScrollAnchorPinMode !== 'bottom') {
+            stopChatScrollAnchorPin();
+            return;
+        }
+        const liveContainer = document.getElementById('chatMessages');
+        if (!liveContainer) {
+            stopChatScrollAnchorPin();
+            return;
+        }
+        chatScrollSuppressUntil = Date.now() + 120;
+        liveContainer.scrollTop = liveContainer.scrollHeight;
+        chatScrollAnchorPinFrame = requestAnimationFrame(keepPinned);
+    };
+    chatScrollAnchorPinFrame = requestAnimationFrame(keepPinned);
+}
+
 function getCurrentChatScrollAnchorId() {
     const container = document.getElementById('chatMessages');
     if (!container) return '';
@@ -3741,10 +3812,20 @@ function initChatScrollAnchorTracking() {
     if (!container) return;
     container.addEventListener('scroll', () => {
         if (document.getElementById('chatMessages')?.classList.contains('history-loading')) return;
+        if (Date.now() < chatScrollSuppressUntil) return;
         chatScrollAnchorHoldUntil = 0;
         chatScrollPinnedToBottom = false;
+        stopChatScrollAnchorPin();
         scheduleChatScrollAnchorSave();
     }, { passive: true });
+    container.addEventListener('pointerup', () => {
+        scheduleChatScrollAnchorSave();
+    }, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            saveChatScrollAnchor().catch(() => {});
+        }
+    });
 }
 
 function insertMessageElementByTimestamp(container, messageEl) {
@@ -8254,8 +8335,8 @@ function initWorkspaceSwipeNavigation() {
         swipeStart.lastX = event.clientX;
         swipeStart.lastAt = now;
         if (!swipeStart.dragging) {
-            if (Math.abs(dx) < 8) return;
-            if (Math.abs(dx) < Math.abs(dy) * 1.08) return;
+            if (Math.abs(dx) < 6) return;
+            if (Math.abs(dx) < Math.abs(dy) * 0.95) return;
             swipeStart.dragging = true;
             track?.classList.add('is-workspace-dragging');
         }
@@ -8284,10 +8365,10 @@ function initWorkspaceSwipeNavigation() {
             : start.index;
         setMobileWorkspaceView(getWorkspaceViewByIndex(nextIndex));
     });
-    ['pointercancel', 'pointerleave'].forEach(eventName => {
-        appShell.addEventListener(eventName, () => {
-            resetTrack();
-        });
+    appShell.addEventListener('pointercancel', resetTrack);
+    appShell.addEventListener('pointerleave', () => {
+        if (swipeStart?.dragging) return;
+        resetTrack();
     });
 }
 
@@ -8778,7 +8859,7 @@ function initUI() {
         const pointerType = filePreviewPointerStart.pointerType;
         filePreviewPointerStart = null;
         if (shouldIgnorePreviewGestureTarget(startTarget)) return;
-        if (Math.abs(dx) > 38 && Math.abs(dx) > Math.abs(dy) * 1.12) {
+        if (Math.abs(dx) > 26 && Math.abs(dx) > Math.abs(dy) * 1.02) {
             event.preventDefault();
             navigateFilePreview(dx < 0 ? 1 : -1).catch(err => historyLog('file-preview-swipe-navigate-failed', { error: err.message }));
             return;
@@ -9720,12 +9801,10 @@ async function loadSessionData() {
                     const anchor = chatScrollAnchorMessageId ? getMessageElement(chatScrollAnchorMessageId) : null;
                     if (anchor) {
                         anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
-                        chatScrollPinnedToBottom = false;
-                        chatScrollAnchorHoldUntil = Date.now() + 8000;
+                        pinChatScrollToDomAnchor(chatScrollAnchorMessageId, 12000);
                     } else {
                         chatMessages.scrollTop = chatMessages.scrollHeight;
-                        chatScrollPinnedToBottom = true;
-                        chatScrollAnchorHoldUntil = Date.now() + 8000;
+                        pinChatScrollToBottom(12000);
                     }
                     requestAnimationFrame(() => {
                         chatMessages.classList.remove('history-loading');

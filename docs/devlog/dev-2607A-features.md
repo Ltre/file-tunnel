@@ -69,3 +69,17 @@
 - Telegram bot supports `/tunnel 12345` to bind the current Telegram chat to a tunnel relay mode.
 - While bound, forwarded files and text messages are sent directly into that tunnel; formatted Telegram text is converted to simple rich text when entities are present.
 - Telegram bot supports `/leave_tunnel` to leave relay mode and clear pending unbound files for that chat.
+
+## 2026-07-02 Gesture and Anchor Follow-Up
+
+### Mobile Workspace Swipe
+- The collaborative editor body now declares horizontal gesture intent with `touch-action: pan-y`, so mobile browsers keep horizontal movement available for the workspace track while preserving vertical editor scrolling.
+- Workspace drag starts with a smaller movement threshold and no longer cancels an active drag just because the pointer leaves the moving track, improving the "finger attached to page" feel inside the rich-text editor.
+
+### Transfer Record Anchor
+- Transfer record restore now pins against the actual message DOM element after initial scroll restoration and keeps correcting its viewport position during the page settling window.
+- If the saved message DOM cannot be found, the transfer list pins to the bottom during settling instead of letting later DOM growth push the view around.
+- Scroll-anchor saves also run after pointer interaction and when the page is hidden, making the next load more likely to restore the last browsed record.
+
+### Collection Preview Swipe
+- Collection child preview horizontal swipe threshold is lower, making adjacent-file switching more responsive on Android Chrome while still checking horizontal intent.
