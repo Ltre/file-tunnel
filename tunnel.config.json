@@ -5,6 +5,6 @@
     "enabled": false,
     "token": "",
     "webhookSecret": "",
-    "maxFileSize": 20971520
+    "maxFileSize": 524288000
   }
 }
