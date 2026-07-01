@@ -18,6 +18,7 @@ const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
 const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
+const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
@@ -71,6 +72,14 @@ const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== undefined
 const MAX_DEBUG_LOGS = 5000;
 const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
+const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
+const telegramConfig = projectConfig.telegramBot && typeof projectConfig.telegramBot === 'object'
+    ? projectConfig.telegramBot
+    : {};
+const TELEGRAM_BOT_ENABLED = telegramConfig.enabled === true && typeof telegramConfig.token === 'string' && telegramConfig.token.trim();
+const TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_ENABLED ? telegramConfig.token.trim() : '';
+const TELEGRAM_WEBHOOK_SECRET = typeof telegramConfig.webhookSecret === 'string' ? telegramConfig.webhookSecret.trim() : '';
+const TELEGRAM_MAX_FILE_SIZE = Math.max(1, Number(telegramConfig.maxFileSize || 20 * 1024 * 1024));
 
 function loadProjectConfig() {
     try {
@@ -169,6 +178,58 @@ app.get('/manifest.webmanifest', (req, res) => {
     res.type('application/manifest+json').send(
         JSON.stringify(getManifestForHost(getRequestHostname(req)), null, 2)
     );
+});
+
+app.get('/api/server-assets/:assetId', (req, res) => {
+    const assetId = req.params.assetId;
+    const asset = telegramServerAssets.get(assetId);
+    if (!asset || !fs.existsSync(asset.path)) return res.status(404).json({ error: 'Asset not found' });
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Type', asset.type || 'application/octet-stream');
+    res.setHeader('Content-Length', String(asset.size || 0));
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
+    fs.createReadStream(asset.path).pipe(res);
+});
+
+app.post('/api/telegram/webhook/:secret?', async (req, res) => {
+    try {
+        if (!TELEGRAM_BOT_ENABLED) return res.status(404).json({ ok: false, error: 'telegram-bot-disabled' });
+        if (TELEGRAM_WEBHOOK_SECRET && req.params.secret !== TELEGRAM_WEBHOOK_SECRET) {
+            return res.status(403).json({ ok: false, error: 'invalid-secret' });
+        }
+        const message = req.body?.message || req.body?.edited_message;
+        const chatId = message?.chat?.id;
+        if (!chatId) return res.json({ ok: true });
+        const text = message.text || message.caption || '';
+        const shortCode = extractShortCodeFromText(text);
+        const telegramFile = getTelegramFileFromMessage(message);
+
+        if (telegramFile) {
+            if (shortCode) {
+                await publishTelegramFileToTunnel(chatId, shortCode, telegramFile);
+            } else {
+                telegramPendingFiles.set(String(chatId), {
+                    file: telegramFile,
+                    createdAt: Date.now()
+                });
+                await telegramSendMessage(chatId, '已收到文件。请回复 5 位隧道暗号，我会把文件发送到该隧道。');
+            }
+            return res.json({ ok: true });
+        }
+
+        if (shortCode && telegramPendingFiles.has(String(chatId))) {
+            const pending = telegramPendingFiles.get(String(chatId));
+            telegramPendingFiles.delete(String(chatId));
+            await publishTelegramFileToTunnel(chatId, shortCode, pending.file);
+            return res.json({ ok: true });
+        }
+
+        await telegramSendMessage(chatId, '请先转发文件给我；也可以在文件说明文字里直接写 5 位隧道暗号。');
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('telegram webhook error:', err);
+        res.json({ ok: true });
+    }
 });
 
 function shouldDisableStaticCache(filePath) {
@@ -612,6 +673,8 @@ const shortCodes = new Map();
 const magnets = new Map();
 const accessDevices = new Map();
 const sessionHistoryBroadcastTimers = new Map();
+const telegramPendingFiles = new Map();
+const telegramServerAssets = new Map();
 
 function bindSocketToDevice(socket, deviceId) {
     socket.data.deviceId = deviceId;
@@ -819,6 +882,171 @@ function createMagnetId() {
 
 function isValidMagnetId(id) {
     return typeof id === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(id);
+}
+
+function createServerAssetId() {
+    return crypto.randomBytes(16).toString('base64url');
+}
+
+function extractShortCodeFromText(text) {
+    const match = String(text || '').toUpperCase().match(/\b[A-Z0-9]{5}\b/);
+    return match ? match[0] : '';
+}
+
+function getTelegramFileFromMessage(message = {}) {
+    if (message.document) {
+        return {
+            fileId: message.document.file_id,
+            name: message.document.file_name || 'telegram-file',
+            type: message.document.mime_type || 'application/octet-stream',
+            size: Number(message.document.file_size) || 0
+        };
+    }
+    if (message.video) {
+        return {
+            fileId: message.video.file_id,
+            name: message.video.file_name || `telegram-video-${Date.now()}.mp4`,
+            type: message.video.mime_type || 'video/mp4',
+            size: Number(message.video.file_size) || 0
+        };
+    }
+    if (message.audio) {
+        return {
+            fileId: message.audio.file_id,
+            name: message.audio.file_name || `telegram-audio-${Date.now()}.mp3`,
+            type: message.audio.mime_type || 'audio/mpeg',
+            size: Number(message.audio.file_size) || 0
+        };
+    }
+    if (Array.isArray(message.photo) && message.photo.length) {
+        const photo = message.photo[message.photo.length - 1];
+        return {
+            fileId: photo.file_id,
+            name: `telegram-photo-${Date.now()}.jpg`,
+            type: 'image/jpeg',
+            size: Number(photo.file_size) || 0
+        };
+    }
+    return null;
+}
+
+async function telegramApi(method, payload) {
+    if (!TELEGRAM_BOT_ENABLED) throw new Error('telegram-bot-disabled');
+    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+        throw new Error(result.description || `telegram-${method}-failed`);
+    }
+    return result.result;
+}
+
+async function telegramSendMessage(chatId, text) {
+    if (!chatId || !TELEGRAM_BOT_ENABLED) return;
+    await telegramApi('sendMessage', { chat_id: chatId, text }).catch(err => {
+        console.warn(`telegram sendMessage failed: ${err.message}`);
+    });
+}
+
+async function downloadTelegramFile(fileId) {
+    const file = await telegramApi('getFile', { file_id: fileId });
+    if (!file?.file_path) throw new Error('telegram-file-path-missing');
+    const response = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`);
+    if (!response.ok) throw new Error(`telegram-file-download-${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+}
+
+function getOrCreateTelegramSession(sessionId, shortCode = '') {
+    let session = sessions.get(sessionId);
+    if (!session) {
+        session = {
+            devices: new Map(),
+            editorAssets: new Map(),
+            fileAssets: new Map(),
+            history: [],
+            deletedMessageIds: [],
+            shortCode: normalizeShortCode(shortCode),
+            remark: '',
+            historySize: 0,
+            createdAt: Date.now(),
+            lastActivity: Date.now()
+        };
+        sessions.set(sessionId, session);
+    }
+    if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
+    if (!session.fileAssets) session.fileAssets = new Map();
+    return session;
+}
+
+async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
+    const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
+    if (!sessionId || !isValidSessionId(sessionId)) {
+        await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
+        return false;
+    }
+    if (telegramFile.size > TELEGRAM_MAX_FILE_SIZE) {
+        await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+        return false;
+    }
+    const data = await downloadTelegramFile(telegramFile.fileId);
+    if (data.length > TELEGRAM_MAX_FILE_SIZE) {
+        await telegramSendMessage(chatId, `文件太大，下载后超过 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+        return false;
+    }
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    const assetId = createServerAssetId();
+    const safeName = sanitizeString(telegramFile.name || 'telegram-file', 180) || 'telegram-file';
+    const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+    fs.writeFileSync(assetPath, data);
+    const asset = {
+        id: assetId,
+        path: assetPath,
+        name: safeName,
+        type: sanitizeString(telegramFile.type || 'application/octet-stream', 100) || 'application/octet-stream',
+        size: data.length,
+        sessionId,
+        createdAt: Date.now()
+    };
+    telegramServerAssets.set(assetId, asset);
+    const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const message = {
+        id: crypto.randomUUID(),
+        type: 'file',
+        fileInfo: {
+            id: assetId,
+            name: asset.name,
+            size: asset.size,
+            type: asset.type,
+            timestamp: Date.now(),
+            sender: TELEGRAM_BOT_DEVICE_ID,
+            senderName: 'Telegram Bot',
+            ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
+            isAsset: false,
+            isServerAsset: true,
+            serverAssetUrl: `/api/server-assets/${assetId}`
+        },
+        timestamp: Date.now(),
+        sender: TELEGRAM_BOT_DEVICE_ID,
+        senderName: 'Telegram Bot',
+        sessionId
+    };
+    addToSessionHistory(sessionId, session, message, {
+        fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
+        source: 'telegram-bot'
+    });
+    session.lastActivity = Date.now();
+    io.to(sessionId).emit('message', { message });
+    scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-file', 300);
+    await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}：${asset.name}`);
+    historyLog('telegram-file-published', {
+        sessionId,
+        deviceId: TELEGRAM_BOT_DEVICE_ID,
+        asset: { id: asset.id, name: asset.name, type: asset.type, size: asset.size }
+    });
+    return true;
 }
 
 function isValidMagnetAssetPayload(asset, fileId) {
@@ -1449,6 +1677,7 @@ io.on('connection', (socket) => {
                 history: [],
                 deletedMessageIds: [],
                 shortCode: createShortCode(sessionId, requestedShortCode),
+                remark: '',
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -1546,6 +1775,7 @@ io.on('connection', (socket) => {
                 devices: deviceList
             });
             socket.emit('session-short-code', { shortCode: session.shortCode });
+            socket.emit('session-remark', { remark: session.remark || '' });
             socket.emit('device-profile', {
                 deviceId,
                 deviceModel: session.devices.get(deviceId)?.deviceModel || '',
@@ -1592,6 +1822,28 @@ io.on('connection', (socket) => {
             return socket.emit('short-code-error', { message: '短码无效或会话已结束' });
         }
         socket.emit('short-code-session', { sessionId });
+    });
+
+    socket.on('session-remark-update', data => {
+        try {
+            const { sessionId } = data || {};
+            if (sessionId !== currentSession || !currentDevice) return;
+            const session = sessions.get(sessionId);
+            if (!session || !session.devices.has(currentDevice)) return;
+            const remark = sanitizeString(String(data.remark || '').trim(), 60);
+            session.remark = remark;
+            session.lastActivity = Date.now();
+            io.to(sessionId).emit('session-remark', { remark, updatedBy: currentDevice });
+            historyLog('session-remark-updated', {
+                sessionId,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                remarkLength: remark.length
+            });
+        } catch (err) {
+            console.error('session-remark-update error:', err);
+        }
     });
 
     socket.on('register-session-codes', data => {

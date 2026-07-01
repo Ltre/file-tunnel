@@ -549,7 +549,7 @@
         
         /* 聊天记录区域 */
         .chat-messages {
-            height: 400px;
+            height: clamp(430px, 52vh, 520px);
             overflow-x: hidden;
             overflow-y: auto;
             padding: 15px;
@@ -649,7 +649,6 @@
             justify-content: flex-end;
             width: min(85%, 100%);
             max-width: none;
-            margin-left: auto;
             margin-top: 6px;
             gap: 6px;
         }
@@ -1105,11 +1104,21 @@
         .file-upload-area {
             border: 3px dashed #ddd;
             border-radius: 12px;
-            padding: 30px;
+            padding: 14px 18px;
             text-align: center;
             cursor: pointer;
             transition: all 0.2s;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
+        }
+
+        .file-upload-area > div:first-child {
+            margin-bottom: 4px !important;
+            font-size: 1.8rem !important;
+        }
+
+        .file-upload-area > div:last-child {
+            margin-top: 2px !important;
+            font-size: 0.78rem !important;
         }
         
         .file-upload-area:hover {
@@ -1714,6 +1723,7 @@
         }
 
         .file-preview-modal {
+            position: relative;
             display: flex;
             flex-direction: column;
             width: min(94vw, 920px);
@@ -1903,6 +1913,41 @@
             display: none;
         }
 
+        .file-preview-nav {
+            position: absolute;
+            top: 50%;
+            z-index: 4;
+            display: grid;
+            place-items: center;
+            width: 40px;
+            height: 64px;
+            transform: translateY(-50%);
+            border: 0;
+            border-radius: 999px;
+            background: rgba(38, 50, 77, 0.16);
+            color: #26324d;
+            font-size: 2.4rem;
+            line-height: 1;
+            cursor: pointer;
+            transition: background 0.16s ease, opacity 0.16s ease;
+        }
+
+        .file-preview-nav:hover {
+            background: rgba(38, 50, 77, 0.26);
+        }
+
+        .file-preview-nav[hidden] {
+            display: none;
+        }
+
+        .file-preview-nav-prev {
+            left: 10px;
+        }
+
+        .file-preview-nav-next {
+            right: 10px;
+        }
+
         .media-fullscreen-viewer {
             position: fixed;
             inset: 0;
@@ -1971,10 +2016,10 @@
 
         .media-fullscreen-content img,
         .media-fullscreen-content video {
-            width: auto;
-            height: auto;
-            max-width: 100%;
-            max-height: 100%;
+            width: var(--preview-media-width, auto) !important;
+            height: var(--preview-media-height, auto) !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
             object-fit: contain;
             border-radius: 2px;
             background: #000;
@@ -1983,8 +2028,8 @@
         .media-fullscreen-active-item {
             max-width: 100% !important;
             max-height: 100% !important;
-            width: auto !important;
-            height: auto !important;
+            width: var(--preview-media-width, auto) !important;
+            height: var(--preview-media-height, auto) !important;
             object-fit: contain;
         }
 
@@ -2909,6 +2954,16 @@
 
             .media-fullscreen-arrow-left { left: 4px; }
             .media-fullscreen-arrow-right { right: 4px; }
+
+            .file-preview-nav {
+                width: 34px;
+                height: 54px;
+                background: rgba(38, 50, 77, 0.12);
+                font-size: 2rem;
+            }
+
+            .file-preview-nav-prev { left: 2px; }
+            .file-preview-nav-next { right: 2px; }
         }
 
 </style>
@@ -2943,8 +2998,8 @@
 
     <div class="container" id="appShell" data-mobile-view="chat" hidden>
         <div class="header">
-            <h1>🚀 即时传输隧道</h1>
-            <p>安全、快速、去中心化的设备间文件传输</p>
+            <h1>🚀 Drop2Tunnel - 即时传输隧道</h1>
+            <!--<p>安全、快速、去中心化的设备间文件传输</p>-->
             <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
                 <button class="theme-option" type="button" data-theme="classic">Classic</button>
                 <button class="theme-option" type="button" data-theme="graphite">Graphite</button>
@@ -3143,7 +3198,9 @@
                     <button class="file-preview-close-btn" id="closeFilePreviewBtn" type="button" title="关闭" aria-label="关闭">×</button>
                 </div>
             </div>
+            <button class="file-preview-nav file-preview-nav-prev" id="filePreviewPrevBtn" type="button" aria-label="上一个文件" hidden>‹</button>
             <div class="file-preview-content" id="filePreviewContent"></div>
+            <button class="file-preview-nav file-preview-nav-next" id="filePreviewNextBtn" type="button" aria-label="下一个文件" hidden>›</button>
             <div class="file-preview-actions" id="filePreviewActions"></div>
         </div>
     </div>

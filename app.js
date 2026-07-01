@@ -62,6 +62,7 @@ const state = {
     activeContactCall: null,
     pendingTunnelInviteReceipt: null,
     recentSessionId: null,
+    sessionRemark: '',
     pendingSharedFileCount: 0,
     db: null // IndexedDB实例
 };
@@ -91,6 +92,7 @@ let mediaFullscreenHistoryOpen = false;
 let mediaFullscreenItems = [];
 let mediaFullscreenIndex = 0;
 let mediaFullscreenPointerStart = null;
+let filePreviewPointerStart = null;
 let mediaFullscreenMovedMedia = null;
 let mediaFullscreenMovedParent = null;
 let mediaFullscreenMovedNextSibling = null;
@@ -679,6 +681,7 @@ async function initSession() {
         }
         const storedSession = await getFromStore('sessions', state.sessionId).catch(() => null);
         state.shortCode = normalizeLocalShortCode(storedSession?.shortCode);
+        state.sessionRemark = String(storedSession?.remark || '').trim().slice(0, 60);
         if (entryUrl.search) {
             history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
         }
@@ -697,6 +700,7 @@ async function initSession() {
 
         state.sessionId = state.recentSessionId;
         state.shortCode = normalizeLocalShortCode(recent.shortCode);
+        state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
         history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
     }
 
@@ -1033,6 +1037,9 @@ function initSocket() {
 
     state.socket.on('session-short-code', (data) => {
         updateShortCode(data?.shortCode).catch(err => historyLog('short-code-persist-failed', { error: err.message }));
+    });
+    state.socket.on('session-remark', (data) => {
+        updateSessionRemark(data?.remark || '').catch(err => historyLog('session-remark-persist-failed', { error: err.message }));
     });
     state.socket.on('short-code-session', (data) => {
         if (data?.sessionId && data.sessionId !== state.sessionId) {
@@ -3155,8 +3162,57 @@ function shouldAutoRequestFileAssetCache(storedFile, fileInfo) {
         (!storedFile?.cacheCleared || storedFile.restoreRequested);
 }
 
+async function fetchServerAssetCache(fileInfo, reason = '') {
+    if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(storedFile, fileInfo) && !storedFile?.cacheCleared) return true;
+    if (storedFile?.cacheCleared && !storedFile.restoreRequested) return false;
+
+    const response = await fetch(fileInfo.serverAssetUrl, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`server-asset-fetch-${response.status}`);
+    const buffer = await response.arrayBuffer();
+    const nextFile = {
+        ...(storedFile || {}),
+        id: fileInfo.id,
+        name: fileInfo.name,
+        type: fileInfo.type || 'application/octet-stream',
+        size: Number(fileInfo.size) || buffer.byteLength,
+        sessionId: state.sessionId,
+        ownerDeviceId: fileInfo.ownerDeviceId || fileInfo.sender || '',
+        isFileAsset: true,
+        isServerAsset: true,
+        serverAssetUrl: fileInfo.serverAssetUrl,
+        data: buffer,
+        timestamp: fileInfo.timestamp || Date.now(),
+        cacheCleared: false,
+        restoreRequested: false,
+        transferInterrupted: false,
+        isPartial: false
+    };
+    const videoPoster = await ensureVideoPosterCache(nextFile, fileInfo);
+    if (videoPoster) nextFile.videoPoster = videoPoster;
+    await saveToStore('files', nextFile);
+    fileObjectUrls.delete(fileInfo.id);
+    await refreshFileMessage(fileInfo.id);
+    historyLog('server-asset-cache-fetched', {
+        reason,
+        fileId: fileInfo.id,
+        fileName: fileInfo.name,
+        size: nextFile.size
+    });
+    return true;
+}
+
 async function requestMissingFileAssetCache(message, reason) {
     const fileInfo = message?.fileInfo;
+    if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
+        await fetchServerAssetCache(fileInfo, reason).catch(err => historyLog('server-asset-cache-fetch-failed', {
+            reason,
+            message: summarizeHistoryMessage(message),
+            error: err.message
+        }));
+        return;
+    }
     if (!fileAssetTransfer || !fileInfo?.id || !fileInfo.isAsset) return;
     const storedFile = await getFromStore('files', fileInfo.id);
     if (!shouldAutoRequestFileAssetCache(storedFile, fileInfo)) return;
@@ -3172,9 +3228,18 @@ async function requestMissingFileAssetCache(message, reason) {
 }
 
 async function requestMissingCollectionAssetCaches(message, reason) {
-    if (!fileAssetTransfer) return;
     const files = getCollectionFiles(message);
     for (const fileInfo of files) {
+        if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
+            await fetchServerAssetCache(fileInfo, reason).catch(err => historyLog('collection-server-asset-cache-fetch-failed', {
+                reason,
+                messageId: message?.id,
+                fileId: fileInfo.id,
+                error: err.message
+            }));
+            continue;
+        }
+        if (!fileAssetTransfer) continue;
         if (!fileInfo?.id || !fileInfo.isAsset) continue;
         const storedFile = await getFromStore('files', fileInfo.id);
         if (!shouldAutoRequestFileAssetCache(storedFile, fileInfo)) continue;
@@ -3218,7 +3283,7 @@ async function handleMessage(data) {
         if (!getMessageElement(message.id)) {
             await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
         }
-        if (message.type === 'file' && message.fileInfo?.isAsset) {
+        if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
             await requestMissingFileAssetCache(message, 'realtime-duplicate');
         }
         if (message.type === 'collection') {
@@ -3261,7 +3326,9 @@ async function handleMessage(data) {
         message: summarizeHistoryMessage(message)
     });
 
-    if (message.type === 'file' && message.fileInfo?.isAsset) {
+    if (message.type === 'file' && message.fileInfo?.isServerAsset) {
+        await requestMissingFileAssetCache(message, 'realtime-server-asset');
+    } else if (message.type === 'file' && message.fileInfo?.isAsset) {
         const requestAsset = async () => {
             await fileAssetTransfer.request(
                 message.fileInfo.id,
@@ -3338,7 +3405,7 @@ async function handleSessionHistory(data) {
                         message: summarizeHistoryMessage(existing)
                     });
                 }
-                if (message.type === 'file' && message.fileInfo?.isAsset) {
+                if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
                     await requestMissingFileAssetCache(message, 'snapshot-duplicate');
                 }
                 if (message.type === 'collection') {
@@ -3366,7 +3433,7 @@ async function handleSessionHistory(data) {
             historyLog('snapshot-message-rendered', {
                 message: summarizeHistoryMessage(message)
             });
-            if (message.type === 'file' && message.fileInfo?.isAsset) {
+            if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
                 await requestMissingFileAssetCache(message, 'snapshot-new');
             }
             if (message.type === 'collection') {
@@ -3694,7 +3761,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
             const hasLocalData = fileInfo.id && Boolean(fileUrl);
             const opacity = hasLocalData ? '' : 'opacity: 0.6;';
 
-            const unavailableLabel = fileInfo.isAsset
+            const unavailableLabel = (fileInfo.isAsset || fileInfo.isServerAsset)
                 ? ' (等待接收)'
                 : fileInfo.isP2P || !fileInfo.isSmall
                     ? ' (未同步到本机)'
@@ -3759,7 +3826,8 @@ async function addMessageToChat(message, isOwn, options = {}) {
     if (shouldScroll) {
         container.scrollTop = container.scrollHeight;
     }
-    if (options.autoRequestAsset !== false && message.type === 'file' && message.fileInfo?.isAsset) {
+    if (options.autoRequestAsset !== false && message.type === 'file' &&
+        (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
         requestMissingFileAssetCache(message, 'message-rendered')
             .catch(err => historyLog('file-asset-cache-backfill-failed', {
                 reason: 'message-rendered',
@@ -3811,6 +3879,12 @@ function renderMessageRecordActions(messageEl, message) {
         deleteHistoryMessage(message.id);
     }));
     messageEl.appendChild(actions);
+    requestAnimationFrame(() => {
+        const bubble = messageEl.querySelector('.message-bubble');
+        if (!bubble || !actions.isConnected) return;
+        actions.style.width = `${Math.ceil(bubble.getBoundingClientRect().width)}px`;
+        actions.style.marginLeft = messageEl.classList.contains('own') ? 'auto' : '0';
+    });
 }
 
 async function downloadFileFromMessage(messageId) {
@@ -3824,7 +3898,7 @@ async function downloadFileFromMessage(messageId) {
         return;
     }
 
-    if (fileInfo.isAsset) {
+    if (fileInfo.isAsset || fileInfo.isServerAsset) {
         await restoreFileCache(messageId);
         alert('文件缓存正在还原，完成后请再次点击下载。');
         return;
@@ -3918,7 +3992,7 @@ function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
     messageEl.querySelector('.file-actions')?.remove();
     messageEl.querySelector('.file-cache-retry')?.remove();
 
-    if (!cacheState.hasLocalData && fileInfo.isAsset) {
+    if (!cacheState.hasLocalData && (fileInfo.isAsset || fileInfo.isServerAsset)) {
         const bubble = messageEl.querySelector('.message-bubble');
         if (bubble) {
             bubble.classList.add('file-cache-retry-target');
@@ -4015,6 +4089,7 @@ function closeFilePreview(options = {}) {
     activeFilePreviewMediaType = '';
     setFilePreviewFullscreenButton(false);
     viewer.classList.remove('active');
+    filePreviewPointerStart = null;
     const content = document.getElementById('filePreviewContent');
     content?.replaceChildren();
     resetFilePreviewContentStage(content);
@@ -4059,6 +4134,10 @@ function restoreCollectionPreviewReturnState(collectionMessageId) {
     activeFilePreviewFileId = '';
     activeFilePreviewMessageId = '';
     activeFilePreviewOwnerDeviceId = '';
+    activeFilePreviewCanFullscreen = false;
+    activeFilePreviewMediaType = '';
+    setFilePreviewFullscreenButton(false);
+    updateFilePreviewNavigationControls().catch(err => historyLog('file-preview-nav-update-failed', { error: err.message }));
     collectionPreviewReturnState = null;
     requestAnimationFrame(() => {
         const grid = content?.querySelector('.collection-file-grid');
@@ -4136,8 +4215,8 @@ function fitPreviewMediaElement(media, content = document.getElementById('filePr
         const natural = getPreviewMediaNaturalSize(media);
         const rect = content.getBoundingClientRect();
         if (!natural || rect.width <= 0 || rect.height <= 0) return;
-        const maxWidth = Math.max(120, rect.width - 16);
-        const maxHeight = Math.max(120, rect.height * 0.9);
+        const maxWidth = Math.max(1, rect.width - 16);
+        const maxHeight = Math.max(1, rect.height * 0.9);
         const scale = Math.min(1, maxWidth / natural.width, maxHeight / natural.height);
         const width = Math.max(1, Math.floor(natural.width * scale));
         const height = Math.max(1, Math.floor(natural.height * scale));
@@ -4375,6 +4454,15 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
         await downloadFile(fileInfo.id);
         return;
     }
+    if (fileInfo.isServerAsset && fileInfo.serverAssetUrl) {
+        const fetched = await fetchServerAssetCache(fileInfo, 'manual-download');
+        if (fetched) {
+            await downloadFile(fileInfo.id);
+            return;
+        }
+        alert('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
+        return;
+    }
     if (fileInfo.isAsset && fileAssetTransfer) {
         await cancelClearedCollectionDownloadsExcept(options.collectionMessageId || '', fileInfo.id);
         await saveToStore('files', {
@@ -4405,6 +4493,12 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
 }
 
 async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = '', options = {}) {
+    if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
+        await fetchServerAssetCache(fileInfo, options.force ? 'manual-force-restore' : 'manual-restore');
+        await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
+        await refreshActiveFilePreviewForFile(fileInfo.id);
+        return;
+    }
     if (!fileInfo?.id || !fileInfo.isAsset || !fileAssetTransfer) {
         alert('此文件没有可用的远程文件来源，无法还原。');
         return;
@@ -4474,7 +4568,9 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
         size: fileInfo.size,
         sessionId: state.sessionId,
         ownerDeviceId: ownerDeviceId || fileInfo.ownerDeviceId || state.deviceId,
-        isFileAsset: Boolean(fileInfo.isAsset),
+        isFileAsset: Boolean(fileInfo.isAsset || fileInfo.isServerAsset),
+        isServerAsset: Boolean(fileInfo.isServerAsset),
+        serverAssetUrl: fileInfo.serverAssetUrl || '',
         cacheCleared: true,
         restoreRequested: false
     });
@@ -4624,7 +4720,14 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
 
     const storedFile = await getFromStore('files', fileInfo.id);
     if (!hasCompleteFileCache(storedFile, fileInfo)) {
-        if (options.requestMissing === true && fileInfo.isAsset && fileAssetTransfer) {
+        if (options.requestMissing === true && fileInfo.isServerAsset && fileInfo.serverAssetUrl) {
+            await fetchServerAssetCache(fileInfo, 'file-preview-request-missing')
+                .catch(err => historyLog('file-preview-server-cache-request-failed', {
+                    messageId: options.messageId,
+                    fileId: fileInfo.id,
+                    error: err.message
+                }));
+        } else if (options.requestMissing === true && fileInfo.isAsset && fileAssetTransfer) {
             await fileAssetTransfer.request(
                 fileInfo.id,
                 ownerDeviceId,
@@ -4650,6 +4753,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             collectionMessageId: options.collectionMessageId,
             fileId: fileInfo.id
         });
+        await updateFilePreviewNavigationControls();
         return true;
     }
 
@@ -4669,6 +4773,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             fileId: fileInfo.id,
             type
         });
+        await updateFilePreviewNavigationControls();
         return true;
     }
 
@@ -4725,6 +4830,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         fileId: fileInfo.id,
         type
     });
+    await updateFilePreviewNavigationControls();
     return true;
 }
 
@@ -4789,6 +4895,9 @@ function restoreMovedFullscreenMedia(options = {}) {
     mediaFullscreenMovedParent = null;
     mediaFullscreenMovedNextSibling = null;
     mediaFullscreenMovedPlaceholder = null;
+    if (media.isConnected && media.parentElement?.id === 'filePreviewContent') {
+        fitPreviewMediaElement(media, media.parentElement);
+    }
 }
 
 function createFullscreenMediaElement(item) {
@@ -4860,12 +4969,14 @@ function renderMediaFullscreenItem() {
             });
         }
         reusableMedia.classList.add('media-fullscreen-active-item');
+        fitPreviewMediaElement(reusableMedia, content);
     } else {
         restoreMovedFullscreenMedia({ pause: true });
         content.replaceChildren();
         const media = createFullscreenMediaElement(item);
         if (media) {
             content.appendChild(media);
+            fitPreviewMediaElement(media, content);
             if (media.tagName === 'VIDEO') media.play().catch(() => {});
         }
     }
@@ -4919,6 +5030,41 @@ function closeMediaFullscreen(options = {}) {
     content?.replaceChildren();
     mediaFullscreenPointerStart = null;
     if (shouldGoBack) history.back();
+}
+
+async function getCollectionPreviewNavigationFiles() {
+    if (!activeCollectionPreviewMessageId) return [];
+    const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
+    return getCollectionFiles(message).filter(file => file?.id);
+}
+
+async function updateFilePreviewNavigationControls() {
+    const prevButton = document.getElementById('filePreviewPrevBtn');
+    const nextButton = document.getElementById('filePreviewNextBtn');
+    if (!prevButton || !nextButton) return;
+    const files = activeFilePreviewMode === 'file' && activeCollectionPreviewMessageId
+        ? await getCollectionPreviewNavigationFiles()
+        : [];
+    const visible = files.length > 1 && files.some(file => file.id === activeFilePreviewFileId);
+    prevButton.hidden = !visible;
+    nextButton.hidden = !visible;
+}
+
+async function navigateFilePreview(delta) {
+    if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
+    if (activeFilePreviewMode !== 'file' || !activeCollectionPreviewMessageId || !activeFilePreviewFileId) return;
+    const files = await getCollectionPreviewNavigationFiles();
+    if (files.length <= 1) return;
+    const currentIndex = files.findIndex(file => file.id === activeFilePreviewFileId);
+    if (currentIndex < 0) return;
+    const nextFile = files[(currentIndex + delta + files.length) % files.length];
+    if (!nextFile?.id) return;
+    await openFilePreviewForInfo(nextFile, {
+        messageId: activeCollectionPreviewMessageId,
+        collectionMessageId: activeCollectionPreviewMessageId,
+        ownerDeviceId: nextFile.ownerDeviceId || activeFilePreviewOwnerDeviceId || '',
+        requestMissing: false
+    });
 }
 
 async function showFileDetailsForInfo(fileInfo, message = {}) {
@@ -5275,6 +5421,9 @@ async function openCollectionRecord(messageId, options = {}) {
     activeFilePreviewMode = 'collection';
     activeCollectionPreviewMessageId = messageId;
     activeFilePreviewFileId = '';
+    activeFilePreviewMessageId = '';
+    activeFilePreviewOwnerDeviceId = '';
+    updateFilePreviewNavigationControls().catch(err => historyLog('file-preview-nav-update-failed', { error: err.message }));
 
     const title = document.getElementById('filePreviewTitle');
     const content = setFilePreviewContentStage('collection-stage');
@@ -5476,7 +5625,9 @@ async function clearFileCache(messageId) {
         size: fileInfo.size,
         sessionId: state.sessionId,
         ownerDeviceId: fileInfo.ownerDeviceId || message.sender,
-        isFileAsset: Boolean(fileInfo.isAsset),
+        isFileAsset: Boolean(fileInfo.isAsset || fileInfo.isServerAsset),
+        isServerAsset: Boolean(fileInfo.isServerAsset),
+        serverAssetUrl: fileInfo.serverAssetUrl || '',
         cacheCleared: true,
         restoreRequested: false
     });
@@ -5495,6 +5646,12 @@ async function clearFileCache(messageId) {
 async function restoreFileCache(messageId, options = {}) {
     const message = await getFromStore('messages', messageId);
     const fileInfo = message?.fileInfo;
+    if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
+        await fetchServerAssetCache(fileInfo, options.force ? 'message-force-restore' : 'message-restore');
+        await refreshFileMessage(fileInfo.id);
+        historyLog('file-cache-server-restore-requested', { messageId, fileId: fileInfo.id });
+        return;
+    }
     if (!fileInfo?.id || !fileInfo.isAsset) {
         alert('此历史文件没有可用的远程文件来源，无法还原。');
         return;
@@ -7812,6 +7969,58 @@ function setMobileWorkspaceView(view, options = {}) {
     }
 }
 
+function isAnyBlockingOverlayOpen() {
+    return Boolean(
+        document.querySelector('.modal-overlay.active') ||
+        document.getElementById('filePreviewViewer')?.classList.contains('active') ||
+        document.getElementById('mediaFullscreenViewer')?.classList.contains('active') ||
+        document.getElementById('richViewer')?.classList.contains('active') ||
+        (document.getElementById('downloadCacheOverlay') && !document.getElementById('downloadCacheOverlay').hidden) ||
+        document.getElementById('resourceBrowserLayer')?.classList.contains('active')
+    );
+}
+
+function shouldIgnoreWorkspaceSwipeTarget(target) {
+    return Boolean(target?.closest?.(
+        '#editor, [contenteditable="true"], input, textarea, select, button, a, .toolbar, .editor-toolbar, .file-preview-actions, .mobile-workspace-nav, .tunnel-topbar'
+    ));
+}
+
+function getAdjacentWorkspaceView(delta) {
+    const views = ['devices', 'chat', 'editor'];
+    const currentIndex = Math.max(0, views.indexOf(currentMobileWorkspaceView));
+    const nextIndex = Math.min(views.length - 1, Math.max(0, currentIndex + delta));
+    return views[nextIndex];
+}
+
+function initWorkspaceSwipeNavigation() {
+    const appShell = document.getElementById('appShell');
+    if (!appShell) return;
+    let swipeStart = null;
+    appShell.addEventListener('pointerdown', event => {
+        if (!window.matchMedia('(max-width: 767px)').matches) return;
+        if (event.pointerType !== 'touch') return;
+        if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(event.target)) return;
+        swipeStart = { x: event.clientX, y: event.clientY, target: event.target };
+    });
+    appShell.addEventListener('pointerup', event => {
+        if (!swipeStart) return;
+        const start = swipeStart;
+        swipeStart = null;
+        if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(start.target)) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        if (Math.abs(dx) < 68 || Math.abs(dx) < Math.abs(dy) * 1.35) return;
+        const nextView = getAdjacentWorkspaceView(dx < 0 ? 1 : -1);
+        if (nextView !== currentMobileWorkspaceView) setMobileWorkspaceView(nextView);
+    });
+    ['pointercancel', 'pointerleave'].forEach(eventName => {
+        appShell.addEventListener(eventName, () => {
+            swipeStart = null;
+        });
+    });
+}
+
 async function showJoinedSessionSwitcher() {
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
@@ -7823,7 +8032,8 @@ async function showJoinedSessionSwitcher() {
             const id = escapeHtml(session.sessionId);
             const time = new Date(session.lastActive || session.createdAt || Date.now()).toLocaleString('zh-CN');
             const currentClass = session.sessionId === state.sessionId ? ' is-current' : '';
-            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;">${id}<br><small>${time}</small></button>`;
+            const remark = escapeHtml(String(session.remark || '').trim());
+            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;"><strong>${remark || id}</strong><br><small>${remark ? id + ' · ' : ''}${time}</small></button>`;
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
@@ -7847,6 +8057,44 @@ async function showJoinedSessionSwitcher() {
                 dialog.remove();
             }
         });
+    });
+}
+
+function showTunnelRemarkDialog() {
+    document.getElementById('tunnelRemarkDialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'tunnelRemarkDialog';
+    overlay.className = 'modal-overlay active';
+    overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="修改隧道备注名">
+            <h3>修改隧道备注名</h3>
+            <p>备注会同步给当前在线的同隧道设备。</p>
+            <input id="tunnelRemarkInput" type="text" maxlength="60" placeholder="例如：公司资料、家庭相册" style="width:100%;height:40px;margin-bottom:14px;padding:0 10px;border:1px solid #d7dce8;border-radius:6px;">
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="cancelTunnelRemarkBtn" type="button">取消</button>
+                <button class="btn btn-primary" id="saveTunnelRemarkBtn" type="button">保存</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('#tunnelRemarkInput');
+    input.value = state.sessionRemark || '';
+    input.focus();
+    input.select();
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', event => {
+        if (event.target === overlay) close();
+    });
+    overlay.querySelector('#cancelTunnelRemarkBtn').addEventListener('click', close);
+    overlay.querySelector('#saveTunnelRemarkBtn').addEventListener('click', async () => {
+        const remark = input.value.trim().slice(0, 60);
+        await updateSessionRemark(remark);
+        state.socket?.emit('session-remark-update', { sessionId: state.sessionId, remark });
+        close();
+    });
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') overlay.querySelector('#saveTunnelRemarkBtn').click();
+        if (event.key === 'Escape') close();
     });
 }
 
@@ -7906,27 +8154,42 @@ async function toggleShortCodeSwitchMenu(event) {
 function initMobileWorkspace() {
     const viewButtons = Array.from(document.querySelectorAll('.mobile-workspace-button[data-mobile-view]'));
     viewButtons.forEach(button => {
-        button.addEventListener('click', () => setMobileWorkspaceView(button.dataset.mobileView));
+        button.addEventListener('click', event => {
+            if (button.dataset.mobileView === 'chat' && currentMobileWorkspaceView === 'chat') {
+                event.preventDefault();
+                showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+                return;
+            }
+            setMobileWorkspaceView(button.dataset.mobileView);
+        });
     });
     const tunnelButton = document.querySelector('.mobile-workspace-button[data-mobile-view="chat"]');
     if (tunnelButton) {
         let longPressTimer = null;
+        let suppressNextClick = false;
         const cancel = () => {
             if (longPressTimer) clearTimeout(longPressTimer);
             longPressTimer = null;
         };
         tunnelButton.addEventListener('contextmenu', event => {
             event.preventDefault();
-            showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+            showTunnelRemarkDialog();
         });
         tunnelButton.addEventListener('pointerdown', event => {
             if (event.pointerType !== 'touch') return;
             cancel();
             longPressTimer = setTimeout(() => {
                 longPressTimer = null;
-                showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+                suppressNextClick = true;
+                showTunnelRemarkDialog();
             }, 600);
         });
+        tunnelButton.addEventListener('click', event => {
+            if (!suppressNextClick) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            suppressNextClick = false;
+        }, true);
         ['pointerup', 'pointercancel', 'pointerleave', 'pointermove'].forEach(eventName => {
             tunnelButton.addEventListener(eventName, cancel);
         });
@@ -7937,6 +8200,7 @@ function initMobileWorkspace() {
     if (mediaQuery.addEventListener) mediaQuery.addEventListener('change', syncViewport);
     else mediaQuery.addListener(syncViewport);
     syncViewport();
+    initWorkspaceSwipeNavigation();
 }
 
 async function forceMobileRefresh() {
@@ -8184,8 +8448,28 @@ function initUI() {
     document.getElementById('filePreviewFullscreenBtn')?.addEventListener('click', () => {
         openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
     });
+    document.getElementById('filePreviewPrevBtn')?.addEventListener('click', () => {
+        navigateFilePreview(-1).catch(err => historyLog('file-preview-navigate-failed', { direction: -1, error: err.message }));
+    });
+    document.getElementById('filePreviewNextBtn')?.addEventListener('click', () => {
+        navigateFilePreview(1).catch(err => historyLog('file-preview-navigate-failed', { direction: 1, error: err.message }));
+    });
     document.getElementById('filePreviewViewer').addEventListener('click', event => {
         if (event.target === event.currentTarget) closeFilePreview();
+    });
+    document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
+        if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
+        if (event.target.closest?.('button, input, textarea, select, a, .file-preview-actions')) return;
+        filePreviewPointerStart = { x: event.clientX, y: event.clientY };
+    });
+    document.getElementById('filePreviewViewer')?.addEventListener('pointerup', event => {
+        if (!filePreviewPointerStart) return;
+        const dx = event.clientX - filePreviewPointerStart.x;
+        const dy = event.clientY - filePreviewPointerStart.y;
+        filePreviewPointerStart = null;
+        if (Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+            navigateFilePreview(dx < 0 ? 1 : -1).catch(err => historyLog('file-preview-swipe-navigate-failed', { error: err.message }));
+        }
     });
     document.getElementById('mediaFullscreenCloseBtn')?.addEventListener('click', () => closeMediaFullscreen());
     document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
@@ -8213,6 +8497,18 @@ function initUI() {
         } else if (event.key === 'ArrowRight') {
             event.preventDefault();
             navigateMediaFullscreen(1);
+        }
+    });
+    document.addEventListener('keydown', event => {
+        if (document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
+        if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
+        if (activeFilePreviewMode !== 'file' || !activeCollectionPreviewMessageId) return;
+        if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            navigateFilePreview(-1).catch(err => historyLog('file-preview-key-navigate-failed', { direction: -1, error: err.message }));
+        } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            navigateFilePreview(1).catch(err => historyLog('file-preview-key-navigate-failed', { direction: 1, error: err.message }));
         }
     });
 
@@ -8555,6 +8851,20 @@ async function updateShortCode(shortCode) {
         sessionId: state.sessionId,
         deviceId: state.deviceId,
         shortCode: state.shortCode,
+        lastActive: existing?.lastActive || Date.now()
+    });
+}
+
+async function updateSessionRemark(remark) {
+    state.sessionRemark = String(remark || '').trim().slice(0, 60);
+    if (!state.sessionId) return;
+    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
+    await saveToStore('sessions', {
+        ...(existing || {}),
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        shortCode: state.shortCode || existing?.shortCode || '',
+        remark: state.sessionRemark,
         lastActive: existing?.lastActive || Date.now()
     });
 }

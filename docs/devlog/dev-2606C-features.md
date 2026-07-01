@@ -175,3 +175,27 @@
 ### Deterministic Preview Fit
 - Image/video preview sizing no longer relies only on CSS `auto` sizing. After media metadata is available, the client computes a concrete pixel size from the preview container and the media's natural aspect ratio.
 - The preview layer writes the computed width/height through CSS variables, keeping media centered and constrained to 90% of the fixed preview container height while respecting the available width.
+
+## 2026-07-01 Collection Preview and Telegram Intake
+
+### Fullscreen Preview Fit
+- Fullscreen image/video preview now reuses the same measured fit logic as the normal file preview layer.
+- The active fullscreen media is capped by the available fullscreen container width and height, preventing tall media from being cropped at the bottom after width expansion.
+
+### Collection Child Navigation
+- Collection child file preview now supports adjacent navigation with previous/next buttons, keyboard left/right arrows, and horizontal swipe.
+- Returning from child file preview back to the collection grid hides the fullscreen action, because the grid layer itself has no fullscreen media target.
+
+### Mobile Workspace Gestures
+- The bottom `隧道` tab now opens the tunnel switcher on normal tap/click only when the tunnel tab is already focused.
+- Long press or right click on the tunnel tab opens the tunnel remark editor, and remark updates are broadcast to devices in the same tunnel.
+- Mobile horizontal swipe can switch between `连接`, `隧道`, and `协同` when no modal overlay is open. Rich text editor, topbar, bottombar, buttons, and inputs are excluded from this gesture.
+
+### Transfer Record Layout
+- Incoming and outgoing record action rows align to their message bubble width, keeping the delete button at the bubble's right edge instead of outside or awkwardly offset.
+- Desktop/tablet upload area height was reduced, while the transfer record list receives more vertical space.
+
+### Telegram Bot Intake
+- Added optional Telegram bot webhook support. When enabled in `tunnel.config.json`, users can forward a file to the bot and provide a tunnel short code; the server publishes the file into that tunnel as a transfer record.
+- Telegram files are stored as temporary server assets under `.tunnel-data/telegram-assets`, exposed through `/api/server-assets/:assetId`, then fetched into each browser's IndexedDB cache like other file assets.
+- The client recognizes `isServerAsset/serverAssetUrl` file metadata for automatic backfill, manual restore, download, preview, and collection cache flows.
