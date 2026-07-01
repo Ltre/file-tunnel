@@ -1,7 +1,7 @@
 {
   "tun.miku.us": {
-    "name": "即时传输隧道(韩大狗)",
-    "short_name": "传输隧道(韩大狗)",
+    "name": "Drop2Tunnel(韩大狗)",
+    "short_name": "Dr2T(韩大狗)",
     "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
     "start_url": "/?pwa=1",
     "scope": "/",
@@ -34,8 +34,8 @@
     }
   },
   "tun-txhk.miku.us": {
-    "name": "即时传输隧道(疼HK)",
-    "short_name": "传输隧道(疼HK)",
+    "name": "Drop2Tunnel(疼HK)",
+    "short_name": "Dr2T(疼HK)",
     "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
     "start_url": "/?pwa=1",
     "scope": "/",
@@ -68,8 +68,8 @@
     }
   },
   "tun-alyhk.miku.us": {
-    "name": "即时传输隧道(啊HK)",
-    "short_name": "传输隧道(啊HK)",
+    "name": "Drop2Tunnel(啊HK)",
+    "short_name": "Dr2T(啊HK)",
     "description": "在同一个传输隧道中的设备间发送文件、消息和协同内容。",
     "start_url": "/?pwa=1",
     "scope": "/",

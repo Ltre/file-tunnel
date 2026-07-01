@@ -79,7 +79,7 @@ const telegramConfig = projectConfig.telegramBot && typeof projectConfig.telegra
 const TELEGRAM_BOT_ENABLED = telegramConfig.enabled === true && typeof telegramConfig.token === 'string' && telegramConfig.token.trim();
 const TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_ENABLED ? telegramConfig.token.trim() : '';
 const TELEGRAM_WEBHOOK_SECRET = typeof telegramConfig.webhookSecret === 'string' ? telegramConfig.webhookSecret.trim() : '';
-const TELEGRAM_MAX_FILE_SIZE = Math.max(1, Number(telegramConfig.maxFileSize || 20 * 1024 * 1024));
+const TELEGRAM_MAX_FILE_SIZE = Math.max(1, Number(telegramConfig.maxFileSize || 500 * 1024 * 1024));
 
 function loadProjectConfig() {
     try {
@@ -93,8 +93,8 @@ function loadProjectConfig() {
 
 function createDefaultManifest() {
     return {
-        name: '即时传输隧道(啊HK)',
-        short_name: '传输隧道(啊HK)',
+        name: '即时传输隧道',
+        short_name: 'Drop2Tunnel',
         description: '在同一个传输隧道中的设备间发送文件、消息和协同内容。',
         start_url: '/?pwa=1',
         scope: '/',
