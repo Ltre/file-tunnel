@@ -200,19 +200,53 @@ app.post('/api/telegram/webhook/:secret?', async (req, res) => {
         const message = req.body?.message || req.body?.edited_message;
         const chatId = message?.chat?.id;
         if (!chatId) return res.json({ ok: true });
-        const text = message.text || message.caption || '';
+
+        const textPayload = getTelegramTextPayload(message);
+        const text = textPayload.text || '';
+        const tunnelCommandShortCode = extractTunnelCommandShortCode(text);
         const shortCode = extractShortCodeFromText(text);
+        const boundTunnel = telegramChatTunnels.get(String(chatId));
+        const targetShortCode = shortCode || boundTunnel?.shortCode || '';
         const telegramFile = getTelegramFileFromMessage(message);
 
+        if (isLeaveTunnelCommand(text)) {
+            const hadTunnel = telegramChatTunnels.delete(String(chatId));
+            telegramPendingFiles.delete(String(chatId));
+            await telegramSendMessage(chatId, hadTunnel
+                ? '已离开隧道中转模式。之后发送内容不会自动转入隧道。'
+                : '当前不在隧道中转模式。');
+            return res.json({ ok: true });
+        }
+
+        if (tunnelCommandShortCode) {
+            const sessionId = infraStore?.findSessionIdByShortCode(tunnelCommandShortCode) || shortCodes.get(tunnelCommandShortCode);
+            if (!sessionId || !isValidSessionId(sessionId)) {
+                await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
+                return res.json({ ok: true });
+            }
+            telegramChatTunnels.set(String(chatId), {
+                shortCode: tunnelCommandShortCode,
+                sessionId,
+                updatedAt: Date.now()
+            });
+            await telegramSendMessage(chatId, '已进入隧道 ' + tunnelCommandShortCode + ' 中转模式。之后直接发送或转发文件、文本即可同步到该隧道。');
+            if (telegramPendingFiles.has(String(chatId))) {
+                const pending = telegramPendingFiles.get(String(chatId));
+                telegramPendingFiles.delete(String(chatId));
+                await publishTelegramFileToTunnel(chatId, tunnelCommandShortCode, pending.file);
+            }
+            return res.json({ ok: true });
+        }
+
         if (telegramFile) {
-            if (shortCode) {
-                await publishTelegramFileToTunnel(chatId, shortCode, telegramFile);
+            if (targetShortCode) {
+                await publishTelegramFileToTunnel(chatId, targetShortCode, telegramFile);
             } else {
                 telegramPendingFiles.set(String(chatId), {
                     file: telegramFile,
                     createdAt: Date.now()
                 });
-                await telegramSendMessage(chatId, '已收到文件。请回复 5 位隧道暗号，我会把文件发送到该隧道。');
+                await telegramSendMessage(chatId, '已收到文件。请回复 5 位隧道暗号，或先发送 /tunnel 五位短码 进入中转模式。');
             }
             return res.json({ ok: true });
         }
@@ -224,14 +258,18 @@ app.post('/api/telegram/webhook/:secret?', async (req, res) => {
             return res.json({ ok: true });
         }
 
-        await telegramSendMessage(chatId, '请先转发文件给我；也可以在文件说明文字里直接写 5 位隧道暗号。');
+        if (boundTunnel?.shortCode && text.trim()) {
+            await publishTelegramTextToTunnel(chatId, boundTunnel.shortCode, textPayload);
+            return res.json({ ok: true });
+        }
+
+        await telegramSendMessage(chatId, '请先发送 /tunnel 五位短码 进入隧道中转模式；也可以转发文件后回复 5 位隧道暗号。');
         res.json({ ok: true });
     } catch (err) {
         console.error('telegram webhook error:', err);
         res.json({ ok: true });
     }
 });
-
 function shouldDisableStaticCache(filePath) {
     return [
         '.html',
@@ -674,6 +712,7 @@ const magnets = new Map();
 const accessDevices = new Map();
 const sessionHistoryBroadcastTimers = new Map();
 const telegramPendingFiles = new Map();
+const telegramChatTunnels = new Map();
 const telegramServerAssets = new Map();
 
 function bindSocketToDevice(socket, deviceId) {
@@ -893,6 +932,87 @@ function extractShortCodeFromText(text) {
     return match ? match[0] : '';
 }
 
+function escapeHtmlServer(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function extractTunnelCommandShortCode(text) {
+    const match = String(text || '').trim().match(/^\/tunnel(?:@\w+)?\s+([A-Za-z0-9]{5})\b/i);
+    return match ? normalizeShortCode(match[1]) : '';
+}
+
+function isLeaveTunnelCommand(text) {
+    return /^\/leave_tunnel(?:@\w+)?(?:\s|$)/i.test(String(text || '').trim());
+}
+
+function getTelegramTextPayload(message = {}) {
+    if (typeof message.text === 'string') {
+        return {
+            text: message.text,
+            entities: Array.isArray(message.entities) ? message.entities : []
+        };
+    }
+    if (typeof message.caption === 'string') {
+        return {
+            text: message.caption,
+            entities: Array.isArray(message.caption_entities) ? message.caption_entities : []
+        };
+    }
+    return { text: '', entities: [] };
+}
+
+function telegramEntityTags(entity, rawText) {
+    const type = entity?.type;
+    if (type === 'bold') return ['<strong>', '</strong>'];
+    if (type === 'italic') return ['<em>', '</em>'];
+    if (type === 'underline') return ['<u>', '</u>'];
+    if (type === 'strikethrough') return ['<s>', '</s>'];
+    if (type === 'spoiler') return ['<span class="telegram-spoiler">', '</span>'];
+    if (type === 'code') return ['<code>', '</code>'];
+    if (type === 'pre') return ['<pre>', '</pre>'];
+    if (type === 'text_link' && entity.url) {
+        const url = escapeHtmlServer(entity.url).replace(/[\r\n]/g, '');
+        return [`<a href="${url}" target="_blank" rel="noopener">`, '</a>'];
+    }
+    if (type === 'url') {
+        const url = rawText.slice(entity.offset, entity.offset + entity.length);
+        const href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+        return [`<a href="${escapeHtmlServer(href)}" target="_blank" rel="noopener">`, '</a>'];
+    }
+    return ['', ''];
+}
+
+function telegramTextToHtml(text, entities = []) {
+    const raw = String(text || '');
+    const opens = new Map();
+    const closes = new Map();
+    entities
+        .filter(entity => entity && entity.type !== 'bot_command' && Number(entity.length) > 0)
+        .forEach(entity => {
+            const start = Math.max(0, Number(entity.offset) || 0);
+            const end = Math.min(raw.length, start + (Number(entity.length) || 0));
+            if (end <= start) return;
+            const [open, close] = telegramEntityTags(entity, raw);
+            if (!open && !close) return;
+            if (!opens.has(start)) opens.set(start, []);
+            if (!closes.has(end)) closes.set(end, []);
+            opens.get(start).push(open);
+            closes.get(end).unshift(close);
+        });
+    let html = '';
+    for (let i = 0; i <= raw.length; i++) {
+        if (closes.has(i)) html += closes.get(i).join('');
+        if (opens.has(i)) html += opens.get(i).join('');
+        if (i < raw.length) html += escapeHtmlServer(raw[i]).replace(/\n/g, '<br>');
+    }
+    return html;
+}
+
 function getTelegramFileFromMessage(message = {}) {
     if (message.document) {
         return {
@@ -1060,6 +1180,51 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         sessionId,
         deviceId: TELEGRAM_BOT_DEVICE_ID,
         asset: { id: asset.id, name: asset.name, type: asset.type, size: asset.size }
+    });
+    return true;
+}
+
+async function publishTelegramTextToTunnel(chatId, shortCode, textPayload) {
+    const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
+    if (!sessionId || !isValidSessionId(sessionId)) {
+        await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
+        return false;
+    }
+    const text = String(textPayload?.text || '').trim();
+    if (!text) return false;
+    const entities = Array.isArray(textPayload?.entities) ? textPayload.entities : [];
+    const richEntities = entities.filter(entity => entity?.type && entity.type !== 'bot_command');
+    const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const isRich = richEntities.length > 0;
+    const message = {
+        id: crypto.randomUUID(),
+        type: isRich ? 'rich' : 'text',
+        timestamp: Date.now(),
+        sender: TELEGRAM_BOT_DEVICE_ID,
+        senderName: 'Telegram Bot',
+        sessionId
+    };
+    if (isRich) {
+        message.content = telegramTextToHtml(text, richEntities);
+    } else {
+        message.text = text;
+    }
+    const historyResult = addToSessionHistory(sessionId, session, message, {
+        fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
+        source: 'telegram-bot-text'
+    });
+    session.lastActivity = Date.now();
+    if (historyResult.stored) {
+        io.to(sessionId).emit('message', { message });
+        scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-text', 300);
+    }
+    await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}。`);
+    historyLog('telegram-text-published', {
+        sessionId,
+        deviceId: TELEGRAM_BOT_DEVICE_ID,
+        rich: isRich,
+        textLength: text.length,
+        historyResult
     });
     return true;
 }

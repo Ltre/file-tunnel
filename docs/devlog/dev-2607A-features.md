@@ -13,7 +13,7 @@
 ### Transfer Record Anchors and Progress Cleanup
 - Transfer record scrolling now stores the current visible message anchor in the local `sessions` record.
 - Reloading a tunnel attempts to restore that anchor instead of always jumping to the bottom; while the page is still settling, DOM updates preserve the pinned anchor to reduce jumpiness.
-- Deleting a file or collection now clears progress UI items for the removed file IDs and drops stale queue snapshots when no real progress item remains, preventing empty drawers such as `1 个任务 · 1 个等待`.
+- Deleting a file or collection now clears progress UI items for the removed file IDs and drops stale queue snapshots when no real progress item remains, preventing empty drawers such as `1 涓换鍔?路 1 涓瓑寰卄.
 
 ### Media Thumbnails
 - Single video file records no longer create `<video>` elements in the transfer list. They use cached generated posters when available, or a lightweight video placeholder.
@@ -23,7 +23,7 @@
 
 ### PWA Shared Files
 - Android/PWA share-target imports now collect all pending shared files first.
-- If more than one file is shared into the app, the same `以合辑发送 / 拆分成多条` dialog used by normal multi-file selection is shown before publishing.
+- If more than one file is shared into the app, the same `浠ュ悎杈戝彂閫?/ 鎷嗗垎鎴愬鏉 dialog used by normal multi-file selection is shown before publishing.
 
 ### Tunnel Switcher and Remarks
 - The mobile tunnel tab still opens the switcher only when the tunnel tab is already focused.
@@ -32,13 +32,40 @@
 - The current tunnel is scrolled into view when the switcher opens, as close to vertical center as practical.
 - The switcher includes slim top/bottom scroll helper buttons for long tunnel lists.
 - Switching away from a tunnel now warns when transfer tasks appear active, because switching will stop the current page's transfer work.
-- The device connection panel now shows `隧道名称` above the session ID when the current tunnel has a remark.
+- The device connection panel now shows `闅ч亾鍚嶇О` above the session ID when the current tunnel has a remark.
 
 ### Mobile Layout and Editor Height
-- Mobile workspace panels now sit in a horizontal track and animate between `连接 / 隧道 / 协同`, giving a smoother folder-switching feel than hide/show toggling.
+- Mobile workspace panels now sit in a horizontal track and animate between `杩炴帴 / 闅ч亾 / 鍗忓悓`, giving a smoother folder-switching feel than hide/show toggling.
 - Horizontal swipe navigation is allowed from the collaborative editor area; only clear horizontal gestures switch panels, so normal typing and caret placement remain unaffected.
 - Collaborative editor height is fixed with viewport-aware constraints on desktop and mobile, keeping the rich-text send controls reachable without scrolling the whole page to the bottom.
 
 ### Telegram Bot Intake
 - Telegram file handling now checks the update-provided `file_size` first and also checks `getFile.file_size` before downloading the full file.
 - Oversized Telegram files are rejected before the server downloads their content whenever Telegram provides size metadata.
+
+## 2026-07-02 鍥炲綊淇琛ュ厖
+
+### Tunnel Switcher
+- Tunnel switcher scroll helper buttons are now shown only when the tunnel list actually overflows its visible container.
+- The focused/current tunnel still scrolls into view after layout settles.
+
+### Mobile Workspace Gestures
+- Mobile `杩炴帴 / 闅ч亾 / 鍗忓悓` panels now use a drag-following horizontal track: the track follows the finger during the gesture and snaps to the nearest/next panel on release, closer to Telegram-style folder switching.
+- Mobile panel widths are fixed to the viewport (`100vw` per panel) to prevent the collaborative editor area from shrinking to an apparent partial-width layout.
+
+### File Preview Gestures
+- File preview and fullscreen touch gestures now use pointer capture and lower movement thresholds, improving Android Chrome reliability.
+- Collection child previews support horizontal swipe on the preview media itself to switch adjacent files.
+- Fullscreen downward swipe requires a shorter, clearer downward movement to exit.
+
+### Transfer Record Anchor
+- Transfer record anchor restore now keeps a longer post-load stabilization window.
+- If the saved anchor is unavailable, the transfer list pins to the bottom during initial settling so later DOM work does not visibly push the viewport around before the user scrolls.
+
+### Collaborative Editor Height
+- The collaborative editor panel is now a fixed viewport-aware flex column. The editor body scrolls internally and the send controls stay reachable on desktop and mobile.
+
+### Telegram Bot Tunnel Mode
+- Telegram bot supports `/tunnel 12345` to bind the current Telegram chat to a tunnel relay mode.
+- While bound, forwarded files and text messages are sent directly into that tunnel; formatted Telegram text is converted to simple rich text when entities are present.
+- Telegram bot supports `/leave_tunnel` to leave relay mode and clear pending unbound files for that chat.

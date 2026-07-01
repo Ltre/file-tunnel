@@ -105,6 +105,7 @@ let progressDrawerBlockPageClicksUntil = 0;
 let chatScrollAnchorMessageId = '';
 let chatScrollAnchorHoldUntil = 0;
 let chatScrollAnchorSaveTimer = null;
+let chatScrollPinnedToBottom = false;
 let adminTapCount = 0;
 let adminTapResetTimer = null;
 let lastAdminTapAt = 0;
@@ -3677,6 +3678,8 @@ function preserveChatScroll(callback) {
     const restore = () => {
         if (pinnedAnchor?.isConnected) {
             container.scrollTop += pinnedAnchor.offsetTop - pinnedTop;
+        } else if (chatScrollAnchorHoldUntil > Date.now() && chatScrollPinnedToBottom) {
+            container.scrollTop = container.scrollHeight;
         } else if (wasNearBottom) {
             container.scrollTop = container.scrollHeight;
         } else {
@@ -3739,6 +3742,7 @@ function initChatScrollAnchorTracking() {
     container.addEventListener('scroll', () => {
         if (document.getElementById('chatMessages')?.classList.contains('history-loading')) return;
         chatScrollAnchorHoldUntil = 0;
+        chatScrollPinnedToBottom = false;
         scheduleChatScrollAnchorSave();
     }, { passive: true });
 }
@@ -8162,6 +8166,7 @@ function setMobileWorkspaceView(view, options = {}) {
 
     currentMobileWorkspaceView = view;
     appShell.dataset.mobileView = view;
+    appShell.querySelector('.main-layout')?.style.removeProperty('transform');
     document.querySelectorAll('.mobile-workspace-button[data-mobile-view]').forEach(button => {
         const active = button.dataset.mobileView === view;
         button.classList.toggle('active', active);
@@ -8197,30 +8202,91 @@ function getAdjacentWorkspaceView(delta) {
     return views[nextIndex];
 }
 
+function getWorkspaceViewIndex(view = currentMobileWorkspaceView) {
+    return Math.max(0, ['devices', 'chat', 'editor'].indexOf(view));
+}
+
+function getWorkspaceViewByIndex(index) {
+    return ['devices', 'chat', 'editor'][Math.min(2, Math.max(0, index))] || 'chat';
+}
+
 function initWorkspaceSwipeNavigation() {
     const appShell = document.getElementById('appShell');
     if (!appShell) return;
+    const track = appShell.querySelector('.main-layout');
     let swipeStart = null;
+    const resetTrack = () => {
+        track?.classList.remove('is-workspace-dragging');
+        track?.style.removeProperty('transform');
+        swipeStart = null;
+    };
     appShell.addEventListener('pointerdown', event => {
         if (!window.matchMedia('(max-width: 767px)').matches) return;
         if (event.pointerType !== 'touch') return;
         if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(event.target)) return;
-        swipeStart = { x: event.clientX, y: event.clientY, target: event.target };
+        const index = getWorkspaceViewIndex();
+        swipeStart = {
+            x: event.clientX,
+            y: event.clientY,
+            lastX: event.clientX,
+            lastAt: performance.now(),
+            velocity: 0,
+            target: event.target,
+            index,
+            width: Math.max(1, appShell.clientWidth || window.innerWidth || 1),
+            dragging: false
+        };
+        try {
+            appShell.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
+    }, { passive: true });
+    appShell.addEventListener('pointermove', event => {
+        if (!swipeStart) return;
+        if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(swipeStart.target)) {
+            resetTrack();
+            return;
+        }
+        const dx = event.clientX - swipeStart.x;
+        const dy = event.clientY - swipeStart.y;
+        const now = performance.now();
+        const dt = Math.max(1, now - swipeStart.lastAt);
+        swipeStart.velocity = (event.clientX - swipeStart.lastX) / dt;
+        swipeStart.lastX = event.clientX;
+        swipeStart.lastAt = now;
+        if (!swipeStart.dragging) {
+            if (Math.abs(dx) < 8) return;
+            if (Math.abs(dx) < Math.abs(dy) * 1.08) return;
+            swipeStart.dragging = true;
+            track?.classList.add('is-workspace-dragging');
+        }
+        event.preventDefault();
+        const minOffset = -2 * swipeStart.width;
+        const maxOffset = 0;
+        const resistance = (swipeStart.index === 0 && dx > 0) || (swipeStart.index === 2 && dx < 0) ? 0.32 : 1;
+        const nextOffset = Math.max(minOffset, Math.min(maxOffset, (-swipeStart.index * swipeStart.width) + dx * resistance));
+        if (track) track.style.transform = `translateX(${nextOffset}px)`;
     });
     appShell.addEventListener('pointerup', event => {
         if (!swipeStart) return;
         const start = swipeStart;
         swipeStart = null;
-        if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(start.target)) return;
+        track?.classList.remove('is-workspace-dragging');
+        if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(start.target)) {
+            track?.style.removeProperty('transform');
+            return;
+        }
         const dx = event.clientX - start.x;
         const dy = event.clientY - start.y;
-        if (Math.abs(dx) < 68 || Math.abs(dx) < Math.abs(dy) * 1.35) return;
-        const nextView = getAdjacentWorkspaceView(dx < 0 ? 1 : -1);
-        if (nextView !== currentMobileWorkspaceView) setMobileWorkspaceView(nextView);
+        const shouldChange = start.dragging && Math.abs(dx) > Math.min(96, start.width * 0.22) && Math.abs(dx) > Math.abs(dy) * 0.72;
+        const velocityChange = start.dragging && Math.abs(start.velocity) > 0.55 && Math.abs(dx) > 32;
+        const nextIndex = shouldChange || velocityChange
+            ? start.index + (dx < 0 ? 1 : -1)
+            : start.index;
+        setMobileWorkspaceView(getWorkspaceViewByIndex(nextIndex));
     });
     ['pointercancel', 'pointerleave'].forEach(eventName => {
         appShell.addEventListener(eventName, () => {
-            swipeStart = null;
+            resetTrack();
         });
     });
 }
@@ -8255,6 +8321,13 @@ async function showJoinedSessionSwitcher() {
     });
     dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
     const scroller = dialog.querySelector('#sessionSwitcherList');
+    const updateScrollButtons = () => {
+        if (!scroller) return;
+        const hasOverflow = scroller.scrollHeight > scroller.clientHeight + 2;
+        dialog.querySelectorAll('.session-switch-scroll').forEach(button => {
+            button.hidden = !hasOverflow;
+        });
+    };
     dialog.querySelectorAll('[data-scroll]').forEach(button => {
         button.addEventListener('click', () => {
             const direction = Number(button.dataset.scroll) || 1;
@@ -8262,10 +8335,13 @@ async function showJoinedSessionSwitcher() {
         });
     });
     requestAnimationFrame(() => {
+        updateScrollButtons();
         const current = scroller?.querySelector('.session-switch-item.is-current');
         if (!current || !scroller) return;
         current.scrollIntoView({ block: 'center', inline: 'nearest' });
+        requestAnimationFrame(updateScrollButtons);
     });
+    window.addEventListener('resize', updateScrollButtons, { once: true });
     dialog.querySelectorAll('[data-session-id]').forEach(button => {
         button.addEventListener('click', () => {
             const sessionId = button.dataset.sessionId;
@@ -8689,6 +8765,9 @@ function initUI() {
     document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
         if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
         if (shouldIgnorePreviewGestureTarget(event.target)) return;
+        try {
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
         filePreviewPointerStart = { x: event.clientX, y: event.clientY, target: event.target, pointerType: event.pointerType };
     }, true);
     document.getElementById('filePreviewViewer')?.addEventListener('pointerup', event => {
@@ -8699,12 +8778,12 @@ function initUI() {
         const pointerType = filePreviewPointerStart.pointerType;
         filePreviewPointerStart = null;
         if (shouldIgnorePreviewGestureTarget(startTarget)) return;
-        if (Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        if (Math.abs(dx) > 38 && Math.abs(dx) > Math.abs(dy) * 1.12) {
             event.preventDefault();
             navigateFilePreview(dx < 0 ? 1 : -1).catch(err => historyLog('file-preview-swipe-navigate-failed', { error: err.message }));
             return;
         }
-        if (pointerType === 'touch' && Math.abs(dy) > 74 && Math.abs(dy) > Math.abs(dx) * 1.45) {
+        if (pointerType === 'touch' && Math.abs(dy) > 46 && Math.abs(dy) > Math.abs(dx) * 1.22) {
             event.preventDefault();
             if (dy < 0 && activeFilePreviewCanFullscreen && isPreviewMediaTarget(startTarget)) {
                 openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
@@ -8723,6 +8802,9 @@ function initUI() {
     });
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
         if (event.target.closest?.('button')) return;
+        try {
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+        } catch (_) {}
         mediaFullscreenPointerStart = { x: event.clientX, y: event.clientY, pointerType: event.pointerType };
     }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerup', event => {
@@ -8731,12 +8813,12 @@ function initUI() {
         const dy = event.clientY - mediaFullscreenPointerStart.y;
         const pointerType = mediaFullscreenPointerStart.pointerType;
         mediaFullscreenPointerStart = null;
-        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        if (Math.abs(dx) > 38 && Math.abs(dx) > Math.abs(dy) * 1.12) {
             event.preventDefault();
             navigateMediaFullscreen(dx < 0 ? 1 : -1);
             return;
         }
-        if (pointerType === 'touch' && dy > 78 && Math.abs(dy) > Math.abs(dx) * 1.45) {
+        if (pointerType === 'touch' && dy > 42 && Math.abs(dy) > Math.abs(dx) * 1.18) {
             event.preventDefault();
             closeMediaFullscreen();
         }
@@ -9638,11 +9720,17 @@ async function loadSessionData() {
                     const anchor = chatScrollAnchorMessageId ? getMessageElement(chatScrollAnchorMessageId) : null;
                     if (anchor) {
                         anchor.scrollIntoView({ block: 'center', inline: 'nearest' });
-                        chatScrollAnchorHoldUntil = Date.now() + 2600;
+                        chatScrollPinnedToBottom = false;
+                        chatScrollAnchorHoldUntil = Date.now() + 8000;
                     } else {
                         chatMessages.scrollTop = chatMessages.scrollHeight;
+                        chatScrollPinnedToBottom = true;
+                        chatScrollAnchorHoldUntil = Date.now() + 8000;
                     }
-                    requestAnimationFrame(() => chatMessages.classList.remove('history-loading'));
+                    requestAnimationFrame(() => {
+                        chatMessages.classList.remove('history-loading');
+                        scheduleChatScrollAnchorSave();
+                    });
                 });
             }
         }
