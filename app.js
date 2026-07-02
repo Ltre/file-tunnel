@@ -4659,6 +4659,20 @@ let activeFilePreviewMessageId = '';
 let activeFilePreviewOwnerDeviceId = '';
 let activeFilePreviewCanFullscreen = false;
 let activeFilePreviewMediaType = '';
+let activeFilePreviewStoredFile = null;
+let activeFilePreviewObjectUrl = '';
+
+const musicPlayer = {
+    audio: null,
+    queue: [],
+    currentIndex: -1,
+    overlay: null,
+    tempAudio: null,
+    tempResumeBackground: false,
+    tempPreviewFileId: '',
+    miniEnabled: false,
+    progressTimer: null
+};
 
 function getFileExtension(fileName) {
     const name = String(fileName || '');
@@ -4687,6 +4701,7 @@ function closeFilePreview(options = {}) {
     if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
         closeMediaFullscreen({ fromHistory: true, forceClose: true });
     }
+    stopTemporaryAudioPreview();
     if (filePreviewReturnCollectionMessageId && !options.forceClose) {
         if (!options.fromHistory && filePreviewNestedHistoryOpen && history.state?.[FILE_PREVIEW_HISTORY_KEY] === true) {
             history.back();
@@ -4719,7 +4734,10 @@ function closeFilePreview(options = {}) {
     activeFilePreviewOwnerDeviceId = '';
     activeFilePreviewCanFullscreen = false;
     activeFilePreviewMediaType = '';
+    activeFilePreviewStoredFile = null;
+    activeFilePreviewObjectUrl = '';
     setFilePreviewFullscreenButton(false);
+    setFilePreviewMusicButton(false);
     viewer.classList.remove('active');
     filePreviewPointerStart = null;
     const content = document.getElementById('filePreviewContent');
@@ -4908,6 +4926,13 @@ function isFullscreenPreviewableType(type) {
 
 function setFilePreviewFullscreenButton(visible) {
     const button = document.getElementById('filePreviewFullscreenBtn');
+    if (!button) return;
+    button.hidden = !visible;
+    button.disabled = !visible;
+}
+
+function setFilePreviewMusicButton(visible) {
+    const button = document.getElementById('filePreviewMusicBtn');
     if (!button) return;
     button.hidden = !visible;
     button.disabled = !visible;
@@ -5333,6 +5358,333 @@ function isInlineDocument() {
     return false;
 }
 
+function formatAudioTime(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value < 0) return '0:00';
+    const total = Math.floor(value);
+    const minutes = Math.floor(total / 60);
+    const rest = String(total % 60).padStart(2, '0');
+    return `${minutes}:${rest}`;
+}
+
+function showAppToast(message) {
+    if (typeof showToast === 'function') {
+        showToast(message);
+        return;
+    }
+    const toast = document.createElement('div');
+    toast.className = 'device-details-toast';
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    toast.style.position = 'fixed';
+    toast.style.right = '16px';
+    toast.style.bottom = 'calc(18px + env(safe-area-inset-bottom))';
+    setTimeout(() => toast.remove(), 2200);
+}
+
+function isBackgroundMusicPlaying() {
+    return Boolean(musicPlayer.audio && !musicPlayer.audio.paused && !musicPlayer.audio.ended);
+}
+
+function ensureBackgroundAudio() {
+    if (musicPlayer.audio) return musicPlayer.audio;
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.addEventListener('timeupdate', updateMusicPlayerProgress);
+    audio.addEventListener('loadedmetadata', updateMusicPlayerProgress);
+    audio.addEventListener('play', () => {
+        updateMusicPlayerPlayState();
+        startMusicPlayerProgressTimer();
+    });
+    audio.addEventListener('pause', () => {
+        updateMusicPlayerPlayState();
+        stopMusicPlayerProgressTimer();
+    });
+    audio.addEventListener('ended', playNextMusicTrack);
+    musicPlayer.audio = audio;
+    return audio;
+}
+
+function stopMusicPlayerProgressTimer() {
+    if (musicPlayer.progressTimer) clearInterval(musicPlayer.progressTimer);
+    musicPlayer.progressTimer = null;
+}
+
+function startMusicPlayerProgressTimer() {
+    stopMusicPlayerProgressTimer();
+    musicPlayer.progressTimer = setInterval(updateMusicPlayerProgress, 500);
+}
+
+async function buildAudioTrack(fileInfo, storedFile, url) {
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    const extension = getFileExtension(fileInfo.name || storedFile?.name || '').toUpperCase();
+    const poster = storedFile?.audioPoster || await ensureAudioPosterCache(storedFile, fileInfo).catch(() => '');
+    return {
+        id: fileInfo.id,
+        fileInfo: { ...fileInfo },
+        name: fileInfo.name || storedFile?.name || 'Audio',
+        artist: '未知艺术家',
+        album: '未知专辑',
+        url,
+        poster,
+        size: Number(fileInfo.size || storedFile?.size || 0),
+        type: type || 'audio/*',
+        codec: extension || type || '未知',
+        duration: 0,
+        bitrate: '',
+        sampleRate: ''
+    };
+}
+
+function getCurrentMusicTrack() {
+    return musicPlayer.queue[musicPlayer.currentIndex] || null;
+}
+
+function setTopbarMusicVisible(visible) {
+    const button = document.getElementById('topbarMusicBtn');
+    if (!button) return;
+    button.hidden = !visible;
+}
+
+function ensureMusicPlayerOverlay() {
+    if (musicPlayer.overlay) return musicPlayer.overlay;
+    const overlay = document.createElement('div');
+    overlay.id = 'musicPlayerOverlay';
+    overlay.className = 'music-player-overlay';
+    overlay.innerHTML = `
+        <div class="music-player-topbar">
+            <button class="music-player-icon-button" id="musicPlayerMinimizeBtn" type="button" title="最小化">_</button>
+            <button class="music-player-icon-button" id="musicPlayerCloseBtn" type="button" title="关闭">×</button>
+        </div>
+        <div class="music-player-body">
+            <div class="music-player-cover" id="musicPlayerCover"></div>
+            <div class="music-player-title" id="musicPlayerTitle"></div>
+            <div class="music-player-subtitle" id="musicPlayerSubtitle"></div>
+            <input class="music-player-range" id="musicPlayerRange" type="range" min="0" max="1000" value="0">
+            <div class="music-player-times"><span id="musicPlayerCurrentTime">0:00</span><span id="musicPlayerDuration">0:00</span></div>
+            <div class="music-player-controls">
+                <button class="music-player-icon-button" id="musicPlayerPrevBtn" type="button">‹</button>
+                <button class="music-player-main-button" id="musicPlayerPlayBtn" type="button">▶</button>
+                <button class="music-player-icon-button" id="musicPlayerNextBtn" type="button">›</button>
+            </div>
+            <div class="music-player-meta" id="musicPlayerMeta"></div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#musicPlayerMinimizeBtn')?.addEventListener('click', minimizeMusicPlayer);
+    overlay.querySelector('#musicPlayerCloseBtn')?.addEventListener('click', closeMusicPlayer);
+    overlay.querySelector('#musicPlayerPrevBtn')?.addEventListener('click', playPreviousMusicTrack);
+    overlay.querySelector('#musicPlayerNextBtn')?.addEventListener('click', playNextMusicTrack);
+    overlay.querySelector('#musicPlayerPlayBtn')?.addEventListener('click', toggleBackgroundMusic);
+    overlay.querySelector('#musicPlayerRange')?.addEventListener('input', event => {
+        const audio = ensureBackgroundAudio();
+        const duration = Number(audio.duration || getCurrentMusicTrack()?.duration || 0);
+        if (duration > 0) audio.currentTime = duration * (Number(event.target.value) / 1000);
+    });
+    musicPlayer.overlay = overlay;
+    return overlay;
+}
+
+function renderMusicPlayer() {
+    const overlay = ensureMusicPlayerOverlay();
+    const track = getCurrentMusicTrack();
+    const cover = overlay.querySelector('#musicPlayerCover');
+    const title = overlay.querySelector('#musicPlayerTitle');
+    const subtitle = overlay.querySelector('#musicPlayerSubtitle');
+    const meta = overlay.querySelector('#musicPlayerMeta');
+    if (!track) return;
+    cover.innerHTML = track.poster
+        ? `<img src="${track.poster}" alt="${escapeHtml(track.name)}">`
+        : '<div class="music-player-cover-placeholder">♪</div>';
+    title.textContent = track.name;
+    subtitle.textContent = `${track.artist || '未知艺术家'} · ${track.album || '未知专辑'}`;
+    meta.innerHTML = `
+        <div>时长: ${formatAudioTime(track.duration)}</div>
+        <div>比特率: ${track.bitrate || '未知'}</div>
+        <div>采样率: ${track.sampleRate || '未知'}</div>
+        <div>编码: ${escapeHtml(track.codec || track.type || '未知')}</div>
+    `;
+    updateMusicPlayerProgress();
+    updateMusicPlayerPlayState();
+}
+
+function updateMusicPlayerProgress() {
+    const overlay = musicPlayer.overlay;
+    if (!overlay) return;
+    const audio = musicPlayer.audio;
+    const track = getCurrentMusicTrack();
+    const duration = Number(audio?.duration || track?.duration || 0);
+    const current = Number(audio?.currentTime || 0);
+    if (track && duration > 0) {
+        track.duration = duration;
+        if (track.size && !track.bitrate) track.bitrate = `${Math.round((track.size * 8) / duration / 1000)} kbps`;
+    }
+    const range = overlay.querySelector('#musicPlayerRange');
+    if (range) range.value = duration > 0 ? String(Math.round((current / duration) * 1000)) : '0';
+    overlay.querySelector('#musicPlayerCurrentTime').textContent = formatAudioTime(current);
+    overlay.querySelector('#musicPlayerDuration').textContent = formatAudioTime(duration);
+    const meta = overlay.querySelector('#musicPlayerMeta');
+    if (meta && track) {
+        meta.children[0].textContent = `时长: ${formatAudioTime(track.duration || duration)}`;
+        meta.children[1].textContent = `比特率: ${track.bitrate || '未知'}`;
+    }
+}
+
+function updateMusicPlayerPlayState() {
+    const button = musicPlayer.overlay?.querySelector('#musicPlayerPlayBtn');
+    if (button) button.textContent = isBackgroundMusicPlaying() ? 'Ⅱ' : '▶';
+}
+
+async function activateMusicTrack(track, options = {}) {
+    if (!track?.id) return;
+    const existingIndex = musicPlayer.queue.findIndex(item => item.id === track.id);
+    const audio = ensureBackgroundAudio();
+    if (existingIndex >= 0) {
+        musicPlayer.currentIndex = existingIndex;
+        const existing = musicPlayer.queue[existingIndex];
+        Object.assign(existing, track);
+        track = existing;
+    } else {
+        const insertAt = musicPlayer.currentIndex >= 0 ? musicPlayer.currentIndex + 1 : musicPlayer.queue.length;
+        musicPlayer.queue.splice(insertAt, 0, track);
+        musicPlayer.currentIndex = insertAt;
+    }
+    if (audio.src !== track.url) audio.src = track.url;
+    renderMusicPlayer();
+    if (options.play !== false) await audio.play().catch(err => historyLog('music-player-play-failed', { fileId: track.id, error: err.message }));
+    musicPlayer.miniEnabled = true;
+    setTopbarMusicVisible(true);
+}
+
+async function openMusicPlayerFromActivePreview() {
+    if (!activeFilePreviewFileId || !activeFilePreviewStoredFile || !activeFilePreviewObjectUrl) return;
+    const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
+    const track = await buildAudioTrack(fileInfo || activeFilePreviewStoredFile, activeFilePreviewStoredFile, activeFilePreviewObjectUrl);
+    stopTemporaryAudioPreview({ resumeBackground: false });
+    await activateMusicTrack(track, { play: true });
+    ensureMusicPlayerOverlay().classList.add('active');
+}
+
+function minimizeMusicPlayer() {
+    musicPlayer.overlay?.classList.remove('active');
+    musicPlayer.miniEnabled = true;
+    setTopbarMusicVisible(Boolean(getCurrentMusicTrack()));
+}
+
+function closeMusicPlayer() {
+    musicPlayer.overlay?.classList.remove('active');
+    ensureBackgroundAudio().pause();
+    musicPlayer.miniEnabled = false;
+    setTopbarMusicVisible(false);
+}
+
+function toggleBackgroundMusic() {
+    const audio = ensureBackgroundAudio();
+    if (audio.paused) audio.play().catch(err => historyLog('music-player-play-failed', { error: err.message }));
+    else audio.pause();
+}
+
+function playNextMusicTrack() {
+    if (!musicPlayer.queue.length) return;
+    musicPlayer.currentIndex = (musicPlayer.currentIndex + 1) % musicPlayer.queue.length;
+    const track = getCurrentMusicTrack();
+    if (!track) return;
+    const audio = ensureBackgroundAudio();
+    audio.src = track.url;
+    renderMusicPlayer();
+    audio.play().catch(err => historyLog('music-player-next-failed', { error: err.message }));
+}
+
+function playPreviousMusicTrack() {
+    if (!musicPlayer.queue.length) return;
+    musicPlayer.currentIndex = (musicPlayer.currentIndex - 1 + musicPlayer.queue.length) % musicPlayer.queue.length;
+    const track = getCurrentMusicTrack();
+    if (!track) return;
+    const audio = ensureBackgroundAudio();
+    audio.src = track.url;
+    renderMusicPlayer();
+    audio.play().catch(err => historyLog('music-player-prev-failed', { error: err.message }));
+}
+
+function pauseBackgroundForTemporaryPreview(fileId) {
+    const shouldResumeLater = musicPlayer.tempResumeBackground || isBackgroundMusicPlaying();
+    if (musicPlayer.tempAudio) {
+        musicPlayer.tempAudio.pause();
+        musicPlayer.tempAudio.src = '';
+    }
+    musicPlayer.tempResumeBackground = shouldResumeLater;
+    musicPlayer.tempPreviewFileId = fileId || '';
+    if (musicPlayer.tempResumeBackground) ensureBackgroundAudio().pause();
+}
+
+function stopTemporaryAudioPreview(options = {}) {
+    const audio = musicPlayer.tempAudio;
+    const shouldResume = options.resumeBackground !== false && musicPlayer.tempResumeBackground;
+    if (audio) {
+        audio.pause();
+        audio.src = '';
+    }
+    musicPlayer.tempAudio = null;
+    musicPlayer.tempPreviewFileId = '';
+    musicPlayer.tempResumeBackground = false;
+    if (shouldResume && getCurrentMusicTrack()) {
+        ensureBackgroundAudio().play()
+            .then(() => showAppToast('后台音乐已恢复播放'))
+            .catch(err => historyLog('music-background-resume-failed', { error: err.message }));
+    }
+}
+
+function renderAudioPreview(content, fileInfo, storedFile, url) {
+    setFilePreviewContentStage('preview-media-stage');
+    content.replaceChildren();
+    pauseBackgroundForTemporaryPreview(fileInfo.id);
+    const poster = storedFile.audioPoster || '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'audio-preview-player';
+    wrapper.innerHTML = `
+        <div class="audio-preview-cover">
+            ${poster ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}">` : '<div class="audio-preview-cover-placeholder">♪</div>'}
+            <button class="audio-preview-toggle" type="button" aria-label="播放或暂停">▶</button>
+        </div>
+        <div class="audio-preview-name">${escapeHtml(fileInfo.name || storedFile.name || 'Audio')}</div>
+        <div class="audio-preview-progress">
+            <input class="audio-preview-range" type="range" min="0" max="1000" value="0">
+            <div class="audio-preview-time"><span>0:00</span><span>0:00</span></div>
+        </div>
+    `;
+    const audio = new Audio(url);
+    audio.autoplay = true;
+    audio.preload = 'metadata';
+    audio.dataset.previewFileId = fileInfo.id;
+    musicPlayer.tempAudio = audio;
+    const toggle = wrapper.querySelector('.audio-preview-toggle');
+    const range = wrapper.querySelector('.audio-preview-range');
+    const current = wrapper.querySelector('.audio-preview-time span:first-child');
+    const duration = wrapper.querySelector('.audio-preview-time span:last-child');
+    const sync = () => {
+        const total = Number(audio.duration || 0);
+        current.textContent = formatAudioTime(audio.currentTime || 0);
+        duration.textContent = formatAudioTime(total);
+        range.value = total > 0 ? String(Math.round((audio.currentTime / total) * 1000)) : '0';
+        toggle.textContent = audio.paused ? '▶' : 'Ⅱ';
+    };
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('loadedmetadata', sync);
+    audio.addEventListener('play', sync);
+    audio.addEventListener('pause', sync);
+    range.addEventListener('input', () => {
+        const total = Number(audio.duration || 0);
+        if (total > 0) audio.currentTime = total * (Number(range.value) / 1000);
+    });
+    toggle.addEventListener('click', () => {
+        if (audio.paused) audio.play().catch(err => historyLog('audio-preview-play-failed', { fileId: fileInfo.id, error: err.message }));
+        else audio.pause();
+    });
+    content.appendChild(wrapper);
+    audio.play().catch(err => historyLog('audio-preview-autoplay-failed', { fileId: fileInfo.id, error: err.message }));
+    sync();
+}
+
 async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (!fileInfo?.id) return false;
     const title = document.getElementById('filePreviewTitle');
@@ -5347,7 +5699,10 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     activeFilePreviewOwnerDeviceId = ownerDeviceId;
     activeFilePreviewCanFullscreen = false;
     activeFilePreviewMediaType = '';
+    activeFilePreviewStoredFile = null;
+    activeFilePreviewObjectUrl = '';
     setFilePreviewFullscreenButton(false);
+    setFilePreviewMusicButton(false);
 
     title.textContent = fileInfo.name || '文件预览';
     renderFilePreviewLoading(content, fileInfo);
@@ -5398,6 +5753,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     }
 
     const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
+    activeFilePreviewStoredFile = storedFile;
     if (!isPreviewableFileType(type)) {
         renderFileMetadataPreview(content, fileInfo, '不可直接预览');
         await renderSingleFilePreviewActions({
@@ -5421,6 +5777,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     content.replaceChildren();
 
     const url = getStoredFileUrl(fileInfo.id, storedFile);
+    activeFilePreviewObjectUrl = url;
     if (type.startsWith('image/')) {
         const image = document.createElement('img');
         image.src = url;
@@ -5444,19 +5801,13 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         fitPreviewMediaElement(video, content);
         video.play().catch(() => {});
     } else if (type.startsWith('audio/')) {
-        const audio = document.createElement('audio');
-        audio.src = url;
-        audio.controls = true;
-        audio.autoplay = true;
-        audio.dataset.previewFileId = fileInfo.id;
-        audio.className = 'file-preview-media-audio';
-        content.appendChild(audio);
-        audio.play().catch(() => {});
+        renderAudioPreview(content, fileInfo, storedFile, url);
     }
 
     activeFilePreviewCanFullscreen = isFullscreenPreviewableType(type);
     activeFilePreviewMediaType = type;
     setFilePreviewFullscreenButton(activeFilePreviewCanFullscreen);
+    setFilePreviewMusicButton(type.startsWith('audio/'));
     await renderSingleFilePreviewActions({
         messageId: options.messageId || '',
         fileInfo,
@@ -9069,6 +9420,10 @@ function initThemeSwitcher() {
         applyTheme(next);
         historyLog('theme-changed', { theme: next, source: 'topbar-cycle' });
     });
+    document.getElementById('topbarMusicBtn')?.addEventListener('click', () => {
+        ensureMusicPlayerOverlay().classList.add('active');
+        renderMusicPlayer();
+    });
 }
 
 function initUI() {
@@ -9205,6 +9560,9 @@ function initUI() {
     document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
     document.getElementById('filePreviewFullscreenBtn')?.addEventListener('click', () => {
         openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
+    });
+    document.getElementById('filePreviewMusicBtn')?.addEventListener('click', () => {
+        openMusicPlayerFromActivePreview().catch(err => historyLog('music-player-open-failed', { error: err.message }));
     });
     document.getElementById('filePreviewPrevBtn')?.addEventListener('click', () => {
         navigateFilePreview(-1).catch(err => historyLog('file-preview-navigate-failed', { direction: -1, error: err.message }));

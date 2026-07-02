@@ -106,3 +106,14 @@
 - Split multi-file sends also publish each transfer record first, then prepare the actual local file asset cache in a background outbound queue.
 - The background queue saves file bytes, announces resource availability, refreshes the affected transfer record, and then lets the existing media-poster queue generate video/audio thumbnails.
 - Own-device auto cache restore is disabled for these just-published deferred records, avoiding fake self-download progress before the local outbound cache is ready.
+## 2026-07-02 Audio Preview and Background Music Player
+
+### Temporary Listening
+- Audio file preview no longer renders a plain native audio control. It now shows a cover-first preview card with filename, seek bar, time display, and a centered play/pause control.
+- Opening an audio preview starts temporary listening and pauses any active background music queue. Closing the preview restores the previous background queue playback and shows a short toast when restoration succeeds.
+
+### Full Music Player
+- Audio previews expose a live music-note button beside the close control. Clicking it promotes the current audio file into the background music queue and opens a fullscreen music player.
+- If another track is focused in the background queue, the previewed track is inserted and played immediately. If the same track is already focused, playback continues from the existing position.
+- The fullscreen player supports cover art, track title, artist/album placeholders, duration, estimated bitrate, sample-rate placeholder, codec display, seek, play/pause, previous/next, and minimize.
+- Once the fullscreen player has been opened, the top bar shows a live music-note button for returning from minimized playback.
