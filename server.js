@@ -19,6 +19,7 @@ const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
 const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
+const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
@@ -73,13 +74,54 @@ const MAX_DEBUG_LOGS = 5000;
 const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
-const telegramConfig = projectConfig.telegramBot && typeof projectConfig.telegramBot === 'object'
-    ? projectConfig.telegramBot
-    : {};
-const TELEGRAM_BOT_ENABLED = telegramConfig.enabled === true && typeof telegramConfig.token === 'string' && telegramConfig.token.trim();
-const TELEGRAM_BOT_TOKEN = TELEGRAM_BOT_ENABLED ? telegramConfig.token.trim() : '';
-const TELEGRAM_WEBHOOK_SECRET = typeof telegramConfig.webhookSecret === 'string' ? telegramConfig.webhookSecret.trim() : '';
-const TELEGRAM_MAX_FILE_SIZE = Math.max(1, Number(telegramConfig.maxFileSize || 500 * 1024 * 1024));
+let telegramConfig = loadTelegramBotConfig();
+
+function normalizeTelegramBotConfig(config = {}) {
+    const token = sanitizeString(config.token || '', 260);
+    const webhookSecret = sanitizeString(config.webhookSecret || '', 160);
+    const maxFileSize = Math.max(1, Number(config.maxFileSize || 500 * 1024 * 1024));
+    return {
+        enabled: Boolean(token),
+        token,
+        webhookSecret,
+        maxFileSize
+    };
+}
+
+function loadTelegramBotConfig() {
+    try {
+        const raw = fs.readFileSync(TELEGRAM_BOT_CONFIG_PATH, 'utf8');
+        return normalizeTelegramBotConfig(JSON.parse(raw));
+    } catch {
+        return normalizeTelegramBotConfig({});
+    }
+}
+
+function saveTelegramBotConfig(config) {
+    const normalized = normalizeTelegramBotConfig(config);
+    fs.mkdirSync(SERVER_DATA_DIR, { recursive: true });
+    const tmpPath = `${TELEGRAM_BOT_CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(normalized, null, 2));
+    fs.renameSync(tmpPath, TELEGRAM_BOT_CONFIG_PATH);
+    telegramConfig = normalized;
+    return normalized;
+}
+
+function isTelegramBotEnabled() {
+    return telegramConfig.enabled === true && Boolean(telegramConfig.token);
+}
+
+function getTelegramBotToken() {
+    return telegramConfig.token || '';
+}
+
+function getTelegramWebhookSecret() {
+    return telegramConfig.webhookSecret || '';
+}
+
+function getTelegramMaxFileSize() {
+    return Math.max(1, Number(telegramConfig.maxFileSize || 500 * 1024 * 1024));
+}
 
 function loadProjectConfig() {
     try {
@@ -193,8 +235,9 @@ app.get('/api/server-assets/:assetId', (req, res) => {
 
 app.post('/api/telegram/webhook/:secret?', async (req, res) => {
     try {
-        if (!TELEGRAM_BOT_ENABLED) return res.status(404).json({ ok: false, error: 'telegram-bot-disabled' });
-        if (TELEGRAM_WEBHOOK_SECRET && req.params.secret !== TELEGRAM_WEBHOOK_SECRET) {
+        if (!isTelegramBotEnabled()) return res.status(404).json({ ok: false, error: 'telegram-bot-disabled' });
+        const webhookSecret = getTelegramWebhookSecret();
+        if (webhookSecret && req.params.secret !== webhookSecret) {
             return res.status(403).json({ ok: false, error: 'invalid-secret' });
         }
         const message = req.body?.message || req.body?.edited_message;
@@ -293,6 +336,47 @@ app.use(express.static(path.join(__dirname), {
 // 管理后台API
 app.get('/admin', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+app.get('/tgbot', (req, res) => {
+    res.sendFile(path.join(__dirname, 'tgbot.html'));
+});
+
+app.get('/api/telegram/config', (req, res) => {
+    const config = loadTelegramBotConfig();
+    res.json({
+        enabled: config.enabled,
+        tokenConfigured: Boolean(config.token),
+        tokenPreview: config.token ? `${config.token.slice(0, 8)}...${config.token.slice(-6)}` : '',
+        webhookSecretConfigured: Boolean(config.webhookSecret),
+        webhookSecretPreview: config.webhookSecret ? `${config.webhookSecret.slice(0, 6)}...${config.webhookSecret.slice(-4)}` : '',
+        maxFileSize: config.maxFileSize
+    });
+});
+
+app.post('/api/telegram/config', (req, res) => {
+    try {
+        const keepExistingToken = req.body?.keepExistingToken === true;
+        const keepExistingWebhookSecret = req.body?.keepExistingWebhookSecret === true;
+        const token = sanitizeString(req.body?.token || '', 260);
+        const webhookSecret = sanitizeString(req.body?.webhookSecret || '', 160);
+        const currentConfig = loadTelegramBotConfig();
+        const config = saveTelegramBotConfig({
+            token: token || (keepExistingToken ? currentConfig.token : ''),
+            webhookSecret: webhookSecret || (keepExistingWebhookSecret ? currentConfig.webhookSecret : ''),
+            maxFileSize: req.body?.maxFileSize || 500 * 1024 * 1024
+        });
+        res.json({
+            ok: true,
+            enabled: config.enabled,
+            tokenConfigured: Boolean(config.token),
+            webhookSecretConfigured: Boolean(config.webhookSecret),
+            maxFileSize: config.maxFileSize
+        });
+    } catch (err) {
+        console.error('save telegram config error:', err);
+        res.status(500).json({ ok: false, error: 'save-telegram-config-failed' });
+    }
 });
 
 app.get('/downloader', (req, res) => {
@@ -1051,8 +1135,8 @@ function getTelegramFileFromMessage(message = {}) {
 }
 
 async function telegramApi(method, payload) {
-    if (!TELEGRAM_BOT_ENABLED) throw new Error('telegram-bot-disabled');
-    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
+    if (!isTelegramBotEnabled()) throw new Error('telegram-bot-disabled');
+    const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {})
@@ -1065,13 +1149,13 @@ async function telegramApi(method, payload) {
 }
 
 async function telegramSendMessage(chatId, text) {
-    if (!chatId || !TELEGRAM_BOT_ENABLED) return;
+    if (!chatId || !isTelegramBotEnabled()) return;
     await telegramApi('sendMessage', { chat_id: chatId, text }).catch(err => {
         console.warn(`telegram sendMessage failed: ${err.message}`);
     });
 }
 
-async function downloadTelegramFile(fileId, maxSize = TELEGRAM_MAX_FILE_SIZE) {
+async function downloadTelegramFile(fileId, maxSize = getTelegramMaxFileSize()) {
     const file = await telegramApi('getFile', { file_id: fileId });
     if (!file?.file_path) throw new Error('telegram-file-path-missing');
     const expectedSize = Number(file.file_size) || 0;
@@ -1080,7 +1164,7 @@ async function downloadTelegramFile(fileId, maxSize = TELEGRAM_MAX_FILE_SIZE) {
         err.fileSize = expectedSize;
         throw err;
     }
-    const response = await fetch(`https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${file.file_path}`);
+    const response = await fetch(`https://api.telegram.org/file/bot${getTelegramBotToken()}/${file.file_path}`);
     if (!response.ok) throw new Error(`telegram-file-download-${response.status}`);
     return Buffer.from(await response.arrayBuffer());
 }
@@ -1113,22 +1197,23 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
         return false;
     }
-    if (telegramFile.size > TELEGRAM_MAX_FILE_SIZE) {
-        await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+    const maxTelegramFileSize = getTelegramMaxFileSize();
+    if (telegramFile.size > maxTelegramFileSize) {
+        await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
         return false;
     }
     let data;
     try {
-        data = await downloadTelegramFile(telegramFile.fileId, TELEGRAM_MAX_FILE_SIZE);
+        data = await downloadTelegramFile(telegramFile.fileId, maxTelegramFileSize);
     } catch (err) {
         if (err.message === 'telegram-file-too-large-before-download') {
-            await telegramSendMessage(chatId, `文件太大，Telegram 显示该文件约 ${Math.round((err.fileSize || 0) / 1024 / 1024)}MB，超过当前接收上限 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+            await telegramSendMessage(chatId, `文件太大，Telegram 显示该文件约 ${Math.round((err.fileSize || 0) / 1024 / 1024)}MB，超过当前接收上限 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
             return false;
         }
         throw err;
     }
-    if (data.length > TELEGRAM_MAX_FILE_SIZE) {
-        await telegramSendMessage(chatId, `文件太大，下载后超过 ${Math.round(TELEGRAM_MAX_FILE_SIZE / 1024 / 1024)}MB。`);
+    if (data.length > maxTelegramFileSize) {
+        await telegramSendMessage(chatId, `文件太大，下载后超过 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
         return false;
     }
     fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });

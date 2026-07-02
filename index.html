@@ -2333,6 +2333,36 @@
             font-size: 0.95rem;
         }
 
+        .music-player-actions-strip {
+            display: flex;
+            width: 100%;
+            max-width: 100%;
+            gap: 8px;
+            overflow-x: auto;
+            overscroll-behavior-x: contain;
+            padding: 2px 2px 4px;
+            scrollbar-width: thin;
+        }
+
+        .music-player-action {
+            flex: 0 0 auto;
+            min-height: 34px;
+            border: 1px solid rgba(255,255,255,.18);
+            border-radius: 999px;
+            background: rgba(255,255,255,.08);
+            color: rgba(248,250,252,.92);
+            cursor: pointer;
+            font-size: .84rem;
+            padding: 0 12px;
+            white-space: nowrap;
+        }
+
+        .music-player-action.active {
+            border-color: rgba(250, 204, 21, .78);
+            background: rgba(250, 204, 21, .16);
+            color: #fde68a;
+        }
+
         .music-player-range {
             width: 100%;
             accent-color: #93c5fd;
@@ -2466,6 +2496,7 @@
         .music-player-queue-name {
             min-width: 0;
             overflow: hidden;
+            text-align: left;
             text-overflow: ellipsis;
             white-space: nowrap;
             font-weight: 700;
@@ -2474,6 +2505,7 @@
         .music-player-queue-meta {
             color: rgba(203, 213, 225, .72);
             font-size: .78rem;
+            text-align: left;
         }
 
         .music-player-queue-state {
@@ -3208,6 +3240,41 @@
             font-size: 0.82rem;
         }
 
+        .landing-session-picker {
+            display: grid;
+            gap: 8px;
+            margin: 14px 0 10px;
+            text-align: left;
+        }
+
+        .landing-session-picker[hidden] {
+            display: none;
+        }
+
+        .landing-session-picker label {
+            color: #52617e;
+            font-size: .82rem;
+        }
+
+        .landing-session-picker select {
+            width: 100%;
+            max-height: 220px;
+            min-height: 42px;
+            border: 1px solid #c9d0df;
+            border-radius: 8px;
+            background: #fff;
+            color: #26324d;
+            padding: 0 10px;
+        }
+
+        .landing-remember-choice {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: #52617e;
+            font-size: .82rem;
+        }
+
         .mobile-workspace-nav {
             display: none;
         }
@@ -3500,7 +3567,8 @@
 <body>
     <div class="tunnel-landing" id="sessionLanding" hidden>
         <main class="tunnel-landing-main">
-            <h1>请输入朋友分享给你的传输隧道暗号</h1>
+            <h1>请输入朋友给你的数据隧道暗号</h1>
+            <br>
             <p id="sharedFilesNotice" hidden></p>
             <div class="tunnel-code-inputs" id="tunnelCodeInputs" aria-label="5 位传输隧道暗号">
                 <input inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="1" aria-label="暗号第 1 位">
@@ -3508,6 +3576,14 @@
                 <input inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="1" aria-label="暗号第 3 位">
                 <input inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="1" aria-label="暗号第 4 位">
                 <input inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="1" aria-label="暗号第 5 位">
+            </div>
+            <div class="landing-session-picker" id="landingSessionPicker" hidden>
+                <label for="landingSessionSelect">选择已加入的传输隧道</label>
+                <select id="landingSessionSelect" size="1"></select>
+                <label class="landing-remember-choice">
+                    <input type="checkbox" id="landingRememberSession">
+                    <span>记住我的选择</span>
+                </label>
             </div>
             <div class="tunnel-landing-actions">
                 <button class="btn btn-primary" id="landingJoinBtn">加入传输隧道</button>

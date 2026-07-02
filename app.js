@@ -122,6 +122,8 @@ const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let lastLocalHistoryTimestamp = 0;
 const MUSIC_PLAYER_STORAGE_KEY = 'tunnelMusicPlayerQueue:v1';
+const MUSIC_LIBRARY_STORAGE_KEY = 'tunnelMusicLibrary:v1';
+const REMEMBERED_SESSION_STORAGE_KEY = 'tunnelRememberedSession:v1';
 let musicPlayerPersistTimer = null;
 let musicPlayerLastPersistAt = 0;
 
@@ -682,6 +684,7 @@ async function initSession() {
     const entryUrl = new URL(window.location.href);
     const hash = entryUrl.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
+        clearRememberedSessionChoice();
         state.sessionId = hash;
         const inviteId = entryUrl.searchParams.get('invite');
         const inviteFrom = entryUrl.searchParams.get('from');
@@ -710,16 +713,45 @@ async function initSession() {
         state.recentSessionId = recent?.sessionId || null;
         state.pendingSharedFileCount = sharedFiles.length;
 
-        if (entryUrl.searchParams.has('leave') || state.pendingSharedFileCount > 0 || !state.recentSessionId) return false;
+        const remembered = getRememberedSessionChoice();
+        const rememberedSession = remembered
+            ? storedSessions.find(session => session.sessionId === remembered && /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
+            : null;
+        if (!entryUrl.searchParams.has('leave') && state.pendingSharedFileCount === 0 && rememberedSession?.sessionId) {
+            state.sessionId = rememberedSession.sessionId;
+            state.shortCode = normalizeLocalShortCode(rememberedSession.shortCode);
+            state.sessionRemark = String(rememberedSession.remark || '').trim().slice(0, 60);
+            history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
+            updateSessionIdentityUi();
+            return true;
+        }
 
-        state.sessionId = state.recentSessionId;
-        state.shortCode = normalizeLocalShortCode(recent.shortCode);
-        state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
-        history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
+        return false;
     }
 
     updateSessionIdentityUi();
     return true;
+}
+
+function getRememberedSessionChoice() {
+    try {
+        const value = localStorage.getItem(REMEMBERED_SESSION_STORAGE_KEY) || '';
+        return /^[a-zA-Z0-9_-]{8,64}$/.test(value) ? value : '';
+    } catch {
+        return '';
+    }
+}
+
+function setRememberedSessionChoice(sessionId) {
+    if (/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId || '')) {
+        localStorage.setItem(REMEMBERED_SESSION_STORAGE_KEY, sessionId);
+    }
+}
+
+function clearRememberedSessionChoice() {
+    try {
+        localStorage.removeItem(REMEMBERED_SESSION_STORAGE_KEY);
+    } catch (_) {}
 }
 
 function normalizeLocalShortCode(value) {
@@ -743,6 +775,9 @@ function initSessionLanding() {
     const landing = document.getElementById('sessionLanding');
     const note = document.getElementById('landingNote');
     const recentButton = document.getElementById('landingRecentBtn');
+    const sessionPicker = document.getElementById('landingSessionPicker');
+    const sessionSelect = document.getElementById('landingSessionSelect');
+    const rememberSession = document.getElementById('landingRememberSession');
     const sharedFilesNotice = document.getElementById('sharedFilesNotice');
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
     landing.hidden = false;
@@ -757,9 +792,49 @@ function initSessionLanding() {
         sharedFilesNotice.hidden = false;
         sharedFilesNotice.textContent = `已收到 ${state.pendingSharedFileCount} 个分享文件，请选择要发送到的传输隧道。`;
     }
+    getAllFromStore('sessions').then(sessions => {
+        const validSessions = sessions
+            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
+            .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true, sensitivity: 'base' }));
+        if (!validSessions.length || !sessionPicker || !sessionSelect) return;
+        sessionSelect.replaceChildren();
+        const recentId = state.recentSessionId || validSessions.slice().sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0]?.sessionId || '';
+        validSessions.forEach(session => {
+            const option = document.createElement('option');
+            option.value = session.sessionId;
+            const code = normalizeLocalShortCode(session.shortCode);
+            const remark = String(session.remark || '').trim();
+            option.textContent = `${code || session.sessionId.slice(0, 8)}${remark ? ` · ${remark}` : ''}${session.sessionId === recentId ? ' · 最近使用' : ''}`;
+            if (session.sessionId === recentId) option.selected = true;
+            sessionSelect.appendChild(option);
+        });
+        sessionPicker.hidden = false;
+        state.recentSessionId = recentId || state.recentSessionId;
+        if (rememberSession) {
+            rememberSession.checked = getRememberedSessionChoice() === sessionSelect.value;
+            rememberSession.addEventListener('change', () => {
+                if (rememberSession.checked) setRememberedSessionChoice(sessionSelect.value);
+                else clearRememberedSessionChoice();
+            });
+        }
+        sessionSelect.addEventListener('change', () => {
+            if (rememberSession?.checked) setRememberedSessionChoice(sessionSelect.value);
+            else clearRememberedSessionChoice();
+        });
+        if (recentButton) {
+            recentButton.hidden = false;
+            recentButton.textContent = '进入所选隧道';
+        }
+    }).catch(err => historyLog('landing-session-picker-load-failed', { error: err.message }));
+
     if (state.recentSessionId) {
         recentButton.hidden = false;
-        recentButton.addEventListener('click', () => openSession(state.recentSessionId));
+        recentButton.addEventListener('click', () => {
+            const selected = sessionSelect?.value || state.recentSessionId;
+            if (rememberSession?.checked) setRememberedSessionChoice(selected);
+            else clearRememberedSessionChoice();
+            openSession(selected, { remember: rememberSession?.checked === true });
+        });
     }
 
     const fillCode = value => {
@@ -780,6 +855,7 @@ function initSessionLanding() {
             if (!response.ok) throw new Error('没有找到该传输隧道，或它已经被删除。');
             const data = await response.json();
             if (!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId || '')) throw new Error('传输隧道响应无效。');
+            clearRememberedSessionChoice();
             openSession(data.sessionId);
         } catch (err) {
             note.textContent = err.message;
@@ -815,12 +891,16 @@ function initSessionLanding() {
         });
     });
     document.getElementById('landingJoinBtn').addEventListener('click', join);
-    document.getElementById('landingCreateBtn').addEventListener('click', () => openSession(generateId()));
+    document.getElementById('landingCreateBtn').addEventListener('click', () => {
+        clearRememberedSessionChoice();
+        openSession(generateId());
+    });
     inputs[0].focus();
 }
 
-function openSession(sessionId) {
+function openSession(sessionId, options = {}) {
     if (!/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) return;
+    if (!options.remember) clearRememberedSessionChoice();
     const target = new URL(`${window.location.origin}${window.location.pathname}`);
     // A changed query forces a new document load. A hash-only assignment would
     // otherwise keep the chooser page alive without running application startup.
@@ -4890,7 +4970,7 @@ const musicPlayer = {
     queueDrag: null,
     mediaSessionReady: false,
     historyOpen: false,
-    hiddenAt: 0,
+    closeAfterHistory: false,
     tempAudio: null,
     tempResumeBackground: false,
     tempPreviewFileId: '',
@@ -5516,8 +5596,18 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
     const result = await response.json().catch(() => ({}));
     if (!response.ok || !result.url) throw new Error(result.error || '服务端未返回磁链');
     const copied = await copyTextToClipboard(result.url).catch(() => false);
-    alert(copied ? `磁链已复制\n${result.url}` : `磁链已生成，请手动复制\n${result.url}`);
+    if (navigator.share) {
+        await navigator.share({
+            title: fileInfo.name || storedFile.name || '文件磁链',
+            text: '分享一个即时传输隧道文件',
+            url: result.url
+        }).catch(err => {
+            if (err?.name !== 'AbortError') historyLog('file-magnet-system-share-failed', { fileId: fileInfo.id, error: err.message });
+        });
+    }
+    alert(copied ? `磁链已复制，可继续使用系统分享面板发送给朋友\n${result.url}` : `磁链已生成，请手动复制\n${result.url}`);
     historyLog('file-magnet-shared', { messageId, fileId: fileInfo.id, magnetId: result.id, copied });
+    return result;
 }
 
 async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false }) {
@@ -5628,6 +5718,40 @@ function serializeMusicTrack(track) {
         bitrate: track.bitrate || '',
         sampleRate: track.sampleRate || ''
     };
+}
+
+function getMusicLibrarySaveKey() {
+    return `${MUSIC_LIBRARY_STORAGE_KEY}:${state.deviceId || 'local'}`;
+}
+
+function getFavoriteMusicIds() {
+    try {
+        return new Set(JSON.parse(localStorage.getItem(getMusicLibrarySaveKey()) || '[]'));
+    } catch (_) {
+        return new Set();
+    }
+}
+
+function saveFavoriteMusicIds(ids) {
+    localStorage.setItem(getMusicLibrarySaveKey(), JSON.stringify(Array.from(ids).filter(Boolean)));
+}
+
+function isMusicTrackFavorite(track = getCurrentMusicTrack()) {
+    if (!track?.id) return false;
+    return getFavoriteMusicIds().has(track.id);
+}
+
+async function setMusicTrackFavorite(track, favorite) {
+    if (!track?.id) return;
+    const ids = getFavoriteMusicIds();
+    if (favorite) ids.add(track.id);
+    else ids.delete(track.id);
+    saveFavoriteMusicIds(ids);
+    const storedFile = await getFromStore('files', track.id).catch(() => null);
+    if (storedFile?.id) {
+        await saveToStore('files', { ...storedFile, mediaFavorite: Boolean(favorite) });
+    }
+    renderMusicPlayerActions();
 }
 
 function scheduleMusicPlayerPersist() {
@@ -5753,7 +5877,7 @@ function ensureBackgroundAudio() {
     });
     audio.addEventListener('ended', () => {
         scheduleMusicPlayerPersist();
-        playNextMusicTrack();
+        playNextMusicTrack({ fromEnded: true });
     });
     musicPlayer.audio = audio;
     return audio;
@@ -5880,6 +6004,106 @@ function updateMediaSessionPlaybackState() {
     }
 }
 
+async function getLocalAudioLibraryTracks() {
+    const files = typeof IDBKeyRange !== 'undefined'
+        ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+        : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+    const favoriteIds = getFavoriteMusicIds();
+    const preferFavorites = favoriteIds.size > 0;
+    const tracks = [];
+    for (const storedFile of files) {
+        if (!storedFile?.id || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
+        if (preferFavorites && !favoriteIds.has(storedFile.id)) continue;
+        const url = getStoredFileUrl(storedFile.id, storedFile);
+        tracks.push(await buildAudioTrack(storedFile, storedFile, url).catch(() => null));
+    }
+    return tracks.filter(Boolean);
+}
+
+async function pickRandomLibraryTrackNotInQueue() {
+    const usedIds = new Set(musicPlayer.queue.map(track => track.id));
+    const candidates = (await getLocalAudioLibraryTracks()).filter(track => !usedIds.has(track.id));
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+async function appendRandomLibraryTrackIfPossible() {
+    const track = await pickRandomLibraryTrackNotInQueue();
+    if (!track) return false;
+    musicPlayer.queue.push(track);
+    musicPlayer.currentIndex = musicPlayer.queue.length - 1;
+    const audio = ensureBackgroundAudio();
+    audio.src = track.url;
+    renderMusicPlayer();
+    await audio.play().catch(err => historyLog('music-player-random-library-play-failed', { fileId: track.id, error: err.message }));
+    scheduleMusicPlayerPersist();
+    return true;
+}
+
+function renderMusicPlayerActions() {
+    const container = musicPlayer.overlay?.querySelector('#musicPlayerActionsStrip');
+    if (!container) return;
+    const track = getCurrentMusicTrack();
+    container.replaceChildren();
+    if (!track?.id) return;
+    const favorite = isMusicTrackFavorite(track);
+    const actions = [
+        {
+            label: favorite ? '★ 已收藏' : '☆ 收藏',
+            title: favorite ? '取消收藏到媒体库' : '收藏到媒体库',
+            className: favorite ? 'active' : '',
+            handler: () => setMusicTrackFavorite(track, !favorite).catch(err => historyLog('music-favorite-toggle-failed', { fileId: track.id, error: err.message }))
+        },
+        {
+            label: '🎯 定位文件',
+            title: '定位到传输记录中的文件',
+            handler: () => locateCurrentMusicFile()
+        },
+        {
+            label: '分享',
+            title: '生成并分享磁力链接',
+            handler: () => shareCurrentMusicFile().catch(err => {
+                alert(`磁链生成失败: ${err.message}`);
+                historyLog('music-share-failed', { fileId: track.id, error: err.message });
+            })
+        },
+        {
+            label: '下载',
+            title: '下载当前歌曲',
+            handler: () => downloadFileByInfo(track.fileInfo || track, track.fileInfo?.ownerDeviceId || track.ownerDeviceId || state.deviceId).catch(err => {
+                alert(`下载失败: ${err.message}`);
+                historyLog('music-download-failed', { fileId: track.id, error: err.message });
+            })
+        }
+    ];
+    actions.forEach(action => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `music-player-action ${action.className || ''}`.trim();
+        button.title = action.title;
+        button.textContent = action.label;
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            action.handler();
+        });
+        container.appendChild(button);
+    });
+}
+
+function locateCurrentMusicFile() {
+    const track = getCurrentMusicTrack();
+    if (!track?.id) return;
+    minimizeMusicPlayer({ keepHistory: true });
+    locateProgressFile(track.id);
+}
+
+async function shareCurrentMusicFile() {
+    const track = getCurrentMusicTrack();
+    if (!track?.id) return;
+    await shareFileMagnetForInfo(track.fileInfo || track, track.fileInfo?.ownerDeviceId || track.ownerDeviceId || state.deviceId, track.messageId || '');
+}
+
 function openMusicPlayerOverlay(options = {}) {
     const overlay = ensureMusicPlayerOverlay();
     overlay.classList.add('active');
@@ -5889,13 +6113,6 @@ function openMusicPlayerOverlay(options = {}) {
         history.pushState({ ...baseState, [MUSIC_PLAYER_HISTORY_KEY]: true }, '', window.location.href);
         musicPlayer.historyOpen = true;
     }
-}
-
-function maybeOpenMusicPlayerFromMediaReturn() {
-    if (document.visibilityState !== 'visible') return;
-    if (!musicPlayer.hiddenAt || Date.now() - musicPlayer.hiddenAt < 500) return;
-    if (!musicPlayer.queue.length || !isBackgroundMusicPlaying()) return;
-    openMusicPlayerOverlay();
 }
 
 function ensureMusicPlayerOverlay() {
@@ -5913,6 +6130,7 @@ function ensureMusicPlayerOverlay() {
                 <div class="music-player-cover" id="musicPlayerCover"></div>
                 <div class="music-player-title" id="musicPlayerTitle"></div>
                 <div class="music-player-subtitle" id="musicPlayerSubtitle"></div>
+                <div class="music-player-actions-strip" id="musicPlayerActionsStrip"></div>
                 <input class="music-player-range" id="musicPlayerRange" type="range" min="0" max="1000" value="0">
                 <div class="music-player-times"><span id="musicPlayerCurrentTime">0:00</span><span id="musicPlayerDuration">0:00</span></div>
                 <div class="music-player-controls">
@@ -5965,6 +6183,7 @@ function renderMusicPlayer() {
     updateMusicPlayerProgress();
     updateMusicPlayerPlayState();
     renderMusicQueueList();
+    renderMusicPlayerActions();
     updateMediaSessionMetadata();
 }
 
@@ -6000,6 +6219,7 @@ function updateMusicPlayerPlayState() {
 function setMusicQueueOpen(open) {
     musicPlayer.queueOpen = Boolean(open);
     musicPlayer.overlay?.classList.toggle('queue-open', musicPlayer.queueOpen);
+    if (musicPlayer.queueOpen) requestAnimationFrame(focusActiveMusicQueueItem);
 }
 
 function initMusicQueueDrawer(overlay) {
@@ -6077,6 +6297,7 @@ function renderMusicQueueList() {
         item.type = 'button';
         item.className = 'music-player-queue-item';
         item.classList.toggle('active', index === musicPlayer.currentIndex);
+        item.dataset.queueIndex = String(index);
         item.innerHTML = `
             <div class="music-player-queue-cover">${track.poster ? `<img src="${track.poster}" alt="${escapeHtml(track.name)}">` : '♪'}</div>
             <div>
@@ -6088,6 +6309,14 @@ function renderMusicQueueList() {
         item.addEventListener('click', () => playMusicQueueIndex(index));
         list.appendChild(item);
     });
+    if (musicPlayer.queueOpen) requestAnimationFrame(focusActiveMusicQueueItem);
+}
+
+function focusActiveMusicQueueItem() {
+    const list = musicPlayer.overlay?.querySelector('#musicPlayerQueueList');
+    const active = list?.querySelector('.music-player-queue-item.active');
+    if (!list || !active) return;
+    active.scrollIntoView({ block: 'center', inline: 'nearest' });
 }
 
 function syncActiveAudioPreviewControls() {
@@ -6176,24 +6405,32 @@ async function playMusicQueueIndex(index) {
 }
 
 function minimizeMusicPlayer(options = {}) {
+    const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory && !options.keepHistory &&
+        history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
+    if (shouldGoBack) {
+        history.back();
+        return;
+    }
     musicPlayer.overlay?.classList.remove('active');
     musicPlayer.miniEnabled = true;
-    const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory &&
-        history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
-    musicPlayer.historyOpen = false;
+    if (!options.keepHistory) musicPlayer.historyOpen = false;
     updateTopbarMusicState();
-    if (shouldGoBack) history.back();
 }
 
-function closeMusicPlayer() {
+function closeMusicPlayer(options = {}) {
+    const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory &&
+        history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
+    if (shouldGoBack) {
+        musicPlayer.closeAfterHistory = true;
+        history.back();
+        return;
+    }
     musicPlayer.overlay?.classList.remove('active');
-    ensureBackgroundAudio().pause();
+    if (options.stop !== false) ensureBackgroundAudio().pause();
     musicPlayer.miniEnabled = false;
-    const shouldGoBack = musicPlayer.historyOpen && history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
     musicPlayer.historyOpen = false;
     updateTopbarMusicState();
     scheduleMusicPlayerPersist();
-    if (shouldGoBack) history.back();
 }
 
 function toggleBackgroundMusic() {
@@ -6203,15 +6440,31 @@ function toggleBackgroundMusic() {
     scheduleMusicPlayerPersist();
 }
 
-function playNextMusicTrack() {
+async function playNextMusicTrack(options = {}) {
     if (!musicPlayer.queue.length) return;
-    playMusicQueueIndex((musicPlayer.currentIndex + 1) % musicPlayer.queue.length)
+    const atQueueEnd = musicPlayer.currentIndex >= musicPlayer.queue.length - 1;
+    if (options.fromEnded && atQueueEnd) {
+        const appended = await appendRandomLibraryTrackIfPossible().catch(err => {
+            historyLog('music-player-random-library-failed', { error: err.message });
+            return false;
+        });
+        if (appended) return;
+        musicPlayer.currentIndex = 0;
+        const first = getCurrentMusicTrack();
+        const audio = ensureBackgroundAudio();
+        if (first?.url) audio.src = first.url;
+        renderMusicPlayer();
+        updateTopbarMusicState();
+        scheduleMusicPlayerPersist();
+        return;
+    }
+    await playMusicQueueIndex((musicPlayer.currentIndex + 1) % musicPlayer.queue.length)
         .catch(err => historyLog('music-player-next-failed', { error: err.message }));
 }
 
-function playPreviousMusicTrack() {
+async function playPreviousMusicTrack() {
     if (!musicPlayer.queue.length) return;
-    playMusicQueueIndex((musicPlayer.currentIndex - 1 + musicPlayer.queue.length) % musicPlayer.queue.length)
+    await playMusicQueueIndex((musicPlayer.currentIndex - 1 + musicPlayer.queue.length) % musicPlayer.queue.length)
         .catch(err => historyLog('music-player-prev-failed', { error: err.message }));
 }
 
@@ -10052,14 +10305,6 @@ function initThemeSwitcher() {
 function initUI() {
     initThemeSwitcher();
     window.addEventListener('beforeunload', persistMusicPlayerState);
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            musicPlayer.hiddenAt = Date.now();
-            return;
-        }
-        maybeOpenMusicPlayerFromMediaReturn();
-    });
-    window.addEventListener('focus', maybeOpenMusicPlayerFromMediaReturn);
     initMobileWorkspace();
     initProgressDrawer();
     initChatScrollAnchorTracking();
@@ -11064,7 +11309,10 @@ function closeRichViewer(options = {}) {
 
 window.addEventListener('popstate', () => {
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
-        minimizeMusicPlayer({ fromHistory: true });
+        const stop = musicPlayer.closeAfterHistory === true;
+        musicPlayer.closeAfterHistory = false;
+        if (stop) closeMusicPlayer({ fromHistory: true });
+        else minimizeMusicPlayer({ fromHistory: true });
         return;
     }
     if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {

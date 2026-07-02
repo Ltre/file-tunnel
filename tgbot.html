@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>配置 telegram bot</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #f5f7fb;
+            --panel: #ffffff;
+            --text: #172033;
+            --muted: #647084;
+            --line: #d9e0ea;
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --danger: #dc2626;
+            --shadow: 0 18px 45px rgba(16, 24, 40, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top left, #e8f0ff 0, transparent 34%), var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+
+        .page {
+            width: min(720px, calc(100vw - 32px));
+            margin: 0 auto;
+            padding: 48px 0;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(24px, 4vw, 34px);
+            letter-spacing: 0;
+        }
+
+        .subtle {
+            margin: 8px 0 0;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 22px;
+        }
+
+        .field {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 18px;
+        }
+
+        label {
+            font-weight: 700;
+        }
+
+        input {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 12px 13px;
+            font: inherit;
+            background: #fff;
+            color: var(--text);
+            outline: none;
+        }
+
+        input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+        }
+
+        .hint {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .inline-check {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: -4px 0 18px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .inline-check input {
+            width: auto;
+        }
+
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .btn {
+            border: 0;
+            border-radius: 10px;
+            padding: 11px 16px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            background: #e8edf5;
+        }
+
+        .btn.primary {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .btn.primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .status {
+            min-height: 22px;
+            color: var(--muted);
+            margin-top: 14px;
+            line-height: 1.5;
+        }
+
+        .status.ok {
+            color: #047857;
+        }
+
+        .status.error {
+            color: var(--danger);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0e1421;
+                --panel: #151d2c;
+                --text: #edf2ff;
+                --muted: #9aa6ba;
+                --line: #2b3850;
+                --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+            }
+
+            input,
+            .btn {
+                background: #101827;
+                color: var(--text);
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="header">
+            <div>
+                <h1>配置 telegram bot</h1>
+                <p class="subtle">敏感配置保存到服务器的 <code>.tunnel-data/telegram-bot.json</code>，不会再从 <code>tunnel.config.json</code> 读取。</p>
+            </div>
+            <a class="btn" href="/admin">返回 admin</a>
+        </div>
+
+        <section class="panel">
+            <form id="telegramBotForm">
+                <div class="field">
+                    <label for="botToken">Bot token</label>
+                    <input id="botToken" name="token" type="password" autocomplete="off" placeholder="留空则保留当前 token">
+                    <div class="hint" id="tokenHint">正在读取当前状态...</div>
+                </div>
+
+                <label class="inline-check">
+                    <input id="clearToken" type="checkbox">
+                    <span>清空已保存的 token</span>
+                </label>
+
+                <div class="field">
+                    <label for="webhookSecret">Webhook secret</label>
+                    <input id="webhookSecret" name="webhookSecret" type="password" autocomplete="off" placeholder="留空则保留当前 secret">
+                    <div class="hint" id="webhookSecretHint">正在读取当前状态...</div>
+                </div>
+
+                <label class="inline-check">
+                    <input id="clearWebhookSecret" type="checkbox">
+                    <span>清空已保存的 webhook secret</span>
+                </label>
+
+                <div class="field">
+                    <label for="maxFileSizeMb">接收文件上限 MB</label>
+                    <input id="maxFileSizeMb" name="maxFileSizeMb" type="number" min="1" step="1">
+                    <div class="hint">Telegram 发送文件时，服务端会先按此上限拦截过大的文件。</div>
+                </div>
+
+                <div class="actions">
+                    <button class="btn" type="button" id="reloadBtn">重新读取</button>
+                    <button class="btn primary" type="submit">保存配置</button>
+                </div>
+
+                <div class="status" id="status"></div>
+            </form>
+        </section>
+    </main>
+
+    <script>
+        const form = document.getElementById('telegramBotForm');
+        const tokenInput = document.getElementById('botToken');
+        const clearTokenInput = document.getElementById('clearToken');
+        const tokenHint = document.getElementById('tokenHint');
+        const webhookSecretInput = document.getElementById('webhookSecret');
+        const webhookSecretHint = document.getElementById('webhookSecretHint');
+        const clearWebhookSecretInput = document.getElementById('clearWebhookSecret');
+        const maxFileSizeInput = document.getElementById('maxFileSizeMb');
+        const statusEl = document.getElementById('status');
+        const reloadBtn = document.getElementById('reloadBtn');
+        let tokenConfigured = false;
+        let webhookSecretConfigured = false;
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = `status ${type}`.trim();
+        }
+
+        async function loadConfig() {
+            setStatus('正在读取配置...');
+            const response = await fetch('/api/telegram/config');
+            if (!response.ok) throw new Error('读取配置失败');
+            const config = await response.json();
+            tokenConfigured = Boolean(config.tokenConfigured);
+            tokenInput.value = '';
+            clearTokenInput.checked = false;
+            tokenHint.textContent = tokenConfigured
+                ? `当前已配置 token：${config.tokenPreview || '已保存'}。留空保存会继续保留。`
+                : '当前未配置 token。';
+            webhookSecretConfigured = Boolean(config.webhookSecretConfigured);
+            webhookSecretInput.value = '';
+            clearWebhookSecretInput.checked = false;
+            webhookSecretHint.textContent = webhookSecretConfigured
+                ? `当前已配置 webhook secret：${config.webhookSecretPreview || '已保存'}。留空保存会继续保留。`
+                : '当前未配置 webhook secret。';
+            maxFileSizeInput.value = Math.max(1, Math.round((Number(config.maxFileSize) || 524288000) / 1024 / 1024));
+            setStatus('配置已读取。', 'ok');
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            try {
+                const token = tokenInput.value.trim();
+                const clearToken = clearTokenInput.checked;
+                const webhookSecret = webhookSecretInput.value.trim();
+                const clearWebhookSecret = clearWebhookSecretInput.checked;
+                const maxFileSizeMb = Math.max(1, Number(maxFileSizeInput.value || 500));
+                setStatus('正在保存...');
+                const response = await fetch('/api/telegram/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: clearToken ? '' : token,
+                        keepExistingToken: !clearToken && !token && tokenConfigured,
+                        webhookSecret: clearWebhookSecret ? '' : webhookSecret,
+                        keepExistingWebhookSecret: !clearWebhookSecret && !webhookSecret && webhookSecretConfigured,
+                        maxFileSize: Math.round(maxFileSizeMb * 1024 * 1024)
+                    })
+                });
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({}));
+                    throw new Error(error.error || '保存配置失败');
+                }
+                await loadConfig();
+                setStatus('telegram bot 配置已保存。', 'ok');
+            } catch (err) {
+                setStatus(err.message || '保存配置失败', 'error');
+            }
+        });
+
+        reloadBtn.addEventListener('click', () => {
+            loadConfig().catch((err) => setStatus(err.message, 'error'));
+        });
+
+        loadConfig().catch((err) => setStatus(err.message, 'error'));
+    </script>
+</body>
+</html>

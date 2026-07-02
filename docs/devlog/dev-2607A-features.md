@@ -140,3 +140,22 @@
 - Added audio text metadata extraction for ID3v2/ID3v1 MP3, MP4/M4A ilst atoms, and FLAC Vorbis comments, then cached title/artist/album fields in IndexedDB for future opens.
 - Updated music queue hydration and Media Session metadata to use parsed track title, artist, and album instead of falling back to file names whenever metadata exists.
 - Added a visibility/focus return hook so when background music is playing and the page is brought back from the system media notification, the fullscreen music player is opened.
+
+## 2026-07-03 Music Player Actions, Routing Memory, and Telegram Bot Config
+
+### Music Player
+- Added a horizontally scrollable action strip between the fullscreen player's artist/album line and seek bar.
+- Added favorite/unfavorite, locate-file, share, and download actions for the current track. Favorites are stored locally and also mirrored onto the cached file record as `mediaFavorite`.
+- Random queue continuation now appends a non-duplicate cached audio track when playback reaches the queue tail. If favorites exist, the random pool prefers favorites; otherwise it falls back to cached audio in the current tunnel.
+- Queue rows now keep title and artist/duration left-aligned and automatically scroll the active track into view when the queue drawer opens.
+- Removed the previous visibility/focus heuristic that reopened the fullscreen player whenever the browser regained focus. This avoids accidental player opens after file picker use or app switching; Media Session controls continue to handle playback actions.
+- Normalized fullscreen player close/minimize/back behavior so returning from a player opened via audio preview keeps the file preview layer in place instead of dropping to the collection grid or transfer list.
+
+### Telegram Bot Configuration
+- Moved Telegram bot token and webhook secret out of `tunnel.config.json`. Runtime now reads/writes `.tunnel-data/telegram-bot.json`.
+- Added `/tgbot` as an admin configuration page and added an admin-page entry link.
+- Added `/api/telegram/config` endpoints for reading status and saving bot settings. Token and webhook secret values are not returned in full; leaving sensitive fields empty keeps existing values unless the operator explicitly clears them.
+
+### Route Page
+- Added a joined-tunnel selector to the route page, sorted by tunnel ID, with the recent tunnel highlighted in the option label.
+- Added a "remember my choice" checkbox. Remembered tunnel selection auto-enters only for root/PWA launches without a hash, and is cleared when the user manually switches, joins by code, creates a tunnel, or opens a hash URL.
