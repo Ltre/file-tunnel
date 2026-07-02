@@ -2482,6 +2482,7 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
     const { asset, fileInfo } = await createFileAsset(file, options);
     await saveToStore('files', asset);
     await fileAssetTransfer.announce(asset);
+    enqueueMediaPosterCache(fileInfo.id, fileInfo);
 
     if (options.collectionMessageId) {
         return fileInfo;
@@ -2869,6 +2870,78 @@ async function ensureAudioPosterCache(storedFile, fileInfo = {}) {
     return poster;
 }
 
+const mediaPosterQueue = [];
+const mediaPosterQueuedIds = new Set();
+let mediaPosterQueueRunning = false;
+
+function shouldGenerateMediaPoster(fileInfo = {}) {
+    const type = String(fileInfo.type || '').toLowerCase();
+    return type.startsWith('video/') || isAudioFileLike(null, fileInfo);
+}
+
+function enqueueMediaPosterCache(fileId, fileInfo = {}) {
+    if (!fileId || !shouldGenerateMediaPoster(fileInfo) || mediaPosterQueuedIds.has(fileId)) return;
+    mediaPosterQueuedIds.add(fileId);
+    mediaPosterQueue.push({ fileId, fileInfo: { ...fileInfo } });
+    if (!mediaPosterQueueRunning) {
+        mediaPosterQueueRunning = true;
+        setTimeout(processMediaPosterQueue, 0);
+    }
+}
+
+function getCachedMediaPosterOrQueue(storedFile, fileInfo = {}) {
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    if (type.startsWith('video/')) {
+        if (storedFile?.videoPoster) return storedFile.videoPoster;
+        enqueueMediaPosterCache(fileInfo.id || storedFile?.id, { ...storedFile, ...fileInfo });
+        return '';
+    }
+    if (isAudioFileLike(storedFile, fileInfo)) {
+        if (storedFile?.audioPoster) return storedFile.audioPoster;
+        enqueueMediaPosterCache(fileInfo.id || storedFile?.id, { ...storedFile, ...fileInfo });
+        return '';
+    }
+    return '';
+}
+
+async function processMediaPosterQueue() {
+    while (mediaPosterQueue.length) {
+        const task = mediaPosterQueue.shift();
+        mediaPosterQueuedIds.delete(task.fileId);
+        try {
+            const storedFile = await getFromStore('files', task.fileId).catch(() => null);
+            if (!hasCompleteFileCache(storedFile, task.fileInfo)) continue;
+            const type = String(task.fileInfo.type || storedFile.type || '').toLowerCase();
+            let updated = false;
+            if (type.startsWith('video/') && !storedFile.videoPoster) {
+                updated = Boolean(await ensureVideoPosterCache(storedFile, task.fileInfo));
+            } else if (isAudioFileLike(storedFile, task.fileInfo) && !storedFile.audioPoster) {
+                updated = Boolean(await ensureAudioPosterCache(storedFile, task.fileInfo));
+            }
+            if (updated) {
+                await refreshFileMessage(task.fileId);
+                historyLog('media-poster-cache-generated', {
+                    fileId: task.fileId,
+                    fileName: task.fileInfo.name || storedFile.name,
+                    type: task.fileInfo.type || storedFile.type
+                });
+            }
+        } catch (err) {
+            historyLog('media-poster-cache-background-failed', {
+                fileId: task.fileId,
+                fileName: task.fileInfo?.name,
+                error: err.message
+            });
+        }
+        await sleep(20);
+    }
+    mediaPosterQueueRunning = false;
+    if (mediaPosterQueue.length) {
+        mediaPosterQueueRunning = true;
+        setTimeout(processMediaPosterQueue, 0);
+    }
+}
+
 function renderMediaKindBadge(kind) {
     if (kind === 'video') return '<span class="media-kind-badge" aria-label="视频文件">▶</span>';
     if (kind === 'audio') return '<span class="media-kind-badge" aria-label="音频文件">♪</span>';
@@ -2894,27 +2967,14 @@ async function createFileAsset(file, options = {}) {
         ...metadataOptions
     };
 
-    const [data, videoPoster] = await Promise.all([
-        fileToArrayBuffer(file),
-        createVideoPosterFromBlob(file).catch(err => {
-            historyLog('video-poster-create-failed', {
-                fileName: file.name,
-                fileSize: file.size,
-                error: err.message
-            });
-            return '';
-        })
-    ]);
+    const data = await fileToArrayBuffer(file);
     const asset = {
         ...fileInfo,
         sessionId: state.sessionId,
         ownerDeviceId: state.deviceId,
         isFileAsset: true,
-        ...(videoPoster ? { videoPoster } : {}),
         data
     };
-    const audioPoster = await ensureAudioPosterCache(asset, fileInfo);
-    if (audioPoster) asset.audioPoster = audioPoster;
     return {
         asset,
         fileInfo: {
@@ -3502,11 +3562,8 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
         transferInterrupted: false,
         isPartial: false
     };
-    const videoPoster = await ensureVideoPosterCache(nextFile, fileInfo);
-    if (videoPoster) nextFile.videoPoster = videoPoster;
-    const audioPoster = await ensureAudioPosterCache(nextFile, fileInfo);
-    if (audioPoster) nextFile.audioPoster = audioPoster;
     await saveToStore('files', nextFile);
+    enqueueMediaPosterCache(fileInfo.id, fileInfo);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
     historyLog('server-asset-cache-fetched', {
@@ -4100,12 +4157,12 @@ async function createCollectionTileHtml(fileInfo, index, total) {
             const url = getStoredFileUrl(fileInfo.id, storedFile);
             body = `<img src="${url}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">`;
         } else if (resolvedType.startsWith('video/')) {
-            const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+            const poster = getCachedMediaPosterOrQueue(storedFile, fileInfo);
             body = poster
                 ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('video')}`
                 : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>${renderMediaKindBadge('video')}`;
         } else if (resolvedType.startsWith('audio/') || isAudioLike) {
-            const poster = await ensureAudioPosterCache(storedFile, fileInfo);
+            const poster = getCachedMediaPosterOrQueue(storedFile, fileInfo);
             body = poster
                 ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('audio')}`
                 : `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
@@ -4223,7 +4280,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
                 </div>
             `;
         } else if (isVideo && fileUrl) {
-            const poster = storedFile ? await ensureVideoPosterCache(storedFile, fileInfo) : '';
+            const poster = storedFile ? getCachedMediaPosterOrQueue(storedFile, fileInfo) : '';
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
@@ -4236,7 +4293,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
                 </div>
             `;
         } else if (isAudio && fileUrl) {
-            const poster = storedFile ? await ensureAudioPosterCache(storedFile, fileInfo) : '';
+            const poster = storedFile ? getCachedMediaPosterOrQueue(storedFile, fileInfo) : '';
             contentHtml = `
                 <div class="message-bubble">
                     <div class="media-preview">
@@ -5297,7 +5354,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         video.autoplay = true;
         video.playsInline = true;
         video.preload = 'metadata';
-        const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+        const poster = getCachedMediaPosterOrQueue(storedFile, fileInfo);
         if (poster) video.poster = poster;
         video.dataset.previewFileId = fileInfo.id;
         video.className = 'file-preview-media file-preview-media-video';
@@ -5676,7 +5733,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
         image.decoding = 'async';
         thumb.appendChild(image);
     } else if (hasLocalData && type.startsWith('video/')) {
-        const poster = await ensureVideoPosterCache(storedFile, fileInfo);
+        const poster = getCachedMediaPosterOrQueue(storedFile, fileInfo);
         if (poster) {
             const image = document.createElement('img');
             image.src = poster;
@@ -5687,7 +5744,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
         }
     } else if (hasLocalData && (type.startsWith('audio/') || isAudioLike)) {
-        const poster = await ensureAudioPosterCache(storedFile, fileInfo);
+        const poster = getCachedMediaPosterOrQueue(storedFile, fileInfo);
         if (poster) {
             const image = document.createElement('img');
             image.src = poster;
@@ -6069,11 +6126,7 @@ async function refreshFileMessage(fileId) {
         fileObjectUrls.set(fileId, url);
     }
 
-    const poster = String(storedFile.type || '').toLowerCase().startsWith('video/')
-        ? await ensureVideoPosterCache(storedFile, storedFile)
-        : isAudioFileLike(storedFile, storedFile)
-            ? await ensureAudioPosterCache(storedFile, storedFile)
-        : '';
+    const poster = getCachedMediaPosterOrQueue(storedFile, storedFile);
 
     preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);

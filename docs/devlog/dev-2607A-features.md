@@ -91,3 +91,10 @@
 - M4A/MP4 audio files now scan the metadata atom tree for `covr/data` artwork and cache JPEG/PNG/GIF covers when present.
 - FLAC files now scan native metadata blocks for `PICTURE` artwork and cache the embedded cover.
 - Audio detection now falls back to common filename extensions such as `.mp3`, `.m4a`, `.aac`, `.alac`, `.flac`, `.ogg`, and `.opus`, so files with weak browser MIME detection can still show cached covers in single-file records and collection grids.
+
+## 2026-07-02 Async Media Poster Cache
+
+### Send Latency
+- Sending single files, split batches, and collections no longer waits for video frame extraction or audio cover parsing before publishing the transfer record.
+- Media poster generation now runs in a local background queue after file bytes are cached, then refreshes affected single-file records and collection previews when each poster is ready.
+- Poster generation remains a local UI cache only; it is not broadcast as session history and does not affect cross-device record alignment or file-resource synchronization.

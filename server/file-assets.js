@@ -117,6 +117,11 @@ function emitWithAck(socket, eventName, payload, timeout = RELAY_TARGET_ACK_TIME
     });
 }
 
+function isRelayAckTimeout(reason) {
+    const value = String(reason || '').toLowerCase();
+    return value.includes('timed out') || value.includes('timeout') || value.includes('acknowledgement');
+}
+
 function registerFileAssetHandlers(socket, context) {
     const { sessions, deviceSockets, getSessionId, getDeviceId, isValidId, sanitize, historyLog, clientIp } = context;
     const current = () => ({ sessionId: getSessionId(), deviceId: getDeviceId() });
@@ -452,8 +457,8 @@ function registerFileAssetHandlers(socket, context) {
             const { deviceId } = current();
             if (sessionId && to && assetId) cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId);
             const reason = err.message || 'relay-chunk-failed';
-            if (reason.startsWith('receiver-')) {
-                historyLog('file-asset-relay-receiver-rejected', {
+            if (reason.startsWith('receiver-') || isRelayAckTimeout(reason)) {
+                historyLog(reason.startsWith('receiver-') ? 'file-asset-relay-receiver-rejected' : 'file-asset-relay-target-timeout', {
                     sessionId,
                     deviceId,
                     targetDeviceId: to,
