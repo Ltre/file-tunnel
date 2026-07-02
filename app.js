@@ -2619,13 +2619,13 @@ function readAscii(bytes, offset, length) {
 }
 
 function getFileExtensionLower(file = {}) {
-    const name = String(file.name || '').toLowerCase();
+    const name = String((file && file.name) || '').toLowerCase();
     const index = name.lastIndexOf('.');
     return index >= 0 ? name.slice(index + 1) : '';
 }
 
 function isAudioFileLike(storedFile, fileInfo = {}) {
-    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
     if (type.startsWith('audio/')) return true;
     return ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(fileInfo)) ||
         ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(storedFile));
