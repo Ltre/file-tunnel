@@ -4673,6 +4673,7 @@ const musicPlayer = {
     overlay: null,
     queueOpen: false,
     queueDrag: null,
+    mediaSessionReady: false,
     tempAudio: null,
     tempResumeBackground: false,
     tempPreviewFileId: '',
@@ -5515,17 +5516,20 @@ function ensureBackgroundAudio() {
     if (musicPlayer.audio) return musicPlayer.audio;
     const audio = new Audio();
     audio.preload = 'metadata';
+    initMusicMediaSession();
     audio.addEventListener('timeupdate', updateMusicPlayerProgress);
     audio.addEventListener('loadedmetadata', updateMusicPlayerProgress);
     audio.addEventListener('play', () => {
         updateMusicPlayerPlayState();
         updateTopbarMusicState();
+        updateMediaSessionPlaybackState();
         startMusicPlayerProgressTimer();
         scheduleMusicPlayerPersist();
     });
     audio.addEventListener('pause', () => {
         updateMusicPlayerPlayState();
         updateTopbarMusicState();
+        updateMediaSessionPlaybackState();
         stopMusicPlayerProgressTimer();
         scheduleMusicPlayerPersist();
     });
@@ -5595,6 +5599,68 @@ function updateTopbarMusicState() {
     }
 }
 
+function initMusicMediaSession() {
+    if (musicPlayer.mediaSessionReady || !('mediaSession' in navigator)) return;
+    musicPlayer.mediaSessionReady = true;
+    const safeSetAction = (action, handler) => {
+        try {
+            navigator.mediaSession.setActionHandler(action, handler);
+        } catch (_) {}
+    };
+    safeSetAction('play', () => ensureBackgroundAudio().play().catch(err => historyLog('music-media-session-play-failed', { error: err.message })));
+    safeSetAction('pause', () => ensureBackgroundAudio().pause());
+    safeSetAction('previoustrack', playPreviousMusicTrack);
+    safeSetAction('nexttrack', playNextMusicTrack);
+    safeSetAction('seekto', details => {
+        const audio = ensureBackgroundAudio();
+        if (typeof details.seekTime === 'number') {
+            audio.currentTime = details.seekTime;
+            updateMediaSessionPlaybackState();
+            scheduleMusicPlayerPersist();
+        }
+    });
+}
+
+function updateMediaSessionMetadata() {
+    if (!('mediaSession' in navigator) || typeof MediaMetadata !== 'function') return;
+    initMusicMediaSession();
+    const track = getCurrentMusicTrack();
+    if (!track) {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = 'none';
+        return;
+    }
+    const artwork = track.poster ? [
+        { src: track.poster, sizes: '512x512', type: 'image/png' }
+    ] : [];
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.name || 'Audio',
+        artist: track.artist || '未知艺术家',
+        album: track.album || '即时传输隧道',
+        artwork
+    });
+    updateMediaSessionPlaybackState();
+}
+
+function updateMediaSessionPlaybackState() {
+    if (!('mediaSession' in navigator)) return;
+    const audio = musicPlayer.audio;
+    const track = getCurrentMusicTrack();
+    navigator.mediaSession.playbackState = isBackgroundMusicPlaying() ? 'playing' : (track ? 'paused' : 'none');
+    if (navigator.mediaSession.setPositionState && audio && track) {
+        const duration = Number(audio.duration || track.duration || 0);
+        if (duration > 0) {
+            try {
+                navigator.mediaSession.setPositionState({
+                    duration,
+                    playbackRate: audio.playbackRate || 1,
+                    position: Math.min(Number(audio.currentTime || 0), duration)
+                });
+            } catch (_) {}
+        }
+    }
+}
+
 function ensureMusicPlayerOverlay() {
     if (musicPlayer.overlay) return musicPlayer.overlay;
     const overlay = document.createElement('div');
@@ -5652,12 +5718,17 @@ function renderMusicPlayer() {
     cover.innerHTML = track.poster
         ? `<img src="${track.poster}" alt="${escapeHtml(track.name)}">`
         : '<div class="music-player-cover-placeholder">♪</div>';
-    title.textContent = track.name;
+    title.innerHTML = `<span>${escapeHtml(track.name || 'Audio')}</span>`;
+    requestAnimationFrame(() => {
+        const span = title.querySelector('span');
+        title.classList.toggle('is-marquee', Boolean(span && span.scrollWidth > title.clientWidth + 8));
+    });
     subtitle.textContent = `${track.artist || '未知艺术家'} · ${track.album || '未知专辑'}`;
     overlay.classList.toggle('queue-open', musicPlayer.queueOpen);
     updateMusicPlayerProgress();
     updateMusicPlayerPlayState();
     renderMusicQueueList();
+    updateMediaSessionMetadata();
 }
 
 function updateMusicPlayerProgress() {
@@ -5677,6 +5748,7 @@ function updateMusicPlayerProgress() {
     overlay.querySelector('#musicPlayerDuration').textContent = formatAudioTime(duration);
     syncActiveAudioPreviewControls();
     updateTopbarMusicState();
+    updateMediaSessionPlaybackState();
     persistMusicPlayerProgressSoon();
 }
 
@@ -5697,7 +5769,9 @@ function initMusicQueueDrawer(overlay) {
     const puller = overlay.querySelector('#musicPlayerQueuePuller');
     if (!puller) return;
     let suppressClickUntil = 0;
-    const toggle = () => {
+    const toggle = event => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
         if (Date.now() < suppressClickUntil) return;
         setMusicQueueOpen(!musicPlayer.queueOpen);
     };
@@ -5710,6 +5784,7 @@ function initMusicQueueDrawer(overlay) {
     });
     puller.addEventListener('pointerdown', event => {
         event.preventDefault();
+        event.stopPropagation();
         puller.setPointerCapture?.(event.pointerId);
         musicPlayer.queueDrag = {
             startY: event.clientY,
@@ -5721,10 +5796,12 @@ function initMusicQueueDrawer(overlay) {
     puller.addEventListener('pointermove', event => {
         const drag = musicPlayer.queueDrag;
         if (!drag) return;
+        event.preventDefault();
+        event.stopPropagation();
         const deltaY = event.clientY - drag.startY;
         drag.lastY = event.clientY;
         if (Math.abs(deltaY) > 8) drag.moved = true;
-        const shouldOpen = drag.wasOpen ? deltaY < 70 : deltaY < -24;
+        const shouldOpen = drag.wasOpen ? deltaY < 70 : deltaY < -14;
         const shouldClose = drag.wasOpen ? deltaY > 24 : deltaY > 70;
         if (shouldOpen) setMusicQueueOpen(true);
         if (shouldClose) setMusicQueueOpen(false);
@@ -5732,9 +5809,11 @@ function initMusicQueueDrawer(overlay) {
     const finish = event => {
         const drag = musicPlayer.queueDrag;
         if (!drag) return;
+        event.preventDefault();
+        event.stopPropagation();
         const deltaY = event.clientY - drag.startY;
         if (drag.moved) {
-            if (deltaY < -24) setMusicQueueOpen(true);
+            if (deltaY < -14) setMusicQueueOpen(true);
             else if (deltaY > 24) setMusicQueueOpen(false);
             else setMusicQueueOpen(drag.wasOpen);
             suppressClickUntil = Date.now() + 240;

@@ -126,3 +126,10 @@
 - Handed off temporary audio preview playback time into the fullscreen player so entering the player continues from the preview timestamp.
 - Kept audio preview controls usable after minimizing or closing the fullscreen player by letting the preview controls target the background track when it is the same audio file.
 - Removed the fullscreen player bottom metadata chips so the bottom area is reserved for queue interaction.
+
+## 2026-07-02 Music Player Queue and Media Session Fixes
+
+- Slightly tightened the topbar action spacing so the four left-side icons read as one balanced group.
+- Fixed the fullscreen music queue pull handle placement so the visible handle is also the active touch/click target, and lowered the upward drag threshold for mobile.
+- Added marquee behavior for long fullscreen player track names while keeping short names static.
+- Added Media Session API metadata and controls for mobile system notification drawers, including title, artist, album, artwork, play/pause, previous/next, seek, and position state updates.
