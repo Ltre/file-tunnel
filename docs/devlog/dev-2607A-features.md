@@ -98,3 +98,11 @@
 - Sending single files, split batches, and collections no longer waits for video frame extraction or audio cover parsing before publishing the transfer record.
 - Media poster generation now runs in a local background queue after file bytes are cached, then refreshes affected single-file records and collection previews when each poster is ready.
 - Poster generation remains a local UI cache only; it is not broadcast as session history and does not affect cross-device record alignment or file-resource synchronization.
+
+## 2026-07-02 Fast Batch Publish Follow-Up
+
+### Batch Send Latency
+- Multi-file collection messages now publish from `File` metadata first, before reading every selected file into `ArrayBuffer` and before writing those bytes into IndexedDB.
+- Split multi-file sends also publish each transfer record first, then prepare the actual local file asset cache in a background outbound queue.
+- The background queue saves file bytes, announces resource availability, refreshes the affected transfer record, and then lets the existing media-poster queue generate video/audio thumbnails.
+- Own-device auto cache restore is disabled for these just-published deferred records, avoiding fake self-download progress before the local outbound cache is ready.

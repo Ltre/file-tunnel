@@ -2479,10 +2479,10 @@ function initAssetPresenceRefresh() {
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
-    const { asset, fileInfo } = await createFileAsset(file, options);
-    await saveToStore('files', asset);
-    await fileAssetTransfer.announce(asset);
-    enqueueMediaPosterCache(fileInfo.id, fileInfo);
+    const fileInfo = createFileInfoFromFile(file, options);
+    if (!options.deferAssetStorage) {
+        await storeAndAnnounceFileAsset(file, fileInfo);
+    }
 
     if (options.collectionMessageId) {
         return fileInfo;
@@ -2507,10 +2507,16 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
         senderName: state.deviceName
     };
 
-    await publishHistoryMessage(message);
+    await publishHistoryMessage(message, {
+        autoRequestAsset: options.deferAssetStorage !== true
+    });
+    if (options.deferAssetStorage) {
+        enqueueOutboundFileAsset(file, fileInfo, { messageId: message.id, mode: 'split' });
+    }
     historyLog('file-asset-message-emitted', {
         message: summarizeHistoryMessage(message),
-        targetDeviceId
+        targetDeviceId,
+        deferredAssetStorage: options.deferAssetStorage === true
     });
 
     return fileInfo.id;
@@ -2948,7 +2954,7 @@ function renderMediaKindBadge(kind) {
     return '';
 }
 
-async function createFileAsset(file, options = {}) {
+function createFileInfoFromFile(file, options = {}) {
     const {
         fileId: optionFileId,
         silent,
@@ -2966,6 +2972,15 @@ async function createFileAsset(file, options = {}) {
         senderName: state.deviceName,
         ...metadataOptions
     };
+    return {
+        ...fileInfo,
+        ownerDeviceId: state.deviceId,
+        isAsset: true
+    };
+}
+
+async function createFileAsset(file, options = {}) {
+    const fileInfo = createFileInfoFromFile(file, options);
 
     const data = await fileToArrayBuffer(file);
     const asset = {
@@ -2985,6 +3000,68 @@ async function createFileAsset(file, options = {}) {
     };
 }
 
+async function storeAndAnnounceFileAsset(file, fileInfo) {
+    const data = await fileToArrayBuffer(file);
+    const asset = {
+        ...fileInfo,
+        sessionId: state.sessionId,
+        ownerDeviceId: state.deviceId,
+        isFileAsset: true,
+        data
+    };
+    await saveToStore('files', asset);
+    await fileAssetTransfer.announce(asset);
+    enqueueMediaPosterCache(fileInfo.id, fileInfo);
+    refreshFileMessage(fileInfo.id).catch(err => historyLog('file-asset-refresh-after-store-failed', {
+        fileId: fileInfo.id,
+        fileName: fileInfo.name,
+        error: err.message
+    }));
+    return fileInfo;
+}
+
+const outboundFileAssetQueue = [];
+let outboundFileAssetQueueRunning = false;
+
+function enqueueOutboundFileAsset(file, fileInfo, context = {}) {
+    if (!file || !fileInfo?.id) return;
+    outboundFileAssetQueue.push({ file, fileInfo: { ...fileInfo }, context: { ...context } });
+    if (!outboundFileAssetQueueRunning) {
+        outboundFileAssetQueueRunning = true;
+        setTimeout(processOutboundFileAssetQueue, 0);
+    }
+}
+
+async function processOutboundFileAssetQueue() {
+    while (outboundFileAssetQueue.length) {
+        const task = outboundFileAssetQueue.shift();
+        try {
+            await storeAndAnnounceFileAsset(task.file, task.fileInfo);
+            historyLog('outbound-file-asset-prepared', {
+                fileId: task.fileInfo.id,
+                fileName: task.fileInfo.name,
+                size: task.fileInfo.size,
+                mode: task.context.mode || '',
+                messageId: task.context.messageId || ''
+            });
+        } catch (err) {
+            historyLog('outbound-file-asset-prepare-failed', {
+                fileId: task.fileInfo.id,
+                fileName: task.fileInfo.name,
+                mode: task.context.mode || '',
+                messageId: task.context.messageId || '',
+                error: err.message
+            });
+        }
+        await sleep(10);
+    }
+    outboundFileAssetQueueRunning = false;
+    if (outboundFileAssetQueue.length) {
+        outboundFileAssetQueueRunning = true;
+        setTimeout(processOutboundFileAssetQueue, 0);
+    }
+}
+
 async function sendFileCollection(files, options = {}) {
     const list = Array.from(files || []).filter(Boolean);
     if (!list.length) return;
@@ -2994,14 +3071,11 @@ async function sendFileCollection(files, options = {}) {
     }
 
     const collectionId = generateId();
-    const fileInfos = [];
-    for (const file of list) {
-        fileInfos.push(await sendFile(file, null, {
-            ...options,
-            collectionId,
-            collectionMessageId: collectionId
-        }));
-    }
+    const fileInfos = list.map(file => createFileInfoFromFile(file, {
+        ...options,
+        collectionId,
+        collectionMessageId: collectionId
+    }));
 
     const totalSize = fileInfos.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
     const message = {
@@ -3018,12 +3092,20 @@ async function sendFileCollection(files, options = {}) {
         senderName: state.deviceName
     };
 
-    await publishHistoryMessage(message);
+    await publishHistoryMessage(message, { autoRequestAsset: false });
+    list.forEach((file, index) => {
+        enqueueOutboundFileAsset(file, fileInfos[index], {
+            messageId: message.id,
+            collectionId,
+            mode: 'collection'
+        });
+    });
     historyLog('file-collection-message-emitted', {
         messageId: message.id,
         collectionId,
         fileCount: fileInfos.length,
-        totalSize
+        totalSize,
+        deferredAssetStorage: true
     });
 }
 
@@ -3070,7 +3152,7 @@ async function sendSelectedFiles(files, options = {}) {
         return;
     }
     for (const file of list) {
-        await sendFile(file, null, options);
+        await sendFile(file, null, { ...options, deferAssetStorage: true });
     }
 }
 
@@ -7131,7 +7213,10 @@ async function publishHistoryMessage(message, options = {}) {
         requestSessionHistory('message-ack-timeout');
     }, 5000);
 
-    await addMessageToChat(message, true, { forceScroll: options.forceScroll !== false });
+    await addMessageToChat(message, true, {
+        forceScroll: options.forceScroll !== false,
+        autoRequestAsset: options.autoRequestAsset !== false
+    });
 }
 
 async function sendText() {
