@@ -89,6 +89,7 @@ let richViewerHistoryOpen = false;
 let filePreviewHistoryOpen = false;
 let filePreviewNestedHistoryOpen = false;
 let mediaFullscreenHistoryOpen = false;
+let suppressNextFilePreviewPopstate = false;
 let mediaFullscreenItems = [];
 let mediaFullscreenIndex = 0;
 let mediaFullscreenPointerStart = null;
@@ -3917,6 +3918,14 @@ function stopChatScrollAnchorPin() {
     chatScrollAnchorPinMode = '';
 }
 
+function releaseChatScrollAnchorPinByUser() {
+    if (!chatScrollAnchorPinMode && chatScrollAnchorHoldUntil <= Date.now()) return;
+    chatScrollAnchorHoldUntil = 0;
+    chatScrollPinnedToBottom = false;
+    chatScrollSuppressUntil = 0;
+    stopChatScrollAnchorPin();
+}
+
 function pinChatScrollToDomAnchor(messageId, duration = 9000) {
     const container = document.getElementById('chatMessages');
     const anchor = getMessageElement(messageId);
@@ -4024,14 +4033,24 @@ function scheduleChatScrollAnchorSave() {
 function initChatScrollAnchorTracking() {
     const container = document.getElementById('chatMessages');
     if (!container) return;
+    const releaseByUser = () => {
+        if (document.getElementById('chatMessages')?.classList.contains('history-loading')) return;
+        releaseChatScrollAnchorPinByUser();
+    };
+    container.addEventListener('pointerdown', releaseByUser, { passive: true });
+    container.addEventListener('touchstart', releaseByUser, { passive: true });
+    container.addEventListener('wheel', releaseByUser, { passive: true });
     container.addEventListener('scroll', () => {
         if (document.getElementById('chatMessages')?.classList.contains('history-loading')) return;
         if (Date.now() < chatScrollSuppressUntil) return;
-        chatScrollAnchorHoldUntil = 0;
-        chatScrollPinnedToBottom = false;
-        stopChatScrollAnchorPin();
+        releaseChatScrollAnchorPinByUser();
         scheduleChatScrollAnchorSave();
     }, { passive: true });
+    container.addEventListener('keydown', event => {
+        if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+            releaseByUser();
+        }
+    });
     container.addEventListener('pointerup', () => {
         scheduleChatScrollAnchorSave();
     }, { passive: true });
@@ -5511,7 +5530,10 @@ function closeMediaFullscreen(options = {}) {
     });
     content?.replaceChildren();
     mediaFullscreenPointerStart = null;
-    if (shouldGoBack) history.back();
+    if (shouldGoBack) {
+        suppressNextFilePreviewPopstate = document.getElementById('filePreviewViewer')?.classList.contains('active') === true;
+        history.back();
+    }
 }
 
 async function getCollectionPreviewNavigationFiles() {
@@ -9917,6 +9939,10 @@ window.addEventListener('popstate', () => {
         closeMediaFullscreen({ fromHistory: true });
         return;
     }
+    if (suppressNextFilePreviewPopstate) {
+        suppressNextFilePreviewPopstate = false;
+        return;
+    }
     if (filePreviewHistoryOpen || document.getElementById('filePreviewViewer')?.classList.contains('active')) {
         closeFilePreview({ fromHistory: true });
         return;
@@ -10021,7 +10047,7 @@ async function loadSessionData() {
                         pinChatScrollToDomAnchor(chatScrollAnchorMessageId, 12000);
                     } else {
                         chatMessages.scrollTop = chatMessages.scrollHeight;
-                        pinChatScrollToBottom(12000);
+                        pinChatScrollToBottom(3500);
                     }
                     requestAnimationFrame(() => {
                         chatMessages.classList.remove('history-loading');
