@@ -133,3 +133,10 @@
 - Fixed the fullscreen music queue pull handle placement so the visible handle is also the active touch/click target, and lowered the upward drag threshold for mobile.
 - Added marquee behavior for long fullscreen player track names while keeping short names static.
 - Added Media Session API metadata and controls for mobile system notification drawers, including title, artist, album, artwork, play/pause, previous/next, seek, and position state updates.
+
+## 2026-07-02 Music Player Back Navigation and Metadata
+
+- Added a dedicated fullscreen music player history state so Android back gestures and browser back keys minimize the player to the background instead of leaving the tunnel page.
+- Added audio text metadata extraction for ID3v2/ID3v1 MP3, MP4/M4A ilst atoms, and FLAC Vorbis comments, then cached title/artist/album fields in IndexedDB for future opens.
+- Updated music queue hydration and Media Session metadata to use parsed track title, artist, and album instead of falling back to file names whenever metadata exists.
+- Added a visibility/focus return hook so when background music is playing and the page is brought back from the system media notification, the fullscreen music player is opened.

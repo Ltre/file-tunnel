@@ -117,6 +117,7 @@ let lastAdminTapAt = 0;
 const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const MEDIA_FULLSCREEN_HISTORY_KEY = 'tunnelMediaFullscreen';
+const MUSIC_PLAYER_HISTORY_KEY = 'tunnelMusicPlayer';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let lastLocalHistoryTimestamp = 0;
@@ -2630,6 +2631,28 @@ function readAscii(bytes, offset, length) {
     return String.fromCharCode(...bytes.slice(offset, offset + length));
 }
 
+function decodeLatin1(bytes) {
+    return new TextDecoder('iso-8859-1').decode(bytes).replace(/\0+$/g, '').trim();
+}
+
+function decodeUtf8(bytes) {
+    return new TextDecoder('utf-8').decode(bytes).replace(/\0+$/g, '').trim();
+}
+
+function decodeUtf16Bytes(bytes, littleEndian = true) {
+    const codes = [];
+    for (let index = 0; index + 1 < bytes.length; index += 2) {
+        const code = littleEndian ? (bytes[index] | (bytes[index + 1] << 8)) : ((bytes[index] << 8) | bytes[index + 1]);
+        if (code === 0) break;
+        codes.push(code);
+    }
+    return String.fromCharCode(...codes).trim();
+}
+
+function cleanAudioMetaText(value) {
+    return String(value || '').replace(/\0/g, '').replace(/\s+/g, ' ').trim();
+}
+
 function getFileExtensionLower(file = {}) {
     const name = String((file && file.name) || '').toLowerCase();
     const index = name.lastIndexOf('.');
@@ -2666,6 +2689,55 @@ function findId3TextTerminator(bytes, start, end, encoding) {
     }
     const index = bytes.indexOf(0, start);
     return index >= 0 && index < end ? index + 1 : end;
+}
+
+function decodeId3TextFrame(bytes, frameStart, frameEnd) {
+    if (frameEnd <= frameStart) return '';
+    const encoding = bytes[frameStart];
+    let data = bytes.slice(frameStart + 1, frameEnd);
+    if (!data.length) return '';
+    if (encoding === 0) return cleanAudioMetaText(decodeLatin1(data));
+    if (encoding === 3) return cleanAudioMetaText(decodeUtf8(data));
+    if (encoding === 1) {
+        if (data[0] === 0xff && data[1] === 0xfe) return cleanAudioMetaText(decodeUtf16Bytes(data.slice(2), true));
+        if (data[0] === 0xfe && data[1] === 0xff) return cleanAudioMetaText(decodeUtf16Bytes(data.slice(2), false));
+        return cleanAudioMetaText(decodeUtf16Bytes(data, true));
+    }
+    if (encoding === 2) return cleanAudioMetaText(decodeUtf16Bytes(data, false));
+    return cleanAudioMetaText(decodeUtf8(data));
+}
+
+function extractAudioTextFromId3Bytes(bytes) {
+    const metadata = {};
+    if (bytes.length < 20 || bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) return metadata;
+    const version = bytes[3];
+    const tagSize = readSynchsafeInteger(bytes, 6);
+    let offset = 10;
+    const flags = bytes[5] || 0;
+    if (flags & 0x40) {
+        if (version === 3 && offset + 4 <= bytes.length) {
+            offset += 4 + readUint32BE(bytes, offset);
+        } else if (version >= 4 && offset + 4 <= bytes.length) {
+            offset += readSynchsafeInteger(bytes, offset);
+        }
+    }
+    const end = Math.min(bytes.length, 10 + tagSize);
+    const decoder = new TextDecoder('iso-8859-1');
+    const headerSize = version === 2 ? 6 : 10;
+    const map = version === 2
+        ? { TT2: 'title', TP1: 'artist', TAL: 'album' }
+        : { TIT2: 'title', TPE1: 'artist', TALB: 'album', TPE2: 'albumArtist' };
+    while (offset + headerSize <= end) {
+        const frameId = decoder.decode(bytes.slice(offset, offset + (version === 2 ? 3 : 4))).replace(/\0/g, '');
+        const frameSize = version === 2 ? readUint24BE(bytes, offset + 3) : readId3FrameSize(bytes, offset + 4, version);
+        if (!frameId || frameSize <= 0) break;
+        const frameStart = offset + headerSize;
+        const frameEnd = Math.min(end, frameStart + frameSize);
+        const key = map[frameId];
+        if (key && !metadata[key]) metadata[key] = decodeId3TextFrame(bytes, frameStart, frameEnd);
+        offset = frameEnd;
+    }
+    return metadata;
 }
 
 function parseId3ApicFrame(bytes, frameStart, frameEnd, frameId) {
@@ -2778,6 +2850,35 @@ function findMp4CoverData(bytes, start = 0, end = bytes.length, depth = 0) {
     return null;
 }
 
+function findMp4TextMetadata(bytes, start = 0, end = bytes.length, depth = 0, metadata = {}) {
+    if (depth > 8) return metadata;
+    let offset = start;
+    const containers = new Set(['moov', 'udta', 'meta', 'ilst']);
+    const atomMap = { '©nam': 'title', '©ART': 'artist', aART: 'artist', '©alb': 'album' };
+    while (offset + 8 <= end) {
+        const atom = readMp4Atom(bytes, offset, end);
+        if (!atom) break;
+        if (atomMap[atom.type]) {
+            let child = atom.payloadStart;
+            while (child + 8 <= atom.end) {
+                const dataAtom = readMp4Atom(bytes, child, atom.end);
+                if (!dataAtom) break;
+                if (dataAtom.type === 'data' && dataAtom.payloadStart + 8 <= dataAtom.end) {
+                    const text = cleanAudioMetaText(decodeUtf8(bytes.slice(dataAtom.payloadStart + 8, dataAtom.end)));
+                    if (text && !metadata[atomMap[atom.type]]) metadata[atomMap[atom.type]] = text;
+                }
+                child = dataAtom.end;
+            }
+        }
+        const childStart = atom.type === 'meta' ? atom.payloadStart + 4 : atom.payloadStart;
+        if (containers.has(atom.type) && childStart + 8 <= atom.end) {
+            findMp4TextMetadata(bytes, childStart, atom.end, depth + 1, metadata);
+        }
+        offset = atom.end;
+    }
+    return metadata;
+}
+
 async function extractAudioPosterFromMp4Bytes(bytes) {
     if (bytes.length < 16) return '';
     const cover = findMp4CoverData(bytes);
@@ -2814,6 +2915,56 @@ function parseFlacPictureBlock(bytes, start, end) {
         bytes: bytes.slice(cursor, cursor + imageLength),
         mime
     };
+}
+
+function readLittleEndianUint32(bytes, offset) {
+    return (bytes[offset]) | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | ((bytes[offset + 3] << 24) >>> 0);
+}
+
+function parseVorbisComments(bytes, start, end) {
+    const metadata = {};
+    let cursor = start;
+    if (cursor + 8 > end) return metadata;
+    const vendorLength = readLittleEndianUint32(bytes, cursor);
+    cursor += 4 + vendorLength;
+    if (cursor + 4 > end) return metadata;
+    const count = readLittleEndianUint32(bytes, cursor);
+    cursor += 4;
+    for (let i = 0; i < count && cursor + 4 <= end; i++) {
+        const length = readLittleEndianUint32(bytes, cursor);
+        cursor += 4;
+        if (length <= 0 || cursor + length > end) break;
+        const entry = decodeUtf8(bytes.slice(cursor, cursor + length));
+        cursor += length;
+        const equalIndex = entry.indexOf('=');
+        if (equalIndex <= 0) continue;
+        const key = entry.slice(0, equalIndex).toUpperCase();
+        const value = cleanAudioMetaText(entry.slice(equalIndex + 1));
+        if (key === 'TITLE' && !metadata.title) metadata.title = value;
+        if (key === 'ARTIST' && !metadata.artist) metadata.artist = value;
+        if (key === 'ALBUM' && !metadata.album) metadata.album = value;
+    }
+    return metadata;
+}
+
+function extractAudioTextFromFlacBytes(bytes) {
+    const metadata = {};
+    const flacStart = findFlacStart(bytes);
+    if (flacStart < 0) return metadata;
+    let offset = flacStart + 4;
+    let lastBlock = false;
+    while (!lastBlock && offset + 4 <= bytes.length) {
+        const header = bytes[offset];
+        lastBlock = Boolean(header & 0x80);
+        const blockType = header & 0x7f;
+        const blockLength = readUint24BE(bytes, offset + 1);
+        const blockStart = offset + 4;
+        const blockEnd = blockStart + blockLength;
+        if (blockEnd > bytes.length) break;
+        if (blockType === 4) return parseVorbisComments(bytes, blockStart, blockEnd);
+        offset = blockEnd;
+    }
+    return metadata;
 }
 
 async function extractAudioPosterFromFlacBytes(bytes) {
@@ -2854,6 +3005,70 @@ async function extractAudioPosterFromStoredFile(storedFile) {
         if (flacPoster) return flacPoster;
     }
     return '';
+}
+
+function extractAudioTextFromId3v1Bytes(bytes) {
+    if (bytes.length < 128) return {};
+    const start = bytes.length - 128;
+    if (readAscii(bytes, start, 3) !== 'TAG') return {};
+    return {
+        title: cleanAudioMetaText(decodeLatin1(bytes.slice(start + 3, start + 33))),
+        artist: cleanAudioMetaText(decodeLatin1(bytes.slice(start + 33, start + 63))),
+        album: cleanAudioMetaText(decodeLatin1(bytes.slice(start + 63, start + 93)))
+    };
+}
+
+async function extractAudioMetadataFromStoredFile(storedFile) {
+    const bytes = await getStoredFileBytes(storedFile);
+    if (bytes.length < 16) return {};
+    const name = String(storedFile?.name || '').toLowerCase();
+    const type = String(storedFile?.type || '').toLowerCase();
+    let metadata = extractAudioTextFromId3Bytes(bytes);
+    if ((!metadata.title && !metadata.artist && !metadata.album) &&
+        (type.includes('mp4') || type.includes('m4a') || name.endsWith('.m4a') || name.endsWith('.mp4') || name.endsWith('.aac') || name.endsWith('.alac'))) {
+        metadata = findMp4TextMetadata(bytes);
+    }
+    if ((!metadata.title && !metadata.artist && !metadata.album) &&
+        (type.includes('flac') || name.endsWith('.flac') || name.endsWith('.fla'))) {
+        metadata = extractAudioTextFromFlacBytes(bytes);
+    }
+    const id3v1 = extractAudioTextFromId3v1Bytes(bytes);
+    return {
+        title: metadata.title || id3v1.title || '',
+        artist: metadata.artist || metadata.albumArtist || id3v1.artist || '',
+        album: metadata.album || id3v1.album || ''
+    };
+}
+
+async function ensureAudioMetadataCache(storedFile, fileInfo = {}) {
+    if (!isAudioFileLike(storedFile, fileInfo) || !hasCompleteFileCache(storedFile, fileInfo)) return {};
+    if (storedFile.audioTitle || storedFile.audioArtist || storedFile.audioAlbum) {
+        return {
+            title: storedFile.audioTitle || '',
+            artist: storedFile.audioArtist || '',
+            album: storedFile.audioAlbum || ''
+        };
+    }
+    const metadata = await extractAudioMetadataFromStoredFile({
+        ...storedFile,
+        name: storedFile?.name || fileInfo.name || '',
+        type: storedFile?.type || fileInfo.type || ''
+    }).catch(err => {
+        historyLog('audio-metadata-cache-failed', {
+            fileId: fileInfo.id || storedFile.id,
+            fileName: fileInfo.name || storedFile.name,
+            error: err.message
+        });
+        return {};
+    });
+    if (!metadata.title && !metadata.artist && !metadata.album) return {};
+    await saveToStore('files', {
+        ...storedFile,
+        audioTitle: metadata.title || '',
+        audioArtist: metadata.artist || '',
+        audioAlbum: metadata.album || ''
+    });
+    return metadata;
 }
 
 async function ensureAudioPosterCache(storedFile, fileInfo = {}) {
@@ -4674,6 +4889,8 @@ const musicPlayer = {
     queueOpen: false,
     queueDrag: null,
     mediaSessionReady: false,
+    historyOpen: false,
+    hiddenAt: 0,
     tempAudio: null,
     tempResumeBackground: false,
     tempPreviewFileId: '',
@@ -5453,12 +5670,13 @@ async function hydrateSavedMusicTrack(savedTrack) {
     const url = getStoredFileUrl(savedTrack.id, storedFile);
     const type = String(fileInfo.type || storedFile.type || savedTrack.type || '').toLowerCase();
     const extension = getFileExtension(fileInfo.name || storedFile.name || savedTrack.name || '').toUpperCase();
+    const metadata = await ensureAudioMetadataCache(storedFile, fileInfo).catch(() => ({}));
     return {
         id: savedTrack.id,
         fileInfo,
-        name: savedTrack.name || fileInfo.name || storedFile.name || 'Audio',
-        artist: savedTrack.artist || '未知艺术家',
-        album: savedTrack.album || '未知专辑',
+        name: metadata.title || storedFile.audioTitle || savedTrack.name || fileInfo.name || storedFile.name || 'Audio',
+        artist: metadata.artist || storedFile.audioArtist || savedTrack.artist || '未知艺术家',
+        album: metadata.album || storedFile.audioAlbum || savedTrack.album || '未知专辑',
         url,
         poster: storedFile.audioPoster || '',
         size: Number(savedTrack.size || fileInfo.size || storedFile.size || 0),
@@ -5555,12 +5773,13 @@ async function buildAudioTrack(fileInfo, storedFile, url) {
     const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
     const extension = getFileExtension(fileInfo.name || storedFile?.name || '').toUpperCase();
     const poster = storedFile?.audioPoster || await ensureAudioPosterCache(storedFile, fileInfo).catch(() => '');
+    const metadata = await ensureAudioMetadataCache(storedFile, fileInfo).catch(() => ({}));
     return {
         id: fileInfo.id,
         fileInfo: { ...fileInfo },
-        name: fileInfo.name || storedFile?.name || 'Audio',
-        artist: '未知艺术家',
-        album: '未知专辑',
+        name: metadata.title || storedFile?.audioTitle || fileInfo.name || storedFile?.name || 'Audio',
+        artist: metadata.artist || storedFile?.audioArtist || '未知艺术家',
+        album: metadata.album || storedFile?.audioAlbum || '未知专辑',
         url,
         poster,
         size: Number(fileInfo.size || storedFile?.size || 0),
@@ -5659,6 +5878,24 @@ function updateMediaSessionPlaybackState() {
             } catch (_) {}
         }
     }
+}
+
+function openMusicPlayerOverlay(options = {}) {
+    const overlay = ensureMusicPlayerOverlay();
+    overlay.classList.add('active');
+    renderMusicPlayer();
+    if (!musicPlayer.historyOpen && options.pushHistory !== false) {
+        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+        history.pushState({ ...baseState, [MUSIC_PLAYER_HISTORY_KEY]: true }, '', window.location.href);
+        musicPlayer.historyOpen = true;
+    }
+}
+
+function maybeOpenMusicPlayerFromMediaReturn() {
+    if (document.visibilityState !== 'visible') return;
+    if (!musicPlayer.hiddenAt || Date.now() - musicPlayer.hiddenAt < 500) return;
+    if (!musicPlayer.queue.length || !isBackgroundMusicPlaying()) return;
+    openMusicPlayerOverlay();
 }
 
 function ensureMusicPlayerOverlay() {
@@ -5912,7 +6149,7 @@ async function openMusicPlayerFromActivePreview() {
     const startTime = tempAudio?.dataset?.previewFileId === activeFilePreviewFileId ? Number(tempAudio.currentTime || 0) : 0;
     handoffTemporaryPreviewToBackground(activeFilePreviewFileId);
     await activateMusicTrack(track, { play: true, startTime });
-    ensureMusicPlayerOverlay().classList.add('active');
+    openMusicPlayerOverlay();
 }
 
 function handoffTemporaryPreviewToBackground(fileId) {
@@ -5938,18 +6175,25 @@ async function playMusicQueueIndex(index) {
     scheduleMusicPlayerPersist();
 }
 
-function minimizeMusicPlayer() {
+function minimizeMusicPlayer(options = {}) {
     musicPlayer.overlay?.classList.remove('active');
     musicPlayer.miniEnabled = true;
+    const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory &&
+        history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
+    musicPlayer.historyOpen = false;
     updateTopbarMusicState();
+    if (shouldGoBack) history.back();
 }
 
 function closeMusicPlayer() {
     musicPlayer.overlay?.classList.remove('active');
     ensureBackgroundAudio().pause();
     musicPlayer.miniEnabled = false;
+    const shouldGoBack = musicPlayer.historyOpen && history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
+    musicPlayer.historyOpen = false;
     updateTopbarMusicState();
     scheduleMusicPlayerPersist();
+    if (shouldGoBack) history.back();
 }
 
 function toggleBackgroundMusic() {
@@ -9801,14 +10045,21 @@ function initThemeSwitcher() {
         historyLog('theme-changed', { theme: next, source: 'topbar-cycle' });
     });
     document.getElementById('topbarMusicBtn')?.addEventListener('click', () => {
-        ensureMusicPlayerOverlay().classList.add('active');
-        renderMusicPlayer();
+        openMusicPlayerOverlay();
     });
 }
 
 function initUI() {
     initThemeSwitcher();
     window.addEventListener('beforeunload', persistMusicPlayerState);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            musicPlayer.hiddenAt = Date.now();
+            return;
+        }
+        maybeOpenMusicPlayerFromMediaReturn();
+    });
+    window.addEventListener('focus', maybeOpenMusicPlayerFromMediaReturn);
     initMobileWorkspace();
     initProgressDrawer();
     initChatScrollAnchorTracking();
@@ -10812,6 +11063,10 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', () => {
+    if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
+        minimizeMusicPlayer({ fromHistory: true });
+        return;
+    }
     if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
         closeMediaFullscreen({ fromHistory: true });
         return;
