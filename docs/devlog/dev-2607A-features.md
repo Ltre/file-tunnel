@@ -83,3 +83,11 @@
 
 ### Collection Preview Swipe
 - Collection child preview horizontal swipe threshold is lower, making adjacent-file switching more responsive on Android Chrome while still checking horizontal intent.
+
+## 2026-07-02 Audio Cover Cache
+
+### Audio Poster Extraction
+- Audio thumbnail extraction now supports MP3 ID3 `APIC`/legacy `PIC` frames, including common ID3v2.2/2.3/2.4 frame layouts.
+- M4A/MP4 audio files now scan the metadata atom tree for `covr/data` artwork and cache JPEG/PNG/GIF covers when present.
+- FLAC files now scan native metadata blocks for `PICTURE` artwork and cache the embedded cover.
+- Audio detection now falls back to common filename extensions such as `.mp3`, `.m4a`, `.aac`, `.alac`, `.flac`, `.ogg`, and `.opus`, so files with weak browser MIME detection can still show cached covers in single-file records and collection grids.

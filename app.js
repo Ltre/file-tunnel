@@ -2599,45 +2599,259 @@ function readId3FrameSize(bytes, offset, version) {
     return (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
 }
 
-async function extractAudioPosterFromId3(storedFile) {
-    const type = String(storedFile?.type || '').toLowerCase();
-    if (!type.includes('mpeg') && !String(storedFile?.name || '').toLowerCase().endsWith('.mp3')) return '';
-    const bytes = new Uint8Array(storedFile.data || []);
+function readUint24BE(bytes, offset) {
+    return (bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2];
+}
+
+function readUint32BE(bytes, offset) {
+    return ((bytes[offset] << 24) >>> 0) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3];
+}
+
+function readUint64BEAsNumber(bytes, offset) {
+    const high = readUint32BE(bytes, offset);
+    const low = readUint32BE(bytes, offset + 4);
+    return high * 0x100000000 + low;
+}
+
+function readAscii(bytes, offset, length) {
+    if (offset < 0 || length <= 0 || offset + length > bytes.length) return '';
+    return String.fromCharCode(...bytes.slice(offset, offset + length));
+}
+
+function getFileExtensionLower(file = {}) {
+    const name = String(file.name || '').toLowerCase();
+    const index = name.lastIndexOf('.');
+    return index >= 0 ? name.slice(index + 1) : '';
+}
+
+function isAudioFileLike(storedFile, fileInfo = {}) {
+    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    if (type.startsWith('audio/')) return true;
+    return ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(fileInfo)) ||
+        ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(storedFile));
+}
+
+async function getStoredFileBytes(storedFile) {
+    const data = storedFile?.data;
+    if (!data) return new Uint8Array();
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    if (typeof Blob !== 'undefined' && data instanceof Blob) return new Uint8Array(await data.arrayBuffer());
+    return new Uint8Array();
+}
+
+async function imageBytesToDataUrl(bytes, mime = 'image/jpeg') {
+    if (!bytes?.length) return '';
+    return await blobToBase64(new Blob([bytes], { type: mime || 'image/jpeg' }));
+}
+
+function findId3TextTerminator(bytes, start, end, encoding) {
+    if (encoding === 1 || encoding === 2) {
+        for (let index = start; index + 1 < end; index += 2) {
+            if (bytes[index] === 0 && bytes[index + 1] === 0) return index + 2;
+        }
+        return end;
+    }
+    const index = bytes.indexOf(0, start);
+    return index >= 0 && index < end ? index + 1 : end;
+}
+
+function parseId3ApicFrame(bytes, frameStart, frameEnd, frameId) {
+    if (frameEnd <= frameStart + 5) return null;
+    const decoder = new TextDecoder('iso-8859-1');
+    const encoding = bytes[frameStart];
+    let cursor = frameStart + 1;
+    let mime = 'image/jpeg';
+    if (frameId === 'PIC') {
+        const format = readAscii(bytes, cursor, 3).toUpperCase();
+        cursor += 3;
+        mime = format.includes('PNG') ? 'image/png' : format.includes('GIF') ? 'image/gif' : 'image/jpeg';
+    } else {
+        const mimeEnd = bytes.indexOf(0, cursor);
+        if (mimeEnd < 0 || mimeEnd >= frameEnd) return null;
+        mime = decoder.decode(bytes.slice(cursor, mimeEnd)) || 'image/jpeg';
+        cursor = mimeEnd + 1;
+    }
+    cursor += 1; // picture type
+    cursor = findId3TextTerminator(bytes, cursor, frameEnd, encoding);
+    if (cursor >= frameEnd) return null;
+    return {
+        bytes: bytes.slice(cursor, frameEnd),
+        mime
+    };
+}
+
+async function extractAudioPosterFromId3Bytes(bytes) {
     if (bytes.length < 20 || bytes[0] !== 0x49 || bytes[1] !== 0x44 || bytes[2] !== 0x33) return '';
     const version = bytes[3];
     const tagSize = readSynchsafeInteger(bytes, 6);
     let offset = 10;
+    const flags = bytes[5] || 0;
+    if (flags & 0x40) {
+        if (version === 3 && offset + 4 <= bytes.length) {
+            offset += 4 + readUint32BE(bytes, offset);
+        } else if (version >= 4 && offset + 4 <= bytes.length) {
+            offset += readSynchsafeInteger(bytes, offset);
+        }
+    }
     const end = Math.min(bytes.length, 10 + tagSize);
     const decoder = new TextDecoder('iso-8859-1');
-    while (offset + 10 <= end) {
-        const frameId = decoder.decode(bytes.slice(offset, offset + 4)).replace(/\0/g, '');
-        const frameSize = readId3FrameSize(bytes, offset + 4, version);
+    const headerSize = version === 2 ? 6 : 10;
+    while (offset + headerSize <= end) {
+        const frameId = decoder.decode(bytes.slice(offset, offset + (version === 2 ? 3 : 4))).replace(/\0/g, '');
+        const frameSize = version === 2 ? readUint24BE(bytes, offset + 3) : readId3FrameSize(bytes, offset + 4, version);
         if (!frameId || frameSize <= 0) break;
-        const frameStart = offset + 10;
+        const frameStart = offset + headerSize;
         const frameEnd = Math.min(end, frameStart + frameSize);
-        if (frameId === 'APIC' && frameEnd > frameStart + 8) {
-            let cursor = frameStart + 1;
-            const mimeEnd = bytes.indexOf(0, cursor);
-            if (mimeEnd < 0 || mimeEnd >= frameEnd) break;
-            const mime = decoder.decode(bytes.slice(cursor, mimeEnd)) || 'image/jpeg';
-            cursor = mimeEnd + 2;
-            while (cursor < frameEnd && bytes[cursor] !== 0) cursor++;
-            cursor++;
-            if (cursor < frameEnd) {
-                const blob = new Blob([bytes.slice(cursor, frameEnd)], { type: mime });
-                return await blobToBase64(blob);
-            }
+        if ((frameId === 'APIC' || frameId === 'PIC') && frameEnd > frameStart + 8) {
+            const image = parseId3ApicFrame(bytes, frameStart, frameEnd, frameId);
+            if (image?.bytes?.length) return await imageBytesToDataUrl(image.bytes, image.mime);
         }
         offset = frameEnd;
     }
     return '';
 }
 
+function readMp4Atom(bytes, offset, limit) {
+    if (offset + 8 > limit) return null;
+    let size = readUint32BE(bytes, offset);
+    const type = readAscii(bytes, offset + 4, 4);
+    let headerSize = 8;
+    if (size === 1) {
+        if (offset + 16 > limit) return null;
+        size = readUint64BEAsNumber(bytes, offset + 8);
+        headerSize = 16;
+    } else if (size === 0) {
+        size = limit - offset;
+    }
+    if (!type || size < headerSize || offset + size > limit) return null;
+    return {
+        type,
+        start: offset,
+        end: offset + size,
+        payloadStart: offset + headerSize
+    };
+}
+
+function getMp4CoverMime(kind) {
+    if (kind === 14) return 'image/png';
+    if (kind === 12) return 'image/gif';
+    return 'image/jpeg';
+}
+
+function findMp4CoverData(bytes, start = 0, end = bytes.length, depth = 0) {
+    if (depth > 8) return null;
+    let offset = start;
+    const containers = new Set(['moov', 'udta', 'meta', 'ilst', 'covr']);
+    while (offset + 8 <= end) {
+        const atom = readMp4Atom(bytes, offset, end);
+        if (!atom) break;
+        if (atom.type === 'data' && atom.payloadStart + 8 <= atom.end) {
+            const kind = readUint32BE(bytes, atom.payloadStart);
+            const dataStart = atom.payloadStart + 8;
+            if (dataStart < atom.end) {
+                return {
+                    bytes: bytes.slice(dataStart, atom.end),
+                    mime: getMp4CoverMime(kind)
+                };
+            }
+        }
+        const childStart = atom.type === 'meta' ? atom.payloadStart + 4 : atom.payloadStart;
+        if (containers.has(atom.type) && childStart + 8 <= atom.end) {
+            const found = findMp4CoverData(bytes, childStart, atom.end, depth + 1);
+            if (found) return found;
+        }
+        offset = atom.end;
+    }
+    return null;
+}
+
+async function extractAudioPosterFromMp4Bytes(bytes) {
+    if (bytes.length < 16) return '';
+    const cover = findMp4CoverData(bytes);
+    return cover?.bytes?.length ? await imageBytesToDataUrl(cover.bytes, cover.mime) : '';
+}
+
+function findFlacStart(bytes) {
+    const max = Math.min(bytes.length - 4, 65536);
+    for (let index = 0; index <= max; index++) {
+        if (bytes[index] === 0x66 && bytes[index + 1] === 0x4c && bytes[index + 2] === 0x61 && bytes[index + 3] === 0x43) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+function parseFlacPictureBlock(bytes, start, end) {
+    let cursor = start;
+    if (cursor + 8 > end) return null;
+    cursor += 4; // picture type
+    const mimeLength = readUint32BE(bytes, cursor);
+    cursor += 4;
+    if (mimeLength < 0 || cursor + mimeLength + 4 > end) return null;
+    const mime = readAscii(bytes, cursor, mimeLength) || 'image/jpeg';
+    cursor += mimeLength;
+    const descriptionLength = readUint32BE(bytes, cursor);
+    cursor += 4 + descriptionLength;
+    if (cursor + 20 > end) return null;
+    cursor += 16; // width, height, depth, indexed colors
+    const imageLength = readUint32BE(bytes, cursor);
+    cursor += 4;
+    if (imageLength <= 0 || cursor + imageLength > end) return null;
+    return {
+        bytes: bytes.slice(cursor, cursor + imageLength),
+        mime
+    };
+}
+
+async function extractAudioPosterFromFlacBytes(bytes) {
+    const flacStart = findFlacStart(bytes);
+    if (flacStart < 0) return '';
+    let offset = flacStart + 4;
+    let lastBlock = false;
+    while (!lastBlock && offset + 4 <= bytes.length) {
+        const header = bytes[offset];
+        lastBlock = Boolean(header & 0x80);
+        const blockType = header & 0x7f;
+        const blockLength = readUint24BE(bytes, offset + 1);
+        const blockStart = offset + 4;
+        const blockEnd = blockStart + blockLength;
+        if (blockEnd > bytes.length) break;
+        if (blockType === 6) {
+            const picture = parseFlacPictureBlock(bytes, blockStart, blockEnd);
+            if (picture?.bytes?.length) return await imageBytesToDataUrl(picture.bytes, picture.mime);
+        }
+        offset = blockEnd;
+    }
+    return '';
+}
+
+async function extractAudioPosterFromStoredFile(storedFile) {
+    const bytes = await getStoredFileBytes(storedFile);
+    if (bytes.length < 16) return '';
+    const id3Poster = await extractAudioPosterFromId3Bytes(bytes);
+    if (id3Poster) return id3Poster;
+    const name = String(storedFile?.name || '').toLowerCase();
+    const type = String(storedFile?.type || '').toLowerCase();
+    if (type.includes('mp4') || type.includes('m4a') || name.endsWith('.m4a') || name.endsWith('.mp4') || name.endsWith('.aac') || name.endsWith('.alac')) {
+        const mp4Poster = await extractAudioPosterFromMp4Bytes(bytes);
+        if (mp4Poster) return mp4Poster;
+    }
+    if (type.includes('flac') || name.endsWith('.flac') || name.endsWith('.fla')) {
+        const flacPoster = await extractAudioPosterFromFlacBytes(bytes);
+        if (flacPoster) return flacPoster;
+    }
+    return '';
+}
+
 async function ensureAudioPosterCache(storedFile, fileInfo = {}) {
-    const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
-    if (!type.startsWith('audio/') || !hasCompleteFileCache(storedFile, fileInfo)) return '';
+    if (!isAudioFileLike(storedFile, fileInfo) || !hasCompleteFileCache(storedFile, fileInfo)) return '';
     if (storedFile.audioPoster) return storedFile.audioPoster;
-    const poster = await extractAudioPosterFromId3(storedFile)
+    const poster = await extractAudioPosterFromStoredFile({
+        ...storedFile,
+        name: storedFile?.name || fileInfo.name || '',
+        type: storedFile?.type || fileInfo.type || ''
+    })
         .catch(err => {
             historyLog('audio-poster-cache-failed', {
                 fileId: fileInfo.id || storedFile.id,
@@ -3860,6 +4074,7 @@ async function createCollectionTileHtml(fileInfo, index, total) {
     const type = String(fileInfo.type || '').toLowerCase();
     let body = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    const isAudioLike = isAudioFileLike(storedFile, fileInfo);
     if (hasCompleteFileCache(storedFile, fileInfo)) {
         const resolvedType = String(fileInfo.type || storedFile.type || '').toLowerCase();
         if (resolvedType.startsWith('image/')) {
@@ -3870,7 +4085,7 @@ async function createCollectionTileHtml(fileInfo, index, total) {
             body = poster
                 ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('video')}`
                 : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>${renderMediaKindBadge('video')}`;
-        } else if (resolvedType.startsWith('audio/')) {
+        } else if (resolvedType.startsWith('audio/') || isAudioLike) {
             const poster = await ensureAudioPosterCache(storedFile, fileInfo);
             body = poster
                 ? `<img src="${poster}" alt="${escapeHtml(fileInfo.name || '')}" loading="lazy" decoding="async">${renderMediaKindBadge('audio')}`
@@ -3878,7 +4093,7 @@ async function createCollectionTileHtml(fileInfo, index, total) {
         }
     } else if (type.startsWith('video/')) {
         body = `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>${renderMediaKindBadge('video')}`;
-    } else if (type.startsWith('audio/')) {
+    } else if (type.startsWith('audio/') || isAudioLike) {
         body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
     }
     const remaining = total > 4 && index === 3 ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
@@ -3956,7 +4171,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
 
         const isImage = fileInfo.type.startsWith('image/');
         const isVideo = fileInfo.type.startsWith('video/');
-        const isAudio = fileInfo.type.startsWith('audio/');
+        const isAudio = isAudioFileLike(null, fileInfo);
 
         // 检查是否是本地已存储的文件（刷新后从IndexedDB加载）
         let fileUrl = fileInfo.data || null;
@@ -5429,6 +5644,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
     const type = String(fileInfo.type || storedFile?.type || '').toLowerCase();
+    const isAudioLike = isAudioFileLike(storedFile, fileInfo);
     if (hasLocalData && type.startsWith('image/')) {
         const url = getStoredFileUrl(fileInfo.id, storedFile);
         const image = document.createElement('img');
@@ -5448,7 +5664,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             thumb.appendChild(image);
             thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
         }
-    } else if (hasLocalData && type.startsWith('audio/')) {
+    } else if (hasLocalData && (type.startsWith('audio/') || isAudioLike)) {
         const poster = await ensureAudioPosterCache(storedFile, fileInfo);
         if (poster) {
             const image = document.createElement('img');
@@ -5470,7 +5686,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             <div class="collection-file-state">${stateLabel}</div>
         `;
         if (type.startsWith('video/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
-        if (type.startsWith('audio/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('audio'));
+        if (type.startsWith('audio/') || isAudioLike) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('audio'));
     }
 
     const name = document.createElement('div');
@@ -5833,13 +6049,14 @@ async function refreshFileMessage(fileId) {
 
     const poster = String(storedFile.type || '').toLowerCase().startsWith('video/')
         ? await ensureVideoPosterCache(storedFile, storedFile)
-        : String(storedFile.type || '').toLowerCase().startsWith('audio/')
+        : isAudioFileLike(storedFile, storedFile)
             ? await ensureAudioPosterCache(storedFile, storedFile)
         : '';
 
     preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const type = fileInfo.type || storedFile.type;
+        const isAudioLike = isAudioFileLike(storedFile, fileInfo);
         const name = escapeHtml(fileInfo.name || storedFile.name);
         const bubble = messageEl.querySelector('.message-bubble');
         if (!bubble) return;
@@ -5852,7 +6069,7 @@ async function refreshFileMessage(fileId) {
             bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<span class="collection-video-placeholder" aria-label="视频文件">🎬</span>`}${renderMediaKindBadge('video')}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
-        } else if (type.startsWith('audio/')) {
+        } else if (type.startsWith('audio/') || isAudioLike) {
             bubble.innerHTML = `<div class="media-preview">${poster ? `<img src="${poster}" alt="${name}" loading="lazy" decoding="async">` : `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>`}${renderMediaKindBadge('audio')}</div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
