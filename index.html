@@ -1829,6 +1829,10 @@
 
         .music-note-live {
             display: inline-block;
+        }
+
+        .file-preview-music-btn .music-note-live,
+        .topbar-music-btn.is-playing .music-note-live {
             animation: musicNotePulse 900ms ease-in-out infinite;
         }
 
@@ -2235,6 +2239,14 @@
             cursor: pointer;
         }
 
+        .music-player-shell {
+            position: relative;
+            min-height: 0;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: minmax(0, 1fr);
+        }
+
         .music-player-body {
             width: min(560px, 92vw);
             align-self: center;
@@ -2243,6 +2255,20 @@
             justify-items: center;
             gap: 18px;
             padding: 18px 0 42px;
+            transition: transform 220ms ease, gap 220ms ease, padding 220ms ease;
+        }
+
+        .music-player-overlay.queue-open .music-player-body {
+            align-self: start;
+            gap: 10px;
+            padding-top: 8px;
+            transform: translateY(-4px);
+        }
+
+        .music-player-overlay.queue-open .music-player-subtitle,
+        .music-player-overlay.queue-open .music-player-range,
+        .music-player-overlay.queue-open .music-player-times {
+            display: none;
         }
 
         .music-player-cover {
@@ -2254,6 +2280,11 @@
             border-radius: 24px;
             background: linear-gradient(145deg, rgba(96,165,250,.22), rgba(255,255,255,.08));
             box-shadow: 0 28px 80px rgba(0,0,0,.42);
+        }
+
+        .music-player-overlay.queue-open .music-player-cover {
+            width: min(34vw, 170px);
+            border-radius: 18px;
         }
 
         .music-player-cover img {
@@ -2312,26 +2343,157 @@
             cursor: pointer;
         }
 
-        .music-player-meta {
-            width: 100%;
+        .music-player-queue-puller {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 2;
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px;
-            margin-top: 4px;
+            justify-items: center;
+            gap: 5px;
+            padding: 8px 0 calc(12px + env(safe-area-inset-bottom));
+            color: rgba(226, 232, 240, .86);
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            transition: transform 220ms ease;
         }
 
-        .music-player-meta div {
+        .music-player-queue-puller::before {
+            width: 48px;
+            height: 5px;
+            border-radius: 999px;
+            background: rgba(226, 232, 240, .72);
+            content: '';
+        }
+
+        .music-player-queue-puller span {
+            font-size: .82rem;
+            letter-spacing: 0;
+        }
+
+        .music-player-queue-drawer {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            height: min(50dvh, 430px);
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+            border-radius: 24px 24px 0 0;
+            background: rgba(15, 23, 42, .92);
+            box-shadow: 0 -22px 80px rgba(0, 0, 0, .45);
+            backdrop-filter: blur(16px);
+            transform: translateY(calc(100% - 62px));
+            transition: transform 220ms ease;
+        }
+
+        .music-player-overlay.queue-open .music-player-queue-drawer {
+            transform: translateY(0);
+        }
+
+        .music-player-queue-title {
+            margin: 8px 0 12px;
+            font-weight: 800;
+            color: #f8fafc;
+        }
+
+        .music-player-queue-list {
+            min-height: 0;
+            overflow: auto;
+            display: grid;
+            align-content: start;
+            gap: 8px;
+        }
+
+        .music-player-queue-item {
+            display: grid;
+            grid-template-columns: 44px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, .09);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, .06);
+            color: rgba(248, 250, 252, .88);
+            cursor: pointer;
+        }
+
+        .music-player-queue-item.active {
+            border-color: rgba(147, 197, 253, .7);
+            background: rgba(59, 130, 246, .18);
+        }
+
+        .music-player-queue-cover {
+            width: 44px;
+            aspect-ratio: 1;
+            display: grid;
+            place-items: center;
+            overflow: hidden;
+            border-radius: 9px;
+            background: rgba(255, 255, 255, .1);
+        }
+
+        .music-player-queue-cover img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .music-player-queue-name {
             min-width: 0;
-            padding: 9px 10px;
-            border: 1px solid rgba(255,255,255,.12);
-            border-radius: 10px;
-            background: rgba(255,255,255,.07);
-            color: rgba(226,232,240,.88);
-            font-size: 0.82rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 700;
+        }
+
+        .music-player-queue-meta {
+            color: rgba(203, 213, 225, .72);
+            font-size: .78rem;
+        }
+
+        .music-player-queue-state {
+            color: #bfdbfe;
+            font-size: .78rem;
         }
 
         .topbar-music-btn[hidden] {
             display: none;
+        }
+
+        .topbar-music-btn:not(.is-playing) .music-note-live {
+            opacity: .78;
+        }
+
+        .topbar-now-playing {
+            flex: 1 1 auto;
+            min-width: 0;
+            max-width: min(42vw, 460px);
+            margin-left: 10px;
+            overflow: hidden;
+            color: #52617e;
+            font-size: .86rem;
+            white-space: nowrap;
+            mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+        }
+
+        .topbar-now-playing[hidden] {
+            display: none;
+        }
+
+        .topbar-now-playing span {
+            display: inline-block;
+            min-width: 100%;
+            padding-left: 100%;
+            animation: topbarNowPlayingMarquee 12s linear infinite;
+        }
+
+        @keyframes topbarNowPlayingMarquee {
+            from { transform: translateX(0); }
+            to { transform: translateX(-100%); }
         }
 
         .send-mode-overlay {
@@ -2783,7 +2945,8 @@
             z-index: 3600;
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-start;
+            gap: 10px;
             height: var(--tunnel-topbar-height);
             padding: 8px 14px;
             border-bottom: 1px solid rgba(214, 220, 233, 0.9);
@@ -2841,14 +3004,6 @@
             border-color: #667eea;
             color: #4f5ec2;
             box-shadow: 0 6px 16px rgba(54, 72, 135, 0.2);
-        }
-
-        .magnet-cache-topbar-btn {
-            margin-left: 2px;
-        }
-
-        #cycleThemeBtn {
-            margin-left: 2px;
         }
 
         .leave-tunnel-btn {
@@ -3347,6 +3502,7 @@
         <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
         <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
         <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
+        <div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
 

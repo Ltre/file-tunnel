@@ -117,3 +117,12 @@
 - If another track is focused in the background queue, the previewed track is inserted and played immediately. If the same track is already focused, playback continues from the existing position.
 - The fullscreen player supports cover art, track title, artist/album placeholders, duration, estimated bitrate, sample-rate placeholder, codec display, seek, play/pause, previous/next, and minimize.
 - Once the fullscreen player has been opened, the top bar shows a live music-note button for returning from minimized playback.
+
+## 2026-07-02 Music Queue Player Polish
+
+- Added a half-screen fullscreen-player queue drawer with a YT Music style pull handle; the player compresses into the upper half while the queue is open.
+- Persisted the browser music queue, current track index, and playback position in localStorage, then rehydrates cached files from IndexedDB on startup instead of saving blob URLs.
+- Changed the topbar music entry to appear whenever a queue exists; the icon animates only while playing, and the current track name scrolls in the topbar only during playback.
+- Handed off temporary audio preview playback time into the fullscreen player so entering the player continues from the preview timestamp.
+- Kept audio preview controls usable after minimizing or closing the fullscreen player by letting the preview controls target the background track when it is the same audio file.
+- Removed the fullscreen player bottom metadata chips so the bottom area is reserved for queue interaction.
