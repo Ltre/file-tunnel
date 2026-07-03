@@ -4523,7 +4523,7 @@ async function createCollectionTileHtml(fileInfo, index, total) {
         body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
     }
     const remaining = total > 4 && index === 3 ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
-    return `<div class="collection-preview-tile">${body}${remaining}</div>`;
+    return `<div class="collection-preview-tile" data-collection-file-id="${escapeHtml(fileInfo.id || '')}" role="button" tabindex="0">${body}${remaining}</div>`;
 }
 
 async function renderCollectionPreviewHtml(message) {
@@ -5669,14 +5669,19 @@ function showAppToast(message) {
 }
 
 function getMusicPlayerSaveKey() {
-    return `${MUSIC_PLAYER_STORAGE_KEY}:${state.deviceId || 'local'}`;
+    return `${MUSIC_PLAYER_STORAGE_KEY}:${state.deviceId || 'local'}:${state.sessionId || 'no-session'}`;
 }
 
 function serializeMusicTrack(track) {
     if (!track?.id) return null;
+    const sessionId = track.sessionId || track.fileInfo?.sessionId || state.sessionId || '';
     return {
         id: track.id,
-        fileInfo: track.fileInfo || { id: track.id, name: track.name, type: track.type, size: track.size },
+        sessionId,
+        fileInfo: {
+            ...(track.fileInfo || { id: track.id, name: track.name, type: track.type, size: track.size }),
+            sessionId
+        },
         name: track.name || track.fileInfo?.name || 'Audio',
         artist: track.artist || '',
         album: track.album || '',
@@ -5757,15 +5762,19 @@ function persistMusicPlayerProgressSoon() {
 
 async function hydrateSavedMusicTrack(savedTrack) {
     if (!savedTrack?.id) return null;
+    if (savedTrack.sessionId && state.sessionId && savedTrack.sessionId !== state.sessionId) return null;
     const storedFile = await getFromStore('files', savedTrack.id).catch(() => null);
+    if (storedFile?.sessionId && state.sessionId && storedFile.sessionId !== state.sessionId) return null;
     if (!hasCompleteFileCache(storedFile, savedTrack.fileInfo || savedTrack)) return null;
     const fileInfo = { ...(savedTrack.fileInfo || {}), id: savedTrack.id };
+    fileInfo.sessionId = savedTrack.sessionId || fileInfo.sessionId || storedFile.sessionId || state.sessionId || '';
     const url = getStoredFileUrl(savedTrack.id, storedFile);
     const type = String(fileInfo.type || storedFile.type || savedTrack.type || '').toLowerCase();
     const extension = getFileExtension(fileInfo.name || storedFile.name || savedTrack.name || '').toUpperCase();
     const metadata = await ensureAudioMetadataCache(storedFile, fileInfo).catch(() => ({}));
     return {
         id: savedTrack.id,
+        sessionId: fileInfo.sessionId,
         fileInfo,
         name: metadata.title || storedFile.audioTitle || savedTrack.name || fileInfo.name || storedFile.name || 'Audio',
         artist: metadata.artist || storedFile.audioArtist || savedTrack.artist || '未知艺术家',
@@ -5789,7 +5798,15 @@ async function restoreMusicPlayerState() {
         saved = null;
     }
     if (!saved?.queue?.length) {
+        if (musicPlayer.audio) {
+            try { musicPlayer.audio.pause(); } catch (_) {}
+            musicPlayer.audio.removeAttribute('src');
+        }
+        musicPlayer.queue = [];
+        musicPlayer.currentIndex = 0;
+        musicPlayer.miniEnabled = false;
         updateTopbarMusicState();
+        renderMusicPlayer();
         return;
     }
     const restored = [];
@@ -5867,9 +5884,11 @@ async function buildAudioTrack(fileInfo, storedFile, url) {
     const extension = getFileExtension(fileInfo.name || storedFile?.name || '').toUpperCase();
     const poster = storedFile?.audioPoster || await ensureAudioPosterCache(storedFile, fileInfo).catch(() => '');
     const metadata = await ensureAudioMetadataCache(storedFile, fileInfo).catch(() => ({}));
+    const sessionId = fileInfo.sessionId || storedFile?.sessionId || state.sessionId || '';
     return {
         id: fileInfo.id,
-        fileInfo: { ...fileInfo },
+        sessionId,
+        fileInfo: { ...fileInfo, sessionId },
         name: metadata.title || storedFile?.audioTitle || fileInfo.name || storedFile?.name || 'Audio',
         artist: metadata.artist || storedFile?.audioArtist || '未知艺术家',
         album: metadata.album || storedFile?.audioAlbum || '未知专辑',
@@ -5978,11 +5997,10 @@ async function getLocalAudioLibraryTracks() {
         ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
         : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
     const favoriteIds = getFavoriteMusicIds();
-    const preferFavorites = favoriteIds.size > 0;
     const tracks = [];
     for (const storedFile of files) {
         if (!storedFile?.id || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
-        if (preferFavorites && !favoriteIds.has(storedFile.id)) continue;
+        if (!favoriteIds.has(storedFile.id) && storedFile.mediaFavorite !== true) continue;
         const url = getStoredFileUrl(storedFile.id, storedFile);
         tracks.push(await buildAudioTrack(storedFile, storedFile, url).catch(() => null));
     }
@@ -6565,8 +6583,10 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     const content = setFilePreviewContentStage('preview-loading-stage');
     if (!content || !title) return false;
 
+    const collectionContextId = options.collectionContextId || options.collectionMessageId || '';
+    const returnCollectionMessageId = options.returnToCollection === false ? '' : (options.collectionMessageId || '');
     activeFilePreviewMode = 'file';
-    activeCollectionPreviewMessageId = options.collectionMessageId || '';
+    activeCollectionPreviewMessageId = collectionContextId;
     activeFilePreviewFileId = fileInfo.id;
     activeFilePreviewMessageId = options.messageId || '';
     const ownerDeviceId = options.ownerDeviceId || fileInfo.ownerDeviceId || options.sender || '';
@@ -6582,10 +6602,10 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     renderFilePreviewLoading(content, fileInfo);
     const viewer = document.getElementById('filePreviewViewer');
     openFilePreviewHistory(viewer, {
-        nested: Boolean(options.collectionMessageId),
-        stage: options.collectionMessageId ? 'file' : 'file-root'
+        nested: Boolean(returnCollectionMessageId),
+        stage: returnCollectionMessageId ? 'file' : 'file-root'
     });
-    filePreviewReturnCollectionMessageId = options.collectionMessageId || '';
+    filePreviewReturnCollectionMessageId = returnCollectionMessageId;
 
     const storedFile = await getFromStore('files', fileInfo.id);
     if (!hasCompleteFileCache(storedFile, fileInfo)) {
@@ -6612,14 +6632,14 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             messageId: options.messageId || '',
             fileInfo,
             ownerDeviceId,
-            collectionMessageId: options.collectionMessageId || '',
+            collectionMessageId: collectionContextId,
             hasLocalData: false,
             cacheCleared: Boolean(storedFile?.cacheCleared),
             restoreRequested: Boolean(storedFile?.restoreRequested)
         });
         historyLog('file-preview-opened-without-cache', {
             messageId: options.messageId,
-            collectionMessageId: options.collectionMessageId,
+            collectionMessageId: collectionContextId,
             fileId: fileInfo.id
         });
         await updateFilePreviewNavigationControls();
@@ -6634,12 +6654,12 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             messageId: options.messageId || '',
             fileInfo,
             ownerDeviceId,
-            collectionMessageId: options.collectionMessageId || '',
+            collectionMessageId: collectionContextId,
             hasLocalData: true
         });
         historyLog('file-preview-opened-as-metadata', {
             messageId: options.messageId,
-            collectionMessageId: options.collectionMessageId,
+            collectionMessageId: collectionContextId,
             fileId: fileInfo.id,
             type
         });
@@ -6686,12 +6706,12 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         messageId: options.messageId || '',
         fileInfo,
         ownerDeviceId,
-        collectionMessageId: options.collectionMessageId || '',
+        collectionMessageId: collectionContextId,
         hasLocalData: true
     });
     historyLog('file-preview-opened', {
         messageId: options.messageId,
-        collectionMessageId: options.collectionMessageId,
+        collectionMessageId: collectionContextId,
         fileId: fileInfo.id,
         type
     });
@@ -7345,6 +7365,33 @@ function attachCollectionRecordInteractions(messageEl) {
     const messageId = messageEl.dataset.messageId;
     messageEl.addEventListener('click', event => {
         if (event.target.closest('.file-cache-retry, .message-record-actions')) return;
+        const tile = event.target.closest('.collection-preview-tile[data-collection-file-id]');
+        if (tile) {
+            const fileId = tile.dataset.collectionFileId || '';
+            if (fileId) {
+                event.preventDefault();
+                event.stopPropagation();
+                getFromStore('messages', messageId)
+                    .then(message => {
+                        const fileInfo = getCollectionFiles(message).find(file => file.id === fileId);
+                        if (!fileInfo) return openCollectionRecord(messageId);
+                        return openFilePreviewForInfo(fileInfo, {
+                            messageId,
+                            ownerDeviceId: fileInfo.ownerDeviceId || message?.sender,
+                            sender: message?.sender,
+                            collectionContextId: messageId,
+                            returnToCollection: false,
+                            requestMissing: true
+                        });
+                    })
+                    .catch(err => historyLog('collection-direct-file-open-failed', {
+                        messageId,
+                        fileId,
+                        error: err.message
+                    }));
+                return;
+            }
+        }
         openCollectionRecord(messageId).catch(err => historyLog('collection-record-open-failed', {
             messageId,
             error: err.message
@@ -9849,7 +9896,9 @@ function setMobileWorkspaceView(view, options = {}) {
 
     currentMobileWorkspaceView = view;
     appShell.dataset.mobileView = view;
-    appShell.querySelector('.main-layout')?.style.removeProperty('transform');
+    const track = appShell.querySelector('.main-layout');
+    track?.classList.remove('is-workspace-dragging');
+    track?.style.removeProperty('transform');
     document.querySelectorAll('.mobile-workspace-button[data-mobile-view]').forEach(button => {
         const active = button.dataset.mobileView === view;
         button.classList.toggle('active', active);
@@ -9859,6 +9908,15 @@ function setMobileWorkspaceView(view, options = {}) {
     if (options.log !== false) {
         historyLog('mobile-workspace-view-changed', { view });
     }
+}
+
+function normalizeMobileWorkspaceView() {
+    const appShell = document.getElementById('appShell');
+    if (!appShell) return;
+    const view = ['chat', 'devices', 'editor'].includes(currentMobileWorkspaceView)
+        ? currentMobileWorkspaceView
+        : (['chat', 'devices', 'editor'].includes(appShell.dataset.mobileView) ? appShell.dataset.mobileView : 'chat');
+    setMobileWorkspaceView(view, { log: false });
 }
 
 function isAnyBlockingOverlayOpen() {
@@ -9903,6 +9961,7 @@ function initWorkspaceSwipeNavigation() {
         track?.style.removeProperty('transform');
         swipeStart = null;
     };
+    const normalizeSoon = () => requestAnimationFrame(normalizeMobileWorkspaceView);
     appShell.addEventListener('pointerdown', event => {
         if (!window.matchMedia('(max-width: 767px)').matches) return;
         if (event.pointerType !== 'touch') return;
@@ -9972,6 +10031,15 @@ function initWorkspaceSwipeNavigation() {
         if (swipeStart?.dragging) return;
         resetTrack();
     });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            resetTrack();
+            normalizeSoon();
+        }
+    });
+    window.addEventListener('pageshow', normalizeSoon);
+    window.addEventListener('resize', normalizeSoon);
+    window.addEventListener('orientationchange', normalizeSoon);
 }
 
 async function showJoinedSessionSwitcher() {

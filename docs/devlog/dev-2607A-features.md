@@ -173,3 +173,18 @@
 - Removed the remembered-tunnel checkbox and storage logic. Root/PWA launches now resume the most recent local tunnel directly when possible.
 - Removed the explicit "join tunnel" button. Entering all 5 short-code characters automatically looks up and opens the tunnel.
 - Adjusted route-page action colors so entering the selected tunnel reads as primary while creating a new tunnel remains secondary.
+
+## 2026-07-03 Regression Follow-up
+
+### Music Player
+- Scoped persisted music queues by device and tunnel so switching tunnels no longer keeps another tunnel's background music queue alive.
+- Filtered the random continuation pool to the current tunnel's locally favorited audio files, using both the favorite ID list and the cached file `mediaFavorite` marker.
+- Kept queue-tail random continuation active for manual next-track presses as well as natural playback completion.
+
+### Tunnel Metadata
+- Persisted tunnel remarks into the server infra SQLite store and restored them when an in-memory session is recreated.
+- Included tunnel remarks in the admin/session list payload so server-side tunnel metadata and client-side display stay aligned.
+
+### Collections and Mobile UI
+- Made visible collection preview tiles in the transfer list open their file preview directly while preserving collection-aware file actions.
+- Hardened mobile three-panel navigation by normalizing the active panel after page visibility, resize, orientation, and pointer-cancel edge cases.

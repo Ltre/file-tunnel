@@ -557,6 +557,7 @@ app.get('/api/sessions', (req, res) => {
             sessionMap.set(sessionId, {
                 id: sessionId,
                 shortCode: tunnel.short_code || '',
+                remark: tunnel.remark || '',
                 deviceCount: 0,
                 createdAt: Number(tunnel.created_at) || Date.now(),
                 lastActivity: Number(tunnel.last_activity) || Date.now(),
@@ -583,6 +584,7 @@ app.get('/api/sessions', (req, res) => {
                 id: sessionId,
                 createdAt: session.createdAt,
                 shortCode: session.shortCode || '',
+                remark: session.remark || '',
                 messageCount: 0,
                 fileCount: 0
             };
@@ -591,6 +593,7 @@ app.get('/api/sessions', (req, res) => {
                 deviceCount: session.devices.size,
                 createdAt: current.createdAt || session.createdAt,
                 lastActivity: session.lastActivity,
+                remark: session.remark || current.remark || '',
                 isActive: Date.now() - session.lastActivity < 5 * 60 * 1000,
                 isOnline: session.devices.size > 0,
                 messageCount,
@@ -1929,6 +1932,8 @@ io.on('connection', (socket) => {
             
             currentSession = sessionId;
             currentDevice = deviceId;
+            const storedTunnel = infraStore?.getTunnel(sessionId);
+            const storedRemark = sanitizeString(storedTunnel?.remark || '', 60);
             
             // 存储设备socket映射
             bindSocketToDevice(socket, deviceId);
@@ -1942,7 +1947,7 @@ io.on('connection', (socket) => {
                 history: [],
                 deletedMessageIds: [],
                 shortCode: createShortCode(sessionId, requestedShortCode),
-                remark: '',
+                remark: storedRemark,
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -1950,6 +1955,7 @@ io.on('connection', (socket) => {
             }
             
             const session = sessions.get(sessionId);
+            if (!session.remark && storedRemark) session.remark = storedRemark;
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
             infraStore?.touchTunnel(sessionId, {
@@ -2098,6 +2104,7 @@ io.on('connection', (socket) => {
             const remark = sanitizeString(String(data.remark || '').trim(), 60);
             session.remark = remark;
             session.lastActivity = Date.now();
+            infraStore?.setTunnelRemark(sessionId, remark, session.lastActivity);
             io.to(sessionId).emit('session-remark', { remark, updatedBy: currentDevice });
             historyLog('session-remark-updated', {
                 sessionId,

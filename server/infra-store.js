@@ -34,6 +34,7 @@ class InfraStore {
                 short_code TEXT UNIQUE,
                 created_at INTEGER NOT NULL,
                 last_activity INTEGER NOT NULL,
+                remark TEXT,
                 deleted_at INTEGER
             );
             CREATE TABLE IF NOT EXISTS devices (
@@ -55,6 +56,11 @@ class InfraStore {
             CREATE INDEX IF NOT EXISTS idx_devices_session_id ON devices(session_id);
             CREATE INDEX IF NOT EXISTS idx_devices_last_access ON devices(last_access);
         `);
+        try {
+            this.db.run('ALTER TABLE tunnels ADD COLUMN remark TEXT');
+        } catch (_) {
+            // Existing databases already have this column after the first migration.
+        }
     }
 
     save() {
@@ -180,6 +186,26 @@ class InfraStore {
         this.save();
     }
 
+    getTunnel(sessionId) {
+        return this.get(
+            'SELECT session_id, short_code, created_at, last_activity, remark FROM tunnels WHERE session_id = ? AND deleted_at IS NULL',
+            [sessionId]
+        );
+    }
+
+    setTunnelRemark(sessionId, remark = '', lastActivity = Date.now()) {
+        const now = Date.now();
+        this.run(`
+            INSERT INTO tunnels (session_id, short_code, created_at, last_activity, remark, deleted_at)
+            VALUES (?, NULL, ?, ?, ?, NULL)
+            ON CONFLICT(session_id) DO UPDATE SET
+                remark = excluded.remark,
+                last_activity = MAX(tunnels.last_activity, excluded.last_activity),
+                deleted_at = NULL
+        `, [sessionId, now, lastActivity || now, remark]);
+        this.save();
+    }
+
     deleteTunnel(sessionId) {
         this.run('DELETE FROM tunnels WHERE session_id = ?', [sessionId]);
         this.save();
@@ -192,7 +218,7 @@ class InfraStore {
 
     listTunnels() {
         return this.query(`
-            SELECT session_id, short_code, created_at, last_activity
+            SELECT session_id, short_code, created_at, last_activity, remark
             FROM tunnels
             WHERE deleted_at IS NULL
             ORDER BY last_activity DESC
