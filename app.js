@@ -4522,8 +4522,10 @@ async function createCollectionTileHtml(fileInfo, index, total) {
     } else if (type.startsWith('audio/') || isAudioLike) {
         body = `<span class="collection-video-placeholder" aria-label="音频文件">🎵</span>${renderMediaKindBadge('audio')}`;
     }
-    const remaining = total > 4 && index === 3 ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
-    return `<div class="collection-preview-tile" data-collection-file-id="${escapeHtml(fileInfo.id || '')}" role="button" tabindex="0">${body}${remaining}</div>`;
+    const isMoreTile = total > 4 && index === 3;
+    const remaining = isMoreTile ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
+    const fileAttribute = isMoreTile ? 'data-collection-more="true"' : `data-collection-file-id="${escapeHtml(fileInfo.id || '')}"`;
+    return `<div class="collection-preview-tile" ${fileAttribute} role="button" tabindex="0">${body}${remaining}</div>`;
 }
 
 async function renderCollectionPreviewHtml(message) {
@@ -5996,11 +5998,9 @@ async function getLocalAudioLibraryTracks() {
     const files = typeof IDBKeyRange !== 'undefined'
         ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
         : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
-    const favoriteIds = getFavoriteMusicIds();
     const tracks = [];
     for (const storedFile of files) {
         if (!storedFile?.id || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
-        if (!favoriteIds.has(storedFile.id) && storedFile.mediaFavorite !== true) continue;
         const url = getStoredFileUrl(storedFile.id, storedFile);
         tracks.push(await buildAudioTrack(storedFile, storedFile, url).catch(() => null));
     }
@@ -6947,9 +6947,12 @@ async function navigateFilePreview(delta) {
     if (currentIndex < 0) return;
     const nextFile = files[(currentIndex + delta + files.length) % files.length];
     if (!nextFile?.id) return;
+    const shouldReturnToCollection = Boolean(filePreviewReturnCollectionMessageId);
     await openFilePreviewForInfo(nextFile, {
         messageId: activeCollectionPreviewMessageId,
-        collectionMessageId: activeCollectionPreviewMessageId,
+        collectionMessageId: shouldReturnToCollection ? activeCollectionPreviewMessageId : '',
+        collectionContextId: activeCollectionPreviewMessageId,
+        returnToCollection: shouldReturnToCollection,
         ownerDeviceId: nextFile.ownerDeviceId || activeFilePreviewOwnerDeviceId || '',
         requestMissing: false
     });
@@ -10522,6 +10525,7 @@ function initUI() {
     });
     document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
         if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
+        if (event.pointerType !== 'touch') return;
         if (shouldIgnorePreviewGestureTarget(event.target)) return;
         try {
             event.currentTarget.setPointerCapture?.(event.pointerId);
