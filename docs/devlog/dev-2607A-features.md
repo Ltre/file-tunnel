@@ -159,3 +159,17 @@
 ### Route Page
 - Added a joined-tunnel selector to the route page, sorted by tunnel ID, with the recent tunnel highlighted in the option label.
 - Added a "remember my choice" checkbox. Remembered tunnel selection auto-enters only for root/PWA launches without a hash, and is cleared when the user manually switches, joins by code, creates a tunnel, or opens a hash URL.
+
+## 2026-07-03 Music Player and Route Page Follow-up
+
+### Music Player
+- Fixed next-track behavior at the queue tail so manually pressing next also attempts to append a random non-duplicate cached audio track from the local media pool.
+- Increased queue drawer drag thresholds and smoothed the drawer/body transitions so the drawer no longer jumps open from a tiny gesture.
+- Hid the fullscreen player's action strip while the queue drawer is open, then restored it when the queue closes.
+- Decoupled audio preview controls from the background player. Returning from fullscreen playback now resets temporary-listening controls instead of letting the preview seek bar mirror background playback.
+- Closing an audio preview or handing it off to fullscreen playback resets temporary-listening progress to zero; pressing preview play again creates a fresh temporary listener and pauses background music.
+
+### Route Page
+- Removed the remembered-tunnel checkbox and storage logic. Root/PWA launches now resume the most recent local tunnel directly when possible.
+- Removed the explicit "join tunnel" button. Entering all 5 short-code characters automatically looks up and opens the tunnel.
+- Adjusted route-page action colors so entering the selected tunnel reads as primary while creating a new tunnel remains secondary.

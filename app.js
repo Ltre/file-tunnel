@@ -123,7 +123,6 @@ const pendingHistoryMessageIds = new Set();
 let lastLocalHistoryTimestamp = 0;
 const MUSIC_PLAYER_STORAGE_KEY = 'tunnelMusicPlayerQueue:v1';
 const MUSIC_LIBRARY_STORAGE_KEY = 'tunnelMusicLibrary:v1';
-const REMEMBERED_SESSION_STORAGE_KEY = 'tunnelRememberedSession:v1';
 let musicPlayerPersistTimer = null;
 let musicPlayerLastPersistAt = 0;
 
@@ -684,7 +683,6 @@ async function initSession() {
     const entryUrl = new URL(window.location.href);
     const hash = entryUrl.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
-        clearRememberedSessionChoice();
         state.sessionId = hash;
         const inviteId = entryUrl.searchParams.get('invite');
         const inviteFrom = entryUrl.searchParams.get('from');
@@ -713,14 +711,10 @@ async function initSession() {
         state.recentSessionId = recent?.sessionId || null;
         state.pendingSharedFileCount = sharedFiles.length;
 
-        const remembered = getRememberedSessionChoice();
-        const rememberedSession = remembered
-            ? storedSessions.find(session => session.sessionId === remembered && /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
-            : null;
-        if (!entryUrl.searchParams.has('leave') && state.pendingSharedFileCount === 0 && rememberedSession?.sessionId) {
-            state.sessionId = rememberedSession.sessionId;
-            state.shortCode = normalizeLocalShortCode(rememberedSession.shortCode);
-            state.sessionRemark = String(rememberedSession.remark || '').trim().slice(0, 60);
+        if (!entryUrl.searchParams.has('leave') && state.pendingSharedFileCount === 0 && state.recentSessionId) {
+            state.sessionId = state.recentSessionId;
+            state.shortCode = normalizeLocalShortCode(recent.shortCode);
+            state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
             history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
             updateSessionIdentityUi();
             return true;
@@ -731,27 +725,6 @@ async function initSession() {
 
     updateSessionIdentityUi();
     return true;
-}
-
-function getRememberedSessionChoice() {
-    try {
-        const value = localStorage.getItem(REMEMBERED_SESSION_STORAGE_KEY) || '';
-        return /^[a-zA-Z0-9_-]{8,64}$/.test(value) ? value : '';
-    } catch {
-        return '';
-    }
-}
-
-function setRememberedSessionChoice(sessionId) {
-    if (/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId || '')) {
-        localStorage.setItem(REMEMBERED_SESSION_STORAGE_KEY, sessionId);
-    }
-}
-
-function clearRememberedSessionChoice() {
-    try {
-        localStorage.removeItem(REMEMBERED_SESSION_STORAGE_KEY);
-    } catch (_) {}
 }
 
 function normalizeLocalShortCode(value) {
@@ -777,9 +750,9 @@ function initSessionLanding() {
     const recentButton = document.getElementById('landingRecentBtn');
     const sessionPicker = document.getElementById('landingSessionPicker');
     const sessionSelect = document.getElementById('landingSessionSelect');
-    const rememberSession = document.getElementById('landingRememberSession');
     const sharedFilesNotice = document.getElementById('sharedFilesNotice');
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
+    let joinInProgress = false;
     landing.hidden = false;
     document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
     document.getElementById('leaveTunnelBtn').hidden = true;
@@ -810,17 +783,6 @@ function initSessionLanding() {
         });
         sessionPicker.hidden = false;
         state.recentSessionId = recentId || state.recentSessionId;
-        if (rememberSession) {
-            rememberSession.checked = getRememberedSessionChoice() === sessionSelect.value;
-            rememberSession.addEventListener('change', () => {
-                if (rememberSession.checked) setRememberedSessionChoice(sessionSelect.value);
-                else clearRememberedSessionChoice();
-            });
-        }
-        sessionSelect.addEventListener('change', () => {
-            if (rememberSession?.checked) setRememberedSessionChoice(sessionSelect.value);
-            else clearRememberedSessionChoice();
-        });
         if (recentButton) {
             recentButton.hidden = false;
             recentButton.textContent = '进入所选隧道';
@@ -831,34 +793,42 @@ function initSessionLanding() {
         recentButton.hidden = false;
         recentButton.addEventListener('click', () => {
             const selected = sessionSelect?.value || state.recentSessionId;
-            if (rememberSession?.checked) setRememberedSessionChoice(selected);
-            else clearRememberedSessionChoice();
-            openSession(selected, { remember: rememberSession?.checked === true });
+            openSession(selected);
         });
     }
 
+    const getCodeValue = () => inputs.map(input => input.value).join('').toUpperCase();
+    const maybeAutoJoin = () => {
+        if (!joinInProgress && /^[A-Z0-9]{5}$/.test(getCodeValue())) {
+            window.setTimeout(join, 0);
+        }
+    };
     const fillCode = value => {
         const characters = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, inputs.length);
+        inputs.forEach(input => { input.value = ''; });
         characters.split('').forEach((character, index) => { inputs[index].value = character; });
         const focusIndex = Math.min(characters.length, inputs.length - 1);
         inputs[focusIndex].focus();
+        maybeAutoJoin();
     };
     const join = async () => {
-        const shortCode = inputs.map(input => input.value).join('').toUpperCase();
+        if (joinInProgress) return;
+        const shortCode = getCodeValue();
         if (!/^[A-Z0-9]{5}$/.test(shortCode)) {
             note.textContent = '请输入完整的 5 位隧道暗号。';
             return;
         }
         note.textContent = '正在查找传输隧道...';
+        joinInProgress = true;
         try {
             const response = await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`);
             if (!response.ok) throw new Error('没有找到该传输隧道，或它已经被删除。');
             const data = await response.json();
             if (!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId || '')) throw new Error('传输隧道响应无效。');
-            clearRememberedSessionChoice();
             openSession(data.sessionId);
         } catch (err) {
             note.textContent = err.message;
+            joinInProgress = false;
         }
     };
 
@@ -874,12 +844,14 @@ function initSessionLanding() {
             }
             input.value = value;
             if (inputs[index + 1]) inputs[index + 1].focus();
+            maybeAutoJoin();
         });
         input.addEventListener('input', event => {
             const value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
             event.target.value = value.slice(-1);
             if (value.length > 1) fillCode(value);
             else if (event.target.value && inputs[index + 1]) inputs[index + 1].focus();
+            maybeAutoJoin();
         });
         input.addEventListener('keydown', event => {
             if (event.key === 'Backspace' && !input.value && inputs[index - 1]) inputs[index - 1].focus();
@@ -890,17 +862,14 @@ function initSessionLanding() {
             fillCode(event.clipboardData?.getData('text'));
         });
     });
-    document.getElementById('landingJoinBtn').addEventListener('click', join);
     document.getElementById('landingCreateBtn').addEventListener('click', () => {
-        clearRememberedSessionChoice();
         openSession(generateId());
     });
     inputs[0].focus();
 }
 
-function openSession(sessionId, options = {}) {
+function openSession(sessionId) {
     if (!/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) return;
-    if (!options.remember) clearRememberedSessionChoice();
     const target = new URL(`${window.location.origin}${window.location.pathname}`);
     // A changed query forces a new document load. A hash-only assignment would
     // otherwise keep the chooser page alive without running application startup.
@@ -6258,8 +6227,8 @@ function initMusicQueueDrawer(overlay) {
         const deltaY = event.clientY - drag.startY;
         drag.lastY = event.clientY;
         if (Math.abs(deltaY) > 8) drag.moved = true;
-        const shouldOpen = drag.wasOpen ? deltaY < 70 : deltaY < -14;
-        const shouldClose = drag.wasOpen ? deltaY > 24 : deltaY > 70;
+        const shouldOpen = drag.wasOpen ? deltaY < 90 : deltaY < -58;
+        const shouldClose = drag.wasOpen ? deltaY > 58 : deltaY > 90;
         if (shouldOpen) setMusicQueueOpen(true);
         if (shouldClose) setMusicQueueOpen(false);
     });
@@ -6270,8 +6239,8 @@ function initMusicQueueDrawer(overlay) {
         event.stopPropagation();
         const deltaY = event.clientY - drag.startY;
         if (drag.moved) {
-            if (deltaY < -14) setMusicQueueOpen(true);
-            else if (deltaY > 24) setMusicQueueOpen(false);
+            if (deltaY < -58) setMusicQueueOpen(true);
+            else if (deltaY > 58) setMusicQueueOpen(false);
             else setMusicQueueOpen(drag.wasOpen);
             suppressClickUntil = Date.now() + 240;
         }
@@ -6323,7 +6292,10 @@ function syncActiveAudioPreviewControls() {
     const controls = musicPlayer.previewControls;
     if (!controls?.fileId || !controls.toggle || !controls.range) return;
     const audio = getAudioForPreviewControls(controls.fileId);
-    if (!audio) return;
+    if (!audio) {
+        resetAudioPreviewControls(controls);
+        return;
+    }
     const total = Number(audio.duration || 0);
     const current = Number(audio.currentTime || 0);
     controls.current.textContent = formatAudioTime(current);
@@ -6333,10 +6305,15 @@ function syncActiveAudioPreviewControls() {
 }
 
 function getAudioForPreviewControls(fileId) {
-    const currentTrack = getCurrentMusicTrack();
-    if (currentTrack?.id === fileId && musicPlayer.audio) return musicPlayer.audio;
     if (musicPlayer.tempPreviewFileId === fileId && musicPlayer.tempAudio) return musicPlayer.tempAudio;
     return null;
+}
+
+function resetAudioPreviewControls(controls = musicPlayer.previewControls) {
+    if (!controls) return;
+    if (controls.range) controls.range.value = '0';
+    if (controls.current) controls.current.textContent = '0:00';
+    if (controls.toggle) controls.toggle.textContent = '▶';
 }
 
 async function activateMusicTrack(track, options = {}) {
@@ -6389,6 +6366,7 @@ function handoffTemporaryPreviewToBackground(fileId) {
     musicPlayer.tempAudio = null;
     musicPlayer.tempPreviewFileId = fileId || '';
     musicPlayer.tempResumeBackground = false;
+    resetAudioPreviewControls();
 }
 
 async function playMusicQueueIndex(index) {
@@ -6443,12 +6421,16 @@ function toggleBackgroundMusic() {
 async function playNextMusicTrack(options = {}) {
     if (!musicPlayer.queue.length) return;
     const atQueueEnd = musicPlayer.currentIndex >= musicPlayer.queue.length - 1;
-    if (options.fromEnded && atQueueEnd) {
+    if (atQueueEnd) {
         const appended = await appendRandomLibraryTrackIfPossible().catch(err => {
             historyLog('music-player-random-library-failed', { error: err.message });
             return false;
         });
         if (appended) return;
+        if (!options.fromEnded) {
+            await playMusicQueueIndex(0).catch(err => historyLog('music-player-next-first-failed', { error: err.message }));
+            return;
+        }
         musicPlayer.currentIndex = 0;
         const first = getCurrentMusicTrack();
         const audio = ensureBackgroundAudio();
@@ -6486,6 +6468,7 @@ function stopTemporaryAudioPreview(options = {}) {
         audio.pause();
         audio.src = '';
     }
+    resetAudioPreviewControls();
     musicPlayer.tempAudio = null;
     musicPlayer.tempPreviewFileId = '';
     musicPlayer.tempResumeBackground = false;
@@ -6532,7 +6515,11 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
         duration
     };
     const sync = () => {
-        const targetAudio = getAudioForPreviewControls(fileInfo.id) || audio;
+        const targetAudio = getAudioForPreviewControls(fileInfo.id);
+        if (!targetAudio) {
+            resetAudioPreviewControls(musicPlayer.previewControls);
+            return;
+        }
         const total = Number(targetAudio.duration || 0);
         current.textContent = formatAudioTime(targetAudio.currentTime || 0);
         duration.textContent = formatAudioTime(total);
@@ -6544,7 +6531,8 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
     audio.addEventListener('play', sync);
     audio.addEventListener('pause', sync);
     range.addEventListener('input', () => {
-        const targetAudio = getAudioForPreviewControls(fileInfo.id) || audio;
+        const targetAudio = getAudioForPreviewControls(fileInfo.id);
+        if (!targetAudio) return;
         const total = Number(targetAudio.duration || 0);
         if (total > 0) {
             targetAudio.currentTime = total * (Number(range.value) / 1000);
@@ -6552,7 +6540,16 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
         }
     });
     toggle.addEventListener('click', () => {
-        const targetAudio = getAudioForPreviewControls(fileInfo.id) || audio;
+        let targetAudio = getAudioForPreviewControls(fileInfo.id);
+        if (!targetAudio) {
+            pauseBackgroundForTemporaryPreview(fileInfo.id);
+            audio.src = url;
+            audio.currentTime = 0;
+            audio.dataset.previewFileId = fileInfo.id;
+            musicPlayer.tempAudio = audio;
+            musicPlayer.tempPreviewFileId = fileInfo.id;
+            targetAudio = audio;
+        }
         if (targetAudio.paused) targetAudio.play().catch(err => historyLog('audio-preview-play-failed', { fileId: fileInfo.id, error: err.message }));
         else targetAudio.pause();
         sync();

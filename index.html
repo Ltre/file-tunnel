@@ -2255,20 +2255,35 @@
             justify-items: center;
             gap: 18px;
             padding: 18px 0 42px;
-            transition: transform 220ms ease, gap 220ms ease, padding 220ms ease;
+            transition: transform 320ms cubic-bezier(.2,.8,.2,1), gap 320ms cubic-bezier(.2,.8,.2,1), padding 320ms cubic-bezier(.2,.8,.2,1);
         }
 
         .music-player-overlay.queue-open .music-player-body {
             align-self: start;
             gap: 10px;
             padding-top: 8px;
-            transform: translateY(-4px);
+            transform: translateY(-10px);
+        }
+
+        .music-player-subtitle,
+        .music-player-range,
+        .music-player-times,
+        .music-player-actions-strip {
+            transition: opacity 180ms ease, max-height 220ms ease, padding 220ms ease, margin 220ms ease;
+            max-height: 56px;
         }
 
         .music-player-overlay.queue-open .music-player-subtitle,
         .music-player-overlay.queue-open .music-player-range,
-        .music-player-overlay.queue-open .music-player-times {
-            display: none;
+        .music-player-overlay.queue-open .music-player-times,
+        .music-player-overlay.queue-open .music-player-actions-strip {
+            opacity: 0;
+            max-height: 0;
+            margin: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            pointer-events: none;
+            overflow: hidden;
         }
 
         .music-player-cover {
@@ -2437,7 +2452,7 @@
             box-shadow: 0 -22px 80px rgba(0, 0, 0, .45);
             backdrop-filter: blur(16px);
             transform: translateY(calc(100% - 62px));
-            transition: transform 220ms ease;
+            transition: transform 320ms cubic-bezier(.2,.8,.2,1);
         }
 
         .music-player-overlay.queue-open .music-player-queue-drawer {
@@ -3233,6 +3248,19 @@
             min-height: 42px;
         }
 
+        #landingRecentBtn {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            border-color: transparent;
+            color: #fff;
+            box-shadow: 0 10px 22px rgba(37, 99, 235, .22);
+        }
+
+        #landingCreateBtn {
+            background: #eef4ff;
+            border-color: #c7d8ff;
+            color: #1f3a68;
+        }
+
         .tunnel-landing-note {
             min-height: 1.2em;
             margin-top: 12px;
@@ -3265,14 +3293,6 @@
             background: #fff;
             color: #26324d;
             padding: 0 10px;
-        }
-
-        .landing-remember-choice {
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            color: #52617e;
-            font-size: .82rem;
         }
 
         .mobile-workspace-nav {
@@ -3580,13 +3600,8 @@
             <div class="landing-session-picker" id="landingSessionPicker" hidden>
                 <label for="landingSessionSelect">选择已加入的传输隧道</label>
                 <select id="landingSessionSelect" size="1"></select>
-                <label class="landing-remember-choice">
-                    <input type="checkbox" id="landingRememberSession">
-                    <span>记住我的选择</span>
-                </label>
             </div>
             <div class="tunnel-landing-actions">
-                <button class="btn btn-primary" id="landingJoinBtn">加入传输隧道</button>
                 <button class="btn btn-secondary" id="landingRecentBtn" hidden>继续最近使用的隧道</button>
                 <button class="btn btn-secondary" id="landingCreateBtn">我没有暗号，新建一个隧道</button>
             </div>
