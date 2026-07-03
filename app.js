@@ -118,6 +118,7 @@ const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const MEDIA_FULLSCREEN_HISTORY_KEY = 'tunnelMediaFullscreen';
 const MUSIC_PLAYER_HISTORY_KEY = 'tunnelMusicPlayer';
+const HOME_GUARD_HISTORY_KEY = 'tunnelHomeGuard';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
 let lastLocalHistoryTimestamp = 0;
@@ -125,6 +126,7 @@ const MUSIC_PLAYER_STORAGE_KEY = 'tunnelMusicPlayerQueue:v1';
 const MUSIC_LIBRARY_STORAGE_KEY = 'tunnelMusicLibrary:v1';
 let musicPlayerPersistTimer = null;
 let musicPlayerLastPersistAt = 0;
+let homeHistoryGuardReady = false;
 
 function nextHistoryTimestamp() {
     const now = Date.now();
@@ -378,6 +380,7 @@ async function startTunnelApplication() {
     await loadSessionData();
     initSocket();
     initAssetPresenceRefresh();
+    ensureHomeHistoryGuard();
 }
 
 function registerServiceWorker() {
@@ -3193,6 +3196,8 @@ async function processMediaPosterQueue() {
                 updated = Boolean(await ensureAudioPosterCache(storedFile, task.fileInfo));
             }
             if (updated) {
+                const updatedFile = await getFromStore('files', task.fileId).catch(() => null);
+                updateMusicQueueTrackPoster(task.fileId, updatedFile?.audioPoster || updatedFile?.videoPoster || '');
                 await refreshFileMessage(task.fileId);
                 historyLog('media-poster-cache-generated', {
                     fileId: task.fileId,
@@ -4949,6 +4954,7 @@ const musicPlayer = {
     miniEnabled: false,
     progressTimer: null
 };
+const musicPlayerPosterHydratingIds = new Set();
 
 function getFileExtension(fileName) {
     const name = String(fileName || '');
@@ -5909,10 +5915,67 @@ function getCurrentMusicTrack() {
     return musicPlayer.queue[musicPlayer.currentIndex] || null;
 }
 
+function updateMusicQueueTrackPoster(fileId, poster) {
+    if (!fileId || !poster) return false;
+    let changed = false;
+    musicPlayer.queue.forEach(track => {
+        if (track?.id !== fileId || track.poster === poster) return;
+        track.poster = poster;
+        if (track.fileInfo) track.fileInfo.audioPoster = poster;
+        changed = true;
+    });
+    if (!changed) return false;
+    renderMusicPlayer();
+    renderMusicQueueList();
+    updateMediaSessionMetadata();
+    scheduleMusicPlayerPersist();
+    return true;
+}
+
+function hydrateMusicTrackPoster(track = getCurrentMusicTrack()) {
+    if (!track?.id || track.poster || musicPlayerPosterHydratingIds.has(track.id)) return;
+    musicPlayerPosterHydratingIds.add(track.id);
+    (async () => {
+        const storedFile = await getFromStore('files', track.id).catch(() => null);
+        if (!hasCompleteFileCache(storedFile, track.fileInfo || track)) return;
+        let poster = storedFile.audioPoster || storedFile.videoPoster || '';
+        if (!poster && isAudioFileLike(storedFile, track.fileInfo || track)) {
+            poster = await ensureAudioPosterCache(storedFile, track.fileInfo || track).catch(() => '');
+        }
+        if (poster) updateMusicQueueTrackPoster(track.id, poster);
+    })()
+        .catch(err => historyLog('music-player-poster-hydrate-failed', { fileId: track.id, error: err.message }))
+        .finally(() => musicPlayerPosterHydratingIds.delete(track.id));
+}
+
 function setTopbarMusicVisible(visible) {
     const button = document.getElementById('topbarMusicBtn');
     if (!button) return;
     button.hidden = !visible;
+}
+
+function ensureHomeHistoryGuard() {
+    if (!state.sessionId || homeHistoryGuardReady) return;
+    const currentState = history.state && typeof history.state === 'object' ? history.state : {};
+    if (!currentState[HOME_GUARD_HISTORY_KEY]) {
+        history.replaceState({ ...currentState, [HOME_GUARD_HISTORY_KEY]: true }, '', window.location.href);
+    }
+    history.pushState({ ...currentState, [HOME_GUARD_HISTORY_KEY]: true, homeGuardTop: true }, '', window.location.href);
+    homeHistoryGuardReady = true;
+}
+
+function trapHomeBackNavigation(eventState = history.state) {
+    if (!state.sessionId || isAnyBlockingOverlayOpen()) return false;
+    if (!eventState?.[HOME_GUARD_HISTORY_KEY]) return false;
+    const nextState = {
+        ...(eventState && typeof eventState === 'object' ? eventState : {}),
+        [HOME_GUARD_HISTORY_KEY]: true,
+        homeGuardTop: true
+    };
+    history.pushState(nextState, '', window.location.href);
+    homeHistoryGuardReady = true;
+    historyLog('home-back-navigation-trapped', { sessionId: state.sessionId });
+    return true;
 }
 
 function updateTopbarMusicState() {
@@ -6160,6 +6223,7 @@ function renderMusicPlayer() {
     cover.innerHTML = track.poster
         ? `<img src="${track.poster}" alt="${escapeHtml(track.name)}">`
         : '<div class="music-player-cover-placeholder">♪</div>';
+    if (!track.poster) hydrateMusicTrackPoster(track);
     title.innerHTML = `<span>${escapeHtml(track.name || 'Audio')}</span>`;
     requestAnimationFrame(() => {
         const span = title.querySelector('span');
@@ -8138,26 +8202,32 @@ function getResourceTargetInEditor(editor, assetId) {
 
 function focusResourceReference(reference) {
     if (reference.kind === 'editor') {
+        settleMobileWorkspaceView('editor');
         const editor = document.getElementById('editor');
         if (!editor) return;
-        editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        const target = getResourceTargetInEditor(editor, reference.targetAssetId || reference.resourceId);
-        if (target) {
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            flashResourceTarget(target);
-        } else {
-            editor.focus();
-            flashResourceTarget(editor);
-        }
+        requestAnimationFrame(() => {
+            editor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const target = getResourceTargetInEditor(editor, reference.targetAssetId || reference.resourceId);
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                flashResourceTarget(target);
+            } else {
+                editor.focus();
+                flashResourceTarget(editor);
+            }
+            settleMobileWorkspaceView('editor');
+        });
         return;
     }
 
+    settleMobileWorkspaceView('chat');
     const message = document.querySelector(`.message[data-message-id="${reference.messageId}"]`);
     if (!message) return;
-    message.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    message.tabIndex = -1;
-    message.focus({ preventScroll: true });
-    flashResourceTarget(message);
+    requestAnimationFrame(() => {
+        message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        flashResourceTarget(message);
+        settleMobileWorkspaceView('chat');
+    });
 }
 
 function closeResourceBrowser() {
@@ -9922,6 +9992,13 @@ function normalizeMobileWorkspaceView() {
     setMobileWorkspaceView(view, { log: false });
 }
 
+function settleMobileWorkspaceView(view = currentMobileWorkspaceView) {
+    setMobileWorkspaceView(view, { log: false });
+    normalizeMobileWorkspaceView();
+    requestAnimationFrame(normalizeMobileWorkspaceView);
+    setTimeout(normalizeMobileWorkspaceView, 80);
+}
+
 function isAnyBlockingOverlayOpen() {
     return Boolean(
         document.querySelector('.modal-overlay.active') ||
@@ -11376,7 +11453,7 @@ function closeRichViewer(options = {}) {
     if (shouldGoBack) history.back();
 }
 
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', event => {
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
         const stop = musicPlayer.closeAfterHistory === true;
         musicPlayer.closeAfterHistory = false;
@@ -11396,6 +11473,7 @@ window.addEventListener('popstate', () => {
         closeFilePreview({ fromHistory: true });
         return;
     }
+    if (trapHomeBackNavigation(event.state)) return;
     if (!richViewerHistoryOpen) return;
     richViewerHistoryOpen = false;
     closeRichViewer({ fromHistory: true });
