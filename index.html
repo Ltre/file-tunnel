@@ -2397,15 +2397,47 @@
             gap: 16px;
         }
 
+        .music-player-controls .music-player-icon-button {
+            width: 54px;
+            height: 54px;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            color: rgba(248,250,252,.9);
+            font-size: 2.15rem;
+            font-weight: 900;
+            line-height: 1;
+            text-shadow: 0 8px 24px rgba(147, 197, 253, .46);
+            box-shadow: none;
+            transition: transform 160ms ease, color 160ms ease, text-shadow 160ms ease;
+        }
+
+        .music-player-controls .music-player-icon-button:hover {
+            transform: translateY(-1px) scale(1.08);
+            background: transparent;
+            color: #fff;
+            text-shadow: 0 10px 28px rgba(125, 211, 252, .58);
+        }
+
         .music-player-main-button {
             width: 68px;
             height: 68px;
             border: 0;
-            border-radius: 999px;
-            background: #f8fafc;
-            color: #0f172a;
-            font-size: 2rem;
+            border-radius: 0;
+            background: transparent;
+            color: rgba(255,255,255,.96);
+            font-size: 2.45rem;
+            font-weight: 900;
             cursor: pointer;
+            text-shadow: 0 10px 32px rgba(96,165,250,.58);
+            box-shadow: none;
+            transition: transform 160ms ease, color 160ms ease, text-shadow 160ms ease;
+        }
+
+        .music-player-main-button:hover {
+            transform: translateY(-1px) scale(1.08);
+            color: #fff;
+            text-shadow: 0 12px 36px rgba(125,211,252,.7);
         }
 
         .music-player-queue-puller {

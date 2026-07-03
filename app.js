@@ -118,6 +118,7 @@ const RICH_VIEWER_HISTORY_KEY = 'tunnelRichViewer';
 const FILE_PREVIEW_HISTORY_KEY = 'tunnelFilePreview';
 const MEDIA_FULLSCREEN_HISTORY_KEY = 'tunnelMediaFullscreen';
 const MUSIC_PLAYER_HISTORY_KEY = 'tunnelMusicPlayer';
+const MUSIC_QUEUE_HISTORY_KEY = 'tunnelMusicQueue';
 const HOME_GUARD_HISTORY_KEY = 'tunnelHomeGuard';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
@@ -2713,9 +2714,10 @@ function getFileExtensionLower(file = {}) {
 
 function isAudioFileLike(storedFile, fileInfo = {}) {
     const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
+    if (type.startsWith('video/')) return false;
     if (type.startsWith('audio/')) return true;
-    return ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(fileInfo)) ||
-        ['mp3', 'm4a', 'mp4', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(storedFile));
+    return ['mp3', 'm4a', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(fileInfo)) ||
+        ['mp3', 'm4a', 'aac', 'alac', 'flac', 'fla', 'ogg', 'opus'].includes(getFileExtensionLower(storedFile));
 }
 
 async function getStoredFileBytes(storedFile) {
@@ -4943,7 +4945,9 @@ const musicPlayer = {
     currentIndex: -1,
     overlay: null,
     queueOpen: false,
+    queueHistoryOpen: false,
     queueDrag: null,
+    libraryFillPending: false,
     mediaSessionReady: false,
     historyOpen: false,
     closeAfterHistory: false,
@@ -5932,6 +5936,39 @@ function updateMusicQueueTrackPoster(fileId, poster) {
     return true;
 }
 
+function removeMusicTrackFromQueue(fileId) {
+    if (!fileId || !musicPlayer.queue.some(track => track?.id === fileId)) return false;
+    const wasCurrent = getCurrentMusicTrack()?.id === fileId;
+    const wasPlaying = isBackgroundMusicPlaying();
+    musicPlayer.queue = musicPlayer.queue.filter(track => track?.id !== fileId);
+    if (!musicPlayer.queue.length) {
+        const audio = musicPlayer.audio;
+        if (audio) {
+            try { audio.pause(); } catch (_) {}
+            audio.removeAttribute('src');
+        }
+        musicPlayer.currentIndex = -1;
+        musicPlayer.miniEnabled = false;
+        musicPlayer.queueOpen = false;
+        musicPlayer.overlay?.classList.remove('active');
+    } else {
+        musicPlayer.currentIndex = Math.min(Math.max(musicPlayer.currentIndex, 0), musicPlayer.queue.length - 1);
+        if (wasCurrent) {
+            const nextTrack = getCurrentMusicTrack();
+            const audio = ensureBackgroundAudio();
+            if (nextTrack?.url && audio.src !== nextTrack.url) audio.src = nextTrack.url;
+            if (wasPlaying) audio.play().catch(err => historyLog('music-player-play-after-delete-failed', { fileId: nextTrack?.id, error: err.message }));
+        }
+        renderMusicPlayer();
+    }
+    renderMusicQueueList();
+    updateTopbarMusicState();
+    updateMediaSessionMetadata();
+    scheduleMusicPlayerPersist();
+    historyLog('music-track-removed-after-file-delete', { fileId, remainingCount: musicPlayer.queue.length });
+    return true;
+}
+
 function hydrateMusicTrackPoster(track = getCurrentMusicTrack()) {
     if (!track?.id || track.poster || musicPlayerPosterHydratingIds.has(track.id)) return;
     musicPlayerPosterHydratingIds.add(track.id);
@@ -6063,7 +6100,8 @@ async function getLocalAudioLibraryTracks() {
         : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
     const tracks = [];
     for (const storedFile of files) {
-        if (!storedFile?.id || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
+        const type = String(storedFile?.type || '').toLowerCase();
+        if (!storedFile?.id || type.startsWith('video/') || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
         const url = getStoredFileUrl(storedFile.id, storedFile);
         tracks.push(await buildAudioTrack(storedFile, storedFile, url).catch(() => null));
     }
@@ -6077,17 +6115,34 @@ async function pickRandomLibraryTrackNotInQueue() {
     return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-async function appendRandomLibraryTrackIfPossible() {
+async function appendRandomLibraryTrackIfPossible(options = {}) {
     const track = await pickRandomLibraryTrackNotInQueue();
     if (!track) return false;
     musicPlayer.queue.push(track);
-    musicPlayer.currentIndex = musicPlayer.queue.length - 1;
-    const audio = ensureBackgroundAudio();
-    audio.src = track.url;
-    renderMusicPlayer();
-    await audio.play().catch(err => historyLog('music-player-random-library-play-failed', { fileId: track.id, error: err.message }));
+    if (options.playNow) {
+        musicPlayer.currentIndex = musicPlayer.queue.length - 1;
+        const audio = ensureBackgroundAudio();
+        audio.src = track.url;
+        renderMusicPlayer();
+        await audio.play().catch(err => historyLog('music-player-random-library-play-failed', { fileId: track.id, error: err.message }));
+    } else {
+        renderMusicQueueList();
+    }
     scheduleMusicPlayerPersist();
     return true;
+}
+
+function scheduleMusicQueueTailFill() {
+    if (musicPlayer.libraryFillPending || !musicPlayer.queue.length) return;
+    if (musicPlayer.currentIndex < musicPlayer.queue.length - 1) return;
+    musicPlayer.libraryFillPending = true;
+    setTimeout(() => {
+        appendRandomLibraryTrackIfPossible({ playNow: false })
+            .catch(err => historyLog('music-player-tail-fill-failed', { error: err.message }))
+            .finally(() => {
+                musicPlayer.libraryFillPending = false;
+            });
+    }, 120);
 }
 
 function renderMusicPlayerActions() {
@@ -6184,9 +6239,9 @@ function ensureMusicPlayerOverlay() {
                 <input class="music-player-range" id="musicPlayerRange" type="range" min="0" max="1000" value="0">
                 <div class="music-player-times"><span id="musicPlayerCurrentTime">0:00</span><span id="musicPlayerDuration">0:00</span></div>
                 <div class="music-player-controls">
-                    <button class="music-player-icon-button" id="musicPlayerPrevBtn" type="button">‹</button>
+                    <button class="music-player-icon-button music-player-skip-button" id="musicPlayerPrevBtn" type="button">❮</button>
                     <button class="music-player-main-button" id="musicPlayerPlayBtn" type="button">▶</button>
-                    <button class="music-player-icon-button" id="musicPlayerNextBtn" type="button">›</button>
+                    <button class="music-player-icon-button music-player-skip-button" id="musicPlayerNextBtn" type="button">❯</button>
                 </div>
             </div>
             <div class="music-player-queue-drawer" id="musicPlayerQueueDrawer">
@@ -6261,14 +6316,35 @@ function updateMusicPlayerProgress() {
 
 function updateMusicPlayerPlayState() {
     const button = musicPlayer.overlay?.querySelector('#musicPlayerPlayBtn');
-    if (button) button.textContent = isBackgroundMusicPlaying() ? 'Ⅱ' : '▶';
+    if (button) button.textContent = isBackgroundMusicPlaying() ? '❚❚' : '▶';
     updateTopbarMusicState();
     syncActiveAudioPreviewControls();
     renderMusicQueueList();
 }
 
-function setMusicQueueOpen(open) {
-    musicPlayer.queueOpen = Boolean(open);
+function setMusicQueueOpen(open, options = {}) {
+    const nextOpen = Boolean(open);
+    if (nextOpen && options.pushHistory !== false && musicPlayer.historyOpen && !history.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
+        const baseState = history.state && typeof history.state === 'object' ? history.state : {};
+        history.pushState({ ...baseState, [MUSIC_PLAYER_HISTORY_KEY]: true, [MUSIC_QUEUE_HISTORY_KEY]: true }, '', window.location.href);
+        musicPlayer.queueHistoryOpen = true;
+    }
+    if (nextOpen && (options.fromHistory || history.state?.[MUSIC_QUEUE_HISTORY_KEY])) {
+        musicPlayer.queueHistoryOpen = true;
+    }
+    if (!nextOpen && !options.fromHistory && musicPlayer.queueHistoryOpen && history.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
+        if (options.replaceHistory) {
+            const baseState = history.state && typeof history.state === 'object' ? { ...history.state } : {};
+            delete baseState[MUSIC_QUEUE_HISTORY_KEY];
+            baseState[MUSIC_PLAYER_HISTORY_KEY] = true;
+            history.replaceState(baseState, '', window.location.href);
+        } else {
+            history.back();
+            return;
+        }
+    }
+    musicPlayer.queueOpen = nextOpen;
+    if (!nextOpen) musicPlayer.queueHistoryOpen = false;
     musicPlayer.overlay?.classList.toggle('queue-open', musicPlayer.queueOpen);
     if (musicPlayer.queueOpen) requestAnimationFrame(focusActiveMusicQueueItem);
 }
@@ -6281,7 +6357,7 @@ function initMusicQueueDrawer(overlay) {
         event?.preventDefault?.();
         event?.stopPropagation?.();
         if (Date.now() < suppressClickUntil) return;
-        setMusicQueueOpen(!musicPlayer.queueOpen);
+        setMusicQueueOpen(!musicPlayer.queueOpen, musicPlayer.queueOpen ? { replaceHistory: true } : {});
     };
     puller.addEventListener('click', toggle);
     puller.addEventListener('keydown', event => {
@@ -6309,10 +6385,6 @@ function initMusicQueueDrawer(overlay) {
         const deltaY = event.clientY - drag.startY;
         drag.lastY = event.clientY;
         if (Math.abs(deltaY) > 8) drag.moved = true;
-        const shouldOpen = drag.wasOpen ? deltaY < 90 : deltaY < -58;
-        const shouldClose = drag.wasOpen ? deltaY > 58 : deltaY > 90;
-        if (shouldOpen) setMusicQueueOpen(true);
-        if (shouldClose) setMusicQueueOpen(false);
     });
     const finish = event => {
         const drag = musicPlayer.queueDrag;
@@ -6322,7 +6394,7 @@ function initMusicQueueDrawer(overlay) {
         const deltaY = event.clientY - drag.startY;
         if (drag.moved) {
             if (deltaY < -58) setMusicQueueOpen(true);
-            else if (deltaY > 58) setMusicQueueOpen(false);
+            else if (deltaY > 58) setMusicQueueOpen(false, { replaceHistory: true });
             else setMusicQueueOpen(drag.wasOpen);
             suppressClickUntil = Date.now() + 240;
         }
@@ -6427,6 +6499,7 @@ async function activateMusicTrack(track, options = {}) {
     musicPlayer.miniEnabled = true;
     updateTopbarMusicState();
     scheduleMusicPlayerPersist();
+    scheduleMusicQueueTailFill();
 }
 
 async function openMusicPlayerFromActivePreview() {
@@ -6462,9 +6535,13 @@ async function playMusicQueueIndex(index) {
     await audio.play().catch(err => historyLog('music-player-queue-play-failed', { fileId: track.id, error: err.message }));
     updateTopbarMusicState();
     scheduleMusicPlayerPersist();
+    scheduleMusicQueueTailFill();
 }
 
 function minimizeMusicPlayer(options = {}) {
+    if (!options.fromHistory && musicPlayer.queueOpen) {
+        setMusicQueueOpen(false, { replaceHistory: true });
+    }
     const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory && !options.keepHistory &&
         history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
     if (shouldGoBack) {
@@ -6478,6 +6555,9 @@ function minimizeMusicPlayer(options = {}) {
 }
 
 function closeMusicPlayer(options = {}) {
+    if (!options.fromHistory && musicPlayer.queueOpen) {
+        setMusicQueueOpen(false, { replaceHistory: true });
+    }
     const shouldGoBack = musicPlayer.historyOpen && !options.fromHistory &&
         history.state?.[MUSIC_PLAYER_HISTORY_KEY] === true;
     if (shouldGoBack) {
@@ -6504,11 +6584,14 @@ async function playNextMusicTrack(options = {}) {
     if (!musicPlayer.queue.length) return;
     const atQueueEnd = musicPlayer.currentIndex >= musicPlayer.queue.length - 1;
     if (atQueueEnd) {
-        const appended = await appendRandomLibraryTrackIfPossible().catch(err => {
+        const appended = await appendRandomLibraryTrackIfPossible({ playNow: false }).catch(err => {
             historyLog('music-player-random-library-failed', { error: err.message });
             return false;
         });
-        if (appended) return;
+        if (appended) {
+            await playMusicQueueIndex(musicPlayer.currentIndex + 1).catch(err => historyLog('music-player-next-random-failed', { error: err.message }));
+            return;
+        }
         if (!options.fromEnded) {
             await playMusicQueueIndex(0).catch(err => historyLog('music-player-next-first-failed', { error: err.message }));
             return;
@@ -7778,6 +7861,7 @@ async function deleteFileCacheIfUnreferenced(fileId, excludingMessageId = null) 
     const stillReferenced = await isFileReferencedByRichContent(fileId, excludingMessageId);
     if (stillReferenced) return;
     await deleteFromStore('files', fileId);
+    removeMusicTrackFromQueue(fileId);
     const objectUrl = fileObjectUrls.get(fileId);
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     fileObjectUrls.delete(fileId);
@@ -7838,6 +7922,7 @@ async function deleteHistoryMessageLocal(messageId) {
                 }
             } else {
                 await deleteFromStore('files', fileId);
+                removeMusicTrackFromQueue(fileId);
                 const objectUrl = fileObjectUrls.get(fileId);
                 if (objectUrl) URL.revokeObjectURL(objectUrl);
                 fileObjectUrls.delete(fileId);
@@ -7870,6 +7955,7 @@ async function deleteHistoryMessageLocal(messageId) {
             }
         } else {
             await deleteFromStore('files', fileId);
+            removeMusicTrackFromQueue(fileId);
             const objectUrl = fileObjectUrls.get(fileId);
             if (objectUrl) URL.revokeObjectURL(objectUrl);
             fileObjectUrls.delete(fileId);
@@ -10635,11 +10721,13 @@ function initUI() {
     document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
     document.getElementById('mediaFullscreenNextBtn')?.addEventListener('click', () => navigateMediaFullscreen(1));
     document.getElementById('mediaFullscreenViewer')?.addEventListener('click', event => {
+        if (event.target?.closest?.('img, video, button, .media-fullscreen-arrow, .media-fullscreen-topbar')) return;
         if (event.target?.id === 'mediaFullscreenViewer' || event.target?.id === 'mediaFullscreenContent') {
             closeMediaFullscreen();
         }
     });
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
+        if (event.pointerType !== 'touch') return;
         if (event.target.closest?.('button')) return;
         try {
             event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -10662,6 +10750,12 @@ function initUI() {
             closeMediaFullscreen();
         }
     }, true);
+    document.addEventListener('keydown', event => {
+        if (!document.getElementById('musicPlayerOverlay')?.classList.contains('active')) return;
+        if (event.key !== 'Escape' || !musicPlayer.queueOpen) return;
+        event.preventDefault();
+        setMusicQueueOpen(false, { replaceHistory: true });
+    });
     document.addEventListener('keydown', event => {
         if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
         if (event.key === 'Escape') {
@@ -11455,6 +11549,14 @@ function closeRichViewer(options = {}) {
 
 window.addEventListener('popstate', event => {
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
+        if (event.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
+            setMusicQueueOpen(true, { fromHistory: true, pushHistory: false });
+            return;
+        }
+        if (musicPlayer.queueOpen) {
+            setMusicQueueOpen(false, { fromHistory: true });
+            return;
+        }
         const stop = musicPlayer.closeAfterHistory === true;
         musicPlayer.closeAfterHistory = false;
         if (stop) closeMusicPlayer({ fromHistory: true });
