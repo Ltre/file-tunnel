@@ -188,3 +188,18 @@
 ### Collections and Mobile UI
 - Made visible collection preview tiles in the transfer list open their file preview directly while preserving collection-aware file actions.
 - Hardened mobile three-panel navigation by normalizing the active panel after page visibility, resize, orientation, and pointer-cancel edge cases.
+
+## 2026-07-04 Music Player Cover and Queue Focus Fix
+
+### Music Player
+- Kept automatic queue-tail preloading as a background-only action. When the player preloads the next random audio track, it no longer focuses or scrolls the queue to that preloaded track.
+- Added a current-track intent timestamp so background preloading preserves the active song unless the user explicitly changes tracks during the preload window.
+- Forced the fullscreen player cover DOM to resync with the current track after opening from either the audio preview layer or the topbar music entry. This prevents the first-open cover from staying on the placeholder while the queue data already has the audio poster.
+- When a cached audio poster is generated or refreshed for the current track, the active fullscreen cover is forced to repaint instead of waiting for a later open/close cycle.
+- Added `currentTrackId` as the authoritative active-song identity alongside `currentIndex`. Queue rendering now normalizes the index from the active file ID before highlighting or scrolling, so a preloaded next track cannot become the visible queue anchor while another song is actually playing.
+- Reopening the fullscreen player from the topbar or from an audio preview resets the queue drawer open state. The queue drawer will only focus the active song when the user opens it deliberately.
+- Fixed persistence for tracks automatically appended at the queue tail. Auto-picked library tracks are created from full IndexedDB file-cache records, so their `fileInfo` is now sanitized before saving the queue to localStorage; this prevents large cached file payloads from breaking queue persistence.
+- Queue-tail append now forces an immediate music-player state save, and player state is also saved on `pagehide`/hidden visibility transitions for better PWA/mobile reliability.
+- Added a durable IndexedDB-backed copy of the music player queue under the current session record. Restore now compares localStorage and the session copy; if localStorage only contains a subset of the more complete session queue, the session queue wins.
+- Automatic queue-tail appends now wait for the durable session copy to be written, so songs inserted by random continuation are not dependent on delayed localStorage-only persistence.
+- Decoupled the fullscreen player's `-` and `X` buttons from asynchronous history back handling. When the queue drawer is open, these buttons now close the drawer state synchronously, clear the music-player history marker, and immediately minimize or close the player instead of waiting for a `popstate` callback.
