@@ -13,6 +13,7 @@ const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
+const { createAdminAuth } = require('./server/admin-auth');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
@@ -24,6 +25,7 @@ const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.jso
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
 let infraStore = null;
+const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 
 // ==================== 安全配置 ====================
 
@@ -55,6 +57,14 @@ const RATE_LIMIT = {
         xForwardedForHeader: false
     }
 };
+const adminAuthRateLimit = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 12,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'admin-auth-rate-limited' }
+});
 
 // 会话限制
 const MAX_SESSIONS = 1000;
@@ -237,7 +247,8 @@ app.post('/api/telegram/webhook/:secret?', async (req, res) => {
     try {
         if (!isTelegramBotEnabled()) return res.status(404).json({ ok: false, error: 'telegram-bot-disabled' });
         const webhookSecret = getTelegramWebhookSecret();
-        if (webhookSecret && req.params.secret !== webhookSecret) {
+        const headerSecret = String(req.get('x-telegram-bot-api-secret-token') || '');
+        if (webhookSecret && req.params.secret !== webhookSecret && headerSecret !== webhookSecret) {
             return res.status(403).json({ ok: false, error: 'invalid-secret' });
         }
         const message = req.body?.message || req.body?.edited_message;
@@ -322,7 +333,50 @@ function shouldDisableStaticCache(filePath) {
     ].some(ext => filePath.endsWith(ext));
 }
 
+function isPrivateAdminSetupRequest(req) {
+    const isPrivateAddress = value => value === '::1' || value === '127.0.0.1' || value.startsWith('10.') ||
+        value.startsWith('192.168.') || /^172\.(1[6-9]|2\d|3[01])\./.test(value);
+    const remote = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+    const forwarded = String(req.get('cf-connecting-ip') || req.get('x-forwarded-for') || '').split(',')[0].trim();
+    const address = isPrivateAddress(remote) && forwarded ? forwarded.replace(/^::ffff:/, '') : remote;
+    return isPrivateAddress(address);
+}
+
 // 静态文件服务 (限制目录遍历)
+app.get('/admin-auth', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin-auth.html'));
+});
+
+app.get('/api/admin/auth/status', (req, res) => {
+    const authenticated = adminAuth.isAuthenticated(req);
+    const configured = adminAuth.isConfigured();
+    const setupAllowed = !configured && isPrivateAdminSetupRequest(req);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ authenticated, configured, setupAllowed, setup: setupAllowed ? adminAuth.getSetup() : undefined });
+});
+
+app.post('/api/admin/auth/setup', adminAuthRateLimit, (req, res) => {
+    if (adminAuth.isConfigured()) return res.status(409).json({ error: 'admin-auth-already-configured' });
+    if (!isPrivateAdminSetupRequest(req)) return res.status(403).json({ error: 'admin-auth-setup-local-network-required' });
+    if (!adminAuth.finishSetup(req.body?.token)) return res.status(401).json({ error: 'invalid-totp' });
+    res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, adminAuth.createSession()));
+    res.json({ ok: true });
+});
+
+app.post('/api/admin/auth/login', adminAuthRateLimit, (req, res) => {
+    if (!adminAuth.isConfigured()) return res.status(409).json({ error: 'admin-auth-setup-required' });
+    if (!adminAuth.verifyToken(req.body?.token)) return res.status(401).json({ error: 'invalid-totp' });
+    res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, adminAuth.createSession()));
+    res.json({ ok: true });
+});
+
+app.post('/api/admin/auth/logout', (req, res) => {
+    res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, '', 0));
+    res.json({ ok: true });
+});
+
+app.use(['/admin.html', '/tgbot.html'], adminAuth.requireAuth);
+
 app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
     index: ['index.html'],
@@ -335,14 +389,16 @@ app.use(express.static(path.join(__dirname), {
 
 // 管理后台API
 app.get('/admin', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
 app.get('/tgbot', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'tgbot.html'));
 });
 
-app.get('/api/telegram/config', (req, res) => {
+app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
     const config = loadTelegramBotConfig();
     res.json({
         enabled: config.enabled,
@@ -354,24 +410,41 @@ app.get('/api/telegram/config', (req, res) => {
     });
 });
 
-app.post('/api/telegram/config', (req, res) => {
+app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
     try {
         const keepExistingToken = req.body?.keepExistingToken === true;
-        const keepExistingWebhookSecret = req.body?.keepExistingWebhookSecret === true;
         const token = sanitizeString(req.body?.token || '', 260);
-        const webhookSecret = sanitizeString(req.body?.webhookSecret || '', 160);
         const currentConfig = loadTelegramBotConfig();
-        const config = saveTelegramBotConfig({
-            token: token || (keepExistingToken ? currentConfig.token : ''),
-            webhookSecret: webhookSecret || (keepExistingWebhookSecret ? currentConfig.webhookSecret : ''),
+        const finalToken = token || (keepExistingToken ? currentConfig.token : '');
+        const webhookSecret = finalToken ? crypto.randomBytes(32).toString('base64url') : '';
+        const nextConfig = normalizeTelegramBotConfig({
+            token: finalToken,
+            webhookSecret,
             maxFileSize: req.body?.maxFileSize || 500 * 1024 * 1024
         });
+        let webhookRegistered = false;
+        if (nextConfig.enabled) {
+            const protocol = String(req.get('x-forwarded-proto') || '').split(',')[0].trim() || req.protocol;
+            const host = req.get('x-forwarded-host') || req.get('host');
+            const webhookUrl = `${protocol}://${host}/api/telegram/webhook/${nextConfig.webhookSecret}`;
+            await telegramApi('setWebhook', {
+                url: webhookUrl,
+                secret_token: nextConfig.webhookSecret,
+                allowed_updates: ['message', 'edited_message'],
+                drop_pending_updates: false
+            }, nextConfig.token);
+            webhookRegistered = true;
+        } else if (currentConfig.token) {
+            await telegramApi('deleteWebhook', { drop_pending_updates: false }, currentConfig.token);
+        }
+        const config = saveTelegramBotConfig(nextConfig);
         res.json({
             ok: true,
             enabled: config.enabled,
             tokenConfigured: Boolean(config.token),
             webhookSecretConfigured: Boolean(config.webhookSecret),
-            maxFileSize: config.maxFileSize
+            maxFileSize: config.maxFileSize,
+            webhookRegistered
         });
     } catch (err) {
         console.error('save telegram config error:', err);
@@ -498,7 +571,7 @@ app.post('/api/magnets', (req, res) => {
     }
 });
 
-app.get('/api/magnets', (req, res) => {
+app.get('/api/magnets', adminAuth.requireAuth, (req, res) => {
     try {
         cleanupExpiredMagnets();
         const baseUrl = getRequestBaseUrl(req);
@@ -544,7 +617,7 @@ app.get('/api/magnets/:magnetId', (req, res) => {
 });
 
 // API: 获取所有会话信息
-app.get('/api/sessions', (req, res) => {
+app.get('/api/sessions', adminAuth.requireAuth, (req, res) => {
     try {
         const sessionMap = new Map();
         let totalDevices = 0;
@@ -618,7 +691,7 @@ app.get('/api/sessions', (req, res) => {
     }
 });
 
-app.get('/api/devices', (req, res) => {
+app.get('/api/devices', adminAuth.requireAuth, (req, res) => {
     try {
         const now = Date.now();
         const deviceMap = new Map();
@@ -684,7 +757,7 @@ app.get('/api/devices/:deviceId', (req, res) => {
     }
 });
 
-app.delete('/api/sessions/:sessionId', (req, res) => {
+app.delete('/api/sessions/:sessionId', adminAuth.requireAuth, (req, res) => {
     try {
         const sessionId = req.params.sessionId;
         if (!isValidSessionId(sessionId)) {
@@ -725,7 +798,7 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
     }
 });
 
-app.get('/api/debug-logs', (req, res) => {
+app.get('/api/debug-logs', adminAuth.requireAuth, (req, res) => {
     if (DEBUG_LOG_TOKEN && req.get('x-debug-log-token') !== DEBUG_LOG_TOKEN) {
         return res.status(403).json({ error: 'Debug log access denied' });
     }
@@ -797,10 +870,59 @@ const editorAssetRelays = new Map();
 const shortCodes = new Map();
 const magnets = new Map();
 const accessDevices = new Map();
+const nearbyPresence = new Map();
 const sessionHistoryBroadcastTimers = new Map();
 const telegramPendingFiles = new Map();
 const telegramChatTunnels = new Map();
 const telegramServerAssets = new Map();
+
+function nearbyDistanceMeters(left, right) {
+    if (!Number.isFinite(left?.latitude) || !Number.isFinite(left?.longitude) ||
+        !Number.isFinite(right?.latitude) || !Number.isFinite(right?.longitude)) return null;
+    const radians = value => value * Math.PI / 180;
+    const dLat = radians(right.latitude - left.latitude);
+    const dLon = radians(right.longitude - left.longitude);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(radians(left.latitude)) * Math.cos(radians(right.latitude)) * Math.sin(dLon / 2) ** 2;
+    return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function samePrivateSubnet(left, right) {
+    const a = String(left || '').split('.');
+    const b = String(right || '').split('.');
+    const isPrivate = parts => parts.length === 4 && (
+        parts[0] === '10' ||
+        (parts[0] === '192' && parts[1] === '168') ||
+        (parts[0] === '172' && Number(parts[1]) >= 16 && Number(parts[1]) <= 31)
+    );
+    return isPrivate(a) && isPrivate(b) && a.slice(0, 3).join('.') === b.slice(0, 3).join('.');
+}
+
+function getNearbyCandidates(deviceId) {
+    const own = nearbyPresence.get(deviceId);
+    if (!own) return [];
+    const now = Date.now();
+    return Array.from(nearbyPresence.values()).filter(candidate => {
+        if (candidate.deviceId === deviceId || now - candidate.lastSeen > 70000) return false;
+        const distance = nearbyDistanceMeters(own, candidate);
+        return distance !== null ? distance <= 10000 :
+            (own.externalIp === candidate.externalIp || samePrivateSubnet(own.localIp, candidate.localIp));
+    }).map(candidate => {
+        const distance = nearbyDistanceMeters(own, candidate);
+        return {
+            deviceId: candidate.deviceId,
+            name: candidate.deviceName,
+            model: candidate.deviceModel,
+            profileUrl: `/device/${candidate.deviceId}`,
+            distanceMeters: distance === null ? null : Math.round(distance),
+            discoveryReason: distance !== null ? 'location' : (own.externalIp === candidate.externalIp ? 'same-network' : 'local-subnet'),
+            lastSeen: candidate.lastSeen
+        };
+    }).sort((a, b) => (a.distanceMeters ?? Number.MAX_SAFE_INTEGER) - (b.distanceMeters ?? Number.MAX_SAFE_INTEGER) || b.lastSeen - a.lastSeen).slice(0, 30);
+}
+
+function emitNearbyCandidates(deviceId) {
+    emitToDevice(deviceId, 'nearby-devices', { devices: getNearbyCandidates(deviceId), generatedAt: Date.now() });
+}
 
 function bindSocketToDevice(socket, deviceId) {
     socket.data.deviceId = deviceId;
@@ -1137,9 +1259,9 @@ function getTelegramFileFromMessage(message = {}) {
     return null;
 }
 
-async function telegramApi(method, payload) {
-    if (!isTelegramBotEnabled()) throw new Error('telegram-bot-disabled');
-    const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/${method}`, {
+async function telegramApi(method, payload, token = getTelegramBotToken()) {
+    if (!token) throw new Error('telegram-bot-disabled');
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {})
@@ -1894,6 +2016,26 @@ io.on('connection', (socket) => {
             accepted: data.accepted !== false,
             link: sanitizeString(data.link || '', 500)
         });
+    });
+
+    socket.on('nearby-presence', data => {
+        const deviceId = data?.deviceId;
+        if (!isValidDeviceId(deviceId) || socket.data?.deviceId !== deviceId) return;
+        const latitude = Number(data?.latitude);
+        const longitude = Number(data?.longitude);
+        nearbyPresence.set(deviceId, {
+            deviceId,
+            deviceName: isValidDeviceName(data?.deviceName || '') ? sanitizeString(data.deviceName, 50) : `设备-${deviceId.slice(-4)}`,
+            deviceModel: sanitizeString(data?.deviceModel || '', 80),
+            localIp: sanitizeString(data?.localIp || '', 80),
+            externalIp: clientIp,
+            latitude: Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 ? latitude : null,
+            longitude: Number.isFinite(longitude) && longitude >= -180 && longitude <= 180 ? longitude : null,
+            lastSeen: Date.now(),
+            socketId: socket.id
+        });
+        socket.data.nearbyDeviceId = deviceId;
+        emitNearbyCandidates(deviceId);
     });
     
     // 加入会话
@@ -2996,6 +3138,10 @@ io.on('connection', (socket) => {
     // 断开连接
     socket.on('disconnect', (reason) => {
         console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
+        const nearbyDeviceId = socket.data?.nearbyDeviceId;
+        if (nearbyDeviceId && nearbyPresence.get(nearbyDeviceId)?.socketId === socket.id) {
+            nearbyPresence.delete(nearbyDeviceId);
+        }
         
         // 清理IP连接记录
         ipSockets.delete(socket.id);

@@ -1,3 +1,5 @@
+> 2026-07-04 更新：Telegram 敏感配置已迁移到 `/tgbot` 管理页。页面只需填写 bot token；服务端会生成 webhook secret，并自动调用 `setWebhook`。下文关于修改 `tunnel.config.json`、手工生成 secret 和手动执行 `setWebhook` 的内容仅用于旧版本，不再适用于当前分支。
+
 Telegram 支持已经是**完整 webhook 入站方案**，不是需要你自己再写 bot 轮询。代码里做了这些事：
 
 1. `tunnel.config.json` 新增 `telegramBot` 配置块，默认是关闭状态。

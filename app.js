@@ -49,6 +49,7 @@ const state = {
     dataChannels: new Map(), // deviceId -> RTCDataChannel
     pendingIceCandidates: new Map(), // deviceId -> RTCIceCandidate[]
     devices: new Map(), // deviceId -> deviceInfo
+    nearbyDevices: new Map(),
     messages: [],
     pendingFiles: new Map(), // fileId -> fileInfo
     editorContent: '',
@@ -129,6 +130,8 @@ let musicPlayerPersistTimer = null;
 let musicPlayerDurablePersistTimer = null;
 let musicPlayerLastPersistAt = 0;
 let homeHistoryGuardReady = false;
+let nearbyPresenceTimer = null;
+let nearbyLocation = null;
 
 function nextHistoryTimestamp() {
     const now = Date.now();
@@ -357,6 +360,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await initStorage();
         registerServiceWorker();
         if (!await initSession()) {
+            initLandingNearbyPresence();
             initSessionLanding();
             return;
         }
@@ -366,6 +370,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStartupFailure(err);
     }
 });
+
+function initLandingNearbyPresence() {
+    if (state.socket?.connected) return;
+    state.socket = io(CONFIG.SOCKET_SERVER, { transports: ['websocket', 'polling'] });
+    state.socket.on('connect', () => {
+        state.socket.emit('register-profile-device', {
+            deviceId: state.deviceId,
+            deviceName: state.deviceName,
+            deviceModel: state.deviceModel,
+            localIp: state.reportedLanIp || '',
+            sessionId: ''
+        }, () => announceNearbyPresence());
+        if (nearbyPresenceTimer) clearInterval(nearbyPresenceTimer);
+        nearbyPresenceTimer = setInterval(announceNearbyPresence, 25000);
+    });
+}
 
 async function startTunnelApplication() {
     document.getElementById('appShell').hidden = false;
@@ -1063,6 +1083,9 @@ function initSocket() {
             localIp: state.reportedLanIp,
             shortCode: state.shortCode
         });
+        announceNearbyPresence();
+        if (nearbyPresenceTimer) clearInterval(nearbyPresenceTimer);
+        nearbyPresenceTimer = setInterval(announceNearbyPresence, 25000);
         scheduleSessionHistoryFallbacks();
         startTunnelHeartbeat();
         state.debugLogReady = true;
@@ -1083,6 +1106,7 @@ function initSocket() {
                 deviceModel: state.deviceModel,
                 localIp
             });
+            announceNearbyPresence();
         });
     });
 
@@ -1108,6 +1132,12 @@ function initSocket() {
         updateDeviceList();
     });
     state.socket.on('device-updated', handleDeviceUpdated);
+    state.socket.on('nearby-devices', data => {
+        state.nearbyDevices = new Map((Array.isArray(data?.devices) ? data.devices : [])
+            .filter(device => device?.deviceId && device.deviceId !== state.deviceId)
+            .map(device => [device.deviceId, device]));
+        renderNearbyDevices();
+    });
 
     state.socket.on('session-short-code', (data) => {
         updateShortCode(data?.shortCode).catch(err => historyLog('short-code-persist-failed', { error: err.message }));
@@ -6655,8 +6685,41 @@ function ensureMusicPlayerOverlay() {
         scheduleMusicPlayerPersist();
     });
     initMusicQueueDrawer(overlay);
+    initMusicPlayerCoverGestures(overlay);
     musicPlayer.overlay = overlay;
     return overlay;
+}
+
+function initMusicPlayerCoverGestures(overlay) {
+    const cover = overlay.querySelector('#musicPlayerCover');
+    if (!cover) return;
+    let gesture = null;
+    cover.addEventListener('pointerdown', event => {
+        gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, horizontal: false };
+        cover.setPointerCapture?.(event.pointerId);
+    });
+    cover.addEventListener('pointermove', event => {
+        if (!gesture || gesture.id !== event.pointerId) return;
+        const dx = event.clientX - gesture.x;
+        const dy = event.clientY - gesture.y;
+        if (!gesture.horizontal && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.35) gesture.horizontal = true;
+        if (!gesture.horizontal) return;
+        event.preventDefault();
+        gesture.dx = dx;
+        cover.style.transform = `translateX(${Math.max(-70, Math.min(70, dx * .42))}px)`;
+    });
+    const finish = event => {
+        if (!gesture || gesture.id !== event.pointerId) return;
+        const dx = gesture.dx;
+        const horizontal = gesture.horizontal;
+        gesture = null;
+        cover.style.transform = '';
+        if (!horizontal || Math.abs(dx) < 56) return;
+        if (dx < 0) playNextMusicTrack();
+        else playPreviousMusicTrack();
+    };
+    cover.addEventListener('pointerup', finish);
+    cover.addEventListener('pointercancel', finish);
 }
 
 function renderMusicPlayer() {
@@ -6866,11 +6929,92 @@ function renderMusicQueueList(options = {}) {
                 <div class="music-player-queue-meta">${escapeHtml(track.artist || '未知艺术家')} · ${formatAudioTime(track.duration || 0)}</div>
             </div>
             <div class="music-player-queue-state">${index === musicPlayer.currentIndex ? (isBackgroundMusicPlaying() ? '播放中' : '当前') : ''}</div>
+            <span class="music-player-queue-handle" role="button" aria-label="拖动调整队列位置" title="拖动调整队列位置">⚌</span>
         `;
-        item.addEventListener('click', () => playMusicQueueIndex(index));
+        bindMusicQueueItemGestures(item, index);
         list.appendChild(item);
     });
     if (musicPlayer.queueOpen && !options.skipFocus) requestAnimationFrame(focusActiveMusicQueueItem);
+}
+
+function moveMusicQueueTrack(fromIndex, toIndex) {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= musicPlayer.queue.length || toIndex >= musicPlayer.queue.length) return;
+    const activeId = getCurrentMusicTrack()?.id || '';
+    const [track] = musicPlayer.queue.splice(fromIndex, 1);
+    musicPlayer.queue.splice(toIndex, 0, track);
+    setMusicCurrentTrackById(activeId, toIndex);
+    musicPlayer.queue.forEach((item, index) => { item.queueOrder = index; });
+    renderMusicQueueList({ skipFocus: true });
+    persistMusicPlayerState();
+}
+
+function bindMusicQueueItemGestures(item, index) {
+    const handle = item.querySelector('.music-player-queue-handle');
+    let swipe = null;
+    let suppressClick = false;
+    item.addEventListener('click', event => {
+        if (suppressClick || event.target.closest('.music-player-queue-handle')) return;
+        playMusicQueueIndex(Number(item.dataset.queueIndex));
+    });
+    item.addEventListener('pointerdown', event => {
+        if (event.target.closest('.music-player-queue-handle')) return;
+        swipe = { id: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, horizontal: false };
+        item.setPointerCapture?.(event.pointerId);
+    });
+    item.addEventListener('pointermove', event => {
+        if (!swipe || swipe.id !== event.pointerId) return;
+        const dx = event.clientX - swipe.x;
+        const dy = event.clientY - swipe.y;
+        if (!swipe.horizontal && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.3) swipe.horizontal = true;
+        if (!swipe.horizontal) return;
+        event.preventDefault();
+        swipe.dx = dx;
+        item.style.transform = `translateX(${Math.max(-110, Math.min(110, dx))}px)`;
+        item.style.opacity = String(Math.max(.35, 1 - Math.abs(dx) / 180));
+    });
+    const finishSwipe = event => {
+        if (!swipe || swipe.id !== event.pointerId) return;
+        const shouldRemove = swipe.horizontal && Math.abs(swipe.dx) >= 72;
+        suppressClick = swipe.horizontal;
+        swipe = null;
+        item.style.transform = '';
+        item.style.opacity = '';
+        if (shouldRemove) removeMusicTrackFromQueue(musicPlayer.queue[Number(item.dataset.queueIndex)]?.id);
+        setTimeout(() => { suppressClick = false; }, 180);
+    };
+    item.addEventListener('pointerup', finishSwipe);
+    item.addEventListener('pointercancel', finishSwipe);
+
+    handle?.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        handle.setPointerCapture?.(event.pointerId);
+        const startIndex = Number(item.dataset.queueIndex);
+        let targetIndex = startIndex;
+        item.classList.add('is-dragging');
+        const onMove = moveEvent => {
+            if (moveEvent.pointerId !== event.pointerId) return;
+            moveEvent.preventDefault();
+            const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest('.music-player-queue-item');
+            if (!target || target === item) return;
+            const nextIndex = Number(target.dataset.queueIndex);
+            if (!Number.isInteger(nextIndex)) return;
+            targetIndex = nextIndex;
+            item.style.transform = `translateY(${target.offsetTop - item.offsetTop}px)`;
+        };
+        const onEnd = endEvent => {
+            if (endEvent.pointerId !== event.pointerId) return;
+            item.classList.remove('is-dragging');
+            item.style.transform = '';
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onEnd);
+            handle.removeEventListener('pointercancel', onEnd);
+            moveMusicQueueTrack(startIndex, targetIndex);
+        };
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onEnd);
+        handle.addEventListener('pointercancel', onEnd);
+    });
 }
 
 function focusActiveMusicQueueItem() {
@@ -10490,6 +10634,82 @@ function makeDeviceNameInteractive(element, device) {
     });
 }
 
+function announceNearbyPresence() {
+    if (!state.socket?.connected || !state.deviceId) return;
+    state.socket.emit('nearby-presence', {
+        deviceId: state.deviceId,
+        deviceName: state.deviceName,
+        deviceModel: state.deviceModel,
+        localIp: state.reportedLanIp || '',
+        latitude: nearbyLocation?.latitude,
+        longitude: nearbyLocation?.longitude
+    });
+}
+
+function formatNearbyHint(device) {
+    if (Number.isFinite(device?.distanceMeters)) {
+        return device.distanceMeters < 1000 ? `约 ${device.distanceMeters} 米` : `约 ${(device.distanceMeters / 1000).toFixed(1)} 公里`;
+    }
+    return device?.discoveryReason === 'same-network' ? '同一网络' : '局域网候选';
+}
+
+function renderNearbyDevices() {
+    const container = document.getElementById('nearbyDeviceList');
+    if (!container) return;
+    container.replaceChildren();
+    if (!state.nearbyDevices.size) {
+        const empty = document.createElement('div');
+        empty.className = 'contact-empty';
+        empty.textContent = nearbyLocation ? '附近暂未发现其他在线设备' : '暂未发现同网络设备，可点击“增强发现”授权位置';
+        container.appendChild(empty);
+        return;
+    }
+    state.nearbyDevices.forEach(device => {
+        const row = document.createElement('div');
+        row.className = 'device-item contact-item';
+        const info = document.createElement('div');
+        info.className = 'info';
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = device.name || `设备-${device.deviceId.slice(-4)}`;
+        const hint = document.createElement('div');
+        hint.className = 'status';
+        hint.textContent = formatNearbyHint(device);
+        makeDeviceNameInteractive(name, {
+            ...device,
+            name: name.textContent,
+            profileUrl: device.profileUrl || `${window.location.origin}/device/${device.deviceId}`
+        });
+        info.append(name, hint);
+        row.append(info);
+        container.appendChild(row);
+    });
+}
+
+function enablePreciseNearbyDiscovery() {
+    if (!window.isSecureContext || !navigator.geolocation) {
+        showAppToast('当前浏览器需要 HTTPS 才能启用跨网络附近发现');
+        return;
+    }
+    const button = document.getElementById('nearbyPreciseBtn');
+    if (button) button.disabled = true;
+    navigator.geolocation.getCurrentPosition(position => {
+        nearbyLocation = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+        };
+        if (button) {
+            button.disabled = false;
+            button.textContent = '已增强';
+        }
+        announceNearbyPresence();
+        showAppToast('已启用跨网络附近发现');
+    }, error => {
+        if (button) button.disabled = false;
+        showAppToast(error.code === 1 ? '未获得位置权限' : '暂时无法获取位置');
+    }, { enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 });
+}
+
 function updateDeviceList() {
     const container = document.getElementById('deviceList');
     const count = state.devices.size + 1;
@@ -11020,6 +11240,7 @@ function initUI() {
         if (event.target.id === 'downloadCacheOverlay') closeDownloadCacheOverlay();
     });
     document.getElementById('refreshContactsBtn')?.addEventListener('click', () => loadContacts());
+    document.getElementById('nearbyPreciseBtn')?.addEventListener('click', enablePreciseNearbyDiscovery);
     document.getElementById('closeDeviceProfileBtn')?.addEventListener('click', closeDeviceProfile);
     document.getElementById('deviceProfileModal')?.addEventListener('click', event => {
         if (event.target.id === 'deviceProfileModal') closeDeviceProfile();

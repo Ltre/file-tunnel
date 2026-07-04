@@ -195,17 +195,6 @@
                 </label>
 
                 <div class="field">
-                    <label for="webhookSecret">Webhook secret</label>
-                    <input id="webhookSecret" name="webhookSecret" type="password" autocomplete="off" placeholder="留空则保留当前 secret">
-                    <div class="hint" id="webhookSecretHint">正在读取当前状态...</div>
-                </div>
-
-                <label class="inline-check">
-                    <input id="clearWebhookSecret" type="checkbox">
-                    <span>清空已保存的 webhook secret</span>
-                </label>
-
-                <div class="field">
                     <label for="maxFileSizeMb">接收文件上限 MB</label>
                     <input id="maxFileSizeMb" name="maxFileSizeMb" type="number" min="1" step="1">
                     <div class="hint">Telegram 发送文件时，服务端会先按此上限拦截过大的文件。</div>
@@ -226,14 +215,10 @@
         const tokenInput = document.getElementById('botToken');
         const clearTokenInput = document.getElementById('clearToken');
         const tokenHint = document.getElementById('tokenHint');
-        const webhookSecretInput = document.getElementById('webhookSecret');
-        const webhookSecretHint = document.getElementById('webhookSecretHint');
-        const clearWebhookSecretInput = document.getElementById('clearWebhookSecret');
         const maxFileSizeInput = document.getElementById('maxFileSizeMb');
         const statusEl = document.getElementById('status');
         const reloadBtn = document.getElementById('reloadBtn');
         let tokenConfigured = false;
-        let webhookSecretConfigured = false;
 
         function setStatus(text, type = '') {
             statusEl.textContent = text;
@@ -251,12 +236,6 @@
             tokenHint.textContent = tokenConfigured
                 ? `当前已配置 token：${config.tokenPreview || '已保存'}。留空保存会继续保留。`
                 : '当前未配置 token。';
-            webhookSecretConfigured = Boolean(config.webhookSecretConfigured);
-            webhookSecretInput.value = '';
-            clearWebhookSecretInput.checked = false;
-            webhookSecretHint.textContent = webhookSecretConfigured
-                ? `当前已配置 webhook secret：${config.webhookSecretPreview || '已保存'}。留空保存会继续保留。`
-                : '当前未配置 webhook secret。';
             maxFileSizeInput.value = Math.max(1, Math.round((Number(config.maxFileSize) || 524288000) / 1024 / 1024));
             setStatus('配置已读取。', 'ok');
         }
@@ -266,8 +245,6 @@
             try {
                 const token = tokenInput.value.trim();
                 const clearToken = clearTokenInput.checked;
-                const webhookSecret = webhookSecretInput.value.trim();
-                const clearWebhookSecret = clearWebhookSecretInput.checked;
                 const maxFileSizeMb = Math.max(1, Number(maxFileSizeInput.value || 500));
                 setStatus('正在保存...');
                 const response = await fetch('/api/telegram/config', {
@@ -276,8 +253,6 @@
                     body: JSON.stringify({
                         token: clearToken ? '' : token,
                         keepExistingToken: !clearToken && !token && tokenConfigured,
-                        webhookSecret: clearWebhookSecret ? '' : webhookSecret,
-                        keepExistingWebhookSecret: !clearWebhookSecret && !webhookSecret && webhookSecretConfigured,
                         maxFileSize: Math.round(maxFileSizeMb * 1024 * 1024)
                     })
                 });
@@ -286,7 +261,7 @@
                     throw new Error(error.error || '保存配置失败');
                 }
                 await loadConfig();
-                setStatus('telegram bot 配置已保存。', 'ok');
+                setStatus('telegram bot 配置已保存，webhook 已自动注册。', 'ok');
             } catch (err) {
                 setStatus(err.message || '保存配置失败', 'error');
             }

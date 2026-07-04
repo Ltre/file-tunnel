@@ -126,16 +126,16 @@ http://10.0.0.16:3000/api/debug-logs?limit=1000
 默认关闭详细 debug，这样页面不会再因为大量 historyLog/debug-log 走 IPC 和 console。
 服务端仍保留启动/错误这类少量日志。
 
-## 管理页身份校验规划：Google Authenticator
+## 管理页身份校验：Google Authenticator
 
-后续接入管理页身份校验时，建议采用基于 TOTP 的 Google Authenticator 流程：
+管理页已采用基于 TOTP 的 Google Authenticator 兼容流程：
 
-1. 首次访问 `/admin` 时，如果服务器隐藏目录中不存在 `GAuth接入标记文件`，页面进入管理员初始化流程。
+1. 首次通过服务器本机或私网地址访问 `/admin` 时，如果服务器隐藏目录中不存在 `.tunnel-data/.gauth-admin.json`，页面进入管理员初始化流程。公网来源不能领取初始化 secret，以防被抢先绑定。
 2. 初始化流程由服务端生成 TOTP secret，前端显示二维码和手动密钥，管理员使用 Google Authenticator、Microsoft Authenticator 等兼容应用扫码绑定。
-3. 管理员输入 6 位动态验证码，服务端验证成功后，在隐藏目录写入 `GAuth接入标记文件`，其中保存加密后的 TOTP secret、创建时间、恢复提示信息等必要元数据。
+3. 管理员输入 6 位动态验证码，服务端验证成功后，在隐藏目录写入 `.gauth-admin.json`，其中保存加密后的 TOTP secret 和创建时间。
 4. 日常访问 `/admin` 时，先要求输入 6 位动态验证码。验证成功后，服务端下发 HttpOnly、SameSite 的管理会话 Cookie，有效期为 14 天。
 5. 14 天内再次访问管理页时，如果 Cookie 有效，则免验证码；超过有效期或服务端重置后，需要重新输入验证码。
-6. 如果管理员丢失认证密钥，可以登录服务器，删除隐藏目录中的 `GAuth接入标记文件`，然后重新访问 `/admin` 进入初始化流程。
+6. 如果管理员丢失认证密钥，可以登录服务器，删除 `.tunnel-data/.gauth-admin.json`，然后重新访问 `/admin` 进入初始化流程。
 7. 所有高风险管理操作，例如删除隧道、查看全局设备、查看全局磁链列表，均应要求管理会话有效；未认证时返回 401 并引导到认证界面。
 
-注意：该机制需要保护好隐藏目录的文件权限；生产环境建议仅允许运行 Node.js 的系统用户读写该标记文件。
+注意：服务端还会创建 `.tunnel-data/.admin-session.key`，用于加密 TOTP secret 和签名管理 Cookie。生产环境应仅允许运行 Node.js 的系统用户读写这两个文件。删除 `.admin-session.key` 会使现有管理 Cookie 及原 TOTP 标记失效，因此正常重置身份验证器时只删除 `.gauth-admin.json`。
