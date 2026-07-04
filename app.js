@@ -5720,7 +5720,7 @@ function sanitizeMusicTrackFileInfo(track = {}) {
     };
 }
 
-function serializeMusicTrack(track) {
+function serializeMusicTrack(track, queueOrder = -1) {
     if (!track?.id) return null;
     const sessionId = track.sessionId || track.fileInfo?.sessionId || state.sessionId || '';
     const fileInfo = sanitizeMusicTrackFileInfo({ ...track, sessionId });
@@ -5736,7 +5736,8 @@ function serializeMusicTrack(track) {
         codec: track.codec || '',
         duration: Number(track.duration || 0),
         bitrate: track.bitrate || '',
-        sampleRate: track.sampleRate || ''
+        sampleRate: track.sampleRate || '',
+        queueOrder: Number.isFinite(queueOrder) && queueOrder >= 0 ? queueOrder : undefined
     };
 }
 
@@ -5782,7 +5783,7 @@ function scheduleMusicPlayerPersist() {
 function buildMusicPlayerPayload() {
     const audio = musicPlayer.audio;
     return {
-        queue: musicPlayer.queue.map(serializeMusicTrack).filter(Boolean),
+        queue: musicPlayer.queue.map((track, index) => serializeMusicTrack(track, index)).filter(Boolean),
         currentIndex: musicPlayer.currentIndex,
         currentTrackId: getCurrentMusicTrack()?.id || musicPlayer.currentTrackId || '',
         currentTime: Number(audio?.currentTime || 0),
@@ -5861,13 +5862,78 @@ function isMusicQueueSubset(shorter = [], longer = []) {
     return shorter.every(track => track?.id && longerIds.has(track.id));
 }
 
+function haveSameMusicQueueMembers(left = [], right = []) {
+    if (left.length !== right.length) return false;
+    const leftIds = new Set(left.map(track => track?.id).filter(Boolean));
+    return right.every(track => track?.id && leftIds.has(track.id));
+}
+
+function findSavedMusicQueueIndex(saved, fileId) {
+    if (!saved?.queue?.length || !fileId) return -1;
+    return saved.queue.findIndex(track => track?.id === fileId);
+}
+
+function normalizeSavedMusicQueue(queue = []) {
+    const items = Array.isArray(queue) ? queue.filter(track => track?.id) : [];
+    const orders = items.map(track => Number(track.queueOrder));
+    const hasStableOrder = items.length > 1 &&
+        orders.every(order => Number.isInteger(order) && order >= 0) &&
+        new Set(orders).size === items.length;
+    if (!hasStableOrder) return items;
+    return [...items].sort((a, b) => Number(a.queueOrder) - Number(b.queueOrder));
+}
+
+function getSavedMusicCurrentTrackId(saved) {
+    if (!saved?.queue?.length) return '';
+    if (saved.currentTrackId && saved.queue.some(track => track?.id === saved.currentTrackId)) {
+        return saved.currentTrackId;
+    }
+    const index = Math.min(Math.max(Number(saved.currentIndex) || 0, 0), saved.queue.length - 1);
+    return saved.queue[index]?.id || '';
+}
+
 function chooseSavedMusicPlayerState(localSaved, durableSaved) {
     const local = parseSavedMusicPlayerState(localSaved);
     const durable = parseSavedMusicPlayerState(durableSaved);
     if (!local?.queue?.length) return durable;
     if (!durable?.queue?.length) return local;
-    if (durable.queue.length > local.queue.length && isMusicQueueSubset(local.queue, durable.queue)) return durable;
-    return Number(durable.updatedAt || 0) > Number(local.updatedAt || 0) ? durable : local;
+    local.queue = normalizeSavedMusicQueue(local.queue);
+    durable.queue = normalizeSavedMusicQueue(durable.queue);
+
+    const localNewer = Number(local.updatedAt || 0) >= Number(durable.updatedAt || 0);
+    const newerState = localNewer ? local : durable;
+    let queueState = localNewer ? local : durable;
+    const explicitCurrentTrackId = newerState.currentTrackId ||
+        local.currentTrackId ||
+        durable.currentTrackId ||
+        '';
+
+    if (durable.queue.length > local.queue.length && isMusicQueueSubset(local.queue, durable.queue)) {
+        queueState = durable;
+    } else if (local.queue.length > durable.queue.length && isMusicQueueSubset(durable.queue, local.queue)) {
+        queueState = local;
+    } else if (durable.queue.length !== local.queue.length) {
+        queueState = durable.queue.length > local.queue.length ? durable : local;
+    } else if (explicitCurrentTrackId && haveSameMusicQueueMembers(local.queue, durable.queue)) {
+        const localIndex = findSavedMusicQueueIndex(local, explicitCurrentTrackId);
+        const durableIndex = findSavedMusicQueueIndex(durable, explicitCurrentTrackId);
+        if (localIndex === 0 && durableIndex > 0) queueState = durable;
+        else if (durableIndex === 0 && localIndex > 0) queueState = local;
+    }
+
+    const currentTrackId = explicitCurrentTrackId && queueState.queue.some(track => track?.id === explicitCurrentTrackId)
+        ? explicitCurrentTrackId
+        : (getSavedMusicCurrentTrackId(newerState) || getSavedMusicCurrentTrackId(queueState));
+    const currentIndex = queueState.queue.findIndex(track => track?.id === currentTrackId);
+    return {
+        ...queueState,
+        currentTime: newerState.currentTrackId === currentTrackId ? newerState.currentTime : queueState.currentTime,
+        paused: newerState.paused,
+        miniEnabled: newerState.miniEnabled || queueState.miniEnabled,
+        updatedAt: Math.max(Number(local.updatedAt || 0), Number(durable.updatedAt || 0)),
+        currentTrackId,
+        currentIndex: currentIndex >= 0 ? currentIndex : Math.min(Math.max(Number(queueState.currentIndex) || 0, 0), queueState.queue.length - 1)
+    };
 }
 
 function persistMusicPlayerProgressSoon() {
@@ -5928,14 +5994,19 @@ async function restoreMusicPlayerState() {
         return;
     }
     const restored = [];
-    for (const item of saved.queue) {
+    const savedQueue = normalizeSavedMusicQueue(saved.queue);
+    const savedCurrentTrackId = getSavedMusicCurrentTrackId({ ...saved, queue: savedQueue });
+    for (const item of savedQueue) {
         const track = await hydrateSavedMusicTrack(item);
         if (track) restored.push(track);
     }
     musicPlayer.queue = restored;
-    musicPlayer.currentIndex = Math.min(Math.max(Number(saved.currentIndex) || 0, 0), Math.max(restored.length - 1, 0));
-    musicPlayer.currentTrackId = saved.currentTrackId || restored[musicPlayer.currentIndex]?.id || '';
-    getCurrentMusicTrack();
+    const restoredCurrentIndex = restored.findIndex(track => track?.id === savedCurrentTrackId);
+    if (restoredCurrentIndex >= 0) {
+        setMusicCurrentIndex(restoredCurrentIndex);
+    } else {
+        setMusicCurrentIndex(Math.min(Math.max(Number(saved.currentIndex) || 0, 0), Math.max(restored.length - 1, 0)));
+    }
     musicPlayer.miniEnabled = Boolean(restored.length && saved.miniEnabled);
     if (restored.length) {
         const audio = ensureBackgroundAudio();
