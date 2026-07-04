@@ -4947,6 +4947,7 @@ const musicPlayer = {
     queueOpen: false,
     queueHistoryOpen: false,
     queueDrag: null,
+    pendingQueueExitAction: '',
     libraryFillPending: false,
     libraryFillExhaustedAt: 0,
     mediaSessionReady: false,
@@ -4960,6 +4961,7 @@ const musicPlayer = {
     progressTimer: null
 };
 const musicPlayerPosterHydratingIds = new Set();
+const musicPlayerDurationHydratingIds = new Set();
 
 function getFileExtension(fileName) {
     const name = String(fileName || '');
@@ -5937,6 +5939,24 @@ function updateMusicQueueTrackPoster(fileId, poster) {
     return true;
 }
 
+function updateMusicQueueTrackDuration(fileId, duration) {
+    const normalized = Number(duration || 0);
+    if (!fileId || !(normalized > 0)) return false;
+    let changed = false;
+    musicPlayer.queue.forEach(track => {
+        if (track?.id !== fileId || Number(track.duration || 0) > 0) return;
+        track.duration = normalized;
+        if (track.size && !track.bitrate) track.bitrate = `${Math.round((track.size * 8) / normalized / 1000)} kbps`;
+        changed = true;
+    });
+    if (!changed) return false;
+    updateMusicPlayerProgress();
+    renderMusicQueueList();
+    updateMediaSessionMetadata();
+    scheduleMusicPlayerPersist();
+    return true;
+}
+
 function removeMusicTrackFromQueue(fileId) {
     if (!fileId || !musicPlayer.queue.some(track => track?.id === fileId)) return false;
     const wasCurrent = getCurrentMusicTrack()?.id === fileId;
@@ -5986,10 +6006,58 @@ function hydrateMusicTrackPoster(track = getCurrentMusicTrack()) {
         .finally(() => musicPlayerPosterHydratingIds.delete(track.id));
 }
 
+async function ensureMusicTrackPosterForPreview(track, fileInfo = {}, storedFile = null) {
+    if (!track?.id || track.poster) return track?.poster || '';
+    const previewPoster = document.querySelector('#filePreviewContent .audio-preview-cover img')?.currentSrc ||
+        document.querySelector('#filePreviewContent .audio-preview-cover img')?.src ||
+        '';
+    if (previewPoster) {
+        track.poster = previewPoster;
+        if (track.fileInfo) track.fileInfo.audioPoster = previewPoster;
+        updateMusicQueueTrackPoster(track.id, previewPoster);
+        return previewPoster;
+    }
+    const latestFile = await getFromStore('files', track.id).catch(() => null);
+    const sourceFile = latestFile || storedFile;
+    if (!hasCompleteFileCache(sourceFile, fileInfo || track)) return '';
+    const poster = sourceFile.audioPoster || await ensureAudioPosterCache(sourceFile, fileInfo || track).catch(() => '');
+    if (!poster) return '';
+    track.poster = poster;
+    if (track.fileInfo) track.fileInfo.audioPoster = poster;
+    updateMusicQueueTrackPoster(track.id, poster);
+    return poster;
+}
+
+function hydrateMusicTrackDuration(track) {
+    if (!track?.id || !track.url || Number(track.duration || 0) > 0 || musicPlayerDurationHydratingIds.has(track.id)) return;
+    musicPlayerDurationHydratingIds.add(track.id);
+    const probe = new Audio();
+    probe.preload = 'metadata';
+    const cleanup = () => {
+        probe.removeAttribute('src');
+        try { probe.load(); } catch (_) {}
+        musicPlayerDurationHydratingIds.delete(track.id);
+    };
+    probe.addEventListener('loadedmetadata', () => {
+        updateMusicQueueTrackDuration(track.id, probe.duration);
+        cleanup();
+    }, { once: true });
+    probe.addEventListener('error', cleanup, { once: true });
+    setTimeout(cleanup, 10000);
+    probe.src = track.url;
+}
+
 function setTopbarMusicVisible(visible) {
     const button = document.getElementById('topbarMusicBtn');
     if (!button) return;
     button.hidden = !visible;
+}
+
+function replaceCurrentHistoryWithoutMusicPlayer() {
+    const baseState = history.state && typeof history.state === 'object' ? { ...history.state } : {};
+    delete baseState[MUSIC_QUEUE_HISTORY_KEY];
+    delete baseState[MUSIC_PLAYER_HISTORY_KEY];
+    history.replaceState(baseState, '', window.location.href);
 }
 
 function ensureHomeHistoryGuard() {
@@ -6141,6 +6209,7 @@ async function appendRandomLibraryTrackIfPossible(options = {}) {
     }
     musicPlayer.libraryFillExhaustedAt = 0;
     musicPlayer.queue.push(track);
+    hydrateMusicTrackDuration(track);
     if (options.playNow) {
         musicPlayer.currentIndex = musicPlayer.queue.length - 1;
         const audio = ensureBackgroundAudio();
@@ -6529,6 +6598,7 @@ async function openMusicPlayerFromActivePreview() {
     if (!activeFilePreviewFileId || !activeFilePreviewStoredFile || !activeFilePreviewObjectUrl) return;
     const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
     const track = await buildAudioTrack(fileInfo || activeFilePreviewStoredFile, activeFilePreviewStoredFile, activeFilePreviewObjectUrl);
+    await ensureMusicTrackPosterForPreview(track, fileInfo || activeFilePreviewStoredFile, activeFilePreviewStoredFile);
     const tempAudio = musicPlayer.tempAudio;
     const startTime = tempAudio?.dataset?.previewFileId === activeFilePreviewFileId ? Number(tempAudio.currentTime || 0) : 0;
     handoffTemporaryPreviewToBackground(activeFilePreviewFileId);
@@ -6562,6 +6632,11 @@ async function playMusicQueueIndex(index) {
 }
 
 function minimizeMusicPlayer(options = {}) {
+    if (!options.fromHistory && musicPlayer.queueOpen && history.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
+        musicPlayer.pendingQueueExitAction = 'minimize';
+        history.back();
+        return;
+    }
     if (!options.fromHistory && musicPlayer.queueOpen) {
         setMusicQueueOpen(false, { replaceHistory: true });
     }
@@ -6578,6 +6653,11 @@ function minimizeMusicPlayer(options = {}) {
 }
 
 function closeMusicPlayer(options = {}) {
+    if (!options.fromHistory && musicPlayer.queueOpen && history.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
+        musicPlayer.pendingQueueExitAction = 'close';
+        history.back();
+        return;
+    }
     if (!options.fromHistory && musicPlayer.queueOpen) {
         setMusicQueueOpen(false, { replaceHistory: true });
     }
@@ -11575,7 +11655,16 @@ window.addEventListener('popstate', event => {
             return;
         }
         if (musicPlayer.queueOpen) {
+            const pendingQueueExitAction = musicPlayer.pendingQueueExitAction;
+            musicPlayer.pendingQueueExitAction = '';
             setMusicQueueOpen(false, { fromHistory: true });
+            if (pendingQueueExitAction === 'close') {
+                closeMusicPlayer({ fromHistory: true });
+                replaceCurrentHistoryWithoutMusicPlayer();
+            } else if (pendingQueueExitAction === 'minimize') {
+                minimizeMusicPlayer({ fromHistory: true });
+                replaceCurrentHistoryWithoutMusicPlayer();
+            }
             return;
         }
         const stop = musicPlayer.closeAfterHistory === true;
