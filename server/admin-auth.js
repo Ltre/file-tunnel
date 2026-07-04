@@ -73,9 +73,17 @@ function createAdminAuth(options) {
     const dataDir = options.dataDir;
     const markerPath = path.join(dataDir, '.gauth-admin.json');
     const signingKeyPath = path.join(dataDir, '.admin-session.key');
-    const issuer = options.issuer || 'Instant Tunnel Admin';
+    const defaultIssuer = options.issuer || 'Instant Tunnel Admin';
     let pendingSecret = '';
     let pendingAt = 0;
+    let pendingIssuer = defaultIssuer;
+
+    function normalizeIssuer(value) {
+        return String(value || defaultIssuer)
+            .replace(/[\u0000-\u001f\u007f]/g, '')
+            .trim()
+            .slice(0, 64) || defaultIssuer;
+    }
 
     function ensurePrivateFile(filePath, contents) {
         fs.mkdirSync(dataDir, { recursive: true });
@@ -116,20 +124,21 @@ function createAdminAuth(options) {
         return Boolean(readMarker());
     }
 
-    function getSetup() {
+    function getSetup(requestedIssuer) {
         if (isConfigured()) return null;
         if (!pendingSecret || Date.now() - pendingAt > 10 * 60 * 1000) {
             pendingSecret = base32Encode(crypto.randomBytes(20));
             pendingAt = Date.now();
         }
+        pendingIssuer = normalizeIssuer(requestedIssuer);
         const account = options.account || 'administrator';
-        const label = encodeURIComponent(`${issuer}:${account}`);
-        const uri = `otpauth://totp/${label}?secret=${pendingSecret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
-        return { secret: pendingSecret, uri, account, expiresAt: pendingAt + 10 * 60 * 1000 };
+        const label = encodeURIComponent(`${pendingIssuer}:${account}`);
+        const uri = `otpauth://totp/${label}?secret=${pendingSecret}&issuer=${encodeURIComponent(pendingIssuer)}&algorithm=SHA1&digits=6&period=30`;
+        return { secret: pendingSecret, uri, issuer: pendingIssuer, account, expiresAt: pendingAt + 10 * 60 * 1000 };
     }
 
-    function finishSetup(token) {
-        const setup = getSetup();
+    function finishSetup(token, requestedIssuer) {
+        const setup = getSetup(requestedIssuer);
         if (!setup || !verifyTotp(setup.secret, token)) return false;
         const key = crypto.createHash('sha256').update(signingKey()).digest();
         const iv = crypto.randomBytes(12);
@@ -140,7 +149,7 @@ function createAdminAuth(options) {
             encryptedSecret: encryptedSecret.toString('base64url'),
             iv: iv.toString('base64url'),
             tag: cipher.getAuthTag().toString('base64url'),
-            issuer,
+            issuer: setup.issuer,
             createdAt: new Date().toISOString()
         }, null, 2));
         pendingSecret = '';

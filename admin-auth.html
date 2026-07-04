@@ -6,21 +6,84 @@
     <title>管理员身份验证</title>
     <script src="/client/qrcode-1.0.0.min.js"></script>
     <style>
-        *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111827;color:#e5e7eb;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px}.panel{width:min(440px,100%);background:#1f2937;border:1px solid #374151;border-radius:8px;padding:28px;box-shadow:0 18px 50px #0007}h1{font-size:22px;margin:0 0 8px}p{color:#9ca3af;line-height:1.6}.qr{width:208px;height:208px;background:#fff;padding:4px;margin:18px auto}.secret{font:600 15px ui-monospace,monospace;word-break:break-all;text-align:center;color:#93c5fd}input,button{width:100%;height:46px;border-radius:6px;font-size:17px}input{border:1px solid #4b5563;background:#111827;color:#fff;padding:0 14px;letter-spacing:5px;text-align:center}button{border:0;background:#2563eb;color:#fff;font-weight:700;margin-top:12px;cursor:pointer}.status{min-height:22px;margin-top:12px;color:#fca5a5}.hidden{display:none}
+        *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111827;color:#e5e7eb;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px}.panel{width:min(440px,100%);background:#1f2937;border:1px solid #374151;border-radius:8px;padding:28px;box-shadow:0 18px 50px #0007}h1{font-size:22px;margin:0 0 8px}p{color:#9ca3af;line-height:1.6}label{display:block;margin:16px 0 8px;color:#d1d5db;font-weight:650}.qr{width:208px;height:208px;background:#fff;padding:4px;margin:18px auto}.secret{font:600 15px ui-monospace,monospace;word-break:break-all;text-align:center;color:#93c5fd}input,button{width:100%;height:46px;border-radius:6px;font-size:17px}input{border:1px solid #4b5563;background:#111827;color:#fff;padding:0 14px;letter-spacing:5px;text-align:center}#issuer{letter-spacing:0;text-align:left}button{border:0;background:#2563eb;color:#fff;font-weight:700;margin-top:12px;cursor:pointer}.status{min-height:22px;margin-top:12px;color:#fca5a5}.hidden{display:none}
     </style>
 </head>
 <body>
 <main class="panel">
     <h1 id="title">管理员身份验证</h1>
     <p id="description">请输入身份验证器中的 6 位动态验证码。</p>
-    <section id="setup" class="hidden"><div id="qr" class="qr"></div><div id="secret" class="secret"></div><p>请先用 Google Authenticator 或其他兼容应用扫码，再输入动态验证码完成绑定。</p></section>
+    <section id="setup" class="hidden">
+        <label for="issuer">验证器中的名称</label>
+        <input id="issuer" type="text" maxlength="64" autocomplete="off" placeholder="例如：新加坡文件隧道">
+        <div id="qr" class="qr"></div>
+        <div id="secret" class="secret"></div>
+        <p>请先填写便于区分服务器的名称，再用 Google Authenticator 或其他兼容应用扫码，最后输入动态验证码完成绑定。</p>
+    </section>
     <form id="form"><input id="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000"><button type="submit">验证并继续</button></form>
     <div id="status" class="status"></div>
 </main>
 <script>
-const setupEl=document.getElementById('setup');const statusEl=document.getElementById('status');const next=new URLSearchParams(location.search).get('next')||'/admin';let mode='login';
-async function init(){const response=await fetch('/api/admin/auth/status');const data=await response.json();if(data.authenticated){location.replace(next);return}if(!data.configured){if(!data.setupAllowed){document.getElementById('title').textContent='请在服务器本机完成首次绑定';document.getElementById('description').textContent='为防止公网访客抢先绑定管理员身份，请通过 127.0.0.1 或私网地址访问本页完成初始化。';document.getElementById('form').classList.add('hidden');return}mode='setup';document.getElementById('title').textContent='绑定管理员身份验证器';document.getElementById('description').textContent='这是首次设置。绑定成功后，管理会话将在本浏览器保持 14 天。';setupEl.classList.remove('hidden');document.getElementById('secret').textContent=data.setup.secret;new QRCode(document.getElementById('qr'),{text:data.setup.uri,width:200,height:200,correctLevel:QRCode.CorrectLevel.M});}}
-document.getElementById('form').addEventListener('submit',async event=>{event.preventDefault();statusEl.textContent='正在验证...';const response=await fetch(`/api/admin/auth/${mode}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.getElementById('token').value})});const data=await response.json().catch(()=>({}));if(!response.ok){statusEl.textContent=data.error==='invalid-totp'?'验证码无效或已过期':'验证失败，请稍后重试';return}location.replace(next)});init().catch(error=>{statusEl.textContent=error.message});
+const setupEl=document.getElementById('setup');
+const statusEl=document.getElementById('status');
+const issuerInput=document.getElementById('issuer');
+const next=new URLSearchParams(location.search).get('next')||'/admin';
+let mode='login';
+let issuerTimer=null;
+
+function renderSetup(setup){
+    document.getElementById('secret').textContent=setup.secret;
+    const qr=document.getElementById('qr');
+    qr.replaceChildren();
+    new QRCode(qr,{text:setup.uri,width:200,height:200,correctLevel:QRCode.CorrectLevel.M});
+}
+
+async function refreshSetup(){
+    const issuer=issuerInput.value.trim();
+    const response=await fetch(`/api/admin/auth/status?issuer=${encodeURIComponent(issuer)}`,{cache:'no-store'});
+    const data=await response.json();
+    if(data.setup)renderSetup(data.setup);
+}
+
+async function init(){
+    const response=await fetch('/api/admin/auth/status',{cache:'no-store'});
+    const data=await response.json();
+    if(data.authenticated){location.replace(next);return;}
+    if(!data.configured){
+        if(!data.setupAllowed){
+            document.getElementById('title').textContent='请在服务器本机完成首次绑定';
+            document.getElementById('description').textContent='为防止公网访客抢先绑定管理员身份，请通过 127.0.0.1 或私网地址访问本页完成初始化。';
+            document.getElementById('form').classList.add('hidden');
+            return;
+        }
+        mode='setup';
+        document.getElementById('title').textContent='绑定管理员身份验证器';
+        document.getElementById('description').textContent='这是首次设置。绑定成功后，管理会话将在本浏览器保持 14 天。';
+        setupEl.classList.remove('hidden');
+        issuerInput.value=data.setup.issuer||'Instant Tunnel Admin';
+        renderSetup(data.setup);
+    }
+}
+
+issuerInput.addEventListener('input',()=>{
+    clearTimeout(issuerTimer);
+    issuerTimer=setTimeout(()=>refreshSetup().catch(error=>{statusEl.textContent=error.message;}),250);
+});
+
+document.getElementById('form').addEventListener('submit',async event=>{
+    event.preventDefault();
+    statusEl.textContent='正在验证...';
+    const response=await fetch(`/api/admin/auth/${mode}`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:document.getElementById('token').value,issuer:issuerInput.value.trim()})
+    });
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok){statusEl.textContent=data.error==='invalid-totp'?'验证码无效或已过期':'验证失败，请稍后重试';return;}
+    location.replace(next);
+});
+
+init().catch(error=>{statusEl.textContent=error.message;});
 </script>
 </body>
 </html>

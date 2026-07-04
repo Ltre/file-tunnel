@@ -352,13 +352,18 @@ app.get('/api/admin/auth/status', (req, res) => {
     const configured = adminAuth.isConfigured();
     const setupAllowed = !configured && isPrivateAdminSetupRequest(req);
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ authenticated, configured, setupAllowed, setup: setupAllowed ? adminAuth.getSetup() : undefined });
+    res.json({
+        authenticated,
+        configured,
+        setupAllowed,
+        setup: setupAllowed ? adminAuth.getSetup(req.query?.issuer) : undefined
+    });
 });
 
 app.post('/api/admin/auth/setup', adminAuthRateLimit, (req, res) => {
     if (adminAuth.isConfigured()) return res.status(409).json({ error: 'admin-auth-already-configured' });
     if (!isPrivateAdminSetupRequest(req)) return res.status(403).json({ error: 'admin-auth-setup-local-network-required' });
-    if (!adminAuth.finishSetup(req.body?.token)) return res.status(401).json({ error: 'invalid-totp' });
+    if (!adminAuth.finishSetup(req.body?.token, req.body?.issuer)) return res.status(401).json({ error: 'invalid-totp' });
     res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, adminAuth.createSession()));
     res.json({ ok: true });
 });
