@@ -4948,6 +4948,7 @@ const musicPlayer = {
     queueHistoryOpen: false,
     queueDrag: null,
     libraryFillPending: false,
+    libraryFillExhaustedAt: 0,
     mediaSessionReady: false,
     historyOpen: false,
     closeAfterHistory: false,
@@ -6110,14 +6111,35 @@ async function getLocalAudioLibraryTracks() {
 
 async function pickRandomLibraryTrackNotInQueue() {
     const usedIds = new Set(musicPlayer.queue.map(track => track.id));
-    const candidates = (await getLocalAudioLibraryTracks()).filter(track => !usedIds.has(track.id));
+    const files = typeof IDBKeyRange !== 'undefined'
+        ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+        : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+    const candidates = files.filter(storedFile => {
+        const type = String(storedFile?.type || '').toLowerCase();
+        return storedFile?.id &&
+            !usedIds.has(storedFile.id) &&
+            !type.startsWith('video/') &&
+            hasCompleteFileCache(storedFile, storedFile) &&
+            isAudioFileLike(storedFile, storedFile);
+    });
     if (!candidates.length) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
+    while (candidates.length) {
+        const [storedFile] = candidates.splice(Math.floor(Math.random() * candidates.length), 1);
+        const url = getStoredFileUrl(storedFile.id, storedFile);
+        const track = await buildAudioTrack(storedFile, storedFile, url).catch(() => null);
+        if (track) return track;
+    }
+    return null;
 }
 
 async function appendRandomLibraryTrackIfPossible(options = {}) {
+    if (musicPlayer.libraryFillExhaustedAt && Date.now() - musicPlayer.libraryFillExhaustedAt < 30000) return false;
     const track = await pickRandomLibraryTrackNotInQueue();
-    if (!track) return false;
+    if (!track) {
+        musicPlayer.libraryFillExhaustedAt = Date.now();
+        return false;
+    }
+    musicPlayer.libraryFillExhaustedAt = 0;
     musicPlayer.queue.push(track);
     if (options.playNow) {
         musicPlayer.currentIndex = musicPlayer.queue.length - 1;
@@ -6472,6 +6494,7 @@ function resetAudioPreviewControls(controls = musicPlayer.previewControls) {
 
 async function activateMusicTrack(track, options = {}) {
     if (!track?.id) return;
+    musicPlayer.libraryFillExhaustedAt = 0;
     const existingIndex = musicPlayer.queue.findIndex(item => item.id === track.id);
     const audio = ensureBackgroundAudio();
     if (existingIndex >= 0) {
@@ -6582,31 +6605,29 @@ function toggleBackgroundMusic() {
 
 async function playNextMusicTrack(options = {}) {
     if (!musicPlayer.queue.length) return;
-    const atQueueEnd = musicPlayer.currentIndex >= musicPlayer.queue.length - 1;
-    if (atQueueEnd) {
-        const appended = await appendRandomLibraryTrackIfPossible({ playNow: false }).catch(err => {
-            historyLog('music-player-random-library-failed', { error: err.message });
-            return false;
-        });
-        if (appended) {
-            await playMusicQueueIndex(musicPlayer.currentIndex + 1).catch(err => historyLog('music-player-next-random-failed', { error: err.message }));
-            return;
-        }
-        if (!options.fromEnded) {
-            await playMusicQueueIndex(0).catch(err => historyLog('music-player-next-first-failed', { error: err.message }));
-            return;
-        }
-        musicPlayer.currentIndex = 0;
-        const first = getCurrentMusicTrack();
-        const audio = ensureBackgroundAudio();
-        if (first?.url) audio.src = first.url;
-        renderMusicPlayer();
-        updateTopbarMusicState();
-        scheduleMusicPlayerPersist();
+    const nextIndex = musicPlayer.currentIndex + 1;
+    if (nextIndex < musicPlayer.queue.length) {
+        await playMusicQueueIndex(nextIndex).catch(err => historyLog('music-player-next-failed', { error: err.message }));
         return;
     }
-    await playMusicQueueIndex((musicPlayer.currentIndex + 1) % musicPlayer.queue.length)
-        .catch(err => historyLog('music-player-next-failed', { error: err.message }));
+    await handleMusicQueueTail(options);
+}
+
+async function handleMusicQueueTail(options = {}) {
+    if (!musicPlayer.queue.length) return;
+    const exhaustedRecently = musicPlayer.libraryFillExhaustedAt && Date.now() - musicPlayer.libraryFillExhaustedAt < 30000;
+    const canTryAppend = !musicPlayer.libraryFillPending && !exhaustedRecently;
+    const appended = canTryAppend
+        ? await appendRandomLibraryTrackIfPossible({ playNow: false }).catch(err => {
+            historyLog('music-player-random-library-failed', { error: err.message });
+            return false;
+        })
+        : false;
+    if (appended) {
+        await playMusicQueueIndex(musicPlayer.currentIndex + 1).catch(err => historyLog('music-player-next-random-failed', { error: err.message }));
+        return;
+    }
+    await playMusicQueueIndex(0).catch(err => historyLog(options.fromEnded ? 'music-player-ended-loop-failed' : 'music-player-next-first-failed', { error: err.message }));
 }
 
 async function playPreviousMusicTrack() {
