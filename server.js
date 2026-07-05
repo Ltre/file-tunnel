@@ -278,6 +278,15 @@ function isPrivateAdminSetupRequest(req) {
 }
 
 // 静态文件服务 (限制目录遍历)
+function redirectShareEntry(req, res) {
+    const route = req.path === '/share/' ? 'share-slash' : 'share';
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.redirect(303, `/?share=1&shareRoute=${route}`);
+}
+
+app.get(['/share', '/share/'], redirectShareEntry);
+app.post(['/share', '/share/'], redirectShareEntry);
+
 app.get('/admin-auth', (req, res) => {
     res.sendFile(path.join(__dirname, 'admin-auth.html'));
 });

@@ -65,6 +65,7 @@ const state = {
     recentSessionId: null,
     sessionRemark: '',
     pendingSharedFileCount: 0,
+    pendingSharedFileError: false,
     isExitingTunnel: false,
     db: null // IndexedDB实例
 };
@@ -805,6 +806,9 @@ async function initSession() {
     } else {
         let storedSessions = readSessionDirectoryCache();
         const pendingSharedFileCount = await countFromStore('shareQueue').catch(() => 0);
+        const shareEntryRequested = entryUrl.searchParams.has('share');
+        const shareFallbackRoute = entryUrl.searchParams.get('shareRoute') || '';
+        const shareErrorReported = entryUrl.searchParams.has('shareError') || entryUrl.searchParams.has('shareEmpty') || Boolean(shareFallbackRoute);
         if (!storedSessions.length) {
             storedSessions = await getAllFromStore('sessions').catch(() => []);
             storedSessions.forEach(session => updateSessionDirectoryCache(session));
@@ -814,8 +818,9 @@ async function initSession() {
             .sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0];
         state.recentSessionId = recent?.sessionId || null;
         state.pendingSharedFileCount = pendingSharedFileCount;
+        state.pendingSharedFileError = shareEntryRequested && pendingSharedFileCount === 0 && shareErrorReported;
 
-        if (!entryUrl.searchParams.has('leave') && state.pendingSharedFileCount === 0 && state.recentSessionId) {
+        if (!entryUrl.searchParams.has('leave') && state.pendingSharedFileCount === 0 && !state.pendingSharedFileError && state.recentSessionId) {
             state.sessionId = state.recentSessionId;
             state.shortCode = normalizeLocalShortCode(recent.shortCode);
             state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
@@ -870,6 +875,9 @@ function initSessionLanding() {
     if (state.pendingSharedFileCount > 0) {
         sharedFilesNotice.hidden = false;
         sharedFilesNotice.textContent = `已收到 ${state.pendingSharedFileCount} 个分享文件，请选择要发送到的传输隧道。`;
+    } else if (state.pendingSharedFileError) {
+        sharedFilesNotice.hidden = false;
+        sharedFilesNotice.textContent = '已打开系统分享入口，但没有收到文件内容。请先强制刷新或重新安装 PWA 后再试；部分软件会走 /share 或 /share/，本版本已兼容这两种入口。';
     }
     const renderSessionPicker = sessions => {
         const validSessions = sessions

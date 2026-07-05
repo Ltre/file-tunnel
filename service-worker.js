@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v21';
+const CACHE_NAME = 'instant-tunnel-v22';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -63,11 +63,21 @@ self.addEventListener('notificationclick', event => {
     );
 });
 
+function isShareTargetPath(pathname) {
+    return pathname === '/share' || pathname === '/share/';
+}
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
-    if (event.request.method === 'POST' && url.pathname === '/share/') {
-        event.respondWith(handleSharedFiles(event.request));
-        return;
+    if (url.origin === self.location.origin && isShareTargetPath(url.pathname)) {
+        if (event.request.method === 'POST') {
+            event.respondWith(handleSharedFiles(event.request));
+            return;
+        }
+        if (event.request.method === 'GET') {
+            event.respondWith(Response.redirect(new URL('/?share=1&shareRoute=sw-get', self.location.origin), 303));
+            return;
+        }
     }
     if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
     if (url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/api/')) {
@@ -89,27 +99,37 @@ self.addEventListener('fetch', event => {
 });
 
 async function handleSharedFiles(request) {
-    const formData = await request.formData();
-    const entries = [];
-    for (const value of formData.values()) {
-        if (!(value instanceof File) || value.size === 0) continue;
-        entries.push({
-            id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-            name: value.name || 'shared-file',
-            type: value.type || 'application/octet-stream',
-            size: value.size,
-            lastModified: value.lastModified || Date.now(),
-            createdAt: Date.now(),
-            data: await value.arrayBuffer()
-        });
+    const redirectUrl = new URL('/?share=1', self.location.origin);
+    try {
+        const formData = await request.formData();
+        const entries = [];
+        for (const value of formData.values()) {
+            if (!(value instanceof File) || value.size === 0) continue;
+            entries.push({
+                id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+                name: value.name || 'shared-file',
+                type: value.type || 'application/octet-stream',
+                size: value.size,
+                lastModified: value.lastModified || Date.now(),
+                createdAt: Date.now(),
+                data: await value.arrayBuffer()
+            });
+        }
+        if (entries.length) {
+            await saveSharedFiles(entries);
+        } else {
+            redirectUrl.searchParams.set('shareEmpty', '1');
+        }
+    } catch (err) {
+        console.error('PWA share target failed:', err);
+        redirectUrl.searchParams.set('shareError', '1');
     }
-    if (entries.length) await saveSharedFiles(entries);
-    return Response.redirect(new URL('/?share=1', self.location.origin), 303);
+    return Response.redirect(redirectUrl, 303);
 }
 
 function openTunnelDb() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('TunnelDB', 4);
+        const request = indexedDB.open('TunnelDB', 5);
         request.onupgradeneeded = event => {
             const db = event.target.result;
             if (!db.objectStoreNames.contains('sessions')) {
@@ -138,6 +158,11 @@ function openTunnelDb() {
                 store.createIndex('followedAt', 'followedAt', { unique: false });
                 store.createIndex('lastSeenAt', 'lastSeenAt', { unique: false });
             }
+            if (!db.objectStoreNames.contains('mounts')) {
+                const store = db.createObjectStore('mounts', { keyPath: 'id' });
+                store.createIndex('sessionId', 'sessionId', { unique: false });
+                store.createIndex('kind', 'kind', { unique: false });
+            }
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
@@ -153,6 +178,7 @@ async function saveSharedFiles(entries) {
             entries.forEach(entry => store.put(entry));
             transaction.oncomplete = resolve;
             transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error('IndexedDB shareQueue write aborted'));
         });
     } finally {
         db.close();
