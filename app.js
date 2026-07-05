@@ -313,6 +313,39 @@ async function persistExternalFileReadState(storedFile, readableFile) {
     return true;
 }
 
+async function syncExternalFileSourceUi(fileId, storedFile, readableFile, fileInfo = null) {
+    const sourceState = getExternalFileSourceState(storedFile, readableFile, fileInfo || storedFile);
+    await persistExternalFileReadState(storedFile, readableFile).catch(err => {
+        historyLog('external-file-state-persist-failed', { fileId, error: err.message });
+    });
+    syncRenderedExternalFileSource(fileId, sourceState.handleSourceOnly);
+    if (storedFile?.externalFileHandle && !sourceState.handleSourceOnly && !sourceState.hasBrowserCache) {
+        const objectUrl = fileObjectUrls.get(fileId);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        fileObjectUrls.delete(fileId);
+        showFileMessagePlaceholder(
+            fileId,
+            readableFile?.externalFilePermissionRequired ? '需要重新授权本机原文件' : '本机原文件无法读取',
+            true,
+            false
+        );
+    }
+    return sourceState;
+}
+
+async function validateVisibleExternalFileSources() {
+    const ids = Array.from(new Set(Array.from(document.querySelectorAll('.message[data-file-id]'))
+        .map(messageEl => messageEl.dataset.fileId)
+        .filter(Boolean)));
+    for (const fileId of ids) {
+        const storedFile = await getFromStore('files', fileId).catch(() => null);
+        if (!storedFile?.externalFileHandle?.getFile || getBinaryDataSize(storedFile.data)) continue;
+        const readableFile = await materializeExternalFileRecord(storedFile);
+        await syncExternalFileSourceUi(fileId, storedFile, readableFile, storedFile);
+        await refreshCollectionMessagesForFile(fileId).catch(() => {});
+    }
+}
+
 function summarizeHistoryMessage(message) {
     const fileInfo = message && message.fileInfo;
     const collectionFiles = Array.isArray(message?.collection?.files) ? message.collection.files : [];
@@ -758,15 +791,30 @@ function updateSessionDirectoryCache(session, deletedSessionId = '') {
     const entries = readSessionDirectoryCache();
     const sessionId = deletedSessionId || session?.sessionId || '';
     const next = entries.filter(entry => entry?.sessionId !== sessionId);
-    if (session?.sessionId) {
+    const shortCode = normalizeLocalShortCode(session?.shortCode);
+    if (session?.sessionId && shortCode) {
         next.push({
             sessionId: session.sessionId,
-            shortCode: normalizeLocalShortCode(session.shortCode),
+            shortCode,
             remark: String(session.remark || '').trim().slice(0, 60),
             lastActive: Number(session.lastActive || session.createdAt || Date.now())
         });
     }
     localStorage.setItem(SESSION_DIRECTORY_STORAGE_KEY, JSON.stringify(next.slice(-500)));
+}
+
+function replaceSessionDirectoryCache(sessions = []) {
+    const entries = Array.from(sessions || [])
+        .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session?.sessionId || '') && normalizeLocalShortCode(session.shortCode))
+        .map(session => ({
+            sessionId: session.sessionId,
+            shortCode: normalizeLocalShortCode(session.shortCode),
+            remark: String(session.remark || '').trim().slice(0, 60),
+            lastActive: Number(session.lastActive || session.createdAt || Date.now())
+        }))
+        .slice(-500);
+    localStorage.setItem(SESSION_DIRECTORY_STORAGE_KEY, JSON.stringify(entries));
+    return entries;
 }
 
 // ==================== 会话管理 ====================
@@ -811,10 +859,10 @@ async function initSession() {
         const shareErrorReported = entryUrl.searchParams.has('shareError') || entryUrl.searchParams.has('shareEmpty') || Boolean(shareFallbackRoute);
         if (!storedSessions.length) {
             storedSessions = await getAllFromStore('sessions').catch(() => []);
-            storedSessions.forEach(session => updateSessionDirectoryCache(session));
+            storedSessions = replaceSessionDirectoryCache(storedSessions);
         }
         const recent = storedSessions
-            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
+            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId) && normalizeLocalShortCode(session.shortCode))
             .sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0];
         state.recentSessionId = recent?.sessionId || null;
         state.pendingSharedFileCount = pendingSharedFileCount;
@@ -881,7 +929,7 @@ function initSessionLanding() {
     }
     const renderSessionPicker = sessions => {
         const validSessions = sessions
-            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
+            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId) && normalizeLocalShortCode(session.shortCode))
             .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true, sensitivity: 'base' }));
         if (!validSessions.length || !sessionPicker || !sessionSelect) return;
         sessionSelect.replaceChildren();
@@ -904,8 +952,8 @@ function initSessionLanding() {
     };
     renderSessionPicker(readSessionDirectoryCache());
     getAllFromStore('sessions').then(sessions => {
-        sessions.forEach(session => updateSessionDirectoryCache(session));
-        renderSessionPicker(sessions);
+        const entries = replaceSessionDirectoryCache(sessions);
+        renderSessionPicker(entries);
     }).catch(err => historyLog('landing-session-picker-load-failed', { error: err.message }));
 
     if (state.recentSessionId) {
@@ -3666,6 +3714,9 @@ function askFileCollectionMode(files) {
 async function sendSelectedFiles(files, options = {}) {
     const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null }).filter(item => item.file);
     if (!entries.length) return;
+    if (entries.length === 1 && await maybeImportTransferHistoryBackupFile(entries[0].file)) {
+        return;
+    }
     if (entries.length === 1) {
         await sendFile(entries[0].file, null, { ...options, externalFileHandle: entries[0].handle });
         return;
@@ -3682,6 +3733,23 @@ async function sendSelectedFiles(files, options = {}) {
             deferAssetStorage: !entry.handle,
             externalFileHandle: entry.handle
         });
+    }
+}
+
+async function maybeImportTransferHistoryBackupFile(file) {
+    const name = String(file?.name || '').toLowerCase();
+    if (!name.endsWith('.tunnel-backup.json') && !name.endsWith('.tunnel-backup')) return false;
+    try {
+        const text = await file.text();
+        const backup = JSON.parse(text);
+        if (backup?.format !== 'instant-tunnel-history-backup' || !Array.isArray(backup.messages) || !Array.isArray(backup.assets)) {
+            return false;
+        }
+        await importTransferHistoryBackup(file, backup);
+        return true;
+    } catch (err) {
+        historyLog('history-backup-auto-import-failed', { fileName: file?.name || '', error: err.message });
+        throw err;
     }
 }
 
@@ -3889,8 +3957,8 @@ function askBackupImportPlacement() {
     });
 }
 
-async function importTransferHistoryBackup(file) {
-    const backup = JSON.parse(await file.text());
+async function importTransferHistoryBackup(file, parsedBackup = null) {
+    const backup = parsedBackup || JSON.parse(await file.text());
     if (backup?.format !== 'instant-tunnel-history-backup' || !Array.isArray(backup.messages) || !Array.isArray(backup.assets)) {
         throw new Error('不是有效的传输记录备份');
     }
@@ -3994,6 +4062,7 @@ async function purgeLocalSession(sessionId) {
         deleteFromStore('sessions', sessionId),
         editorContent?.sessionId === sessionId ? deleteFromStore('editorContent', 'current') : Promise.resolve()
     ]);
+    updateSessionDirectoryCache(null, sessionId);
 }
 
 async function sendFileOffer(fileInfo, file, targetDeviceId) {
@@ -7891,14 +7960,13 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (persistedFile?.externalFileHandle) {
         storedFile = await materializeExternalFileRecord(persistedFile, { requestPermission: true });
     }
-    const externalSourceState = getExternalFileSourceState(persistedFile, storedFile, fileInfo);
-    const externalStateChanged = await persistExternalFileReadState(persistedFile, storedFile).catch(err => {
-        historyLog('external-file-state-persist-failed', { fileId: fileInfo.id, error: err.message });
-        return false;
-    });
+    const beforeExternalSourceState = getExternalFileSourceState(persistedFile, persistedFile, fileInfo);
+    const externalSourceState = await syncExternalFileSourceUi(fileInfo.id, persistedFile, storedFile, fileInfo);
     setFilePreviewTitle(fileInfo.name, { handleSourceOnly: externalSourceState.handleSourceOnly });
-    syncRenderedExternalFileSource(fileInfo.id, externalSourceState.handleSourceOnly);
-    if (externalStateChanged) {
+    if (beforeExternalSourceState.handleSourceOnly !== externalSourceState.handleSourceOnly ||
+        persistedFile?.externalFileAvailable !== storedFile?.externalFileAvailable ||
+        persistedFile?.externalFileMissing !== storedFile?.externalFileMissing ||
+        persistedFile?.externalFilePermissionRequired !== storedFile?.externalFilePermissionRequired) {
         await refreshCollectionMessagesForFile(fileInfo.id);
         await refreshCollectionPreviewCardForFile(fileInfo.id, collectionContextId);
     }
@@ -11475,6 +11543,10 @@ function settleMobileWorkspaceView(view = currentMobileWorkspaceView) {
     setTimeout(normalizeMobileWorkspaceView, 80);
 }
 
+function settleCurrentMobileWorkspaceView() {
+    settleMobileWorkspaceView(currentMobileWorkspaceView);
+}
+
 function isAnyBlockingOverlayOpen() {
     return Boolean(
         document.querySelector('.modal-overlay.active') ||
@@ -11580,7 +11652,7 @@ function initWorkspaceSwipeNavigation() {
         const nextIndex = shouldChange || velocityChange
             ? start.index + (dx < 0 ? 1 : -1)
             : start.index;
-        setMobileWorkspaceView(getWorkspaceViewByIndex(nextIndex));
+        setMobileWorkspaceView(getWorkspaceViewByIndex(nextIndex), { user: true });
     });
     appShell.addEventListener('pointercancel', resetTrack);
     appShell.addEventListener('pointerleave', () => {
@@ -11766,7 +11838,7 @@ function initMobileWorkspace() {
                 showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
                 return;
             }
-            setMobileWorkspaceView(button.dataset.mobileView);
+            setMobileWorkspaceView(button.dataset.mobileView, { user: true });
         });
     });
     const tunnelButton = document.querySelector('.mobile-workspace-button[data-mobile-view="chat"]');
@@ -11935,6 +12007,12 @@ function initUI() {
     window.addEventListener('pagehide', persistMusicPlayerStateNow);
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') persistMusicPlayerStateNow();
+        if (document.visibilityState === 'visible') {
+            validateVisibleExternalFileSources().catch(err => historyLog('external-file-visible-validation-failed', { error: err.message }));
+        }
+    });
+    window.addEventListener('focus', () => {
+        validateVisibleExternalFileSources().catch(err => historyLog('external-file-focus-validation-failed', { error: err.message }));
     });
     initMobileWorkspace();
     initProgressDrawer();
@@ -13103,6 +13181,7 @@ async function loadSessionData() {
                     requestAnimationFrame(() => {
                         chatMessages.classList.remove('history-loading');
                         scheduleChatScrollAnchorSave();
+                        settleCurrentMobileWorkspaceView();
                     });
                 });
             }

@@ -258,3 +258,11 @@
 - Video/audio poster and metadata extraction may read a handle-backed file transiently, but strips that transient `File` before saving metadata so the original binary is not copied into IndexedDB.
 - Handle validity is now persisted after preview checks and all `外部文件` badges are derived from the current local handle-only state instead of the message's historical `isExternalFile` flag.
 - Completing a remote restore clears stale cache/restore flags, revokes the previous handle-backed object URL, and refreshes the transfer-list record, collection tiles, and active preview without requiring a page reload.
+
+## 2026-07-05 PWA Share, Routing, and Handle-State Fixes
+
+- Confirmed the current server and service worker both support `/share` and `/share/` share-target entry routes; direct browser GET and PWA POST both redirect into `/?share=1`.
+- Normal file-send entry points now auto-detect a single `.tunnel-backup` / `.tunnel-backup.json` history backup and import it instead of publishing the backup JSON as a file record.
+- Exiting a tunnel now removes the compact local session-directory entry, and the landing route selector ignores/rebuilds away stale sessions that do not have a valid five-character short code.
+- Mobile workspace tab clicks and swipes are marked as user-selected, and history rendering now re-settles the current workspace instead of forcing the view back to transfer records.
+- Visible handle-backed file records are revalidated when the page regains focus/visibility; if the source handle becomes unreadable, stale object URLs are revoked and the flat record, collection tiles, and preview actions fall back to the restore flow immediately.
