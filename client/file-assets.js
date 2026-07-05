@@ -123,6 +123,13 @@
             return `req-${String(assetId || '').slice(0, 8)}-${Date.now().toString(36)}-${random}`;
         }
 
+        sourceSessionId(assetId) {
+            const sourceSessionId = this.requestedMetadata.get(assetId)?.backupSourceSessionId;
+            return typeof sourceSessionId === 'string' && sourceSessionId && sourceSessionId !== this.deps.getSessionId()
+                ? sourceSessionId
+                : undefined;
+        }
+
         transferAttemptId(requestId, transport, transfer = null) {
             const base = String(requestId || this.createRequestId('asset')).replace(/[^a-zA-Z0-9_.:-]/g, '-');
             const part = transfer?.transferId ? `-${transfer.transferId}` : '-full';
@@ -341,6 +348,7 @@
                 const needsManifest = Number(metadata?.size) > MULTI_SOURCE_THRESHOLD;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
+                    sourceSessionId: this.sourceSessionId(assetId),
                     assetId,
                     mode: needsManifest ? 'manifest' : undefined,
                     preferredProviderId: this.desiredAssets.get(assetId),
@@ -389,6 +397,7 @@
             this.discoveryRequests.set(assetId, now);
             socket.emit('file-asset-discovery', {
                 sessionId: this.deps.getSessionId(),
+                sourceSessionId: this.sourceSessionId(assetId),
                 assetId,
                 reason
             });
@@ -486,6 +495,7 @@
             this.requestIds.set(asset.id, fallbackRequestId);
             socket.emit('file-asset-request', {
                 sessionId: this.deps.getSessionId(),
+                sourceSessionId: this.sourceSessionId(asset.id),
                 assetId: asset.id,
                 preferredProviderId: this.desiredAssets.get(asset.id) || providers[0],
                 force: forced,
@@ -574,6 +584,7 @@
                 const forced = Boolean(transfer.forceRequestId || range.retryCount > 0);
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
+                    sourceSessionId: this.sourceSessionId(assetId),
                     assetId,
                     preferredProviderId,
                     transferId,

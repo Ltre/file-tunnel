@@ -206,3 +206,55 @@
 - Persisted an explicit `queueOrder` for every music queue item and normalized queue restore order from that value.
 - Hardened restore merging when localStorage and the IndexedDB session copy contain the same songs in different orders. If the active track appears at the first position in one copy but later in the other, the restore path keeps the non-leading order to avoid a queue-tail song jumping to the front after refresh.
 - During queue restore, the active track is resolved by file ID after filtering unavailable cached files; the player no longer falls back to index `0` unless the active file is genuinely missing from the restored queue.
+
+## 2026-07-05 Preview, Backup, Mount, Mobile, and Telegram Follow-up
+
+### File Preview and Transfer List
+- Reduced the audio-preview play/pause control opacity and blur so album artwork remains visible beneath the control.
+- Replaced file-preview action labels with compact `i`, `↓`, `🧲🔗`, `🧹释放空间` / `☁↓ 还原文件`, and `✖删除` controls.
+- Kept all file-preview actions on one horizontally scrollable row on narrow mobile screens.
+- Added the file name below poster artwork for single audio and video records in the transfer list, including records refreshed after a cache arrives.
+- Added an `🖴 外部文件` source marker to single-file and collection views for files supplied from a local filesystem handle.
+
+### Transfer History Backup and Restore
+- Added metadata-only and full-data JSON backup exports for the current tunnel's transfer history.
+- Added import placement choices for preserving original timestamps or appending records at the current tunnel tail while retaining their original order.
+- Metadata backups retain source server, source tunnel, short code, owner/provider IDs, and per-asset source-session information.
+- Added cross-tunnel asset lookup: imported metadata requests providers from the original tunnel while reusing the existing P2P and Socket.IO transfer paths. This requires the source deployment and at least one source-tunnel provider to be online.
+- Full-data imports register the importing device as a current-tunnel provider immediately, allowing other devices to fetch restored assets.
+
+### Tunnel Routing and Mobile Workspace
+- Added a compact local session-directory cache so the route selector can render immediately without waiting for a full IndexedDB scan or network response.
+- Rendered the locally known current short code immediately, then allowed the server response to reconcile it later.
+- Hardened tunnel exit by suppressing late session rewrites and deleting messages, file caches, editor state, session metadata, compact-directory entries, and filesystem mounts before redirecting to `/?leave=1`.
+- Reworked the mobile three-panel track around a single explicit workspace index and viewport-width panels. Visibility, resize, orientation, pointer cancellation, programmatic file location, and tab selection all normalize through the same state path.
+- File and progress-anchor location now scrolls only the transfer-record container instead of using document-level `scrollIntoView`, preventing horizontal workspace displacement and stale bottom-tab focus.
+
+### Local Filesystem Mounts
+- Added IndexedDB persistence for read-only local directory and file handles.
+- Added `挂载本机目录` and `关联本机文件` actions to the resource browser.
+- Mounted files are published without duplicating their payload into browser storage. When another device requests a file, the provider reads the authorized local handle and sends it through the existing transfer strategy; receivers cache it normally.
+- If a local handle becomes unavailable, the record remains recoverable from another online device that already cached the same asset.
+- Directory publishing currently limits one traversal to 500 files. File System Access API support and a secure browser context are required.
+
+### Telegram Bot Relay
+- Removed Telegram token and webhook-secret fields from `tunnel.config.json`; runtime secrets are stored only in `.tunnel-data/telegram-bot.json`.
+- `/tgbot` now validates the token, generates a webhook secret, persists the configuration, registers the webhook, and registers the `tunnel` and `leave_tunnel` bot commands.
+- Telegram webhooks acknowledge immediately and process downloads asynchronously to reduce duplicate retries.
+- Added persistent bound/unbound reply-keyboard states, bare `/tunnel` short-code prompting, `/leave_tunnel`, pending-content cancellation, and follow-up short-code handling for text, rich text, files, and collections.
+- Caption text is treated as a short code only when the code resolves to a real tunnel, preventing unrelated five-character caption words from producing misleading invalid-code errors.
+- Telegram `media_group_id` updates are buffered, ordered by message ID, and published as one collection in both bound and unbound modes.
+- Added Telegram voice, animation, and video-note file recognition alongside document, photo, video, and audio handling.
+
+## 2026-07-05 Filesystem Handle Source State
+
+- Split filesystem-handle readability from browser-cache completeness in the file preview state model.
+- On secure Chromium contexts, the normal click-to-select path now uses `showOpenFilePicker()` so newly sent local files can retain a real `FileSystemFileHandle`; unsupported browsers keep the existing `<input type=file>` cache path.
+- Drag-and-drop attempts `DataTransferItem.getAsFileSystemHandle()` and falls back to the original `File` transfer whenever a persistent handle is unavailable.
+- A file is treated as a handle-only local source only when IndexedDB contains no binary payload and the current handle permission plus `getFile()` read both succeed.
+- Handle-only local sources show `💾` before the file name in preview layer G and omit both `释放空间` and `还原文件` actions.
+- Permission denial, missing source files, and handle read failures remove the valid-source icon and fall back to the existing missing-file and restore flow with a more specific status label.
+- Files that have both a valid handle and an actual browser-cache payload retain the normal cache-release behavior.
+- Video/audio poster and metadata extraction may read a handle-backed file transiently, but strips that transient `File` before saving metadata so the original binary is not copied into IndexedDB.
+- Handle validity is now persisted after preview checks and all `外部文件` badges are derived from the current local handle-only state instead of the message's historical `isExternalFile` flag.
+- Completing a remote restore clears stale cache/restore flags, revokes the previous handle-backed object URL, and refreshes the transfer-list record, collection tiles, and active preview without requiring a page reload.

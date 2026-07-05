@@ -1,10 +1,4 @@
 {
   "debugLogsEnabled": false,
-  "serverPort": 80,
-  "telegramBot": {
-    "enabled": false,
-    "token": "",
-    "webhookSecret": "",
-    "maxFileSize": 524288000
-  }
+  "serverPort": 80
 }

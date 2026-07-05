@@ -1781,11 +1781,28 @@
         }
 
         .file-preview-header h3 {
+            display: flex;
+            flex: 1 1 auto;
+            min-width: 0;
+            align-items: center;
             overflow: hidden;
             margin: 0;
             color: #26324d;
             font-size: 1rem;
             text-align: left;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-preview-source-icon {
+            flex: 0 0 auto;
+            margin-right: .5ch;
+            line-height: 1;
+        }
+
+        .file-preview-title-name {
+            min-width: 0;
+            overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
@@ -1970,12 +1987,53 @@
             place-items: center;
             border: 1px solid rgba(255, 255, 255, 0.5);
             border-radius: 999px;
-            background: rgba(15, 23, 42, 0.34);
+            background: rgba(15, 23, 42, 0.16);
             color: #fff;
             font-size: 2.1rem;
             cursor: pointer;
-            backdrop-filter: blur(8px);
+            opacity: .68;
+            backdrop-filter: blur(3px);
         }
+
+        .audio-preview-toggle:hover,
+        .audio-preview-toggle:focus-visible { opacity: .92; }
+
+        .media-file-name {
+            max-width: min(100%, 360px);
+            margin: 7px auto 0;
+            overflow: hidden;
+            color: #26324d;
+            font-size: .82rem;
+            text-align: center;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .external-file-badge {
+            display: inline-flex;
+            align-items: center;
+            margin: 6px 8px 0;
+            padding: 2px 6px;
+            border: 1px solid #b9c6dc;
+            border-radius: 4px;
+            color: #52627b;
+            font-size: .68rem;
+            line-height: 1.2;
+        }
+
+        .collection-external-file-badge {
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            z-index: 3;
+            margin: 0;
+            background: rgba(255, 255, 255, 0.86);
+            backdrop-filter: blur(4px);
+        }
+
+        .resource-browser-mounts { padding: 10px 12px; border: 1px solid #dfe5ef; border-radius: 6px; background: #f7f9fc; }
+        .resource-browser-mount-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+        .resource-browser-mount-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         .audio-preview-name {
             width: 100%;
@@ -2932,12 +2990,17 @@
             }
 
             .file-preview-actions {
-                justify-content: stretch;
+                flex-wrap: nowrap;
+                justify-content: flex-start;
+                overflow-x: auto;
+                overscroll-behavior-x: contain;
+                scrollbar-width: thin;
             }
 
             .file-preview-actions .history-action {
-                flex: 1 1 calc(50% - 8px);
-                min-width: 0;
+                flex: 0 0 auto;
+                min-width: 42px;
+                white-space: nowrap;
             }
 
             .collection-file-grid {
@@ -3391,8 +3454,8 @@
                 min-height: 0;
                 margin: 0;
                 gap: 0;
-                width: 300vw;
-                transform: translateX(-33.3333%);
+                width: 100vw;
+                transform: translate3d(calc(var(--workspace-index, 1) * -100vw), 0, 0);
                 transition: transform 240ms cubic-bezier(.22, .61, .36, 1);
                 will-change: transform;
             }
@@ -3402,16 +3465,16 @@
             }
 
             #appShell[data-mobile-view="devices"] .main-layout {
-                transform: translateX(0);
+                --workspace-index: 0;
             }
 
             #appShell[data-mobile-view="chat"] .main-layout,
             #appShell:not([data-mobile-view]) .main-layout {
-                transform: translateX(-33.3333%);
+                --workspace-index: 1;
             }
 
             #appShell[data-mobile-view="editor"] .main-layout {
-                transform: translateX(-66.6666%);
+                --workspace-index: 2;
             }
 
             .main-layout > .left-panel,
@@ -3716,6 +3779,8 @@
                             <button class="session-tool" id="clipboardShareBtn" title="读取并共享本机剪贴板文本">启用粘贴板共享</button>
                             <button class="session-tool" id="garbageCleanupBtn" title="扫描并清理未关联的本地文件缓存">清理垃圾</button>
                             <button class="session-tool" id="resourceBrowserBtn" title="查看会话文件资源及其引用位置">资源浏览器</button>
+                            <button class="session-tool" id="historyBackupBtn" title="导出或导入传输记录备份">备份/导入</button>
+                            <input id="historyBackupInput" type="file" accept="application/json,.json,.tunnel-backup" hidden>
                         </div>
                         <div class="directory-sync-status" id="directorySyncStatus" hidden></div>
                         <div class="clipboard-notice" id="clipboardNotice" style="display: none;">
