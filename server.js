@@ -238,15 +238,38 @@ app.get('/manifest.webmanifest', (req, res) => {
     );
 });
 
-app.get('/api/server-assets/:assetId', (req, res) => {
+app.get('/api/server-assets/:assetId', async (req, res) => {
     const assetId = req.params.assetId;
-    const asset = telegramServerAssets.get(assetId);
-    if (!asset || !fs.existsSync(asset.path)) return res.status(404).json({ error: 'Asset not found' });
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.setHeader('Content-Type', asset.type || 'application/octet-stream');
-    res.setHeader('Content-Length', String(asset.size || 0));
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
-    fs.createReadStream(asset.path).pipe(res);
+    const asset = resolveTelegramServerAsset(assetId);
+    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    try {
+        await ensureTelegramServerAssetFile(asset);
+        const stat = fs.statSync(asset.path);
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('Content-Type', asset.type || 'application/octet-stream');
+        res.setHeader('Content-Length', String(stat.size));
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
+        telegramAssetReaders.set(assetId, (telegramAssetReaders.get(assetId) || 0) + 1);
+        let released = false;
+        const release = completed => {
+            if (released) return;
+            released = true;
+            const readers = Math.max(0, (telegramAssetReaders.get(assetId) || 1) - 1);
+            if (readers) telegramAssetReaders.set(assetId, readers);
+            else telegramAssetReaders.delete(assetId);
+            if (completed && !readers && asset.fileId) removeTelegramAssetTemporaryFile(asset);
+        };
+        res.once('finish', () => release(true));
+        res.once('close', () => release(res.writableFinished));
+        fs.createReadStream(asset.path).on('error', err => {
+            release(false);
+            if (!res.headersSent) res.status(500).json({ error: 'Asset read failed' });
+            else res.destroy(err);
+        }).pipe(res);
+    } catch (err) {
+        console.warn(`Telegram asset ${assetId} fetch failed: ${err.message}`);
+        if (!res.headersSent) res.status(502).json({ error: 'Telegram asset fetch failed' });
+    }
 });
 
 app.post('/api/telegram/webhook/:secret?', async (req, res) => {
@@ -839,6 +862,8 @@ const telegramServerAssets = new Map();
 const telegramMediaGroups = new Map();
 const telegramProcessedUpdates = new Map();
 const telegramAwaitingTunnelCode = new Set();
+const telegramAssetDownloads = new Map();
+const telegramAssetReaders = new Map();
 
 function nearbyDistanceMeters(left, right) {
     if (!Number.isFinite(left?.latitude) || !Number.isFinite(left?.longitude) ||
@@ -1098,6 +1123,93 @@ function isValidMagnetId(id) {
 
 function createServerAssetId() {
     return crypto.randomBytes(16).toString('base64url');
+}
+
+function isValidServerAssetId(assetId) {
+    return typeof assetId === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(assetId);
+}
+
+function getTelegramAssetMetadataPath(assetId) {
+    return path.join(TELEGRAM_ASSET_DIR, `${assetId}.json`);
+}
+
+function persistTelegramServerAsset(asset) {
+    telegramServerAssets.set(asset.id, asset);
+    fs.writeFileSync(getTelegramAssetMetadataPath(asset.id), JSON.stringify({
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        size: asset.size,
+        sessionId: asset.sessionId,
+        createdAt: asset.createdAt,
+        fileId: asset.fileId || ''
+    }));
+}
+
+function resolveTelegramServerAsset(assetId) {
+    if (!isValidServerAssetId(assetId)) return null;
+    const cached = telegramServerAssets.get(assetId);
+    if (cached && (cached.fileId || fs.existsSync(cached.path))) return cached;
+
+    const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+    let metadata = {};
+    try {
+        metadata = JSON.parse(fs.readFileSync(getTelegramAssetMetadataPath(assetId), 'utf8'));
+    } catch (_) {
+        // Assets created before metadata persistence remain downloadable.
+    }
+    const hasFile = fs.existsSync(assetPath) && fs.statSync(assetPath).isFile();
+    if (!hasFile && !metadata.fileId) return null;
+    const stat = hasFile ? fs.statSync(assetPath) : null;
+    const asset = {
+        id: assetId,
+        path: assetPath,
+        name: sanitizeString(metadata.name || assetId, 180) || assetId,
+        type: sanitizeString(metadata.type || 'application/octet-stream', 100) || 'application/octet-stream',
+        size: Number(metadata.size) || stat?.size || 0,
+        sessionId: isValidSessionId(metadata.sessionId) ? metadata.sessionId : '',
+        createdAt: Number(metadata.createdAt) || stat?.birthtimeMs || stat?.mtimeMs || Date.now(),
+        fileId: typeof metadata.fileId === 'string' ? metadata.fileId : ''
+    };
+    telegramServerAssets.set(assetId, asset);
+    return asset;
+}
+
+async function ensureTelegramServerAssetFile(asset) {
+    if (fs.existsSync(asset.path)) return asset.path;
+    if (!asset.fileId) throw new Error('telegram-file-source-missing');
+    let download = telegramAssetDownloads.get(asset.id);
+    if (!download) {
+        download = (async () => {
+            const data = await downloadTelegramFile(asset.fileId, getTelegramMaxFileSize());
+            fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+            fs.writeFileSync(asset.path, data);
+            asset.size = data.length;
+            persistTelegramServerAsset(asset);
+            return asset.path;
+        })().finally(() => telegramAssetDownloads.delete(asset.id));
+        telegramAssetDownloads.set(asset.id, download);
+    }
+    return download;
+}
+
+function removeTelegramAssetTemporaryFile(asset) {
+    try {
+        if (fs.existsSync(asset.path)) fs.unlinkSync(asset.path);
+    } catch (err) {
+        console.warn(`Unable to remove Telegram temporary asset ${asset.id}: ${err.message}`);
+    }
+}
+
+function hydrateTelegramServerAssets() {
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    let restored = 0;
+    for (const entry of fs.readdirSync(TELEGRAM_ASSET_DIR, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        const assetId = entry.name.endsWith('.json') ? entry.name.slice(0, -5) : entry.name;
+        if (!telegramServerAssets.has(assetId) && resolveTelegramServerAsset(assetId)) restored += 1;
+    }
+    if (restored) console.log(`Restored ${restored} Telegram server assets from disk`);
 }
 
 function extractShortCodeFromText(text) {
@@ -1473,35 +1585,21 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
         return false;
     }
-    let data;
-    try {
-        data = await downloadTelegramFile(telegramFile.fileId, maxTelegramFileSize);
-    } catch (err) {
-        if (err.message === 'telegram-file-too-large-before-download') {
-            await telegramSendMessage(chatId, `文件太大，Telegram 显示该文件约 ${Math.round((err.fileSize || 0) / 1024 / 1024)}MB，超过当前接收上限 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
-            return false;
-        }
-        throw err;
-    }
-    if (data.length > maxTelegramFileSize) {
-        await telegramSendMessage(chatId, `文件太大，下载后超过 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
-        return false;
-    }
     fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
     const assetId = createServerAssetId();
     const safeName = sanitizeString(telegramFile.name || 'telegram-file', 180) || 'telegram-file';
     const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
-    fs.writeFileSync(assetPath, data);
     const asset = {
         id: assetId,
         path: assetPath,
         name: safeName,
         type: sanitizeString(telegramFile.type || 'application/octet-stream', 100) || 'application/octet-stream',
-        size: data.length,
+        size: Number(telegramFile.size) || 0,
         sessionId,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        fileId: telegramFile.fileId
     };
-    telegramServerAssets.set(assetId, asset);
+    persistTelegramServerAsset(asset);
     const session = getOrCreateTelegramSession(sessionId, shortCode);
     const message = {
         id: crypto.randomUUID(),
@@ -1543,8 +1641,6 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
 async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
     const maxSize = getTelegramMaxFileSize();
     if (telegramFile.size > maxSize) throw new Error(`文件 ${telegramFile.name} 超过 Telegram 接收上限`);
-    const data = await downloadTelegramFile(telegramFile.fileId, maxSize);
-    if (data.length > maxSize) throw new Error(`文件 ${telegramFile.name} 下载后超过接收上限`);
     fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
     const assetId = createServerAssetId();
     const asset = {
@@ -1552,12 +1648,12 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         path: path.join(TELEGRAM_ASSET_DIR, assetId),
         name: sanitizeString(telegramFile.name || 'telegram-file', 180) || 'telegram-file',
         type: sanitizeString(telegramFile.type || 'application/octet-stream', 100) || 'application/octet-stream',
-        size: data.length,
+        size: Number(telegramFile.size) || 0,
         sessionId,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        fileId: telegramFile.fileId
     };
-    fs.writeFileSync(asset.path, data);
-    telegramServerAssets.set(asset.id, asset);
+    persistTelegramServerAsset(asset);
     return {
         id: asset.id,
         name: asset.name,
@@ -3496,6 +3592,7 @@ async function startServer() {
     infraStore = await createInfraStore({ dataDir: SERVER_DATA_DIR });
     migrateLegacyShortCodeStore();
     hydrateShortCodeCache();
+    hydrateTelegramServerAssets();
     webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
 }
 
