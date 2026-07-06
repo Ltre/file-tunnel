@@ -214,7 +214,7 @@
 - Replaced file-preview action labels with compact `i`, `↓`, `🧲🔗`, `🧹释放空间` / `☁↓ 还原文件`, and `✖删除` controls.
 - Kept all file-preview actions on one horizontally scrollable row on narrow mobile screens.
 - Added the file name below poster artwork for single audio and video records in the transfer list, including records refreshed after a cache arrives.
-- Added an `🖴 外部文件` source marker to single-file and collection views for files supplied from a local filesystem handle.
+- Added an `💾 外部文件` source marker to single-file and collection views for files supplied from a local filesystem handle.
 
 ### Transfer History Backup and Restore
 - Added metadata-only and full-data JSON backup exports for the current tunnel's transfer history.
@@ -266,3 +266,11 @@
 - Exiting a tunnel now removes the compact local session-directory entry, and the landing route selector ignores/rebuilds away stale sessions that do not have a valid five-character short code.
 - Mobile workspace tab clicks and swipes are marked as user-selected, and history rendering now re-settles the current workspace instead of forcing the view back to transfer records.
 - Visible handle-backed file records are revalidated when the page regains focus/visibility; if the source handle becomes unreadable, stale object URLs are revoked and the flat record, collection tiles, and preview actions fall back to the restore flow immediately.
+
+## 2026-07-05 Backup Import and Handle Safety Cache
+
+- Added blocking progress panels for expensive tunnel-exit cleanup and transfer-history backup import so low-end devices do not appear frozen during IndexedDB-heavy work.
+- Mobile landing no longer auto-focuses the five-character tunnel-code boxes; desktop still focuses them for keyboard convenience.
+- Cross-tunnel backup imports now remap file IDs and rewrite file-message and collection references to the new IDs, while copying any locally available source cache into the new tunnel-specific file record.
+- Tunnel exit and local history deletion now check for cross-tunnel references before physically deleting a file cache record.
+- Handle-backed local files now keep a safety copy on the same file record until another device announces a completed replica; release-space actions are blocked while that safety copy is still the only reliable fallback.

@@ -319,6 +319,19 @@ async function syncExternalFileSourceUi(fileId, storedFile, readableFile, fileIn
         historyLog('external-file-state-persist-failed', { fileId, error: err.message });
     });
     syncRenderedExternalFileSource(fileId, sourceState.handleSourceOnly);
+    if (storedFile?.externalFileHandle && !sourceState.handleReadable && sourceState.hasBrowserCache) {
+        await saveToStore('files', {
+            ...storedFile,
+            externalFileAvailable: false,
+            externalFileMissing: readableFile?.externalFileMissing === true,
+            externalFilePermissionRequired: readableFile?.externalFilePermissionRequired === true,
+            hasSafetyCopy: false,
+            safetyCopyState: 'promoted-after-handle-loss',
+            sourceMode: 'browser-cache',
+            cacheCleared: false,
+            restoreRequested: false
+        }).catch(err => historyLog('external-file-safety-copy-promote-failed', { fileId, error: err.message }));
+    }
     if (storedFile?.externalFileHandle && !sourceState.handleSourceOnly && !sourceState.hasBrowserCache) {
         const objectUrl = fileObjectUrls.get(fileId);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -1032,7 +1045,9 @@ function initSessionLanding() {
     document.getElementById('landingCreateBtn').addEventListener('click', () => {
         openSession(generateId());
     });
-    inputs[0].focus();
+    if (window.matchMedia('(min-width: 768px)').matches) {
+        requestAnimationFrame(() => inputs[0]?.focus());
+    }
 }
 
 function openSession(sessionId) {
@@ -2885,9 +2900,8 @@ async function ensureVideoPosterCache(storedFile, fileInfo = {}) {
             return '';
         });
     if (!poster) return '';
-    const { data: _externalData, ...externalMetadata } = storedFile.externalFileHandle ? storedFile : {};
     await saveToStore('files', {
-        ...(storedFile.externalFileHandle ? externalMetadata : storedFile),
+        ...storedFile,
         videoPoster: poster
     });
     return poster;
@@ -3356,9 +3370,8 @@ async function ensureAudioMetadataCache(storedFile, fileInfo = {}) {
         return {};
     });
     if (!metadata.title && !metadata.artist && !metadata.album) return {};
-    const { data: _externalData, ...externalMetadata } = storedFile.externalFileHandle ? storedFile : {};
     await saveToStore('files', {
-        ...(storedFile.externalFileHandle ? externalMetadata : storedFile),
+        ...storedFile,
         audioTitle: metadata.title || '',
         audioArtist: metadata.artist || '',
         audioAlbum: metadata.album || ''
@@ -3383,9 +3396,8 @@ async function ensureAudioPosterCache(storedFile, fileInfo = {}) {
             return '';
         });
     if (!poster) return '';
-    const { data: _externalData, ...externalMetadata } = storedFile.externalFileHandle ? storedFile : {};
     await saveToStore('files', {
-        ...(storedFile.externalFileHandle ? externalMetadata : storedFile),
+        ...storedFile,
         audioPoster: poster
     });
     return poster;
@@ -3557,6 +3569,7 @@ async function storeAndAnnounceFileAsset(file, fileInfo) {
 
 async function storeAndAnnounceExternalFileAsset(file, handle, fileInfo) {
     if (!handle?.getFile) return storeAndAnnounceFileAsset(file, fileInfo);
+    const data = await fileToArrayBuffer(file);
     const asset = {
         ...fileInfo,
         isExternalFile: true,
@@ -3568,6 +3581,10 @@ async function storeAndAnnounceExternalFileAsset(file, handle, fileInfo) {
         externalFileAvailable: true,
         externalFilePermissionRequired: false,
         externalFileMissing: false,
+        data,
+        hasSafetyCopy: true,
+        safetyCopyState: state.devices.size > 0 ? 'pending-replica' : 'waiting-online-peer',
+        sourceMode: 'external-handle-with-safety-copy',
         cacheCleared: false
     };
     await saveToStore('files', asset);
@@ -3964,14 +3981,27 @@ async function importTransferHistoryBackup(file, parsedBackup = null) {
     }
     const placement = await askBackupImportPlacement();
     if (!placement) return;
+    const progress = showBlockingProgressPanel('正在导入传输记录', '正在准备备份数据...');
+    try {
+    const sourceSessionId = backup.source?.sessionId || backup.network?.sourceSessionId || '';
+    const shouldRemapFileIds = Boolean(sourceSessionId && sourceSessionId !== state.sessionId);
     const assetMap = new Map(backup.assets.map(asset => [asset.id, asset]));
-    const importedAssetsWithData = [];
+    const fileIdMap = new Map();
     for (const asset of backup.assets) {
+        fileIdMap.set(asset.id, shouldRemapFileIds ? generateId() : asset.id);
+    }
+    const importedAssetsWithData = [];
+    for (let assetIndex = 0; assetIndex < backup.assets.length; assetIndex++) {
+        const asset = backup.assets[assetIndex];
+        const newFileId = fileIdMap.get(asset.id) || asset.id;
+        progress.update(Math.floor(assetIndex * 45 / Math.max(1, backup.assets.length)), `导入文件元信息 ${assetIndex + 1}/${backup.assets.length}`);
         const existing = await getFromStore('files', asset.id).catch(() => null);
+        const existingNew = newFileId === asset.id ? existing : await getFromStore('files', newFileId).catch(() => null);
         const data = asset.dataBase64 ? base64ToArrayBuffer(asset.dataBase64) : existing?.data;
         const storedAsset = {
-            ...(existing || {}),
+            ...(existingNew || {}),
             ...asset,
+            id: newFileId,
             data,
             dataBase64: undefined,
             sessionId: state.sessionId,
@@ -3981,18 +4011,22 @@ async function importTransferHistoryBackup(file, parsedBackup = null) {
                 serverOrigin: backup.source?.serverOrigin || backup.network?.sourceServerOrigin || '',
                 sessionId: asset.sourceSessionId || backup.source?.sessionId || '',
                 shortCode: backup.source?.shortCode || '',
-                providerDeviceIds: backup.network?.providerDeviceIds || []
+                providerDeviceIds: backup.network?.providerDeviceIds || [],
+                fileId: asset.id
             },
+            backupSourceFileId: asset.id,
             backupSourceSessionId: asset.sourceSessionId || backup.source?.sessionId || '',
             backupSourceServer: backup.source?.serverOrigin || backup.network?.sourceServerOrigin || ''
         };
         await saveToStore('files', storedAsset);
         if (getBinaryDataSize(data)) importedAssetsWithData.push(storedAsset);
+        if (assetIndex % 8 === 0) await sleep(0);
     }
     const ordered = backup.messages.slice().sort(compareHistoryMessages);
     const tailStart = Math.max(Date.now(), ...state.messages.map(message => Number(message.timestamp) || 0)) + 1;
     for (let index = 0; index < ordered.length; index++) {
         const original = ordered[index];
+        progress.update(45 + Math.floor(index * 45 / Math.max(1, ordered.length)), `导入传输记录 ${index + 1}/${ordered.length}`);
         const message = {
             ...original,
             id: generateId(),
@@ -4007,24 +4041,35 @@ async function importTransferHistoryBackup(file, parsedBackup = null) {
         }
         const decorate = info => info ? ({
             ...info,
+            id: fileIdMap.get(info.id) || info.id,
             data: undefined,
             isSmall: false,
             isAsset: true,
             backupSourceSessionId: assetMap.get(info.id)?.sourceSessionId || backup.source?.sessionId || '',
-            backupSourceServer: backup.source?.serverOrigin || ''
+            backupSourceServer: backup.source?.serverOrigin || '',
+            backupSourceFileId: info.id
         }) : info;
         if (message.fileInfo) message.fileInfo = decorate(message.fileInfo);
         if (message.collection?.files) message.collection.files = message.collection.files.map(decorate);
         await publishHistoryMessage(message, { autoRequestAsset: true, scroll: false });
+        if (index % 8 === 0) await sleep(0);
     }
+    progress.update(92, '广播已导入的文件缓存...');
     for (const asset of importedAssetsWithData) {
         await fileAssetTransfer?.announce(asset).catch(err => historyLog('backup-import-asset-announce-failed', {
             fileId: asset.id,
             error: err.message
         }));
     }
+    progress.update(96, '刷新传输记录...');
     await loadSessionData();
+    progress.update(100, '导入完成');
+    progress.close();
     showAppToast(`已导入 ${ordered.length} 条传输记录`);
+    } catch (err) {
+        progress.close();
+        throw err;
+    }
 }
 
 function showHistoryBackupDialog() {
@@ -4042,7 +4087,7 @@ function showHistoryBackupDialog() {
     document.body.appendChild(overlay);
 }
 
-async function purgeLocalSession(sessionId) {
+async function purgeLocalSession(sessionId, options = {}) {
     const [messages, files, mounts, editorContent] = await Promise.all([
         typeof IDBKeyRange !== 'undefined'
             ? getAllFromStore('messages', 'sessionId', IDBKeyRange.only(sessionId))
@@ -4055,13 +4100,39 @@ async function purgeLocalSession(sessionId) {
             : getAllFromStore('mounts').then(items => items.filter(item => item.sessionId === sessionId)),
         getFromStore('editorContent', 'current')
     ]);
-    await Promise.all([
-        ...messages.map(message => deleteFromStore('messages', message.id)),
-        ...files.map(file => deleteFromStore('files', file.id)),
-        ...mounts.map(mount => deleteFromStore('mounts', mount.id)),
-        deleteFromStore('sessions', sessionId),
-        editorContent?.sessionId === sessionId ? deleteFromStore('editorContent', 'current') : Promise.resolve()
-    ]);
+    const total = Math.max(1, messages.length + files.length + mounts.length + 2);
+    let done = 0;
+    const tick = label => {
+        done++;
+        options.onProgress?.(Math.floor(done * 100 / total), label);
+    };
+    for (const message of messages) {
+        await deleteFromStore('messages', message.id);
+        tick(`清理传输记录 ${done + 1}/${total}`);
+        if (done % 20 === 0) await sleep(0);
+    }
+    for (const file of files) {
+        if (await isFileReferencedOutsideSession(file.id, sessionId)) {
+            await saveToStore('files', {
+                ...file,
+                sessionId: file.sessionId || sessionId,
+                retainedForOtherSession: true,
+                timestamp: file.timestamp || Date.now()
+            });
+        } else {
+            await deleteFromStore('files', file.id);
+        }
+        tick(`清理文件缓存 ${done + 1}/${total}`);
+        if (done % 8 === 0) await sleep(0);
+    }
+    for (const mount of mounts) {
+        await deleteFromStore('mounts', mount.id);
+        tick(`清理本机挂载 ${done + 1}/${total}`);
+    }
+    await deleteFromStore('sessions', sessionId);
+    tick('清理隧道索引');
+    if (editorContent?.sessionId === sessionId) await deleteFromStore('editorContent', 'current');
+    tick('完成退出清理');
     updateSessionDirectoryCache(null, sessionId);
 }
 
@@ -5375,7 +5446,7 @@ function syncFileMessageExternalSourceBadge(messageEl, handleSourceOnly) {
     const badge = document.createElement('span');
     badge.className = 'external-file-badge external-file-source-badge';
     badge.title = '本机原文件可直接读取，未占用浏览器文件缓存';
-    badge.textContent = '🖴 外部文件';
+    badge.textContent = '💾 外部文件';
     messageEl.appendChild(badge);
 }
 
@@ -6145,6 +6216,10 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
     }
     fileAssetTransfer?.cancel(fileInfo.id);
     const storedFile = await getFromStore('files', fileInfo.id);
+    if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
+        alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
+        return;
+    }
     if (storedFile?.externalFileHandle && !getBinaryDataSize(storedFile.data)) {
         showAppToast('此文件已是按需读取模式，没有占用浏览器文件缓存');
         return;
@@ -6248,11 +6323,11 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
                 });
         });
     setFilePreviewActions([
-        createFileActionButton('i', '查看文件名、大小、来源设备等详细信息', () => {
+        createFileActionButton('📋', '查看文件名、大小、来源设备等详细信息', () => {
             showFileDetailsForInfo(fileInfo, { messageId, sender: ownerDeviceId, senderName: '' })
                 .catch(err => historyLog('file-details-open-failed', { messageId, fileId: fileInfo.id, error: err.message }));
         }),
-        createFileActionButton('↓', '下载此文件', () => downloadFileByInfo(fileInfo, ownerDeviceId, { collectionMessageId })),
+        createFileActionButton('⇩', '下载此文件', () => downloadFileByInfo(fileInfo, ownerDeviceId, { collectionMessageId })),
         createFileActionButton('🧲🔗', '生成可分享的磁力下载链接', () => {
             shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId).catch(err => {
                 alert(`磁链生成失败: ${err.message}`);
@@ -6320,6 +6395,40 @@ function showAppToast(message) {
     toast.style.right = '16px';
     toast.style.bottom = 'calc(18px + env(safe-area-inset-bottom))';
     setTimeout(() => toast.remove(), 2200);
+}
+
+function showBlockingProgressPanel(title, detail = '') {
+    const overlay = document.createElement('div');
+    overlay.className = 'send-mode-overlay blocking-progress-overlay';
+    overlay.style.zIndex = '99999';
+    overlay.innerHTML = `
+        <div class="send-mode-dialog" role="alertdialog" aria-modal="true" style="min-width:min(360px,88vw);text-align:center;">
+            <div style="font-size:18px;font-weight:800;margin-bottom:10px;">${escapeHtml(title)}</div>
+            <div class="blocking-progress-spinner" aria-hidden="true" style="width:38px;height:38px;border:4px solid rgba(102,126,234,.18);border-top-color:#667eea;border-radius:50%;margin:8px auto 12px;animation:blocking-progress-spin .85s linear infinite;"></div>
+            <div class="blocking-progress-detail" style="font-size:14px;color:#526079;line-height:1.55;">${escapeHtml(detail || '正在处理，请稍候...')}</div>
+            <div style="height:7px;background:#edf1fa;border-radius:999px;overflow:hidden;margin-top:14px;">
+                <div class="blocking-progress-fill" style="height:100%;width:0%;background:#667eea;transition:width .16s ease;"></div>
+            </div>
+        </div>
+    `;
+    if (!document.getElementById('blockingProgressStyle')) {
+        const style = document.createElement('style');
+        style.id = 'blockingProgressStyle';
+        style.textContent = '@keyframes blocking-progress-spin{to{transform:rotate(360deg)}}';
+        document.head.appendChild(style);
+    }
+    document.body.appendChild(overlay);
+    return {
+        update(progress, nextDetail = '') {
+            const fill = overlay.querySelector('.blocking-progress-fill');
+            const detailEl = overlay.querySelector('.blocking-progress-detail');
+            if (fill && Number.isFinite(progress)) fill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+            if (detailEl && nextDetail) detailEl.textContent = nextDetail;
+        },
+        close() {
+            overlay.remove();
+        }
+    };
 }
 
 function getMusicPlayerSaveKey() {
@@ -8477,7 +8586,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
         const badge = document.createElement('span');
         badge.className = 'external-file-badge';
         badge.title = '内容按需读取自供源设备的本机文件系统';
-        badge.textContent = '🖴 外部文件';
+        badge.textContent = '💾 外部文件';
         card.appendChild(badge);
     }
     card.addEventListener('click', event => {
@@ -8929,6 +9038,10 @@ async function clearFileCache(messageId) {
 
     fileAssetTransfer?.cancel(fileInfo.id);
     const storedFile = await getFromStore('files', fileInfo.id);
+    if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
+        alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
+        return;
+    }
     const { data, ...metadata } = storedFile || {};
     await saveToStore('files', {
         ...metadata,
@@ -9090,6 +9203,7 @@ async function deleteFileCacheIfUnreferenced(fileId, excludingMessageId = null) 
     fileAssetTransfer?.cancel(fileId);
     const stillReferenced = await isFileReferencedByRichContent(fileId, excludingMessageId);
     if (stillReferenced) return;
+    if (await isFileReferencedOutsideSession(fileId, state.sessionId)) return;
     await deleteFromStore('files', fileId);
     removeMusicTrackFromQueue(fileId);
     const objectUrl = fileObjectUrls.get(fileId);
@@ -9139,7 +9253,8 @@ async function deleteHistoryMessageLocal(messageId) {
             const fileId = fileInfo.id;
             fileAssetTransfer?.cancel(fileId);
             cleanupProgressForDeletedFile(fileId);
-            const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
+            const stillReferenced = await isFileReferencedByRichContent(fileId, messageId) ||
+                await isFileReferencedOutsideSession(fileId, state.sessionId);
             if (stillReferenced) {
                 const storedFile = await getFromStore('files', fileId);
                 if (storedFile) {
@@ -9172,7 +9287,8 @@ async function deleteHistoryMessageLocal(messageId) {
         const fileId = message.fileInfo.id;
         fileAssetTransfer?.cancel(fileId);
         cleanupProgressForDeletedFile(fileId);
-        const stillReferenced = await isFileReferencedByRichContent(fileId, messageId);
+        const stillReferenced = await isFileReferencedByRichContent(fileId, messageId) ||
+            await isFileReferencedOutsideSession(fileId, state.sessionId);
         if (stillReferenced) {
             const storedFile = await getFromStore('files', fileId);
             if (storedFile) {
@@ -9231,6 +9347,22 @@ async function isFileReferencedByRichContent(fileId, excludingMessageId = null) 
     }
     const editor = document.getElementById('editor');
     return Boolean(editor && extractFileRefIds(editor.innerHTML).includes(fileId));
+}
+
+async function isFileReferencedOutsideSession(fileId, currentSessionId) {
+    if (!fileId) return false;
+    const [messages, files] = await Promise.all([
+        getAllFromStore('messages').catch(() => []),
+        getAllFromStore('files').catch(() => [])
+    ]);
+    if (files.some(file => file?.id === fileId && file.sessionId && file.sessionId !== currentSessionId)) return true;
+    return messages.some(message => {
+        if (!message || message.sessionId === currentSessionId) return false;
+        if (message.fileInfo?.id === fileId) return true;
+        if (getCollectionFiles(message).some(file => file?.id === fileId)) return true;
+        if (message.type === 'rich' && extractFileRefIds(message.content).includes(fileId)) return true;
+        return false;
+    });
 }
 
 async function findGarbageFileCaches() {
@@ -11939,16 +12071,21 @@ function closeDownloadCacheOverlay() {
 async function exitTunnelAndClearCache() {
     const ok = confirm('退出当前隧道，将清理这个隧道的所有缓存数据。\n如需再进此隧道，将重新拉取全部远程文件。\n确定退出吗？');
     if (!ok) return;
+    const progress = showBlockingProgressPanel('正在退出隧道', '正在清理本机缓存与传输记录...');
     try {
         state.isExitingTunnel = true;
         if (chatScrollAnchorSaveTimer) clearTimeout(chatScrollAnchorSaveTimer);
         if (musicPlayerPersistTimer) clearTimeout(musicPlayerPersistTimer);
         if (musicPlayerDurablePersistTimer) clearTimeout(musicPlayerDurablePersistTimer);
         state.socket?.disconnect();
-        await purgeLocalSession(state.sessionId);
+        await purgeLocalSession(state.sessionId, {
+            onProgress: (value, detail) => progress.update(value, detail)
+        });
+        progress.update(100, '清理完成，正在返回入口...');
         state.db?.close?.();
         window.location.href = `${window.location.origin}${window.location.pathname}?leave=1`;
     } catch (err) {
+        progress.close();
         state.isExitingTunnel = false;
         historyLog('exit-tunnel-clear-failed', { error: err.message });
         alert(`退出隧道失败：${err.message}`);

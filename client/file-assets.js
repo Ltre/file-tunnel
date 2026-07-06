@@ -866,6 +866,19 @@
 
         handleAvailable(data) {
             const asset = data && data.asset;
+            if (asset?.id && data.from) {
+                this.deps.load(asset.id)
+                    .then(local => {
+                        if (!local?.externalFileHandle || !local.hasSafetyCopy || local.safetyCopyState === 'replicated') return;
+                        return this.deps.store({
+                            ...local,
+                            safetyCopyState: 'replicated',
+                            replicatedByDeviceId: data.from,
+                            replicatedAt: Date.now()
+                        });
+                    })
+                    .catch(err => this.log('safety-copy-replica-mark-failed', { assetId: asset.id, error: err.message }));
+            }
             if (!asset || !asset.id || !this.desiredAssets.has(asset.id)) return;
             this.requestedMetadata.set(asset.id, asset);
             this.retryCounts.delete(asset.id);
