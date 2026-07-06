@@ -274,3 +274,50 @@
 - Cross-tunnel backup imports now remap file IDs and rewrite file-message and collection references to the new IDs, while copying any locally available source cache into the new tunnel-specific file record.
 - Tunnel exit and local history deletion now check for cross-tunnel references before physically deleting a file cache record.
 - Handle-backed local files now keep a safety copy on the same file record until another device announces a completed replica; release-space actions are blocked while that safety copy is still the only reliable fallback.
+- External-source UI now distinguishes a readable filesystem handle from handle-only storage: valid handles display `💾 外部文件` even while a browser safety copy is retained, while cache action suppression remains limited to true handle-only records.
+- Foreground/visibility validation now checks handle-backed single files and collection files even when a safety copy exists, so moved, renamed, permission-revoked, or deleted source files promptly lose the external-source badge.
+
+## 2026-07-06 Transfer Forwarding, Telegram Recovery, and Mobile Polish
+
+### File Preview and Collection UI
+- Fullscreen preview now materializes readable File System Access handles before checking cache completeness, so handle-only image and video sources can enter fullscreen without requiring an IndexedDB binary copy.
+- Mobile preview actions remain on one horizontally scrollable row but align to the right, matching the desktop action placement.
+- Collection grid scrollports now include stable top and bottom padding, explicit border-box sizing, start alignment, and scroll padding to prevent first/last-row clipping during asynchronous media poster updates.
+- Collections support an optional remark entered in the multi-file send dialog; remarks render at the bottom of the flat collection record.
+- File remarks now use a shared message-level model for both single-file and collection records. Either type can be edited later from its record actions and synchronized through the existing message-update channel.
+- Single-file remarks now render inside the file bubble and reuse the collection remark divider, spacing, typography, and wrapping styles for a consistent transfer-record appearance.
+- Telegram single-file captions and album captions are preserved verbatim as their corresponding transfer-record remarks; routing codes are not removed or otherwise rewritten.
+
+### Cross-Tunnel Forwarding
+- Added `⎇ 发到其他隧道` to transfer-record actions and a local tunnel chooser.
+- Forwarded text, rich-text, file, and collection records are stored as new target-tunnel messages.
+- Forwarded files receive new file IDs and retain the source tunnel as `backupSourceSessionId`, preventing cache-key sharing while allowing target devices to retrieve content from source-tunnel providers.
+- Added a dedicated authenticated Socket.IO forwarding event that validates the target tunnel and records/broadcasts the forwarded message.
+
+### Telegram Reliability
+- Telegram albums retain caption text as the collection remark while removing a resolved five-character routing code from that remark.
+- Completing an unbound pending Telegram send now removes the `放弃发送` reply keyboard and clears the pending input state.
+- Telegram-origin files first request ordinary P2P/multi-source providers. The server/Telegram `file_id` source is used only after the peer preference window expires.
+- A client that obtains a Telegram fallback stores a complete IndexedDB cache and immediately announces itself as a normal file provider for subsequent devices.
+
+### Nearby Invitations and Device Remarks
+- Nearby devices not already in the current tunnel now expose an `邀请` action using the existing tunnel invitation, acknowledgement, foreground prompt, and notification flow.
+- Device remarks are visible only to the device that created them and are stored locally.
+- Each remark is mirrored only to the remarked device as an invisible backup keyed by remark owner and target device; it is never displayed or applied by the helper device.
+- Online peers support backup refresh and owner-initiated restoration without involving server persistence.
+
+### PWA Share Target Feedback
+- Share Target imports now pin the transfer-record view to the bottom and show a `发送处理中` placeholder with file-reading, preview preparation, record-writing, and send-preparation stages.
+- The placeholder is removed only after real records enter the normal send flow, then the view remains positioned near the newest record.
+- The same bottom processing placeholder is now owned by the shared file-send pipeline, so normal file selection, File System Access picker sends, drag-and-drop, split sends, collection sends, and PWA Share Target imports all expose consistent preparation progress without stacking duplicate panels.
+
+### Responsive Transfer-Record Deletion
+- Transfer-record deletion now removes the IndexedDB message and visible DOM record before expensive cache-reference cleanup, immediately restoring touch, scroll, and navigation responsiveness.
+- Collection deletion builds one reference set for all member files instead of independently scanning every message and file store once per member.
+- Cache deletion/preservation runs in small asynchronous batches with explicit main-thread yields while retaining rich-text, editor, collection, and cross-tunnel reference protection.
+
+### Music Queue Tail Preloading Recovery
+- Queue-tail preloading now builds lightweight audio candidates from transfer-record metadata and reads only randomized candidate cache records, avoiding full IndexedDB binary-file scans.
+- If lightweight record metadata cannot find a playable track, selection falls back to the original `e6e9493` current-session file-store scan so locally cached library tracks without a current flat record are not omitted.
+- `下一曲` at the queue tail waits for an already-running preload promise and plays the appended track instead of treating the pending state as exhaustion and jumping directly to the queue head.
+- Local sends, filesystem-handle assets, P2P receives, and Telegram/server fallback receives reset stale library-exhaustion state and immediately reschedule tail preloading when a new playable audio cache becomes available.

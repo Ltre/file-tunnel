@@ -2825,13 +2825,91 @@
             font-size: 0.82rem;
         }
 
+        .collection-remark {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(101, 113, 138, 0.18);
+            color: #34405a;
+            font-size: 0.9rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .shared-file-processing-placeholder {
+            position: sticky;
+            bottom: 10px;
+            z-index: 6;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: min(460px, calc(100% - 20px));
+            margin: 12px auto 0;
+            padding: 13px 15px;
+            box-sizing: border-box;
+            border: 1px solid rgba(77, 96, 145, 0.22);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 10px 30px rgba(28, 39, 68, 0.14);
+            color: #26324d;
+        }
+
+        .shared-file-processing-spinner {
+            flex: 0 0 auto;
+            width: 24px;
+            height: 24px;
+            border: 3px solid #dce3f2;
+            border-top-color: #5066cc;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        .shared-file-processing-copy {
+            display: grid;
+            min-width: 0;
+            gap: 2px;
+        }
+
+        .shared-file-processing-copy span,
+        .shared-file-processing-copy small {
+            overflow: hidden;
+            color: #65718a;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .send-mode-remark-label {
+            display: grid;
+            gap: 6px;
+            margin: 14px 0;
+            color: #526079;
+            font-size: 0.88rem;
+            text-align: left;
+        }
+
+        .send-mode-remark {
+            width: 100%;
+            resize: vertical;
+            box-sizing: border-box;
+            border: 1px solid #d7deeb;
+            border-radius: 7px;
+            padding: 9px 10px;
+            font: inherit;
+            color: #26324d;
+            background: #fff;
+        }
+
         .collection-file-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
             gap: 10px;
             width: min(820px, 100%);
             max-height: min(62dvh, 560px);
+            padding-block: 6px 10px;
+            box-sizing: border-box;
             overflow: auto;
+            scroll-padding-block: 6px 10px;
+            align-content: start;
         }
 
         .collection-file-card {
@@ -2991,7 +3069,7 @@
 
             .file-preview-actions {
                 flex-wrap: nowrap;
-                justify-content: flex-start;
+                justify-content: flex-end;
                 overflow-x: auto;
                 overscroll-behavior-x: contain;
                 scrollbar-width: thin;

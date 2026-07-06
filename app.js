@@ -318,7 +318,7 @@ async function syncExternalFileSourceUi(fileId, storedFile, readableFile, fileIn
     await persistExternalFileReadState(storedFile, readableFile).catch(err => {
         historyLog('external-file-state-persist-failed', { fileId, error: err.message });
     });
-    syncRenderedExternalFileSource(fileId, sourceState.handleSourceOnly);
+    syncRenderedExternalFileSource(fileId, sourceState.handleReadable);
     if (storedFile?.externalFileHandle && !sourceState.handleReadable && sourceState.hasBrowserCache) {
         await saveToStore('files', {
             ...storedFile,
@@ -347,12 +347,15 @@ async function syncExternalFileSourceUi(fileId, storedFile, readableFile, fileIn
 }
 
 async function validateVisibleExternalFileSources() {
-    const ids = Array.from(new Set(Array.from(document.querySelectorAll('.message[data-file-id]'))
+    const ids = new Set(Array.from(document.querySelectorAll('.message[data-file-id]'))
         .map(messageEl => messageEl.dataset.fileId)
-        .filter(Boolean)));
+        .filter(Boolean));
+    document.querySelectorAll('.message[data-collection-file-ids]').forEach(messageEl => {
+        String(messageEl.dataset.collectionFileIds || '').split(',').filter(Boolean).forEach(fileId => ids.add(fileId));
+    });
     for (const fileId of ids) {
         const storedFile = await getFromStore('files', fileId).catch(() => null);
-        if (!storedFile?.externalFileHandle?.getFile || getBinaryDataSize(storedFile.data)) continue;
+        if (!storedFile?.externalFileHandle?.getFile) continue;
         const readableFile = await materializeExternalFileRecord(storedFile);
         await syncExternalFileSourceUi(fileId, storedFile, readableFile, storedFile);
         await refreshCollectionMessagesForFile(fileId).catch(() => {});
@@ -1457,6 +1460,9 @@ function initSocket() {
     state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
     state.socket.on('device-tunnel-invite', handleDeviceTunnelInvite);
     state.socket.on('device-tunnel-invite-ack', handleDeviceTunnelInviteAck);
+    state.socket.on('device-remark-backup', handleDeviceRemarkBackup);
+    state.socket.on('device-remark-restore-request', handleDeviceRemarkRestoreRequest);
+    state.socket.on('device-remark-restore-response', handleDeviceRemarkRestoreResponse);
 
     state.socket.on('error', (data) => {
         const message = data && data.message ? data.message : '服务器返回错误';
@@ -2569,6 +2575,7 @@ function initFileAssetTransfer() {
             fileObjectUrls.delete(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
+            notifyMusicLibraryAssetAvailable(asset, storedFile);
         },
         onUnavailable: (fileId, reason) => {
             hideCompletedFileReceiveProgress(fileId);
@@ -2816,7 +2823,8 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
         },
         timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
-        senderName: state.deviceName
+        senderName: state.deviceName,
+        remark: String(options.remark || '').trim().slice(0, 500)
     };
 
     await publishHistoryMessage(message, {
@@ -3557,6 +3565,7 @@ async function storeAndAnnounceFileAsset(file, fileInfo) {
         data
     };
     await saveToStore('files', asset);
+    notifyMusicLibraryAssetAvailable(fileInfo, asset);
     await fileAssetTransfer.announce(asset);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     refreshFileMessage(fileInfo.id).catch(err => historyLog('file-asset-refresh-after-store-failed', {
@@ -3588,6 +3597,7 @@ async function storeAndAnnounceExternalFileAsset(file, handle, fileInfo) {
         cacheCleared: false
     };
     await saveToStore('files', asset);
+    notifyMusicLibraryAssetAvailable(fileInfo, asset);
     await fileAssetTransfer.announce(asset);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     refreshFileMessage(fileInfo.id).catch(err => historyLog('external-file-asset-refresh-after-store-failed', {
@@ -3674,11 +3684,13 @@ async function sendFileCollection(files, options = {}) {
             id: collectionId,
             files: fileInfos,
             count: fileInfos.length,
-            totalSize
+            totalSize,
+            remark: String(options.remark || '').trim().slice(0, 500)
         },
         timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
-        senderName: state.deviceName
+        senderName: state.deviceName,
+        remark: String(options.remark || '').trim().slice(0, 500)
     };
 
     await publishHistoryMessage(message, { autoRequestAsset: false });
@@ -3708,6 +3720,9 @@ function askFileCollectionMode(files) {
             <div class="send-mode-dialog" role="dialog" aria-modal="true" aria-label="多文件发送方式">
                 <h3>发送 ${list.length} 个文件</h3>
                 <p>以合辑发送会在传输记录里合并成一条，方便预览和批量保存；拆分发送则保持每个文件一条记录。</p>
+                <label class="send-mode-remark-label">合辑备注（可选）
+                    <textarea class="send-mode-remark" maxlength="500" rows="3" placeholder="为这组合辑添加说明"></textarea>
+                </label>
                 <div class="send-mode-actions">
                     <button class="btn btn-secondary" type="button" data-mode="split">拆分成多条</button>
                     <button class="btn btn-primary" type="button" data-mode="collection">以合辑发送</button>
@@ -3715,8 +3730,9 @@ function askFileCollectionMode(files) {
             </div>
         `;
         const finish = mode => {
+            const remark = overlay.querySelector('.send-mode-remark')?.value?.trim() || '';
             overlay.remove();
-            resolve(mode);
+            resolve({ mode, remark });
         };
         overlay.addEventListener('click', event => {
             if (event.target === overlay) finish('split');
@@ -3731,25 +3747,42 @@ function askFileCollectionMode(files) {
 async function sendSelectedFiles(files, options = {}) {
     const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null }).filter(item => item.file);
     if (!entries.length) return;
-    if (entries.length === 1 && await maybeImportTransferHistoryBackupFile(entries[0].file)) {
-        return;
-    }
-    if (entries.length === 1) {
-        await sendFile(entries[0].file, null, { ...options, externalFileHandle: entries[0].handle });
-        return;
-    }
+    const { processingProgress: suppliedProgress, ...sendOptions } = options;
+    const progress = suppliedProgress || showFileSendProcessingPlaceholder(entries.length);
+    const ownsProgress = !suppliedProgress;
+    try {
+        progress.update('检查文件', 0, entries.length, entries[0].file.name || '文件');
+        if (entries.length === 1 && await maybeImportTransferHistoryBackupFile(entries[0].file)) {
+            progress.update('备份导入完成', entries.length, entries.length);
+            return;
+        }
+        if (entries.length === 1) {
+            progress.update('读取文件并准备记录', 0, 1, entries[0].file.name || '文件');
+            await sendFile(entries[0].file, null, { ...sendOptions, externalFileHandle: entries[0].handle });
+            progress.update('记录已写入，准备发送', 1, 1, entries[0].file.name || '文件');
+            return;
+        }
 
-    const mode = await askFileCollectionMode(entries.map(entry => entry.file));
-    if (mode === 'collection') {
-        await sendFileCollection(entries, options);
-        return;
-    }
-    for (const entry of entries) {
-        await sendFile(entry.file, null, {
-            ...options,
-            deferAssetStorage: !entry.handle,
-            externalFileHandle: entry.handle
-        });
+        progress.update('等待选择发送方式', 0, entries.length, `共 ${entries.length} 个文件`);
+        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file));
+        if (mode === 'collection') {
+            progress.update('生成合辑记录', 0, entries.length, `正在整理 ${entries.length} 个文件`);
+            await sendFileCollection(entries, { ...sendOptions, remark });
+            progress.update('合辑已写入，后台准备发送', entries.length, entries.length);
+            return;
+        }
+        for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index];
+            progress.update('写入拆分记录', index, entries.length, entry.file.name || `文件 ${index + 1}`);
+            await sendFile(entry.file, null, {
+                ...sendOptions,
+                deferAssetStorage: !entry.handle,
+                externalFileHandle: entry.handle
+            });
+        }
+        progress.update('记录已写入，后台准备发送', entries.length, entries.length);
+    } finally {
+        if (ownsProgress) progress.close();
     }
 }
 
@@ -3817,11 +3850,14 @@ async function consumePendingSharedFiles() {
     if (!queued.length) return;
 
     sharedFileImportInProgress = true;
+    const progress = showFileSendProcessingPlaceholder(queued.length, '正在读取系统分享文件');
     try {
         const sorted = queued.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
         const files = [];
         const importedItems = [];
-        for (const item of sorted) {
+        for (let index = 0; index < sorted.length; index++) {
+            const item = sorted[index];
+            progress.update('读取文件', index, sorted.length, item.name || 'shared-file');
             if (!(item.data instanceof ArrayBuffer) && !ArrayBuffer.isView(item.data)) continue;
             const bytes = item.data instanceof ArrayBuffer
                 ? item.data
@@ -3841,7 +3877,9 @@ async function consumePendingSharedFiles() {
             importedItems.push(item);
         }
         if (files.length) {
-            await sendSelectedFiles(files);
+            progress.update('生成预览并准备记录', files.length, files.length, '请选择合辑或拆分发送');
+            await sendSelectedFiles(files, { processingProgress: progress });
+            progress.update('写入记录并准备发送', files.length, files.length, '正在完成本机缓存登记');
             for (const item of importedItems) {
                 await deleteFromStore('shareQueue', item.id);
                 historyLog('shared-file-imported', { name: item.name, size: item.size, sessionId: state.sessionId });
@@ -3849,8 +3887,40 @@ async function consumePendingSharedFiles() {
         }
         state.pendingSharedFileCount = 0;
     } finally {
+        progress.close();
         sharedFileImportInProgress = false;
     }
+}
+
+function showFileSendProcessingPlaceholder(total, initialStage = '正在准备所选文件') {
+    const container = document.getElementById('chatMessages');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'shared-file-processing-placeholder';
+    placeholder.innerHTML = `<div class="shared-file-processing-spinner" aria-hidden="true"></div>
+        <div class="shared-file-processing-copy">
+            <strong>发送处理中</strong>
+            <span>${escapeHtml(initialStage)}</span>
+            <small>0 / ${total}</small>
+        </div>`;
+    container?.appendChild(placeholder);
+    let active = true;
+    const pin = () => {
+        if (!active || !container) return;
+        container.scrollTop = container.scrollHeight;
+        requestAnimationFrame(pin);
+    };
+    requestAnimationFrame(pin);
+    return {
+        update(stage, current, count, detail = '') {
+            placeholder.querySelector('span').textContent = detail ? `${stage} · ${detail}` : stage;
+            placeholder.querySelector('small').textContent = `${Math.min(current + (stage === '读取文件' ? 1 : 0), count)} / ${count}`;
+        },
+        close() {
+            active = false;
+            placeholder.remove();
+            if (container) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+        }
+    };
 }
 
 function downloadJsonFile(name, value) {
@@ -4565,6 +4635,12 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
         isPartial: false
     };
     await saveToStore('files', nextFile);
+    notifyMusicLibraryAssetAvailable(fileInfo, nextFile);
+    await fileAssetTransfer?.announce?.(nextFile).catch(err => historyLog('server-asset-cache-announce-failed', {
+        reason,
+        fileId: fileInfo.id,
+        error: err.message
+    }));
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
@@ -4577,10 +4653,34 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
     return true;
 }
 
+async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, reason, options = {}) {
+    if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    const initial = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(initial, fileInfo) && !initial?.cacheCleared) return true;
+
+    if (fileAssetTransfer) {
+        await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || '', {
+            ...fileInfo,
+            isAsset: true
+        }, {
+            priority: options.priority === true,
+            force: options.force === true
+        }).catch(err => historyLog('server-asset-peer-request-failed', {
+            reason,
+            fileId: fileInfo.id,
+            error: err.message
+        }));
+        await sleep(options.peerWaitMs ?? 3500);
+        const peerResult = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (hasCompleteFileCache(peerResult, fileInfo)) return true;
+    }
+    return fetchServerAssetCache(fileInfo, `${reason}-telegram-fallback`);
+}
+
 async function requestMissingFileAssetCache(message, reason) {
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await fetchServerAssetCache(fileInfo, reason).catch(err => historyLog('server-asset-cache-fetch-failed', {
+        await requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message.sender, reason).catch(err => historyLog('server-asset-cache-fetch-failed', {
             reason,
             message: summarizeHistoryMessage(message),
             error: err.message
@@ -4605,7 +4705,7 @@ async function requestMissingCollectionAssetCaches(message, reason) {
     const files = getCollectionFiles(message);
     for (const fileInfo of files) {
         if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-            await fetchServerAssetCache(fileInfo, reason).catch(err => historyLog('collection-server-asset-cache-fetch-failed', {
+            requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message?.sender, reason).catch(err => historyLog('collection-server-asset-cache-fetch-failed', {
                 reason,
                 messageId: message?.id,
                 fileId: fileInfo.id,
@@ -5179,7 +5279,7 @@ async function createCollectionTileHtml(fileInfo, index, total) {
     }
     const isMoreTile = total > 4 && index === 3;
     const remaining = isMoreTile ? `<span class="collection-more">更多文件...<br>+${total - 3}</span>` : '';
-    const externalBadge = externalSourceState.handleSourceOnly
+    const externalBadge = externalSourceState.handleReadable
         ? '<span class="external-file-badge collection-external-file-badge" title="内容按需读取自供源设备的本机文件系统">🖴</span>'
         : '';
     const fileAttribute = isMoreTile ? 'data-collection-more="true"' : `data-collection-file-id="${escapeHtml(fileInfo.id || '')}"`;
@@ -5194,10 +5294,12 @@ async function renderCollectionPreviewHtml(message) {
         tiles.push(await createCollectionTileHtml(visible[index], index, files.length));
     }
     const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    const remark = String(message?.remark || message?.collection?.remark || '').trim();
     return `
         <div class="message-bubble collection-message">
             <div class="collection-preview">${tiles.join('')}</div>
             <div class="collection-meta">${files.length} 个文件 · ${formatFileSize(totalSize)}</div>
+            ${remark ? `<div class="collection-remark">${escapeHtml(remark)}</div>` : ''}
         </div>
     `;
 }
@@ -5347,7 +5449,8 @@ async function addMessageToChat(message, isOwn, options = {}) {
             hasLocalData: Boolean(fileUrl),
             cacheCleared: Boolean(storedFile?.cacheCleared),
             restoreRequested: Boolean(storedFile?.restoreRequested),
-            handleSourceOnly: externalSourceState.handleSourceOnly
+            handleSourceOnly: externalSourceState.handleSourceOnly,
+            handleReadable: externalSourceState.handleReadable
         };
     } else if (message.type === 'collection') {
         const files = getCollectionFiles(message);
@@ -5370,6 +5473,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         `;
     }
 
+    const fileRecordRemark = message.type === 'file' ? String(message.remark || '').trim() : '';
     messageEl.innerHTML = `
         <div class="message-header">
             <span>${message.senderName}</span>
@@ -5377,9 +5481,15 @@ async function addMessageToChat(message, isOwn, options = {}) {
         </div>
         ${contentHtml}
     `;
+    if (fileRecordRemark) {
+        const remark = document.createElement('div');
+        remark.className = 'collection-remark';
+        remark.textContent = fileRecordRemark;
+        messageEl.querySelector('.message-bubble')?.appendChild(remark);
+    }
 
     if (fileRenderState) {
-        syncFileMessageExternalSourceBadge(messageEl, fileRenderState.handleSourceOnly);
+        syncFileMessageExternalSourceBadge(messageEl, fileRenderState.handleReadable);
         renderFileMessageActions(messageEl, fileRenderState.fileInfo, fileRenderState);
         attachFileRecordInteractions(messageEl);
         renderMessageRecordActions(messageEl, message);
@@ -5439,10 +5549,10 @@ function createFileActionButton(label, title, handler) {
     return button;
 }
 
-function syncFileMessageExternalSourceBadge(messageEl, handleSourceOnly) {
+function syncFileMessageExternalSourceBadge(messageEl, handleReadable) {
     if (!messageEl) return;
     messageEl.querySelectorAll(':scope > .external-file-badge').forEach(badge => badge.remove());
-    if (!handleSourceOnly) return;
+    if (!handleReadable) return;
     const badge = document.createElement('span');
     badge.className = 'external-file-badge external-file-source-badge';
     badge.title = '本机原文件可直接读取，未占用浏览器文件缓存';
@@ -5450,15 +5560,28 @@ function syncFileMessageExternalSourceBadge(messageEl, handleSourceOnly) {
     messageEl.appendChild(badge);
 }
 
-function syncRenderedExternalFileSource(fileId, handleSourceOnly) {
+function syncRenderedExternalFileSource(fileId, handleReadable) {
     document.querySelectorAll(`.message[data-file-id="${CSS.escape(fileId)}"]`)
-        .forEach(messageEl => syncFileMessageExternalSourceBadge(messageEl, handleSourceOnly));
+        .forEach(messageEl => syncFileMessageExternalSourceBadge(messageEl, handleReadable));
 }
 
 function renderMessageRecordActions(messageEl, message) {
     messageEl.querySelector('.message-record-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
+    if (message.type === 'file' || message.type === 'collection') {
+        actions.appendChild(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
+            editTransferRecordRemark(message.id).catch(err => {
+                alert(`备注保存失败：${err.message}`);
+            });
+        }));
+    }
+    actions.appendChild(createFileActionButton('⎇ 发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+        forwardHistoryMessage(message.id).catch(err => {
+            alert(`转发失败：${err.message}`);
+            historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
+        });
+    }));
     actions.appendChild(createFileActionButton('删除', '从会话中删除此记录', () => {
         deleteHistoryMessage(message.id);
     }));
@@ -5469,6 +5592,112 @@ function renderMessageRecordActions(messageEl, message) {
         actions.style.width = `${Math.ceil(bubble.getBoundingClientRect().width)}px`;
         actions.style.marginLeft = messageEl.classList.contains('own') ? 'auto' : '0';
     });
+}
+
+async function editTransferRecordRemark(messageId) {
+    const message = await getFromStore('messages', messageId);
+    if (!message || !['file', 'collection'].includes(message.type)) return;
+    const current = String(message.remark || message.collection?.remark || '');
+    const next = prompt('文件备注（留空即删除）', current);
+    if (next === null) return;
+    const remark = next.trim().slice(0, 500);
+    const updated = { ...message, remark };
+    if (updated.type === 'collection') updated.collection = { ...updated.collection, remark };
+    await updateHistoryMessage(updated);
+}
+
+async function chooseForwardTargetSession() {
+    const sessions = (await getAllFromStore('sessions').catch(() => []))
+        .filter(session => session?.sessionId && session.sessionId !== state.sessionId)
+        .sort((left, right) => String(left.sessionId).localeCompare(String(right.sessionId), undefined, { numeric: true }));
+    if (!sessions.length) throw new Error('本机没有可转发的其他隧道');
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'send-mode-overlay';
+        const options = sessions.map(session => {
+            const label = String(session.remark || session.shortCode || session.sessionId).trim();
+            return `<option value="${escapeHtml(session.sessionId)}">${escapeHtml(label)} · ${escapeHtml(session.shortCode || session.sessionId.slice(0, 8))}</option>`;
+        }).join('');
+        overlay.innerHTML = `<div class="send-mode-dialog" role="dialog" aria-modal="true">
+            <h3>发到其他隧道</h3>
+            <select class="forward-session-select">${options}</select>
+            <div class="send-mode-actions">
+                <button class="btn btn-secondary" type="button" data-forward-cancel>取消</button>
+                <button class="btn btn-primary" type="button" data-forward-confirm>转发</button>
+            </div>
+        </div>`;
+        const finish = value => { overlay.remove(); resolve(value); };
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay || event.target.closest('[data-forward-cancel]')) finish('');
+            if (event.target.closest('[data-forward-confirm]')) finish(overlay.querySelector('.forward-session-select')?.value || '');
+        });
+        document.body.appendChild(overlay);
+    });
+}
+
+async function cloneForwardFileInfo(fileInfo, targetSessionId) {
+    const nextId = generateId();
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (storedFile) {
+        const nextStored = {
+            ...storedFile,
+            id: nextId,
+            sessionId: state.sessionId,
+            ownerDeviceId: state.deviceId,
+            timestamp: Date.now()
+        };
+        await saveToStore('files', nextStored);
+        if (hasCompleteFileCache(nextStored, fileInfo)) await fileAssetTransfer?.announce?.(nextStored);
+    }
+    return {
+        ...fileInfo,
+        id: nextId,
+        ownerDeviceId: state.deviceId,
+        sender: state.deviceId,
+        isAsset: true,
+        backupSourceSessionId: state.sessionId,
+        forwardedToSessionId: targetSessionId,
+        timestamp: Date.now()
+    };
+}
+
+async function forwardHistoryMessage(messageId) {
+    const source = await getFromStore('messages', messageId);
+    if (!source) throw new Error('找不到原传输记录');
+    const targetSessionId = await chooseForwardTargetSession();
+    if (!targetSessionId) return;
+    const message = {
+        ...source,
+        id: generateId(),
+        sessionId: targetSessionId,
+        timestamp: Date.now(),
+        sender: state.deviceId,
+        senderName: state.deviceName,
+        forwardedFrom: { sessionId: state.sessionId, messageId: source.id }
+    };
+    if (source.type === 'file' && source.fileInfo?.id) {
+        message.fileInfo = await cloneForwardFileInfo(source.fileInfo, targetSessionId);
+    } else if (source.type === 'collection') {
+        const files = [];
+        for (const fileInfo of getCollectionFiles(source)) files.push(await cloneForwardFileInfo(fileInfo, targetSessionId));
+        message.collection = {
+            ...source.collection,
+            id: generateId(),
+            files,
+            count: files.length,
+            totalSize: files.reduce((sum, file) => sum + (Number(file.size) || 0), 0)
+        };
+    }
+    await new Promise((resolve, reject) => {
+        state.socket.timeout(10000).emit('forward-message', { targetSessionId, message }, (err, response) => {
+            if (err) return reject(new Error('服务器响应超时'));
+            if (!response?.ok) return reject(new Error(response?.error || '服务器拒绝转发'));
+            resolve(response);
+        });
+    });
+    await saveToStore('messages', message);
+    showAppToast('已转发到所选隧道');
+    historyLog('history-message-forwarded', { messageId, targetMessageId: message.id, targetSessionId });
 }
 
 async function downloadFileFromMessage(messageId) {
@@ -5625,6 +5854,7 @@ const musicPlayer = {
     queueDrag: null,
     pendingQueueExitAction: '',
     libraryFillPending: false,
+    libraryFillPromise: null,
     libraryFillExhaustedAt: 0,
     mediaSessionReady: false,
     historyOpen: false,
@@ -5914,11 +6144,13 @@ function setFilePreviewTitle(fileName, options = {}) {
     name.className = 'file-preview-title-name';
     name.textContent = fileName || '文件预览';
     title.replaceChildren();
-    if (options.handleSourceOnly) {
+    if (options.handleReadable || options.handleSourceOnly) {
         const sourceIcon = document.createElement('span');
         sourceIcon.className = 'file-preview-source-icon';
         sourceIcon.textContent = '💾';
-        sourceIcon.title = '本机原文件可直接读取，未占用浏览器文件缓存';
+        sourceIcon.title = options.handleSourceOnly
+            ? '本机原文件可直接读取，未占用浏览器文件缓存'
+            : '本机原文件句柄有效，当前仍保留浏览器安全副本';
         sourceIcon.setAttribute('aria-label', '本机文件系统句柄来源');
         title.appendChild(sourceIcon);
     }
@@ -6112,7 +6344,11 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
         return;
     }
     if (fileInfo.isServerAsset && fileInfo.serverAssetUrl) {
-        const fetched = await fetchServerAssetCache(fileInfo, 'manual-download');
+        const fetched = await requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, 'manual-download', {
+            priority: true,
+            force: true,
+            peerWaitMs: 5000
+        });
         if (fetched) {
             await downloadFile(fileInfo.id);
             return;
@@ -6151,7 +6387,12 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
 
 async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = '', options = {}) {
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await fetchServerAssetCache(fileInfo, options.force ? 'manual-force-restore' : 'manual-restore');
+        await requestServerAssetWithPeerPreference(
+            fileInfo,
+            ownerDeviceId,
+            options.force ? 'manual-force-restore' : 'manual-restore',
+            { priority: true, force: Boolean(options.force), peerWaitMs: 5000 }
+        );
         await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
         await refreshActiveFilePreviewForFile(fileInfo.id);
         return;
@@ -7164,21 +7405,56 @@ function updateMediaSessionPlaybackState() {
 }
 
 async function getLocalAudioLibraryTracks() {
-    const files = typeof IDBKeyRange !== 'undefined'
-        ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
-        : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
     const tracks = [];
-    for (const storedFile of files) {
-        const type = String(storedFile?.type || '').toLowerCase();
-        if (!storedFile?.id || type.startsWith('video/') || !hasCompleteFileCache(storedFile, storedFile) || !isAudioFileLike(storedFile, storedFile)) continue;
+    for (const fileInfo of await getCurrentSessionAudioFileInfos()) {
+        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
         const url = getStoredFileUrl(storedFile.id, storedFile);
-        tracks.push(await buildAudioTrack(storedFile, storedFile, url).catch(() => null));
+        tracks.push(await buildAudioTrack(fileInfo, storedFile, url).catch(() => null));
+        if (tracks.length % 8 === 0) await sleep(0);
     }
     return tracks.filter(Boolean);
 }
 
+async function getCurrentSessionAudioFileInfos() {
+    const messages = await getCurrentSessionMessages();
+    const byId = new Map();
+    const consider = fileInfo => {
+        if (!fileInfo?.id || byId.has(fileInfo.id)) return;
+        const type = String(fileInfo.type || '').toLowerCase();
+        if (type.startsWith('video/') || !isAudioFileLike(null, fileInfo)) return;
+        byId.set(fileInfo.id, fileInfo);
+    };
+    for (const message of messages) {
+        if (message?.type === 'file') consider(message.fileInfo);
+        if (message?.type === 'collection') getCollectionFiles(message).forEach(consider);
+    }
+    return Array.from(byId.values());
+}
+
+function notifyMusicLibraryAssetAvailable(fileInfo, storedFile = null) {
+    const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
+    if (type.startsWith('video/') || !isAudioFileLike(storedFile, fileInfo)) return;
+    musicPlayer.libraryFillExhaustedAt = 0;
+    scheduleMusicQueueTailFill();
+}
+
 async function pickRandomLibraryTrackNotInQueue() {
     const usedIds = new Set(musicPlayer.queue.map(track => track.id));
+    const candidates = (await getCurrentSessionAudioFileInfos()).filter(fileInfo => !usedIds.has(fileInfo.id));
+    while (candidates.length) {
+        const [fileInfo] = candidates.splice(Math.floor(Math.random() * candidates.length), 1);
+        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
+        const url = getStoredFileUrl(storedFile.id, storedFile);
+        const track = await buildAudioTrack(fileInfo, storedFile, url).catch(() => null);
+        if (track) return track;
+        await sleep(0);
+    }
+    return pickRandomLibraryTrackFromFileStore(usedIds);
+}
+
+async function pickRandomLibraryTrackFromFileStore(usedIds) {
     const files = typeof IDBKeyRange !== 'undefined'
         ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
         : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
@@ -7190,12 +7466,12 @@ async function pickRandomLibraryTrackNotInQueue() {
             hasCompleteFileCache(storedFile, storedFile) &&
             isAudioFileLike(storedFile, storedFile);
     });
-    if (!candidates.length) return null;
     while (candidates.length) {
         const [storedFile] = candidates.splice(Math.floor(Math.random() * candidates.length), 1);
         const url = getStoredFileUrl(storedFile.id, storedFile);
         const track = await buildAudioTrack(storedFile, storedFile, url).catch(() => null);
         if (track) return track;
+        await sleep(0);
     }
     return null;
 }
@@ -7234,16 +7510,20 @@ function scheduleMusicQueueTailFill() {
     const currentTrackId = getCurrentMusicTrack()?.id || '';
     const scheduledAt = Date.now();
     musicPlayer.libraryFillPending = true;
-    setTimeout(() => {
-        appendRandomLibraryTrackIfPossible({ playNow: false })
-            .then(() => {
+    musicPlayer.libraryFillPromise = new Promise(resolve => setTimeout(resolve, 120))
+        .then(() => appendRandomLibraryTrackIfPossible({ playNow: false }))
+        .then(appended => {
                 if (musicPlayer.lastTrackIntentAt <= scheduledAt) restoreMusicCurrentTrackById(currentTrackId);
-            })
-            .catch(err => historyLog('music-player-tail-fill-failed', { error: err.message }))
-            .finally(() => {
-                musicPlayer.libraryFillPending = false;
-            });
-    }, 120);
+                return appended;
+        })
+        .catch(err => {
+            historyLog('music-player-tail-fill-failed', { error: err.message });
+            return false;
+        })
+        .finally(() => {
+            musicPlayer.libraryFillPending = false;
+            musicPlayer.libraryFillPromise = null;
+        });
 }
 
 function restoreMusicCurrentTrackById(fileId) {
@@ -7895,6 +8175,14 @@ async function playNextMusicTrack(options = {}) {
 
 async function handleMusicQueueTail(options = {}) {
     if (!musicPlayer.queue.length) return;
+    if (musicPlayer.libraryFillPromise) {
+        await musicPlayer.libraryFillPromise;
+        if (musicPlayer.currentIndex + 1 < musicPlayer.queue.length) {
+            await playMusicQueueIndex(musicPlayer.currentIndex + 1)
+                .catch(err => historyLog('music-player-next-preloaded-failed', { error: err.message }));
+            return;
+        }
+    }
     const exhaustedRecently = musicPlayer.libraryFillExhaustedAt && Date.now() - musicPlayer.libraryFillExhaustedAt < 30000;
     const canTryAppend = !musicPlayer.libraryFillPending && !exhaustedRecently;
     const appended = canTryAppend
@@ -8071,7 +8359,10 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     }
     const beforeExternalSourceState = getExternalFileSourceState(persistedFile, persistedFile, fileInfo);
     const externalSourceState = await syncExternalFileSourceUi(fileInfo.id, persistedFile, storedFile, fileInfo);
-    setFilePreviewTitle(fileInfo.name, { handleSourceOnly: externalSourceState.handleSourceOnly });
+    setFilePreviewTitle(fileInfo.name, {
+        handleSourceOnly: externalSourceState.handleSourceOnly,
+        handleReadable: externalSourceState.handleReadable
+    });
     if (beforeExternalSourceState.handleSourceOnly !== externalSourceState.handleSourceOnly ||
         persistedFile?.externalFileAvailable !== storedFile?.externalFileAvailable ||
         persistedFile?.externalFileMissing !== storedFile?.externalFileMissing ||
@@ -8081,7 +8372,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     }
     if (!hasCompleteFileCache(storedFile, fileInfo)) {
         if (options.requestMissing === true && fileInfo.isServerAsset && fileInfo.serverAssetUrl) {
-            await fetchServerAssetCache(fileInfo, 'file-preview-request-missing')
+            await requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, 'file-preview-request-missing', { priority: true })
                 .catch(err => historyLog('file-preview-server-cache-request-failed', {
                     messageId: options.messageId,
                     fileId: fileInfo.id,
@@ -8209,7 +8500,10 @@ async function getFullscreenPreviewItems() {
     if (activeCollectionPreviewMessageId) {
         const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
         for (const fileInfo of getCollectionFiles(message)) {
-            const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+            const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+            const storedFile = persistedFile?.externalFileHandle
+                ? await materializeExternalFileRecord(persistedFile, { requestPermission: true })
+                : persistedFile;
             if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
             const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
             if (!isFullscreenPreviewableType(type)) continue;
@@ -8217,7 +8511,10 @@ async function getFullscreenPreviewItems() {
         }
     } else if (activeFilePreviewFileId) {
         const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
-        const storedFile = await getFromStore('files', activeFilePreviewFileId).catch(() => null);
+        const persistedFile = await getFromStore('files', activeFilePreviewFileId).catch(() => null);
+        const storedFile = persistedFile?.externalFileHandle
+            ? await materializeExternalFileRecord(persistedFile, { requestPermission: true })
+            : persistedFile;
         const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
         if (fileInfo?.id && hasCompleteFileCache(storedFile, fileInfo) && isFullscreenPreviewableType(type)) {
             items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile) });
@@ -8582,7 +8879,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     size.className = 'collection-file-size';
     size.textContent = formatFileSize(Number(fileInfo.size) || 0);
     card.append(thumb, name, size);
-    if (externalSourceState.handleSourceOnly) {
+    if (externalSourceState.handleReadable) {
         const badge = document.createElement('span');
         badge.className = 'external-file-badge';
         badge.title = '内容按需读取自供源设备的本机文件系统';
@@ -8996,7 +9293,7 @@ async function refreshFileMessage(fileId) {
             const size = bubble.querySelector('.file-size');
             if (size) size.textContent = formatFileSize(storedFile.size);
         }
-        syncFileMessageExternalSourceBadge(messageEl, externalSourceState.handleSourceOnly);
+        syncFileMessageExternalSourceBadge(messageEl, externalSourceState.handleReadable);
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: true, cacheCleared: false });
     }));
     await refreshCollectionMessagesForFile(fileId);
@@ -9248,48 +9545,31 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
 
 async function deleteHistoryMessageLocal(messageId) {
     const message = await getFromStore('messages', messageId);
-    if (message?.type === 'collection') {
-        for (const fileInfo of getCollectionFiles(message)) {
-            const fileId = fileInfo.id;
-            fileAssetTransfer?.cancel(fileId);
-            cleanupProgressForDeletedFile(fileId);
-            const stillReferenced = await isFileReferencedByRichContent(fileId, messageId) ||
-                await isFileReferencedOutsideSession(fileId, state.sessionId);
-            if (stillReferenced) {
-                const storedFile = await getFromStore('files', fileId);
-                if (storedFile) {
-                    await saveToStore('files', {
-                        ...storedFile,
-                        referencedAfterHistoryDelete: true,
-                        isFileAsset: false,
-                        timestamp: storedFile.timestamp || Date.now()
-                    });
-                }
-            } else {
-                await deleteFromStore('files', fileId);
-                removeMusicTrackFromQueue(fileId);
-                const objectUrl = fileObjectUrls.get(fileId);
-                if (objectUrl) URL.revokeObjectURL(objectUrl);
-                fileObjectUrls.delete(fileId);
-            }
-        }
+    if (!message) return;
+    const fileIds = new Set();
+    if (message.type === 'collection') getCollectionFiles(message).forEach(file => file?.id && fileIds.add(file.id));
+    if (message.type === 'rich') {
+        extractAssetIds(message.content).forEach(fileId => fileIds.add(fileId));
+        extractFileRefIds(message.content).forEach(fileId => fileIds.add(fileId));
     }
-    if (message?.type === 'rich') {
-        const richFileIds = new Set([
-            ...extractAssetIds(message.content),
-            ...extractFileRefIds(message.content)
-        ]);
-        for (const fileId of richFileIds) {
-            await deleteFileCacheIfUnreferenced(fileId, messageId);
-        }
+    if (message.fileInfo?.id) fileIds.add(message.fileInfo.id);
+
+    // Make the visible deletion immediate; cache cleanup continues asynchronously below.
+    await deleteFromStore('messages', messageId);
+    pendingHistoryMessageIds.delete(messageId);
+    document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
+    if (activeCollectionPreviewMessageId === messageId || activeFileDetailsMessageId === messageId) {
+        closeFileDetails();
+        closeFilePreview({ forceClose: true, fromHistory: true });
     }
-    if (message?.fileInfo?.id) {
-        const fileId = message.fileInfo.id;
+    await sleep(0);
+
+    const referencedFileIds = await findReferencedFileIds(fileIds, messageId);
+    let index = 0;
+    for (const fileId of fileIds) {
         fileAssetTransfer?.cancel(fileId);
         cleanupProgressForDeletedFile(fileId);
-        const stillReferenced = await isFileReferencedByRichContent(fileId, messageId) ||
-            await isFileReferencedOutsideSession(fileId, state.sessionId);
-        if (stillReferenced) {
+        if (referencedFileIds.has(fileId)) {
             const storedFile = await getFromStore('files', fileId);
             if (storedFile) {
                 await saveToStore('files', {
@@ -9306,15 +9586,42 @@ async function deleteHistoryMessageLocal(messageId) {
             if (objectUrl) URL.revokeObjectURL(objectUrl);
             fileObjectUrls.delete(fileId);
         }
+        index += 1;
+        if (index % 4 === 0) await sleep(0);
     }
-    await deleteFromStore('messages', messageId);
-    pendingHistoryMessageIds.delete(messageId);
-    document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
-    if (activeCollectionPreviewMessageId === messageId || activeFileDetailsMessageId === messageId) {
-        closeFileDetails();
-        closeFilePreview({ forceClose: true, fromHistory: true });
+    historyLog('history-message-deleted-locally', {
+        messageId,
+        fileId: message?.fileInfo?.id,
+        cleanedFileCount: fileIds.size,
+        preservedReferenceCount: referencedFileIds.size
+    });
+}
+
+async function findReferencedFileIds(fileIds, excludingMessageId = null) {
+    const targets = fileIds instanceof Set ? fileIds : new Set(fileIds || []);
+    const referenced = new Set();
+    if (!targets.size) return referenced;
+    const [messages, editorContent] = await Promise.all([
+        getAllFromStore('messages').catch(() => []),
+        getFromStore('editorContent', 'current').catch(() => null)
+    ]);
+    const markContentReferences = content => {
+        for (const fileId of extractFileRefIds(content)) {
+            if (targets.has(fileId)) referenced.add(fileId);
+        }
+    };
+    for (const entry of messages) {
+        if (!entry || entry.id === excludingMessageId || referenced.size === targets.size) continue;
+        if (entry.fileInfo?.id && targets.has(entry.fileInfo.id)) referenced.add(entry.fileInfo.id);
+        for (const file of getCollectionFiles(entry)) {
+            if (targets.has(file.id)) referenced.add(file.id);
+        }
+        if (entry.type === 'rich') markContentReferences(entry.content);
     }
-    historyLog('history-message-deleted-locally', { messageId, fileId: message?.fileInfo?.id });
+    if (editorContent?.sessionId === state.sessionId) markContentReferences(editorContent.content);
+    const editor = document.getElementById('editor');
+    if (editor) markContentReferences(editor.innerHTML);
+    return referenced;
 }
 
 function extractAssetIds(content) {
@@ -11016,6 +11323,81 @@ async function unfollowDevice(deviceId) {
     historyLog('contact-unfollowed', { contactDeviceId: deviceId });
 }
 
+const DEVICE_REMARKS_KEY = 'deviceRemarks:v1';
+const DEVICE_REMARK_BACKUPS_KEY = 'deviceRemarkBackups:v1';
+const deviceRemarkSyncSignatures = new Map();
+
+function readDeviceRemarkMap(key) {
+    try {
+        const value = JSON.parse(localStorage.getItem(key) || '{}');
+        return value && typeof value === 'object' ? value : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function getLocalDeviceRemark(deviceId) {
+    return readDeviceRemarkMap(DEVICE_REMARKS_KEY)[deviceId] || null;
+}
+
+async function setLocalDeviceRemark(deviceId, value) {
+    const remarks = readDeviceRemarkMap(DEVICE_REMARKS_KEY);
+    const remark = String(value || '').trim().slice(0, 120);
+    const updatedAt = Date.now();
+    if (remark) remarks[deviceId] = { remark, updatedAt };
+    else delete remarks[deviceId];
+    localStorage.setItem(DEVICE_REMARKS_KEY, JSON.stringify(remarks));
+    state.socket?.emit('device-remark-backup', { targetDeviceId: deviceId, remark, updatedAt });
+}
+
+function handleDeviceRemarkBackup(data) {
+    if (data?.targetDeviceId !== state.deviceId || !data.ownerDeviceId) return;
+    const backups = readDeviceRemarkMap(DEVICE_REMARK_BACKUPS_KEY);
+    const key = `${data.ownerDeviceId}:${state.deviceId}`;
+    if (!backups[key] || Number(data.updatedAt) >= Number(backups[key].updatedAt || 0)) {
+        backups[key] = { remark: String(data.remark || '').slice(0, 120), updatedAt: Number(data.updatedAt) || Date.now() };
+        localStorage.setItem(DEVICE_REMARK_BACKUPS_KEY, JSON.stringify(backups));
+    }
+}
+
+function handleDeviceRemarkRestoreRequest(data) {
+    if (data?.helperDeviceId !== state.deviceId || !data.ownerDeviceId) return;
+    const backup = readDeviceRemarkMap(DEVICE_REMARK_BACKUPS_KEY)[`${data.ownerDeviceId}:${state.deviceId}`];
+    if (!backup) return;
+    state.socket?.emit('device-remark-restore-response', {
+        ownerDeviceId: data.ownerDeviceId,
+        remark: backup.remark,
+        updatedAt: backup.updatedAt
+    });
+}
+
+function handleDeviceRemarkRestoreResponse(data) {
+    if (data?.ownerDeviceId !== state.deviceId || !data.helperDeviceId) return;
+    const remarks = readDeviceRemarkMap(DEVICE_REMARKS_KEY);
+    const current = remarks[data.helperDeviceId];
+    if (!current || Number(data.updatedAt) > Number(current.updatedAt || 0)) {
+        if (data.remark) remarks[data.helperDeviceId] = { remark: String(data.remark).slice(0, 120), updatedAt: Number(data.updatedAt) || Date.now() };
+        else delete remarks[data.helperDeviceId];
+        localStorage.setItem(DEVICE_REMARKS_KEY, JSON.stringify(remarks));
+        updateDeviceList();
+    }
+}
+
+function syncDeviceRemarkWithHelper(deviceId) {
+    if (!deviceId || !state.socket?.connected) return;
+    const local = getLocalDeviceRemark(deviceId);
+    const signature = `${local?.updatedAt || 0}:${local?.remark || ''}`;
+    if (deviceRemarkSyncSignatures.get(deviceId) !== signature) {
+        deviceRemarkSyncSignatures.set(deviceId, signature);
+        if (local) state.socket.emit('device-remark-backup', {
+            targetDeviceId: deviceId,
+            remark: local.remark,
+            updatedAt: local.updatedAt
+        });
+    }
+    state.socket.emit('device-remark-restore-request', { helperDeviceId: deviceId });
+}
+
 async function startIntercomWithDevice(device) {
     try {
         if (!device?.deviceId) return;
@@ -11049,7 +11431,9 @@ function renderDeviceRow(device, options = {}) {
         </div>
     `;
     const name = el.querySelector('.name');
-    name.textContent = `${normalized.name || normalized.deviceId}${isSelf ? ' (我)' : ''}`;
+    const localRemark = isSelf ? '' : getLocalDeviceRemark(normalized.deviceId)?.remark;
+    name.textContent = `${localRemark || normalized.name || normalized.deviceId}${isSelf ? ' (我)' : ''}`;
+    if (localRemark) name.title = `设备原名：${normalized.name || normalized.deviceId}`;
     makeDeviceNameInteractive(name, normalized);
     const status = el.querySelector('.status');
     status.textContent = isSelf
@@ -11102,6 +11486,7 @@ function showDeviceProfile(device, options = {}) {
     title.textContent = profile.name || '设备资料';
     fields.innerHTML = '';
     [
+        ['我的备注', getLocalDeviceRemark(profile.deviceId)?.remark || '未设置'],
         ['设备ID', profile.deviceId || '-'],
         ['型号', profile.model || '-'],
         ['内网IP', profile.internalIp || '-'],
@@ -11146,6 +11531,24 @@ function showDeviceProfile(device, options = {}) {
             followButton.textContent = '取消关注';
         }
     };
+    document.getElementById('deviceRemarkBtn')?.remove();
+    if (profile.deviceId !== state.deviceId) {
+        const remarkButton = document.createElement('button');
+        remarkButton.id = 'deviceRemarkBtn';
+        remarkButton.type = 'button';
+        remarkButton.className = 'btn btn-secondary';
+        remarkButton.textContent = '设置备注';
+        remarkButton.onclick = async () => {
+            const current = getLocalDeviceRemark(profile.deviceId)?.remark || '';
+            const next = prompt('设置仅自己可见的设备备注（留空即删除）', current);
+            if (next === null) return;
+            await setLocalDeviceRemark(profile.deviceId, next);
+            closeDeviceProfile();
+            showDeviceProfile(profile, options);
+            updateDeviceList();
+        };
+        followButton.parentElement?.insertBefore(remarkButton, followButton);
+    }
     modal.classList.add('active');
     historyLog('device-profile-opened', { contactDeviceId: profile.deviceId, fromContactList: Boolean(options.contact) });
 }
@@ -11549,6 +11952,33 @@ function formatNearbyHint(device) {
     return device?.discoveryReason === 'same-network' ? '同一网络' : '局域网候选';
 }
 
+async function inviteNearbyDeviceToCurrentTunnel(device) {
+    if (!device?.deviceId || !state.sessionId) return;
+    const invitationId = generateId();
+    const invite = {
+        invitationId,
+        from: state.deviceId,
+        to: device.deviceId,
+        sessionId: state.sessionId,
+        link: `${window.location.origin}/?open=1&invite=${encodeURIComponent(invitationId)}&from=${encodeURIComponent(state.deviceId)}#${state.sessionId}`,
+        sender: {
+            deviceId: state.deviceId,
+            name: state.deviceName,
+            profileUrl: `${window.location.origin}/device/${encodeURIComponent(state.deviceId)}`
+        },
+        createdAt: Date.now()
+    };
+    const response = await sendTunnelInvite(invite);
+    if (!response?.delivered) {
+        const queued = getQueuedTunnelInvites().filter(item => item.invitationId !== invitationId);
+        queued.push(invite);
+        setQueuedTunnelInvites(queued);
+        showAppToast('对方暂时不可达，邀请已加入待发送队列');
+        return;
+    }
+    showAppToast('已向附近设备发送加入邀请');
+}
+
 function renderNearbyDevices() {
     const container = document.getElementById('nearbyDeviceList');
     if (!container) return;
@@ -11578,6 +12008,22 @@ function renderNearbyDevices() {
         });
         info.append(name, hint);
         row.append(info);
+        const alreadyJoined = state.devices.has(device.deviceId);
+        if (!alreadyJoined) {
+            const inviteButton = document.createElement('button');
+            inviteButton.type = 'button';
+            inviteButton.className = 'session-tool';
+            inviteButton.textContent = '邀请';
+            inviteButton.title = '邀请此设备加入当前隧道';
+            inviteButton.addEventListener('click', async () => {
+                inviteButton.disabled = true;
+                await inviteNearbyDeviceToCurrentTunnel(device).catch(err => {
+                    showAppToast(`邀请失败：${err.message}`);
+                });
+                setTimeout(() => { inviteButton.disabled = false; }, 1200);
+            });
+            row.appendChild(inviteButton);
+        }
         container.appendChild(row);
     });
 }
@@ -11625,6 +12071,7 @@ function updateDeviceList() {
 
     state.devices.forEach(device => {
         container.appendChild(renderDeviceRow(device));
+        syncDeviceRemarkWithHelper(device.deviceId || device.id);
     });
     renderContacts();
 }

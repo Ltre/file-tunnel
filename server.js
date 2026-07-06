@@ -1299,12 +1299,14 @@ function telegramTextToHtml(text, entities = []) {
 }
 
 function getTelegramFileFromMessage(message = {}) {
+    const remark = String(message.caption || '').trim().slice(0, 500);
     if (message.document) {
         return {
             fileId: message.document.file_id,
             name: message.document.file_name || 'telegram-file',
             type: message.document.mime_type || 'application/octet-stream',
-            size: Number(message.document.file_size) || 0
+            size: Number(message.document.file_size) || 0,
+            remark
         };
     }
     if (message.video) {
@@ -1312,7 +1314,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: message.video.file_id,
             name: message.video.file_name || `telegram-video-${Date.now()}.mp4`,
             type: message.video.mime_type || 'video/mp4',
-            size: Number(message.video.file_size) || 0
+            size: Number(message.video.file_size) || 0,
+            remark
         };
     }
     if (message.animation) {
@@ -1320,7 +1323,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: message.animation.file_id,
             name: message.animation.file_name || `telegram-animation-${Date.now()}.mp4`,
             type: message.animation.mime_type || 'video/mp4',
-            size: Number(message.animation.file_size) || 0
+            size: Number(message.animation.file_size) || 0,
+            remark
         };
     }
     if (message.audio) {
@@ -1328,7 +1332,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: message.audio.file_id,
             name: message.audio.file_name || `telegram-audio-${Date.now()}.mp3`,
             type: message.audio.mime_type || 'audio/mpeg',
-            size: Number(message.audio.file_size) || 0
+            size: Number(message.audio.file_size) || 0,
+            remark
         };
     }
     if (message.voice) {
@@ -1336,7 +1341,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: message.voice.file_id,
             name: `telegram-voice-${Date.now()}.ogg`,
             type: message.voice.mime_type || 'audio/ogg',
-            size: Number(message.voice.file_size) || 0
+            size: Number(message.voice.file_size) || 0,
+            remark
         };
     }
     if (message.video_note) {
@@ -1344,7 +1350,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: message.video_note.file_id,
             name: `telegram-video-note-${Date.now()}.mp4`,
             type: 'video/mp4',
-            size: Number(message.video_note.file_size) || 0
+            size: Number(message.video_note.file_size) || 0,
+            remark
         };
     }
     if (Array.isArray(message.photo) && message.photo.length) {
@@ -1353,7 +1360,8 @@ function getTelegramFileFromMessage(message = {}) {
             fileId: photo.file_id,
             name: `telegram-photo-${Date.now()}.jpg`,
             type: 'image/jpeg',
-            size: Number(photo.file_size) || 0
+            size: Number(photo.file_size) || 0,
+            remark
         };
     }
     return null;
@@ -1363,7 +1371,7 @@ async function publishTelegramPending(chatId, shortCode, pending) {
     if (!pending) return false;
     if (pending.kind === 'text') return publishTelegramTextToTunnel(chatId, shortCode, pending.textPayload);
     const files = Array.isArray(pending.files) ? pending.files : (pending.file ? [pending.file] : []);
-    if (files.length > 1) return publishTelegramCollectionToTunnel(chatId, shortCode, files);
+    if (files.length > 1) return publishTelegramCollectionToTunnel(chatId, shortCode, files, pending.remark || '');
     if (files.length === 1) return publishTelegramFileToTunnel(chatId, shortCode, files[0]);
     return false;
 }
@@ -1384,24 +1392,31 @@ async function bindTelegramTunnel(chatId, shortCode) {
     return true;
 }
 
+function getTelegramCollectionRemark(message = {}) {
+    const caption = String(message.caption || '').trim();
+    return caption.slice(0, 500);
+}
+
 function queueTelegramMediaGroup(chatId, message, file, targetShortCode) {
     const key = `${chatId}:${message.media_group_id}`;
     let group = telegramMediaGroups.get(key);
     if (!group) {
-        group = { chatId, files: [], targetShortCode: '', timer: null, createdAt: Date.now() };
+        group = { chatId, files: [], targetShortCode: '', remark: '', timer: null, createdAt: Date.now() };
         telegramMediaGroups.set(key, group);
     }
     group.files.push({ ...file, telegramMessageId: Number(message.message_id) || 0 });
     if (targetShortCode) group.targetShortCode = targetShortCode;
+    const remark = getTelegramCollectionRemark(message);
+    if (remark && !group.remark) group.remark = remark;
     clearTimeout(group.timer);
     group.timer = setTimeout(async () => {
         telegramMediaGroups.delete(key);
         try {
             group.files.sort((left, right) => left.telegramMessageId - right.telegramMessageId);
             if (group.targetShortCode) {
-                await publishTelegramCollectionToTunnel(chatId, group.targetShortCode, group.files);
+                await publishTelegramCollectionToTunnel(chatId, group.targetShortCode, group.files, group.remark);
             } else {
-                telegramPendingFiles.set(String(chatId), { kind: 'files', files: group.files, createdAt: Date.now() });
+                telegramPendingFiles.set(String(chatId), { kind: 'files', files: group.files, remark: group.remark, createdAt: Date.now() });
                 await promptTelegramShortCode(chatId);
             }
         } catch (err) {
@@ -1468,7 +1483,11 @@ async function handleTelegramUpdate(update = {}) {
     }
     if (pending && /^[A-Z0-9]{5}$/i.test(trimmed)) {
         telegramPendingFiles.delete(chatKey);
-        await publishTelegramPending(chatId, normalizeShortCode(trimmed), pending);
+        const published = await publishTelegramPending(chatId, normalizeShortCode(trimmed), pending);
+        if (published) {
+            telegramAwaitingTunnelCode.delete(chatKey);
+            await telegramSendMessage(chatId, '待发送内容已处理完成。', { remove_keyboard: true });
+        }
         return;
     }
     const telegramFile = getTelegramFileFromMessage(message);
@@ -1620,7 +1639,8 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         timestamp: Date.now(),
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
-        sessionId
+        sessionId,
+        remark: String(telegramFile.remark || '').trim().slice(0, 500)
     };
     addToSessionHistory(sessionId, session, message, {
         fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
@@ -1669,7 +1689,7 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
     };
 }
 
-async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFiles) {
+async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFiles, remark = '') {
     const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
     if (!sessionId || !isValidSessionId(sessionId)) {
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
@@ -1688,12 +1708,14 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
             id: crypto.randomUUID(),
             files: fileInfos,
             count: fileInfos.length,
-            totalSize: fileInfos.reduce((sum, file) => sum + file.size, 0)
+            totalSize: fileInfos.reduce((sum, file) => sum + file.size, 0),
+            remark: String(remark || '').trim().slice(0, 500)
         },
         timestamp: Date.now(),
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
-        sessionId
+        sessionId,
+        remark: String(remark || '').trim().slice(0, 500)
     };
     addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'telegram-bot-album' });
     session.lastActivity = Date.now();
@@ -2327,6 +2349,41 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('device-remark-backup', (data, ack) => {
+        const targetDeviceId = sanitizeString(data?.targetDeviceId, 80);
+        const remark = sanitizeString(data?.remark, 120);
+        if (!isValidDeviceId(targetDeviceId) || targetDeviceId === currentDevice) {
+            return typeof ack === 'function' && ack({ ok: false, error: 'invalid-target' });
+        }
+        const targets = emitToDevice(targetDeviceId, 'device-remark-backup', {
+            ownerDeviceId: currentDevice,
+            targetDeviceId,
+            remark,
+            updatedAt: Number(data?.updatedAt) || Date.now()
+        });
+        if (typeof ack === 'function') ack({ ok: true, delivered: targets.length > 0 });
+    });
+
+    socket.on('device-remark-restore-request', data => {
+        const helperDeviceId = sanitizeString(data?.helperDeviceId, 80);
+        if (!isValidDeviceId(helperDeviceId) || helperDeviceId === currentDevice) return;
+        emitToDevice(helperDeviceId, 'device-remark-restore-request', {
+            ownerDeviceId: currentDevice,
+            helperDeviceId
+        });
+    });
+
+    socket.on('device-remark-restore-response', data => {
+        const ownerDeviceId = sanitizeString(data?.ownerDeviceId, 80);
+        if (!isValidDeviceId(ownerDeviceId) || ownerDeviceId === currentDevice) return;
+        emitToDevice(ownerDeviceId, 'device-remark-restore-response', {
+            ownerDeviceId,
+            helperDeviceId: currentDevice,
+            remark: sanitizeString(data?.remark, 120),
+            updatedAt: Number(data?.updatedAt) || Date.now()
+        });
+    });
+
     socket.on('nearby-presence', data => {
         const deviceId = data?.deviceId;
         if (!isValidDeviceId(deviceId) || socket.data?.deviceId !== deviceId) return;
@@ -2776,6 +2833,38 @@ io.on('connection', (socket) => {
             scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
         } catch (err) {
             console.error('message error:', err);
+        }
+    });
+
+    socket.on('forward-message', (data, ack) => {
+        try {
+            const targetSessionId = sanitizeString(data?.targetSessionId, 80);
+            const message = data?.message;
+            if (!isValidSessionId(targetSessionId) || !message || typeof message !== 'object') {
+                return typeof ack === 'function' && ack({ ok: false, error: 'invalid-forward' });
+            }
+            if (!infraStore?.getTunnel(targetSessionId)) {
+                return typeof ack === 'function' && ack({ ok: false, error: 'target-tunnel-not-found' });
+            }
+            if (message.sender !== currentDevice || JSON.stringify(message).length > MAX_MESSAGE_SIZE) {
+                return typeof ack === 'function' && ack({ ok: false, error: 'invalid-forward-message' });
+            }
+            const targetSession = getOrCreateTelegramSession(
+                targetSessionId,
+                infraStore.findShortCodeForSession(targetSessionId)
+            );
+            const historyResult = addToSessionHistory(targetSessionId, targetSession, message, {
+                fromDeviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                source: 'cross-tunnel-forward'
+            });
+            io.to(targetSessionId).emit('message', { message });
+            scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
+            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored) });
+        } catch (err) {
+            console.error('forward-message error:', err);
+            if (typeof ack === 'function') ack({ ok: false, error: 'forward-failed' });
         }
     });
 
