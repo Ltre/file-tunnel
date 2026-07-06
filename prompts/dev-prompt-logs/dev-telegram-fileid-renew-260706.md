@@ -40,9 +40,7 @@
 
        * `telegramFileId`：当前最新可用的 file_id；
        * `telegramFileUniqueId`：如果 Telegram 返回了 file_unique_id，也一并保存；
-       *
        * `telegramFileIdUpdatedAt`：本次更新 file_id 的时间戳；
-       *
        * `telegramFileIdHistory`：可选，保留旧 file_id、旧 bot 标识、更新时间、失效原因，便于排查。
 
     7. 新的 `telegramFileIdUpdatedAt` 应作为版本依据同步给同隧道其它设备。其它设备如果发现同一个文件记录上出现更新时间更晚的 Telegram `file_id`，应以最新版本为准，更新本地记录。不要让旧设备用旧 file_id 覆盖新 file_id。
