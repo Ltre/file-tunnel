@@ -321,3 +321,21 @@
 - If lightweight record metadata cannot find a playable track, selection falls back to the original `e6e9493` current-session file-store scan so locally cached library tracks without a current flat record are not omitted.
 - `下一曲` at the queue tail waits for an already-running preload promise and plays the appended track instead of treating the pending state as exhaustion and jumping directly to the queue head.
 - Local sends, filesystem-handle assets, P2P receives, and Telegram/server fallback receives reset stale library-exhaustion state and immediately reschedule tail preloading when a new playable audio cache becomes available.
+
+### Telegram Remarks And Relay Mode Reliability
+- Telegram single-file captions and album captions are copied verbatim into transfer-record remarks, including captions that contain a routing short code.
+- When a chat is already bound to a tunnel relay mode, that binding takes priority and captions are no longer parsed for another short code.
+- Telegram chat-to-tunnel bindings are persisted under `.tunnel-data`, so a long-lived relay mode survives Node.js restarts instead of unexpectedly asking for a short code again.
+- A persisted binding is validated before use. If its tunnel has actually been removed, the bot explicitly exits the stale relay mode and removes the custom keyboard.
+- Single-file remarks now use the same bottom-divider, spacing, typography, and wrapping component as collection remarks, including non-previewable file bubbles.
+
+### Tunnel List Labels
+- The bottom navigation tunnel switcher now uses `short code` or `short code · tunnel remark` on its first line and keeps only the localized date and time on its second line.
+- The connection-device tunnel selector uses the same compact `short code` or `short code · tunnel remark` format and no longer exposes long session IDs in each row.
+
+### Telegram File Continuity Repair
+- Telegram asset metadata now retains `file_id`, `file_unique_id`, update/check timestamps, and bounded historical IDs in the server sidecar and transfer record.
+- The resource manager includes `Telegram 文件防失联检测及修复`, scans Telegram-origin files one at a time, and reports visible progress and a final validity/repair summary.
+- Repair first tries the ordinary local handle/cache and online peer transfer paths. It only uploads a replacement copy after a browser has obtained the bytes, preserving the existing peer-first recovery strategy.
+- The Telegram bot configuration page now accepts a private backup chat/channel target. Repair uploads the recovered bytes there, records the returned replacement `file_id`, and updates the existing transfer record in place without creating a duplicate message.
+- Server-side message updates preserve the newest timestamped Telegram identifier metadata, preventing a stale client from overwriting a freshly repaired `file_id`.

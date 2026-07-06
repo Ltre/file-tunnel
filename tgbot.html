@@ -200,6 +200,12 @@
                     <div class="hint">Telegram 发送文件时，服务端会先按此上限拦截过大的文件。</div>
                 </div>
 
+                <div class="field">
+                    <label for="backupChatId">文件防失联备份目标</label>
+                    <input id="backupChatId" name="backupChatId" type="text" autocomplete="off" placeholder="频道 @username、群组或用户 chat ID">
+                    <div class="hint">当前 bot 必须有权向该目标发送文件。仅在修复失效 file_id 时使用。</div>
+                </div>
+
                 <div class="actions">
                     <button class="btn" type="button" id="reloadBtn">重新读取</button>
                     <button class="btn primary" type="submit">保存配置</button>
@@ -216,6 +222,7 @@
         const clearTokenInput = document.getElementById('clearToken');
         const tokenHint = document.getElementById('tokenHint');
         const maxFileSizeInput = document.getElementById('maxFileSizeMb');
+        const backupChatIdInput = document.getElementById('backupChatId');
         const statusEl = document.getElementById('status');
         const reloadBtn = document.getElementById('reloadBtn');
         let tokenConfigured = false;
@@ -237,6 +244,7 @@
                 ? `当前已配置 token：${config.tokenPreview || '已保存'}。留空保存会继续保留。`
                 : '当前未配置 token。';
             maxFileSizeInput.value = Math.max(1, Math.round((Number(config.maxFileSize) || 524288000) / 1024 / 1024));
+            backupChatIdInput.value = config.backupChatId || '';
             setStatus('配置已读取。', 'ok');
         }
 
@@ -253,7 +261,8 @@
                     body: JSON.stringify({
                         token: clearToken ? '' : token,
                         keepExistingToken: !clearToken && !token && tokenConfigured,
-                        maxFileSize: Math.round(maxFileSizeMb * 1024 * 1024)
+                        maxFileSize: Math.round(maxFileSizeMb * 1024 * 1024),
+                        backupChatId: backupChatIdInput.value.trim()
                     })
                 });
                 if (!response.ok) {

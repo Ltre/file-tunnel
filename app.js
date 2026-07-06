@@ -5436,10 +5436,12 @@ async function addMessageToChat(message, isOwn, options = {}) {
                     : ' (文件数据不可用)';
             contentHtml = `
                 <div class="message-bubble file-message" style="${opacity}">
-                    <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
-                    <div class="file-info">
-                        <div class="file-name">${escapeHtml(fileInfo.name)}</div>
-                        <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
+                    <div class="file-message-main">
+                        <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
+                        <div class="file-info">
+                            <div class="file-name">${escapeHtml(fileInfo.name)}</div>
+                            <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -5473,7 +5475,9 @@ async function addMessageToChat(message, isOwn, options = {}) {
         `;
     }
 
-    const fileRecordRemark = message.type === 'file' ? String(message.remark || '').trim() : '';
+    const fileRecordRemark = message.type === 'file'
+        ? String(message.remark || message.fileInfo?.remark || '').trim()
+        : '';
     messageEl.innerHTML = `
         <div class="message-header">
             <span>${message.senderName}</span>
@@ -9821,6 +9825,10 @@ async function getSessionResourceInventory() {
                 sourceFileId: '',
                 isEditorAsset: false,
                 isFileAsset: false,
+                isTelegramSource: false,
+                serverAssetUrl: '',
+                telegramFileId: '',
+                telegramFileIdUpdatedAt: 0,
                 file: null,
                 references: [],
                 derivedCopies: [],
@@ -9835,6 +9843,13 @@ async function getSessionResourceInventory() {
         if (candidate.sourceFileId) resource.sourceFileId = candidate.sourceFileId;
         resource.isEditorAsset = resource.isEditorAsset || candidate.isEditorAsset === true;
         resource.isFileAsset = resource.isFileAsset || candidate.isFileAsset === true || candidate.isAsset === true;
+        resource.isTelegramSource = resource.isTelegramSource || candidate.isServerAsset === true || Boolean(candidate.telegramFileId) ||
+            String(candidate.serverAssetUrl || '').startsWith('/api/server-assets/');
+        if (candidate.serverAssetUrl) resource.serverAssetUrl = candidate.serverAssetUrl;
+        if (candidate.telegramFileId && Number(candidate.telegramFileIdUpdatedAt || 0) >= resource.telegramFileIdUpdatedAt) {
+            resource.telegramFileId = candidate.telegramFileId;
+            resource.telegramFileIdUpdatedAt = Number(candidate.telegramFileIdUpdatedAt) || 0;
+        }
         if (storedFile) resource.file = candidate;
         return resource;
     };
@@ -10243,6 +10258,122 @@ async function renderMountsInResourceBrowser(container) {
     container.appendChild(section);
 }
 
+async function waitForTelegramRepairCache(resource, timeoutMs = 12000) {
+    let storedFile = await getFromStore('files', resource.id).catch(() => null);
+    if (storedFile?.externalFileHandle) storedFile = await materializeExternalFileRecord(storedFile, { requestPermission: true });
+    if (hasCompleteFileCache(storedFile, resource)) return storedFile;
+    if (!fileAssetTransfer) return null;
+    await fileAssetTransfer.requestProviderDiscovery?.(resource.id, 'telegram-file-id-repair');
+    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId || null, {
+        id: resource.id,
+        name: resource.name,
+        type: resource.type,
+        size: resource.size,
+        ownerDeviceId: resource.ownerDeviceId,
+        isAsset: true
+    }, { priority: true }).catch(() => null);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        await sleep(500);
+        storedFile = await getFromStore('files', resource.id).catch(() => null);
+        if (storedFile?.externalFileHandle) storedFile = await materializeExternalFileRecord(storedFile);
+        if (hasCompleteFileCache(storedFile, resource)) return storedFile;
+    }
+    return null;
+}
+
+async function applyTelegramFileIdUpdateLocally(fileId, update) {
+    const storedFile = await getFromStore('files', fileId).catch(() => null);
+    if (storedFile && Number(update.telegramFileIdUpdatedAt || 0) >= Number(storedFile.telegramFileIdUpdatedAt || 0)) {
+        await saveToStore('files', {
+            ...storedFile,
+            telegramFileId: update.telegramFileId,
+            telegramFileUniqueId: update.telegramFileUniqueId || '',
+            telegramFileIdUpdatedAt: update.telegramFileIdUpdatedAt,
+            isServerAsset: true,
+            serverAssetUrl: `/api/server-assets/${fileId}`
+        });
+    }
+    for (const message of await getCurrentSessionMessages()) {
+        let changed = false;
+        const patch = fileInfo => {
+            if (!fileInfo || fileInfo.id !== fileId || Number(fileInfo.telegramFileIdUpdatedAt || 0) > Number(update.telegramFileIdUpdatedAt || 0)) return;
+            fileInfo.telegramFileId = update.telegramFileId;
+            fileInfo.telegramFileUniqueId = update.telegramFileUniqueId || '';
+            fileInfo.telegramFileIdUpdatedAt = update.telegramFileIdUpdatedAt;
+            fileInfo.isServerAsset = true;
+            fileInfo.serverAssetUrl = `/api/server-assets/${fileId}`;
+            changed = true;
+        };
+        const next = { ...message };
+        if (next.fileInfo) next.fileInfo = { ...next.fileInfo };
+        if (next.collection?.files) next.collection = { ...next.collection, files: next.collection.files.map(file => ({ ...file })) };
+        patch(next.fileInfo);
+        next.collection?.files?.forEach(patch);
+        if (changed) await applyHistoryMessageUpdate(next, { remote: true });
+    }
+}
+
+async function runTelegramFileContinuityRepair() {
+    const resources = (await getSessionResourceInventory()).filter(resource => resource.isTelegramSource);
+    if (!resources.length) {
+        showAppToast('当前隧道没有 Telegram 来源文件');
+        return;
+    }
+    const progress = showBlockingProgressPanel('Telegram 文件防失联检测及修复', `准备扫描 ${resources.length} 个文件...`);
+    const stats = { valid: 0, repaired: 0, unavailable: 0, failed: 0 };
+    try {
+        for (let index = 0; index < resources.length; index++) {
+            const resource = resources[index];
+            progress.update(Math.floor(index * 100 / resources.length), `检测 ${index + 1}/${resources.length} · ${resource.name} · 有效 ${stats.valid} / 修复 ${stats.repaired} / 待来源 ${stats.unavailable} / 失败 ${stats.failed}`);
+            const response = await fetch('/api/telegram/assets/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: state.sessionId, assetIds: [resource.id] })
+            });
+            if (!response.ok) throw new Error(`检测接口返回 ${response.status}`);
+            const payload = await response.json();
+            const result = payload.results?.[0];
+            if (result?.valid) {
+                stats.valid += 1;
+                continue;
+            }
+            const storedFile = await waitForTelegramRepairCache(resource);
+            if (!storedFile) {
+                stats.unavailable += 1;
+                continue;
+            }
+            try {
+                const body = storedFile.data instanceof Blob
+                    ? storedFile.data
+                    : new Blob([storedFile.data], { type: resource.type || storedFile.type || 'application/octet-stream' });
+                const repairResponse = await fetch(`/api/telegram/assets/${encodeURIComponent(resource.id)}/repair?sessionId=${encodeURIComponent(state.sessionId)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/octet-stream',
+                        'X-File-Name': encodeURIComponent(resource.name || 'file')
+                    },
+                    body
+                });
+                const repair = await repairResponse.json().catch(() => ({}));
+                if (!repairResponse.ok) throw new Error(repair.error || `修复接口返回 ${repairResponse.status}`);
+                await applyTelegramFileIdUpdateLocally(resource.id, repair);
+                stats.repaired += 1;
+            } catch (err) {
+                stats.failed += 1;
+                historyLog('telegram-file-id-repair-failed', { fileId: resource.id, error: err.message });
+            }
+            await sleep(0);
+        }
+        progress.update(100, `有效 ${stats.valid} · 已修复 ${stats.repaired} · 暂不可修复 ${stats.unavailable} · 失败 ${stats.failed}`);
+        await sleep(500);
+    } finally {
+        progress.close();
+    }
+    await showResourceBrowser();
+    showAppToast(`Telegram 检测完成：有效 ${stats.valid}，修复 ${stats.repaired}，待来源 ${stats.unavailable}，失败 ${stats.failed}`);
+}
+
 async function showResourceBrowser() {
     const layer = document.getElementById('resourceBrowserLayer');
     if (!layer) throw new Error('资源浏览器容器不存在');
@@ -10269,6 +10400,9 @@ async function showResourceBrowser() {
     controls.className = 'resource-browser-controls';
     const mountDirectoryButton = createResourceBrowserButton('挂载本机目录', '只读映射用户授权的真实目录', () => mountLocalDirectory().catch(err => alert(err.message)));
     const mountFileButton = createResourceBrowserButton('关联本机文件', '不复制文件内容，远端请求时再读取', () => mountLocalFiles().catch(err => alert(err.message)));
+    const telegramRepairButton = createResourceBrowserButton('Telegram 文件防失联检测及修复', '检测当前 bot 是否仍可使用文件的 Telegram file_id，并在有缓存来源时换绑', () => {
+        runTelegramFileContinuityRepair().catch(err => alert(`Telegram 文件检测失败：${err.message}`));
+    });
     const searchInput = document.createElement('input');
     searchInput.type = 'search';
     searchInput.placeholder = '按名称或格式筛选资源';
@@ -10286,7 +10420,7 @@ async function showResourceBrowser() {
         option.textContent = label;
         filter.appendChild(option);
     });
-    controls.append(mountDirectoryButton, mountFileButton, searchInput, filter);
+    controls.append(mountDirectoryButton, mountFileButton, telegramRepairButton, searchInput, filter);
 
     const summary = document.createElement('div');
     summary.className = 'resource-browser-summary';
@@ -10346,6 +10480,7 @@ async function showResourceBrowser() {
                 tags.appendChild(tag);
             };
             addTag(resource.isEditorAsset ? '协同图片' : '文件');
+            if (resource.isTelegramSource) addTag('Telegram 兜底', 'protected');
             if (resource.references.length) addTag(`引用 ${resource.references.length}`, 'protected');
             else addTag('未引用', 'warning');
             if (resource.derivedCopies.length) addTag(`引用副本 ${resource.derivedCopies.length}`, 'protected');
@@ -12261,7 +12396,8 @@ async function showJoinedSessionSwitcher() {
             const time = new Date(session.lastActive || session.createdAt || Date.now()).toLocaleString('zh-CN');
             const currentClass = session.sessionId === state.sessionId ? ' is-current' : '';
             const remark = escapeHtml(String(session.remark || '').trim());
-            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;"><strong>${remark || id}</strong><br><small>${remark ? id + ' · ' : ''}${time}</small></button>`;
+            const code = escapeHtml(normalizeLocalShortCode(session.shortCode) || '-----');
+            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;"><strong>${code}${remark ? ` · ${remark}` : ''}</strong><br><small>${time}</small></button>`;
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
@@ -12373,7 +12509,8 @@ async function renderShortCodeSwitchMenu() {
         button.className = `short-code-switch-item${session.sessionId === state.sessionId ? ' is-current' : ''}`;
         button.dataset.sessionId = session.sessionId;
         const code = normalizeLocalShortCode(session.shortCode) || '-----';
-        button.innerHTML = `<strong>${escapeHtml(code)}</strong><small>${escapeHtml(session.sessionId)}</small>`;
+        const remark = String(session.remark || '').trim();
+        button.innerHTML = `<strong>${escapeHtml(code)}${remark ? ` · ${escapeHtml(remark)}` : ''}</strong>`;
         button.addEventListener('click', () => {
             if (session.sessionId === state.sessionId) {
                 closeShortCodeSwitchMenu();

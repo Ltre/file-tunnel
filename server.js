@@ -21,6 +21,7 @@ const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
+const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
@@ -90,11 +91,13 @@ function normalizeTelegramBotConfig(config = {}) {
     const token = sanitizeString(config.token || '', 260);
     const webhookSecret = sanitizeString(config.webhookSecret || '', 160);
     const maxFileSize = Math.max(1, Number(config.maxFileSize || 500 * 1024 * 1024));
+    const backupChatId = sanitizeString(config.backupChatId || '', 120);
     return {
         enabled: Boolean(token),
         token,
         webhookSecret,
-        maxFileSize
+        maxFileSize,
+        backupChatId
     };
 }
 
@@ -137,6 +140,22 @@ function getTelegramWebhookSecret() {
 
 function getTelegramMaxFileSize() {
     return Math.max(1, Number(telegramConfig.maxFileSize || 500 * 1024 * 1024));
+}
+
+function loadTelegramChatTunnels() {
+    try {
+        const entries = JSON.parse(fs.readFileSync(TELEGRAM_CHAT_TUNNELS_PATH, 'utf8'));
+        return new Map((Array.isArray(entries) ? entries : []).filter(entry =>
+            Array.isArray(entry) && entry.length === 2 && entry[0] && entry[1]?.shortCode && entry[1]?.sessionId
+        ));
+    } catch (_) {
+        return new Map();
+    }
+}
+
+function persistTelegramChatTunnels() {
+    fs.mkdirSync(SERVER_DATA_DIR, { recursive: true });
+    fs.writeFileSync(TELEGRAM_CHAT_TUNNELS_PATH, JSON.stringify(Array.from(telegramChatTunnels.entries()), null, 2));
 }
 
 function loadProjectConfig() {
@@ -378,7 +397,8 @@ app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
         tokenPreview: config.token ? `${config.token.slice(0, 8)}...${config.token.slice(-6)}` : '',
         webhookSecretConfigured: Boolean(config.webhookSecret),
         webhookSecretPreview: config.webhookSecret ? `${config.webhookSecret.slice(0, 6)}...${config.webhookSecret.slice(-4)}` : '',
-        maxFileSize: config.maxFileSize
+        maxFileSize: config.maxFileSize,
+        backupChatId: config.backupChatId || ''
     });
 });
 
@@ -392,7 +412,8 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
         const nextConfig = normalizeTelegramBotConfig({
             token: finalToken,
             webhookSecret,
-            maxFileSize: req.body?.maxFileSize || 500 * 1024 * 1024
+            maxFileSize: req.body?.maxFileSize || 500 * 1024 * 1024,
+            backupChatId: req.body?.backupChatId ?? currentConfig.backupChatId
         });
         let webhookRegistered = false;
         if (nextConfig.enabled) {
@@ -433,6 +454,60 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
     } catch (err) {
         console.error('save telegram config error:', err);
         res.status(500).json({ ok: false, error: 'save-telegram-config-failed' });
+    }
+});
+
+app.post('/api/telegram/assets/check', async (req, res) => {
+    if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
+    const sessionId = sanitizeString(req.body?.sessionId, 80);
+    const assetIds = Array.from(new Set(Array.isArray(req.body?.assetIds) ? req.body.assetIds : []))
+        .filter(isValidServerAssetId)
+        .slice(0, 1000);
+    if (!isValidSessionId(sessionId)) return res.status(400).json({ error: 'invalid-session' });
+    const results = [];
+    for (const assetId of assetIds) {
+        const asset = resolveTelegramServerAsset(assetId);
+        if (!asset || asset.sessionId !== sessionId) {
+            results.push({ assetId, valid: false, repairable: false, reason: 'asset-not-registered' });
+            continue;
+        }
+        if (!asset.fileId) {
+            results.push({ assetId, valid: false, repairable: true, reason: 'telegram-file-id-missing' });
+            continue;
+        }
+        try {
+            const info = await telegramApi('getFile', { file_id: asset.fileId });
+            asset.lastFileIdCheckedAt = Date.now();
+            persistTelegramServerAsset(asset);
+            results.push({ assetId, valid: Boolean(info?.file_path), repairable: true, checkedAt: asset.lastFileIdCheckedAt });
+        } catch (err) {
+            results.push({ assetId, valid: false, repairable: true, reason: String(err.message || 'telegram-file-id-invalid').slice(0, 180) });
+        }
+    }
+    res.json({ ok: true, results });
+});
+
+app.post('/api/telegram/assets/:assetId/repair', async (req, res) => {
+    const assetId = req.params.assetId;
+    const sessionId = sanitizeString(req.query?.sessionId, 80);
+    const asset = resolveTelegramServerAsset(assetId);
+    if (!asset || asset.sessionId !== sessionId) return res.status(404).json({ error: 'asset-not-registered' });
+    if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
+    if (!telegramConfig.backupChatId) return res.status(409).json({ error: 'telegram-backup-chat-not-configured' });
+    const chunks = [];
+    let size = 0;
+    const maxSize = getTelegramMaxFileSize();
+    try {
+        for await (const chunk of req) {
+            size += chunk.length;
+            if (size > maxSize) return res.status(413).json({ error: 'telegram-file-too-large' });
+            chunks.push(chunk);
+        }
+        const result = await uploadTelegramAssetBackup(asset, Buffer.concat(chunks, size));
+        res.json({ ok: true, ...result });
+    } catch (err) {
+        console.error('telegram asset repair error:', err);
+        if (!res.headersSent) res.status(502).json({ error: String(err.message || 'telegram-asset-repair-failed').slice(0, 180) });
     }
 });
 
@@ -857,7 +932,7 @@ const accessDevices = new Map();
 const nearbyPresence = new Map();
 const sessionHistoryBroadcastTimers = new Map();
 const telegramPendingFiles = new Map();
-const telegramChatTunnels = new Map();
+const telegramChatTunnels = loadTelegramChatTunnels();
 const telegramServerAssets = new Map();
 const telegramMediaGroups = new Map();
 const telegramProcessedUpdates = new Map();
@@ -1142,7 +1217,11 @@ function persistTelegramServerAsset(asset) {
         size: asset.size,
         sessionId: asset.sessionId,
         createdAt: asset.createdAt,
-        fileId: asset.fileId || ''
+        fileId: asset.fileId || '',
+        fileUniqueId: asset.fileUniqueId || '',
+        fileIdUpdatedAt: Number(asset.fileIdUpdatedAt) || 0,
+        lastFileIdCheckedAt: Number(asset.lastFileIdCheckedAt) || 0,
+        fileIdHistory: Array.isArray(asset.fileIdHistory) ? asset.fileIdHistory.slice(-20) : []
     }));
 }
 
@@ -1169,7 +1248,11 @@ function resolveTelegramServerAsset(assetId) {
         size: Number(metadata.size) || stat?.size || 0,
         sessionId: isValidSessionId(metadata.sessionId) ? metadata.sessionId : '',
         createdAt: Number(metadata.createdAt) || stat?.birthtimeMs || stat?.mtimeMs || Date.now(),
-        fileId: typeof metadata.fileId === 'string' ? metadata.fileId : ''
+        fileId: typeof metadata.fileId === 'string' ? metadata.fileId : '',
+        fileUniqueId: typeof metadata.fileUniqueId === 'string' ? metadata.fileUniqueId : '',
+        fileIdUpdatedAt: Number(metadata.fileIdUpdatedAt) || 0,
+        lastFileIdCheckedAt: Number(metadata.lastFileIdCheckedAt) || 0,
+        fileIdHistory: Array.isArray(metadata.fileIdHistory) ? metadata.fileIdHistory.slice(-20) : []
     };
     telegramServerAssets.set(assetId, asset);
     return asset;
@@ -1303,6 +1386,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.document) {
         return {
             fileId: message.document.file_id,
+            fileUniqueId: message.document.file_unique_id || '',
             name: message.document.file_name || 'telegram-file',
             type: message.document.mime_type || 'application/octet-stream',
             size: Number(message.document.file_size) || 0,
@@ -1312,6 +1396,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.video) {
         return {
             fileId: message.video.file_id,
+            fileUniqueId: message.video.file_unique_id || '',
             name: message.video.file_name || `telegram-video-${Date.now()}.mp4`,
             type: message.video.mime_type || 'video/mp4',
             size: Number(message.video.file_size) || 0,
@@ -1321,6 +1406,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.animation) {
         return {
             fileId: message.animation.file_id,
+            fileUniqueId: message.animation.file_unique_id || '',
             name: message.animation.file_name || `telegram-animation-${Date.now()}.mp4`,
             type: message.animation.mime_type || 'video/mp4',
             size: Number(message.animation.file_size) || 0,
@@ -1330,6 +1416,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.audio) {
         return {
             fileId: message.audio.file_id,
+            fileUniqueId: message.audio.file_unique_id || '',
             name: message.audio.file_name || `telegram-audio-${Date.now()}.mp3`,
             type: message.audio.mime_type || 'audio/mpeg',
             size: Number(message.audio.file_size) || 0,
@@ -1339,6 +1426,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.voice) {
         return {
             fileId: message.voice.file_id,
+            fileUniqueId: message.voice.file_unique_id || '',
             name: `telegram-voice-${Date.now()}.ogg`,
             type: message.voice.mime_type || 'audio/ogg',
             size: Number(message.voice.file_size) || 0,
@@ -1348,6 +1436,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.video_note) {
         return {
             fileId: message.video_note.file_id,
+            fileUniqueId: message.video_note.file_unique_id || '',
             name: `telegram-video-note-${Date.now()}.mp4`,
             type: 'video/mp4',
             size: Number(message.video_note.file_size) || 0,
@@ -1358,6 +1447,7 @@ function getTelegramFileFromMessage(message = {}) {
         const photo = message.photo[message.photo.length - 1];
         return {
             fileId: photo.file_id,
+            fileUniqueId: photo.file_unique_id || '',
             name: `telegram-photo-${Date.now()}.jpg`,
             type: 'image/jpeg',
             size: Number(photo.file_size) || 0,
@@ -1383,6 +1473,7 @@ async function bindTelegramTunnel(chatId, shortCode) {
         return false;
     }
     telegramChatTunnels.set(String(chatId), { shortCode, sessionId, updatedAt: Date.now() });
+    persistTelegramChatTunnels();
     await telegramSendMessage(chatId, `当前处于 ${shortCode} 隧道中转模式，直接发送任何内容，将转发到此隧道。`, telegramBoundKeyboard(shortCode));
     const pending = telegramPendingFiles.get(String(chatId));
     if (pending) {
@@ -1455,6 +1546,7 @@ async function handleTelegramUpdate(update = {}) {
     }
     if (isLeaveTunnelCommand(text)) {
         const hadTunnel = telegramChatTunnels.delete(chatKey);
+        if (hadTunnel) persistTelegramChatTunnels();
         telegramPendingFiles.delete(chatKey);
         telegramAwaitingTunnelCode.delete(chatKey);
         await telegramSendMessage(chatId, hadTunnel ? '已离开隧道中转模式。' : '当前不在隧道中转模式。', { remove_keyboard: true });
@@ -1471,8 +1563,17 @@ async function handleTelegramUpdate(update = {}) {
         await bindTelegramTunnel(chatId, commandCode);
         return;
     }
-    const boundTunnel = telegramChatTunnels.get(chatKey);
-    const extractedCode = extractShortCodeFromText(text);
+    let boundTunnel = telegramChatTunnels.get(chatKey);
+    if (boundTunnel) {
+        const activeSessionId = infraStore?.findSessionIdByShortCode(boundTunnel.shortCode) || shortCodes.get(boundTunnel.shortCode);
+        if (!activeSessionId || activeSessionId !== boundTunnel.sessionId) {
+            telegramChatTunnels.delete(chatKey);
+            persistTelegramChatTunnels();
+            boundTunnel = null;
+            await telegramSendMessage(chatId, '此前绑定的隧道已失效，已自动退出中转模式。请重新使用 /tunnel 进入有效隧道。', { remove_keyboard: true });
+        }
+    }
+    const extractedCode = boundTunnel ? '' : extractShortCodeFromText(text);
     const extractedSessionId = extractedCode && (infraStore?.findSessionIdByShortCode(extractedCode) || shortCodes.get(extractedCode));
     const captionCode = extractedSessionId && isValidSessionId(extractedSessionId) ? extractedCode : '';
     const pending = telegramPendingFiles.get(chatKey);
@@ -1491,7 +1592,7 @@ async function handleTelegramUpdate(update = {}) {
         return;
     }
     const telegramFile = getTelegramFileFromMessage(message);
-    const targetShortCode = captionCode || boundTunnel?.shortCode || '';
+    const targetShortCode = boundTunnel?.shortCode || captionCode || '';
     if (telegramFile && message.media_group_id) {
         queueTelegramMediaGroup(chatId, message, telegramFile, targetShortCode);
         return;
@@ -1526,6 +1627,68 @@ async function telegramApi(method, payload, token = getTelegramBotToken()) {
         throw new Error(result.description || `telegram-${method}-failed`);
     }
     return result.result;
+}
+
+async function uploadTelegramAssetBackup(asset, data) {
+    if (!data?.length) throw new Error('repair-file-content-empty');
+    const form = new FormData();
+    form.set('chat_id', telegramConfig.backupChatId);
+    form.set('caption', `Drop2Tunnel backup · ${asset.id}`);
+    form.set('document', new Blob([data], { type: asset.type || 'application/octet-stream' }), asset.name || 'file');
+    const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendDocument`, {
+        method: 'POST',
+        body: form
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.description || `telegram-sendDocument-${response.status}`);
+    const document = payload.result?.document;
+    if (!document?.file_id) throw new Error('telegram-repair-file-id-missing');
+    const updatedAt = Date.now();
+    const previousFileId = asset.fileId || '';
+    asset.fileIdHistory = [
+        ...(Array.isArray(asset.fileIdHistory) ? asset.fileIdHistory : []),
+        ...(previousFileId ? [{ fileId: previousFileId, fileUniqueId: asset.fileUniqueId || '', replacedAt: updatedAt, reason: 'rotated-by-current-bot' }] : [])
+    ].slice(-20);
+    asset.fileId = document.file_id;
+    asset.fileUniqueId = document.file_unique_id || '';
+    asset.fileIdUpdatedAt = updatedAt;
+    asset.lastFileIdCheckedAt = updatedAt;
+    persistTelegramServerAsset(asset);
+    updateTelegramAssetMetadataInSession(asset);
+    return {
+        assetId: asset.id,
+        telegramFileId: asset.fileId,
+        telegramFileUniqueId: asset.fileUniqueId,
+        telegramFileIdUpdatedAt: updatedAt
+    };
+}
+
+function updateTelegramAssetMetadataInSession(asset) {
+    const session = sessions.get(asset.sessionId);
+    if (!session) return;
+    for (let index = 0; index < session.history.length; index++) {
+        const previous = session.history[index];
+        const message = previous.message;
+        let changed = false;
+        const patch = fileInfo => {
+            if (!fileInfo || fileInfo.id !== asset.id) return;
+            fileInfo.telegramFileId = asset.fileId;
+            fileInfo.telegramFileUniqueId = asset.fileUniqueId;
+            fileInfo.telegramFileIdUpdatedAt = asset.fileIdUpdatedAt;
+            fileInfo.serverAssetUrl = `/api/server-assets/${asset.id}`;
+            fileInfo.isServerAsset = true;
+            changed = true;
+        };
+        patch(message.fileInfo);
+        if (message.type === 'collection') message.collection?.files?.forEach(patch);
+        if (!changed) continue;
+        const historyMessage = createHistoryMessage(message);
+        const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
+        session.history[index] = { message: historyMessage, size };
+        session.historySize = Math.max(0, session.historySize - previous.size + size);
+        io.to(asset.sessionId).emit('message-updated', { message: historyMessage });
+    }
+    scheduleSessionHistoryBroadcast(asset.sessionId, 'telegram-file-id-repaired');
 }
 
 async function telegramSendMessage(chatId, text, replyMarkup = undefined) {
@@ -1616,7 +1779,9 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         size: Number(telegramFile.size) || 0,
         sessionId,
         createdAt: Date.now(),
-        fileId: telegramFile.fileId
+        fileId: telegramFile.fileId,
+        fileUniqueId: telegramFile.fileUniqueId || '',
+        fileIdUpdatedAt: Date.now()
     };
     persistTelegramServerAsset(asset);
     const session = getOrCreateTelegramSession(sessionId, shortCode);
@@ -1634,7 +1799,11 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
             ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
             isAsset: false,
             isServerAsset: true,
-            serverAssetUrl: `/api/server-assets/${assetId}`
+            serverAssetUrl: `/api/server-assets/${assetId}`,
+            remark: String(telegramFile.remark || '').trim().slice(0, 500),
+            telegramFileId: asset.fileId,
+            telegramFileUniqueId: asset.fileUniqueId,
+            telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
         },
         timestamp: Date.now(),
         sender: TELEGRAM_BOT_DEVICE_ID,
@@ -1671,7 +1840,9 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         size: Number(telegramFile.size) || 0,
         sessionId,
         createdAt: Date.now(),
-        fileId: telegramFile.fileId
+        fileId: telegramFile.fileId,
+        fileUniqueId: telegramFile.fileUniqueId || '',
+        fileIdUpdatedAt: Date.now()
     };
     persistTelegramServerAsset(asset);
     return {
@@ -1685,7 +1856,11 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
         isAsset: false,
         isServerAsset: true,
-        serverAssetUrl: `/api/server-assets/${asset.id}`
+        serverAssetUrl: `/api/server-assets/${asset.id}`,
+        remark: String(telegramFile.remark || '').trim().slice(0, 500),
+        telegramFileId: asset.fileId,
+        telegramFileUniqueId: asset.fileUniqueId,
+        telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
     };
 }
 
@@ -2057,6 +2232,28 @@ function createHistoryMessage(message) {
     }
 
     return historyMessage;
+}
+
+function preserveNewestTelegramFileIds(previousMessage, nextMessage) {
+    const previousById = new Map();
+    const collect = (message, callback) => {
+        if (message?.fileInfo?.id) callback(message.fileInfo);
+        if (message?.type === 'collection' && Array.isArray(message.collection?.files)) message.collection.files.forEach(callback);
+    };
+    collect(previousMessage, fileInfo => previousById.set(fileInfo.id, fileInfo));
+    collect(nextMessage, fileInfo => {
+        const previous = previousById.get(fileInfo.id);
+        if (!previous) return;
+        const previousUpdatedAt = Number(previous.telegramFileIdUpdatedAt) || 0;
+        const nextUpdatedAt = Number(fileInfo.telegramFileIdUpdatedAt) || 0;
+        if (previousUpdatedAt <= nextUpdatedAt) return;
+        fileInfo.telegramFileId = previous.telegramFileId;
+        fileInfo.telegramFileUniqueId = previous.telegramFileUniqueId || '';
+        fileInfo.telegramFileIdUpdatedAt = previousUpdatedAt;
+        fileInfo.isServerAsset = previous.isServerAsset;
+        fileInfo.serverAssetUrl = previous.serverAssetUrl;
+    });
+    return nextMessage;
 }
 
 function summarizeHistoryMessage(message) {
@@ -2946,7 +3143,10 @@ io.on('connection', (socket) => {
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === message.id);
             if (historyIndex < 0) return;
-            const historyMessage = createHistoryMessage(message);
+            const historyMessage = preserveNewestTelegramFileIds(
+                session.history[historyIndex].message,
+                createHistoryMessage(message)
+            );
             const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
             if (size > MAX_HISTORY_SIZE) return;
 

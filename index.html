@@ -608,11 +608,15 @@
         
         /* 文件消息 */
         .file-message {
+            display: block;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .file-message-main {
             display: flex;
             align-items: center;
             gap: 12px;
-            cursor: pointer;
-            transition: transform 0.2s;
         }
         
         .file-message:hover {
