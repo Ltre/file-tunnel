@@ -380,3 +380,22 @@
 - Record action menus close before running any command, so copy feedback, forwarding dialogs, remark editing, and deletion confirmations cannot be covered by the old menu.
 - Replaced the native remark prompt with a responsive modal editor, character counter, backdrop cancellation, and Ctrl/Cmd+Enter save support.
 - The mobile record-action sheet now has a real pointer-enabled handle and follows a downward drag before dismissing past a guarded threshold.
+
+### Forwarding, Collection Return, And File Handles
+- The destination selector remembers the last tunnel used for forwarding on the current device and preselects it for the next transfer-record forward operation.
+- Deleting a collection member now preserves its preview origin: files opened from the collection grid return to that grid, while files opened directly from the flat record return to the flat history view.
+- File System Access handles are now retained only for files of at least 30 MB. Smaller selected or dropped files use ordinary browser cache storage and no longer produce repeated external-file permission prompts.
+
+### Versioned Rich-Text Editing
+- Rich-text records now start with version 1 and retain synchronized version entries containing content, editor device ID/name, edit time, and version number.
+- Added in-viewer edit and history commands, a responsive rich-text editor, a two-pane read-only line diff with `+`/`-` markers, and version selectors.
+- The server accepts rich-text changes only through an atomic base-version check. Stale edits return a conflict instead of overwriting the newest content.
+- Offline edits are stored separately on the device and reconciled after reconnect. Conflicts can be manually merged or sent as a new record linked to the original.
+- Direct content replacement through the generic message-update channel is rejected for rich-text records, preserving the version chain.
+
+### Tunnel Settings And Permissions
+- Added a gear entry immediately before the temporary-leave control and a responsive settings workspace for tunnel tools and permissions.
+- Moved folder sending, directory sync, clipboard sharing, garbage cleanup, resource browsing, and backup/import out of the connection panel into settings without duplicating their existing handlers.
+- Added persistent SQLite tunnel owner and permission metadata with migrations for existing installations.
+- The tunnel creator can configure default permissions for reading, text, rich text, files, deletion, collaborative editing, global intercom speech, and group voice chat.
+- Permission state is synchronized to every device and enforced in both client controls and server handlers. Read-restricted devices do not receive snapshots, realtime records, or history broadcasts.

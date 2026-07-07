@@ -35,6 +35,8 @@ class InfraStore {
                 created_at INTEGER NOT NULL,
                 last_activity INTEGER NOT NULL,
                 remark TEXT,
+                owner_device_id TEXT,
+                permissions_json TEXT,
                 deleted_at INTEGER
             );
             CREATE TABLE IF NOT EXISTS devices (
@@ -58,6 +60,16 @@ class InfraStore {
         `);
         try {
             this.db.run('ALTER TABLE tunnels ADD COLUMN remark TEXT');
+        } catch (_) {
+            // Existing databases already have this column after the first migration.
+        }
+        try {
+            this.db.run('ALTER TABLE tunnels ADD COLUMN owner_device_id TEXT');
+        } catch (_) {
+            // Existing databases already have this column after the first migration.
+        }
+        try {
+            this.db.run('ALTER TABLE tunnels ADD COLUMN permissions_json TEXT');
         } catch (_) {
             // Existing databases already have this column after the first migration.
         }
@@ -188,9 +200,23 @@ class InfraStore {
 
     getTunnel(sessionId) {
         return this.get(
-            'SELECT session_id, short_code, created_at, last_activity, remark FROM tunnels WHERE session_id = ? AND deleted_at IS NULL',
+            'SELECT session_id, short_code, created_at, last_activity, remark, owner_device_id, permissions_json FROM tunnels WHERE session_id = ? AND deleted_at IS NULL',
             [sessionId]
         );
+    }
+
+    setTunnelAccess(sessionId, ownerDeviceId = '', permissions = {}, lastActivity = Date.now()) {
+        const now = Date.now();
+        this.run(`
+            INSERT INTO tunnels (session_id, short_code, created_at, last_activity, owner_device_id, permissions_json, deleted_at)
+            VALUES (?, NULL, ?, ?, ?, ?, NULL)
+            ON CONFLICT(session_id) DO UPDATE SET
+                owner_device_id = COALESCE(NULLIF(tunnels.owner_device_id, ''), excluded.owner_device_id),
+                permissions_json = excluded.permissions_json,
+                last_activity = MAX(tunnels.last_activity, excluded.last_activity),
+                deleted_at = NULL
+        `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify(permissions || {})]);
+        this.save();
     }
 
     setTunnelRemark(sessionId, remark = '', lastActivity = Date.now()) {

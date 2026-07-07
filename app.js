@@ -64,6 +64,8 @@ const state = {
     pendingTunnelInviteReceipt: null,
     recentSessionId: null,
     sessionRemark: '',
+    sessionOwnerDeviceId: '',
+    sessionPermissions: null,
     pendingSharedFileCount: 0,
     pendingSharedFileError: false,
     pendingRecordId: '',
@@ -91,6 +93,7 @@ let fileAssetPresenceRefreshTimer = null;
 let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
 let richViewerHistoryOpen = false;
+let activeRichMessageId = '';
 let filePreviewHistoryOpen = false;
 let filePreviewNestedHistoryOpen = false;
 let mediaFullscreenHistoryOpen = false;
@@ -135,6 +138,29 @@ let lastLocalHistoryTimestamp = 0;
 const MUSIC_PLAYER_STORAGE_KEY = 'tunnelMusicPlayerQueue:v1';
 const MUSIC_LIBRARY_STORAGE_KEY = 'tunnelMusicLibrary:v1';
 const SESSION_DIRECTORY_STORAGE_KEY = 'tunnelSessionDirectory:v1';
+const LAST_FORWARD_SESSION_STORAGE_KEY = 'tunnelLastForwardSession:v1';
+const PENDING_RICH_EDITS_STORAGE_KEY = 'tunnelPendingRichEdits:v1';
+const EXTERNAL_FILE_HANDLE_MIN_SIZE = 30 * 1024 * 1024;
+const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
+    read: true,
+    sendText: true,
+    sendRich: true,
+    sendFile: true,
+    delete: true,
+    collaborativeEdit: true,
+    globalIntercom: true,
+    groupVoice: true
+});
+const TUNNEL_PERMISSION_LABELS = Object.freeze({
+    read: '读取传输记录',
+    sendText: '发送文本',
+    sendRich: '发送富文本',
+    sendFile: '发送文件',
+    delete: '删除记录',
+    collaborativeEdit: '协同编辑',
+    globalIntercom: '全局对讲机发声',
+    groupVoice: '群语音通话'
+});
 let musicPlayerPersistTimer = null;
 let musicPlayerDurablePersistTimer = null;
 let musicPlayerLastPersistAt = 0;
@@ -1271,6 +1297,7 @@ function initSocket() {
         });
         flushPendingTunnelInvites();
         sendPendingTunnelInviteReceipt();
+        setTimeout(() => reconcilePendingRichEdits().catch(err => historyLog('pending-rich-edit-reconcile-failed', { error: err.message })), 1200);
         discoverLocalNetworkIp().then(localIp => {
             if (!localIp || localIp === state.reportedLanIp || !state.socket?.connected) return;
             state.reportedLanIp = localIp;
@@ -1317,6 +1344,14 @@ function initSocket() {
     });
     state.socket.on('session-remark', (data) => {
         updateSessionRemark(data?.remark || '').catch(err => historyLog('session-remark-persist-failed', { error: err.message }));
+    });
+    state.socket.on('session-permissions', data => {
+        state.sessionOwnerDeviceId = String(data?.ownerDeviceId || '');
+        state.sessionPermissions = { ...DEFAULT_TUNNEL_PERMISSIONS, ...(data?.permissions || {}) };
+        applyTunnelPermissionUi();
+    });
+    state.socket.on('permission-denied', data => {
+        showAppToast(`操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
     state.socket.on('short-code-session', (data) => {
         if (data?.sessionId && data.sessionId !== state.sessionId) {
@@ -2804,7 +2839,10 @@ function initAssetPresenceRefresh() {
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
-    const externalFileHandle = options.externalFileHandle?.getFile ? options.externalFileHandle : null;
+    if (!requireTunnelPermission('sendFile')) return null;
+    const externalFileHandle = Number(file?.size || 0) >= EXTERNAL_FILE_HANDLE_MIN_SIZE && options.externalFileHandle?.getFile
+        ? options.externalFileHandle
+        : null;
     const fileInfo = createFileInfoFromFile(file, {
         ...options,
         isExternalFile: Boolean(externalFileHandle),
@@ -3673,7 +3711,15 @@ async function processOutboundFileAssetQueue() {
 }
 
 async function sendFileCollection(files, options = {}) {
-    const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null }).filter(item => item.file);
+    if (!requireTunnelPermission('sendFile')) return;
+    const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null })
+        .filter(item => item.file)
+        .map(entry => ({
+            ...entry,
+            handle: Number(entry.file?.size || 0) >= EXTERNAL_FILE_HANDLE_MIN_SIZE && entry.handle?.getFile
+                ? entry.handle
+                : null
+        }));
     if (!entries.length) return;
     if (entries.length === 1) {
         await sendFile(entries[0].file, null, { ...options, externalFileHandle: entries[0].handle });
@@ -5863,6 +5909,7 @@ async function chooseForwardTargetSession() {
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId && session.sessionId !== state.sessionId)
         .sort((left, right) => String(left.sessionId).localeCompare(String(right.sessionId), undefined, { numeric: true }));
+    const lastTargetSessionId = localStorage.getItem(LAST_FORWARD_SESSION_STORAGE_KEY) || '';
     if (!sessions.length) throw new Error('本机没有可转发的其他隧道');
     return new Promise(resolve => {
         const overlay = document.createElement('div');
@@ -5885,6 +5932,10 @@ async function chooseForwardTargetSession() {
             if (event.target.closest('[data-forward-confirm]')) finish(overlay.querySelector('.forward-session-select')?.value || '');
         });
         document.body.appendChild(overlay);
+        const select = overlay.querySelector('.forward-session-select');
+        if (select && sessions.some(session => session.sessionId === lastTargetSessionId)) {
+            select.value = lastTargetSessionId;
+        }
     });
 }
 
@@ -5919,6 +5970,7 @@ async function forwardHistoryMessage(messageId) {
     if (!source) throw new Error('找不到原传输记录');
     const targetSessionId = await chooseForwardTargetSession();
     if (!targetSessionId) return;
+    localStorage.setItem(LAST_FORWARD_SESSION_STORAGE_KEY, targetSessionId);
     const message = {
         ...source,
         id: generateId(),
@@ -9777,6 +9829,7 @@ async function restoreFileCache(messageId, options = {}) {
 }
 
 async function deleteHistoryMessage(messageId) {
+    if (!requireTunnelPermission('delete')) return;
     if (!state.socket?.connected) {
         alert('当前未连接到会话，无法同步删除记录。');
         return;
@@ -9827,6 +9880,11 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     });
     if (removedCollectionFiles.length) {
         enqueueFileCacheCleanup(removedCollectionFiles.map(fileInfo => fileInfo.id), 'collection-file-removed');
+    }
+    if (message.type === 'rich' && activeRichMessageId === message.id && document.getElementById('richViewer')?.classList.contains('active')) {
+        const container = document.getElementById('richViewerContent');
+        container.innerHTML = message.content;
+        await hydrateEditorAssets(container);
     }
 }
 
@@ -9911,6 +9969,7 @@ async function processPendingFileCacheCleanup() {
 }
 
 async function deleteFileFromCollection(collectionMessageId, fileId) {
+    if (!requireTunnelPermission('delete')) return;
     const message = await getFromStore('messages', collectionMessageId);
     const files = getCollectionFiles(message);
     const removedFile = files.find(file => file.id === fileId);
@@ -9925,6 +9984,7 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
         return;
     }
 
+    const shouldReturnToCollection = filePreviewReturnCollectionMessageId === collectionMessageId;
     const nextMessage = {
         ...message,
         collection: {
@@ -9936,7 +9996,8 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
         updatedAt: Date.now()
     };
     await updateHistoryMessage(nextMessage);
-    filePreviewReturnCollectionMessageId = '';
+    if (shouldReturnToCollection) closeFilePreview();
+    else closeFilePreview({ forceClose: true });
     historyLog('collection-file-deleted', {
         messageId: collectionMessageId,
         fileId,
@@ -11097,6 +11158,7 @@ async function publishHistoryMessage(message, options = {}) {
 }
 
 async function sendText() {
+    if (!requireTunnelPermission('sendText')) return;
     const input = document.getElementById('textInput');
     const text = input.value.trim();
 
@@ -11178,6 +11240,7 @@ function getEditorContentSize(content) {
 }
 
 async function syncEditorContent(content) {
+    if (!requireTunnelPermission('collaborativeEdit')) return { emitted: false, reason: 'permission-denied' };
     content = serializeEditorContent(content);
     await persistEditorContent(content);
 
@@ -11679,6 +11742,7 @@ function initEditor() {
 
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
+        if (!requireTunnelPermission('sendRich')) return;
         const content = serializeEditorContent(editor.innerHTML);
         if (isEditorContentEmpty(content)) {
             alert('请输入内容');
@@ -11699,7 +11763,15 @@ function initEditor() {
             content,
             timestamp: nextHistoryTimestamp(),
             sender: state.deviceId,
-            senderName: state.deviceName
+            senderName: state.deviceName,
+            richVersion: 1,
+            richHistory: [{
+                version: 1,
+                content,
+                editorDeviceId: state.deviceId,
+                editorDeviceName: state.deviceName,
+                editedAt: Date.now()
+            }]
         };
 
         await publishHistoryMessage(message);
@@ -13279,7 +13351,118 @@ function initThemeSwitcher() {
     });
 }
 
+function isTunnelOwner() {
+    return !state.sessionOwnerDeviceId || state.sessionOwnerDeviceId === state.deviceId;
+}
+
+function hasTunnelPermission(capability) {
+    if (isTunnelOwner()) return true;
+    return state.sessionPermissions?.[capability] !== false;
+}
+
+function requireTunnelPermission(capability) {
+    if (hasTunnelPermission(capability)) return true;
+    showAppToast(`当前隧道权限不允许：${TUNNEL_PERMISSION_LABELS[capability] || capability}`);
+    return false;
+}
+
+function renderTunnelPermissionSettings() {
+    const grid = document.getElementById('tunnelPermissionGrid');
+    const hint = document.getElementById('tunnelPermissionOwnerHint');
+    const save = document.getElementById('saveTunnelPermissionsBtn');
+    if (!grid || !hint || !save) return;
+    const permissions = { ...DEFAULT_TUNNEL_PERMISSIONS, ...(state.sessionPermissions || {}) };
+    grid.replaceChildren();
+    Object.entries(TUNNEL_PERMISSION_LABELS).forEach(([key, label]) => {
+        const option = document.createElement('label');
+        option.className = 'tunnel-permission-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.permission = key;
+        input.checked = permissions[key] !== false;
+        input.disabled = !isTunnelOwner();
+        option.append(input, document.createTextNode(label));
+        grid.appendChild(option);
+    });
+    hint.textContent = isTunnelOwner() ? '你是隧道创建者' : '仅创建者可修改';
+    save.hidden = !isTunnelOwner();
+}
+
+function applyTunnelPermissionUi() {
+    const bindings = {
+        sendTextBtn: 'sendText',
+        textInput: 'sendText',
+        dropZone: 'sendFile',
+        fileInput: 'sendFile',
+        folderUploadBtn: 'sendFile',
+        directorySyncBtn: 'sendFile',
+        sendRichBtn: 'sendRich',
+        editor: 'collaborativeEdit',
+        clearEditorBtn: 'collaborativeEdit',
+        insertImageBtn: 'collaborativeEdit',
+        insertFileBtn: 'collaborativeEdit',
+        globalIntercomBtn: 'globalIntercom',
+        voiceChatBtn: 'groupVoice'
+    };
+    Object.entries(bindings).forEach(([id, capability]) => {
+        const element = document.getElementById(id);
+        if (!element) return;
+        const allowed = hasTunnelPermission(capability);
+        if ('disabled' in element) element.disabled = !allowed;
+        element.setAttribute('aria-disabled', String(!allowed));
+        element.classList.toggle('permission-disabled', !allowed);
+        if (id === 'editor') element.contentEditable = allowed ? 'true' : 'false';
+    });
+    const chatMessages = document.getElementById('chatMessages');
+    const canRead = hasTunnelPermission('read');
+    chatMessages?.classList.toggle('permission-read-blocked', !canRead);
+    if (chatMessages) chatMessages.inert = !canRead;
+    ['resourceBrowserBtn', 'historyBackupBtn'].forEach(id => {
+        const element = document.getElementById(id);
+        if (element) element.disabled = !canRead;
+    });
+    renderTunnelPermissionSettings();
+}
+
+function initTunnelSettings() {
+    const settingsToolGrid = document.getElementById('settingsToolGrid');
+    const connectionTools = document.querySelector('.left-panel .session-tools');
+    if (settingsToolGrid && connectionTools && connectionTools !== settingsToolGrid) {
+        while (connectionTools.firstChild) settingsToolGrid.appendChild(connectionTools.firstChild);
+        connectionTools.remove();
+    }
+    const layer = document.getElementById('tunnelSettingsLayer');
+    const open = () => {
+        renderTunnelPermissionSettings();
+        layer.hidden = false;
+    };
+    const close = () => { layer.hidden = true; };
+    settingsToolGrid?.addEventListener('click', event => {
+        if (event.target.closest('button')) close();
+    }, true);
+    document.getElementById('tunnelSettingsBtn')?.addEventListener('click', open);
+    document.getElementById('closeTunnelSettingsBtn')?.addEventListener('click', close);
+    layer?.addEventListener('click', event => {
+        if (event.target === layer) close();
+    });
+    document.getElementById('saveTunnelPermissionsBtn')?.addEventListener('click', () => {
+        if (!isTunnelOwner()) return;
+        const permissions = {};
+        layer.querySelectorAll('[data-permission]').forEach(input => { permissions[input.dataset.permission] = input.checked; });
+        state.socket.timeout(8000).emit('session-permissions-update', {
+            sessionId: state.sessionId,
+            permissions
+        }, (err, response) => {
+            if (err || !response?.ok) return showAppToast('隧道权限保存失败');
+            state.sessionPermissions = response.permissions;
+            applyTunnelPermissionUi();
+            showAppToast('隧道默认权限已保存');
+        });
+    });
+}
+
 function initUI() {
+    initTunnelSettings();
     initThemeSwitcher();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
     window.addEventListener('pagehide', persistMusicPlayerStateNow);
@@ -13372,6 +13555,7 @@ function initUI() {
     });
 
     document.getElementById('voiceChatBtn').addEventListener('click', async () => {
+        if (!requireTunnelPermission('groupVoice')) return;
         try {
             if (mediaController.voice) mediaController.leaveVoice();
             else await mediaController.joinVoice();
@@ -13382,6 +13566,7 @@ function initUI() {
     });
 
     document.getElementById('globalIntercomBtn').addEventListener('click', async () => {
+        if (!requireTunnelPermission('globalIntercom')) return;
         try {
             if (mediaController.intercom) {
                 mediaController.stopIntercom();
@@ -13402,6 +13587,7 @@ function initUI() {
 
     // 文件上传
     document.getElementById('dropZone').addEventListener('click', () => {
+        if (!requireTunnelPermission('sendFile')) return;
         pickFilesForSending().catch(err => {
             historyLog('file-picker-send-failed', { error: err.message });
             alert(`选择文件失败：${err.message}`);
@@ -13550,6 +13736,12 @@ function initUI() {
 
     document.getElementById('closeRichViewer').addEventListener('click', () => {
         closeRichViewer();
+    });
+    document.getElementById('editRichMessageBtn')?.addEventListener('click', () => {
+        if (activeRichMessageId) openRichMessageEditor(activeRichMessageId);
+    });
+    document.getElementById('richHistoryBtn')?.addEventListener('click', () => {
+        if (activeRichMessageId) openRichHistory(activeRichMessageId);
     });
 
     // 点击遮罩关闭
@@ -14306,6 +14498,7 @@ function closeRichViewer(options = {}) {
     const viewer = document.getElementById('richViewer');
     if (!viewer?.classList.contains('active')) return;
     viewer.classList.remove('active');
+    activeRichMessageId = '';
 
     const shouldGoBack = richViewerHistoryOpen && !options.fromHistory &&
         history.state?.[RICH_VIEWER_HISTORY_KEY] === true;
@@ -14356,6 +14549,238 @@ window.addEventListener('popstate', event => {
     closeRichViewer({ fromHistory: true });
 });
 
+function normalizeRichHistory(message) {
+    const history = Array.isArray(message?.richHistory) ? message.richHistory.filter(entry => entry?.content) : [];
+    if (history.length) return history.sort((a, b) => Number(a.version) - Number(b.version));
+    return [{
+        version: Number(message?.richVersion) || 1,
+        content: message?.content || '',
+        editorDeviceId: message?.sender || '',
+        editorDeviceName: message?.senderName || '未知设备',
+        editedAt: Number(message?.timestamp) || Date.now()
+    }];
+}
+
+function readPendingRichEdits() {
+    try {
+        const value = JSON.parse(localStorage.getItem(PENDING_RICH_EDITS_STORAGE_KEY) || '{}');
+        return value && typeof value === 'object' ? value : {};
+    } catch {
+        return {};
+    }
+}
+
+function writePendingRichEdit(messageId, draft) {
+    const all = readPendingRichEdits();
+    const key = `${state.sessionId}:${messageId}`;
+    if (draft) all[key] = draft;
+    else delete all[key];
+    localStorage.setItem(PENDING_RICH_EDITS_STORAGE_KEY, JSON.stringify(all));
+}
+
+function htmlToDiffLines(html) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = String(html || '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|h[1-6])>/gi, '\n');
+    return (wrapper.textContent || '').replace(/\r/g, '').split('\n');
+}
+
+function buildLineDiff(leftHtml, rightHtml) {
+    const left = htmlToDiffLines(leftHtml);
+    const right = htmlToDiffLines(rightHtml);
+    const rows = Array.from({ length: left.length + 1 }, () => new Uint16Array(right.length + 1));
+    for (let i = left.length - 1; i >= 0; i--) {
+        for (let j = right.length - 1; j >= 0; j--) {
+            rows[i][j] = left[i] === right[j] ? rows[i + 1][j + 1] + 1 : Math.max(rows[i + 1][j], rows[i][j + 1]);
+        }
+    }
+    const operations = [];
+    let i = 0;
+    let j = 0;
+    while (i < left.length || j < right.length) {
+        if (i < left.length && j < right.length && left[i] === right[j]) {
+            operations.push({ type: 'same', left: left[i], right: right[j] }); i++; j++;
+        } else if (j < right.length && (i >= left.length || rows[i][j + 1] >= rows[i + 1][j])) {
+            operations.push({ type: 'added', left: '', right: right[j++] });
+        } else {
+            operations.push({ type: 'removed', left: left[i++], right: '' });
+        }
+    }
+    return operations;
+}
+
+function renderRichDiff(panel, leftVersion, rightVersion) {
+    const leftPane = panel.querySelector('[data-rich-diff-left]');
+    const rightPane = panel.querySelector('[data-rich-diff-right]');
+    leftPane.replaceChildren();
+    rightPane.replaceChildren();
+    buildLineDiff(leftVersion.content, rightVersion.content).forEach(operation => {
+        const addLine = (target, marker, text, className) => {
+            const line = document.createElement('div');
+            line.className = `rich-diff-line ${className || ''}`.trim();
+            line.innerHTML = `<span>${marker}</span><span>${escapeHtml(text || ' ')}</span>`;
+            target.appendChild(line);
+        };
+        addLine(leftPane, operation.type === 'removed' ? '-' : ' ', operation.left, operation.type === 'removed' ? 'removed' : '');
+        addLine(rightPane, operation.type === 'added' ? '+' : ' ', operation.right, operation.type === 'added' ? 'added' : '');
+    });
+}
+
+async function openRichHistory(messageId) {
+    const message = await getFromStore('messages', messageId);
+    if (!message?.content) return;
+    const versions = normalizeRichHistory(message);
+    const layer = document.createElement('div');
+    layer.className = 'rich-history-layer';
+    layer.innerHTML = `<section class="rich-history-panel" role="dialog" aria-modal="true">
+        <header class="rich-history-header"><h3>富文本修改历史</h3><button class="btn btn-secondary" data-rich-history-close>关闭</button></header>
+        <div class="rich-history-body">
+            <div class="rich-version-list"></div>
+            <div class="rich-diff-selectors"><select data-rich-left></select><select data-rich-right></select></div>
+            <div class="rich-diff-grid"><div class="rich-diff-pane" data-rich-diff-left></div><div class="rich-diff-pane" data-rich-diff-right></div></div>
+        </div>
+    </section>`;
+    const list = layer.querySelector('.rich-version-list');
+    const leftSelect = layer.querySelector('[data-rich-left]');
+    const rightSelect = layer.querySelector('[data-rich-right]');
+    versions.forEach(version => {
+        const label = `版本 ${version.version} · ${version.editorDeviceName || version.editorDeviceId || '未知设备'} · ${formatDateTime(version.editedAt)}`;
+        const optionLeft = new Option(label, String(version.version));
+        const optionRight = new Option(label, String(version.version));
+        leftSelect.add(optionLeft);
+        rightSelect.add(optionRight);
+        const button = document.createElement('button');
+        button.className = 'rich-version-button';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+            leftSelect.value = String(Math.max(1, Number(version.version) - 1));
+            rightSelect.value = String(version.version);
+            update();
+        });
+        list.appendChild(button);
+    });
+    leftSelect.value = String(versions[Math.max(0, versions.length - 2)].version);
+    rightSelect.value = String(versions[versions.length - 1].version);
+    const update = () => {
+        const left = versions.find(version => String(version.version) === leftSelect.value) || versions[0];
+        const right = versions.find(version => String(version.version) === rightSelect.value) || versions[versions.length - 1];
+        renderRichDiff(layer, left, right);
+    };
+    leftSelect.addEventListener('change', update);
+    rightSelect.addEventListener('change', update);
+    layer.addEventListener('click', event => {
+        if (event.target === layer || event.target.closest('[data-rich-history-close]')) layer.remove();
+    });
+    document.body.appendChild(layer);
+    update();
+}
+
+async function submitRichMessageEdit(message, content, baseVersion) {
+    if (!state.socket?.connected) {
+        writePendingRichEdit(message.id, { content, baseVersion, savedAt: Date.now() });
+        showAppToast('当前离线，修改已保存在本机；联网后将检查版本冲突');
+        return { offline: true };
+    }
+    return await new Promise((resolve, reject) => {
+        state.socket.timeout(10000).emit('rich-message-edit', {
+            sessionId: state.sessionId,
+            messageId: message.id,
+            baseVersion,
+            content
+        }, (err, response) => {
+            if (err) reject(new Error('服务端响应超时'));
+            else resolve(response || {});
+        });
+    });
+}
+
+async function publishRichConflictAsNewRecord(original, content) {
+    const message = {
+        id: generateId(),
+        type: 'rich',
+        content,
+        timestamp: nextHistoryTimestamp(),
+        sender: state.deviceId,
+        senderName: state.deviceName,
+        relatedRichMessageId: original.id,
+        richVersion: 1,
+        richHistory: [{ version: 1, content, editorDeviceId: state.deviceId, editorDeviceName: state.deviceName, editedAt: Date.now() }]
+    };
+    await publishHistoryMessage(message);
+    showAppToast('本地修改已作为关联的新记录发送');
+}
+
+async function openRichMessageEditor(messageId, draft = null) {
+    if (!requireTunnelPermission('sendRich')) return;
+    const message = await getFromStore('messages', messageId);
+    if (!message?.content) return;
+    let baseVersion = Number(draft?.baseVersion || message.richVersion) || 1;
+    const layer = document.createElement('div');
+    layer.className = 'rich-history-layer';
+    layer.innerHTML = `<section class="rich-history-panel" role="dialog" aria-modal="true">
+        <header class="rich-history-header"><h3>编辑富文本 · 基于版本 ${baseVersion}</h3><button class="btn btn-secondary" data-rich-edit-close>关闭</button></header>
+        <div class="rich-history-body"><div class="rich-conflict-notice" hidden></div><div class="rich-message-editor" contenteditable="true"></div></div>
+        <footer class="rich-history-actions"><button class="btn btn-secondary" data-rich-edit-history>修改历史</button><button class="btn btn-primary" data-rich-edit-save>保存修改</button></footer>
+    </section>`;
+    const editor = layer.querySelector('.rich-message-editor');
+    const notice = layer.querySelector('.rich-conflict-notice');
+    editor.innerHTML = draft?.content || message.content;
+    const close = () => layer.remove();
+    layer.addEventListener('click', async event => {
+        if (event.target === layer || event.target.closest('[data-rich-edit-close]')) return close();
+        if (event.target.closest('[data-rich-edit-history]')) return openRichHistory(messageId);
+        if (!event.target.closest('[data-rich-edit-save]')) return;
+        const localContent = serializeEditorContent(editor.innerHTML);
+        const response = await submitRichMessageEdit(message, localContent, baseVersion).catch(err => ({ error: err.message }));
+        if (response.offline) {
+            close();
+            return;
+        }
+        if (response.ok) {
+            writePendingRichEdit(messageId, null);
+            await applyHistoryMessageUpdate(response.message, { remote: true });
+            close();
+            await viewRichContent(messageId);
+            showAppToast(`已保存为版本 ${response.message.richVersion}`);
+            return;
+        }
+        if (response.conflict && response.message) {
+            notice.hidden = false;
+            notice.innerHTML = `线上已更新到版本 ${response.message.richVersion}，当前修改基于版本 ${baseVersion}。<div class="send-mode-actions"><button class="btn btn-secondary" data-rich-send-related>作为关联新记录发送</button><button class="btn btn-primary" data-rich-merge>手动合并</button></div>`;
+            notice.querySelector('[data-rich-send-related]').onclick = async () => { await publishRichConflictAsNewRecord(response.message, localContent); writePendingRichEdit(messageId, null); close(); };
+            notice.querySelector('[data-rich-merge]').onclick = () => {
+                notice.innerHTML = `<strong>手动合并</strong><p>下方编辑区已保留本地修改；线上版本只读展示在其后，请整理后再次保存。</p><details open><summary>线上版本 ${response.message.richVersion}</summary><div class="rich-message-editor">${response.message.content}</div></details>`;
+                baseVersion = Number(response.message.richVersion) || baseVersion;
+            };
+            return;
+        }
+        showAppToast(`保存失败：${response.error || '未知错误'}`);
+    });
+    document.body.appendChild(layer);
+    requestAnimationFrame(() => editor.focus());
+}
+
+async function reconcilePendingRichEdits() {
+    if (!state.socket?.connected) return;
+    const pending = readPendingRichEdits();
+    const prefix = `${state.sessionId}:`;
+    const entry = Object.entries(pending).find(([key]) => key.startsWith(prefix));
+    if (!entry) return;
+    const messageId = entry[0].slice(prefix.length);
+    const message = await getFromStore('messages', messageId).catch(() => null);
+    if (!message) return writePendingRichEdit(messageId, null);
+    const response = await submitRichMessageEdit(message, entry[1].content, entry[1].baseVersion).catch(() => null);
+    if (response?.ok) {
+        writePendingRichEdit(messageId, null);
+        await applyHistoryMessageUpdate(response.message, { remote: true });
+        showAppToast('离线富文本修改已同步');
+    } else if (response?.conflict) {
+        showAppToast('检测到离线富文本修改冲突，请在编辑浮层中处理');
+        openRichMessageEditor(messageId, entry[1]);
+    }
+}
+
 async function viewRichContent(messageId) {
     const message = await getFromStore('messages', messageId);
     if (message && message.type === 'rich') {
@@ -14363,6 +14788,7 @@ async function viewRichContent(messageId) {
         container.innerHTML = message.content;
         await hydrateEditorAssets(container);
         const viewer = document.getElementById('richViewer');
+        activeRichMessageId = messageId;
         if (!viewer.classList.contains('active')) {
             const baseState = history.state && typeof history.state === 'object' ? history.state : {};
             history.pushState({ ...baseState, [RICH_VIEWER_HISTORY_KEY]: true }, '', window.location.href);

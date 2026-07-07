@@ -6,7 +6,7 @@ function ensureMediaState(session) {
 }
 
 function registerMediaHandlers(socket, context) {
-    const { sessions, deviceSockets, getSessionId, getDeviceId, isValidId, historyLog, clientIp } = context;
+    const { sessions, deviceSockets, getSessionId, getDeviceId, isValidId, canUseCapability, historyLog, clientIp } = context;
     const current = () => ({ sessionId: getSessionId(), deviceId: getDeviceId() });
 
     socket.on('camera-broadcast-start', data => {
@@ -55,6 +55,9 @@ function registerMediaHandlers(socket, context) {
         if (sessionId !== current().sessionId) return;
         const session = sessions.get(sessionId);
         if (!session) return;
+        if (canUseCapability && !canUseCapability(session, deviceId, 'groupVoice')) {
+            return socket.emit('permission-denied', { capability: 'groupVoice' });
+        }
         const media = ensureMediaState(session);
         const participants = Array.from(media.voiceParticipants);
         media.voiceParticipants.add(deviceId);
@@ -83,6 +86,8 @@ function registerMediaHandlers(socket, context) {
             typeof sessionKey !== 'string' || !['offer', 'answer', 'ice-candidate'].includes(type)) return;
         const session = sessions.get(sessionId);
         if (!session?.devices.has(deviceId) || !session.devices.has(to)) return;
+        if (kind === 'voice' && canUseCapability && !canUseCapability(session, deviceId, 'groupVoice')) return;
+        if (kind === 'intercom' && canUseCapability && !canUseCapability(session, deviceId, 'globalIntercom')) return;
         const target = deviceSockets.get(to);
         if (target) target.emit('media-signal', { ...data, from: deviceId });
     });

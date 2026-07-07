@@ -945,6 +945,36 @@ const telegramAwaitingTunnelCode = new Set();
 const telegramAssetDownloads = new Map();
 const telegramAssetReaders = new Map();
 
+const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
+    read: true,
+    sendText: true,
+    sendRich: true,
+    sendFile: true,
+    delete: true,
+    collaborativeEdit: true,
+    globalIntercom: true,
+    groupVoice: true
+});
+
+function normalizeTunnelPermissions(value = {}) {
+    return Object.fromEntries(Object.keys(DEFAULT_TUNNEL_PERMISSIONS)
+        .map(key => [key, value?.[key] !== false]));
+}
+
+function parseStoredTunnelPermissions(value) {
+    try {
+        return normalizeTunnelPermissions(typeof value === 'string' ? JSON.parse(value) : value);
+    } catch {
+        return normalizeTunnelPermissions();
+    }
+}
+
+function canUseTunnelCapability(session, deviceId, capability) {
+    if (!session || !deviceId) return false;
+    if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
+    return session.permissions?.[capability] !== false;
+}
+
 function nearbyDistanceMeters(left, right) {
     if (!Number.isFinite(left?.latitude) || !Number.isFinite(left?.longitude) ||
         !Number.isFinite(right?.latitude) || !Number.isFinite(right?.longitude)) return null;
@@ -1691,7 +1721,7 @@ function updateTelegramAssetMetadataInSession(asset) {
         const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
         session.history[index] = { message: historyMessage, size };
         session.historySize = Math.max(0, session.historySize - previous.size + size);
-        io.to(asset.sessionId).emit('message-updated', { message: historyMessage });
+        emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage });
     }
     scheduleSessionHistoryBroadcast(asset.sessionId, 'telegram-file-id-repaired');
 }
@@ -1742,6 +1772,7 @@ async function downloadTelegramFile(fileId, maxSize = getTelegramMaxFileSize()) 
 function getOrCreateTelegramSession(sessionId, shortCode = '') {
     let session = sessions.get(sessionId);
     if (!session) {
+        const storedTunnel = infraStore?.getTunnel(sessionId);
         session = {
             devices: new Map(),
             editorAssets: new Map(),
@@ -1749,7 +1780,9 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
             history: [],
             deletedMessageIds: [],
             shortCode: normalizeShortCode(shortCode),
-            remark: '',
+            remark: sanitizeString(storedTunnel?.remark || '', 60),
+            ownerDeviceId: sanitizeString(storedTunnel?.owner_device_id || '', 80),
+            permissions: parseStoredTunnelPermissions(storedTunnel?.permissions_json),
             historySize: 0,
             createdAt: Date.now(),
             lastActivity: Date.now()
@@ -1821,7 +1854,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         source: 'telegram-bot'
     });
     session.lastActivity = Date.now();
-    io.to(sessionId).emit('message', { message });
+    emitToReadableSessionDevices(session, 'message', { message });
     scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-file', 300);
     await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}：${asset.name}`);
     historyLog('telegram-file-published', {
@@ -1899,7 +1932,7 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
     };
     addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'telegram-bot-album' });
     session.lastActivity = Date.now();
-    io.to(sessionId).emit('message', { message });
+    emitToReadableSessionDevices(session, 'message', { message });
     scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-album', 300);
     await telegramSendMessage(chatId, `已将 ${fileInfos.length} 个媒体文件以合辑发送到隧道 ${shortCode}。`, telegramBoundKeyboard(shortCode));
     return true;
@@ -1936,7 +1969,7 @@ async function publishTelegramTextToTunnel(chatId, shortCode, textPayload) {
     });
     session.lastActivity = Date.now();
     if (historyResult.stored) {
-        io.to(sessionId).emit('message', { message });
+        emitToReadableSessionDevices(session, 'message', { message });
         scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-text', 300);
     }
     await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}。`);
@@ -2392,6 +2425,15 @@ function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context
     });
 }
 
+function emitToReadableSessionDevices(session, event, payload, excludeDeviceId = '') {
+    if (!session?.devices) return;
+    session.devices.forEach((device, deviceId) => {
+        if (deviceId === excludeDeviceId || !canUseTunnelCapability(session, deviceId, 'read')) return;
+        const target = deviceSockets.get(deviceId);
+        if (target) target.emit(event, payload);
+    });
+}
+
 function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast', delay = 800) {
     if (!isValidSessionId(sessionId)) return;
     const existing = sessionHistoryBroadcastTimers.get(sessionId);
@@ -2401,7 +2443,7 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
         const session = sessions.get(sessionId);
         if (!session) return;
         const historyMessages = session.history.map(entry => entry.message);
-        io.to(sessionId).emit('session-history', {
+        emitToReadableSessionDevices(session, 'session-history', {
             messages: historyMessages,
             deletedMessageIds: session.deletedMessageIds || [],
             authoritative: true,
@@ -2644,6 +2686,8 @@ io.on('connection', (socket) => {
             currentDevice = deviceId;
             const storedTunnel = infraStore?.getTunnel(sessionId);
             const storedRemark = sanitizeString(storedTunnel?.remark || '', 60);
+            const storedOwnerDeviceId = sanitizeString(storedTunnel?.owner_device_id || '', 80);
+            const storedPermissions = parseStoredTunnelPermissions(storedTunnel?.permissions_json);
             
             // 存储设备socket映射
             bindSocketToDevice(socket, deviceId);
@@ -2658,6 +2702,8 @@ io.on('connection', (socket) => {
                 deletedMessageIds: [],
                 shortCode: createShortCode(sessionId, requestedShortCode),
                 remark: storedRemark,
+                ownerDeviceId: storedOwnerDeviceId || deviceId,
+                permissions: storedPermissions,
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -2666,6 +2712,8 @@ io.on('connection', (socket) => {
             
             const session = sessions.get(sessionId);
             if (!session.remark && storedRemark) session.remark = storedRemark;
+            if (!session.ownerDeviceId) session.ownerDeviceId = storedOwnerDeviceId || deviceId;
+            if (!session.permissions) session.permissions = storedPermissions;
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
             infraStore?.touchTunnel(sessionId, {
@@ -2673,6 +2721,7 @@ io.on('connection', (socket) => {
                 createdAt: session.createdAt || Date.now(),
                 lastActivity: Date.now()
             });
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now());
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -2757,6 +2806,11 @@ io.on('connection', (socket) => {
             });
             socket.emit('session-short-code', { shortCode: session.shortCode });
             socket.emit('session-remark', { remark: session.remark || '' });
+            socket.emit('session-permissions', {
+                ownerDeviceId: session.ownerDeviceId,
+                permissions: session.permissions,
+                isOwner: session.ownerDeviceId === deviceId
+            });
             socket.emit('device-profile', {
                 deviceId,
                 deviceModel: session.devices.get(deviceId)?.deviceModel || '',
@@ -2781,7 +2835,11 @@ io.on('connection', (socket) => {
                 content: latestRemoteEditor ? latestRemoteEditor.content : ''
             });
 
-            emitSessionSnapshot(socket, sessionId, session, deviceId, { clientIp, reason: 'join' });
+            if (canUseTunnelCapability(session, deviceId, 'read')) {
+                emitSessionSnapshot(socket, sessionId, session, deviceId, { clientIp, reason: 'join' });
+            } else {
+                socket.emit('session-history', { messages: [], deletedMessageIds: [], authoritative: true });
+            }
             if (session.media?.camera) {
                 socket.emit('camera-broadcast-start', {
                     broadcastId: session.media.camera.broadcastId,
@@ -2825,6 +2883,28 @@ io.on('connection', (socket) => {
             });
         } catch (err) {
             console.error('session-remark-update error:', err);
+        }
+    });
+
+    socket.on('session-permissions-update', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const sessionId = data?.sessionId;
+            const session = sessions.get(sessionId);
+            if (sessionId !== currentSession || !session || session.ownerDeviceId !== currentDevice) {
+                return respond({ ok: false, error: 'owner-required' });
+            }
+            session.permissions = normalizeTunnelPermissions(data?.permissions);
+            session.lastActivity = Date.now();
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity);
+            io.to(sessionId).emit('session-permissions', {
+                ownerDeviceId: session.ownerDeviceId,
+                permissions: session.permissions
+            });
+            respond({ ok: true, permissions: session.permissions });
+        } catch (err) {
+            console.error('session-permissions-update error:', err);
+            respond({ ok: false, error: 'internal-error' });
         }
     });
 
@@ -2997,9 +3077,16 @@ io.on('connection', (socket) => {
             if (!isValidSessionId(sessionId)) return;
             if (!message || typeof message !== 'object') return;
             if (message.sender !== currentDevice) return;
-            
             const session = sessions.get(sessionId);
             if (!session) return;
+            const requiredCapability = message.type === 'text'
+                ? 'sendText'
+                : message.type === 'rich'
+                    ? 'sendRich'
+                    : 'sendFile';
+            if (!canUseTunnelCapability(session, currentDevice, requiredCapability)) {
+                return socket.emit('permission-denied', { capability: requiredCapability });
+            }
             
             session.lastActivity = Date.now();
             
@@ -3031,7 +3118,7 @@ io.on('connection', (socket) => {
             });
             
             // 广播给会话中的其他设备
-            socket.to(sessionId).emit('message', { message });
+            emitToReadableSessionDevices(session, 'message', { message }, currentDevice);
             scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
         } catch (err) {
             console.error('message error:', err);
@@ -3055,13 +3142,17 @@ io.on('connection', (socket) => {
                 targetSessionId,
                 infraStore.findShortCodeForSession(targetSessionId)
             );
+            const forwardCapability = message.type === 'text' ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
+            if (!canUseTunnelCapability(targetSession, currentDevice, forwardCapability)) {
+                return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
+            }
             const historyResult = addToSessionHistory(targetSessionId, targetSession, message, {
                 fromDeviceId: currentDevice,
                 socketId: socket.id,
                 clientIp,
                 source: 'cross-tunnel-forward'
             });
-            io.to(targetSessionId).emit('message', { message });
+            emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
             if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored) });
         } catch (err) {
@@ -3096,6 +3187,9 @@ io.on('connection', (socket) => {
             if (sessionId !== currentSession || !isValidDeviceId(messageId)) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
+            if (!canUseTunnelCapability(session, currentDevice, 'delete')) {
+                return socket.emit('permission-denied', { capability: 'delete' });
+            }
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
             let fileId = null;
@@ -3121,7 +3215,7 @@ io.on('connection', (socket) => {
                 if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) session.deletedMessageIds.shift();
             }
             session.lastActivity = Date.now();
-            socket.to(sessionId).emit('message-deleted', { messageId });
+            emitToReadableSessionDevices(session, 'message-deleted', { messageId }, currentDevice);
             historyLog('message-deleted', {
                 sessionId,
                 deviceId: currentDevice,
@@ -3148,6 +3242,15 @@ io.on('connection', (socket) => {
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === message.id);
             if (historyIndex < 0) return;
+            const existingMessage = session.history[historyIndex].message;
+            if (existingMessage.type === 'rich' && message.content !== existingMessage.content) {
+                return socket.emit('permission-denied', { capability: 'versionedRichEdit' });
+            }
+            if (existingMessage.type === 'collection' && message.type === 'collection' &&
+                (message.collection?.files?.length || 0) < (existingMessage.collection?.files?.length || 0) &&
+                !canUseTunnelCapability(session, currentDevice, 'delete')) {
+                return socket.emit('permission-denied', { capability: 'delete' });
+            }
             const historyMessage = preserveNewestTelegramFileIds(
                 session.history[historyIndex].message,
                 createHistoryMessage(message)
@@ -3168,7 +3271,7 @@ io.on('connection', (socket) => {
                 });
             }
             session.lastActivity = Date.now();
-            socket.to(sessionId).emit('message-updated', { message: historyMessage });
+            emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage }, currentDevice);
             scheduleSessionHistoryBroadcast(sessionId, 'message-updated');
             historyLog('message-updated', {
                 sessionId,
@@ -3180,6 +3283,70 @@ io.on('connection', (socket) => {
             });
         } catch (err) {
             console.error('update-message error:', err);
+        }
+    });
+
+    socket.on('rich-message-edit', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const { sessionId, messageId, content } = data || {};
+            const baseVersion = Number(data?.baseVersion) || 1;
+            const session = sessions.get(sessionId);
+            if (sessionId !== currentSession || !session?.devices.has(currentDevice)) {
+                return respond({ ok: false, error: 'invalid-session' });
+            }
+            if (!canUseTunnelCapability(session, currentDevice, 'sendRich')) {
+                return respond({ ok: false, error: 'permission-denied' });
+            }
+            if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_EDITOR_CONTENT_SIZE) {
+                return respond({ ok: false, error: 'content-too-large' });
+            }
+            const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
+            if (historyIndex < 0 || session.history[historyIndex].message.type !== 'rich') {
+                return respond({ ok: false, error: 'message-not-found' });
+            }
+            const previous = session.history[historyIndex];
+            const currentMessage = previous.message;
+            const currentVersion = Number(currentMessage.richVersion) || 1;
+            if (baseVersion !== currentVersion) {
+                return respond({ ok: false, conflict: true, message: currentMessage });
+            }
+            const history = Array.isArray(currentMessage.richHistory) && currentMessage.richHistory.length
+                ? currentMessage.richHistory.slice()
+                : [{
+                    version: currentVersion,
+                    content: currentMessage.content,
+                    editorDeviceId: currentMessage.sender || '',
+                    editorDeviceName: currentMessage.senderName || '',
+                    editedAt: currentMessage.timestamp || Date.now()
+                }];
+            const nextVersion = currentVersion + 1;
+            history.push({
+                version: nextVersion,
+                content,
+                editorDeviceId: currentDevice,
+                editorDeviceName: session.devices.get(currentDevice)?.deviceName || '',
+                editedAt: Date.now()
+            });
+            const updated = createHistoryMessage({
+                ...currentMessage,
+                content,
+                richVersion: nextVersion,
+                richHistory: history,
+                updatedAt: Date.now(),
+                updatedBy: currentDevice
+            });
+            const size = Buffer.byteLength(JSON.stringify(updated), 'utf8');
+            if (size > MAX_HISTORY_SIZE) return respond({ ok: false, error: 'history-too-large' });
+            session.history[historyIndex] = { message: updated, size };
+            session.historySize = Math.max(0, session.historySize - previous.size + size);
+            session.lastActivity = Date.now();
+            emitToReadableSessionDevices(session, 'message-updated', { message: updated });
+            scheduleSessionHistoryBroadcast(sessionId, 'rich-message-edited');
+            respond({ ok: true, message: updated });
+        } catch (err) {
+            console.error('rich-message-edit error:', err);
+            respond({ ok: false, error: 'internal-error' });
         }
     });
 
@@ -3218,7 +3385,7 @@ io.on('connection', (socket) => {
 
             session.lastActivity = Date.now();
             const canonicalMessages = session.history.map(entry => entry.message);
-            io.to(sessionId).emit('session-history', {
+            emitToReadableSessionDevices(session, 'session-history', {
                 messages: canonicalMessages,
                 deletedMessageIds: session.deletedMessageIds || [],
                 authoritative: true
@@ -3354,6 +3521,10 @@ io.on('connection', (socket) => {
             if (!data || typeof data !== 'object') return;
             
             const { sessionId, from, content } = data;
+            const session = sessions.get(sessionId);
+            if (!canUseTunnelCapability(session, currentDevice, 'collaborativeEdit')) {
+                return socket.emit('permission-denied', { capability: 'collaborativeEdit' });
+            }
             
             if (!isValidSessionId(sessionId)) return;
             if (from !== currentDevice) return;
@@ -3377,7 +3548,6 @@ io.on('connection', (socket) => {
                 });
             }
             
-            const session = sessions.get(sessionId);
             if (!session) return;
 
             const device = session.devices.get(currentDevice);
@@ -3734,6 +3904,7 @@ io.on('connection', (socket) => {
         getSessionId: () => currentSession,
         getDeviceId: () => currentDevice,
         isValidId: isValidDeviceId,
+        canUseCapability: canUseTunnelCapability,
         historyLog,
         clientIp
     });

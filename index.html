@@ -566,6 +566,26 @@
             background: #f8f9fa;
             border-radius: 12px;
         }
+
+        .chat-messages.permission-read-blocked {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .chat-messages.permission-read-blocked > * { visibility: hidden; }
+        .chat-messages.permission-read-blocked::after {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background: #f8f9fa;
+            color: #68748b;
+            content: '当前设备在此隧道中没有读取权限';
+            text-align: center;
+        }
+
+        .permission-disabled { opacity: .55; cursor: not-allowed !important; }
         
         .message {
             margin-bottom: 15px;
@@ -3465,6 +3485,52 @@
             max-height: calc(90vh - 80px);
             overflow-y: auto;
         }
+
+        .rich-viewer-header-actions { display: flex; align-items: center; gap: 8px; }
+        .rich-history-layer {
+            position: fixed;
+            inset: 0;
+            z-index: 6700;
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            background: rgba(20, 28, 48, .55);
+        }
+        .rich-history-panel {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            width: min(1040px, calc(100vw - 40px));
+            max-height: min(90dvh, 820px);
+            overflow: hidden;
+            border-radius: 8px;
+            background: #fff;
+            color: #26324d;
+            box-shadow: 0 24px 72px rgba(17, 25, 45, .36);
+        }
+        .rich-history-header,
+        .rich-history-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e3e7ef; }
+        .rich-history-header h3 { margin: 0; }
+        .rich-history-body { min-height: 0; overflow: auto; padding: 16px; }
+        .rich-version-list { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; }
+        .rich-version-button { flex: 0 0 auto; min-width: 150px; padding: 9px 10px; border: 1px solid #dce2ed; border-radius: 6px; background: #f7f9fc; text-align: left; cursor: pointer; }
+        .rich-version-button.active { border-color: #667eea; background: #eef1ff; }
+        .rich-diff-selectors { display: flex; gap: 8px; margin: 4px 0 12px; }
+        .rich-diff-selectors select { min-width: 0; flex: 1; padding: 8px; border: 1px solid #d8deea; border-radius: 6px; }
+        .rich-diff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .rich-diff-pane { min-width: 0; max-height: 48dvh; overflow: auto; border: 1px solid #e0e5ee; border-radius: 6px; background: #fafbfd; }
+        .rich-diff-line { display: grid; grid-template-columns: 26px minmax(0, 1fr); padding: 3px 8px; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .rich-diff-line.added { background: #e9f8ef; color: #176a3a; }
+        .rich-diff-line.removed { background: #fff0f0; color: #9a3030; }
+        .rich-message-editor { min-height: 260px; padding: 13px; border: 1px solid #d8deea; border-radius: 6px; overflow: auto; }
+        .rich-conflict-notice { margin-bottom: 12px; padding: 10px 12px; border: 1px solid #edc66d; border-radius: 6px; background: #fff8e8; color: #70551b; }
+        .rich-history-actions { justify-content: flex-end; border-top: 1px solid #e3e7ef; border-bottom: 0; }
+        @media (max-width: 767px) {
+            .rich-viewer-header { align-items: flex-start; }
+            .rich-viewer-header-actions { flex-wrap: wrap; justify-content: flex-end; }
+            .rich-history-layer { padding: 0; }
+            .rich-history-panel { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
+            .rich-diff-grid { grid-template-columns: 1fr; }
+        }
         
         .close-btn {
             background: none;
@@ -3559,6 +3625,88 @@
             color: #52617e;
             cursor: pointer;
             box-shadow: 0 4px 12px rgba(33, 44, 72, 0.14);
+        }
+
+        .tunnel-settings-layer {
+            position: fixed;
+            inset: 0;
+            z-index: 6500;
+            display: grid;
+            place-items: center;
+            padding: 22px;
+            background: rgba(20, 28, 48, .5);
+            backdrop-filter: blur(8px);
+            box-sizing: border-box;
+        }
+
+        .tunnel-settings-layer[hidden] { display: none; }
+
+        .tunnel-settings-panel {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            width: min(820px, calc(100vw - 44px));
+            max-height: min(86dvh, 760px);
+            overflow: hidden;
+            border: 1px solid #dfe4ee;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 24px 72px rgba(17, 25, 45, .34);
+            color: #26324d;
+        }
+
+        .tunnel-settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 15px 18px;
+            border-bottom: 1px solid #e4e8f0;
+        }
+
+        .tunnel-settings-header span { color: #738097; font-size: .76rem; }
+        .tunnel-settings-header h2 { margin: 2px 0 0; font-size: 1.18rem; }
+        .tunnel-settings-header button {
+            display: grid;
+            width: 36px;
+            height: 36px;
+            place-items: center;
+            border: 0;
+            border-radius: 6px;
+            background: #f1f3f8;
+            color: #38445e;
+            font-size: 1.35rem;
+            cursor: pointer;
+        }
+
+        .tunnel-settings-body { min-height: 0; overflow-y: auto; padding: 18px; }
+        .tunnel-settings-section + .tunnel-settings-section { margin-top: 22px; }
+        .tunnel-settings-section h3 { margin: 0 0 10px; font-size: 1rem; }
+        .tunnel-settings-section > p { margin: -4px 0 13px; color: #6d788e; font-size: .84rem; }
+        .settings-tool-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .tunnel-permission-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+        .tunnel-permission-heading span { color: #6d788e; font-size: .78rem; }
+        .tunnel-permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .tunnel-permission-option {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            min-height: 40px;
+            padding: 7px 10px;
+            border: 1px solid #e1e5ee;
+            border-radius: 6px;
+            background: #f8f9fc;
+            font-size: .86rem;
+        }
+        .tunnel-permission-option input { width: 18px; height: 18px; accent-color: #596bd6; }
+        .tunnel-settings-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+
+        @media (max-width: 767px) {
+            .tunnel-settings-layer { padding: 0; background: #fff; }
+            .tunnel-settings-panel { width: 100vw; height: 100dvh; max-height: none; border: 0; border-radius: 0; }
+            .tunnel-settings-header { padding-top: calc(12px + env(safe-area-inset-top)); }
+            .tunnel-settings-body { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+            .settings-tool-grid,
+            .tunnel-permission-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
 
         .leave-tunnel-btn::before {
@@ -4133,10 +4281,32 @@
         <button class="tunnel-topbar-action mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源">↻</button>
         <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
         <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
+        <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
         <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
         <div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
+
+    <div class="tunnel-settings-layer" id="tunnelSettingsLayer" hidden>
+        <section class="tunnel-settings-panel" role="dialog" aria-modal="true" aria-labelledby="tunnelSettingsTitle">
+            <header class="tunnel-settings-header">
+                <div><span>隧道设置</span><h2 id="tunnelSettingsTitle">工具与权限</h2></div>
+                <button type="button" id="closeTunnelSettingsBtn" aria-label="关闭设置">×</button>
+            </header>
+            <div class="tunnel-settings-body">
+                <section class="tunnel-settings-section">
+                    <h3>隧道工具</h3>
+                    <div class="session-tools settings-tool-grid" id="settingsToolGrid"></div>
+                </section>
+                <section class="tunnel-settings-section tunnel-permission-settings">
+                    <div class="tunnel-permission-heading"><h3>隧道权限</h3><span id="tunnelPermissionOwnerHint"></span></div>
+                    <p>设置新加入设备的全局默认权限。隧道创建者始终保留管理权限。</p>
+                    <div class="tunnel-permission-grid" id="tunnelPermissionGrid"></div>
+                    <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelPermissionsBtn" type="button">保存权限</button></div>
+                </section>
+            </div>
+        </section>
+    </div>
 
     <div class="container" id="appShell" data-mobile-view="chat" hidden>
         <div class="header">
@@ -4376,7 +4546,11 @@
         <div class="rich-viewer">
             <div class="rich-viewer-header">
                 <h3 style="margin: 0;">📝 富文本内容</h3>
-                <button class="btn btn-secondary" id="closeRichViewer" type="button">关闭</button>
+                <div class="rich-viewer-header-actions">
+                    <button class="btn btn-secondary" id="richHistoryBtn" type="button">修改历史</button>
+                    <button class="btn btn-primary" id="editRichMessageBtn" type="button">编辑</button>
+                    <button class="btn btn-secondary" id="closeRichViewer" type="button">关闭</button>
+                </div>
             </div>
             <div class="rich-viewer-content" id="richViewerContent"></div>
         </div>
