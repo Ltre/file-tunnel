@@ -12095,7 +12095,7 @@ function handleDeviceJoined(data) {
     });
 
     updateDeviceList();
-    renderTunnelAdminSettings();
+    refreshTunnelAdminDevicePicker();
 
     // 尝试建立P2P连接
     connectToPeer(deviceId);
@@ -12124,7 +12124,7 @@ function handleDeviceLeft(data) {
     state.dataChannels.delete(deviceId);
     state.pendingIceCandidates.delete(deviceId);
     updateDeviceList();
-    renderTunnelAdminSettings();
+    refreshTunnelAdminDevicePicker();
 }
 
 function handleSessionDevices(data) {
@@ -12159,7 +12159,7 @@ function handleSessionDevices(data) {
     });
 
     updateDeviceList();
-    renderTunnelAdminSettings();
+    refreshTunnelAdminDevicePicker();
     scheduleStoredFileAssetAnnounce('session-devices', 1200);
 }
 
@@ -12176,7 +12176,7 @@ function handleDeviceUpdated(data) {
     });
     if (!existing) connectToPeer(data.deviceId);
     updateDeviceList();
-    renderTunnelAdminSettings();
+    refreshTunnelAdminDevicePicker();
     scheduleStoredFileAssetAnnounce('device-updated');
 }
 
@@ -13610,6 +13610,28 @@ function getDeviceNameForAdminRecord(deviceId, fallback = '') {
     return fallback || deviceId;
 }
 
+function refreshTunnelAdminDevicePicker(knownDevices = getTunnelKnownDevicesForAdminPicker()) {
+    const select = document.getElementById('tunnelAdminDeviceSelect');
+    if (!select) return;
+    const placeholder = knownDevices.length ? '选择在线设备' : '暂无可选在线设备';
+    const desiredOptions = [
+        { value: '', label: placeholder },
+        ...knownDevices.map(device => ({
+            value: device.deviceId,
+            label: `${device.deviceName || device.name || '未命名设备'} · ${String(device.deviceId).slice(0, 8)}...`
+        }))
+    ];
+    const optionSignature = JSON.stringify(desiredOptions);
+    if (select.dataset.adminPickerSignature === optionSignature) return;
+
+    const selectedDeviceId = select.value;
+    select.replaceChildren(...desiredOptions.map(option => new Option(option.label, option.value)));
+    select.dataset.adminPickerSignature = optionSignature;
+    if (selectedDeviceId && desiredOptions.some(option => option.value === selectedDeviceId)) {
+        select.value = selectedDeviceId;
+    }
+}
+
 function renderTunnelAdminSettings() {
     const container = document.getElementById('tunnelAdminDeviceList');
     const hint = document.getElementById('tunnelAdminHint');
@@ -13622,11 +13644,7 @@ function renderTunnelAdminSettings() {
     const editable = canManageTunnelSettings();
     const admins = Array.from(state.sessionAdminDevices.values());
     const knownDevices = getTunnelKnownDevicesForAdminPicker();
-    select.replaceChildren(new Option(knownDevices.length ? '选择在线设备' : '暂无可选在线设备', ''));
-    knownDevices.forEach(device => {
-        const label = `${device.deviceName || device.name || '未命名设备'} · ${String(device.deviceId).slice(0, 8)}...`;
-        select.add(new Option(label, device.deviceId));
-    });
+    refreshTunnelAdminDevicePicker(knownDevices);
     select.disabled = !editable;
     manual.disabled = !editable;
     add.disabled = !editable;
