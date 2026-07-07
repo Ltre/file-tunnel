@@ -1230,31 +1230,36 @@
         }
 
         .resource-browser-layer {
-            position: absolute;
+            position: fixed;
             inset: 0;
-            z-index: 20;
+            z-index: 6200;
             display: flex;
-            background: #fff;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(20, 28, 48, 0.48);
+            box-sizing: border-box;
         }
 
-        .resource-browser-modal {
-            width: 100%;
-            max-width: none;
-            height: 100%;
-            max-height: none;
+        .modal.resource-browser-modal {
+            width: min(1120px, calc(100vw - 48px));
+            max-width: 1120px;
+            height: min(86dvh, 820px);
+            max-height: 820px;
             padding: 0;
-            border-radius: 0;
-            box-shadow: none;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 24px 72px rgba(17, 25, 45, 0.32);
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            text-align: left;
         }
 
         .resource-browser-header {
             display: flex;
             align-items: center;
-            justify-content: flex-start;
-            gap: 10px;
+            justify-content: space-between;
             gap: 12px;
             padding: 16px 18px;
             border-bottom: 1px solid #e4e8f0;
@@ -1266,26 +1271,91 @@
             font-size: 1.05rem;
         }
 
+        .resource-browser-header-main,
+        .resource-browser-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .resource-browser-header-main { flex: 1 1 auto; }
+        .resource-browser-header-actions { flex: 0 0 auto; }
+
+        .resource-browser-refresh,
+        .resource-browser-minimize,
         .resource-browser-close {
-            width: 30px;
+            min-width: 30px;
             height: 30px;
             border: 0;
             border-radius: 5px;
             background: transparent;
             color: #58637a;
             cursor: pointer;
-            font-size: 1.25rem;
             line-height: 1;
         }
 
+        .resource-browser-refresh {
+            min-width: auto;
+            border: 1px solid #d9dfeb;
+            padding: 0 9px;
+            font-size: .76rem;
+        }
+
+        .resource-browser-refresh:disabled { cursor: wait; opacity: .62; }
+
+        .resource-browser-minimize {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .resource-browser-close {
+            font-size: 1.25rem;
+        }
+
+        .resource-browser-refresh:hover,
+        .resource-browser-minimize:hover,
         .resource-browser-close:hover {
             background: #f1f3f8;
             color: #26324d;
         }
 
+        .resource-browser-layer.is-minimized {
+            pointer-events: none;
+            background: transparent;
+            padding: 0;
+        }
+
+        .resource-browser-layer.is-minimized .modal.resource-browser-modal {
+            position: fixed;
+            right: 18px;
+            bottom: 18px;
+            width: min(360px, calc(100vw - 24px));
+            height: auto;
+            max-height: none;
+            pointer-events: auto;
+            border: 1px solid #dce2ed;
+            border-radius: 8px;
+            box-shadow: 0 12px 36px rgba(20, 28, 48, .24);
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header {
+            border-bottom: 0;
+            padding: 10px 11px 10px 14px;
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header-main {
+            cursor: pointer;
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header-main .resource-browser-refresh,
+        .resource-browser-layer.is-minimized .resource-browser-modal > :not(.resource-browser-header) {
+            display: none;
+        }
+
         .resource-browser-controls {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 132px;
+            grid-template-columns: auto auto auto minmax(180px, 1fr) 160px;
             gap: 8px;
             padding: 12px 18px;
             border-bottom: 1px solid #e4e8f0;
@@ -1435,10 +1505,105 @@
             100% { outline-color: transparent; }
         }
 
-        @media (max-width: 560px) {
-            .resource-browser-controls { grid-template-columns: 1fr; }
+        @media (max-width: 767px) {
+            .resource-browser-layer { padding: 0; background: #fff; }
+            .modal.resource-browser-modal {
+                width: 100vw;
+                max-width: none;
+                height: 100dvh;
+                max-height: none;
+                border-radius: 0;
+                box-shadow: none;
+            }
+            .resource-browser-header {
+                padding-top: calc(12px + env(safe-area-inset-top));
+            }
+            .resource-browser-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .resource-browser-controls input,
+            .resource-browser-controls select { grid-column: 1 / -1; }
+            .resource-browser-controls .resource-action { min-height: 36px; }
+            .resource-browser-list { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
             .resource-browser-main { display: block; }
             .resource-browser-tags { justify-content: flex-start; margin-top: 8px; }
+            .resource-browser-layer.is-minimized { background: transparent; }
+            .resource-browser-layer.is-minimized .modal.resource-browser-modal {
+                right: 12px;
+                bottom: calc(76px + env(safe-area-inset-bottom));
+                width: calc(100vw - 24px);
+                height: auto;
+                border-radius: 8px;
+                box-shadow: 0 10px 32px rgba(20, 28, 48, .25);
+            }
+        }
+
+        .transfer-record-details-layer {
+            position: fixed;
+            inset: 0;
+            z-index: 6400;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background: rgba(20, 28, 48, 0.5);
+            box-sizing: border-box;
+        }
+
+        .transfer-record-details-panel {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) auto;
+            width: min(920px, calc(100vw - 48px));
+            max-height: min(88dvh, 820px);
+            overflow: hidden;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 24px 72px rgba(17, 25, 45, 0.34);
+        }
+
+        .transfer-record-details-header,
+        .transfer-record-details-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 18px;
+            border-bottom: 1px solid #e4e8f0;
+        }
+
+        .transfer-record-details-header h2 { margin: 2px 0 0; color: #26324d; font-size: 1.15rem; }
+        .transfer-record-details-kicker { color: #66728a; font-size: .76rem; }
+        .transfer-record-details-close {
+            width: 36px;
+            height: 36px;
+            border: 0;
+            border-radius: 5px;
+            background: #f1f3f8;
+            color: #38445e;
+            font-size: 1.4rem;
+            cursor: pointer;
+        }
+        .transfer-record-details-body { min-height: 0; overflow: auto; padding: 18px; }
+        .transfer-record-details-summary { display: grid; gap: 0; margin: 0; border: 1px solid #e4e8f0; border-radius: 6px; overflow: hidden; }
+        .transfer-record-details-summary > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; padding: 10px 12px; border-bottom: 1px solid #edf0f5; }
+        .transfer-record-details-summary > div:last-child { border-bottom: 0; }
+        .transfer-record-details-summary dt { color: #68748b; font-size: .8rem; }
+        .transfer-record-details-summary dd { min-width: 0; margin: 0; color: #35415c; overflow-wrap: anywhere; }
+        .transfer-record-details-content,
+        .transfer-record-details-files,
+        .transfer-record-raw-details { margin-top: 16px; }
+        .transfer-record-details-content h3,
+        .transfer-record-details-files h3 { margin: 0 0 9px; color: #34405a; font-size: .92rem; }
+        .transfer-record-details-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .transfer-record-detail-file { display: grid; gap: 4px; padding: 11px 12px; border: 1px solid #e4e8f0; border-radius: 6px; margin-top: 8px; }
+        .transfer-record-detail-file span { color: #66728a; font-size: .78rem; overflow-wrap: anywhere; }
+        .transfer-record-raw-details pre { max-height: 260px; overflow: auto; padding: 12px; background: #f5f7fb; color: #35415c; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .transfer-record-details-actions { justify-content: flex-end; border-top: 1px solid #e4e8f0; border-bottom: 0; }
+        .transfer-record-details-actions button { min-height: 36px; border: 1px solid #ccd3e2; border-radius: 5px; background: #fff; color: #3e4c69; padding: 0 13px; cursor: pointer; }
+
+        @media (max-width: 767px) {
+            .transfer-record-details-layer { padding: 0; }
+            .transfer-record-details-panel { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
+            .transfer-record-details-header { padding-top: calc(12px + env(safe-area-inset-top)); }
+            .transfer-record-details-summary > div { grid-template-columns: 92px minmax(0, 1fr); }
+            .transfer-record-details-actions { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
         }
         
         /* 传输进度 */

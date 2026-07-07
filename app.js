@@ -66,6 +66,8 @@ const state = {
     sessionRemark: '',
     pendingSharedFileCount: 0,
     pendingSharedFileError: false,
+    pendingRecordId: '',
+    pendingRecordDetails: false,
     isExitingTunnel: false,
     db: null // IndexedDB实例
 };
@@ -125,6 +127,10 @@ const MUSIC_QUEUE_HISTORY_KEY = 'tunnelMusicQueue';
 const HOME_GUARD_HISTORY_KEY = 'tunnelHomeGuard';
 const fileObjectUrls = new Map();
 const pendingHistoryMessageIds = new Set();
+const pendingFileCacheCleanupIds = new Set();
+let fileCacheCleanupTimer = null;
+let fileCacheCleanupIdleHandle = null;
+let fileCacheCleanupRunning = false;
 let lastLocalHistoryTimestamp = 0;
 const MUSIC_PLAYER_STORAGE_KEY = 'tunnelMusicPlayerQueue:v1';
 const MUSIC_LIBRARY_STORAGE_KEY = 'tunnelMusicLibrary:v1';
@@ -483,6 +489,7 @@ async function startTunnelApplication() {
     initSocket();
     initAssetPresenceRefresh();
     ensureHomeHistoryGuard();
+    handlePendingRecordNavigation().catch(err => historyLog('record-deep-link-failed', { error: err.message }));
 }
 
 function registerServiceWorker() {
@@ -848,7 +855,13 @@ async function initSession() {
     // A shared hash always wins. A plain home page resumes the most recent local
     // session, unless it was opened as a PWA share target and needs a destination.
     const entryUrl = new URL(window.location.href);
-    const hash = entryUrl.hash.slice(1);
+    const recordRouteMatch = entryUrl.pathname.match(/^\/record\/([^/]+)\/([^/]+)\/?$/);
+    const routeSessionId = recordRouteMatch ? decodeURIComponent(recordRouteMatch[1]) : '';
+    state.pendingRecordId = recordRouteMatch
+        ? decodeURIComponent(recordRouteMatch[2])
+        : String(entryUrl.searchParams.get('record') || '').trim();
+    state.pendingRecordDetails = Boolean(recordRouteMatch);
+    const hash = routeSessionId || entryUrl.hash.slice(1);
     if (hash && /^[a-zA-Z0-9_-]{8,}$/.test(hash)) {
         state.sessionId = hash;
         const inviteId = entryUrl.searchParams.get('invite');
@@ -5569,10 +5582,128 @@ function syncRenderedExternalFileSource(fileId, handleReadable) {
         .forEach(messageEl => syncFileMessageExternalSourceBadge(messageEl, handleReadable));
 }
 
+function getTransferRecordAnchorUrl(messageId, sessionId = state.sessionId) {
+    const url = new URL('/', window.location.origin);
+    url.searchParams.set('record', messageId);
+    url.hash = sessionId;
+    return url.href;
+}
+
+function getTransferRecordDetailsUrl(messageId, sessionId = state.sessionId) {
+    return `${window.location.origin}/record/${encodeURIComponent(sessionId)}/${encodeURIComponent(messageId)}`;
+}
+
+async function copyTransferRecordLink(messageId) {
+    const copied = await copyTextToClipboard(getTransferRecordAnchorUrl(messageId)).catch(() => false);
+    showAppToast(copied ? '传输记录链接已复制' : '复制失败，请从详情页手动复制链接');
+}
+
+function getTransferRecordTypeLabel(message) {
+    if (message?.type === 'collection') return '文件合辑';
+    if (message?.type === 'file') return '单文件';
+    if (message?.type === 'rich') return '富文本消息';
+    if (message?.type === 'text') return '文本消息';
+    return message?.type || '未知类型';
+}
+
+async function getRecordFileDetail(fileInfo = {}) {
+    const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    const readableFile = persistedFile?.externalFileHandle
+        ? await materializeExternalFileRecord(persistedFile)
+        : persistedFile;
+    const sourceState = getExternalFileSourceState(persistedFile, readableFile, fileInfo);
+    let cacheStatus = '本机无缓存';
+    if (sourceState.handleReadable) cacheStatus = '本机原文件句柄有效';
+    else if (hasCompleteFileCache(persistedFile, fileInfo)) cacheStatus = '浏览器缓存完整';
+    else if (persistedFile?.restoreRequested) cacheStatus = '正在请求还原';
+    else if (persistedFile?.isPartial || persistedFile?.transferInterrupted) cacheStatus = '传输中断或存在分片';
+    else if (persistedFile?.cacheCleared) cacheStatus = '缓存已释放';
+    return { fileInfo, cacheStatus, sourceState };
+}
+
+function closeTransferRecordDetails(options = {}) {
+    const overlay = document.getElementById('transferRecordDetailsLayer');
+    if (!overlay) return;
+    overlay.remove();
+    if (options.keepRoute !== true && /^\/record\//.test(window.location.pathname)) {
+        history.replaceState(null, '', getTransferRecordAnchorUrl(overlay.dataset.messageId, state.sessionId));
+    }
+}
+
+async function showTransferRecordDetails(messageId) {
+    const message = await getFromStore('messages', messageId).catch(() => null);
+    if (!message) throw new Error('目标传输记录尚未同步到本机');
+    closeTransferRecordDetails({ keepRoute: true });
+
+    const fileInfos = message.type === 'collection'
+        ? getCollectionFiles(message)
+        : (message.fileInfo?.id ? [message.fileInfo] : []);
+    const fileDetails = [];
+    for (const fileInfo of fileInfos) fileDetails.push(await getRecordFileDetail(fileInfo));
+    const sender = {
+        deviceId: message.sender || fileInfos[0]?.ownerDeviceId || '',
+        name: message.senderName || fileInfos[0]?.senderName || '未知设备'
+    };
+    const senderName = getDeviceDisplayName(sender);
+    const overlay = document.createElement('div');
+    overlay.id = 'transferRecordDetailsLayer';
+    overlay.className = 'transfer-record-details-layer';
+    overlay.dataset.messageId = message.id;
+    overlay.innerHTML = `
+        <section class="transfer-record-details-panel" role="dialog" aria-modal="true" aria-labelledby="transferRecordDetailsTitle">
+            <header class="transfer-record-details-header">
+                <div>
+                    <span class="transfer-record-details-kicker">${escapeHtml(getTransferRecordTypeLabel(message))}</span>
+                    <h2 id="transferRecordDetailsTitle">传输记录详情</h2>
+                </div>
+                <button type="button" class="transfer-record-details-close" aria-label="关闭">×</button>
+            </header>
+            <div class="transfer-record-details-body">
+                <dl class="transfer-record-details-summary">
+                    <div><dt>记录 ID</dt><dd>${escapeHtml(message.id)}</dd></div>
+                    <div><dt>关联隧道</dt><dd>${escapeHtml(state.shortCode || state.sessionId)}${state.sessionRemark ? ` · ${escapeHtml(state.sessionRemark)}` : ''}</dd></div>
+                    <div><dt>发送者</dt><dd>${escapeHtml(senderName)}${sender.deviceId ? ` · ${escapeHtml(sender.deviceId)}` : ''}</dd></div>
+                    <div><dt>发送时间</dt><dd>${escapeHtml(formatDateTime(message.timestamp || Date.now()))}</dd></div>
+                    <div><dt>备注</dt><dd>${escapeHtml(String(message.remark || message.collection?.remark || '无'))}</dd></div>
+                </dl>
+                ${message.type === 'text' ? `<section class="transfer-record-details-content"><h3>消息内容</h3><p>${escapeHtml(message.text || '')}</p></section>` : ''}
+                ${message.type === 'rich' ? `<section class="transfer-record-details-content"><h3>富文本摘要</h3><p>${escapeHtml(String(message.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000))}</p></section>` : ''}
+                ${fileDetails.length ? `<section class="transfer-record-details-files"><h3>文件信息 · ${fileDetails.length}</h3>${fileDetails.map((entry, index) => `
+                    <article class="transfer-record-detail-file">
+                        <strong>${index + 1}. ${escapeHtml(entry.fileInfo.name || '未知文件')}</strong>
+                        <span>${escapeHtml(entry.fileInfo.type || 'application/octet-stream')} · ${formatFileSize(Number(entry.fileInfo.size) || 0)}</span>
+                        <span>缓存状态：${escapeHtml(entry.cacheStatus)}</span>
+                        <span>文件 ID：${escapeHtml(entry.fileInfo.id || '-')}</span>
+                    </article>`).join('')}</section>` : ''}
+                <details class="transfer-record-raw-details"><summary>记录元数据</summary><pre>${escapeHtml(JSON.stringify(message, (key, value) => key === 'data' ? '[binary omitted]' : value, 2))}</pre></details>
+            </div>
+            <footer class="transfer-record-details-actions">
+                <button type="button" data-record-locate>定位到记录</button>
+                <button type="button" data-record-copy>复制记录链接</button>
+            </footer>
+        </section>`;
+    overlay.querySelector('.transfer-record-details-close').addEventListener('click', () => closeTransferRecordDetails());
+    overlay.querySelector('[data-record-copy]').addEventListener('click', () => copyTransferRecordLink(message.id));
+    overlay.querySelector('[data-record-locate]').addEventListener('click', async () => {
+        closeTransferRecordDetails();
+        await focusTransferRecordById(message.id, { timeoutMs: 5000 });
+    });
+    overlay.addEventListener('click', event => {
+        if (event.target === overlay) closeTransferRecordDetails();
+    });
+    document.body.appendChild(overlay);
+}
+
 function renderMessageRecordActions(messageEl, message) {
     messageEl.querySelector('.message-record-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
+    actions.appendChild(createFileActionButton('详情', '在专门页面查看这条传输记录的完整信息', () => {
+        window.location.href = getTransferRecordDetailsUrl(message.id);
+    }));
+    actions.appendChild(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
+        copyTransferRecordLink(message.id);
+    }));
     if (message.type === 'file' || message.type === 'collection') {
         actions.appendChild(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
             editTransferRecordRemark(message.id).catch(err => {
@@ -5846,6 +5977,20 @@ let activeFilePreviewCanFullscreen = false;
 let activeFilePreviewMediaType = '';
 let activeFilePreviewStoredFile = null;
 let activeFilePreviewObjectUrl = '';
+let filePreviewOpenTask = null;
+
+function runExclusiveFilePreviewOpen(task, details = {}) {
+    if (filePreviewOpenTask) return filePreviewOpenTask;
+    filePreviewOpenTask = Promise.resolve()
+        .then(task)
+        .catch(err => {
+            historyLog('file-preview-exclusive-open-failed', { ...details, error: err.message });
+        })
+        .finally(() => {
+            requestAnimationFrame(() => { filePreviewOpenTask = null; });
+        });
+    return filePreviewOpenTask;
+}
 
 const musicPlayer = {
     audio: null,
@@ -6253,10 +6398,50 @@ async function updateCollectionMessageElement(message) {
     messageEl.dataset.collectionId = message.collection?.id || message.id;
     messageEl.dataset.collectionCount = String(files.length);
     messageEl.dataset.collectionFileIds = files.map(file => file.id).join(',');
-    const html = await renderCollectionPreviewHtml(message);
+    const previousBubble = messageEl.querySelector('.message-bubble');
+    const previousPreview = previousBubble?.querySelector('.collection-preview');
+    const nextBubble = document.createElement('div');
+    nextBubble.className = 'message-bubble collection-message';
+    const nextPreview = document.createElement('div');
+    nextPreview.className = 'collection-preview';
+    files.slice(0, Math.min(files.length, 4)).forEach((fileInfo, index) => {
+        const isMoreTile = files.length > 4 && index === 3;
+        const existingTile = previousPreview
+            ?.querySelector(`.collection-preview-tile[data-collection-file-id="${CSS.escape(fileInfo.id)}"]`);
+        const tile = existingTile?.cloneNode(true) || document.createElement('div');
+        tile.className = 'collection-preview-tile';
+        tile.setAttribute('role', 'button');
+        tile.setAttribute('tabindex', '0');
+        tile.removeAttribute('data-collection-file-id');
+        tile.removeAttribute('data-collection-more');
+        tile.querySelector('.collection-more')?.remove();
+        if (!tile.childNodes.length) {
+            tile.innerHTML = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
+        }
+        if (isMoreTile) {
+            tile.dataset.collectionMore = 'true';
+            const more = document.createElement('span');
+            more.className = 'collection-more';
+            more.innerHTML = `更多文件...<br>+${files.length - 3}`;
+            tile.appendChild(more);
+        } else {
+            tile.dataset.collectionFileId = fileInfo.id;
+        }
+        nextPreview.appendChild(tile);
+    });
+    const meta = document.createElement('div');
+    meta.className = 'collection-meta';
+    meta.textContent = `${files.length} 个文件 · ${formatFileSize(files.reduce((sum, file) => sum + (Number(file.size) || 0), 0))}`;
+    nextBubble.append(nextPreview, meta);
+    const remarkText = String(message?.remark || message?.collection?.remark || '').trim();
+    if (remarkText) {
+        const remark = document.createElement('div');
+        remark.className = 'collection-remark';
+        remark.textContent = remarkText;
+        nextBubble.appendChild(remark);
+    }
     preserveChatScroll(() => {
-        const bubble = messageEl.querySelector('.message-bubble');
-        if (bubble) bubble.outerHTML = html;
+        if (previousBubble) previousBubble.replaceWith(nextBubble);
     });
 }
 
@@ -6455,12 +6640,27 @@ async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = 
 
 async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', options = {}) {
     if (!fileInfo?.id) return;
+    const storedFile = await getFromStore('files', fileInfo.id);
+    if (storedFile?.externalFileHandle) {
+        const readableFile = await materializeExternalFileRecord(storedFile, { requestPermission: true });
+        const sourceState = await syncExternalFileSourceUi(fileInfo.id, storedFile, readableFile, fileInfo);
+        if (sourceState.handleReadable) {
+            showAppToast('本机原文件仍可直接读取，没有需要释放的浏览器缓存');
+            await refreshFileMessage(fileInfo.id);
+            await openFilePreviewForInfo(fileInfo, {
+                messageId,
+                collectionMessageId: options.collectionMessageId || '',
+                ownerDeviceId,
+                requestMissing: false
+            });
+            return;
+        }
+    }
     if (state.devices.size === 0) {
         const ok = confirm('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
         if (!ok) return;
     }
     fileAssetTransfer?.cancel(fileInfo.id);
-    const storedFile = await getFromStore('files', fileInfo.id);
     if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
         alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
@@ -6551,10 +6751,10 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
     return result;
 }
 
-async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false, handleSourceOnly = false }) {
+async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false, handleSourceOnly = false, handleReadable = false }) {
     const isCollectionFile = Boolean(collectionMessageId);
     const deleteTitle = isCollectionFile ? '仅从合辑中删除此文件，并清理其缓存' : '从会话中删除此记录及所有设备的文件缓存';
-    const cacheAction = handleSourceOnly
+    const cacheAction = handleReadable || handleSourceOnly
         ? null
         : hasLocalData
         ? createFileActionButton('🧹释放空间', '仅清理本设备保存的文件内容', () => {
@@ -8401,7 +8601,8 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             collectionMessageId: collectionContextId,
             hasLocalData: false,
             cacheCleared: Boolean(storedFile?.cacheCleared),
-            restoreRequested: Boolean(storedFile?.restoreRequested)
+            restoreRequested: Boolean(storedFile?.restoreRequested),
+            handleReadable: externalSourceState.handleReadable
         });
         historyLog('file-preview-opened-without-cache', {
             messageId: options.messageId,
@@ -8422,7 +8623,8 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             ownerDeviceId,
             collectionMessageId: collectionContextId,
             hasLocalData: true,
-            handleSourceOnly: externalSourceState.handleSourceOnly
+            handleSourceOnly: externalSourceState.handleSourceOnly,
+            handleReadable: externalSourceState.handleReadable
         });
         historyLog('file-preview-opened-as-metadata', {
             messageId: options.messageId,
@@ -8475,7 +8677,8 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         ownerDeviceId,
         collectionMessageId: collectionContextId,
         hasLocalData: true,
-        handleSourceOnly: externalSourceState.handleSourceOnly
+        handleSourceOnly: externalSourceState.handleSourceOnly,
+        handleReadable: externalSourceState.handleReadable
     });
     historyLog('file-preview-opened', {
         messageId: options.messageId,
@@ -8893,17 +9096,18 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     card.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        captureCollectionPreviewReturnState(collectionMessageId, fileInfo.id);
-        openFilePreviewForInfo(fileInfo, {
+        runExclusiveFilePreviewOpen(() => {
+            captureCollectionPreviewReturnState(collectionMessageId, fileInfo.id);
+            return openFilePreviewForInfo(fileInfo, {
+                messageId: collectionMessageId,
+                collectionMessageId,
+                ownerDeviceId: fileInfo.ownerDeviceId,
+                requestMissing: false
+            });
+        }, {
             messageId: collectionMessageId,
-            collectionMessageId,
-            ownerDeviceId: fileInfo.ownerDeviceId,
-            requestMissing: false
-        }).catch(err => historyLog('collection-file-open-failed', {
-            messageId: collectionMessageId,
-            fileId: fileInfo.id,
-            error: err.message
-        }));
+            fileId: fileInfo.id
+        });
     });
     return card;
 }
@@ -9159,8 +9363,8 @@ function attachCollectionRecordInteractions(messageEl) {
             if (fileId) {
                 event.preventDefault();
                 event.stopPropagation();
-                getFromStore('messages', messageId)
-                    .then(message => {
+                runExclusiveFilePreviewOpen(async () => {
+                    const message = await getFromStore('messages', messageId);
                         const fileInfo = getCollectionFiles(message).find(file => file.id === fileId);
                         if (!fileInfo) return openCollectionRecord(messageId);
                         return openFilePreviewForInfo(fileInfo, {
@@ -9171,19 +9375,11 @@ function attachCollectionRecordInteractions(messageEl) {
                             returnToCollection: false,
                             requestMissing: true
                         });
-                    })
-                    .catch(err => historyLog('collection-direct-file-open-failed', {
-                        messageId,
-                        fileId,
-                        error: err.message
-                    }));
+                }, { messageId, fileId });
                 return;
             }
         }
-        openCollectionRecord(messageId).catch(err => historyLog('collection-record-open-failed', {
-            messageId,
-            error: err.message
-        }));
+        runExclusiveFilePreviewOpen(() => openCollectionRecord(messageId), { messageId });
     });
 }
 
@@ -9206,7 +9402,7 @@ function attachFileRecordInteractions(messageEl) {
 
     messageEl.addEventListener('click', event => {
         if (isAction(event.target) || Date.now() < suppressClickUntil) return;
-        openFileRecord(messageId).catch(err => historyLog('file-record-open-failed', { messageId, error: err.message }));
+        runExclusiveFilePreviewOpen(() => openFileRecord(messageId), { messageId });
     });
     messageEl.addEventListener('contextmenu', event => {
         if (isAction(event.target)) return;
@@ -9258,10 +9454,13 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
 }
 
 async function refreshFileMessage(fileId) {
-    const storedFile = await getFromStore('files', fileId);
+    const persistedFile = await getFromStore('files', fileId);
+    const storedFile = persistedFile?.externalFileHandle
+        ? await materializeExternalFileRecord(persistedFile)
+        : persistedFile;
     if (!hasCompleteFileCache(storedFile)) return;
     hideCompletedFileReceiveProgress(fileId);
-    const externalSourceState = getExternalFileSourceState(storedFile, storedFile, storedFile);
+    const externalSourceState = getExternalFileSourceState(persistedFile, storedFile, storedFile);
 
     let url = fileObjectUrls.get(fileId);
     if (!url) {
@@ -9271,7 +9470,8 @@ async function refreshFileMessage(fileId) {
 
     const poster = getCachedMediaPosterOrQueue(storedFile, storedFile);
 
-    preserveChatScroll(() => document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+    const renderedMessages = Array.from(document.querySelectorAll(`.message[data-file-id="${fileId}"]`));
+    preserveChatScroll(() => renderedMessages.forEach(messageEl => {
         const fileInfo = getFileInfoFromMessageElement(messageEl);
         const type = fileInfo.type || storedFile.type;
         const isAudioLike = isAudioFileLike(storedFile, fileInfo);
@@ -9300,6 +9500,17 @@ async function refreshFileMessage(fileId) {
         syncFileMessageExternalSourceBadge(messageEl, externalSourceState.handleReadable);
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: true, cacheCleared: false });
     }));
+    for (const messageEl of renderedMessages) {
+        const message = await getFromStore('messages', messageEl.dataset.messageId).catch(() => null);
+        const remarkText = String(message?.remark || message?.fileInfo?.remark || '').trim();
+        messageEl.querySelector('.collection-remark')?.remove();
+        if (remarkText) {
+            const remark = document.createElement('div');
+            remark.className = 'collection-remark';
+            remark.textContent = remarkText;
+            messageEl.querySelector('.message-bubble')?.appendChild(remark);
+        }
+    }
     await refreshCollectionMessagesForFile(fileId);
     await refreshCollectionPreviewCardForFile(fileId);
     await refreshActiveFilePreviewForFile(fileId);
@@ -9337,8 +9548,17 @@ async function clearFileCache(messageId) {
         if (!ok) return;
     }
 
-    fileAssetTransfer?.cancel(fileInfo.id);
     const storedFile = await getFromStore('files', fileInfo.id);
+    if (storedFile?.externalFileHandle) {
+        const readableFile = await materializeExternalFileRecord(storedFile, { requestPermission: true });
+        const sourceState = await syncExternalFileSourceUi(fileInfo.id, storedFile, readableFile, fileInfo);
+        if (sourceState.handleReadable) {
+            showAppToast('本机原文件仍可直接读取，没有需要释放的浏览器缓存');
+            await refreshFileMessage(fileInfo.id);
+            return;
+        }
+    }
+    fileAssetTransfer?.cancel(fileInfo.id);
     if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
         alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
@@ -9451,12 +9671,10 @@ async function deleteHistoryMessage(messageId) {
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
     const previous = await getFromStore('messages', message.id).catch(() => null);
+    let removedCollectionFiles = [];
     if (previous?.type === 'collection' && message.type === 'collection') {
         const nextIds = new Set(getCollectionFiles(message).map(file => file.id));
-        const removedFiles = getCollectionFiles(previous).filter(file => !nextIds.has(file.id));
-        for (const fileInfo of removedFiles) {
-            await deleteFileCacheIfUnreferenced(fileInfo.id, message.id);
-        }
+        removedCollectionFiles = getCollectionFiles(previous).filter(file => !nextIds.has(file.id));
     }
     await saveToStore('messages', {
         ...message,
@@ -9489,6 +9707,9 @@ async function applyHistoryMessageUpdate(message, options = {}) {
         message: summarizeHistoryMessage(message),
         remote: Boolean(options.remote)
     });
+    if (removedCollectionFiles.length) {
+        enqueueFileCacheCleanup(removedCollectionFiles.map(fileInfo => fileInfo.id), 'collection-file-removed');
+    }
 }
 
 async function updateHistoryMessage(message) {
@@ -9499,17 +9720,76 @@ async function updateHistoryMessage(message) {
     });
 }
 
-async function deleteFileCacheIfUnreferenced(fileId, excludingMessageId = null) {
-    if (!fileId) return;
-    fileAssetTransfer?.cancel(fileId);
-    const stillReferenced = await isFileReferencedByRichContent(fileId, excludingMessageId);
-    if (stillReferenced) return;
-    if (await isFileReferencedOutsideSession(fileId, state.sessionId)) return;
-    await deleteFromStore('files', fileId);
-    removeMusicTrackFromQueue(fileId);
-    const objectUrl = fileObjectUrls.get(fileId);
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    fileObjectUrls.delete(fileId);
+function enqueueFileCacheCleanup(fileIds, reason = 'history-deleted') {
+    for (const fileId of fileIds || []) {
+        if (fileId) pendingFileCacheCleanupIds.add(fileId);
+    }
+    if (!pendingFileCacheCleanupIds.size) return;
+    historyLog('file-cache-cleanup-queued', {
+        reason,
+        pendingCount: pendingFileCacheCleanupIds.size
+    });
+    scheduleFileCacheCleanup();
+}
+
+function scheduleFileCacheCleanup(delay = 900) {
+    if (fileCacheCleanupRunning) return;
+    if (fileCacheCleanupTimer) clearTimeout(fileCacheCleanupTimer);
+    if (fileCacheCleanupIdleHandle && 'cancelIdleCallback' in window) {
+        cancelIdleCallback(fileCacheCleanupIdleHandle);
+        fileCacheCleanupIdleHandle = null;
+    }
+    fileCacheCleanupTimer = setTimeout(() => {
+        fileCacheCleanupTimer = null;
+        const run = () => {
+            fileCacheCleanupIdleHandle = null;
+            processPendingFileCacheCleanup().catch(err => {
+                historyLog('file-cache-cleanup-batch-failed', { error: err.message });
+                scheduleFileCacheCleanup(1800);
+            });
+        };
+        if ('requestIdleCallback' in window) {
+            fileCacheCleanupIdleHandle = requestIdleCallback(run, { timeout: 3500 });
+        } else {
+            setTimeout(run, 0);
+        }
+    }, delay);
+}
+
+async function processPendingFileCacheCleanup() {
+    if (fileCacheCleanupRunning || !pendingFileCacheCleanupIds.size) return;
+    fileCacheCleanupRunning = true;
+    const batch = Array.from(pendingFileCacheCleanupIds).slice(0, 64);
+    batch.forEach(fileId => pendingFileCacheCleanupIds.delete(fileId));
+    try {
+        const referencedFileIds = await findReferencedFileIds(new Set(batch));
+        let deletedCount = 0;
+        for (let index = 0; index < batch.length; index++) {
+            const fileId = batch[index];
+            if (referencedFileIds.has(fileId)) continue;
+            fileAssetTransfer?.cancel(fileId);
+            cleanupProgressForDeletedFile(fileId);
+            await deleteFromStore('files', fileId);
+            removeMusicTrackFromQueue(fileId);
+            const objectUrl = fileObjectUrls.get(fileId);
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            fileObjectUrls.delete(fileId);
+            deletedCount += 1;
+            if (index % 4 === 3 || navigator.scheduling?.isInputPending?.()) await sleep(0);
+        }
+        historyLog('file-cache-cleanup-batch-completed', {
+            checkedCount: batch.length,
+            deletedCount,
+            preservedCount: referencedFileIds.size,
+            remainingCount: pendingFileCacheCleanupIds.size
+        });
+    } catch (err) {
+        batch.forEach(fileId => pendingFileCacheCleanupIds.add(fileId));
+        throw err;
+    } finally {
+        fileCacheCleanupRunning = false;
+    }
+    if (pendingFileCacheCleanupIds.size) scheduleFileCacheCleanup(500);
 }
 
 async function deleteFileFromCollection(collectionMessageId, fileId) {
@@ -9520,7 +9800,6 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
     if (!confirm('删除会同步移除所有设备中合辑里的这个文件，并清理其文件缓存。继续吗？')) return;
 
     const nextFiles = files.filter(file => file.id !== fileId);
-    await deleteFileCacheIfUnreferenced(fileId, collectionMessageId);
     if (!nextFiles.length) {
         closeFilePreview({ forceClose: true });
         await deleteHistoryMessageLocal(collectionMessageId);
@@ -9566,38 +9845,14 @@ async function deleteHistoryMessageLocal(messageId) {
         closeFileDetails();
         closeFilePreview({ forceClose: true, fromHistory: true });
     }
-    await sleep(0);
-
-    const referencedFileIds = await findReferencedFileIds(fileIds, messageId);
-    let index = 0;
     for (const fileId of fileIds) {
-        fileAssetTransfer?.cancel(fileId);
         cleanupProgressForDeletedFile(fileId);
-        if (referencedFileIds.has(fileId)) {
-            const storedFile = await getFromStore('files', fileId);
-            if (storedFile) {
-                await saveToStore('files', {
-                    ...storedFile,
-                    referencedAfterHistoryDelete: true,
-                    isFileAsset: false,
-                    timestamp: storedFile.timestamp || Date.now()
-                });
-            }
-        } else {
-            await deleteFromStore('files', fileId);
-            removeMusicTrackFromQueue(fileId);
-            const objectUrl = fileObjectUrls.get(fileId);
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
-            fileObjectUrls.delete(fileId);
-        }
-        index += 1;
-        if (index % 4 === 0) await sleep(0);
     }
+    enqueueFileCacheCleanup(fileIds, 'history-message-deleted');
     historyLog('history-message-deleted-locally', {
         messageId,
         fileId: message?.fileInfo?.id,
-        cleanedFileCount: fileIds.size,
-        preservedReferenceCount: referencedFileIds.size
+        queuedFileCount: fileIds.size
     });
 }
 
@@ -9610,7 +9865,8 @@ async function findReferencedFileIds(fileIds, excludingMessageId = null) {
         getFromStore('editorContent', 'current').catch(() => null)
     ]);
     const markContentReferences = content => {
-        for (const fileId of extractFileRefIds(content)) {
+        const contentIds = new Set([...extractAssetIds(content), ...extractFileRefIds(content)]);
+        for (const fileId of contentIds) {
             if (targets.has(fileId)) referenced.add(fileId);
         }
     };
@@ -9622,7 +9878,7 @@ async function findReferencedFileIds(fileIds, excludingMessageId = null) {
         }
         if (entry.type === 'rich') markContentReferences(entry.content);
     }
-    if (editorContent?.sessionId === state.sessionId) markContentReferences(editorContent.content);
+    if (editorContent?.content) markContentReferences(editorContent.content);
     const editor = document.getElementById('editor');
     if (editor) markContentReferences(editor.innerHTML);
     return referenced;
@@ -9641,32 +9897,9 @@ function extractFileRefIds(content) {
     return Array.from(ids);
 }
 
-async function isFileReferencedByRichContent(fileId, excludingMessageId = null) {
-    const [messages, editorContent] = await Promise.all([
-        getCurrentSessionMessages(),
-        getFromStore('editorContent', 'current')
-    ]);
-    for (const message of messages) {
-        if (!message || message.id === excludingMessageId) continue;
-        if (message.type === 'rich' && extractFileRefIds(message.content).includes(fileId)) return true;
-        if (message.type === 'file' && message.fileInfo?.id === fileId) return true;
-        if (message.type === 'collection' && getCollectionFiles(message).some(file => file.id === fileId)) return true;
-    }
-    if (editorContent?.sessionId === state.sessionId &&
-        extractFileRefIds(editorContent.content).includes(fileId)) {
-        return true;
-    }
-    const editor = document.getElementById('editor');
-    return Boolean(editor && extractFileRefIds(editor.innerHTML).includes(fileId));
-}
-
 async function isFileReferencedOutsideSession(fileId, currentSessionId) {
     if (!fileId) return false;
-    const [messages, files] = await Promise.all([
-        getAllFromStore('messages').catch(() => []),
-        getAllFromStore('files').catch(() => [])
-    ]);
-    if (files.some(file => file?.id === fileId && file.sessionId && file.sessionId !== currentSessionId)) return true;
+    const messages = await getAllFromStore('messages').catch(() => []);
     return messages.some(message => {
         if (!message || message.sessionId === currentSessionId) return false;
         if (message.fileInfo?.id === fileId) return true;
@@ -9934,6 +10167,7 @@ async function getSessionResourceInventory() {
         resource.name = resource.name || `未命名资源 ${resource.id.slice(0, 8)}`;
         resource.hasLocalData = hasCompleteFileCache(resource.file, resource);
         resource.isExternalFile = Boolean(resource.file?.externalFileHandle || resource.isExternalFile);
+        resource.externalFileAvailable = resource.file?.externalFileAvailable === true;
         resource.hasReadableLocalSource = resource.hasLocalData || (resource.isExternalFile && resource.file?.externalFileMissing !== true);
         resource.cacheCleared = Boolean(resource.file?.cacheCleared);
         resource.isPartial = Boolean(resource.file?.isPartial || resource.file?.transferInterrupted);
@@ -10006,7 +10240,35 @@ function closeResourceBrowser() {
     const layer = document.getElementById('resourceBrowserLayer');
     if (!layer) return;
     layer.replaceChildren();
+    layer.classList.remove('active', 'is-minimized');
     layer.hidden = true;
+}
+
+function minimizeResourceBrowser() {
+    const layer = document.getElementById('resourceBrowserLayer');
+    if (!layer || layer.hidden) return;
+    layer.classList.remove('active');
+    layer.classList.add('is-minimized');
+    const button = layer.querySelector('.resource-browser-minimize');
+    if (button) {
+        button.textContent = '□';
+        button.title = '恢复资源管理器';
+        button.setAttribute('aria-label', '恢复资源管理器');
+    }
+}
+
+function restoreResourceBrowser() {
+    const layer = document.getElementById('resourceBrowserLayer');
+    if (!layer || layer.hidden) return false;
+    layer.classList.remove('is-minimized');
+    layer.classList.add('active');
+    const button = layer.querySelector('.resource-browser-minimize');
+    if (button) {
+        button.textContent = '−';
+        button.title = '最小化资源管理器';
+        button.setAttribute('aria-label', '最小化资源管理器');
+    }
+    return true;
 }
 
 async function clearResourceCache(resource) {
@@ -10255,7 +10517,8 @@ async function renderMountsInResourceBrowser(container) {
         );
         section.appendChild(row);
     });
-    container.appendChild(section);
+    container.querySelector(':scope > .resource-browser-mounts')?.remove();
+    container.insertBefore(section, container.querySelector(':scope > .resource-browser-list'));
 }
 
 async function waitForTelegramRepairCache(resource, timeoutMs = 12000) {
@@ -10374,11 +10637,18 @@ async function runTelegramFileContinuityRepair() {
     showAppToast(`Telegram 检测完成：有效 ${stats.valid}，修复 ${stats.repaired}，待来源 ${stats.unavailable}，失败 ${stats.failed}`);
 }
 
-async function showResourceBrowser() {
+async function showResourceBrowser(options = {}) {
     const layer = document.getElementById('resourceBrowserLayer');
     if (!layer) throw new Error('资源浏览器容器不存在');
+    if (options.restoreIfMinimized && layer.classList.contains('is-minimized')) {
+        restoreResourceBrowser();
+        return;
+    }
+    if (layer.parentElement !== document.body) document.body.appendChild(layer);
     layer.replaceChildren();
     layer.hidden = false;
+    layer.classList.remove('is-minimized');
+    layer.classList.add('active');
     const modal = document.createElement('section');
     modal.className = 'modal resource-browser-modal';
     modal.setAttribute('role', 'dialog');
@@ -10386,15 +10656,39 @@ async function showResourceBrowser() {
 
     const header = document.createElement('div');
     header.className = 'resource-browser-header';
+    const headerMain = document.createElement('div');
+    headerMain.className = 'resource-browser-header-main';
     const title = document.createElement('h3');
     title.textContent = '会话资源浏览器';
+    const refreshButton = document.createElement('button');
+    refreshButton.type = 'button';
+    refreshButton.className = 'resource-browser-refresh';
+    refreshButton.textContent = '↻ 刷新';
+    refreshButton.title = '重新扫描当前会话资源';
+    const headerActions = document.createElement('div');
+    headerActions.className = 'resource-browser-header-actions';
+    const minimizeButton = document.createElement('button');
+    minimizeButton.type = 'button';
+    minimizeButton.className = 'resource-browser-minimize';
+    minimizeButton.textContent = '−';
+    minimizeButton.title = '最小化资源管理器';
+    minimizeButton.setAttribute('aria-label', '最小化资源管理器');
+    minimizeButton.addEventListener('click', () => {
+        if (layer.classList.contains('is-minimized')) restoreResourceBrowser();
+        else minimizeResourceBrowser();
+    });
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'resource-browser-close';
     closeButton.textContent = '×';
     closeButton.title = '关闭资源浏览器';
     closeButton.addEventListener('click', closeResourceBrowser);
-    header.append(title, closeButton);
+    headerMain.append(title, refreshButton);
+    headerMain.addEventListener('click', () => {
+        if (layer.classList.contains('is-minimized')) restoreResourceBrowser();
+    });
+    headerActions.append(minimizeButton, closeButton);
+    header.append(headerMain, headerActions);
 
     const controls = document.createElement('div');
     controls.className = 'resource-browser-controls';
@@ -10413,7 +10707,8 @@ async function showResourceBrowser() {
         ['all', '全部资源'],
         ['referenced', '有引用'],
         ['orphaned', '未引用'],
-        ['missing', '缓存缺失']
+        ['missing', '缓存缺失'],
+        ['telegram', 'Telegram 渠道']
     ].forEach(([value, label]) => {
         const option = document.createElement('option');
         option.value = value;
@@ -10430,8 +10725,12 @@ async function showResourceBrowser() {
     await renderMountsInResourceBrowser(modal);
     modal.append(list);
     layer.appendChild(modal);
+    layer.onclick = event => {
+        if (event.target === layer) closeResourceBrowser();
+    };
 
-    const render = async () => {
+    const render = async (options = {}) => {
+        const previousScrollTop = options.preserveScroll ? list.scrollTop : 0;
         const resources = await getSessionResourceInventory();
         const query = searchInput.value.trim().toLocaleLowerCase('zh-CN');
         const mode = filter.value;
@@ -10441,6 +10740,7 @@ async function showResourceBrowser() {
             if (mode === 'referenced') return resource.references.length > 0;
             if (mode === 'orphaned') return resource.references.length === 0;
             if (mode === 'missing') return !resource.hasReadableLocalSource;
+            if (mode === 'telegram') return resource.isTelegramSource;
             return true;
         });
         const cachedSize = resources.reduce((sum, resource) => sum + (resource.hasLocalData ? resource.size : 0), 0);
@@ -10527,7 +10827,7 @@ async function showResourceBrowser() {
             actions.className = 'resource-browser-actions';
             if (resource.hasReadableLocalSource) {
                 actions.appendChild(createResourceBrowserButton('下载', resource.isExternalFile ? '从本机映射读取并下载' : '下载本机已缓存的资源', () => downloadFile(resource.id)));
-                if (resource.hasLocalData) {
+                if (resource.hasLocalData && !(resource.isExternalFile && resource.externalFileAvailable)) {
                     actions.appendChild(createResourceBrowserButton('清除缓存', '仅清理本设备保存的文件内容', async () => {
                         await clearResourceCache(resource);
                         await render();
@@ -10552,10 +10852,30 @@ async function showResourceBrowser() {
             if (actions.childElementCount) item.appendChild(actions);
             list.appendChild(item);
         });
+        if (options.preserveScroll) {
+            requestAnimationFrame(() => {
+                list.scrollTop = Math.min(previousScrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
+            });
+        }
     };
 
     searchInput.addEventListener('input', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
     filter.addEventListener('change', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
+    refreshButton.addEventListener('click', async () => {
+        if (refreshButton.disabled) return;
+        refreshButton.disabled = true;
+        refreshButton.textContent = '↻ 刷新中';
+        try {
+            await renderMountsInResourceBrowser(modal);
+            await render({ preserveScroll: true });
+            showAppToast('资源列表已刷新');
+        } catch (err) {
+            alert(`刷新资源失败: ${err.message}`);
+        } finally {
+            refreshButton.disabled = false;
+            refreshButton.textContent = '↻ 刷新';
+        }
+    });
     try {
         await render();
     } catch (err) {
@@ -11475,6 +11795,14 @@ function getLocalDeviceRemark(deviceId) {
     return readDeviceRemarkMap(DEVICE_REMARKS_KEY)[deviceId] || null;
 }
 
+function getDeviceDisplayName(device = {}, options = {}) {
+    const deviceId = device.deviceId || device.id || '';
+    const originalName = String(device.name || device.deviceName || (deviceId ? `设备-${deviceId.slice(-4)}` : '未知设备')).trim();
+    if (options.isSelf || deviceId === state.deviceId) return originalName;
+    const remark = String(getLocalDeviceRemark(deviceId)?.remark || '').trim();
+    return remark ? `${remark}(${originalName})` : originalName;
+}
+
 async function setLocalDeviceRemark(deviceId, value) {
     const remarks = readDeviceRemarkMap(DEVICE_REMARKS_KEY);
     const remark = String(value || '').trim().slice(0, 120);
@@ -11483,6 +11811,7 @@ async function setLocalDeviceRemark(deviceId, value) {
     else delete remarks[deviceId];
     localStorage.setItem(DEVICE_REMARKS_KEY, JSON.stringify(remarks));
     state.socket?.emit('device-remark-backup', { targetDeviceId: deviceId, remark, updatedAt });
+    renderNearbyDevices();
 }
 
 function handleDeviceRemarkBackup(data) {
@@ -11515,6 +11844,7 @@ function handleDeviceRemarkRestoreResponse(data) {
         else delete remarks[data.helperDeviceId];
         localStorage.setItem(DEVICE_REMARKS_KEY, JSON.stringify(remarks));
         updateDeviceList();
+        renderNearbyDevices();
     }
 }
 
@@ -11567,7 +11897,7 @@ function renderDeviceRow(device, options = {}) {
     `;
     const name = el.querySelector('.name');
     const localRemark = isSelf ? '' : getLocalDeviceRemark(normalized.deviceId)?.remark;
-    name.textContent = `${localRemark || normalized.name || normalized.deviceId}${isSelf ? ' (我)' : ''}`;
+    name.textContent = `${getDeviceDisplayName(normalized, { isSelf })}${isSelf ? ' (我)' : ''}`;
     if (localRemark) name.title = `设备原名：${normalized.name || normalized.deviceId}`;
     makeDeviceNameInteractive(name, normalized);
     const status = el.querySelector('.status');
@@ -12132,13 +12462,13 @@ function renderNearbyDevices() {
         info.className = 'info';
         const name = document.createElement('div');
         name.className = 'name';
-        name.textContent = device.name || `设备-${device.deviceId.slice(-4)}`;
+        name.textContent = getDeviceDisplayName(device);
         const hint = document.createElement('div');
         hint.className = 'status';
         hint.textContent = formatNearbyHint(device);
         makeDeviceNameInteractive(name, {
             ...device,
-            name: name.textContent,
+            name: device.name || `设备-${device.deviceId.slice(-4)}`,
             profileUrl: device.profileUrl || `${window.location.origin}/device/${device.deviceId}`
         });
         info.append(name, hint);
@@ -12234,6 +12564,54 @@ function setMobileWorkspaceView(view, options = {}) {
     }
 }
 
+async function focusTransferRecordById(messageId, options = {}) {
+    if (!messageId) return false;
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs || 30000));
+    const deadline = Date.now() + timeoutMs;
+    let historyRequested = false;
+    settleMobileWorkspaceView('chat');
+    while (Date.now() < deadline) {
+        let messageEl = getMessageElement(messageId);
+        if (!messageEl) {
+            const storedMessage = await getFromStore('messages', messageId).catch(() => null);
+            if (storedMessage?.sessionId === state.sessionId) {
+                await addMessageToChat(storedMessage, storedMessage.sender === state.deviceId, {
+                    scroll: false,
+                    autoRequestAsset: false
+                });
+                messageEl = getMessageElement(messageId);
+            }
+        }
+        if (messageEl) {
+            settleMobileWorkspaceView('chat');
+            scrollMessageInsideChat(messageEl, options.behavior || 'auto');
+            pinChatScrollToDomAnchor(messageId, 4500);
+            flashResourceTarget(messageEl);
+            return true;
+        }
+        if (!historyRequested && state.socket?.connected) {
+            historyRequested = true;
+            requestSessionHistory('record-deep-link');
+        }
+        await sleep(250);
+    }
+    return false;
+}
+
+async function handlePendingRecordNavigation() {
+    const messageId = state.pendingRecordId;
+    if (!messageId) return;
+    const found = await focusTransferRecordById(messageId, { timeoutMs: 30000, behavior: 'auto' });
+    if (!found) {
+        showAppToast('目标传输记录暂未同步到本机，请稍后重试');
+        return;
+    }
+    state.pendingRecordId = '';
+    if (state.pendingRecordDetails) {
+        await showTransferRecordDetails(messageId);
+    }
+}
+
 function scrollMessageInsideChat(message, behavior = 'smooth') {
     const container = document.getElementById('chatMessages');
     if (!container || !message || !container.contains(message)) return;
@@ -12267,6 +12645,7 @@ function isAnyBlockingOverlayOpen() {
         document.getElementById('filePreviewViewer')?.classList.contains('active') ||
         document.getElementById('mediaFullscreenViewer')?.classList.contains('active') ||
         document.getElementById('richViewer')?.classList.contains('active') ||
+        document.getElementById('transferRecordDetailsLayer') ||
         (document.getElementById('downloadCacheOverlay') && !document.getElementById('downloadCacheOverlay').hidden) ||
         document.getElementById('resourceBrowserLayer')?.classList.contains('active')
     );
@@ -12774,7 +13153,7 @@ function initUI() {
     document.getElementById('copySharedClipboardBtn').addEventListener('click', copySharedClipboard);
     document.getElementById('garbageCleanupBtn').addEventListener('click', showGarbageCleanupDialog);
     document.getElementById('resourceBrowserBtn').addEventListener('click', () => {
-        showResourceBrowser().catch(err => {
+        showResourceBrowser({ restoreIfMinimized: true }).catch(err => {
             historyLog('resource-browser-open-failed', { error: err.message });
             alert(`无法打开资源浏览器: ${err.message}`);
         });
@@ -13872,14 +14251,32 @@ async function loadSessionData() {
 
         const chatMessages = document.getElementById('chatMessages');
         const storedSessionForAnchor = await getFromStore('sessions', state.sessionId).catch(() => null);
-        chatScrollAnchorMessageId = storedSessionForAnchor?.scrollAnchorMessageId || '';
+        const deepLinkedMessage = state.pendingRecordId
+            ? messages.find(message => message.id === state.pendingRecordId)
+            : null;
+        const orderedMessages = deepLinkedMessage
+            ? [deepLinkedMessage, ...messages.filter(message => message.id !== deepLinkedMessage.id)]
+            : messages;
+        chatScrollAnchorMessageId = deepLinkedMessage?.id || storedSessionForAnchor?.scrollAnchorMessageId || '';
         chatMessages?.classList.add('history-loading');
         try {
             // 使用 for...of 确保按顺序异步处理，但不要每条都滚动，避免刷新时列表抖动。
-            for (const msg of messages) {
+            let renderedCount = 0;
+            for (const msg of orderedMessages) {
                 try {
                     const isOwn = msg.sender === state.deviceId;
                     await addMessageToChat(msg, isOwn, { scroll: false });
+                    renderedCount += 1;
+                    if (msg.id === deepLinkedMessage?.id) {
+                        settleMobileWorkspaceView('chat');
+                        const target = getMessageElement(msg.id);
+                        if (target) {
+                            scrollMessageInsideChat(target, 'auto');
+                            pinChatScrollToDomAnchor(msg.id, 30000);
+                            flashResourceTarget(target);
+                        }
+                    }
+                    if (deepLinkedMessage && renderedCount % 8 === 0) await sleep(0);
                 } catch (err) {
                     console.error('Failed to render stored message:', msg && msg.id, err);
                     historyLog('indexeddb-history-message-render-failed', {

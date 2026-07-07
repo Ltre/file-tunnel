@@ -339,3 +339,27 @@
 - Repair first tries the ordinary local handle/cache and online peer transfer paths. It only uploads a replacement copy after a browser has obtained the bytes, preserving the existing peer-first recovery strategy.
 - The Telegram bot configuration page now accepts a private backup chat/channel target. Repair uploads the recovered bytes there, records the returned replacement `file_id`, and updates the existing transfer record in place without creating a duplicate message.
 - Server-side message updates preserve the newest timestamped Telegram identifier metadata, preventing a stale client from overwriting a freshly repaired `file_id`.
+
+### External Files, Record Links, And Resource Management
+- File preview actions now revalidate File System Access handles at action time. A readable local source never exposes browser-cache release or restore actions, even when permission checks finish later on HTTPS deployments.
+- External-handle and peer-restored files repaint their flat records, collection cards, active preview, source badge, and remark immediately without requiring a page refresh.
+- Device names in online, nearby, and followed lists use one local-only display rule: `remark(original device name)` when a remark exists, otherwise the original device name.
+- Removing one member from a collection persists and broadcasts the smaller collection before orphan-cache scans run in yielded background cleanup, keeping the preview responsive.
+- Added dedicated `/record/:sessionId/:messageId` detail pages for text, rich text, single files, and collections, including tunnel, sender, file, cache-source, and raw record metadata.
+- Transfer records expose copyable `/?record=:messageId#:sessionId` links. Deep links prioritize and pin the requested DOM record while large histories continue rendering, and request remote history when the record is not local yet.
+- The session resource manager is now a centered large desktop overlay and a full-screen mobile workspace above the app header, content, and bottom navigation.
+- Resource filters now include a dedicated Telegram channel view.
+
+### Resource Manager Window State
+- Added separate refresh, minimize/restore, and close actions to the session resource manager header.
+- Minimizing keeps the current resource DOM, search query, filter selection, and scroll state in a compact floating bar while allowing the underlying tunnel UI to remain interactive.
+- Reopening from the connection-panel entry restores a minimized manager without rescanning IndexedDB; closing destroys the manager so the next open performs a fresh load.
+- The explicit refresh action rescans resources and local mounts while preserving the current query, filter, and list position.
+- The minimized bar is positioned above the mobile bottom navigation and remains a compact bottom-right utility on desktop.
+
+### Non-Blocking Record Deletion And Preview Opening
+- Removed the deletion-time scan of the complete IndexedDB `files` store. Reference checks no longer clone large binary payloads onto the main thread merely to decide whether a cache entry is orphaned.
+- File-cache cleanup is now a deduplicated idle queue. Messages and visible records disappear first; orphan checks and key-only cache deletion run later in bounded batches with input-aware yields.
+- Collection-member deletion updates the existing bubble with lightweight metadata and reused thumbnail DOM instead of rereading several media blobs to rebuild the preview.
+- Repeated taps while a file or collection preview is opening are coalesced into one task, preventing delayed click bursts from opening the collection and then unexpectedly opening one of its files.
+- Cross-tunnel, rich-text, collection, and collaborative-editor references remain protected during deferred cleanup.

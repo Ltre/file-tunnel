@@ -368,6 +368,11 @@ app.post('/api/admin/auth/logout', (req, res) => {
 
 app.use(['/admin.html', '/tgbot.html'], adminAuth.requireAuth);
 
+app.get('/record/:sessionId/:messageId', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
     index: ['index.html'],
