@@ -14,6 +14,7 @@ const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
 const { createAdminAuth } = require('./server/admin-auth');
+const { normalizeLanguageCode, translateTelegramText } = require('./server/i18n');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
@@ -942,6 +943,7 @@ const telegramServerAssets = new Map();
 const telegramMediaGroups = new Map();
 const telegramProcessedUpdates = new Map();
 const telegramAwaitingTunnelCode = new Set();
+const telegramChatLanguages = new Map();
 const telegramAssetDownloads = new Map();
 const telegramAssetReaders = new Map();
 
@@ -961,18 +963,89 @@ function normalizeTunnelPermissions(value = {}) {
         .map(key => [key, value?.[key] !== false]));
 }
 
-function parseStoredTunnelPermissions(value) {
+function normalizeTunnelAdminRecords(value = {}) {
+    const records = {};
+    if (!value || typeof value !== 'object') return records;
+    Object.entries(value).forEach(([rawDeviceId, rawRecord]) => {
+        const deviceId = sanitizeString(rawDeviceId, 80);
+        if (!isValidDeviceId(deviceId)) return;
+        const source = rawRecord && typeof rawRecord === 'object' ? rawRecord : {};
+        records[deviceId] = {
+            deviceId,
+            deviceName: sanitizeString(source.deviceName || source.name || '', 80),
+            permissions: normalizeTunnelPermissions(source.permissions || source),
+            grantedBy: sanitizeString(source.grantedBy || '', 80),
+            createdAt: Number(source.createdAt) || Date.now(),
+            updatedAt: Number(source.updatedAt) || Date.now()
+        };
+    });
+    return records;
+}
+
+function parseStoredTunnelAccess(value) {
     try {
-        return normalizeTunnelPermissions(typeof value === 'string' ? JSON.parse(value) : value);
+        const parsed = typeof value === 'string' && value ? JSON.parse(value) : (value || {});
+        if (parsed && typeof parsed === 'object' && (parsed.permissions || parsed.admins)) {
+            return {
+                permissions: normalizeTunnelPermissions(parsed.permissions || {}),
+                admins: normalizeTunnelAdminRecords(parsed.admins || {})
+            };
+        }
+        return { permissions: normalizeTunnelPermissions(parsed), admins: {} };
     } catch {
-        return normalizeTunnelPermissions();
+        return { permissions: normalizeTunnelPermissions(), admins: {} };
     }
+}
+
+function parseStoredTunnelPermissions(value) {
+    return parseStoredTunnelAccess(value).permissions;
+}
+
+function parseStoredTunnelAdmins(value) {
+    return parseStoredTunnelAccess(value).admins;
+}
+
+function serializeTunnelAccess(permissions = {}, admins = {}) {
+    return {
+        permissions: normalizeTunnelPermissions(permissions),
+        admins: normalizeTunnelAdminRecords(admins)
+    };
+}
+
+function getTunnelAdminRecord(session, deviceId) {
+    if (!session || !deviceId || !session.admins) return null;
+    return session.admins[deviceId] || null;
+}
+
+function canManageTunnel(session, deviceId) {
+    return Boolean(session && deviceId && (!session.ownerDeviceId || session.ownerDeviceId === deviceId));
 }
 
 function canUseTunnelCapability(session, deviceId, capability) {
     if (!session || !deviceId) return false;
     if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
+    const adminRecord = getTunnelAdminRecord(session, deviceId);
+    if (adminRecord) return adminRecord.permissions?.[capability] !== false;
     return session.permissions?.[capability] !== false;
+}
+
+function getSessionPermissionPayload(session, deviceId = '') {
+    const admins = normalizeTunnelAdminRecords(session?.admins || {});
+    return {
+        ownerDeviceId: session?.ownerDeviceId || '',
+        permissions: normalizeTunnelPermissions(session?.permissions || {}),
+        adminDevices: Object.values(admins).map(record => ({
+            deviceId: record.deviceId,
+            deviceName: record.deviceName || session?.devices?.get(record.deviceId)?.deviceName || '',
+            permissions: normalizeTunnelPermissions(record.permissions),
+            grantedBy: record.grantedBy || '',
+            createdAt: record.createdAt || Date.now(),
+            updatedAt: record.updatedAt || Date.now()
+        })),
+        isOwner: Boolean(session && deviceId && (!session.ownerDeviceId || session.ownerDeviceId === deviceId)),
+        isAdmin: Boolean(deviceId && admins[deviceId]),
+        selfAdminPermissions: deviceId && admins[deviceId] ? normalizeTunnelPermissions(admins[deviceId].permissions) : null
+    };
 }
 
 function nearbyDistanceMeters(left, right) {
@@ -1570,6 +1643,8 @@ async function handleTelegramUpdate(update = {}) {
     const chatId = message?.chat?.id;
     if (!chatId) return;
     const chatKey = String(chatId);
+    const telegramLanguage = normalizeLanguageCode(message?.from?.language_code || message?.chat?.language_code || '');
+    if (telegramLanguage) telegramChatLanguages.set(chatKey, telegramLanguage);
     const textPayload = getTelegramTextPayload(message);
     const text = textPayload.text || '';
     const trimmed = text.trim();
@@ -1589,7 +1664,7 @@ async function handleTelegramUpdate(update = {}) {
     }
     if (/^\/tunnel(?:@\w+)?\s*$/i.test(trimmed)) {
         telegramAwaitingTunnelCode.add(chatKey);
-        await telegramSendMessage(chatId, '请输入 5 位隧道暗号。', { force_reply: true, input_field_placeholder: '输入 5 位隧道暗号' });
+        await telegramSendMessage(chatId, '请输入 5 位隧道暗号。', { force_reply: true, input_field_placeholder: translateTelegramText('输入 5 位隧道暗号', telegramChatLanguages.get(chatKey) || 'zh-Hans') });
         return;
     }
     const commandCode = extractTunnelCommandShortCode(text);
@@ -1783,6 +1858,7 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
             remark: sanitizeString(storedTunnel?.remark || '', 60),
             ownerDeviceId: sanitizeString(storedTunnel?.owner_device_id || '', 80),
             permissions: parseStoredTunnelPermissions(storedTunnel?.permissions_json),
+            admins: parseStoredTunnelAdmins(storedTunnel?.permissions_json),
             historySize: 0,
             createdAt: Date.now(),
             lastActivity: Date.now()
@@ -2687,7 +2763,9 @@ io.on('connection', (socket) => {
             const storedTunnel = infraStore?.getTunnel(sessionId);
             const storedRemark = sanitizeString(storedTunnel?.remark || '', 60);
             const storedOwnerDeviceId = sanitizeString(storedTunnel?.owner_device_id || '', 80);
-            const storedPermissions = parseStoredTunnelPermissions(storedTunnel?.permissions_json);
+            const storedAccess = parseStoredTunnelAccess(storedTunnel?.permissions_json);
+            const storedPermissions = storedAccess.permissions;
+            const storedAdmins = storedAccess.admins;
             
             // 存储设备socket映射
             bindSocketToDevice(socket, deviceId);
@@ -2704,6 +2782,7 @@ io.on('connection', (socket) => {
                 remark: storedRemark,
                 ownerDeviceId: storedOwnerDeviceId || deviceId,
                 permissions: storedPermissions,
+                admins: storedAdmins,
                 historySize: 0,
                     createdAt: Date.now(),
                     lastActivity: Date.now()
@@ -2714,6 +2793,7 @@ io.on('connection', (socket) => {
             if (!session.remark && storedRemark) session.remark = storedRemark;
             if (!session.ownerDeviceId) session.ownerDeviceId = storedOwnerDeviceId || deviceId;
             if (!session.permissions) session.permissions = storedPermissions;
+            if (!session.admins) session.admins = storedAdmins;
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
             infraStore?.touchTunnel(sessionId, {
@@ -2721,7 +2801,7 @@ io.on('connection', (socket) => {
                 createdAt: session.createdAt || Date.now(),
                 lastActivity: Date.now()
             });
-            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now());
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now(), session.admins);
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -2806,11 +2886,7 @@ io.on('connection', (socket) => {
             });
             socket.emit('session-short-code', { shortCode: session.shortCode });
             socket.emit('session-remark', { remark: session.remark || '' });
-            socket.emit('session-permissions', {
-                ownerDeviceId: session.ownerDeviceId,
-                permissions: session.permissions,
-                isOwner: session.ownerDeviceId === deviceId
-            });
+            socket.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
             socket.emit('device-profile', {
                 deviceId,
                 deviceModel: session.devices.get(deviceId)?.deviceModel || '',
@@ -2891,19 +2967,56 @@ io.on('connection', (socket) => {
         try {
             const sessionId = data?.sessionId;
             const session = sessions.get(sessionId);
-            if (sessionId !== currentSession || !session || session.ownerDeviceId !== currentDevice) {
+            if (sessionId !== currentSession || !session || !canManageTunnel(session, currentDevice)) {
                 return respond({ ok: false, error: 'owner-required' });
             }
             session.permissions = normalizeTunnelPermissions(data?.permissions);
             session.lastActivity = Date.now();
-            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity);
-            io.to(sessionId).emit('session-permissions', {
-                ownerDeviceId: session.ownerDeviceId,
-                permissions: session.permissions
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            session.devices.forEach((_, deviceId) => {
+                const target = deviceSockets.get(deviceId);
+                if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
             });
-            respond({ ok: true, permissions: session.permissions });
+            respond({ ok: true, ...getSessionPermissionPayload(session, currentDevice) });
         } catch (err) {
             console.error('session-permissions-update error:', err);
+            respond({ ok: false, error: 'internal-error' });
+        }
+    });
+
+    socket.on('session-admins-update', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const sessionId = data?.sessionId;
+            const session = sessions.get(sessionId);
+            if (sessionId !== currentSession || !session || !canManageTunnel(session, currentDevice)) {
+                return respond({ ok: false, error: 'owner-required' });
+            }
+            const records = normalizeTunnelAdminRecords(data?.admins || {});
+            delete records[session.ownerDeviceId];
+            Object.values(records).forEach(record => {
+                if (!record.deviceName && session.devices?.has(record.deviceId)) {
+                    record.deviceName = session.devices.get(record.deviceId).deviceName || '';
+                }
+                record.grantedBy = currentDevice;
+                record.updatedAt = Date.now();
+                record.createdAt = Number(record.createdAt) || record.updatedAt;
+            });
+            session.admins = records;
+            session.lastActivity = Date.now();
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            session.devices.forEach((_, deviceId) => {
+                const target = deviceSockets.get(deviceId);
+                if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
+            });
+            respond({ ok: true, ...getSessionPermissionPayload(session, currentDevice) });
+            historyLog('session-admins-updated', {
+                sessionId,
+                deviceId: currentDevice,
+                adminCount: Object.keys(records).length
+            });
+        } catch (err) {
+            console.error('session-admins-update error:', err);
             respond({ ok: false, error: 'internal-error' });
         }
     });

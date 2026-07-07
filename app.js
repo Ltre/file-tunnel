@@ -66,6 +66,9 @@ const state = {
     sessionRemark: '',
     sessionOwnerDeviceId: '',
     sessionPermissions: null,
+    sessionAdminDevices: new Map(),
+    sessionSelfAdminPermissions: null,
+    sessionIsAdmin: false,
     pendingSharedFileCount: 0,
     pendingSharedFileError: false,
     pendingRecordId: '',
@@ -1348,6 +1351,16 @@ function initSocket() {
     state.socket.on('session-permissions', data => {
         state.sessionOwnerDeviceId = String(data?.ownerDeviceId || '');
         state.sessionPermissions = { ...DEFAULT_TUNNEL_PERMISSIONS, ...(data?.permissions || {}) };
+        state.sessionIsAdmin = data?.isAdmin === true;
+        state.sessionSelfAdminPermissions = data?.selfAdminPermissions
+            ? { ...DEFAULT_TUNNEL_PERMISSIONS, ...data.selfAdminPermissions }
+            : null;
+        state.sessionAdminDevices = new Map((Array.isArray(data?.adminDevices) ? data.adminDevices : [])
+            .filter(record => record?.deviceId)
+            .map(record => [record.deviceId, {
+                ...record,
+                permissions: { ...DEFAULT_TUNNEL_PERMISSIONS, ...(record.permissions || {}) }
+            }]));
         applyTunnelPermissionUi();
     });
     state.socket.on('permission-denied', data => {
@@ -9996,8 +10009,13 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
         updatedAt: Date.now()
     };
     await updateHistoryMessage(nextMessage);
-    if (shouldReturnToCollection) closeFilePreview();
-    else closeFilePreview({ forceClose: true });
+    if (shouldReturnToCollection) {
+        // applyCollectionPreviewIncrementalUpdate may already have restored the F layer.
+        // Do not close again, otherwise deleting from G would fall through to the P layer.
+        if (activeFilePreviewMode === 'file' && activeFilePreviewFileId === fileId) closeFilePreview();
+    } else {
+        closeFilePreview({ forceClose: true });
+    }
     historyLog('collection-file-deleted', {
         messageId: collectionMessageId,
         fileId,
@@ -11496,6 +11514,139 @@ function openEditorFileReferenceDialog(files, savedRange, insertEditorHtml, edit
     document.body.appendChild(dialog);
 }
 
+function getEditableSelectionRange(editor) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !editor) return null;
+    const range = selection.getRangeAt(0);
+    return editor.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+}
+
+function insertHtmlIntoEditable(editor, html, savedRange = null) {
+    if (!editor) return;
+    const range = savedRange || getEditableSelectionRange(editor);
+    if (!range) {
+        editor.insertAdjacentHTML('beforeend', html);
+        editor.focus();
+        return;
+    }
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const lastNode = template.content.lastChild;
+    range.deleteContents();
+    range.insertNode(template.content);
+    if (lastNode) {
+        range.setStartAfter(lastNode);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+    editor.focus();
+}
+
+function getEditableDropRange(editor, event) {
+    let range = null;
+    if (document.caretRangeFromPoint) {
+        range = document.caretRangeFromPoint(event.clientX, event.clientY);
+    } else if (document.caretPositionFromPoint) {
+        const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+        if (position) {
+            range = document.createRange();
+            range.setStart(position.offsetNode, position.offset);
+            range.collapse(true);
+        }
+    }
+    return range && editor?.contains(range.commonAncestorContainer) ? range : null;
+}
+
+async function insertRichEditorImageFile(editor, file, savedRange = null) {
+    const asset = await createEditorAssetFromFile(file);
+    const html = createEditorAssetHtml(asset);
+    if (getEditorContentSize(editor.innerHTML + html) > MAX_EDITOR_CONTENT_SIZE) {
+        throw new Error('内容过大，无法同步到其它设备');
+    }
+    insertHtmlIntoEditable(editor, html, savedRange);
+    await hydrateEditorAssets(editor);
+}
+
+function attachRichEditorEnhancedTools(layer, editor) {
+    if (!layer || !editor) return;
+    layer.querySelectorAll('.rich-message-editor-toolbar .toolbar-btn[data-cmd]').forEach(btn => {
+        btn.addEventListener('click', event => {
+            event.preventDefault();
+            document.execCommand(btn.dataset.cmd, false, null);
+            editor.focus();
+        });
+    });
+    layer.querySelector('[data-rich-insert-image]')?.addEventListener('click', event => {
+        event.preventDefault();
+        editor.focus();
+        const savedRange = getEditableSelectionRange(editor);
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.onchange = async e => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+                await insertRichEditorImageFile(editor, file, savedRange);
+            } catch (err) {
+                alert(`图片无法插入: ${err.message}`);
+            }
+        };
+        input.click();
+    });
+    layer.querySelector('[data-rich-insert-file]')?.addEventListener('click', async event => {
+        event.preventDefault();
+        editor.focus();
+        const savedRange = getEditableSelectionRange(editor);
+        const referenceFiles = await getReferenceableSessionFiles();
+        if (!referenceFiles.length) return alert('暂无文件可引用');
+        openEditorFileReferenceDialog(referenceFiles, savedRange, (html, range) => insertHtmlIntoEditable(editor, html, range), editor, async () => {
+            await hydrateEditorAssets(editor);
+            return { emitted: false };
+        });
+    });
+    layer.querySelector('[data-rich-insert-link]')?.addEventListener('click', event => {
+        event.preventDefault();
+        editor.focus();
+        const url = prompt('请输入链接地址（https://...）');
+        if (!url) return;
+        const safeUrl = escapeHtml(url.trim());
+        const selectedText = String(window.getSelection?.()?.toString() || '').trim();
+        insertHtmlIntoEditable(editor, `<a href="${safeUrl}" target="_blank" rel="noopener">${escapeHtml(selectedText || url)}</a>&nbsp;`, getEditableSelectionRange(editor));
+    });
+    layer.querySelector('[data-rich-insert-quote]')?.addEventListener('click', event => {
+        event.preventDefault();
+        insertHtmlIntoEditable(editor, '<blockquote style="border-left:4px solid #667eea;margin:8px 0;padding:6px 10px;background:#f6f8ff;">引用内容</blockquote>');
+    });
+    layer.querySelector('[data-rich-insert-hr]')?.addEventListener('click', event => {
+        event.preventDefault();
+        insertHtmlIntoEditable(editor, '<hr><p><br></p>');
+    });
+    layer.querySelector('[data-rich-insert-table]')?.addEventListener('click', event => {
+        event.preventDefault();
+        insertHtmlIntoEditable(editor, '<table border="1" style="border-collapse:collapse;width:100%;"><tbody><tr><td>单元格</td><td>单元格</td></tr><tr><td>单元格</td><td>单元格</td></tr></tbody></table><p><br></p>');
+    });
+    editor.addEventListener('dragover', event => {
+        if (Array.from(event.dataTransfer?.files || []).some(file => file.type.startsWith('image/'))) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+        }
+    });
+    editor.addEventListener('drop', async event => {
+        const imageFile = Array.from(event.dataTransfer?.files || []).find(file => file.type.startsWith('image/'));
+        if (!imageFile) return;
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+            await insertRichEditorImageFile(editor, imageFile, getEditableDropRange(editor, event));
+        } catch (err) {
+            alert(`图片无法插入: ${err.message}`);
+        }
+    });
+}
+
 function initEditor() {
     const editor = document.getElementById('editor');
     let syncTimeout;
@@ -11878,6 +12029,7 @@ function handleDeviceJoined(data) {
     });
 
     updateDeviceList();
+    renderTunnelAdminSettings();
 
     // 尝试建立P2P连接
     connectToPeer(deviceId);
@@ -11906,6 +12058,7 @@ function handleDeviceLeft(data) {
     state.dataChannels.delete(deviceId);
     state.pendingIceCandidates.delete(deviceId);
     updateDeviceList();
+    renderTunnelAdminSettings();
 }
 
 function handleSessionDevices(data) {
@@ -11940,6 +12093,7 @@ function handleSessionDevices(data) {
     });
 
     updateDeviceList();
+    renderTunnelAdminSettings();
     scheduleStoredFileAssetAnnounce('session-devices', 1200);
 }
 
@@ -11956,6 +12110,7 @@ function handleDeviceUpdated(data) {
     });
     if (!existing) connectToPeer(data.deviceId);
     updateDeviceList();
+    renderTunnelAdminSettings();
     scheduleStoredFileAssetAnnounce('device-updated');
 }
 
@@ -13355,8 +13510,13 @@ function isTunnelOwner() {
     return !state.sessionOwnerDeviceId || state.sessionOwnerDeviceId === state.deviceId;
 }
 
+function canManageTunnelSettings() {
+    return isTunnelOwner();
+}
+
 function hasTunnelPermission(capability) {
     if (isTunnelOwner()) return true;
+    if (state.sessionSelfAdminPermissions) return state.sessionSelfAdminPermissions?.[capability] !== false;
     return state.sessionPermissions?.[capability] !== false;
 }
 
@@ -13364,6 +13524,98 @@ function requireTunnelPermission(capability) {
     if (hasTunnelPermission(capability)) return true;
     showAppToast(`当前隧道权限不允许：${TUNNEL_PERMISSION_LABELS[capability] || capability}`);
     return false;
+}
+
+function getTunnelKnownDevicesForAdminPicker() {
+    const devices = new Map();
+    if (state.deviceId) devices.set(state.deviceId, { deviceId: state.deviceId, deviceName: state.deviceName || '本设备' });
+    state.devices.forEach((device, id) => {
+        const deviceId = device.deviceId || id;
+        if (deviceId) devices.set(deviceId, { ...device, deviceId });
+    });
+    return Array.from(devices.values())
+        .filter(device => device.deviceId && device.deviceId !== state.sessionOwnerDeviceId && device.deviceId !== state.deviceId)
+        .sort((a, b) => String(a.deviceName || a.deviceId).localeCompare(String(b.deviceName || b.deviceId), undefined, { numeric: true }));
+}
+
+function getDeviceNameForAdminRecord(deviceId, fallback = '') {
+    if (state.devices.has(deviceId)) return state.devices.get(deviceId).deviceName || state.devices.get(deviceId).name || fallback;
+    if (deviceId === state.deviceId) return state.deviceName || fallback;
+    return fallback || deviceId;
+}
+
+function renderTunnelAdminSettings() {
+    const container = document.getElementById('tunnelAdminDeviceList');
+    const hint = document.getElementById('tunnelAdminHint');
+    const save = document.getElementById('saveTunnelAdminsBtn');
+    const add = document.getElementById('addTunnelAdminBtn');
+    const select = document.getElementById('tunnelAdminDeviceSelect');
+    const manual = document.getElementById('tunnelAdminManualId');
+    if (!container || !hint || !save || !add || !select || !manual) return;
+
+    const editable = canManageTunnelSettings();
+    const admins = Array.from(state.sessionAdminDevices.values());
+    const knownDevices = getTunnelKnownDevicesForAdminPicker();
+    select.replaceChildren(new Option(knownDevices.length ? '选择在线设备' : '暂无可选在线设备', ''));
+    knownDevices.forEach(device => {
+        const label = `${device.deviceName || device.name || '未命名设备'} · ${String(device.deviceId).slice(0, 8)}...`;
+        select.add(new Option(label, device.deviceId));
+    });
+    select.disabled = !editable;
+    manual.disabled = !editable;
+    add.disabled = !editable;
+    save.hidden = !editable;
+    hint.textContent = editable
+        ? '只有隧道创建者可添加或移除管理员；管理员使用这里分配的独立权限。'
+        : (state.sessionIsAdmin ? '你是此隧道管理员，正在使用独立权限。' : '仅隧道创建者可配置管理员。');
+
+    container.replaceChildren();
+    if (!admins.length) {
+        const empty = document.createElement('div');
+        empty.className = 'tunnel-admin-empty';
+        empty.textContent = '尚未添加指定设备管理员。';
+        container.appendChild(empty);
+        return;
+    }
+    admins.forEach(record => {
+        const card = document.createElement('div');
+        card.className = 'tunnel-admin-card';
+        card.dataset.adminDeviceId = record.deviceId;
+        const title = document.createElement('div');
+        title.className = 'tunnel-admin-card-title';
+        const name = document.createElement('strong');
+        name.textContent = record.deviceName || getDeviceNameForAdminRecord(record.deviceId, '未命名设备');
+        const id = document.createElement('span');
+        id.textContent = record.deviceId;
+        title.append(name, id);
+        const grid = document.createElement('div');
+        grid.className = 'tunnel-permission-grid tunnel-admin-permission-grid';
+        Object.entries(TUNNEL_PERMISSION_LABELS).forEach(([key, label]) => {
+            const option = document.createElement('label');
+            option.className = 'tunnel-permission-option';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.dataset.adminPermission = key;
+            input.checked = record.permissions?.[key] !== false;
+            input.disabled = !editable;
+            option.append(input, document.createTextNode(label));
+            grid.appendChild(option);
+        });
+        const actions = document.createElement('div');
+        actions.className = 'tunnel-admin-actions';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-secondary';
+        remove.textContent = '移除管理员';
+        remove.disabled = !editable;
+        remove.addEventListener('click', () => {
+            state.sessionAdminDevices.delete(record.deviceId);
+            renderTunnelAdminSettings();
+        });
+        actions.appendChild(remove);
+        card.append(title, grid, actions);
+        container.appendChild(card);
+    });
 }
 
 function renderTunnelPermissionSettings() {
@@ -13380,12 +13632,13 @@ function renderTunnelPermissionSettings() {
         input.type = 'checkbox';
         input.dataset.permission = key;
         input.checked = permissions[key] !== false;
-        input.disabled = !isTunnelOwner();
+        input.disabled = !canManageTunnelSettings();
         option.append(input, document.createTextNode(label));
         grid.appendChild(option);
     });
-    hint.textContent = isTunnelOwner() ? '你是隧道创建者' : '仅创建者可修改';
-    save.hidden = !isTunnelOwner();
+    hint.textContent = isTunnelOwner() ? '你是隧道创建者' : (state.sessionIsAdmin ? '你是指定设备管理员' : '仅创建者可修改');
+    save.hidden = !canManageTunnelSettings();
+    renderTunnelAdminSettings();
 }
 
 function applyTunnelPermissionUi() {
@@ -13446,7 +13699,7 @@ function initTunnelSettings() {
         if (event.target === layer) close();
     });
     document.getElementById('saveTunnelPermissionsBtn')?.addEventListener('click', () => {
-        if (!isTunnelOwner()) return;
+        if (!canManageTunnelSettings()) return;
         const permissions = {};
         layer.querySelectorAll('[data-permission]').forEach(input => { permissions[input.dataset.permission] = input.checked; });
         state.socket.timeout(8000).emit('session-permissions-update', {
@@ -13454,9 +13707,63 @@ function initTunnelSettings() {
             permissions
         }, (err, response) => {
             if (err || !response?.ok) return showAppToast('隧道权限保存失败');
-            state.sessionPermissions = response.permissions;
+            state.sessionPermissions = { ...DEFAULT_TUNNEL_PERMISSIONS, ...(response.permissions || permissions) };
+            if (Array.isArray(response.adminDevices)) {
+                state.sessionAdminDevices = new Map(response.adminDevices.map(record => [record.deviceId, {
+                    ...record,
+                    permissions: { ...DEFAULT_TUNNEL_PERMISSIONS, ...(record.permissions || {}) }
+                }]));
+            }
             applyTunnelPermissionUi();
             showAppToast('隧道默认权限已保存');
+        });
+    });
+    document.getElementById('addTunnelAdminBtn')?.addEventListener('click', () => {
+        if (!canManageTunnelSettings()) return;
+        const select = document.getElementById('tunnelAdminDeviceSelect');
+        const manual = document.getElementById('tunnelAdminManualId');
+        const deviceId = String(manual?.value || select?.value || '').trim();
+        if (!deviceId) return showAppToast('请选择在线设备，或输入设备 ID');
+        if (deviceId === state.deviceId || deviceId === state.sessionOwnerDeviceId) return showAppToast('创建者无需添加为管理员');
+        const deviceName = getDeviceNameForAdminRecord(deviceId, '指定设备');
+        state.sessionAdminDevices.set(deviceId, {
+            deviceId,
+            deviceName,
+            permissions: { ...DEFAULT_TUNNEL_PERMISSIONS },
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        });
+        if (manual) manual.value = '';
+        renderTunnelAdminSettings();
+    });
+    document.getElementById('saveTunnelAdminsBtn')?.addEventListener('click', () => {
+        if (!canManageTunnelSettings()) return;
+        const admins = {};
+        layer.querySelectorAll('.tunnel-admin-card[data-admin-device-id]').forEach(card => {
+            const deviceId = card.dataset.adminDeviceId;
+            const record = state.sessionAdminDevices.get(deviceId) || { deviceId, permissions: {} };
+            const permissions = {};
+            card.querySelectorAll('[data-admin-permission]').forEach(input => {
+                permissions[input.dataset.adminPermission] = input.checked;
+            });
+            admins[deviceId] = {
+                ...record,
+                permissions,
+                deviceName: record.deviceName || getDeviceNameForAdminRecord(deviceId, ''),
+                updatedAt: Date.now()
+            };
+        });
+        state.socket.timeout(8000).emit('session-admins-update', {
+            sessionId: state.sessionId,
+            admins
+        }, (err, response) => {
+            if (err || !response?.ok) return showAppToast('管理员权限保存失败');
+            state.sessionAdminDevices = new Map((response.adminDevices || []).map(record => [record.deviceId, {
+                ...record,
+                permissions: { ...DEFAULT_TUNNEL_PERMISSIONS, ...(record.permissions || {}) }
+            }]));
+            applyTunnelPermissionUi();
+            showAppToast('指定设备管理员已保存');
         });
     });
 }
@@ -14644,7 +14951,8 @@ async function openRichHistory(messageId) {
     const list = layer.querySelector('.rich-version-list');
     const leftSelect = layer.querySelector('[data-rich-left]');
     const rightSelect = layer.querySelector('[data-rich-right]');
-    versions.forEach(version => {
+    const displayVersions = [...versions].sort((a, b) => Number(b.version) - Number(a.version));
+    displayVersions.forEach(version => {
         const label = `版本 ${version.version} · ${version.editorDeviceName || version.editorDeviceId || '未知设备'} · ${formatDateTime(version.editedAt)}`;
         const optionLeft = new Option(label, String(version.version));
         const optionRight = new Option(label, String(version.version));
@@ -14720,12 +15028,28 @@ async function openRichMessageEditor(messageId, draft = null) {
     layer.className = 'rich-history-layer';
     layer.innerHTML = `<section class="rich-history-panel" role="dialog" aria-modal="true">
         <header class="rich-history-header"><h3>编辑富文本 · 基于版本 ${baseVersion}</h3><button class="btn btn-secondary" data-rich-edit-close>关闭</button></header>
-        <div class="rich-history-body"><div class="rich-conflict-notice" hidden></div><div class="rich-message-editor" contenteditable="true"></div></div>
+        <div class="rich-history-body"><div class="rich-conflict-notice" hidden></div>
+            <div class="editor-toolbar rich-message-editor-toolbar">
+                <button class="toolbar-btn" type="button" data-cmd="bold" title="加粗">B</button>
+                <button class="toolbar-btn" type="button" data-cmd="italic" title="斜体">I</button>
+                <button class="toolbar-btn" type="button" data-cmd="underline" title="下划线">U</button>
+                <button class="toolbar-btn" type="button" data-cmd="insertUnorderedList" title="无序列表">•</button>
+                <button class="toolbar-btn" type="button" data-cmd="insertOrderedList" title="有序列表">1.</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-link title="插入链接">🔗</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-image title="插入图片">🖼️</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-file title="引用文件">📎</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-quote title="引用块">❝</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-table title="插入表格">▦</button>
+                <button class="toolbar-btn" type="button" data-rich-insert-hr title="分割线">—</button>
+            </div>
+            <div class="rich-message-editor" contenteditable="true"></div></div>
         <footer class="rich-history-actions"><button class="btn btn-secondary" data-rich-edit-history>修改历史</button><button class="btn btn-primary" data-rich-edit-save>保存修改</button></footer>
     </section>`;
     const editor = layer.querySelector('.rich-message-editor');
     const notice = layer.querySelector('.rich-conflict-notice');
     editor.innerHTML = draft?.content || message.content;
+    attachRichEditorEnhancedTools(layer, editor);
+    hydrateEditorAssets(editor).catch(err => historyLog('rich-editor-asset-hydrate-failed', { messageId, error: err.message }));
     const close = () => layer.remove();
     layer.addEventListener('click', async event => {
         if (event.target === layer || event.target.closest('[data-rich-edit-close]')) return close();

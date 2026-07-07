@@ -205,7 +205,7 @@ class InfraStore {
         );
     }
 
-    setTunnelAccess(sessionId, ownerDeviceId = '', permissions = {}, lastActivity = Date.now()) {
+    setTunnelAccess(sessionId, ownerDeviceId = '', permissions = {}, lastActivity = Date.now(), admins = {}) {
         const now = Date.now();
         this.run(`
             INSERT INTO tunnels (session_id, short_code, created_at, last_activity, owner_device_id, permissions_json, deleted_at)
@@ -215,7 +215,7 @@ class InfraStore {
                 permissions_json = excluded.permissions_json,
                 last_activity = MAX(tunnels.last_activity, excluded.last_activity),
                 deleted_at = NULL
-        `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify(permissions || {})]);
+        `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify({ permissions: permissions || {}, admins: admins || {} })]);
         this.save();
     }
 

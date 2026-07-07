@@ -9,6 +9,7 @@
     <title>Drop2Tunnel - 即时传输隧道</title>
     <script defer src="/socket.io/socket.io.js"></script>
     <script src="/client/qrcode-1.0.0.min.js"></script>
+    <script defer src="/client/i18n.js"></script>
     <style>
         * {
             margin: 0;
@@ -3700,7 +3701,21 @@
             font-size: .86rem;
         }
         .tunnel-permission-option input { width: 18px; height: 18px; accent-color: #596bd6; }
-        .tunnel-settings-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+        .tunnel-settings-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+        .tunnel-admin-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, .8fr) auto; gap: 8px; align-items: center; margin: 12px 0; }
+        .tunnel-admin-picker select,
+        .tunnel-admin-picker input,
+        .language-select { min-height: 36px; border: 1px solid #dfe5f1; border-radius: 8px; padding: 0 10px; background: #fff; color: #273451; }
+        .tunnel-admin-list { display: grid; gap: 10px; margin-top: 12px; }
+        .tunnel-admin-empty { padding: 12px; border: 1px dashed #d7ddea; border-radius: 10px; color: #768299; background: #fafbff; font-size: .86rem; }
+        .tunnel-admin-card { border: 1px solid #dfe5f1; border-radius: 12px; padding: 12px; background: #fff; }
+        .tunnel-admin-card-title { display: grid; gap: 4px; margin-bottom: 10px; }
+        .tunnel-admin-card-title strong { color: #273451; }
+        .tunnel-admin-card-title span { color: #738097; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .72rem; word-break: break-all; }
+        .tunnel-admin-permission-grid { margin-top: 8px; }
+        .tunnel-admin-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+        .language-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .language-settings-row label { color: #273451; font-weight: 700; }
 
         @media (max-width: 767px) {
             .tunnel-settings-layer { padding: 0; background: #fff; }
@@ -3709,6 +3724,7 @@
             .tunnel-settings-body { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
             .settings-tool-grid,
             .tunnel-permission-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .tunnel-admin-picker { grid-template-columns: 1fr; }
         }
 
         .leave-tunnel-btn::before {
@@ -4305,6 +4321,23 @@
                     <p>设置新加入设备的全局默认权限。隧道创建者始终保留管理权限。</p>
                     <div class="tunnel-permission-grid" id="tunnelPermissionGrid"></div>
                     <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelPermissionsBtn" type="button">保存权限</button></div>
+                </section>
+                <section class="tunnel-settings-section tunnel-admin-settings">
+                    <div class="tunnel-permission-heading"><h3>指定设备管理员</h3><span id="tunnelAdminHint"></span></div>
+                    <p>在这里添加某台设备为管理员，并为它分配独立权限；未添加的设备继续使用上方默认权限。</p>
+                    <div class="tunnel-admin-picker">
+                        <select id="tunnelAdminDeviceSelect" aria-label="选择在线设备"></select>
+                        <input id="tunnelAdminManualId" type="text" placeholder="或粘贴设备 ID" autocomplete="off">
+                        <button class="btn btn-secondary" id="addTunnelAdminBtn" type="button">添加管理员</button>
+                    </div>
+                    <div class="tunnel-admin-list" id="tunnelAdminDeviceList"></div>
+                    <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelAdminsBtn" type="button">保存管理员权限</button></div>
+                </section>
+                <section class="tunnel-settings-section language-settings">
+                    <div class="language-settings-row">
+                        <label for="appLanguageSelect">界面语言</label>
+                        <select class="language-select" id="appLanguageSelect" aria-label="选择界面语言"></select>
+                    </div>
                 </section>
             </div>
         </section>
