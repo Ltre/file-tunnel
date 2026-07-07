@@ -124,6 +124,7 @@ function isRelayAckTimeout(reason) {
 
 function registerFileAssetHandlers(socket, context) {
     const { sessions, deviceSockets, getSessionId, getDeviceId, isValidId, sanitize, historyLog, clientIp } = context;
+    const translateText = typeof context.translateText === 'function' ? context.translateText : text => text;
     const current = () => ({ sessionId: getSessionId(), deviceId: getDeviceId() });
 
     socket.on('file-asset-available', data => {
@@ -138,7 +139,7 @@ function registerFileAssetHandlers(socket, context) {
             let record = session.fileAssets.get(asset.id);
             if (!record) {
                 if (session.fileAssets.size >= MAX_FILE_ASSETS_PER_SESSION) {
-                    socket.emit('error', { message: '会话文件数量已达上限', code: 'FILE_ASSET_LIMIT_REACHED' });
+                    socket.emit('error', { message: translateText('会话文件数量已达上限'), code: 'FILE_ASSET_LIMIT_REACHED' });
                     return;
                 }
                 record = {

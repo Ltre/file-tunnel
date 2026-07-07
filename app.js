@@ -77,6 +77,13 @@ const state = {
     db: null // IndexedDB实例
 };
 
+window.addEventListener('drop2tunnel-language-changed', event => {
+    const language = event.detail?.language || 'zh-Hans';
+    if (!state.socket) return;
+    state.socket.auth = { ...(state.socket.auth || {}), language };
+    if (state.socket.connected) state.socket.emit('set-language', { language });
+});
+
 const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
 const MAX_CLIENT_DEBUG_LOGS = 1000;
 const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
@@ -488,7 +495,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function initLandingNearbyPresence() {
     if (state.socket?.connected) return;
-    state.socket = io(CONFIG.SOCKET_SERVER, { transports: ['websocket', 'polling'] });
+    state.socket = io(CONFIG.SOCKET_SERVER, {
+        transports: ['websocket', 'polling'],
+        auth: { language: window.TunnelI18n?.currentLanguage?.() || navigator.language || 'zh-Hans' }
+    });
     state.socket.on('connect', () => {
         state.socket.emit('register-profile-device', {
             deviceId: state.deviceId,
@@ -1262,7 +1272,8 @@ function generateQRCode() {
 // ==================== Socket.io 连接 ====================
 function initSocket() {
     state.socket = io(CONFIG.SOCKET_SERVER, {
-        transports: ['websocket', 'polling']
+        transports: ['websocket', 'polling'],
+        auth: { language: window.TunnelI18n?.currentLanguage?.() || navigator.language || 'zh-Hans' }
     });
 
     state.socket.on('connect', async () => {
@@ -9524,6 +9535,12 @@ async function openCollectionRecord(messageId, options = {}) {
             grid.scrollTop = Number(options.scrollTop) || 0;
         }
     });
+    setCollectionPreviewActions(files, messageId);
+    openFilePreviewHistory(document.getElementById('filePreviewViewer'), { stage: 'collection' });
+    historyLog('collection-preview-opened', { messageId, fileCount: files.length });
+}
+
+function setCollectionPreviewActions(files, messageId) {
     setFilePreviewActions([
         createFileActionButton('下载全部', '拉取缺失缓存后打包下载整个合辑 ZIP', () => {
             downloadCollectionFiles(files, messageId).catch(err => {
@@ -9532,8 +9549,6 @@ async function openCollectionRecord(messageId, options = {}) {
             });
         })
     ]);
-    openFilePreviewHistory(document.getElementById('filePreviewViewer'), { stage: 'collection' });
-    historyLog('collection-preview-opened', { messageId, fileCount: files.length });
 }
 
 function attachCollectionRecordInteractions(messageEl) {
@@ -9997,7 +10012,12 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
         return;
     }
 
-    const shouldReturnToCollection = filePreviewReturnCollectionMessageId === collectionMessageId;
+    const shouldReturnToCollection = filePreviewReturnCollectionMessageId === collectionMessageId ||
+        collectionPreviewReturnState?.messageId === collectionMessageId ||
+        (activeCollectionPreviewMessageId === collectionMessageId && filePreviewNestedHistoryOpen);
+    const frozenCollectionReturnState = shouldReturnToCollection && collectionPreviewReturnState
+        ? { ...collectionPreviewReturnState }
+        : {};
     const nextMessage = {
         ...message,
         collection: {
@@ -10008,11 +10028,57 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
         },
         updatedAt: Date.now()
     };
+    let restoredCollectionBeforeUpdate = false;
+    if (shouldReturnToCollection) {
+        stopTemporaryAudioPreview();
+        musicPlayer.previewControls = null;
+        const shouldConsumeNestedHistory = filePreviewNestedHistoryOpen &&
+            history.state?.[FILE_PREVIEW_HISTORY_KEY] === true && history.state?.filePreviewStage === 'file';
+        filePreviewReturnCollectionMessageId = '';
+        filePreviewNestedHistoryOpen = false;
+        if (shouldConsumeNestedHistory) {
+            suppressNextFilePreviewPopstate = true;
+            history.back();
+        } else {
+            const historyState = history.state && typeof history.state === 'object' ? history.state : {};
+            history.replaceState({ ...historyState, [FILE_PREVIEW_HISTORY_KEY]: true, filePreviewStage: 'collection' }, '', window.location.href);
+        }
+        restoredCollectionBeforeUpdate = restoreCollectionPreviewReturnState(collectionMessageId);
+        if (restoredCollectionBeforeUpdate) {
+            const content = document.getElementById('filePreviewContent');
+            content?.querySelector(`.collection-file-card[data-file-id="${CSS.escape(fileId)}"]`)?.remove();
+            const grid = content?.querySelector('.collection-file-grid');
+            if (grid) grid.dataset.collectionCount = String(nextFiles.length);
+            const title = document.getElementById('filePreviewTitle');
+            if (title) title.textContent = `合辑 · ${nextFiles.length} 个文件`;
+            setCollectionPreviewActions(nextFiles, collectionMessageId);
+        } else {
+            activeFilePreviewMode = 'collection';
+            activeCollectionPreviewMessageId = collectionMessageId;
+            activeFilePreviewFileId = '';
+            activeFilePreviewMessageId = '';
+            activeFilePreviewOwnerDeviceId = '';
+            activeFilePreviewCanFullscreen = false;
+            activeFilePreviewMediaType = '';
+            setFilePreviewFullscreenButton(false);
+            setFilePreviewMusicButton(false);
+            const title = document.getElementById('filePreviewTitle');
+            if (title) title.textContent = `合辑 · ${nextFiles.length} 个文件`;
+            const content = setFilePreviewContentStage('collection-stage');
+            if (content) {
+                const status = document.createElement('div');
+                status.className = 'collection-preview-updating';
+                status.textContent = '正在更新合辑…';
+                content.replaceChildren(status);
+            }
+            setFilePreviewActions([]);
+        }
+    }
     await updateHistoryMessage(nextMessage);
     if (shouldReturnToCollection) {
-        // applyCollectionPreviewIncrementalUpdate may already have restored the F layer.
-        // Do not close again, otherwise deleting from G would fall through to the P layer.
-        if (activeFilePreviewMode === 'file' && activeFilePreviewFileId === fileId) closeFilePreview();
+        if (!restoredCollectionBeforeUpdate) {
+            await openCollectionRecord(collectionMessageId, frozenCollectionReturnState);
+        }
     } else {
         closeFilePreview({ forceClose: true });
     }

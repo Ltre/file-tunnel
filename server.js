@@ -14,7 +14,7 @@ const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
 const { createAdminAuth } = require('./server/admin-auth');
-const { normalizeLanguageCode, translateTelegramText } = require('./server/i18n');
+const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
@@ -54,7 +54,10 @@ function isAllowedOrigin(origin) {
 const RATE_LIMIT = {
     windowMs: 15 * 60 * 1000, // 15分钟
     max: 1000, // 每个IP最多100个请求
-    message: { error: '请求过于频繁，请稍后再试' },
+    handler(req, res, next, options) {
+        const language = normalizeLanguageCode(req.headers['accept-language'] || 'zh-Hans');
+        res.status(options.statusCode).json({ error: translateTelegramText('请求过于频繁，请稍后再试', language) });
+    },
     validate: {
         xForwardedForHeader: false
     }
@@ -440,6 +443,15 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
                     { command: 'leave_tunnel', description: '退出当前隧道中转模式' }
                 ]
             }, nextConfig.token);
+            await Promise.all(['en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th'].map(languageCode =>
+                telegramApi('setMyCommands', {
+                    language_code: languageCode,
+                    commands: [
+                        { command: 'tunnel', description: translateTelegramText('进入指定的传输隧道中转模式', languageCode) },
+                        { command: 'leave_tunnel', description: translateTelegramText('退出当前隧道中转模式', languageCode) }
+                    ]
+                }, nextConfig.token)
+            ));
             webhookRegistered = true;
         } else if (currentConfig.token) {
             await telegramApi('deleteWebhook', { drop_pending_updates: false }, currentConfig.token);
@@ -1636,7 +1648,10 @@ async function handleTelegramUpdate(update = {}) {
     const callback = update.callback_query;
     if (callback) {
         if (callback.data === 'cancel_pending') telegramPendingFiles.delete(String(callback.message?.chat?.id || callback.from?.id));
-        await telegramApi('answerCallbackQuery', { callback_query_id: callback.id, text: '已放弃发送' });
+        await telegramApi('answerCallbackQuery', {
+            callback_query_id: callback.id,
+            text: translateTelegramText('已放弃发送', telegramChatLanguages.get(chatKey) || 'zh-Hans')
+        });
         return;
     }
     const message = update.message || update.edited_message;
@@ -1648,7 +1663,7 @@ async function handleTelegramUpdate(update = {}) {
     const textPayload = getTelegramTextPayload(message);
     const text = textPayload.text || '';
     const trimmed = text.trim();
-    if (trimmed === '放弃发送') {
+    if (matchesTranslatedText(trimmed, '放弃发送')) {
         telegramPendingFiles.delete(chatKey);
         telegramAwaitingTunnelCode.delete(chatKey);
         await telegramSendMessage(chatId, '已放弃待发送内容。', { remove_keyboard: true });
@@ -1803,7 +1818,23 @@ function updateTelegramAssetMetadataInSession(asset) {
 
 async function telegramSendMessage(chatId, text, replyMarkup = undefined) {
     if (!chatId || !isTelegramBotEnabled()) return;
-    await telegramApi('sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup }).catch(err => {
+    const language = telegramChatLanguages.get(String(chatId)) || 'zh-Hans';
+    const localizedText = translateTelegramText(text, language);
+    const localizeMarkup = value => {
+        if (Array.isArray(value)) return value.map(localizeMarkup);
+        if (!value || typeof value !== 'object') return value;
+        return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+            if ((key === 'text' || key === 'input_field_placeholder') && typeof entry === 'string') {
+                return [key, translateTelegramText(entry, language)];
+            }
+            return [key, localizeMarkup(entry)];
+        }));
+    };
+    await telegramApi('sendMessage', {
+        chat_id: chatId,
+        text: localizedText,
+        reply_markup: localizeMarkup(replyMarkup)
+    }).catch(err => {
         console.warn(`telegram sendMessage failed: ${err.message}`);
     });
 }
@@ -2538,6 +2569,17 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
+    let socketLanguage = normalizeLanguageCode(
+        socket.handshake.auth?.language || socket.handshake.headers['accept-language'] || 'zh-Hans'
+    );
+    const socketText = text => translateTelegramText(text, socketLanguage);
+    const emitSocketError = (event, message, details = {}) => socket.emit(event, {
+        ...details,
+        message: socketText(message)
+    });
+    socket.on('set-language', data => {
+        socketLanguage = normalizeLanguageCode(data?.language || socketLanguage);
+    });
     const socketAccessKey = `socket:${socket.id}`;
     
     console.log(`Client connected: ${socket.id} from ${clientIp}`);
@@ -2570,7 +2612,7 @@ io.on('connection', (socket) => {
     
     if (ipSockets.size >= 20) { // 每个IP最多20个连接
         console.warn(`IP ${clientIp} exceeded connection limit`);
-        socket.emit('error', { message: '连接数超限' });
+        emitSocketError('error', '连接数超限');
         socket.disconnect();
         return;
     }
@@ -2729,7 +2771,7 @@ io.on('connection', (socket) => {
         try {
             // 验证数据
             if (!data || typeof data !== 'object') {
-                return socket.emit('error', { message: '无效的数据格式' });
+                return emitSocketError('error', '无效的数据格式');
             }
             
             const { sessionId, deviceId, deviceName } = data;
@@ -2737,17 +2779,17 @@ io.on('connection', (socket) => {
             
             // 验证 sessionId
             if (!isValidSessionId(sessionId)) {
-                return socket.emit('error', { message: '无效的会话ID' });
+                return emitSocketError('error', '无效的会话ID');
             }
             
             // 验证 deviceId
             if (!isValidDeviceId(deviceId)) {
-                return socket.emit('error', { message: '无效的设备ID' });
+                return emitSocketError('error', '无效的设备ID');
             }
             
             // 验证 deviceName
             if (!isValidDeviceName(deviceName)) {
-                return socket.emit('error', { message: '无效的设备名称' });
+                return emitSocketError('error', '无效的设备名称');
             }
             
             // 清理过期会话
@@ -2755,7 +2797,7 @@ io.on('connection', (socket) => {
             
             // 会话数量限制
             if (!sessions.has(sessionId) && sessions.size >= MAX_SESSIONS) {
-                return socket.emit('error', { message: '服务器会话已满' });
+                return emitSocketError('error', '服务器会话已满');
             }
             
             currentSession = sessionId;
@@ -2807,7 +2849,7 @@ io.on('connection', (socket) => {
             const existingDevice = session.devices.get(deviceId);
 
             if (session.devices.size >= MAX_DEVICES_PER_SESSION && !existingDevice) {
-                return socket.emit('error', { message: '会话设备数已满' });
+                return emitSocketError('error', '会话设备数已满');
             }
             
             // 添加设备到会话
@@ -2924,17 +2966,17 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             console.error('join-session error:', err);
-            socket.emit('error', { message: '服务器内部错误' });
+            emitSocketError('error', '服务器内部错误');
         }
     });
 
     socket.on('join-by-short-code', data => {
         const shortCode = normalizeShortCode(data?.shortCode);
-        if (!shortCode) return socket.emit('short-code-error', { message: '短码应为 5 位字母或数字' });
+        if (!shortCode) return emitSocketError('short-code-error', '短码应为 5 位字母或数字');
         const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
         if (!sessionId || !isValidSessionId(sessionId)) {
             deleteShortCode(shortCode);
-            return socket.emit('short-code-error', { message: '短码无效或会话已结束' });
+            return emitSocketError('short-code-error', '短码无效或会话已结束');
         }
         socket.emit('short-code-session', { sessionId });
     });
@@ -3139,7 +3181,7 @@ io.on('connection', (socket) => {
 
     socket.on('signal', (data) => {
         if (!checkMessageRate()) {
-            return socket.emit('error', { message: '消息发送过于频繁' });
+            return emitSocketError('error', '消息发送过于频繁');
         }
         
         try {
@@ -3159,7 +3201,7 @@ io.on('connection', (socket) => {
             
             // 验证当前设备
             if (from !== currentDevice) {
-                return socket.emit('error', { message: '设备ID不匹配' });
+                return emitSocketError('error', '设备ID不匹配');
             }
             
             const targetSocket = deviceSockets.get(to);
@@ -3179,7 +3221,7 @@ io.on('connection', (socket) => {
     // 消息转发
     socket.on('message', (data) => {
         if (!checkMessageRate()) {
-            return socket.emit('error', { message: '消息发送过于频繁' });
+            return emitSocketError('error', '消息发送过于频繁');
         }
         
         try {
@@ -3206,7 +3248,7 @@ io.on('connection', (socket) => {
             // 验证消息内容大小
             const messageStr = JSON.stringify(message);
             if (messageStr.length > MAX_MESSAGE_SIZE) {
-                return socket.emit('error', { message: '消息过大' });
+                return emitSocketError('error', '消息过大');
             }
 
             const historyResult = addToSessionHistory(sessionId, session, message, {
@@ -3627,7 +3669,7 @@ io.on('connection', (socket) => {
                 clientIp,
                 reason: 'rate-limited'
             });
-            return socket.emit('error', { message: '同步过于频繁', code: 'EDITOR_SYNC_RATE_LIMITED' });
+            return emitSocketError('error', '同步过于频繁', { code: 'EDITOR_SYNC_RATE_LIMITED' });
         }
         
         try {
@@ -3654,7 +3696,7 @@ io.on('connection', (socket) => {
                     maxContentSize: MAX_EDITOR_CONTENT_SIZE
                 });
                 return socket.emit('error', {
-                    message: '协同编辑内容过大，无法同步',
+                    message: socketText('协同编辑内容过大，无法同步'),
                     code: 'EDITOR_CONTENT_TOO_LARGE',
                     contentSize,
                     maxContentSize: MAX_EDITOR_CONTENT_SIZE
@@ -3709,7 +3751,7 @@ io.on('connection', (socket) => {
             if (!record) {
                 if (session.editorAssets.size >= MAX_EDITOR_ASSETS_PER_SESSION) {
                     return socket.emit('error', {
-                        message: '协同编辑图片数量已达上限',
+                        message: socketText('协同编辑图片数量已达上限'),
                         code: 'EDITOR_ASSET_LIMIT_REACHED'
                     });
                 }
@@ -3939,7 +3981,7 @@ io.on('connection', (socket) => {
     // 文件传输offer
     socket.on('file-offer', (data) => {
         if (!checkMessageRate()) {
-            return socket.emit('error', { message: '请求过于频繁' });
+            return emitSocketError('error', '请求过于频繁');
         }
         
         try {
@@ -4008,7 +4050,8 @@ io.on('connection', (socket) => {
         isValidId: isValidDeviceId,
         sanitize: sanitizeString,
         historyLog,
-        clientIp
+        clientIp,
+        translateText: socketText
     });
 
     registerMediaHandlers(socket, {

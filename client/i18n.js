@@ -58,6 +58,41 @@
         '打开隧道设置': { 'zh-Hant': '開啟隧道設定', en: 'Open tunnel settings', ja: 'トンネル設定を開く', fr: 'Ouvrir les paramètres du tunnel', ru: 'Открыть настройки туннеля', es: 'Abrir ajustes del túnel', it: 'Apri impostazioni tunnel', fa: 'باز کردن تنظیمات تونل', ko: '터널 설정 열기', ms: 'Buka tetapan terowong', id: 'Buka pengaturan tunnel', vi: 'Mở cài đặt đường hầm', km: 'បើកការកំណត់ផ្លូវរូង', my: 'တန်နယ် ဆက်တင်များ ဖွင့်မည်', th: 'เปิดการตั้งค่าอุโมงค์' }
     };
 
+    if (window.__drop2TunnelLegacyCatalogOnly) {
+        window.Drop2TunnelI18nCatalog = {
+            ...CORE,
+            ...(window.Drop2TunnelI18nCatalog || {})
+        };
+        return;
+    }
+
+    const CATALOG = new Map();
+    const REVERSE_CATALOG = new Map();
+    const TEXT_SOURCES = new WeakMap();
+    const ATTRIBUTE_SOURCES = new WeakMap();
+    let applyingTranslations = false;
+
+    function canonicalKey(value) {
+        return String(value || '').trim().replace(/\s+/g, '');
+    }
+
+    function registerCatalog(source, entries) {
+        Object.entries(entries || {}).forEach(([rawKey, translations]) => {
+            const key = canonicalKey(rawKey);
+            if (!key) return;
+            const simplified = translations?.['zh-Hans'] || rawKey;
+            const entry = { source: simplified, translations: { ...(translations || {}) } };
+            CATALOG.set(key, entry);
+            [simplified, ...Object.values(entry.translations)].forEach(value => {
+                const reverseKey = canonicalKey(value);
+                if (reverseKey) REVERSE_CATALOG.set(reverseKey, key);
+            });
+        });
+    }
+
+    registerCatalog('legacy', CORE);
+    registerCatalog('catalog', window.Drop2TunnelI18nCatalog || {});
+
     function normalizeLanguage(value) {
         const raw = String(value || '').toLowerCase();
         if (raw.startsWith('zh-tw') || raw.startsWith('zh-hk') || raw.includes('hant')) return 'zh-Hant';
@@ -72,45 +107,97 @@
         return normalizeLanguage(localStorage.getItem(STORAGE_KEY) || navigator.language || DEFAULT_LANG);
     }
 
+    function resolveCatalogKey(value) {
+        const normalized = canonicalKey(value);
+        return CATALOG.has(normalized) ? normalized : (REVERSE_CATALOG.get(normalized) || '');
+    }
+
     function translateText(source, lang = currentLanguage()) {
-        const text = String(source || '');
-        if (!text.trim() || lang === 'zh-Hans') return text;
-        const entry = CORE[text.trim()];
-        if (!entry) return text;
-        return entry[lang] || entry.en || text;
+        const text = String(source ?? '');
+        if (!text.trim()) return text;
+        const key = resolveCatalogKey(text);
+        if (!key) return text;
+        const entry = CATALOG.get(key);
+        if (lang === DEFAULT_LANG) return entry.source;
+        return entry.translations[lang] || entry.translations.en || entry.source;
+    }
+
+    function shouldSkipTextNode(node) {
+        const parent = node.parentElement;
+        return !parent || !node.nodeValue?.trim() || Boolean(parent.closest(
+            'script, style, code, pre, textarea, [contenteditable="true"], .message-content, .rich-message-editor'
+        ));
+    }
+
+    function rememberTextSource(node) {
+        const currentKey = resolveCatalogKey(node.nodeValue);
+        const saved = TEXT_SOURCES.get(node);
+        if (currentKey && (!saved || resolveCatalogKey(saved) !== currentKey)) {
+            TEXT_SOURCES.set(node, CATALOG.get(currentKey).source);
+        }
+        return TEXT_SOURCES.get(node) || node.nodeValue;
+    }
+
+    function translateTextNode(node, lang) {
+        if (shouldSkipTextNode(node)) return;
+        const source = rememberTextSource(node);
+        if (!resolveCatalogKey(source)) return;
+        const leading = node.nodeValue.match(/^\s*/)?.[0] || '';
+        const trailing = node.nodeValue.match(/\s*$/)?.[0] || '';
+        const next = `${leading}${translateText(source.trim(), lang)}${trailing}`;
+        if (node.nodeValue !== next) node.nodeValue = next;
+    }
+
+    function translateAttributes(element, lang) {
+        let sources = ATTRIBUTE_SOURCES.get(element);
+        if (!sources) {
+            sources = new Map();
+            ATTRIBUTE_SOURCES.set(element, sources);
+        }
+        ['title', 'placeholder', 'aria-label'].forEach(attr => {
+            if (!element.hasAttribute(attr)) return;
+            const current = element.getAttribute(attr) || '';
+            const currentKey = resolveCatalogKey(current);
+            const saved = sources.get(attr);
+            if (currentKey && (!saved || resolveCatalogKey(saved) !== currentKey)) {
+                sources.set(attr, CATALOG.get(currentKey).source);
+            }
+            const source = sources.get(attr) || current;
+            if (!resolveCatalogKey(source)) return;
+            const next = translateText(source, lang);
+            if (next !== current) element.setAttribute(attr, next);
+        });
     }
 
     function translateNode(root) {
+        if (!root) return;
         const lang = currentLanguage();
         document.documentElement.lang = lang;
-        document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
-        const walker = document.createTreeWalker(root || document.body, NodeFilter.SHOW_TEXT, {
+        document.documentElement.dir = 'ltr';
+        applyingTranslations = true;
+        if (root.nodeType === Node.TEXT_NODE) {
+            try { translateTextNode(root, lang); } finally { applyingTranslations = false; }
+            return;
+        }
+        if (root.nodeType !== Node.ELEMENT_NODE && root !== document) {
+            applyingTranslations = false;
+            return;
+        }
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
-                const parent = node.parentElement;
-                if (!parent || parent.closest('script, style, code, pre, textarea, [contenteditable="true"], .message, .rich-message-editor')) return NodeFilter.FILTER_REJECT;
-                if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-                return NodeFilter.FILTER_ACCEPT;
+                return shouldSkipTextNode(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
             }
         });
         const nodes = [];
         while (walker.nextNode()) nodes.push(walker.currentNode);
-        nodes.forEach(node => {
-            const original = node.__i18nSource || node.nodeValue.trim();
-            if (!node.__i18nSource) node.__i18nSource = original;
-            const translated = translateText(original, lang);
-            const currentText = node.nodeValue.trim();
-            if (currentText !== translated) node.nodeValue = node.nodeValue.replace(currentText, translated);
-        });
-        (root || document).querySelectorAll?.('[title], [placeholder], [aria-label]').forEach(el => {
-            ['title', 'placeholder', 'aria-label'].forEach(attr => {
-                if (!el.hasAttribute(attr)) return;
-                const key = `__i18n_${attr}`;
-                const original = el[key] || el.getAttribute(attr);
-                if (!el[key]) el[key] = original;
-                el.setAttribute(attr, translateText(original, lang));
-            });
-        });
-        bindLanguageSelect(root || document);
+        try {
+            nodes.forEach(node => translateTextNode(node, lang));
+            if (root.nodeType === Node.ELEMENT_NODE) translateAttributes(root, lang);
+            root.querySelectorAll?.('[title], [placeholder], [aria-label]').forEach(el => translateAttributes(el, lang));
+            bindLanguageSelect(root);
+        } finally {
+            applyingTranslations = false;
+        }
     }
 
     function bindLanguageSelect(root) {
@@ -135,18 +222,22 @@
     function start() {
         translateNode(document.body);
         observer = new MutationObserver(records => {
+            if (applyingTranslations) return;
+            const roots = new Set();
             for (const record of records) {
-                if (record.type === 'characterData' && record.target?.parentElement) {
-                    translateNode(record.target.parentElement);
-                    continue;
-                }
-                record.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE) translateNode(node);
-                    else if (node.nodeType === Node.TEXT_NODE && node.parentElement) translateNode(node.parentElement);
-                });
+                if (record.type === 'characterData') roots.add(record.target);
+                if (record.type === 'attributes') roots.add(record.target);
+                record.addedNodes.forEach(node => roots.add(node));
             }
+            roots.forEach(translateNode);
         });
-        observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ['title', 'placeholder', 'aria-label']
+        });
     }
 
     window.TunnelI18n = {
@@ -155,7 +246,8 @@
         setLanguage,
         t: translateText,
         translate: translateNode,
-        bindLanguageSelect
+        bindLanguageSelect,
+        canonicalKey
     };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

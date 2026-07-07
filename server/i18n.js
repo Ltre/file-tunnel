@@ -7,13 +7,10 @@ function normalizeLanguageCode(value = '') {
     if (raw.startsWith('ru')) return 'ru';
     if (raw.startsWith('es')) return 'es';
     if (raw.startsWith('it')) return 'it';
-    if (raw.startsWith('fa')) return 'fa';
     if (raw.startsWith('ko')) return 'ko';
     if (raw.startsWith('ms')) return 'ms';
     if (raw.startsWith('id')) return 'id';
     if (raw.startsWith('vi')) return 'vi';
-    if (raw.startsWith('km')) return 'km';
-    if (raw.startsWith('my') || raw.startsWith('bur')) return 'my';
     if (raw.startsWith('th')) return 'th';
     if (raw.startsWith('en')) return 'en';
     return 'zh-Hans';
@@ -34,6 +31,38 @@ const TG = {
     '所发内容的备注文字中没有找到 5 位隧道暗号，请提供给我；也可以点击“放弃发送”。': { 'zh-Hant': '在所發內容的備註中找不到 5 位隧道暗號，請提供給我；也可以點選「放棄傳送」。', en: 'I could not find a 5-character tunnel code in the caption. Please send it, or tap “Cancel sending”.', ja: 'キャプションに5文字のトンネルコードが見つかりません。送信するか、「送信をキャンセル」を押してください。', fr: 'Aucun code de tunnel à 5 caractères dans la légende. Envoyez-le ou touchez « Annuler l’envoi ».', ru: 'В подписи нет 5-символьного кода туннеля. Отправьте его или нажмите «Отменить отправку».', es: 'No encontré un código de túnel de 5 caracteres en el texto. Envíalo o toca “Cancelar envío”.', it: 'Non trovo un codice tunnel di 5 caratteri nella didascalia. Invialo o tocca “Annulla invio”.', fa: 'در توضیح، کد ۵ نویسه‌ای تونل پیدا نشد. آن را بفرستید یا «لغو ارسال» را بزنید.', ko: '캡션에서 5자리 터널 코드를 찾지 못했습니다. 코드를 보내거나 “보내기 취소”를 누르세요.', ms: 'Kod terowong 5 aksara tidak ditemui dalam kapsyen. Hantar kod atau ketik “Batal hantar”.', id: 'Kode tunnel 5 karakter tidak ditemukan di keterangan. Kirim kodenya atau ketuk “Batalkan pengiriman”.', vi: 'Không tìm thấy mã đường hầm 5 ký tự trong chú thích. Hãy gửi mã hoặc bấm “Hủy gửi”.', km: 'រកមិនឃើញលេខសម្ងាត់ផ្លូវរូង 5 តួអក្សរក្នុងចំណាំទេ។ សូមផ្ញើវា ឬចុច “បោះបង់ការផ្ញើ”។', my: 'စာတန်းတွင် စာလုံး ၅ လုံး တန်နယ်ကုဒ် မတွေ့ပါ။ ကုဒ်ပို့ပါ သို့မဟုတ် “ပို့ခြင်းပယ်ဖျက်” ကိုနှိပ်ပါ။', th: 'ไม่พบรหัสอุโมงค์ 5 ตัวอักษรในคำบรรยาย โปรดส่งรหัส หรือแตะ “ยกเลิกการส่ง”' }
 };
 
+const SERVER_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th'];
+const SERVER_ROWS = [
+    ['请输入 5 位隧道暗号','請輸入 5 位隧道暗號','Please enter the 5-character tunnel code','5文字のトンネルコードを入力してください','Veuillez saisir le code de tunnel à 5 caractères','Введите 5-символьный код туннеля','Introduce el código de túnel de 5 caracteres','Inserisci il codice tunnel di 5 caratteri','5자리 터널 코드를 입력하세요','Sila masukkan kod terowong 5 aksara','Silakan masukkan kode tunnel 5 karakter','Vui lòng nhập mã đường hầm 5 ký tự','โปรดป้อนรหัสทันเนล 5 ตัวอักษร'],
+    ['请求过于频繁，请稍后再试','請求過於頻繁，請稍後再試','Too many requests. Please try again later.','リクエストが多すぎます。後でもう一度お試しください。','Trop de requêtes. Réessayez plus tard.','Слишком много запросов. Повторите позже.','Demasiadas solicitudes. Inténtalo más tarde.','Troppe richieste. Riprova più tardi.','요청이 너무 많습니다. 나중에 다시 시도하세요.','Terlalu banyak permintaan. Cuba lagi kemudian.','Terlalu banyak permintaan. Coba lagi nanti.','Quá nhiều yêu cầu. Vui lòng thử lại sau.','มีคำขอมากเกินไป โปรดลองอีกครั้งภายหลัง'],
+    ['请求过于频繁','請求過於頻繁','Too many requests','リクエストが多すぎます','Trop de requêtes','Слишком много запросов','Demasiadas solicitudes','Troppe richieste','요청이 너무 많습니다','Terlalu banyak permintaan','Terlalu banyak permintaan','Quá nhiều yêu cầu','มีคำขอมากเกินไป'],
+    ['消息发送过于频繁','訊息傳送過於頻繁','Messages are being sent too quickly','メッセージの送信が速すぎます','Les messages sont envoyés trop rapidement','Сообщения отправляются слишком часто','Los mensajes se envían demasiado rápido','I messaggi vengono inviati troppo rapidamente','메시지를 너무 자주 보내고 있습니다','Mesej dihantar terlalu kerap','Pesan dikirim terlalu cepat','Tin nhắn được gửi quá nhanh','ส่งข้อความถี่เกินไป'],
+    ['同步过于频繁','同步過於頻繁','Sync requests are too frequent','同期リクエストが多すぎます','Les synchronisations sont trop fréquentes','Слишком частые запросы синхронизации','Las solicitudes de sincronización son demasiado frecuentes','Le richieste di sincronizzazione sono troppo frequenti','동기화 요청이 너무 잦습니다','Permintaan segerak terlalu kerap','Permintaan sinkronisasi terlalu sering','Yêu cầu đồng bộ quá thường xuyên','คำขอซิงค์ถี่เกินไป'],
+    ['无效的数据格式','資料格式無效','Invalid data format','データ形式が無効です','Format de données invalide','Недопустимый формат данных','Formato de datos no válido','Formato dati non valido','잘못된 데이터 형식입니다','Format data tidak sah','Format data tidak valid','Định dạng dữ liệu không hợp lệ','รูปแบบข้อมูลไม่ถูกต้อง'],
+    ['无效的会话ID','工作階段ID無效','Invalid session ID','セッションIDが無効です','ID de session invalide','Недопустимый ID сеанса','ID de sesión no válido','ID sessione non valido','잘못된 세션 ID입니다','ID sesi tidak sah','ID sesi tidak valid','ID phiên không hợp lệ','รหัสเซสชันไม่ถูกต้อง'],
+    ['无效的设备ID','裝置ID無效','Invalid device ID','デバイスIDが無効です','ID d’appareil invalide','Недопустимый ID устройства','ID de dispositivo no válido','ID dispositivo non valido','잘못된 기기 ID입니다','ID peranti tidak sah','ID perangkat tidak valid','ID thiết bị không hợp lệ','รหัสอุปกรณ์ไม่ถูกต้อง'],
+    ['无效的设备名称','裝置名稱無效','Invalid device name','デバイス名が無効です','Nom d’appareil invalide','Недопустимое имя устройства','Nombre de dispositivo no válido','Nome dispositivo non valido','잘못된 기기 이름입니다','Nama peranti tidak sah','Nama perangkat tidak valid','Tên thiết bị không hợp lệ','ชื่ออุปกรณ์ไม่ถูกต้อง'],
+    ['设备ID不匹配','裝置ID不相符','Device ID does not match','デバイスIDが一致しません','L’ID de l’appareil ne correspond pas','ID устройства не совпадает','El ID del dispositivo no coincide','L’ID dispositivo non corrisponde','기기 ID가 일치하지 않습니다','ID peranti tidak sepadan','ID perangkat tidak cocok','ID thiết bị không khớp','รหัสอุปกรณ์ไม่ตรงกัน'],
+    ['服务器会话已满','伺服器工作階段已滿','The server has reached its session limit','サーバーのセッション数が上限に達しました','Le serveur a atteint sa limite de sessions','Достигнут лимит сеансов сервера','El servidor alcanzó el límite de sesiones','Il server ha raggiunto il limite di sessioni','서버 세션 한도에 도달했습니다','Pelayan telah mencapai had sesi','Server telah mencapai batas sesi','Máy chủ đã đạt giới hạn phiên','เซิร์ฟเวอร์ถึงขีดจำกัดเซสชันแล้ว'],
+    ['会话设备数已满','工作階段裝置數已滿','This session has reached its device limit','このセッションはデバイス数の上限に達しました','Cette session a atteint sa limite d’appareils','Достигнут лимит устройств в сеансе','La sesión alcanzó el límite de dispositivos','La sessione ha raggiunto il limite di dispositivi','세션의 기기 한도에 도달했습니다','Sesi ini telah mencapai had peranti','Sesi ini telah mencapai batas perangkat','Phiên đã đạt giới hạn thiết bị','เซสชันนี้ถึงขีดจำกัดอุปกรณ์แล้ว'],
+    ['会话文件数量已达上限','工作階段檔案數量已達上限','This session has reached its file limit','このセッションはファイル数の上限に達しました','Cette session a atteint sa limite de fichiers','Достигнут лимит файлов в сеансе','La sesión alcanzó el límite de archivos','La sessione ha raggiunto il limite di file','세션의 파일 한도에 도달했습니다','Sesi ini telah mencapai had fail','Sesi ini telah mencapai batas file','Phiên đã đạt giới hạn tệp','เซสชันนี้ถึงขีดจำกัดไฟล์แล้ว'],
+    ['连接数超限','連線數超過上限','Connection limit exceeded','接続数の上限を超えました','Limite de connexions dépassée','Превышен лимит подключений','Se superó el límite de conexiones','Limite di connessioni superato','연결 한도를 초과했습니다','Had sambungan dilebihi','Batas koneksi terlampaui','Đã vượt giới hạn kết nối','เกินขีดจำกัดการเชื่อมต่อ'],
+    ['服务器内部错误','伺服器內部錯誤','Internal server error','サーバー内部エラー','Erreur interne du serveur','Внутренняя ошибка сервера','Error interno del servidor','Errore interno del server','서버 내부 오류','Ralat dalaman pelayan','Kesalahan internal server','Lỗi máy chủ nội bộ','ข้อผิดพลาดภายในเซิร์ฟเวอร์'],
+    ['短码应为 5 位字母或数字','短碼應為 5 位英文字母或數字','The short code must contain 5 letters or digits','短縮コードは5文字の英数字で入力してください','Le code court doit contenir 5 lettres ou chiffres','Короткий код должен состоять из 5 букв или цифр','El código corto debe tener 5 letras o dígitos','Il codice breve deve contenere 5 lettere o cifre','단축 코드는 영문자 또는 숫자 5자여야 합니다','Kod ringkas mesti mengandungi 5 huruf atau angka','Kode singkat harus berisi 5 huruf atau angka','Mã ngắn phải gồm 5 chữ cái hoặc chữ số','รหัสสั้นต้องมีตัวอักษรหรือตัวเลข 5 ตัว'],
+    ['短码无效或会话已结束','短碼無效或工作階段已結束','The short code is invalid or the session has ended','短縮コードが無効か、セッションが終了しています','Le code court est invalide ou la session est terminée','Короткий код недействителен или сеанс завершён','El código corto no es válido o la sesión terminó','Il codice breve non è valido o la sessione è terminata','단축 코드가 잘못되었거나 세션이 종료되었습니다','Kod ringkas tidak sah atau sesi telah tamat','Kode singkat tidak valid atau sesi telah berakhir','Mã ngắn không hợp lệ hoặc phiên đã kết thúc','รหัสสั้นไม่ถูกต้องหรือเซสชันสิ้นสุดแล้ว'],
+    ['消息过大','訊息過大','The message is too large','メッセージが大きすぎます','Le message est trop volumineux','Сообщение слишком большое','El mensaje es demasiado grande','Il messaggio è troppo grande','메시지가 너무 큽니다','Mesej terlalu besar','Pesan terlalu besar','Tin nhắn quá lớn','ข้อความมีขนาดใหญ่เกินไป'],
+    ['协同编辑内容过大，无法同步','協同編輯內容過大，無法同步','Collaborative content is too large to sync','共同編集の内容が大きすぎて同期できません','Le contenu collaboratif est trop volumineux pour être synchronisé','Совместное содержимое слишком велико для синхронизации','El contenido colaborativo es demasiado grande para sincronizarse','Il contenuto collaborativo è troppo grande per la sincronizzazione','협업 편집 내용이 너무 커서 동기화할 수 없습니다','Kandungan kolaboratif terlalu besar untuk disegerakkan','Konten kolaboratif terlalu besar untuk disinkronkan','Nội dung cộng tác quá lớn để đồng bộ','เนื้อหาการทำงานร่วมกันใหญ่เกินกว่าจะซิงค์'],
+    ['协同编辑图片数量已达上限','協同編輯圖片數量已達上限','The collaborative editor has reached its image limit','共同編集の画像数が上限に達しました','L’éditeur collaboratif a atteint sa limite d’images','Достигнут лимит изображений совместного редактора','El editor colaborativo alcanzó el límite de imágenes','L’editor collaborativo ha raggiunto il limite di immagini','협업 편집기의 이미지 한도에 도달했습니다','Editor kolaboratif telah mencapai had imej','Editor kolaboratif telah mencapai batas gambar','Trình chỉnh sửa cộng tác đã đạt giới hạn hình ảnh','ตัวแก้ไขร่วมถึงขีดจำกัดรูปภาพแล้ว'],
+    ['放弃发送','放棄傳送','Cancel sending','送信をキャンセル','Annuler l’envoi','Отменить отправку','Cancelar envío','Annulla invio','보내기 취소','Batal hantar','Batalkan pengiriman','Hủy gửi','ยกเลิกการส่ง'],
+    ['已放弃发送','已放棄傳送','Sending cancelled','送信をキャンセルしました','Envoi annulé','Отправка отменена','Envío cancelado','Invio annullato','보내기를 취소했습니다','Penghantaran dibatalkan','Pengiriman dibatalkan','Đã hủy gửi','ยกเลิกการส่งแล้ว'],
+    ['进入指定的传输隧道中转模式','進入指定的傳輸隧道中轉模式','Relay messages to a specified tunnel','指定したトンネルへの中継モード','Relayer vers un tunnel précis','Пересылать в указанный туннель','Retransmitir a un túnel específico','Inoltra a un tunnel specifico','지정한 터널로 중계','Geganti ke terowong tertentu','Teruskan ke tunnel tertentu','Chuyển tiếp tới đường hầm chỉ định','ส่งต่อไปยังทันเนลที่ระบุ'],
+    ['退出当前隧道中转模式','退出目前隧道中轉模式','Leave the current tunnel relay mode','現在のトンネル中継モードを終了','Quitter le mode relais actuel','Выйти из режима пересылки','Salir del modo retransmisión actual','Esci dalla modalità inoltro','현재 터널 중계 모드 종료','Keluar daripada mod geganti','Keluar dari mode relay','Thoát chế độ chuyển tiếp hiện tại','ออกจากโหมดส่งต่อปัจจุบัน']
+];
+
+for (const row of SERVER_ROWS) {
+    TG[row[0]] = Object.fromEntries(SERVER_LANGUAGES.map((language, index) => [language, row[index + 1]]));
+}
+
 function translateExact(text, lang) {
     if (!text || lang === 'zh-Hans') return text;
     const entry = TG[text];
@@ -45,6 +74,15 @@ function translateTelegramText(text, langCode = 'zh-Hans') {
     let translated = translateExact(text, lang);
     if (translated !== text) return translated;
     if (lang === 'zh-Hans') return text;
+    let shortMatch = /^当前处于 ([A-Z0-9]{5}) 隧道中转模式$/.exec(text);
+    if (shortMatch) return ({
+        'zh-Hant': `目前處於 ${shortMatch[1]} 隧道中轉模式`, en: `Relaying to tunnel ${shortMatch[1]}`,
+        ja: `${shortMatch[1]} トンネル中継モード`, fr: `Relais vers le tunnel ${shortMatch[1]}`,
+        ru: `Ретрансляция в туннель ${shortMatch[1]}`, es: `Retransmitiendo al túnel ${shortMatch[1]}`,
+        it: `Inoltro al tunnel ${shortMatch[1]}`, ko: `${shortMatch[1]} 터널 중계 모드`,
+        ms: `Menggeganti ke terowong ${shortMatch[1]}`, id: `Meneruskan ke tunnel ${shortMatch[1]}`,
+        vi: `Đang chuyển tiếp tới đường hầm ${shortMatch[1]}`, th: `กำลังส่งต่อไปยังทันเนล ${shortMatch[1]}`
+    }[lang] || text);
     let match = /^当前处于 ([A-Z0-9]{5}) 隧道中转模式，直接发送任何内容，将转发到此隧道。$/.exec(text);
     if (match) return ({
         'zh-Hant': `目前處於 ${match[1]} 隧道中轉模式，直接傳送任何內容都會轉發到此隧道。`, en: `Tunnel relay mode is active for ${match[1]}. Anything you send will be forwarded to this tunnel.`, ja: `${match[1]} のトンネル中継モードです。送信した内容はこのトンネルへ転送されます。`, fr: `Le mode relais est actif pour le tunnel ${match[1]}. Tout ce que vous envoyez sera transféré à ce tunnel.`, ru: `Включён режим ретрансляции для туннеля ${match[1]}. Всё отправленное будет переслано туда.`, es: `Modo retransmisión activo para el túnel ${match[1]}. Todo lo que envíes se reenviará a este túnel.`, it: `Modalità inoltro attiva per il tunnel ${match[1]}. Tutto ciò che invii sarà inoltrato a questo tunnel.`, fa: `حالت رله برای تونل ${match[1]} فعال است. هر چیزی بفرستید به این تونل منتقل می‌شود.`, ko: `${match[1]} 터널 중계 모드입니다. 보내는 모든 내용이 이 터널로 전달됩니다.`, ms: `Mod geganti aktif untuk terowong ${match[1]}. Apa-apa yang dihantar akan dimajukan ke terowong ini.`, id: `Mode relay aktif untuk tunnel ${match[1]}. Apa pun yang Anda kirim akan diteruskan ke tunnel ini.`, vi: `Chế độ chuyển tiếp đang bật cho đường hầm ${match[1]}. Mọi nội dung bạn gửi sẽ được chuyển tiếp vào đó.`, km: `របៀបបញ្ជូនសកម្មសម្រាប់ផ្លូវរូង ${match[1]}។ អ្វីៗដែលអ្នកផ្ញើនឹងត្រូវបញ្ជូនទៅផ្លូវរូងនេះ។`, my: `${match[1]} တန်နယ်အတွက် relay မုဒ် ဖွင့်ထားသည်။ သင်ပို့သမျှကို ထိုတန်နယ်သို့ ပို့မည်။`, th: `โหมดส่งต่อเปิดอยู่สำหรับอุโมงค์ ${match[1]} ทุกอย่างที่ส่งจะถูกส่งต่อเข้าอุโมงค์นี้` }[lang] || text);
@@ -57,4 +95,10 @@ function translateTelegramText(text, langCode = 'zh-Hans') {
     return text;
 }
 
-module.exports = { normalizeLanguageCode, translateTelegramText };
+function matchesTranslatedText(value, sourceText) {
+    const actual = String(value || '').trim();
+    if (actual === sourceText) return true;
+    return ['zh-Hans', ...SERVER_LANGUAGES].some(language => translateTelegramText(sourceText, language) === actual);
+}
+
+module.exports = { normalizeLanguageCode, translateTelegramText, matchesTranslatedText };
