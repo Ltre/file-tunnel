@@ -730,6 +730,37 @@
             background: #f2f5fa;
         }
 
+        .message-record-action-menu-handle {
+            display: none;
+        }
+
+        .record-remark-editor textarea {
+            width: 100%;
+            min-height: 122px;
+            margin-top: 14px;
+            padding: 11px 12px;
+            resize: vertical;
+            border: 1px solid #d4dbe7;
+            border-radius: 7px;
+            background: #fbfcfe;
+            color: #26324d;
+            font: inherit;
+            line-height: 1.55;
+            box-sizing: border-box;
+        }
+
+        .record-remark-editor textarea:focus {
+            border-color: #667eea;
+            outline: 3px solid rgba(102, 126, 234, .14);
+        }
+
+        .record-remark-editor-count {
+            margin-top: 5px;
+            color: #78849a;
+            font-size: .76rem;
+            text-align: right;
+        }
+
         .message.file-record video {
             pointer-events: none;
         }
@@ -1637,13 +1668,15 @@
                 animation: record-action-sheet-in 180ms cubic-bezier(.22, .61, .36, 1);
             }
 
-            .message-record-action-menu::before {
-                content: '';
+            .message-record-action-menu-handle {
+                display: block;
                 width: 38px;
                 height: 4px;
                 margin: 0 auto 7px;
                 border-radius: 999px;
                 background: #c7cedb;
+                cursor: grab;
+                touch-action: none;
             }
 
             .message-record-action-menu .history-action {

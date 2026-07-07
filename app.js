@@ -5595,7 +5595,7 @@ function getTransferRecordDetailsUrl(messageId, sessionId = state.sessionId) {
 
 async function copyTransferRecordLink(messageId) {
     const copied = await copyTextToClipboard(getTransferRecordAnchorUrl(messageId)).catch(() => false);
-    showAppToast(copied ? '传输记录链接已复制' : '复制失败，请从详情页手动复制链接');
+    showAppToast(copied ? '锚点链接已复制，可通过该链接一键跳转到这条记录' : '复制失败，请从详情页手动复制链接');
 }
 
 function getTransferRecordTypeLabel(message) {
@@ -5699,8 +5699,8 @@ function renderMessageRecordActions(messageEl, message) {
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
     const menuItems = [];
-    menuItems.push(createFileActionButton('详情', '在专门页面查看这条传输记录的完整信息', () => {
-        window.location.href = getTransferRecordDetailsUrl(message.id);
+    menuItems.push(createFileActionButton('详情', '查看这条传输记录的完整信息', () => {
+        showTransferRecordDetails(message.id).catch(err => showAppToast(`详情加载失败：${err.message}`));
     }));
     menuItems.push(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
@@ -5743,13 +5743,20 @@ function openMessageRecordActionMenu(trigger, menuItems) {
     const menu = document.createElement('div');
     menu.className = 'message-record-action-menu';
     menu.setAttribute('role', 'menu');
+    const handle = document.createElement('div');
+    handle.className = 'message-record-action-menu-handle';
+    handle.setAttribute('aria-hidden', 'true');
+    menu.appendChild(handle);
     menuItems.forEach(item => menu.appendChild(item));
     layer.appendChild(menu);
     document.body.appendChild(layer);
 
     const close = () => layer.remove();
+    menu.addEventListener('click', event => {
+        if (event.target.closest('.history-action')) close();
+    }, true);
     layer.addEventListener('click', event => {
-        if (event.target === layer || event.target.closest('.history-action')) close();
+        if (event.target === layer) close();
     });
     layer.addEventListener('contextmenu', event => event.preventDefault());
 
@@ -5764,18 +5771,92 @@ function openMessageRecordActionMenu(trigger, menuItems) {
         menu.style.left = `${left}px`;
         menu.style.top = `${top}px`;
     }
+
+    let dragPointerId = null;
+    let dragStartY = 0;
+    let dragDistance = 0;
+    handle.addEventListener('pointerdown', event => {
+        if (!window.matchMedia('(max-width: 767px)').matches) return;
+        dragPointerId = event.pointerId;
+        dragStartY = event.clientY;
+        dragDistance = 0;
+        handle.setPointerCapture?.(dragPointerId);
+        menu.style.transition = 'none';
+        event.preventDefault();
+    });
+    handle.addEventListener('pointermove', event => {
+        if (event.pointerId !== dragPointerId) return;
+        dragDistance = Math.max(0, event.clientY - dragStartY);
+        menu.style.transform = `translateY(${dragDistance}px)`;
+        event.preventDefault();
+    });
+    const finishDrag = event => {
+        if (event.pointerId !== dragPointerId) return;
+        handle.releasePointerCapture?.(dragPointerId);
+        dragPointerId = null;
+        menu.style.transition = 'transform 180ms cubic-bezier(.22, .61, .36, 1)';
+        if (dragDistance >= 56) {
+            menu.style.transform = 'translateY(105%)';
+            layer.style.background = 'transparent';
+            setTimeout(close, 180);
+        } else {
+            menu.style.transform = '';
+        }
+        dragDistance = 0;
+        event.preventDefault();
+    };
+    handle.addEventListener('pointerup', finishDrag);
+    handle.addEventListener('pointercancel', finishDrag);
 }
 
 async function editTransferRecordRemark(messageId) {
     const message = await getFromStore('messages', messageId);
     if (!message || !['file', 'collection'].includes(message.type)) return;
     const current = String(message.remark || message.collection?.remark || '');
-    const next = prompt('文件备注（留空即删除）', current);
+    const next = await openTransferRecordRemarkEditor(current);
     if (next === null) return;
     const remark = next.trim().slice(0, 500);
     const updated = { ...message, remark };
     if (updated.type === 'collection') updated.collection = { ...updated.collection, remark };
     await updateHistoryMessage(updated);
+}
+
+function openTransferRecordRemarkEditor(current = '') {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'send-mode-overlay record-remark-editor-layer';
+        overlay.innerHTML = `
+            <section class="send-mode-dialog record-remark-editor" role="dialog" aria-modal="true" aria-labelledby="recordRemarkEditorTitle">
+                <h3 id="recordRemarkEditorTitle">传输记录备注</h3>
+                <p>备注会随这条文件记录同步；留空保存即可删除备注。</p>
+                <textarea maxlength="500" rows="5" placeholder="填写备注内容"></textarea>
+                <div class="record-remark-editor-count">0 / 500</div>
+                <div class="send-mode-actions">
+                    <button class="btn btn-secondary" type="button" data-remark-cancel>取消</button>
+                    <button class="btn btn-primary" type="button" data-remark-save>保存</button>
+                </div>
+            </section>`;
+        const input = overlay.querySelector('textarea');
+        const count = overlay.querySelector('.record-remark-editor-count');
+        input.value = current;
+        const syncCount = () => { count.textContent = `${input.value.length} / 500`; };
+        syncCount();
+        input.addEventListener('input', syncCount);
+        const finish = value => {
+            overlay.remove();
+            resolve(value);
+        };
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay || event.target.closest('[data-remark-cancel]')) finish(null);
+            if (event.target.closest('[data-remark-save]')) finish(input.value);
+        });
+        input.addEventListener('keydown', event => {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') finish(input.value);
+            if (event.key === 'Escape') finish(null);
+        });
+        document.body.appendChild(overlay);
+        requestAnimationFrame(() => input.focus({ preventScroll: true }));
+    });
 }
 
 async function chooseForwardTargetSession() {
@@ -10900,7 +10981,10 @@ async function showResourceBrowser(options = {}) {
                     button.className = 'resource-reference-button';
                     button.textContent = getResourceReferenceLabel(reference);
                     button.title = '定位到引用位置';
-                    button.addEventListener('click', () => focusResourceReference(reference));
+                    button.addEventListener('click', () => {
+                        minimizeResourceBrowser();
+                        requestAnimationFrame(() => focusResourceReference(reference));
+                    });
                     referenceList.appendChild(button);
                 });
                 references.append(referenceTitle, referenceList);

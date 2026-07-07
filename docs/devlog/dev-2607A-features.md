@@ -373,3 +373,10 @@
 ### Resource Manager Capsule
 - Minimizing the resource manager now produces a button-free floating capsule containing only a drag affordance and the `资源管理器` label.
 - The capsule supports pointer and touch dragging within viewport bounds; a tap restores the preserved resource-manager window and state.
+
+### Resource Reference And Record Menu Refinements
+- Selecting a resource reference now minimizes the resource manager before focusing and flashing the referenced editor or transfer-record location.
+- The transfer-record details command opens the existing in-page details overlay without navigation, preserving active transfers and realtime connections.
+- Record action menus close before running any command, so copy feedback, forwarding dialogs, remark editing, and deletion confirmations cannot be covered by the old menu.
+- Replaced the native remark prompt with a responsive modal editor, character counter, backdrop cancellation, and Ctrl/Cmd+Enter save support.
+- The mobile record-action sheet now has a real pointer-enabled handle and follows a downward drag before dismissing past a guarded threshold.
