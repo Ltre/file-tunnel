@@ -5698,35 +5698,72 @@ function renderMessageRecordActions(messageEl, message) {
     messageEl.querySelector('.message-record-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
-    actions.appendChild(createFileActionButton('详情', '在专门页面查看这条传输记录的完整信息', () => {
+    const menuItems = [];
+    menuItems.push(createFileActionButton('详情', '在专门页面查看这条传输记录的完整信息', () => {
         window.location.href = getTransferRecordDetailsUrl(message.id);
     }));
-    actions.appendChild(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
+    menuItems.push(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
     if (message.type === 'file' || message.type === 'collection') {
-        actions.appendChild(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
+        menuItems.push(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
             editTransferRecordRemark(message.id).catch(err => {
                 alert(`备注保存失败：${err.message}`);
             });
         }));
     }
-    actions.appendChild(createFileActionButton('⎇ 发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+    menuItems.push(createFileActionButton('⎇ 发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
-    actions.appendChild(createFileActionButton('删除', '从会话中删除此记录', () => {
+    menuItems.push(createFileActionButton('删除', '从会话中删除此记录', () => {
         deleteHistoryMessage(message.id);
     }));
-    messageEl.appendChild(actions);
-    requestAnimationFrame(() => {
-        const bubble = messageEl.querySelector('.message-bubble');
-        if (!bubble || !actions.isConnected) return;
-        actions.style.width = `${Math.ceil(bubble.getBoundingClientRect().width)}px`;
-        actions.style.marginLeft = messageEl.classList.contains('own') ? 'auto' : '0';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'message-record-menu-trigger';
+    trigger.textContent = '☰';
+    trigger.title = '记录操作';
+    trigger.setAttribute('aria-label', '打开传输记录操作菜单');
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openMessageRecordActionMenu(trigger, menuItems);
     });
+    actions.appendChild(trigger);
+    messageEl.appendChild(actions);
+}
+
+function openMessageRecordActionMenu(trigger, menuItems) {
+    document.querySelector('.message-record-action-menu-layer')?.remove();
+    const layer = document.createElement('div');
+    layer.className = 'message-record-action-menu-layer';
+    const menu = document.createElement('div');
+    menu.className = 'message-record-action-menu';
+    menu.setAttribute('role', 'menu');
+    menuItems.forEach(item => menu.appendChild(item));
+    layer.appendChild(menu);
+    document.body.appendChild(layer);
+
+    const close = () => layer.remove();
+    layer.addEventListener('click', event => {
+        if (event.target === layer || event.target.closest('.history-action')) close();
+    });
+    layer.addEventListener('contextmenu', event => event.preventDefault());
+
+    if (!window.matchMedia('(max-width: 767px)').matches) {
+        const rect = trigger.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const left = Math.min(window.innerWidth - menuRect.width - 8, Math.max(8, rect.right - menuRect.width));
+        const preferredTop = rect.bottom + 5;
+        const top = preferredTop + menuRect.height <= window.innerHeight - 8
+            ? preferredTop
+            : Math.max(8, rect.top - menuRect.height - 5);
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+    }
 }
 
 async function editTransferRecordRemark(messageId) {
@@ -9373,7 +9410,7 @@ function attachCollectionRecordInteractions(messageEl) {
                             sender: message?.sender,
                             collectionContextId: messageId,
                             returnToCollection: false,
-                            requestMissing: true
+                            requestMissing: false
                         });
                 }, { messageId, fileId });
                 return;
@@ -9388,7 +9425,7 @@ function attachFileRecordInteractions(messageEl) {
     let suppressClickUntil = 0;
     let startPoint = null;
     const messageId = messageEl.dataset.messageId;
-    const isAction = target => Boolean(target.closest('.file-actions, .file-cache-retry'));
+    const isAction = target => Boolean(target.closest('.file-actions, .file-cache-retry, .message-record-actions'));
     const cancelLongPress = () => {
         if (longPressTimer) clearTimeout(longPressTimer);
         longPressTimer = null;
@@ -10262,6 +10299,13 @@ function restoreResourceBrowser() {
     if (!layer || layer.hidden) return false;
     layer.classList.remove('is-minimized');
     layer.classList.add('active');
+    const modal = layer.querySelector('.resource-browser-modal');
+    if (modal) {
+        modal.style.removeProperty('left');
+        modal.style.removeProperty('top');
+        modal.style.removeProperty('right');
+        modal.style.removeProperty('bottom');
+    }
     const button = layer.querySelector('.resource-browser-minimize');
     if (button) {
         button.textContent = '−';
@@ -10269,6 +10313,58 @@ function restoreResourceBrowser() {
         button.setAttribute('aria-label', '最小化资源管理器');
     }
     return true;
+}
+
+function initResourceBrowserCapsuleDrag(layer, header) {
+    let pointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+    let dragged = false;
+
+    header.addEventListener('pointerdown', event => {
+        if (!layer.classList.contains('is-minimized')) return;
+        const modal = layer.querySelector('.resource-browser-modal');
+        if (!modal) return;
+        const rect = modal.getBoundingClientRect();
+        pointerId = event.pointerId;
+        startX = event.clientX;
+        startY = event.clientY;
+        originLeft = rect.left;
+        originTop = rect.top;
+        dragged = false;
+        header.setPointerCapture?.(pointerId);
+        event.preventDefault();
+    });
+
+    header.addEventListener('pointermove', event => {
+        if (pointerId !== event.pointerId || !layer.classList.contains('is-minimized')) return;
+        const modal = layer.querySelector('.resource-browser-modal');
+        if (!modal) return;
+        const deltaX = event.clientX - startX;
+        const deltaY = event.clientY - startY;
+        if (Math.hypot(deltaX, deltaY) > 5) dragged = true;
+        if (!dragged) return;
+        modal.style.left = `${Math.min(window.innerWidth - modal.offsetWidth - 6, Math.max(6, originLeft + deltaX))}px`;
+        modal.style.top = `${Math.min(window.innerHeight - modal.offsetHeight - 6, Math.max(6, originTop + deltaY))}px`;
+        modal.style.right = 'auto';
+        modal.style.bottom = 'auto';
+        event.preventDefault();
+    });
+
+    header.addEventListener('pointerup', event => {
+        if (pointerId !== event.pointerId) return;
+        header.releasePointerCapture?.(pointerId);
+        pointerId = null;
+        if (!dragged && layer.classList.contains('is-minimized')) restoreResourceBrowser();
+        dragged = false;
+        event.preventDefault();
+    });
+    header.addEventListener('pointercancel', event => {
+        if (pointerId === event.pointerId) pointerId = null;
+        dragged = false;
+    });
 }
 
 async function clearResourceCache(resource) {
@@ -10684,11 +10780,9 @@ async function showResourceBrowser(options = {}) {
     closeButton.title = '关闭资源浏览器';
     closeButton.addEventListener('click', closeResourceBrowser);
     headerMain.append(title, refreshButton);
-    headerMain.addEventListener('click', () => {
-        if (layer.classList.contains('is-minimized')) restoreResourceBrowser();
-    });
     headerActions.append(minimizeButton, closeButton);
     header.append(headerMain, headerActions);
+    initResourceBrowserCapsuleDrag(layer, header);
 
     const controls = document.createElement('div');
     controls.className = 'resource-browser-controls';

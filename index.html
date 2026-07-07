@@ -95,9 +95,19 @@
         
         .main-layout {
             display: grid;
-            grid-template-columns: 300px 1fr 400px;
+            grid-template-columns: 300px minmax(0, 1fr) 400px;
             gap: 20px;
             margin-top: 20px;
+            min-width: 0;
+        }
+
+        .main-layout > *,
+        .panel,
+        .panel-content,
+        .chat-messages,
+        .message,
+        .message-bubble {
+            min-width: 0;
         }
         
         @media (max-width: 1200px) {
@@ -583,7 +593,9 @@
         .message-bubble {
             min-width: 0;
             max-width: 85%;
+            box-sizing: border-box;
             overflow-wrap: anywhere;
+            word-break: break-word;
             background: white;
             padding: 12px 15px;
             border-radius: 12px;
@@ -653,8 +665,8 @@
         .message-record-actions {
             display: flex;
             justify-content: flex-end;
-            width: min(85%, 100%);
-            max-width: none;
+            width: fit-content;
+            max-width: 85%;
             margin-top: 6px;
             gap: 6px;
         }
@@ -668,6 +680,54 @@
             padding: 4px 10px;
             border-radius: 6px;
             font-size: 0.76rem;
+        }
+
+        .message-record-menu-trigger {
+            display: inline-grid;
+            width: 34px;
+            height: 30px;
+            place-items: center;
+            border: 1px solid #d8deea;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, .92);
+            color: #4c5870;
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+            box-shadow: 0 2px 7px rgba(27, 38, 62, .1);
+        }
+
+        .message-record-action-menu-layer {
+            position: fixed;
+            inset: 0;
+            z-index: 6350;
+            background: transparent;
+        }
+
+        .message-record-action-menu {
+            position: fixed;
+            display: grid;
+            width: min(240px, calc(100vw - 24px));
+            gap: 3px;
+            padding: 7px;
+            border: 1px solid #dfe4ee;
+            border-radius: 7px;
+            background: #fff;
+            box-shadow: 0 14px 38px rgba(20, 29, 50, .22);
+        }
+
+        .message-record-action-menu .history-action {
+            width: 100%;
+            min-height: 38px;
+            justify-content: flex-start;
+            border: 0;
+            background: transparent;
+            color: #34415a;
+            text-align: left;
+        }
+
+        .message-record-action-menu .history-action:hover {
+            background: #f2f5fa;
         }
 
         .message.file-record video {
@@ -1330,18 +1390,27 @@
             position: fixed;
             right: 18px;
             bottom: 18px;
-            width: min(360px, calc(100vw - 24px));
+            width: auto;
             height: auto;
             max-height: none;
             pointer-events: auto;
             border: 1px solid #dce2ed;
-            border-radius: 8px;
+            border-radius: 999px;
             box-shadow: 0 12px 36px rgba(20, 28, 48, .24);
         }
 
         .resource-browser-layer.is-minimized .resource-browser-header {
             border-bottom: 0;
-            padding: 10px 11px 10px 14px;
+            padding: 9px 16px;
+            cursor: grab;
+            touch-action: none;
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header::before {
+            content: '⠿';
+            margin-right: 8px;
+            color: #77839a;
+            font-size: 1.1rem;
         }
 
         .resource-browser-layer.is-minimized .resource-browser-header-main {
@@ -1349,8 +1418,20 @@
         }
 
         .resource-browser-layer.is-minimized .resource-browser-header-main .resource-browser-refresh,
+        .resource-browser-layer.is-minimized .resource-browser-header-actions,
         .resource-browser-layer.is-minimized .resource-browser-modal > :not(.resource-browser-header) {
             display: none;
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header-main h3 {
+            margin: 0;
+            font-size: 0;
+            white-space: nowrap;
+        }
+
+        .resource-browser-layer.is-minimized .resource-browser-header-main h3::after {
+            content: '资源管理器';
+            font-size: .9rem;
         }
 
         .resource-browser-controls {
@@ -1529,11 +1610,54 @@
             .resource-browser-layer.is-minimized .modal.resource-browser-modal {
                 right: 12px;
                 bottom: calc(76px + env(safe-area-inset-bottom));
-                width: calc(100vw - 24px);
+                width: auto;
                 height: auto;
-                border-radius: 8px;
+                border-radius: 999px;
                 box-shadow: 0 10px 32px rgba(20, 28, 48, .25);
             }
+
+            .message-record-action-menu-layer {
+                display: flex;
+                align-items: flex-end;
+                background: rgba(20, 28, 48, .42);
+            }
+
+            .message-record-action-menu {
+                position: relative;
+                left: auto !important;
+                top: auto !important;
+                bottom: auto;
+                width: 100%;
+                max-height: min(62dvh, 520px);
+                overflow-y: auto;
+                gap: 5px;
+                padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+                border: 0;
+                border-radius: 14px 14px 0 0;
+                animation: record-action-sheet-in 180ms cubic-bezier(.22, .61, .36, 1);
+            }
+
+            .message-record-action-menu::before {
+                content: '';
+                width: 38px;
+                height: 4px;
+                margin: 0 auto 7px;
+                border-radius: 999px;
+                background: #c7cedb;
+            }
+
+            .message-record-action-menu .history-action {
+                min-height: 46px;
+                padding: 0 14px;
+                border-radius: 6px;
+                background: #f5f7fb;
+                font-size: .92rem;
+            }
+        }
+
+        @keyframes record-action-sheet-in {
+            from { opacity: .5; transform: translateY(28px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .transfer-record-details-layer {
@@ -4267,11 +4391,11 @@
         (function loadVersionedClientScripts() {
             const version = new URLSearchParams(window.location.search).get('_reload');
             const suffix = version ? `?v=${encodeURIComponent(version)}` : '';
-            document.write(`<script src="runtime-config.js${suffix}"><\/script>`);
-            document.write(`<script src="client/file-assets.js${suffix}"><\/script>`);
-            document.write(`<script src="client/folder-archive.js${suffix}"><\/script>`);
-            document.write(`<script src="client/media.js${suffix}"><\/script>`);
-            document.write(`<script src="app.js${suffix}"><\/script>`);
+            document.write(`<script src="/runtime-config.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/file-assets.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/folder-archive.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/media.js${suffix}"><\/script>`);
+            document.write(`<script src="/app.js${suffix}"><\/script>`);
         })();
     </script>
 </body>

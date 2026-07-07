@@ -363,3 +363,13 @@
 - Collection-member deletion updates the existing bubble with lightweight metadata and reused thumbnail DOM instead of rereading several media blobs to rebuild the preview.
 - Repeated taps while a file or collection preview is opening are coalesced into one task, preventing delayed click bursts from opening the collection and then unexpectedly opening one of its files.
 - Cross-tunnel, rich-text, collection, and collaborative-editor references remain protected during deferred cleanup.
+
+### Record Details, Menus, And Layout Containment
+- Fixed `/record/:sessionId/:messageId` pages by loading all client scripts from root-relative URLs, so nested routes no longer request missing scripts below `/record/`.
+- Transfer-record actions now live behind one compact menu trigger. Desktop uses a trigger-anchored context menu; mobile uses a bottom action sheet with vertically arranged commands.
+- Direct collection tiles in the flat history view no longer trigger automatic cache restoration when opened. Missing files remain operable in the preview without starting a transfer.
+- Desktop workspace columns and their descendants now have explicit shrink boundaries, and the center track uses `minmax(0, 1fr)` to prevent a single record from expanding the full three-column layout.
+
+### Resource Manager Capsule
+- Minimizing the resource manager now produces a button-free floating capsule containing only a drag affordance and the `资源管理器` label.
+- The capsule supports pointer and touch dragging within viewport bounds; a tap restores the preserved resource-manager window and state.
