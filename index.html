@@ -617,6 +617,7 @@
         .message-bubble {
             min-width: 0;
             max-width: 85%;
+            width: fit-content;
             box-sizing: border-box;
             overflow-wrap: anywhere;
             word-break: break-word;
@@ -1063,6 +1064,8 @@
         
         /* 富文本预览气泡 */
         .rich-preview {
+            width: fit-content;
+            max-width: 85%;
             border: 1px solid #dfe5f1;
             border-left: 4px solid #667eea;
             background: #fff;
@@ -1078,6 +1081,10 @@
             transform: translateY(-2px);
             border-color: #cdd6ea;
             box-shadow: 0 8px 18px rgba(33, 45, 75, 0.14);
+        }
+
+        .message.own .rich-preview {
+            margin-left: auto;
         }
         
         .rich-preview-title {
@@ -1100,6 +1107,7 @@
         .media-preview {
             position: relative;
             max-width: 200px;
+            width: fit-content;
             border-radius: 10px;
             overflow: hidden;
         }
