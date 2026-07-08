@@ -2000,6 +2000,16 @@ function serializeEditorContent(content) {
     return container.innerHTML;
 }
 
+function getRichMessageContent(message) {
+    return typeof message?.content === 'string' ? message.content : '';
+}
+
+function getRichMessagePreviewText(message) {
+    const container = document.createElement('div');
+    container.innerHTML = getRichMessageContent(message);
+    return (container.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
 async function cloneBinaryData(data) {
     if (data instanceof ArrayBuffer) return data.slice(0);
     if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
@@ -5546,14 +5556,15 @@ async function addMessageToChat(message, isOwn, options = {}) {
         contentHtml = await renderCollectionPreviewHtml(message);
     } else if (message.type === 'rich') {
         // 富文本消息
-        const preview = message.content.replace(/<[^>]+>/g, '').slice(0, 100);
+        const preview = getRichMessagePreviewText(message).slice(0, 100);
+        const previewText = preview || '空富文本内容';
         contentHtml = `
             <div class="rich-preview" onclick="viewRichContent('${message.id}')">
                 <div class="rich-preview-title">
                     <span>📝</span>
                     <span>富文本消息</span>
                 </div>
-                <div class="rich-preview-content">${escapeHtml(preview)}${preview.length >= 100 ? '...' : ''}</div>
+                <div class="rich-preview-content ${preview ? '' : 'rich-preview-empty'}">${escapeHtml(previewText)}${preview.length >= 100 ? '...' : ''}</div>
             </div>
         `;
     }
@@ -9911,7 +9922,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     }
     if (message.type === 'rich' && activeRichMessageId === message.id && document.getElementById('richViewer')?.classList.contains('active')) {
         const container = document.getElementById('richViewerContent');
-        container.innerHTML = message.content;
+        container.innerHTML = getRichMessageContent(message);
         await hydrateEditorAssets(container);
     }
 }
@@ -14941,11 +14952,13 @@ window.addEventListener('popstate', event => {
 });
 
 function normalizeRichHistory(message) {
-    const history = Array.isArray(message?.richHistory) ? message.richHistory.filter(entry => entry?.content) : [];
+    const history = Array.isArray(message?.richHistory)
+        ? message.richHistory.filter(entry => entry && typeof entry.content === 'string')
+        : [];
     if (history.length) return history.sort((a, b) => Number(a.version) - Number(b.version));
     return [{
         version: Number(message?.richVersion) || 1,
-        content: message?.content || '',
+        content: getRichMessageContent(message),
         editorDeviceId: message?.sender || '',
         editorDeviceName: message?.senderName || '未知设备',
         editedAt: Number(message?.timestamp) || Date.now()
@@ -15020,7 +15033,7 @@ function renderRichDiff(panel, leftVersion, rightVersion) {
 
 async function openRichHistory(messageId) {
     const message = await getFromStore('messages', messageId);
-    if (!message?.content) return;
+    if (!message || message.type !== 'rich') return;
     const versions = normalizeRichHistory(message);
     const layer = document.createElement('div');
     layer.className = 'rich-history-layer';
@@ -15106,7 +15119,7 @@ async function publishRichConflictAsNewRecord(original, content) {
 async function openRichMessageEditor(messageId, draft = null) {
     if (!requireTunnelPermission('sendRich')) return;
     const message = await getFromStore('messages', messageId);
-    if (!message?.content) return;
+    if (!message || message.type !== 'rich') return;
     let baseVersion = Number(draft?.baseVersion || message.richVersion) || 1;
     const layer = document.createElement('div');
     layer.className = 'rich-history-layer';
@@ -15131,7 +15144,7 @@ async function openRichMessageEditor(messageId, draft = null) {
     </section>`;
     const editor = layer.querySelector('.rich-message-editor');
     const notice = layer.querySelector('.rich-conflict-notice');
-    editor.innerHTML = draft?.content || message.content;
+    editor.innerHTML = draft && typeof draft.content === 'string' ? draft.content : getRichMessageContent(message);
     attachRichEditorEnhancedTools(layer, editor);
     hydrateEditorAssets(editor).catch(err => historyLog('rich-editor-asset-hydrate-failed', { messageId, error: err.message }));
     const close = () => layer.remove();
@@ -15193,7 +15206,7 @@ async function viewRichContent(messageId) {
     const message = await getFromStore('messages', messageId);
     if (message && message.type === 'rich') {
         const container = document.getElementById('richViewerContent');
-        container.innerHTML = message.content;
+        container.innerHTML = getRichMessageContent(message);
         await hydrateEditorAssets(container);
         const viewer = document.getElementById('richViewer');
         activeRichMessageId = messageId;
