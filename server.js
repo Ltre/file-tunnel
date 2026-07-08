@@ -334,7 +334,7 @@ app.get(['/share', '/share/'], redirectShareEntry);
 app.post(['/share', '/share/'], redirectShareEntry);
 
 app.get('/admin-auth', (req, res) => {
-    res.sendFile(path.join(__dirname, 'admin-auth.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'admin-auth.html'));
 });
 
 app.get('/api/admin/auth/status', (req, res) => {
@@ -370,16 +370,22 @@ app.post('/api/admin/auth/logout', (req, res) => {
     res.json({ ok: true });
 });
 
-app.use(['/admin.html', '/tgbot.html'], adminAuth.requireAuth);
-
 app.get('/record/:sessionId/:messageId', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
+
+// 根路径 - 提供 pages/index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pages', 'index.html'));
+});
+
+//禁止直接从pages目录，以无校验态访问admin和tgbot
+app.use(['/pages/admin.html', '/pages/tgbot.html'], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
-    index: ['index.html'],
+    index: false,
     setHeaders: (res, filePath) => {
         if (shouldDisableStaticCache(filePath)) {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -387,15 +393,29 @@ app.use(express.static(path.join(__dirname), {
     }
 }));
 
+// 从 pages/ 目录提供 HTML 文件（显式路由，避免暴露 admin.html 和 tgbot.html）
+app.get('/admin-auth.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pages', 'admin-auth.html'));
+});
+app.get('/device.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pages', 'device.html'));
+});
+app.get('/downloader.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pages', 'downloader.html'));
+});
+app.get('/downloadList.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'pages', 'downloadList.html'));
+});
+
 // 管理后台API
 app.get('/admin', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
-    res.sendFile(path.join(__dirname, 'admin.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'admin.html'));
 });
 
 app.get('/tgbot', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
-    res.sendFile(path.join(__dirname, 'tgbot.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'tgbot.html'));
 });
 
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
@@ -530,16 +550,16 @@ app.post('/api/telegram/assets/:assetId/repair', async (req, res) => {
 });
 
 app.get('/downloader', (req, res) => {
-    res.sendFile(path.join(__dirname, 'downloader.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'downloader.html'));
 });
 
 app.get('/downloadList', (req, res) => {
-    res.sendFile(path.join(__dirname, 'downloadList.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'downloadList.html'));
 });
 
 app.get('/device/:deviceId', (req, res) => {
     if (!isValidDeviceId(req.params.deviceId)) return res.status(400).send('Invalid device id');
-    res.sendFile(path.join(__dirname, 'device.html'));
+    res.sendFile(path.join(__dirname, 'pages', 'device.html'));
 });
 
 app.get('/wasted', (req, res) => {

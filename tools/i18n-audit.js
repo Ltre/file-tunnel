@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const roots = ['index.html', 'app.js', 'client', 'server.js', 'server'];
+const roots = ['pages/index.html', 'app.js', 'client', 'server.js', 'server'];
 const ignoredFiles = new Set(['client/i18n-catalog.js']);
 const files = [];
 
