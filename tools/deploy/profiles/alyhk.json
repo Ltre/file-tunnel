@@ -1,0 +1,14 @@
+{
+  "id": "alyhk",
+  "label": "Alibaba Hong Kong via Nginx",
+  "deployBranch": "deploy-alyhk",
+  "domain": "tun-alyhk.miku.us",
+  "serverPort": 4000,
+  "nginxEnabled": true,
+  "nginxListenPort": 80,
+  "pwaName": "Drop2Tunnel(啊HK)",
+  "pwaShortName": "Dr2T(啊HK)",
+  "remoteHost": "",
+  "remotePath": "/opt/drop2tunnel",
+  "systemdService": "drop2tunnel-alyhk"
+}

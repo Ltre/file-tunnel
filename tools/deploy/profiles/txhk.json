@@ -1,0 +1,14 @@
+{
+  "id": "txhk",
+  "label": "Tencent Hong Kong via Nginx",
+  "deployBranch": "deploy-txhk",
+  "domain": "tun-txhk.miku.us",
+  "serverPort": 4000,
+  "nginxEnabled": true,
+  "nginxListenPort": 80,
+  "pwaName": "Drop2Tunnel(疼HK)",
+  "pwaShortName": "Dr2T(疼HK)",
+  "remoteHost": "",
+  "remotePath": "/opt/drop2tunnel",
+  "systemdService": "drop2tunnel-txhk"
+}

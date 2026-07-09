@@ -305,13 +305,24 @@ app.post('/api/telegram/webhook/:secret?', async (req, res) => {
     res.json({ ok: true });
     handleTelegramUpdate(req.body).catch(err => console.error('telegram webhook error:', err));
 });
-function shouldDisableStaticCache(filePath) {
+function normalizeStaticPath(filePath) {
+    return filePath.replace(/\\/g, '/');
+}
+
+function shouldUseImmutableStaticCache(filePath) {
+    const normalized = normalizeStaticPath(filePath);
+    return /\/assets\/[^/]+\.[a-f0-9]{10}\.(?:min\.)?(?:js|css|json|svg|png|jpg|jpeg|webp|woff2?)$/i.test(normalized);
+}
+
+function shouldRevalidateStaticCache(filePath) {
+    const normalized = normalizeStaticPath(filePath);
     return [
         '.html',
-        '.js',
-        '.webmanifest',
-        '.svg'
-    ].some(ext => filePath.endsWith(ext));
+        '.webmanifest'
+    ].some(ext => normalized.endsWith(ext)) ||
+        normalized.endsWith('/service-worker.js') ||
+        normalized.endsWith('/runtime-config.js') ||
+        (!normalized.includes('/assets/') && normalized.endsWith('.js'));
 }
 
 function isPrivateAdminSetupRequest(req) {
@@ -387,8 +398,10 @@ app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
     index: false,
     setHeaders: (res, filePath) => {
-        if (shouldDisableStaticCache(filePath)) {
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        if (shouldUseImmutableStaticCache(filePath)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (shouldRevalidateStaticCache(filePath)) {
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
         }
     }
 }));

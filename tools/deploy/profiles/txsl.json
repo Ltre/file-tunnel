@@ -1,0 +1,14 @@
+{
+  "id": "txsl",
+  "label": "Seoul direct Node.js",
+  "deployBranch": "deploy-txsl",
+  "domain": "tun.miku.us",
+  "serverPort": 80,
+  "nginxEnabled": false,
+  "nginxListenPort": 80,
+  "pwaName": "Drop2Tunnel(首尔)",
+  "pwaShortName": "Dr2T(首尔)",
+  "remoteHost": "",
+  "remotePath": "/opt/drop2tunnel",
+  "systemdService": "drop2tunnel-txsl"
+}

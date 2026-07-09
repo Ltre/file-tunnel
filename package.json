@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "deploy:build": "node tools/deploy/build.mjs",
+    "deploy:verify": "node tools/deploy/verify.mjs"
   },
   "keywords": [
     "p2p",
@@ -21,5 +23,10 @@
     "express-rate-limit": "^7.1.5",
     "socket.io": "^4.7.2",
     "sql.js": "^1.14.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "html-minifier-terser": "^7.2.0",
+    "terser": "^5.49.0"
   }
 }
