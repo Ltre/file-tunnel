@@ -1,3 +1,10 @@
+
+
+警告：先不要用，构建后的静态代码引用有异常！
+
+
+-----------------------------------
+
 到服务器执行以下：
 
 cd ~/mydir/pre-deploy/file-tunnel-deploy # 假定已经 【git clone https://github.com/Ltre/file-tunnel】 到此目录
