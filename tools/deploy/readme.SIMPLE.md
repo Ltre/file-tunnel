@@ -7,5 +7,5 @@ bash tools/deploy/release.sh --source dev/2607A-NEWCODE  --profile txhk  # "dev/
 构建后的代码位于类似于这样 ".deploy-worktrees/deploy-txhk/dist" 的目录中
 
 
-tools/deploy/deploy-remote.sh --profile txhk # 利用rsync将构建好的代码同步到生产目录
+bash tools/deploy/deploy-remote.sh --profile txhk # 利用rsync将构建好的代码同步到生产目录
 
