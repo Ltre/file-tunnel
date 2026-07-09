@@ -12,10 +12,10 @@ developer working tree.
 
 All machine-specific values live in `tools/deploy/profiles/*.json`.
 
-## Build Only
+## Build Only (for current branch "dev/2607A-NEWCODE")
 
 ```bash
-node tools/deploy/build.mjs --profile txsl --out dist --source-branch dev/2607A
+node tools/deploy/build.mjs --profile txsl --out dist --source-branch dev/2607A-NEWCODE
 node tools/deploy/verify.mjs --dist dist --profile txsl
 ```
 
@@ -39,19 +39,19 @@ Generated outputs include:
 Dry run is the default:
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl
 ```
 
 Create a deploy-branch commit, but do not push:
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl --commit
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl --commit
 ```
 
 Push only when explicitly requested:
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl --commit --push
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl --commit --push
 ```
 
 `release.sh` uses `.deploy-worktrees/<deploy-branch>` and refuses to start if

@@ -16,10 +16,10 @@
 tools/deploy/profiles/*.json
 ```
 
-## 仅执行构建
+## 仅执行构建 (针对目标分支"dev/2607A-NEWCODE")
 
 ```bash
-node tools/deploy/build.mjs --profile txsl --out dist --source-branch dev/2607A
+node tools/deploy/build.mjs --profile txsl --out dist --source-branch dev/2607A-NEWCODE
 node tools/deploy/verify.mjs --dist dist --profile txsl
 ```
 
@@ -43,19 +43,19 @@ node tools/deploy/verify.mjs --dist dist --profile txsl
 默认执行的是演练模式，不会真正提交或推送：
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl
 ```
 
 创建部署分支提交，但不推送到远程仓库：
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl --commit
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl --commit
 ```
 
 只有在明确指定时才推送：
 
 ```bash
-tools/deploy/release.sh --source dev/2607A --profile txsl --commit --push
+tools/deploy/release.sh --source dev/2607A-NEWCODE --profile txsl --commit --push
 ```
 
 `release.sh` 会使用以下目录作为部署工作树：
