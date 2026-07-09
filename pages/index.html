@@ -67,6 +67,20 @@
             --surface-soft: #f2eee6;
         }
 
+        body[data-theme="social"] {
+            --page-bg: #f0f2f5;
+            --panel-bg: rgba(255, 255, 255, 0.98);
+            --panel-border: rgba(20, 33, 61, 0.08);
+            --panel-shadow: 0 10px 26px rgba(24, 38, 63, 0.10);
+            --panel-radius: 8px;
+            --header-bg: linear-gradient(135deg, #1877f2 0%, #0f5fd0 100%);
+            --accent: #1877f2;
+            --accent-2: #42b72a;
+            --text-main: #1c1e21;
+            --text-muted: #65676b;
+            --surface-soft: #f0f2f5;
+        }
+
         body[data-theme="graphite"] .main-layout {
             grid-template-columns: 320px minmax(0, 1fr) 420px;
         }
@@ -1165,7 +1179,8 @@
         }
         
         .input-area input[type="text"]:focus {
-            border-color: #667eea;
+            /* border-color: #667eea; 备选，不要删 */
+            border-color: #285f75;
         }
         
         .btn {
@@ -1181,7 +1196,8 @@
         }
         
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            /* background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 备选，不要删 */
+            background: linear-gradient(135deg, #90a1bd 0%, #202317fc 100%);
             color: white;
         }
         
@@ -1248,7 +1264,8 @@
         }
         
         .editor-content:focus {
-            border-color: #667eea;
+            /* border-color: #667eea; 备选，不要删 */
+            border-color: #285f75;
         }
         
         .editor-content img {
@@ -2532,7 +2549,7 @@
             right: 0;
             z-index: 3;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) auto auto;
+            grid-template-columns: minmax(0, 1fr) auto auto auto;
             align-items: center;
             gap: 12px;
             padding: max(12px, env(safe-area-inset-top)) 14px 10px;
@@ -2566,6 +2583,25 @@
             font-size: 1.5rem;
             line-height: 1;
             cursor: pointer;
+        }
+
+        .media-fullscreen-locate {
+            pointer-events: auto;
+            display: grid;
+            place-items: center;
+            width: 38px;
+            height: 38px;
+            border: 1px solid rgba(255, 255, 255, .24);
+            border-radius: 999px;
+            background: rgba(0, 0, 0, .24);
+            color: rgba(255, 255, 255, .92);
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .media-fullscreen-locate:hover {
+            background: rgba(255, 255, 255, .16);
         }
 
         .media-fullscreen-content {
@@ -3198,8 +3234,20 @@
             color: #34405a;
             font-size: 0.9rem;
             line-height: 1.45;
+            max-height: min(32vh, 260px);
+            overflow: auto;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
+        }
+
+        .collection-remark a {
+            color: var(--accent);
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .collection-remark a:hover {
+            text-decoration: underline;
         }
 
         .shared-file-processing-placeholder {
@@ -4211,6 +4259,10 @@
                 color: #65718a;
                 cursor: pointer;
                 font-size: 0.72rem;
+                -webkit-user-select: none;
+                user-select: none;
+                -webkit-touch-callout: none;
+                touch-action: manipulation;
             }
 
             .mobile-workspace-button > span:first-child {
@@ -4368,6 +4420,7 @@
                 <button class="theme-option" type="button" data-theme="classic">Classic</button>
                 <button class="theme-option" type="button" data-theme="graphite">Graphite</button>
                 <button class="theme-option" type="button" data-theme="atelier">Atelier</button>
+                <button class="theme-option" type="button" data-theme="social">Social</button>
             </div>
         </div>
         
@@ -4586,6 +4639,7 @@
         <div class="media-fullscreen-topbar">
             <div class="media-fullscreen-title" id="mediaFullscreenTitle"></div>
             <div class="media-fullscreen-counter" id="mediaFullscreenCounter"></div>
+            <button class="media-fullscreen-locate" id="mediaFullscreenLocateBtn" type="button" title="定位到传输记录" aria-label="定位到传输记录">🎯</button>
             <button class="media-fullscreen-close" id="mediaFullscreenCloseBtn" type="button" title="退出全屏" aria-label="退出全屏">×</button>
         </div>
         <button class="media-fullscreen-arrow media-fullscreen-arrow-left" id="mediaFullscreenPrevBtn" type="button" aria-label="上一个">‹</button>

@@ -18,6 +18,52 @@ function buildSocketServerUrl() {
     return window.location.origin;
 }
 
+function isWeChatEmbeddedBrowser() {
+    return /MicroMessenger/i.test(navigator.userAgent || '');
+}
+
+async function blockWeChatEmbeddedBrowser() {
+    const url = window.location.href;
+    let copied = false;
+    try {
+        if (navigator.clipboard?.writeText && window.isSecureContext) {
+            await navigator.clipboard.writeText(url);
+            copied = true;
+        }
+    } catch (_) {}
+    document.body.innerHTML = '';
+    const layer = document.createElement('div');
+    layer.style.cssText = [
+        'position:fixed',
+        'inset:0',
+        'z-index:2147483647',
+        'display:grid',
+        'place-items:center',
+        'padding:24px',
+        'background:#f2f4f7',
+        'color:#172033',
+        'font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+    ].join(';');
+    layer.innerHTML = `
+        <section style="width:min(92vw,440px);border-radius:18px;background:#fff;padding:24px;box-shadow:0 18px 54px rgba(22,32,51,.18);">
+            <h1 style="margin:0 0 10px;font-size:1.28rem;">请使用系统浏览器打开</h1>
+            <p style="margin:0 0 14px;line-height:1.65;color:#58657a;">微信内置浏览器会限制文件、音视频、PWA、剪贴板和本地缓存能力，无法稳定使用 Drop2Tunnel。</p>
+            <p style="margin:0 0 12px;line-height:1.6;color:#58657a;">${copied ? '当前页面地址已复制到剪贴板，请在 Safari、Chrome 或系统浏览器中粘贴打开。' : '请复制下面地址，在 Safari、Chrome 或系统浏览器中打开。'}</p>
+            <textarea readonly style="box-sizing:border-box;width:100%;min-height:74px;padding:10px;border:1px solid #d8deea;border-radius:10px;color:#34415a;background:#f7f9fc;">${escapeHtml(url)}</textarea>
+            <button id="wechatCopyUrlBtn" style="width:100%;height:42px;margin-top:14px;border:0;border-radius:10px;background:#1877f2;color:#fff;font-weight:800;">复制页面地址</button>
+        </section>
+    `;
+    document.body.appendChild(layer);
+    document.getElementById('wechatCopyUrlBtn')?.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(url);
+            alert('页面地址已复制，请用系统浏览器打开。');
+        } catch (_) {
+            alert(url);
+        }
+    });
+}
+
 const CONFIG = {
     // Socket.io 服务器地址 (自动检测)
     // 开发环境: 使用当前页面地址
@@ -35,6 +81,7 @@ const CONFIG = {
     // 会话超时 (30分钟)
     SESSION_TIMEOUT: 30 * 60 * 1000
 };
+const RECORD_REMARK_MAX_LENGTH = 2000;
 
 // ==================== 全局状态 ====================
 const state = {
@@ -479,6 +526,10 @@ function flushClientDebugLogs() {
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', async () => {
     try {
+        if (isWeChatEmbeddedBrowser()) {
+            await blockWeChatEmbeddedBrowser();
+            return;
+        }
         await initStorage();
         registerServiceWorker();
         if (!await initSession()) {
@@ -2909,7 +2960,7 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
         timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
         senderName: state.deviceName,
-        remark: String(options.remark || '').trim().slice(0, 500)
+        remark: String(options.remark || '').trim().slice(0, RECORD_REMARK_MAX_LENGTH)
     };
 
     await publishHistoryMessage(message, {
@@ -3778,12 +3829,12 @@ async function sendFileCollection(files, options = {}) {
             files: fileInfos,
             count: fileInfos.length,
             totalSize,
-            remark: String(options.remark || '').trim().slice(0, 500)
+            remark: String(options.remark || '').trim().slice(0, RECORD_REMARK_MAX_LENGTH)
         },
         timestamp: nextHistoryTimestamp(),
         sender: state.deviceId,
         senderName: state.deviceName,
-        remark: String(options.remark || '').trim().slice(0, 500)
+        remark: String(options.remark || '').trim().slice(0, RECORD_REMARK_MAX_LENGTH)
     };
 
     await publishHistoryMessage(message, { autoRequestAsset: false });
@@ -3814,7 +3865,7 @@ function askFileCollectionMode(files) {
                 <h3>发送 ${list.length} 个文件</h3>
                 <p>以合辑发送会在传输记录里合并成一条，方便预览和批量保存；拆分发送则保持每个文件一条记录。</p>
                 <label class="send-mode-remark-label">合辑备注（可选）
-                    <textarea class="send-mode-remark" maxlength="500" rows="3" placeholder="为这组合辑添加说明"></textarea>
+                    <textarea class="send-mode-remark" maxlength="${RECORD_REMARK_MAX_LENGTH}" rows="3" placeholder="为这组合辑添加说明"></textarea>
                 </label>
                 <div class="send-mode-actions">
                     <button class="btn btn-secondary" type="button" data-mode="split">拆分成多条</button>
@@ -5392,7 +5443,7 @@ async function renderCollectionPreviewHtml(message) {
         <div class="message-bubble collection-message">
             <div class="collection-preview">${tiles.join('')}</div>
             <div class="collection-meta">${files.length} 个文件 · ${formatFileSize(totalSize)}</div>
-            ${remark ? `<div class="collection-remark">${escapeHtml(remark)}</div>` : ''}
+            ${remark ? `<div class="collection-remark">${renderRemarkHtml(remark)}</div>` : ''}
         </div>
     `;
 }
@@ -5582,7 +5633,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     if (fileRecordRemark) {
         const remark = document.createElement('div');
         remark.className = 'collection-remark';
-        remark.textContent = fileRecordRemark;
+        remark.innerHTML = renderRemarkHtml(fileRecordRemark);
         messageEl.querySelector('.message-bubble')?.appendChild(remark);
     }
 
@@ -5786,6 +5837,11 @@ function renderMessageRecordActions(messageEl, message) {
     menuItems.push(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
+    menuItems.push(createFileActionButton(message.favorite ? '★ 取消收藏' : '☆ 收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
+        toggleTransferRecordFavorite(message.id).catch(err => {
+            alert(`收藏状态保存失败：${err.message}`);
+        });
+    }));
     if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
             editTransferRecordRemark(message.id).catch(err => {
@@ -5815,6 +5871,15 @@ function renderMessageRecordActions(messageEl, message) {
     });
     actions.appendChild(trigger);
     messageEl.appendChild(actions);
+}
+
+async function toggleTransferRecordFavorite(messageId) {
+    const message = await getFromStore('messages', messageId);
+    if (!message) throw new Error('record-not-found');
+    const favorite = !message.favorite;
+    const updated = { ...message, favorite, favoritedAt: favorite ? Date.now() : 0 };
+    await updateHistoryMessage(updated);
+    showAppToast(favorite ? '已加入已收藏' : '已取消收藏');
 }
 
 function openMessageRecordActionMenu(trigger, menuItems) {
@@ -5896,7 +5961,7 @@ async function editTransferRecordRemark(messageId) {
     const current = String(message.remark || message.collection?.remark || '');
     const next = await openTransferRecordRemarkEditor(current);
     if (next === null) return;
-    const remark = next.trim().slice(0, 500);
+    const remark = next.trim().slice(0, RECORD_REMARK_MAX_LENGTH);
     const updated = { ...message, remark };
     if (updated.type === 'collection') updated.collection = { ...updated.collection, remark };
     await updateHistoryMessage(updated);
@@ -5910,8 +5975,8 @@ function openTransferRecordRemarkEditor(current = '') {
             <section class="send-mode-dialog record-remark-editor" role="dialog" aria-modal="true" aria-labelledby="recordRemarkEditorTitle">
                 <h3 id="recordRemarkEditorTitle">传输记录备注</h3>
                 <p>备注会随这条文件记录同步；留空保存即可删除备注。</p>
-                <textarea maxlength="500" rows="5" placeholder="填写备注内容"></textarea>
-                <div class="record-remark-editor-count">0 / 500</div>
+                <textarea maxlength="${RECORD_REMARK_MAX_LENGTH}" rows="5" placeholder="填写备注内容"></textarea>
+                <div class="record-remark-editor-count">0 / ${RECORD_REMARK_MAX_LENGTH}</div>
                 <div class="send-mode-actions">
                     <button class="btn btn-secondary" type="button" data-remark-cancel>取消</button>
                     <button class="btn btn-primary" type="button" data-remark-save>保存</button>
@@ -5920,7 +5985,7 @@ function openTransferRecordRemarkEditor(current = '') {
         const input = overlay.querySelector('textarea');
         const count = overlay.querySelector('.record-remark-editor-count');
         input.value = current;
-        const syncCount = () => { count.textContent = `${input.value.length} / 500`; };
+        const syncCount = () => { count.textContent = `${input.value.length} / ${RECORD_REMARK_MAX_LENGTH}`; };
         syncCount();
         input.addEventListener('input', syncCount);
         const finish = value => {
@@ -6642,7 +6707,7 @@ async function updateCollectionMessageElement(message) {
     if (remarkText) {
         const remark = document.createElement('div');
         remark.className = 'collection-remark';
-        remark.textContent = remarkText;
+        remark.innerHTML = renderRemarkHtml(remarkText);
         nextBubble.appendChild(remark);
     }
     preserveChatScroll(() => {
@@ -8909,7 +8974,32 @@ async function openFileRecord(messageId) {
 
 async function getFullscreenPreviewItems() {
     const items = [];
-    if (activeCollectionPreviewMessageId) {
+    const addFileInfo = async (fileInfo, messageId = '') => {
+        if (!fileInfo?.id) return;
+        const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        const storedFile = persistedFile?.externalFileHandle
+            ? await materializeExternalFileRecord(persistedFile, { requestPermission: false })
+            : persistedFile;
+        if (!hasCompleteFileCache(storedFile, fileInfo)) return;
+        const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
+        if (!isFullscreenPreviewableType(type)) return;
+        items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile), messageId });
+    };
+
+    const messages = (await getCurrentSessionMessages().catch(() => []))
+        .filter(message => message?.id)
+        .sort(compareHistoryMessages);
+    for (const message of messages) {
+        if (message.type === 'collection') {
+            for (const fileInfo of getCollectionFiles(message)) {
+                await addFileInfo(fileInfo, message.id);
+            }
+        } else if (message.type === 'file' && message.fileInfo?.id) {
+            await addFileInfo(message.fileInfo, message.id);
+        }
+    }
+
+    if (!items.length && activeCollectionPreviewMessageId) {
         const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
         for (const fileInfo of getCollectionFiles(message)) {
             const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
@@ -8919,9 +9009,9 @@ async function getFullscreenPreviewItems() {
             if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
             const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
             if (!isFullscreenPreviewableType(type)) continue;
-            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile) });
+            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile), messageId: activeCollectionPreviewMessageId });
         }
-    } else if (activeFilePreviewFileId) {
+    } else if (!items.length && activeFilePreviewFileId) {
         const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
         const persistedFile = await getFromStore('files', activeFilePreviewFileId).catch(() => null);
         const storedFile = persistedFile?.externalFileHandle
@@ -8929,7 +9019,7 @@ async function getFullscreenPreviewItems() {
             : persistedFile;
         const type = String(fileInfo?.type || storedFile?.type || '').toLowerCase();
         if (fileInfo?.id && hasCompleteFileCache(storedFile, fileInfo) && isFullscreenPreviewableType(type)) {
-            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile) });
+            items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile), messageId: activeFilePreviewMessageId });
         }
     }
     return items;
@@ -9062,6 +9152,15 @@ function navigateMediaFullscreen(delta) {
     if (mediaFullscreenItems.length <= 1) return;
     mediaFullscreenIndex = (mediaFullscreenIndex + delta + mediaFullscreenItems.length) % mediaFullscreenItems.length;
     renderMediaFullscreenItem();
+}
+
+async function locateMediaFullscreenRecord() {
+    const item = mediaFullscreenItems[mediaFullscreenIndex];
+    const messageId = item?.messageId || activeCollectionPreviewMessageId || activeFilePreviewMessageId;
+    if (!messageId) return;
+    closeMediaFullscreen({ forceClose: true });
+    closeFilePreview({ forceClose: true });
+    await focusTransferRecordById(messageId, { timeoutMs: 7000 });
 }
 
 async function openActivePreviewFullscreen() {
@@ -9716,7 +9815,7 @@ async function refreshFileMessage(fileId) {
         if (remarkText) {
             const remark = document.createElement('div');
             remark.className = 'collection-remark';
-            remark.textContent = remarkText;
+            remark.innerHTML = renderRemarkHtml(remarkText);
             messageEl.querySelector('.message-bubble')?.appendChild(remark);
         }
     }
@@ -10316,6 +10415,7 @@ async function getSessionResourceInventory() {
         getCurrentSessionFiles(),
         getFromStore('editorContent', 'current')
     ]);
+    const favoriteMusicIds = getFavoriteMusicIds();
     const resources = new Map();
 
     const upsertResource = (candidate, storedFile = false) => {
@@ -10333,6 +10433,9 @@ async function getSessionResourceInventory() {
                 isEditorAsset: false,
                 isFileAsset: false,
                 isTelegramSource: false,
+                isFavorite: false,
+                isFileFavorite: false,
+                isRecordFavorite: false,
                 serverAssetUrl: '',
                 telegramFileId: '',
                 telegramFileIdUpdatedAt: 0,
@@ -10350,6 +10453,9 @@ async function getSessionResourceInventory() {
         if (candidate.sourceFileId) resource.sourceFileId = candidate.sourceFileId;
         resource.isEditorAsset = resource.isEditorAsset || candidate.isEditorAsset === true;
         resource.isFileAsset = resource.isFileAsset || candidate.isFileAsset === true || candidate.isAsset === true;
+        resource.isFileFavorite = resource.isFileFavorite || candidate.mediaFavorite === true || favoriteMusicIds.has(id);
+        resource.isRecordFavorite = resource.isRecordFavorite || candidate.recordFavorite === true || candidate.favorite === true;
+        resource.isFavorite = resource.isFavorite || resource.isFileFavorite || resource.isRecordFavorite;
         resource.isTelegramSource = resource.isTelegramSource || candidate.isServerAsset === true || Boolean(candidate.telegramFileId) ||
             String(candidate.serverAssetUrl || '').startsWith('/api/server-assets/');
         if (candidate.serverAssetUrl) resource.serverAssetUrl = candidate.serverAssetUrl;
@@ -10375,7 +10481,7 @@ async function getSessionResourceInventory() {
 
     messages.forEach(message => {
         if (message.fileInfo?.id) {
-            upsertResource(message.fileInfo);
+            upsertResource({ ...message.fileInfo, recordFavorite: message.favorite === true });
             addReference(message.fileInfo.id, {
                 kind: 'chat-file',
                 messageId: message.id,
@@ -10385,7 +10491,7 @@ async function getSessionResourceInventory() {
         if (message.type === 'collection') {
             getCollectionFiles(message).forEach(fileInfo => {
                 if (!fileInfo?.id) return;
-                upsertResource(fileInfo);
+                upsertResource({ ...fileInfo, recordFavorite: message.favorite === true });
                 addReference(fileInfo.id, {
                     kind: 'collection-file',
                     messageId: message.id,
@@ -11039,6 +11145,7 @@ async function showResourceBrowser(options = {}) {
         ['referenced', '有引用'],
         ['orphaned', '未引用'],
         ['missing', '缓存缺失'],
+        ['favorite', '已收藏'],
         ['telegram', 'Telegram 渠道']
     ].forEach(([value, label]) => {
         const option = document.createElement('option');
@@ -11071,6 +11178,7 @@ async function showResourceBrowser(options = {}) {
             if (mode === 'referenced') return resource.references.length > 0;
             if (mode === 'orphaned') return resource.references.length === 0;
             if (mode === 'missing') return !resource.hasReadableLocalSource;
+            if (mode === 'favorite') return resource.isFavorite;
             if (mode === 'telegram') return resource.isTelegramSource;
             return true;
         });
@@ -11114,6 +11222,8 @@ async function showResourceBrowser(options = {}) {
             if (resource.isTelegramSource) addTag('Telegram 兜底', 'protected');
             if (resource.references.length) addTag(`引用 ${resource.references.length}`, 'protected');
             else addTag('未引用', 'warning');
+            if (resource.isFileFavorite) addTag('单文件收藏', 'protected');
+            if (resource.isRecordFavorite) addTag('记录收藏', 'protected');
             if (resource.derivedCopies.length) addTag(`引用副本 ${resource.derivedCopies.length}`, 'protected');
             if (resource.isExternalFile && !resource.hasLocalData) addTag('🖴 本机映射', 'protected');
             else if (resource.hasLocalData) addTag('已缓存');
@@ -13422,22 +13532,44 @@ function initMobileWorkspace() {
     if (tunnelButton) {
         let longPressTimer = null;
         let suppressNextClick = false;
+        let touchLongPressActive = false;
         const cancel = () => {
             if (longPressTimer) clearTimeout(longPressTimer);
             longPressTimer = null;
         };
+        const openTunnelSwitcherFromHold = event => {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            clearSelection();
+            suppressNextClick = true;
+            showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+        };
         tunnelButton.addEventListener('contextmenu', event => {
             event.preventDefault();
-            showTunnelRemarkDialog();
+            openTunnelSwitcherFromHold(event);
         });
         tunnelButton.addEventListener('pointerdown', event => {
             if (event.pointerType !== 'touch') return;
             cancel();
             longPressTimer = setTimeout(() => {
                 longPressTimer = null;
-                suppressNextClick = true;
-                showTunnelRemarkDialog();
+                openTunnelSwitcherFromHold(event);
             }, 600);
+        });
+        tunnelButton.addEventListener('touchstart', event => {
+            touchLongPressActive = true;
+            cancel();
+            longPressTimer = setTimeout(() => {
+                longPressTimer = null;
+                if (!touchLongPressActive) return;
+                openTunnelSwitcherFromHold(event);
+            }, 560);
+        }, { passive: false });
+        ['touchend', 'touchcancel', 'touchmove'].forEach(eventName => {
+            tunnelButton.addEventListener(eventName, () => {
+                touchLongPressActive = false;
+                cancel();
+            }, { passive: true });
         });
         tunnelButton.addEventListener('click', event => {
             if (!suppressNextClick) return;
@@ -13555,7 +13687,7 @@ function handleTopbarAdminTap(event) {
 }
 
 function applyTheme(theme) {
-    const selected = ['classic', 'graphite', 'atelier'].includes(theme) ? theme : 'classic';
+    const selected = ['classic', 'graphite', 'atelier', 'social'].includes(theme) ? theme : 'classic';
     document.body.dataset.theme = selected;
     localStorage.setItem('uiTheme', selected);
     document.querySelectorAll('.theme-option[data-theme]').forEach(button => {
@@ -13572,7 +13704,7 @@ function initThemeSwitcher() {
         historyLog('theme-changed', { theme: button.dataset.theme });
     });
     document.getElementById('cycleThemeBtn')?.addEventListener('click', () => {
-        const themes = ['classic', 'graphite', 'atelier'];
+        const themes = ['classic', 'graphite', 'atelier', 'social'];
         const current = document.body.dataset.theme || 'classic';
         const next = themes[(themes.indexOf(current) + 1) % themes.length];
         applyTheme(next);
@@ -14072,6 +14204,9 @@ function initUI() {
         }
     }, true);
     document.getElementById('mediaFullscreenCloseBtn')?.addEventListener('click', () => closeMediaFullscreen());
+    document.getElementById('mediaFullscreenLocateBtn')?.addEventListener('click', () => {
+        locateMediaFullscreenRecord().catch(err => historyLog('media-fullscreen-locate-failed', { error: err.message }));
+    });
     document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
     document.getElementById('mediaFullscreenNextBtn')?.addEventListener('click', () => navigateMediaFullscreen(1));
     document.getElementById('mediaFullscreenViewer')?.addEventListener('click', event => {
@@ -15403,6 +15538,15 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function renderRemarkHtml(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    return escapeHtml(raw).replace(/https?:\/\/[^\s<>"']+/g, url => {
+        const safeUrl = url.replace(/[\r\n]/g, '');
+        return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+    });
 }
 
 function getFileIcon(mimeType) {

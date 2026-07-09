@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const { spawn } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
@@ -23,6 +24,17 @@ const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
+const SNS_COOKIE_FILES = Object.freeze({
+    youtube: 'yt-cookies.txt',
+    ytmusic: 'yt-cookies.txt',
+    tiktok: 'tiktok-cookies.txt',
+    facebook: 'facebook-cookies.txt',
+    instagram: 'instagram-cookies.txt',
+    thread: 'thread-cookies.txt',
+    line: 'line-cookies.txt',
+    twitter: 'twitter-cookies.txt',
+    x: 'x-cookies.txt'
+});
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
@@ -89,6 +101,7 @@ const MAX_DEBUG_LOGS = 5000;
 const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
+const TELEGRAM_REMARK_MAX_LENGTH = 2000;
 let telegramConfig = loadTelegramBotConfig();
 
 function normalizeTelegramBotConfig(config = {}) {
@@ -128,6 +141,67 @@ function saveTelegramBotConfig(config) {
     }
     telegramConfig = normalized;
     return normalized;
+}
+
+function writeDataFileAtomic(targetPath, content) {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, content);
+    try {
+        fs.renameSync(tmpPath, targetPath);
+    } catch (err) {
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) throw err;
+        fs.copyFileSync(tmpPath, targetPath);
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+    }
+}
+
+function normalizeSnsCookiePlatform(platform) {
+    const key = String(platform || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key === 'youtube' || key === 'yt' || key === 'ytmusic' || key === 'youtubemusic') {
+        return key === 'youtube' || key === 'yt' ? 'youtube' : 'ytmusic';
+    }
+    if (key === 'threads') return 'thread';
+    if (Object.prototype.hasOwnProperty.call(SNS_COOKIE_FILES, key)) return key;
+    return '';
+}
+
+function getSnsCookiePath(platform) {
+    const normalized = normalizeSnsCookiePlatform(platform);
+    const fileName = normalized ? SNS_COOKIE_FILES[normalized] : '';
+    return fileName ? path.join(SERVER_DATA_DIR, fileName) : '';
+}
+
+function getSnsCookieFileForUrl(url) {
+    const raw = String(url || '');
+    if (/music\.youtube\.com/i.test(raw)) return getSnsCookiePath('ytmusic');
+    if (/(?:youtube\.com|youtu\.be)/i.test(raw)) return getSnsCookiePath('youtube');
+    if (/tiktok\.com/i.test(raw)) return getSnsCookiePath('tiktok');
+    if (/(?:facebook\.com|fb\.watch)/i.test(raw)) return getSnsCookiePath('facebook');
+    if (/instagram\.com/i.test(raw)) return getSnsCookiePath('instagram');
+    if (/threads\.net/i.test(raw)) return getSnsCookiePath('thread');
+    if (/line\.me/i.test(raw)) return getSnsCookiePath('line');
+    if (/twitter\.com/i.test(raw)) return getSnsCookiePath('twitter');
+    if (/x\.com/i.test(raw)) return getSnsCookiePath('x');
+    return '';
+}
+
+function getSnsCookieEntries({ includeContent = false } = {}) {
+    return Object.entries(SNS_COOKIE_FILES).map(([platform, fileName]) => {
+        const filePath = path.join(SERVER_DATA_DIR, fileName);
+        let content = '';
+        let exists = false;
+        let size = 0;
+        let updatedAt = 0;
+        try {
+            const stat = fs.statSync(filePath);
+            exists = stat.isFile() && stat.size > 0;
+            size = stat.size;
+            updatedAt = stat.mtimeMs;
+            if (includeContent && stat.isFile()) content = fs.readFileSync(filePath, 'utf8');
+        } catch (_) {}
+        return { platform, fileName, exists, size, updatedAt, content };
+    });
 }
 
 function isTelegramBotEnabled() {
@@ -245,7 +319,7 @@ app.use((req, res, next) => {
 
 // 速率限制
 app.use(rateLimit(RATE_LIMIT));
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/runtime-config.js', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -391,8 +465,8 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
-//禁止直接从pages目录，以无校验态访问admin和tgbot
-app.use(['/pages/admin.html', '/pages/tgbot.html'], adminAuth.requireAuth);
+//禁止直接从pages目录，以无校验态访问admin、tgbot和SNS cookies配置页
+app.use(['/pages/admin.html', '/pages/tgbot.html', '/pages/sns-cookies.html'], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
@@ -429,6 +503,38 @@ app.get('/admin', (req, res) => {
 app.get('/tgbot', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'tgbot.html'));
+});
+
+app.get(['/sns-cookies', '/sns-cookies.html'], (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'sns-cookies.html'));
+});
+
+app.get('/api/sns-cookies', adminAuth.requireAuth, (req, res) => {
+    res.json({ platforms: getSnsCookieEntries({ includeContent: true }) });
+});
+
+app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
+    try {
+        const platform = normalizeSnsCookiePlatform(req.params.platform);
+        if (!platform) return res.status(400).json({ error: 'invalid-platform' });
+        const filePath = getSnsCookiePath(platform);
+        const content = String(req.body?.content || '').replace(/\r\n/g, '\n');
+        if (Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024) {
+            return res.status(413).json({ error: 'cookie-file-too-large' });
+        }
+        if (content.trim()) {
+            writeDataFileAtomic(filePath, content.endsWith('\n') ? content : `${content}\n`);
+        } else {
+            try { fs.unlinkSync(filePath); } catch (err) {
+                if (err.code !== 'ENOENT') throw err;
+            }
+        }
+        res.json({ ok: true, platform, fileName: SNS_COOKIE_FILES[platform] });
+    } catch (err) {
+        console.error('sns-cookies-save error:', err);
+        res.status(500).json({ error: 'save-failed', message: err.message });
+    }
 });
 
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
@@ -1534,8 +1640,88 @@ function telegramTextToHtml(text, entities = []) {
     return html;
 }
 
+function extractSupportedSocialUrl(text = '') {
+    const urls = String(text || '').match(/https?:\/\/[^\s<>"']+/gi) || [];
+    return urls.find(url => /(?:youtube\.com|youtu\.be|music\.youtube\.com|tiktok\.com|facebook\.com|fb\.watch|instagram\.com|threads\.net|twitter\.com|x\.com|line\.me)\b/i.test(url)) || '';
+}
+
+function runYtDlpJson(url) {
+    return new Promise((resolve, reject) => {
+        const command = process.env.YT_DLP_BIN || 'yt-dlp';
+        const args = [
+            '--dump-single-json',
+            '--skip-download',
+            '--no-playlist',
+            '--no-cache-dir',
+            url
+        ];
+        const cookiePath = getSnsCookieFileForUrl(url);
+        if (cookiePath && fs.existsSync(cookiePath)) {
+            try {
+                if (fs.statSync(cookiePath).size > 0) {
+                    args.splice(args.length - 1, 0, '--cookies', cookiePath);
+                }
+            } catch (_) {}
+        }
+        const child = spawn(command, args, {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+        let stdout = '';
+        let stderr = '';
+        const timer = setTimeout(() => {
+            child.kill('SIGTERM');
+            reject(new Error('yt-dlp-timeout'));
+        }, Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS || 25000));
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', chunk => { stdout += chunk; });
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        child.on('error', err => {
+            clearTimeout(timer);
+            reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
+        });
+        child.on('close', code => {
+            clearTimeout(timer);
+            if (code !== 0) return reject(new Error(stderr.trim() || `yt-dlp-exit-${code}`));
+            try {
+                resolve(JSON.parse(stdout));
+            } catch (err) {
+                reject(new Error(`yt-dlp-json-parse-failed: ${err.message}`));
+            }
+        });
+    });
+}
+
+async function buildSocialLinkRemark(text) {
+    const sourceUrl = extractSupportedSocialUrl(text);
+    if (!sourceUrl) return null;
+    const meta = await runYtDlpJson(sourceUrl);
+    const title = sanitizeString(meta.title || meta.fulltitle || '社媒链接', 240);
+    const uploader = sanitizeString(meta.uploader || meta.channel || meta.creator || meta.artist || '', 160);
+    const description = sanitizeString(meta.description || meta.caption || text || '', 1500);
+    const webpageUrl = sanitizeString(meta.webpage_url || meta.original_url || sourceUrl, 800);
+    const lines = [title, uploader, description, webpageUrl].filter(Boolean);
+    return lines.join('\n\n').trim().slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+}
+
+async function buildTelegramRemarkWithSocialMetadata(rawRemark) {
+    const remark = String(rawRemark || '').trim();
+    if (!extractSupportedSocialUrl(remark)) return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    try {
+        const socialRemark = await buildSocialLinkRemark(remark);
+        if (!socialRemark) return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+        if (socialRemark === remark || socialRemark.includes(remark)) return socialRemark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+        return `${remark}\n\n${socialRemark}`.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    } catch (err) {
+        console.warn('telegram social remark failed:', err.message);
+        return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    }
+}
+
 function getTelegramFileFromMessage(message = {}) {
-    const remark = String(message.caption || '').trim().slice(0, 500);
+    const remark = String(message.caption || '').trim().slice(0, TELEGRAM_REMARK_MAX_LENGTH);
     if (message.document) {
         return {
             fileId: message.document.file_id,
@@ -1638,7 +1824,7 @@ async function bindTelegramTunnel(chatId, shortCode) {
 
 function getTelegramCollectionRemark(message = {}) {
     const caption = String(message.caption || '').trim();
-    return caption.slice(0, 500);
+    return caption.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
 }
 
 function queueTelegramMediaGroup(chatId, message, file, targetShortCode) {
@@ -1963,6 +2149,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
     };
     persistTelegramServerAsset(asset);
     const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const messageRemark = await buildTelegramRemarkWithSocialMetadata(telegramFile.remark);
     const message = {
         id: crypto.randomUUID(),
         type: 'file',
@@ -1978,7 +2165,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
             isAsset: false,
             isServerAsset: true,
             serverAssetUrl: `/api/server-assets/${assetId}`,
-            remark: String(telegramFile.remark || '').trim().slice(0, 500),
+            remark: messageRemark,
             telegramFileId: asset.fileId,
             telegramFileUniqueId: asset.fileUniqueId,
             telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
@@ -1987,7 +2174,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
         sessionId,
-        remark: String(telegramFile.remark || '').trim().slice(0, 500)
+        remark: messageRemark
     };
     addToSessionHistory(sessionId, session, message, {
         fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
@@ -2035,7 +2222,7 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         isAsset: false,
         isServerAsset: true,
         serverAssetUrl: `/api/server-assets/${asset.id}`,
-        remark: String(telegramFile.remark || '').trim().slice(0, 500),
+        remark: String(telegramFile.remark || '').trim().slice(0, TELEGRAM_REMARK_MAX_LENGTH),
         telegramFileId: asset.fileId,
         telegramFileUniqueId: asset.fileUniqueId,
         telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
@@ -2054,6 +2241,7 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
     }
     if (!fileInfos.length) return false;
     const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const messageRemark = await buildTelegramRemarkWithSocialMetadata(remark);
     const message = {
         id: crypto.randomUUID(),
         type: 'collection',
@@ -2062,13 +2250,13 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
             files: fileInfos,
             count: fileInfos.length,
             totalSize: fileInfos.reduce((sum, file) => sum + file.size, 0),
-            remark: String(remark || '').trim().slice(0, 500)
+            remark: messageRemark
         },
         timestamp: Date.now(),
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
         sessionId,
-        remark: String(remark || '').trim().slice(0, 500)
+        remark: messageRemark
     };
     addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'telegram-bot-album' });
     session.lastActivity = Date.now();

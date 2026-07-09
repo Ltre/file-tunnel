@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN" translate="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="google" content="notranslate">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>配置 SNS cookies</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #f5f7fb;
+            --panel: #ffffff;
+            --text: #172033;
+            --muted: #647084;
+            --line: #d9e0ea;
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --danger: #dc2626;
+            --ok: #047857;
+            --shadow: 0 18px 45px rgba(16, 24, 40, 0.12);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: radial-gradient(circle at top left, #e8f0ff 0, transparent 34%), var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+
+        .page {
+            width: min(980px, calc(100vw - 32px));
+            margin: 0 auto;
+            padding: 42px 0 56px;
+        }
+
+        .header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        h1 { margin: 0; font-size: clamp(24px, 4vw, 34px); letter-spacing: 0; }
+
+        .subtle { margin: 8px 0 0; color: var(--muted); line-height: 1.65; }
+
+        .btn {
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font: inherit;
+            font-weight: 750;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+            background: #e8edf5;
+            white-space: nowrap;
+        }
+
+        .btn.primary { background: var(--primary); color: #fff; }
+        .btn.primary:hover { background: var(--primary-dark); }
+        .btn.danger { color: #fff; background: var(--danger); }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 16px 0;
+        }
+
+        .grid {
+            display: grid;
+            gap: 14px;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 18px;
+        }
+
+        .card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .platform-title {
+            display: grid;
+            gap: 4px;
+        }
+
+        .platform-title strong { font-size: 18px; }
+        .platform-title span { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+
+        .badge {
+            border-radius: 999px;
+            padding: 5px 9px;
+            font-size: 12px;
+            font-weight: 750;
+            background: #eef2ff;
+            color: #3730a3;
+        }
+
+        .badge.empty { background: #f2f4f7; color: var(--muted); }
+        .badge.ok { background: #dcfce7; color: #166534; }
+
+        textarea {
+            width: 100%;
+            min-height: 180px;
+            resize: vertical;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 12px;
+            font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+            background: #fff;
+            color: var(--text);
+            outline: none;
+        }
+
+        textarea:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+        }
+
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+
+        .status {
+            min-height: 22px;
+            color: var(--muted);
+            margin-top: 12px;
+            line-height: 1.5;
+        }
+
+        .status.ok { color: var(--ok); }
+        .status.error { color: var(--danger); }
+
+        @media (max-width: 640px) {
+            .header { display: grid; }
+            .card-head { align-items: flex-start; }
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0e1421;
+                --panel: #151d2c;
+                --text: #edf2ff;
+                --muted: #9aa6ba;
+                --line: #2b3850;
+                --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+            }
+
+            textarea,
+            .btn {
+                background: #101827;
+                color: var(--text);
+            }
+
+            .btn.primary,
+            .btn.danger {
+                color: #fff;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <div class="header">
+            <div>
+                <h1>配置 SNS cookies</h1>
+                <p class="subtle">这些 cookies 仅供服务端调用 yt-dlp 解析 YouTube、TikTok、Instagram 等链接时使用，文件会保存到服务器的 <code>.tunnel-data</code> 目录。</p>
+            </div>
+            <a class="btn" href="/admin">返回 admin</a>
+        </div>
+
+        <section class="card">
+            <p class="subtle">请粘贴 Netscape cookies.txt 格式内容。YouTube 与 YT Music 共用 <code>yt-cookies.txt</code>；保存空内容会删除对应 cookies 文件。</p>
+            <div class="toolbar">
+                <button class="btn" id="reloadBtn" type="button">重新读取</button>
+            </div>
+            <div class="status" id="status">正在读取...</div>
+        </section>
+
+        <section class="grid" id="platformList" aria-live="polite"></section>
+    </main>
+
+    <script>
+        const platformLabels = {
+            youtube: 'YouTube',
+            ytmusic: 'YT Music',
+            tiktok: 'TikTok',
+            facebook: 'Facebook',
+            instagram: 'Instagram',
+            thread: 'Threads',
+            line: 'LINE',
+            twitter: 'Twitter',
+            x: 'X'
+        };
+        const listEl = document.getElementById('platformList');
+        const statusEl = document.getElementById('status');
+        const reloadBtn = document.getElementById('reloadBtn');
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = `status ${type}`.trim();
+        }
+
+        function formatSize(size) {
+            const n = Number(size) || 0;
+            if (n < 1024) return `${n} B`;
+            if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+            return `${(n / 1024 / 1024).toFixed(2)} MB`;
+        }
+
+        function renderPlatforms(platforms) {
+            listEl.innerHTML = '';
+            platforms.forEach(entry => {
+                const card = document.createElement('article');
+                card.className = 'card';
+                card.dataset.platform = entry.platform;
+                card.innerHTML = `
+                    <div class="card-head">
+                        <div class="platform-title">
+                            <strong>${platformLabels[entry.platform] || entry.platform}</strong>
+                            <span>${entry.fileName}</span>
+                        </div>
+                        <span class="badge ${entry.exists ? 'ok' : 'empty'}">${entry.exists ? `已配置 · ${formatSize(entry.size)}` : '未配置'}</span>
+                    </div>
+                    <textarea spellcheck="false" placeholder="# Netscape HTTP Cookie File">${entry.content || ''}</textarea>
+                    <div class="actions">
+                        <button class="btn danger" type="button" data-action="clear">清空</button>
+                        <button class="btn primary" type="button" data-action="save">保存</button>
+                    </div>
+                `;
+                listEl.appendChild(card);
+            });
+        }
+
+        async function loadCookies() {
+            setStatus('正在读取...');
+            const response = await fetch('/api/sns-cookies', { cache: 'no-store' });
+            if (!response.ok) throw new Error('读取 cookies 配置失败');
+            const data = await response.json();
+            renderPlatforms(data.platforms || []);
+            setStatus('配置已读取。', 'ok');
+        }
+
+        async function savePlatform(card, content) {
+            const platform = card.dataset.platform;
+            const response = await fetch(`/api/sns-cookies/${encodeURIComponent(platform)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.message || data.error || '保存失败');
+            }
+            await loadCookies();
+        }
+
+        listEl.addEventListener('click', async (event) => {
+            const button = event.target.closest('button[data-action]');
+            if (!button) return;
+            const card = button.closest('.card[data-platform]');
+            const textarea = card?.querySelector('textarea');
+            if (!card || !textarea) return;
+            try {
+                button.disabled = true;
+                const action = button.dataset.action;
+                if (action === 'clear' && textarea.value.trim() && !confirm('确定清空这个平台的 cookies 吗？')) return;
+                setStatus(action === 'clear' ? '正在清空...' : '正在保存...');
+                await savePlatform(card, action === 'clear' ? '' : textarea.value);
+                setStatus(action === 'clear' ? '已清空。' : '已保存。', 'ok');
+            } catch (err) {
+                setStatus(err.message || '操作失败', 'error');
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        reloadBtn.addEventListener('click', () => {
+            loadCookies().catch(err => setStatus(err.message || '读取失败', 'error'));
+        });
+
+        loadCookies().catch(err => setStatus(err.message || '读取失败', 'error'));
+    </script>
+</body>
+</html>
