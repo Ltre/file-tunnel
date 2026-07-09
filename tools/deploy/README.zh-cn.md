@@ -108,10 +108,21 @@ Cache-Control: no-cache
 
 ## 远程部署
 
-`deploy-remote.sh` 和 `rollback.sh` 在第一阶段中仅作为占位脚本存在。
+在部署服务器上执行 `release.sh` 生成 dist 后，可以把生成结果同步到正在运行的 Node.js 应用目录：
 
-在本地构建验证流程达到足够稳定、可靠且可重复的程度之前，不要把以下远程操作加入正式发布流程：
+```bash
+tools/deploy/deploy-remote.sh --profile txhk
+tools/deploy/deploy-remote.sh --profile alyhk
+```
 
-* SSH
-* rsync
-* systemd 服务控制
+对于每个配置，该脚本都会从对应部署工作树的 dist 目录同步：
+
+```text
+.deploy-worktrees/<profile.deployBranch>/dist/ -> ~/mydir/nodeapp/file-tunnel/
+```
+
+脚本使用 `rsync -a`，并且刻意不传入 `--delete`，因此
+`~/mydir/nodeapp/file-tunnel/` 目录中已有但 `dist/` 中不存在的文件会被保留。
+可先加 `--dry-run` 预览同步结果。
+
+`rollback.sh` 仍是占位脚本，等回滚流程验证稳定后再启用。

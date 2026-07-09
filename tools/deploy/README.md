@@ -94,6 +94,22 @@ Cache-Control: no-cache
 
 ## Remote Deployment
 
-`deploy-remote.sh` and `rollback.sh` are placeholders in this first stage. Keep
-remote SSH/rsync/systemd actions out of the flow until local build verification
-is boringly reliable.
+After running `release.sh` on the deployment server, sync the generated dist
+tree into the running Node.js app directory:
+
+```bash
+tools/deploy/deploy-remote.sh --profile txhk
+tools/deploy/deploy-remote.sh --profile alyhk
+```
+
+For each profile this copies from its deployment worktree dist directory:
+
+```text
+.deploy-worktrees/<profile.deployBranch>/dist/ -> ~/mydir/nodeapp/file-tunnel/
+```
+
+The script uses `rsync -a` and intentionally does not pass `--delete`, so files
+that already exist under `~/mydir/nodeapp/file-tunnel/` but are absent from
+`dist/` are preserved. Use `--dry-run` to preview changes.
+
+`rollback.sh` is still a placeholder until a verified rollback flow is added.
