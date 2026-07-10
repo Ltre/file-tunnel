@@ -308,6 +308,15 @@ function cssEscape(value) {
     return String(value).replace(/["\\]/g, '\\$&');
 }
 
+function clearSelection() {
+    try {
+        window.getSelection?.()?.removeAllRanges?.();
+        document.getSelection?.()?.removeAllRanges?.();
+    } catch (err) {
+        // Selection APIs can be unavailable or locked during native touch gestures.
+    }
+}
+
 function progressElementId(progressKey) {
     return `progress-${String(progressKey).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
@@ -1753,19 +1762,19 @@ async function createPeerConnection(deviceId) {
         });
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             console.log('P2P connection established with', deviceId);
-        } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-            console.warn('P2P connection failed/disconnected with', deviceId);
+        } else if (pc.iceConnectionState === 'disconnected') {
+            console.info('P2P connection temporarily disconnected with', deviceId);
+        } else if (pc.iceConnectionState === 'failed') {
+            console.warn('P2P connection failed with', deviceId);
             if (pc.iceConnectionState === 'failed') {
                 editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             }
             // Attempt to restart ICE
-            if (pc.iceConnectionState === 'failed') {
-                console.log('Attempting ICE restart...');
-                try {
-                    pc.restartIce();
-                } catch (e) {
-                    console.error('Failed to restart ICE:', e);
-                }
+            console.log('Attempting ICE restart...');
+            try {
+                pc.restartIce();
+            } catch (e) {
+                console.error('Failed to restart ICE:', e);
             }
         }
     };
@@ -1809,7 +1818,7 @@ async function connectToPeer(deviceId) {
         }
         
         // 如果连接失败，关闭旧连接
-        if (existingPC.connectionState === 'failed' || existingPC.iceConnectionState === 'failed' || existingPC.iceConnectionState === 'disconnected') {
+        if (existingPC.connectionState === 'failed' || existingPC.iceConnectionState === 'failed' || existingPC.connectionState === 'closed' || existingPC.iceConnectionState === 'closed') {
             console.log('Existing connection in failed state, closing it');
             existingPC.close();
             state.peers.delete(deviceId);
@@ -1871,8 +1880,7 @@ async function connectToPeerForFileAsset(deviceId) {
         } : null
     });
     if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed' ||
-        pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed' ||
-        pc.iceConnectionState === 'disconnected')) {
+        pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed')) {
         pc.close();
         state.peers.delete(deviceId);
         pc = null;
@@ -13809,9 +13817,27 @@ function showTunnelRemarkDialog() {
     document.body.appendChild(overlay);
     const input = overlay.querySelector('#tunnelRemarkInput');
     input.value = state.sessionRemark || '';
-    input.focus();
-    input.select();
+    const shouldSelectInput = window.matchMedia?.('(hover: hover) and (pointer: fine)')?.matches;
+    input.focus({ preventScroll: true });
+    if (shouldSelectInput) {
+        input.select();
+    } else {
+        const end = input.value.length;
+        input.setSelectionRange?.(end, end);
+        requestAnimationFrame(() => {
+            clearSelection();
+            input.setSelectionRange?.(end, end);
+        });
+    }
     const close = () => overlay.remove();
+    overlay.addEventListener('selectstart', event => {
+        if (event.target === input) return;
+        event.preventDefault();
+    });
+    overlay.addEventListener('contextmenu', event => {
+        if (event.target === input) return;
+        event.preventDefault();
+    });
     overlay.addEventListener('click', event => {
         if (event.target === overlay) close();
     });
@@ -13898,52 +13924,71 @@ function initMobileWorkspace() {
     if (tunnelButton) {
         let longPressTimer = null;
         let suppressNextClick = false;
-        let touchLongPressActive = false;
+        let holdStartPoint = null;
+        let lastRemarkHoldAt = 0;
         const cancel = () => {
             if (longPressTimer) clearTimeout(longPressTimer);
             longPressTimer = null;
+            holdStartPoint = null;
         };
-        const openTunnelSwitcherFromHold = event => {
+        const pointFromEvent = event => {
+            const touch = event?.touches?.[0] || event?.changedTouches?.[0];
+            return touch
+                ? { x: touch.clientX, y: touch.clientY }
+                : { x: event?.clientX || 0, y: event?.clientY || 0 };
+        };
+        const cancelIfMoved = event => {
+            if (!holdStartPoint) return;
+            const point = pointFromEvent(event);
+            if (Math.hypot(point.x - holdStartPoint.x, point.y - holdStartPoint.y) > 14) cancel();
+        };
+        const openTunnelRemarkFromHold = event => {
             event?.preventDefault?.();
             event?.stopPropagation?.();
             clearSelection();
+            const now = Date.now();
+            if (now - lastRemarkHoldAt < 650) {
+                suppressNextClick = true;
+                return;
+            }
+            lastRemarkHoldAt = now;
             suppressNextClick = true;
-            showJoinedSessionSwitcher().catch(err => historyLog('session-switcher-open-failed', { error: err.message }));
+            showTunnelRemarkDialog();
         };
+        const scheduleHold = event => {
+            cancel();
+            holdStartPoint = pointFromEvent(event);
+            longPressTimer = setTimeout(() => {
+                longPressTimer = null;
+                openTunnelRemarkFromHold(event);
+                navigator.vibrate?.(12);
+            }, 560);
+        };
+        tunnelButton.addEventListener('selectstart', event => event.preventDefault());
+        tunnelButton.addEventListener('dragstart', event => event.preventDefault());
         tunnelButton.addEventListener('contextmenu', event => {
             event.preventDefault();
-            openTunnelSwitcherFromHold(event);
+            openTunnelRemarkFromHold(event);
         });
         tunnelButton.addEventListener('pointerdown', event => {
-            if (event.pointerType !== 'touch') return;
-            cancel();
-            longPressTimer = setTimeout(() => {
-                longPressTimer = null;
-                openTunnelSwitcherFromHold(event);
-            }, 600);
+            if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+            scheduleHold(event);
         });
-        tunnelButton.addEventListener('touchstart', event => {
-            touchLongPressActive = true;
-            cancel();
-            longPressTimer = setTimeout(() => {
-                longPressTimer = null;
-                if (!touchLongPressActive) return;
-                openTunnelSwitcherFromHold(event);
-            }, 560);
-        }, { passive: false });
-        ['touchend', 'touchcancel', 'touchmove'].forEach(eventName => {
-            tunnelButton.addEventListener(eventName, () => {
-                touchLongPressActive = false;
-                cancel();
-            }, { passive: true });
-        });
+        tunnelButton.addEventListener('pointermove', cancelIfMoved);
+        if (!window.PointerEvent) {
+            tunnelButton.addEventListener('touchstart', scheduleHold, { passive: true });
+            tunnelButton.addEventListener('touchmove', cancelIfMoved, { passive: true });
+            ['touchend', 'touchcancel'].forEach(eventName => {
+                tunnelButton.addEventListener(eventName, cancel, { passive: true });
+            });
+        }
         tunnelButton.addEventListener('click', event => {
             if (!suppressNextClick) return;
             event.preventDefault();
             event.stopImmediatePropagation();
             suppressNextClick = false;
         }, true);
-        ['pointerup', 'pointercancel', 'pointerleave', 'pointermove'].forEach(eventName => {
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(eventName => {
             tunnelButton.addEventListener(eventName, cancel);
         });
     }

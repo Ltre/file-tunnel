@@ -1,5 +1,7 @@
 (function attachDrop2TunnelCacheStore(global) {
     const OPFS_MIN_SIZE = 16 * 1024 * 1024;
+    const CACHE_WORKER_TIMEOUT_MS = 12000;
+    const CACHE_WORKER_WRITE_TIMEOUT_MS = 5000;
 
     function dataSize(data) {
         if (!data) return 0;
@@ -90,7 +92,7 @@
                 transferId: this.transferId,
                 offset,
                 chunk: buffer
-            }, [buffer]);
+            }, [buffer], CACHE_WORKER_WRITE_TIMEOUT_MS);
             this.receivedSize = Math.max(this.receivedSize, offset + buffer.byteLength);
             return { driver: this.driver, written: this.receivedSize };
         }
@@ -147,14 +149,30 @@
             else pending.resolve(message);
         }
 
-        callWorker(type, payload = {}, transfer = []) {
+        callWorker(type, payload = {}, transfer = [], timeoutMs = CACHE_WORKER_TIMEOUT_MS) {
             if (!this.worker) return Promise.reject(new Error('cache-worker-unavailable'));
             const id = ++this.sequence;
             return new Promise((resolve, reject) => {
-                this.pending.set(id, { resolve, reject });
+                const timer = setTimeout(() => {
+                    if (!this.pending.has(id)) return;
+                    this.pending.delete(id);
+                    this.log('cache-worker-timeout', { type, timeoutMs });
+                    reject(new Error(`cache-worker-timeout:${type}`));
+                }, timeoutMs);
+                this.pending.set(id, {
+                    resolve: value => {
+                        clearTimeout(timer);
+                        resolve(value);
+                    },
+                    reject: err => {
+                        clearTimeout(timer);
+                        reject(err);
+                    }
+                });
                 try {
                     this.worker.postMessage({ id, type, ...payload }, transfer);
                 } catch (err) {
+                    clearTimeout(timer);
                     this.pending.delete(id);
                     reject(err);
                 }

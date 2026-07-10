@@ -1,13 +1,14 @@
 (function attachFileAssetTransfer(global) {
     const RELAY_CHUNK_SIZE = 256 * 1024;
-    const P2P_CHUNK_SIZE = 256 * 1024;
-    const P2P_FALLBACK_CHUNK_SIZE = 256 * 1024;
-    const BUFFER_LIMIT = 2 * 1024 * 1024;
-    const BUFFER_LOW_WATER = 512 * 1024;
+    const P2P_CHUNK_SIZE = 128 * 1024;
+    const P2P_FALLBACK_CHUNK_SIZE = 128 * 1024;
+    const BUFFER_LIMIT = 1024 * 1024;
+    const BUFFER_LOW_WATER = 256 * 1024;
     const BUFFER_POLL_MS = 20;
     const BUFFER_WAIT_TIMEOUT = 15000;
     const BUFFER_STALL_TIMEOUT = 15000;
     const P2P_TIMEOUT = 1500;
+    const P2P_FILE_CHANNEL_TIMEOUT = 5000;
     const MAX_CONCURRENT_FULL_DOWNLOADS = 3;
     const MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS = 4;
     const MAX_CONCURRENT_UPLOADS = 2;
@@ -58,6 +59,7 @@
             this.completedUploadKeys = new Map();
             this.rejectedUploadKeys = new Set();
             this.cancelledAssets = new Set();
+            this.cacheWriteFallbackAssets = new Set();
             this.uploadQueueSeq = 0;
             this.requestWatchdogTimer = setInterval(() => this.checkRequestStalls(), REQUEST_WATCHDOG_INTERVAL);
         }
@@ -638,13 +640,24 @@
             const transfer = this.multiSourceTransfers.get(assetId);
             const socket = this.socket();
             if (!transfer || !socket?.connected) return;
-            while (transfer.activeRangeIds.size < MAX_CONCURRENT_RANGES && transfer.queuedRangeIds.length) {
+            const activeProviders = new Set(Array.from(transfer.activeRangeIds)
+                .map(transferId => transfer.ranges.get(transferId)?.providerId)
+                .filter(Boolean));
+            const maxScans = transfer.queuedRangeIds.length;
+            let scanned = 0;
+            while (transfer.activeRangeIds.size < MAX_CONCURRENT_RANGES && transfer.queuedRangeIds.length && scanned < maxScans) {
                 const transferId = transfer.queuedRangeIds.shift();
+                scanned++;
                 const range = transfer.ranges.get(transferId);
                 if (!range || range.completed || range.active) continue;
                 const preferredProviderId = transfer.providers[range.providerCursor % transfer.providers.length];
+                if (transfer.providers.length > 1 && activeProviders.has(preferredProviderId)) {
+                    transfer.queuedRangeIds.push(transferId);
+                    continue;
+                }
                 range.active = true;
                 range.providerId = preferredProviderId;
+                activeProviders.add(preferredProviderId);
                 range.from = null;
                 range.transport = null;
                 range.receivedSize = 0;
@@ -1229,12 +1242,12 @@
                     channelState: channel.readyState,
                     peer: this.peerSnapshot(this.deps.getPeer(from))
                 });
-                if (!await this.waitForChannel(channel, P2P_TIMEOUT)) {
+                if (!await this.waitForChannel(channel, P2P_FILE_CHANNEL_TIMEOUT)) {
                     this.routeLog('p2p-file-channel-timeout', {
                         assetId: asset.id,
                         peerDeviceId: from,
                         requestId,
-                        timeoutMs: P2P_TIMEOUT,
+                        timeoutMs: P2P_FILE_CHANNEL_TIMEOUT,
                         channelState: channel.readyState,
                         peer: this.peerSnapshot(this.deps.getPeer(from))
                     });
@@ -1642,7 +1655,7 @@
                 });
                 return false;
             }
-            const cacheWriterPromise = this.deps.beginCacheWrite
+            const cacheWriterPromise = this.deps.beginCacheWrite && !this.cacheWriteFallbackAssets.has(assetId)
                 ? this.deps.beginCacheWrite({
                     ...asset,
                     sessionId: this.deps.getSessionId(),
@@ -1661,7 +1674,8 @@
                 chunks: [],
                 cacheWriterPromise,
                 receivedSize: 0,
-                pendingChunks: Promise.resolve()
+                pendingChunks: Promise.resolve(),
+                firstChunkLogged: false
             });
             this.resetReceiveTimer(assetId, deviceId);
             this.deps.onProgress(assetId, asset.name, 0, transport === 'p2p' ? 'receiving' : 'receiving-relay');
@@ -1685,9 +1699,35 @@
             if (ArrayBuffer.isView(chunk)) chunk = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
             if (!(chunk instanceof ArrayBuffer)) throw new Error('Invalid file asset chunk');
             const offset = transfer.receivedSize;
+            if (!transfer.firstChunkLogged) {
+                transfer.firstChunkLogged = true;
+                this.routeLog('receiver-first-chunk-received', {
+                    assetId,
+                    assetName: transfer.asset.name,
+                    peerDeviceId: transfer.from,
+                    transport: transfer.transport,
+                    attemptId: transfer.attemptId || attemptId || '',
+                    chunkSize: chunk.byteLength
+                });
+            }
             const writer = transfer.cacheWriterPromise ? await transfer.cacheWriterPromise : null;
             if (writer) {
-                await writer.writeChunk(chunk, offset);
+                try {
+                    await writer.writeChunk(chunk, offset);
+                } catch (err) {
+                    this.log('cache-writer-write-failed-fallback-memory', {
+                        assetId,
+                        attemptId,
+                        offset,
+                        chunkSize: chunk.byteLength,
+                        error: err.message
+                    });
+                    this.cacheWriteFallbackAssets.add(assetId);
+                    writer.abort?.().catch(() => {});
+                    if (offset > 0) throw err;
+                    transfer.cacheWriterPromise = Promise.resolve(null);
+                    transfer.chunks.push(chunk);
+                }
             } else {
                 transfer.chunks.push(chunk);
             }

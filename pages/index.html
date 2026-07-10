@@ -2079,6 +2079,13 @@
             user-select: none;
         }
 
+        #tunnelRemarkDialog .modal,
+        #tunnelRemarkDialog .modal :not(input):not(textarea) {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
         .download-cache-overlay {
             position: fixed;
             inset: 0;
@@ -4293,6 +4300,9 @@
                 border-top: 1px solid #dfe4ee;
                 background: rgba(255, 255, 255, 0.96);
                 box-shadow: 0 -5px 18px rgba(35, 47, 77, 0.1);
+                -webkit-user-select: none;
+                user-select: none;
+                -webkit-touch-callout: none;
             }
 
             .mobile-force-refresh.is-refreshing {
@@ -4316,7 +4326,15 @@
                 -webkit-user-select: none;
                 user-select: none;
                 -webkit-touch-callout: none;
+                -webkit-tap-highlight-color: transparent;
                 touch-action: manipulation;
+            }
+
+            .mobile-workspace-button * {
+                -webkit-user-select: none;
+                user-select: none;
+                -webkit-touch-callout: none;
+                pointer-events: none;
             }
 
             .mobile-workspace-button > span:first-child {
