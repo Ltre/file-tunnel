@@ -1472,6 +1472,16 @@ function initSocket() {
                     messageId: data.message?.id,
                     error: err.message
                 });
+            }).then(() => {
+                const detailsLayer = document.getElementById('transferRecordDetailsLayer');
+                if (detailsLayer?.dataset.messageId === data.message.id) {
+                    showTransferRecordDetails(data.message.id).catch(err => {
+                        historyLog('message-update-detail-refresh-failed', {
+                            messageId: data.message.id,
+                            error: err.message
+                        });
+                    });
+                }
             });
         }
     });
@@ -5811,6 +5821,7 @@ async function showTransferRecordDetails(messageId) {
                         <span>缓存状态：${escapeHtml(entry.cacheStatus)}</span>
                         <span>文件 ID：${escapeHtml(entry.fileInfo.id || '-')}</span>
                     </article>`).join('')}</section>` : ''}
+                ${renderSnsMediaSection(message)}
                 <details class="transfer-record-raw-details"><summary>记录元数据</summary><pre>${escapeHtml(JSON.stringify(message, (key, value) => key === 'data' ? '[binary omitted]' : value, 2))}</pre></details>
             </div>
             <footer class="transfer-record-details-actions">
@@ -5824,10 +5835,120 @@ async function showTransferRecordDetails(messageId) {
         closeTransferRecordDetails();
         await focusTransferRecordById(message.id, { timeoutMs: 5000 });
     });
+    overlay.querySelectorAll('[data-sns-fetch]').forEach(button => {
+        button.addEventListener('click', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            button.disabled = true;
+            button.textContent = '获取中...';
+            try {
+                await requestSnsMediaContent(message.id, button.dataset.snsFetch);
+                await showTransferRecordDetails(message.id);
+            } catch (err) {
+                button.disabled = false;
+                button.textContent = '获取文件内容';
+                showAppToast(`获取SNS媒体失败：${err.message}`);
+            }
+        });
+    });
+    overlay.querySelectorAll('[data-sns-locate]').forEach(button => {
+        button.addEventListener('click', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeTransferRecordDetails();
+            await focusTransferRecordById(button.dataset.snsLocate, { timeoutMs: 8000 });
+        });
+    });
     overlay.addEventListener('click', event => {
         if (event.target === overlay) closeTransferRecordDetails();
     });
     document.body.appendChild(overlay);
+}
+
+function getSnsMediaStatusLabel(item = {}) {
+    if (item.serverState === 'fetching') {
+        const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
+        return `服务器获取中 · ${Math.round(progress)}%`;
+    }
+    if (item.serverState === 'ready') return item.generatedMessageId ? '已生成文件记录' : '已获取到服务器';
+    if (item.serverState === 'failed') return `获取失败：${item.serverError || '未知错误'}`;
+    return '等待获取文件内容';
+}
+
+function renderSnsMediaItemHtml(item = {}) {
+    const canFetch = !item.serverState || item.serverState === 'not_fetched' || item.serverState === 'failed';
+    const isFetching = item.serverState === 'fetching';
+    const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
+    return `
+        <article class="sns-media-item" data-sns-media-item-id="${escapeHtml(item.id || '')}">
+            ${item.coverUrl ? `<img class="sns-media-cover" src="${escapeHtml(item.coverUrl)}" alt="">` : '<div class="sns-media-cover sns-media-cover-empty">SNS</div>'}
+            <div class="sns-media-main">
+                <strong>${escapeHtml(item.title || 'SNS 媒体文件')}</strong>
+                <a href="${escapeHtml(item.mediaUrl || item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.mediaUrl || item.sourceUrl || '')}</a>
+                <span>${escapeHtml(getSnsMediaStatusLabel(item))}</span>
+                ${isFetching ? `<div class="sns-media-progress"><i style="width:${progress}%"></i></div>` : ''}
+                <div class="sns-media-actions">
+                    ${canFetch ? `<button type="button" data-sns-fetch="${escapeHtml(item.id || '')}">获取文件内容</button>` : ''}
+                    ${item.generatedMessageId ? `<button type="button" data-sns-locate="${escapeHtml(item.generatedMessageId)}">定位生成的文件记录</button>` : ''}
+                </div>
+            </div>
+        </article>`;
+}
+
+function renderSnsMediaSection(message = {}) {
+    const items = Array.isArray(message.snsMediaItems) ? message.snsMediaItems.filter(item => item?.id) : [];
+    const sources = Array.isArray(message.snsSources) ? message.snsSources.filter(source => source?.id) : [];
+    if (!items.length && !sources.length) return '';
+    const itemsBySource = new Map();
+    items.forEach(item => {
+        const list = itemsBySource.get(item.sourceId) || [];
+        list.push(item);
+        itemsBySource.set(item.sourceId, list);
+    });
+    const renderedSources = sources.map(source => {
+        const sourceItems = itemsBySource.get(source.id) || [];
+        const isCollection = source.sourceType === 'collection' || sourceItems.length > 1;
+        const body = sourceItems.map(renderSnsMediaItemHtml).join('') ||
+            `<p class="sns-media-empty">${source.parseStatus === 'failed' ? `解析失败：${escapeHtml(source.parseError || '')}` : '正在识别媒体文件...'}</p>`;
+        if (!isCollection) return body;
+        return `
+            <details class="sns-media-source" open>
+                <summary>${escapeHtml(source.title || source.sourceUrl || 'SNS 列表')}</summary>
+                ${body}
+            </details>`;
+    }).join('');
+    const orphanItems = items
+        .filter(item => !sources.some(source => source.id === item.sourceId))
+        .map(renderSnsMediaItemHtml)
+        .join('');
+    return `
+        <section class="transfer-record-details-sns">
+            <h3>SNS媒体文件</h3>
+            ${renderedSources}${orphanItems}
+        </section>`;
+}
+
+function emitSocketWithAck(eventName, payload, timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+        if (!state.socket?.connected) return reject(new Error('socket-not-connected'));
+        state.socket.timeout(timeoutMs).emit(eventName, payload, (err, response) => {
+            if (err) return reject(err);
+            resolve(response);
+        });
+    });
+}
+
+async function requestSnsMediaContent(messageId, mediaItemId) {
+    if (!state.socket?.connected) throw new Error('socket-not-connected');
+    showAppToast('已开始获取SNS媒体文件内容');
+    const result = await emitSocketWithAck('sns-media-fetch', {
+        sessionId: state.sessionId,
+        messageId,
+        mediaItemId
+    }, 10000);
+    if (!result?.ok) throw new Error(result?.error || 'sns-media-fetch-failed');
+    showAppToast('SNS媒体文件获取任务已启动');
+    return result.item;
 }
 
 function renderMessageRecordActions(messageEl, message) {

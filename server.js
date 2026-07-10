@@ -22,6 +22,7 @@ const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
 const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
+const SNS_MEDIA_WORK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-work');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const SNS_COOKIE_FILES = Object.freeze({
@@ -341,10 +342,30 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
     try {
         await ensureTelegramServerAssetFile(asset);
         const stat = fs.statSync(asset.path);
+        const totalSize = stat.size;
+        let start = 0;
+        let end = Math.max(0, totalSize - 1);
+        let statusCode = 200;
+        const range = String(req.headers.range || '');
+        if (range) {
+            const match = range.match(/^bytes=(\d*)-(\d*)$/);
+            if (match) {
+                if (match[1]) start = Math.min(Number(match[1]) || 0, end);
+                if (match[2]) end = Math.min(Number(match[2]) || end, totalSize - 1);
+                if (start > end || start >= totalSize) {
+                    res.setHeader('Content-Range', `bytes */${totalSize}`);
+                    return res.status(416).end();
+                }
+                statusCode = 206;
+                res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+            }
+        }
         res.setHeader('Cache-Control', 'private, no-store');
         res.setHeader('Content-Type', asset.type || 'application/octet-stream');
-        res.setHeader('Content-Length', String(stat.size));
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Length', String(end - start + 1));
         res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
+        res.status(statusCode);
         telegramAssetReaders.set(assetId, (telegramAssetReaders.get(assetId) || 0) + 1);
         let released = false;
         const release = completed => {
@@ -357,7 +378,7 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
         };
         res.once('finish', () => release(true));
         res.once('close', () => release(res.writableFinished));
-        fs.createReadStream(asset.path).on('error', err => {
+        fs.createReadStream(asset.path, { start, end }).on('error', err => {
             release(false);
             if (!res.headersSent) res.status(500).json({ error: 'Asset read failed' });
             else res.destroy(err);
@@ -1096,6 +1117,7 @@ const telegramAwaitingTunnelCode = new Set();
 const telegramChatLanguages = new Map();
 const telegramAssetDownloads = new Map();
 const telegramAssetReaders = new Map();
+const snsMediaTasks = new Map();
 
 const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
     read: true,
@@ -1475,6 +1497,10 @@ function persistTelegramServerAsset(asset) {
         size: asset.size,
         sessionId: asset.sessionId,
         createdAt: asset.createdAt,
+        source: sanitizeString(asset.source || '', 40),
+        sourceUrl: sanitizeString(asset.sourceUrl || '', 1000),
+        sourceMessageId: sanitizeString(asset.sourceMessageId || '', 80),
+        snsMediaItemId: sanitizeString(asset.snsMediaItemId || '', 80),
         fileId: asset.fileId || '',
         fileUniqueId: asset.fileUniqueId || '',
         fileIdUpdatedAt: Number(asset.fileIdUpdatedAt) || 0,
@@ -1506,6 +1532,10 @@ function resolveTelegramServerAsset(assetId) {
         size: Number(metadata.size) || stat?.size || 0,
         sessionId: isValidSessionId(metadata.sessionId) ? metadata.sessionId : '',
         createdAt: Number(metadata.createdAt) || stat?.birthtimeMs || stat?.mtimeMs || Date.now(),
+        source: sanitizeString(metadata.source || '', 40),
+        sourceUrl: sanitizeString(metadata.sourceUrl || '', 1000),
+        sourceMessageId: sanitizeString(metadata.sourceMessageId || '', 80),
+        snsMediaItemId: sanitizeString(metadata.snsMediaItemId || '', 80),
         fileId: typeof metadata.fileId === 'string' ? metadata.fileId : '',
         fileUniqueId: typeof metadata.fileUniqueId === 'string' ? metadata.fileUniqueId : '',
         fileIdUpdatedAt: Number(metadata.fileIdUpdatedAt) || 0,
@@ -1639,21 +1669,67 @@ function telegramTextToHtml(text, entities = []) {
     return html;
 }
 
-function extractSupportedSocialUrl(text = '') {
-    const urls = String(text || '').match(/https?:\/\/[^\s<>"']+/gi) || [];
-    return urls.find(url => /(?:youtube\.com|youtu\.be|music\.youtube\.com|tiktok\.com|facebook\.com|fb\.watch|instagram\.com|threads\.net|twitter\.com|x\.com|line\.me)\b/i.test(url)) || '';
+function normalizeSocialUrl(url = '') {
+    return String(url || '')
+        .trim()
+        .replace(/[)\].,，。!?！？;；]+$/g, '');
 }
 
-function runYtDlpJson(url) {
+function isSupportedSocialUrl(url = '') {
+    return /(?:youtube\.com|youtu\.be|music\.youtube\.com|tiktok\.com|facebook\.com|fb\.watch|instagram\.com|threads\.net|twitter\.com|x\.com|line\.me)\b/i.test(url);
+}
+
+function extractSupportedSocialUrls(text = '') {
+    const urls = String(text || '').match(/https?:\/\/[^\s<>"']+/gi) || [];
+    const seen = new Set();
+    return urls
+        .map(normalizeSocialUrl)
+        .filter(url => {
+            if (!url || !isSupportedSocialUrl(url)) return false;
+            const key = url.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .slice(0, 20);
+}
+
+function extractSupportedSocialUrl(text = '') {
+    return extractSupportedSocialUrls(text)[0] || '';
+}
+
+function getSocialPlatform(url = '') {
+    const raw = String(url || '');
+    if (/music\.youtube\.com/i.test(raw)) return 'ytmusic';
+    if (/(?:youtube\.com|youtu\.be)/i.test(raw)) return 'youtube';
+    if (/tiktok\.com/i.test(raw)) return 'tiktok';
+    if (/(?:facebook\.com|fb\.watch)/i.test(raw)) return 'facebook';
+    if (/instagram\.com/i.test(raw)) return 'instagram';
+    if (/threads\.net/i.test(raw)) return 'threads';
+    if (/line\.me/i.test(raw)) return 'line';
+    if (/twitter\.com/i.test(raw)) return 'twitter';
+    if (/x\.com/i.test(raw)) return 'x';
+    return 'sns';
+}
+
+function createStableSnsId(...parts) {
+    return crypto.createHash('sha1')
+        .update(parts.map(part => String(part || '')).join('\n'))
+        .digest('base64url')
+        .slice(0, 18);
+}
+
+function runYtDlpJson(url, options = {}) {
     return new Promise((resolve, reject) => {
         const command = process.env.YT_DLP_BIN || 'yt-dlp';
         const args = [
             '--dump-single-json',
             '--skip-download',
-            '--no-playlist',
             '--no-cache-dir',
-            url
         ];
+        if (options.flatPlaylist === true) args.push('--flat-playlist');
+        if (options.noPlaylist !== false) args.push('--no-playlist');
+        args.push(url);
         const cookiePath = getSnsCookieFileForUrl(url);
         if (cookiePath && fs.existsSync(cookiePath)) {
             try {
@@ -1693,6 +1769,127 @@ function runYtDlpJson(url) {
     });
 }
 
+function getYtDlpCookieArgs(url) {
+    const cookiePath = getSnsCookieFileForUrl(url);
+    if (!cookiePath || !fs.existsSync(cookiePath)) return [];
+    try {
+        if (fs.statSync(cookiePath).size > 0) return ['--cookies', cookiePath];
+    } catch (_) {}
+    return [];
+}
+
+function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
+    let mediaUrl = normalizeSocialUrl(meta?.webpage_url || meta?.original_url || meta?.url || source.sourceUrl);
+    if (mediaUrl && !/^https?:\/\//i.test(mediaUrl) && /(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(source.sourceUrl)) {
+        mediaUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(mediaUrl)}`;
+    }
+    const mediaId = createStableSnsId(messageId, source.id, mediaUrl, mediaIndex);
+    return {
+        id: mediaId,
+        sourceId: source.id,
+        messageId,
+        sourceUrl: source.sourceUrl,
+        mediaUrl,
+        title: sanitizeString(meta?.title || meta?.fulltitle || source.title || 'SNS 媒体文件', 240),
+        coverUrl: sanitizeString(meta?.thumbnail || meta?.thumbnails?.slice(-1)?.[0]?.url || source.coverUrl || '', 1000),
+        duration: Number(meta?.duration) || 0,
+        platform: getSocialPlatform(source.sourceUrl),
+        mediaIndex,
+        serverState: 'not_fetched',
+        serverProgress: 0,
+        serverAssetId: '',
+        generatedMessageId: '',
+        serverError: ''
+    };
+}
+
+async function buildTelegramSnsMetadata(rawText, messageId) {
+    const urls = extractSupportedSocialUrls(rawText);
+    if (!urls.length) return { sources: [], items: [] };
+    const sources = [];
+    const items = [];
+    for (let sourceOrder = 0; sourceOrder < urls.length; sourceOrder++) {
+        const sourceUrl = urls[sourceOrder];
+        const source = {
+            id: createStableSnsId(messageId, sourceUrl, sourceOrder),
+            messageId,
+            sourceUrl,
+            sourceType: 'single',
+            title: sourceUrl,
+            coverUrl: '',
+            sourceOrder,
+            parseStatus: 'pending',
+            parseError: '',
+            mediaItemIds: []
+        };
+        try {
+            const meta = await runYtDlpJson(sourceUrl, { flatPlaylist: true, noPlaylist: false });
+            const entries = Array.isArray(meta?.entries) ? meta.entries.filter(Boolean).slice(0, 100) : [];
+            source.title = sanitizeString(meta?.title || meta?.fulltitle || sourceUrl, 240);
+            source.coverUrl = sanitizeString(meta?.thumbnail || meta?.thumbnails?.slice(-1)?.[0]?.url || '', 1000);
+            source.sourceType = entries.length > 1 ? 'collection' : 'single';
+            const mediaMetas = entries.length > 1 ? entries : [meta];
+            mediaMetas.forEach((entry, mediaIndex) => {
+                const item = buildSnsMediaItemFromMeta(messageId, source, entry, mediaIndex);
+                item.sourceType = source.sourceType;
+                source.mediaItemIds.push(item.id);
+                items.push(item);
+            });
+            source.parseStatus = 'ready';
+        } catch (err) {
+            source.parseStatus = 'failed';
+            source.parseError = sanitizeString(err.message || 'sns-parse-failed', 240);
+        }
+        sources.push(source);
+    }
+    return { sources, items };
+}
+
+function createTelegramSnsPlaceholderMetadata(rawText, messageId) {
+    const urls = extractSupportedSocialUrls(rawText);
+    return {
+        sources: urls.map((sourceUrl, sourceOrder) => ({
+            id: createStableSnsId(messageId, sourceUrl, sourceOrder),
+            messageId,
+            sourceUrl,
+            sourceType: 'single',
+            title: sourceUrl,
+            coverUrl: '',
+            sourceOrder,
+            parseStatus: 'pending',
+            parseError: '',
+            mediaItemIds: []
+        })),
+        items: []
+    };
+}
+
+function queueTelegramSnsMetadataScan(sessionId, messageId, rawText) {
+    if (!extractSupportedSocialUrls(rawText).length) return;
+    setTimeout(async () => {
+        try {
+            const session = sessions.get(sessionId);
+            const entry = getHistoryMessageEntry(session, messageId);
+            if (!session || !entry?.message) return;
+            const metadata = await buildTelegramSnsMetadata(rawText, messageId);
+            entry.message.snsSources = metadata.sources;
+            entry.message.snsMediaItems = metadata.items;
+            replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parsed');
+        } catch (err) {
+            console.warn('telegram sns metadata scan failed:', err.message);
+            const session = sessions.get(sessionId);
+            const entry = getHistoryMessageEntry(session, messageId);
+            if (!session || !entry?.message || !Array.isArray(entry.message.snsSources)) return;
+            entry.message.snsSources = entry.message.snsSources.map(source => ({
+                ...source,
+                parseStatus: 'failed',
+                parseError: sanitizeString(err.message || 'sns-parse-failed', 240)
+            }));
+            replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parse-failed');
+        }
+    }, 10);
+}
+
 async function buildSocialLinkRemark(text) {
     const sourceUrl = extractSupportedSocialUrl(text);
     if (!sourceUrl) return null;
@@ -1707,16 +1904,7 @@ async function buildSocialLinkRemark(text) {
 
 async function buildTelegramRemarkWithSocialMetadata(rawRemark) {
     const remark = String(rawRemark || '').trim();
-    if (!extractSupportedSocialUrl(remark)) return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
-    try {
-        const socialRemark = await buildSocialLinkRemark(remark);
-        if (!socialRemark) return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
-        if (socialRemark === remark || socialRemark.includes(remark)) return socialRemark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
-        return `${remark}\n\n${socialRemark}`.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
-    } catch (err) {
-        console.warn('telegram social remark failed:', err.message);
-        return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
-    }
+    return remark.slice(0, TELEGRAM_REMARK_MAX_LENGTH);
 }
 
 function getTelegramFileFromMessage(message = {}) {
@@ -2148,9 +2336,11 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
     };
     persistTelegramServerAsset(asset);
     const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const messageId = crypto.randomUUID();
     const messageRemark = await buildTelegramRemarkWithSocialMetadata(telegramFile.remark);
+    const snsMetadata = createTelegramSnsPlaceholderMetadata(telegramFile.remark, messageId);
     const message = {
-        id: crypto.randomUUID(),
+        id: messageId,
         type: 'file',
         fileInfo: {
             id: assetId,
@@ -2173,7 +2363,9 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
         sessionId,
-        remark: messageRemark
+        remark: messageRemark,
+        snsSources: snsMetadata.sources,
+        snsMediaItems: snsMetadata.items
     };
     addToSessionHistory(sessionId, session, message, {
         fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
@@ -2182,6 +2374,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
     session.lastActivity = Date.now();
     emitToReadableSessionDevices(session, 'message', { message });
     scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-file', 300);
+    queueTelegramSnsMetadataScan(sessionId, messageId, telegramFile.remark);
     await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}：${asset.name}`);
     historyLog('telegram-file-published', {
         sessionId,
@@ -2240,9 +2433,11 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
     }
     if (!fileInfos.length) return false;
     const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const messageId = crypto.randomUUID();
     const messageRemark = await buildTelegramRemarkWithSocialMetadata(remark);
+    const snsMetadata = createTelegramSnsPlaceholderMetadata(remark, messageId);
     const message = {
-        id: crypto.randomUUID(),
+        id: messageId,
         type: 'collection',
         collection: {
             id: crypto.randomUUID(),
@@ -2255,12 +2450,15 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
         sender: TELEGRAM_BOT_DEVICE_ID,
         senderName: 'Telegram Bot',
         sessionId,
-        remark: messageRemark
+        remark: messageRemark,
+        snsSources: snsMetadata.sources,
+        snsMediaItems: snsMetadata.items
     };
     addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'telegram-bot-album' });
     session.lastActivity = Date.now();
     emitToReadableSessionDevices(session, 'message', { message });
     scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-album', 300);
+    queueTelegramSnsMetadataScan(sessionId, messageId, remark);
     await telegramSendMessage(chatId, `已将 ${fileInfos.length} 个媒体文件以合辑发送到隧道 ${shortCode}。`, telegramBoundKeyboard(shortCode));
     return true;
 }
@@ -2285,6 +2483,11 @@ async function publishTelegramTextToTunnel(chatId, shortCode, textPayload) {
         senderName: 'Telegram Bot',
         sessionId
     };
+    const snsMetadata = createTelegramSnsPlaceholderMetadata(text, message.id);
+    if (snsMetadata.sources.length || snsMetadata.items.length) {
+        message.snsSources = snsMetadata.sources;
+        message.snsMediaItems = snsMetadata.items;
+    }
     if (isRich) {
         message.content = telegramTextToHtml(text, richEntities);
     } else {
@@ -2298,6 +2501,7 @@ async function publishTelegramTextToTunnel(chatId, shortCode, textPayload) {
     if (historyResult.stored) {
         emitToReadableSessionDevices(session, 'message', { message });
         scheduleSessionHistoryBroadcast(sessionId, 'telegram-bot-text', 300);
+        queueTelegramSnsMetadataScan(sessionId, message.id, text);
     }
     await telegramSendMessage(chatId, `已发送到隧道 ${shortCode}。`);
     historyLog('telegram-text-published', {
@@ -2308,6 +2512,253 @@ async function publishTelegramTextToTunnel(chatId, shortCode, textPayload) {
         historyResult
     });
     return true;
+}
+
+function getHistoryMessageEntry(session, messageId) {
+    if (!session || !messageId) return null;
+    return session.history.find(entry => entry.message?.id === messageId) || null;
+}
+
+function replaceHistoryMessage(sessionId, session, message, reason = 'message-updated') {
+    const historyIndex = session.history.findIndex(entry => entry.message?.id === message.id);
+    if (historyIndex < 0) return false;
+    const historyMessage = createHistoryMessage(message);
+    const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
+    const previous = session.history[historyIndex];
+    session.history[historyIndex] = { message: historyMessage, size };
+    session.historySize = Math.max(0, session.historySize - previous.size + size);
+    session.lastActivity = Date.now();
+    emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage });
+    scheduleSessionHistoryBroadcast(sessionId, reason, 500);
+    return true;
+}
+
+function updateSnsMediaItem(sessionId, messageId, mediaItemId, patch, reason = 'sns-media-updated') {
+    const session = sessions.get(sessionId);
+    const entry = getHistoryMessageEntry(session, messageId);
+    const message = entry?.message;
+    if (!message || !Array.isArray(message.snsMediaItems)) return null;
+    const index = message.snsMediaItems.findIndex(item => item?.id === mediaItemId);
+    if (index < 0) return null;
+    const nextItem = {
+        ...message.snsMediaItems[index],
+        ...patch,
+        updatedAt: Date.now()
+    };
+    message.snsMediaItems[index] = nextItem;
+    replaceHistoryMessage(sessionId, session, message, reason);
+    return nextItem;
+}
+
+function getMimeTypeFromFileName(fileName = '') {
+    const ext = path.extname(fileName).slice(1).toLowerCase();
+    if (['jpg', 'jpeg'].includes(ext)) return 'image/jpeg';
+    if (ext === 'png') return 'image/png';
+    if (ext === 'gif') return 'image/gif';
+    if (ext === 'webp') return 'image/webp';
+    if (ext === 'mp4') return 'video/mp4';
+    if (ext === 'webm') return 'video/webm';
+    if (ext === 'mov') return 'video/quicktime';
+    if (ext === 'mp3') return 'audio/mpeg';
+    if (ext === 'm4a') return 'audio/mp4';
+    if (ext === 'aac') return 'audio/aac';
+    if (ext === 'ogg') return 'audio/ogg';
+    if (ext === 'flac') return 'audio/flac';
+    return 'application/octet-stream';
+}
+
+function findDownloadedSnsFile(assetId) {
+    if (!fs.existsSync(SNS_MEDIA_WORK_DIR)) return '';
+    const prefix = `${assetId}.`;
+    const entries = fs.readdirSync(SNS_MEDIA_WORK_DIR)
+        .filter(name => name.startsWith(prefix) && !name.endsWith('.part') && !name.endsWith('.ytdl'))
+        .map(name => path.join(SNS_MEDIA_WORK_DIR, name))
+        .filter(filePath => {
+            try { return fs.statSync(filePath).isFile(); } catch (_) { return false; }
+        })
+        .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+    return entries[0] || '';
+}
+
+function runYtDlpDownload(url, assetId, onProgress = () => {}) {
+    return new Promise((resolve, reject) => {
+        fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
+        const command = process.env.YT_DLP_BIN || 'yt-dlp';
+        const outputTemplate = path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`);
+        const args = [
+            '--newline',
+            '--no-playlist',
+            '--no-cache-dir',
+            '-f',
+            'bv*+ba/best',
+            '--merge-output-format',
+            'mp4',
+            '-o',
+            outputTemplate,
+            ...getYtDlpCookieArgs(url),
+            url
+        ];
+        const child = spawn(command, args, {
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env }
+        });
+        let stderr = '';
+        let lastProgressAt = 0;
+        const parseProgress = chunk => {
+            const text = String(chunk || '');
+            const percentMatch = text.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
+            if (!percentMatch) return;
+            const now = Date.now();
+            if (now - lastProgressAt < 900 && Number(percentMatch[1]) < 99.9) return;
+            lastProgressAt = now;
+            const sizeMatch = text.match(/of\s+~?\s*([0-9.]+\w+i?B)/i);
+            const speedMatch = text.match(/at\s+([0-9.]+\w+i?B\/s)/i);
+            const etaMatch = text.match(/ETA\s+([0-9:]+)/i);
+            onProgress({
+                percent: Math.max(0, Math.min(100, Number(percentMatch[1]) || 0)),
+                totalText: sizeMatch?.[1] || '',
+                speedText: speedMatch?.[1] || '',
+                etaText: etaMatch?.[1] || ''
+            });
+        };
+        child.stdout.setEncoding('utf8');
+        child.stderr.setEncoding('utf8');
+        child.stdout.on('data', parseProgress);
+        child.stderr.on('data', chunk => {
+            stderr += chunk;
+            parseProgress(chunk);
+        });
+        child.on('error', err => {
+            reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
+        });
+        child.on('close', code => {
+            if (code !== 0) return reject(new Error(stderr.trim().slice(-500) || `yt-dlp-download-${code}`));
+            const filePath = findDownloadedSnsFile(assetId);
+            if (!filePath) return reject(new Error('yt-dlp-output-missing'));
+            resolve(filePath);
+        });
+    });
+}
+
+async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
+    const session = sessions.get(sessionId);
+    const entry = getHistoryMessageEntry(session, messageId);
+    const message = entry?.message;
+    const item = message?.snsMediaItems?.find(candidate => candidate?.id === mediaItemId);
+    if (!session || !message || !item) throw new Error('sns-media-not-found');
+    if (item.generatedMessageId && item.serverAssetId) return item;
+
+    const taskKey = `${sessionId}:${messageId}:${mediaItemId}`;
+    if (snsMediaTasks.has(taskKey)) return snsMediaTasks.get(taskKey);
+
+    const task = (async () => {
+        const assetId = createServerAssetId();
+        let lastStateEmit = 0;
+        const updateItem = (patch, reason = 'sns-media-status') => {
+            const now = Date.now();
+            if (reason === 'sns-media-progress' && now - lastStateEmit < 1200) return item;
+            lastStateEmit = now;
+            return updateSnsMediaItem(sessionId, messageId, mediaItemId, patch, reason) || item;
+        };
+
+        try {
+            updateItem({
+                serverState: 'fetching',
+                serverProgress: 0,
+                serverError: '',
+                serverAssetId: '',
+                generatedMessageId: ''
+            }, 'sns-media-fetch-started');
+
+            const downloadedPath = await runYtDlpDownload(item.mediaUrl || item.sourceUrl, assetId, progress => {
+                updateItem({
+                    serverState: 'fetching',
+                    serverProgress: progress.percent,
+                    serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
+                }, 'sns-media-progress');
+            });
+            const stat = fs.statSync(downloadedPath);
+            const ext = path.extname(downloadedPath) || '.mp4';
+            const safeTitle = sanitizeString(item.title || 'sns-media', 150).replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'sns-media';
+            const fileName = `${safeTitle}${ext}`;
+            const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+            fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+            try {
+                fs.renameSync(downloadedPath, assetPath);
+            } catch (err) {
+                fs.copyFileSync(downloadedPath, assetPath);
+                try { fs.unlinkSync(downloadedPath); } catch (_) {}
+            }
+
+            const asset = {
+                id: assetId,
+                path: assetPath,
+                name: fileName,
+                type: getMimeTypeFromFileName(fileName),
+                size: stat.size,
+                sessionId,
+                createdAt: Date.now(),
+                source: 'sns',
+                sourceUrl: item.mediaUrl || item.sourceUrl,
+                sourceMessageId: messageId,
+                snsMediaItemId: mediaItemId
+            };
+            persistTelegramServerAsset(asset);
+            const generatedMessage = {
+                id: crypto.randomUUID(),
+                type: 'file',
+                fileInfo: {
+                    id: asset.id,
+                    name: asset.name,
+                    size: asset.size,
+                    type: asset.type,
+                    timestamp: Date.now(),
+                    sender: TELEGRAM_BOT_DEVICE_ID,
+                    senderName: 'SNS 媒体文件',
+                    ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
+                    isAsset: false,
+                    isServerAsset: true,
+                    serverAssetUrl: `/api/server-assets/${asset.id}`,
+                    remark: String(item.mediaUrl || item.sourceUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH),
+                    sourceMessageId: messageId,
+                    snsMediaItemId: mediaItemId,
+                    snsSourceUrl: item.sourceUrl
+                },
+                timestamp: Date.now(),
+                sender: TELEGRAM_BOT_DEVICE_ID,
+                senderName: 'SNS 媒体文件',
+                sessionId,
+                remark: String(item.mediaUrl || item.sourceUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH)
+            };
+            addToSessionHistory(sessionId, session, generatedMessage, {
+                fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
+                source: 'sns-media-download'
+            });
+            session.lastActivity = Date.now();
+            emitToReadableSessionDevices(session, 'message', { message: generatedMessage });
+            const finalItem = updateItem({
+                serverState: 'ready',
+                serverProgress: 100,
+                serverProgressText: '',
+                serverAssetId: asset.id,
+                generatedMessageId: generatedMessage.id,
+                serverError: ''
+            }, 'sns-media-ready');
+            scheduleSessionHistoryBroadcast(sessionId, 'sns-media-file-generated', 300);
+            return finalItem;
+        } catch (err) {
+            const failedItem = updateItem({
+                serverState: 'failed',
+                serverError: sanitizeString(err.message || 'sns-media-download-failed', 240)
+            }, 'sns-media-failed');
+            throw Object.assign(err, { snsMediaItem: failedItem });
+        }
+    })().finally(() => {
+        snsMediaTasks.delete(taskKey);
+    });
+    snsMediaTasks.set(taskKey, task);
+    return task;
 }
 
 function isValidMagnetAssetPayload(asset, fileId) {
@@ -3658,6 +4109,37 @@ io.on('connection', (socket) => {
             });
         } catch (err) {
             console.error('update-message error:', err);
+        }
+    });
+
+    socket.on('sns-media-fetch', async (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const { sessionId, messageId, mediaItemId } = data || {};
+            const session = sessions.get(sessionId);
+            if (sessionId !== currentSession || !session?.devices.has(currentDevice)) {
+                return respond({ ok: false, error: 'invalid-session' });
+            }
+            if (!canUseTunnelCapability(session, currentDevice, 'read')) {
+                return respond({ ok: false, error: 'permission-denied' });
+            }
+            if (!isValidDeviceId(messageId) || typeof mediaItemId !== 'string' || mediaItemId.length > 80) {
+                return respond({ ok: false, error: 'invalid-sns-media' });
+            }
+            const entry = getHistoryMessageEntry(session, messageId);
+            const item = entry?.message?.snsMediaItems?.find(candidate => candidate?.id === mediaItemId);
+            if (!item) return respond({ ok: false, error: 'sns-media-not-found' });
+            fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId).catch(err => {
+                console.error('sns-media-fetch task error:', err);
+            });
+            respond({ ok: true, item, started: true });
+        } catch (err) {
+            console.error('sns-media-fetch error:', err);
+            respond({
+                ok: false,
+                error: sanitizeString(err.message || 'sns-media-fetch-failed', 240),
+                item: err.snsMediaItem || null
+            });
         }
     });
 

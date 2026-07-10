@@ -1818,12 +1818,29 @@
         .transfer-record-details-summary dd { min-width: 0; margin: 0; color: #35415c; overflow-wrap: anywhere; }
         .transfer-record-details-content,
         .transfer-record-details-files,
+        .transfer-record-details-sns,
         .transfer-record-raw-details { margin-top: 16px; }
         .transfer-record-details-content h3,
-        .transfer-record-details-files h3 { margin: 0 0 9px; color: #34405a; font-size: .92rem; }
+        .transfer-record-details-files h3,
+        .transfer-record-details-sns h3 { margin: 0 0 9px; color: #34405a; font-size: .92rem; }
         .transfer-record-details-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
         .transfer-record-detail-file { display: grid; gap: 4px; padding: 11px 12px; border: 1px solid #e4e8f0; border-radius: 6px; margin-top: 8px; }
         .transfer-record-detail-file span { color: #66728a; font-size: .78rem; overflow-wrap: anywhere; }
+        .sns-media-source { border: 1px solid #e4e8f0; border-radius: 6px; padding: 9px; margin-top: 9px; }
+        .sns-media-source summary { cursor: pointer; color: #34405a; font-weight: 700; }
+        .sns-media-item { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; padding: 11px; border: 1px solid #e4e8f0; border-radius: 6px; margin-top: 8px; background: #fff; }
+        .sns-media-cover { width: 96px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 5px; background: #eef2f8; }
+        .sns-media-cover-empty { display: grid; place-items: center; color: #758197; font-weight: 700; }
+        .sns-media-main { min-width: 0; display: grid; gap: 5px; }
+        .sns-media-main strong { color: #27324a; overflow-wrap: anywhere; }
+        .sns-media-main a,
+        .sns-media-main span { color: #66728a; font-size: .78rem; overflow-wrap: anywhere; }
+        .sns-media-progress { height: 6px; border-radius: 999px; background: #e6ebf3; overflow: hidden; }
+        .sns-media-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #1d8cf8, #18c7a7); }
+        .sns-media-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
+        .sns-media-actions button { min-height: 32px; border: 1px solid #ccd3e2; border-radius: 5px; background: #f8fafc; color: #2e3b56; padding: 0 10px; cursor: pointer; }
+        .sns-media-actions button[data-sns-fetch] { border-color: #1f7ae0; background: #1f7ae0; color: #fff; }
+        .sns-media-empty { margin: 8px 0 0; color: #66728a; font-size: .82rem; }
         .transfer-record-raw-details pre { max-height: 260px; overflow: auto; padding: 12px; background: #f5f7fb; color: #35415c; white-space: pre-wrap; overflow-wrap: anywhere; }
         .transfer-record-details-actions { justify-content: flex-end; border-top: 1px solid #e4e8f0; border-bottom: 0; }
         .transfer-record-details-actions button { min-height: 36px; border: 1px solid #ccd3e2; border-radius: 5px; background: #fff; color: #3e4c69; padding: 0 13px; cursor: pointer; }
@@ -1834,6 +1851,8 @@
             .transfer-record-details-header { padding-top: calc(12px + env(safe-area-inset-top)); }
             .transfer-record-details-summary > div { grid-template-columns: 92px minmax(0, 1fr); }
             .transfer-record-details-actions { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+            .sns-media-item { grid-template-columns: 82px minmax(0, 1fr); gap: 10px; padding: 9px; }
+            .sns-media-cover { width: 82px; }
         }
         
         /* 传输进度 */
