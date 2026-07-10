@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v24';
+const CACHE_NAME = 'instant-tunnel-v25';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -11,6 +11,8 @@ const APP_SHELL = [
     '/device.html',
     '/runtime-config.js',
     '/app.js',
+    '/client/cache-store.js',
+    '/client/cache-store-worker.js',
     '/client/file-assets.js',
     '/client/folder-archive.js',
     '/client/media.js',

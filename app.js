@@ -146,6 +146,7 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 let fileAssetTransfer = null;
+let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
 let mediaController = null;
 let currentMobileWorkspaceView = 'chat';
@@ -369,14 +370,49 @@ function getBinaryDataSize(data) {
 
 function hasCompleteFileCache(storedFile, fileInfo = null) {
     const size = getBinaryDataSize(storedFile?.data);
-    if (size <= 0) return false;
     const expectedSize = Number(fileInfo?.size ?? storedFile?.size);
-    return !Number.isFinite(expectedSize) || expectedSize <= 0 || size === expectedSize;
+    if (size > 0) return !Number.isFinite(expectedSize) || expectedSize <= 0 || size === expectedSize;
+    if (!storedFile?.cacheStoreUnavailable && fileCacheStore?.isCompleteReference?.(storedFile, fileInfo)) return true;
+    const ref = storedFile?.cacheStoreRef;
+    return !storedFile?.cacheStoreUnavailable && Boolean(ref?.complete) &&
+        (!Number.isFinite(expectedSize) || expectedSize <= 0 || Number(ref.size) === expectedSize);
+}
+
+async function initFileCacheStore() {
+    if (!window.createDrop2TunnelCacheStore) return;
+    fileCacheStore = await window.createDrop2TunnelCacheStore({ log: historyLog })
+        .catch(err => {
+            historyLog('cache-store-init-failed', { error: err.message });
+            return null;
+        });
+}
+
+async function materializeCachedFileRecord(storedFile) {
+    if (!storedFile || getBinaryDataSize(storedFile.data) > 0) return storedFile;
+    if (!fileCacheStore?.isCompleteReference?.(storedFile, storedFile)) return storedFile;
+    return fileCacheStore.materialize(storedFile).catch(err => {
+        historyLog('cache-store-materialize-failed', { fileId: storedFile.id, error: err.message });
+        return { ...storedFile, cacheStoreUnavailable: true };
+    });
+}
+
+async function deleteCacheStoreReference(storedFile, reason = 'cache-delete') {
+    if (!storedFile?.cacheStoreRef || !fileCacheStore?.deleteReference) return false;
+    return fileCacheStore.deleteReference(storedFile)
+        .then(deleted => {
+            if (deleted) historyLog('cache-store-reference-deleted', { fileId: storedFile.id, reason });
+            return deleted;
+        })
+        .catch(err => {
+            historyLog('cache-store-reference-delete-failed', { fileId: storedFile.id, reason, error: err.message });
+            return false;
+        });
 }
 
 function getExternalFileSourceState(storedFile, readableFile, fileInfo = null) {
     const hasHandle = Boolean(storedFile?.externalFileHandle?.getFile);
-    const browserDataSize = getBinaryDataSize(storedFile?.data);
+    const browserDataSize = getBinaryDataSize(storedFile?.data) ||
+        (storedFile?.cacheStoreRef?.complete ? Number(storedFile.cacheStoreRef.size) || 0 : 0);
     const hasBrowserCache = hasCompleteFileCache(storedFile, fileInfo);
     const handleReadable = hasHandle && readableFile?.externalFileAvailable === true &&
         hasCompleteFileCache(readableFile, fileInfo);
@@ -531,6 +567,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         await initStorage();
+        await initFileCacheStore();
         registerServiceWorker();
         if (!await initSession()) {
             initLandingNearbyPresence();
@@ -769,6 +806,8 @@ async function saveToStore(storeName, data) {
             data = {
                 ...data,
                 data: existing.data,
+                cacheStoreRef: existing.cacheStoreRef,
+                cacheStorage: existing.cacheStorage,
                 cacheCleared: false,
                 restoreRequested: false,
                 transferInterrupted: false,
@@ -1818,6 +1857,94 @@ function shouldInitiatePeerConnection(deviceId) {
     return state.deviceId.localeCompare(deviceId) < 0;
 }
 
+async function connectToPeerForFileAsset(deviceId) {
+    let pc = state.peers.get(deviceId);
+    console.info('[file-asset-route]', {
+        phase: 'app-connect-peer-for-file-asset-start',
+        peerDeviceId: deviceId,
+        peer: pc ? {
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState
+        } : null
+    });
+    if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed' ||
+        pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed' ||
+        pc.iceConnectionState === 'disconnected')) {
+        pc.close();
+        state.peers.delete(deviceId);
+        pc = null;
+    }
+
+    if (!pc) {
+        pc = await createPeerConnection(deviceId);
+    }
+
+    console.info('[file-asset-route]', {
+        phase: 'app-connect-peer-for-file-asset-return',
+        peerDeviceId: deviceId,
+        peer: {
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState
+        }
+    });
+    if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        return pc;
+    }
+
+    return pc;
+}
+
+async function ensurePeerOfferForFileAsset(deviceId) {
+    const pc = state.peers.get(deviceId);
+    if (!pc) throw new Error('Peer connection missing');
+    console.info('[file-asset-route]', {
+        phase: 'app-ensure-offer-start',
+        peerDeviceId: deviceId,
+        peer: {
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState
+        }
+    });
+    if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-connected', peerDeviceId: deviceId });
+        return pc;
+    }
+    if (pc.signalingState !== 'stable') {
+        console.info('[file-asset-route]', {
+            phase: 'app-ensure-offer-skip-signaling-busy',
+            peerDeviceId: deviceId,
+            signalingState: pc.signalingState
+        });
+        return pc;
+    }
+    const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+        iceRestart: false
+    });
+    await pc.setLocalDescription(offer);
+    state.socket.emit('signal', {
+        to: deviceId,
+        from: state.deviceId,
+        type: 'offer',
+        sdp: offer
+    });
+    historyLog('p2p-file-asset-offer-sent', { peerDeviceId: deviceId });
+    console.info('[file-asset-route]', {
+        phase: 'app-ensure-offer-sent',
+        peerDeviceId: deviceId,
+        signalingState: pc.signalingState,
+        iceGatheringState: pc.iceGatheringState
+    });
+    return pc;
+}
+
 function queueIceCandidate(deviceId, candidate) {
     if (!state.pendingIceCandidates.has(deviceId)) {
         state.pendingIceCandidates.set(deviceId, []);
@@ -2648,9 +2775,13 @@ function initFileAssetTransfer() {
         getSocket: () => state.socket,
         getSessionId: () => state.sessionId,
         getPeer: deviceId => state.peers.get(deviceId),
-        connectPeer: connectToPeer,
+        connectPeer: connectToPeerForFileAsset,
+        ensurePeerOffer: ensurePeerOfferForFileAsset,
         waitForDataChannel,
-        load: async fileId => materializeExternalFileRecord(await getFromStore('files', fileId)),
+        load: async fileId => materializeExternalFileRecord(await materializeCachedFileRecord(await getFromStore('files', fileId))),
+        beginCacheWrite: async file => fileCacheStore?.beginWrite
+            ? fileCacheStore.beginWrite(file)
+            : null,
         store: async file => {
             const existing = await getFromStore('files', file.id).catch(() => null);
             return saveToStore('files', { ...(existing || {}), ...file });
@@ -7130,11 +7261,12 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
         alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
     }
-    if (storedFile?.externalFileHandle && !getBinaryDataSize(storedFile.data)) {
+    if (storedFile?.externalFileHandle && !getBinaryDataSize(storedFile.data) && !storedFile.cacheStoreRef) {
         showAppToast('此文件已是按需读取模式，没有占用浏览器文件缓存');
         return;
     }
-    const { data, ...metadata } = storedFile || {};
+    await deleteCacheStoreReference(storedFile, 'clear-file-cache-by-info');
+    const { data, cacheStoreRef, cacheStorage, ...metadata } = storedFile || {};
     await saveToStore('files', {
         ...metadata,
         id: fileInfo.id,
@@ -9031,7 +9163,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     });
     filePreviewReturnCollectionMessageId = returnCollectionMessageId;
 
-    const persistedFile = await getFromStore('files', fileInfo.id);
+    const persistedFile = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
     let storedFile = persistedFile;
     if (persistedFile?.externalFileHandle) {
         storedFile = await materializeExternalFileRecord(persistedFile, { requestPermission: true });
@@ -9721,7 +9853,7 @@ async function getCachedCollectionEntries(files) {
     const entries = [];
     for (let index = 0; index < files.length; index++) {
         const fileInfo = files[index];
-        const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        const storedFile = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id).catch(() => null));
         if (!hasCompleteFileCache(storedFile, fileInfo)) continue;
         const blob = new Blob([storedFile.data], { type: storedFile.type || fileInfo.type || 'application/octet-stream' });
         entries.push({
@@ -10086,7 +10218,8 @@ async function clearFileCache(messageId) {
         alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
     }
-    const { data, ...metadata } = storedFile || {};
+    await deleteCacheStoreReference(storedFile, 'clear-file-cache');
+    const { data, cacheStoreRef, cacheStorage, ...metadata } = storedFile || {};
     await saveToStore('files', {
         ...metadata,
         id: fileInfo.id,
@@ -10303,6 +10436,8 @@ async function processPendingFileCacheCleanup() {
             if (referencedFileIds.has(fileId)) continue;
             fileAssetTransfer?.cancel(fileId);
             cleanupProgressForDeletedFile(fileId);
+            const storedFile = await getFromStore('files', fileId).catch(() => null);
+            await deleteCacheStoreReference(storedFile, 'pending-file-cleanup');
             await deleteFromStore('files', fileId);
             removeMusicTrackFromQueue(fileId);
             const objectUrl = fileObjectUrls.get(fileId);
@@ -10531,6 +10666,7 @@ async function findGarbageFileCaches() {
 async function clearGarbageFileCaches(files) {
     for (const file of files) {
         fileAssetTransfer?.cancel(file.id);
+        await deleteCacheStoreReference(file, 'garbage-cleanup');
         await deleteFromStore('files', file.id);
         const objectUrl = fileObjectUrls.get(file.id);
         if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -10936,7 +11072,8 @@ async function clearResourceCache(resource) {
     if (!confirm(`仅清除此设备保存的“${resource.name}”内容吗？引用与传输记录会保留。`)) return;
 
     fileAssetTransfer?.cancel(resource.id);
-    const { data, ...metadata } = file;
+    await deleteCacheStoreReference(file, 'resource-cache-clear');
+    const { data, cacheStoreRef, cacheStorage, ...metadata } = file;
     await saveToStore('files', {
         ...metadata,
         id: resource.id,
@@ -15579,7 +15716,7 @@ window.viewRichContent = viewRichContent;
 
 // ==================== 文件下载 ====================
 async function downloadFile(fileId) {
-    let file = await getFromStore('files', fileId);
+    let file = await materializeCachedFileRecord(await getFromStore('files', fileId));
     if (file?.externalFileHandle) {
         file = await materializeExternalFileRecord(file, { requestPermission: true });
     }

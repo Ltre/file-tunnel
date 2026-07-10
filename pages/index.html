@@ -4759,6 +4759,7 @@
             const version = new URLSearchParams(window.location.search).get('_reload');
             const suffix = version ? `?v=${encodeURIComponent(version)}` : '';
             document.write(`<script src="/runtime-config.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/cache-store.js${suffix}"><\/script>`);
             document.write(`<script src="/client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script src="/client/folder-archive.js${suffix}"><\/script>`);
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);
