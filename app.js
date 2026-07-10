@@ -5426,8 +5426,11 @@ async function createCollectionTileHtml(fileInfo, index, total) {
     const externalBadge = externalSourceState.handleReadable
         ? '<span class="external-file-badge collection-external-file-badge" title="内容按需读取自供源设备的本机文件系统">🖴</span>'
         : '';
+    const favoriteBadge = !isMoreTile && await isFileFavorite(fileInfo)
+        ? '<span class="collection-file-favorite-badge" title="单文件收藏">★</span>'
+        : '';
     const fileAttribute = isMoreTile ? 'data-collection-more="true"' : `data-collection-file-id="${escapeHtml(fileInfo.id || '')}"`;
-    return `<div class="collection-preview-tile" ${fileAttribute} role="button" tabindex="0">${body}${externalBadge}${remaining}</div>`;
+    return `<div class="collection-preview-tile" ${fileAttribute} role="button" tabindex="0">${body}${favoriteBadge}${externalBadge}${remaining}</div>`;
 }
 
 async function renderCollectionPreviewHtml(message) {
@@ -5613,7 +5616,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
             <div class="rich-preview" onclick="viewRichContent('${message.id}')">
                 <div class="rich-preview-title">
                     <span>📝</span>
-                    <span>富文本消息</span>
+                    <span>富文本</span>
                 </div>
                 <div class="rich-preview-content ${preview ? '' : 'rich-preview-empty'}">${escapeHtml(previewText)}${preview.length >= 100 ? '...' : ''}</div>
             </div>
@@ -5630,6 +5633,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         </div>
         ${contentHtml}
     `;
+    syncTransferRecordFavoriteBadge(messageEl, message);
     if (fileRecordRemark) {
         const remark = document.createElement('div');
         remark.className = 'collection-remark';
@@ -5733,7 +5737,7 @@ async function copyTransferRecordLink(messageId) {
 function getTransferRecordTypeLabel(message) {
     if (message?.type === 'collection') return '文件合辑';
     if (message?.type === 'file') return '单文件';
-    if (message?.type === 'rich') return '富文本消息';
+    if (message?.type === 'rich') return '富文本';
     if (message?.type === 'text') return '文本消息';
     return message?.type || '未知类型';
 }
@@ -5879,7 +5883,76 @@ async function toggleTransferRecordFavorite(messageId) {
     const favorite = !message.favorite;
     const updated = { ...message, favorite, favoritedAt: favorite ? Date.now() : 0 };
     await updateHistoryMessage(updated);
+    const messageEl = getMessageElement(messageId);
+    if (messageEl) {
+        syncTransferRecordFavoriteBadge(messageEl, updated);
+        renderMessageRecordActions(messageEl, updated);
+    }
     showAppToast(favorite ? '已加入已收藏' : '已取消收藏');
+}
+
+function syncTransferRecordFavoriteBadge(messageEl, message) {
+    if (!messageEl) return;
+    messageEl.querySelector('.message-record-favorite-badge')?.remove();
+    messageEl.classList.toggle('message-record-favorite', message?.favorite === true);
+    if (message?.favorite !== true) return;
+    const header = messageEl.querySelector('.message-header');
+    if (!header) return;
+    const badge = document.createElement('span');
+    badge.className = 'message-record-favorite-badge';
+    badge.textContent = '★';
+    badge.title = '记录收藏';
+    header.appendChild(badge);
+}
+
+async function isFileFavorite(fileInfo = {}) {
+    if (!fileInfo?.id) return false;
+    if (getFavoriteMusicIds().has(fileInfo.id)) return true;
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    return storedFile?.mediaFavorite === true;
+}
+
+async function setSingleFileFavorite(fileInfo, favorite) {
+    if (!fileInfo?.id) return;
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (storedFile?.id) {
+        await saveToStore('files', { ...storedFile, mediaFavorite: Boolean(favorite) });
+    }
+    if (isAudioFileLike(storedFile, fileInfo)) {
+        const ids = getFavoriteMusicIds();
+        if (favorite) ids.add(fileInfo.id);
+        else ids.delete(fileInfo.id);
+        saveFavoriteMusicIds(ids);
+        renderMusicPlayerActions();
+    }
+    await refreshFileFavoriteBadges(fileInfo.id);
+    showAppToast(favorite ? '已加入单文件收藏' : '已取消单文件收藏');
+}
+
+async function toggleSingleFileFavorite(fileInfo) {
+    const favorite = await isFileFavorite(fileInfo);
+    await setSingleFileFavorite(fileInfo, !favorite);
+}
+
+async function refreshFileFavoriteBadges(fileId) {
+    if (!fileId) return;
+    const favorite = await isFileFavorite({ id: fileId });
+    document.querySelectorAll(`.collection-file-card[data-file-id="${CSS.escape(fileId)}"], .collection-preview-tile[data-collection-file-id="${CSS.escape(fileId)}"]`).forEach(card => {
+        syncCollectionFileFavoriteBadge(card, favorite);
+    });
+}
+
+function syncCollectionFileFavoriteBadge(card, favorite) {
+    const target = card?.querySelector?.('.collection-file-thumb') || card;
+    if (!target) return;
+    target.querySelector('.collection-file-favorite-badge')?.remove();
+    card.classList.toggle('collection-file-card--favorite', favorite === true);
+    if (!favorite) return;
+    const badge = document.createElement('span');
+    badge.className = 'collection-file-favorite-badge';
+    badge.textContent = '★';
+    badge.title = '单文件收藏';
+    target.appendChild(badge);
 }
 
 function openMessageRecordActionMenu(trigger, menuItems) {
@@ -6713,6 +6786,7 @@ async function updateCollectionMessageElement(message) {
     preserveChatScroll(() => {
         if (previousBubble) previousBubble.replaceWith(nextBubble);
     });
+    syncTransferRecordFavoriteBadge(messageEl, message);
 }
 
 async function applyCollectionPreviewIncrementalUpdate(previousMessage, nextMessage) {
@@ -7023,6 +7097,7 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
 
 async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false, handleSourceOnly = false, handleReadable = false }) {
     const isCollectionFile = Boolean(collectionMessageId);
+    const fileFavorite = await isFileFavorite(fileInfo);
     const deleteTitle = isCollectionFile ? '仅从合辑中删除此文件，并清理其缓存' : '从会话中删除此记录及所有设备的文件缓存';
     const cacheAction = handleReadable || handleSourceOnly
         ? null
@@ -7038,6 +7113,14 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
                 });
         });
     setFilePreviewActions([
+        createFileActionButton(fileFavorite ? '★' : '☆', fileFavorite ? '取消收藏' : '收藏', () => {
+            toggleSingleFileFavorite(fileInfo)
+                .then(() => renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId, hasLocalData, cacheCleared, restoreRequested, handleSourceOnly, handleReadable }))
+                .catch(err => {
+                    alert(`收藏状态保存失败: ${err.message}`);
+                    historyLog('file-favorite-toggle-failed', { messageId, collectionMessageId, fileId: fileInfo.id, error: err.message });
+                });
+        }),
         createFileActionButton('📋', '查看文件名、大小、来源设备等详细信息', () => {
             showFileDetailsForInfo(fileInfo, { messageId, sender: ownerDeviceId, senderName: '' })
                 .catch(err => historyLog('file-details-open-failed', { messageId, fileId: fileInfo.id, error: err.message }));
@@ -7217,6 +7300,7 @@ async function setMusicTrackFavorite(track, favorite) {
     if (storedFile?.id) {
         await saveToStore('files', { ...storedFile, mediaFavorite: Boolean(favorite) });
     }
+    await refreshFileFavoriteBadges(track.id);
     renderMusicPlayerActions();
 }
 
@@ -9080,6 +9164,15 @@ function createFullscreenMediaElement(item) {
     return null;
 }
 
+function getMediaFullscreenGroupCounter() {
+    const item = mediaFullscreenItems[mediaFullscreenIndex];
+    if (!item?.messageId) return '';
+    const group = mediaFullscreenItems.filter(entry => entry.messageId === item.messageId);
+    if (group.length <= 1) return '';
+    const groupIndex = group.findIndex(entry => entry.fileInfo?.id === item.fileInfo?.id);
+    return `${groupIndex >= 0 ? groupIndex + 1 : 1} / ${group.length}`;
+}
+
 function renderMediaFullscreenItem() {
     const overlay = document.getElementById('mediaFullscreenViewer');
     const content = document.getElementById('mediaFullscreenContent');
@@ -9099,7 +9192,7 @@ function renderMediaFullscreenItem() {
         return;
     }
     title.textContent = item.fileInfo.name || '文件预览';
-    counter.textContent = mediaFullscreenItems.length > 1 ? `${mediaFullscreenIndex + 1} / ${mediaFullscreenItems.length}` : '';
+    counter.textContent = getMediaFullscreenGroupCounter();
     prevButton.hidden = mediaFullscreenItems.length <= 1;
     nextButton.hidden = mediaFullscreenItems.length <= 1;
 
@@ -9390,6 +9483,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     size.className = 'collection-file-size';
     size.textContent = formatFileSize(Number(fileInfo.size) || 0);
     card.append(thumb, name, size);
+    syncCollectionFileFavoriteBadge(card, await isFileFavorite(fileInfo));
     if (externalSourceState.handleReadable) {
         const badge = document.createElement('span');
         badge.className = 'external-file-badge';
@@ -9994,6 +10088,11 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     if (previous?.type === 'collection' && message.type === 'collection') {
         await updateCollectionMessageElement(message);
         await applyCollectionPreviewIncrementalUpdate(previous, message);
+        const existingElement = getMessageElement(message.id);
+        if (existingElement) {
+            syncTransferRecordFavoriteBadge(existingElement, message);
+            renderMessageRecordActions(existingElement, message);
+        }
     } else {
         const existingElement = getMessageElement(message.id);
         const shouldScroll = Boolean(existingElement && isChatNearBottom(document.getElementById('chatMessages')));
@@ -10405,7 +10504,7 @@ function getResourceReferenceLabel(reference) {
     const time = reference.timestamp ? ` ${formatTime(reference.timestamp)}` : '';
     if (reference.kind === 'chat-file') return `聊天文件${time}`;
     if (reference.kind === 'collection-file') return `合辑文件${time}`;
-    if (reference.kind === 'rich-message') return `富文本消息${time}`;
+    if (reference.kind === 'rich-message') return `富文本${time}`;
     return '协同编辑器';
 }
 

@@ -630,6 +630,7 @@
         }
         
         .message-bubble {
+            position: relative;
             min-width: 0;
             max-width: 85%;
             width: fit-content;
@@ -645,10 +646,11 @@
         .message.own .message-bubble {
             /* background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); (备选颜色，不要删！)*/
             /* background: linear-gradient(143deg, #266069 0%, #79402f 100%); (备选颜色，不要删！)*/
-            /* background: linear-gradient(143deg, #312d49 0%, #162f33 100%);
-            (备选颜色，不要删！)*/
-            background: linear-gradient(143deg, #f9f8ff 0%, #7e8e9f 100%);
-            color: white;
+            /* background: linear-gradient(143deg, #312d49 0%, #162f33 100%); (备选颜色，不要删！)*/
+            /* background: linear-gradient(143deg, #f9f8ff 0%, #7e8e9f 100%); (备选颜色，不要删！)*/
+            /* background: linear-gradient(143deg, #0e0d0e 0%, #121212 100%); (备选颜色，不要删！)*/
+            background: aliceblue;
+            color: #26324d;
             margin-left: auto;
         }
         
@@ -693,6 +695,20 @@
 
         .message.file-record .message-bubble {
             position: relative;
+        }
+
+        .message-record-favorite-badge {
+            display: inline-grid;
+            place-items: center;
+            min-width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: rgba(255, 193, 7, 0.92);
+            color: #4b3300;
+            font-size: 0.7rem;
+            font-weight: 900;
+            box-shadow: 0 2px 8px rgba(93, 64, 0, 0.18);
+            pointer-events: none;
         }
 
         .message.file-record .message-bubble.file-cache-retry-target {
@@ -3223,7 +3239,8 @@
 
         .collection-meta {
             margin-top: 8px;
-            color: #65718a;
+            /* color: #65718a; 备选，不要删 */
+            color: #8891a5;
             font-size: 0.82rem;
         }
 
@@ -3348,6 +3365,24 @@
             border-radius: 6px;
             background: #edf2f7;
             font-size: 2.1rem;
+        }
+
+        .collection-file-favorite-badge {
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            z-index: 3;
+            display: inline-grid;
+            place-items: center;
+            min-width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            background: rgba(255, 193, 7, 0.94);
+            color: #4b3300;
+            font-size: 0.78rem;
+            font-weight: 900;
+            box-shadow: 0 2px 8px rgba(93, 64, 0, 0.2);
+            pointer-events: none;
         }
 
         .collection-file-thumb--metadata {

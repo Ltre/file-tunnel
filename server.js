@@ -26,7 +26,6 @@ const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json')
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
-    ytmusic: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
     facebook: 'facebook-cookies.txt',
     instagram: 'instagram-cookies.txt',
@@ -159,7 +158,7 @@ function writeDataFileAtomic(targetPath, content) {
 function normalizeSnsCookiePlatform(platform) {
     const key = String(platform || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
     if (key === 'youtube' || key === 'yt' || key === 'ytmusic' || key === 'youtubemusic') {
-        return key === 'youtube' || key === 'yt' ? 'youtube' : 'ytmusic';
+        return 'youtube';
     }
     if (key === 'threads') return 'thread';
     if (Object.prototype.hasOwnProperty.call(SNS_COOKIE_FILES, key)) return key;
@@ -174,7 +173,7 @@ function getSnsCookiePath(platform) {
 
 function getSnsCookieFileForUrl(url) {
     const raw = String(url || '');
-    if (/music\.youtube\.com/i.test(raw)) return getSnsCookiePath('ytmusic');
+    if (/music\.youtube\.com/i.test(raw)) return getSnsCookiePath('youtube');
     if (/(?:youtube\.com|youtu\.be)/i.test(raw)) return getSnsCookiePath('youtube');
     if (/tiktok\.com/i.test(raw)) return getSnsCookiePath('tiktok');
     if (/(?:facebook\.com|fb\.watch)/i.test(raw)) return getSnsCookiePath('facebook');
