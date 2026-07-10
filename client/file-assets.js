@@ -482,13 +482,33 @@
             if (status === 'started') {
                 this.providerTransfers.set(assetId, { from, transferId: transferId || 'full', requestId: requestId || currentRequestId || '', updatedAt: now });
                 const metadata = this.requestedMetadata.get(assetId);
-                if (metadata?.name) this.deps.onProgress(assetId, metadata.name, 0, 'receiving');
+                if (metadata?.name) this.deps.onProgress(assetId, metadata.name, 0, transferId ? 'receiving-multi-source' : 'receiving');
                 this.log('provider-transfer-started', { assetId, peerDeviceId: from, transferId, requestId });
                 return;
             }
             this.providerTransfers.delete(assetId);
             if (status === 'failed') {
                 this.log('provider-transfer-failed', { assetId, peerDeviceId: from, transferId, requestId });
+                if (transferId && this.multiSourceTransfers.has(assetId)) {
+                    const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
+                    if (range?.completed || range?.from) {
+                        this.log('provider-range-failed-ignored-active-range', {
+                            assetId,
+                            peerDeviceId: from,
+                            transferId,
+                            requestId,
+                            activePeerDeviceId: range?.from || '',
+                            completed: Boolean(range?.completed)
+                        });
+                        return;
+                    }
+                    this.retryMultiSourceRange(assetId, transferId, from, 'provider-transfer-failed');
+                    return;
+                }
+                if (transferId || this.transfers.has(assetId) || this.multiSourceTransfers.has(assetId)) {
+                    this.log('provider-transfer-failed-ignored-active-transfer', { assetId, peerDeviceId: from, transferId, requestId });
+                    return;
+                }
                 this.retryDownload(assetId, from, 'provider-transfer-failed');
                 return;
             }
@@ -1747,6 +1767,12 @@
             if (!this.desiredAssets.has(assetId)) {
                 return { ok: false, reason: 'not-requested' };
             }
+            if (transferId && this.transfers.has(assetId)) {
+                return { ok: false, reason: 'full-transfer-active' };
+            }
+            if (!transferId && this.multiSourceTransfers.has(assetId)) {
+                return { ok: false, reason: 'multi-source-active' };
+            }
             const currentRequestId = this.requestIds.get(assetId);
             if (!transferId && currentRequestId && attemptId && !String(attemptId).startsWith(`${currentRequestId}-`)) {
                 return { ok: false, reason: 'stale-request' };
@@ -1755,6 +1781,12 @@
             const attemptAt = this.attemptTimestamp(attemptId);
             if (requestedAt && attemptAt && attemptAt < requestedAt - 1000) {
                 return { ok: false, reason: 'stale-request' };
+            }
+            if (!transferId) {
+                const activeTransfer = this.transfers.get(assetId);
+                if (activeTransfer && !this.isStaleAttempt(activeTransfer, attemptId, activeTransfer.transport || 'p2p')) {
+                    return { ok: false, reason: 'transfer-active' };
+                }
             }
             return { ok: true, reason: '' };
         }
@@ -1924,6 +1956,7 @@
                         attemptId: attemptId || '',
                         activeAttemptId: range.attemptId || ''
                     });
+                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer);
                     return { ok: false, reason: 'receiver-p2p-active' };
                 }
             } else {
@@ -1937,6 +1970,7 @@
                         attemptId: attemptId || '',
                         activeAttemptId: activeTransfer.attemptId || ''
                     });
+                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer);
                     return { ok: false, reason: 'receiver-p2p-active' };
                 }
             }
@@ -2017,7 +2051,16 @@
         handleUnavailable(data) {
             const { assetId, reason, from, transferId } = data || {};
             if (!assetId) return;
-            if (['receiver-not-requested', 'receiver-stale-request', 'receiver-invalid-asset', 'receiver-already-cached'].includes(reason)) {
+            if ([
+                'receiver-not-requested',
+                'receiver-stale-request',
+                'receiver-invalid-asset',
+                'receiver-already-cached',
+                'receiver-p2p-active',
+                'receiver-full-transfer-active',
+                'receiver-multi-source-active',
+                'receiver-transfer-active'
+            ].includes(reason)) {
                 this.rejectedUploadKeys.add(this.uploadCancelKey(assetId, from, transferId || 'full'));
                 this.log('upload-rejected-by-receiver', { assetId, peerDeviceId: from, transferId, reason });
                 return;

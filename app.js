@@ -294,6 +294,7 @@ window.addEventListener('beforeunload', () => {
 
 function getFileProgressKey(fileId, transport = '') {
     const route = String(transport || '');
+    if (route.startsWith('sending-multi-source')) return `${fileId}::sending-multi-source`;
     if (!route.startsWith('sending')) return fileId;
     return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
@@ -2844,6 +2845,7 @@ function initFileAssetTransfer() {
                     isPartial: false
                 });
             }
+            clearFileMessageAvailability(asset.id);
             const staleUrl = fileObjectUrls.get(asset.id);
             if (staleUrl) URL.revokeObjectURL(staleUrl);
             fileObjectUrls.delete(asset.id);
@@ -10190,6 +10192,13 @@ function updateFileMessageAvailability(fileId, reason) {
     document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
         const size = messageEl.querySelector('.file-size');
         if (size) size.textContent = `${formatFileSize(Number(messageEl.dataset.fileSize || 0))} (${label})`;
+    });
+}
+
+function clearFileMessageAvailability(fileId) {
+    document.querySelectorAll(`.message[data-file-id="${fileId}"]`).forEach(messageEl => {
+        const size = messageEl.querySelector('.file-size');
+        if (size) size.textContent = formatFileSize(Number(messageEl.dataset.fileSize || 0));
     });
 }
 
