@@ -1785,6 +1785,38 @@ function getYtDlpCookieArgs(url) {
     return [];
 }
 
+function getYtDlpFormatSelector(url) {
+    if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(String(url || ''))) {
+        return 'bv*+ba/best';
+    }
+    const audio = [
+        'bestaudio[acodec^=mp4a][abr>=245][abr<=265]',
+        'bestaudio[ext=m4a][abr>=245][abr<=265]',
+        'bestaudio[abr>=245][abr<=265]',
+        'bestaudio[acodec^=mp4a][abr>=120][abr<=136]',
+        'bestaudio[ext=m4a][abr>=120][abr<=136]',
+        'bestaudio[abr>=120][abr<=136]',
+        'bestaudio[acodec^=mp4a][abr>=192][abr<=320]',
+        'bestaudio[ext=m4a][abr>=192][abr<=320]',
+        'bestaudio[abr>=192][abr<=320]',
+        'bestaudio[acodec^=mp4a][abr>=96][abr<192]',
+        'bestaudio[ext=m4a][abr>=96][abr<192]',
+        'bestaudio[abr>=96][abr<192]',
+        'bestaudio[acodec^=mp4a]',
+        'bestaudio[ext=m4a]',
+        'bestaudio'
+    ].join('/');
+    if (/music\.youtube\.com/i.test(String(url || ''))) return audio;
+    return [
+        `bestvideo[vcodec^=avc1][height<=1080]+(${audio})`,
+        `bestvideo[vcodec^=av01][height<=1080]+(${audio})`,
+        `bestvideo[height<=1080]+(${audio})`,
+        'best[height<=1080][vcodec^=avc1]',
+        'best[height<=1080]',
+        audio
+    ].join('/');
+}
+
 function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
     let mediaUrl = normalizeSocialUrl(meta?.webpage_url || meta?.original_url || meta?.url || source.sourceUrl);
     if (mediaUrl && !/^https?:\/\//i.test(mediaUrl) && /(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(source.sourceUrl)) {
@@ -2598,7 +2630,7 @@ function runYtDlpDownload(url, assetId, onProgress = () => {}) {
             '--no-cache-dir',
             ...getYtDlpRemoteComponentArgs(url),
             '-f',
-            'bv*+ba/best',
+            getYtDlpFormatSelector(url),
             '--merge-output-format',
             'mp4',
             '-o',
