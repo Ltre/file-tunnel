@@ -19,6 +19,7 @@ Drop2Tunnel（即时传输隧道）是一个以浏览器为客户端、Node.js �
 - 浏览器 IndexedDB 本地缓存；
 - PWA 安装和 Android 系统分享入口；
 - Telegram Bot 中转与 `file_id` 兜底恢复；
+- Telegram 备注中的 SNS 链接识别与按需下载；
 - 协同编辑、富文本版本历史和冲突处理；
 - 图片、视频、音频预览及后台音乐队列；
 - 会话资源管理器、备份/导入、文件系统句柄挂载；
@@ -66,6 +67,7 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - 短码、隧道备注、设备访问记录、隧道所有者和权限持久化；
 - 管理员 TOTP 会话；
 - Telegram Bot Webhook、绑定状态、文件索引及临时文件；
+- `yt-dlp` 调用、SNS cookies 读取、SNS 媒体临时文件登记；
 - 动态 PWA Manifest；
 - 记录详情深链和辅助页面。
 
@@ -77,6 +79,8 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - `telegram-bot.json`：Bot Token、Webhook Secret、文件大小限制、备份 Chat/Channel；
 - `telegram-chat-tunnels.json`：Telegram Chat 与隧道的绑定关系；
 - Telegram 文件索引及临时文件；
+- SNS 平台 cookies，例如 `yt-cookies.txt`、`twitter-cookies.txt`；
+- SNS 媒体下载过程中的临时工作目录；
 - 管理员 TOTP 加密配置和会话签名密钥；
 - 从旧版本迁移而来的短码数据。
 
@@ -87,6 +91,7 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - 大文件主体通常保存在浏览器缓存或本机文件系统；
 - 服务端历史窗口主要用于在线同步，不应当作唯一备份；
 - Telegram 下载到服务端的二进制通常只是临时文件，完成交付后会清理；
+- SNS 媒体通过 `yt-dlp` 下载到服务端后，会登记为 server asset 并交付给客户端缓存，不应被视为永久媒体库；
 - 浏览器清除站点数据会删除该设备的本地缓存；
 - 服务器重启后，在线客户端会重新参与历史和供源同步，但不能替代客户端备份。
 
@@ -134,12 +139,44 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - 当前仍受支持的 Node.js LTS；
 - Node.js 至少 18，因为服务端会使用现代 Web/Fetch 能力；
 - npm；
+- `yt-dlp`，用于识别和下载 Telegram 备注中的 YouTube、YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter/X 等 SNS 链接；
+- `ffmpeg`，用于 `yt-dlp` 合并音视频轨、转封装和处理部分平台媒体；
 - Nginx 或其他支持 WebSocket 的反向代理；
 - HTTPS 证书；
 - 可写的项目目录或可写的 `.tunnel-data/`；
 - 足够的磁盘空间用于 SQLite、日志和 Telegram 临时文件。
+- 额外预留 SNS 媒体下载临时空间；下载大视频时，峰值可能高于最终文件大小。
 
-### 4.2 网络端口
+### 4.2 安装 yt-dlp 和 ffmpeg
+
+Debian / Ubuntu 示例：
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg python3 python3-pip
+python3 -m pip install --user -U yt-dlp
+```
+
+如果使用 systemd 运行服务，确认运行用户的 `PATH` 中能找到 `yt-dlp`。也可以显式指定：
+
+```ini
+Environment=YT_DLP_BIN=/home/drop2tunnel/.local/bin/yt-dlp
+```
+
+Windows Server 可安装：
+
+- Node.js 官方 MSI；
+- `ffmpeg` 官方构建或包管理器版本，并加入 `PATH`；
+- `yt-dlp.exe`，或通过 Python/pip 安装后将脚本目录加入 `PATH`。
+
+验证：
+
+```bash
+yt-dlp --version
+ffmpeg -version
+```
+
+### 4.3 网络端口
 
 建议的生产结构：
 
@@ -173,6 +210,31 @@ npm ci
 ```
 
 不要把 `node_modules` 从其他系统直接复制到生产服务器。
+
+### 5.1 构建发布版
+
+仓库提供 `tools/deploy` 下的发布工具，用于压缩前端静态资源、更新资源版本参数，并按环境生成 `dist`：
+
+```bash
+npm run deploy:build
+npm run deploy:verify
+```
+
+如果使用预设环境：
+
+```bash
+tools/deploy/release.sh txhk
+tools/deploy/release.sh alyhk
+tools/deploy/release.sh txsl
+```
+
+输出目录位于：
+
+```text
+.deploy-worktrees/deploy-<profile>/dist
+```
+
+远端同步脚本使用 rsync，默认不删除目标目录中发布包没有的额外文件。详情见 `tools/deploy/README.zh-cn.md`。
 
 ---
 
@@ -526,6 +588,61 @@ https://tunnel.example.com/tgbot
 
 其中 `telegram-assets/` 可能同时包含轻量索引和临时二进制。不要把这个目录放在自动清空的临时分区。
 
+### 12.4 SNS 媒体链接下载
+
+当 Telegram 文本、单文件 caption 或 album caption 中包含 SNS 链接时，服务端会异步扫描全部 URL，并用 `yt-dlp` 读取元数据。用户在传输记录详情页的“SNS媒体文件”区域点击“获取文件内容”后，服务端才开始下载完整媒体。
+
+当前行为：
+
+- 识别阶段不下载完整媒体；
+- 支持多个 URL 和列表 URL；
+- 下载成功后登记为 server asset，并生成普通文件传输记录；
+- 客户端通过 `/api/server-assets/:assetId` 拉取文件，接口支持 HTTP Range；
+- YouTube 视频优先选择 H.264、最高不超过 1080p；无 H.264 时降级到 AV1 或其他视频轨；
+- YT Music 只选择音频轨；
+- 音频优先选择 AAC/M4A 且码率接近 256K，其次接近 128K，再逐级降级。
+
+YouTube / YT Music 默认会调用：
+
+```bash
+yt-dlp --remote-components ejs:github
+```
+
+如果部署环境不允许自动获取 remote components，可设置：
+
+```bash
+SOCIAL_YTDLP_REMOTE_COMPONENTS=false
+```
+
+或设置为其他 yt-dlp 支持的值。
+
+### 12.5 SNS Cookies 配置
+
+管理员登录后访问：
+
+```text
+https://tunnel.example.com/sns-cookies
+```
+
+可配置：
+
+- YouTube / YT Music：`.tunnel-data/yt-cookies.txt`；
+- TikTok：`.tunnel-data/tiktok-cookies.txt`；
+- Facebook：`.tunnel-data/facebook-cookies.txt`；
+- Instagram：`.tunnel-data/instagram-cookies.txt`；
+- Threads：`.tunnel-data/thread-cookies.txt`；
+- LINE：`.tunnel-data/line-cookies.txt`；
+- Twitter：`.tunnel-data/twitter-cookies.txt`；
+- X：`.tunnel-data/x-cookies.txt`。
+
+这些 cookies 可能包含登录态。建议：
+
+- 只使用专用低权限账号导出；
+- 限制 `.tunnel-data` 文件权限；
+- 不写入 `tunnel.config.json`；
+- 不提交到 Git；
+- 定期更新或清理失效 cookies。
+
 ---
 
 ## 13. PWA 和多域名 Manifest
@@ -684,9 +801,11 @@ sudo systemctl status drop2tunnel
 5. P2P 失败时 Relay；
 6. 管理后台；
 7. Telegram Webhook；
-8. 隧道权限；
-9. PWA 强制刷新；
-10. `.tunnel-data/infra.sqlite` 是否正常更新。
+8. SNS cookies 页面；
+9. `yt-dlp` / `ffmpeg` 是否可用；
+10. 隧道权限；
+11. PWA 强制刷新；
+12. `.tunnel-data/infra.sqlite` 是否正常更新。
 
 SQLite 表结构由程序启动时自动迁移，但不能替代升级前备份。
 
@@ -714,12 +833,15 @@ tail -f /var/log/nginx/error.log
 - `.tunnel-data` 是否可写；
 - `infra.sqlite` 保存错误；
 - Telegram API/Webhook 错误；
+- yt-dlp / ffmpeg 执行错误；
+- SNS media 临时目录异常增长；
 - Socket.IO 断连；
 - 内存和磁盘占用；
 - Relay 流量；
 - Nginx 499/502/504；
 - WebSocket Upgrade 是否成功；
 - 服务端临时 Telegram 文件是否异常堆积。
+- 服务端临时 SNS 媒体文件是否异常堆积。
 
 ---
 
@@ -782,7 +904,20 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - 最大文件限制；
 - 服务端日志中的 Telegram API 错误。
 
-### 18.7 Windows 出现 `EPERM rename ... infra.sqlite.tmp`
+### 18.7 SNS 链接解析失败
+
+检查：
+
+- `yt-dlp --version` 是否可执行；
+- `ffmpeg -version` 是否可执行；
+- 是否配置了对应平台 cookies；
+- 服务器是否能访问目标 SNS 平台；
+- YouTube 是否需要 remote components；
+- 日志中是否有 challenge、403、cookies 失效或地区限制。
+
+对于 YouTube challenge 相关警告，默认已启用 `--remote-components ejs:github`。如果服务器无法访问 GitHub，仍可能解析失败。
+
+### 18.8 Windows 出现 `EPERM rename ... infra.sqlite.tmp`
 
 当前代码已对 Windows 的 `EPERM`、`EACCES`、`EBUSY` 增加复制回退和重试，但仍应检查：
 
@@ -791,7 +926,7 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - 运行用户是否有写权限；
 - 是否有多个 Node 实例同时使用同一个数据目录。
 
-### 18.8 PWA 一直显示旧界面
+### 18.9 PWA 一直显示旧界面
 
 让用户：
 
@@ -800,7 +935,7 @@ P2P 受 NAT、防火墙、运营商网络影响。
 3. 重新打开；
 4. 仍无效时清理该站点缓存并重新安装 PWA。
 
-### 18.9 文件记录存在但无法恢复
+### 18.10 文件记录存在但无法恢复
 
 这通常表示只有元数据，没有可用文件源。
 
@@ -811,6 +946,7 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - 文件是否被移动、改名或删除；
 - Telegram `file_id` 是否仍有效；
 - 服务器 Telegram 索引是否存在；
+- SNS 生成的 server asset 是否仍存在；
 - 是否已执行“Telegram 文件防失联检测及修复”。
 
 ---
@@ -827,6 +963,8 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - 管理后台不要交给不受信任用户；
 - 谨慎分享隧道短码和记录链接；
 - Telegram 作为恢复源时，文件会进入 Telegram 基础设施；
+- SNS 媒体下载会使服务端短暂或较长时间持有第三方平台媒体文件；
+- 遵守第三方平台服务条款和当地法律，避免把服务端部署成公开下载器；
 - 当前没有应用层端到端加密，不应把“HTTPS/WebRTC 加密传输”误认为完整 E2EE；
 - 高敏感场景应额外使用受控网络、私有 TURN、访问控制和文件自身加密。
 
@@ -846,6 +984,8 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - [ ] PWA 可安装；
 - [ ] Android 系统分享可进入应用；
 - [ ] Telegram Webhook 已验证；
+- [ ] `yt-dlp` 和 `ffmpeg` 已验证；
+- [ ] SNS cookies 页面权限已验证；
 - [ ] 备份 Chat/Channel 已验证；
 - [ ] 隧道权限服务端校验已验证；
 - [ ] 升级和回滚流程已演练；

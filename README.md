@@ -216,6 +216,20 @@ Telegram Bot 可作为隧道内容入口和文件恢复兜底：
 
 Telegram 不能凭空恢复已经在所有设备、服务器和旧 Bot 中都不可用的文件。
 
+### Telegram SNS 媒体文件
+
+当 Telegram 转入隧道的文本、单文件备注或 album caption 中包含 YouTube、YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter/X 等链接时，服务端会先异步识别可由 `yt-dlp` 解析的 SNS 媒体：
+
+- 备注中可同时包含多个 URL；
+- 列表 URL 会作为一个可展开的来源，内部包含多条媒体；
+- 识别阶段只读取元数据，不会自动下载完整媒体；
+- 在“传输记录详情”底部的“SNS媒体文件”区域，点击“获取文件内容”才会启动完整下载；
+- 服务端使用 `yt-dlp` 下载到 `.tunnel-data` 临时工作区，成功后注册成 server asset，并生成一条普通文件传输记录；
+- 客户端继续按普通 server asset 逻辑通过 HTTP/Range 拉取到浏览器缓存；
+- 已经获得缓存的浏览器会成为后续其他设备的普通供源者。
+
+YouTube 视频下载会优先选择 H.264、最高不超过 1080p 的视频轨，并按音频码率优先选择接近 256K、再接近 128K 的 AAC/M4A 音轨；若无 H.264 视频，则降级到 AV1 或其他可用视频轨。`music.youtube.com` 链接只选择音频轨。该能力要求服务端已安装 `yt-dlp` 和 `ffmpeg`。
+
 ### 设置、权限与管理
 
 - 功能首页顶栏齿轮设置页；
@@ -285,6 +299,8 @@ flowchart TD
 | 管理员 TOTP 和会话签名密钥 | `.tunnel-data` | 本机私有文件，需妥善备份和限制权限 |
 | Telegram Bot 配置与聊天绑定 | `.tunnel-data` | Token 不写入 `tunnel.config.json` |
 | Telegram 文件临时缓存和 `file_id` 元数据 | `.tunnel-data/telegram-assets` | 二进制按需下载并尽量在客户端取走后清理 |
+| SNS Cookies | `.tunnel-data/*-cookies.txt` | 由 `/sns-cookies` 管理，用于 `yt-dlp` 访问 YouTube、TikTok、X 等平台 |
+| SNS 媒体临时下载 | `.tunnel-data/sns-media-work` | `yt-dlp` 下载过程中的临时输出，成功后登记为 server asset |
 | Socket.IO 中继数据 | 服务器进程 | 中继期间服务器会接触文件分块 |
 
 因此：
@@ -301,6 +317,8 @@ flowchart TD
 
 - Node.js 18 或更高版本；
 - npm；
+- `yt-dlp`，用于解析和按需下载 Telegram 备注中的 SNS 媒体链接；
+- `ffmpeg`，用于 `yt-dlp` 合并视频轨/音频轨、转封装和处理部分平台媒体；
 - 支持 WebSocket、WebRTC 和 IndexedDB 的现代浏览器；
 - PWA、文件句柄、摄像头和麦克风等完整能力需要 HTTPS，`localhost` 除外。
 
@@ -488,6 +506,20 @@ https://tunnel.example.com/tgbot
 
 Telegram webhook 必须能够从公网通过 HTTPS 访问当前服务。
 
+## SNS Cookies 配置
+
+完成管理员登录后打开：
+
+```text
+https://tunnel.example.com/sns-cookies
+```
+
+可为 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter/X 等平台保存 cookies 文件内容。YouTube 和 YT Music 共用 `.tunnel-data/yt-cookies.txt`。
+
+这些 cookies 只供服务端 `yt-dlp` 在识别和下载 SNS 媒体时使用。它们可能包含敏感登录态，应像 Bot Token 一样保护，不要提交到 Git 仓库，也不要交给不可信用户。
+
+如果 YouTube 出现 JS challenge 相关警告，服务端默认会为 YouTube / YT Music 调用 `yt-dlp --remote-components ejs:github`。可通过环境变量 `SOCIAL_YTDLP_REMOTE_COMPONENTS=false` 禁用，或设置为其他值覆盖默认来源。
+
 ## 音视频 ICE 配置
 
 `tunnel.config.json` 中可为实时音视频功能追加 ICE/TURN 配置：
@@ -574,17 +606,20 @@ Telegram webhook 必须能够从公网通过 HTTPS 访问当前服务。
 
 ```text
 file-tunnel/
-├── index.html                         # 主应用页面和响应式 UI
+├── pages/
+│   ├── index.html                     # 主应用页面和响应式 UI
+│   ├── admin.html                     # 管理后台
+│   ├── admin-auth.html                # 管理员 TOTP 初始化与登录
+│   ├── tgbot.html                     # Telegram Bot 配置页
+│   ├── sns-cookies.html               # SNS cookies 配置页
+│   ├── device.html                    # 设备主页
+│   ├── downloader.html                # 磁链下载页
+│   └── downloadList.html              # 磁链缓存列表
 ├── app.js                             # 隧道、消息、缓存、预览、设置与交互主逻辑
 ├── server.js                          # Express、Socket.IO、隧道、Telegram 和管理 API
 ├── service-worker.js                  # PWA 应用壳与 Share Target
 ├── tunnel.config.json                 # 服务端端口、调试和 RTC 运行配置
 ├── manifest.hosts.json                # 按域名生成 PWA Manifest
-├── admin.html                         # 管理后台
-├── tgbot.html                         # Telegram Bot 配置页
-├── device.html                        # 设备主页
-├── downloader.html                    # 磁链下载页
-├── downloadList.html                  # 磁链缓存列表
 ├── client/
 │   ├── file-assets.js                 # 文件请求、P2P、Relay、多源和重试
 │   ├── folder-archive.js              # 文件夹打包与目录相关逻辑
@@ -595,10 +630,23 @@ file-tunnel/
 │   ├── media-session.js               # 实时媒体信令
 │   ├── infra-store.js                 # SQLite 基础设施元数据
 │   └── admin-auth.js                  # 管理员 TOTP 与会话认证
+├── tools/deploy/                      # 静态资源压缩、发布包生成、远端同步和回滚脚本
 ├── docs/devlog/                       # 按开发阶段整理的实现记录
 ├── prompts/dev-prompt-logs/           # 需求、排查过程和 Codex 处理记录
 └── .tunnel-data/                      # 运行后生成的服务端持久化数据
 ```
+
+## 构建与发布工具
+
+仓库提供 `tools/deploy` 下的最小可控部署工具：
+
+- `npm run deploy:build`：生成压缩后的前端静态资源和服务端发布目录；
+- `npm run deploy:verify`：检查发布目录中的关键文件；
+- `tools/deploy/release.sh <profile>`：按 `tools/deploy/profiles/*.json` 生成对应环境的 `dist`；
+- `tools/deploy/deploy-remote.sh <profile>`：使用 rsync 将 `dist` 同步到目标服务器，默认不删除目标目录中 dist 没有的额外文件；
+- `tools/deploy/rollback.sh`：辅助回滚。
+
+详细说明见 [`tools/deploy/README.zh-cn.md`](tools/deploy/README.zh-cn.md)。
 
 ## 开发记录
 
@@ -610,6 +658,8 @@ file-tunnel/
 - [`prompts/dev-prompt-logs/dev-filecache-ref-260705.md`](prompts/dev-prompt-logs/dev-filecache-ref-260705.md)：跨隧道缓存引用和备份导入隔离；
 - [`prompts/dev-prompt-logs/dev-real-filesystem-handle-260705.md`](prompts/dev-prompt-logs/dev-real-filesystem-handle-260705.md)：文件系统句柄与安全缓存副本；
 - [`prompts/dev-prompt-logs/dev-telegram-fileid-renew-260706.md`](prompts/dev-prompt-logs/dev-telegram-fileid-renew-260706.md)：Telegram `file_id` 防失联检测与换绑。
+- [`prompts/dev-prompt-logs/deploy-tools-260709.md`](prompts/dev-prompt-logs/deploy-tools-260709.md)：前端资源压缩、版本参数、PWA 缓存和部署工具设计；
+- [`prompts/dev-prompt-logs/dev-260710-sns-file-dl.md`](prompts/dev-prompt-logs/dev-260710-sns-file-dl.md)：Telegram 备注中的 SNS 多链接、列表媒体识别和“获取文件内容”链路。
 
 查看各版本的实际差异，请结合 Git 标签、Release 页面和 commit message，不要仅根据旧 README 判断当前能力。
 
@@ -623,7 +673,7 @@ tunnel.config.json
 manifest.hosts.json
 ```
 
-其中 `.tunnel-data` 包含基础设施数据库、管理员认证、Telegram 配置和恢复元数据。
+其中 `.tunnel-data` 包含基础设施数据库、管理员认证、Telegram 配置、SNS cookies、Telegram/SNS 临时资产和恢复元数据。
 
 浏览器 IndexedDB 不包含在服务器备份中。重要传输记录和文件应使用应用内“备份/导入”另行导出，不能只备份服务器目录。
 
@@ -634,6 +684,8 @@ manifest.hosts.json
 - 保护 `.tunnel-data`，避免泄露 Bot Token、TOTP 和会话签名密钥；
 - 不要公开传播隧道短码和完整隧道链接；
 - Telegram Bot 使用专用账号、私有群组或频道作为备份目标；
+- SNS cookies 可能包含第三方平台登录态，应限制文件权限并定期轮换；
+- SNS 媒体下载依赖第三方平台规则和 `yt-dlp` 能力，部署者应自行确认合规边界；
 - 为公网服务配置防火墙、反向代理限速和日志轮转；
 - 不要把本项目用于需要强合规、零知识存储或已审计端到端加密的场景。
 
