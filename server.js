@@ -1729,6 +1729,7 @@ function runYtDlpJson(url, options = {}) {
         ];
         if (options.flatPlaylist === true) args.push('--flat-playlist');
         if (options.noPlaylist !== false) args.push('--no-playlist');
+        args.push(...getYtDlpRemoteComponentArgs(url));
         args.push(url);
         const cookiePath = getSnsCookieFileForUrl(url);
         if (cookiePath && fs.existsSync(cookiePath)) {
@@ -1767,6 +1768,12 @@ function runYtDlpJson(url, options = {}) {
             }
         });
     });
+}
+
+function getYtDlpRemoteComponentArgs(url) {
+    if (process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS === 'false') return [];
+    if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(String(url || ''))) return [];
+    return ['--remote-components', process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || 'ejs:github'];
 }
 
 function getYtDlpCookieArgs(url) {
@@ -2589,6 +2596,7 @@ function runYtDlpDownload(url, assetId, onProgress = () => {}) {
             '--newline',
             '--no-playlist',
             '--no-cache-dir',
+            ...getYtDlpRemoteComponentArgs(url),
             '-f',
             'bv*+ba/best',
             '--merge-output-format',
