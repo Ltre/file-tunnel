@@ -482,7 +482,7 @@
             if (status === 'started') {
                 this.providerTransfers.set(assetId, { from, transferId: transferId || 'full', requestId: requestId || currentRequestId || '', updatedAt: now });
                 const metadata = this.requestedMetadata.get(assetId);
-                if (metadata?.name) this.deps.onProgress(assetId, metadata.name, 0, transferId ? 'receiving-multi-source' : 'receiving');
+                if (metadata?.name && !transferId) this.deps.onProgress(assetId, metadata.name, 0, 'receiving');
                 this.log('provider-transfer-started', { assetId, peerDeviceId: from, transferId, requestId });
                 return;
             }
