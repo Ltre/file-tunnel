@@ -145,6 +145,7 @@ const editorAssetTransfers = new Map();
 const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
+const peerSignalQueues = new Map();
 let fileAssetTransfer = null;
 let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
@@ -1487,7 +1488,7 @@ function initSocket() {
     state.socket.on('clipboard-update', (data) => receiveSharedClipboard(data));
 
     state.socket.on('signal', (data) => {
-        handleSignal(data);
+        queuePeerSignal(data);
     });
 
     state.socket.on('message', (data) => {
@@ -1980,6 +1981,24 @@ async function flushPendingIceCandidates(deviceId, pc) {
     }
 }
 
+function queuePeerSignal(data) {
+    const peerDeviceId = data?.from;
+    if (!peerDeviceId) {
+        handleSignal(data);
+        return;
+    }
+    const previous = peerSignalQueues.get(peerDeviceId) || Promise.resolve();
+    const next = previous
+        .catch(() => {})
+        .then(() => handleSignal(data));
+    peerSignalQueues.set(peerDeviceId, next);
+    next.finally(() => {
+        if (peerSignalQueues.get(peerDeviceId) === next) {
+            peerSignalQueues.delete(peerDeviceId);
+        }
+    });
+}
+
 async function handleSignal(data) {
     const { from, type, sdp, candidate } = data;
 
@@ -2012,7 +2031,21 @@ async function handleSignal(data) {
             
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             await flushPendingIceCandidates(from, pc);
+            if (pc.signalingState !== 'have-remote-offer') {
+                historyLog('p2p-answer-skipped-stale-offer', {
+                    peerDeviceId: from,
+                    signalingState: pc.signalingState
+                });
+                return;
+            }
             const answer = await pc.createAnswer();
+            if (pc.signalingState !== 'have-remote-offer') {
+                historyLog('p2p-answer-skipped-after-create', {
+                    peerDeviceId: from,
+                    signalingState: pc.signalingState
+                });
+                return;
+            }
             await pc.setLocalDescription(answer);
 
             state.socket.emit('signal', {
@@ -2841,6 +2874,11 @@ function initFileAssetTransfer() {
             }
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
+        onDownloadIdle: (fileId, reason) => {
+            fileTransferProgressStates.delete(fileId);
+            hideProgress(fileId);
+            historyLog('file-download-attempt-ui-cleared', { fileId, reason: reason || '' });
+        },
         onReceived: async (asset) => {
             hideCompletedFileReceiveProgress(asset.id);
             const storedFile = await getFromStore('files', asset.id).catch(() => null);
@@ -7206,7 +7244,9 @@ async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = 
         hideProgress(fileInfo.id);
         fileTransferProgressStates.delete(fileInfo.id);
     }
-    await cancelClearedCollectionDownloadsExcept(options.collectionMessageId || '', fileInfo.id);
+    if (!options.preserveCollectionDownloads) {
+        await cancelClearedCollectionDownloadsExcept(options.collectionMessageId || '', fileInfo.id);
+    }
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     if (hasCompleteFileCache(storedFile, fileInfo)) {
         await saveToStore('files', {
@@ -9917,6 +9957,72 @@ async function requestMissingCollectionFiles(files) {
     return requested;
 }
 
+async function collectionFileHasUsableLocalSource(fileInfo) {
+    if (!fileInfo?.id) return true;
+    const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(storedFile, fileInfo)) return true;
+    if (storedFile?.externalFileHandle) {
+        const readableFile = await materializeExternalFileRecord(storedFile);
+        const sourceState = getExternalFileSourceState(storedFile, readableFile, fileInfo);
+        return sourceState.handleReadable;
+    }
+    return false;
+}
+
+function canRestoreCollectionFile(fileInfo) {
+    if (!fileInfo?.id) return false;
+    if (fileInfo.isServerAsset && fileInfo.serverAssetUrl) return true;
+    return Boolean(fileInfo.isAsset && fileAssetTransfer);
+}
+
+async function restoreMissingCollectionFiles(files, collectionMessageId = '') {
+    const missingFiles = [];
+    let unavailableCount = 0;
+    for (const fileInfo of files) {
+        if (!fileInfo?.id) continue;
+        if (await collectionFileHasUsableLocalSource(fileInfo)) continue;
+        if (!canRestoreCollectionFile(fileInfo)) {
+            unavailableCount++;
+            continue;
+        }
+        missingFiles.push(fileInfo);
+    }
+    if (!missingFiles.length) {
+        showAppToast(unavailableCount > 0 ? '合辑内缺失文件暂无可用来源' : '合辑内文件均已缓存');
+        return;
+    }
+
+    showAppToast(`正在还原 ${missingFiles.length} 个缺失文件`);
+    let requested = 0;
+    let failed = 0;
+    for (const fileInfo of missingFiles) {
+        try {
+            await restoreFileCacheByInfo(fileInfo, fileInfo.ownerDeviceId || null, collectionMessageId, {
+                collectionMessageId,
+                force: false,
+                preserveCollectionDownloads: true
+            });
+            requested++;
+        } catch (err) {
+            failed++;
+            historyLog('collection-restore-missing-file-failed', {
+                messageId: collectionMessageId,
+                fileId: fileInfo.id,
+                error: err.message
+            });
+        }
+    }
+    historyLog('collection-restore-missing-requested', {
+        messageId: collectionMessageId,
+        totalCount: files.length,
+        missingCount: missingFiles.length,
+        requested,
+        failed,
+        unavailableCount
+    });
+    showAppToast(failed > 0 ? `已请求还原 ${requested} 个文件，${failed} 个失败` : `已请求还原 ${requested} 个缺失文件`);
+}
+
 async function downloadCollectionFiles(files, collectionMessageId = '') {
     if (!window.FolderArchive?.createZip) {
         alert('当前页面缺少 ZIP 打包模块，无法下载合辑压缩包。');
@@ -10009,6 +10115,18 @@ async function openCollectionRecord(messageId, options = {}) {
 
 function setCollectionPreviewActions(files, messageId) {
     setFilePreviewActions([
+        createFileActionButton('还原所有文件', '仅拉取合辑内尚未缓存的文件', event => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            restoreMissingCollectionFiles(files, messageId)
+                .catch(err => {
+                    alert(`合辑还原失败: ${err.message}`);
+                    historyLog('collection-restore-missing-failed', { messageId, error: err.message });
+                })
+                .finally(() => {
+                    button.disabled = false;
+                });
+        }),
         createFileActionButton('下载全部', '拉取缺失缓存后打包下载整个合辑 ZIP', () => {
             downloadCollectionFiles(files, messageId).catch(err => {
                 alert(`合辑下载失败: ${err.message}`);
@@ -14887,10 +15005,13 @@ function updateProgressDrawerSummary() {
 
     const snapshotFresh = Date.now() - progressQueueSnapshot.updatedAt <= PROGRESS_QUEUE_SNAPSHOT_TTL;
     const queuedSnapshot = snapshotFresh ? progressQueueSnapshot.queueLength : 0;
+    const activeDownloadSnapshot = snapshotFresh ? progressQueueSnapshot.activeDownloads : 0;
 
     const items = Array.from(list.children);
     const taskItems = items;
-    const count = taskItems.length + queuedSnapshot;
+    const visibleReceiveItems = taskItems.filter(item => item.dataset.progressDirection === 'receive').length;
+    const hiddenStartingDownloads = Math.max(0, activeDownloadSnapshot - visibleReceiveItems);
+    const count = taskItems.length + queuedSnapshot + hiddenStartingDownloads;
     if (!count) {
         summary.textContent = '';
         return;
@@ -14898,7 +15019,7 @@ function updateProgressDrawerSummary() {
 
     const moving = taskItems.filter(isProgressItemActivelyMoving).length;
     const stalled = taskItems.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
-    const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length;
+    const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length + hiddenStartingDownloads;
     const queued = queuedSnapshot;
     const parts = [`${count} 个任务`];
     if (moving) parts.push(`进行中 ${moving}`);

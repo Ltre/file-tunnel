@@ -1,16 +1,17 @@
 (function attachFileAssetTransfer(global) {
-    const RELAY_CHUNK_SIZE = 256 * 1024;
-    const P2P_CHUNK_SIZE = 128 * 1024;
-    const P2P_FALLBACK_CHUNK_SIZE = 128 * 1024;
-    const BUFFER_LIMIT = 1024 * 1024;
-    const BUFFER_LOW_WATER = 256 * 1024;
+    const RELAY_CHUNK_SIZE = 64 * 1024;
+    const P2P_CHUNK_SIZE = 64 * 1024;
+    const P2P_FALLBACK_CHUNK_SIZE = 64 * 1024;
+    const BUFFER_LIMIT = 4 * 1024 * 1024;
+    const BUFFER_LOW_WATER = 1 * 1024 * 1024;
     const BUFFER_POLL_MS = 20;
-    const BUFFER_WAIT_TIMEOUT = 15000;
-    const BUFFER_STALL_TIMEOUT = 15000;
+    const BUFFER_WAIT_TIMEOUT = 5000;
+    const BUFFER_STALL_TIMEOUT = 8000;
     const P2P_TIMEOUT = 1500;
     const P2P_FILE_CHANNEL_TIMEOUT = 5000;
     const MAX_CONCURRENT_FULL_DOWNLOADS = 3;
-    const MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS = 4;
+    const MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS = 2;
+    const MAX_TOTAL_CONCURRENT_DOWNLOADS = 4;
     const MAX_CONCURRENT_UPLOADS = 2;
     const RECEIVE_TIMEOUT = 30000;
     const MAX_RETRIES = 3;
@@ -20,10 +21,10 @@
     const MAX_CONCURRENT_RANGES = 4;
     const SMALL_TRANSFER_PRIORITY_SIZE = 1024 * 1024;
     const LARGE_FULL_UPLOAD_THRESHOLD = 4 * 1024 * 1024;
-    const MULTI_SOURCE_WATCHDOG_INTERVAL = 5000;
+    const MULTI_SOURCE_WATCHDOG_INTERVAL = 3000;
     const MULTI_SOURCE_STALL_MS = 12000;
     const REQUEST_WATCHDOG_INTERVAL = 5000;
-    const REQUEST_STALL_MS = 15000;
+    const REQUEST_STALL_MS = 45000;
     const PROVIDER_TRANSFER_STALL_MS = 120000;
     const DISCOVERY_RETRY_MS = 2500;
     const DISCOVERY_RETRY_MAX_MS = 15000;
@@ -60,6 +61,7 @@
             this.rejectedUploadKeys = new Set();
             this.cancelledAssets = new Set();
             this.cacheWriteFallbackAssets = new Set();
+            this.retryTimers = new Map();
             this.uploadQueueSeq = 0;
             this.requestWatchdogTimer = setInterval(() => this.checkRequestStalls(), REQUEST_WATCHDOG_INTERVAL);
         }
@@ -92,6 +94,34 @@
 
         socket() {
             return this.deps.getSocket();
+        }
+
+        emitQueueState(assetId = '') {
+            this.deps.onQueue?.(assetId, this.downloadQueue.length, this.activeDownloads.size);
+        }
+
+        notifyDownloadIdle(assetId, reason = '') {
+            this.deps.onDownloadIdle?.(assetId, reason);
+        }
+
+        clearRetryTimer(assetId) {
+            const timer = this.retryTimers.get(assetId);
+            if (timer) clearTimeout(timer);
+            this.retryTimers.delete(assetId);
+        }
+
+        scheduleRetryTimer(assetId, delay, callback, reason = '') {
+            if (this.retryTimers.has(assetId)) {
+                this.log('retry-timer-ignored-duplicate', { assetId, reason, delay });
+                return false;
+            }
+            const timer = setTimeout(() => {
+                if (this.retryTimers.get(assetId) !== timer) return;
+                this.retryTimers.delete(assetId);
+                callback();
+            }, delay);
+            this.retryTimers.set(assetId, timer);
+            return true;
         }
 
         async announce(asset) {
@@ -228,7 +258,7 @@
                     if (queueIndex > 0) {
                         this.downloadQueue.splice(queueIndex, 1);
                         this.downloadQueue.unshift(assetId);
-                        this.deps.onQueue?.(assetId, this.downloadQueue.length, this.activeDownloads.size);
+                        this.emitQueueState(assetId);
                         this.log('download-queue-promoted', { assetId, queueLength: this.downloadQueue.length });
                         this.dispatchDownloads();
                     }
@@ -297,7 +327,7 @@
             if (!this.desiredAssets.has(assetId) || this.activeDownloads.has(assetId) || this.downloadQueue.includes(assetId)) return;
             if (this.priorityDownloads.has(assetId)) this.downloadQueue.unshift(assetId);
             else this.downloadQueue.push(assetId);
-            this.deps.onQueue?.(assetId, this.downloadQueue.length, this.activeDownloads.size);
+            this.emitQueueState(assetId);
             this.log('download-queued', {
                 assetId,
                 queueLength: this.downloadQueue.length,
@@ -333,7 +363,9 @@
             const mode = this.downloadMode(assetId);
             const limit = mode === 'multi-source' ? MAX_CONCURRENT_MULTI_SOURCE_DOWNLOADS : MAX_CONCURRENT_FULL_DOWNLOADS;
             const activeCount = this.activeDownloadCount(mode);
+            if (this.activeDownloads.size >= MAX_TOTAL_CONCURRENT_DOWNLOADS) return false;
             if (activeCount < limit) return true;
+            if (mode === 'multi-source') return false;
             return this.priorityDownloads.has(assetId) && activeCount < limit + 1;
         }
 
@@ -358,11 +390,13 @@
         dispatchDownloads() {
             const socket = this.socket();
             if (!socket?.connected) return;
+            let lastDispatchedAssetId = '';
             while (this.downloadQueue.length) {
                 const nextIndex = this.nextDownloadIndex();
                 if (nextIndex < 0) break;
                 const [assetId] = this.downloadQueue.splice(nextIndex, 1);
                 if (!this.desiredAssets.has(assetId) || this.activeDownloads.has(assetId)) continue;
+                lastDispatchedAssetId = assetId;
                 this.activeDownloads.add(assetId);
                 this.requests.set(assetId, Date.now());
                 const metadata = this.requestedMetadata.get(assetId);
@@ -396,6 +430,7 @@
                     forced
                 });
             }
+            this.emitQueueState(lastDispatchedAssetId);
         }
 
         checkRequestStalls() {
@@ -443,10 +478,15 @@
 
         scheduleProviderDiscoveryRetry(assetId, providerId, reason = 'provider-discovery') {
             if (!this.desiredAssets.has(assetId)) return;
+            if (this.retryTimers.has(assetId)) {
+                this.log('provider-discovery-retry-ignored-pending', { assetId, providerId, reason });
+                return;
+            }
             const attempts = (this.retryCounts.get(assetId) || 0) + 1;
             this.retryCounts.set(assetId, attempts);
             this.requestProviderDiscovery(assetId, reason);
             this.providerTransfers.delete(assetId);
+            this.notifyDownloadIdle(assetId, reason);
             this.releaseDownload(assetId);
             this.forceRequests.set(assetId, `discovery:${assetId}:${attempts}:${Date.now()}`);
             this.priorityDownloads.add(assetId);
@@ -458,11 +498,11 @@
                 attempts,
                 delay
             });
-            setTimeout(() => {
+            this.scheduleRetryTimer(assetId, delay, () => {
                 if (!this.desiredAssets.has(assetId)) return;
                 this.desiredAssets.set(assetId, null);
                 this.enqueueDownload(assetId);
-            }, delay);
+            }, reason);
         }
 
         async handleTransferStatus(data) {
@@ -483,8 +523,6 @@
             const now = Date.now();
             if (status === 'started') {
                 this.providerTransfers.set(assetId, { from, transferId: transferId || 'full', requestId: requestId || currentRequestId || '', updatedAt: now });
-                const metadata = this.requestedMetadata.get(assetId);
-                if (metadata?.name && !transferId) this.deps.onProgress(assetId, metadata.name, 0, 'receiving');
                 this.log('provider-transfer-started', { assetId, peerDeviceId: from, transferId, requestId });
                 return;
             }
@@ -864,6 +902,7 @@
                 this.requestIds.delete(assetId);
                 this.forceRequests.delete(assetId);
                 this.priorityDownloads.delete(assetId);
+                this.notifyDownloadIdle(assetId, reason || 'range-retry-exhausted');
                 this.markInterruptedAsset(assetId, interruptedAsset, reason);
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
                 this.log('range-retry-exhausted', { assetId, transferId, providerId, reason, error });
@@ -962,6 +1001,7 @@
             this.activeDownloads.delete(assetId);
             this.clearReceiveTimer(assetId);
             this.dispatchDownloads();
+            this.emitQueueState(assetId);
         }
 
         handleAvailable(data) {
@@ -1079,21 +1119,30 @@
 
         nextUploadIndex() {
             let bestIndex = -1;
+            let bestPeerLoad = Infinity;
             let bestPriority = Infinity;
             let bestSize = Infinity;
             let bestSeq = Infinity;
+            const peerLoads = new Map();
+            for (const active of this.activeUploadTasks.values()) {
+                const peerId = active?.from || '';
+                peerLoads.set(peerId, (peerLoads.get(peerId) || 0) + 1);
+            }
             for (let index = 0; index < this.uploadQueue.length; index++) {
                 const item = this.uploadQueue[index];
                 if (!this.canStartUpload(item)) continue;
+                const peerLoad = peerLoads.get(item?.from || '') || 0;
                 const priority = this.uploadPriority(item);
                 const size = Number(item?.asset?.size) || Infinity;
                 const seq = Number.isFinite(item?._queueSeq) ? item._queueSeq : Infinity;
                 if (
-                    priority < bestPriority ||
-                    (priority === bestPriority && size < bestSize) ||
-                    (priority === bestPriority && size === bestSize && seq < bestSeq)
+                    peerLoad < bestPeerLoad ||
+                    (peerLoad === bestPeerLoad && priority < bestPriority) ||
+                    (peerLoad === bestPeerLoad && priority === bestPriority && size < bestSize) ||
+                    (peerLoad === bestPeerLoad && priority === bestPriority && size === bestSize && seq < bestSeq)
                 ) {
                     bestIndex = index;
+                    bestPeerLoad = peerLoad;
                     bestPriority = priority;
                     bestSize = size;
                     bestSeq = seq;
@@ -1571,6 +1620,7 @@
             }
             if (channel._fileAssetRejected) throw new Error(`File asset receiver rejected: ${channel._fileAssetRejected}`);
             const receiverAck = this.waitForTransferAck(channel, asset.id, transfer?.transferId || '', attemptId);
+            receiverAck.catch(() => {});
             await this.sendWithBackpressure(
                 channel,
                 JSON.stringify({ type: 'file-asset-complete', assetId: asset.id, transferId: transfer?.transferId, attemptId }),
@@ -1844,6 +1894,7 @@
         }
 
         releaseCompletedDownload(assetId, asset = null, reason = 'completed') {
+            this.clearRetryTimer(assetId);
             this.transfers.delete(assetId);
             this.providerTransfers.delete(assetId);
             this.desiredAssets.delete(assetId);
@@ -2089,7 +2140,7 @@
         }
 
         handleUnavailable(data) {
-            const { assetId, reason, from, transferId } = data || {};
+            const { assetId, reason, from, transferId, retryAfterMs } = data || {};
             if (!assetId) return;
             if ([
                 'receiver-not-requested',
@@ -2105,11 +2156,16 @@
                 this.log('upload-rejected-by-receiver', { assetId, peerDeviceId: from, transferId, reason });
                 return;
             }
+            const requested = this.desiredAssets.has(assetId);
+            if (requested && reason === 'receiver-backpressure') {
+                const delay = Math.max(1000, Math.min(15000, Number(retryAfterMs) || 3000));
+                this.deferDownload(assetId, from, reason, delay);
+                return;
+            }
             if (transferId && this.multiSourceTransfers.has(assetId)) {
                 this.retryMultiSourceRange(assetId, transferId, from, reason || 'provider-unavailable');
                 return;
             }
-            const requested = this.desiredAssets.has(assetId);
             const discoveryReasons = ['no-known-provider', 'no-online-provider'];
             if (requested && discoveryReasons.includes(reason)) {
                 this.scheduleProviderDiscoveryRetry(assetId, from, reason || 'provider-discovery');
@@ -2128,9 +2184,11 @@
 
         cancel(assetId) {
             if (!assetId) return;
+            this.clearRetryTimer(assetId);
             this.cancelledAssets.add(assetId);
             this.abortFullTransferWriter(assetId);
             this.releaseDownload(assetId);
+            this.notifyDownloadIdle(assetId, 'receiver-cancelled');
             this.desiredAssets.delete(assetId);
             this.requestedMetadata.delete(assetId);
             this.requestIds.delete(assetId);
@@ -2168,18 +2226,24 @@
 
         retryDownload(assetId, providerId, reason, error) {
             if (!this.desiredAssets.has(assetId)) return;
+            if (this.retryTimers.has(assetId)) {
+                this.log('retry-ignored-pending', { assetId, providerId, reason, error });
+                return;
+            }
             const attempts = (this.retryCounts.get(assetId) || 0) + 1;
             const interruptedAsset = this.transfers.get(assetId)?.asset || this.requestedMetadata.get(assetId);
             this.retryCounts.set(assetId, attempts);
             this.abortFullTransferWriter(assetId);
             this.transfers.delete(assetId);
             this.providerTransfers.delete(assetId);
+            this.notifyDownloadIdle(assetId, reason || 'receiver-retry');
             this.releaseDownload(assetId);
             if (attempts > MAX_RETRIES) {
                 this.markInterruptedAsset(assetId, interruptedAsset, reason);
                 this.desiredAssets.delete(assetId);
                 this.requestedMetadata.delete(assetId);
                 this.requestIds.delete(assetId);
+                this.forceRequests.delete(assetId);
                 this.priorityDownloads.delete(assetId);
                 this.discoveryRequests.delete(assetId);
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
@@ -2188,19 +2252,46 @@
             }
             this.forceRequests.set(assetId, `retry:${assetId}:${attempts}:${Date.now()}`);
             this.priorityDownloads.add(assetId);
-            this.log('retry-scheduled', { assetId, providerId, reason, error, attempts });
-            setTimeout(() => {
+            const delay = Math.min(15000, attempts * 3000);
+            this.log('retry-scheduled', { assetId, providerId, reason, error, attempts, delay });
+            this.scheduleRetryTimer(assetId, delay, () => {
                 if (!this.desiredAssets.has(assetId)) return;
                 this.desiredAssets.set(assetId, null);
                 this.enqueueDownload(assetId);
-            }, attempts * 1000);
+            }, reason);
+        }
+
+        deferDownload(assetId, providerId, reason, delay = 3000) {
+            if (!this.desiredAssets.has(assetId)) return;
+            if (this.retryTimers.has(assetId)) {
+                this.log('download-defer-ignored-pending', { assetId, providerId, reason, delay });
+                return;
+            }
+            this.abortFullTransferWriter(assetId);
+            this.transfers.delete(assetId);
+            this.providerTransfers.delete(assetId);
+            this.stopMultiSourceWatchdog(this.multiSourceTransfers.get(assetId));
+            this.multiSourceTransfers.delete(assetId);
+            this.clearRangeTimers(assetId);
+            this.notifyDownloadIdle(assetId, reason || 'receiver-backpressure');
+            this.releaseDownload(assetId);
+            this.priorityDownloads.delete(assetId);
+            this.log('download-deferred', { assetId, providerId, reason, delay });
+            this.scheduleRetryTimer(assetId, delay, () => {
+                if (!this.desiredAssets.has(assetId)) return;
+                this.desiredAssets.set(assetId, providerId || this.desiredAssets.get(assetId) || null);
+                this.enqueueDownload(assetId);
+            }, reason);
         }
 
         resumePending() {
+            for (const timer of this.retryTimers.values()) clearTimeout(timer);
+            this.retryTimers.clear();
             this.requests.clear();
             this.activeDownloads.clear();
             this.desiredAssets.forEach((_, assetId) => this.enqueueDownload(assetId));
             this.dispatchDownloads();
+            this.emitQueueState();
         }
     }
 

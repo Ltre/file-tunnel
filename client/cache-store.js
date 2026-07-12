@@ -1,5 +1,6 @@
 (function attachDrop2TunnelCacheStore(global) {
     const OPFS_MIN_SIZE = 16 * 1024 * 1024;
+    const OPFS_RECEIVE_WRITE_ENABLED = false;
     const CACHE_WORKER_TIMEOUT_MS = 12000;
     const CACHE_WORKER_WRITE_TIMEOUT_MS = 5000;
 
@@ -116,6 +117,7 @@
             this.log = typeof options.log === 'function' ? options.log : () => {};
             this.worker = null;
             this.workerReady = false;
+            this.opfsReceiveWriteLogged = false;
             this.pending = new Map();
             this.writers = new Map();
             this.sequence = 0;
@@ -180,6 +182,16 @@
         }
 
         shouldUseOpfs(file) {
+            if (!OPFS_RECEIVE_WRITE_ENABLED) {
+                if (!this.opfsReceiveWriteLogged) {
+                    this.opfsReceiveWriteLogged = true;
+                    this.log('cache-store-opfs-receive-write-disabled', {
+                        reason: 'avoid-serial-opfs-chunk-write-on-p2p-hot-path',
+                        minSize: OPFS_MIN_SIZE
+                    });
+                }
+                return false;
+            }
             return this.workerReady && Number(file?.size) >= OPFS_MIN_SIZE;
         }
 

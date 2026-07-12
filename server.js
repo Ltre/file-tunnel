@@ -4859,10 +4859,12 @@ io.on('connection', (socket) => {
                         for (const [assetId, asset] of session.fileAssets) {
                             if (asset.assignments) {
                                 for (const [key, providerId] of asset.assignments) {
-                                    if (providerId === currentDevice || key.endsWith(`:${currentDevice}`)) {
-                                        const requesterId = key.slice(key.lastIndexOf(':') + 1);
+                                    const keyParts = String(key).split(':');
+                                    const requesterId = keyParts[1] || '';
+                                    if (providerId === currentDevice || requesterId === currentDevice) {
                                         const provider = asset.assignments.get(key);
                                         asset.assignments.delete(key);
+                                        asset.assignmentMeta?.delete(key);
                                         const nextLoad = Math.max(0, (asset.providerLoads?.get(provider) || 1) - 1);
                                         if (nextLoad === 0) asset.providerLoads?.delete(provider);
                                         else asset.providerLoads?.set(provider, nextLoad);
