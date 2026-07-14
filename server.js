@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
@@ -39,6 +39,8 @@ const SNS_COOKIE_FILES = Object.freeze({
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
+const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
+const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 
@@ -245,6 +247,67 @@ function loadProjectConfig() {
     } catch {
         return {};
     }
+}
+
+function locateExecutable(command) {
+    const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+    try {
+        const result = spawnSync(locator, [command], {
+            encoding: 'utf8',
+            windowsHide: true,
+            env: { ...process.env }
+        });
+        if (result.status !== 0) return '';
+        return String(result.stdout || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function getConfiguredFfmpegLocation() {
+    return String(
+        process.env.FFMPEG_LOCATION ||
+        projectConfig.ffmpegLocation ||
+        projectConfig.ffmpegPath ||
+        ''
+    ).trim();
+}
+
+function resolveMediaToolCommand(toolName) {
+    const envValue = toolName === 'ffmpeg' ? process.env.FFMPEG_BIN : process.env.FFPROBE_BIN;
+    const configValue = toolName === 'ffmpeg' ? projectConfig.ffmpegBin : projectConfig.ffprobeBin;
+    const explicit = String(envValue || configValue || '').trim();
+    if (explicit) return explicit;
+
+    const location = getConfiguredFfmpegLocation();
+    if (location) {
+        try {
+            const stat = fs.statSync(location);
+            if (stat.isDirectory()) {
+                return path.join(location, process.platform === 'win32' ? `${toolName}.exe` : toolName);
+            }
+            if (stat.isFile()) {
+                if (path.basename(location).toLowerCase().startsWith(toolName)) return location;
+                return path.join(path.dirname(location), process.platform === 'win32' ? `${toolName}.exe` : toolName);
+            }
+        } catch (_) {
+            const looksLikeExecutable = path.extname(location) || path.basename(location).toLowerCase().startsWith('ffmpeg');
+            if (looksLikeExecutable) {
+                return toolName === 'ffmpeg'
+                    ? location
+                    : path.join(path.dirname(location), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+            }
+            return path.join(location, process.platform === 'win32' ? `${toolName}.exe` : toolName);
+        }
+    }
+    return locateExecutable(toolName) || toolName;
+}
+
+function getYtDlpFfmpegArgs() {
+    const configuredLocation = getConfiguredFfmpegLocation();
+    if (configuredLocation) return ['--ffmpeg-location', configuredLocation];
+    if (path.isAbsolute(FFMPEG_COMMAND)) return ['--ffmpeg-location', path.dirname(FFMPEG_COMMAND)];
+    return [];
 }
 
 function createDefaultManifest() {
@@ -1876,6 +1939,7 @@ function runYtDlpJson(url, options = {}) {
         if (options.flatPlaylist === true) args.push('--flat-playlist');
         if (options.noPlaylist !== false) args.push('--no-playlist');
         args.push(...getYtDlpRemoteComponentArgs(url));
+        args.push(...getYtDlpFfmpegArgs());
         args.push(url);
         const cookiePath = getSnsCookieFileForUrl(url);
         if (cookiePath && fs.existsSync(cookiePath)) {
@@ -2916,7 +2980,7 @@ function spawnYtDlpCapture(args, options = {}) {
 }
 
 async function probeMediaFile(filePath) {
-    const result = await spawnCapture(process.env.FFPROBE_BIN || 'ffprobe', [
+    const result = await spawnCapture(FFPROBE_COMMAND, [
         '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath
     ], { timeoutMs: 30000, timeoutError: 'ffprobe-timeout' });
     try {
@@ -2951,6 +3015,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}) {
     await spawnYtDlpCapture([
         '--newline', '--no-playlist', '--no-cache-dir',
         ...getYtDlpRemoteComponentArgs(url),
+        ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpFormatSelector(url),
         '--max-filesize', String(getTelegramMaxFileSize()),
         '--merge-output-format', 'mp4',
@@ -3013,7 +3078,7 @@ async function createSquareCover(sourcePath, outputPath) {
     let crop = null;
     if (width > height) {
         try {
-            const detection = await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+            const detection = await spawnCapture(FFMPEG_COMMAND, [
                 '-hide_banner', '-loglevel', 'info', '-loop', '1', '-i', sourcePath,
                 '-t', '0.15', '-vf', 'cropdetect=24:2:0', '-f', 'null', '-'
             ], { timeoutMs: 30000, timeoutError: 'song-cover-cropdetect-timeout' });
@@ -3036,7 +3101,7 @@ async function createSquareCover(sourcePath, outputPath) {
         const side = Math.min(width, height);
         crop = { side, x: Math.round((width - side) / 2), y: Math.round((height - side) / 2) };
     }
-    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+    await spawnCapture(FFMPEG_COMMAND, [
         '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
         '-vf', `crop=${crop.side}:${crop.side}:${crop.x}:${crop.y}`,
         '-frames:v', '1', '-q:v', '2', outputPath
@@ -3057,6 +3122,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     await spawnYtDlpCapture([
         '--newline', '--no-playlist', '--no-cache-dir',
         ...getYtDlpRemoteComponentArgs(url),
+        ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpAudioFormatSelector(),
         '--max-filesize', String(getTelegramMaxFileSize()),
         '--write-thumbnail', '--convert-thumbnails', 'jpg',
@@ -3091,7 +3157,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         ? ['-c:a', 'copy']
         : ['-c:a', 'aac', '-b:a', `${Math.max(96, Math.min(256, Math.round((sourceSummary.bitRate || 128000) / 1000)))}k`];
     onStage('writing_metadata');
-    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+    await spawnCapture(FFMPEG_COMMAND, [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-i', sourceAudio, '-i', squareCover,
         '-map', '0:a:0', '-map', '1:v:0',
@@ -5525,6 +5591,7 @@ function logStartup() {
     console.log(`🔌 Socket.IO: 与 Web/API 共用 ${WEB_PORT} 端口`);
     console.log(`🔒 Nginx should proxy public HTTP/HTTPS traffic to this upstream`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
+    console.log(`🎞️ Media tools: ffmpeg=${FFMPEG_COMMAND}; ffprobe=${FFPROBE_COMMAND}; yt-dlp ffmpeg-location=${getYtDlpFfmpegArgs()[1] || '(PATH)'}`);
 }
 
 async function startServer() {
