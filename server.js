@@ -2088,6 +2088,14 @@ function queueSnsMetadataScan(sessionId, messageId, rawText) {
             const session = sessions.get(sessionId);
             const entry = getHistoryMessageEntry(session, messageId);
             if (!session || !entry?.message) return;
+            if (entry.message.snsAcquisition) {
+                if (entry.message.snsSources || entry.message.snsMediaItems) {
+                    delete entry.message.snsSources;
+                    delete entry.message.snsMediaItems;
+                    replaceHistoryMessage(sessionId, session, entry.message, 'sns-result-metadata-cleanup');
+                }
+                return;
+            }
             const metadata = await buildSnsMetadata(rawText, messageId);
             entry.message.snsSources = metadata.sources;
             entry.message.snsMediaItems = metadata.items;
@@ -2111,6 +2119,15 @@ function queueSnsMetadataScan(sessionId, messageId, rawText) {
 
 function resumePendingSnsMetadataScans(sessionId, messages = []) {
     messages.forEach(message => {
+        if (message?.snsAcquisition) {
+            if (message.snsSources || message.snsMediaItems) {
+                const session = sessions.get(sessionId);
+                delete message.snsSources;
+                delete message.snsMediaItems;
+                if (session) replaceHistoryMessage(sessionId, session, message, 'sns-result-metadata-cleanup');
+            }
+            return;
+        }
         const rawText = getMessageSnsText(message);
         if (!extractSupportedSocialUrls(rawText).length) return;
         const sources = Array.isArray(message.snsSources) ? message.snsSources : [];

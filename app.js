@@ -5823,6 +5823,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         ${contentHtml}
     `;
     syncTransferRecordFavoriteBadge(messageEl, message);
+    syncTransferRecordSnsBadge(messageEl, message);
     if (fileRecordRemark) {
         const remark = document.createElement('div');
         remark.className = 'collection-remark';
@@ -6121,6 +6122,7 @@ function renderSnsAcquisitionSection(message = {}) {
 }
 
 function renderSnsMediaSection(message = {}) {
+    if (message.snsAcquisition) return '';
     const items = Array.isArray(message.snsMediaItems) ? message.snsMediaItems.filter(item => item?.id) : [];
     const sources = Array.isArray(message.snsSources) ? message.snsSources.filter(source => source?.id) : [];
     if (!items.length && !sources.length) return '';
@@ -6248,6 +6250,22 @@ function syncTransferRecordFavoriteBadge(messageEl, message) {
     badge.className = 'message-record-favorite-badge';
     badge.textContent = '★';
     badge.title = '记录收藏';
+    header.appendChild(badge);
+}
+
+function syncTransferRecordSnsBadge(messageEl, message) {
+    if (!messageEl) return;
+    messageEl.querySelector('.message-record-sns-badge')?.remove();
+    const mediaItems = Array.isArray(message?.snsMediaItems) ? message.snsMediaItems : [];
+    const hasSnsMedia = !message?.snsAcquisition && mediaItems.some(item => item?.id && item?.mediaKind !== 'unsupported');
+    messageEl.classList.toggle('message-record-sns', hasSnsMedia);
+    if (!hasSnsMedia) return;
+    const header = messageEl.querySelector('.message-header');
+    if (!header) return;
+    const badge = document.createElement('span');
+    badge.className = 'message-record-sns-badge';
+    badge.textContent = '◉ SNS';
+    badge.title = '此记录包含可获取的 SNS 媒体';
     header.appendChild(badge);
 }
 
@@ -7133,6 +7151,7 @@ async function updateCollectionMessageElement(message) {
         if (previousBubble) previousBubble.replaceWith(nextBubble);
     });
     syncTransferRecordFavoriteBadge(messageEl, message);
+    syncTransferRecordSnsBadge(messageEl, message);
 }
 
 async function applyCollectionPreviewIncrementalUpdate(previousMessage, nextMessage) {
@@ -10526,6 +10545,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
         const existingElement = getMessageElement(message.id);
         if (existingElement) {
             syncTransferRecordFavoriteBadge(existingElement, message);
+            syncTransferRecordSnsBadge(existingElement, message);
             renderMessageRecordActions(existingElement, message);
         }
     } else {
