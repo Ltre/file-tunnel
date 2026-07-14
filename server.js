@@ -23,6 +23,7 @@ const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
 const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const SNS_MEDIA_WORK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-work');
+const SNS_MEDIA_TASK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-tasks');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const SNS_COOKIE_FILES = Object.freeze({
@@ -1118,6 +1119,29 @@ const telegramChatLanguages = new Map();
 const telegramAssetDownloads = new Map();
 const telegramAssetReaders = new Map();
 const snsMediaTasks = new Map();
+const snsMetadataScans = new Set();
+const snsMediaTaskWaiters = [];
+let activeSnsMediaTasks = 0;
+
+async function acquireSnsMediaTaskSlot() {
+    const limit = Math.max(1, Math.min(8, Number(process.env.SOCIAL_MAX_CONCURRENT_TASKS || 2)));
+    if (activeSnsMediaTasks < limit) {
+        activeSnsMediaTasks++;
+    } else {
+        await new Promise(resolve => snsMediaTaskWaiters.push(resolve));
+    }
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        const next = snsMediaTaskWaiters.shift();
+        if (next) {
+            next();
+        } else {
+            activeSnsMediaTasks = Math.max(0, activeSnsMediaTasks - 1);
+        }
+    };
+}
 
 const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
     read: true,
@@ -1501,6 +1525,9 @@ function persistTelegramServerAsset(asset) {
         sourceUrl: sanitizeString(asset.sourceUrl || '', 1000),
         sourceMessageId: sanitizeString(asset.sourceMessageId || '', 80),
         snsMediaItemId: sanitizeString(asset.snsMediaItemId || '', 80),
+        snsTaskId: sanitizeString(asset.snsTaskId || '', 80),
+        youtubeVideoId: sanitizeString(asset.youtubeVideoId || '', 80),
+        mediaKind: sanitizeString(asset.mediaKind || '', 40),
         fileId: asset.fileId || '',
         fileUniqueId: asset.fileUniqueId || '',
         fileIdUpdatedAt: Number(asset.fileIdUpdatedAt) || 0,
@@ -1536,6 +1563,9 @@ function resolveTelegramServerAsset(assetId) {
         sourceUrl: sanitizeString(metadata.sourceUrl || '', 1000),
         sourceMessageId: sanitizeString(metadata.sourceMessageId || '', 80),
         snsMediaItemId: sanitizeString(metadata.snsMediaItemId || '', 80),
+        snsTaskId: sanitizeString(metadata.snsTaskId || '', 80),
+        youtubeVideoId: sanitizeString(metadata.youtubeVideoId || '', 80),
+        mediaKind: sanitizeString(metadata.mediaKind || '', 40),
         fileId: typeof metadata.fileId === 'string' ? metadata.fileId : '',
         fileUniqueId: typeof metadata.fileUniqueId === 'string' ? metadata.fileUniqueId : '',
         fileIdUpdatedAt: Number(metadata.fileIdUpdatedAt) || 0,
@@ -1669,14 +1699,53 @@ function telegramTextToHtml(text, entities = []) {
     return html;
 }
 
+const SUPPORTED_SOCIAL_HOSTS = Object.freeze({
+    'youtube.com': 'youtube',
+    'www.youtube.com': 'youtube',
+    'm.youtube.com': 'youtube',
+    'youtu.be': 'youtube',
+    'music.youtube.com': 'ytmusic',
+    'www.music.youtube.com': 'ytmusic',
+    'tiktok.com': 'tiktok',
+    'www.tiktok.com': 'tiktok',
+    'facebook.com': 'facebook',
+    'www.facebook.com': 'facebook',
+    'fb.watch': 'facebook',
+    'instagram.com': 'instagram',
+    'www.instagram.com': 'instagram',
+    'threads.net': 'threads',
+    'www.threads.net': 'threads',
+    'line.me': 'line',
+    'www.line.me': 'line',
+    'twitter.com': 'twitter',
+    'www.twitter.com': 'twitter',
+    'x.com': 'x',
+    'www.x.com': 'x'
+});
+
 function normalizeSocialUrl(url = '') {
     return String(url || '')
         .trim()
         .replace(/[)\].,，。!?！？;；]+$/g, '');
 }
 
+function parseSupportedSocialUrl(value = '') {
+    const raw = normalizeSocialUrl(value);
+    if (!raw) return null;
+    try {
+        const parsed = new URL(raw);
+        if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+        const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+        const platform = SUPPORTED_SOCIAL_HOSTS[hostname];
+        if (!platform) return null;
+        return { raw, parsed, hostname, platform };
+    } catch (_) {
+        return null;
+    }
+}
+
 function isSupportedSocialUrl(url = '') {
-    return /(?:youtube\.com|youtu\.be|music\.youtube\.com|tiktok\.com|facebook\.com|fb\.watch|instagram\.com|threads\.net|twitter\.com|x\.com|line\.me)\b/i.test(url);
+    return Boolean(parseSupportedSocialUrl(url));
 }
 
 function extractSupportedSocialUrls(text = '') {
@@ -1685,8 +1754,9 @@ function extractSupportedSocialUrls(text = '') {
     return urls
         .map(normalizeSocialUrl)
         .filter(url => {
-            if (!url || !isSupportedSocialUrl(url)) return false;
-            const key = url.toLowerCase();
+            const parsed = parseSupportedSocialUrl(url);
+            if (!parsed) return false;
+            const key = parsed.parsed.href;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -1699,17 +1769,43 @@ function extractSupportedSocialUrl(text = '') {
 }
 
 function getSocialPlatform(url = '') {
-    const raw = String(url || '');
-    if (/music\.youtube\.com/i.test(raw)) return 'ytmusic';
-    if (/(?:youtube\.com|youtu\.be)/i.test(raw)) return 'youtube';
-    if (/tiktok\.com/i.test(raw)) return 'tiktok';
-    if (/(?:facebook\.com|fb\.watch)/i.test(raw)) return 'facebook';
-    if (/instagram\.com/i.test(raw)) return 'instagram';
-    if (/threads\.net/i.test(raw)) return 'threads';
-    if (/line\.me/i.test(raw)) return 'line';
-    if (/twitter\.com/i.test(raw)) return 'twitter';
-    if (/x\.com/i.test(raw)) return 'x';
-    return 'sns';
+    return parseSupportedSocialUrl(url)?.platform || 'sns';
+}
+
+function isYouTubeUrl(url = '') {
+    const platform = getSocialPlatform(url);
+    return platform === 'youtube' || platform === 'ytmusic';
+}
+
+function isYouTubePlaylistOnly(url = '') {
+    const parsed = parseSupportedSocialUrl(url)?.parsed;
+    if (!parsed || !isYouTubeUrl(url)) return false;
+    if (parsed.hostname === 'youtu.be') return !parsed.pathname.replace(/^\/+/, '');
+    return Boolean(parsed.searchParams.get('list')) && !parsed.searchParams.get('v');
+}
+
+function getMessageSnsText(message = {}) {
+    if (message.type === 'text') return String(message.text || '');
+    if (message.type === 'rich') {
+        const html = String(message.content || '');
+        const decodeEntities = value => String(value || '')
+            .replace(/&amp;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#39;/gi, "'")
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>');
+        const hrefs = Array.from(html.matchAll(/\bhref\s*=\s*["']([^"']+)["']/gi), match => decodeEntities(match[1]));
+        const visibleText = html
+            .replace(/<br\s*\/?\s*>/gi, '\n')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&amp;/gi, '&')
+            .replace(/&quot;/gi, '"')
+            .replace(/&#39;/gi, "'")
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>');
+        return [visibleText, ...hrefs].join('\n');
+    }
+    return String(message.remark || message.fileInfo?.remark || message.collection?.remark || '');
 }
 
 function createStableSnsId(...parts) {
@@ -1719,9 +1815,59 @@ function createStableSnsId(...parts) {
         .slice(0, 18);
 }
 
+function getStructuredArtistValue(meta = {}) {
+    if (typeof meta.artist === 'string' && meta.artist.trim()) return meta.artist.trim();
+    if (Array.isArray(meta.artists)) return meta.artists.map(value => String(value || '').trim()).filter(Boolean).join(', ');
+    if (typeof meta.artists === 'string' && meta.artists.trim()) return meta.artists.trim();
+    return '';
+}
+
+function normalizeArtistValue(meta = {}) {
+    const structuredArtist = getStructuredArtistValue(meta);
+    if (structuredArtist) return structuredArtist;
+    return String(meta.uploader || meta.channel || '').trim();
+}
+
+function getReleaseYear(meta = {}) {
+    const releaseYear = String(meta.release_year || '').match(/\b(19|20)\d{2}\b/)?.[0];
+    if (releaseYear) return releaseYear;
+    return String(meta.release_date || '').match(/^(19|20)\d{2}/)?.[0] || '';
+}
+
+function getYtDlpInvocation(args = []) {
+    const command = process.env.YT_DLP_BIN || 'yt-dlp';
+    const prefixArgs = String(process.env.YT_DLP_BIN_ARGS || '').split(/\s+/).filter(Boolean);
+    return { command, args: [...prefixArgs, ...args] };
+}
+
+function buildYtDlpEnv() {
+    const env = { ...process.env };
+    const proxy = env.YT_DLP_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '';
+    const allProxy = env.YT_DLP_ALL_PROXY || env.ALL_PROXY || proxy;
+    if (proxy) {
+        env.HTTP_PROXY ||= proxy;
+        env.HTTPS_PROXY ||= proxy;
+        env.http_proxy ||= env.HTTP_PROXY;
+        env.https_proxy ||= env.HTTPS_PROXY;
+    }
+    if (allProxy) {
+        env.ALL_PROXY ||= allProxy;
+        env.all_proxy ||= env.ALL_PROXY;
+    }
+    return env;
+}
+
+function classifySnsMedia(sourceUrl, meta = {}) {
+    if (!isYouTubeUrl(sourceUrl)) return 'video';
+    if (isYouTubePlaylistOnly(sourceUrl)) return 'unsupported';
+    if (getSocialPlatform(sourceUrl) === 'ytmusic') return 'song';
+    const track = String(meta.track || '').trim();
+    const artist = getStructuredArtistValue(meta);
+    return track && artist ? 'song' : 'video';
+}
+
 function runYtDlpJson(url, options = {}) {
     return new Promise((resolve, reject) => {
-        const command = process.env.YT_DLP_BIN || 'yt-dlp';
         const args = [
             '--dump-single-json',
             '--skip-download',
@@ -1739,10 +1885,11 @@ function runYtDlpJson(url, options = {}) {
                 }
             } catch (_) {}
         }
-        const child = spawn(command, args, {
+        const invocation = getYtDlpInvocation(args);
+        const child = spawn(invocation.command, invocation.args, {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: buildYtDlpEnv()
         });
         let stdout = '';
         let stderr = '';
@@ -1773,7 +1920,10 @@ function runYtDlpJson(url, options = {}) {
 function getYtDlpRemoteComponentArgs(url) {
     if (process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS === 'false') return [];
     if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(String(url || ''))) return [];
-    return ['--remote-components', process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || 'ejs:github'];
+    return [
+        '--js-runtimes', process.env.SOCIAL_YTDLP_JS_RUNTIME || 'node',
+        '--remote-components', process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || 'ejs:github'
+    ];
 }
 
 function getYtDlpCookieArgs(url) {
@@ -1785,11 +1935,8 @@ function getYtDlpCookieArgs(url) {
     return [];
 }
 
-function getYtDlpFormatSelector(url) {
-    if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(String(url || ''))) {
-        return 'bv*+ba/best';
-    }
-    const audio = [
+function getYtDlpAudioFormatSelector() {
+    return [
         'bestaudio[acodec^=mp4a][abr>=245][abr<=265]',
         'bestaudio[ext=m4a][abr>=245][abr<=265]',
         'bestaudio[abr>=245][abr<=265]',
@@ -1806,23 +1953,31 @@ function getYtDlpFormatSelector(url) {
         'bestaudio[ext=m4a]',
         'bestaudio'
     ].join('/');
+}
+
+function getYtDlpFormatSelector(url) {
+    if (!isYouTubeUrl(url)) return 'bv*+ba/best';
+    const audio = getYtDlpAudioFormatSelector();
     if (/music\.youtube\.com/i.test(String(url || ''))) return audio;
     return [
         `bestvideo[vcodec^=avc1][height<=1080]+(${audio})`,
         `bestvideo[vcodec^=av01][height<=1080]+(${audio})`,
         `bestvideo[height<=1080]+(${audio})`,
-        'best[height<=1080][vcodec^=avc1]',
-        'best[height<=1080]',
-        audio
+        'best[height<=1080][vcodec^=avc1][vcodec!=none][acodec!=none]',
+        'best[height<=1080][vcodec!=none][acodec!=none]'
     ].join('/');
 }
 
 function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
+    const mediaKind = classifySnsMedia(source.sourceUrl, meta);
     let mediaUrl = normalizeSocialUrl(meta?.webpage_url || meta?.original_url || meta?.url || source.sourceUrl);
     if (mediaUrl && !/^https?:\/\//i.test(mediaUrl) && /(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(source.sourceUrl)) {
         mediaUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(mediaUrl)}`;
     }
+    if (getSocialPlatform(source.sourceUrl) === 'ytmusic') mediaUrl = source.sourceUrl;
     const mediaId = createStableSnsId(messageId, source.id, mediaUrl, mediaIndex);
+    const artist = normalizeArtistValue(meta);
+    const track = String(meta?.track || meta?.title || meta?.fulltitle || '').trim();
     return {
         id: mediaId,
         sourceId: source.id,
@@ -1833,6 +1988,15 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
         coverUrl: sanitizeString(meta?.thumbnail || meta?.thumbnails?.slice(-1)?.[0]?.url || source.coverUrl || '', 1000),
         duration: Number(meta?.duration) || 0,
         platform: getSocialPlatform(source.sourceUrl),
+        mediaKind,
+        youtubeVideoId: sanitizeString(meta?.id || '', 80),
+        acquisitionTaskId: createStableSnsId('sns-task', messageId, mediaId, meta?.id || mediaUrl),
+        songMetadata: mediaKind === 'song' ? {
+            track: sanitizeString(track, 240),
+            artist: sanitizeString(artist || '未知艺术家', 240),
+            album: sanitizeString(meta?.album || '', 240),
+            year: getReleaseYear(meta)
+        } : null,
         mediaIndex,
         serverState: 'not_fetched',
         serverProgress: 0,
@@ -1842,7 +2006,7 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
     };
 }
 
-async function buildTelegramSnsMetadata(rawText, messageId) {
+async function buildSnsMetadata(rawText, messageId) {
     const urls = extractSupportedSocialUrls(rawText);
     if (!urls.length) return { sources: [], items: [] };
     const sources = [];
@@ -1862,8 +2026,19 @@ async function buildTelegramSnsMetadata(rawText, messageId) {
             mediaItemIds: []
         };
         try {
-            const meta = await runYtDlpJson(sourceUrl, { flatPlaylist: true, noPlaylist: false });
-            const entries = Array.isArray(meta?.entries) ? meta.entries.filter(Boolean).slice(0, 100) : [];
+            if (isYouTubePlaylistOnly(sourceUrl)) {
+                source.sourceType = 'unsupported';
+                source.parseStatus = 'failed';
+                source.parseError = '暂不支持获取整个播放列表，请发送具体视频或歌曲链接';
+                sources.push(source);
+                continue;
+            }
+            const youtube = isYouTubeUrl(sourceUrl);
+            const meta = await runYtDlpJson(sourceUrl, {
+                flatPlaylist: !youtube,
+                noPlaylist: youtube
+            });
+            const entries = youtube ? [] : (Array.isArray(meta?.entries) ? meta.entries.filter(Boolean).slice(0, 100) : []);
             source.title = sanitizeString(meta?.title || meta?.fulltitle || sourceUrl, 240);
             source.coverUrl = sanitizeString(meta?.thumbnail || meta?.thumbnails?.slice(-1)?.[0]?.url || '', 1000);
             source.sourceType = entries.length > 1 ? 'collection' : 'single';
@@ -1884,38 +2059,41 @@ async function buildTelegramSnsMetadata(rawText, messageId) {
     return { sources, items };
 }
 
-function createTelegramSnsPlaceholderMetadata(rawText, messageId) {
+function createSnsPlaceholderMetadata(rawText, messageId) {
     const urls = extractSupportedSocialUrls(rawText);
     return {
         sources: urls.map((sourceUrl, sourceOrder) => ({
             id: createStableSnsId(messageId, sourceUrl, sourceOrder),
             messageId,
             sourceUrl,
-            sourceType: 'single',
+            sourceType: isYouTubePlaylistOnly(sourceUrl) ? 'unsupported' : 'single',
             title: sourceUrl,
             coverUrl: '',
             sourceOrder,
-            parseStatus: 'pending',
-            parseError: '',
+            parseStatus: isYouTubePlaylistOnly(sourceUrl) ? 'failed' : 'pending',
+            parseError: isYouTubePlaylistOnly(sourceUrl) ? '暂不支持获取整个播放列表，请发送具体视频或歌曲链接' : '',
             mediaItemIds: []
         })),
         items: []
     };
 }
 
-function queueTelegramSnsMetadataScan(sessionId, messageId, rawText) {
+function queueSnsMetadataScan(sessionId, messageId, rawText) {
     if (!extractSupportedSocialUrls(rawText).length) return;
+    const scanKey = `${sessionId}:${messageId}`;
+    if (snsMetadataScans.has(scanKey)) return;
+    snsMetadataScans.add(scanKey);
     setTimeout(async () => {
         try {
             const session = sessions.get(sessionId);
             const entry = getHistoryMessageEntry(session, messageId);
             if (!session || !entry?.message) return;
-            const metadata = await buildTelegramSnsMetadata(rawText, messageId);
+            const metadata = await buildSnsMetadata(rawText, messageId);
             entry.message.snsSources = metadata.sources;
             entry.message.snsMediaItems = metadata.items;
             replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parsed');
         } catch (err) {
-            console.warn('telegram sns metadata scan failed:', err.message);
+            console.warn('sns metadata scan failed:', err.message);
             const session = sessions.get(sessionId);
             const entry = getHistoryMessageEntry(session, messageId);
             if (!session || !entry?.message || !Array.isArray(entry.message.snsSources)) return;
@@ -1925,9 +2103,25 @@ function queueTelegramSnsMetadataScan(sessionId, messageId, rawText) {
                 parseError: sanitizeString(err.message || 'sns-parse-failed', 240)
             }));
             replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parse-failed');
+        } finally {
+            snsMetadataScans.delete(scanKey);
         }
     }, 10);
 }
+
+function resumePendingSnsMetadataScans(sessionId, messages = []) {
+    messages.forEach(message => {
+        const rawText = getMessageSnsText(message);
+        if (!extractSupportedSocialUrls(rawText).length) return;
+        const sources = Array.isArray(message.snsSources) ? message.snsSources : [];
+        if (sources.length && !sources.some(source => source?.parseStatus === 'pending')) return;
+        queueSnsMetadataScan(sessionId, message.id, rawText);
+    });
+}
+
+// Compatibility aliases keep the Telegram publishing path on the shared SNS pipeline.
+const createTelegramSnsPlaceholderMetadata = createSnsPlaceholderMetadata;
+const queueTelegramSnsMetadataScan = queueSnsMetadataScan;
 
 async function buildSocialLinkRemark(text) {
     const sourceUrl = extractSupportedSocialUrl(text);
@@ -2606,197 +2800,541 @@ function getMimeTypeFromFileName(fileName = '') {
     return 'application/octet-stream';
 }
 
-function findDownloadedSnsFile(assetId) {
-    if (!fs.existsSync(SNS_MEDIA_WORK_DIR)) return '';
-    const prefix = `${assetId}.`;
-    const entries = fs.readdirSync(SNS_MEDIA_WORK_DIR)
+function getSnsTaskPath(taskId) {
+    return path.join(SNS_MEDIA_TASK_DIR, `${taskId}.json`);
+}
+
+function readSnsTask(taskId) {
+    if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(taskId || ''))) return null;
+    try {
+        return JSON.parse(fs.readFileSync(getSnsTaskPath(taskId), 'utf8'));
+    } catch (_) {
+        return null;
+    }
+}
+
+function persistSnsTask(task) {
+    fs.mkdirSync(SNS_MEDIA_TASK_DIR, { recursive: true });
+    const next = { ...task, updatedAt: Date.now() };
+    writeDataFileAtomic(getSnsTaskPath(next.id), JSON.stringify(next, null, 2));
+    return next;
+}
+
+function listSnsWorkFiles(prefix) {
+    if (!fs.existsSync(SNS_MEDIA_WORK_DIR)) return [];
+    return fs.readdirSync(SNS_MEDIA_WORK_DIR)
         .filter(name => name.startsWith(prefix) && !name.endsWith('.part') && !name.endsWith('.ytdl'))
         .map(name => path.join(SNS_MEDIA_WORK_DIR, name))
         .filter(filePath => {
             try { return fs.statSync(filePath).isFile(); } catch (_) { return false; }
-        })
-        .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
-    return entries[0] || '';
+        });
 }
 
-function runYtDlpDownload(url, assetId, onProgress = () => {}) {
+function cleanupSnsWorkFiles(prefix) {
+    if (!fs.existsSync(SNS_MEDIA_WORK_DIR)) return;
+    fs.readdirSync(SNS_MEDIA_WORK_DIR)
+        .filter(name => name.startsWith(prefix))
+        .map(name => path.join(SNS_MEDIA_WORK_DIR, name))
+        .forEach(filePath => {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+        });
+}
+
+function findDownloadedSnsFile(prefix, predicate = () => true) {
+    return listSnsWorkFiles(prefix)
+        .filter(predicate)
+        .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0] || '';
+}
+
+function spawnCapture(command, args, options = {}) {
     return new Promise((resolve, reject) => {
-        fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
-        const command = process.env.YT_DLP_BIN || 'yt-dlp';
-        const outputTemplate = path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`);
-        const args = [
-            '--newline',
-            '--no-playlist',
-            '--no-cache-dir',
-            ...getYtDlpRemoteComponentArgs(url),
-            '-f',
-            getYtDlpFormatSelector(url),
-            '--merge-output-format',
-            'mp4',
-            '-o',
-            outputTemplate,
-            ...getYtDlpCookieArgs(url),
-            url
-        ];
         const child = spawn(command, args, {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: { ...process.env }
+            env: options.env || { ...process.env }
         });
+        let stdout = '';
         let stderr = '';
-        let lastProgressAt = 0;
-        const parseProgress = chunk => {
-            const text = String(chunk || '');
-            const percentMatch = text.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
-            if (!percentMatch) return;
-            const now = Date.now();
-            if (now - lastProgressAt < 900 && Number(percentMatch[1]) < 99.9) return;
-            lastProgressAt = now;
-            const sizeMatch = text.match(/of\s+~?\s*([0-9.]+\w+i?B)/i);
-            const speedMatch = text.match(/at\s+([0-9.]+\w+i?B\/s)/i);
-            const etaMatch = text.match(/ETA\s+([0-9:]+)/i);
-            onProgress({
-                percent: Math.max(0, Math.min(100, Number(percentMatch[1]) || 0)),
-                totalText: sizeMatch?.[1] || '',
-                speedText: speedMatch?.[1] || '',
-                etaText: etaMatch?.[1] || ''
-            });
-        };
+        let settled = false;
+        const maxOutput = Number(options.maxOutput || 2 * 1024 * 1024);
+        const append = (current, chunk) => (current + String(chunk || '')).slice(-maxOutput);
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
-        child.stdout.on('data', parseProgress);
-        child.stderr.on('data', chunk => {
-            stderr += chunk;
-            parseProgress(chunk);
+        child.stdout.on('data', chunk => {
+            stdout = append(stdout, chunk);
+            options.onOutput?.(chunk);
         });
+        child.stderr.on('data', chunk => {
+            stderr = append(stderr, chunk);
+            options.onOutput?.(chunk);
+        });
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill('SIGTERM');
+            reject(new Error(options.timeoutError || `${path.basename(command)}-timeout`));
+        }, Math.max(1000, Number(options.timeoutMs) || 10 * 60 * 1000));
         child.on('error', err => {
-            reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(new Error(err.code === 'ENOENT' ? `${path.basename(command)}-not-found` : err.message));
         });
         child.on('close', code => {
-            if (code !== 0) return reject(new Error(stderr.trim().slice(-500) || `yt-dlp-download-${code}`));
-            const filePath = findDownloadedSnsFile(assetId);
-            if (!filePath) return reject(new Error('yt-dlp-output-missing'));
-            resolve(filePath);
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (code !== 0) return reject(new Error(stderr.trim().slice(-1000) || `${path.basename(command)}-exit-${code}`));
+            resolve({ stdout, stderr });
         });
     });
+}
+
+function spawnYtDlpCapture(args, options = {}) {
+    const invocation = getYtDlpInvocation(args);
+    return spawnCapture(invocation.command, invocation.args, {
+        ...options,
+        env: buildYtDlpEnv()
+    });
+}
+
+async function probeMediaFile(filePath) {
+    const result = await spawnCapture(process.env.FFPROBE_BIN || 'ffprobe', [
+        '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath
+    ], { timeoutMs: 30000, timeoutError: 'ffprobe-timeout' });
+    try {
+        return JSON.parse(result.stdout);
+    } catch (err) {
+        throw new Error(`ffprobe-json-parse-failed: ${err.message}`);
+    }
+}
+
+function parseYtDlpProgress(chunk, onProgress, state) {
+    const text = String(chunk || '');
+    const percentMatch = text.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
+    if (!percentMatch) return;
+    const now = Date.now();
+    if (now - state.lastAt < 900 && Number(percentMatch[1]) < 99.9) return;
+    state.lastAt = now;
+    const sizeMatch = text.match(/of\s+~?\s*([0-9.]+\w+i?B)/i);
+    const speedMatch = text.match(/at\s+([0-9.]+\w+i?B\/s)/i);
+    const etaMatch = text.match(/ETA\s+([0-9:]+)/i);
+    onProgress({
+        percent: Math.max(0, Math.min(100, Number(percentMatch[1]) || 0)),
+        totalText: sizeMatch?.[1] || '',
+        speedText: speedMatch?.[1] || '',
+        etaText: etaMatch?.[1] || ''
+    });
+}
+
+async function runYtDlpDownload(url, assetId, onProgress = () => {}) {
+    fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
+    cleanupSnsWorkFiles(`${assetId}.`);
+    const progressState = { lastAt: 0 };
+    await spawnYtDlpCapture([
+        '--newline', '--no-playlist', '--no-cache-dir',
+        ...getYtDlpRemoteComponentArgs(url),
+        '-f', getYtDlpFormatSelector(url),
+        '--max-filesize', String(getTelegramMaxFileSize()),
+        '--merge-output-format', 'mp4',
+        '-o', path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`),
+        ...getYtDlpCookieArgs(url),
+        url
+    ], {
+        timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
+        timeoutError: 'yt-dlp-download-timeout',
+        onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
+    });
+    const filePath = findDownloadedSnsFile(`${assetId}.`);
+    if (!filePath) throw new Error('yt-dlp-output-missing');
+    return filePath;
+}
+
+function sanitizeMediaFilePart(value, fallback) {
+    const replacements = { '\\': '＼', '/': '／', ':': '：', '*': '＊', '?': '？', '"': '＂', '<': '＜', '>': '＞', '|': '｜' };
+    const result = String(value || '')
+        .replace(/[\\/:*?"<>|]/g, char => replacements[char])
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .replace(/[. ]+$/g, '')
+        .trim()
+        .slice(0, 110);
+    return result || fallback;
+}
+
+function formatMediaDuration(seconds) {
+    const total = Math.max(0, Math.round(Number(seconds) || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    return hours > 0
+        ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+        : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function getAudioProbeSummary(probe = {}) {
+    const audio = probe.streams?.find(stream => stream.codec_type === 'audio') || {};
+    const format = probe.format || {};
+    const bitRate = Number(audio.bit_rate || format.bit_rate) || 0;
+    const codecName = String(audio.codec_name || '').toUpperCase();
+    const profile = String(audio.profile || '').trim();
+    return {
+        codecName: String(audio.codec_name || '').toLowerCase(),
+        formatLabel: [codecName === 'AAC' ? 'AAC' : codecName, profile].filter(Boolean).join(' ').trim() || '未知',
+        bitRate,
+        bitRateLabel: bitRate > 0 ? `${Math.round(bitRate / 1000)}kbps` : '未知',
+        duration: Number(audio.duration || format.duration) || 0,
+        durationLabel: formatMediaDuration(audio.duration || format.duration)
+    };
+}
+
+async function createSquareCover(sourcePath, outputPath) {
+    const probe = await probeMediaFile(sourcePath);
+    const image = probe.streams?.find(stream => stream.codec_type === 'video');
+    const width = Number(image?.width) || 0;
+    const height = Number(image?.height) || 0;
+    if (!width || !height) throw new Error('song-cover-dimensions-missing');
+    let crop = null;
+    if (width > height) {
+        try {
+            const detection = await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+                '-hide_banner', '-loglevel', 'info', '-loop', '1', '-i', sourcePath,
+                '-t', '0.15', '-vf', 'cropdetect=24:2:0', '-f', 'null', '-'
+            ], { timeoutMs: 30000, timeoutError: 'song-cover-cropdetect-timeout' });
+            const matches = Array.from(detection.stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g));
+            const values = matches.at(-1)?.slice(1).map(Number);
+            if (values?.length === 4) {
+                const [detectedWidth, detectedHeight, detectedX, detectedY] = values;
+                const centered = Math.abs(detectedX - (width - detectedWidth) / 2) <= Math.max(8, width * 0.03);
+                const mostlySquare = detectedWidth / detectedHeight >= 0.82 && detectedWidth / detectedHeight <= 1.18;
+                if (centered && mostlySquare) {
+                    const side = Math.min(detectedWidth, detectedHeight);
+                    crop = { side, x: Math.round(detectedX + (detectedWidth - side) / 2), y: Math.round(detectedY + (detectedHeight - side) / 2) };
+                }
+            }
+        } catch (_) {
+            // Center-crop below is the safe fallback when black-border detection is inconclusive.
+        }
+    }
+    if (!crop) {
+        const side = Math.min(width, height);
+        crop = { side, x: Math.round((width - side) / 2), y: Math.round((height - side) / 2) };
+    }
+    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+        '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
+        '-vf', `crop=${crop.side}:${crop.side}:${crop.x}:${crop.y}`,
+        '-frames:v', '1', '-q:v', '2', outputPath
+    ], { timeoutMs: 60000, timeoutError: 'song-cover-process-timeout' });
+    const finalProbe = await probeMediaFile(outputPath);
+    const finalImage = finalProbe.streams?.find(stream => stream.codec_type === 'video');
+    if (!finalImage || Number(finalImage.width) !== Number(finalImage.height)) throw new Error('song-cover-not-square');
+    return outputPath;
+}
+
+async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onStage) {
+    const url = item.sourceUrl || item.mediaUrl;
+    const prefix = `${taskRecord.id}.source.`;
+    fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
+    cleanupSnsWorkFiles(prefix);
+    const progressState = { lastAt: 0 };
+    onStage('fetching_song');
+    await spawnYtDlpCapture([
+        '--newline', '--no-playlist', '--no-cache-dir',
+        ...getYtDlpRemoteComponentArgs(url),
+        '-f', getYtDlpAudioFormatSelector(),
+        '--max-filesize', String(getTelegramMaxFileSize()),
+        '--write-thumbnail', '--convert-thumbnails', 'jpg',
+        '-o', path.join(SNS_MEDIA_WORK_DIR, `${prefix}%(ext)s`),
+        ...getYtDlpCookieArgs(url),
+        url
+    ], {
+        timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
+        timeoutError: 'yt-dlp-song-download-timeout',
+        onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
+    });
+    const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+    const sourceAudio = findDownloadedSnsFile(prefix, filePath => !imageExts.has(path.extname(filePath).toLowerCase()));
+    const sourceCover = findDownloadedSnsFile(prefix, filePath => imageExts.has(path.extname(filePath).toLowerCase()));
+    if (!sourceAudio) throw new Error('yt-dlp-song-audio-missing');
+    if (!sourceCover) throw new Error('yt-dlp-song-cover-missing');
+    if (fs.statSync(sourceAudio).size > getTelegramMaxFileSize()) throw new Error('sns-media-file-too-large');
+
+    onStage('processing_cover');
+    const squareCover = path.join(SNS_MEDIA_WORK_DIR, `${taskRecord.id}.cover.jpg`);
+    await createSquareCover(sourceCover, squareCover);
+    const sourceProbe = await probeMediaFile(sourceAudio);
+    const sourceSummary = getAudioProbeSummary(sourceProbe);
+    const metadata = item.songMetadata || {};
+    const track = sanitizeString(metadata.track || item.title || item.youtubeVideoId || '未知曲名', 240);
+    const artist = sanitizeString(metadata.artist || '未知艺术家', 240);
+    const album = sanitizeString(metadata.album || '', 240);
+    const year = String(metadata.year || '').match(/\b(19|20)\d{2}\b/)?.[0] || '';
+    const sourceUrl = String(item.sourceUrl || item.mediaUrl || '').slice(0, 1000);
+    const finalAudio = path.join(SNS_MEDIA_WORK_DIR, `${taskRecord.id}.final.m4a`);
+    const audioCodecArgs = sourceSummary.codecName === 'aac'
+        ? ['-c:a', 'copy']
+        : ['-c:a', 'aac', '-b:a', `${Math.max(96, Math.min(256, Math.round((sourceSummary.bitRate || 128000) / 1000)))}k`];
+    onStage('writing_metadata');
+    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+        '-y', '-hide_banner', '-loglevel', 'error',
+        '-i', sourceAudio, '-i', squareCover,
+        '-map', '0:a:0', '-map', '1:v:0',
+        ...audioCodecArgs, '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic',
+        '-metadata', `title=${track}`, '-metadata', `artist=${artist}`,
+        '-metadata', `album=${album}`, '-metadata', `date=${year}`,
+        '-metadata', `comment=${sourceUrl}`,
+        '-metadata:s:v:0', 'title=Album cover', '-metadata:s:v:0', 'comment=Cover (front)',
+        '-movflags', '+faststart', finalAudio
+    ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-metadata-write-timeout' });
+
+    const finalProbe = await probeMediaFile(finalAudio);
+    const finalAudioStream = finalProbe.streams?.find(stream => stream.codec_type === 'audio');
+    const coverStream = finalProbe.streams?.find(stream => stream.codec_type === 'video' && Number(stream.disposition?.attached_pic) === 1);
+    const formatName = String(finalProbe.format?.format_name || '');
+    if (!finalAudioStream || !/(?:mov|mp4|m4a)/i.test(formatName)) throw new Error('song-final-m4a-invalid');
+    if (!coverStream) throw new Error('song-cover-not-embedded');
+    const finalSummary = getAudioProbeSummary(finalProbe);
+    const tags = finalProbe.format?.tags || {};
+    return {
+        finalAudio,
+        squareCover,
+        fileName: `${sanitizeMediaFilePart(artist, '未知艺术家')} - ${sanitizeMediaFilePart(track, '未知曲名')}.m4a`,
+        coverName: `${sanitizeMediaFilePart(artist, '未知艺术家')} - ${sanitizeMediaFilePart(track, '未知曲名')} - 封面.jpg`,
+        metadata: {
+            track: String(tags.title || track), artist: String(tags.artist || artist),
+            album: String(tags.album || album), year: String(tags.date || year), comment: String(tags.comment || sourceUrl)
+        },
+        probe: finalSummary
+    };
+}
+
+function moveSnsFileToAsset(sourcePath, assetId) {
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    const targetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+    try {
+        fs.renameSync(sourcePath, targetPath);
+    } catch (_) {
+        fs.copyFileSync(sourcePath, targetPath);
+        try { fs.unlinkSync(sourcePath); } catch (_) {}
+    }
+    return targetPath;
+}
+
+function createServerAssetFileInfo(asset, extra = {}) {
+    return {
+        id: asset.id, name: asset.name, size: asset.size, type: asset.type,
+        timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件',
+        ownerDeviceId: TELEGRAM_BOT_DEVICE_ID, isAsset: false, isServerAsset: true,
+        serverAssetUrl: `/api/server-assets/${asset.id}`,
+        ...extra
+    };
+}
+
+function buildSongRemark(fileName, metadata, probe) {
+    return [
+        fileName,
+        `    - Track name：${metadata.track || '未知'}`,
+        `    - Performer：${metadata.artist || '未知'}`,
+        `    - Recorded date：${metadata.year || '未知'}`,
+        `    - Bit Rate：${probe.bitRateLabel || '未知'}`,
+        `    - Fomat：${probe.formatLabel || '未知'}`,
+        `    - Duration：${probe.durationLabel || '未知'}`,
+        `    - Comment：${metadata.comment || '未知'}`
+    ].join('\n').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+}
+
+function ensureGeneratedSnsMessage(sessionId, session, taskRecord) {
+    const generatedMessage = taskRecord.generatedMessage;
+    if (!generatedMessage?.id) throw new Error('sns-generated-message-missing');
+    const result = addToSessionHistory(sessionId, session, generatedMessage, {
+        fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
+        source: generatedMessage.type === 'collection' ? 'sns-song-download' : 'sns-media-download'
+    });
+    if (result.stored) emitToReadableSessionDevices(session, 'message', { message: generatedMessage });
+    session.lastActivity = Date.now();
+    scheduleSessionHistoryBroadcast(sessionId, 'sns-media-file-generated', 300);
+    return generatedMessage;
 }
 
 async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
     const session = sessions.get(sessionId);
     const entry = getHistoryMessageEntry(session, messageId);
     const message = entry?.message;
-    const item = message?.snsMediaItems?.find(candidate => candidate?.id === mediaItemId);
+    let item = message?.snsMediaItems?.find(candidate => candidate?.id === mediaItemId);
     if (!session || !message || !item) throw new Error('sns-media-not-found');
-    if (item.generatedMessageId && item.serverAssetId) return item;
+    if (item.mediaKind === 'unsupported') throw new Error('sns-media-unsupported');
+    if (item.generatedMessageId && (item.serverAssetId || item.serverAssetIds?.length) && getHistoryMessageEntry(session, item.generatedMessageId)) return item;
+    const maxDuration = Math.max(60, Number(process.env.SOCIAL_MAX_DURATION_SECONDS || 6 * 60 * 60));
+    if (Number(item.duration) > maxDuration) throw new Error('sns-media-duration-limit-exceeded');
 
+    const taskId = createStableSnsId('sns-task', sessionId, messageId, mediaItemId, item.youtubeVideoId || item.mediaUrl);
     const taskKey = `${sessionId}:${messageId}:${mediaItemId}`;
     if (snsMediaTasks.has(taskKey)) return snsMediaTasks.get(taskKey);
 
     const task = (async () => {
-        const assetId = createServerAssetId();
+        let taskRecord = readSnsTask(taskId) || {
+            id: taskId,
+            sessionId,
+            sourceMessageId: messageId,
+            sourceRecordId: messageId,
+            mediaItemId,
+            sourceUrl: item.sourceUrl || item.mediaUrl,
+            youtubeVideoId: item.youtubeVideoId || '',
+            mediaKind: item.mediaKind || 'video',
+            status: 'pending',
+            createdAt: Date.now(),
+            generatedMessageId: crypto.randomUUID(),
+            audioAssetId: item.mediaKind === 'song' ? createServerAssetId() : '',
+            coverAssetId: item.mediaKind === 'song' ? createServerAssetId() : '',
+            videoAssetId: item.mediaKind === 'song' ? '' : createServerAssetId()
+        };
+        taskRecord = persistSnsTask(taskRecord);
         let lastStateEmit = 0;
         const updateItem = (patch, reason = 'sns-media-status') => {
             const now = Date.now();
             if (reason === 'sns-media-progress' && now - lastStateEmit < 1200) return item;
             lastStateEmit = now;
-            return updateSnsMediaItem(sessionId, messageId, mediaItemId, patch, reason) || item;
+            item = updateSnsMediaItem(sessionId, messageId, mediaItemId, {
+                acquisitionTaskId: taskId,
+                ...patch
+            }, reason) || item;
+            return item;
+        };
+        const updateTask = patch => {
+            taskRecord = persistSnsTask({ ...taskRecord, ...patch });
+            return taskRecord;
+        };
+        const updateStage = stage => {
+            updateTask({ status: stage });
+            updateItem({ serverState: 'fetching', serverStage: stage }, 'sns-media-stage');
         };
 
+        updateItem({ serverState: 'fetching', serverStage: 'queued', serverProgress: 0 }, 'sns-media-queued');
+        const releaseTaskSlot = await acquireSnsMediaTaskSlot();
         try {
-            updateItem({
-                serverState: 'fetching',
-                serverProgress: 0,
-                serverError: '',
-                serverAssetId: '',
-                generatedMessageId: ''
-            }, 'sns-media-fetch-started');
-
-            const downloadedPath = await runYtDlpDownload(item.mediaUrl || item.sourceUrl, assetId, progress => {
-                updateItem({
-                    serverState: 'fetching',
-                    serverProgress: progress.percent,
-                    serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
-                }, 'sns-media-progress');
-            });
-            const stat = fs.statSync(downloadedPath);
-            const ext = path.extname(downloadedPath) || '.mp4';
-            const safeTitle = sanitizeString(item.title || 'sns-media', 150).replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'sns-media';
-            const fileName = `${safeTitle}${ext}`;
-            const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
-            fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
-            try {
-                fs.renameSync(downloadedPath, assetPath);
-            } catch (err) {
-                fs.copyFileSync(downloadedPath, assetPath);
-                try { fs.unlinkSync(downloadedPath); } catch (_) {}
+            if (taskRecord.status === 'ready' && taskRecord.generatedMessage) {
+                const generated = ensureGeneratedSnsMessage(sessionId, session, taskRecord);
+                const resultFileName = generated.type === 'collection'
+                    ? generated.collection?.files?.find(file => String(file.type || '').startsWith('audio/'))?.name
+                    : generated.fileInfo?.name;
+                return updateItem({
+                    serverState: 'ready', serverStage: 'completed', serverProgress: 100,
+                    serverProgressText: '', serverAssetId: taskRecord.audioAssetId || taskRecord.videoAssetId,
+                    serverAssetIds: [taskRecord.coverAssetId, taskRecord.audioAssetId || taskRecord.videoAssetId].filter(Boolean),
+                    generatedMessageId: generated.id, generatedMessageType: generated.type,
+                    resultFileName: resultFileName || '', serverError: ''
+                }, 'sns-media-ready-restored');
             }
 
-            const asset = {
-                id: assetId,
-                path: assetPath,
-                name: fileName,
-                type: getMimeTypeFromFileName(fileName),
-                size: stat.size,
-                sessionId,
-                createdAt: Date.now(),
-                source: 'sns',
-                sourceUrl: item.mediaUrl || item.sourceUrl,
-                sourceMessageId: messageId,
-                snsMediaItemId: mediaItemId
-            };
-            persistTelegramServerAsset(asset);
-            const generatedMessage = {
-                id: crypto.randomUUID(),
-                type: 'file',
-                fileInfo: {
-                    id: asset.id,
-                    name: asset.name,
-                    size: asset.size,
-                    type: asset.type,
-                    timestamp: Date.now(),
-                    sender: TELEGRAM_BOT_DEVICE_ID,
-                    senderName: 'SNS 媒体文件',
-                    ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
-                    isAsset: false,
-                    isServerAsset: true,
-                    serverAssetUrl: `/api/server-assets/${asset.id}`,
-                    remark: String(item.mediaUrl || item.sourceUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH),
-                    sourceMessageId: messageId,
-                    snsMediaItemId: mediaItemId,
-                    snsSourceUrl: item.sourceUrl
-                },
-                timestamp: Date.now(),
-                sender: TELEGRAM_BOT_DEVICE_ID,
-                senderName: 'SNS 媒体文件',
-                sessionId,
-                remark: String(item.mediaUrl || item.sourceUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH)
-            };
-            addToSessionHistory(sessionId, session, generatedMessage, {
-                fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
-                source: 'sns-media-download'
-            });
-            session.lastActivity = Date.now();
-            emitToReadableSessionDevices(session, 'message', { message: generatedMessage });
-            const finalItem = updateItem({
-                serverState: 'ready',
-                serverProgress: 100,
-                serverProgressText: '',
-                serverAssetId: asset.id,
-                generatedMessageId: generatedMessage.id,
-                serverError: ''
+            updateItem({
+                serverState: 'fetching', serverStage: 'parsing', serverProgress: 0,
+                serverError: '', generatedMessageId: ''
+            }, 'sns-media-fetch-started');
+
+            if (!taskRecord.generatedMessage) {
+                if (item.mediaKind === 'song') {
+                    const song = await downloadAndProcessYoutubeSong(item, taskRecord, progress => {
+                        updateTask({ status: 'fetching_song', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
+                        updateItem({
+                            serverState: 'fetching', serverStage: 'fetching_song', serverProgress: progress.percent,
+                            serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
+                        }, 'sns-media-progress');
+                    }, updateStage);
+                    updateStage('creating_collection');
+                    const coverPath = moveSnsFileToAsset(song.squareCover, taskRecord.coverAssetId);
+                    const audioPath = moveSnsFileToAsset(song.finalAudio, taskRecord.audioAssetId);
+                    cleanupSnsWorkFiles(`${taskRecord.id}.source.`);
+                    const coverAsset = {
+                        id: taskRecord.coverAssetId, path: coverPath, name: song.coverName, type: 'image/jpeg',
+                        size: fs.statSync(coverPath).size, sessionId, createdAt: Date.now(), source: 'sns-youtube-song-cover',
+                        sourceUrl: item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
+                        snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: 'song-cover'
+                    };
+                    const audioAsset = {
+                        id: taskRecord.audioAssetId, path: audioPath, name: song.fileName, type: 'audio/mp4',
+                        size: fs.statSync(audioPath).size, sessionId, createdAt: Date.now(), source: 'sns-youtube-song',
+                        sourceUrl: item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
+                        snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: 'song'
+                    };
+                    persistTelegramServerAsset(coverAsset);
+                    persistTelegramServerAsset(audioAsset);
+                    const remark = buildSongRemark(song.fileName, song.metadata, song.probe);
+                    const timestamp = Date.now();
+                    taskRecord.generatedMessage = {
+                        id: taskRecord.generatedMessageId, type: 'collection',
+                        collection: {
+                            id: crypto.randomUUID(),
+                            files: [
+                                createServerAssetFileInfo(coverAsset, { sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId }),
+                                createServerAssetFileInfo(audioAsset, { sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId, audioTitle: song.metadata.track, audioArtist: song.metadata.artist, audioAlbum: song.metadata.album, audioYear: song.metadata.year })
+                            ],
+                            count: 2, totalSize: coverAsset.size + audioAsset.size, remark
+                        },
+                        timestamp, sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件', sessionId, remark,
+                        snsAcquisition: { source: item.platform || 'youtube', mediaKind: 'song', taskId, sourceMessageId: messageId, sourceRecordId: messageId, mediaItemId, sourceUrl: item.sourceUrl, youtubeVideoId: item.youtubeVideoId, coverAssetId: coverAsset.id, audioAssetId: audioAsset.id }
+                    };
+                } else {
+                    updateStage('fetching_video');
+                    const downloadedPath = await runYtDlpDownload(item.mediaUrl || item.sourceUrl, taskRecord.videoAssetId, progress => {
+                        updateTask({ status: 'fetching_video', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
+                        updateItem({
+                            serverState: 'fetching', serverStage: 'fetching_video', serverProgress: progress.percent,
+                            serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
+                        }, 'sns-media-progress');
+                    });
+                    if (fs.statSync(downloadedPath).size > getTelegramMaxFileSize()) {
+                        cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
+                        throw new Error('sns-media-file-too-large');
+                    }
+                    const downloadedProbe = await probeMediaFile(downloadedPath);
+                    if (!downloadedProbe.streams?.some(stream => stream.codec_type === 'video')) {
+                        cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
+                        throw new Error('未获取到有效视频流，请检查 cookies、代理或 yt-dlp 格式可用性');
+                    }
+                    const ext = path.extname(downloadedPath) || '.mp4';
+                    const fileName = `${sanitizeMediaFilePart(item.title, 'sns-media')}${ext}`;
+                    const assetPath = moveSnsFileToAsset(downloadedPath, taskRecord.videoAssetId);
+                    const asset = {
+                        id: taskRecord.videoAssetId, path: assetPath, name: fileName, type: getMimeTypeFromFileName(fileName),
+                        size: fs.statSync(assetPath).size, sessionId, createdAt: Date.now(), source: 'sns',
+                        sourceUrl: item.mediaUrl || item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
+                        snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: 'video'
+                    };
+                    persistTelegramServerAsset(asset);
+                    const remark = String(item.sourceUrl || item.mediaUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+                    taskRecord.generatedMessage = {
+                        id: taskRecord.generatedMessageId, type: 'file',
+                        fileInfo: createServerAssetFileInfo(asset, { remark, sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId }),
+                        timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件', sessionId, remark,
+                        snsAcquisition: { source: item.platform || 'sns', mediaKind: 'video', taskId, sourceMessageId: messageId, sourceRecordId: messageId, mediaItemId, sourceUrl: item.sourceUrl, youtubeVideoId: item.youtubeVideoId, videoAssetId: asset.id }
+                    };
+                }
+                updateTask({ status: 'processed', generatedMessage: taskRecord.generatedMessage });
+            }
+
+            const generatedMessage = ensureGeneratedSnsMessage(sessionId, session, taskRecord);
+            updateTask({ status: 'ready', generatedMessage });
+            const resultFileName = generatedMessage.type === 'collection'
+                ? generatedMessage.collection?.files?.find(file => String(file.type || '').startsWith('audio/'))?.name
+                : generatedMessage.fileInfo?.name;
+            return updateItem({
+                serverState: 'ready', serverStage: 'completed', serverProgress: 100, serverProgressText: '',
+                serverAssetId: taskRecord.audioAssetId || taskRecord.videoAssetId,
+                serverAssetIds: [taskRecord.coverAssetId, taskRecord.audioAssetId || taskRecord.videoAssetId].filter(Boolean),
+                generatedMessageId: generatedMessage.id, generatedMessageType: generatedMessage.type,
+                resultFileName: resultFileName || '', serverError: ''
             }, 'sns-media-ready');
-            scheduleSessionHistoryBroadcast(sessionId, 'sns-media-file-generated', 300);
-            return finalItem;
         } catch (err) {
+            cleanupSnsWorkFiles(`${taskRecord.id}.`);
+            updateTask({ status: 'failed', error: sanitizeString(err.message || 'sns-media-download-failed', 500) });
             const failedItem = updateItem({
-                serverState: 'failed',
+                serverState: 'failed', serverStage: 'failed',
                 serverError: sanitizeString(err.message || 'sns-media-download-failed', 240)
             }, 'sns-media-failed');
             throw Object.assign(err, { snsMediaItem: failedItem });
+        } finally {
+            releaseTaskSlot();
         }
-    })().finally(() => {
-        snsMediaTasks.delete(taskKey);
-    });
+    })().finally(() => snsMediaTasks.delete(taskKey));
     snsMediaTasks.set(taskKey, task);
     return task;
 }
@@ -3953,6 +4491,18 @@ io.on('connection', (socket) => {
             if (!canUseTunnelCapability(session, currentDevice, requiredCapability)) {
                 return socket.emit('permission-denied', { capability: requiredCapability });
             }
+
+            const snsText = getMessageSnsText(message);
+            const snsMetadata = createSnsPlaceholderMetadata(snsText, message.id);
+            if (snsMetadata.sources.length) {
+                message.snsSources = snsMetadata.sources;
+                message.snsMediaItems = [];
+                message.snsOrigin = 'client';
+            } else {
+                delete message.snsSources;
+                delete message.snsMediaItems;
+                delete message.snsOrigin;
+            }
             
             session.lastActivity = Date.now();
             
@@ -3986,6 +4536,9 @@ io.on('connection', (socket) => {
             // 广播给会话中的其他设备
             emitToReadableSessionDevices(session, 'message', { message }, currentDevice);
             scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
+            if (historyResult.stored && snsMetadata.sources.length) {
+                queueSnsMetadataScan(sessionId, message.id, snsText);
+            }
         } catch (err) {
             console.error('message error:', err);
         }
@@ -4163,6 +4716,9 @@ io.on('connection', (socket) => {
             if (!canUseTunnelCapability(session, currentDevice, 'read')) {
                 return respond({ ok: false, error: 'permission-denied' });
             }
+            if (!canUseTunnelCapability(session, currentDevice, 'sendFile')) {
+                return respond({ ok: false, error: 'permission-denied' });
+            }
             if (!isValidDeviceId(messageId) || typeof mediaItemId !== 'string' || mediaItemId.length > 80) {
                 return respond({ ok: false, error: 'invalid-sns-media' });
             }
@@ -4282,6 +4838,7 @@ io.on('connection', (socket) => {
 
             session.lastActivity = Date.now();
             const canonicalMessages = session.history.map(entry => entry.message);
+            resumePendingSnsMetadataScans(sessionId, canonicalMessages);
             emitToReadableSessionDevices(session, 'session-history', {
                 messages: canonicalMessages,
                 deletedMessageIds: session.deletedMessageIds || [],

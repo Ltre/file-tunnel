@@ -6001,6 +6001,7 @@ async function showTransferRecordDetails(messageId) {
                         <span>文件 ID：${escapeHtml(entry.fileInfo.id || '-')}</span>
                     </article>`).join('')}</section>` : ''}
                 ${renderSnsMediaSection(message)}
+                ${renderSnsAcquisitionSection(message)}
                 <details class="transfer-record-raw-details"><summary>记录元数据</summary><pre>${escapeHtml(JSON.stringify(message, (key, value) => key === 'data' ? '[binary omitted]' : value, 2))}</pre></details>
             </div>
             <footer class="transfer-record-details-actions">
@@ -6038,6 +6039,14 @@ async function showTransferRecordDetails(messageId) {
             await focusTransferRecordById(button.dataset.snsLocate, { timeoutMs: 8000 });
         });
     });
+    overlay.querySelectorAll('[data-sns-source-locate]').forEach(button => {
+        button.addEventListener('click', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeTransferRecordDetails();
+            await focusTransferRecordById(button.dataset.snsSourceLocate, { timeoutMs: 8000 });
+        });
+    });
     overlay.addEventListener('click', event => {
         if (event.target === overlay) closeTransferRecordDetails();
     });
@@ -6047,15 +6056,30 @@ async function showTransferRecordDetails(messageId) {
 function getSnsMediaStatusLabel(item = {}) {
     if (item.serverState === 'fetching') {
         const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
-        return `服务器获取中 · ${Math.round(progress)}%`;
+        const stages = {
+            queued: '等待服务器处理',
+            parsing: '正在解析',
+            fetching_song: '正在获取歌曲',
+            fetching_video: '正在获取视频',
+            processing_cover: '正在处理封面',
+            writing_metadata: '正在写入元数据',
+            creating_collection: '正在创建合辑'
+        };
+        const stage = stages[item.serverStage] || '服务器获取中';
+        const showProgress = item.serverStage === 'fetching_song' || item.serverStage === 'fetching_video';
+        return showProgress ? `${stage} · ${Math.round(progress)}%` : stage;
     }
-    if (item.serverState === 'ready') return item.generatedMessageId ? '已生成文件记录' : '已获取到服务器';
+    if (item.serverState === 'ready') {
+        const label = item.mediaKind === 'song' ? '已获取歌曲' : '已生成文件记录';
+        return item.resultFileName ? `${label} · ${item.resultFileName}` : label;
+    }
     if (item.serverState === 'failed') return `获取失败：${item.serverError || '未知错误'}`;
     return '等待获取文件内容';
 }
 
 function renderSnsMediaItemHtml(item = {}) {
-    const canFetch = !item.serverState || item.serverState === 'not_fetched' || item.serverState === 'failed';
+    const staleFetching = item.serverState === 'fetching' && Date.now() - (Number(item.updatedAt) || 0) > 2 * 60 * 1000;
+    const canFetch = !item.serverState || item.serverState === 'not_fetched' || item.serverState === 'failed' || staleFetching;
     const isFetching = item.serverState === 'fetching';
     const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
     return `
@@ -6063,6 +6087,7 @@ function renderSnsMediaItemHtml(item = {}) {
             ${item.coverUrl ? `<img class="sns-media-cover" src="${escapeHtml(item.coverUrl)}" alt="">` : '<div class="sns-media-cover sns-media-cover-empty">SNS</div>'}
             <div class="sns-media-main">
                 <strong>${escapeHtml(item.title || 'SNS 媒体文件')}</strong>
+                ${item.mediaKind ? `<span>${escapeHtml(item.mediaKind === 'song' ? '歌曲' : item.mediaKind === 'video' ? '视频' : '暂不支持')}</span>` : ''}
                 <a href="${escapeHtml(item.mediaUrl || item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.mediaUrl || item.sourceUrl || '')}</a>
                 <span>${escapeHtml(getSnsMediaStatusLabel(item))}</span>
                 ${isFetching ? `<div class="sns-media-progress"><i style="width:${progress}%"></i></div>` : ''}
@@ -6072,6 +6097,27 @@ function renderSnsMediaItemHtml(item = {}) {
                 </div>
             </div>
         </article>`;
+}
+
+function renderSnsAcquisitionSection(message = {}) {
+    const acquisition = message.snsAcquisition;
+    if (!acquisition?.sourceMessageId) return '';
+    const sourceLabel = acquisition.source === 'ytmusic'
+        ? 'YouTube Music'
+        : acquisition.source === 'youtube'
+            ? 'YouTube'
+            : String(acquisition.source || 'SNS').toUpperCase();
+    return `
+        <section class="transfer-record-details-sns">
+            <h3>来源为 ${escapeHtml(sourceLabel)} 获取</h3>
+            <div class="sns-media-main">
+                <a href="${escapeHtml(acquisition.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(acquisition.sourceUrl || '')}</a>
+                <span>${escapeHtml(acquisition.mediaKind === 'song' ? '歌曲合辑' : '视频文件')}</span>
+                <div class="sns-media-actions">
+                    <button type="button" data-sns-source-locate="${escapeHtml(acquisition.sourceMessageId)}">定位原始链接记录</button>
+                </div>
+            </div>
+        </section>`;
 }
 
 function renderSnsMediaSection(message = {}) {
