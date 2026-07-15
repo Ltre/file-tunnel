@@ -91,7 +91,7 @@ function getAssignmentMeta(record, assetId, requesterId, transferId = 'full') {
     return record?.assignmentMeta?.get(assignmentKey(assetId, requesterId, transferId));
 }
 
-function setAssignment(record, assetId, requesterId, transferId, providerId, requestId = '') {
+function setAssignment(record, assetId, requesterId, transferId, providerId, requestId = '', requesterSocketId = '') {
     if (!record.assignments) record.assignments = new Map();
     if (!record.providerLoads) record.providerLoads = new Map();
     if (!record.assignmentMeta) record.assignmentMeta = new Map();
@@ -102,7 +102,8 @@ function setAssignment(record, assetId, requesterId, transferId, providerId, req
         assignedAt: Date.now(),
         updatedAt: Date.now(),
         status: 'assigned',
-        requestId: requestId || ''
+        requestId: requestId || '',
+        requesterSocketId: requesterSocketId || ''
     });
     record.providerLoads.set(providerId, (record.providerLoads.get(providerId) || 0) + 1);
 }
@@ -301,12 +302,23 @@ function registerFileAssetHandlers(socket, context) {
                 : ASSIGNMENT_PENDING_STALE_MS;
             if (existingProviderId && session.devices.has(existingProviderId) && deviceSockets.has(existingProviderId) &&
                 (!existingAge || existingAge <= existingStaleAfter)) {
-                historyLog('file-asset-request-ignored-duplicate', {
+                const existingRequestId = existingMeta?.requestId || '';
+                const isSameRequest = !requestId || !existingRequestId || requestId === existingRequestId;
+                const isSameRequesterSocket = !existingMeta?.requesterSocketId || existingMeta.requesterSocketId === socket.id;
+                if (isSameRequesterSocket && (!forced || isSameRequest)) {
+                    historyLog('file-asset-request-ignored-duplicate', {
+                        sessionId, deviceId, targetDeviceId: existingProviderId, socketId: socket.id, clientIp,
+                        assetId, transfer, forced, requestId, existingRequestId,
+                        existingAge
+                    });
+                    return;
+                }
+                historyLog('file-asset-request-superseded', {
                     sessionId, deviceId, targetDeviceId: existingProviderId, socketId: socket.id, clientIp,
-                    assetId, transfer, forced, requestId, existingRequestId: existingMeta?.requestId || '',
-                    existingAge
+                    assetId, transfer, requestId, existingRequestId, existingAge,
+                    supersedeReason: isSameRequesterSocket ? 'forced-new-request' : 'requester-socket-changed'
                 });
-                return;
+                releaseAssignment(record, assetId, deviceId, transfer?.transferId);
             }
             if (existingProviderId) releaseAssignment(record, assetId, deviceId, transfer?.transferId);
             const receiverLimit = shouldDeferReceiverTask(session, deviceId, record, assetId);
@@ -356,7 +368,7 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             releaseAssignment(record, assetId, deviceId, transfer?.transferId);
-            setAssignment(record, assetId, deviceId, transfer?.transferId, providerId, requestId);
+            setAssignment(record, assetId, deviceId, transfer?.transferId, providerId, requestId, socket.id);
             providerSocket.emit('file-asset-request', { asset: record.metadata, from: deviceId, transfer, requestId });
             historyLog('file-asset-request-forwarded', {
                 sessionId, sourceSessionId: assetSessionId, deviceId, targetDeviceId: providerId,
@@ -377,6 +389,9 @@ function registerFileAssetHandlers(socket, context) {
             const requestId = typeof data?.requestId === 'string' && data.requestId.length <= 120
                 ? sanitize(data.requestId, 120)
                 : undefined;
+            const attemptId = typeof data?.attemptId === 'string' && data.attemptId.length <= 120
+                ? sanitize(data.attemptId, 120)
+                : undefined;
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(assetId) || !isValidId(to)) return;
             const session = sessions.get(sessionId);
@@ -385,11 +400,16 @@ function registerFileAssetHandlers(socket, context) {
             if ((transferId || rangeStart !== undefined || rangeEnd !== undefined) && !transfer) return;
             const receiverRejected = typeof reason === 'string' && reason.startsWith('receiver-');
             if (record && receiverRejected) {
-                releaseAssignment(record, assetId, deviceId, transfer?.transferId);
-                cleanupFileAssetRelay(sessionId, to, deviceId, assetId, transfer?.transferId);
-                historyLog('file-asset-receiver-rejected', {
+                const assignmentMeta = getAssignmentMeta(record, assetId, deviceId, transfer?.transferId);
+                const matchesAssignment = !requestId || !assignmentMeta?.requestId || requestId === assignmentMeta.requestId;
+                if (matchesAssignment) {
+                    releaseAssignment(record, assetId, deviceId, transfer?.transferId);
+                }
+                cleanupFileAssetRelay(sessionId, to, deviceId, assetId, transfer?.transferId, attemptId);
+                historyLog(matchesAssignment ? 'file-asset-receiver-rejected' : 'file-asset-stale-rejection-isolated', {
                     sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId,
-                    transfer, reason: sanitize(reason, 80)
+                    transfer, reason: sanitize(reason, 80), requestId,
+                    activeRequestId: assignmentMeta?.requestId || '', attemptId
                 });
             }
             if (record && reason === 'provider-missing-local-data') {
@@ -405,7 +425,7 @@ function registerFileAssetHandlers(socket, context) {
                     if (!record.assignments) record.assignments = new Map();
                     if (!record.providerLoads) record.providerLoads = new Map();
                     if (!record.assignmentMeta) record.assignmentMeta = new Map();
-                    setAssignment(record, assetId, to, transfer?.transferId, alternative, requestId);
+                    setAssignment(record, assetId, to, transfer?.transferId, alternative, requestId, deviceSockets.get(to)?.id || '');
                     alternativeSocket.emit('file-asset-request', { asset: record.metadata, from: to, transfer, requestId });
                     return;
                 }
@@ -415,7 +435,8 @@ function registerFileAssetHandlers(socket, context) {
                 assetId, from: deviceId, transferId: transfer?.transferId,
                 rangeStart: transfer?.rangeStart, rangeEnd: transfer?.rangeEnd,
                 reason: sanitize(reason || 'provider-unavailable', 80),
-                requestId
+                requestId,
+                attemptId
             });
         } catch (err) {
             console.error('file-asset-unavailable error:', err);
@@ -551,7 +572,7 @@ function registerFileAssetHandlers(socket, context) {
             const { sessionId, to, asset, transferId, attemptId } = data || {};
             const { deviceId } = current();
             if (sessionId && to && asset?.id) {
-                cleanupFileAssetRelay(sessionId, deviceId, to, asset.id, transferId);
+                cleanupFileAssetRelay(sessionId, deviceId, to, asset.id, transferId, attemptId);
             }
             ackFail(ack, err.message || 'relay-start-failed');
         }
@@ -586,9 +607,9 @@ function registerFileAssetHandlers(socket, context) {
             relay.receivedSize += size;
             ackOk(ack, { receivedSize: relay.receivedSize, expectedSize: relay.expectedSize });
         } catch (err) {
-            const { sessionId, to, assetId, transferId } = data || {};
+            const { sessionId, to, assetId, transferId, attemptId } = data || {};
             const { deviceId } = current();
-            if (sessionId && to && assetId) cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId);
+            if (sessionId && to && assetId) cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId, attemptId);
             const reason = err.message || 'relay-chunk-failed';
             if (reason.startsWith('receiver-') || isRelayAckTimeout(reason)) {
                 historyLog(reason.startsWith('receiver-') ? 'file-asset-relay-receiver-rejected' : 'file-asset-relay-target-timeout', {
@@ -647,11 +668,12 @@ function cleanupFileAssetRelays(sessionId, deviceId) {
     }
 }
 
-function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId) {
+function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId, attemptId = '') {
     for (const [key, relay] of relays) {
         if (relay.sessionId !== sessionId || relay.from !== from || relay.to !== to || relay.asset?.id !== assetId) continue;
         const relayTransferId = relay.transfer?.transferId;
         if ((relayTransferId || undefined) !== (transferId || undefined)) continue;
+        if (attemptId && relay.attemptId !== attemptId) continue;
         relays.delete(key);
     }
 }

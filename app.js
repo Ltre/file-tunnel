@@ -165,7 +165,8 @@ let mediaFullscreenMovedMedia = null;
 let mediaFullscreenMovedParent = null;
 let mediaFullscreenMovedNextSibling = null;
 let mediaFullscreenMovedPlaceholder = null;
-let progressDrawerCollapsed = true;
+const PROGRESS_DRAWER_STATE_KEY = 'drop2tunnel-progress-drawer-state';
+let progressDrawerState = loadProgressDrawerState();
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
 let progressDrawerIgnoreItemClicksUntil = 0;
@@ -1405,6 +1406,7 @@ function initSocket() {
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
+        fileAssetTransfer?.resumePending();
         announceStoredFileAssets();
         hydrateEditorAssets(document.getElementById('editor'));
         consumePendingSharedFiles().catch(err => {
@@ -1723,6 +1725,201 @@ function stopTunnelHeartbeat() {
 }
 
 // ==================== WebRTC P2P ====================
+function summarizeIceCandidate(candidate) {
+    if (!candidate) return null;
+    const text = String(candidate.candidate || '');
+    const fields = text.trim().split(/\s+/);
+    const typeMatch = text.match(/\btyp\s+(\w+)/i);
+    return {
+        foundation: candidate.foundation || fields[0]?.replace(/^candidate:/i, '') || '',
+        component: candidate.component || fields[1] || '',
+        type: candidate.type || typeMatch?.[1] || '',
+        protocol: candidate.protocol || fields[2] || '',
+        priority: Number(candidate.priority || fields[3]) || 0,
+        address: candidate.address || fields[4] || '',
+        port: Number(candidate.port || fields[5]) || 0,
+        relatedAddress: candidate.relatedAddress || '',
+        relatedPort: Number(candidate.relatedPort) || 0,
+        tcpType: candidate.tcpType || '',
+        usernameFragment: candidate.usernameFragment || '',
+        url: candidate.url || ''
+    };
+}
+
+function summarizeIceStatsCandidate(report) {
+    return {
+        id: report.id,
+        foundation: report.foundation || '',
+        priority: Number(report.priority) || 0,
+        type: report.candidateType || '',
+        protocol: report.protocol || '',
+        address: report.address || report.ip || '',
+        port: Number(report.port) || 0,
+        networkType: report.networkType || '',
+        relayProtocol: report.relayProtocol || '',
+        usernameFragment: report.usernameFragment || '',
+        url: report.url || ''
+    };
+}
+
+function extractIceUfrags(description) {
+    const sdp = typeof description === 'string' ? description : description?.sdp;
+    if (!sdp) return [];
+    return Array.from(new Set(Array.from(sdp.matchAll(/^a=ice-ufrag:(.+)$/gm), match => match[1].trim()).filter(Boolean)));
+}
+
+async function queryPeerPermissionState(name) {
+    if (!navigator.permissions?.query) return 'unsupported';
+    try {
+        return (await navigator.permissions.query({ name })).state || 'unknown';
+    } catch (_) {
+        return 'unsupported';
+    }
+}
+
+async function logPeerOriginContext(deviceId, pc) {
+    const permissions = {};
+    const permissionNames = ['camera', 'microphone', 'local-network-access'];
+    await Promise.all(permissionNames.map(async name => {
+        permissions[name] = await queryPeerPermissionState(name);
+    }));
+    if (!pc || pc.connectionState === 'closed') return;
+    const payload = {
+        at: new Date().toISOString(),
+        origin: window.location.origin,
+        secureContext: window.isSecureContext,
+        localDeviceId: state.deviceId || '',
+        peerDeviceId: deviceId,
+        designatedInitiator: shouldInitiatePeerConnection(deviceId),
+        visibilityState: document.visibilityState,
+        userAgent: navigator.userAgent,
+        permissions
+    };
+    console.info('[p2p-origin-context]', payload);
+    console.info('[p2p-origin-context-json]', JSON.stringify(payload));
+    historyLog('p2p-origin-context', payload);
+}
+
+function logPeerSignalingStep(deviceId, pc, action, details = {}) {
+    const { persist = true, ...logDetails } = details;
+    const payload = {
+        action,
+        at: new Date().toISOString(),
+        origin: window.location.origin,
+        localDeviceId: state.deviceId || '',
+        peerDeviceId: deviceId,
+        designatedInitiator: shouldInitiatePeerConnection(deviceId),
+        peer: pc ? {
+            connectionState: pc.connectionState,
+            iceConnectionState: pc.iceConnectionState,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState,
+            localIceUfrags: extractIceUfrags(pc.localDescription),
+            remoteIceUfrags: extractIceUfrags(pc.remoteDescription)
+        } : null,
+        ...logDetails
+    };
+    console.info('[p2p-signaling-step]', payload);
+    console.info('[p2p-signaling-step-json]', JSON.stringify(payload));
+    if (persist) historyLog('p2p-signaling-step', payload);
+}
+
+async function logPeerIceDiagnostics(deviceId, pc, reason) {
+    if (!pc || pc.connectionState === 'closed') return;
+    try {
+        const stats = await pc.getStats();
+        const localCandidates = new Map();
+        const remoteCandidates = new Map();
+        const candidatePairs = [];
+        const transports = [];
+        stats.forEach(report => {
+            if (report.type === 'local-candidate') {
+                localCandidates.set(report.id, summarizeIceStatsCandidate(report));
+            } else if (report.type === 'remote-candidate') {
+                remoteCandidates.set(report.id, summarizeIceStatsCandidate(report));
+            } else if (report.type === 'transport') {
+                transports.push({
+                    id: report.id,
+                    iceState: report.iceState || '',
+                    dtlsState: report.dtlsState || '',
+                    selectedCandidatePairId: report.selectedCandidatePairId || ''
+                });
+            }
+        });
+        stats.forEach(report => {
+            if (report.type === 'candidate-pair') {
+                candidatePairs.push({
+                    id: report.id,
+                    state: report.state || '',
+                    nominated: report.nominated === true,
+                    selected: report.selected === true,
+                    writable: report.writable === true,
+                    priority: Number(report.priority) || 0,
+                    currentRoundTripTime: Number(report.currentRoundTripTime) || 0,
+                    availableOutgoingBitrate: Number(report.availableOutgoingBitrate) || 0,
+                    bytesSent: Number(report.bytesSent) || 0,
+                    bytesReceived: Number(report.bytesReceived) || 0,
+                    localCandidate: localCandidates.get(report.localCandidateId) || report.localCandidateId || '',
+                    remoteCandidate: remoteCandidates.get(report.remoteCandidateId) || report.remoteCandidateId || ''
+                });
+            }
+        });
+        candidatePairs.sort((a, b) => Number(b.selected) - Number(a.selected) || Number(b.nominated) - Number(a.nominated) || b.priority - a.priority);
+        const payload = {
+            reason,
+            at: new Date().toISOString(),
+            localDeviceId: state.deviceId || '',
+            peerDeviceId: deviceId,
+            designatedInitiator: shouldInitiatePeerConnection(deviceId),
+            page: {
+                origin: window.location.origin,
+                secureContext: window.isSecureContext,
+                visibilityState: document.visibilityState,
+                online: navigator.onLine,
+                connectionType: navigator.connection?.type || '',
+                effectiveType: navigator.connection?.effectiveType || ''
+            },
+            peer: {
+                connectionState: pc.connectionState,
+                iceConnectionState: pc.iceConnectionState,
+                signalingState: pc.signalingState,
+                iceGatheringState: pc.iceGatheringState,
+                localIceUfrags: extractIceUfrags(pc.localDescription),
+                remoteIceUfrags: extractIceUfrags(pc.remoteDescription)
+            },
+            transports,
+            localCandidates: Array.from(localCandidates.values()),
+            remoteCandidates: Array.from(remoteCandidates.values()),
+            candidatePairs
+        };
+        console.info('[p2p-ice-diagnostics]', payload);
+        console.info('[p2p-ice-diagnostics-json]', JSON.stringify(payload));
+        historyLog('p2p-ice-diagnostics', {
+            reason,
+            peerDeviceId: deviceId,
+            secureContext: window.isSecureContext,
+            localCandidateTypes: Array.from(new Set(payload.localCandidates.map(item => item.type).filter(Boolean))),
+            remoteCandidateTypes: Array.from(new Set(payload.remoteCandidates.map(item => item.type).filter(Boolean))),
+            candidatePairStates: candidatePairs.reduce((counts, item) => {
+                counts[item.state || 'unknown'] = (counts[item.state || 'unknown'] || 0) + 1;
+                return counts;
+            }, {}),
+            selectedCandidatePair: transports.some(item => item.selectedCandidatePairId) || candidatePairs.some(item => item.selected || item.nominated)
+        });
+    } catch (err) {
+        console.warn('[p2p-ice-diagnostics]', { reason, peerDeviceId: deviceId, error: err.message });
+    }
+}
+
+function scheduleCheckingIceDiagnostics(deviceId, pc) {
+    clearTimeout(pc._checkingDiagnosticsTimer);
+    pc._checkingDiagnosticsTimer = setTimeout(() => {
+        if (pc.iceConnectionState === 'checking') {
+            logPeerIceDiagnostics(deviceId, pc, 'checking-before-file-channel-timeout');
+        }
+    }, 4200);
+}
+
 async function createPeerConnection(deviceId) {
     const config = {
         iceServers: [
@@ -1742,17 +1939,56 @@ async function createPeerConnection(deviceId) {
     };
     
     const pc = new RTCPeerConnection(config);
+    logPeerSignalingStep(deviceId, pc, 'peer-connection-created');
+    logPeerOriginContext(deviceId, pc).catch(err => {
+        console.warn('[p2p-origin-context]', { peerDeviceId: deviceId, error: err.message });
+    });
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             console.log('Sending ICE candidate to', deviceId);
+            console.info('[p2p-ice-candidate]', {
+                direction: 'local',
+                localDeviceId: state.deviceId || '',
+                peerDeviceId: deviceId,
+                candidate: summarizeIceCandidate(event.candidate)
+            });
+            console.info('[p2p-ice-candidate-json]', JSON.stringify({
+                direction: 'local',
+                localDeviceId: state.deviceId || '',
+                peerDeviceId: deviceId,
+                candidate: summarizeIceCandidate(event.candidate)
+            }));
             state.socket.emit('signal', {
                 to: deviceId,
                 from: state.deviceId,
                 type: 'ice-candidate',
                 candidate: event.candidate
             });
+        } else {
+            console.info('[p2p-ice-candidate]', {
+                direction: 'local-complete',
+                peerDeviceId: deviceId
+            });
         }
+    };
+
+    pc.onicecandidateerror = event => {
+        console.warn('[p2p-ice-candidate-error]', {
+            peerDeviceId: deviceId,
+            errorCode: event.errorCode || 0,
+            errorText: event.errorText || '',
+            url: event.url || '',
+            address: event.address || '',
+            port: Number(event.port) || 0
+        });
+    };
+
+    pc.onicegatheringstatechange = () => {
+        console.info('[p2p-ice-gathering-state]', {
+            peerDeviceId: deviceId,
+            iceGatheringState: pc.iceGatheringState
+        });
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -1762,11 +1998,18 @@ async function createPeerConnection(deviceId) {
             iceConnectionState: pc.iceConnectionState
         });
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            clearTimeout(pc._checkingDiagnosticsTimer);
             console.log('P2P connection established with', deviceId);
+            logPeerIceDiagnostics(deviceId, pc, 'ice-connected');
+        } else if (pc.iceConnectionState === 'checking') {
+            scheduleCheckingIceDiagnostics(deviceId, pc);
         } else if (pc.iceConnectionState === 'disconnected') {
+            clearTimeout(pc._checkingDiagnosticsTimer);
             console.info('P2P connection temporarily disconnected with', deviceId);
         } else if (pc.iceConnectionState === 'failed') {
+            clearTimeout(pc._checkingDiagnosticsTimer);
             console.warn('P2P connection failed with', deviceId);
+            logPeerIceDiagnostics(deviceId, pc, 'ice-failed');
             if (pc.iceConnectionState === 'failed') {
                 editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             }
@@ -1807,6 +2050,7 @@ async function createPeerConnection(deviceId) {
 
 async function connectToPeer(deviceId) {
     console.log('Connecting to peer:', deviceId);
+    logPeerSignalingStep(deviceId, state.peers.get(deviceId), 'connect-requested');
     
     // 检查是否已有连接
     if (state.peers.has(deviceId)) {
@@ -1815,6 +2059,7 @@ async function connectToPeer(deviceId) {
         // 检查连接状态
         if (existingPC.connectionState === 'connected' || existingPC.iceConnectionState === 'connected' || existingPC.iceConnectionState === 'completed') {
             console.log('Already connected to', deviceId);
+            logPeerSignalingStep(deviceId, existingPC, 'connect-reuse-connected');
             return existingPC;
         }
         
@@ -1826,6 +2071,7 @@ async function connectToPeer(deviceId) {
         } else {
             // 如果连接正在进行中，等待其完成
             console.log('Connection already in progress with', deviceId);
+            logPeerSignalingStep(deviceId, existingPC, 'connect-reuse-in-progress');
             return existingPC;
         }
     }
@@ -1834,6 +2080,7 @@ async function connectToPeer(deviceId) {
 
     if (!shouldInitiatePeerConnection(deviceId)) {
         console.log('Waiting for peer to initiate connection:', deviceId);
+        logPeerSignalingStep(deviceId, pc, 'connect-wait-designated-peer');
         return pc;
     }
 
@@ -1853,6 +2100,9 @@ async function connectToPeer(deviceId) {
     
     await pc.setLocalDescription(offer);
     console.log('Set local description, sending offer to', deviceId);
+    logPeerSignalingStep(deviceId, pc, 'connect-offer-sent', {
+        sdpIceUfrags: extractIceUfrags(offer)
+    });
 
     state.socket.emit('signal', {
         to: deviceId,
@@ -1911,6 +2161,7 @@ async function connectToPeerForFileAsset(deviceId) {
 async function ensurePeerOfferForFileAsset(deviceId) {
     const pc = state.peers.get(deviceId);
     if (!pc) throw new Error('Peer connection missing');
+    logPeerSignalingStep(deviceId, pc, 'file-channel-offer-check');
     console.info('[file-asset-route]', {
         phase: 'app-ensure-offer-start',
         peerDeviceId: deviceId,
@@ -1923,6 +2174,7 @@ async function ensurePeerOfferForFileAsset(deviceId) {
     });
     if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-connected', peerDeviceId: deviceId });
+        logPeerSignalingStep(deviceId, pc, 'file-channel-offer-skip-connected');
         return pc;
     }
     if (pc.signalingState !== 'stable') {
@@ -1931,6 +2183,7 @@ async function ensurePeerOfferForFileAsset(deviceId) {
             peerDeviceId: deviceId,
             signalingState: pc.signalingState
         });
+        logPeerSignalingStep(deviceId, pc, 'file-channel-offer-skip-signaling-busy');
         return pc;
     }
     const offer = await pc.createOffer({
@@ -1939,6 +2192,9 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         iceRestart: false
     });
     await pc.setLocalDescription(offer);
+    logPeerSignalingStep(deviceId, pc, 'file-channel-offer-sent', {
+        sdpIceUfrags: extractIceUfrags(offer)
+    });
     state.socket.emit('signal', {
         to: deviceId,
         from: state.deviceId,
@@ -2008,17 +2264,37 @@ async function handleSignal(data) {
         hasSdp: Boolean(sdp),
         hasCandidate: Boolean(candidate)
     });
+    if (type === 'ice-candidate' && candidate) {
+        console.info('[p2p-ice-candidate]', {
+            direction: 'remote',
+            localDeviceId: state.deviceId || '',
+            peerDeviceId: from,
+            candidate: summarizeIceCandidate(candidate)
+        });
+        console.info('[p2p-ice-candidate-json]', JSON.stringify({
+            direction: 'remote',
+            localDeviceId: state.deviceId || '',
+            peerDeviceId: from,
+            candidate: summarizeIceCandidate(candidate)
+        }));
+    }
 
     let pc = state.peers.get(from);
     if (!pc) {
         pc = await createPeerConnection(from);
     }
+    logPeerSignalingStep(from, pc, `signal-${type}-received`, {
+        sdpIceUfrags: extractIceUfrags(sdp),
+        candidateUsernameFragment: candidate?.usernameFragment || '',
+        persist: type !== 'ice-candidate'
+    });
 
     try {
         if (type === 'offer') {
             if (pc.signalingState === 'have-local-offer') {
                 if (shouldInitiatePeerConnection(from)) {
                     console.warn('Ignoring competing offer from', from);
+                    logPeerSignalingStep(from, pc, 'offer-glare-ignore-remote');
                     historyLog('p2p-offer-ignored', {
                         peerDeviceId: from,
                         reason: 'local-device-is-designated-initiator'
@@ -2026,10 +2302,12 @@ async function handleSignal(data) {
                     return;
                 }
 
+                logPeerSignalingStep(from, pc, 'offer-glare-rollback-local');
                 await pc.setLocalDescription({ type: 'rollback' });
             }
             
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            logPeerSignalingStep(from, pc, 'offer-remote-description-set');
             await flushPendingIceCandidates(from, pc);
             if (pc.signalingState !== 'have-remote-offer') {
                 historyLog('p2p-answer-skipped-stale-offer', {
@@ -2047,6 +2325,9 @@ async function handleSignal(data) {
                 return;
             }
             await pc.setLocalDescription(answer);
+            logPeerSignalingStep(from, pc, 'answer-sent', {
+                sdpIceUfrags: extractIceUfrags(answer)
+            });
 
             state.socket.emit('signal', {
                 to: from,
@@ -2062,11 +2343,19 @@ async function handleSignal(data) {
             }
             
             await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            logPeerSignalingStep(from, pc, 'answer-remote-description-set');
             await flushPendingIceCandidates(from, pc);
         } else if (type === 'ice-candidate') {
             if (pc.remoteDescription) {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                logPeerSignalingStep(from, pc, 'ice-candidate-added', {
+                    candidateUsernameFragment: candidate?.usernameFragment || '',
+                    persist: false
+                });
             } else {
+                logPeerSignalingStep(from, pc, 'ice-candidate-queued-no-remote-description', {
+                    candidateUsernameFragment: candidate?.usernameFragment || ''
+                });
                 queueIceCandidate(from, candidate);
             }
         }
@@ -3045,7 +3334,6 @@ async function announceStoredFileAssets() {
             }
             await fileAssetTransfer.announce(file);
         }
-        fileAssetTransfer.resumePending();
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
@@ -4044,8 +4332,9 @@ async function sendFileCollection(files, options = {}) {
     });
 }
 
-function askFileCollectionMode(files) {
+function askFileCollectionMode(files, options = {}) {
     const list = Array.from(files || []);
+    const ignoredDirectoryCount = Math.max(0, Number(options.ignoredDirectoryCount) || 0);
     return new Promise(resolve => {
         const overlay = document.createElement('div');
         overlay.className = 'send-mode-overlay';
@@ -4053,6 +4342,7 @@ function askFileCollectionMode(files) {
             <div class="send-mode-dialog" role="dialog" aria-modal="true" aria-label="多文件发送方式">
                 <h3>发送 ${list.length} 个文件</h3>
                 <p>以合辑发送会在传输记录里合并成一条，方便预览和批量保存；拆分发送则保持每个文件一条记录。</p>
+                ${ignoredDirectoryCount > 0 ? `<p class="send-mode-directory-warning"><span>已忽略</span> ${ignoredDirectoryCount} <span>个文件夹；当前仅支持拖放文件，不支持拖放文件夹。</span></p>` : ''}
                 <label class="send-mode-remark-label">合辑备注（可选）
                     <textarea class="send-mode-remark" maxlength="${RECORD_REMARK_MAX_LENGTH}" rows="3" placeholder="为这组合辑添加说明"></textarea>
                 </label>
@@ -4097,23 +4387,37 @@ async function sendSelectedFiles(files, options = {}) {
         }
 
         progress.update('等待选择发送方式', 0, entries.length, `共 ${entries.length} 个文件`);
-        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file));
+        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file), {
+            ignoredDirectoryCount: sendOptions.ignoredDirectoryCount
+        });
         if (mode === 'collection') {
             progress.update('生成合辑记录', 0, entries.length, `正在整理 ${entries.length} 个文件`);
             await sendFileCollection(entries, { ...sendOptions, remark });
             progress.update('合辑已写入，后台准备发送', entries.length, entries.length);
             return;
         }
+        const failedFiles = [];
         for (let index = 0; index < entries.length; index++) {
             const entry = entries[index];
             progress.update('写入拆分记录', index, entries.length, entry.file.name || `文件 ${index + 1}`);
-            await sendFile(entry.file, null, {
-                ...sendOptions,
-                deferAssetStorage: !entry.handle,
-                externalFileHandle: entry.handle
-            });
+            try {
+                await sendFile(entry.file, null, {
+                    ...sendOptions,
+                    deferAssetStorage: !entry.handle,
+                    externalFileHandle: entry.handle
+                });
+            } catch (err) {
+                failedFiles.push(entry.file.name || `文件 ${index + 1}`);
+                historyLog('split-file-send-failed', {
+                    fileName: entry.file.name || '',
+                    error: err.message
+                });
+            }
         }
         progress.update('记录已写入，后台准备发送', entries.length, entries.length);
+        if (failedFiles.length) {
+            showAppToast(`${failedFiles.length} 个文件发送失败，其余文件已继续处理`);
+        }
     } finally {
         if (ownsProgress) progress.close();
     }
@@ -4158,14 +4462,29 @@ async function pickFilesForSending() {
 
 async function getDroppedFileEntries(dataTransfer) {
     const items = Array.from(dataTransfer?.items || []).filter(item => item.kind === 'file');
-    if (!items.length) return Array.from(dataTransfer?.files || []).map(file => ({ file, handle: null }));
+    if (!items.length) {
+        return {
+            entries: Array.from(dataTransfer?.files || []).map(file => ({ file, handle: null })),
+            ignoredDirectoryCount: 0
+        };
+    }
     const entries = [];
+    let ignoredDirectoryCount = 0;
     for (const item of items) {
         const fallbackFile = item.getAsFile?.();
         let handle = null;
+        const legacyEntry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+        if (legacyEntry?.isDirectory) {
+            ignoredDirectoryCount += 1;
+            continue;
+        }
         if (typeof item.getAsFileSystemHandle === 'function') {
             try {
                 const candidate = await item.getAsFileSystemHandle();
+                if (candidate?.kind === 'directory') {
+                    ignoredDirectoryCount += 1;
+                    continue;
+                }
                 if (candidate?.kind === 'file') handle = candidate;
             } catch (err) {
                 historyLog('dropped-file-handle-read-failed', { fileName: fallbackFile?.name || '', error: err.message });
@@ -4174,7 +4493,64 @@ async function getDroppedFileEntries(dataTransfer) {
         const file = handle ? await handle.getFile().catch(() => fallbackFile) : fallbackFile;
         if (file) entries.push({ file, handle });
     }
-    return entries;
+    return { entries, ignoredDirectoryCount };
+}
+
+function isEditableClipboardTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest('input, textarea, select, [contenteditable="true"], .ql-editor, #editor'));
+}
+
+function clipboardImageExtension(type) {
+    const subtype = String(type || '').split('/')[1]?.toLowerCase() || 'png';
+    if (subtype === 'jpeg') return 'jpg';
+    return subtype.replace(/[^a-z0-9]/g, '') || 'png';
+}
+
+function createClipboardImageFile(blob, index, total) {
+    const now = new Date();
+    const stamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+        '_',
+        String(now.getHours()).padStart(2, '0'),
+        String(now.getMinutes()).padStart(2, '0'),
+        String(now.getSeconds()).padStart(2, '0')
+    ].join('');
+    const suffix = total > 1 ? `_${index + 1}` : '';
+    return new File([blob], `Screenshot_${stamp}${suffix}.${clipboardImageExtension(blob.type)}`, {
+        type: blob.type || 'image/png',
+        lastModified: Date.now()
+    });
+}
+
+function initClipboardImagePaste() {
+    document.addEventListener('paste', event => {
+        if (!state.sessionId || isEditableClipboardTarget(event.target)) return;
+        const imageItems = Array.from(event.clipboardData?.items || [])
+            .filter(item => item.kind === 'file' && String(item.type || '').toLowerCase().startsWith('image/'));
+        if (!imageItems.length || !requireTunnelPermission('sendFile')) return;
+        const files = imageItems.map(item => item.getAsFile()).filter(Boolean)
+            .map((blob, index, list) => createClipboardImageFile(blob, index, list.length));
+        if (!files.length) return;
+        event.preventDefault();
+        sendSelectedFiles(files).catch(err => {
+            historyLog('clipboard-image-send-failed', { fileCount: files.length, error: err.message });
+            showAppToast(`粘贴截图发送失败：${err.message}`);
+        });
+    });
+}
+
+function initMobilePageZoomGuard() {
+    const isMobileLike = window.matchMedia?.('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (!isMobileLike) return;
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach(type => {
+        document.addEventListener(type, event => event.preventDefault(), { passive: false });
+    });
+    document.addEventListener('touchmove', event => {
+        if (event.touches?.length > 1) event.preventDefault();
+    }, { passive: false });
 }
 
 async function consumePendingSharedFiles() {
@@ -4940,22 +5316,106 @@ function shouldAutoRequestFileAssetCache(storedFile, fileInfo) {
         (!storedFile?.cacheCleared || storedFile.restoreRequested);
 }
 
-async function fetchServerAssetCache(fileInfo, reason = '') {
+const FILE_ASSET_RECOVERY_CONCURRENCY = 3;
+const FILE_ASSET_SERVER_FETCH_TIMEOUT_MS = 45000;
+const FILE_ASSET_ACTIVE_PEER_GRACE_MS = 12000;
+const fileAssetRecoveryQueue = [];
+const queuedFileAssetRecoveries = new Set();
+let activeFileAssetRecoveries = 0;
+
+function enqueueFileAssetRecovery(fileInfo, senderDeviceId, reason, messageId = '') {
+    if (!fileInfo?.id || (!fileInfo.isAsset && !fileInfo.isServerAsset)) return;
+    const sessionId = state.sessionId;
+    const key = `${sessionId}:${fileInfo.id}`;
+    if (queuedFileAssetRecoveries.has(key)) return;
+    queuedFileAssetRecoveries.add(key);
+    fileAssetRecoveryQueue.push({
+        key,
+        sessionId,
+        fileInfo,
+        senderDeviceId: senderDeviceId || fileInfo.ownerDeviceId || '',
+        reason,
+        messageId
+    });
+    processFileAssetRecoveryQueue();
+}
+
+function enqueueMessageAssetRecovery(message, reason) {
+    if (!message) return;
+    if (message.type === 'file') {
+        enqueueFileAssetRecovery(message.fileInfo, message.sender, reason, message.id);
+        return;
+    }
+    if (message.type === 'collection') {
+        getCollectionFiles(message).forEach(fileInfo => {
+            enqueueFileAssetRecovery(fileInfo, message.sender, reason, message.id);
+        });
+    }
+}
+
+function processFileAssetRecoveryQueue() {
+    while (activeFileAssetRecoveries < FILE_ASSET_RECOVERY_CONCURRENCY && fileAssetRecoveryQueue.length) {
+        const task = fileAssetRecoveryQueue.shift();
+        activeFileAssetRecoveries += 1;
+        Promise.resolve().then(async () => {
+            if (task.sessionId !== state.sessionId) return;
+            await requestMissingFileAssetCache({
+                id: task.messageId,
+                sender: task.senderDeviceId,
+                fileInfo: task.fileInfo
+            }, task.reason, { expectedSessionId: task.sessionId });
+        }).catch(err => historyLog('background-file-asset-recovery-failed', {
+            reason: task.reason,
+            messageId: task.messageId,
+            fileId: task.fileInfo?.id,
+            error: err.message
+        })).finally(() => {
+            queuedFileAssetRecoveries.delete(task.key);
+            activeFileAssetRecoveries = Math.max(0, activeFileAssetRecoveries - 1);
+            processFileAssetRecoveryQueue();
+        });
+    }
+}
+
+async function fetchServerAssetCache(fileInfo, reason = '', options = {}) {
     if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    const expectedSessionId = options.expectedSessionId || state.sessionId;
+    if (!expectedSessionId || expectedSessionId !== state.sessionId) return false;
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     if (hasCompleteFileCache(storedFile, fileInfo) && !storedFile?.cacheCleared) return true;
     if (storedFile?.cacheCleared && !storedFile.restoreRequested) return false;
 
-    const response = await fetch(fileInfo.serverAssetUrl, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`server-asset-fetch-${response.status}`);
-    const buffer = await response.arrayBuffer();
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), FILE_ASSET_SERVER_FETCH_TIMEOUT_MS) : null;
+    const sessionGuard = controller ? setInterval(() => {
+        if (expectedSessionId !== state.sessionId) controller.abort();
+    }, 250) : null;
+    let buffer;
+    try {
+        const response = await fetch(fileInfo.serverAssetUrl, {
+            cache: 'no-store',
+            signal: controller?.signal
+        });
+        if (!response.ok) throw new Error(`server-asset-fetch-${response.status}`);
+        buffer = await response.arrayBuffer();
+    } catch (err) {
+        if (err?.name === 'AbortError' && expectedSessionId !== state.sessionId) return false;
+        if (err?.name === 'AbortError') throw new Error('server-asset-fetch-timeout');
+        throw err;
+    } finally {
+        if (timeout) clearTimeout(timeout);
+        if (sessionGuard) clearInterval(sessionGuard);
+    }
+    if (expectedSessionId !== state.sessionId) return false;
+    const latestStoredFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(latestStoredFile, fileInfo) && !latestStoredFile?.cacheCleared) return true;
     const nextFile = {
-        ...(storedFile || {}),
+        ...(latestStoredFile || storedFile || {}),
         id: fileInfo.id,
         name: fileInfo.name,
         type: fileInfo.type || 'application/octet-stream',
         size: Number(fileInfo.size) || buffer.byteLength,
-        sessionId: state.sessionId,
+        sessionId: expectedSessionId,
         ownerDeviceId: fileInfo.ownerDeviceId || fileInfo.sender || '',
         isFileAsset: true,
         isServerAsset: true,
@@ -4967,13 +5427,16 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
         transferInterrupted: false,
         isPartial: false
     };
+    if (expectedSessionId !== state.sessionId) return false;
     await saveToStore('files', nextFile);
+    if (expectedSessionId !== state.sessionId) return true;
     notifyMusicLibraryAssetAvailable(fileInfo, nextFile);
     await fileAssetTransfer?.announce?.(nextFile).catch(err => historyLog('server-asset-cache-announce-failed', {
         reason,
         fileId: fileInfo.id,
         error: err.message
     }));
+    scheduleStoredFileAssetAnnounce('server-asset-cache-fetched', 200);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
@@ -4988,6 +5451,8 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
 
 async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, reason, options = {}) {
     if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    const expectedSessionId = options.expectedSessionId || state.sessionId;
+    if (!expectedSessionId || expectedSessionId !== state.sessionId) return false;
     const initial = await getFromStore('files', fileInfo.id).catch(() => null);
     if (hasCompleteFileCache(initial, fileInfo) && !initial?.cacheCleared) return true;
 
@@ -5004,16 +5469,27 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
             error: err.message
         }));
         await sleep(options.peerWaitMs ?? 3500);
+        if (expectedSessionId !== state.sessionId) return false;
         const peerResult = await getFromStore('files', fileInfo.id).catch(() => null);
         if (hasCompleteFileCache(peerResult, fileInfo)) return true;
+
+        const activePeerDeadline = Date.now() + (options.activePeerGraceMs ?? FILE_ASSET_ACTIVE_PEER_GRACE_MS);
+        while (expectedSessionId === state.sessionId && fileAssetTransfer.hasDownloadWork?.(fileInfo.id) && Date.now() < activePeerDeadline) {
+            await sleep(500);
+            const activePeerResult = await getFromStore('files', fileInfo.id).catch(() => null);
+            if (hasCompleteFileCache(activePeerResult, fileInfo)) return true;
+        }
     }
-    return fetchServerAssetCache(fileInfo, `${reason}-telegram-fallback`);
+    if (expectedSessionId !== state.sessionId) return false;
+    return fetchServerAssetCache(fileInfo, `${reason}-telegram-fallback`, { expectedSessionId });
 }
 
-async function requestMissingFileAssetCache(message, reason) {
+async function requestMissingFileAssetCache(message, reason, options = {}) {
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message.sender, reason).catch(err => historyLog('server-asset-cache-fetch-failed', {
+        await requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message.sender, reason, {
+            expectedSessionId: options.expectedSessionId
+        }).catch(err => historyLog('server-asset-cache-fetch-failed', {
             reason,
             message: summarizeHistoryMessage(message),
             error: err.message
@@ -5091,10 +5567,10 @@ async function handleMessage(data) {
             await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
         }
         if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-            await requestMissingFileAssetCache(message, 'realtime-duplicate');
+            enqueueMessageAssetRecovery(message, 'realtime-duplicate');
         }
         if (message.type === 'collection') {
-            await requestMissingCollectionAssetCaches(existing, 'realtime-collection-duplicate');
+            enqueueMessageAssetRecovery(existing, 'realtime-collection-duplicate');
         }
         historyLog('realtime-message-skipped', {
             reason: 'already-in-indexeddb',
@@ -5134,7 +5610,7 @@ async function handleMessage(data) {
     });
 
     if (message.type === 'file' && message.fileInfo?.isServerAsset) {
-        await requestMissingFileAssetCache(message, 'realtime-server-asset');
+        enqueueMessageAssetRecovery(message, 'realtime-server-asset');
     } else if (message.type === 'file' && message.fileInfo?.isAsset) {
         const requestAsset = async () => {
             await fileAssetTransfer.request(
@@ -5152,7 +5628,7 @@ async function handleMessage(data) {
         }
     }
     if (message.type === 'collection') {
-        await requestMissingCollectionAssetCaches(message, 'realtime-collection');
+        enqueueMessageAssetRecovery(message, 'realtime-collection');
     }
 }
 
@@ -5213,10 +5689,10 @@ async function handleSessionHistory(data) {
                     });
                 }
                 if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-                    await requestMissingFileAssetCache(message, 'snapshot-duplicate');
+                    enqueueMessageAssetRecovery(message, 'snapshot-duplicate');
                 }
                 if (message.type === 'collection') {
-                    await requestMissingCollectionAssetCaches(message, 'snapshot-collection-duplicate');
+                    enqueueMessageAssetRecovery(message, 'snapshot-collection-duplicate');
                 }
                 continue;
             }
@@ -5236,15 +5712,15 @@ async function handleSessionHistory(data) {
                 message: summarizeHistoryMessage(message)
             });
 
-            await addMessageToChat(message, message.sender === state.deviceId);
+            await addMessageToChat(message, message.sender === state.deviceId, { autoRequestAsset: false });
             historyLog('snapshot-message-rendered', {
                 message: summarizeHistoryMessage(message)
             });
             if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-                await requestMissingFileAssetCache(message, 'snapshot-new');
+                enqueueMessageAssetRecovery(message, 'snapshot-new');
             }
             if (message.type === 'collection') {
-                await requestMissingCollectionAssetCaches(message, 'snapshot-collection-new');
+                enqueueMessageAssetRecovery(message, 'snapshot-collection-new');
             }
             restored++;
         } catch (err) {
@@ -5849,20 +6325,10 @@ async function addMessageToChat(message, isOwn, options = {}) {
     }
     if (options.autoRequestAsset !== false && message.type === 'file' &&
         (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-        requestMissingFileAssetCache(message, 'message-rendered')
-            .catch(err => historyLog('file-asset-cache-backfill-failed', {
-                reason: 'message-rendered',
-                message: summarizeHistoryMessage(message),
-                error: err.message
-            }));
+        enqueueMessageAssetRecovery(message, 'message-rendered');
     }
     if (options.autoRequestAsset !== false && message.type === 'collection') {
-        requestMissingCollectionAssetCaches(message, 'collection-rendered')
-            .catch(err => historyLog('collection-asset-cache-backfill-failed', {
-                reason: 'collection-rendered',
-                messageId: message.id,
-                error: err.message
-            }));
+        enqueueMessageAssetRecovery(message, 'collection-rendered');
     }
     return messageEl;
 }
@@ -10450,7 +10916,12 @@ async function restoreFileCache(messageId, options = {}) {
     const message = await getFromStore('messages', messageId);
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await fetchServerAssetCache(fileInfo, options.force ? 'message-force-restore' : 'message-restore');
+        await requestServerAssetWithPeerPreference(
+            fileInfo,
+            fileInfo.ownerDeviceId || message.sender,
+            options.force ? 'message-force-restore' : 'message-restore',
+            { priority: true, force: Boolean(options.force), peerWaitMs: 5000 }
+        );
         await refreshFileMessage(fileInfo.id);
         historyLog('file-cache-server-restore-requested', { messageId, fileId: fileInfo.id });
         return;
@@ -14604,6 +15075,8 @@ function initUI() {
     window.addEventListener('focus', () => {
         validateVisibleExternalFileSources().catch(err => historyLog('external-file-focus-validation-failed', { error: err.message }));
     });
+    initMobilePageZoomGuard();
+    initClipboardImagePaste();
     initMobileWorkspace();
     initProgressDrawer();
     initChatScrollAnchorTracking();
@@ -14910,8 +15383,15 @@ function initDragDrop() {
     });
 
     dropZone.addEventListener('drop', async (e) => {
-        const entries = await getDroppedFileEntries(e.dataTransfer);
-        await sendSelectedFiles(entries);
+        const { entries, ignoredDirectoryCount } = await getDroppedFileEntries(e.dataTransfer);
+        if (ignoredDirectoryCount > 0 && entries.length <= 1) {
+            const translate = window.TunnelI18n?.t || (text => text);
+            showAppToast(entries.length
+                ? `${translate('已忽略')} ${ignoredDirectoryCount} ${translate('个文件夹；合法文件将继续发送。')}`
+                : translate('暂不支持拖放文件夹，请拖入一个或多个文件。'));
+        }
+        if (!entries.length) return;
+        await sendSelectedFiles(entries, { ignoredDirectoryCount });
     }, false);
 }
 
@@ -14928,8 +15408,7 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
         return;
     }
     if (container) {
-        container.style.display = 'block';
-        setProgressDrawerCollapsed(progressDrawerCollapsed);
+        syncProgressDrawerVisibility();
     }
     updateProgressDrawerSummary();
 }
@@ -15078,12 +15557,13 @@ function updateProgressDrawerSummary() {
     const visibleReceiveItems = taskItems.filter(item => item.dataset.progressDirection === 'receive').length;
     const hiddenStartingDownloads = Math.max(0, activeDownloadSnapshot - visibleReceiveItems);
     const count = taskItems.length + queuedSnapshot + hiddenStartingDownloads;
+    const moving = taskItems.filter(isProgressItemActivelyMoving).length;
+    updateTopbarTransferTaskButton(count, moving);
     if (!count) {
         summary.textContent = '';
+        syncProgressDrawerVisibility();
         return;
     }
-
-    const moving = taskItems.filter(isProgressItemActivelyMoving).length;
     const stalled = taskItems.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
     const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length + hiddenStartingDownloads;
     const queued = queuedSnapshot;
@@ -15093,6 +15573,35 @@ function updateProgressDrawerSummary() {
     if (starting) parts.push(`${starting} 个建链中`);
     if (queued) parts.push(`${queued} 个等待`);
     summary.textContent = parts.join(' · ');
+    syncProgressDrawerVisibility();
+}
+
+function loadProgressDrawerState() {
+    try {
+        const stored = localStorage.getItem(PROGRESS_DRAWER_STATE_KEY);
+        return ['expanded', 'collapsed', 'hidden'].includes(stored) ? stored : 'collapsed';
+    } catch (_) {
+        return 'collapsed';
+    }
+}
+
+function updateTopbarTransferTaskButton(totalCount, movingCount) {
+    const button = document.getElementById('topbarTransferTaskBtn');
+    const count = document.getElementById('topbarTransferTaskCount');
+    if (!button || !count) return;
+    const total = Math.max(0, Number(totalCount) || 0);
+    const moving = Math.max(0, Number(movingCount) || 0);
+    count.textContent = total > 99 ? '99+' : String(total);
+    button.hidden = false;
+    button.classList.toggle('has-moving-transfer', moving > 0);
+}
+
+function syncProgressDrawerVisibility() {
+    const container = document.getElementById('transferProgress');
+    if (!container) return;
+    container.style.display = progressDrawerState === 'hidden' || !hasActiveTransferTasks()
+        ? 'none'
+        : 'block';
 }
 
 function hasActiveTransferTasks() {
@@ -15103,50 +15612,81 @@ function hasActiveTransferTasks() {
         (snapshotFresh && (progressQueueSnapshot.queueLength > 0 || progressQueueSnapshot.activeDownloads > 0));
 }
 
-function setProgressDrawerCollapsed(collapsed) {
-    const wasCollapsed = progressDrawerCollapsed;
-    progressDrawerCollapsed = Boolean(collapsed);
+function setProgressDrawerState(nextState, options = {}) {
+    const normalized = ['expanded', 'collapsed', 'hidden'].includes(nextState) ? nextState : 'collapsed';
+    const wasExpanded = progressDrawerState === 'expanded';
+    progressDrawerState = normalized;
+    const isCollapsed = normalized === 'collapsed';
     const container = document.getElementById('transferProgress');
     const toggle = document.getElementById('progressDrawerToggle');
     if (!container || !toggle) return;
 
-    container.classList.toggle('collapsed', progressDrawerCollapsed);
-    toggle.setAttribute('aria-expanded', String(!progressDrawerCollapsed));
-    toggle.title = progressDrawerCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
-    if (wasCollapsed && !progressDrawerCollapsed) {
+    container.classList.toggle('collapsed', isCollapsed);
+    container.classList.toggle('hidden', normalized === 'hidden');
+    toggle.setAttribute('aria-expanded', String(normalized === 'expanded'));
+    toggle.title = isCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
+    if (!wasExpanded && normalized === 'expanded') {
         progressDrawerIgnoreItemClicksUntil = Date.now() + 450;
         progressDrawerBlockPageClicksUntil = Date.now() + 450;
     }
-    if (!progressDrawerCollapsed) {
+    if (normalized === 'expanded') {
         container.style.left = '';
         container.style.top = '';
         container.style.right = '';
         container.style.bottom = '';
         container.removeAttribute('data-dragged');
     }
+    if (options.persist !== false) {
+        try {
+            localStorage.setItem(PROGRESS_DRAWER_STATE_KEY, normalized);
+        } catch (_) {}
+    }
+    syncProgressDrawerVisibility();
+}
+
+function setProgressDrawerCollapsed(collapsed) {
+    setProgressDrawerState(collapsed ? 'collapsed' : 'expanded');
 }
 
 function initProgressDrawer() {
     const toggle = document.getElementById('progressDrawerToggle');
     const container = document.getElementById('transferProgress');
+    const hideButton = document.getElementById('progressDrawerHideBtn');
+    const topbarButton = document.getElementById('topbarTransferTaskBtn');
     if (!toggle || !container) return;
 
     document.addEventListener('click', event => {
+        if (event.target.closest?.('#progressDrawerHideBtn, #topbarTransferTaskBtn')) return;
         if (Date.now() >= progressDrawerBlockPageClicksUntil) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation?.();
     }, true);
 
+    hideButton?.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    hideButton?.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setProgressDrawerState('hidden');
+    });
+    topbarButton?.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setProgressDrawerState('expanded');
+    });
+
     toggle.addEventListener('click', () => {
         if (progressDrawerSuppressClick) {
             progressDrawerSuppressClick = false;
             return;
         }
-        setProgressDrawerCollapsed(!progressDrawerCollapsed);
+        setProgressDrawerState(progressDrawerState === 'expanded' ? 'collapsed' : 'expanded');
     });
     toggle.addEventListener('pointerdown', event => {
-        if (!progressDrawerCollapsed || event.button > 0) return;
+        if (progressDrawerState !== 'collapsed' || event.button > 0) return;
         const rect = container.getBoundingClientRect();
         progressDrawerDragState = {
             pointerId: event.pointerId,
@@ -15199,7 +15739,7 @@ function initProgressDrawer() {
             setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
             return;
         }
-        if (progressDrawerCollapsed) {
+        if (progressDrawerState === 'collapsed') {
             progressDrawerSuppressClick = true;
             setProgressDrawerCollapsed(false);
             setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
@@ -15207,7 +15747,7 @@ function initProgressDrawer() {
     };
     toggle.addEventListener('pointerup', endDrag);
     toggle.addEventListener('pointercancel', endDrag);
-    setProgressDrawerCollapsed(progressDrawerCollapsed);
+    setProgressDrawerState(progressDrawerState, { persist: false });
     updateProgressDrawerSummary();
 }
 
@@ -15451,8 +15991,7 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
     const list = document.getElementById('progressList');
     const elementId = progressElementId(fileId);
 
-    container.style.display = 'block';
-    setProgressDrawerCollapsed(progressDrawerCollapsed);
+    syncProgressDrawerVisibility();
 
     let item = document.getElementById(elementId);
     if (!item) {
@@ -15466,7 +16005,7 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
         item.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            if (progressDrawerCollapsed || Date.now() < progressDrawerIgnoreItemClicksUntil) {
+            if (progressDrawerState !== 'expanded' || Date.now() < progressDrawerIgnoreItemClicksUntil) {
                 return;
             }
             locateProgressFile(item.dataset.progressKey);
@@ -16023,7 +16562,8 @@ async function loadSessionData() {
             for (const msg of orderedMessages) {
                 try {
                     const isOwn = msg.sender === state.deviceId;
-                    await addMessageToChat(msg, isOwn, { scroll: false });
+                    await addMessageToChat(msg, isOwn, { scroll: false, autoRequestAsset: false });
+                    enqueueMessageAssetRecovery(msg, 'indexeddb-history-rendered');
                     renderedCount += 1;
                     if (msg.id === deepLinkedMessage?.id) {
                         settleMobileWorkspaceView('chat');

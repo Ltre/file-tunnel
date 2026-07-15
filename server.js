@@ -1444,6 +1444,29 @@ function recordDebugLog({ source, event, details, sessionId = null, deviceId = n
     return entry;
 }
 
+function summarizeSignalIceCandidate(value) {
+    if (!value) return null;
+    const text = String(value.candidate || '');
+    const fields = text.trim().split(/\s+/);
+    const typeMatch = text.match(/\btyp\s+(\w+)/i);
+    return {
+        foundation: value.foundation || fields[0]?.replace(/^candidate:/i, '') || '',
+        component: value.component || fields[1] || '',
+        protocol: value.protocol || fields[2] || '',
+        priority: Number(value.priority || fields[3]) || 0,
+        address: value.address || fields[4] || '',
+        port: Number(value.port || fields[5]) || 0,
+        candidateType: value.type || typeMatch?.[1] || '',
+        usernameFragment: value.usernameFragment || ''
+    };
+}
+
+function extractSignalIceUfrags(value) {
+    const sdp = typeof value === 'string' ? value : value?.sdp;
+    if (!sdp) return [];
+    return Array.from(new Set(Array.from(sdp.matchAll(/^a=ice-ufrag:(.+)$/gm), match => match[1].trim()).filter(Boolean)));
+}
+
 function getSocketClientIp(socket) {
     const headers = socket.handshake.headers || {};
     const forwardedFor = headers['x-forwarded-for'];
@@ -4539,26 +4562,77 @@ io.on('connection', (socket) => {
 
     socket.on('signal', (data) => {
         if (!checkMessageRate()) {
+            recordDebugLog({
+                source: 'server',
+                event: 'p2p-signal-rate-limited',
+                sessionId: currentSession,
+                deviceId: currentDevice,
+                socketId: socket.id,
+                clientIp,
+                details: {
+                    signalType: data?.type || '',
+                    fromDeviceId: data?.from || '',
+                    toDeviceId: data?.to || ''
+                }
+            });
             return emitSocketError('error', '消息发送过于频繁');
         }
         
         try {
-            if (!data || typeof data !== 'object') return;
+            if (!data || typeof data !== 'object') {
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-rejected',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: { reason: 'invalid-payload' }
+                });
+                return;
+            }
             
             const { to, from, type, sdp, candidate } = data;
             
             // 验证目标设备ID
             if (!isValidDeviceId(to) || !isValidDeviceId(from)) {
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-rejected',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: { reason: 'invalid-device-id', signalType: type || '', fromDeviceId: from || '', toDeviceId: to || '' }
+                });
                 return;
             }
             
             // 验证信令类型
             if (!['offer', 'answer', 'ice-candidate'].includes(type)) {
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-rejected',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: { reason: 'invalid-signal-type', signalType: type || '', fromDeviceId: from, toDeviceId: to }
+                });
                 return;
             }
             
             // 验证当前设备
             if (from !== currentDevice) {
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-rejected',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: { reason: 'sender-device-mismatch', signalType: type, fromDeviceId: from, toDeviceId: to }
+                });
                 return emitSocketError('error', '设备ID不匹配');
             }
             
@@ -4569,6 +4643,38 @@ io.on('connection', (socket) => {
                     type,
                     sdp,
                     candidate
+                });
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-forwarded',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: {
+                        signalType: type,
+                        fromDeviceId: from,
+                        toDeviceId: to,
+                        targetSocketId: targetSocket.id,
+                        sdpIceUfrags: extractSignalIceUfrags(sdp),
+                        ice: summarizeSignalIceCandidate(candidate)
+                    }
+                });
+            } else {
+                recordDebugLog({
+                    source: 'server',
+                    event: 'p2p-signal-target-missing',
+                    sessionId: currentSession,
+                    deviceId: currentDevice,
+                    socketId: socket.id,
+                    clientIp,
+                    details: {
+                        signalType: type,
+                        fromDeviceId: from,
+                        toDeviceId: to,
+                        sdpIceUfrags: extractSignalIceUfrags(sdp),
+                        ice: summarizeSignalIceCandidate(candidate)
+                    }
                 });
             }
         } catch (err) {

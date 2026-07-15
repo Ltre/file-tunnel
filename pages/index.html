@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="google" content="notranslate">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#4f5ec2">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/tunnel-icon.svg" type="image/svg+xml">
@@ -15,6 +15,10 @@
     <script defer src="/client/i18n.js?v=20260707-catalog-only"></script>
     <script defer src="/client/localization-runtime.js?v=20260707-3"></script>
     <style>
+        @media (pointer: coarse) {
+            html, body { touch-action: manipulation; }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -1890,7 +1894,7 @@
             align-items: center;
             width: 100%;
             min-height: 48px;
-            padding: 10px 14px;
+            padding: 10px 48px 10px 14px;
             border: 0;
             gap: 8px;
             background: linear-gradient(180deg, #ffffff 0%, #f7f9fd 100%);
@@ -1943,6 +1947,7 @@
             min-height: 46px;
             border-radius: 999px;
             cursor: grab;
+            padding-right: 46px;
             touch-action: none;
         }
 
@@ -1982,6 +1987,65 @@
             padding: 0 14px 14px;
             color: #68748b;
             font-size: 0.86rem;
+        }
+
+        .progress-drawer-hide-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 3;
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border: 0;
+            border-radius: 50%;
+            background: rgba(233, 237, 246, 0.92);
+            color: #52617f;
+            cursor: pointer;
+            touch-action: manipulation;
+        }
+
+        .progress-drawer-hide-btn::before {
+            content: "";
+            position: absolute;
+            inset: 9px 6px;
+            border: 2px solid currentColor;
+            border-radius: 50% / 58%;
+        }
+
+        .progress-drawer-hide-btn::after {
+            content: "";
+            position: absolute;
+            top: 14px;
+            left: 5px;
+            width: 20px;
+            height: 2px;
+            border-radius: 2px;
+            background: currentColor;
+            transform: rotate(-42deg);
+        }
+
+        .transfer-progress.collapsed .progress-drawer-hide-btn {
+            top: 8px;
+            right: 8px;
+        }
+
+        .topbar-transfer-task-btn {
+            position: relative;
+            min-width: 34px;
+            padding: 0 7px;
+            font-size: 0.78rem;
+            font-variant-numeric: tabular-nums;
+            font-weight: 800;
+        }
+
+        .topbar-transfer-task-btn.has-moving-transfer {
+            animation: transfer-task-pulse 1.05s ease-in-out infinite;
+        }
+
+        @keyframes transfer-task-pulse {
+            0%, 100% { transform: translateY(0) scale(1); }
+            45% { transform: translateY(-2px) scale(1.08); }
         }
         
         .progress-item {
@@ -3163,6 +3227,16 @@
             margin: 0;
             color: #5b6475;
             line-height: 1.6;
+        }
+
+        .send-mode-dialog .send-mode-directory-warning {
+            margin-top: 10px;
+            padding: 9px 10px;
+            border: 1px solid #f1c8c8;
+            border-radius: 6px;
+            background: #fff5f5;
+            color: #a33a3a;
+            font-size: 0.86rem;
         }
 
         .send-mode-actions {
@@ -4457,6 +4531,7 @@
         <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
         <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
         <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
+        <button class="tunnel-topbar-action topbar-transfer-task-btn" id="topbarTransferTaskBtn" type="button" title="查看传输进度" aria-label="查看传输进度"><span id="topbarTransferTaskCount">0</span></button>
         <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
         <div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
@@ -4680,6 +4755,7 @@
             <span class="transfer-progress-summary" id="progressDrawerSummary"></span>
             <span class="transfer-progress-chevron" aria-hidden="true">⌄</span>
         </button>
+        <button class="progress-drawer-hide-btn" id="progressDrawerHideBtn" type="button" title="隐藏传输进度" aria-label="隐藏传输进度"></button>
         <div id="progressList"></div>
     </div>
     
