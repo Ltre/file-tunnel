@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
@@ -39,6 +39,8 @@ const SNS_COOKIE_FILES = Object.freeze({
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
 const manifestHostMap = loadManifestHostMap();
+const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
+const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 
@@ -103,6 +105,8 @@ const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
 const TELEGRAM_REMARK_MAX_LENGTH = 2000;
+const TELEGRAM_CLOUD_GET_FILE_MAX_SIZE = 20 * 1024 * 1024;
+const TELEGRAM_GET_FILE_DOC_URL = 'https://core.telegram.org/bots/api#getfile';
 let telegramConfig = loadTelegramBotConfig();
 
 function normalizeTelegramBotConfig(config = {}) {
@@ -245,6 +249,69 @@ function loadProjectConfig() {
     } catch {
         return {};
     }
+}
+
+function locateExecutable(command) {
+    const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+    try {
+        const result = spawnSync(locator, [command], {
+            encoding: 'utf8',
+            windowsHide: true,
+            env: { ...process.env }
+        });
+        if (result.status !== 0) return '';
+        return String(result.stdout || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function getConfiguredFfmpegLocation() {
+    if (process.env.FFMPEG_LOCATION) return String(process.env.FFMPEG_LOCATION).trim();
+
+    const configured = projectConfig.ffmpegLocation ?? projectConfig.ffmpegPath;
+    if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+        const profile = String(projectConfig.deployment?.profile || '').trim();
+        return profile && typeof configured[profile] === 'string'
+            ? configured[profile].trim()
+            : '';
+    }
+    return typeof configured === 'string' ? configured.trim() : '';
+}
+
+function resolveMediaToolCommand(toolName) {
+    const envValue = toolName === 'ffmpeg' ? process.env.FFMPEG_BIN : process.env.FFPROBE_BIN;
+    const configValue = toolName === 'ffmpeg' ? projectConfig.ffmpegBin : projectConfig.ffprobeBin;
+    const explicit = String(envValue || configValue || '').trim();
+    if (explicit) return explicit;
+
+    const location = getConfiguredFfmpegLocation();
+    if (location) {
+        try {
+            const stat = fs.statSync(location);
+            if (stat.isDirectory()) {
+                return path.join(location, process.platform === 'win32' ? `${toolName}.exe` : toolName);
+            }
+            if (stat.isFile()) {
+                if (path.basename(location).toLowerCase().startsWith(toolName)) return location;
+                return path.join(path.dirname(location), process.platform === 'win32' ? `${toolName}.exe` : toolName);
+            }
+        } catch (_) {
+            const looksLikeExecutable = path.extname(location) || path.basename(location).toLowerCase().startsWith('ffmpeg');
+            if (looksLikeExecutable) {
+                return toolName === 'ffmpeg'
+                    ? location
+                    : path.join(path.dirname(location), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+            }
+            return path.join(location, process.platform === 'win32' ? `${toolName}.exe` : toolName);
+        }
+    }
+    return locateExecutable(toolName) || toolName;
+}
+
+function getYtDlpFfmpegArgs() {
+    const configuredLocation = getConfiguredFfmpegLocation();
+    return configuredLocation ? ['--ffmpeg-location', configuredLocation] : [];
 }
 
 function createDefaultManifest() {
@@ -1876,6 +1943,7 @@ function runYtDlpJson(url, options = {}) {
         if (options.flatPlaylist === true) args.push('--flat-playlist');
         if (options.noPlaylist !== false) args.push('--no-playlist');
         args.push(...getYtDlpRemoteComponentArgs(url));
+        args.push(...getYtDlpFfmpegArgs());
         args.push(url);
         const cookiePath = getSnsCookieFileForUrl(url);
         if (cookiePath && fs.existsSync(cookiePath)) {
@@ -2280,6 +2348,7 @@ function queueTelegramMediaGroup(chatId, message, file, targetShortCode) {
         telegramMediaGroups.delete(key);
         try {
             group.files.sort((left, right) => left.telegramMessageId - right.telegramMessageId);
+            if (await rejectTelegramCloudOversizedFiles(chatId, group.files)) return;
             if (group.targetShortCode) {
                 await publishTelegramCollectionToTunnel(chatId, group.targetShortCode, group.files, group.remark);
             } else {
@@ -2379,6 +2448,7 @@ async function handleTelegramUpdate(update = {}) {
         return;
     }
     if (telegramFile) {
+        if (await rejectTelegramCloudOversizedFiles(chatId, telegramFile)) return;
         if (targetShortCode) await publishTelegramFileToTunnel(chatId, targetShortCode, telegramFile);
         else {
             telegramPendingFiles.set(chatKey, { kind: 'files', files: [telegramFile], createdAt: Date.now() });
@@ -2495,6 +2565,24 @@ async function telegramSendMessage(chatId, text, replyMarkup = undefined) {
     });
 }
 
+function getTelegramCloudOversizedFiles(files) {
+    return (Array.isArray(files) ? files : [files]).filter(file =>
+        file && Number(file.size) > TELEGRAM_CLOUD_GET_FILE_MAX_SIZE
+    );
+}
+
+async function rejectTelegramCloudOversizedFiles(chatId, files) {
+    const oversized = getTelegramCloudOversizedFiles(files);
+    if (!oversized.length) return false;
+    const names = oversized.slice(0, 3).map(file => file.name || 'telegram-file').join('\n');
+    const remaining = oversized.length > 3 ? `\n……以及另外 ${oversized.length - 3} 个文件` : '';
+    await telegramSendMessage(chatId,
+        `以下文件超过 20MB，已拦截，无法通过 Telegram 官方云端 Bot API 转发到隧道：\n${names}${remaining}\n\n` +
+        `Telegram 官方说明：Bot API 的 getFile 目前只能下载不超过 20MB 的文件。\n${TELEGRAM_GET_FILE_DOC_URL}`
+    );
+    return true;
+}
+
 function telegramUnboundKeyboard() {
     return {
         keyboard: [[{ text: '放弃发送' }]],
@@ -2563,6 +2651,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
         return false;
     }
+    if (await rejectTelegramCloudOversizedFiles(chatId, telegramFile)) return false;
     const maxTelegramFileSize = getTelegramMaxFileSize();
     if (telegramFile.size > maxTelegramFileSize) {
         await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
@@ -2677,6 +2766,7 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
         return false;
     }
+    if (await rejectTelegramCloudOversizedFiles(chatId, telegramFiles)) return false;
     const fileInfos = [];
     for (const telegramFile of telegramFiles.slice(0, 100)) {
         fileInfos.push(await prepareTelegramCollectionAsset(sessionId, telegramFile));
@@ -2916,7 +3006,7 @@ function spawnYtDlpCapture(args, options = {}) {
 }
 
 async function probeMediaFile(filePath) {
-    const result = await spawnCapture(process.env.FFPROBE_BIN || 'ffprobe', [
+    const result = await spawnCapture(FFPROBE_COMMAND, [
         '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath
     ], { timeoutMs: 30000, timeoutError: 'ffprobe-timeout' });
     try {
@@ -2951,6 +3041,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}) {
     await spawnYtDlpCapture([
         '--newline', '--no-playlist', '--no-cache-dir',
         ...getYtDlpRemoteComponentArgs(url),
+        ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpFormatSelector(url),
         '--max-filesize', String(getTelegramMaxFileSize()),
         '--merge-output-format', 'mp4',
@@ -3013,7 +3104,7 @@ async function createSquareCover(sourcePath, outputPath) {
     let crop = null;
     if (width > height) {
         try {
-            const detection = await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+            const detection = await spawnCapture(FFMPEG_COMMAND, [
                 '-hide_banner', '-loglevel', 'info', '-loop', '1', '-i', sourcePath,
                 '-t', '0.15', '-vf', 'cropdetect=24:2:0', '-f', 'null', '-'
             ], { timeoutMs: 30000, timeoutError: 'song-cover-cropdetect-timeout' });
@@ -3036,7 +3127,7 @@ async function createSquareCover(sourcePath, outputPath) {
         const side = Math.min(width, height);
         crop = { side, x: Math.round((width - side) / 2), y: Math.round((height - side) / 2) };
     }
-    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+    await spawnCapture(FFMPEG_COMMAND, [
         '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
         '-vf', `crop=${crop.side}:${crop.side}:${crop.x}:${crop.y}`,
         '-frames:v', '1', '-q:v', '2', outputPath
@@ -3057,6 +3148,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     await spawnYtDlpCapture([
         '--newline', '--no-playlist', '--no-cache-dir',
         ...getYtDlpRemoteComponentArgs(url),
+        ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpAudioFormatSelector(),
         '--max-filesize', String(getTelegramMaxFileSize()),
         '--write-thumbnail', '--convert-thumbnails', 'jpg',
@@ -3091,7 +3183,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         ? ['-c:a', 'copy']
         : ['-c:a', 'aac', '-b:a', `${Math.max(96, Math.min(256, Math.round((sourceSummary.bitRate || 128000) / 1000)))}k`];
     onStage('writing_metadata');
-    await spawnCapture(process.env.FFMPEG_BIN || 'ffmpeg', [
+    await spawnCapture(FFMPEG_COMMAND, [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-i', sourceAudio, '-i', squareCover,
         '-map', '0:a:0', '-map', '1:v:0',
@@ -5525,6 +5617,7 @@ function logStartup() {
     console.log(`🔌 Socket.IO: 与 Web/API 共用 ${WEB_PORT} 端口`);
     console.log(`🔒 Nginx should proxy public HTTP/HTTPS traffic to this upstream`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
+    console.log(`🎞️ Media tools: ffmpeg=${FFMPEG_COMMAND}; ffprobe=${FFPROBE_COMMAND}; yt-dlp ffmpeg-location=${getYtDlpFfmpegArgs()[1] || '(PATH)'}`);
 }
 
 async function startServer() {

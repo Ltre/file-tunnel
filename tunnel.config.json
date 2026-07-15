@@ -1,4 +1,9 @@
 {
   "debugLogsEnabled": false,
-  "serverPort": 80
+  "serverPort": 80,
+  "ffmpegLocation": {
+    "txsl": "C:\\GreenApps\\ffmpeg\\bin",
+    "txhk": null,
+    "alyhk": null
+  }
 }
