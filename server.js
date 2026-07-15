@@ -105,6 +105,8 @@ const MAX_DEBUG_STRING_LENGTH = 500;
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
 const TELEGRAM_REMARK_MAX_LENGTH = 2000;
+const TELEGRAM_CLOUD_GET_FILE_MAX_SIZE = 20 * 1024 * 1024;
+const TELEGRAM_GET_FILE_DOC_URL = 'https://core.telegram.org/bots/api#getfile';
 let telegramConfig = loadTelegramBotConfig();
 
 function normalizeTelegramBotConfig(config = {}) {
@@ -265,12 +267,16 @@ function locateExecutable(command) {
 }
 
 function getConfiguredFfmpegLocation() {
-    return String(
-        process.env.FFMPEG_LOCATION ||
-        projectConfig.ffmpegLocation ||
-        projectConfig.ffmpegPath ||
-        ''
-    ).trim();
+    if (process.env.FFMPEG_LOCATION) return String(process.env.FFMPEG_LOCATION).trim();
+
+    const configured = projectConfig.ffmpegLocation ?? projectConfig.ffmpegPath;
+    if (configured && typeof configured === 'object' && !Array.isArray(configured)) {
+        const profile = String(projectConfig.deployment?.profile || '').trim();
+        return profile && typeof configured[profile] === 'string'
+            ? configured[profile].trim()
+            : '';
+    }
+    return typeof configured === 'string' ? configured.trim() : '';
 }
 
 function resolveMediaToolCommand(toolName) {
@@ -305,9 +311,7 @@ function resolveMediaToolCommand(toolName) {
 
 function getYtDlpFfmpegArgs() {
     const configuredLocation = getConfiguredFfmpegLocation();
-    if (configuredLocation) return ['--ffmpeg-location', configuredLocation];
-    if (path.isAbsolute(FFMPEG_COMMAND)) return ['--ffmpeg-location', path.dirname(FFMPEG_COMMAND)];
-    return [];
+    return configuredLocation ? ['--ffmpeg-location', configuredLocation] : [];
 }
 
 function createDefaultManifest() {
@@ -2344,6 +2348,7 @@ function queueTelegramMediaGroup(chatId, message, file, targetShortCode) {
         telegramMediaGroups.delete(key);
         try {
             group.files.sort((left, right) => left.telegramMessageId - right.telegramMessageId);
+            if (await rejectTelegramCloudOversizedFiles(chatId, group.files)) return;
             if (group.targetShortCode) {
                 await publishTelegramCollectionToTunnel(chatId, group.targetShortCode, group.files, group.remark);
             } else {
@@ -2443,6 +2448,7 @@ async function handleTelegramUpdate(update = {}) {
         return;
     }
     if (telegramFile) {
+        if (await rejectTelegramCloudOversizedFiles(chatId, telegramFile)) return;
         if (targetShortCode) await publishTelegramFileToTunnel(chatId, targetShortCode, telegramFile);
         else {
             telegramPendingFiles.set(chatKey, { kind: 'files', files: [telegramFile], createdAt: Date.now() });
@@ -2559,6 +2565,24 @@ async function telegramSendMessage(chatId, text, replyMarkup = undefined) {
     });
 }
 
+function getTelegramCloudOversizedFiles(files) {
+    return (Array.isArray(files) ? files : [files]).filter(file =>
+        file && Number(file.size) > TELEGRAM_CLOUD_GET_FILE_MAX_SIZE
+    );
+}
+
+async function rejectTelegramCloudOversizedFiles(chatId, files) {
+    const oversized = getTelegramCloudOversizedFiles(files);
+    if (!oversized.length) return false;
+    const names = oversized.slice(0, 3).map(file => file.name || 'telegram-file').join('\n');
+    const remaining = oversized.length > 3 ? `\n……以及另外 ${oversized.length - 3} 个文件` : '';
+    await telegramSendMessage(chatId,
+        `以下文件超过 20MB，已拦截，无法通过 Telegram 官方云端 Bot API 转发到隧道：\n${names}${remaining}\n\n` +
+        `Telegram 官方说明：Bot API 的 getFile 目前只能下载不超过 20MB 的文件。\n${TELEGRAM_GET_FILE_DOC_URL}`
+    );
+    return true;
+}
+
 function telegramUnboundKeyboard() {
     return {
         keyboard: [[{ text: '放弃发送' }]],
@@ -2627,6 +2651,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
         return false;
     }
+    if (await rejectTelegramCloudOversizedFiles(chatId, telegramFile)) return false;
     const maxTelegramFileSize = getTelegramMaxFileSize();
     if (telegramFile.size > maxTelegramFileSize) {
         await telegramSendMessage(chatId, `文件太大，当前 Telegram bot 接收上限是 ${Math.round(maxTelegramFileSize / 1024 / 1024)}MB。`);
@@ -2741,6 +2766,7 @@ async function publishTelegramCollectionToTunnel(chatId, shortCode, telegramFile
         await telegramSendMessage(chatId, '没有找到这个隧道暗号，请确认 5 位暗号是否正确。');
         return false;
     }
+    if (await rejectTelegramCloudOversizedFiles(chatId, telegramFiles)) return false;
     const fileInfos = [];
     for (const telegramFile of telegramFiles.slice(0, 100)) {
         fileInfos.push(await prepareTelegramCollectionAsset(sessionId, telegramFile));
