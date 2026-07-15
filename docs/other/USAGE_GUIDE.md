@@ -143,4 +143,4 @@ http://10.0.0.16:3000/api/debug-logs?limit=1000
 
 ## 在windows server 2022 部署注意事项
 
-1. 不要在git bash.exe中npm start，可能会使yt-dlp找不到ffmpeg命令，建议直接在自带的cmd或powershell执行服务启动。
+1. 在该环境中yt-dlp好像搜索不到ffmpeg的路径，即便加了系统环境变量也没用，所以暂时考虑在tunnel.config.json中指定ffmpeg路径。
