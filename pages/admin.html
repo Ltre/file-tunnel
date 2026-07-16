@@ -760,6 +760,9 @@
             container.innerHTML = sessions.map(session => {
                 const safeId = escapeHtml(session.id);
                 const shortId = escapeHtml(session.id.substring(0, 8) + '...');
+                const shortCode = /^[a-z0-9]{5}$/i.test(String(session.shortCode || ''))
+                    ? escapeHtml(String(session.shortCode).toUpperCase())
+                    : '—';
                 const createdTime = new Date(session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const lastActivity = new Date(session.lastActivity || session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const isActive = session.isActive === true;
@@ -782,6 +785,7 @@
                                 </span>
                             </div>
                             <div class="session-meta">
+                                <div>短码: <strong>${shortCode}</strong></div>
                                 <div>设备数: <span class="device-count">📱 ${session.deviceCount || 1}</span></div>
                                 <div>历史: ${session.messageCount || 0} messages / ${session.fileCount || 0} files</div>
                                 <div>创建: ${createdTime}</div>

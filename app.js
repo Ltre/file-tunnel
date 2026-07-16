@@ -165,7 +165,7 @@ let mediaFullscreenMovedMedia = null;
 let mediaFullscreenMovedParent = null;
 let mediaFullscreenMovedNextSibling = null;
 let mediaFullscreenMovedPlaceholder = null;
-let progressDrawerCollapsed = true;
+let progressDrawerState = 'collapsed';
 let progressDrawerDragState = null;
 let progressDrawerSuppressClick = false;
 let progressDrawerIgnoreItemClicksUntil = 0;
@@ -4044,8 +4044,9 @@ async function sendFileCollection(files, options = {}) {
     });
 }
 
-function askFileCollectionMode(files) {
+function askFileCollectionMode(files, options = {}) {
     const list = Array.from(files || []);
+    const ignoredDirectoryCount = Math.max(0, Number(options.ignoredDirectoryCount) || 0);
     return new Promise(resolve => {
         const overlay = document.createElement('div');
         overlay.className = 'send-mode-overlay';
@@ -4053,6 +4054,7 @@ function askFileCollectionMode(files) {
             <div class="send-mode-dialog" role="dialog" aria-modal="true" aria-label="多文件发送方式">
                 <h3>发送 ${list.length} 个文件</h3>
                 <p>以合辑发送会在传输记录里合并成一条，方便预览和批量保存；拆分发送则保持每个文件一条记录。</p>
+                ${ignoredDirectoryCount > 0 ? `<p class="send-mode-directory-warning"><span>已忽略</span> ${ignoredDirectoryCount} <span>个文件夹；当前仅支持拖放文件，不支持拖放文件夹。</span></p>` : ''}
                 <label class="send-mode-remark-label">合辑备注（可选）
                     <textarea class="send-mode-remark" maxlength="${RECORD_REMARK_MAX_LENGTH}" rows="3" placeholder="为这组合辑添加说明"></textarea>
                 </label>
@@ -4097,23 +4099,37 @@ async function sendSelectedFiles(files, options = {}) {
         }
 
         progress.update('等待选择发送方式', 0, entries.length, `共 ${entries.length} 个文件`);
-        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file));
+        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file), {
+            ignoredDirectoryCount: sendOptions.ignoredDirectoryCount
+        });
         if (mode === 'collection') {
             progress.update('生成合辑记录', 0, entries.length, `正在整理 ${entries.length} 个文件`);
             await sendFileCollection(entries, { ...sendOptions, remark });
             progress.update('合辑已写入，后台准备发送', entries.length, entries.length);
             return;
         }
+        const failedFiles = [];
         for (let index = 0; index < entries.length; index++) {
             const entry = entries[index];
             progress.update('写入拆分记录', index, entries.length, entry.file.name || `文件 ${index + 1}`);
-            await sendFile(entry.file, null, {
-                ...sendOptions,
-                deferAssetStorage: !entry.handle,
-                externalFileHandle: entry.handle
-            });
+            try {
+                await sendFile(entry.file, null, {
+                    ...sendOptions,
+                    deferAssetStorage: !entry.handle,
+                    externalFileHandle: entry.handle
+                });
+            } catch (err) {
+                failedFiles.push(entry.file.name || `文件 ${index + 1}`);
+                historyLog('split-file-send-failed', {
+                    fileName: entry.file.name || '',
+                    error: err.message
+                });
+            }
         }
         progress.update('记录已写入，后台准备发送', entries.length, entries.length);
+        if (failedFiles.length) {
+            showAppToast(`${failedFiles.length} 个文件发送失败，其余文件已继续处理`);
+        }
     } finally {
         if (ownsProgress) progress.close();
     }
@@ -4158,23 +4174,110 @@ async function pickFilesForSending() {
 
 async function getDroppedFileEntries(dataTransfer) {
     const items = Array.from(dataTransfer?.items || []).filter(item => item.kind === 'file');
-    if (!items.length) return Array.from(dataTransfer?.files || []).map(file => ({ file, handle: null }));
-    const entries = [];
-    for (const item of items) {
-        const fallbackFile = item.getAsFile?.();
-        let handle = null;
-        if (typeof item.getAsFileSystemHandle === 'function') {
+    if (!items.length) {
+        return {
+            entries: Array.from(dataTransfer?.files || []).map(file => ({ file, handle: null })),
+            ignoredDirectoryCount: 0
+        };
+    }
+    // File-system handle requests must all start during the drop event's current tick.
+    const preparedItems = items.map(item => {
+        const fallbackFile = item.getAsFile?.() || null;
+        const legacyEntry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+        const needsHandle = !legacyEntry?.isDirectory && typeof item.getAsFileSystemHandle === 'function' &&
+            (!fallbackFile || Number(fallbackFile.size || 0) >= EXTERNAL_FILE_HANDLE_MIN_SIZE);
+        let handleResult = Promise.resolve({ handle: null, error: null });
+        if (needsHandle) {
             try {
-                const candidate = await item.getAsFileSystemHandle();
-                if (candidate?.kind === 'file') handle = candidate;
-            } catch (err) {
-                historyLog('dropped-file-handle-read-failed', { fileName: fallbackFile?.name || '', error: err.message });
+                handleResult = Promise.resolve(item.getAsFileSystemHandle()).then(
+                    handle => ({ handle, error: null }),
+                    error => ({ handle: null, error })
+                );
+            } catch (error) {
+                handleResult = Promise.resolve({ handle: null, error });
             }
         }
-        const file = handle ? await handle.getFile().catch(() => fallbackFile) : fallbackFile;
-        if (file) entries.push({ file, handle });
-    }
-    return entries;
+        return { fallbackFile, legacyEntry, handleResult };
+    });
+
+    const resolvedItems = await Promise.all(preparedItems.map(async prepared => {
+        if (prepared.legacyEntry?.isDirectory) return { directory: true };
+        const { handle: candidate, error } = await prepared.handleResult;
+        if (error) {
+            historyLog('dropped-file-handle-read-failed', {
+                fileName: prepared.fallbackFile?.name || '',
+                error: error.message
+            });
+        }
+        if (candidate?.kind === 'directory') return { directory: true };
+        const handle = candidate?.kind === 'file' ? candidate : null;
+        const file = handle
+            ? await handle.getFile().catch(() => prepared.fallbackFile)
+            : prepared.fallbackFile;
+        return file ? { directory: false, file, handle } : null;
+    }));
+
+    const entries = resolvedItems.filter(item => item && !item.directory)
+        .map(item => ({ file: item.file, handle: item.handle }));
+    const ignoredDirectoryCount = resolvedItems.filter(item => item?.directory).length;
+    return { entries, ignoredDirectoryCount };
+}
+
+function isEditableClipboardTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest('input, textarea, select, [contenteditable="true"], .ql-editor, #editor'));
+}
+
+function clipboardImageExtension(type) {
+    const subtype = String(type || '').split('/')[1]?.toLowerCase() || 'png';
+    if (subtype === 'jpeg') return 'jpg';
+    return subtype.replace(/[^a-z0-9]/g, '') || 'png';
+}
+
+function createClipboardImageFile(blob, index, total) {
+    const now = new Date();
+    const stamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+        '_',
+        String(now.getHours()).padStart(2, '0'),
+        String(now.getMinutes()).padStart(2, '0'),
+        String(now.getSeconds()).padStart(2, '0')
+    ].join('');
+    const suffix = total > 1 ? `_${index + 1}` : '';
+    return new File([blob], `Screenshot_${stamp}${suffix}.${clipboardImageExtension(blob.type)}`, {
+        type: blob.type || 'image/png',
+        lastModified: Date.now()
+    });
+}
+
+function initClipboardImagePaste() {
+    document.addEventListener('paste', event => {
+        if (!state.sessionId || isEditableClipboardTarget(event.target)) return;
+        const imageItems = Array.from(event.clipboardData?.items || [])
+            .filter(item => item.kind === 'file' && String(item.type || '').toLowerCase().startsWith('image/'));
+        if (!imageItems.length || !requireTunnelPermission('sendFile')) return;
+        const files = imageItems.map(item => item.getAsFile()).filter(Boolean)
+            .map((blob, index, list) => createClipboardImageFile(blob, index, list.length));
+        if (!files.length) return;
+        event.preventDefault();
+        sendSelectedFiles(files).catch(err => {
+            historyLog('clipboard-image-send-failed', { fileCount: files.length, error: err.message });
+            showAppToast(`粘贴截图发送失败：${err.message}`);
+        });
+    });
+}
+
+function initMobilePageZoomGuard() {
+    const isMobileLike = window.matchMedia?.('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (!isMobileLike) return;
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach(type => {
+        document.addEventListener(type, event => event.preventDefault(), { passive: false });
+    });
+    document.addEventListener('touchmove', event => {
+        if (event.touches?.length > 1) event.preventDefault();
+    }, { passive: false });
 }
 
 async function consumePendingSharedFiles() {
@@ -13827,6 +13930,8 @@ function initWorkspaceSwipeNavigation() {
     if (!appShell) return;
     const track = appShell.querySelector('.main-layout');
     let swipeStart = null;
+    const activeTouchPointers = new Set();
+    let multiTouchBlocked = false;
     const resetTrack = () => {
         track?.classList.remove('is-workspace-dragging');
         track?.style.removeProperty('transform');
@@ -13836,6 +13941,13 @@ function initWorkspaceSwipeNavigation() {
     appShell.addEventListener('pointerdown', event => {
         if (!window.matchMedia('(max-width: 767px)').matches) return;
         if (event.pointerType !== 'touch') return;
+        activeTouchPointers.add(event.pointerId);
+        if (activeTouchPointers.size > 1) {
+            multiTouchBlocked = true;
+            resetTrack();
+            return;
+        }
+        if (multiTouchBlocked) return;
         if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(event.target)) return;
         const index = getWorkspaceViewIndex();
         swipeStart = {
@@ -13854,6 +13966,10 @@ function initWorkspaceSwipeNavigation() {
         } catch (_) {}
     }, { passive: true });
     appShell.addEventListener('pointermove', event => {
+        if (multiTouchBlocked || activeTouchPointers.size > 1) {
+            resetTrack();
+            return;
+        }
         if (!swipeStart) return;
         if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(swipeStart.target)) {
             resetTrack();
@@ -13880,6 +13996,12 @@ function initWorkspaceSwipeNavigation() {
         if (track) track.style.transform = `translateX(${nextOffset}px)`;
     });
     appShell.addEventListener('pointerup', event => {
+        activeTouchPointers.delete(event.pointerId);
+        if (multiTouchBlocked) {
+            resetTrack();
+            if (activeTouchPointers.size === 0) multiTouchBlocked = false;
+            return;
+        }
         if (!swipeStart) return;
         const start = swipeStart;
         swipeStart = null;
@@ -13897,7 +14019,11 @@ function initWorkspaceSwipeNavigation() {
             : start.index;
         setMobileWorkspaceView(getWorkspaceViewByIndex(nextIndex), { user: true });
     });
-    appShell.addEventListener('pointercancel', resetTrack);
+    appShell.addEventListener('pointercancel', event => {
+        activeTouchPointers.delete(event.pointerId);
+        resetTrack();
+        if (activeTouchPointers.size === 0) multiTouchBlocked = false;
+    });
     appShell.addEventListener('pointerleave', () => {
         if (swipeStart?.dragging) return;
         resetTrack();
@@ -14604,6 +14730,8 @@ function initUI() {
     window.addEventListener('focus', () => {
         validateVisibleExternalFileSources().catch(err => historyLog('external-file-focus-validation-failed', { error: err.message }));
     });
+    initMobilePageZoomGuard();
+    initClipboardImagePaste();
     initMobileWorkspace();
     initProgressDrawer();
     initChatScrollAnchorTracking();
@@ -14910,8 +15038,15 @@ function initDragDrop() {
     });
 
     dropZone.addEventListener('drop', async (e) => {
-        const entries = await getDroppedFileEntries(e.dataTransfer);
-        await sendSelectedFiles(entries);
+        const { entries, ignoredDirectoryCount } = await getDroppedFileEntries(e.dataTransfer);
+        if (ignoredDirectoryCount > 0 && entries.length <= 1) {
+            const translate = window.TunnelI18n?.t || (text => text);
+            showAppToast(entries.length
+                ? `${translate('已忽略')} ${ignoredDirectoryCount} ${translate('个文件夹；合法文件将继续发送。')}`
+                : translate('暂不支持拖放文件夹，请拖入一个或多个文件。'));
+        }
+        if (!entries.length) return;
+        await sendSelectedFiles(entries, { ignoredDirectoryCount });
     }, false);
 }
 
@@ -14928,8 +15063,7 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
         return;
     }
     if (container) {
-        container.style.display = 'block';
-        setProgressDrawerCollapsed(progressDrawerCollapsed);
+        syncProgressDrawerVisibility();
     }
     updateProgressDrawerSummary();
 }
@@ -15078,12 +15212,15 @@ function updateProgressDrawerSummary() {
     const visibleReceiveItems = taskItems.filter(item => item.dataset.progressDirection === 'receive').length;
     const hiddenStartingDownloads = Math.max(0, activeDownloadSnapshot - visibleReceiveItems);
     const count = taskItems.length + queuedSnapshot + hiddenStartingDownloads;
+    const moving = taskItems.filter(isProgressItemActivelyMoving).length;
+    updateTopbarTransferTaskButton(moving, count);
     if (!count) {
         summary.textContent = '';
+        if (progressDrawerState === 'hidden') setProgressDrawerState('collapsed');
+        else syncProgressDrawerVisibility();
         return;
     }
 
-    const moving = taskItems.filter(isProgressItemActivelyMoving).length;
     const stalled = taskItems.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
     const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length + hiddenStartingDownloads;
     const queued = queuedSnapshot;
@@ -15093,6 +15230,30 @@ function updateProgressDrawerSummary() {
     if (starting) parts.push(`${starting} 个建链中`);
     if (queued) parts.push(`${queued} 个等待`);
     summary.textContent = parts.join(' · ');
+    syncProgressDrawerVisibility();
+}
+
+function updateTopbarTransferTaskButton(movingCount, totalCount) {
+    const button = document.getElementById('topbarTransferTaskBtn');
+    const count = document.getElementById('topbarTransferTaskCount');
+    if (!button || !count) return;
+    const moving = Math.max(0, Number(movingCount) || 0);
+    const total = Math.max(0, Number(totalCount) || 0);
+    const displayedCount = moving > 0 ? moving : total;
+    count.textContent = displayedCount > 99 ? '99+' : String(displayedCount);
+    button.hidden = total <= 0;
+    button.classList.toggle('has-moving-transfer', moving > 0);
+    button.title = moving > 0
+        ? `${total} 个传输任务，${moving} 个进行中`
+        : `${total} 个传输任务等待处理`;
+}
+
+function syncProgressDrawerVisibility() {
+    const container = document.getElementById('transferProgress');
+    if (!container) return;
+    container.style.display = progressDrawerState === 'hidden' || !hasActiveTransferTasks()
+        ? 'none'
+        : 'block';
 }
 
 function hasActiveTransferTasks() {
@@ -15103,50 +15264,76 @@ function hasActiveTransferTasks() {
         (snapshotFresh && (progressQueueSnapshot.queueLength > 0 || progressQueueSnapshot.activeDownloads > 0));
 }
 
-function setProgressDrawerCollapsed(collapsed) {
-    const wasCollapsed = progressDrawerCollapsed;
-    progressDrawerCollapsed = Boolean(collapsed);
+function setProgressDrawerState(nextState) {
+    const normalized = ['expanded', 'collapsed', 'hidden'].includes(nextState) ? nextState : 'collapsed';
+    const wasExpanded = progressDrawerState === 'expanded';
+    progressDrawerState = normalized;
+    const isCollapsed = normalized === 'collapsed';
     const container = document.getElementById('transferProgress');
     const toggle = document.getElementById('progressDrawerToggle');
     if (!container || !toggle) return;
 
-    container.classList.toggle('collapsed', progressDrawerCollapsed);
-    toggle.setAttribute('aria-expanded', String(!progressDrawerCollapsed));
-    toggle.title = progressDrawerCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
-    if (wasCollapsed && !progressDrawerCollapsed) {
+    container.classList.toggle('collapsed', isCollapsed);
+    container.classList.toggle('hidden', normalized === 'hidden');
+    toggle.setAttribute('aria-expanded', String(normalized === 'expanded'));
+    toggle.title = isCollapsed ? '点击展开；按住可拖动位置' : '点击收起传输进度';
+    if (!wasExpanded && normalized === 'expanded') {
         progressDrawerIgnoreItemClicksUntil = Date.now() + 450;
         progressDrawerBlockPageClicksUntil = Date.now() + 450;
     }
-    if (!progressDrawerCollapsed) {
+    if (normalized === 'expanded') {
         container.style.left = '';
         container.style.top = '';
         container.style.right = '';
         container.style.bottom = '';
         container.removeAttribute('data-dragged');
     }
+    syncProgressDrawerVisibility();
+}
+
+function setProgressDrawerCollapsed(collapsed) {
+    setProgressDrawerState(collapsed ? 'collapsed' : 'expanded');
 }
 
 function initProgressDrawer() {
     const toggle = document.getElementById('progressDrawerToggle');
     const container = document.getElementById('transferProgress');
+    const hideButton = document.getElementById('progressDrawerHideBtn');
+    const topbarButton = document.getElementById('topbarTransferTaskBtn');
     if (!toggle || !container) return;
 
     document.addEventListener('click', event => {
+        if (event.target.closest?.('#progressDrawerHideBtn, #topbarTransferTaskBtn')) return;
         if (Date.now() >= progressDrawerBlockPageClicksUntil) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation?.();
     }, true);
 
+    hideButton?.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    hideButton?.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setProgressDrawerState('hidden');
+    });
+    topbarButton?.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setProgressDrawerState('expanded');
+    });
+
     toggle.addEventListener('click', () => {
         if (progressDrawerSuppressClick) {
             progressDrawerSuppressClick = false;
             return;
         }
-        setProgressDrawerCollapsed(!progressDrawerCollapsed);
+        setProgressDrawerState(progressDrawerState === 'expanded' ? 'collapsed' : 'expanded');
     });
     toggle.addEventListener('pointerdown', event => {
-        if (!progressDrawerCollapsed || event.button > 0) return;
+        if (progressDrawerState !== 'collapsed' || event.button > 0) return;
         const rect = container.getBoundingClientRect();
         progressDrawerDragState = {
             pointerId: event.pointerId,
@@ -15199,7 +15386,7 @@ function initProgressDrawer() {
             setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
             return;
         }
-        if (progressDrawerCollapsed) {
+        if (progressDrawerState === 'collapsed') {
             progressDrawerSuppressClick = true;
             setProgressDrawerCollapsed(false);
             setTimeout(() => { progressDrawerSuppressClick = false; }, 250);
@@ -15207,7 +15394,7 @@ function initProgressDrawer() {
     };
     toggle.addEventListener('pointerup', endDrag);
     toggle.addEventListener('pointercancel', endDrag);
-    setProgressDrawerCollapsed(progressDrawerCollapsed);
+    setProgressDrawerState(progressDrawerState);
     updateProgressDrawerSummary();
 }
 
@@ -15451,8 +15638,7 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
     const list = document.getElementById('progressList');
     const elementId = progressElementId(fileId);
 
-    container.style.display = 'block';
-    setProgressDrawerCollapsed(progressDrawerCollapsed);
+    syncProgressDrawerVisibility();
 
     let item = document.getElementById(elementId);
     if (!item) {
@@ -15466,7 +15652,7 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
         item.addEventListener('click', event => {
             event.preventDefault();
             event.stopPropagation();
-            if (progressDrawerCollapsed || Date.now() < progressDrawerIgnoreItemClicksUntil) {
+            if (progressDrawerState !== 'expanded' || Date.now() < progressDrawerIgnoreItemClicksUntil) {
                 return;
             }
             locateProgressFile(item.dataset.progressKey);
