@@ -4553,7 +4553,10 @@ io.on('connection', (socket) => {
             }
             
             // 验证信令类型
-            if (!['offer', 'answer', 'ice-candidate'].includes(type)) {
+            if (![
+                'offer', 'answer', 'ice-candidate',
+                'lan-connect-request', 'lan-offer', 'lan-answer', 'lan-ice-candidate'
+            ].includes(type)) {
                 return;
             }
             

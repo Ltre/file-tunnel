@@ -64,3 +64,13 @@
 - 顶栏任务入口改为只要存在进行中、等待中、建链中或停滞任务就显示；有进度增长时数字表示进行中数量并保持跳动，没有增长时显示总任务数但不跳动。
 - 当前任务批次完全清空后，隐藏状态自动复位为收缩状态，使下一批新任务能够正常弹出抽屉。
 - 本次仅修复传输状态的可见性，不修改任务产生、调度、链路选择或数据传输行为。
+
+## 2026-07-16：独立 LAN-only WebRTC 文件链路
+
+- 新增仅用于文件传输的独立 LAN WebRTC 连接，使用空 `iceServers` 收集本机 host 候选，避免公网 STUN 候选先被选中而绕行公网地址。
+- LAN 连接使用独立的 `lan-connect-request`、`lan-offer`、`lan-answer`、`lan-ice-candidate` 信令类型和独立信令队列，不与原有 WebRTC 的 SDP、ICE candidate 或连接状态混用。
+- 设备发现后优先预建 LAN 连接；文件传输发起时如果尚未预建成功，会再按需尝试一次。LAN 探测通道在 1.5 秒内打开时，文件 DataChannel 直接复用该连接。
+- LAN 建链失败、超时、连接关闭、对端为旧版本或服务端不支持 LAN 信令时，关闭本次 LAN 尝试并回到原有 STUN WebRTC 链路；原链路后续仍可按既有逻辑降级到 Socket.IO relay。
+- LAN 失败后为对应设备设置 30 秒冷却，避免不可用网络环境下每个文件都重复创建连接；冷却期间直接使用原有链路。
+- 增加 LAN 连接状态和选中 candidate pair 诊断日志，便于确认同一 Wi-Fi 下是否选中 `host` 直连，以及区分 LAN 超时和原链路降级。
+- 保持 `client/file-assets.js`、文件分片、并发调度、重试、进度条和 Socket.IO relay 实现不变，本次只在其 `connectPeer/getPeer/ensurePeerOffer` 依赖入口前增加 LAN 优先选择。
