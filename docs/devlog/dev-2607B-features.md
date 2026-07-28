@@ -31,3 +31,47 @@
 - `[file-asset-route] lan-host-only-peer-selected`：本次文件任务使用 LAN-only 连接。
 - `[file-asset-route] standard-peer-selected`：LAN 尚不可用，本次文件任务立即使用原标准 P2P 链路。
 - `p2p-degrade-to-relay` 且错误为 `Peer connection failed to become ready before P2P timeout`：标准 PeerConnection 在 1500ms 内未连通，已直接降级，不再额外等待文件通道超时。
+
+## 2026-07-29：撤回 LAN-only 实验
+
+### 回归结论
+
+- 实机日志确认，独立 LAN-only PeerConnection 在设备加入后反复超时，随后才启动标准 PeerConnection；两套连接的生命周期还会引发重复 offer、DataChannel 关闭以及 `checking -> disconnected -> failed` 循环。
+- “更快出现 Socket.IO relay”来自缩短 P2P 失败后的等待，并不代表 P2P 建链得到修复。
+- 多文件场景中，该实验造成大量任务停留在“建链中”，不满足可用性要求，因此不再保留。
+
+### 回退明细
+
+- 完整移除客户端 LAN-only PeerConnection、`lan-signal` 队列、LAN 探测定时器、文件链路短时锁定及相关设备生命周期接入。
+- 完整移除服务端 `lan-signal` 转发与独立限流。
+- 撤回文件供源端“连接在 1500ms 后仍未就绪便立即降级”的额外判断。
+- `app.js`、`client/file-assets.js`、`server.js` 的传输链路实现恢复为基线 `0b8e4e18b84a035586a17977de76c7c701945995`：设备发现后立即预建原标准 WebRTC 连接，失败时继续使用原有 Socket.IO relay 兜底。
+
+## 2026-07-29：标准 P2P 并发建链修复
+
+### 日志根因
+
+- 接收端日志中，少量缺失文件触发了大量重复请求；同一设备之间反复出现 `checking -> disconnected -> failed`，但没有出现 `Data channel opened`。
+- 多个文件任务会同时复用一个尚未稳定的 PeerConnection，却又分别尝试创建文件 DataChannel 和触发 offer。每个文件通道各自等待超时后再降级，导致小文件也长时间停留在“建链中”。
+- 旧 PeerConnection 进入失败状态后只从 `state.peers` 删除，没有真正关闭。旧连接的 ICE 回调仍可能继续向后续新连接发送候选，造成信令代际互相污染。
+- 旧控制 DataChannel 的关闭回调会无条件删除设备当前通道，可能误删后来已经建立的新通道。
+
+### 实现调整
+
+- 保留单一的标准 STUN WebRTC 链路，不恢复独立 LAN-only PeerConnection，也不新增服务端信令协议。
+- 同一远端设备只保留一个当前 PeerConnection，并以单个 `_offerPromise` 合并并发 offer 请求；一批文件不会各自发起一轮 SDP 协商。
+- 设备加入时仍立即预建标准 PeerConnection。文件任务先等待共享连接就绪，再创建各自的文件 DataChannel。
+- 共享 PeerConnection 的等待窗口保持 1500ms；超过窗口但 ICE 尚未明确失败时仅让本次任务使用 Socket.IO relay，不把该设备误标记为 P2P 冷却状态，后续文件仍可复用稍后连通的 P2P。
+- PeerConnection 明确失败或断开超时后会真正关闭，清理属于该连接的控制通道和候选，并以单个定时器重建连接。
+- ICE、answer 和 DataChannel 回调都会确认自己仍属于当前 PeerConnection；旧连接的迟到回调不能覆盖新连接状态。
+- 保留确定性 offer 发起方规则；双方发生 offer 竞争时，指定发起方保留本地 offer，另一方回滚并应答，避免 `setLocalDescription` 状态冲突。
+- 服务端 `server.js` 保持基线信令与文件中继逻辑，没有加入新的调度或链路选择分支。
+
+### 回归验证
+
+- 新增 `npm run test:p2p`，覆盖 24 个并发连接请求只创建一个 PeerConnection 和一个 offer。
+- 覆盖文件侧并发 offer 合并、旧连接关闭后不能继续发送 ICE、候选先于 offer 到达、offer 竞争、共享连接等待和明确降级。
+- 以 16 个并发小文件模拟批量发送：共享 PeerConnection 连通前不创建文件通道，连通后全部走 P2P，未触发 relay。
+- 源码 `app.js`、`client/file-assets.js`、`server.js`、`server/file-assets.js` 均通过 `node --check`。
+- `txsl` 部署构建成功，压缩后的 `app` 与 `file-assets` 脚本均通过语法检查。
+- 本地浏览器以 `127.0.0.1` 和 `localhost` 两个独立来源模拟两台设备：ICE 从 `checking` 进入 `connected`，双方控制 DataChannel 正常打开，控制台无警告或错误。

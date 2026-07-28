@@ -3982,9 +3982,6 @@ io.on('connection', (socket) => {
     let messageCount = 0;
     const MESSAGE_LIMIT = 100; // 每分钟最多100条消息
     let messageResetTime = Date.now() + 60000;
-    let lanSignalCount = 0;
-    const LAN_SIGNAL_LIMIT = 120;
-    let lanSignalResetTime = Date.now() + 60000;
     
     // 消息速率检查
     function checkMessageRate() {
@@ -3995,16 +3992,6 @@ io.on('connection', (socket) => {
         }
         messageCount++;
         return messageCount <= MESSAGE_LIMIT;
-    }
-
-    function checkLanSignalRate() {
-        const now = Date.now();
-        if (now > lanSignalResetTime) {
-            lanSignalCount = 0;
-            lanSignalResetTime = now + 60000;
-        }
-        lanSignalCount++;
-        return lanSignalCount <= LAN_SIGNAL_LIMIT;
     }
 
     socket.on('register-profile-device', (data, ack) => {
@@ -4586,34 +4573,6 @@ io.on('connection', (socket) => {
             }
         } catch (err) {
             console.error('signal error:', err);
-        }
-    });
-
-    socket.on('lan-signal', (data) => {
-        if (!checkLanSignalRate()) return;
-
-        try {
-            if (!data || typeof data !== 'object') return;
-
-            const { to, from, type, sdp, candidate } = data;
-            if (!isValidDeviceId(to) || !isValidDeviceId(from)) return;
-            if (!['probe-request', 'offer', 'answer', 'ice-candidate'].includes(type)) return;
-            if (from !== currentDevice || !currentSession) return;
-
-            const session = sessions.get(currentSession);
-            if (!session?.devices.has(from) || !session.devices.has(to)) return;
-
-            const targetSocketId = session.devices.get(to)?.socketId;
-            const targetSocket = targetSocketId ? io.sockets.sockets.get(targetSocketId) : null;
-            if (!targetSocket?.connected || !targetSocket.rooms.has(currentSession)) return;
-            targetSocket.emit('lan-signal', {
-                from,
-                type,
-                sdp,
-                candidate
-            });
-        } catch (err) {
-            console.error('lan-signal error:', err);
         }
     });
     
