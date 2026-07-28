@@ -1249,8 +1249,9 @@
                     peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'closed') {
                     throw new Error('Peer connection is not ready');
                 }
-                if (peer.connectionState !== 'connected' && peer.iceConnectionState !== 'connected' &&
-                    peer.iceConnectionState !== 'completed' && peer.signalingState !== 'stable') {
+                if (peer.connectionState !== 'connected' &&
+                    peer.iceConnectionState !== 'connected' &&
+                    peer.iceConnectionState !== 'completed') {
                     this.routeLog('p2p-wait-existing-negotiation', {
                         assetId: asset.id,
                         peerDeviceId: from,
@@ -1269,6 +1270,11 @@
                     if (!peer || peer.connectionState === 'failed' || peer.connectionState === 'closed' ||
                         peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'closed') {
                         throw new Error('Peer connection is not ready');
+                    }
+                    if (peer.connectionState !== 'connected' &&
+                        peer.iceConnectionState !== 'connected' &&
+                        peer.iceConnectionState !== 'completed') {
+                        throw new Error('Peer connection failed to become ready before P2P timeout');
                     }
                 }
                 const suffix = transfer ? `:${transfer.transferId}` : '';

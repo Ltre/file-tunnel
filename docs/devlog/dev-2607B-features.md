@@ -1,0 +1,33 @@
+# dev-2607B 开发记录
+
+## 2026-07-28：LAN-only WebRTC 安全升级与原链路无阻塞兜底
+
+### 失败版本复盘
+
+- 复盘 `af0e7a3275b0e2d2e7852a9c57361891e903ad18` 后确认，旧实现用 LAN 探测替换了设备加入时原本立即执行的标准 `connectToPeer()`，导致所有设备都必须先等待 LAN 超时才启动原 P2P。
+- 旧实现还把 `lan-*` 类型塞进原 `signal` 事件；旧客户端虽然不识别这些类型，却会先在原信令处理函数中创建标准 PeerConnection，可能留下没有 offer 的连接并影响后续原 P2P 建链。
+
+### 本次实现
+
+- 不让独立 LAN-only PeerConnection 与标准 PeerConnection 同时进行 ICE 建链。回归日志证明，两套连接同时处于 `checking` 会在部分移动端争抢 WebRTC/ICE 资源，使原本的标准连接也转为 `disconnected`、`failed`，并让多个小文件长期停在“建链中”。
+- 设备互相发现后先执行一次独立 LAN-only 尝试，其 `iceServers` 为空，只尝试浏览器可用的 host 直连路径；尝试窗口严格限制为 1500ms，同一设备共享同一个尝试 Promise，多个文件不会各自重复启动 LAN 建链。
+- LAN-only 在 1500ms 内成功时立即供文件任务使用；随后等待 1000ms，再在后台启动原标准 STUN PeerConnection，以保留协同编辑等既有功能。此时 LAN 已经稳定，不会与标准连接同时竞争首次 ICE。
+- LAN-only 超时或失败时先彻底关闭该 PeerConnection，再立即调用原 `connectToPeer()`；标准 STUN WebRTC 的 offer/answer、ICE candidate、重连和 Socket.IO relay 逻辑保持原样。
+- 如果混用旧客户端，旧客户端先发来标准 `signal`，新客户端会立即取消尚未完成的 LAN 尝试并处理标准信令，不会让两套 ICE 并行。
+- 不使用“上报 IP 相同”作为硬判断条件：代理、CGNAT、mDNS 和浏览器隐私策略都可能令该判断误报或漏报；LAN-only probe 能否真正打开就是最终的局域网可达性判定。
+- LAN 信令使用独立的 Socket.IO `lan-signal` 事件、独立队列和独立限流，不进入原 `signal` 处理函数，也不占用原信令的速率额度。
+- 同一设备的文件传输链路选择短时锁定 10 秒，避免多个并发文件在 LAN 与标准 PeerConnection 之间交叉创建 DataChannel。
+- 新服务端与旧客户端混用时，旧客户端会完全忽略独立 `lan-signal` 事件；新客户端连接旧服务端时 LAN probe 会静默超时，但原传输链路不受影响。
+- 修正文件供源端的超时判断：原逻辑在 PeerConnection 仍为 `checking/connecting`、但信令状态已经是 `stable` 时，会跳过 1500ms 连接等待，并继续额外等待 5000ms 文件 DataChannel 超时。现在无论信令状态如何，只要 PeerConnection 在 1500ms 后仍未连通，就立即进入既有 Socket.IO relay 兜底，并对同一设备启用短暂 P2P 冷却，防止一批小文件逐个重复长时间建链。
+
+### 诊断日志
+
+- `[lan-peer] background host-only probe started`：旁路 LAN 探测已启动。
+- `[lan-peer] host-only channel ready`：LAN probe DataChannel 已打开，可供后续文件任务优先选择。
+- `[lan-peer] selected candidate pair`：输出 LAN 连接实际选中的 candidate pair。
+- `lan-peer-first-attempt-ready`：LAN 首试在 1500ms 窗口内成功。
+- `lan-peer-first-attempt-fallback`：LAN 首试未成功，已切换到原标准链路。
+- `lan-peer-standard-background-started`：LAN 已稳定，开始补建原标准连接；或 LAN 失败后立即启动原标准连接。
+- `[file-asset-route] lan-host-only-peer-selected`：本次文件任务使用 LAN-only 连接。
+- `[file-asset-route] standard-peer-selected`：LAN 尚不可用，本次文件任务立即使用原标准 P2P 链路。
+- `p2p-degrade-to-relay` 且错误为 `Peer connection failed to become ready before P2P timeout`：标准 PeerConnection 在 1500ms 内未连通，已直接降级，不再额外等待文件通道超时。

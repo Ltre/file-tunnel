@@ -146,6 +146,18 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 const peerSignalQueues = new Map();
+const LAN_PEER_PROBE_TIMEOUT = 1500;
+const LAN_PEER_RETRY_COOLDOWN = 30 * 1000;
+const LAN_STANDARD_BACKGROUND_DELAY = 1000;
+const FILE_ASSET_PEER_ROUTE_LOCK = 10 * 1000;
+const lanPeerConnections = new Map();
+const lanPeerProbeTimers = new Map();
+const lanPeerAttemptPromises = new Map();
+const lanStandardConnectTimers = new Map();
+const lanPeerRetryAfter = new Map();
+const lanPendingIceCandidates = new Map();
+const lanSignalQueues = new Map();
+const fileAssetPeerRoutes = new Map();
 let fileAssetTransfer = null;
 let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
@@ -1444,6 +1456,9 @@ function initSocket() {
     });
     state.socket.on('device-profile', data => {
         state.selfNetworkInfo = data || null;
+        state.devices.forEach((_, deviceId) => {
+            preconnectPreferredFileAssetPeer(deviceId, 'self-network-profile');
+        });
         updateDeviceList();
     });
     state.socket.on('device-updated', handleDeviceUpdated);
@@ -1489,6 +1504,9 @@ function initSocket() {
 
     state.socket.on('signal', (data) => {
         queuePeerSignal(data);
+    });
+    state.socket.on('lan-signal', (data) => {
+        queueLanSignal(data);
     });
 
     state.socket.on('message', (data) => {
@@ -1723,6 +1741,582 @@ function stopTunnelHeartbeat() {
 }
 
 // ==================== WebRTC P2P ====================
+function isLanPeerConnectionTerminal(pc) {
+    return !pc ||
+        pc.connectionState === 'failed' ||
+        pc.connectionState === 'closed' ||
+        pc.iceConnectionState === 'failed' ||
+        pc.iceConnectionState === 'closed';
+}
+
+function isLanFilePeerReady(deviceId) {
+    const pc = lanPeerConnections.get(deviceId);
+    return Boolean(pc) &&
+        (pc.connectionState === 'connected' ||
+            pc.iceConnectionState === 'connected' ||
+            pc.iceConnectionState === 'completed') &&
+        pc._lanProbeChannel?.readyState === 'open';
+}
+
+function isStandardFilePeerReady(deviceId) {
+    const pc = state.peers.get(deviceId);
+    return Boolean(pc) &&
+        (pc.connectionState === 'connected' ||
+            pc.iceConnectionState === 'connected' ||
+            pc.iceConnectionState === 'completed');
+}
+
+function clearLanPeerProbeTimer(deviceId) {
+    const timer = lanPeerProbeTimers.get(deviceId);
+    if (timer) clearTimeout(timer);
+    lanPeerProbeTimers.delete(deviceId);
+}
+
+function clearLanStandardConnectTimer(deviceId) {
+    const timer = lanStandardConnectTimers.get(deviceId);
+    if (timer) clearTimeout(timer);
+    lanStandardConnectTimers.delete(deviceId);
+}
+
+function clearFileAssetPeerRoute(deviceId, peer = null) {
+    const route = fileAssetPeerRoutes.get(deviceId);
+    if (!route || (peer && route.peer !== peer)) return;
+    fileAssetPeerRoutes.delete(deviceId);
+}
+
+function closeLanFilePeer(deviceId, reason = '', retryDelay = 0) {
+    clearLanPeerProbeTimer(deviceId);
+    const pc = lanPeerConnections.get(deviceId);
+    if (pc) {
+        pc._lanClosing = true;
+        clearFileAssetPeerRoute(deviceId, pc);
+        try {
+            pc.close();
+        } catch (_) {}
+    }
+    lanPeerConnections.delete(deviceId);
+    lanPendingIceCandidates.delete(deviceId);
+    if (retryDelay > 0) {
+        lanPeerRetryAfter.set(deviceId, Date.now() + retryDelay);
+    } else {
+        lanPeerRetryAfter.delete(deviceId);
+    }
+    if (reason) {
+        historyLog('lan-peer-closed', {
+            peerDeviceId: deviceId,
+            reason,
+            retryDelay
+        });
+    }
+}
+
+function armLanPeerProbeTimeout(deviceId, pc) {
+    clearLanPeerProbeTimer(deviceId);
+    const timer = setTimeout(() => {
+        lanPeerProbeTimers.delete(deviceId);
+        if (lanPeerConnections.get(deviceId) !== pc || isLanFilePeerReady(deviceId)) return;
+        console.info('[lan-peer] probe timed out; falling back to standard path for', deviceId);
+        closeLanFilePeer(deviceId, 'probe-timeout', LAN_PEER_RETRY_COOLDOWN);
+    }, LAN_PEER_PROBE_TIMEOUT);
+    lanPeerProbeTimers.set(deviceId, timer);
+}
+
+function setupLanProbeChannel(deviceId, pc, channel) {
+    pc._lanProbeChannel = channel;
+    channel.binaryType = 'arraybuffer';
+    channel.onopen = () => {
+        if (lanPeerConnections.get(deviceId) !== pc) return;
+        clearLanPeerProbeTimer(deviceId);
+        lanPeerRetryAfter.delete(deviceId);
+        historyLog('lan-peer-ready', { peerDeviceId: deviceId });
+        console.info('[lan-peer] host-only channel ready with', deviceId);
+    };
+    channel.onclose = () => {
+        if (pc._lanClosing || lanPeerConnections.get(deviceId) !== pc) return;
+        closeLanFilePeer(deviceId, 'probe-channel-closed', LAN_PEER_RETRY_COOLDOWN);
+    };
+}
+
+async function readSelectedCandidatePair(pc) {
+    if (!pc?.getStats) return null;
+    const stats = await pc.getStats();
+    const reports = Array.from(stats.values());
+    const transport = reports.find(report =>
+        report.type === 'transport' && report.selectedCandidatePairId);
+    const pair = transport?.selectedCandidatePairId
+        ? stats.get(transport.selectedCandidatePairId)
+        : reports.find(report =>
+            report.type === 'candidate-pair' &&
+            report.state === 'succeeded' &&
+            report.nominated);
+    if (!pair) return null;
+    const local = stats.get(pair.localCandidateId);
+    const remote = stats.get(pair.remoteCandidateId);
+    return {
+        localCandidateType: local?.candidateType || '',
+        localProtocol: local?.protocol || '',
+        remoteCandidateType: remote?.candidateType || '',
+        remoteProtocol: remote?.protocol || '',
+        currentRoundTripTime: pair.currentRoundTripTime || 0
+    };
+}
+
+async function logLanSelectedCandidatePair(deviceId, pc) {
+    try {
+        const pair = await readSelectedCandidatePair(pc);
+        const details = {
+            peerDeviceId: deviceId,
+            ...(pair || {})
+        };
+        historyLog('lan-peer-selected-pair', details);
+        console.info('[lan-peer] selected candidate pair', details);
+    } catch (err) {
+        historyLog('lan-peer-selected-pair-read-failed', {
+            peerDeviceId: deviceId,
+            error: err.message
+        });
+    }
+}
+
+function createLanFilePeerConnection(deviceId) {
+    const existing = lanPeerConnections.get(deviceId);
+    if (existing && !isLanPeerConnectionTerminal(existing)) return existing;
+    if (existing) closeLanFilePeer(deviceId, 'replace-terminal-peer');
+
+    const pc = new RTCPeerConnection({
+        iceServers: [],
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 0
+    });
+    pc._lanOnly = true;
+    lanPeerConnections.set(deviceId, pc);
+    armLanPeerProbeTimeout(deviceId, pc);
+
+    pc.onicecandidate = event => {
+        if (!event.candidate || !state.socket?.connected) return;
+        state.socket.emit('lan-signal', {
+            to: deviceId,
+            from: state.deviceId,
+            type: 'ice-candidate',
+            candidate: event.candidate
+        });
+    };
+    pc.oniceconnectionstatechange = () => {
+        historyLog('lan-peer-ice-state', {
+            peerDeviceId: deviceId,
+            iceConnectionState: pc.iceConnectionState
+        });
+        if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            setTimeout(() => logLanSelectedCandidatePair(deviceId, pc), 100);
+            return;
+        }
+        if (pc.iceConnectionState === 'failed' &&
+            lanPeerConnections.get(deviceId) === pc &&
+            !pc._lanClosing) {
+            closeLanFilePeer(deviceId, 'ice-failed', LAN_PEER_RETRY_COOLDOWN);
+        }
+    };
+    pc.onconnectionstatechange = () => {
+        if (!['failed', 'closed'].includes(pc.connectionState) ||
+            lanPeerConnections.get(deviceId) !== pc ||
+            pc._lanClosing) return;
+        closeLanFilePeer(deviceId, `connection-${pc.connectionState}`, LAN_PEER_RETRY_COOLDOWN);
+    };
+    pc.ondatachannel = event => {
+        const channel = event.channel;
+        if (channel.label === 'lan-file-probe') {
+            setupLanProbeChannel(deviceId, pc, channel);
+            return;
+        }
+        if (fileAssetTransfer?.handleIncomingChannel(deviceId, channel)) return;
+        channel.close();
+    };
+
+    historyLog('lan-peer-created', { peerDeviceId: deviceId });
+    console.info('[lan-peer] background host-only probe started with', deviceId);
+    return pc;
+}
+
+async function startLanFilePeerProbe(deviceId) {
+    if (!deviceId || deviceId === state.deviceId || !state.socket?.connected) return null;
+    if (state.peers.has(deviceId)) return null;
+    if (isLanFilePeerReady(deviceId)) return lanPeerConnections.get(deviceId);
+
+    const retryAfter = lanPeerRetryAfter.get(deviceId) || 0;
+    if (retryAfter > Date.now()) return null;
+
+    const pc = createLanFilePeerConnection(deviceId);
+    if (!shouldInitiatePeerConnection(deviceId)) {
+        if (!pc._lanProbeRequestSent) {
+            pc._lanProbeRequestSent = true;
+            state.socket.emit('lan-signal', {
+                to: deviceId,
+                from: state.deviceId,
+                type: 'probe-request'
+            });
+        }
+        return pc;
+    }
+    if (pc._lanOfferPromise || pc.localDescription) return pc;
+
+    const probeChannel = pc.createDataChannel('lan-file-probe', { ordered: true });
+    setupLanProbeChannel(deviceId, pc, probeChannel);
+    pc._lanOfferPromise = (async () => {
+        const offer = await pc.createOffer({
+            offerToReceiveAudio: false,
+            offerToReceiveVideo: false,
+            iceRestart: false
+        });
+        await pc.setLocalDescription(offer);
+        state.socket.emit('lan-signal', {
+            to: deviceId,
+            from: state.deviceId,
+            type: 'offer',
+            sdp: offer
+        });
+        historyLog('lan-peer-offer-sent', { peerDeviceId: deviceId });
+    })();
+
+    try {
+        await pc._lanOfferPromise;
+    } catch (err) {
+        if (lanPeerConnections.get(deviceId) === pc) {
+            closeLanFilePeer(deviceId, 'offer-failed', LAN_PEER_RETRY_COOLDOWN);
+        }
+        historyLog('lan-peer-offer-failed', {
+            peerDeviceId: deviceId,
+            error: err.message
+        });
+        return null;
+    }
+    return pc;
+}
+
+function waitForLanFilePeerReady(deviceId, timeoutMs) {
+    if (isLanFilePeerReady(deviceId)) {
+        return Promise.resolve(lanPeerConnections.get(deviceId));
+    }
+
+    return new Promise(resolve => {
+        const startedAt = Date.now();
+        const poll = () => {
+            if (isLanFilePeerReady(deviceId)) {
+                resolve(lanPeerConnections.get(deviceId));
+                return;
+            }
+            const pc = lanPeerConnections.get(deviceId);
+            if (!pc ||
+                isLanPeerConnectionTerminal(pc) ||
+                state.peers.has(deviceId) ||
+                Date.now() - startedAt >= timeoutMs) {
+                resolve(null);
+                return;
+            }
+            setTimeout(poll, 40);
+        };
+        poll();
+    });
+}
+
+function tryLanFilePeerFirst(deviceId, reason) {
+    if (!deviceId ||
+        deviceId === state.deviceId ||
+        !state.socket?.connected) {
+        return Promise.resolve(null);
+    }
+    if (isLanFilePeerReady(deviceId)) {
+        return Promise.resolve(lanPeerConnections.get(deviceId));
+    }
+    if (state.peers.has(deviceId)) {
+        return Promise.resolve(null);
+    }
+    if ((lanPeerRetryAfter.get(deviceId) || 0) > Date.now()) {
+        return Promise.resolve(null);
+    }
+
+    const existingAttempt = lanPeerAttemptPromises.get(deviceId);
+    if (existingAttempt) return existingAttempt;
+
+    let attempt;
+    attempt = (async () => {
+        const startedAt = Date.now();
+        try {
+            const pc = await startLanFilePeerProbe(deviceId);
+            if (!pc) return null;
+            const remainingMs = Math.max(0, LAN_PEER_PROBE_TIMEOUT - (Date.now() - startedAt));
+            const readyPeer = remainingMs > 0
+                ? await waitForLanFilePeerReady(deviceId, remainingMs)
+                : null;
+            if (readyPeer) {
+                historyLog('lan-peer-first-attempt-ready', {
+                    peerDeviceId: deviceId,
+                    reason,
+                    elapsedMs: Date.now() - startedAt
+                });
+                return readyPeer;
+            }
+            if (lanPeerConnections.has(deviceId)) {
+                closeLanFilePeer(deviceId, 'first-attempt-timeout', LAN_PEER_RETRY_COOLDOWN);
+            }
+            historyLog('lan-peer-first-attempt-fallback', {
+                peerDeviceId: deviceId,
+                reason,
+                elapsedMs: Date.now() - startedAt
+            });
+            return null;
+        } catch (err) {
+            if (lanPeerConnections.has(deviceId)) {
+                closeLanFilePeer(deviceId, 'first-attempt-failed', LAN_PEER_RETRY_COOLDOWN);
+            }
+            historyLog('lan-peer-first-attempt-failed', {
+                peerDeviceId: deviceId,
+                reason,
+                error: err.message
+            });
+            return null;
+        }
+    })();
+    lanPeerAttemptPromises.set(deviceId, attempt);
+    attempt.finally(() => {
+        if (lanPeerAttemptPromises.get(deviceId) === attempt) {
+            lanPeerAttemptPromises.delete(deviceId);
+        }
+    });
+    return attempt;
+}
+
+function scheduleStandardPeerConnect(deviceId, delayMs, reason) {
+    if (!deviceId ||
+        deviceId === state.deviceId ||
+        !state.socket?.connected ||
+        isStandardFilePeerReady(deviceId) ||
+        lanStandardConnectTimers.has(deviceId)) {
+        return;
+    }
+
+    const timer = setTimeout(() => {
+        lanStandardConnectTimers.delete(deviceId);
+        if (!state.socket?.connected ||
+            !state.devices.has(deviceId) ||
+            isStandardFilePeerReady(deviceId)) {
+            return;
+        }
+        historyLog('lan-peer-standard-background-started', {
+            peerDeviceId: deviceId,
+            reason
+        });
+        connectToPeer(deviceId).catch(err => {
+            historyLog('lan-peer-standard-background-failed', {
+                peerDeviceId: deviceId,
+                reason,
+                error: err.message
+            });
+        });
+    }, Math.max(0, delayMs));
+    lanStandardConnectTimers.set(deviceId, timer);
+}
+
+function preconnectPreferredFileAssetPeer(deviceId, reason) {
+    tryLanFilePeerFirst(deviceId, reason).then(lanPeer => {
+        if (!state.socket?.connected || !state.devices.has(deviceId)) return;
+        scheduleStandardPeerConnect(
+            deviceId,
+            lanPeer ? LAN_STANDARD_BACKGROUND_DELAY : 0,
+            lanPeer ? `lan-ready:${reason}` : `lan-fallback:${reason}`
+        );
+    });
+}
+
+function cancelPendingLanFilePeerAttempt(deviceId, reason) {
+    if (!lanPeerConnections.has(deviceId) || isLanFilePeerReady(deviceId)) return;
+    closeLanFilePeer(deviceId, reason, LAN_PEER_RETRY_COOLDOWN);
+}
+
+function queueLanIceCandidate(deviceId, candidate) {
+    if (!lanPendingIceCandidates.has(deviceId)) {
+        lanPendingIceCandidates.set(deviceId, []);
+    }
+    lanPendingIceCandidates.get(deviceId).push(candidate);
+}
+
+async function flushLanIceCandidates(deviceId, pc) {
+    const candidates = lanPendingIceCandidates.get(deviceId) || [];
+    lanPendingIceCandidates.delete(deviceId);
+    for (const candidate of candidates) {
+        await pc.addIceCandidate(candidate);
+    }
+}
+
+async function handleLanSignal(data) {
+    const { from, type, sdp, candidate } = data || {};
+    if (!from || from === state.deviceId || !state.devices.has(from)) return;
+    if ((lanPeerRetryAfter.get(from) || 0) > Date.now()) return;
+    if (state.peers.has(from)) {
+        cancelPendingLanFilePeerAttempt(from, 'standard-peer-already-started');
+        historyLog('lan-peer-signal-ignored-after-standard-started', {
+            peerDeviceId: from,
+            signalType: type
+        });
+        return;
+    }
+
+    try {
+        if (type === 'probe-request') {
+            if (shouldInitiatePeerConnection(from)) {
+                await startLanFilePeerProbe(from);
+            }
+            return;
+        }
+
+        let pc = lanPeerConnections.get(from);
+        if (!pc || isLanPeerConnectionTerminal(pc)) {
+            pc = createLanFilePeerConnection(from);
+        }
+
+        if (type === 'offer') {
+            if (pc.signalingState === 'have-local-offer') {
+                if (shouldInitiatePeerConnection(from)) return;
+                await pc.setLocalDescription({ type: 'rollback' });
+            }
+            await pc.setRemoteDescription(sdp);
+            await flushLanIceCandidates(from, pc);
+            if (pc.signalingState !== 'have-remote-offer') return;
+            const answer = await pc.createAnswer();
+            if (pc.signalingState !== 'have-remote-offer') return;
+            await pc.setLocalDescription(answer);
+            state.socket.emit('lan-signal', {
+                to: from,
+                from: state.deviceId,
+                type: 'answer',
+                sdp: answer
+            });
+        } else if (type === 'answer') {
+            if (pc.signalingState !== 'have-local-offer') return;
+            await pc.setRemoteDescription(sdp);
+            await flushLanIceCandidates(from, pc);
+        } else if (type === 'ice-candidate' && candidate) {
+            if (pc.remoteDescription) {
+                await pc.addIceCandidate(candidate);
+            } else {
+                queueLanIceCandidate(from, candidate);
+            }
+        }
+    } catch (err) {
+        historyLog('lan-peer-signal-failed', {
+            peerDeviceId: from,
+            signalType: type,
+            error: err.message
+        });
+    }
+}
+
+function queueLanSignal(data) {
+    const peerDeviceId = data?.from;
+    if (!peerDeviceId) return;
+    const previous = lanSignalQueues.get(peerDeviceId) || Promise.resolve();
+    const next = previous
+        .catch(() => {})
+        .then(() => handleLanSignal(data));
+    lanSignalQueues.set(peerDeviceId, next);
+    next.finally(() => {
+        if (lanSignalQueues.get(peerDeviceId) === next) {
+            lanSignalQueues.delete(peerDeviceId);
+        }
+    });
+}
+
+function getLockedFileAssetPeer(deviceId) {
+    const route = fileAssetPeerRoutes.get(deviceId);
+    if (!route || route.expiresAt <= Date.now()) {
+        fileAssetPeerRoutes.delete(deviceId);
+        return null;
+    }
+    if (route.kind === 'lan') {
+        if (lanPeerConnections.get(deviceId) !== route.peer || !isLanFilePeerReady(deviceId)) {
+            fileAssetPeerRoutes.delete(deviceId);
+            return null;
+        }
+    } else if (state.peers.get(deviceId) !== route.peer || isLanPeerConnectionTerminal(route.peer)) {
+        fileAssetPeerRoutes.delete(deviceId);
+        return null;
+    }
+    return route.peer;
+}
+
+function lockFileAssetPeer(deviceId, peer, kind) {
+    if (!peer) return null;
+    fileAssetPeerRoutes.set(deviceId, {
+        peer,
+        kind,
+        expiresAt: Date.now() + FILE_ASSET_PEER_ROUTE_LOCK
+    });
+    return peer;
+}
+
+async function connectToPreferredFileAssetPeer(deviceId) {
+    const lockedPeer = getLockedFileAssetPeer(deviceId);
+    if (lockedPeer) return lockedPeer;
+
+    if (isLanFilePeerReady(deviceId)) {
+        historyLog('file-asset-peer-selected', {
+            peerDeviceId: deviceId,
+            route: 'lan-host-only'
+        });
+        console.info('[file-asset-route]', {
+            phase: 'lan-host-only-peer-selected',
+            peerDeviceId: deviceId
+        });
+        return lockFileAssetPeer(deviceId, lanPeerConnections.get(deviceId), 'lan');
+    }
+
+    if (!state.peers.has(deviceId)) {
+        const lanPeer = await tryLanFilePeerFirst(deviceId, 'file-request');
+        if (lanPeer && isLanFilePeerReady(deviceId)) {
+            historyLog('file-asset-peer-selected', {
+                peerDeviceId: deviceId,
+                route: 'lan-host-only'
+            });
+            console.info('[file-asset-route]', {
+                phase: 'lan-host-only-peer-selected',
+                peerDeviceId: deviceId
+            });
+            scheduleStandardPeerConnect(
+                deviceId,
+                LAN_STANDARD_BACKGROUND_DELAY,
+                'lan-ready:file-request'
+            );
+            return lockFileAssetPeer(deviceId, lanPeer, 'lan');
+        }
+    }
+
+    const standardPeer = await connectToPeerForFileAsset(deviceId);
+    historyLog('file-asset-peer-selected', {
+        peerDeviceId: deviceId,
+        route: 'standard-p2p'
+    });
+    console.info('[file-asset-route]', {
+        phase: 'standard-peer-selected',
+        peerDeviceId: deviceId,
+        lanProbeState: lanPeerConnections.get(deviceId)?.connectionState || 'unavailable'
+    });
+    return lockFileAssetPeer(deviceId, standardPeer, 'standard');
+}
+
+function getPreferredFileAssetPeer(deviceId) {
+    const lockedPeer = getLockedFileAssetPeer(deviceId);
+    if (lockedPeer) return lockedPeer;
+    if (isLanFilePeerReady(deviceId)) return lanPeerConnections.get(deviceId);
+    return state.peers.get(deviceId);
+}
+
+async function ensurePreferredFileAssetPeerOffer(deviceId) {
+    const peer = getPreferredFileAssetPeer(deviceId);
+    if (peer?._lanOnly) return peer;
+    return ensurePeerOfferForFileAsset(deviceId);
+}
+
 async function createPeerConnection(deviceId) {
     const config = {
         iceServers: [
@@ -1807,6 +2401,7 @@ async function createPeerConnection(deviceId) {
 
 async function connectToPeer(deviceId) {
     console.log('Connecting to peer:', deviceId);
+    cancelPendingLanFilePeerAttempt(deviceId, 'standard-connect-requested');
     
     // 检查是否已有连接
     if (state.peers.has(deviceId)) {
@@ -2009,6 +2604,7 @@ async function handleSignal(data) {
         hasCandidate: Boolean(candidate)
     });
 
+    cancelPendingLanFilePeerAttempt(from, 'standard-signal-received');
     let pc = state.peers.get(from);
     if (!pc) {
         pc = await createPeerConnection(from);
@@ -2816,9 +3412,9 @@ function initFileAssetTransfer() {
     fileAssetTransfer = new window.FileAssetTransfer({
         getSocket: () => state.socket,
         getSessionId: () => state.sessionId,
-        getPeer: deviceId => state.peers.get(deviceId),
-        connectPeer: connectToPeerForFileAsset,
-        ensurePeerOffer: ensurePeerOfferForFileAsset,
+        getPeer: getPreferredFileAssetPeer,
+        connectPeer: connectToPreferredFileAssetPeer,
+        ensurePeerOffer: ensurePreferredFileAssetPeerOffer,
         waitForDataChannel,
         load: async fileId => materializeExternalFileRecord(await materializeCachedFileRecord(await getFromStore('files', fileId))),
         beginCacheWrite: async file => fileCacheStore?.beginWrite
@@ -12777,7 +13373,7 @@ function handleDeviceJoined(data) {
     refreshTunnelAdminDevicePicker();
 
     // 尝试建立P2P连接
-    connectToPeer(deviceId);
+    preconnectPreferredFileAssetPeer(deviceId, 'device-joined');
     scheduleStoredFileAssetAnnounce('device-joined');
     setTimeout(() => {
         reconcileLocalHistory([], [])
@@ -12802,6 +13398,12 @@ function handleDeviceLeft(data) {
 
     state.dataChannels.delete(deviceId);
     state.pendingIceCandidates.delete(deviceId);
+    clearLanStandardConnectTimer(deviceId);
+    closeLanFilePeer(deviceId, 'device-left');
+    lanPeerAttemptPromises.delete(deviceId);
+    lanPeerRetryAfter.delete(deviceId);
+    lanSignalQueues.delete(deviceId);
+    clearFileAssetPeerRoute(deviceId);
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
 }
@@ -12823,7 +13425,7 @@ function handleSessionDevices(data) {
             });
 
             // 建立P2P连接
-            connectToPeer(device.deviceId);
+            preconnectPreferredFileAssetPeer(device.deviceId, 'session-devices');
         }
     });
     Array.from(state.devices.keys()).forEach(deviceId => {
@@ -12833,6 +13435,12 @@ function handleSessionDevices(data) {
             state.peers.delete(deviceId);
             state.dataChannels.delete(deviceId);
             state.pendingIceCandidates.delete(deviceId);
+            clearLanStandardConnectTimer(deviceId);
+            closeLanFilePeer(deviceId, 'device-removed');
+            lanPeerAttemptPromises.delete(deviceId);
+            lanPeerRetryAfter.delete(deviceId);
+            lanSignalQueues.delete(deviceId);
+            clearFileAssetPeerRoute(deviceId);
             state.devices.delete(deviceId);
         }
     });
@@ -12853,7 +13461,9 @@ function handleDeviceUpdated(data) {
         internalIp: data.internalIp || data.localIp || existing?.internalIp || null,
         externalIp: data.externalIp || existing?.externalIp || null
     });
-    if (!existing) connectToPeer(data.deviceId);
+    if (!existing) {
+        preconnectPreferredFileAssetPeer(data.deviceId, 'device-updated');
+    }
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
     scheduleStoredFileAssetAnnounce('device-updated');
