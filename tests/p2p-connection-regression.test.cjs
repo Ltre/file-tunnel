@@ -113,11 +113,20 @@ function loadPeerHarness(localDeviceId = 'device-a', remoteDeviceId = 'device-b'
             }
         },
         peerSignalQueues: new Map(),
-        peerReconnectTimers: new Map(),
-        PEER_RECONNECT_DELAY: 5,
         editorAssetP2PUnavailablePeers: new Map(),
         EDITOR_ASSET_P2P_COOLDOWN: 5000,
         fileAssetTransfer: null,
+        isPrivateNetworkIp(value) {
+            const ip = String(value || '').replace(/^::ffff:/i, '');
+            return /^10\./.test(ip) ||
+                /^192\.168\./.test(ip) ||
+                /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip) ||
+                /^127\./.test(ip) ||
+                /^169\.254\./.test(ip) ||
+                /^fc/i.test(ip) ||
+                /^fd/i.test(ip) ||
+                /^fe80:/i.test(ip);
+        },
         historyLog() {},
         handleDataChannelMessage() {},
         setupEditorAssetDataChannel() {}
@@ -155,18 +164,35 @@ test('file offer requests are single-flight for the same peer', async () => {
     assert.equal(harness.signals.filter(item => item.payload?.type === 'offer').length, 1);
 });
 
-test('failed peers are closed and cannot emit stale ICE candidates', async () => {
+test('failed peers close without starting an unsynchronized background reconnect', async () => {
     const harness = loadPeerHarness();
     const pc = await harness.context.connectToPeer(harness.remoteDeviceId);
     const signalCount = harness.signals.length;
-    harness.context.state.socket.connected = false;
     pc.connectionState = 'failed';
     pc.onconnectionstatechange();
+    await new Promise(resolve => setTimeout(resolve, 20));
 
     assert.equal(pc.closed, true);
     assert.equal(harness.context.state.peers.has(harness.remoteDeviceId), false);
+    assert.equal(harness.peers.length, 1);
     pc.onicecandidate({ candidate: { candidate: 'stale-candidate' } });
     assert.equal(harness.signals.length, signalCount);
+});
+
+test('the next file request creates one fresh peer after the previous peer failed', async () => {
+    const harness = loadPeerHarness();
+    const failedPeer = await harness.context.connectToPeer(harness.remoteDeviceId);
+    failedPeer.connectionState = 'failed';
+    failedPeer.onconnectionstatechange();
+
+    const replacement = await harness.context.connectToPeerForFileAsset(harness.remoteDeviceId);
+    await harness.context.ensurePeerOfferForFileAsset(harness.remoteDeviceId);
+
+    assert.notEqual(replacement, failedPeer);
+    assert.equal(failedPeer.closed, true);
+    assert.equal(harness.peers.length, 2);
+    assert.equal(replacement.offerCount, 1);
+    assert.equal(harness.signals.filter(item => item.payload?.type === 'offer').length, 2);
 });
 
 test('peer readiness waits for the shared connection instead of a file channel', async () => {
@@ -179,6 +205,33 @@ test('peer readiness waits for the shared connection instead of a file channel',
         pc.onconnectionstatechange();
     }, 20);
     assert.equal(await readiness, true);
+});
+
+test('heartbeat and history refreshes do not restart failed background peers', () => {
+    const harness = loadPeerHarness();
+
+    assert.equal(harness.context.shouldPreconnectSessionPeer(true, ''), true);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(true, 'heartbeat'), false);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(true, 'history-request'), false);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(false, ''), false);
+});
+
+test('a fresh remote offer cancels disposal of a temporarily disconnected peer', async () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    const peer = await harness.context.connectToPeer(harness.remoteDeviceId);
+    peer.iceConnectionState = 'disconnected';
+    peer.oniceconnectionstatechange();
+    assert.ok(peer._disconnectTimer);
+
+    await harness.context.handleSignal({
+        from: harness.remoteDeviceId,
+        type: 'offer',
+        sdp: { type: 'offer', sdp: 'recovery-offer' }
+    });
+
+    assert.equal(peer._disconnectTimer, null);
+    assert.equal(peer.closed, false);
+    assert.equal(harness.signals.filter(item => item.payload?.type === 'answer').length, 1);
 });
 
 test('queued ICE is applied to the same peer before one answer is sent', async () => {
@@ -198,6 +251,60 @@ test('queued ICE is applied to the same peer before one answer is sent', async (
     assert.equal(harness.peers[0].addedCandidates.length, 1);
     assert.equal(harness.signals.filter(item => item.payload?.type === 'answer').length, 1);
     assert.equal(harness.context.state.pendingIceCandidates.has(harness.remoteDeviceId), false);
+});
+
+test('a server-observed private address supplements an mDNS host candidate', async () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    harness.context.state.devices.set(harness.remoteDeviceId, {
+        id: harness.remoteDeviceId,
+        externalIp: '::ffff:10.0.0.23'
+    });
+    await harness.context.handleSignal({
+        from: harness.remoteDeviceId,
+        type: 'ice-candidate',
+        candidate: {
+            candidate: 'candidate:1 1 udp 2122260223 peer-name.local 54321 typ host generation 0',
+            sdpMid: '0',
+            sdpMLineIndex: 0,
+            usernameFragment: 'remote'
+        }
+    });
+    await harness.context.handleSignal({
+        from: harness.remoteDeviceId,
+        type: 'offer',
+        sdp: { type: 'offer', sdp: 'remote-offer' }
+    });
+
+    assert.equal(harness.peers[0].addedCandidates.length, 2);
+    assert.match(harness.peers[0].addedCandidates[0].candidate, /peer-name\.local/);
+    assert.match(harness.peers[0].addedCandidates[1].candidate, /\s10\.0\.0\.23\s54321\s/);
+});
+
+test('a public server-observed address does not rewrite an mDNS host candidate', () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    harness.context.state.devices.set(harness.remoteDeviceId, {
+        id: harness.remoteDeviceId,
+        externalIp: '203.0.113.8'
+    });
+    const variants = harness.context.getRemoteIceCandidateVariants(harness.remoteDeviceId, {
+        candidate: 'candidate:1 1 udp 2122260223 peer-name.local 54321 typ host generation 0'
+    });
+
+    assert.equal(variants.length, 1);
+    assert.match(variants[0].candidate, /peer-name\.local/);
+});
+
+test('a loopback proxy address does not rewrite an mDNS host candidate', () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    harness.context.state.devices.set(harness.remoteDeviceId, {
+        id: harness.remoteDeviceId,
+        externalIp: '127.0.0.1'
+    });
+    const variants = harness.context.getRemoteIceCandidateVariants(harness.remoteDeviceId, {
+        candidate: 'candidate:1 1 udp 2122260223 peer-name.local 54321 typ host generation 0'
+    });
+
+    assert.equal(variants.length, 1);
 });
 
 test('the designated initiator ignores a competing offer without replacing its peer', async () => {

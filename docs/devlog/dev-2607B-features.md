@@ -62,7 +62,7 @@
 - 同一远端设备只保留一个当前 PeerConnection，并以单个 `_offerPromise` 合并并发 offer 请求；一批文件不会各自发起一轮 SDP 协商。
 - 设备加入时仍立即预建标准 PeerConnection。文件任务先等待共享连接就绪，再创建各自的文件 DataChannel。
 - 共享 PeerConnection 的等待窗口保持 1500ms；超过窗口但 ICE 尚未明确失败时仅让本次任务使用 Socket.IO relay，不把该设备误标记为 P2P 冷却状态，后续文件仍可复用稍后连通的 P2P。
-- PeerConnection 明确失败或断开超时后会真正关闭，清理属于该连接的控制通道和候选，并以单个定时器重建连接。
+- PeerConnection 明确失败或断开超时后会真正关闭，清理属于该连接的控制通道和候选；不在空闲期自行循环重建，下一次真实文件请求或对端新 offer 才创建新连接。
 - ICE、answer 和 DataChannel 回调都会确认自己仍属于当前 PeerConnection；旧连接的迟到回调不能覆盖新连接状态。
 - 保留确定性 offer 发起方规则；双方发生 offer 竞争时，指定发起方保留本地 offer，另一方回滚并应答，避免 `setLocalDescription` 状态冲突。
 - 服务端 `server.js` 保持基线信令与文件中继逻辑，没有加入新的调度或链路选择分支。
@@ -75,3 +75,20 @@
 - 源码 `app.js`、`client/file-assets.js`、`server.js`、`server/file-assets.js` 均通过 `node --check`。
 - `txsl` 部署构建成功，压缩后的 `app` 与 `file-assets` 脚本均通过语法检查。
 - 本地浏览器以 `127.0.0.1` 和 `localhost` 两个独立来源模拟两台设备：ICE 从 `checking` 进入 `connected`，双方控制 DataChannel 正常打开，控制台无警告或错误。
+
+### 实机日志补充修复
+
+- 新一轮实机日志显示，真实文件请求到达之前，同一远端已经连续经历多轮 `checking -> disconnected -> failed -> reconnect`，文件请求随后撞上下一轮尚未完成的 ICE，约 1500ms 后进入 relay。
+- 根因之一是失败后的 750ms 自动重建：两端进入失败状态的时间不同，一端的新 offer 可能落到另一端即将关闭的旧 PeerConnection 上，形成连接代际错位。
+- 根因之二是服务端每 15 秒心跳都会返回 `session-devices`，客户端此前每次收到列表都调用 `connectToPeer()`；失败连接因此即使没有文件任务，也会被心跳周期性重启。
+- 移除失败后的主动重建定时器。失败连接仍会立即彻底释放，但会等待真实文件请求或远端 offer 再建立一套干净连接。
+- `session-devices` 只有在设备首次出现时才预建 P2P；`heartbeat` 和 `history-request` 只刷新设备在线信息，不再触发后台建链。
+- 新增回归测试，确认失败后不会自动创建第二个 PeerConnection；下一次文件请求只创建一个新连接并只发送一个 offer；心跳和历史刷新不会重启失败连接。
+- 浏览器双端等待超过一个完整的 15 秒心跳周期后，两端 `Connecting to peer` 计数均未增加；设备重新进入时可重新建立 P2P 和控制 DataChannel。
+
+### 局域网 mDNS host candidate 补充
+
+- 最新实机日志确认 offer/answer 已完成并进入 `ICE checking`，随后没有候选对连通，文件任务才在原有 1500ms 窗口结束后降级到 Socket.IO relay；失败点位于 ICE 候选连通，而不是文件链路误选。
+- 浏览器会把私网 host candidate 的真实地址隐藏为 `.local` mDNS 名称；当当前设备或 Wi-Fi 不能解析对端的 mDNS 名称时，同一局域网的 host-host 路径也会丢失。
+- 保留浏览器原始 mDNS candidate，同时在会话设备目录已有服务端观察私网地址时补充一条等价 host candidate。该逻辑不建立第二条 PeerConnection、不替换原 candidate，也不改变 P2P 等待时间或 relay 降级策略。
+- 新增回归测试，覆盖私网观察地址补充 mDNS host candidate，以及公网观察地址不得改写 candidate。

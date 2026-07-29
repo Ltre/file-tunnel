@@ -146,8 +146,6 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 const peerSignalQueues = new Map();
-const peerReconnectTimers = new Map();
-const PEER_RECONNECT_DELAY = 750;
 let fileAssetTransfer = null;
 let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
@@ -1741,10 +1739,10 @@ function isPeerConnectionTerminal(pc) {
         pc.iceConnectionState === 'closed';
 }
 
-function clearPeerReconnectTimer(deviceId) {
-    const timer = peerReconnectTimers.get(deviceId);
-    if (timer) clearTimeout(timer);
-    peerReconnectTimers.delete(deviceId);
+function shouldPreconnectSessionPeer(isNewDevice, refreshReason = '') {
+    return isNewDevice &&
+        refreshReason !== 'heartbeat' &&
+        refreshReason !== 'history-request';
 }
 
 function disposePeerConnection(deviceId, pc, reason = '') {
@@ -1765,27 +1763,6 @@ function disposePeerConnection(deviceId, pc, reason = '') {
         peerDeviceId: deviceId,
         reason
     });
-}
-
-function schedulePeerReconnect(deviceId, reason = '') {
-    if (!deviceId ||
-        peerReconnectTimers.has(deviceId) ||
-        !state.socket?.connected ||
-        !state.devices.has(deviceId)) {
-        return;
-    }
-    const timer = setTimeout(() => {
-        peerReconnectTimers.delete(deviceId);
-        if (!state.socket?.connected || !state.devices.has(deviceId)) return;
-        connectToPeer(deviceId).catch(err => {
-            historyLog('p2p-reconnect-failed', {
-                peerDeviceId: deviceId,
-                reason,
-                error: err.message
-            });
-        });
-    }, PEER_RECONNECT_DELAY);
-    peerReconnectTimers.set(deviceId, timer);
 }
 
 function ensurePeerControlChannel(deviceId, pc) {
@@ -1912,7 +1889,6 @@ async function createPeerConnection(deviceId) {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             if (pc._disconnectTimer) clearTimeout(pc._disconnectTimer);
             pc._disconnectTimer = null;
-            clearPeerReconnectTimer(deviceId);
             editorAssetP2PUnavailablePeers.delete(deviceId);
             console.log('P2P connection established with', deviceId);
         } else if (pc.iceConnectionState === 'disconnected') {
@@ -1926,14 +1902,12 @@ async function createPeerConnection(deviceId) {
                         return;
                     }
                     disposePeerConnection(deviceId, pc, 'ice-disconnected-timeout');
-                    schedulePeerReconnect(deviceId, 'ice-disconnected-timeout');
                 }, 3000);
             }
         } else if (pc.iceConnectionState === 'failed') {
             console.warn('P2P connection failed with', deviceId);
             editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             disposePeerConnection(deviceId, pc, 'ice-failed');
-            schedulePeerReconnect(deviceId, 'ice-failed');
         }
     };
 
@@ -1945,10 +1919,9 @@ async function createPeerConnection(deviceId) {
             connectionState: pc.connectionState
         });
         if (pc.connectionState === 'failed') {
-            console.warn('Connection failed, attempting to reconnect...');
+            console.warn('P2P connection failed; waiting for the next request or remote offer');
             editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             disposePeerConnection(deviceId, pc, 'connection-failed');
-            schedulePeerReconnect(deviceId, 'connection-failed');
         }
     };
 
@@ -2087,6 +2060,81 @@ function queueIceCandidate(deviceId, candidate) {
     });
 }
 
+function getRemoteIceCandidateVariants(deviceId, candidate) {
+    if (!candidate) return [];
+    const candidateInit = typeof candidate === 'string'
+        ? { candidate }
+        : {
+            candidate: String(candidate.candidate || ''),
+            sdpMid: candidate.sdpMid ?? null,
+            sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+            usernameFragment: candidate.usernameFragment ?? undefined
+        };
+    const candidateText = candidateInit.candidate.trim();
+    if (!candidateText) return [candidateInit];
+
+    const parts = candidateText.split(/\s+/);
+    const typeIndex = parts.indexOf('typ');
+    const hostAddress = parts[4] || '';
+    if (typeIndex < 0 ||
+        parts[typeIndex + 1] !== 'host' ||
+        !/\.local\.?$/i.test(hostAddress)) {
+        return [candidateInit];
+    }
+
+    const remoteDevice = state.devices.get(deviceId) || {};
+    const privateAddress = [
+        remoteDevice.externalIp,
+        remoteDevice.internalIp,
+        remoteDevice.localIp
+    ].map(value => String(value || '')
+        .trim()
+        .replace(/^\[|\]$/g, '')
+        .replace(/^::ffff:/i, '')
+        .replace(/%.+$/, ''))
+        .find(value => isPrivateNetworkIp(value) && !/^127\./.test(value));
+    if (!privateAddress) return [candidateInit];
+
+    const rewrittenParts = [...parts];
+    rewrittenParts[4] = privateAddress;
+    return [
+        candidateInit,
+        {
+            ...candidateInit,
+            candidate: rewrittenParts.join(' '),
+            _drop2TunnelObservedHost: true
+        }
+    ];
+}
+
+async function addRemoteIceCandidate(deviceId, pc, candidate) {
+    const variants = getRemoteIceCandidateVariants(deviceId, candidate);
+    for (const variant of variants) {
+        if (pc._disposed || state.peers.get(deviceId) !== pc) return;
+        try {
+            await pc.addIceCandidate(new RTCIceCandidate(variant));
+            if (variant._drop2TunnelObservedHost) {
+                const observedAddress = variant.candidate.split(/\s+/)[4] || '';
+                console.info('[p2p-ice-candidate]', {
+                    phase: 'remote-mdns-host-supplemented',
+                    peerDeviceId: deviceId,
+                    observedAddress
+                });
+                historyLog('p2p-remote-mdns-host-supplemented', {
+                    peerDeviceId: deviceId,
+                    observedAddress
+                });
+            }
+        } catch (err) {
+            historyLog('p2p-ice-candidate-skipped', {
+                peerDeviceId: deviceId,
+                supplementedHost: variant._drop2TunnelObservedHost === true,
+                error: err.message
+            });
+        }
+    }
+}
+
 async function flushPendingIceCandidates(deviceId, pc) {
     const candidates = state.pendingIceCandidates.get(deviceId) || [];
     state.pendingIceCandidates.delete(deviceId);
@@ -2098,14 +2146,7 @@ async function flushPendingIceCandidates(deviceId, pc) {
 
     for (const candidate of candidates) {
         if (pc._disposed || state.peers.get(deviceId) !== pc) return;
-        try {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-            historyLog('p2p-ice-candidate-skipped', {
-                peerDeviceId: deviceId,
-                error: err.message
-            });
-        }
+        await addRemoteIceCandidate(deviceId, pc, candidate);
     }
 }
 
@@ -2147,6 +2188,10 @@ async function handleSignal(data) {
     }
 
     try {
+        if ((type === 'offer' || type === 'answer') && pc._disconnectTimer) {
+            clearTimeout(pc._disconnectTimer);
+            pc._disconnectTimer = null;
+        }
         if (type === 'offer') {
             if (pc.signalingState === 'have-local-offer') {
                 if (shouldInitiatePeerConnection(from)) {
@@ -2201,14 +2246,7 @@ async function handleSignal(data) {
         } else if (type === 'ice-candidate') {
             if (!candidate) return;
             if (pc.remoteDescription) {
-                try {
-                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                } catch (err) {
-                    historyLog('p2p-ice-candidate-skipped', {
-                        peerDeviceId: from,
-                        error: err.message
-                    });
-                }
+                await addRemoteIceCandidate(from, pc, candidate);
             } else {
                 queueIceCandidate(from, candidate);
             }
@@ -12952,7 +12990,6 @@ function handleDeviceLeft(data) {
         disposePeerConnection(deviceId, pc, 'device-left');
     }
 
-    clearPeerReconnectTimer(deviceId);
     state.dataChannels.delete(deviceId);
     state.pendingIceCandidates.delete(deviceId);
     updateDeviceList();
@@ -12961,10 +12998,12 @@ function handleDeviceLeft(data) {
 
 function handleSessionDevices(data) {
     const devices = Array.isArray(data?.devices) ? data.devices : [];
+    const refreshReason = typeof data?.reason === 'string' ? data.reason : '';
     const seenDeviceIds = new Set();
 
     devices.forEach(device => {
         if (device.deviceId !== state.deviceId) {
+            const isNewDevice = !state.devices.has(device.deviceId);
             seenDeviceIds.add(device.deviceId);
             state.devices.set(device.deviceId, {
                 id: device.deviceId,
@@ -12976,20 +13015,21 @@ function handleSessionDevices(data) {
             });
 
             // 建立P2P连接
-            connectToPeer(device.deviceId).catch(err => {
-                historyLog('p2p-preconnect-failed', {
-                    peerDeviceId: device.deviceId,
-                    reason: 'session-devices',
-                    error: err.message
+            if (shouldPreconnectSessionPeer(isNewDevice, refreshReason)) {
+                connectToPeer(device.deviceId).catch(err => {
+                    historyLog('p2p-preconnect-failed', {
+                        peerDeviceId: device.deviceId,
+                        reason: 'session-devices',
+                        error: err.message
+                    });
                 });
-            });
+            }
         }
     });
     Array.from(state.devices.keys()).forEach(deviceId => {
         if (!seenDeviceIds.has(deviceId)) {
             const pc = state.peers.get(deviceId);
             if (pc) disposePeerConnection(deviceId, pc, 'session-device-removed');
-            clearPeerReconnectTimer(deviceId);
             state.dataChannels.delete(deviceId);
             state.pendingIceCandidates.delete(deviceId);
             state.devices.delete(deviceId);
