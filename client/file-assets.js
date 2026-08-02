@@ -76,7 +76,12 @@
                 connectionState: peer.connectionState,
                 iceConnectionState: peer.iceConnectionState,
                 signalingState: peer.signalingState,
-                iceGatheringState: peer.iceGatheringState
+                iceGatheringState: peer.iceGatheringState,
+                localCandidateTypes: Array.from(peer._localIceCandidateTypes || []),
+                remoteCandidateTypes: Array.from(peer._remoteIceCandidateTypes || []),
+                offerAgeMs: Number.isFinite(peer._offerSentAt)
+                    ? Math.max(0, Date.now() - peer._offerSentAt)
+                    : null
             };
         }
 
@@ -863,6 +868,18 @@
         }
 
         async completeMultiSourceDownload(assetId, transfer) {
+            const elapsedMs = Math.max(1, Date.now() - transfer.startedAt);
+            const throughputDetails = {
+                assetId,
+                assetName: transfer.asset.name,
+                direction: 'receive',
+                transport: 'multi-source',
+                byteCount: transfer.asset.size,
+                elapsedMs,
+                mebibytesPerSecond: Number((transfer.asset.size / 1048576 / (elapsedMs / 1000)).toFixed(2))
+            };
+            this.routeLog('receiver-data-throughput', throughputDetails);
+            console.info('[file-asset-throughput]', JSON.stringify(throughputDetails));
             const stored = {
                 ...transfer.asset,
                 sessionId: this.deps.getSessionId(),
@@ -1597,6 +1614,8 @@
             const metadata = this.metadata(asset);
             const rangeStart = transfer ? transfer.rangeStart : 0;
             const rangeEnd = transfer ? transfer.rangeEnd : this.dataSize(asset.data);
+            const byteCount = rangeEnd - rangeStart;
+            const startedAt = Date.now();
             const routeId = transfer?.transferId ? `${peerDeviceId}:${transfer.transferId}` : peerDeviceId;
             const transport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
             const chunkSize = this.p2pChunkSize(channel);
@@ -1627,6 +1646,20 @@
                 { assetId: asset.id, peerDeviceId, attemptId, phase: 'complete' }
             );
             await this.waitForChannelDrain(channel);
+            const elapsedMs = Math.max(1, Date.now() - startedAt);
+            const throughputDetails = {
+                assetId: asset.id,
+                assetName: asset.name,
+                peerDeviceId,
+                transferId: transfer?.transferId || null,
+                direction: 'send',
+                byteCount,
+                elapsedMs,
+                mebibytesPerSecond: Number((byteCount / 1048576 / (elapsedMs / 1000)).toFixed(2)),
+                chunkSize
+            };
+            this.routeLog('p2p-data-throughput', throughputDetails);
+            console.info('[file-asset-throughput]', JSON.stringify(throughputDetails));
             await receiverAck;
             this.deps.onProgress(asset.id, asset.name, 100, transport);
             this.log('sent-p2p', { asset: metadata, transfer });
@@ -1725,7 +1758,8 @@
                 cacheWriterPromise,
                 receivedSize: 0,
                 pendingChunks: Promise.resolve(),
-                firstChunkLogged: false
+                firstChunkLogged: false,
+                startedAt: Date.now()
             });
             this.resetReceiveTimer(assetId, deviceId);
             this.deps.onProgress(assetId, asset.name, 0, transport === 'p2p' ? 'receiving' : 'receiving-relay');
@@ -1820,6 +1854,19 @@
             }
             await transfer.pendingChunks;
             if (transfer.receivedSize !== transfer.asset.size) throw new Error('File asset size mismatch');
+            const elapsedMs = Math.max(1, Date.now() - transfer.startedAt);
+            const throughputDetails = {
+                assetId,
+                assetName: transfer.asset.name,
+                peerDeviceId: deviceId,
+                direction: 'receive',
+                transport,
+                byteCount: transfer.receivedSize,
+                elapsedMs,
+                mebibytesPerSecond: Number((transfer.receivedSize / 1048576 / (elapsedMs / 1000)).toFixed(2))
+            };
+            this.routeLog('receiver-data-throughput', throughputDetails);
+            console.info('[file-asset-throughput]', JSON.stringify(throughputDetails));
             const writer = transfer.cacheWriterPromise ? await transfer.cacheWriterPromise : null;
             const cached = writer
                 ? await writer.commit()

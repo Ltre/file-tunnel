@@ -146,6 +146,7 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 const peerSignalQueues = new Map();
+const PEER_STALE_OFFER_MS = 8000;
 let fileAssetTransfer = null;
 let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
@@ -1739,10 +1740,16 @@ function isPeerConnectionTerminal(pc) {
         pc.iceConnectionState === 'closed';
 }
 
-function shouldPreconnectSessionPeer(isNewDevice, refreshReason = '') {
-    return isNewDevice &&
-        refreshReason !== 'heartbeat' &&
-        refreshReason !== 'history-request';
+function shouldPreconnectSessionPeer(deviceId, isNewDevice, refreshReason = '') {
+    if (isNewDevice) return refreshReason !== 'history-request';
+    if (refreshReason !== 'heartbeat') return false;
+    const peer = state.peers.get(deviceId);
+    if (isPeerConnectionReady(peer)) return false;
+    if (peer && Number.isFinite(peer._offerSentAt) &&
+        Date.now() - peer._offerSentAt < PEER_STALE_OFFER_MS) {
+        return false;
+    }
+    return true;
 }
 
 function disposePeerConnection(deviceId, pc, reason = '') {
@@ -1799,6 +1806,7 @@ async function createAndSendPeerOffer(deviceId, pc, options = {}) {
         }
         await pc.setLocalDescription(offer);
         if (pc._disposed || state.peers.get(deviceId) !== pc) return pc;
+        pc._offerSentAt = Date.now();
         state.socket.emit('signal', {
             to: deviceId,
             from: state.deviceId,
@@ -1817,6 +1825,52 @@ async function createAndSendPeerOffer(deviceId, pc, options = {}) {
         return await offerPromise;
     } finally {
         if (pc._offerPromise === offerPromise) pc._offerPromise = null;
+    }
+}
+
+async function logSelectedIceCandidatePair(deviceId, pc, reason = '') {
+    if (!pc?.getStats || pc._disposed || state.peers.get(deviceId) !== pc) return;
+    try {
+        const stats = await pc.getStats();
+        let selectedPair = null;
+        stats.forEach(report => {
+            if (report.type === 'transport' && report.selectedCandidatePairId) {
+                selectedPair = stats.get(report.selectedCandidatePairId) || selectedPair;
+            }
+        });
+        if (!selectedPair) {
+            stats.forEach(report => {
+                if (report.type === 'candidate-pair' &&
+                    report.state === 'succeeded' &&
+                    (report.nominated || report.selected)) {
+                    selectedPair = report;
+                }
+            });
+        }
+        if (!selectedPair) return;
+
+        const local = stats.get(selectedPair.localCandidateId);
+        const remote = stats.get(selectedPair.remoteCandidateId);
+        const details = {
+            phase: 'selected-candidate-pair',
+            peerDeviceId: deviceId,
+            reason,
+            localType: local?.candidateType || '',
+            localAddress: local?.address || local?.ip || '',
+            remoteType: remote?.candidateType || '',
+            remoteAddress: remote?.address || remote?.ip || '',
+            protocol: local?.protocol || remote?.protocol || '',
+            currentRoundTripTime: Number(selectedPair.currentRoundTripTime) || 0,
+            availableOutgoingBitrate: Number(selectedPair.availableOutgoingBitrate) || 0
+        };
+        console.info('[p2p-ice-selected-pair]', JSON.stringify(details));
+        historyLog('p2p-ice-selected-pair', details);
+    } catch (err) {
+        historyLog('p2p-ice-selected-pair-unavailable', {
+            peerDeviceId: deviceId,
+            reason,
+            error: err.message
+        });
     }
 }
 
@@ -1863,12 +1917,18 @@ async function createPeerConnection(deviceId) {
     };
     
     const pc = new RTCPeerConnection(config);
+    pc._localIceCandidateTypes = new Set();
+    pc._remoteIceCandidateTypes = new Set();
 
     pc.onicecandidate = (event) => {
         if (event.candidate &&
             !pc._disposed &&
             state.peers.get(deviceId) === pc &&
             state.socket?.connected) {
+            const candidateType = event.candidate.type ||
+                /\styp\s+(\S+)/i.exec(event.candidate.candidate || '')?.[1] ||
+                'unknown';
+            pc._localIceCandidateTypes.add(candidateType);
             console.log('Sending ICE candidate to', deviceId);
             state.socket.emit('signal', {
                 to: deviceId,
@@ -1891,6 +1951,7 @@ async function createPeerConnection(deviceId) {
             pc._disconnectTimer = null;
             editorAssetP2PUnavailablePeers.delete(deviceId);
             console.log('P2P connection established with', deviceId);
+            logSelectedIceCandidatePair(deviceId, pc, 'ice-connected');
         } else if (pc.iceConnectionState === 'disconnected') {
             console.info('P2P connection temporarily disconnected with', deviceId);
             if (!pc._disconnectTimer) {
@@ -1948,6 +2009,9 @@ async function connectToPeer(deviceId) {
     // 检查是否已有连接
     if (state.peers.has(deviceId)) {
         const existingPC = state.peers.get(deviceId);
+        const staleLocalOffer = existingPC.signalingState === 'have-local-offer' &&
+            Number.isFinite(existingPC._offerSentAt) &&
+            Date.now() - existingPC._offerSentAt >= PEER_STALE_OFFER_MS;
         
         // 检查连接状态
         if (isPeerConnectionReady(existingPC)) {
@@ -1956,9 +2020,13 @@ async function connectToPeer(deviceId) {
         }
         
         // 如果连接失败，关闭旧连接
-        if (isPeerConnectionTerminal(existingPC)) {
+        if (isPeerConnectionTerminal(existingPC) || staleLocalOffer) {
             console.log('Existing connection in failed state, closing it');
-            disposePeerConnection(deviceId, existingPC, 'replace-terminal-peer');
+            disposePeerConnection(
+                deviceId,
+                existingPC,
+                staleLocalOffer ? 'replace-stale-local-offer' : 'replace-terminal-peer'
+            );
         } else {
             console.log('Connection already in progress with', deviceId);
             if (shouldInitiatePeerConnection(deviceId) && existingPC.signalingState === 'stable') {
@@ -2113,6 +2181,8 @@ async function addRemoteIceCandidate(deviceId, pc, candidate) {
         if (pc._disposed || state.peers.get(deviceId) !== pc) return;
         try {
             await pc.addIceCandidate(new RTCIceCandidate(variant));
+            const candidateType = /\styp\s+(\S+)/i.exec(variant.candidate || '')?.[1] || 'unknown';
+            pc._remoteIceCandidateTypes?.add(candidateType);
             if (variant._drop2TunnelObservedHost) {
                 const observedAddress = variant.candidate.split(/\s+/)[4] || '';
                 console.info('[p2p-ice-candidate]', {
@@ -13015,7 +13085,7 @@ function handleSessionDevices(data) {
             });
 
             // 建立P2P连接
-            if (shouldPreconnectSessionPeer(isNewDevice, refreshReason)) {
+            if (shouldPreconnectSessionPeer(device.deviceId, isNewDevice, refreshReason)) {
                 connectToPeer(device.deviceId).catch(err => {
                     historyLog('p2p-preconnect-failed', {
                         peerDeviceId: device.deviceId,

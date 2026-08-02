@@ -113,6 +113,7 @@ function loadPeerHarness(localDeviceId = 'device-a', remoteDeviceId = 'device-b'
             }
         },
         peerSignalQueues: new Map(),
+        PEER_STALE_OFFER_MS: 8000,
         editorAssetP2PUnavailablePeers: new Map(),
         EDITOR_ASSET_P2P_COOLDOWN: 5000,
         fileAssetTransfer: null,
@@ -207,13 +208,35 @@ test('peer readiness waits for the shared connection instead of a file channel',
     assert.equal(await readiness, true);
 });
 
-test('heartbeat and history refreshes do not restart failed background peers', () => {
+test('heartbeat retries only unresolved session peers', async () => {
     const harness = loadPeerHarness();
 
-    assert.equal(harness.context.shouldPreconnectSessionPeer(true, ''), true);
-    assert.equal(harness.context.shouldPreconnectSessionPeer(true, 'heartbeat'), false);
-    assert.equal(harness.context.shouldPreconnectSessionPeer(true, 'history-request'), false);
-    assert.equal(harness.context.shouldPreconnectSessionPeer(false, ''), false);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, true, ''), true);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, true, 'heartbeat'), true);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, true, 'history-request'), false);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, false, ''), false);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, false, 'heartbeat'), true);
+
+    const peer = await harness.context.connectToPeer(harness.remoteDeviceId);
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, false, 'heartbeat'), false);
+    peer._offerSentAt = Date.now() - 9000;
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, false, 'heartbeat'), true);
+    peer.connectionState = 'connected';
+    peer.iceConnectionState = 'connected';
+    assert.equal(harness.context.shouldPreconnectSessionPeer(harness.remoteDeviceId, false, 'heartbeat'), false);
+});
+
+test('a heartbeat retry replaces a stale unanswered local offer', async () => {
+    const harness = loadPeerHarness();
+    const stalePeer = await harness.context.connectToPeer(harness.remoteDeviceId);
+    stalePeer._offerSentAt = Date.now() - 9000;
+
+    const replacement = await harness.context.connectToPeer(harness.remoteDeviceId);
+
+    assert.notEqual(replacement, stalePeer);
+    assert.equal(stalePeer.closed, true);
+    assert.equal(harness.peers.length, 2);
+    assert.equal(harness.signals.filter(item => item.payload?.type === 'offer').length, 2);
 });
 
 test('a fresh remote offer cancels disposal of a temporarily disconnected peer', async () => {

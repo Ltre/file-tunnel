@@ -92,3 +92,28 @@
 - 浏览器会把私网 host candidate 的真实地址隐藏为 `.local` mDNS 名称；当当前设备或 Wi-Fi 不能解析对端的 mDNS 名称时，同一局域网的 host-host 路径也会丢失。
 - 保留浏览器原始 mDNS candidate，同时在会话设备目录已有服务端观察私网地址时补充一条等价 host candidate。该逻辑不建立第二条 PeerConnection、不替换原 candidate，也不改变 P2P 等待时间或 relay 降级策略。
 - 新增回归测试，覆盖私网观察地址补充 mDNS host candidate，以及公网观察地址不得改写 candidate。
+
+## 2026-07-29：公网域名预连接恢复与吞吐诊断
+
+### 问题定位
+
+- `tun-test.miku.us` 的日志显示，页面载入时创建的共享 PeerConnection 长期停在“等待对端发起”；约两分钟后的文件请求仍未复用到已连接的 P2P，随后才进入 Socket.IO relay。
+- 此现象与局域网 HTTP 环境可通过私网 host candidate 快速连通并不矛盾：公网 HTTPS 环境更依赖提前完成的标准 ICE 协商，而此前完全忽略心跳刷新会令首次丢失或卡住的预连接永久失去修复机会。
+- 浏览器内使用与正式代码相同的 64 KiB 分片、4 MiB 高水位和 20ms 背压轮询进行 32 MiB DataChannel 基准，`host ↔ host / UDP` 可达到约 18.5 MiB/s；改为约 240 KiB 分片没有提升。因此没有把分片尺寸作为约 1 MiB/s 现象的推定根因。
+
+### 实现调整
+
+- 仍不恢复失败后 750ms 无限自动重建；仅在 15 秒隧道心跳返回设备列表时，检查尚未连通的共享 PeerConnection 并补一次预连接。
+- 已连接的 PeerConnection、最近 8 秒内刚发送 offer 的连接，以及历史记录刷新均不触发补建，避免扰动健康连接或正在正常协商的连接。
+- 对超过 8 秒仍停在 `have-local-offer` 的无应答协商，先彻底释放旧 PeerConnection，再创建一套干净连接，防止死 offer 长期阻塞后续文件请求。
+- 不改变文件任务的 1500ms P2P 等待窗口、STUN 列表、文件调度、DataChannel 参数和 Socket.IO relay 兜底。
+
+### 可观测性
+
+- ICE 连通后新增 `[p2p-ice-selected-pair]` 日志，记录最终 `host/srflx/relay` candidate 类型、地址、协议、RTT 和浏览器估算的可用发送码率。
+- P2P 降级日志的 peer 快照新增本地/远端已收集 candidate 类型和当前 offer 年龄，用于区分“没有 host candidate”“信令未应答”和“候选已齐但检查失败”。
+- 每次 P2P 发送及接收完成新增应用层吞吐日志，记录字节数、纯数据阶段耗时、MiB/s 和 P2P 分片大小，避免以系统总流量或 UI 进度刷新速度代替链路测速。
+
+### 回归验证
+
+- P2P 回归测试扩展至 16 项，覆盖未连通 peer 的心跳补建、健康 peer 不被心跳扰动，以及陈旧无应答 offer 被替换；全部通过。
