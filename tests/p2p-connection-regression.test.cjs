@@ -32,9 +32,12 @@ class MockDataChannel extends EventTarget {
         this.label = label;
         this.readyState = readyState;
         this.bufferedAmount = 0;
+        this.sent = [];
     }
 
-    send() {}
+    send(payload) {
+        this.sent.push(payload);
+    }
 
     close() {
         if (this.readyState === 'closed') return;
@@ -458,6 +461,7 @@ function createFileAssetHarness({ connect = true } = {}) {
         transfer,
         peer,
         channels,
+        socketEvents,
         progressEvents,
         releaseReadiness,
         get p2pSends() { return p2pSends; },
@@ -527,6 +531,172 @@ test('a failed file DataChannel releases its references before relay fallback', 
     assert.equal(harness.channels[0].onmessage, null);
     assert.equal(harness.channels[0]._fileAssetPeerConnection, null);
     assert.equal(harness.relaySends, 1);
+});
+
+test('a file channel close does not put a healthy shared peer into cooldown', async () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.sendViaDataChannel = async () => {
+        throw new Error('File asset channel closed before receiver acknowledgement');
+    };
+    const send = harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-channel-close', name: 'channel-close.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-channel-close'
+    });
+
+    harness.releaseReadiness();
+    assert.equal(await send, true);
+    assert.equal(harness.relaySends, 1);
+    assert.equal(harness.transfer.p2pUnavailablePeers.has('device-b'), false);
+});
+
+test('a file channel failure still cools down a failed shared peer', async () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.sendViaDataChannel = async () => {
+        harness.peer.connectionState = 'failed';
+        throw new Error('File asset channel closed');
+    };
+    const send = harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-peer-failed', name: 'peer-failed.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-peer-failed'
+    });
+
+    harness.releaseReadiness();
+    assert.equal(await send, true);
+    assert.equal(harness.relaySends, 1);
+    assert.equal(harness.transfer.p2pUnavailablePeers.has('device-b'), true);
+});
+
+test('receiver leaves a completed channel open until the sender receives its acknowledgement', async () => {
+    const harness = createFileAssetHarness();
+    const channel = new MockDataChannel('file-asset:asset-ack', 'open');
+    harness.transfer.complete = async () => {};
+
+    await harness.transfer.handleChannelMessage(
+        'device-b',
+        'asset-ack',
+        JSON.stringify({ type: 'file-asset-complete', assetId: 'asset-ack', attemptId: 'attempt-ack' }),
+        channel
+    );
+
+    assert.equal(channel.readyState, 'open');
+    assert.equal(channel.sent.length, 1);
+    assert.deepEqual(JSON.parse(channel.sent[0]), {
+        type: 'file-asset-complete-ack',
+        assetId: 'asset-ack',
+        transferId: '',
+        attemptId: 'attempt-ack',
+        ok: true
+    });
+    channel.close();
+});
+
+test('provider backpressure is reported as a transient failure without relay fallback', async () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.sendViaDataChannel = async () => {
+        throw new Error('File asset channel backpressure timeout');
+    };
+    const send = harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-backpressure', name: 'backpressure.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-backpressure'
+    });
+
+    harness.releaseReadiness();
+    assert.equal(await send, false);
+    assert.equal(harness.relaySends, 0);
+    const statusEvent = harness.socketEvents.find(({ event, payload }) => (
+        event === 'file-asset-transfer-status' && payload.status === 'failed'
+    ));
+    assert.equal(statusEvent?.payload.reason, 'provider-backpressure');
+    assert.equal(statusEvent?.payload.retryAfterMs, 1200);
+});
+
+test('full-file provider backpressure requeues without consuming a retry', async () => {
+    const harness = createFileAssetHarness();
+    const assetId = 'asset-full-backpressure';
+    harness.transfer.desiredAssets.set(assetId, 'device-b');
+    harness.transfer.requestIds.set(assetId, 'request-full');
+    harness.transfer.requestedMetadata.set(assetId, {
+        id: assetId,
+        name: 'full.bin',
+        type: 'application/octet-stream',
+        size: 4
+    });
+    harness.transfer.activeDownloads.add(assetId);
+    harness.transfer.priorityDownloads.add(assetId);
+    harness.transfer.transfers.set(assetId, {
+        asset: harness.transfer.requestedMetadata.get(assetId),
+        from: 'device-b'
+    });
+
+    await harness.transfer.handleTransferStatus({
+        assetId,
+        from: 'device-b',
+        status: 'failed',
+        requestId: 'request-full',
+        reason: 'provider-backpressure',
+        retryAfterMs: 500
+    });
+
+    assert.equal(harness.transfer.retryCounts.has(assetId), false);
+    assert.equal(harness.transfer.desiredAssets.has(assetId), true);
+    assert.equal(harness.transfer.priorityDownloads.has(assetId), true);
+    assert.equal(harness.transfer.transfers.has(assetId), false);
+    assert.equal(harness.transfer.retryTimers.has(assetId), true);
+    harness.transfer.clearRetryTimer(assetId);
+});
+
+test('multi-source provider backpressure defers only its range without consuming a retry', async () => {
+    const harness = createFileAssetHarness();
+    const assetId = 'asset-range-backpressure';
+    const transferId = 'part-0';
+    const range = {
+        transferId,
+        rangeStart: 0,
+        rangeEnd: 4,
+        receivedSize: 2,
+        retryCount: 2,
+        retryScheduled: false,
+        active: true,
+        completed: false,
+        from: 'device-b',
+        providerId: 'device-b',
+        providerCursor: 0,
+        requestId: 'request-range',
+        pendingChunks: Promise.resolve(),
+        lastActivityAt: Date.now()
+    };
+    harness.transfer.desiredAssets.set(assetId, 'device-b');
+    harness.transfer.multiSourceTransfers.set(assetId, {
+        asset: { id: assetId, name: 'range.bin', size: 4 },
+        providers: ['device-b', 'device-c'],
+        ranges: new Map([[transferId, range]]),
+        activeRangeIds: new Set([transferId]),
+        queuedRangeIds: [],
+        receivedBytes: 2,
+        completedBytes: 0
+    });
+
+    await harness.transfer.handleTransferStatus({
+        assetId,
+        from: 'device-b',
+        status: 'failed',
+        transferId,
+        requestId: 'request-range',
+        reason: 'provider-backpressure',
+        retryAfterMs: 500
+    });
+
+    assert.equal(range.retryCount, 2);
+    assert.equal(range.retryScheduled, true);
+    assert.equal(range.active, false);
+    assert.equal(range.receivedSize, 0);
+    assert.equal(range.providerCursor, 1);
+    assert.equal(harness.transfer.multiSourceTransfers.get(assetId).receivedBytes, 0);
+    assert.equal(harness.transfer.rangeTimers.has(`${assetId}:${transferId}`), true);
+    harness.transfer.clearRangeTimers(assetId);
 });
 
 test('failed shared peer readiness falls back once without creating a file channel', async () => {

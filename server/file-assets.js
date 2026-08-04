@@ -451,6 +451,12 @@ function registerFileAssetHandlers(socket, context) {
             const requestId = typeof data?.requestId === 'string' && data.requestId.length <= 120
                 ? sanitize(data.requestId, 120)
                 : undefined;
+            const reason = typeof data?.reason === 'string' && data.reason.length <= 80
+                ? sanitize(data.reason, 80)
+                : undefined;
+            const retryAfterMs = Number.isFinite(data?.retryAfterMs)
+                ? Math.max(500, Math.min(5000, Math.round(data.retryAfterMs)))
+                : undefined;
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(assetId) || !isValidId(to) ||
                 (transferId !== undefined && !isValidTransferId(transferId)) ||
@@ -488,11 +494,14 @@ function registerFileAssetHandlers(socket, context) {
                     from: deviceId,
                     transferId,
                     status,
-                    requestId
+                    requestId,
+                    reason,
+                    retryAfterMs
                 });
             }
             historyLog('file-asset-transfer-status', {
-                sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId, transferId, status, requestId,
+                sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
+                assetId, transferId, status, requestId, reason, retryAfterMs,
                 providerLoads: Object.fromEntries(record.providerLoads || [])
             });
         } catch (err) {
