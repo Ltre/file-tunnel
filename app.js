@@ -265,10 +265,12 @@ let clipboardShareTimer = null;
 let lastClipboardText = null;
 let remoteAudioContext = null;
 let sharedFileImportInProgress = false;
-const completedFileProgress = new Set();
+const completedFileProgress = new Map();
 const activeFileProgress = new Set();
 const progressHideTimers = new Map();
 const progressUiLastPaint = new Map();
+let progressSummaryTimer = null;
+let progressSummaryLastPaintAt = 0;
 const progressQueueSnapshot = {
     queueLength: 0,
     activeDownloads: 0,
@@ -279,6 +281,10 @@ const PROGRESS_QUEUE_SNAPSHOT_TTL = 15000;
 const MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS = 2500;
 const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
+const PROGRESS_REORDER_MIN_INTERVAL = 500;
+const PROGRESS_SUMMARY_MIN_INTERVAL = 250;
+const COMPLETED_PROGRESS_TTL = 30 * 1000;
+const MAX_COMPLETED_PROGRESS_KEYS = 512;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
 const HISTORY_RECONCILE_MESSAGE_LIMIT = 1000;
@@ -312,6 +318,22 @@ function getFileProgressKey(fileId, transport = '') {
 
 function getProgressBaseFileId(progressKey) {
     return String(progressKey || '').split('::')[0];
+}
+
+function hasRecentCompletedProgress(progressKey) {
+    const completedAt = completedFileProgress.get(progressKey) || 0;
+    if (!completedAt) return false;
+    if (Date.now() - completedAt <= COMPLETED_PROGRESS_TTL) return true;
+    completedFileProgress.delete(progressKey);
+    return false;
+}
+
+function markCompletedProgress(progressKey) {
+    completedFileProgress.delete(progressKey);
+    completedFileProgress.set(progressKey, Date.now());
+    while (completedFileProgress.size > MAX_COMPLETED_PROGRESS_KEYS) {
+        completedFileProgress.delete(completedFileProgress.keys().next().value);
+    }
 }
 
 function cssEscape(value) {
@@ -3102,7 +3124,6 @@ function initFileAssetTransfer() {
         onProgress: (fileId, fileName, progress, transport, progressMeta = {}) => {
             const route = String(transport || '');
             const progressKey = getFileProgressKey(fileId, route);
-            const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
             const multiSourceAttemptEnded = route.startsWith('sending-multi-source') &&
                 (progressMeta.rangeComplete === true || progressMeta.attemptEnded === true);
@@ -3117,10 +3138,10 @@ function initFileAssetTransfer() {
                 const timer = progressHideTimers.get(progressKey);
                 if (timer) clearTimeout(timer);
                 progressHideTimers.delete(progressKey);
-            } else if (terminal && completedFileProgress.has(progressKey)) {
+            } else if (terminal && hasRecentCompletedProgress(progressKey)) {
                 return;
             } else if (terminal && !activeFileProgress.has(progressKey)) {
-                completedFileProgress.add(progressKey);
+                markCompletedProgress(progressKey);
                 hideProgress(progressKey);
                 historyLog('file-progress-terminal-suppressed', {
                     fileId,
@@ -3132,16 +3153,17 @@ function initFileAssetTransfer() {
             }
             const now = Date.now();
             const lastPaintAt = progressUiLastPaint.get(progressKey) || 0;
-            const shouldPaintProgress = terminal || progress === 0 ||
-                now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL ||
-                !document.getElementById(progressElementId(progressKey));
+            const shouldPaintProgress = terminal ||
+                (progress === 0 && lastPaintAt === 0) ||
+                now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL;
             if (shouldPaintProgress) {
+                const status = getFileProgressStatus(route);
                 showProgress(progressKey, fileName, progress, status, { route, ...progressMeta });
                 progressUiLastPaint.set(progressKey, now);
             }
             if (terminal || multiSourceAttemptEnded) {
                 activeFileProgress.delete(progressKey);
-                if (terminal) completedFileProgress.add(progressKey);
+                if (terminal) markCompletedProgress(progressKey);
                 const hideDelay = route.startsWith('sending-multi-source')
                     ? MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS
                     : 800;
@@ -15334,13 +15356,17 @@ function positionProgressItem(item) {
         return lastMovedAt > otherMovedAt;
     });
 
-    if (next) list.insertBefore(item, next);
-    else list.appendChild(item);
+    if (next) {
+        if (item.nextElementSibling !== next) list.insertBefore(item, next);
+    } else if (list.lastElementChild !== item) {
+        list.appendChild(item);
+    }
 }
 
 function updateProgressItemState(item, progress, status = '', meta = {}) {
     const normalizedProgress = Math.max(0, Math.min(100, Number(progress) || 0));
     const previousProgress = Number(item.dataset.progressValue || 0);
+    const previousActivity = item.dataset.progressActivity || '';
     const now = Date.now();
     const route = String(meta.route || '');
     const direction = meta.direction || getProgressDirection(route, item.dataset.progressKey);
@@ -15362,10 +15388,30 @@ function updateProgressItemState(item, progress, status = '', meta = {}) {
     if ((direction === 'receive' || direction === 'send') && activity === 'moving' && normalizedProgress > previousProgress) {
         item.dataset.progressLastMovedAt = String(now);
     }
-    positionProgressItem(item);
+    const lastPositionedAt = Number(item.dataset.progressPositionedAt || 0);
+    if (!lastPositionedAt || previousActivity !== activity || now - lastPositionedAt >= PROGRESS_REORDER_MIN_INTERVAL) {
+        item.dataset.progressPositionedAt = String(now);
+        positionProgressItem(item);
+    }
+}
+
+function scheduleProgressDrawerSummary() {
+    if (progressSummaryTimer) return;
+    const elapsed = Date.now() - progressSummaryLastPaintAt;
+    const delay = Math.max(0, PROGRESS_SUMMARY_MIN_INTERVAL - elapsed);
+    progressSummaryTimer = setTimeout(() => {
+        progressSummaryTimer = null;
+        progressSummaryLastPaintAt = Date.now();
+        updateProgressDrawerSummary();
+    }, delay);
 }
 
 function updateProgressDrawerSummary() {
+    if (progressSummaryTimer) {
+        clearTimeout(progressSummaryTimer);
+        progressSummaryTimer = null;
+    }
+    progressSummaryLastPaintAt = Date.now();
     const list = document.getElementById('progressList');
     const summary = document.getElementById('progressDrawerSummary');
     if (!list || !summary) return;
@@ -15815,7 +15861,7 @@ function updateProgress(fileId, progress, status = '', meta = {}) {
         item.querySelector('.progress-fill').style.width = `${progress}%`;
         updateProgressItemState(item, progress, status, meta);
     }
-    updateProgressDrawerSummary();
+    scheduleProgressDrawerSummary();
 }
 
 function locateProgressFile(progressKey) {
@@ -15871,7 +15917,9 @@ function cleanupProgressForDeletedFile(fileId) {
     const baseFileId = String(fileId);
     fileTransferProgressStates.delete(baseFileId);
     activeFileProgress.delete(baseFileId);
-    completedFileProgress.add(baseFileId);
+    Array.from(completedFileProgress.keys()).forEach(key => {
+        if (getProgressBaseFileId(key) === baseFileId) completedFileProgress.delete(key);
+    });
     Array.from(progressHideTimers.keys()).forEach(key => {
         if (getProgressBaseFileId(key) !== baseFileId) return;
         const timer = progressHideTimers.get(key);
@@ -15897,7 +15945,7 @@ function cleanupProgressForDeletedFile(fileId) {
 function hideCompletedFileReceiveProgress(fileId) {
     if (!fileId) return;
     fileTransferProgressStates.delete(fileId);
-    completedFileProgress.add(fileId);
+    markCompletedProgress(fileId);
     hideProgress(fileId);
 }
 

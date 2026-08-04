@@ -479,6 +479,9 @@ test('file DataChannel is created only after the shared peer becomes connected',
     assert.equal(harness.channels.length, 1);
     assert.equal(harness.p2pSends, 1);
     assert.equal(harness.relaySends, 0);
+    assert.equal(harness.channels[0].readyState, 'closed');
+    assert.equal(harness.channels[0].onmessage, null);
+    assert.equal(harness.channels[0]._fileAssetPeerConnection, null);
 });
 
 test('a batch of small files waits on one shared peer before opening file channels', async () => {
@@ -501,6 +504,29 @@ test('a batch of small files waits on one shared peer before opening file channe
     assert.equal(harness.channels.length, 16);
     assert.equal(harness.p2pSends, 16);
     assert.equal(harness.relaySends, 0);
+    assert.equal(harness.channels.every(channel => channel.readyState === 'closed'), true);
+    assert.equal(harness.channels.every(channel => channel.onmessage === null), true);
+    assert.equal(harness.channels.every(channel => channel._fileAssetPeerConnection === null), true);
+});
+
+test('a failed file DataChannel releases its references before relay fallback', async () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.sendViaDataChannel = async () => {
+        throw new Error('simulated P2P send failure');
+    };
+    const send = harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-fallback', name: 'fallback.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-fallback'
+    });
+
+    harness.releaseReadiness();
+    assert.equal(await send, true);
+    assert.equal(harness.channels.length, 1);
+    assert.equal(harness.channels[0].readyState, 'closed');
+    assert.equal(harness.channels[0].onmessage, null);
+    assert.equal(harness.channels[0]._fileAssetPeerConnection, null);
+    assert.equal(harness.relaySends, 1);
 });
 
 test('failed shared peer readiness falls back once without creating a file channel', async () => {
@@ -573,6 +599,32 @@ test('multi-source provider progress accumulates unique range bytes without retr
     });
 
     assert.deepEqual(harness.progressEvents.map(event => event[2]), [50, 75, 75, 99, 100]);
+    assert.equal(harness.transfer.multiSourceUploadProgress.size, 0);
+});
+
+test('stale upload bookkeeping is pruned without touching fresh transfer state', () => {
+    const harness = createFileAssetHarness();
+    const now = Date.now();
+    harness.transfer.multiSourceUploadProgress.set('old', {
+        ranges: new Map(),
+        uniqueSentBytes: 0,
+        updatedAt: now - (3 * 60 * 1000)
+    });
+    harness.transfer.multiSourceUploadProgress.set('fresh', {
+        ranges: new Map(),
+        uniqueSentBytes: 0,
+        updatedAt: now
+    });
+    harness.transfer.rejectedUploadKeys.set('expired', now - 1);
+    harness.transfer.rejectedUploadKeys.set('fresh', now + 30000);
+
+    harness.transfer.cleanupMultiSourceUploadProgress(now);
+    harness.transfer.cleanupRejectedUploads(now);
+
+    assert.equal(harness.transfer.multiSourceUploadProgress.has('old'), false);
+    assert.equal(harness.transfer.multiSourceUploadProgress.has('fresh'), true);
+    assert.equal(harness.transfer.rejectedUploadKeys.has('expired'), false);
+    assert.equal(harness.transfer.rejectedUploadKeys.has('fresh'), true);
 });
 
 test('late multi-source starts are rejected while the completed file is being stored', () => {
