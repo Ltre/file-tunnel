@@ -400,6 +400,7 @@ function createFileAssetHarness({ connect = true } = {}) {
     const FileAssetTransfer = loadFileAssetTransfer();
     const socketEvents = [];
     const channels = [];
+    const progressEvents = [];
     const peer = {
         connectionState: 'connecting',
         iceConnectionState: 'checking',
@@ -440,7 +441,9 @@ function createFileAssetHarness({ connect = true } = {}) {
             size: 4,
             data: new Uint8Array([1, 2, 3, 4])
         }),
-        onProgress() {},
+        onProgress(...args) {
+            progressEvents.push(args);
+        },
         log() {}
     });
     let p2pSends = 0;
@@ -455,6 +458,7 @@ function createFileAssetHarness({ connect = true } = {}) {
         transfer,
         peer,
         channels,
+        progressEvents,
         releaseReadiness,
         get p2pSends() { return p2pSends; },
         get relaySends() { return relaySends; }
@@ -512,4 +516,92 @@ test('failed shared peer readiness falls back once without creating a file chann
     assert.equal(harness.p2pSends, 0);
     assert.equal(harness.relaySends, 1);
     assert.equal(harness.transfer.p2pUnavailablePeers.size, 0);
+});
+
+test('multi-source watchdog gives a fully received range time to process its completion frame', () => {
+    const harness = createFileAssetHarness();
+    const now = Date.now();
+    const range = {
+        transferId: 'part-0',
+        rangeStart: 0,
+        rangeEnd: 4,
+        receivedSize: 4,
+        lastActivityAt: now - 13000,
+        providerId: 'device-b',
+        active: true,
+        completed: false,
+        retryScheduled: false
+    };
+    harness.transfer.multiSourceTransfers.set('asset-range', {
+        asset: { id: 'asset-range', name: 'range.bin', size: 4 },
+        ranges: new Map([['part-0', range]]),
+        activeRangeIds: new Set(['part-0']),
+        queuedRangeIds: [],
+        startedAt: now - 13000,
+        lastProgressAt: now - 13000
+    });
+    let retries = 0;
+    harness.transfer.retryMultiSourceRange = () => { retries++; };
+
+    harness.transfer.checkMultiSourceStall('asset-range');
+    assert.equal(retries, 0, '12 second data stall must not discard a range whose bytes are complete');
+
+    range.lastActivityAt = Date.now() - 31000;
+    harness.transfer.checkMultiSourceStall('asset-range');
+    assert.equal(retries, 1, 'a missing completion frame still retries after the normal receive timeout');
+});
+
+test('multi-source provider progress accumulates unique range bytes without retry regressions', () => {
+    const harness = createFileAssetHarness();
+    const asset = {
+        id: 'asset-progress',
+        name: 'progress.bin',
+        size: 8,
+        data: new Uint8Array(8)
+    };
+    const part0 = { transferId: 'part-0', rangeStart: 0, rangeEnd: 4 };
+    const part1 = { transferId: 'part-1', rangeStart: 4, rangeEnd: 8 };
+
+    harness.transfer.reportUploadProgress(asset, 'device-b', part0, 4, 'sending-multi-source:device-b:part-0', {
+        rangeComplete: true
+    });
+    harness.transfer.reportUploadProgress(asset, 'device-b', part1, 2, 'sending-multi-source:device-b:part-1');
+    harness.transfer.reportUploadProgress(asset, 'device-b', part0, 1, 'sending-multi-source:device-b:part-0');
+    harness.transfer.reportUploadProgress(asset, 'device-b', part1, 4, 'sending-multi-source:device-b:part-1');
+    harness.transfer.reportUploadProgress(asset, 'device-b', part1, 4, 'sending-multi-source:device-b:part-1', {
+        rangeComplete: true
+    });
+
+    assert.deepEqual(harness.progressEvents.map(event => event[2]), [50, 75, 75, 99, 100]);
+});
+
+test('late multi-source starts are rejected while the completed file is being stored', () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.desiredAssets.set('asset-completing', 'device-b');
+    harness.transfer.multiSourceTransfers.set('asset-completing', {
+        completing: true,
+        ranges: new Map()
+    });
+
+    const acceptance = harness.transfer.shouldAcceptIncomingTransfer(
+        'asset-completing',
+        { id: 'asset-completing', size: 4 },
+        'attempt-a',
+        'part-0'
+    );
+    assert.equal(acceptance.ok, false);
+    assert.equal(acceptance.reason, 'multi-source-completing');
+
+    harness.transfer.multiSourceTransfers.set('asset-completing', {
+        completing: false,
+        ranges: new Map([['part-0', { completed: true }]])
+    });
+    const completedRangeAcceptance = harness.transfer.shouldAcceptIncomingTransfer(
+        'asset-completing',
+        { id: 'asset-completing', size: 4 },
+        'attempt-b',
+        'part-0'
+    );
+    assert.equal(completedRangeAcceptance.ok, false);
+    assert.equal(completedRangeAcceptance.reason, 'range-completed');
 });

@@ -3099,12 +3099,18 @@ function initFileAssetTransfer() {
             return saveToStore('files', { ...(existing || {}), ...file });
         },
         log: historyLog,
-        onProgress: (fileId, fileName, progress, transport) => {
+        onProgress: (fileId, fileName, progress, transport, progressMeta = {}) => {
             const route = String(transport || '');
             const progressKey = getFileProgressKey(fileId, route);
             const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
+            const multiSourceAttemptEnded = route.startsWith('sending-multi-source') &&
+                (progressMeta.rangeComplete === true || progressMeta.attemptEnded === true);
             trackFileReceiveProgress(fileId, fileName, progress, route, progressKey);
+            if (multiSourceAttemptEnded && !activeFileProgress.has(progressKey) &&
+                !document.getElementById(progressElementId(progressKey))) {
+                return;
+            }
             if (progress < 100) {
                 activeFileProgress.add(progressKey);
                 completedFileProgress.delete(progressKey);
@@ -3130,12 +3136,12 @@ function initFileAssetTransfer() {
                 now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL ||
                 !document.getElementById(progressElementId(progressKey));
             if (shouldPaintProgress) {
-                showProgress(progressKey, fileName, progress, status, { route });
+                showProgress(progressKey, fileName, progress, status, { route, ...progressMeta });
                 progressUiLastPaint.set(progressKey, now);
             }
-            if (terminal) {
+            if (terminal || multiSourceAttemptEnded) {
                 activeFileProgress.delete(progressKey);
-                completedFileProgress.add(progressKey);
+                if (terminal) completedFileProgress.add(progressKey);
                 const hideDelay = route.startsWith('sending-multi-source')
                     ? MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS
                     : 800;
@@ -15780,6 +15786,7 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
         const text = document.createElement('span');
         text.className = 'progress-text';
         text.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
+        text.title = status || '';
         left.append(directionIcon, name);
         info.append(left, text);
 
@@ -15802,7 +15809,9 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
 function updateProgress(fileId, progress, status = '', meta = {}) {
     const item = document.getElementById(progressElementId(fileId));
     if (item) {
-        item.querySelector('.progress-text').textContent = `${progress}%${status ? ` · ${status}` : ''}`;
+        const progressText = item.querySelector('.progress-text');
+        progressText.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
+        progressText.title = status || '';
         item.querySelector('.progress-fill').style.width = `${progress}%`;
         updateProgressItemState(item, progress, status, meta);
     }

@@ -1990,17 +1990,19 @@
         }
         
         .progress-info {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: minmax(7.5em, 1fr) minmax(0, 56%);
+            align-items: center;
             gap: 10px;
             margin-bottom: 8px;
             font-size: 0.9rem;
         }
 
         .progress-info-left {
-            display: inline-flex;
+            display: flex;
             align-items: center;
             min-width: 0;
+            overflow: hidden;
             gap: 6px;
         }
 
@@ -2022,10 +2024,15 @@
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .progress-text {
-            flex: 0 0 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-align: right;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         
         .progress-bar {
