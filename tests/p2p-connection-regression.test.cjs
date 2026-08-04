@@ -6,6 +6,26 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
+function loadProgressKeyHarness() {
+    const appSource = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const start = appSource.indexOf('function getSendingProgressPeerId');
+    const end = appSource.indexOf('function getProgressBaseFileId');
+    assert.ok(start >= 0 && end > start, 'progress key source region must be discoverable');
+    const context = vm.createContext({});
+    vm.runInContext(appSource.slice(start, end), context, { filename: 'app-progress-key.js' });
+    return context;
+}
+
+test('multi-source upload progress is grouped per receiver without splitting P2P and relay attempts', () => {
+    const harness = loadProgressKeyHarness();
+    const p2pA = harness.getFileProgressKey('asset-a', 'sending-multi-source:device-a:part-0');
+    const relayA = harness.getFileProgressKey('asset-a', 'sending-multi-source-relay:device-a:part-0');
+    const p2pB = harness.getFileProgressKey('asset-a', 'sending-multi-source:device-b:part-0');
+
+    assert.equal(p2pA, relayA, 'one receiver keeps one row while its range falls back');
+    assert.notEqual(p2pA, p2pB, 'different receivers must not overwrite each other');
+});
+
 class MockDataChannel extends EventTarget {
     constructor(label, readyState = 'connecting') {
         super();

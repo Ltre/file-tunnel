@@ -276,6 +276,7 @@ const progressQueueSnapshot = {
     expireTimer: null
 };
 const PROGRESS_QUEUE_SNAPSHOT_TTL = 15000;
+const MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS = 2500;
 const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
@@ -294,9 +295,17 @@ window.addEventListener('beforeunload', () => {
     fileObjectUrls.forEach(url => URL.revokeObjectURL(url));
 });
 
+function getSendingProgressPeerId(transport = '') {
+    const match = /^sending(?:-multi-source)?(?:-relay)?:([^:]+)/.exec(String(transport || ''));
+    return match?.[1] || '';
+}
+
 function getFileProgressKey(fileId, transport = '') {
     const route = String(transport || '');
-    if (route.startsWith('sending-multi-source')) return `${fileId}::sending-multi-source`;
+    if (route.startsWith('sending-multi-source')) {
+        const peerDeviceId = getSendingProgressPeerId(route);
+        return `${fileId}::sending-multi-source${peerDeviceId ? `-${peerDeviceId}` : ''}`;
+    }
     if (!route.startsWith('sending')) return fileId;
     return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
@@ -325,8 +334,14 @@ function progressElementId(progressKey) {
 
 function getFileProgressStatus(transport = '') {
     const route = String(transport || '');
-    if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
-    if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return 'multi-source P2P';
+    const peerDeviceId = getSendingProgressPeerId(route);
+    const peer = peerDeviceId ? state.devices.get(peerDeviceId) : null;
+    const peerLabel = peerDeviceId
+        ? ` → ${peer ? getDeviceDisplayName({ ...peer, deviceId: peerDeviceId }) : peerDeviceId.slice(-4)}`
+        : '';
+    if (route.startsWith('sending-multi-source-relay')) return `multi-source Socket.IO relay${peerLabel}`;
+    if (route.startsWith('sending-multi-source')) return `multi-source P2P${peerLabel}`;
+    if (route.startsWith('receiving-multi-source')) return 'multi-source P2P';
     if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
     if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
     return '';
@@ -3121,10 +3136,13 @@ function initFileAssetTransfer() {
             if (terminal) {
                 activeFileProgress.delete(progressKey);
                 completedFileProgress.add(progressKey);
+                const hideDelay = route.startsWith('sending-multi-source')
+                    ? MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS
+                    : 800;
                 const timer = setTimeout(() => {
                     hideProgress(progressKey);
                     progressHideTimers.delete(progressKey);
-                }, 800);
+                }, hideDelay);
                 progressHideTimers.set(progressKey, timer);
             }
         },
