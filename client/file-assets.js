@@ -1561,11 +1561,16 @@
                 const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
                 const abandonedTransport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
                 if (!transfer) this.deps.onProgress(asset.id, asset.name, 100, abandonedTransport);
-                if (/send queue is full|backpressure/i.test(err.message || '')) {
+                const failedPeer = this.deps.getPeer(from);
+                const completionAckRace = err.message === 'File asset channel closed before receiver acknowledgement' &&
+                    this.peerConnected(failedPeer);
+                if (completionAckRace || /send queue is full|backpressure/i.test(err.message || '')) {
                     if (transfer) {
                         this.reportUploadProgress(stored, from, transfer, 0, abandonedTransport, { attemptEnded: true });
                     }
-                    this.routeLog('p2p-backpressure-failed-without-relay', {
+                    this.routeLog(completionAckRace
+                        ? 'p2p-completion-unconfirmed-without-relay'
+                        : 'p2p-backpressure-failed-without-relay', {
                         assetId: asset.id,
                         peerDeviceId: from,
                         requestId,
@@ -1581,7 +1586,6 @@
                     });
                     return false;
                 }
-                const failedPeer = this.deps.getPeer(from);
                 const peerConnectionFailed = !failedPeer ||
                     failedPeer.connectionState === 'failed' || failedPeer.connectionState === 'closed' ||
                     failedPeer.iceConnectionState === 'failed' || failedPeer.iceConnectionState === 'closed';

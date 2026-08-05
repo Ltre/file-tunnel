@@ -667,7 +667,7 @@ test('a failed file DataChannel releases its references before relay fallback', 
     assert.equal(harness.relaySends, 1);
 });
 
-test('a file channel close does not put a healthy shared peer into cooldown', async () => {
+test('a healthy peer completion acknowledgement race retries without relay fallback', async () => {
     const harness = createFileAssetHarness();
     harness.transfer.sendViaDataChannel = async () => {
         throw new Error('File asset channel closed before receiver acknowledgement');
@@ -679,9 +679,14 @@ test('a file channel close does not put a healthy shared peer into cooldown', as
     });
 
     harness.releaseReadiness();
-    assert.equal(await send, true);
-    assert.equal(harness.relaySends, 1);
+    assert.equal(await send, false);
+    assert.equal(harness.relaySends, 0);
     assert.equal(harness.transfer.p2pUnavailablePeers.has('device-b'), false);
+    const statusEvent = harness.socketEvents.find(({ event, payload }) => (
+        event === 'file-asset-transfer-status' && payload.status === 'failed'
+    ));
+    assert.equal(statusEvent?.payload.reason, 'provider-backpressure');
+    assert.equal(statusEvent?.payload.retryAfterMs, 1200);
 });
 
 test('a file channel failure still cools down a failed shared peer', async () => {
