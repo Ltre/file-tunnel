@@ -16,6 +16,30 @@ function loadProgressKeyHarness() {
     return context;
 }
 
+function loadStoredAssetAnnouncementHarness() {
+    const appSource = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const start = appSource.indexOf('async function announceStoredFileAssets');
+    const end = appSource.indexOf('async function handleFileAssetDiscovery');
+    assert.ok(start >= 0 && end > start, 'stored asset announcement source region must be discoverable');
+    const metrics = { announced: 0, resumed: 0 };
+    const context = vm.createContext({
+        Date,
+        getCurrentSessionFileInventory: async () => [{
+            id: 'asset-a', name: 'a.bin', size: 4, ownerDeviceId: 'device-a', isFileAsset: true
+        }],
+        materializeExternalFileRecord: async file => file,
+        hasCompleteFileInventoryCache: () => true,
+        saveToStore: async () => {},
+        historyLog() {},
+        fileAssetTransfer: {
+            async announce() { metrics.announced++; },
+            resumePending() { metrics.resumed++; }
+        }
+    });
+    vm.runInContext(appSource.slice(start, end), context, { filename: 'app-file-presence.js' });
+    return { context, metrics };
+}
+
 test('multi-source upload progress is grouped per receiver without splitting P2P and relay attempts', () => {
     const harness = loadProgressKeyHarness();
     const p2pA = harness.getFileProgressKey('asset-a', 'sending-multi-source:device-a:part-0');
@@ -24,6 +48,16 @@ test('multi-source upload progress is grouped per receiver without splitting P2P
 
     assert.equal(p2pA, relayA, 'one receiver keeps one row while its range falls back');
     assert.notEqual(p2pA, p2pB, 'different receivers must not overwrite each other');
+});
+
+test('routine file presence refresh does not reset pending downloads', async () => {
+    const harness = loadStoredAssetAnnouncementHarness();
+
+    await harness.context.announceStoredFileAssets();
+    assert.deepEqual(harness.metrics, { announced: 1, resumed: 0 });
+
+    await harness.context.announceStoredFileAssets({ resumePending: true });
+    assert.deepEqual(harness.metrics, { announced: 2, resumed: 1 });
 });
 
 class MockDataChannel extends EventTarget {
@@ -707,6 +741,31 @@ test('a late incoming transfer cancels its pending retry before it can be reques
     assert.equal(harness.transfer.begin(assetId, asset, 'device-b', 'p2p', 'late-attempt'), true);
     assert.equal(harness.transfer.retryTimers.has(assetId), false);
     assert.equal(harness.transfer.activeDownloads.has(assetId), true);
+    harness.transfer.cancel(assetId);
+});
+
+test('the request watchdog does not bypass a pending retry timer', () => {
+    const harness = createFileAssetHarness();
+    const assetId = 'asset-pending-provider-retry';
+    harness.transfer.desiredAssets.set(assetId, null);
+    harness.transfer.requestedMetadata.set(assetId, {
+        id: assetId,
+        name: 'pending.bin',
+        type: 'application/octet-stream',
+        size: 4
+    });
+    const timer = setTimeout(() => {}, 60000);
+    harness.transfer.retryTimers.set(assetId, timer);
+
+    for (let index = 0; index < 100; index++) harness.transfer.checkRequestStalls();
+
+    assert.equal(harness.transfer.activeDownloads.has(assetId), false);
+    assert.equal(harness.transfer.downloadQueue.includes(assetId), false);
+    assert.equal(harness.socketEvents.some(({ event }) => event === 'file-asset-request'), false);
+
+    harness.transfer.clearRetryTimer(assetId);
+    assert.equal(harness.transfer.ensureDesiredDownloadQueued(assetId, 'retry-owner-released'), true);
+    assert.equal(harness.socketEvents.filter(({ event }) => event === 'file-asset-request').length, 1);
     harness.transfer.cancel(assetId);
 });
 

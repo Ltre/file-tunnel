@@ -330,7 +330,8 @@
             return this.activeDownloads.has(assetId) ||
                 this.downloadQueue.includes(assetId) ||
                 this.transfers.has(assetId) ||
-                this.multiSourceTransfers.has(assetId);
+                this.multiSourceTransfers.has(assetId) ||
+                this.retryTimers.has(assetId);
         }
 
         ensureDesiredDownloadQueued(assetId, reason = 'desired-download-check') {

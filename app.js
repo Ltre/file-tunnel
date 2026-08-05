@@ -1443,7 +1443,7 @@ function initSocket() {
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
-        announceStoredFileAssets();
+        announceStoredFileAssets({ resumePending: true });
         hydrateEditorAssets(document.getElementById('editor'));
         consumePendingSharedFiles().catch(err => {
             historyLog('shared-file-import-failed', { error: err.message });
@@ -3361,21 +3361,21 @@ function updateMediaButtons(stateUpdate = {}) {
     }
 }
 
-async function announceStoredFileAssets() {
+async function announceStoredFileAssets(options = {}) {
     if (!fileAssetTransfer) return;
     const startedAt = Date.now();
     let announcedCount = 0;
     try {
-        const files = typeof IDBKeyRange !== 'undefined'
-            ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
-            : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
+        const files = await getCurrentSessionFileInventory();
         for (const storedFile of files) {
             const file = await materializeExternalFileRecord(storedFile);
-            const isCachedChatAsset = hasCompleteFileCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+            const isCachedChatAsset = hasCompleteFileInventoryCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
             if (!isCachedChatAsset) continue;
             if (!file.isFileAsset) {
+                const persistedFile = await getFromStore('files', file.id);
+                if (!persistedFile) continue;
                 file.isFileAsset = true;
-                await saveToStore('files', file);
+                await saveToStore('files', { ...persistedFile, isFileAsset: true });
                 historyLog('file-asset-cache-migrated', { fileId: file.id });
             }
             await fileAssetTransfer.announce(file);
@@ -3384,9 +3384,10 @@ async function announceStoredFileAssets() {
         historyLog('file-asset-presence-batch-announced', {
             announcedCount,
             scannedCount: files.length,
+            resumedPending: Boolean(options.resumePending),
             elapsedMs: Date.now() - startedAt
         });
-        fileAssetTransfer.resumePending();
+        if (options.resumePending) fileAssetTransfer.resumePending();
     } catch (err) {
         historyLog('file-asset-announce-failed', {
             error: err.message,
@@ -11281,6 +11282,47 @@ async function getCurrentSessionFiles() {
     return (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
 }
 
+function createFileInventoryRecord(file) {
+    if (!file) return file;
+    const { data, audioPoster, videoPoster, ...metadata } = file;
+    return { ...metadata, _inventoryDataSize: getBinaryDataSize(data) };
+}
+
+function hasCompleteFileInventoryCache(file, fileInfo = null) {
+    const dataSize = Number(file?._inventoryDataSize) || 0;
+    const expectedSize = Number(fileInfo?.size ?? file?.size);
+    return (dataSize > 0 && (!Number.isFinite(expectedSize) || expectedSize <= 0 || dataSize === expectedSize)) ||
+        hasCompleteFileCache(file, fileInfo);
+}
+
+async function getCurrentSessionFileInventory() {
+    if (state.db._isMemory || typeof IDBKeyRange === 'undefined') {
+        return (await getCurrentSessionFiles()).map(createFileInventoryRecord);
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            const transaction = state.db.transaction(['files'], 'readonly');
+            const source = transaction.objectStore('files').index('sessionId');
+            const request = source.openCursor(IDBKeyRange.only(state.sessionId));
+            const files = [];
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) {
+                    resolve(files);
+                    return;
+                }
+                files.push(createFileInventoryRecord(cursor.value));
+                cursor.continue();
+            };
+            request.onerror = () => reject(request.error);
+            transaction.onabort = () => reject(transaction.error || new Error('IndexedDB files inventory read aborted'));
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
 function getEditorAssetEntries(content) {
     const container = document.createElement('div');
     container.innerHTML = String(content || '');
@@ -11314,7 +11356,7 @@ function getResourceReferenceLabel(reference) {
 async function getSessionResourceInventory() {
     const [messages, files, editorContent] = await Promise.all([
         getCurrentSessionMessages(),
-        getCurrentSessionFiles(),
+        getCurrentSessionFileInventory(),
         getFromStore('editorContent', 'current')
     ]);
     const favoriteMusicIds = getFavoriteMusicIds();
@@ -11447,7 +11489,7 @@ async function getSessionResourceInventory() {
 
     return Array.from(resources.values()).map(resource => {
         resource.name = resource.name || `未命名资源 ${resource.id.slice(0, 8)}`;
-        resource.hasLocalData = hasCompleteFileCache(resource.file, resource);
+        resource.hasLocalData = hasCompleteFileInventoryCache(resource.file, resource);
         resource.isExternalFile = Boolean(resource.file?.externalFileHandle || resource.isExternalFile);
         resource.externalFileAvailable = resource.file?.externalFileAvailable === true;
         resource.hasReadableLocalSource = resource.hasLocalData || (resource.isExternalFile && resource.file?.externalFileMissing !== true);
@@ -12070,9 +12112,13 @@ async function showResourceBrowser(options = {}) {
         if (event.target === layer) closeResourceBrowser();
     };
 
+    let resourceInventory = null;
     const render = async (options = {}) => {
         const previousScrollTop = options.preserveScroll ? list.scrollTop : 0;
-        const resources = await getSessionResourceInventory();
+        if (options.reload || resourceInventory === null) {
+            resourceInventory = await getSessionResourceInventory();
+        }
+        const resources = resourceInventory;
         const query = searchInput.value.trim().toLocaleLowerCase('zh-CN');
         const mode = filter.value;
         const visible = resources.filter(resource => {
@@ -12177,7 +12223,7 @@ async function showResourceBrowser(options = {}) {
                 if (resource.hasLocalData && !(resource.isExternalFile && resource.externalFileAvailable)) {
                     actions.appendChild(createResourceBrowserButton('清除缓存', '仅清理本设备保存的文件内容', async () => {
                         await clearResourceCache(resource);
-                        await render();
+                        await render({ reload: true, preserveScroll: true });
                     }));
                 }
             } else if (resource.cacheCleared || resource.isPartial) {
@@ -12186,14 +12232,14 @@ async function showResourceBrowser(options = {}) {
                     '从当前在线设备重新获取资源内容',
                     async () => {
                         await restoreResourceCache(resource);
-                        await render();
+                        await render({ reload: true, preserveScroll: true });
                     }
                 ));
             }
             if (resource.references.length === 0) {
                 actions.appendChild(createResourceBrowserButton('移除资源', '仅从本设备移除未引用资源', async () => {
                     await deleteUnreferencedResource(resource);
-                    await render();
+                    await render({ reload: true, preserveScroll: true });
                 }, 'danger'));
             }
             if (actions.childElementCount) item.appendChild(actions);
@@ -12214,7 +12260,7 @@ async function showResourceBrowser(options = {}) {
         refreshButton.textContent = '↻ 刷新中';
         try {
             await renderMountsInResourceBrowser(modal);
-            await render({ preserveScroll: true });
+            await render({ reload: true, preserveScroll: true });
             showAppToast('资源列表已刷新');
         } catch (err) {
             alert(`刷新资源失败: ${err.message}`);
@@ -13160,10 +13206,12 @@ function handleSessionDevices(data) {
     const devices = Array.isArray(data?.devices) ? data.devices : [];
     const refreshReason = typeof data?.reason === 'string' ? data.reason : '';
     const seenDeviceIds = new Set();
+    let membershipChanged = false;
 
     devices.forEach(device => {
         if (device.deviceId !== state.deviceId) {
             const isNewDevice = !state.devices.has(device.deviceId);
+            if (isNewDevice) membershipChanged = true;
             seenDeviceIds.add(device.deviceId);
             state.devices.set(device.deviceId, {
                 id: device.deviceId,
@@ -13188,6 +13236,7 @@ function handleSessionDevices(data) {
     });
     Array.from(state.devices.keys()).forEach(deviceId => {
         if (!seenDeviceIds.has(deviceId)) {
+            membershipChanged = true;
             const pc = state.peers.get(deviceId);
             if (pc) disposePeerConnection(deviceId, pc, 'session-device-removed');
             state.dataChannels.delete(deviceId);
@@ -13198,7 +13247,7 @@ function handleSessionDevices(data) {
 
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
-    scheduleStoredFileAssetAnnounce('session-devices', 1200);
+    if (membershipChanged) scheduleStoredFileAssetAnnounce('session-devices', 1200);
 }
 
 function handleDeviceUpdated(data) {
@@ -13220,10 +13269,10 @@ function handleDeviceUpdated(data) {
                 error: err.message
             });
         });
+        scheduleStoredFileAssetAnnounce('device-updated');
     }
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
-    scheduleStoredFileAssetAnnounce('device-updated');
 }
 
 function getSelfContactProfile() {
