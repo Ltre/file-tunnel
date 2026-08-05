@@ -102,6 +102,10 @@ const HISTORY_DEBUG = process.env.HISTORY_DEBUG !== undefined
     : projectConfig.debugLogsEnabled === true;
 const MAX_DEBUG_LOGS = 5000;
 const MAX_DEBUG_STRING_LENGTH = 500;
+const SUPPRESSED_HIGH_VOLUME_DEBUG_EVENTS = new Set([
+    'file-asset-announced',
+    'file-asset-available'
+]);
 const DEBUG_LOG_TOKEN = process.env.DEBUG_LOG_TOKEN || null;
 const TELEGRAM_BOT_DEVICE_ID = '00000000-0000-4000-8000-000000000001';
 const TELEGRAM_REMARK_MAX_LENGTH = 2000;
@@ -1122,6 +1126,9 @@ app.get('/api/debug-logs', adminAuth.requireAuth, (req, res) => {
     res.json({
         generatedAt: new Date().toISOString(),
         retainedCount: debugLogs.length,
+        oldestRetainedAt: debugLogs[0]?.timestamp || null,
+        newestRetainedAt: debugLogs[debugLogs.length - 1]?.timestamp || null,
+        matchedCount: logs.length,
         returnedCount: Math.min(logs.length, limit),
         logs: logs.slice(-limit)
     });
@@ -1419,10 +1426,12 @@ function sanitizeDebugValue(value, depth = 0) {
 }
 
 function recordDebugLog({ source, event, details, sessionId = null, deviceId = null, deviceName = null, socketId = null, clientIp = null, clientTimestamp = null }) {
+    const normalizedEvent = sanitizeString(event, 120);
+    if (SUPPRESSED_HIGH_VOLUME_DEBUG_EVENTS.has(normalizedEvent)) return null;
     const entry = {
         timestamp: new Date().toISOString(),
         source,
-        event: sanitizeString(event, 120),
+        event: normalizedEvent,
         sessionId,
         deviceId,
         deviceName: deviceName ? sanitizeString(deviceName, 50) : null,
@@ -4562,13 +4571,15 @@ io.on('connection', (socket) => {
                 return emitSocketError('error', '设备ID不匹配');
             }
             
-            const targetSocket = deviceSockets.get(to);
-            if (targetSocket) {
+            const targetSocketId = sessions.get(currentSession)?.devices.get(to)?.socketId;
+            const targetSocket = io.sockets.sockets.get(targetSocketId) || deviceSockets.get(to);
+            if (targetSocket?.connected) {
                 targetSocket.emit('signal', {
                     from,
                     type,
                     sdp,
-                    candidate
+                    candidate,
+                    observedIp: clientIp
                 });
             }
         } catch (err) {

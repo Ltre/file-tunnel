@@ -86,6 +86,9 @@
                 remoteCandidateTypes: Array.from(peer._remoteIceCandidateTypes || []),
                 offerAgeMs: Number.isFinite(peer._offerSentAt)
                     ? Math.max(0, Date.now() - peer._offerSentAt)
+                    : null,
+                iceCheckingAgeMs: Number.isFinite(peer._iceCheckingStartedAt)
+                    ? Math.max(0, Date.now() - peer._iceCheckingStartedAt)
                     : null
             };
         }
@@ -105,7 +108,10 @@
                 ...details
             };
             if (typeof console !== 'undefined' && console.info) {
-                console.info('[file-asset-route]', payload);
+                console.info(
+                    '[file-asset-route]',
+                    phase === 'p2p-degrade-to-relay' ? JSON.stringify(payload) : payload
+                );
             }
             this.log(`route-${phase}`, details);
         }
@@ -149,7 +155,6 @@
                 sessionId: this.deps.getSessionId(),
                 asset: this.metadata(asset)
             });
-            this.log('announced', { asset: this.metadata(asset) });
         }
 
         metadata(asset) {
@@ -1996,6 +2001,10 @@
                 });
                 return false;
             }
+            this.clearRetryTimer(assetId);
+            this.activeDownloads.add(assetId);
+            this.requests.set(assetId, Date.now());
+            this.emitQueueState(assetId);
             const cacheWriterPromise = this.deps.beginCacheWrite && !this.cacheWriteFallbackAssets.has(assetId)
                 ? this.deps.beginCacheWrite({
                     ...asset,
@@ -2277,7 +2286,7 @@
                 });
                 if (!acceptance.ok) {
                     this.rejectIncomingChannel(channel, assetId, acceptance.reason, message.attemptId || '');
-                    setTimeout(() => this.disposeFileChannel(channel), 50);
+                    setTimeout(() => this.disposeFileChannel(channel), 500);
                     return;
                 }
                 if (message.transfer?.transferId) {

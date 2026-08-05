@@ -1826,6 +1826,7 @@ async function createAndSendPeerOffer(deviceId, pc, options = {}) {
         throw new Error('Peer connection was replaced');
     }
     if (isPeerConnectionReady(pc)) return pc;
+    if (options.iceRestart !== true && (pc.localDescription || pc.remoteDescription)) return pc;
     if (pc._offerPromise) return pc._offerPromise;
     if (pc.signalingState !== 'stable') return pc;
 
@@ -2058,7 +2059,7 @@ async function connectToPeer(deviceId) {
         
         // 如果连接失败，关闭旧连接
         if (isPeerConnectionTerminal(existingPC) || staleLocalOffer) {
-            console.log('Existing connection in failed state, closing it');
+            console.log('Existing connection is terminal or stale, closing it');
             disposePeerConnection(
                 deviceId,
                 existingPC,
@@ -2143,7 +2144,6 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         return pc;
     }
     await createAndSendPeerOffer(deviceId, pc, { reason: 'file-asset-request' });
-    historyLog('p2p-file-asset-offer-sent', { peerDeviceId: deviceId });
     console.info('[file-asset-route]', {
         phase: 'app-ensure-offer-sent',
         peerDeviceId: deviceId,
@@ -2167,6 +2167,7 @@ function queueIceCandidate(deviceId, candidate) {
 
 function getRemoteIceCandidateVariants(deviceId, candidate) {
     if (!candidate) return [];
+    const observedIp = typeof candidate === 'object' ? candidate._drop2TunnelObservedIp : '';
     const candidateInit = typeof candidate === 'string'
         ? { candidate }
         : {
@@ -2181,14 +2182,13 @@ function getRemoteIceCandidateVariants(deviceId, candidate) {
     const parts = candidateText.split(/\s+/);
     const typeIndex = parts.indexOf('typ');
     const hostAddress = parts[4] || '';
-    if (typeIndex < 0 ||
-        parts[typeIndex + 1] !== 'host' ||
-        !/\.local\.?$/i.test(hostAddress)) {
+    if (typeIndex < 0 || parts[typeIndex + 1] !== 'host') {
         return [candidateInit];
     }
 
     const remoteDevice = state.devices.get(deviceId) || {};
     const privateAddress = [
+        observedIp,
         remoteDevice.externalIp,
         remoteDevice.internalIp,
         remoteDevice.localIp
@@ -2198,7 +2198,7 @@ function getRemoteIceCandidateVariants(deviceId, candidate) {
         .replace(/^::ffff:/i, '')
         .replace(/%.+$/, ''))
         .find(value => isPrivateNetworkIp(value) && !/^127\./.test(value));
-    if (!privateAddress) return [candidateInit];
+    if (!privateAddress || hostAddress === privateAddress) return [candidateInit];
 
     const rewrittenParts = [...parts];
     rewrittenParts[4] = privateAddress;
@@ -2210,6 +2210,31 @@ function getRemoteIceCandidateVariants(deviceId, candidate) {
             _drop2TunnelObservedHost: true
         }
     ];
+}
+
+function supplementRemoteSdpHostCandidates(deviceId, description, observedIp) {
+    if (!description?.sdp) return description;
+    const lines = description.sdp.split(/\r?\n/);
+    const supplemented = [];
+    let supplementCount = 0;
+    for (const line of lines) {
+        supplemented.push(line);
+        if (!line.startsWith('a=candidate:')) continue;
+        const variants = getRemoteIceCandidateVariants(deviceId, {
+            candidate: line.slice(2),
+            _drop2TunnelObservedIp: observedIp
+        });
+        const extra = variants.find(item => item._drop2TunnelObservedHost);
+        if (!extra) continue;
+        supplemented.push(`a=${extra.candidate}`);
+        supplementCount += 1;
+    }
+    if (!supplementCount) return description;
+    historyLog('p2p-remote-sdp-host-supplemented', {
+        peerDeviceId: deviceId,
+        candidateCount: supplementCount
+    });
+    return { ...description, sdp: supplemented.join('\r\n') };
 }
 
 async function addRemoteIceCandidate(deviceId, pc, candidate) {
@@ -2276,7 +2301,7 @@ function queuePeerSignal(data) {
 }
 
 async function handleSignal(data) {
-    const { from, type, sdp, candidate } = data;
+    const { from, type, sdp, candidate, observedIp } = data;
 
     historyLog('p2p-signal-received', {
         peerDeviceId: from,
@@ -2313,7 +2338,9 @@ async function handleSignal(data) {
                 await pc.setLocalDescription({ type: 'rollback' });
             }
             
-            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            await pc.setRemoteDescription(new RTCSessionDescription(
+                supplementRemoteSdpHostCandidates(from, sdp, observedIp)
+            ));
             await flushPendingIceCandidates(from, pc);
             if (pc.signalingState !== 'have-remote-offer') {
                 historyLog('p2p-answer-skipped-stale-offer', {
@@ -2336,7 +2363,7 @@ async function handleSignal(data) {
                 to: from,
                 from: state.deviceId,
                 type: 'answer',
-                sdp: answer
+                sdp: pc.localDescription || answer
             });
         } else if (type === 'answer') {
             if (pc.signalingState !== 'have-local-offer') {
@@ -2348,14 +2375,19 @@ async function handleSignal(data) {
                 return;
             }
             
-            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            await pc.setRemoteDescription(new RTCSessionDescription(
+                supplementRemoteSdpHostCandidates(from, sdp, observedIp)
+            ));
             await flushPendingIceCandidates(from, pc);
         } else if (type === 'ice-candidate') {
             if (!candidate) return;
+            const remoteCandidate = observedIp && typeof candidate === 'object'
+                ? { ...candidate, _drop2TunnelObservedIp: observedIp }
+                : candidate;
             if (pc.remoteDescription) {
-                await addRemoteIceCandidate(from, pc, candidate);
+                await addRemoteIceCandidate(from, pc, remoteCandidate);
             } else {
-                queueIceCandidate(from, candidate);
+                queueIceCandidate(from, remoteCandidate);
             }
         }
     } catch (err) {
@@ -3331,6 +3363,8 @@ function updateMediaButtons(stateUpdate = {}) {
 
 async function announceStoredFileAssets() {
     if (!fileAssetTransfer) return;
+    const startedAt = Date.now();
+    let announcedCount = 0;
     try {
         const files = typeof IDBKeyRange !== 'undefined'
             ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
@@ -3345,10 +3379,20 @@ async function announceStoredFileAssets() {
                 historyLog('file-asset-cache-migrated', { fileId: file.id });
             }
             await fileAssetTransfer.announce(file);
+            announcedCount += 1;
         }
+        historyLog('file-asset-presence-batch-announced', {
+            announcedCount,
+            scannedCount: files.length,
+            elapsedMs: Date.now() - startedAt
+        });
         fileAssetTransfer.resumePending();
     } catch (err) {
-        historyLog('file-asset-announce-failed', { error: err.message });
+        historyLog('file-asset-announce-failed', {
+            error: err.message,
+            announcedCount,
+            elapsedMs: Date.now() - startedAt
+        });
     }
 }
 
@@ -15246,7 +15290,10 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
     scheduleProgressQueueSnapshotExpiry();
     const list = document.getElementById('progressList');
     const container = document.getElementById('transferProgress');
-    if (progressQueueSnapshot.activeDownloads <= 0 && (!list || list.children.length === 0)) {
+    if (progressQueueSnapshot.activeDownloads <= 0 &&
+        progressQueueSnapshot.queueLength <= 0 &&
+        (!list || list.children.length === 0)) {
+        if (container) container.style.display = 'none';
         updateProgressDrawerSummary();
         return;
     }
