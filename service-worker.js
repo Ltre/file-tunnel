@@ -1,9 +1,7 @@
 const CACHE_NAME = 'instant-tunnel-v25';
 const APP_SHELL = [
     '/',
-    '/index.html',
     '/admin',
-    '/admin.html',
     '/downloader',
     '/downloader.html',
     '/downloadList',
