@@ -1480,7 +1480,7 @@
                         timeoutMs: P2P_TIMEOUT,
                         peer: this.peerSnapshot(peer)
                     });
-                    const connected = await this.deps.waitForPeerConnection?.(from, P2P_TIMEOUT);
+                    let connected = await this.deps.waitForPeerConnection?.(from, P2P_TIMEOUT);
                     peer = this.deps.getPeer(from);
                     this.routeLog('p2p-existing-negotiation-returned', {
                         assetId: asset.id,
@@ -1489,6 +1489,21 @@
                         connected: connected === true,
                         peer: this.peerSnapshot(peer)
                     });
+                    if ((connected !== true || !this.peerConnected(peer)) && peer &&
+                        peer.signalingState === 'stable' &&
+                        peer.connectionState !== 'failed' && peer.connectionState !== 'closed' &&
+                        peer.iceConnectionState !== 'failed' && peer.iceConnectionState !== 'closed') {
+                        await this.deps.ensurePeerOffer?.(from, { iceRestart: true });
+                        connected = await this.deps.waitForPeerConnection?.(from, P2P_TIMEOUT);
+                        peer = this.deps.getPeer(from);
+                        this.routeLog('p2p-recovery-negotiation-returned', {
+                            assetId: asset.id,
+                            peerDeviceId: from,
+                            requestId,
+                            connected: connected === true,
+                            peer: this.peerSnapshot(peer)
+                        });
+                    }
                     if (connected !== true || !this.peerConnected(peer)) {
                         throw new Error('Peer connection was not ready before P2P timeout');
                     }

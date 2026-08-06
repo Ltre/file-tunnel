@@ -256,6 +256,27 @@ test('file requests do not renegotiate a peer that is already checking ICE', asy
     assert.equal(harness.signals.filter(item => item.payload?.type === 'offer').length, 1);
 });
 
+test('a stalled file connection gets one throttled ICE restart', async () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    const pc = await harness.context.connectToPeer(harness.remoteDeviceId);
+    await harness.context.ensurePeerOfferForFileAsset(harness.remoteDeviceId);
+    await harness.context.handleSignal({
+        from: harness.remoteDeviceId,
+        type: 'answer',
+        sdp: { type: 'answer', sdp: 'answer' }
+    });
+    pc.iceConnectionState = 'checking';
+    pc.connectionState = 'connecting';
+
+    await Promise.all([
+        harness.context.ensurePeerOfferForFileAsset(harness.remoteDeviceId, { iceRestart: true }),
+        harness.context.ensurePeerOfferForFileAsset(harness.remoteDeviceId, { iceRestart: true })
+    ]);
+
+    assert.equal(pc.offerCount, 2);
+    assert.equal(harness.signals.filter(item => item.payload?.type === 'offer').length, 2);
+});
+
 test('failed peers close without starting an unsynchronized background reconnect', async () => {
     const harness = loadPeerHarness();
     const pc = await harness.context.connectToPeer(harness.remoteDeviceId);
@@ -533,11 +554,12 @@ function loadFileAssetTransfer() {
     return context.window.FileAssetTransfer;
 }
 
-function createFileAssetHarness({ connect = true } = {}) {
+function createFileAssetHarness({ connect = true, readinessResults = null } = {}) {
     const FileAssetTransfer = loadFileAssetTransfer();
     const socketEvents = [];
     const channels = [];
     const progressEvents = [];
+    const ensurePeerOptions = [];
     const peer = {
         connectionState: 'connecting',
         iceConnectionState: 'checking',
@@ -569,8 +591,20 @@ function createFileAssetHarness({ connect = true } = {}) {
         getSessionId: () => 'session',
         getPeer: () => peer,
         connectPeer: async () => peer,
-        ensurePeerOffer: async () => peer,
-        waitForPeerConnection: async () => readiness,
+        ensurePeerOffer: async (_deviceId, options) => {
+            ensurePeerOptions.push(options);
+            return peer;
+        },
+        waitForPeerConnection: readinessResults
+            ? async () => {
+                const result = readinessResults.shift();
+                if (result) {
+                    peer.connectionState = 'connected';
+                    peer.iceConnectionState = 'connected';
+                }
+                return result;
+            }
+            : async () => readiness,
         load: async fileId => ({
             id: fileId,
             name: `${fileId}.jpg`,
@@ -597,6 +631,7 @@ function createFileAssetHarness({ connect = true } = {}) {
         channels,
         socketEvents,
         progressEvents,
+        ensurePeerOptions,
         releaseReadiness,
         get p2pSends() { return p2pSends; },
         get relaySends() { return relaySends; }
@@ -620,6 +655,21 @@ test('file DataChannel is created only after the shared peer becomes connected',
     assert.equal(harness.channels[0].readyState, 'closed');
     assert.equal(harness.channels[0].onmessage, null);
     assert.equal(harness.channels[0]._fileAssetPeerConnection, null);
+});
+
+test('a file retries one ICE negotiation before relay fallback', async () => {
+    const harness = createFileAssetHarness({ readinessResults: [false, true] });
+    const sent = await harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-recovery', name: 'recovery.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-recovery'
+    });
+
+    assert.equal(sent, true);
+    assert.equal(harness.p2pSends, 1);
+    assert.equal(harness.relaySends, 0);
+    assert.equal(harness.ensurePeerOptions.length, 2);
+    assert.equal(harness.ensurePeerOptions[1].iceRestart, true);
 });
 
 test('a batch of small files waits on one shared peer before opening file channels', async () => {

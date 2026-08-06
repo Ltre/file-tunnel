@@ -2118,9 +2118,10 @@ async function connectToPeerForFileAsset(deviceId) {
     return pc;
 }
 
-async function ensurePeerOfferForFileAsset(deviceId) {
+async function ensurePeerOfferForFileAsset(deviceId, options = {}) {
     const pc = state.peers.get(deviceId);
     if (!pc) throw new Error('Peer connection missing');
+    const iceRestart = options.iceRestart === true;
     console.info('[file-asset-route]', {
         phase: 'app-ensure-offer-start',
         peerDeviceId: deviceId,
@@ -2143,10 +2144,20 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         });
         return pc;
     }
-    await createAndSendPeerOffer(deviceId, pc, { reason: 'file-asset-request' });
+    if (iceRestart && Number.isFinite(pc._fileAssetRecoveryOfferAt) &&
+        Date.now() - pc._fileAssetRecoveryOfferAt < PEER_STALE_OFFER_MS) {
+        return pc;
+    }
+    if (iceRestart) pc._fileAssetRecoveryOfferAt = Date.now();
+    const previousOfferSentAt = pc._offerSentAt;
+    await createAndSendPeerOffer(deviceId, pc, {
+        reason: iceRestart ? 'file-asset-recovery' : 'file-asset-request',
+        iceRestart
+    });
     console.info('[file-asset-route]', {
-        phase: 'app-ensure-offer-sent',
+        phase: pc._offerSentAt !== previousOfferSentAt ? 'app-ensure-offer-sent' : 'app-ensure-offer-reused',
         peerDeviceId: deviceId,
+        iceRestart,
         signalingState: pc.signalingState,
         iceGatheringState: pc.iceGatheringState
     });
