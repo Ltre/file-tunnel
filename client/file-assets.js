@@ -1614,6 +1614,7 @@
                     this.emitTransferStatus(asset.id, from, 'completed', transfer?.transferId, requestId);
                     return true;
                 } catch (relayErr) {
+                    const receiverRejectedRelay = String(relayErr.message || '').startsWith('receiver-');
                     const failedRelayTransport = transfer ? `sending-multi-source-relay:${routeId}` : `sending-relay:${routeId}`;
                     if (transfer) {
                         this.reportUploadProgress(stored, from, transfer, 0, failedRelayTransport, { attemptEnded: true });
@@ -1629,7 +1630,7 @@
                     });
                     this.log('send-relay-failed', { assetId: asset.id, peerDeviceId: from, transferId: transfer?.transferId, error: relayErr.message });
                     this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
-                    this.emitUnavailable(asset.id, from, 'asset-transfer-failed', transfer, requestId);
+                    if (!receiverRejectedRelay) this.emitUnavailable(asset.id, from, 'asset-transfer-failed', transfer, requestId);
                     return false;
                 }
             }
@@ -1853,7 +1854,8 @@
                     if ((message.transferId || '') !== (transferId || '')) return;
                     if (attemptId && message.attemptId && message.attemptId !== attemptId) return;
                     if (message.ok === false) {
-                        finish(new Error(message.reason || 'File asset receiver failed to store data'));
+                        channel._fileAssetRejected = message.reason || 'File asset receiver failed to store data';
+                        finish(new Error(channel._fileAssetRejected));
                         return;
                     }
                     finish(null, message);
@@ -2305,10 +2307,24 @@
             }
             if (message.type === 'file-asset-complete' && message.assetId === assetId) {
                 try {
+                    let completed;
                     if (message.transferId && this.multiSourceTransfers.has(assetId)) {
-                        await this.completeMultiSourceRange(assetId, message.transferId, deviceId, 'p2p', message.attemptId || channel._fileAssetAttemptId || '');
+                        completed = await this.completeMultiSourceRange(assetId, message.transferId, deviceId, 'p2p', message.attemptId || channel._fileAssetAttemptId || '');
                     } else {
-                        await this.complete(assetId, deviceId, 'p2p', message.attemptId || channel._fileAssetAttemptId || '');
+                        completed = await this.complete(assetId, deviceId, 'p2p', message.attemptId || channel._fileAssetAttemptId || '');
+                    }
+                    if (!completed) {
+                        if (channel.readyState === 'open') {
+                            channel.send(JSON.stringify({
+                                type: 'file-asset-complete-ack',
+                                assetId,
+                                transferId: message.transferId || '',
+                                attemptId: message.attemptId || channel._fileAssetAttemptId || '',
+                                ok: false,
+                                reason: message.transferId ? 'receiver-stale-range-complete' : 'receiver-stale-transfer-complete'
+                            }));
+                        }
+                        return;
                     }
                     this.routeLog('receiver-p2p-complete', {
                         assetId,
@@ -2355,7 +2371,7 @@
                     if (this.relayStartPromises.get(key) === promise) this.relayStartPromises.delete(key);
                 });
             this.relayStartPromises.set(key, promise);
-            await promise;
+            return await promise;
         }
 
         async waitForRelayStart(assetId, from, transferId = '') {
@@ -2434,11 +2450,20 @@
             if (!assetId || !chunk) return { ok: false, reason: 'invalid-relay-chunk' };
             await this.waitForRelayStart(assetId, from, transferId || '');
             if (transferId) {
-                if (!this.multiSourceTransfers.has(assetId)) return { ok: false, reason: 'receiver-transfer-missing' };
+                const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
+                if (!range) return { ok: false, reason: 'receiver-transfer-missing' };
+                if (!range.active || range.completed || range.retryScheduled || range.from !== from ||
+                    (attemptId && range.attemptId && range.attemptId !== attemptId)) {
+                    return { ok: false, reason: 'receiver-stale-range-attempt' };
+                }
                 await this.queueMultiSourceChunk(assetId, transferId, from, chunk, attemptId || '');
                 return { ok: true };
             }
-            if (!this.transfers.has(assetId)) return { ok: false, reason: 'receiver-transfer-missing' };
+            const transfer = this.transfers.get(assetId);
+            if (!transfer) return { ok: false, reason: 'receiver-transfer-missing' };
+            if (transfer.from !== from || (attemptId && transfer.attemptId && transfer.attemptId !== attemptId)) {
+                return { ok: false, reason: 'receiver-stale-transfer-attempt' };
+            }
             await this.queueChunk(assetId, chunk, attemptId || '');
             return { ok: true };
         }
@@ -2448,8 +2473,15 @@
             if (!assetId || !from) return { ok: false, reason: 'invalid-relay-complete' };
             await this.waitForRelayStart(assetId, from, transferId || '');
             if (transferId) {
-                if (!this.multiSourceTransfers.has(assetId)) return { ok: false, reason: 'receiver-transfer-missing' };
-                await this.completeMultiSourceRange(assetId, transferId, from, 'socket-relay', attemptId || '');
+                const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
+                if (!range) return { ok: false, reason: 'receiver-transfer-missing' };
+                if (range.completed) return { ok: true, duplicate: true };
+                if (!range.active || range.retryScheduled || range.from !== from ||
+                    (attemptId && range.attemptId && range.attemptId !== attemptId)) {
+                    return { ok: false, reason: 'receiver-stale-range-attempt' };
+                }
+                const completed = await this.completeMultiSourceRange(assetId, transferId, from, 'socket-relay', attemptId || '');
+                if (!completed) return { ok: false, reason: 'receiver-stale-range-complete' };
                 this.routeLog('receiver-relay-complete', {
                     assetId,
                     peerDeviceId: from,
@@ -2458,8 +2490,13 @@
                 });
                 return { ok: true };
             }
-            if (!this.transfers.has(assetId)) return { ok: false, reason: 'receiver-transfer-missing' };
-            await this.complete(assetId, from, 'socket-relay', attemptId || '');
+            const transfer = this.transfers.get(assetId);
+            if (!transfer) return { ok: false, reason: 'receiver-transfer-missing' };
+            if (transfer.from !== from || (attemptId && transfer.attemptId && transfer.attemptId !== attemptId)) {
+                return { ok: false, reason: 'receiver-stale-transfer-attempt' };
+            }
+            const completed = await this.complete(assetId, from, 'socket-relay', attemptId || '');
+            if (!completed) return { ok: false, reason: 'receiver-stale-transfer-complete' };
             this.routeLog('receiver-relay-complete', {
                 assetId,
                 peerDeviceId: from,

@@ -707,10 +707,29 @@ test('a file channel failure still cools down a failed shared peer', async () =>
     assert.equal(harness.transfer.p2pUnavailablePeers.has('device-b'), true);
 });
 
+test('a receiver-rejected relay does not echo a generic failure into the active download', async () => {
+    const harness = createFileAssetHarness();
+    harness.transfer.sendViaDataChannel = async () => {
+        throw new Error('simulated P2P send failure');
+    };
+    harness.transfer.sendViaSocketRelay = async () => {
+        throw new Error('receiver-p2p-active');
+    };
+    const send = harness.transfer.sendRequestedAsset({
+        asset: { id: 'asset-relay-rejected', name: 'relay-rejected.jpg', type: 'image/jpeg', size: 4 },
+        from: 'device-b',
+        requestId: 'request-relay-rejected'
+    });
+
+    harness.releaseReadiness();
+    assert.equal(await send, false);
+    assert.equal(harness.socketEvents.some(({ event }) => event === 'file-asset-unavailable'), false);
+});
+
 test('receiver leaves a completed channel open until the sender receives its acknowledgement', async () => {
     const harness = createFileAssetHarness();
     const channel = new MockDataChannel('file-asset:asset-ack', 'open');
-    harness.transfer.complete = async () => {};
+    harness.transfer.complete = async () => true;
 
     await harness.transfer.handleChannelMessage(
         'device-b',
@@ -729,6 +748,175 @@ test('receiver leaves a completed channel open until the sender receives its ack
         ok: true
     });
     channel.close();
+});
+
+test('receiver propagates an active P2P range rejection to the relay sender', async () => {
+    const harness = createFileAssetHarness();
+    const asset = { id: 'asset-relay-rejected', name: 'relay-rejected.bin', size: 8 };
+    const transfer = { transferId: 'part-0', rangeStart: 0, rangeEnd: 4 };
+    harness.transfer.desiredAssets.set(asset.id, 'device-b');
+    harness.transfer.multiSourceTransfers.set(asset.id, {
+        asset,
+        ranges: new Map([[transfer.transferId, {
+            ...transfer,
+            active: true,
+            completed: false,
+            retryScheduled: false,
+            from: 'device-b',
+            transport: 'p2p',
+            attemptId: 'request-p2p-part-0'
+        }]])
+    });
+
+    const result = await harness.transfer.handleRelayStart({
+        asset,
+        from: 'device-b',
+        transfer,
+        attemptId: 'request-relay-part-0'
+    });
+
+    assert.equal(result?.ok, false);
+    assert.equal(result?.reason, 'receiver-p2p-active');
+});
+
+test('receiver returns success for a valid relay range start', async () => {
+    const harness = createFileAssetHarness();
+    const asset = { id: 'asset-relay-valid', name: 'relay-valid.bin', size: 4 };
+    const transfer = { transferId: 'part-0', rangeStart: 0, rangeEnd: 4 };
+    const range = {
+        ...transfer,
+        active: true,
+        completed: false,
+        retryScheduled: false,
+        from: null,
+        transport: null,
+        attemptId: '',
+        pendingChunks: Promise.resolve()
+    };
+    harness.transfer.desiredAssets.set(asset.id, 'device-b');
+    harness.transfer.multiSourceTransfers.set(asset.id, {
+        asset,
+        buffer: new Uint8Array(asset.size),
+        ranges: new Map([[transfer.transferId, range]]),
+        activeRangeIds: new Set([transfer.transferId]),
+        queuedRangeIds: [],
+        completedBytes: 0,
+        receivedBytes: 0,
+        lastProgressAt: Date.now()
+    });
+    harness.transfer.completeMultiSourceDownload = async () => {};
+
+    const result = await harness.transfer.handleRelayStart({
+        asset,
+        from: 'device-b',
+        transfer,
+        attemptId: 'request-relay-part-0'
+    });
+
+    assert.equal(result?.ok, true);
+    assert.equal(range.transport, 'socket-relay');
+    assert.equal(range.attemptId, 'request-relay-part-0');
+    const chunkResult = await harness.transfer.handleRelayChunk({
+        assetId: asset.id,
+        from: 'device-b',
+        transferId: transfer.transferId,
+        attemptId: 'request-relay-part-0',
+        chunk: new Uint8Array([1, 2, 3, 4]).buffer
+    });
+    const completeResult = await harness.transfer.handleRelayComplete({
+        assetId: asset.id,
+        from: 'device-b',
+        transferId: transfer.transferId,
+        attemptId: 'request-relay-part-0'
+    });
+    assert.equal(chunkResult?.ok, true);
+    assert.equal(completeResult?.ok, true);
+    assert.equal(range.completed, true);
+});
+
+test('receiver rejects the first stale relay chunk after a range was reassigned', async () => {
+    const harness = createFileAssetHarness();
+    const assetId = 'asset-stale-relay';
+    const transferId = 'part-0';
+    const range = {
+        transferId,
+        rangeStart: 0,
+        rangeEnd: 4,
+        active: true,
+        completed: false,
+        retryScheduled: false,
+        from: 'device-c',
+        transport: 'p2p',
+        attemptId: 'new-p2p-attempt',
+        receivedSize: 0,
+        pendingChunks: Promise.resolve()
+    };
+    harness.transfer.multiSourceTransfers.set(assetId, {
+        ranges: new Map([[transferId, range]])
+    });
+
+    const result = await harness.transfer.handleRelayChunk({
+        assetId,
+        from: 'device-b',
+        transferId,
+        attemptId: 'old-relay-attempt',
+        chunk: new Uint8Array([1, 2]).buffer
+    });
+
+    assert.equal(result?.ok, false);
+    assert.equal(result?.reason, 'receiver-stale-range-attempt');
+    assert.equal(range.receivedSize, 0);
+});
+
+test('a stale P2P range completion is not acknowledged as stored', async () => {
+    const harness = createFileAssetHarness();
+    const channel = new MockDataChannel('file-asset:asset-stale:part-0', 'open');
+    harness.transfer.multiSourceTransfers.set('asset-stale', { ranges: new Map() });
+    harness.transfer.completeMultiSourceRange = async () => false;
+
+    await harness.transfer.handleChannelMessage(
+        'device-b',
+        'asset-stale',
+        JSON.stringify({
+            type: 'file-asset-complete',
+            assetId: 'asset-stale',
+            transferId: 'part-0',
+            attemptId: 'stale-attempt'
+        }),
+        channel,
+        'part-0'
+    );
+
+    assert.equal(channel.sent.length, 1);
+    const acknowledgement = JSON.parse(channel.sent[0]);
+    assert.equal(acknowledgement.ok, false);
+    assert.equal(acknowledgement.reason, 'receiver-stale-range-complete');
+});
+
+test('a negative completion acknowledgement stops fallback relay for that attempt', async () => {
+    const harness = createFileAssetHarness();
+    const channel = new MockDataChannel('file-asset:asset-negative-ack:part-0', 'open');
+    const acknowledgement = harness.transfer.waitForTransferAck(
+        channel,
+        'asset-negative-ack',
+        'part-0',
+        'attempt-negative'
+    );
+    const message = new Event('message');
+    Object.defineProperty(message, 'data', {
+        value: JSON.stringify({
+            type: 'file-asset-complete-ack',
+            assetId: 'asset-negative-ack',
+            transferId: 'part-0',
+            attemptId: 'attempt-negative',
+            ok: false,
+            reason: 'receiver-stale-range-complete'
+        })
+    });
+    channel.dispatchEvent(message);
+
+    await assert.rejects(acknowledgement, /receiver-stale-range-complete/);
+    assert.equal(channel._fileAssetRejected, 'receiver-stale-range-complete');
 });
 
 test('a late incoming transfer cancels its pending retry before it can be requested again', () => {
