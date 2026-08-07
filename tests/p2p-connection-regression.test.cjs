@@ -459,18 +459,31 @@ test('a server-observed private address supplements host candidates embedded in 
     assert.match(harness.peers[0].remoteDescription.sdp, /\s10\.0\.0\.23\s54321\s/);
 });
 
-test('a public server-observed address does not rewrite an mDNS host candidate', () => {
+test('a public server-observed address does not trust a device-reported private address', () => {
     const harness = loadPeerHarness('device-z', 'device-a');
     harness.context.state.devices.set(harness.remoteDeviceId, {
         id: harness.remoteDeviceId,
-        externalIp: '203.0.113.8'
+        externalIp: '203.0.113.8',
+        internalIp: '10.0.0.23'
     });
     const variants = harness.context.getRemoteIceCandidateVariants(harness.remoteDeviceId, {
+        _drop2TunnelObservedIp: '203.0.113.8',
         candidate: 'candidate:1 1 udp 2122260223 peer-name.local 54321 typ host generation 0'
     });
 
     assert.equal(variants.length, 1);
     assert.match(variants[0].candidate, /peer-name\.local/);
+});
+
+test('a numeric host candidate is preserved when a private address is observed', () => {
+    const harness = loadPeerHarness('device-z', 'device-a');
+    const variants = harness.context.getRemoteIceCandidateVariants(harness.remoteDeviceId, {
+        _drop2TunnelObservedIp: '10.0.0.23',
+        candidate: 'candidate:1 1 udp 2122260223 192.168.1.40 54321 typ host generation 0'
+    });
+
+    assert.equal(variants.length, 1);
+    assert.match(variants[0].candidate, /\s192\.168\.1\.40\s54321\s/);
 });
 
 test('a loopback proxy address does not rewrite an mDNS host candidate', () => {

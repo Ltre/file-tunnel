@@ -2186,23 +2186,18 @@ function getRemoteIceCandidateVariants(deviceId, candidate) {
     const parts = candidateText.split(/\s+/);
     const typeIndex = parts.indexOf('typ');
     const hostAddress = parts[4] || '';
-    if (typeIndex < 0 || parts[typeIndex + 1] !== 'host') {
+    if (typeIndex < 0 ||
+        parts[typeIndex + 1] !== 'host' ||
+        !/\.local\.?$/i.test(hostAddress)) {
         return [candidateInit];
     }
 
-    const remoteDevice = state.devices.get(deviceId) || {};
-    const privateAddress = [
-        observedIp,
-        remoteDevice.externalIp,
-        remoteDevice.internalIp,
-        remoteDevice.localIp
-    ].map(value => String(value || '')
+    const privateAddress = String(observedIp || '')
         .trim()
         .replace(/^\[|\]$/g, '')
         .replace(/^::ffff:/i, '')
-        .replace(/%.+$/, ''))
-        .find(value => isPrivateNetworkIp(value) && !/^127\./.test(value));
-    if (!privateAddress || hostAddress === privateAddress) return [candidateInit];
+        .replace(/%.+$/, '');
+    if (!isPrivateNetworkIp(privateAddress) || /^127\./.test(privateAddress)) return [candidateInit];
 
     const rewrittenParts = [...parts];
     rewrittenParts[4] = privateAddress;
