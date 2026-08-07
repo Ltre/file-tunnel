@@ -556,11 +556,13 @@ function registerFileAssetHandlers(socket, context) {
             ackOk(ack);
             historyLog('file-asset-relay-started', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset, transfer, attemptId: relayAttemptId });
         } catch (err) {
-            console.error('file-asset-relay-start error:', err);
             const { sessionId, to, asset, transferId, attemptId } = data || {};
             const { deviceId } = current();
             if (sessionId && to && asset?.id) {
-                cleanupFileAssetRelay(sessionId, deviceId, to, asset.id, transferId);
+                cleanupFileAssetRelay(sessionId, deviceId, to, asset.id, transferId, attemptId);
+            }
+            if (!String(err.message || '').startsWith('receiver-')) {
+                console.error('file-asset-relay-start error:', err);
             }
             ackFail(ack, err.message || 'relay-start-failed');
         }
@@ -595,9 +597,11 @@ function registerFileAssetHandlers(socket, context) {
             relay.receivedSize += size;
             ackOk(ack, { receivedSize: relay.receivedSize, expectedSize: relay.expectedSize });
         } catch (err) {
-            const { sessionId, to, assetId, transferId } = data || {};
+            const { sessionId, to, assetId, transferId, attemptId } = data || {};
             const { deviceId } = current();
-            if (sessionId && to && assetId) cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId);
+            if (sessionId && to && assetId) {
+                cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transferId, attemptId);
+            }
             const reason = err.message || 'relay-chunk-failed';
             if (reason.startsWith('receiver-') || isRelayAckTimeout(reason)) {
                 historyLog(reason.startsWith('receiver-') ? 'file-asset-relay-receiver-rejected' : 'file-asset-relay-target-timeout', {
@@ -656,11 +660,12 @@ function cleanupFileAssetRelays(sessionId, deviceId) {
     }
 }
 
-function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId) {
+function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId, attemptId) {
     for (const [key, relay] of relays) {
         if (relay.sessionId !== sessionId || relay.from !== from || relay.to !== to || relay.asset?.id !== assetId) continue;
         const relayTransferId = relay.transfer?.transferId;
         if ((relayTransferId || undefined) !== (transferId || undefined)) continue;
+        if (attemptId && relay.attemptId !== attemptId) continue;
         relays.delete(key);
     }
 }
