@@ -711,6 +711,7 @@
                 ranges,
                 queuedRangeIds: Array.from(ranges.keys()),
                 activeRangeIds: new Set(),
+                transports: new Set(),
                 completedBytes: 0,
                 receivedBytes: 0,
                 forceRequestId,
@@ -851,6 +852,8 @@
             transfer.buffer.set(new Uint8Array(chunk), range.rangeStart + range.receivedSize);
             range.receivedSize += chunk.byteLength;
             transfer.receivedBytes += chunk.byteLength;
+            if (!transfer.transports) transfer.transports = new Set();
+            transfer.transports.add(range.transport);
             range.lastActivityAt = Date.now();
             if (range.receivedSize === range.rangeEnd - range.rangeStart && !range.awaitingCompleteAt) {
                 range.awaitingCompleteAt = range.lastActivityAt;
@@ -919,7 +922,15 @@
 
         reportMultiSourceProgress(transfer) {
             const progress = Math.min(99, Math.floor(transfer.receivedBytes * 100 / transfer.asset.size));
-            this.deps.onProgress(transfer.asset.id, transfer.asset.name, progress, 'receiving-multi-source');
+            const transports = transfer.transports || new Set();
+            const route = transports.has('p2p') && transports.has('socket-relay')
+                ? 'receiving-multi-source-mixed'
+                : transports.has('socket-relay')
+                    ? 'receiving-multi-source-relay'
+                    : transports.has('p2p')
+                        ? 'receiving-multi-source-p2p'
+                        : 'receiving-multi-source';
+            this.deps.onProgress(transfer.asset.id, transfer.asset.name, progress, route);
         }
 
         async completeMultiSourceDownload(assetId, transfer) {

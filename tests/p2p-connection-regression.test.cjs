@@ -1159,6 +1159,31 @@ test('multi-source provider progress accumulates unique range bytes without retr
     assert.equal(harness.transfer.multiSourceUploadProgress.size, 0);
 });
 
+test('multi-source receiver progress reports the transports that actually delivered ranges', () => {
+    const harness = createFileAssetHarness();
+    const transfer = {
+        asset: { id: 'asset-receive-progress', name: 'receive.bin', size: 8 },
+        receivedBytes: 4,
+        transports: new Set(['p2p']),
+        ranges: new Map([
+            ['part-0', { transport: 'p2p' }],
+            ['part-1', { transport: null }]
+        ])
+    };
+
+    harness.transfer.reportMultiSourceProgress(transfer);
+    transfer.transports.add('socket-relay');
+    harness.transfer.reportMultiSourceProgress(transfer);
+    transfer.transports.delete('p2p');
+    harness.transfer.reportMultiSourceProgress(transfer);
+
+    assert.deepEqual(harness.progressEvents.map(event => event[3]), [
+        'receiving-multi-source-p2p',
+        'receiving-multi-source-mixed',
+        'receiving-multi-source-relay'
+    ]);
+});
+
 test('stale upload bookkeeping is pruned without touching fresh transfer state', () => {
     const harness = createFileAssetHarness();
     const now = Date.now();

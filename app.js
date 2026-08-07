@@ -363,7 +363,10 @@ function getFileProgressStatus(transport = '') {
         : '';
     if (route.startsWith('sending-multi-source-relay')) return `multi-source Socket.IO relay${peerLabel}`;
     if (route.startsWith('sending-multi-source')) return `multi-source P2P${peerLabel}`;
-    if (route.startsWith('receiving-multi-source')) return 'multi-source P2P';
+    if (route.startsWith('receiving-multi-source-mixed')) return 'multi-source P2P + Socket.IO relay';
+    if (route.startsWith('receiving-multi-source-relay')) return 'multi-source Socket.IO relay';
+    if (route.startsWith('receiving-multi-source-p2p')) return 'multi-source P2P';
+    if (route.startsWith('receiving-multi-source')) return 'multi-source';
     if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
     if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
     return '';
@@ -2143,9 +2146,10 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         });
         return pc;
     }
+    const previousOfferSentAt = pc._offerSentAt;
     await createAndSendPeerOffer(deviceId, pc, { reason: 'file-asset-request' });
     console.info('[file-asset-route]', {
-        phase: 'app-ensure-offer-sent',
+        phase: pc._offerSentAt !== previousOfferSentAt ? 'app-ensure-offer-sent' : 'app-ensure-offer-reused',
         peerDeviceId: deviceId,
         signalingState: pc.signalingState,
         iceGatheringState: pc.iceGatheringState
