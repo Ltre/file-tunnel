@@ -167,6 +167,7 @@ let mediaFullscreenMovedNextSibling = null;
 let mediaFullscreenMovedPlaceholder = null;
 let progressDrawerCollapsed = true;
 let progressDrawerDragState = null;
+let lanP2pGuideTimer = null;
 let progressDrawerSuppressClick = false;
 let progressDrawerIgnoreItemClicksUntil = 0;
 let progressDrawerBlockPageClicksUntil = 0;
@@ -1452,6 +1453,7 @@ function initSocket() {
             .filter(device => device?.deviceId && device.deviceId !== state.deviceId)
             .map(device => [device.deviceId, device]));
         renderNearbyDevices();
+        scheduleLanP2pGuide();
     });
 
     state.socket.on('session-short-code', (data) => {
@@ -2847,6 +2849,7 @@ function initFileAssetTransfer() {
             const progressKey = getFileProgressKey(fileId, route);
             const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
+            if (!terminal && route.includes('relay')) maybeShowLanP2pGuide('relay');
             trackFileReceiveProgress(fileId, fileName, progress, route, progressKey);
             if (progress < 100) {
                 activeFileProgress.add(progressKey);
@@ -13747,6 +13750,7 @@ function updateDeviceList() {
         syncDeviceRemarkWithHelper(device.deviceId || device.id);
     });
     renderContacts();
+    if (state.devices.size) scheduleLanP2pGuide();
 }
 
 // ==================== UI 初始化 ====================
@@ -14557,6 +14561,106 @@ function applyTunnelPermissionUi() {
     renderTunnelPermissionSettings();
 }
 
+async function updateLanP2pPermissionUi() {
+    const button = document.getElementById('grantLanP2pPermissionBtn');
+    const status = document.getElementById('lanP2pPermissionStatus');
+    if (!button || !status) return;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        button.disabled = true;
+        status.textContent = '需要 HTTPS';
+        return;
+    }
+    button.disabled = false;
+    try {
+        const states = await Promise.all(['camera', 'microphone'].map(name => navigator.permissions.query({ name })));
+        status.textContent = states.every(permission => permission.state === 'granted') ? '已授权' : '未授权';
+    } catch {
+        status.textContent = '状态未知';
+    }
+}
+
+function hasSameLanTunnelPeer() {
+    const ownExternalIp = state.selfNetworkInfo?.externalIp || '';
+    const ownIp = String(state.selfNetworkInfo?.internalIp || state.reportedLanIp || '').split('.');
+    return Array.from(state.devices.values()).some(device => {
+        const nearbyReason = state.nearbyDevices.get(device.id)?.discoveryReason;
+        if (nearbyReason === 'same-network' || nearbyReason === 'local-subnet') return true;
+        if (ownExternalIp && device.externalIp === ownExternalIp) return true;
+        const peerIp = String(device.internalIp || '').split('.');
+        return ownIp.length === 4 && peerIp.length === 4 && isPrivateNetworkIp(ownIp.join('.')) &&
+            ownIp.slice(0, 3).join('.') === peerIp.slice(0, 3).join('.');
+    });
+}
+
+function scheduleLanP2pGuide() {
+    if (location.protocol !== 'https:' || !state.devices.size) return;
+    if (lanP2pGuideTimer) clearTimeout(lanP2pGuideTimer);
+    lanP2pGuideTimer = setTimeout(() => {
+        lanP2pGuideTimer = null;
+        maybeShowLanP2pGuide('same-lan');
+    }, 5000);
+}
+
+async function maybeShowLanP2pGuide(reason) {
+    const guide = document.getElementById('lanP2pGuide');
+    if (!guide || location.protocol !== 'https:' || !state.devices.size || !navigator.mediaDevices?.getUserMedia ||
+        guide.dataset.state || (reason !== 'relay' && !hasSameLanTunnelPeer())) return;
+    try {
+        if (sessionStorage.getItem('drop2tunnel.lanP2pGuideSeen')) {
+            guide.dataset.state = 'seen';
+            return;
+        }
+    } catch (_) {}
+
+    guide.dataset.state = 'checking';
+    try {
+        const permissions = await Promise.all(['camera', 'microphone'].map(name => navigator.permissions.query({ name })));
+        if (permissions.every(permission => permission.state === 'granted')) {
+            guide.dataset.state = 'granted';
+            return;
+        }
+    } catch (_) {}
+
+    try { sessionStorage.setItem('drop2tunnel.lanP2pGuideSeen', '1'); } catch (_) {}
+    guide.dataset.state = 'shown';
+    guide.hidden = false;
+    historyLog('lan-p2p-guide-shown', { reason });
+}
+
+function initLanP2pGuide() {
+    const guide = document.getElementById('lanP2pGuide');
+    if (!guide) return;
+    const dismiss = () => {
+        guide.hidden = true;
+        guide.dataset.state = 'dismissed';
+    };
+    guide.querySelectorAll('[data-dismiss-lan-p2p-guide]').forEach(button => button.addEventListener('click', dismiss));
+    document.getElementById('openLanP2pEnhancementBtn')?.addEventListener('click', () => {
+        dismiss();
+        document.getElementById('tunnelSettingsBtn')?.click();
+        requestAnimationFrame(() => {
+            document.getElementById('lanP2pEnhancementSection')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            document.getElementById('grantLanP2pPermissionBtn')?.focus({ preventScroll: true });
+        });
+    });
+}
+
+async function grantLanP2pPermission() {
+    const button = document.getElementById('grantLanP2pPermissionBtn');
+    let stream;
+    if (button) button.disabled = true;
+    try {
+        stream = await mediaController.getMedia({ video: true, audio: true });
+        showAppToast('授权完成，请刷新页面后建立新的 P2P 连接');
+    } catch (err) {
+        historyLog('lan-p2p-permission-failed', { name: err.name, error: err.message });
+        showAppToast('授权失败，请在站点设置中允许摄像头和麦克风');
+    } finally {
+        stream?.getTracks().forEach(track => track.stop());
+        await updateLanP2pPermissionUi();
+    }
+}
+
 function initTunnelSettings() {
     const settingsToolGrid = document.getElementById('settingsToolGrid');
     const connectionTools = document.querySelector('.left-panel .session-tools');
@@ -14567,6 +14671,7 @@ function initTunnelSettings() {
     const layer = document.getElementById('tunnelSettingsLayer');
     const open = () => {
         renderTunnelPermissionSettings();
+        updateLanP2pPermissionUi();
         layer.hidden = false;
     };
     const close = () => { layer.hidden = true; };
@@ -14574,6 +14679,7 @@ function initTunnelSettings() {
         if (event.target.closest('button')) close();
     }, true);
     document.getElementById('tunnelSettingsBtn')?.addEventListener('click', open);
+    document.getElementById('grantLanP2pPermissionBtn')?.addEventListener('click', grantLanP2pPermission);
     document.getElementById('closeTunnelSettingsBtn')?.addEventListener('click', close);
     layer?.addEventListener('click', event => {
         if (event.target === layer) close();
@@ -14650,6 +14756,7 @@ function initTunnelSettings() {
 
 function initUI() {
     initTunnelSettings();
+    initLanP2pGuide();
     initThemeSwitcher();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
     window.addEventListener('pagehide', persistMusicPlayerStateNow);

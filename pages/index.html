@@ -3865,6 +3865,38 @@
         .tunnel-admin-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
         .language-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .language-settings-row label { color: #273451; font-weight: 700; }
+        .lan-p2p-enhancement-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .lan-p2p-status { color: #6d788e; font-size: .82rem; }
+        .lan-p2p-guide {
+            position: fixed;
+            top: calc(var(--tunnel-topbar-height) + 14px + env(safe-area-inset-top));
+            right: 14px;
+            z-index: 6400;
+            display: grid;
+            gap: 10px;
+            width: min(390px, calc(100vw - 28px));
+            padding: 14px;
+            border: 1px solid #dce2ee;
+            border-radius: 8px;
+            background: #fff;
+            color: #273451;
+            box-shadow: 0 16px 44px rgba(17, 25, 45, .24);
+            box-sizing: border-box;
+        }
+        .lan-p2p-guide[hidden] { display: none; }
+        .lan-p2p-guide-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .lan-p2p-guide-header strong { font-size: .96rem; }
+        .lan-p2p-guide-close {
+            width: 30px;
+            height: 30px;
+            border: 0;
+            background: transparent;
+            color: #63708a;
+            font-size: 1.25rem;
+            cursor: pointer;
+        }
+        .lan-p2p-guide p { margin: 0; color: #66728a; font-size: .84rem; line-height: 1.55; }
+        .lan-p2p-guide-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
         @media (max-width: 767px) {
             .tunnel-settings-layer { padding: 0; background: #fff; }
@@ -4469,6 +4501,18 @@
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
 
+    <aside class="lan-p2p-guide" id="lanP2pGuide" role="dialog" aria-labelledby="lanP2pGuideTitle" hidden>
+        <div class="lan-p2p-guide-header">
+            <strong id="lanP2pGuideTitle">增强局域网 P2P</strong>
+            <button class="lan-p2p-guide-close" type="button" data-dismiss-lan-p2p-guide aria-label="关闭">×</button>
+        </div>
+        <p>检测到同一局域网设备或 Socket.IO 中转。授权站点媒体权限可提高局域网 P2P 直连成功率；音视频不会被上传。</p>
+        <div class="lan-p2p-guide-actions">
+            <button class="btn btn-secondary" type="button" data-dismiss-lan-p2p-guide>稍后</button>
+            <button class="btn btn-primary" id="openLanP2pEnhancementBtn" type="button">前往增强</button>
+        </div>
+    </aside>
+
     <div class="tunnel-settings-layer" id="tunnelSettingsLayer" hidden>
         <section class="tunnel-settings-panel" role="dialog" aria-modal="true" aria-labelledby="tunnelSettingsTitle">
             <header class="tunnel-settings-header">
@@ -4479,6 +4523,14 @@
                 <section class="tunnel-settings-section">
                     <h3>隧道工具</h3>
                     <div class="session-tools settings-tool-grid" id="settingsToolGrid"></div>
+                </section>
+                <section class="tunnel-settings-section" id="lanP2pEnhancementSection">
+                    <h3>增强局域网 P2P</h3>
+                    <p>Android Chrome 与 VPN 并用时，授予摄像头和麦克风权限可提高局域网直连成功率。媒体设备仅短暂启动并立即停止，不上传音视频。</p>
+                    <div class="lan-p2p-enhancement-row">
+                        <button class="btn btn-secondary" id="grantLanP2pPermissionBtn" type="button">授权增强 P2P</button>
+                        <span class="lan-p2p-status" id="lanP2pPermissionStatus" aria-live="polite">未授权</span>
+                    </div>
                 </section>
                 <section class="tunnel-settings-section tunnel-permission-settings">
                     <div class="tunnel-permission-heading"><h3>隧道权限</h3><span id="tunnelPermissionOwnerHint"></span></div>
