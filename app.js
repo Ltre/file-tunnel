@@ -69,7 +69,7 @@ const CONFIG = {
     // 开发环境: 使用当前页面地址
     // 生产环境: 可配置为固定地址
     SOCKET_SERVER: buildSocketServerUrl(),
-    
+
     // 备用服务器地址 (当自动检测失败时使用)
     FALLBACK_SERVER: null,
     // 小文件大小阈值。Base64 和消息元数据也会占用 Socket.IO 的 1MB 上限。
@@ -167,6 +167,7 @@ let mediaFullscreenMovedNextSibling = null;
 let mediaFullscreenMovedPlaceholder = null;
 let progressDrawerCollapsed = true;
 let progressDrawerDragState = null;
+let lanP2pGuideTimer = null;
 let progressDrawerSuppressClick = false;
 let progressDrawerIgnoreItemClicksUntil = 0;
 let progressDrawerBlockPageClicksUntil = 0;
@@ -1405,7 +1406,7 @@ function initSocket() {
         state.debugLogReady = true;
         flushClientDebugLogs();
         announceStoredEditorAssets();
-        announceStoredFileAssets();
+        announceStoredFileAssets({ resumePending: true });
         hydrateEditorAssets(document.getElementById('editor'));
         consumePendingSharedFiles().catch(err => {
             historyLog('shared-file-import-failed', { error: err.message });
@@ -1452,6 +1453,7 @@ function initSocket() {
             .filter(device => device?.deviceId && device.deviceId !== state.deviceId)
             .map(device => [device.deviceId, device]));
         renderNearbyDevices();
+        scheduleLanP2pGuide();
     });
 
     state.socket.on('session-short-code', (data) => {
@@ -1850,7 +1852,7 @@ async function connectToPeer(deviceId) {
         offerToReceiveVideo: false,
         iceRestart: false
     });
-    
+
     await pc.setLocalDescription(offer);
     console.log('Set local description, sending offer to', deviceId);
 
@@ -1925,6 +1927,10 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-connected', peerDeviceId: deviceId });
         return pc;
     }
+    if (pc.localDescription && pc.remoteDescription) {
+        console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: deviceId });
+        return pc;
+    }
     if (pc.signalingState !== 'stable') {
         console.info('[file-asset-route]', {
             phase: 'app-ensure-offer-skip-signaling-busy',
@@ -1933,26 +1939,35 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         });
         return pc;
     }
-    const offer = await pc.createOffer({
-        offerToReceiveAudio: false,
-        offerToReceiveVideo: false,
-        iceRestart: false
-    });
-    await pc.setLocalDescription(offer);
-    state.socket.emit('signal', {
-        to: deviceId,
-        from: state.deviceId,
-        type: 'offer',
-        sdp: offer
-    });
-    historyLog('p2p-file-asset-offer-sent', { peerDeviceId: deviceId });
-    console.info('[file-asset-route]', {
-        phase: 'app-ensure-offer-sent',
-        peerDeviceId: deviceId,
-        signalingState: pc.signalingState,
-        iceGatheringState: pc.iceGatheringState
-    });
-    return pc;
+    if (pc._fileAssetOfferPromise) return pc._fileAssetOfferPromise;
+    pc._fileAssetOfferPromise = (async () => {
+        const offer = await pc.createOffer({
+            offerToReceiveAudio: false,
+            offerToReceiveVideo: false,
+            iceRestart: false
+        });
+        if (state.peers.get(deviceId) !== pc || pc.signalingState !== 'stable') return pc;
+        await pc.setLocalDescription(offer);
+        state.socket.emit('signal', {
+            to: deviceId,
+            from: state.deviceId,
+            type: 'offer',
+            sdp: offer
+        });
+        historyLog('p2p-file-asset-offer-sent', { peerDeviceId: deviceId });
+        console.info('[file-asset-route]', {
+            phase: 'app-ensure-offer-sent',
+            peerDeviceId: deviceId,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState
+        });
+        return pc;
+    })();
+    try {
+        return await pc._fileAssetOfferPromise;
+    } finally {
+        pc._fileAssetOfferPromise = null;
+    }
 }
 
 function queueIceCandidate(deviceId, candidate) {
@@ -2834,6 +2849,7 @@ function initFileAssetTransfer() {
             const progressKey = getFileProgressKey(fileId, route);
             const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
+            if (!terminal && route.includes('relay')) maybeShowLanP2pGuide('relay');
             trackFileReceiveProgress(fileId, fileName, progress, route, progressKey);
             if (progress < 100) {
                 activeFileProgress.add(progressKey);
@@ -3028,7 +3044,7 @@ function updateMediaButtons(stateUpdate = {}) {
     }
 }
 
-async function announceStoredFileAssets() {
+async function announceStoredFileAssets(options = {}) {
     if (!fileAssetTransfer) return;
     try {
         const files = typeof IDBKeyRange !== 'undefined'
@@ -3045,7 +3061,7 @@ async function announceStoredFileAssets() {
             }
             await fileAssetTransfer.announce(file);
         }
-        fileAssetTransfer.resumePending();
+        if (options.resumePending) fileAssetTransfer.resumePending();
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
@@ -5823,6 +5839,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         ${contentHtml}
     `;
     syncTransferRecordFavoriteBadge(messageEl, message);
+    syncTransferRecordSnsBadge(messageEl, message);
     if (fileRecordRemark) {
         const remark = document.createElement('div');
         remark.className = 'collection-remark';
@@ -6001,6 +6018,7 @@ async function showTransferRecordDetails(messageId) {
                         <span>文件 ID：${escapeHtml(entry.fileInfo.id || '-')}</span>
                     </article>`).join('')}</section>` : ''}
                 ${renderSnsMediaSection(message)}
+                ${renderSnsAcquisitionSection(message)}
                 <details class="transfer-record-raw-details"><summary>记录元数据</summary><pre>${escapeHtml(JSON.stringify(message, (key, value) => key === 'data' ? '[binary omitted]' : value, 2))}</pre></details>
             </div>
             <footer class="transfer-record-details-actions">
@@ -6038,6 +6056,14 @@ async function showTransferRecordDetails(messageId) {
             await focusTransferRecordById(button.dataset.snsLocate, { timeoutMs: 8000 });
         });
     });
+    overlay.querySelectorAll('[data-sns-source-locate]').forEach(button => {
+        button.addEventListener('click', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            closeTransferRecordDetails();
+            await focusTransferRecordById(button.dataset.snsSourceLocate, { timeoutMs: 8000 });
+        });
+    });
     overlay.addEventListener('click', event => {
         if (event.target === overlay) closeTransferRecordDetails();
     });
@@ -6047,15 +6073,30 @@ async function showTransferRecordDetails(messageId) {
 function getSnsMediaStatusLabel(item = {}) {
     if (item.serverState === 'fetching') {
         const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
-        return `服务器获取中 · ${Math.round(progress)}%`;
+        const stages = {
+            queued: '等待服务器处理',
+            parsing: '正在解析',
+            fetching_song: '正在获取歌曲',
+            fetching_video: '正在获取视频',
+            processing_cover: '正在处理封面',
+            writing_metadata: '正在写入元数据',
+            creating_collection: '正在创建合辑'
+        };
+        const stage = stages[item.serverStage] || '服务器获取中';
+        const showProgress = item.serverStage === 'fetching_song' || item.serverStage === 'fetching_video';
+        return showProgress ? `${stage} · ${Math.round(progress)}%` : stage;
     }
-    if (item.serverState === 'ready') return item.generatedMessageId ? '已生成文件记录' : '已获取到服务器';
+    if (item.serverState === 'ready') {
+        const label = item.mediaKind === 'song' ? '已获取歌曲' : '已生成文件记录';
+        return item.resultFileName ? `${label} · ${item.resultFileName}` : label;
+    }
     if (item.serverState === 'failed') return `获取失败：${item.serverError || '未知错误'}`;
     return '等待获取文件内容';
 }
 
 function renderSnsMediaItemHtml(item = {}) {
-    const canFetch = !item.serverState || item.serverState === 'not_fetched' || item.serverState === 'failed';
+    const staleFetching = item.serverState === 'fetching' && Date.now() - (Number(item.updatedAt) || 0) > 2 * 60 * 1000;
+    const canFetch = !item.serverState || item.serverState === 'not_fetched' || item.serverState === 'failed' || staleFetching;
     const isFetching = item.serverState === 'fetching';
     const progress = Math.max(0, Math.min(100, Number(item.serverProgress) || 0));
     return `
@@ -6063,6 +6104,7 @@ function renderSnsMediaItemHtml(item = {}) {
             ${item.coverUrl ? `<img class="sns-media-cover" src="${escapeHtml(item.coverUrl)}" alt="">` : '<div class="sns-media-cover sns-media-cover-empty">SNS</div>'}
             <div class="sns-media-main">
                 <strong>${escapeHtml(item.title || 'SNS 媒体文件')}</strong>
+                ${item.mediaKind ? `<span>${escapeHtml(item.mediaKind === 'song' ? '歌曲' : item.mediaKind === 'video' ? '视频' : '暂不支持')}</span>` : ''}
                 <a href="${escapeHtml(item.mediaUrl || item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.mediaUrl || item.sourceUrl || '')}</a>
                 <span>${escapeHtml(getSnsMediaStatusLabel(item))}</span>
                 ${isFetching ? `<div class="sns-media-progress"><i style="width:${progress}%"></i></div>` : ''}
@@ -6074,7 +6116,29 @@ function renderSnsMediaItemHtml(item = {}) {
         </article>`;
 }
 
+function renderSnsAcquisitionSection(message = {}) {
+    const acquisition = message.snsAcquisition;
+    if (!acquisition?.sourceMessageId) return '';
+    const sourceLabel = acquisition.source === 'ytmusic'
+        ? 'YouTube Music'
+        : acquisition.source === 'youtube'
+            ? 'YouTube'
+            : String(acquisition.source || 'SNS').toUpperCase();
+    return `
+        <section class="transfer-record-details-sns">
+            <h3>来源为 ${escapeHtml(sourceLabel)} 获取</h3>
+            <div class="sns-media-main">
+                <a href="${escapeHtml(acquisition.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(acquisition.sourceUrl || '')}</a>
+                <span>${escapeHtml(acquisition.mediaKind === 'song' ? '歌曲合辑' : '视频文件')}</span>
+                <div class="sns-media-actions">
+                    <button type="button" data-sns-source-locate="${escapeHtml(acquisition.sourceMessageId)}">定位原始链接记录</button>
+                </div>
+            </div>
+        </section>`;
+}
+
 function renderSnsMediaSection(message = {}) {
+    if (message.snsAcquisition) return '';
     const items = Array.isArray(message.snsMediaItems) ? message.snsMediaItems.filter(item => item?.id) : [];
     const sources = Array.isArray(message.snsSources) ? message.snsSources.filter(source => source?.id) : [];
     if (!items.length && !sources.length) return '';
@@ -6202,6 +6266,22 @@ function syncTransferRecordFavoriteBadge(messageEl, message) {
     badge.className = 'message-record-favorite-badge';
     badge.textContent = '★';
     badge.title = '记录收藏';
+    header.appendChild(badge);
+}
+
+function syncTransferRecordSnsBadge(messageEl, message) {
+    if (!messageEl) return;
+    messageEl.querySelector('.message-record-sns-badge')?.remove();
+    const mediaItems = Array.isArray(message?.snsMediaItems) ? message.snsMediaItems : [];
+    const hasSnsMedia = !message?.snsAcquisition && mediaItems.some(item => item?.id && item?.mediaKind !== 'unsupported');
+    messageEl.classList.toggle('message-record-sns', hasSnsMedia);
+    if (!hasSnsMedia) return;
+    const header = messageEl.querySelector('.message-header');
+    if (!header) return;
+    const badge = document.createElement('span');
+    badge.className = 'message-record-sns-badge';
+    badge.textContent = '◉ SNS';
+    badge.title = '此记录包含可获取的 SNS 媒体';
     header.appendChild(badge);
 }
 
@@ -7087,6 +7167,7 @@ async function updateCollectionMessageElement(message) {
         if (previousBubble) previousBubble.replaceWith(nextBubble);
     });
     syncTransferRecordFavoriteBadge(messageEl, message);
+    syncTransferRecordSnsBadge(messageEl, message);
 }
 
 async function applyCollectionPreviewIncrementalUpdate(previousMessage, nextMessage) {
@@ -10480,6 +10561,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
         const existingElement = getMessageElement(message.id);
         if (existingElement) {
             syncTransferRecordFavoriteBadge(existingElement, message);
+            syncTransferRecordSnsBadge(existingElement, message);
             renderMessageRecordActions(existingElement, message);
         }
     } else {
@@ -10870,6 +10952,47 @@ async function getCurrentSessionFiles() {
     return (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
 }
 
+function createFileInventoryRecord(file) {
+    if (!file) return file;
+    const { data, audioPoster, videoPoster, ...metadata } = file;
+    return { ...metadata, _inventoryDataSize: getBinaryDataSize(data) };
+}
+
+function hasCompleteFileInventoryCache(file, fileInfo = null) {
+    const dataSize = Number(file?._inventoryDataSize) || 0;
+    const expectedSize = Number(fileInfo?.size ?? file?.size);
+    return (dataSize > 0 && (!Number.isFinite(expectedSize) || expectedSize <= 0 || dataSize === expectedSize)) ||
+        hasCompleteFileCache(file, fileInfo);
+}
+
+async function getCurrentSessionFileInventory() {
+    if (state.db._isMemory || typeof IDBKeyRange === 'undefined') {
+        return (await getCurrentSessionFiles()).map(createFileInventoryRecord);
+    }
+
+    return new Promise((resolve, reject) => {
+        try {
+            const transaction = state.db.transaction(['files'], 'readonly');
+            const source = transaction.objectStore('files').index('sessionId');
+            const request = source.openCursor(IDBKeyRange.only(state.sessionId));
+            const files = [];
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) {
+                    resolve(files);
+                    return;
+                }
+                files.push(createFileInventoryRecord(cursor.value));
+                cursor.continue();
+            };
+            request.onerror = () => reject(request.error);
+            transaction.onabort = () => reject(transaction.error || new Error('IndexedDB files inventory read aborted'));
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
+
 function getEditorAssetEntries(content) {
     const container = document.createElement('div');
     container.innerHTML = String(content || '');
@@ -10903,7 +11026,7 @@ function getResourceReferenceLabel(reference) {
 async function getSessionResourceInventory() {
     const [messages, files, editorContent] = await Promise.all([
         getCurrentSessionMessages(),
-        getCurrentSessionFiles(),
+        getCurrentSessionFileInventory(),
         getFromStore('editorContent', 'current')
     ]);
     const favoriteMusicIds = getFavoriteMusicIds();
@@ -11036,7 +11159,7 @@ async function getSessionResourceInventory() {
 
     return Array.from(resources.values()).map(resource => {
         resource.name = resource.name || `未命名资源 ${resource.id.slice(0, 8)}`;
-        resource.hasLocalData = hasCompleteFileCache(resource.file, resource);
+        resource.hasLocalData = hasCompleteFileInventoryCache(resource.file, resource);
         resource.isExternalFile = Boolean(resource.file?.externalFileHandle || resource.isExternalFile);
         resource.externalFileAvailable = resource.file?.externalFileAvailable === true;
         resource.hasReadableLocalSource = resource.hasLocalData || (resource.isExternalFile && resource.file?.externalFileMissing !== true);
@@ -11659,9 +11782,13 @@ async function showResourceBrowser(options = {}) {
         if (event.target === layer) closeResourceBrowser();
     };
 
+    let resourceInventory = null;
     const render = async (options = {}) => {
         const previousScrollTop = options.preserveScroll ? list.scrollTop : 0;
-        const resources = await getSessionResourceInventory();
+        if (options.reload || resourceInventory === null) {
+            resourceInventory = await getSessionResourceInventory();
+        }
+        const resources = resourceInventory;
         const query = searchInput.value.trim().toLocaleLowerCase('zh-CN');
         const mode = filter.value;
         const visible = resources.filter(resource => {
@@ -11766,7 +11893,7 @@ async function showResourceBrowser(options = {}) {
                 if (resource.hasLocalData && !(resource.isExternalFile && resource.externalFileAvailable)) {
                     actions.appendChild(createResourceBrowserButton('清除缓存', '仅清理本设备保存的文件内容', async () => {
                         await clearResourceCache(resource);
-                        await render();
+                        await render({ reload: true, preserveScroll: true });
                     }));
                 }
             } else if (resource.cacheCleared || resource.isPartial) {
@@ -11775,14 +11902,14 @@ async function showResourceBrowser(options = {}) {
                     '从当前在线设备重新获取资源内容',
                     async () => {
                         await restoreResourceCache(resource);
-                        await render();
+                        await render({ reload: true, preserveScroll: true });
                     }
                 ));
             }
             if (resource.references.length === 0) {
                 actions.appendChild(createResourceBrowserButton('移除资源', '仅从本设备移除未引用资源', async () => {
                     await deleteUnreferencedResource(resource);
-                    await render();
+                    await render({ reload: true, preserveScroll: true });
                 }, 'danger'));
             }
             if (actions.childElementCount) item.appendChild(actions);
@@ -11803,7 +11930,7 @@ async function showResourceBrowser(options = {}) {
         refreshButton.textContent = '↻ 刷新中';
         try {
             await renderMountsInResourceBrowser(modal);
-            await render({ preserveScroll: true });
+            await render({ reload: true, preserveScroll: true });
             showAppToast('资源列表已刷新');
         } catch (err) {
             alert(`刷新资源失败: ${err.message}`);
@@ -13623,6 +13750,7 @@ function updateDeviceList() {
         syncDeviceRemarkWithHelper(device.deviceId || device.id);
     });
     renderContacts();
+    if (state.devices.size) scheduleLanP2pGuide();
 }
 
 // ==================== UI 初始化 ====================
@@ -14433,6 +14561,106 @@ function applyTunnelPermissionUi() {
     renderTunnelPermissionSettings();
 }
 
+async function updateLanP2pPermissionUi() {
+    const button = document.getElementById('grantLanP2pPermissionBtn');
+    const status = document.getElementById('lanP2pPermissionStatus');
+    if (!button || !status) return;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        button.disabled = true;
+        status.textContent = '需要 HTTPS';
+        return;
+    }
+    button.disabled = false;
+    try {
+        const states = await Promise.all(['camera', 'microphone'].map(name => navigator.permissions.query({ name })));
+        status.textContent = states.every(permission => permission.state === 'granted') ? '已授权' : '未授权';
+    } catch {
+        status.textContent = '状态未知';
+    }
+}
+
+function hasSameLanTunnelPeer() {
+    const ownExternalIp = state.selfNetworkInfo?.externalIp || '';
+    const ownIp = String(state.selfNetworkInfo?.internalIp || state.reportedLanIp || '').split('.');
+    return Array.from(state.devices.values()).some(device => {
+        const nearbyReason = state.nearbyDevices.get(device.id)?.discoveryReason;
+        if (nearbyReason === 'same-network' || nearbyReason === 'local-subnet') return true;
+        if (ownExternalIp && device.externalIp === ownExternalIp) return true;
+        const peerIp = String(device.internalIp || '').split('.');
+        return ownIp.length === 4 && peerIp.length === 4 && isPrivateNetworkIp(ownIp.join('.')) &&
+            ownIp.slice(0, 3).join('.') === peerIp.slice(0, 3).join('.');
+    });
+}
+
+function scheduleLanP2pGuide() {
+    if (location.protocol !== 'https:' || !state.devices.size) return;
+    if (lanP2pGuideTimer) clearTimeout(lanP2pGuideTimer);
+    lanP2pGuideTimer = setTimeout(() => {
+        lanP2pGuideTimer = null;
+        maybeShowLanP2pGuide('same-lan');
+    }, 5000);
+}
+
+async function maybeShowLanP2pGuide(reason) {
+    const guide = document.getElementById('lanP2pGuide');
+    if (!guide || location.protocol !== 'https:' || !state.devices.size || !navigator.mediaDevices?.getUserMedia ||
+        guide.dataset.state || (reason !== 'relay' && !hasSameLanTunnelPeer())) return;
+    try {
+        if (sessionStorage.getItem('drop2tunnel.lanP2pGuideSeen')) {
+            guide.dataset.state = 'seen';
+            return;
+        }
+    } catch (_) {}
+
+    guide.dataset.state = 'checking';
+    try {
+        const permissions = await Promise.all(['camera', 'microphone'].map(name => navigator.permissions.query({ name })));
+        if (permissions.every(permission => permission.state === 'granted')) {
+            guide.dataset.state = 'granted';
+            return;
+        }
+    } catch (_) {}
+
+    try { sessionStorage.setItem('drop2tunnel.lanP2pGuideSeen', '1'); } catch (_) {}
+    guide.dataset.state = 'shown';
+    guide.hidden = false;
+    historyLog('lan-p2p-guide-shown', { reason });
+}
+
+function initLanP2pGuide() {
+    const guide = document.getElementById('lanP2pGuide');
+    if (!guide) return;
+    const dismiss = () => {
+        guide.hidden = true;
+        guide.dataset.state = 'dismissed';
+    };
+    guide.querySelectorAll('[data-dismiss-lan-p2p-guide]').forEach(button => button.addEventListener('click', dismiss));
+    document.getElementById('openLanP2pEnhancementBtn')?.addEventListener('click', () => {
+        dismiss();
+        document.getElementById('tunnelSettingsBtn')?.click();
+        requestAnimationFrame(() => {
+            document.getElementById('lanP2pEnhancementSection')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            document.getElementById('grantLanP2pPermissionBtn')?.focus({ preventScroll: true });
+        });
+    });
+}
+
+async function grantLanP2pPermission() {
+    const button = document.getElementById('grantLanP2pPermissionBtn');
+    let stream;
+    if (button) button.disabled = true;
+    try {
+        stream = await mediaController.getMedia({ video: true, audio: true });
+        showAppToast('授权完成，请刷新页面后建立新的 P2P 连接');
+    } catch (err) {
+        historyLog('lan-p2p-permission-failed', { name: err.name, error: err.message });
+        showAppToast('授权失败，请在站点设置中允许摄像头和麦克风');
+    } finally {
+        stream?.getTracks().forEach(track => track.stop());
+        await updateLanP2pPermissionUi();
+    }
+}
+
 function initTunnelSettings() {
     const settingsToolGrid = document.getElementById('settingsToolGrid');
     const connectionTools = document.querySelector('.left-panel .session-tools');
@@ -14443,6 +14671,7 @@ function initTunnelSettings() {
     const layer = document.getElementById('tunnelSettingsLayer');
     const open = () => {
         renderTunnelPermissionSettings();
+        updateLanP2pPermissionUi();
         layer.hidden = false;
     };
     const close = () => { layer.hidden = true; };
@@ -14450,6 +14679,7 @@ function initTunnelSettings() {
         if (event.target.closest('button')) close();
     }, true);
     document.getElementById('tunnelSettingsBtn')?.addEventListener('click', open);
+    document.getElementById('grantLanP2pPermissionBtn')?.addEventListener('click', grantLanP2pPermission);
     document.getElementById('closeTunnelSettingsBtn')?.addEventListener('click', close);
     layer?.addEventListener('click', event => {
         if (event.target === layer) close();
@@ -14526,6 +14756,7 @@ function initTunnelSettings() {
 
 function initUI() {
     initTunnelSettings();
+    initLanP2pGuide();
     initThemeSwitcher();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
     window.addEventListener('pagehide', persistMusicPlayerStateNow);

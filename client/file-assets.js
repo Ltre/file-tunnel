@@ -307,7 +307,8 @@
             return this.activeDownloads.has(assetId) ||
                 this.downloadQueue.includes(assetId) ||
                 this.transfers.has(assetId) ||
-                this.multiSourceTransfers.has(assetId);
+                this.multiSourceTransfers.has(assetId) ||
+                this.retryTimers.has(assetId);
         }
 
         ensureDesiredDownloadQueued(assetId, reason = 'desired-download-check') {
@@ -1350,7 +1351,7 @@
                     this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
                     return false;
                 }
-                if (/\b(failed|closed)\b/i.test(err.message || '')) {
+                if (/\b(failed|closed|timed out)\b/i.test(err.message || '')) {
                     this.p2pUnavailablePeers.set(from, Date.now() + 5000);
                 }
                 this.routeLog('p2p-degrade-to-relay', {
@@ -1365,7 +1366,7 @@
                 this.log('send-p2p-failed', { assetId: asset.id, peerDeviceId: from, transferId: transfer?.transferId, error: err.message });
                 try {
                     this.routeLog('relay-start', { assetId: asset.id, peerDeviceId: from, requestId });
-                    await this.sendViaSocketRelay(from, stored, transfer, this.transferAttemptId(requestId, 'relay', transfer));
+                    await this.sendViaSocketRelay(from, stored, transfer, this.transferAttemptId(requestId, 'relay', transfer), requestId);
                     this.routeLog('relay-completed', {
                         assetId: asset.id,
                         peerDeviceId: from,
@@ -1655,7 +1656,7 @@
             });
         }
 
-        async sendViaSocketRelay(deviceId, asset, transfer = null, attemptId = '') {
+        async sendViaSocketRelay(deviceId, asset, transfer = null, attemptId = '', requestId = '') {
             const socket = this.socket();
             if (!socket || !socket.connected) throw new Error('Socket is not connected');
             const metadata = this.metadata(asset);
@@ -1668,7 +1669,7 @@
             await this.emitWithAck('file-asset-relay-start', {
                 sessionId: this.deps.getSessionId(), to: deviceId, asset: metadata,
                 transferId: transfer?.transferId, rangeStart: transfer?.rangeStart, rangeEnd: transfer?.rangeEnd,
-                attemptId
+                attemptId, requestId
             }, RELAY_ACK_TIMEOUT);
             for (let offset = rangeStart; offset < rangeEnd; offset += RELAY_CHUNK_SIZE) {
                 if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
@@ -2025,7 +2026,7 @@
                     if (this.relayStartPromises.get(key) === promise) this.relayStartPromises.delete(key);
                 });
             this.relayStartPromises.set(key, promise);
-            await promise;
+            return await promise;
         }
 
         async waitForRelayStart(assetId, from, transferId = '') {
@@ -2034,7 +2035,7 @@
         }
 
         async processRelayStart(data) {
-            const { asset, from, transfer, attemptId } = data || {};
+            const { asset, from, transfer, attemptId, requestId } = data || {};
             if (!asset || !asset.id || !from) return { ok: false, reason: 'invalid-relay-start' };
             if (transfer?.transferId) {
                 const range = this.multiSourceTransfers.get(asset.id)?.ranges.get(transfer.transferId);
@@ -2047,7 +2048,7 @@
                         attemptId: attemptId || '',
                         activeAttemptId: range.attemptId || ''
                     });
-                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer);
+                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer, requestId);
                     return { ok: false, reason: 'receiver-p2p-active' };
                 }
             } else {
@@ -2061,7 +2062,7 @@
                         attemptId: attemptId || '',
                         activeAttemptId: activeTransfer.attemptId || ''
                     });
-                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer);
+                    this.emitUnavailable(asset.id, from, 'receiver-p2p-active', transfer, requestId);
                     return { ok: false, reason: 'receiver-p2p-active' };
                 }
             }
@@ -2078,7 +2079,7 @@
             });
             if (!acceptance.ok) {
                 this.log('relay-start-rejected', { assetId: asset.id, peerDeviceId: from, reason: acceptance.reason, attemptId });
-                this.emitUnavailable(asset.id, from, `receiver-${acceptance.reason}`, transfer);
+                this.emitUnavailable(asset.id, from, `receiver-${acceptance.reason}`, transfer, requestId);
                 return { ok: false, reason: `receiver-${acceptance.reason}` };
             }
             if (transfer?.transferId) {
@@ -2140,8 +2141,13 @@
         }
 
         handleUnavailable(data) {
-            const { assetId, reason, from, transferId, retryAfterMs } = data || {};
+            const { assetId, reason, from, transferId, retryAfterMs, requestId } = data || {};
             if (!assetId) return;
+            const currentRequestId = this.requestIds.get(assetId);
+            if (!transferId && this.desiredAssets.has(assetId) && requestId && currentRequestId && requestId !== currentRequestId) {
+                this.log('unavailable-ignored-stale', { assetId, peerDeviceId: from, reason, requestId, currentRequestId });
+                return;
+            }
             if ([
                 'receiver-not-requested',
                 'receiver-stale-request',

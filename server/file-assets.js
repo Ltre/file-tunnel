@@ -300,7 +300,8 @@ function registerFileAssetHandlers(socket, context) {
                 ? ASSIGNMENT_ACTIVE_STALE_MS
                 : ASSIGNMENT_PENDING_STALE_MS;
             if (existingProviderId && session.devices.has(existingProviderId) && deviceSockets.has(existingProviderId) &&
-                (!existingAge || existingAge <= existingStaleAfter)) {
+                (!existingAge || existingAge <= existingStaleAfter) &&
+                ((!requestId && !existingMeta?.requestId) || requestId === existingMeta?.requestId)) {
                 historyLog('file-asset-request-ignored-duplicate', {
                     sessionId, deviceId, targetDeviceId: existingProviderId, socketId: socket.id, clientIp,
                     assetId, transfer, forced, requestId, existingRequestId: existingMeta?.requestId || '',
@@ -385,12 +386,15 @@ function registerFileAssetHandlers(socket, context) {
             if ((transferId || rangeStart !== undefined || rangeEnd !== undefined) && !transfer) return;
             const receiverRejected = typeof reason === 'string' && reason.startsWith('receiver-');
             if (record && receiverRejected) {
-                releaseAssignment(record, assetId, deviceId, transfer?.transferId);
-                cleanupFileAssetRelay(sessionId, to, deviceId, assetId, transfer?.transferId);
-                historyLog('file-asset-receiver-rejected', {
-                    sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId,
-                    transfer, reason: sanitize(reason, 80)
-                });
+                const activeRequestId = getAssignmentMeta(record, assetId, to, transfer?.transferId)?.requestId;
+                if (!requestId || !activeRequestId || requestId === activeRequestId) {
+                    releaseAssignment(record, assetId, to, transfer?.transferId);
+                    cleanupFileAssetRelay(sessionId, deviceId, to, assetId, transfer?.transferId);
+                    historyLog('file-asset-receiver-rejected', {
+                        sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId,
+                        transfer, reason: sanitize(reason, 80), requestId
+                    });
+                }
             }
             if (record && reason === 'provider-missing-local-data') {
                 releaseAssignment(record, assetId, to, transfer?.transferId);
@@ -519,7 +523,7 @@ function registerFileAssetHandlers(socket, context) {
 
     socket.on('file-asset-relay-start', async (data, ack) => {
         try {
-            const { sessionId, to, asset, transferId, rangeStart, rangeEnd, attemptId } = data || {};
+            const { sessionId, to, asset, transferId, rangeStart, rangeEnd, attemptId, requestId } = data || {};
             const { deviceId } = current();
             if (sessionId !== current().sessionId || !isValidId(to) || !isValidFileAsset(asset, isValidId) || to === deviceId) {
                 ackFail(ack, 'invalid-relay-start');
@@ -527,6 +531,9 @@ function registerFileAssetHandlers(socket, context) {
             }
             const relayAttemptId = typeof attemptId === 'string' && attemptId
                 ? sanitize(attemptId, 120)
+                : '';
+            const relayRequestId = typeof requestId === 'string' && requestId.length <= 120
+                ? sanitize(requestId, 120)
                 : '';
             const transfer = normalizeTransfer({ transferId, rangeStart, rangeEnd }, asset);
             if ((transferId || rangeStart !== undefined || rangeEnd !== undefined) && !transfer) {
@@ -543,9 +550,14 @@ function registerFileAssetHandlers(socket, context) {
                 sessionId, from: deviceId, to, asset, transfer, attemptId: relayAttemptId, receivedSize: 0,
                 expectedSize: transfer ? transfer.rangeEnd - transfer.rangeStart : asset.size
             });
-            await emitWithAck(target, 'file-asset-relay-start', { asset, from: deviceId, transfer, attemptId: relayAttemptId });
+            await emitWithAck(target, 'file-asset-relay-start', {
+                asset, from: deviceId, transfer, attemptId: relayAttemptId, requestId: relayRequestId
+            });
             ackOk(ack);
-            historyLog('file-asset-relay-started', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset, transfer, attemptId: relayAttemptId });
+            historyLog('file-asset-relay-started', {
+                sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
+                asset, transfer, attemptId: relayAttemptId, requestId: relayRequestId
+            });
         } catch (err) {
             console.error('file-asset-relay-start error:', err);
             const { sessionId, to, asset, transferId, attemptId } = data || {};
@@ -553,6 +565,11 @@ function registerFileAssetHandlers(socket, context) {
             if (sessionId && to && asset?.id) {
                 cleanupFileAssetRelay(sessionId, deviceId, to, asset.id, transferId);
             }
+            historyLog('file-asset-relay-start-failed', {
+                sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
+                assetId: asset?.id, transferId, attemptId,
+                reason: err.message || 'relay-start-failed'
+            });
             ackFail(ack, err.message || 'relay-start-failed');
         }
     });
@@ -647,6 +664,20 @@ function cleanupFileAssetRelays(sessionId, deviceId) {
     }
 }
 
+function cleanupFileAssetAssignments(session, deviceId) {
+    for (const asset of session?.fileAssets?.values?.() || []) {
+        for (const [key, providerId] of asset.assignments || []) {
+            const requesterId = String(key).split(':')[1] || '';
+            if (providerId !== deviceId && requesterId !== deviceId) continue;
+            asset.assignments.delete(key);
+            asset.assignmentMeta?.delete(key);
+            const nextLoad = Math.max(0, (asset.providerLoads?.get(providerId) || 1) - 1);
+            if (nextLoad === 0) asset.providerLoads?.delete(providerId);
+            else asset.providerLoads?.set(providerId, nextLoad);
+        }
+    }
+}
+
 function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId) {
     for (const [key, relay] of relays) {
         if (relay.sessionId !== sessionId || relay.from !== from || relay.to !== to || relay.asset?.id !== assetId) continue;
@@ -656,4 +687,4 @@ function cleanupFileAssetRelay(sessionId, from, to, assetId, transferId) {
     }
 }
 
-module.exports = { registerFileAssetHandlers, cleanupFileAssetRelays };
+module.exports = { registerFileAssetHandlers, cleanupFileAssetRelays, cleanupFileAssetAssignments };

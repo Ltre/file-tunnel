@@ -139,3 +139,8 @@ http://10.0.0.16:3000/api/debug-logs?limit=1000
 7. 所有高风险管理操作，例如删除隧道、查看全局设备、查看全局磁链列表，均应要求管理会话有效；未认证时返回 401 并引导到认证界面。
 
 注意：服务端还会创建 `.tunnel-data/.admin-session.key`，用于加密 TOTP secret 和签名管理 Cookie。生产环境应仅允许运行 Node.js 的系统用户读写这两个文件。删除 `.admin-session.key` 会使现有管理 Cookie 及原 TOTP 标记失效，因此正常重置身份验证器时只删除 `.gauth-admin.json`。
+
+
+## 在windows server 2022 部署注意事项
+
+1. 在该环境中yt-dlp好像搜索不到ffmpeg的路径，即便加了系统环境变量也没用，所以暂时考虑在tunnel.config.json中指定ffmpeg路径。

@@ -1,5 +1,5 @@
 {
-  "debugLogsEnabled": true,
+  "debugLogsEnabled": false,
   "serverPort": 80,
   "ffmpegLocation": {
     "txsl": "C:\\GreenApps\\ffmpeg\\bin",
