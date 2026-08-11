@@ -183,7 +183,7 @@
     测试组C：
         共用信息：
         - trojan-gfw版本1.1.6，igniter版本0.10.3-beta
-        - 测试页面：https://test.miku.us/
+        - 测试页面：https://tun.miku.us/
         用例编号范围：33 ~ 48
     
         用例33：
