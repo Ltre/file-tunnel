@@ -69,7 +69,7 @@ const CONFIG = {
     // 开发环境: 使用当前页面地址
     // 生产环境: 可配置为固定地址
     SOCKET_SERVER: buildSocketServerUrl(),
-    
+
     // 备用服务器地址 (当自动检测失败时使用)
     FALLBACK_SERVER: null,
     // 小文件大小阈值。Base64 和消息元数据也会占用 Socket.IO 的 1MB 上限。
@@ -146,7 +146,6 @@ const editorAssetRetryCounts = new Map();
 const editorAssetP2PUnavailablePeers = new Map();
 const editorAssetCacheVersions = new Map();
 const peerSignalQueues = new Map();
-const PEER_STALE_OFFER_MS = 8000;
 let fileAssetTransfer = null;
 let fileCacheStore = null;
 let fileAssetPresenceRefreshTimer = null;
@@ -265,12 +264,10 @@ let clipboardShareTimer = null;
 let lastClipboardText = null;
 let remoteAudioContext = null;
 let sharedFileImportInProgress = false;
-const completedFileProgress = new Map();
+const completedFileProgress = new Set();
 const activeFileProgress = new Set();
 const progressHideTimers = new Map();
 const progressUiLastPaint = new Map();
-let progressSummaryTimer = null;
-let progressSummaryLastPaintAt = 0;
 const progressQueueSnapshot = {
     queueLength: 0,
     activeDownloads: 0,
@@ -278,13 +275,8 @@ const progressQueueSnapshot = {
     expireTimer: null
 };
 const PROGRESS_QUEUE_SNAPSHOT_TTL = 15000;
-const MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS = 2500;
 const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
-const PROGRESS_REORDER_MIN_INTERVAL = 500;
-const PROGRESS_SUMMARY_MIN_INTERVAL = 250;
-const COMPLETED_PROGRESS_TTL = 30 * 1000;
-const MAX_COMPLETED_PROGRESS_KEYS = 512;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
 const HISTORY_RECONCILE_MESSAGE_LIMIT = 1000;
@@ -301,39 +293,15 @@ window.addEventListener('beforeunload', () => {
     fileObjectUrls.forEach(url => URL.revokeObjectURL(url));
 });
 
-function getSendingProgressPeerId(transport = '') {
-    const match = /^sending(?:-multi-source)?(?:-relay)?:([^:]+)/.exec(String(transport || ''));
-    return match?.[1] || '';
-}
-
 function getFileProgressKey(fileId, transport = '') {
     const route = String(transport || '');
-    if (route.startsWith('sending-multi-source')) {
-        const peerDeviceId = getSendingProgressPeerId(route);
-        return `${fileId}::sending-multi-source${peerDeviceId ? `-${peerDeviceId}` : ''}`;
-    }
+    if (route.startsWith('sending-multi-source')) return `${fileId}::sending-multi-source`;
     if (!route.startsWith('sending')) return fileId;
     return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }
 
 function getProgressBaseFileId(progressKey) {
     return String(progressKey || '').split('::')[0];
-}
-
-function hasRecentCompletedProgress(progressKey) {
-    const completedAt = completedFileProgress.get(progressKey) || 0;
-    if (!completedAt) return false;
-    if (Date.now() - completedAt <= COMPLETED_PROGRESS_TTL) return true;
-    completedFileProgress.delete(progressKey);
-    return false;
-}
-
-function markCompletedProgress(progressKey) {
-    completedFileProgress.delete(progressKey);
-    completedFileProgress.set(progressKey, Date.now());
-    while (completedFileProgress.size > MAX_COMPLETED_PROGRESS_KEYS) {
-        completedFileProgress.delete(completedFileProgress.keys().next().value);
-    }
 }
 
 function cssEscape(value) {
@@ -356,17 +324,8 @@ function progressElementId(progressKey) {
 
 function getFileProgressStatus(transport = '') {
     const route = String(transport || '');
-    const peerDeviceId = getSendingProgressPeerId(route);
-    const peer = peerDeviceId ? state.devices.get(peerDeviceId) : null;
-    const peerLabel = peerDeviceId
-        ? ` → ${peer ? getDeviceDisplayName({ ...peer, deviceId: peerDeviceId }) : peerDeviceId.slice(-4)}`
-        : '';
-    if (route.startsWith('sending-multi-source-relay')) return `multi-source Socket.IO relay${peerLabel}`;
-    if (route.startsWith('sending-multi-source')) return `multi-source P2P${peerLabel}`;
-    if (route.startsWith('receiving-multi-source-mixed')) return 'multi-source P2P + Socket.IO relay';
-    if (route.startsWith('receiving-multi-source-relay')) return 'multi-source Socket.IO relay';
-    if (route.startsWith('receiving-multi-source-p2p')) return 'multi-source P2P';
-    if (route.startsWith('receiving-multi-source')) return 'multi-source';
+    if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
+    if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return 'multi-source P2P';
     if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
     if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
     return '';
@@ -1764,183 +1723,6 @@ function stopTunnelHeartbeat() {
 }
 
 // ==================== WebRTC P2P ====================
-function isPeerConnectionReady(pc) {
-    return Boolean(pc) && (
-        pc.connectionState === 'connected' ||
-        pc.iceConnectionState === 'connected' ||
-        pc.iceConnectionState === 'completed'
-    );
-}
-
-function isPeerConnectionTerminal(pc) {
-    return !pc ||
-        pc.connectionState === 'failed' ||
-        pc.connectionState === 'closed' ||
-        pc.iceConnectionState === 'failed' ||
-        pc.iceConnectionState === 'closed';
-}
-
-function shouldPreconnectSessionPeer(deviceId, isNewDevice, refreshReason = '') {
-    if (isNewDevice) return refreshReason !== 'history-request';
-    if (refreshReason !== 'heartbeat') return false;
-    const peer = state.peers.get(deviceId);
-    if (isPeerConnectionReady(peer)) return false;
-    if (peer && Number.isFinite(peer._offerSentAt) &&
-        Date.now() - peer._offerSentAt < PEER_STALE_OFFER_MS) {
-        return false;
-    }
-    return true;
-}
-
-function disposePeerConnection(deviceId, pc, reason = '') {
-    if (!pc || pc._disposed) return;
-    pc._disposed = true;
-    if (pc._disconnectTimer) clearTimeout(pc._disconnectTimer);
-    pc._disconnectTimer = null;
-    if (state.peers.get(deviceId) === pc) state.peers.delete(deviceId);
-    const activeChannel = state.dataChannels.get(deviceId);
-    if (!activeChannel || activeChannel._peerConnection === pc) {
-        state.dataChannels.delete(deviceId);
-    }
-    state.pendingIceCandidates.delete(deviceId);
-    try {
-        pc.close();
-    } catch (_) {}
-    historyLog('p2p-peer-disposed', {
-        peerDeviceId: deviceId,
-        reason
-    });
-}
-
-function ensurePeerControlChannel(deviceId, pc) {
-    if (!pc || pc._disposed) throw new Error('Peer connection is unavailable');
-    if (pc._controlDataChannel && pc._controlDataChannel.readyState !== 'closed') {
-        return pc._controlDataChannel;
-    }
-    const channel = pc.createDataChannel('fileTransfer', { ordered: true });
-    channel._peerConnection = pc;
-    pc._controlDataChannel = channel;
-    setupDataChannel(deviceId, channel);
-    return channel;
-}
-
-async function createAndSendPeerOffer(deviceId, pc, options = {}) {
-    if (!pc || pc._disposed || state.peers.get(deviceId) !== pc) {
-        throw new Error('Peer connection was replaced');
-    }
-    if (isPeerConnectionReady(pc)) return pc;
-    if (options.iceRestart !== true && (pc.localDescription || pc.remoteDescription)) return pc;
-    if (pc._offerPromise) return pc._offerPromise;
-    if (pc.signalingState !== 'stable') return pc;
-
-    ensurePeerControlChannel(deviceId, pc);
-    const offerPromise = (async () => {
-        const offer = await pc.createOffer({
-            offerToReceiveAudio: false,
-            offerToReceiveVideo: false,
-            iceRestart: options.iceRestart === true
-        });
-        if (pc._disposed ||
-            state.peers.get(deviceId) !== pc ||
-            pc.signalingState !== 'stable') {
-            return pc;
-        }
-        await pc.setLocalDescription(offer);
-        if (pc._disposed || state.peers.get(deviceId) !== pc) return pc;
-        pc._offerSentAt = Date.now();
-        state.socket.emit('signal', {
-            to: deviceId,
-            from: state.deviceId,
-            type: 'offer',
-            sdp: pc.localDescription || offer
-        });
-        historyLog('p2p-offer-sent', {
-            peerDeviceId: deviceId,
-            reason: options.reason || 'connect',
-            iceRestart: options.iceRestart === true
-        });
-        return pc;
-    })();
-    pc._offerPromise = offerPromise;
-    try {
-        return await offerPromise;
-    } finally {
-        if (pc._offerPromise === offerPromise) pc._offerPromise = null;
-    }
-}
-
-async function logSelectedIceCandidatePair(deviceId, pc, reason = '') {
-    if (!pc?.getStats || pc._disposed || state.peers.get(deviceId) !== pc) return;
-    try {
-        const stats = await pc.getStats();
-        let selectedPair = null;
-        stats.forEach(report => {
-            if (report.type === 'transport' && report.selectedCandidatePairId) {
-                selectedPair = stats.get(report.selectedCandidatePairId) || selectedPair;
-            }
-        });
-        if (!selectedPair) {
-            stats.forEach(report => {
-                if (report.type === 'candidate-pair' &&
-                    report.state === 'succeeded' &&
-                    (report.nominated || report.selected)) {
-                    selectedPair = report;
-                }
-            });
-        }
-        if (!selectedPair) return;
-
-        const local = stats.get(selectedPair.localCandidateId);
-        const remote = stats.get(selectedPair.remoteCandidateId);
-        const details = {
-            phase: 'selected-candidate-pair',
-            peerDeviceId: deviceId,
-            reason,
-            localType: local?.candidateType || '',
-            localAddress: local?.address || local?.ip || '',
-            remoteType: remote?.candidateType || '',
-            remoteAddress: remote?.address || remote?.ip || '',
-            protocol: local?.protocol || remote?.protocol || '',
-            currentRoundTripTime: Number(selectedPair.currentRoundTripTime) || 0,
-            availableOutgoingBitrate: Number(selectedPair.availableOutgoingBitrate) || 0
-        };
-        console.info('[p2p-ice-selected-pair]', JSON.stringify(details));
-        historyLog('p2p-ice-selected-pair', details);
-    } catch (err) {
-        historyLog('p2p-ice-selected-pair-unavailable', {
-            peerDeviceId: deviceId,
-            reason,
-            error: err.message
-        });
-    }
-}
-
-function waitForPeerConnection(deviceId, timeoutMs = 1500) {
-    if (isPeerConnectionReady(state.peers.get(deviceId))) return Promise.resolve(true);
-    const deadline = Date.now() + Math.max(0, timeoutMs);
-    return new Promise(resolve => {
-        let timer = null;
-        const finish = result => {
-            if (timer) clearTimeout(timer);
-            timer = null;
-            resolve(result);
-        };
-        const inspect = () => {
-            const pc = state.peers.get(deviceId);
-            if (isPeerConnectionReady(pc)) {
-                finish(true);
-                return;
-            }
-            if (Date.now() >= deadline || isPeerConnectionTerminal(pc)) {
-                finish(false);
-                return;
-            }
-            timer = setTimeout(inspect, 25);
-        };
-        inspect();
-    });
-}
-
 async function createPeerConnection(deviceId) {
     const config = {
         iceServers: [
@@ -1954,22 +1736,15 @@ async function createPeerConnection(deviceId) {
         iceTransportPolicy: 'all',
         bundlePolicy: 'max-bundle',
         rtcpMuxPolicy: 'require',
+        // Enable DTLS for secure connections
+        rtcpMuxPolicy: 'require',
         iceCandidatePoolSize: 10 // Pre-generate candidates
     };
     
     const pc = new RTCPeerConnection(config);
-    pc._localIceCandidateTypes = new Set();
-    pc._remoteIceCandidateTypes = new Set();
 
     pc.onicecandidate = (event) => {
-        if (event.candidate &&
-            !pc._disposed &&
-            state.peers.get(deviceId) === pc &&
-            state.socket?.connected) {
-            const candidateType = event.candidate.type ||
-                /\styp\s+(\S+)/i.exec(event.candidate.candidate || '')?.[1] ||
-                'unknown';
-            pc._localIceCandidateTypes.add(candidateType);
+        if (event.candidate) {
             console.log('Sending ICE candidate to', deviceId);
             state.socket.emit('signal', {
                 to: deviceId,
@@ -1981,62 +1756,48 @@ async function createPeerConnection(deviceId) {
     };
 
     pc.oniceconnectionstatechange = () => {
-        if (pc._disposed || state.peers.get(deviceId) !== pc) return;
         console.log('ICE connection state for', deviceId, ':', pc.iceConnectionState);
         historyLog('p2p-ice-state', {
             peerDeviceId: deviceId,
             iceConnectionState: pc.iceConnectionState
         });
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-            if (pc._disconnectTimer) clearTimeout(pc._disconnectTimer);
-            pc._disconnectTimer = null;
-            editorAssetP2PUnavailablePeers.delete(deviceId);
             console.log('P2P connection established with', deviceId);
-            logSelectedIceCandidatePair(deviceId, pc, 'ice-connected');
         } else if (pc.iceConnectionState === 'disconnected') {
             console.info('P2P connection temporarily disconnected with', deviceId);
-            if (!pc._disconnectTimer) {
-                pc._disconnectTimer = setTimeout(() => {
-                    pc._disconnectTimer = null;
-                    if (pc._disposed ||
-                        state.peers.get(deviceId) !== pc ||
-                        pc.iceConnectionState !== 'disconnected') {
-                        return;
-                    }
-                    disposePeerConnection(deviceId, pc, 'ice-disconnected-timeout');
-                }, 3000);
-            }
         } else if (pc.iceConnectionState === 'failed') {
             console.warn('P2P connection failed with', deviceId);
-            editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
-            disposePeerConnection(deviceId, pc, 'ice-failed');
+            if (pc.iceConnectionState === 'failed') {
+                editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
+            }
+            // Attempt to restart ICE
+            console.log('Attempting ICE restart...');
+            try {
+                pc.restartIce();
+            } catch (e) {
+                console.error('Failed to restart ICE:', e);
+            }
         }
     };
 
     pc.onconnectionstatechange = () => {
-        if (pc._disposed || state.peers.get(deviceId) !== pc) return;
         console.log('Connection state for', deviceId, ':', pc.connectionState);
         historyLog('p2p-connection-state', {
             peerDeviceId: deviceId,
             connectionState: pc.connectionState
         });
         if (pc.connectionState === 'failed') {
-            console.warn('P2P connection failed; waiting for the next request or remote offer');
+            console.warn('Connection failed, attempting to reconnect...');
             editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
-            disposePeerConnection(deviceId, pc, 'connection-failed');
+            // Remove the failed connection so it can be recreated
+            state.peers.delete(deviceId);
         }
     };
 
     pc.ondatachannel = (event) => {
-        if (pc._disposed || state.peers.get(deviceId) !== pc) {
-            event.channel.close();
-            return;
-        }
         const channel = event.channel;
         console.log('Received data channel from', deviceId);
         if (fileAssetTransfer?.handleIncomingChannel(deviceId, channel)) return;
-        channel._peerConnection = pc;
-        if (channel.label === 'fileTransfer') pc._controlDataChannel = channel;
         setupDataChannel(deviceId, channel);
     };
 
@@ -2050,29 +1811,21 @@ async function connectToPeer(deviceId) {
     // 检查是否已有连接
     if (state.peers.has(deviceId)) {
         const existingPC = state.peers.get(deviceId);
-        const staleLocalOffer = existingPC.signalingState === 'have-local-offer' &&
-            Number.isFinite(existingPC._offerSentAt) &&
-            Date.now() - existingPC._offerSentAt >= PEER_STALE_OFFER_MS;
         
         // 检查连接状态
-        if (isPeerConnectionReady(existingPC)) {
+        if (existingPC.connectionState === 'connected' || existingPC.iceConnectionState === 'connected' || existingPC.iceConnectionState === 'completed') {
             console.log('Already connected to', deviceId);
             return existingPC;
         }
         
         // 如果连接失败，关闭旧连接
-        if (isPeerConnectionTerminal(existingPC) || staleLocalOffer) {
-            console.log('Existing connection is terminal or stale, closing it');
-            disposePeerConnection(
-                deviceId,
-                existingPC,
-                staleLocalOffer ? 'replace-stale-local-offer' : 'replace-terminal-peer'
-            );
+        if (existingPC.connectionState === 'failed' || existingPC.iceConnectionState === 'failed' || existingPC.connectionState === 'closed' || existingPC.iceConnectionState === 'closed') {
+            console.log('Existing connection in failed state, closing it');
+            existingPC.close();
+            state.peers.delete(deviceId);
         } else {
+            // 如果连接正在进行中，等待其完成
             console.log('Connection already in progress with', deviceId);
-            if (shouldInitiatePeerConnection(deviceId) && existingPC.signalingState === 'stable') {
-                await createAndSendPeerOffer(deviceId, existingPC, { reason: 'resume-connect' });
-            }
             return existingPC;
         }
     }
@@ -2084,8 +1837,29 @@ async function connectToPeer(deviceId) {
         return pc;
     }
 
-    await createAndSendPeerOffer(deviceId, pc, { reason: 'initial-connect' });
+    // 创建数据通道
+    const channel = pc.createDataChannel('fileTransfer', {
+        ordered: true,
+        maxRetransmits: 0  // 使用可靠传输
+    });
+    setupDataChannel(deviceId, channel);
+
+    // 创建offer
+    const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+        iceRestart: false
+    });
+
+    await pc.setLocalDescription(offer);
     console.log('Set local description, sending offer to', deviceId);
+
+    state.socket.emit('signal', {
+        to: deviceId,
+        from: state.deviceId,
+        type: 'offer',
+        sdp: offer
+    });
     
     return pc;
 }
@@ -2106,7 +1880,16 @@ async function connectToPeerForFileAsset(deviceId) {
             iceGatheringState: pc.iceGatheringState
         } : null
     });
-    pc = await connectToPeer(deviceId);
+    if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed' ||
+        pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed')) {
+        pc.close();
+        state.peers.delete(deviceId);
+        pc = null;
+    }
+
+    if (!pc) {
+        pc = await createPeerConnection(deviceId);
+    }
 
     console.info('[file-asset-route]', {
         phase: 'app-connect-peer-for-file-asset-return',
@@ -2118,6 +1901,10 @@ async function connectToPeerForFileAsset(deviceId) {
             iceGatheringState: pc.iceGatheringState
         }
     });
+    if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        return pc;
+    }
+
     return pc;
 }
 
@@ -2134,8 +1921,12 @@ async function ensurePeerOfferForFileAsset(deviceId) {
             iceGatheringState: pc.iceGatheringState
         }
     });
-    if (isPeerConnectionReady(pc)) {
+    if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-connected', peerDeviceId: deviceId });
+        return pc;
+    }
+    if (pc.localDescription && pc.remoteDescription) {
+        console.info('[file-asset-route]', { phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: deviceId });
         return pc;
     }
     if (pc.signalingState !== 'stable') {
@@ -2146,15 +1937,35 @@ async function ensurePeerOfferForFileAsset(deviceId) {
         });
         return pc;
     }
-    const previousOfferSentAt = pc._offerSentAt;
-    await createAndSendPeerOffer(deviceId, pc, { reason: 'file-asset-request' });
-    console.info('[file-asset-route]', {
-        phase: pc._offerSentAt !== previousOfferSentAt ? 'app-ensure-offer-sent' : 'app-ensure-offer-reused',
-        peerDeviceId: deviceId,
-        signalingState: pc.signalingState,
-        iceGatheringState: pc.iceGatheringState
-    });
-    return pc;
+    if (pc._fileAssetOfferPromise) return pc._fileAssetOfferPromise;
+    pc._fileAssetOfferPromise = (async () => {
+        const offer = await pc.createOffer({
+            offerToReceiveAudio: false,
+            offerToReceiveVideo: false,
+            iceRestart: false
+        });
+        if (state.peers.get(deviceId) !== pc || pc.signalingState !== 'stable') return pc;
+        await pc.setLocalDescription(offer);
+        state.socket.emit('signal', {
+            to: deviceId,
+            from: state.deviceId,
+            type: 'offer',
+            sdp: offer
+        });
+        historyLog('p2p-file-asset-offer-sent', { peerDeviceId: deviceId });
+        console.info('[file-asset-route]', {
+            phase: 'app-ensure-offer-sent',
+            peerDeviceId: deviceId,
+            signalingState: pc.signalingState,
+            iceGatheringState: pc.iceGatheringState
+        });
+        return pc;
+    })();
+    try {
+        return await pc._fileAssetOfferPromise;
+    } finally {
+        pc._fileAssetOfferPromise = null;
+    }
 }
 
 function queueIceCandidate(deviceId, candidate) {
@@ -2169,103 +1980,6 @@ function queueIceCandidate(deviceId, candidate) {
     });
 }
 
-function getRemoteIceCandidateVariants(deviceId, candidate) {
-    if (!candidate) return [];
-    const observedIp = typeof candidate === 'object' ? candidate._drop2TunnelObservedIp : '';
-    const candidateInit = typeof candidate === 'string'
-        ? { candidate }
-        : {
-            candidate: String(candidate.candidate || ''),
-            sdpMid: candidate.sdpMid ?? null,
-            sdpMLineIndex: candidate.sdpMLineIndex ?? null,
-            usernameFragment: candidate.usernameFragment ?? undefined
-        };
-    const candidateText = candidateInit.candidate.trim();
-    if (!candidateText) return [candidateInit];
-
-    const parts = candidateText.split(/\s+/);
-    const typeIndex = parts.indexOf('typ');
-    const hostAddress = parts[4] || '';
-    if (typeIndex < 0 ||
-        parts[typeIndex + 1] !== 'host' ||
-        !/\.local\.?$/i.test(hostAddress)) {
-        return [candidateInit];
-    }
-
-    const privateAddress = String(observedIp || '')
-        .trim()
-        .replace(/^\[|\]$/g, '')
-        .replace(/^::ffff:/i, '')
-        .replace(/%.+$/, '');
-    if (!isPrivateNetworkIp(privateAddress) || /^127\./.test(privateAddress)) return [candidateInit];
-
-    const rewrittenParts = [...parts];
-    rewrittenParts[4] = privateAddress;
-    return [
-        candidateInit,
-        {
-            ...candidateInit,
-            candidate: rewrittenParts.join(' '),
-            _drop2TunnelObservedHost: true
-        }
-    ];
-}
-
-function supplementRemoteSdpHostCandidates(deviceId, description, observedIp) {
-    if (!description?.sdp) return description;
-    const lines = description.sdp.split(/\r?\n/);
-    const supplemented = [];
-    let supplementCount = 0;
-    for (const line of lines) {
-        supplemented.push(line);
-        if (!line.startsWith('a=candidate:')) continue;
-        const variants = getRemoteIceCandidateVariants(deviceId, {
-            candidate: line.slice(2),
-            _drop2TunnelObservedIp: observedIp
-        });
-        const extra = variants.find(item => item._drop2TunnelObservedHost);
-        if (!extra) continue;
-        supplemented.push(`a=${extra.candidate}`);
-        supplementCount += 1;
-    }
-    if (!supplementCount) return description;
-    historyLog('p2p-remote-sdp-host-supplemented', {
-        peerDeviceId: deviceId,
-        candidateCount: supplementCount
-    });
-    return { ...description, sdp: supplemented.join('\r\n') };
-}
-
-async function addRemoteIceCandidate(deviceId, pc, candidate) {
-    const variants = getRemoteIceCandidateVariants(deviceId, candidate);
-    for (const variant of variants) {
-        if (pc._disposed || state.peers.get(deviceId) !== pc) return;
-        try {
-            await pc.addIceCandidate(new RTCIceCandidate(variant));
-            const candidateType = /\styp\s+(\S+)/i.exec(variant.candidate || '')?.[1] || 'unknown';
-            pc._remoteIceCandidateTypes?.add(candidateType);
-            if (variant._drop2TunnelObservedHost) {
-                const observedAddress = variant.candidate.split(/\s+/)[4] || '';
-                console.info('[p2p-ice-candidate]', {
-                    phase: 'remote-mdns-host-supplemented',
-                    peerDeviceId: deviceId,
-                    observedAddress
-                });
-                historyLog('p2p-remote-mdns-host-supplemented', {
-                    peerDeviceId: deviceId,
-                    observedAddress
-                });
-            }
-        } catch (err) {
-            historyLog('p2p-ice-candidate-skipped', {
-                peerDeviceId: deviceId,
-                supplementedHost: variant._drop2TunnelObservedHost === true,
-                error: err.message
-            });
-        }
-    }
-}
-
 async function flushPendingIceCandidates(deviceId, pc) {
     const candidates = state.pendingIceCandidates.get(deviceId) || [];
     state.pendingIceCandidates.delete(deviceId);
@@ -2276,8 +1990,7 @@ async function flushPendingIceCandidates(deviceId, pc) {
     });
 
     for (const candidate of candidates) {
-        if (pc._disposed || state.peers.get(deviceId) !== pc) return;
-        await addRemoteIceCandidate(deviceId, pc, candidate);
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
 }
 
@@ -2300,7 +2013,7 @@ function queuePeerSignal(data) {
 }
 
 async function handleSignal(data) {
-    const { from, type, sdp, candidate, observedIp } = data;
+    const { from, type, sdp, candidate } = data;
 
     historyLog('p2p-signal-received', {
         peerDeviceId: from,
@@ -2310,19 +2023,11 @@ async function handleSignal(data) {
     });
 
     let pc = state.peers.get(from);
-    if (pc && isPeerConnectionTerminal(pc)) {
-        disposePeerConnection(from, pc, 'signal-replace-terminal-peer');
-        pc = null;
-    }
     if (!pc) {
         pc = await createPeerConnection(from);
     }
 
     try {
-        if ((type === 'offer' || type === 'answer') && pc._disconnectTimer) {
-            clearTimeout(pc._disconnectTimer);
-            pc._disconnectTimer = null;
-        }
         if (type === 'offer') {
             if (pc.signalingState === 'have-local-offer') {
                 if (shouldInitiatePeerConnection(from)) {
@@ -2337,9 +2042,7 @@ async function handleSignal(data) {
                 await pc.setLocalDescription({ type: 'rollback' });
             }
             
-            await pc.setRemoteDescription(new RTCSessionDescription(
-                supplementRemoteSdpHostCandidates(from, sdp, observedIp)
-            ));
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             await flushPendingIceCandidates(from, pc);
             if (pc.signalingState !== 'have-remote-offer') {
                 historyLog('p2p-answer-skipped-stale-offer', {
@@ -2362,31 +2065,22 @@ async function handleSignal(data) {
                 to: from,
                 from: state.deviceId,
                 type: 'answer',
-                sdp: pc.localDescription || answer
+                sdp: answer
             });
         } else if (type === 'answer') {
-            if (pc.signalingState !== 'have-local-offer') {
-                console.warn('No matching local offer, ignoring answer');
-                historyLog('p2p-answer-ignored', {
-                    peerDeviceId: from,
-                    signalingState: pc.signalingState
-                });
+            // 检查连接状态
+            if (pc.signalingState === 'stable') {
+                console.warn('Connection already stable, ignoring answer');
                 return;
             }
             
-            await pc.setRemoteDescription(new RTCSessionDescription(
-                supplementRemoteSdpHostCandidates(from, sdp, observedIp)
-            ));
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
             await flushPendingIceCandidates(from, pc);
         } else if (type === 'ice-candidate') {
-            if (!candidate) return;
-            const remoteCandidate = observedIp && typeof candidate === 'object'
-                ? { ...candidate, _drop2TunnelObservedIp: observedIp }
-                : candidate;
             if (pc.remoteDescription) {
-                await addRemoteIceCandidate(from, pc, remoteCandidate);
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
             } else {
-                queueIceCandidate(from, remoteCandidate);
+                queueIceCandidate(from, candidate);
             }
         }
     } catch (err) {
@@ -2408,7 +2102,6 @@ function setupDataChannel(deviceId, channel) {
     if (fileAssetTransfer?.handleIncomingChannel(deviceId, channel)) return;
 
     state.dataChannels.set(deviceId, channel);
-    if (!channel._peerConnection) channel._peerConnection = state.peers.get(deviceId) || null;
 
     channel.onopen = () => {
         console.log('Data channel opened with', deviceId);
@@ -2423,9 +2116,7 @@ function setupDataChannel(deviceId, channel) {
     channel.onclose = () => {
         console.log('Data channel closed with', deviceId);
         historyLog('p2p-data-channel-closed', { peerDeviceId: deviceId });
-        if (state.dataChannels.get(deviceId) === channel) {
-            state.dataChannels.delete(deviceId);
-        }
+        state.dataChannels.delete(deviceId);
     };
 }
 
@@ -3141,7 +2832,6 @@ function initFileAssetTransfer() {
         getPeer: deviceId => state.peers.get(deviceId),
         connectPeer: connectToPeerForFileAsset,
         ensurePeerOffer: ensurePeerOfferForFileAsset,
-        waitForPeerConnection,
         waitForDataChannel,
         load: async fileId => materializeExternalFileRecord(await materializeCachedFileRecord(await getFromStore('files', fileId))),
         beginCacheWrite: async file => fileCacheStore?.beginWrite
@@ -3152,27 +2842,22 @@ function initFileAssetTransfer() {
             return saveToStore('files', { ...(existing || {}), ...file });
         },
         log: historyLog,
-        onProgress: (fileId, fileName, progress, transport, progressMeta = {}) => {
+        onProgress: (fileId, fileName, progress, transport) => {
             const route = String(transport || '');
             const progressKey = getFileProgressKey(fileId, route);
+            const status = getFileProgressStatus(route);
             const terminal = progress >= 100;
-            const multiSourceAttemptEnded = route.startsWith('sending-multi-source') &&
-                (progressMeta.rangeComplete === true || progressMeta.attemptEnded === true);
             trackFileReceiveProgress(fileId, fileName, progress, route, progressKey);
-            if (multiSourceAttemptEnded && !activeFileProgress.has(progressKey) &&
-                !document.getElementById(progressElementId(progressKey))) {
-                return;
-            }
             if (progress < 100) {
                 activeFileProgress.add(progressKey);
                 completedFileProgress.delete(progressKey);
                 const timer = progressHideTimers.get(progressKey);
                 if (timer) clearTimeout(timer);
                 progressHideTimers.delete(progressKey);
-            } else if (terminal && hasRecentCompletedProgress(progressKey)) {
+            } else if (terminal && completedFileProgress.has(progressKey)) {
                 return;
             } else if (terminal && !activeFileProgress.has(progressKey)) {
-                markCompletedProgress(progressKey);
+                completedFileProgress.add(progressKey);
                 hideProgress(progressKey);
                 historyLog('file-progress-terminal-suppressed', {
                     fileId,
@@ -3184,24 +2869,20 @@ function initFileAssetTransfer() {
             }
             const now = Date.now();
             const lastPaintAt = progressUiLastPaint.get(progressKey) || 0;
-            const shouldPaintProgress = terminal ||
-                (progress === 0 && lastPaintAt === 0) ||
-                now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL;
+            const shouldPaintProgress = terminal || progress === 0 ||
+                now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL ||
+                !document.getElementById(progressElementId(progressKey));
             if (shouldPaintProgress) {
-                const status = getFileProgressStatus(route);
-                showProgress(progressKey, fileName, progress, status, { route, ...progressMeta });
+                showProgress(progressKey, fileName, progress, status, { route });
                 progressUiLastPaint.set(progressKey, now);
             }
-            if (terminal || multiSourceAttemptEnded) {
+            if (terminal) {
                 activeFileProgress.delete(progressKey);
-                if (terminal) markCompletedProgress(progressKey);
-                const hideDelay = route.startsWith('sending-multi-source')
-                    ? MULTI_SOURCE_UPLOAD_PROGRESS_HIDE_MS
-                    : 800;
+                completedFileProgress.add(progressKey);
                 const timer = setTimeout(() => {
                     hideProgress(progressKey);
                     progressHideTimers.delete(progressKey);
-                }, hideDelay);
+                }, 800);
                 progressHideTimers.set(progressKey, timer);
             }
         },
@@ -3362,37 +3043,24 @@ function updateMediaButtons(stateUpdate = {}) {
 
 async function announceStoredFileAssets(options = {}) {
     if (!fileAssetTransfer) return;
-    const startedAt = Date.now();
-    let announcedCount = 0;
     try {
-        const files = await getCurrentSessionFileInventory();
+        const files = typeof IDBKeyRange !== 'undefined'
+            ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
+            : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
         for (const storedFile of files) {
             const file = await materializeExternalFileRecord(storedFile);
-            const isCachedChatAsset = hasCompleteFileInventoryCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+            const isCachedChatAsset = hasCompleteFileCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
             if (!isCachedChatAsset) continue;
             if (!file.isFileAsset) {
-                const persistedFile = await getFromStore('files', file.id);
-                if (!persistedFile) continue;
                 file.isFileAsset = true;
-                await saveToStore('files', { ...persistedFile, isFileAsset: true });
+                await saveToStore('files', file);
                 historyLog('file-asset-cache-migrated', { fileId: file.id });
             }
             await fileAssetTransfer.announce(file);
-            announcedCount += 1;
         }
-        historyLog('file-asset-presence-batch-announced', {
-            announcedCount,
-            scannedCount: files.length,
-            resumedPending: Boolean(options.resumePending),
-            elapsedMs: Date.now() - startedAt
-        });
         if (options.resumePending) fileAssetTransfer.resumePending();
     } catch (err) {
-        historyLog('file-asset-announce-failed', {
-            error: err.message,
-            announcedCount,
-            elapsedMs: Date.now() - startedAt
-        });
+        historyLog('file-asset-announce-failed', { error: err.message });
     }
 }
 
@@ -13167,13 +12835,7 @@ function handleDeviceJoined(data) {
     refreshTunnelAdminDevicePicker();
 
     // 尝试建立P2P连接
-    connectToPeer(deviceId).catch(err => {
-        historyLog('p2p-preconnect-failed', {
-            peerDeviceId: deviceId,
-            reason: 'device-joined',
-            error: err.message
-        });
-    });
+    connectToPeer(deviceId);
     scheduleStoredFileAssetAnnounce('device-joined');
     setTimeout(() => {
         reconcileLocalHistory([], [])
@@ -13192,7 +12854,8 @@ function handleDeviceLeft(data) {
     // 清理P2P连接
     const pc = state.peers.get(deviceId);
     if (pc) {
-        disposePeerConnection(deviceId, pc, 'device-left');
+        pc.close();
+        state.peers.delete(deviceId);
     }
 
     state.dataChannels.delete(deviceId);
@@ -13203,14 +12866,10 @@ function handleDeviceLeft(data) {
 
 function handleSessionDevices(data) {
     const devices = Array.isArray(data?.devices) ? data.devices : [];
-    const refreshReason = typeof data?.reason === 'string' ? data.reason : '';
     const seenDeviceIds = new Set();
-    let membershipChanged = false;
 
     devices.forEach(device => {
         if (device.deviceId !== state.deviceId) {
-            const isNewDevice = !state.devices.has(device.deviceId);
-            if (isNewDevice) membershipChanged = true;
             seenDeviceIds.add(device.deviceId);
             state.devices.set(device.deviceId, {
                 id: device.deviceId,
@@ -13222,22 +12881,14 @@ function handleSessionDevices(data) {
             });
 
             // 建立P2P连接
-            if (shouldPreconnectSessionPeer(device.deviceId, isNewDevice, refreshReason)) {
-                connectToPeer(device.deviceId).catch(err => {
-                    historyLog('p2p-preconnect-failed', {
-                        peerDeviceId: device.deviceId,
-                        reason: 'session-devices',
-                        error: err.message
-                    });
-                });
-            }
+            connectToPeer(device.deviceId);
         }
     });
     Array.from(state.devices.keys()).forEach(deviceId => {
         if (!seenDeviceIds.has(deviceId)) {
-            membershipChanged = true;
             const pc = state.peers.get(deviceId);
-            if (pc) disposePeerConnection(deviceId, pc, 'session-device-removed');
+            if (pc) pc.close();
+            state.peers.delete(deviceId);
             state.dataChannels.delete(deviceId);
             state.pendingIceCandidates.delete(deviceId);
             state.devices.delete(deviceId);
@@ -13246,7 +12897,7 @@ function handleSessionDevices(data) {
 
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
-    if (membershipChanged) scheduleStoredFileAssetAnnounce('session-devices', 1200);
+    scheduleStoredFileAssetAnnounce('session-devices', 1200);
 }
 
 function handleDeviceUpdated(data) {
@@ -13260,18 +12911,10 @@ function handleDeviceUpdated(data) {
         internalIp: data.internalIp || data.localIp || existing?.internalIp || null,
         externalIp: data.externalIp || existing?.externalIp || null
     });
-    if (!existing) {
-        connectToPeer(data.deviceId).catch(err => {
-            historyLog('p2p-preconnect-failed', {
-                peerDeviceId: data.deviceId,
-                reason: 'device-updated',
-                error: err.message
-            });
-        });
-        scheduleStoredFileAssetAnnounce('device-updated');
-    }
+    if (!existing) connectToPeer(data.deviceId);
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
+    scheduleStoredFileAssetAnnounce('device-updated');
 }
 
 function getSelfContactProfile() {
@@ -15338,10 +14981,7 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
     scheduleProgressQueueSnapshotExpiry();
     const list = document.getElementById('progressList');
     const container = document.getElementById('transferProgress');
-    if (progressQueueSnapshot.activeDownloads <= 0 &&
-        progressQueueSnapshot.queueLength <= 0 &&
-        (!list || list.children.length === 0)) {
-        if (container) container.style.display = 'none';
+    if (progressQueueSnapshot.activeDownloads <= 0 && (!list || list.children.length === 0)) {
         updateProgressDrawerSummary();
         return;
     }
@@ -15451,17 +15091,13 @@ function positionProgressItem(item) {
         return lastMovedAt > otherMovedAt;
     });
 
-    if (next) {
-        if (item.nextElementSibling !== next) list.insertBefore(item, next);
-    } else if (list.lastElementChild !== item) {
-        list.appendChild(item);
-    }
+    if (next) list.insertBefore(item, next);
+    else list.appendChild(item);
 }
 
 function updateProgressItemState(item, progress, status = '', meta = {}) {
     const normalizedProgress = Math.max(0, Math.min(100, Number(progress) || 0));
     const previousProgress = Number(item.dataset.progressValue || 0);
-    const previousActivity = item.dataset.progressActivity || '';
     const now = Date.now();
     const route = String(meta.route || '');
     const direction = meta.direction || getProgressDirection(route, item.dataset.progressKey);
@@ -15483,30 +15119,10 @@ function updateProgressItemState(item, progress, status = '', meta = {}) {
     if ((direction === 'receive' || direction === 'send') && activity === 'moving' && normalizedProgress > previousProgress) {
         item.dataset.progressLastMovedAt = String(now);
     }
-    const lastPositionedAt = Number(item.dataset.progressPositionedAt || 0);
-    if (!lastPositionedAt || previousActivity !== activity || now - lastPositionedAt >= PROGRESS_REORDER_MIN_INTERVAL) {
-        item.dataset.progressPositionedAt = String(now);
-        positionProgressItem(item);
-    }
-}
-
-function scheduleProgressDrawerSummary() {
-    if (progressSummaryTimer) return;
-    const elapsed = Date.now() - progressSummaryLastPaintAt;
-    const delay = Math.max(0, PROGRESS_SUMMARY_MIN_INTERVAL - elapsed);
-    progressSummaryTimer = setTimeout(() => {
-        progressSummaryTimer = null;
-        progressSummaryLastPaintAt = Date.now();
-        updateProgressDrawerSummary();
-    }, delay);
+    positionProgressItem(item);
 }
 
 function updateProgressDrawerSummary() {
-    if (progressSummaryTimer) {
-        clearTimeout(progressSummaryTimer);
-        progressSummaryTimer = null;
-    }
-    progressSummaryLastPaintAt = Date.now();
     const list = document.getElementById('progressList');
     const summary = document.getElementById('progressDrawerSummary');
     if (!list || !summary) return;
@@ -15927,7 +15543,6 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
         const text = document.createElement('span');
         text.className = 'progress-text';
         text.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
-        text.title = status || '';
         left.append(directionIcon, name);
         info.append(left, text);
 
@@ -15950,13 +15565,11 @@ function showProgress(fileId, fileName, progress, status = '', meta = {}) {
 function updateProgress(fileId, progress, status = '', meta = {}) {
     const item = document.getElementById(progressElementId(fileId));
     if (item) {
-        const progressText = item.querySelector('.progress-text');
-        progressText.textContent = `${progress}%${status ? ` · ${status}` : ''}`;
-        progressText.title = status || '';
+        item.querySelector('.progress-text').textContent = `${progress}%${status ? ` · ${status}` : ''}`;
         item.querySelector('.progress-fill').style.width = `${progress}%`;
         updateProgressItemState(item, progress, status, meta);
     }
-    scheduleProgressDrawerSummary();
+    updateProgressDrawerSummary();
 }
 
 function locateProgressFile(progressKey) {
@@ -16012,9 +15625,7 @@ function cleanupProgressForDeletedFile(fileId) {
     const baseFileId = String(fileId);
     fileTransferProgressStates.delete(baseFileId);
     activeFileProgress.delete(baseFileId);
-    Array.from(completedFileProgress.keys()).forEach(key => {
-        if (getProgressBaseFileId(key) === baseFileId) completedFileProgress.delete(key);
-    });
+    completedFileProgress.add(baseFileId);
     Array.from(progressHideTimers.keys()).forEach(key => {
         if (getProgressBaseFileId(key) !== baseFileId) return;
         const timer = progressHideTimers.get(key);
@@ -16040,7 +15651,7 @@ function cleanupProgressForDeletedFile(fileId) {
 function hideCompletedFileReceiveProgress(fileId) {
     if (!fileId) return;
     fileTransferProgressStates.delete(fileId);
-    markCompletedProgress(fileId);
+    completedFileProgress.add(fileId);
     hideProgress(fileId);
 }
 

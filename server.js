@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
 const rateLimit = require('express-rate-limit');
-const { registerFileAssetHandlers, cleanupFileAssetRelays } = require('./server/file-assets');
+const { registerFileAssetHandlers, cleanupFileAssetRelays, cleanupFileAssetAssignments } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
 const { createAdminAuth } = require('./server/admin-auth');
@@ -4214,9 +4214,15 @@ io.on('connection', (socket) => {
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
+            const reconnected = Boolean(existingDevice && existingDevice.socketId !== socket.id);
 
             if (session.devices.size >= MAX_DEVICES_PER_SESSION && !existingDevice) {
                 return emitSocketError('error', '会话设备数已满');
+            }
+
+            if (reconnected) {
+                cleanupFileAssetRelays(sessionId, deviceId);
+                cleanupFileAssetAssignments(session, deviceId);
             }
             
             // 添加设备到会话
@@ -4278,6 +4284,7 @@ io.on('connection', (socket) => {
             } else {
                 socket.to(sessionId).emit('device-updated', {
                     deviceId,
+                    reconnected,
                     deviceName: sanitizeString(deviceName),
                     deviceModel: session.devices.get(deviceId)?.deviceModel || '',
                     localIp: session.devices.get(deviceId)?.localIp || '',
@@ -4500,13 +4507,16 @@ io.on('connection', (socket) => {
             if (!session || !device) return;
 
             device.lastSeenAt = Date.now();
-            device.socketId = socket.id;
+            const primarySocket = deviceSockets.get(currentDevice);
+            if (!primarySocket?.connected || primarySocket === socket) {
+                device.socketId = socket.id;
+                bindSocketToDevice(socket, currentDevice);
+            }
             device.deviceName = sanitizeString(data.deviceName || device.deviceName || '', 80);
             device.deviceModel = sanitizeString(data.deviceModel || device.deviceModel || '', 80);
             device.localIp = sanitizeString(data.localIp || device.localIp || '', 80);
             device.externalIp = clientIp;
             session.lastActivity = Date.now();
-            bindSocketToDevice(socket, currentDevice);
             touchAccessDevice(currentDevice, {
                 deviceId: currentDevice,
                 sessionId,
@@ -4515,7 +4525,7 @@ io.on('connection', (socket) => {
                 localIp: device.localIp,
                 externalIp: device.externalIp,
                 ip: clientIp,
-                socketId: socket.id,
+                socketId: device.socketId,
                 userAgent: sanitizeString(socket.handshake.headers['user-agent'] || '', 160),
                 online: true,
                 active: true
@@ -4571,17 +4581,12 @@ io.on('connection', (socket) => {
                 return emitSocketError('error', '设备ID不匹配');
             }
             
-            const targetSocketId = sessions.get(currentSession)?.devices.get(to)?.socketId;
-            const targetSocket = io.sockets.sockets.get(targetSocketId) || deviceSockets.get(to);
-            if (targetSocket?.connected) {
-                targetSocket.emit('signal', {
-                    from,
-                    type,
-                    sdp,
-                    candidate,
-                    observedIp: clientIp
-                });
-            }
+            const signal = { from, type, sdp, candidate };
+            const targetSocket = deviceSockets.get(to);
+            if (targetSocket) targetSocket.emit('signal', signal);
+            else setTimeout(() => {
+                if (deviceSockets.get(from) === socket) deviceSockets.get(to)?.emit('signal', signal);
+            }, 500);
         } catch (err) {
             console.error('signal error:', err);
         }
@@ -5499,18 +5504,18 @@ io.on('connection', (socket) => {
         }
         
         if (currentSession && currentDevice) {
-            cleanupFileAssetRelays(currentSession, currentDevice);
-            for (const [key, relay] of editorAssetRelays) {
-                if (relay.sessionId === currentSession && (relay.from === currentDevice || relay.to === currentDevice)) {
-                    editorAssetRelays.delete(key);
-                }
-            }
             const session = sessions.get(currentSession);
             if (session) {
                 const device = session.devices.get(currentDevice);
 
                 // A reloaded page may already have replaced this socket.
                 if (device && device.socketId === socket.id) {
+                    cleanupFileAssetRelays(currentSession, currentDevice);
+                    for (const [key, relay] of editorAssetRelays) {
+                        if (relay.sessionId === currentSession && (relay.from === currentDevice || relay.to === currentDevice)) {
+                            editorAssetRelays.delete(key);
+                        }
+                    }
                     markAccessDeviceOffline(currentDevice, {
                         deviceId: currentDevice,
                         sessionId: currentSession,
@@ -5533,21 +5538,8 @@ io.on('connection', (socket) => {
                     }
 
                     if (session.fileAssets) {
+                        cleanupFileAssetAssignments(session, currentDevice);
                         for (const [assetId, asset] of session.fileAssets) {
-                            if (asset.assignments) {
-                                for (const [key, providerId] of asset.assignments) {
-                                    const keyParts = String(key).split(':');
-                                    const requesterId = keyParts[1] || '';
-                                    if (providerId === currentDevice || requesterId === currentDevice) {
-                                        const provider = asset.assignments.get(key);
-                                        asset.assignments.delete(key);
-                                        asset.assignmentMeta?.delete(key);
-                                        const nextLoad = Math.max(0, (asset.providerLoads?.get(provider) || 1) - 1);
-                                        if (nextLoad === 0) asset.providerLoads?.delete(provider);
-                                        else asset.providerLoads?.set(provider, nextLoad);
-                                    }
-                                }
-                            }
                             asset.providers.delete(currentDevice);
                             if (asset.providers.size === 0) session.fileAssets.delete(assetId);
                         }
