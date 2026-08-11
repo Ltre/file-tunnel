@@ -2,6 +2,7 @@
 
 分支：dev-2607B-NEWCODE-WRONGCODE3
 版本：89d4f59f841abb0d95c44e0059d79af60a071be4
+标签：stable-1.7.27
 测试日期：260811
 
 目前现状（以同处一个局域网且同一个子网的两设备A/B打开chrome进行几组测试用例说明）：
