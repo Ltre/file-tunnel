@@ -1,9 +1,9 @@
 关于传输链路方面的技术难题
 
-分支：dev-2607B-NEWCODE-WRONGCODE3
-版本：89d4f59f841abb0d95c44e0059d79af60a071be4
-标签：stable-1.7.27
-测试日期：260811
+分支：dev-2607B-NEWCODE-DEBUG
+版本：0b8e4e18b84a035586a17977de76c7c701945995
+标签：stable-1.7.12
+测试日期：260810
 
 目前现状（以同处一个局域网且同一个子网的两设备A/B打开chrome进行几组测试用例说明）：
 
@@ -254,7 +254,7 @@
         用例46：
             设备A：android 13, igniter关闭
             设备B：android 10, igniter启用且启用[Exempt Chinese Domain/IPs]
-            传输表现：全部以P2P，偶然出现极少socket.io relay，期望全部以P2P（不用太在意这个偶然。可以解释为网络波动后出现socket.io relay进度条，之后全是P2P）
+            传输表现：全部以P2P，如期望
         
         用例47：
             设备A：android 13, igniter启用且启用[Exempt Chinese Domain/IPs]
@@ -267,7 +267,8 @@
             传输表现：全部以P2P，如期望 （注意，此用例测试表现在此条件下，在测试环境10.0.0.11和tun-test环境是走socket.io relay）
 
     
-    
+总结：
+
 从用例1~12、17~28来看，windows设备A不论有没有开启代理或代理开什么模式，都不影响测试表现，而取决于android设备B。
 从用例13~16、29~32来看，两台相似环境都使用igniter的android设备，只要不全部都启用igniter且启用[Exempt Chinese Domain/IPs]，那么就可以走P2P。
 用例33~44的测试表现，跟相似条件的用例1~12、17~28的测试表现不完全一致，差异在于在tun.miku.us正式环境下，windows设备A和android设备B都启用网络代理时可走P2P。
