@@ -1,6 +1,6 @@
 # Drop2Tunnel 服务部署者指南
 
-> 适用基线：`Ltre/file-tunnel` 的 `dev/2607A-NEWCODE` 分支及 Alpha-1.6.5 前后的当前实现。  
+> 适用基线：`Ltre/file-tunnel` 的 `dev/2608A-NEWCODE` 分支，核对至 `4af5873`（2026-08-12）。
 > 本手册面向负责安装、升级、反向代理、数据备份、Telegram Bot、权限与故障排查的服务器维护者。
 
 ---
@@ -20,11 +20,14 @@ Drop2Tunnel（即时传输隧道）是一个以浏览器为客户端、Node.js �
 - PWA 安装和 Android 系统分享入口；
 - Telegram Bot 中转与 `file_id` 兜底恢复；
 - Telegram 备注中的 SNS 链接识别与按需下载；
+- 浏览器发送的文本/备注中的 SNS 链接识别与按需下载；
 - 协同编辑、富文本版本历史和冲突处理；
 - 图片、视频、音频预览及后台音乐队列；
 - 会话资源管理器、备份/导入、文件系统句柄挂载；
 - 隧道创建者和默认权限控制；
 - 管理后台、TOTP 登录和 Telegram 配置页。
+- 13 种界面语言及 Telegram Bot 交互翻译；
+- 面向 Android Chrome 与 VPN 场景的“增强局域网 P2P”授权引导。
 
 Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。浏览器缓存和在线设备副本是主要数据来源，Node.js 服务器主要负责会话协调、信令、元数据同步、Socket.IO 中继、基础设施元数据持久化及可选 Telegram 恢复。
 
@@ -34,7 +37,7 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 
 ### 2.1 浏览器端
 
-每台设备在 IndexedDB 中独立保存：
+每台设备以 IndexedDB 为主要持久化层，独立保存：
 
 - 已加入隧道；
 - 传输记录；
@@ -45,6 +48,8 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - 本机目录/文件句柄挂载；
 - 音乐队列的持久化副本；
 - 设备备注和富文本离线草稿。
+
+当前代码已经提供统一的 `CacheStore` 接口以及 IndexedDB、内存临时态和 OPFS 驱动。需要特别注意：接收侧 OPFS 分块写入当前被明确关闭，避免串行 OPFS 写入阻塞 P2P 热路径；现行接收流程仍以内存聚合后写入 IndexedDB Blob 为主。不要因为仓库中存在 `OpfsCacheDriver` 就把 OPFS 当成当前默认缓存后端。
 
 因此，同一条文件记录在不同设备上可能处于不同状态：
 
@@ -115,13 +120,17 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 | 小文件直接消息阈值 | 512 KiB |
 | 多源下载阈值 | 大于 10 MiB |
 | 同时完整下载 | 3 |
-| 同时多源下载 | 4 |
+| 同时多源下载 | 2 |
+| 客户端同时下载总数 | 4 |
 | 同时上传 | 2 |
+| 服务端单接收端活跃文件 | 5 |
+| 服务端单接收端活跃大文件 | 3 |
 
 此外：
 
 - 当前没有真正持久化已接收分片的完整断点续传协议；
 - 当前没有应用层端到端加密；
+- 当前接收侧 OPFS 写入未启用，浏览器仍可能在大文件合并和 IndexedDB 落库阶段产生内存压力；
 - File System Access API 主要依赖安全上下文中的 Chromium 浏览器；
 - 摄像头、麦克风、PWA、系统分享和多数高级能力需要 HTTPS；
 - 文件传输主 DataChannel 当前使用内置公共 STUN 列表；`tunnel.config.json` 中的 `rtc` 配置主要供语音、摄像头和通话媒体控制器使用；
@@ -199,7 +208,7 @@ Node.js :3000 或 :8080
 ```bash
 git clone https://github.com/Ltre/file-tunnel.git
 cd file-tunnel
-git checkout dev/2607A-NEWCODE
+git checkout dev/2608A-NEWCODE
 npm ci
 ```
 
@@ -213,20 +222,32 @@ npm ci
 
 ### 5.1 构建发布版
 
-仓库提供 `tools/deploy` 下的发布工具，用于压缩前端静态资源、更新资源版本参数，并按环境生成 `dist`：
+仓库提供 `tools/deploy` 下的发布工具，用于压缩前端静态资源、生成内容哈希文件名、更新 Service Worker 应用壳，并按环境生成 `dist`。
+
+直接构建某个 profile：
 
 ```bash
-npm run deploy:build
-npm run deploy:verify
+node tools/deploy/build.mjs --profile txsl --out dist --source-branch dev/2608A-NEWCODE
+node tools/deploy/verify.mjs --dist dist --profile txsl
 ```
 
-如果使用预设环境：
+推荐通过独立部署工作树构建。默认是演练模式，不提交、不推送：
 
 ```bash
-tools/deploy/release.sh txhk
-tools/deploy/release.sh alyhk
-tools/deploy/release.sh txsl
+tools/deploy/release.sh --source dev/2608A-NEWCODE --profile txsl
+tools/deploy/release.sh --source dev/2608A-NEWCODE --profile txhk
+tools/deploy/release.sh --source dev/2608A-NEWCODE --profile alyhk
 ```
+
+需要生成部署分支提交时追加 `--commit`；只有明确需要推送时才再追加 `--push`。脚本会拒绝从脏工作树发布，并在 `.deploy-worktrees/<deployBranch>/` 中构建和校验，不切换当前开发工作树。
+
+现有 profile：
+
+| Profile | Node.js 监听 | 反向代理 | 默认域名 |
+|---|---:|---|---|
+| `txsl` | 80 | 无，Node.js 直出 | `tun.miku.us` |
+| `txhk` | 4000 | Nginx | `tun-txhk.miku.us` |
+| `alyhk` | 4000 | Nginx | `tun-alyhk.miku.us` |
 
 输出目录位于：
 
@@ -240,14 +261,17 @@ tools/deploy/release.sh txsl
 
 ## 6. 基础配置
 
-编辑项目根目录的 `tunnel.config.json`。
-
-推荐生产示例：
+编辑项目根目录的 `tunnel.config.json`。下面是包含可选 RTC 媒体配置的完整示例；不需要自定义媒体 ICE 时可省略 `rtc`：
 
 ```json
 {
   "debugLogsEnabled": false,
-  "serverPort": 3000,
+  "serverPort": 80,
+  "ffmpegLocation": {
+    "txsl": "C:\\GreenApps\\ffmpeg\\bin",
+    "txhk": null,
+    "alyhk": null
+  },
   "rtc": {
     "replaceDefaultIceServers": false,
     "iceServers": [
@@ -273,11 +297,12 @@ tools/deploy/release.sh txsl
 
 - `debugLogsEnabled`：是否启用较详细的历史调试日志；
 - `serverPort`：Node.js Web/API/Socket.IO 共用端口；
+- `ffmpegLocation`：可写字符串，也可按 `deployment.profile` 配置路径；值为空或 profile 未命中时由 `PATH` 查找；
 - `rtc.iceServers`：附加 STUN；
 - `rtc.turnServers`：附加 TURN；
 - `rtc.replaceDefaultIceServers`：为 `true` 时不再附加内置公共 STUN。
 
-注意：TURN 凭据属于敏感配置。不要把生产凭据提交到公开仓库。
+构建工具会在发布产物中补充 `deployment.profile`、域名、构建 ID、源分支和源提交。`rtc` 当前主要供语音、摄像头和通话媒体控制器读取；文件 DataChannel 仍使用 `app.js` 内置 ICE 配置，不要误以为只改这里就能改变文件链路。TURN 凭据属于敏感配置，不要提交到公开仓库。
 
 ### 6.1 CORS/Origin 限制
 
@@ -483,7 +508,7 @@ https://tunnel.example.com/admin
 https://tunnel.example.com/admin-auth
 ```
 
-首次 TOTP 初始化只允许来自私网、回环地址或本机可信链路的请求。推荐两种方式。
+首次 TOTP 初始化只允许来自私网、回环地址或本机可信链路的请求。初始化页面可填写自定义 issuer，建议使用能区分服务器的名称，例如“首尔 Drop2Tunnel 管理后台”。推荐两种方式。
 
 ### 11.1 在服务器局域网内访问
 
@@ -602,6 +627,8 @@ https://tunnel.example.com/tgbot
 - YT Music 只选择音频轨；
 - 音频优先选择 AAC/M4A 且码率接近 256K，其次接近 128K，再逐级降级。
 
+YT Music 获取完成后还会整理曲名、艺术家、专辑、年份和来源 URL，裁剪封面两侧黑边，并将方形封面和元数据写入 M4A；文件名采用“艺术家 - 曲名.m4a”。普通 YouTube 链接按视频处理，不会一律转成音频。
+
 YouTube / YT Music 默认会调用：
 
 ```bash
@@ -642,6 +669,10 @@ https://tunnel.example.com/sns-cookies
 - 不写入 `tunnel.config.json`；
 - 不提交到 Git；
 - 定期更新或清理失效 cookies。
+
+### 12.6 Telegram 云端 Bot API 的 20MB 下载边界
+
+Telegram Bot API 的 `getFile` 云端下载接口当前只能下载不超过 20MB 的文件。代码会在收到 update 时优先读取 `file_size`，对超过 20MB 的文件直接拦截并向用户附上 Telegram 官方说明，避免下载完整文件后才失败。`telegram-bot.json` 中更大的业务上限不能突破这一官方接口限制。
 
 ---
 
@@ -698,6 +729,8 @@ https://tunnel.example.com/sns-cookies
 ```
 
 修改 Service Worker、Manifest 或前端资源后，旧 PWA 可能仍持有缓存。用户可使用页面中的“强制刷新”，或清理该站点缓存后重新打开。
+
+当前 Service Worker 同时处理 `/share` 与 `/share/`，GET 会跳转到分享入口，POST 会把系统 Share Target 文件写入 IndexedDB 队列后再进入隧道。反向代理和 CDN 不应把这两个路径改写成 404，也不应缓存 POST 响应。
 
 ---
 
@@ -779,7 +812,7 @@ tar -czf ../drop2tunnel-before-upgrade-$(date +%F-%H%M%S).tar.gz \
 
 git status
 git fetch --all --tags
-git checkout dev/2607A-NEWCODE
+git checkout dev/2608A-NEWCODE
 git pull --ff-only
 npm ci
 
@@ -787,6 +820,8 @@ node --check server.js
 node --check app.js
 node --check server/infra-store.js
 node --check server/media-session.js
+node --check client/file-assets.js
+node tests/p2p-connection-regression.test.cjs
 
 sudo systemctl start drop2tunnel
 sudo systemctl status drop2tunnel
@@ -843,6 +878,25 @@ tail -f /var/log/nginx/error.log
 - 服务端临时 Telegram 文件是否异常堆积。
 - 服务端临时 SNS 媒体文件是否异常堆积。
 
+### 17.4 关联客户端和服务端调试日志
+
+仅在排障期间开启：
+
+```json
+{
+  "debugLogsEnabled": true
+}
+```
+
+重启服务后，客户端会通过 Socket.IO 上报经过采样和长度限制的诊断事件。管理员通过 TOTP 登录后可查询：
+
+```text
+/api/debug-logs?source=client&deviceId=<设备ID>&limit=2000
+/api/debug-logs?source=server&sessionId=<隧道ID>&limit=2000
+```
+
+接口上限为 2000 条；如果配置了 `DEBUG_LOG_TOKEN`，还必须携带匹配的 `x-debug-log-token` 请求头。排障结束后应关闭详细日志，避免额外内存和网络开销。
+
 ---
 
 ## 18. 常见故障
@@ -882,10 +936,14 @@ P2P 受 NAT、防火墙、运营商网络影响。
 处理顺序：
 
 1. 确认双方 WebRTC 可用；
-2. 确认公共 STUN 未被阻断；
-3. 为媒体配置 TURN；
-4. 检查 Socket.IO Relay 是否正常；
-5. 观察是否只是直连失败但 Relay 成功。
+2. 核对浏览器控制台中的 ICE candidate、selected candidate pair 和 DataChannel 状态；
+3. 排除 PWA/Service Worker 混用旧版静态资源；
+4. 确认公共 STUN 未被阻断；
+5. 检查 VPN/代理是否改变 WebRTC 候选或隐藏局域网 host candidate；
+6. 检查 Socket.IO Relay 是否正常；
+7. 观察是否只是直连失败但 Relay 成功。
+
+在 Android Chrome 与 VPN/代理并用时，站点媒体权限可能改变 WebRTC 对局域网地址的暴露。当前设置页提供“增强局域网 P2P”：用户明确操作后短暂申请摄像头和麦克风权限，随即停止所有媒体轨道，不上传音视频。页面在 HTTPS、存在在线设备且检测到同局域网候选或 Relay 后也可能显示一次非阻塞引导。该能力只能提高成功率，不能保证 P2P，更不能替代 Relay 兜底。完整经验见 `docs/other/P2P_TRANSMISSION_NOTES-260812.md`。
 
 ### 18.5 管理员首次配置提示不允许
 
@@ -981,6 +1039,8 @@ P2P 受 NAT、防火墙、运营商网络影响。
 - [ ] 管理员 TOTP 已配置；
 - [ ] 两台设备能加入同一隧道；
 - [ ] P2P 与 Relay 均做过测试；
+- [ ] Android Chrome/VPN 场景已验证“增强局域网 P2P”授权提示及隐私说明；
+- [ ] `debugLogsEnabled` 默认关闭，排障接口受管理员认证保护；
 - [ ] PWA 可安装；
 - [ ] Android 系统分享可进入应用；
 - [ ] Telegram Webhook 已验证；
