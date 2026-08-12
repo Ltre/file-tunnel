@@ -7,10 +7,13 @@ function normalizeLanguageCode(value = '') {
     if (raw.startsWith('ru')) return 'ru';
     if (raw.startsWith('es')) return 'es';
     if (raw.startsWith('it')) return 'it';
+    if (raw.startsWith('fa')) return 'fa';
     if (raw.startsWith('ko')) return 'ko';
     if (raw.startsWith('ms')) return 'ms';
     if (raw.startsWith('id')) return 'id';
     if (raw.startsWith('vi')) return 'vi';
+    if (raw.startsWith('km')) return 'km';
+    if (raw.startsWith('my')) return 'my';
     if (raw.startsWith('th')) return 'th';
     if (raw.startsWith('en')) return 'en';
     return 'zh-Hans';
@@ -31,7 +34,7 @@ const TG = {
     '所发内容的备注文字中没有找到 5 位隧道暗号，请提供给我；也可以点击“放弃发送”。': { 'zh-Hant': '在所發內容的備註中找不到 5 位隧道暗號，請提供給我；也可以點選「放棄傳送」。', en: 'I could not find a 5-character tunnel code in the caption. Please send it, or tap “Cancel sending”.', ja: 'キャプションに5文字のトンネルコードが見つかりません。送信するか、「送信をキャンセル」を押してください。', fr: 'Aucun code de tunnel à 5 caractères dans la légende. Envoyez-le ou touchez « Annuler l’envoi ».', ru: 'В подписи нет 5-символьного кода туннеля. Отправьте его или нажмите «Отменить отправку».', es: 'No encontré un código de túnel de 5 caracteres en el texto. Envíalo o toca “Cancelar envío”.', it: 'Non trovo un codice tunnel di 5 caratteri nella didascalia. Invialo o tocca “Annulla invio”.', fa: 'در توضیح، کد ۵ نویسه‌ای تونل پیدا نشد. آن را بفرستید یا «لغو ارسال» را بزنید.', ko: '캡션에서 5자리 터널 코드를 찾지 못했습니다. 코드를 보내거나 “보내기 취소”를 누르세요.', ms: 'Kod terowong 5 aksara tidak ditemui dalam kapsyen. Hantar kod atau ketik “Batal hantar”.', id: 'Kode tunnel 5 karakter tidak ditemukan di keterangan. Kirim kodenya atau ketuk “Batalkan pengiriman”.', vi: 'Không tìm thấy mã đường hầm 5 ký tự trong chú thích. Hãy gửi mã hoặc bấm “Hủy gửi”.', km: 'រកមិនឃើញលេខសម្ងាត់ផ្លូវរូង 5 តួអក្សរក្នុងចំណាំទេ។ សូមផ្ញើវា ឬចុច “បោះបង់ការផ្ញើ”។', my: 'စာတန်းတွင် စာလုံး ၅ လုံး တန်နယ်ကုဒ် မတွေ့ပါ။ ကုဒ်ပို့ပါ သို့မဟုတ် “ပို့ခြင်းပယ်ဖျက်” ကိုနှိပ်ပါ။', th: 'ไม่พบรหัสอุโมงค์ 5 ตัวอักษรในคำบรรยาย โปรดส่งรหัส หรือแตะ “ยกเลิกการส่ง”' }
 };
 
-const SERVER_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th'];
+const SERVER_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
 const SERVER_ROWS = [
     ['请输入 5 位隧道暗号','請輸入 5 位隧道暗號','Please enter the 5-character tunnel code','5文字のトンネルコードを入力してください','Veuillez saisir le code de tunnel à 5 caractères','Введите 5-символьный код туннеля','Introduce el código de túnel de 5 caracteres','Inserisci il codice tunnel di 5 caratteri','5자리 터널 코드를 입력하세요','Sila masukkan kod terowong 5 aksara','Silakan masukkan kode tunnel 5 karakter','Vui lòng nhập mã đường hầm 5 ký tự','โปรดป้อนรหัสทันเนล 5 ตัวอักษร'],
     ['请求过于频繁，请稍后再试','請求過於頻繁，請稍後再試','Too many requests. Please try again later.','リクエストが多すぎます。後でもう一度お試しください。','Trop de requêtes. Réessayez plus tard.','Слишком много запросов. Повторите позже.','Demasiadas solicitudes. Inténtalo más tarde.','Troppe richieste. Riprova più tardi.','요청이 너무 많습니다. 나중에 다시 시도하세요.','Terlalu banyak permintaan. Cuba lagi kemudian.','Terlalu banyak permintaan. Coba lagi nanti.','Quá nhiều yêu cầu. Vui lòng thử lại sau.','มีคำขอมากเกินไป โปรดลองอีกครั้งภายหลัง'],
@@ -81,7 +84,9 @@ function translateTelegramText(text, langCode = 'zh-Hans') {
         ru: `Ретрансляция в туннель ${shortMatch[1]}`, es: `Retransmitiendo al túnel ${shortMatch[1]}`,
         it: `Inoltro al tunnel ${shortMatch[1]}`, ko: `${shortMatch[1]} 터널 중계 모드`,
         ms: `Menggeganti ke terowong ${shortMatch[1]}`, id: `Meneruskan ke tunnel ${shortMatch[1]}`,
-        vi: `Đang chuyển tiếp tới đường hầm ${shortMatch[1]}`, th: `กำลังส่งต่อไปยังทันเนล ${shortMatch[1]}`
+        vi: `Đang chuyển tiếp tới đường hầm ${shortMatch[1]}`, th: `กำลังส่งต่อไปยังทันเนล ${shortMatch[1]}`,
+        fa: `در حال انتقال به تونل ${shortMatch[1]}`, km: `កំពុងបញ្ជូនទៅផ្លូវរូង ${shortMatch[1]}`,
+        my: `${shortMatch[1]} တန်နယ်သို့ လွှဲပြောင်းနေသည်`
     }[lang] || text);
     let match = /^当前处于 ([A-Z0-9]{5}) 隧道中转模式，直接发送任何内容，将转发到此隧道。$/.exec(text);
     if (match) return ({
@@ -92,6 +97,29 @@ function translateTelegramText(text, langCode = 'zh-Hans') {
     if (match) return ({ en: `Sent to tunnel ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, 'zh-Hant': `已傳送到隧道 ${match[1]}${match[2] ? `：${match[2].trim()}` : '。'}`, ja: `トンネル ${match[1]} に送信しました${match[2] ? `：${match[2].trim()}` : '。'}`, fr: `Envoyé au tunnel ${match[1]}${match[2] ? ` : ${match[2].trim()}` : '.'}`, ru: `Отправлено в туннель ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, es: `Enviado al túnel ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, it: `Inviato al tunnel ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, fa: `به تونل ${match[1]} ارسال شد${match[2] ? `: ${match[2].trim()}` : '.'}`, ko: `${match[1]} 터널로 보냈습니다${match[2] ? `: ${match[2].trim()}` : '.'}`, ms: `Dihantar ke terowong ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, id: `Dikirim ke tunnel ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, vi: `Đã gửi tới đường hầm ${match[1]}${match[2] ? `: ${match[2].trim()}` : '.'}`, km: `បានផ្ញើទៅផ្លូវរូង ${match[1]}${match[2] ? `: ${match[2].trim()}` : '។'}`, my: `${match[1]} တန်နယ်သို့ ပို့ပြီးပါပြီ${match[2] ? `: ${match[2].trim()}` : '။'}`, th: `ส่งไปยังอุโมงค์ ${match[1]} แล้ว${match[2] ? `: ${match[2].trim()}` : ''}` }[lang] || text);
     match = /^已将 (\d+) 个媒体文件以合辑发送到隧道 ([A-Z0-9]{5})。$/.exec(text);
     if (match) return ({ en: `Sent ${match[1]} media files as a collection to tunnel ${match[2]}.`, 'zh-Hant': `已將 ${match[1]} 個媒體檔案以合輯傳送到隧道 ${match[2]}。`, ja: `${match[1]} 個のメディアファイルを合輯としてトンネル ${match[2]} に送信しました。`, fr: `${match[1]} fichiers média ont été envoyés comme collection au tunnel ${match[2]}.`, ru: `${match[1]} медиафайлов отправлены подборкой в туннель ${match[2]}.`, es: `Se enviaron ${match[1]} archivos multimedia como colección al túnel ${match[2]}.`, it: `${match[1]} file multimediali inviati come raccolta al tunnel ${match[2]}.`, fa: `${match[1]} فایل رسانه‌ای به‌صورت مجموعه به تونل ${match[2]} ارسال شد.`, ko: `미디어 파일 ${match[1]}개를 모음으로 ${match[2]} 터널에 보냈습니다.`, ms: `${match[1]} fail media dihantar sebagai koleksi ke terowong ${match[2]}.`, id: `${match[1]} file media dikirim sebagai koleksi ke tunnel ${match[2]}.`, vi: `Đã gửi ${match[1]} tệp media dưới dạng bộ sưu tập tới đường hầm ${match[2]}.`, km: `បានផ្ញើឯកសារមេឌៀ ${match[1]} ជាបណ្តុំទៅផ្លូវរូង ${match[2]}។`, my: `မီဒီယာဖိုင် ${match[1]} ခုကို စုစည်းမှုအဖြစ် ${match[2]} တန်နယ်သို့ ပို့ပြီးပါပြီ။`, th: `ส่งไฟล์สื่อ ${match[1]} ไฟล์เป็นชุดไปยังอุโมงค์ ${match[2]} แล้ว` }[lang] || text);
+    match = /^以下文件超过 20MB，已拦截，无法通过 Telegram 官方云端 Bot API 转发到隧道：\n([\s\S]+)\n\nTelegram 官方说明：Bot API 的 getFile 目前只能下载不超过 20MB 的文件。\n(https?:\/\/\S+)$/.exec(text);
+    if (match) {
+        const messages = {
+            'zh-Hant': ['以下檔案超過 20MB，已攔截，無法透過 Telegram 官方雲端 Bot API 轉發到隧道：', 'Telegram 官方說明：Bot API 的 getFile 目前只能下載不超過 20MB 的檔案。', '……以及另外 {n} 個檔案'],
+            en: ['The following files exceed 20 MB and were blocked because the official Telegram cloud Bot API cannot forward them to the tunnel:', 'Telegram documentation: Bot API getFile can currently download files of up to 20 MB only.', '...and {n} more files'],
+            ja: ['次のファイルは 20MB を超えるため、Telegram 公式クラウド Bot API からトンネルへ転送できず、ブロックされました：', 'Telegram 公式説明：Bot API の getFile で現在ダウンロードできるファイルは 20MB 以下です。', '…ほか {n} 件'],
+            fr: ['Les fichiers suivants dépassent 20 Mo et ont été bloqués, car l’API Bot cloud officielle de Telegram ne peut pas les transférer vers le tunnel :', 'Documentation Telegram : getFile de l’API Bot ne peut actuellement télécharger que des fichiers de 20 Mo maximum.', '…et {n} autres fichiers'],
+            ru: ['Следующие файлы превышают 20 МБ и были заблокированы: официальный облачный Telegram Bot API не может переслать их в туннель:', 'Документация Telegram: getFile в Bot API сейчас загружает только файлы размером до 20 МБ.', '…и ещё файлов: {n}'],
+            es: ['Los siguientes archivos superan los 20 MB y se bloquearon porque la API Bot oficial en la nube de Telegram no puede reenviarlos al túnel:', 'Documentación de Telegram: getFile de la Bot API solo puede descargar actualmente archivos de hasta 20 MB.', '…y {n} archivos más'],
+            it: ['I seguenti file superano 20 MB e sono stati bloccati perché la Bot API cloud ufficiale di Telegram non può inoltrarli al tunnel:', 'Documentazione Telegram: getFile della Bot API può scaricare al momento solo file fino a 20 MB.', '…e altri {n} file'],
+            ko: ['다음 파일은 20MB를 초과하여 Telegram 공식 클라우드 Bot API로 터널에 전달할 수 없으므로 차단되었습니다:', 'Telegram 공식 안내: Bot API의 getFile은 현재 20MB 이하 파일만 다운로드할 수 있습니다.', '…외 {n}개 파일'],
+            ms: ['Fail berikut melebihi 20 MB dan telah disekat kerana Bot API awan rasmi Telegram tidak dapat memajukannya ke terowong:', 'Dokumentasi Telegram: getFile Bot API kini hanya boleh memuat turun fail sehingga 20 MB.', '…dan {n} fail lagi'],
+            id: ['File berikut melebihi 20 MB dan diblokir karena Bot API cloud resmi Telegram tidak dapat meneruskannya ke tunnel:', 'Dokumentasi Telegram: getFile Bot API saat ini hanya dapat mengunduh file hingga 20 MB.', '…dan {n} file lainnya'],
+            vi: ['Các tệp sau vượt quá 20 MB và đã bị chặn vì Bot API đám mây chính thức của Telegram không thể chuyển tiếp chúng vào đường hầm:', 'Tài liệu Telegram: getFile của Bot API hiện chỉ tải được tệp tối đa 20 MB.', '…và {n} tệp khác'],
+            th: ['ไฟล์ต่อไปนี้มีขนาดเกิน 20 MB และถูกบล็อก เนื่องจาก Bot API แบบคลาวด์อย่างเป็นทางการของ Telegram ไม่สามารถส่งต่อเข้าอุโมงค์ได้:', 'คำอธิบายของ Telegram: ขณะนี้ getFile ของ Bot API ดาวน์โหลดได้เฉพาะไฟล์ไม่เกิน 20 MB', '…และอีก {n} ไฟล์'],
+            fa: ['فایل‌های زیر بیش از ۲۰ مگابایت هستند و مسدود شدند، زیرا Bot API ابری رسمی تلگرام نمی‌تواند آن‌ها را به تونل منتقل کند:', 'مستندات تلگرام: getFile در Bot API در حال حاضر فقط فایل‌های حداکثر ۲۰ مگابایت را دانلود می‌کند.', '…و {n} فایل دیگر'],
+            km: ['ឯកសារខាងក្រោមលើស 20MB ហើយត្រូវបានទប់ស្កាត់ ព្រោះ Telegram cloud Bot API ផ្លូវការមិនអាចបញ្ជូនទៅផ្លូវរូងបាន៖', 'ឯកសារ Telegram៖ getFile របស់ Bot API បច្ចុប្បន្នអាចទាញយកឯកសារមិនលើស 20MB ប៉ុណ្ណោះ។', '…និងឯកសារ {n} ទៀត'],
+            my: ['အောက်ပါဖိုင်များသည် 20MB ကျော်သောကြောင့် ပိတ်ထားပြီး Telegram တရားဝင် cloud Bot API မှ တန်နယ်သို့ မပို့နိုင်ပါ:', 'Telegram လမ်းညွှန်ချက်အရ Bot API ၏ getFile သည် လက်ရှိတွင် 20MB အထိသာ ဒေါင်းလုဒ်လုပ်နိုင်သည်။', '…နောက်ထပ် {n} ဖိုင်']
+        };
+        const [heading, footer, remainingTemplate] = messages[lang] || messages.en;
+        const names = match[1].replace(/……以及另外 (\d+) 个文件$/, (_, count) => remainingTemplate.replace('{n}', count));
+        return `${heading}\n${names}\n\n${footer}\n${match[2]}`;
+    }
     return text;
 }
 

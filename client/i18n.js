@@ -71,6 +71,24 @@
     const TEXT_SOURCES = new WeakMap();
     const ATTRIBUTE_SOURCES = new WeakMap();
     let applyingTranslations = false;
+    const DYNAMIC_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
+    const DYNAMIC_TEMPLATES = [
+        [/^(\d+)\s*个任务$/, ['{n} 個工作','{n} tasks','タスク {n} 件','{n} tâches','Задач: {n}','{n} tareas','{n} attività','작업 {n}개','{n} tugas','{n} tugas','{n} tác vụ','{n} งาน']],
+        [/^进行中\s*(\d+)$/, ['進行中 {n}','{n} active','実行中 {n}','{n} en cours','Выполняется: {n}','{n} en curso','{n} in corso','진행 중 {n}','{n} aktif','{n} aktif','{n} đang chạy','กำลังทำ {n}']],
+        [/^(\d+)\s*个停滞$/, ['{n} 個停滯','{n} stalled','停滞 {n} 件','{n} bloquées','Зависло: {n}','{n} detenidas','{n} bloccate','정체 {n}개','{n} terhenti','{n} terhenti','{n} bị dừng','ค้าง {n}']],
+        [/^(\d+)\s*个建链中$/, ['{n} 個正在建立連線','{n} connecting','接続中 {n} 件','{n} en connexion','Подключается: {n}','{n} conectando','{n} in connessione','연결 중 {n}개','{n} menyambung','{n} menghubungkan','{n} đang kết nối','กำลังเชื่อมต่อ {n}']],
+        [/^(\d+)\s*个等待$/, ['{n} 個等待','{n} waiting','待機中 {n} 件','{n} en attente','Ожидает: {n}','{n} en espera','{n} in attesa','대기 {n}개','{n} menunggu','{n} menunggu','{n} đang chờ','รอ {n}']],
+        [/^正在还原\s*(\d+)\s*个缺失文件$/, ['正在還原 {n} 個缺少的檔案','Restoring {n} missing files','不足しているファイル {n} 件を復元中','Restauration de {n} fichiers manquants','Восстановление отсутствующих файлов: {n}','Restaurando {n} archivos que faltan','Ripristino di {n} file mancanti','누락 파일 {n}개 복원 중','Memulihkan {n} fail yang tiada','Memulihkan {n} file yang hilang','Đang khôi phục {n} tệp còn thiếu','กำลังกู้คืนไฟล์ที่ขาด {n} ไฟล์','در حال بازیابی {n} فایل گم‌شده','កំពុងស្ដារឯកសារដែលបាត់ {n}','ပျောက်ဆုံးဖိုင် {n} ဖိုင်ကို ပြန်လည်ရယူနေသည်']],
+        [/^已请求还原\s*(\d+)\s*个缺失文件$/, ['已要求還原 {n} 個缺少的檔案','Requested restoration of {n} missing files','不足しているファイル {n} 件の復元を要求しました','Restauration demandée pour {n} fichiers manquants','Запрошено восстановление отсутствующих файлов: {n}','Se solicitó restaurar {n} archivos que faltan','Richiesto il ripristino di {n} file mancanti','누락 파일 {n}개 복원을 요청했습니다','Pemulihan {n} fail yang tiada telah diminta','Pemulihan {n} file yang hilang telah diminta','Đã yêu cầu khôi phục {n} tệp còn thiếu','ขอกู้คืนไฟล์ที่ขาด {n} ไฟล์แล้ว','بازیابی {n} فایل گم‌شده درخواست شد','បានស្នើស្ដារឯកសារដែលបាត់ {n}','ပျောက်ဆုံးဖိုင် {n} ဖိုင် ပြန်လည်ရယူရန် တောင်းဆိုပြီး']],
+        [/^已请求还原\s*(\d+)\s*个文件，\s*(\d+)\s*个失败$/, ['已要求還原 {n} 個檔案，{2} 個失敗','Requested restoration of {n} files; {2} failed','{n} 件の復元を要求し、{2} 件失敗しました','Restauration demandée pour {n} fichiers ; {2} échecs','Запрошено восстановление файлов: {n}; ошибок: {2}','Se solicitó restaurar {n} archivos; {2} fallaron','Richiesto il ripristino di {n} file; {2} non riusciti','파일 {n}개 복원을 요청했으며 {2}개 실패했습니다','Pemulihan {n} fail diminta; {2} gagal','Pemulihan {n} file diminta; {2} gagal','Đã yêu cầu khôi phục {n} tệp; {2} tệp thất bại','ขอกู้คืน {n} ไฟล์ โดยล้มเหลว {2} ไฟล์','بازیابی {n} فایل درخواست شد؛ {2} مورد ناموفق بود','បានស្នើស្ដារឯកសារ {n} ហើយបរាជ័យ {2}','ဖိုင် {n} ဖိုင် ပြန်လည်ရယူရန် တောင်းဆိုခဲ့ပြီး {2} ဖိုင် မအောင်မြင်ပါ']],
+        [/^获取SNS媒体失败[:：]\s*(.+)$/, ['取得 SNS 媒體失敗：{1}','Failed to fetch SNS media: {1}','SNS メディアの取得に失敗しました：{1}','Échec de la récupération du média SNS : {1}','Не удалось получить SNS-медиа: {1}','Error al obtener el contenido SNS: {1}','Recupero media SNS non riuscito: {1}','SNS 미디어를 가져오지 못했습니다: {1}','Gagal mendapatkan media SNS: {1}','Gagal mengambil media SNS: {1}','Không lấy được media SNS: {1}','ดึงสื่อ SNS ไม่สำเร็จ: {1}']],
+        [/^获取失败[:：]\s*(.+)$/, ['取得失敗：{1}','Fetch failed: {1}','取得に失敗しました：{1}','Échec de la récupération : {1}','Ошибка получения: {1}','Error de obtención: {1}','Recupero non riuscito: {1}','가져오기 실패: {1}','Gagal mendapatkan: {1}','Gagal mengambil: {1}','Lấy dữ liệu thất bại: {1}','ดึงข้อมูลไม่สำเร็จ: {1}']],
+        [/^解析失败[:：]\s*(.+)$/, ['解析失敗：{1}','Parsing failed: {1}','解析に失敗しました：{1}','Échec de l’analyse : {1}','Ошибка анализа: {1}','Error de análisis: {1}','Analisi non riuscita: {1}','분석 실패: {1}','Gagal menghuraikan: {1}','Gagal mengurai: {1}','Phân tích thất bại: {1}','วิเคราะห์ไม่สำเร็จ: {1}']],
+        [/^收藏状态保存失败[:：]\s*(.+)$/, ['收藏狀態儲存失敗：{1}','Failed to save favorite status: {1}','お気に入り状態を保存できませんでした：{1}','Échec de l’enregistrement du favori : {1}','Не удалось сохранить статус избранного: {1}','No se pudo guardar el estado de favorito: {1}','Salvataggio dello stato preferito non riuscito: {1}','즐겨찾기 상태 저장 실패: {1}','Gagal menyimpan status kegemaran: {1}','Gagal menyimpan status favorit: {1}','Không lưu được trạng thái yêu thích: {1}','บันทึกสถานะรายการโปรดไม่สำเร็จ: {1}']],
+        [/^合辑还原失败[:：]\s*(.+)$/, ['合輯還原失敗：{1}','Collection restore failed: {1}','コレクションの復元に失敗しました：{1}','Échec de la restauration de la collection : {1}','Не удалось восстановить подборку: {1}','No se pudo restaurar la colección: {1}','Ripristino della raccolta non riuscito: {1}','모음 복원 실패: {1}','Gagal memulihkan koleksi: {1}','Gagal memulihkan koleksi: {1}','Khôi phục bộ sưu tập thất bại: {1}','กู้คืนชุดไม่สำเร็จ: {1}']],
+        [/^来源为\s*(.+)\s*获取$/, ['從 {1} 取得','Fetched from {1}','{1} から取得','Récupéré depuis {1}','Получено из {1}','Obtenido de {1}','Ottenuto da {1}','{1}에서 가져옴','Diperoleh daripada {1}','Diambil dari {1}','Được lấy từ {1}','ดึงมาจาก {1}']],
+        [/^已配置\s*·\s*(.+)$/, ['已設定 · {1}','Configured · {1}','設定済み · {1}','Configuré · {1}','Настроено · {1}','Configurado · {1}','Configurato · {1}','설정됨 · {1}','Dikonfigurasikan · {1}','Dikonfigurasi · {1}','Đã cấu hình · {1}','ตั้งค่าแล้ว · {1}']]
+    ];
 
     function canonicalKey(value) {
         return String(value || '').trim().replace(/\s+/g, '');
@@ -81,7 +99,9 @@
             const key = canonicalKey(rawKey);
             if (!key) return;
             const simplified = translations?.['zh-Hans'] || rawKey;
-            const entry = { source: simplified, translations: { ...(translations || {}) } };
+            const previous = CATALOG.get(key);
+            const translatedValues = Object.fromEntries(Object.entries(translations || {}).filter(([, value]) => value));
+            const entry = { source: simplified, translations: { ...(previous?.translations || {}), ...translatedValues } };
             CATALOG.set(key, entry);
             [simplified, ...Object.values(entry.translations)].forEach(value => {
                 const reverseKey = canonicalKey(value);
@@ -112,9 +132,31 @@
         return CATALOG.has(normalized) ? normalized : (REVERSE_CATALOG.get(normalized) || '');
     }
 
+    function translateDynamic(source, lang) {
+        const text = String(source || '').trim();
+        for (const [pattern, values] of DYNAMIC_TEMPLATES) {
+            const match = pattern.exec(text);
+            if (!match) continue;
+            if (lang === DEFAULT_LANG) return text;
+            const template = values[DYNAMIC_LANGUAGES.indexOf(lang)] || values[1];
+            const localizeCapture = value => {
+                const key = resolveCatalogKey(value);
+                if (!key) return value;
+                const entry = CATALOG.get(key);
+                return entry.translations[lang] || entry.translations.en || entry.source;
+            };
+            return template
+                .replace(/\{n\}/g, localizeCapture(match[1]))
+                .replace(/\{(\d+)\}/g, (_, index) => localizeCapture(match[Number(index)] || ''));
+        }
+        return '';
+    }
+
     function translateText(source, lang = currentLanguage()) {
         const text = String(source ?? '');
         if (!text.trim()) return text;
+        const dynamic = translateDynamic(text, lang);
+        if (dynamic) return dynamic;
         const key = resolveCatalogKey(text);
         if (!key) return text;
         const entry = CATALOG.get(key);
@@ -134,6 +176,8 @@
         const saved = TEXT_SOURCES.get(node);
         if (currentKey && (!saved || resolveCatalogKey(saved) !== currentKey)) {
             TEXT_SOURCES.set(node, CATALOG.get(currentKey).source);
+        } else if (!saved && DYNAMIC_TEMPLATES.some(([pattern]) => pattern.test(String(node.nodeValue || '').trim()))) {
+            TEXT_SOURCES.set(node, String(node.nodeValue || '').trim());
         }
         return TEXT_SOURCES.get(node) || node.nodeValue;
     }
@@ -173,7 +217,7 @@
         if (!root) return;
         const lang = currentLanguage();
         document.documentElement.lang = lang;
-        document.documentElement.dir = 'ltr';
+        document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
         applyingTranslations = true;
         if (root.nodeType === Node.TEXT_NODE) {
             try { translateTextNode(root, lang); } finally { applyingTranslations = false; }
