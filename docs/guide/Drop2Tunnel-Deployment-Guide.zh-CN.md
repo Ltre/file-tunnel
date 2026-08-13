@@ -148,7 +148,7 @@ Drop2Tunnel 不是传统“文件全部上传到中心服务器”的网盘。�
 - 当前仍受支持的 Node.js LTS；
 - Node.js 至少 18，因为服务端会使用现代 Web/Fetch 能力；
 - npm；
-- `yt-dlp`，用于识别和下载 Telegram 备注中的 YouTube、YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter/X 等 SNS 链接；
+- 包含 `yt-dlp-ejs` 的 `yt-dlp`，最好再附加安装deno，用于识别和下载 Telegram 备注中的 YouTube、YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter/X 等 SNS 链接；
 - `ffmpeg`，用于 `yt-dlp` 合并音视频轨、转封装和处理部分平台媒体；
 - Nginx 或其他支持 WebSocket 的反向代理；
 - HTTPS 证书；
@@ -163,8 +163,10 @@ Debian / Ubuntu 示例：
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg python3 python3-pip
-python3 -m pip install --user -U yt-dlp
+python3 -m pip install --user -U "yt-dlp[default]"
 ```
+
+`yt-dlp[default]` 会同时安装 YouTube 完整解析所需的 `yt-dlp-ejs`。只安装裸 `yt-dlp` 时，元数据可能仍能读取，但下载阶段可能因签名挑战无法解析而失败。官方独立版 `yt-dlp`/`yt-dlp.exe` 已内置该组件。项目默认使用 Node.js 执行 EJS；该功能需要 Node.js 22 或更新版本。网络无法访问 GitHub Release 时尤其应优先使用本地 `yt-dlp-ejs`，不要只依赖远程组件下载。详见 [yt-dlp EJS 官方说明](https://github.com/yt-dlp/yt-dlp/wiki/EJS)。
 
 如果使用 systemd 运行服务，确认运行用户的 `PATH` 中能找到 `yt-dlp`。也可以显式指定：
 
@@ -176,7 +178,15 @@ Windows Server 可安装：
 
 - Node.js 官方 MSI；
 - `ffmpeg` 官方构建或包管理器版本，并加入 `PATH`；
-- `yt-dlp.exe`，或通过 Python/pip 安装后将脚本目录加入 `PATH`。
+- 官方 `yt-dlp.exe`，或执行 `py -m pip install --upgrade "yt-dlp[default]"` 后将 Python 脚本目录加入 `PATH`。
+
+安装后应以运行 Node.js 服务的同一账号验证一次真实格式解析：
+
+```bash
+yt-dlp --verbose --simulate --no-playlist --js-runtimes node "<实际可访问的 YouTube 视频 URL>"
+```
+
+输出中不应出现 `Failed to download challenge solver lib script` 或 `Signature solving failed`。修改依赖或 `PATH` 后，需要重启 Node.js 服务进程。
 
 验证：
 
@@ -669,6 +679,7 @@ https://tunnel.example.com/sns-cookies
 - 不写入 `tunnel.config.json`；
 - 不提交到 Git；
 - 定期更新或清理失效 cookies。
+- 使用firefox的cookie-editor插件（https://addons.mozilla.org/zh-CN/firefox/addon/cookie-editor/），以Netscape格式导出cookie （不建议使用chrome的cookie-editor，因为可能导出不完整）
 
 ### 12.6 Telegram 云端 Bot API 的 20MB 下载边界
 

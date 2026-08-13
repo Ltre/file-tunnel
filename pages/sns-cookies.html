@@ -114,6 +114,13 @@
 
         .badge.empty { background: #f2f4f7; color: var(--muted); }
         .badge.ok { background: #dcfce7; color: #166534; }
+        .badge.warning { background: #fff4cc; color: #8a5700; }
+
+        .cookie-warning {
+            margin: 0 0 12px;
+            color: #a33a00;
+            line-height: 1.55;
+        }
 
         textarea {
             width: 100%;
@@ -190,7 +197,7 @@
         </div>
 
         <section class="card">
-            <p class="subtle">请粘贴 Netscape cookies.txt 格式内容。YouTube 与 YT Music 共用 <code>yt-cookies.txt</code>；保存空内容会删除对应 cookies 文件。</p>
+            <p class="subtle">请粘贴 Netscape cookies.txt 格式内容。YouTube 与 YT Music 共用 <code>yt-cookies.txt</code>；保存空内容会删除对应 cookies 文件。YouTube 登录态应使用能够导出 HttpOnly Cookie 的工具完整导出，不能使用只读取 <code>document.cookie</code> 的脚本。建议在新无痕窗口登录 YouTube，在同一标签打开 <code>https://www.youtube.com/robots.txt</code> 后导出并立即关闭该无痕窗口；详见 <a href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies" target="_blank" rel="noopener noreferrer">yt-dlp 官方说明</a>。</p>
             <div class="toolbar">
                 <button class="btn" id="reloadBtn" type="button">重新读取</button>
             </div>
@@ -227,9 +234,20 @@
             return `${(n / 1024 / 1024).toFixed(2)} MB`;
         }
 
+        function getCookieWarning(entry) {
+            if (entry.platform !== 'youtube' || !entry.exists) return '';
+            if (!/^#HttpOnly_/m.test(entry.content || '')) {
+                return '未发现 HttpOnly 登录态，当前文件很可能不完整，YouTube 下载仍会要求登录验证。请重新导出完整的 youtube.com Netscape cookies.txt。';
+            }
+            return '';
+        }
+
         function renderPlatforms(platforms) {
             listEl.innerHTML = '';
+            let warningCount = 0;
             platforms.forEach(entry => {
+                const warning = getCookieWarning(entry);
+                if (warning) warningCount += 1;
                 const card = document.createElement('article');
                 card.className = 'card';
                 card.dataset.platform = entry.platform;
@@ -239,8 +257,9 @@
                             <strong>${platformLabels[entry.platform] || entry.platform}</strong>
                             <span>${entry.fileName}</span>
                         </div>
-                        <span class="badge ${entry.exists ? 'ok' : 'empty'}">${entry.exists ? `已配置 · ${formatSize(entry.size)}` : '未配置'}</span>
+                        <span class="badge ${warning ? 'warning' : (entry.exists ? 'ok' : 'empty')}">${warning ? `需检查 · ${formatSize(entry.size)}` : (entry.exists ? `已配置 · ${formatSize(entry.size)}` : '未配置')}</span>
                     </div>
+                    ${warning ? `<p class="cookie-warning">${warning}</p>` : ''}
                     <textarea spellcheck="false" placeholder="# Netscape HTTP Cookie File">${entry.content || ''}</textarea>
                     <div class="actions">
                         <button class="btn danger" type="button" data-action="clear">清空</button>
@@ -249,6 +268,7 @@
                 `;
                 listEl.appendChild(card);
             });
+            return warningCount;
         }
 
         async function loadCookies() {
@@ -256,8 +276,8 @@
             const response = await fetch('/api/sns-cookies', { cache: 'no-store' });
             if (!response.ok) throw new Error('读取 cookies 配置失败');
             const data = await response.json();
-            renderPlatforms(data.platforms || []);
-            setStatus('配置已读取。', 'ok');
+            const warningCount = renderPlatforms(data.platforms || []);
+            setStatus(warningCount ? '配置已读取，但有 cookies 登录态不完整，请按提示重新导出。' : '配置已读取。', warningCount ? 'error' : 'ok');
         }
 
         async function savePlatform(card, content) {

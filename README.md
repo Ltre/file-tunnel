@@ -228,7 +228,7 @@ Telegram 不能凭空恢复已经在所有设备、服务器和旧 Bot 中都不
 - 客户端继续按普通 server asset 逻辑通过 HTTP/Range 拉取到浏览器缓存；
 - 已经获得缓存的浏览器会成为后续其他设备的普通供源者。
 
-YouTube 视频下载会优先选择 H.264、最高不超过 1080p 的视频轨，并按音频码率优先选择接近 256K、再接近 128K 的 AAC/M4A 音轨；若无 H.264 视频，则降级到 AV1 或其他可用视频轨。`music.youtube.com` 链接只选择音频轨。该能力要求服务端已安装 `yt-dlp` 和 `ffmpeg`。
+YouTube 视频下载会优先选择 H.264、最高不超过 1080p 的视频轨，并按音频码率优先选择接近 256K、再接近 128K 的 AAC/M4A 音轨；若无 H.264 视频，则降级到 AV1 或其他可用视频轨。`music.youtube.com` 链接只选择音频轨。该能力要求服务端已安装 `ffmpeg` 和包含 `yt-dlp-ejs` 的 `yt-dlp`；通过 pip 安装时应使用 `python -m pip install -U "yt-dlp[default]"`，官方独立可执行文件已内置该组件。
 
 ### 设置、权限与管理
 

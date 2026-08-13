@@ -125,6 +125,7 @@
         }
 
         async announce(asset) {
+            if (asset?.id) this.cancelledAssets.delete(asset.id);
             const socket = this.socket();
             if (!socket || !socket.connected) return;
             socket.emit('file-asset-available', {
@@ -308,6 +309,7 @@
                 this.downloadQueue.includes(assetId) ||
                 this.transfers.has(assetId) ||
                 this.multiSourceTransfers.has(assetId) ||
+                this.providerTransfers.has(assetId) ||
                 this.retryTimers.has(assetId);
         }
 
@@ -1442,7 +1444,7 @@
         }
 
         handleIncomingChannel(deviceId, channel) {
-            const match = /^file-asset:([a-zA-Z0-9-]+)(?::([a-zA-Z0-9_-]+))?$/.exec(channel.label || '');
+            const match = /^file-asset:([a-zA-Z0-9_-]+)(?::([a-zA-Z0-9_-]+))?$/.exec(channel.label || '');
             if (!match) return false;
             this.setupChannel(deviceId, match[1], channel, match[2] || null);
             return true;

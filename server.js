@@ -24,8 +24,10 @@ const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const SNS_MEDIA_WORK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-work');
 const SNS_MEDIA_TASK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-tasks');
+const YT_DLP_CACHE_DIR = path.join(SERVER_DATA_DIR, 'yt-dlp-cache');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
+const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -245,6 +247,33 @@ function persistTelegramChatTunnels() {
     fs.writeFileSync(TELEGRAM_CHAT_TUNNELS_PATH, JSON.stringify(Array.from(telegramChatTunnels.entries()), null, 2));
 }
 
+function loadTelegramPendingFiles() {
+    try {
+        const entries = JSON.parse(fs.readFileSync(TELEGRAM_PENDING_FILES_PATH, 'utf8'));
+        return new Map((Array.isArray(entries) ? entries : []).filter(entry =>
+            Array.isArray(entry) && entry.length === 2 && entry[0] &&
+            ['text', 'files'].includes(entry[1]?.kind)
+        ));
+    } catch (_) {
+        return new Map();
+    }
+}
+
+function persistTelegramPendingFiles() {
+    writeDataFileAtomic(TELEGRAM_PENDING_FILES_PATH, JSON.stringify(Array.from(telegramPendingFiles.entries()), null, 2));
+}
+
+function setTelegramPendingFile(chatKey, pending) {
+    telegramPendingFiles.set(String(chatKey), pending);
+    persistTelegramPendingFiles();
+}
+
+function deleteTelegramPendingFile(chatKey) {
+    const deleted = telegramPendingFiles.delete(String(chatKey));
+    if (deleted) persistTelegramPendingFiles();
+    return deleted;
+}
+
 function loadProjectConfig() {
     try {
         const raw = fs.readFileSync(PROJECT_CONFIG_PATH, 'utf8');
@@ -446,7 +475,7 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
             const readers = Math.max(0, (telegramAssetReaders.get(assetId) || 1) - 1);
             if (readers) telegramAssetReaders.set(assetId, readers);
             else telegramAssetReaders.delete(assetId);
-            if (completed && !readers && asset.fileId) removeTelegramAssetTemporaryFile(asset);
+            if (completed && !readers) removeConfirmedServerAssetFile(asset);
         };
         res.once('finish', () => release(true));
         res.once('close', () => release(res.writableFinished));
@@ -457,7 +486,15 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
         }).pipe(res);
     } catch (err) {
         console.warn(`Telegram asset ${assetId} fetch failed: ${err.message}`);
-        if (!res.headersSent) res.status(502).json({ error: 'Telegram asset fetch failed' });
+        if (!res.headersSent) {
+            const message = String(err?.message || '');
+            const error = /YouTube 要求登录验证|sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(message)
+                ? 'SNS 原链接重新获取失败：YouTube Cookie 已失效或不完整，请管理员在 /sns-cookies 重新保存有效 Cookie'
+                : /YouTube 签名解析组件不可用/i.test(message)
+                    ? message
+                    : 'server-asset-fetch-failed';
+            res.status(502).json({ error });
+        }
     }
 });
 
@@ -621,6 +658,11 @@ app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
             try { fs.unlinkSync(filePath); } catch (err) {
                 if (err.code !== 'ENOENT') throw err;
             }
+        }
+        if (platform === 'youtube') {
+            sessions.forEach((session, sessionId) => {
+                resumePendingSnsMetadataScans(sessionId, session.history.map(entry => entry.message));
+            });
         }
         res.json({ ok: true, platform, fileName: SNS_COOKIE_FILES[platform] });
     } catch (err) {
@@ -1183,7 +1225,7 @@ const magnets = new Map();
 const accessDevices = new Map();
 const nearbyPresence = new Map();
 const sessionHistoryBroadcastTimers = new Map();
-const telegramPendingFiles = new Map();
+const telegramPendingFiles = loadTelegramPendingFiles();
 const telegramChatTunnels = loadTelegramChatTunnels();
 const telegramServerAssets = new Map();
 const telegramMediaGroups = new Map();
@@ -1584,6 +1626,12 @@ function isValidServerAssetId(assetId) {
     return typeof assetId === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(assetId);
 }
 
+function isRecoverableSnsAsset(asset) {
+    if (!/^sns(?:-|$)/.test(String(asset?.source || '')) || !asset?.sourceUrl || !asset?.snsTaskId) return false;
+    const task = readSnsTask(asset.snsTaskId);
+    return Boolean(task?.sourceUrl && task?.sessionId === asset.sessionId);
+}
+
 function getTelegramAssetMetadataPath(assetId) {
     return path.join(TELEGRAM_ASSET_DIR, `${assetId}.json`);
 }
@@ -1608,6 +1656,9 @@ function persistTelegramServerAsset(asset) {
         fileUniqueId: asset.fileUniqueId || '',
         fileIdUpdatedAt: Number(asset.fileIdUpdatedAt) || 0,
         lastFileIdCheckedAt: Number(asset.lastFileIdCheckedAt) || 0,
+        cacheConfirmedAt: Number(asset.cacheConfirmedAt) || 0,
+        cacheConfirmedBy: sanitizeString(asset.cacheConfirmedBy || '', 80),
+        temporaryFileRemovedAt: Number(asset.temporaryFileRemovedAt) || 0,
         fileIdHistory: Array.isArray(asset.fileIdHistory) ? asset.fileIdHistory.slice(-20) : []
     }));
 }
@@ -1615,7 +1666,7 @@ function persistTelegramServerAsset(asset) {
 function resolveTelegramServerAsset(assetId) {
     if (!isValidServerAssetId(assetId)) return null;
     const cached = telegramServerAssets.get(assetId);
-    if (cached && (cached.fileId || fs.existsSync(cached.path))) return cached;
+    if (cached && (cached.fileId || fs.existsSync(cached.path) || isRecoverableSnsAsset(cached))) return cached;
 
     const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
     let metadata = {};
@@ -1625,7 +1676,7 @@ function resolveTelegramServerAsset(assetId) {
         // Assets created before metadata persistence remain downloadable.
     }
     const hasFile = fs.existsSync(assetPath) && fs.statSync(assetPath).isFile();
-    if (!hasFile && !metadata.fileId) return null;
+    if (!hasFile && !metadata.fileId && !isRecoverableSnsAsset(metadata)) return null;
     const stat = hasFile ? fs.statSync(assetPath) : null;
     const asset = {
         id: assetId,
@@ -1646,6 +1697,9 @@ function resolveTelegramServerAsset(assetId) {
         fileUniqueId: typeof metadata.fileUniqueId === 'string' ? metadata.fileUniqueId : '',
         fileIdUpdatedAt: Number(metadata.fileIdUpdatedAt) || 0,
         lastFileIdCheckedAt: Number(metadata.lastFileIdCheckedAt) || 0,
+        cacheConfirmedAt: Number(metadata.cacheConfirmedAt) || 0,
+        cacheConfirmedBy: sanitizeString(metadata.cacheConfirmedBy || '', 80),
+        temporaryFileRemovedAt: Number(metadata.temporaryFileRemovedAt) || 0,
         fileIdHistory: Array.isArray(metadata.fileIdHistory) ? metadata.fileIdHistory.slice(-20) : []
     };
     telegramServerAssets.set(assetId, asset);
@@ -1654,28 +1708,100 @@ function resolveTelegramServerAsset(assetId) {
 
 async function ensureTelegramServerAssetFile(asset) {
     if (fs.existsSync(asset.path)) return asset.path;
-    if (!asset.fileId) throw new Error('telegram-file-source-missing');
-    let download = telegramAssetDownloads.get(asset.id);
+    if (!asset.fileId && !isRecoverableSnsAsset(asset)) throw new Error('server-asset-source-missing');
+    const downloadKey = asset.fileId ? asset.id : `sns:${asset.snsTaskId || asset.id}`;
+    let download = telegramAssetDownloads.get(downloadKey);
     if (!download) {
         download = (async () => {
-            const data = await downloadTelegramFile(asset.fileId, getTelegramMaxFileSize());
-            fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
-            fs.writeFileSync(asset.path, data);
-            asset.size = data.length;
-            persistTelegramServerAsset(asset);
+            if (asset.fileId) {
+                const data = await downloadTelegramFile(asset.fileId, TELEGRAM_CLOUD_GET_FILE_MAX_SIZE);
+                fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+                fs.writeFileSync(asset.path, data);
+                asset.size = data.length;
+                resetRestoredServerAsset(asset);
+            } else {
+                await restoreSnsServerAssetFile(asset);
+            }
             return asset.path;
-        })().finally(() => telegramAssetDownloads.delete(asset.id));
-        telegramAssetDownloads.set(asset.id, download);
+        })().finally(() => telegramAssetDownloads.delete(downloadKey));
+        telegramAssetDownloads.set(downloadKey, download);
     }
-    return download;
+    await download;
+    if (!fs.existsSync(asset.path)) throw new Error('server-asset-restore-missing');
+    return asset.path;
+}
+
+function resetRestoredServerAsset(asset) {
+    asset.cacheConfirmedAt = 0;
+    asset.cacheConfirmedBy = '';
+    asset.temporaryFileRemovedAt = 0;
+    persistTelegramServerAsset(asset);
+    updateTelegramAssetMetadataInSession(asset);
+    const task = asset.snsTaskId ? readSnsTask(asset.snsTaskId) : null;
+    const messageId = task?.generatedMessageId || task?.generatedMessage?.id;
+    const message = sessions.get(asset.sessionId)?.history.find(entry => entry.message?.id === messageId)?.message;
+    if (task && message) persistSnsTask({ ...task, generatedMessage: message });
+}
+
+async function restoreSnsServerAssetFile(asset) {
+    const task = readSnsTask(asset.snsTaskId);
+    if (!task || task.sessionId !== asset.sessionId || !task.sourceUrl) throw new Error('sns-asset-source-missing');
+
+    try {
+        if (task.mediaKind === 'song') {
+            const files = task.generatedMessage?.collection?.files || [];
+            const audioInfo = files.find(file => file.id === task.audioAssetId) || {};
+            const item = {
+                sourceUrl: task.sourceUrl,
+                mediaUrl: task.sourceUrl,
+                mediaKind: 'song',
+                title: audioInfo.audioTitle || audioInfo.name || task.youtubeVideoId,
+                youtubeVideoId: task.youtubeVideoId || '',
+                songMetadata: {
+                    track: audioInfo.audioTitle || '',
+                    artist: audioInfo.audioArtist || '',
+                    album: audioInfo.audioAlbum || '',
+                    year: audioInfo.audioYear || ''
+                }
+            };
+            const song = await downloadAndProcessYoutubeSong(item, task, () => {}, () => {});
+            for (const [assetId, sourcePath] of [[task.coverAssetId, song.squareCover], [task.audioAssetId, song.finalAudio]]) {
+                const target = assetId === asset.id ? asset : resolveTelegramServerAsset(assetId);
+                if (!target || fs.existsSync(target.path)) continue;
+                moveSnsFileToAsset(sourcePath, assetId);
+                target.size = fs.statSync(target.path).size;
+                resetRestoredServerAsset(target);
+            }
+        } else {
+            const downloadedPath = await runYtDlpDownload(task.sourceUrl, asset.id);
+            const probe = await probeMediaFile(downloadedPath);
+            if (!probe.streams?.some(stream => stream.codec_type === 'video')) throw new Error('sns-restored-video-invalid');
+            moveSnsFileToAsset(downloadedPath, asset.id);
+            asset.size = fs.statSync(asset.path).size;
+            resetRestoredServerAsset(asset);
+        }
+    } finally {
+        cleanupSnsWorkFiles(task.mediaKind === 'song' ? `${task.id}.` : `${asset.id}.`);
+    }
 }
 
 function removeTelegramAssetTemporaryFile(asset) {
     try {
         if (fs.existsSync(asset.path)) fs.unlinkSync(asset.path);
+        return true;
     } catch (err) {
         console.warn(`Unable to remove Telegram temporary asset ${asset.id}: ${err.message}`);
+        return false;
     }
+}
+
+function removeConfirmedServerAssetFile(asset) {
+    if (!asset?.cacheConfirmedAt || (telegramAssetReaders.get(asset.id) || 0) > 0) return false;
+    if (/^sns(?:-|$)/.test(String(asset.source || '')) && !isRecoverableSnsAsset(asset)) return false;
+    if (!removeTelegramAssetTemporaryFile(asset)) return false;
+    asset.temporaryFileRemovedAt = Date.now();
+    persistTelegramServerAsset(asset);
+    return true;
 }
 
 function hydrateTelegramServerAssets() {
@@ -1684,7 +1810,11 @@ function hydrateTelegramServerAssets() {
     for (const entry of fs.readdirSync(TELEGRAM_ASSET_DIR, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
         const assetId = entry.name.endsWith('.json') ? entry.name.slice(0, -5) : entry.name;
-        if (!telegramServerAssets.has(assetId) && resolveTelegramServerAsset(assetId)) restored += 1;
+        if (telegramServerAssets.has(assetId)) continue;
+        const asset = resolveTelegramServerAsset(assetId);
+        if (!asset) continue;
+        restored += 1;
+        if (asset.cacheConfirmedAt) removeConfirmedServerAssetFile(asset);
     }
     if (restored) console.log(`Restored ${restored} Telegram server assets from disk`);
 }
@@ -1916,8 +2046,38 @@ function getYtDlpInvocation(args = []) {
     return { command, args: [...prefixArgs, ...args] };
 }
 
+function copyYtDlpCookies(args) {
+    const index = args.indexOf('--cookies');
+    if (index < 0 || !args[index + 1]) return { args, cleanup() {} };
+    fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
+    const tempPath = path.join(SNS_MEDIA_WORK_DIR, `.cookies-${process.pid}-${crypto.randomBytes(6).toString('hex')}.txt`);
+    fs.copyFileSync(args[index + 1], tempPath);
+    const copiedArgs = [...args];
+    copiedArgs[index + 1] = tempPath;
+    return {
+        args: copiedArgs,
+        cleanup() { try { fs.unlinkSync(tempPath); } catch (_) {} }
+    };
+}
+
+function getYtDlpFailureMessage(stderr, fallback) {
+    const output = String(stderr || '').trim();
+    const lines = output.split(/\r?\n/).filter(Boolean).reverse();
+    const errorLine = lines.find(line => /^ERROR:\s*/i.test(line)) || lines[0] || '';
+    if (/challenge solver|signature solving failed/i.test(output) &&
+        /requested format is not available|only images are available/i.test(errorLine)) {
+        return 'YouTube 签名解析组件不可用，请确认服务端使用包含 yt-dlp-ejs 的 yt-dlp（pip 请安装 "yt-dlp[default]"）并重启服务';
+    }
+    if (/sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(output)) {
+        return 'YouTube 要求登录验证；当前 cookies 无效或不完整，请在 SNS cookies 管理页重新导出包含 HttpOnly 登录态的完整 Netscape cookies.txt';
+    }
+    return String(errorLine || fallback).replace(/^ERROR:\s*/i, '');
+}
+
 function buildYtDlpEnv() {
     const env = { ...process.env };
+    env.PYTHONUTF8 = '1';
+    env.PYTHONIOENCODING = 'utf-8';
     const proxy = env.YT_DLP_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '';
     const allProxy = env.YT_DLP_ALL_PROXY || env.ALL_PROXY || proxy;
     if (proxy) {
@@ -1947,8 +2107,9 @@ function runYtDlpJson(url, options = {}) {
         const args = [
             '--dump-single-json',
             '--skip-download',
-            '--no-cache-dir',
+            '--cache-dir', YT_DLP_CACHE_DIR,
         ];
+        if (options.ignoreNoFormats === true) args.push('--ignore-no-formats-error');
         if (options.flatPlaylist === true) args.push('--flat-playlist');
         if (options.noPlaylist !== false) args.push('--no-playlist');
         args.push(...getYtDlpRemoteComponentArgs(url));
@@ -1962,7 +2123,8 @@ function runYtDlpJson(url, options = {}) {
                 }
             } catch (_) {}
         }
-        const invocation = getYtDlpInvocation(args);
+        const cookies = copyYtDlpCookies(args);
+        const invocation = getYtDlpInvocation(cookies.args);
         const child = spawn(invocation.command, invocation.args, {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1980,11 +2142,21 @@ function runYtDlpJson(url, options = {}) {
         child.stderr.on('data', chunk => { stderr += chunk; });
         child.on('error', err => {
             clearTimeout(timer);
+            cookies.cleanup();
             reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
         });
         child.on('close', code => {
             clearTimeout(timer);
-            if (code !== 0) return reject(new Error(stderr.trim() || `yt-dlp-exit-${code}`));
+            cookies.cleanup();
+            if (code !== 0) {
+                if (options.ignoreNoFormats !== true &&
+                    ((/challenge solver|signature solving failed/i.test(stderr) &&
+                        /requested format is not available|only images are available/i.test(stderr)) ||
+                        /sign in to confirm you(?:'|’)?re not a bot/i.test(stderr))) {
+                    return runYtDlpJson(url, { ...options, ignoreNoFormats: true }).then(resolve, reject);
+                }
+                return reject(new Error(getYtDlpFailureMessage(stderr, `yt-dlp-exit-${code}`)));
+            }
             try {
                 resolve(JSON.parse(stdout));
             } catch (err) {
@@ -2208,7 +2380,10 @@ function resumePendingSnsMetadataScans(sessionId, messages = []) {
         const rawText = getMessageSnsText(message);
         if (!extractSupportedSocialUrls(rawText).length) return;
         const sources = Array.isArray(message.snsSources) ? message.snsSources : [];
-        if (sources.length && !sources.some(source => source?.parseStatus === 'pending')) return;
+        if (sources.length && !sources.some(source =>
+            source?.parseStatus === 'pending' ||
+            (source?.parseStatus === 'failed' && /challenge solver|signature solving failed|requested format is not available|only images are available|sign in to confirm|YouTube 要求登录验证/i.test(String(source.parseError || '')))
+        )) return;
         queueSnsMetadataScan(sessionId, message.id, rawText);
     });
 }
@@ -2330,8 +2505,8 @@ async function bindTelegramTunnel(chatId, shortCode) {
     await telegramSendMessage(chatId, `当前处于 ${shortCode} 隧道中转模式，直接发送任何内容，将转发到此隧道。`, telegramBoundKeyboard(shortCode));
     const pending = telegramPendingFiles.get(String(chatId));
     if (pending) {
-        telegramPendingFiles.delete(String(chatId));
-        await publishTelegramPending(chatId, shortCode, pending);
+        const published = await publishTelegramPending(chatId, shortCode, pending);
+        if (published) deleteTelegramPendingFile(chatId);
     }
     return true;
 }
@@ -2361,7 +2536,7 @@ function queueTelegramMediaGroup(chatId, message, file, targetShortCode) {
             if (group.targetShortCode) {
                 await publishTelegramCollectionToTunnel(chatId, group.targetShortCode, group.files, group.remark);
             } else {
-                telegramPendingFiles.set(String(chatId), { kind: 'files', files: group.files, remark: group.remark, createdAt: Date.now() });
+                setTelegramPendingFile(chatId, { kind: 'files', files: group.files, remark: group.remark, createdAt: Date.now() });
                 await promptTelegramShortCode(chatId);
             }
         } catch (err) {
@@ -2381,7 +2556,8 @@ async function handleTelegramUpdate(update = {}) {
     }
     const callback = update.callback_query;
     if (callback) {
-        if (callback.data === 'cancel_pending') telegramPendingFiles.delete(String(callback.message?.chat?.id || callback.from?.id));
+        const chatKey = String(callback.message?.chat?.id || callback.from?.id || '');
+        if (callback.data === 'cancel_pending') deleteTelegramPendingFile(chatKey);
         await telegramApi('answerCallbackQuery', {
             callback_query_id: callback.id,
             text: translateTelegramText('已放弃发送', telegramChatLanguages.get(chatKey) || 'zh-Hans')
@@ -2398,7 +2574,7 @@ async function handleTelegramUpdate(update = {}) {
     const text = textPayload.text || '';
     const trimmed = text.trim();
     if (matchesTranslatedText(trimmed, '放弃发送')) {
-        telegramPendingFiles.delete(chatKey);
+        deleteTelegramPendingFile(chatKey);
         telegramAwaitingTunnelCode.delete(chatKey);
         await telegramSendMessage(chatId, '已放弃待发送内容。', { remove_keyboard: true });
         return;
@@ -2406,7 +2582,7 @@ async function handleTelegramUpdate(update = {}) {
     if (isLeaveTunnelCommand(text)) {
         const hadTunnel = telegramChatTunnels.delete(chatKey);
         if (hadTunnel) persistTelegramChatTunnels();
-        telegramPendingFiles.delete(chatKey);
+        deleteTelegramPendingFile(chatKey);
         telegramAwaitingTunnelCode.delete(chatKey);
         await telegramSendMessage(chatId, hadTunnel ? '已离开隧道中转模式。' : '当前不在隧道中转模式。', { remove_keyboard: true });
         return;
@@ -2442,9 +2618,9 @@ async function handleTelegramUpdate(update = {}) {
         return;
     }
     if (pending && /^[A-Z0-9]{5}$/i.test(trimmed)) {
-        telegramPendingFiles.delete(chatKey);
         const published = await publishTelegramPending(chatId, normalizeShortCode(trimmed), pending);
         if (published) {
+            deleteTelegramPendingFile(chatKey);
             telegramAwaitingTunnelCode.delete(chatKey);
             await telegramSendMessage(chatId, '待发送内容已处理完成。', { remove_keyboard: true });
         }
@@ -2460,7 +2636,7 @@ async function handleTelegramUpdate(update = {}) {
         if (await rejectTelegramCloudOversizedFiles(chatId, telegramFile)) return;
         if (targetShortCode) await publishTelegramFileToTunnel(chatId, targetShortCode, telegramFile);
         else {
-            telegramPendingFiles.set(chatKey, { kind: 'files', files: [telegramFile], createdAt: Date.now() });
+            setTelegramPendingFile(chatKey, { kind: 'files', files: [telegramFile], createdAt: Date.now() });
             await promptTelegramShortCode(chatId);
         }
         return;
@@ -2470,7 +2646,7 @@ async function handleTelegramUpdate(update = {}) {
         return;
     }
     if (trimmed && !trimmed.startsWith('/')) {
-        telegramPendingFiles.set(chatKey, { kind: 'text', textPayload, createdAt: Date.now() });
+        setTelegramPendingFile(chatKey, { kind: 'text', textPayload, createdAt: Date.now() });
         await promptTelegramShortCode(chatId);
     }
 }
@@ -2526,12 +2702,21 @@ async function uploadTelegramAssetBackup(asset, data) {
 function updateTelegramAssetMetadataInSession(asset) {
     const session = sessions.get(asset.sessionId);
     if (!session) return;
+    const record = session.fileAssets?.get(asset.id);
+    if (record?.metadata) Object.assign(record.metadata, {
+        name: asset.name,
+        type: asset.type,
+        size: asset.size
+    });
     for (let index = 0; index < session.history.length; index++) {
         const previous = session.history[index];
         const message = previous.message;
         let changed = false;
         const patch = fileInfo => {
             if (!fileInfo || fileInfo.id !== asset.id) return;
+            fileInfo.name = asset.name;
+            fileInfo.size = asset.size;
+            fileInfo.type = asset.type;
             fileInfo.telegramFileId = asset.fileId;
             fileInfo.telegramFileUniqueId = asset.fileUniqueId;
             fileInfo.telegramFileIdUpdatedAt = asset.fileIdUpdatedAt;
@@ -2614,7 +2799,7 @@ async function promptTelegramShortCode(chatId) {
     await telegramSendMessage(chatId, '所发内容的备注文字中没有找到 5 位隧道暗号，请提供给我；也可以点击“放弃发送”。', telegramUnboundKeyboard());
 }
 
-async function downloadTelegramFile(fileId, maxSize = getTelegramMaxFileSize()) {
+async function downloadTelegramFile(fileId, maxSize = TELEGRAM_CLOUD_GET_FILE_MAX_SIZE) {
     const file = await telegramApi('getFile', { file_id: fileId });
     if (!file?.file_path) throw new Error('telegram-file-path-missing');
     const expectedSize = Number(file.file_size) || 0;
@@ -3000,18 +3185,23 @@ function spawnCapture(command, args, options = {}) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            if (code !== 0) return reject(new Error(stderr.trim().slice(-1000) || `${path.basename(command)}-exit-${code}`));
+            if (code !== 0) {
+                const fallback = stderr.trim().slice(-1000) || `${path.basename(command)}-exit-${code}`;
+                return reject(new Error(options.ytDlp ? getYtDlpFailureMessage(stderr, fallback) : fallback));
+            }
             resolve({ stdout, stderr });
         });
     });
 }
 
 function spawnYtDlpCapture(args, options = {}) {
-    const invocation = getYtDlpInvocation(args);
+    const cookies = copyYtDlpCookies(args);
+    const invocation = getYtDlpInvocation(cookies.args);
     return spawnCapture(invocation.command, invocation.args, {
         ...options,
+        ytDlp: true,
         env: buildYtDlpEnv()
-    });
+    }).finally(cookies.cleanup);
 }
 
 async function probeMediaFile(filePath) {
@@ -3048,7 +3238,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}) {
     cleanupSnsWorkFiles(`${assetId}.`);
     const progressState = { lastAt: 0 };
     await spawnYtDlpCapture([
-        '--newline', '--no-playlist', '--no-cache-dir',
+        '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
         ...getYtDlpRemoteComponentArgs(url),
         ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpFormatSelector(url),
@@ -3155,7 +3345,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     const progressState = { lastAt: 0 };
     onStage('fetching_song');
     await spawnYtDlpCapture([
-        '--newline', '--no-playlist', '--no-cache-dir',
+        '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
         ...getYtDlpRemoteComponentArgs(url),
         ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpAudioFormatSelector(),
@@ -5002,6 +5192,26 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('server-asset-cache-confirmed', data => {
+        const assetId = sanitizeString(data?.assetId || '', 80);
+        const asset = resolveTelegramServerAsset(assetId);
+        const session = sessions.get(currentSession);
+        const registeredProvider = session?.fileAssets?.get(assetId)?.providers?.has(currentDevice);
+        if (!asset || data?.sessionId !== currentSession || asset.sessionId !== currentSession || !registeredProvider) return;
+        const confirmedSize = Number(data?.size) || 0;
+        if (asset.size > 0 && confirmedSize > 0 && confirmedSize !== asset.size) return;
+        asset.cacheConfirmedAt = Date.now();
+        asset.cacheConfirmedBy = currentDevice;
+        persistTelegramServerAsset(asset);
+        removeConfirmedServerAssetFile(asset);
+        historyLog('server-asset-cache-confirmed', {
+            sessionId: currentSession,
+            deviceId: currentDevice,
+            assetId,
+            source: asset.source || (asset.fileId ? 'telegram' : 'server')
+        });
+    });
+
     socket.on('device-profile-update', data => {
         try {
             if (!data || data.sessionId !== currentSession || !currentDevice) return;
@@ -5471,7 +5681,9 @@ io.on('connection', (socket) => {
         deviceSockets,
         getSessionId: () => currentSession,
         getDeviceId: () => currentDevice,
-        isValidId: isValidDeviceId,
+        isValidAssetId: isValidServerAssetId,
+        isValidDeviceId,
+        isValidSessionId,
         sanitize: sanitizeString,
         historyLog,
         clientIp,
@@ -5625,6 +5837,7 @@ function logStartup() {
 
 async function startServer() {
     infraStore = await createInfraStore({ dataDir: SERVER_DATA_DIR });
+    cleanupSnsWorkFiles('.cookies-');
     migrateLegacyShortCodeStore();
     hydrateShortCodeCache();
     hydrateTelegramServerAssets();

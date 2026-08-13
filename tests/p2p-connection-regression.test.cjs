@@ -405,6 +405,55 @@ test('a requested asset creates a file channel and uses P2P first', async () => 
     assert.equal(harness.channels[0].label, 'file-asset:asset-a');
 });
 
+test('an incoming SNS asset channel accepts a Base64URL id containing an underscore', () => {
+    const FileAssetTransfer = loadFileAssetTransfer();
+    const transfer = new FileAssetTransfer({ log() {} });
+    const channel = new MockDataChannel('file-asset:q-pouLV5k4JWegm2Zr2Ziw', 'open');
+
+    assert.equal(transfer.handleIncomingChannel('device-b', channel), true);
+    assert.equal(channel.binaryType, 'arraybuffer');
+});
+
+test('an HTTP-restored SNS asset can become a P2P provider after its peer request was cancelled', async () => {
+    const harness = createFileAssetHarness();
+    const assetId = 'q-pouLV5k4JWegm2Zr2Ziw';
+    harness.transfer.cancel(assetId);
+
+    await harness.transfer.announce({
+        id: assetId,
+        name: 'sns-video.mp4',
+        type: 'video/mp4',
+        size: 4
+    });
+
+    assert.equal(harness.transfer.cancelledAssets.has(assetId), false);
+    assert.equal(await harness.transfer.sendRequestedAsset({
+        asset: { id: assetId, name: 'sns-video.mp4', size: 4 },
+        from: 'device-b',
+        requestId: 'request-sns-restored'
+    }), true);
+    assert.equal(harness.metrics.p2pSends, 1);
+    assert.equal(harness.metrics.relaySends, 0);
+});
+
+test('a provider-started transfer remains active while peer-first recovery is waiting', () => {
+    const FileAssetTransfer = loadFileAssetTransfer();
+    const transfer = new FileAssetTransfer({ log() {} });
+    transfer.providerTransfers.set('asset-a', { from: 'device-b', updatedAt: Date.now() });
+
+    assert.equal(transfer.hasDownloadWork('asset-a'), true);
+});
+
+test('SNS peer-first recovery does not mistake a queued request for an active transfer', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const start = source.indexOf('async function requestServerAssetWithPeerPreference');
+    const end = source.indexOf('\nfunction scheduleServerAssetRecovery', start);
+    const recoverySource = source.slice(start, end);
+
+    assert.match(recoverySource, /providerTransfers\?\.has\(fileInfo\.id\)/);
+    assert.doesNotMatch(recoverySource, /hasDownloadWork\?\.\(fileInfo\.id\)/);
+});
+
 test('a P2P channel failure falls back to Socket.IO relay once', async () => {
     const harness = createFileAssetHarness();
     harness.transfer.sendViaDataChannel = async () => {
@@ -721,4 +770,69 @@ test('a new receiver request replaces a fresh assignment with an obsolete reques
     assert.equal(providerEvents[0].payload.requestId, 'request-new');
     assert.equal(record.assignmentMeta.get(assignment).requestId, 'request-new');
     assert.equal(record.providerLoads.get(providerId), 1);
+});
+
+test('SNS server asset ids can register a browser provider and route a peer request', () => {
+    const { registerFileAssetHandlers } = require(path.join(ROOT, 'server', 'file-assets.js'));
+    const handlers = new Map();
+    const providerEvents = [];
+    const sessionId = 'ca00b0b9-e226-4eea-9434-7b931bd6b529';
+    const providerId = 'c9a6e705-173b-49f7-b876-adf94d894dfd';
+    const receiverId = 'bc4037cb-babc-4ae6-a883-744d7b22d53b';
+    const assetId = 'LGHWRHRbU6fjNKqd8t7WEw';
+    const devices = new Map([[providerId, {}], [receiverId, {}]]);
+    const session = { devices, fileAssets: new Map() };
+    let currentDeviceId = providerId;
+    const socket = {
+        id: 'socket-current',
+        on(event, handler) {
+            handlers.set(event, handler);
+        },
+        emit() {},
+        to() {
+            return { emit() {} };
+        }
+    };
+    const isUuid = value => typeof value === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+    registerFileAssetHandlers(socket, {
+        sessions: new Map([[sessionId, session]]),
+        deviceSockets: new Map([[providerId, {
+            emit(event, payload) {
+                providerEvents.push({ event, payload });
+            }
+        }]]),
+        getSessionId: () => sessionId,
+        getDeviceId: () => currentDeviceId,
+        isValidAssetId: value => typeof value === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(value),
+        isValidDeviceId: isUuid,
+        isValidSessionId: value => typeof value === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(value),
+        sanitize: value => String(value || ''),
+        historyLog() {},
+        clientIp: '127.0.0.1'
+    });
+
+    handlers.get('file-asset-available')({
+        sessionId,
+        asset: {
+            id: assetId,
+            name: 'sns-video.mp4',
+            type: 'video/mp4',
+            size: 1375734,
+            ownerDeviceId: '00000000-0000-4000-8000-000000000001'
+        }
+    });
+
+    const record = session.fileAssets.get(assetId);
+    assert.ok(record);
+    assert.equal(record.providers.has(providerId), true);
+
+    currentDeviceId = receiverId;
+    handlers.get('file-asset-request')({ sessionId, assetId });
+
+    assert.equal(providerEvents.length, 1);
+    assert.equal(providerEvents[0].event, 'file-asset-request');
+    assert.equal(providerEvents[0].payload.asset.id, assetId);
+    assert.equal(providerEvents[0].payload.from, receiverId);
 });

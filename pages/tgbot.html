@@ -198,9 +198,9 @@
                 </label>
 
                 <div class="field">
-                    <label for="maxFileSizeMb">接收文件上限 MB</label>
+                    <label for="maxFileSizeMb">服务端媒体处理上限 MB</label>
                     <input id="maxFileSizeMb" name="maxFileSizeMb" type="number" min="1" step="1">
-                    <div class="hint">Telegram 发送文件时，服务端会先按此上限拦截过大的文件。</div>
+                    <div class="hint">用于 SNS 获取、文件防失联修复等服务端处理。Telegram 官方云 Bot API 的入站下载硬上限为 20MB，不能通过此配置提高。</div>
                 </div>
 
                 <div class="field">

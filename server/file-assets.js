@@ -11,9 +11,9 @@ const RECEIVER_MAX_ACTIVE_LARGE_ASSETS = 3;
 const ASSIGNMENT_PENDING_STALE_MS = 45000;
 const ASSIGNMENT_ACTIVE_STALE_MS = 10 * 60 * 1000;
 
-function isValidFileAsset(asset, isValidId) {
+function isValidFileAsset(asset, isValidAssetId) {
     return asset &&
-        isValidId(asset.id) &&
+        isValidAssetId(asset.id) &&
         typeof asset.name === 'string' && asset.name.length > 0 && asset.name.length <= 255 &&
         typeof asset.type === 'string' && asset.type.length <= 100 &&
         typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_FILE_ASSET_SIZE;
@@ -200,7 +200,10 @@ function isRelayAckTimeout(reason) {
 }
 
 function registerFileAssetHandlers(socket, context) {
-    const { sessions, deviceSockets, getSessionId, getDeviceId, isValidId, sanitize, historyLog, clientIp } = context;
+    const { sessions, deviceSockets, getSessionId, getDeviceId, sanitize, historyLog, clientIp } = context;
+    const isValidAssetId = context.isValidAssetId || context.isValidId;
+    const isValidDeviceId = context.isValidDeviceId || context.isValidId;
+    const isValidSessionId = context.isValidSessionId || context.isValidId;
     const translateText = typeof context.translateText === 'function' ? context.translateText : text => text;
     const current = () => ({ sessionId: getSessionId(), deviceId: getDeviceId() });
 
@@ -208,7 +211,7 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, asset } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidFileAsset(asset, isValidId)) return;
+            if (sessionId !== current().sessionId || !isValidFileAsset(asset, isValidAssetId)) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(deviceId)) return;
             if (!session.fileAssets) session.fileAssets = new Map();
@@ -225,7 +228,7 @@ function registerFileAssetHandlers(socket, context) {
                         name: sanitize(asset.name, 255),
                         type: sanitize(asset.type, 100),
                         size: asset.size,
-                        ownerDeviceId: isValidId(asset.ownerDeviceId) ? asset.ownerDeviceId : deviceId,
+                        ownerDeviceId: isValidDeviceId(asset.ownerDeviceId) ? asset.ownerDeviceId : deviceId,
                         isFolderArchive: asset.isFolderArchive === true,
                         isDirectoryMirror: asset.isDirectoryMirror === true,
                         folderName: typeof asset.folderName === 'string' ? sanitize(asset.folderName, 120) : undefined,
@@ -254,10 +257,10 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, sourceSessionId, assetId, preferredProviderId, mode } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(assetId)) return;
+            if (sessionId !== current().sessionId || !isValidAssetId(assetId)) return;
             const requesterSession = sessions.get(sessionId);
             if (!requesterSession || !requesterSession.devices.has(deviceId)) return;
-            const assetSessionId = sourceSessionId && isValidId(sourceSessionId) ? sourceSessionId : sessionId;
+            const assetSessionId = sourceSessionId && isValidSessionId(sourceSessionId) ? sourceSessionId : sessionId;
             const session = sessions.get(assetSessionId);
             const record = session?.fileAssets?.get(assetId);
             if (!record) {
@@ -379,7 +382,7 @@ function registerFileAssetHandlers(socket, context) {
                 ? sanitize(data.requestId, 120)
                 : undefined;
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(assetId) || !isValidId(to)) return;
+            if (sessionId !== current().sessionId || !isValidAssetId(assetId) || !isValidDeviceId(to)) return;
             const session = sessions.get(sessionId);
             const record = session?.fileAssets?.get(assetId);
             const transfer = normalizeTransfer({ transferId, rangeStart, rangeEnd }, record?.metadata || {});
@@ -430,10 +433,10 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, sourceSessionId, assetId, reason } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(assetId)) return;
+            if (sessionId !== current().sessionId || !isValidAssetId(assetId)) return;
             const requesterSession = sessions.get(sessionId);
             if (!requesterSession || !requesterSession.devices.has(deviceId)) return;
-            const assetSessionId = sourceSessionId && isValidId(sourceSessionId) ? sourceSessionId : sessionId;
+            const assetSessionId = sourceSessionId && isValidSessionId(sourceSessionId) ? sourceSessionId : sessionId;
             if (!sessions.has(assetSessionId)) return;
             socket.to(assetSessionId).emit('file-asset-discovery', {
                 assetId,
@@ -456,7 +459,7 @@ function registerFileAssetHandlers(socket, context) {
                 ? sanitize(data.requestId, 120)
                 : undefined;
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(assetId) || !isValidId(to) ||
+            if (sessionId !== current().sessionId || !isValidAssetId(assetId) || !isValidDeviceId(to) ||
                 (transferId !== undefined && !isValidTransferId(transferId)) ||
                 !['started', 'completed', 'failed'].includes(status)) return;
             const record = sessions.get(sessionId)?.fileAssets?.get(assetId);
@@ -508,7 +511,7 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, assetId } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(assetId)) return;
+            if (sessionId !== current().sessionId || !isValidAssetId(assetId)) return;
             const session = sessions.get(sessionId);
             const record = session?.fileAssets?.get(assetId);
             if (!record?.metadata?.isDirectoryMirror || !record.providers.has(deviceId)) return;
@@ -525,7 +528,7 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, to, asset, transferId, rangeStart, rangeEnd, attemptId, requestId } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(to) || !isValidFileAsset(asset, isValidId) || to === deviceId) {
+            if (sessionId !== current().sessionId || !isValidDeviceId(to) || !isValidFileAsset(asset, isValidAssetId) || to === deviceId) {
                 ackFail(ack, 'invalid-relay-start');
                 return;
             }
@@ -578,7 +581,7 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, to, assetId, chunk, transferId, attemptId } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(to) || !isValidId(assetId) ||
+            if (sessionId !== current().sessionId || !isValidDeviceId(to) || !isValidAssetId(assetId) ||
                 (transferId !== undefined && !isValidTransferId(transferId))) {
                 ackFail(ack, 'invalid-relay-chunk');
                 return;
@@ -628,7 +631,7 @@ function registerFileAssetHandlers(socket, context) {
         try {
             const { sessionId, to, assetId, transferId, attemptId } = data || {};
             const { deviceId } = current();
-            if (sessionId !== current().sessionId || !isValidId(to) || !isValidId(assetId) ||
+            if (sessionId !== current().sessionId || !isValidDeviceId(to) || !isValidAssetId(assetId) ||
                 (transferId !== undefined && !isValidTransferId(transferId))) {
                 ackFail(ack, 'invalid-relay-complete');
                 return;

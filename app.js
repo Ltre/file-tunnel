@@ -258,7 +258,12 @@ function compareHistoryMessages(a, b) {
     return String(left.id).localeCompare(String(right.id));
 }
 
-let sessionHistoryQueue = Promise.resolve();
+const sessionHistoryQueue = {
+    pending: null,
+    running: false,
+    recoveryPending: null,
+    recoveryRunning: false
+};
 let sessionHistoryFallbackTimers = [];
 let tunnelHeartbeatTimer = null;
 let clipboardShareTimer = null;
@@ -1545,9 +1550,7 @@ function initSocket() {
             messageCount: messages.length,
             messages: messages.map(summarizeHistoryMessage)
         });
-        sessionHistoryQueue = sessionHistoryQueue
-            .then(() => handleSessionHistory(data))
-            .catch(err => historyLog('snapshot-processing-failed', { error: err.message }));
+        enqueueSessionHistory(data);
     });
 
     state.socket.on('editor-sync', (data) => {
@@ -2897,15 +2900,18 @@ function initFileAssetTransfer() {
         },
         onReceived: async (asset) => {
             hideCompletedFileReceiveProgress(asset.id);
-            const storedFile = await getFromStore('files', asset.id).catch(() => null);
+            const sourceInfo = serverAssetRecoveries.metadata.get(asset.id);
+            let storedFile = await getFromStore('files', asset.id).catch(() => null);
             if (hasCompleteFileCache(storedFile, asset)) {
-                await saveToStore('files', {
+                storedFile = {
                     ...storedFile,
+                    ...(sourceInfo ? { isServerAsset: true, serverAssetUrl: sourceInfo.serverAssetUrl } : {}),
                     cacheCleared: false,
                     restoreRequested: false,
                     transferInterrupted: false,
                     isPartial: false
-                });
+                };
+                await saveToStore('files', storedFile);
             }
             clearFileMessageAvailability(asset.id);
             const staleUrl = fileObjectUrls.get(asset.id);
@@ -2914,10 +2920,22 @@ function initFileAssetTransfer() {
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
             notifyMusicLibraryAssetAvailable(asset, storedFile);
+            if (sourceInfo) {
+                confirmServerAssetCache(sourceInfo, storedFile);
+                serverAssetRecoveries.metadata.delete(asset.id);
+            }
+            refreshOpenSnsMediaClientStates();
         },
         onUnavailable: (fileId, reason) => {
             hideCompletedFileReceiveProgress(fileId);
             updateFileMessageAvailability(fileId, reason);
+            const sourceInfo = serverAssetRecoveries.metadata.get(fileId);
+            if (sourceInfo) {
+                scheduleServerAssetRecovery(sourceInfo, sourceInfo.ownerDeviceId || '', `peer-unavailable-${reason || 'unknown'}`, {
+                    serverOnly: true
+                });
+            }
+            refreshOpenSnsMediaClientStates();
         }
     });
 }
@@ -3060,6 +3078,7 @@ async function announceStoredFileAssets(options = {}) {
                 historyLog('file-asset-cache-migrated', { fileId: file.id });
             }
             await fileAssetTransfer.announce(file);
+            if (file.isServerAsset) confirmServerAssetCache(file, file);
         }
         if (options.resumePending) fileAssetTransfer.resumePending();
     } catch (err) {
@@ -4956,21 +4975,65 @@ function shouldAutoRequestFileAssetCache(storedFile, fileInfo) {
         (!storedFile?.cacheCleared || storedFile.restoreRequested);
 }
 
+const serverAssetRecoveries = {
+    pending: [],
+    active: 0,
+    promises: new Map(),
+    fetches: new Map(),
+    metadata: new Map()
+};
+
+function confirmServerAssetCache(fileInfo, cachedFile = fileInfo) {
+    if (!fileInfo?.id || !fileInfo.isServerAsset || state.db?._isMemory || !state.socket?.connected) return;
+    state.socket.emit('server-asset-cache-confirmed', {
+        sessionId: state.sessionId,
+        assetId: fileInfo.id,
+        size: Number(cachedFile?.size ?? fileInfo.size) || 0
+    });
+}
+
 async function fetchServerAssetCache(fileInfo, reason = '') {
     if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    if (serverAssetRecoveries.fetches.has(fileInfo.id)) {
+        return serverAssetRecoveries.fetches.get(fileInfo.id);
+    }
+    const task = fetchServerAssetCacheOnce(fileInfo, reason)
+        .finally(() => serverAssetRecoveries.fetches.delete(fileInfo.id));
+    serverAssetRecoveries.fetches.set(fileInfo.id, task);
+    return task;
+}
+
+async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
-    if (hasCompleteFileCache(storedFile, fileInfo) && !storedFile?.cacheCleared) return true;
+    if (hasCompleteFileCache(storedFile, fileInfo) && !storedFile?.cacheCleared) {
+        await fileAssetTransfer?.announce?.(storedFile);
+        confirmServerAssetCache(fileInfo, storedFile);
+        serverAssetRecoveries.metadata.delete(fileInfo.id);
+        return true;
+    }
     if (storedFile?.cacheCleared && !storedFile.restoreRequested) return false;
 
     const response = await fetch(fileInfo.serverAssetUrl, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`server-asset-fetch-${response.status}`);
+    if (!response.ok) {
+        let serverError = '';
+        try {
+            serverError = String((await response.json())?.error || '');
+        } catch (_) {}
+        throw new Error(serverError && serverError !== 'server-asset-fetch-failed'
+            ? serverError
+            : `server-asset-fetch-${response.status}`);
+    }
     const buffer = await response.arrayBuffer();
+    const expectedSize = Number(response.headers.get('content-length')) || Number(fileInfo.size) || 0;
+    if (expectedSize > 0 && buffer.byteLength !== expectedSize) {
+        throw new Error(`server-asset-size-mismatch-${buffer.byteLength}-${expectedSize}`);
+    }
     const nextFile = {
         ...(storedFile || {}),
         id: fileInfo.id,
         name: fileInfo.name,
         type: fileInfo.type || 'application/octet-stream',
-        size: Number(fileInfo.size) || buffer.byteLength,
+        size: buffer.byteLength,
         sessionId: state.sessionId,
         ownerDeviceId: fileInfo.ownerDeviceId || fileInfo.sender || '',
         isFileAsset: true,
@@ -4984,28 +5047,52 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
         isPartial: false
     };
     await saveToStore('files', nextFile);
-    notifyMusicLibraryAssetAvailable(fileInfo, nextFile);
-    await fileAssetTransfer?.announce?.(nextFile).catch(err => historyLog('server-asset-cache-announce-failed', {
+    const verifiedFile = await getFromStore('files', fileInfo.id);
+    if (!hasCompleteFileCache(verifiedFile, { ...fileInfo, size: buffer.byteLength })) {
+        throw new Error('server-asset-cache-verification-failed');
+    }
+    notifyMusicLibraryAssetAvailable(fileInfo, verifiedFile);
+    await fileAssetTransfer?.announce?.(verifiedFile).catch(err => historyLog('server-asset-cache-announce-failed', {
         reason,
         fileId: fileInfo.id,
         error: err.message
     }));
+    confirmServerAssetCache(fileInfo, verifiedFile);
+    serverAssetRecoveries.metadata.delete(fileInfo.id);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
+    refreshOpenSnsMediaClientStates();
     historyLog('server-asset-cache-fetched', {
         reason,
         fileId: fileInfo.id,
         fileName: fileInfo.name,
-        size: nextFile.size
+        size: verifiedFile.size
     });
     return true;
 }
 
 async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, reason, options = {}) {
     if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
+    serverAssetRecoveries.metadata.set(fileInfo.id, fileInfo);
     const initial = await getFromStore('files', fileInfo.id).catch(() => null);
-    if (hasCompleteFileCache(initial, fileInfo) && !initial?.cacheCleared) return true;
+    if (initial?.cacheCleared && !initial.restoreRequested) {
+        if (!options.priority && !options.force) {
+            serverAssetRecoveries.metadata.delete(fileInfo.id);
+            return false;
+        }
+        await saveToStore('files', {
+            ...initial,
+            restoreRequested: true,
+            transferInterrupted: false
+        });
+    }
+    if (hasCompleteFileCache(initial, fileInfo) && !initial?.cacheCleared) {
+        await fileAssetTransfer?.announce?.(initial);
+        confirmServerAssetCache(fileInfo, initial);
+        serverAssetRecoveries.metadata.delete(fileInfo.id);
+        return true;
+    }
 
     if (fileAssetTransfer) {
         await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || '', {
@@ -5021,19 +5108,72 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
         }));
         await sleep(options.peerWaitMs ?? 3500);
         const peerResult = await getFromStore('files', fileInfo.id).catch(() => null);
-        if (hasCompleteFileCache(peerResult, fileInfo)) return true;
+        if (hasCompleteFileCache(peerResult, fileInfo)) {
+            confirmServerAssetCache(fileInfo, peerResult);
+            serverAssetRecoveries.metadata.delete(fileInfo.id);
+            return true;
+        }
+        const peerTransferActive = fileAssetTransfer.transfers?.has(fileInfo.id) ||
+            fileAssetTransfer.multiSourceTransfers?.has(fileInfo.id) ||
+            fileAssetTransfer.providerTransfers?.has(fileInfo.id);
+        if (peerTransferActive) {
+            return true;
+        }
+        fileAssetTransfer.cancel?.(fileInfo.id);
     }
     return fetchServerAssetCache(fileInfo, `${reason}-telegram-fallback`);
+}
+
+function scheduleServerAssetRecovery(fileInfo, ownerDeviceId, reason, options = {}) {
+    if (!fileInfo?.id || !fileInfo.serverAssetUrl) return Promise.resolve(false);
+    const existing = serverAssetRecoveries.promises.get(fileInfo.id);
+    if (existing) return existing;
+    if (!options.serverOnly && serverAssetRecoveries.metadata.has(fileInfo.id) && fileAssetTransfer?.hasDownloadWork?.(fileInfo.id)) {
+        return Promise.resolve(true);
+    }
+    let resolveTask;
+    const promise = new Promise(resolve => { resolveTask = resolve; });
+    serverAssetRecoveries.promises.set(fileInfo.id, promise);
+    serverAssetRecoveries.pending.push({ fileInfo, ownerDeviceId, reason, serverOnly: options.serverOnly === true, resolveTask });
+    drainServerAssetRecoveries();
+    return promise;
+}
+
+function drainServerAssetRecoveries() {
+    while (serverAssetRecoveries.active < 2 && serverAssetRecoveries.pending.length) {
+        const job = serverAssetRecoveries.pending.shift();
+        serverAssetRecoveries.active++;
+        const recovery = job.serverOnly
+            ? fetchServerAssetCache(job.fileInfo, job.reason)
+            : requestServerAssetWithPeerPreference(job.fileInfo, job.ownerDeviceId, job.reason);
+        recovery
+            .catch(err => {
+                historyLog('server-asset-cache-fetch-failed', {
+                    reason: job.reason,
+                    fileId: job.fileInfo.id,
+                    error: err.message
+                });
+                return false;
+            })
+            .then(result => {
+                if (!result && !fileAssetTransfer?.hasDownloadWork?.(job.fileInfo.id)) {
+                    serverAssetRecoveries.metadata.delete(job.fileInfo.id);
+                }
+                job.resolveTask(result);
+            })
+            .finally(() => {
+                serverAssetRecoveries.active--;
+                serverAssetRecoveries.promises.delete(job.fileInfo.id);
+                refreshOpenSnsMediaClientStates();
+                drainServerAssetRecoveries();
+            });
+    }
 }
 
 async function requestMissingFileAssetCache(message, reason) {
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message.sender, reason).catch(err => historyLog('server-asset-cache-fetch-failed', {
-            reason,
-            message: summarizeHistoryMessage(message),
-            error: err.message
-        }));
+        scheduleServerAssetRecovery(fileInfo, fileInfo.ownerDeviceId || message.sender, reason);
         return;
     }
     if (!fileAssetTransfer || !fileInfo?.id || !fileInfo.isAsset) return;
@@ -5054,12 +5194,7 @@ async function requestMissingCollectionAssetCaches(message, reason) {
     const files = getCollectionFiles(message);
     for (const fileInfo of files) {
         if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-            requestServerAssetWithPeerPreference(fileInfo, fileInfo.ownerDeviceId || message?.sender, reason).catch(err => historyLog('collection-server-asset-cache-fetch-failed', {
-                reason,
-                messageId: message?.id,
-                fileId: fileInfo.id,
-                error: err.message
-            }));
+            scheduleServerAssetRecovery(fileInfo, fileInfo.ownerDeviceId || message?.sender, reason);
             continue;
         }
         if (!fileAssetTransfer) continue;
@@ -5172,6 +5307,50 @@ async function handleMessage(data) {
     }
 }
 
+function enqueueSessionHistory(data) {
+    sessionHistoryQueue.pending = data;
+    if (sessionHistoryQueue.running) return;
+    sessionHistoryQueue.running = true;
+    (async () => {
+        while (sessionHistoryQueue.pending) {
+            const snapshot = sessionHistoryQueue.pending;
+            sessionHistoryQueue.pending = null;
+            await handleSessionHistory(snapshot);
+        }
+    })().catch(err => historyLog('snapshot-processing-failed', { error: err.message }))
+        .finally(() => {
+            sessionHistoryQueue.running = false;
+            if (sessionHistoryQueue.pending) enqueueSessionHistory(sessionHistoryQueue.pending);
+        });
+}
+
+function enqueueHistoryAssetRecovery(messages) {
+    sessionHistoryQueue.recoveryPending = messages;
+    if (sessionHistoryQueue.recoveryRunning) return;
+    sessionHistoryQueue.recoveryRunning = true;
+    (async () => {
+        while (sessionHistoryQueue.recoveryPending) {
+            const pending = sessionHistoryQueue.recoveryPending;
+            sessionHistoryQueue.recoveryPending = null;
+            for (let index = 0; index < pending.length; index++) {
+                const message = pending[index];
+                if (message?.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
+                    await requestMissingFileAssetCache(message, 'snapshot-background');
+                } else if (message?.type === 'collection') {
+                    await requestMissingCollectionAssetCaches(message, 'snapshot-collection-background');
+                }
+                if (index > 0 && index % 20 === 0) await sleep(0);
+            }
+        }
+    })().catch(err => historyLog('snapshot-background-recovery-failed', { error: err.message }))
+        .finally(() => {
+            sessionHistoryQueue.recoveryRunning = false;
+            if (sessionHistoryQueue.recoveryPending) {
+                enqueueHistoryAssetRecovery(sessionHistoryQueue.recoveryPending);
+            }
+        });
+}
+
 async function handleSessionHistory(data) {
     if (!data || !Array.isArray(data.messages)) {
         historyLog('snapshot-skipped', { reason: 'invalid-payload' });
@@ -5228,12 +5407,6 @@ async function handleSessionHistory(data) {
                         message: summarizeHistoryMessage(existing)
                     });
                 }
-                if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-                    await requestMissingFileAssetCache(message, 'snapshot-duplicate');
-                }
-                if (message.type === 'collection') {
-                    await requestMissingCollectionAssetCaches(message, 'snapshot-collection-duplicate');
-                }
                 continue;
             }
 
@@ -5252,16 +5425,10 @@ async function handleSessionHistory(data) {
                 message: summarizeHistoryMessage(message)
             });
 
-            await addMessageToChat(message, message.sender === state.deviceId);
+            await addMessageToChat(message, message.sender === state.deviceId, { autoRequestAsset: false });
             historyLog('snapshot-message-rendered', {
                 message: summarizeHistoryMessage(message)
             });
-            if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
-                await requestMissingFileAssetCache(message, 'snapshot-new');
-            }
-            if (message.type === 'collection') {
-                await requestMissingCollectionAssetCaches(message, 'snapshot-collection-new');
-            }
             restored++;
         } catch (err) {
             failed++;
@@ -5305,6 +5472,7 @@ async function handleSessionHistory(data) {
         });
         historyLog('snapshot-ack-emitted', result);
     }
+    enqueueHistoryAssetRecovery(messages);
 }
 
 async function getCurrentSessionMessages() {
@@ -6068,6 +6236,7 @@ async function showTransferRecordDetails(messageId) {
         if (event.target === overlay) closeTransferRecordDetails();
     });
     document.body.appendChild(overlay);
+    await refreshSnsMediaClientStates(overlay, message);
 }
 
 function getSnsMediaStatusLabel(item = {}) {
@@ -6107,6 +6276,7 @@ function renderSnsMediaItemHtml(item = {}) {
                 ${item.mediaKind ? `<span>${escapeHtml(item.mediaKind === 'song' ? '歌曲' : item.mediaKind === 'video' ? '视频' : '暂不支持')}</span>` : ''}
                 <a href="${escapeHtml(item.mediaUrl || item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.mediaUrl || item.sourceUrl || '')}</a>
                 <span>${escapeHtml(getSnsMediaStatusLabel(item))}</span>
+                ${item.generatedMessageId ? `<span class="sns-media-client-state"><span aria-hidden="true">💻</span><span data-sns-client-state="${escapeHtml(item.id || '')}">本机无缓存</span></span>` : ''}
                 ${isFetching ? `<div class="sns-media-progress"><i style="width:${progress}%"></i></div>` : ''}
                 <div class="sns-media-actions">
                     ${canFetch ? `<button type="button" data-sns-fetch="${escapeHtml(item.id || '')}">获取文件内容</button>` : ''}
@@ -6114,6 +6284,46 @@ function renderSnsMediaItemHtml(item = {}) {
                 </div>
             </div>
         </article>`;
+}
+
+async function refreshSnsMediaClientStates(container, message) {
+    const items = Array.isArray(message?.snsMediaItems) ? message.snsMediaItems : [];
+    for (const item of items) {
+        if (!item?.generatedMessageId) continue;
+        const target = container?.querySelector?.(`[data-sns-client-state="${cssEscape(item.id)}"]`);
+        if (!target) continue;
+        const generated = await getFromStore('messages', item.generatedMessageId).catch(() => null);
+        if (!generated) {
+            target.textContent = '本机无缓存';
+            continue;
+        }
+        const files = generated.type === 'collection' ? getCollectionFiles(generated) : [generated.fileInfo].filter(Boolean);
+        const stored = await Promise.all(files.map(file => getFromStore('files', file.id).catch(() => null)));
+        const completeCount = stored.filter((file, index) => hasCompleteFileCache(file, files[index])).length;
+        const downloading = files.some(file => serverAssetRecoveries.promises.has(file.id) || fileAssetTransfer?.hasDownloadWork?.(file.id));
+        const partial = stored.some(file => file?.isPartial || file?.transferInterrupted);
+        const released = stored.length > 0 && stored.every(file => file?.cacheCleared);
+        const status = completeCount === files.length && files.length
+            ? '浏览器缓存完整'
+            : downloading
+                ? '正在请求还原'
+                : partial
+                    ? '传输中断或存在分片'
+                    : released
+                        ? '缓存已释放'
+                        : completeCount
+                            ? '传输中断或存在分片'
+                            : '本机无缓存';
+        target.textContent = status;
+    }
+}
+
+function refreshOpenSnsMediaClientStates() {
+    const overlay = document.getElementById('transferRecordDetailsLayer');
+    if (!overlay?.dataset.messageId) return;
+    getFromStore('messages', overlay.dataset.messageId)
+        .then(message => message && refreshSnsMediaClientStates(overlay, message))
+        .catch(() => {});
 }
 
 function renderSnsAcquisitionSection(message = {}) {
@@ -10466,7 +10676,12 @@ async function restoreFileCache(messageId, options = {}) {
     const message = await getFromStore('messages', messageId);
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        await fetchServerAssetCache(fileInfo, options.force ? 'message-force-restore' : 'message-restore');
+        await requestServerAssetWithPeerPreference(
+            fileInfo,
+            fileInfo.ownerDeviceId || message.sender,
+            options.force ? 'message-force-restore' : 'message-restore',
+            { priority: true, force: Boolean(options.force), peerWaitMs: 5000 }
+        );
         await refreshFileMessage(fileInfo.id);
         historyLog('file-cache-server-restore-requested', { messageId, fileId: fileInfo.id });
         return;
@@ -11397,6 +11612,16 @@ async function restoreResourceCache(resource) {
     if (resource.isEditorAsset) {
         requestEditorAsset(resource.id, resource.ownerDeviceId);
         historyLog('resource-editor-asset-restore-requested', { resourceId: resource.id });
+        return;
+    }
+
+    if (resource.isServerAsset && resource.serverAssetUrl) {
+        await requestServerAssetWithPeerPreference(metadata, resource.ownerDeviceId, 'resource-restore', {
+            priority: true,
+            force: true,
+            peerWaitMs: 5000
+        });
+        historyLog('resource-server-asset-restore-requested', { resourceId: resource.id });
         return;
     }
 
