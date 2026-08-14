@@ -5165,6 +5165,10 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
         return true;
     }
 
+    if (fileInfo.sourceChannel === 'youtube-premium') {
+        return fetchServerAssetCache(fileInfo, `${reason}-premium-ready-copy`);
+    }
+
     setServerAssetRecoveryStage(fileInfo, '1/4 正在查找在线设备副本');
     if (fileAssetTransfer) {
         await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || '', {
@@ -5953,6 +5957,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         messageEl.dataset.fileIsAsset = String(Boolean(message.fileInfo.isAsset));
         messageEl.dataset.fileIsServerAsset = String(Boolean(message.fileInfo.isServerAsset));
         messageEl.dataset.fileServerAssetUrl = message.fileInfo.serverAssetUrl || '';
+        messageEl.dataset.fileSourceChannel = message.fileInfo.sourceChannel || '';
         messageEl.dataset.fileSnsTaskId = message.fileInfo.snsTaskId || '';
         messageEl.dataset.fileSnsSourceUrl = message.fileInfo.snsSourceUrl || '';
     }
@@ -6150,6 +6155,7 @@ function getFileInfoFromMessageElement(messageEl) {
         isAsset: messageEl.dataset.fileIsAsset === 'true',
         isServerAsset: messageEl.dataset.fileIsServerAsset === 'true',
         serverAssetUrl: messageEl.dataset.fileServerAssetUrl || '',
+        sourceChannel: messageEl.dataset.fileSourceChannel || '',
         snsTaskId: messageEl.dataset.fileSnsTaskId || '',
         snsSourceUrl: messageEl.dataset.fileSnsSourceUrl || ''
     };

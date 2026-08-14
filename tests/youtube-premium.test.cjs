@@ -221,6 +221,7 @@ test('queued and running private tasks can be cancelled', async t => {
 
 test('routes, page and extension preserve the private credential boundary', () => {
     const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
     const service = fs.readFileSync(path.join(ROOT, 'server', 'youtube-premium.js'), 'utf8');
     const page = fs.readFileSync(path.join(ROOT, 'pages', 'youtube-premium-dl.html'), 'utf8');
     const cookiesPage = fs.readFileSync(path.join(ROOT, 'pages', 'sns-cookies.html'), 'utf8');
@@ -257,10 +258,18 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/clear/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/retry/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/forward/);
+    assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/info/);
+    assert.match(server, /mimeType:\s*getMimeTypeFromFileName\(file\.name\)/);
+    assert.match(server, /await fs\.promises\.copyFile\(file\.path, assetPath\)/);
+    assert.doesNotMatch(server, /fs\.linkSync\(file\.path, assetPath\)/);
     assert.match(server, /Accept-Ranges/);
     assert.match(server, /analysis\.selection\.formatSelector/);
     assert.match(page, /showPreview\(task\)/);
+    assert.match(page, /showFileInfo\(task\)/);
+    assert.match(page, /MIME type/);
     assert.match(page, /showForward\(task\)/);
+    assert.match(app, /fileInfo\.sourceChannel === 'youtube-premium'/);
+    assert.match(app, /premium-ready-copy/);
     assert.match(page, /keepalive: true/);
     assert.match(background, /if \(server\.syncYoutubePremium\) \{\s*if \(!youtube\) throw new Error/);
     assert.match(background, /body\.youtubePremium = youtube\.content/);

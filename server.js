@@ -998,10 +998,43 @@ app.get('/api/youtube-premium/tasks/:taskId/file', adminAuth.requireAuth, (req, 
     res.download(file.path, file.name);
 });
 
-app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
+app.get('/api/youtube-premium/tasks/:taskId/info', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const file = youtubePremiumService.getFile(req.params.taskId);
+    if (!file) return res.status(404).json({ error: 'youtube-premium-file-not-found' });
+    try {
+        const probe = await probeMediaFile(file.path);
+        const video = probe.streams?.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
+        const audio = probe.streams?.find(stream => stream.codec_type === 'audio');
+        const [rateNumber, rateDivisor] = String(video?.avg_frame_rate || video?.r_frame_rate || '').split('/').map(Number);
+        res.json({
+            name: file.name,
+            size: fs.statSync(file.path).size,
+            mimeType: getMimeTypeFromFileName(file.name),
+            container: String(probe.format?.format_long_name || probe.format?.format_name || ''),
+            duration: Number(probe.format?.duration || video?.duration || audio?.duration) || 0,
+            bitRate: Number(probe.format?.bit_rate) || 0,
+            resolution: video?.width && video?.height ? `${video.width} × ${video.height}` : '',
+            frameRate: rateNumber ? rateNumber / (rateDivisor || 1) : 0,
+            videoCodec: String(video?.codec_long_name || video?.codec_name || ''),
+            videoProfile: String(video?.profile || ''),
+            pixelFormat: String(video?.pix_fmt || ''),
+            videoBitRate: Number(video?.bit_rate) || 0,
+            audioCodec: String(audio?.codec_long_name || audio?.codec_name || ''),
+            audioBitRate: Number(audio?.bit_rate) || 0,
+            sampleRate: Number(audio?.sample_rate) || 0,
+            channels: Number(audio?.channels) || 0,
+            channelLayout: String(audio?.channel_layout || '')
+        });
+    } catch (error) {
+        res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-        res.status(201).json(forwardYoutubePremiumTaskToTunnel(req.params.taskId, req.body?.sessionId));
+        res.status(201).json(await forwardYoutubePremiumTaskToTunnel(req.params.taskId, req.body?.sessionId));
     } catch (error) {
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
     }
@@ -3223,7 +3256,7 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
     return session;
 }
 
-function forwardYoutubePremiumTaskToTunnel(taskId, sessionId) {
+async function forwardYoutubePremiumTaskToTunnel(taskId, sessionId) {
     const task = youtubePremiumService.get(taskId);
     const file = youtubePremiumService.getFile(taskId);
     const tunnel = isValidSessionId(sessionId) ? infraStore?.getTunnel(sessionId) : null;
@@ -3234,9 +3267,10 @@ function forwardYoutubePremiumTaskToTunnel(taskId, sessionId) {
     const assetId = createServerAssetId();
     const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
     try {
-        fs.linkSync(file.path, assetPath);
-    } catch (_) {
-        fs.copyFileSync(file.path, assetPath);
+        await fs.promises.copyFile(file.path, assetPath);
+    } catch (error) {
+        fs.rmSync(assetPath, { force: true });
+        throw error;
     }
     const asset = {
         id: assetId,

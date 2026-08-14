@@ -75,6 +75,9 @@
         .preview-audio { display:grid; gap:14px; }
         .preview-audio img { width:min(360px,100%); aspect-ratio:1; margin:auto; object-fit:cover; border-radius:6px; }
         .preview-audio audio { width:100%; }
+        .file-info-list { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:9px 16px; margin:0; }
+        .file-info-list dt { color:var(--muted); font-weight:700; }
+        .file-info-list dd { min-width:0; margin:0; overflow-wrap:anywhere; }
         .forward-form { display:grid; gap:12px; }
         .forward-form select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); }
         .dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
@@ -163,6 +166,11 @@
     <div class="dialog-body" id="previewBody"></div>
 </dialog>
 
+<dialog id="fileInfoDialog">
+    <div class="dialog-head"><strong id="fileInfoTitle">文件信息</strong><button type="button" data-close-file-info aria-label="关闭">×</button></div>
+    <div class="dialog-body" id="fileInfoBody"></div>
+</dialog>
+
 <dialog id="forwardDialog">
     <div class="dialog-head"><strong>转发到隧道</strong><button type="button" data-close-forward aria-label="关闭">×</button></div>
     <div class="dialog-body forward-form">
@@ -191,6 +199,9 @@
     const previewDialog = document.getElementById('previewDialog');
     const previewBody = document.getElementById('previewBody');
     const previewTitle = document.getElementById('previewTitle');
+    const fileInfoDialog = document.getElementById('fileInfoDialog');
+    const fileInfoBody = document.getElementById('fileInfoBody');
+    const fileInfoTitle = document.getElementById('fileInfoTitle');
     const forwardDialog = document.getElementById('forwardDialog');
     const forwardTarget = document.getElementById('forwardTarget');
     const forwardStatus = document.getElementById('forwardStatus');
@@ -242,6 +253,14 @@
         let unit = 0;
         while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
         return `${size.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+    }
+
+    function formatDuration(seconds) {
+        const value = Math.max(0, Math.round(Number(seconds) || 0));
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor(value % 3600 / 60);
+        const rest = value % 60;
+        return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}` : `${minutes}:${String(rest).padStart(2, '0')}`;
     }
 
     function detail(label, value) {
@@ -463,6 +482,46 @@
         previewBody.replaceChildren();
     }
 
+    async function showFileInfo(task) {
+        fileInfoDialog.dataset.taskId = task.id;
+        fileInfoTitle.textContent = task.outputFileName || '文件信息';
+        fileInfoBody.textContent = '正在读取最终成品信息...';
+        fileInfoDialog.showModal();
+        try {
+            const data = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/info`);
+            if (fileInfoDialog.dataset.taskId !== task.id) return;
+            const list = document.createElement('dl');
+            list.className = 'file-info-list';
+            [
+                ['文件名', data.name],
+                ['文件大小', formatSize(data.size)],
+                ['MIME type', data.mimeType],
+                ['封装格式', data.container],
+                ['时长', data.duration ? formatDuration(data.duration) : ''],
+                ['分辨率', data.resolution],
+                ['帧率', data.frameRate ? `${Number(data.frameRate.toFixed(3))} FPS` : ''],
+                ['视频编码', data.videoCodec],
+                ['视频 Profile', data.videoProfile],
+                ['像素格式', data.pixelFormat],
+                ['视频码率', data.videoBitRate ? `${Math.round(data.videoBitRate / 1000)} kbps` : ''],
+                ['音频编码', data.audioCodec],
+                ['音频码率', data.audioBitRate ? `${Math.round(data.audioBitRate / 1000)} kbps` : ''],
+                ['采样率', data.sampleRate ? `${data.sampleRate} Hz` : ''],
+                ['声道', data.channels ? `${data.channels}${data.channelLayout ? ` · ${data.channelLayout}` : ''}` : ''],
+                ['总码率', data.bitRate ? `${Math.round(data.bitRate / 1000)} kbps` : '']
+            ].filter(([, value]) => value !== '' && value != null).forEach(([label, value]) => {
+                const term = document.createElement('dt');
+                const description = document.createElement('dd');
+                term.textContent = label;
+                description.textContent = String(value);
+                list.append(term, description);
+            });
+            fileInfoBody.replaceChildren(list);
+        } catch (error) {
+            if (fileInfoDialog.dataset.taskId === task.id) fileInfoBody.textContent = `读取失败：${error.message}`;
+        }
+    }
+
     async function showForward(task) {
         forwardDialog.dataset.taskId = task.id;
         forwardTarget.replaceChildren();
@@ -561,6 +620,11 @@
             preview.textContent = '预览';
             preview.addEventListener('click', () => showPreview(task));
             actions.appendChild(preview);
+            const info = document.createElement('button');
+            info.type = 'button';
+            info.textContent = '文件信息';
+            info.addEventListener('click', () => showFileInfo(task));
+            actions.appendChild(info);
             const forward = document.createElement('button');
             forward.type = 'button';
             forward.textContent = '发到隧道';
@@ -613,8 +677,10 @@
     startBtn.addEventListener('click', startDownload);
     document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));
     document.querySelectorAll('[data-close-preview]').forEach(button => button.addEventListener('click', closePreview));
+    document.querySelectorAll('[data-close-file-info]').forEach(button => button.addEventListener('click', () => fileInfoDialog.close()));
     document.querySelectorAll('[data-close-forward]').forEach(button => button.addEventListener('click', () => forwardDialog.close()));
     previewDialog.addEventListener('click', event => { if (event.target === previewDialog) closePreview(); });
+    fileInfoDialog.addEventListener('click', event => { if (event.target === fileInfoDialog) fileInfoDialog.close(); });
     forwardDialog.addEventListener('click', event => { if (event.target === forwardDialog) forwardDialog.close(); });
     forwardConfirm.addEventListener('click', async () => {
         const sessionId = forwardTarget.value;
