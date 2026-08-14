@@ -212,6 +212,7 @@
     let analyzeTimer = 0;
     let page = 1;
     let pages = 1;
+    const thumbnailDownloads = new Set();
 
     const statusLabels = {
         queued: '等待中', parsing: '解析中', downloading: '下载中', merging: '合并中',
@@ -545,6 +546,45 @@
         }
     }
 
+    async function downloadOriginalThumbnail(task, button) {
+        if (thumbnailDownloads.has(task.id)) return;
+        thumbnailDownloads.add(task.id);
+        button.disabled = true;
+        button.textContent = '获取封面中...';
+        notice.textContent = '正在通过 yt-dlp 获取原尺寸封面...';
+        try {
+            const response = await fetch(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/thumbnail`, {
+                method: 'POST', cache: 'no-store'
+            });
+            if (response.status === 401) {
+                location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+                throw new Error('管理会话已失效');
+            }
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.error || `HTTP ${response.status}`);
+            }
+            const blobUrl = URL.createObjectURL(await response.blob());
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            try { link.download = decodeURIComponent(response.headers.get('X-Download-Name') || 'youtube-thumbnail'); }
+            catch (_) { link.download = 'youtube-thumbnail'; }
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+            notice.textContent = '原尺寸封面已下载。';
+        } catch (error) {
+            notice.textContent = `封面下载失败：${error.message}`;
+        } finally {
+            thumbnailDownloads.delete(task.id);
+            if (button.isConnected) {
+                button.disabled = false;
+                button.textContent = '原尺寸封面';
+            }
+        }
+    }
+
     function renderTask(task) {
         const card = document.createElement('article');
         card.className = 'task';
@@ -608,6 +648,12 @@
         const actions = document.createElement('div');
         actions.className = 'task-actions';
         const running = ['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status);
+        const thumbnail = document.createElement('button');
+        thumbnail.type = 'button';
+        thumbnail.disabled = thumbnailDownloads.has(task.id);
+        thumbnail.textContent = thumbnail.disabled ? '获取封面中...' : '原尺寸封面';
+        thumbnail.addEventListener('click', () => downloadOriginalThumbnail(task, thumbnail));
+        actions.appendChild(thumbnail);
         if (task.hasFile) {
             const download = document.createElement('a');
             download.className = 'command primary';
@@ -615,6 +661,7 @@
             download.download = task.outputFileName || '';
             download.textContent = '下载';
             actions.appendChild(download);
+            download.after(thumbnail);
             const preview = document.createElement('button');
             preview.type = 'button';
             preview.textContent = '预览';

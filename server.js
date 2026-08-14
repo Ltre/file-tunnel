@@ -1031,6 +1031,23 @@ app.get('/api/youtube-premium/tasks/:taskId/info', adminAuth.requireAuth, async 
     }
 });
 
+app.post('/api/youtube-premium/tasks/:taskId/thumbnail', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    let thumbnail;
+    try {
+        thumbnail = await downloadYoutubePremiumOriginalThumbnail(req.params.taskId);
+        res.setHeader('X-Download-Name', encodeURIComponent(thumbnail.name));
+        res.download(thumbnail.path, thumbnail.name, error => {
+            thumbnail.cleanup();
+            if (error && !res.headersSent) res.status(500).json({ error: sanitizeYoutubePremiumError(error) });
+        });
+    } catch (error) {
+        thumbnail?.cleanup();
+        res.status(error.message === 'youtube-premium-task-not-found' ? 404 : 422)
+            .json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
 app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
@@ -3930,6 +3947,37 @@ function requireYoutubePremiumCookies() {
     return YOUTUBE_PREMIUM_COOKIE_PATH;
 }
 
+async function downloadYoutubePremiumOriginalThumbnail(taskId) {
+    const task = youtubePremiumService.get(taskId);
+    if (!task) throw new Error('youtube-premium-task-not-found');
+    const workDir = path.join(SNS_MEDIA_WORK_DIR, `premium-thumbnail-${task.id}-${crypto.randomBytes(6).toString('hex')}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) {} };
+    try {
+        await spawnYtDlpCapture([
+            '--no-playlist', '--skip-download', '--write-thumbnail', '--cache-dir', YT_DLP_CACHE_DIR,
+            ...getYtDlpRemoteComponentArgs(task.url),
+            '-o', path.join(workDir, 'thumbnail.%(ext)s'),
+            ...getYtDlpCookieArgs(task.url, requireYoutubePremiumCookies()),
+            task.url
+        ], {
+            timeoutMs: Number(process.env.YOUTUBE_PREMIUM_THUMBNAIL_TIMEOUT_MS || 5 * 60 * 1000),
+            timeoutError: 'youtube-premium-thumbnail-timeout'
+        });
+        const fileName = fs.readdirSync(workDir).find(name => !name.endsWith('.part') && !name.endsWith('.ytdl'));
+        if (!fileName) throw new Error('youtube-premium-thumbnail-missing');
+        const extension = path.extname(fileName);
+        return {
+            path: path.join(workDir, fileName),
+            name: `${sanitizeMediaFilePart(task.title, 'youtube')} - 原尺寸封面${extension}`,
+            cleanup
+        };
+    } catch (error) {
+        cleanup();
+        throw error;
+    }
+}
+
 async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());
     if (!parsed || !['youtube', 'ytmusic'].includes(parsed.platform) || isYouTubePlaylistOnly(parsed.parsed.href)) {
@@ -4076,6 +4124,8 @@ function sanitizeYoutubePremiumError(error) {
         'youtube-playlist-not-supported': '私人下载页暂不支持整张播放列表',
         'youtube-premium-cookie-required': '请先在 /sns-cookies 配置私人 YouTube Premium Cookie',
         'youtube-premium-cookie-save-failed': '私人 YouTube Premium Cookie 保存失败',
+        'youtube-premium-thumbnail-missing': 'yt-dlp 没有返回可下载的封面',
+        'youtube-premium-thumbnail-timeout': '获取原尺寸封面超时，请稍后重试',
         'youtube-premium-task-active': '任务仍在运行，请先取消并等待任务停止',
         'custom-format-required': '自定义模式至少选择一个媒体格式',
         'custom-format-count-invalid': '只能选择一个媒体格式，或一个视频格式加一个音频格式',

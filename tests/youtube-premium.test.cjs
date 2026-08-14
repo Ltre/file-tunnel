@@ -259,6 +259,14 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/retry/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/forward/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/info/);
+    assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/thumbnail/);
+    const thumbnailHelper = server.slice(
+        server.indexOf('async function downloadYoutubePremiumOriginalThumbnail'),
+        server.indexOf('async function analyzeYoutubePremiumUrl')
+    );
+    assert.match(thumbnailHelper, /--skip-download[\s\S]*--write-thumbnail/);
+    assert.match(thumbnailHelper, /getYtDlpCookieArgs\(task\.url, requireYoutubePremiumCookies\(\)\)/);
+    assert.doesNotMatch(thumbnailHelper, /--convert-thumbnails/);
     assert.match(server, /mimeType:\s*getMimeTypeFromFileName\(file\.name\)/);
     assert.match(server, /await fs\.promises\.copyFile\(file\.path, assetPath\)/);
     assert.doesNotMatch(server, /fs\.linkSync\(file\.path, assetPath\)/);
@@ -267,6 +275,8 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /showPreview\(task\)/);
     assert.match(page, /showFileInfo\(task\)/);
     assert.match(page, /MIME type/);
+    assert.match(page, /downloadOriginalThumbnail\(task, thumbnail\)/);
+    assert.match(page, /原尺寸封面/);
     assert.match(page, /showForward\(task\)/);
     assert.match(app, /fileInfo\.sourceChannel === 'youtube-premium'/);
     assert.match(app, /premium-ready-copy/);

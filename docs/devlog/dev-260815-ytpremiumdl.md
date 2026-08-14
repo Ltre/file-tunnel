@@ -274,3 +274,9 @@
 - 转发时从 Premium 服务端成品异步复制出一份独立隧道资产；不使用硬链接，复制完整后才写入并广播目标隧道记录。
 - 目标隧道客户端识别 `youtube-premium` 来源后，不再等待并不存在的浏览器供源设备，直接读取已经就绪的服务器副本并写入本机 IndexedDB/OPFS；缓存校验完成后继续按既有逻辑宣告为供源端。
 - 此路径不会重新执行 yt-dlp，也不改变普通 Telegram/SNS server asset 的 peer-first 与原链接兜底策略。
+
+### 10.3 原尺寸封面
+
+- 每条 Premium 任务增加“原尺寸封面”按钮，不要求任务成品仍在服务端；点击后按该任务原 URL 和私人 Premium Cookie 独立执行 `yt-dlp --no-playlist --skip-download --write-thumbnail`。
+- 不使用 `--convert-thumbnails`，保留 YouTube 返回图片的原始尺寸与格式；下载动作不会覆盖音乐任务已经裁切、内嵌的方形封面。
+- 封面只写入请求专属临时目录，HTTP 下载响应结束后立即清理；页面显示获取中、成功和失败状态，并阻止同一任务重复发起请求。
