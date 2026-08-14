@@ -516,6 +516,8 @@ test('administrator SNS cookie sync covers every configured platform and rejects
     assert.match(background, /chrome\.storage\.local\.remove\(\['serverUrl', 'syncToken'\]\)/);
     assert.match(options, /addServerBtn/);
     assert.match(options, /deleteServer\(server\)/);
+    const saveServerSource = options.slice(options.indexOf('async function saveServer'), options.indexOf('\nasync function deleteServer'));
+    assert.ok(saveServerSource.indexOf('chrome.storage.local.set') < saveServerSource.indexOf('chrome.permissions.request'));
 });
 
 test('a P2P channel failure falls back to Socket.IO relay once', async () => {

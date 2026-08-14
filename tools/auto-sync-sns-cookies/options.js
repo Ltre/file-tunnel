@@ -112,8 +112,6 @@ async function saveServer() {
     if (servers.some(server => server.id !== editingServerId && server.serverUrl === serverUrl)) {
         throw new Error('该服务器已经存在');
     }
-    const granted = await chrome.permissions.request({ origins: [`${serverUrl}/*`] });
-    if (!granted) throw new Error(`未授予访问 ${serverUrl} 的权限`);
 
     const previous = servers.find(server => server.id === editingServerId);
     const next = { id: editingServerId || crypto.randomUUID(), serverUrl, syncToken };
@@ -122,6 +120,9 @@ async function saveServer() {
     if (previous && previous.serverUrl !== serverUrl) await removeUnusedPermission(previous.serverUrl);
     serverDialog.close();
     renderServers();
+    setStatus('服务器配置已保存，正在请求访问权限...');
+    const granted = await chrome.permissions.request({ origins: [`${serverUrl}/*`] });
+    if (!granted) throw new Error(`服务器配置已保存，但尚未授予访问 ${serverUrl} 的权限`);
     setStatus(previous ? '服务器配置已更新。' : '服务器已添加。', 'ok');
 }
 
@@ -161,7 +162,10 @@ document.getElementById('addServerBtn').addEventListener('click', () => openServ
 document.getElementById('cancelServerBtn').addEventListener('click', () => serverDialog.close());
 document.getElementById('saveServerBtn').addEventListener('click', () => {
     serverDialogStatus.textContent = '';
-    saveServer().catch(error => { serverDialogStatus.textContent = error.message; });
+    saveServer().catch(error => {
+        if (serverDialog.open) serverDialogStatus.textContent = error.message;
+        else setStatus(error.message, 'error');
+    });
 });
 document.getElementById('saveBtn').addEventListener('click', () => {
     saveSettings().catch(error => setStatus(error.message, 'error'));
