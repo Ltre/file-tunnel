@@ -5188,6 +5188,13 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
             fileId: fileInfo.id,
             error: err.message
         }));
+        if (fileAssetTransfer.downloadQueue?.includes(fileInfo.id)) {
+            setServerAssetRecoveryStage(fileInfo, '1/4 已排队，等待在线设备传输');
+            while (fileAssetTransfer.downloadQueue?.includes(fileInfo.id)) {
+                await sleep(250);
+            }
+            setServerAssetRecoveryStage(fileInfo, '1/4 正在查找在线设备副本');
+        }
         await sleep(options.peerWaitMs ?? 3500);
         const peerResult = await getFromStore('files', fileInfo.id).catch(() => null);
         if (hasCompleteFileCache(peerResult, fileInfo)) {

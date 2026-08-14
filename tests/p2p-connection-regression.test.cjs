@@ -467,6 +467,31 @@ test('a provider-started transfer remains active while peer-first recovery is wa
     assert.equal(transfer.hasDownloadWork('asset-a'), true);
 });
 
+test('a provider acknowledges an accepted request while it waits in the upload queue', () => {
+    const FileAssetTransfer = loadFileAssetTransfer();
+    const emitted = [];
+    const transfer = new FileAssetTransfer({
+        log() {},
+        getSessionId: () => 'session-a',
+        getSocket: () => ({
+            connected: true,
+            emit: (event, payload) => emitted.push({ event, payload })
+        })
+    });
+    transfer.activeUploads = 2;
+
+    transfer.handleRequest({
+        asset: { id: 'asset-a', name: 'sns-video.mp4', size: 4 },
+        from: 'device-b',
+        requestId: 'request-a'
+    });
+
+    assert.equal(transfer.uploadQueue.length, 1);
+    assert.equal(emitted[0]?.event, 'file-asset-transfer-status');
+    assert.equal(emitted[0]?.payload.status, 'started');
+    assert.equal(emitted[0]?.payload.requestId, 'request-a');
+});
+
 test('SNS peer-first recovery keeps an accepted provider before the first byte arrives', () => {
     const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
     const start = source.indexOf('async function requestServerAssetWithPeerPreference');
@@ -478,6 +503,19 @@ test('SNS peer-first recovery keeps an accepted provider before the first byte a
     assert.match(recoverySource, /已找到在线设备，正在建立 P2P 传输/);
     assert.doesNotMatch(recoverySource, /peerTransferActive && Number\(peerProgress\?\.progress\) > 0/);
     assert.doesNotMatch(recoverySource, /hasDownloadWork\?\.\(fileInfo\.id\)/);
+});
+
+test('SNS peer-first timeout starts after the asset leaves the local download queue', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const start = source.indexOf('async function requestServerAssetWithPeerPreference');
+    const end = source.indexOf('\nfunction scheduleServerAssetRecovery', start);
+    const recoverySource = source.slice(start, end);
+    const queueWait = recoverySource.indexOf('while (fileAssetTransfer.downloadQueue?.includes(fileInfo.id))');
+    const peerTimeout = recoverySource.indexOf('await sleep(options.peerWaitMs ?? 3500)');
+
+    assert.ok(queueWait >= 0);
+    assert.ok(peerTimeout > queueWait);
+    assert.match(recoverySource, /已排队，等待在线设备传输/);
 });
 
 test('SNS recovery exposes each fallback stage and resets a failed restore for retry', () => {

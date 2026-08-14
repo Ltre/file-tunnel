@@ -1058,6 +1058,7 @@
             data._uploadKey = key;
             data._queueSeq = this.uploadQueueSeq++;
             this.uploadQueue.push(data);
+            this.emitTransferStatus(data.asset.id, data.from, 'started', data.transfer?.transferId, data.requestId || '');
             this.log('upload-queued', { assetId: data.asset.id, peerDeviceId: data.from, queueLength: this.uploadQueue.length });
             this.dispatchUploads();
         }
