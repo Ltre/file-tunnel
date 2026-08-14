@@ -10,6 +10,7 @@ const serverDialog = document.getElementById('serverDialog');
 const serverUrlInput = document.getElementById('serverUrl');
 const syncTokenInput = document.getElementById('syncToken');
 const serverDialogStatus = document.getElementById('serverDialogStatus');
+const configBackupInput = document.getElementById('configBackup');
 const statusEl = document.getElementById('status');
 let servers = [];
 let editingServerId = '';
@@ -29,6 +30,37 @@ function normalizeSyncToken(value) {
     const matches = String(value || '').split(/[^A-Za-z0-9_-]+/).filter(part => part.length === 43);
     if (matches.length !== 1) throw new Error('同步密钥格式无效，请重新复制管理页生成的密钥');
     return matches[0];
+}
+
+function encodeConfigBackup(value) {
+    let binary = '';
+    for (const byte of new TextEncoder().encode(JSON.stringify(value))) binary += String.fromCharCode(byte);
+    return btoa(binary);
+}
+
+function parseConfigBackup(value) {
+    const encoded = String(value || '').replace(/\s/g, '');
+    if (!encoded || encoded.length > 128 * 1024) throw new Error('配置备份为空或过大');
+    let backup;
+    try {
+        backup = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), char => char.charCodeAt(0))));
+    } catch (_) {
+        throw new Error('配置备份不是有效的 Base64');
+    }
+    if (backup?.format !== 'drop2tunnel-sns-cookie-sync' || backup.version !== 1 || !Array.isArray(backup.servers)) {
+        throw new Error('无法识别这个配置备份');
+    }
+    if (!backup.servers.length || backup.servers.length > 50) throw new Error('配置备份中的服务器数量无效');
+    const importedServers = [...new Map(backup.servers.map(server => {
+        const serverUrl = normalizeServerUrl(server?.serverUrl);
+        return [serverUrl, { id: crypto.randomUUID(), serverUrl, syncToken: normalizeSyncToken(server?.syncToken) }];
+    })).values()];
+    return {
+        servers: importedServers,
+        enabled: backup.settings?.enabled === true,
+        intervalMinutes: Math.max(5, Number(backup.settings?.intervalMinutes) || 15),
+        pageResyncMinutes: Math.max(5, Number(backup.settings?.pageResyncMinutes) || 30)
+    };
 }
 
 function createIconButton(symbol, title, handler, danger = false) {
@@ -158,6 +190,60 @@ async function saveSettings() {
     setStatus('设置已保存。', 'ok');
 }
 
+function exportConfig() {
+    if (!servers.length) throw new Error('没有可导出的服务器配置');
+    configBackupInput.value = encodeConfigBackup({
+        format: 'drop2tunnel-sns-cookie-sync',
+        version: 1,
+        servers: servers.map(({ serverUrl, syncToken }) => ({ serverUrl, syncToken: normalizeSyncToken(syncToken) })),
+        settings: {
+            enabled: fields.enabled.checked,
+            intervalMinutes: Math.max(5, Number(fields.intervalMinutes.value) || 15),
+            pageResyncMinutes: Math.max(5, Number(fields.pageResyncMinutes.value) || 30)
+        }
+    });
+    configBackupInput.focus();
+    configBackupInput.select();
+    setStatus(`已导出 ${servers.length} 台服务器配置，请妥善保管。`, 'ok');
+}
+
+async function copyConfig() {
+    const content = configBackupInput.value.trim();
+    if (!content) throw new Error('请先导出配置');
+    try {
+        await navigator.clipboard.writeText(content);
+    } catch (_) {
+        configBackupInput.select();
+        if (!document.execCommand('copy')) throw new Error('复制失败，请手动复制已选内容');
+    }
+    setStatus('配置备份已复制。', 'ok');
+}
+
+async function importConfig() {
+    const imported = parseConfigBackup(configBackupInput.value);
+    if (!confirm(`将用备份中的 ${imported.servers.length} 台服务器替换当前配置，确定继续吗？`)) return;
+    const previousServers = servers;
+    servers = imported.servers;
+    fields.enabled.checked = imported.enabled;
+    fields.intervalMinutes.value = imported.intervalMinutes;
+    fields.pageResyncMinutes.value = imported.pageResyncMinutes;
+    await chrome.storage.local.set({
+        ...imported,
+        lastCookieHash: '',
+        lastSyncAt: 0,
+        lastResult: '',
+        lastError: ''
+    });
+    previousServers.forEach(server => { removeUnusedPermission(server.serverUrl); });
+    renderServers();
+    setStatus('配置已导入，正在请求服务器访问权限...');
+    const origins = servers.map(server => `${server.serverUrl}/*`);
+    const granted = await chrome.permissions.request({ origins });
+    if (!granted) throw new Error('配置已导入，但尚未授予全部服务器的访问权限');
+    configBackupInput.value = '';
+    setStatus(`已导入 ${servers.length} 台服务器配置。`, 'ok');
+}
+
 document.getElementById('addServerBtn').addEventListener('click', () => openServerDialog());
 document.getElementById('cancelServerBtn').addEventListener('click', () => serverDialog.close());
 document.getElementById('saveServerBtn').addEventListener('click', () => {
@@ -169,6 +255,15 @@ document.getElementById('saveServerBtn').addEventListener('click', () => {
 });
 document.getElementById('saveBtn').addEventListener('click', () => {
     saveSettings().catch(error => setStatus(error.message, 'error'));
+});
+document.getElementById('exportConfigBtn').addEventListener('click', () => {
+    try { exportConfig(); } catch (error) { setStatus(error.message, 'error'); }
+});
+document.getElementById('copyConfigBtn').addEventListener('click', () => {
+    copyConfig().catch(error => setStatus(error.message, 'error'));
+});
+document.getElementById('importConfigBtn').addEventListener('click', () => {
+    importConfig().catch(error => setStatus(error.message, 'error'));
 });
 document.getElementById('syncBtn').addEventListener('click', async event => {
     try {

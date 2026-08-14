@@ -24,9 +24,14 @@
         .empty { padding:16px 0; color:var(--muted); text-align:center; }
         label { display:grid; gap:6px; margin-bottom:12px; font-weight:650; }
         input[type="url"], input[type="password"], input[type="number"] { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; font:inherit; }
+        textarea { width:100%; min-height:88px; padding:9px 10px; resize:vertical; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; word-break:break-all; }
         .toggle { display:flex; grid-template-columns:none; align-items:center; gap:8px; }
         .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
         .actions { display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-top:14px; }
+        .backup { margin:0 0 16px; padding-bottom:16px; border-bottom:1px solid var(--line); }
+        .backup-actions { display:flex; gap:8px; flex-wrap:wrap; }
+        .backup-foot { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-top:7px; }
+        .backup-foot small { color:var(--muted); }
         button { border:0; border-radius:6px; padding:9px 12px; font:inherit; font-weight:700; cursor:pointer; }
         button.primary { background:var(--primary); color:#fff; }
         button.icon { display:grid; place-items:center; width:34px; height:34px; padding:0; background:color-mix(in srgb,var(--muted) 12%,transparent); font-size:18px; }
@@ -53,6 +58,20 @@
             <button class="icon primary" id="addServerBtn" type="button" title="添加服务器" aria-label="添加服务器">+</button>
         </div>
         <div class="server-list" id="serverList"></div>
+        <div class="backup">
+            <div class="section-head">
+                <strong>配置备份</strong>
+                <div class="backup-actions">
+                    <button id="importConfigBtn" type="button">导入配置</button>
+                    <button class="primary" id="exportConfigBtn" type="button">导出配置</button>
+                </div>
+            </div>
+            <textarea id="configBackup" rows="4" spellcheck="false" autocomplete="off" placeholder="点击“导出配置”生成 Base64，或在此粘贴 Base64 后导入"></textarea>
+            <div class="backup-foot">
+                <small>Base64 不是加密，内容包含全部服务器同步密钥，请按敏感信息保管。</small>
+                <button id="copyConfigBtn" type="button">复制</button>
+            </div>
+        </div>
         <div class="row">
             <label>定时同步间隔（分钟）
                 <input id="intervalMinutes" type="number" min="5" max="1440" step="1">

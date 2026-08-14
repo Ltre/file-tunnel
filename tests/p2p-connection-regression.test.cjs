@@ -516,6 +516,12 @@ test('administrator SNS cookie sync covers every configured platform and rejects
     assert.match(background, /chrome\.storage\.local\.remove\(\['serverUrl', 'syncToken'\]\)/);
     assert.match(options, /addServerBtn/);
     assert.match(options, /deleteServer\(server\)/);
+    assert.match(options, /drop2tunnel-sns-cookie-sync/);
+    assert.match(options, /encodeConfigBackup/);
+    assert.match(options, /parseConfigBackup/);
+    assert.match(options, /importConfig/);
+    const importConfigSource = options.slice(options.indexOf('async function importConfig'), options.indexOf("\ndocument.getElementById('addServerBtn')"));
+    assert.ok(importConfigSource.indexOf('chrome.storage.local.set') < importConfigSource.indexOf('chrome.permissions.request'));
     const saveServerSource = options.slice(options.indexOf('async function saveServer'), options.indexOf('\nasync function deleteServer'));
     assert.ok(saveServerSource.indexOf('chrome.storage.local.set') < saveServerSource.indexOf('chrome.permissions.request'));
 });
