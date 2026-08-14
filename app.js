@@ -5200,8 +5200,11 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
             fileAssetTransfer.multiSourceTransfers?.has(fileInfo.id) ||
             fileAssetTransfer.providerTransfers?.has(fileInfo.id);
         const peerProgress = getFileReceiveProgressState(fileInfo.id);
-        if (peerTransferActive && Number(peerProgress?.progress) > 0) {
-            setServerAssetRecoveryStage(fileInfo, `1/4 正在从在线设备接收（${Math.round(peerProgress.progress)}%）`);
+        if (peerTransferActive) {
+            const progress = Number(peerProgress?.progress) || 0;
+            setServerAssetRecoveryStage(fileInfo, progress > 0
+                ? `1/4 正在从在线设备接收（${Math.round(progress)}%）`
+                : '1/4 已找到在线设备，正在建立 P2P 传输');
             return true;
         }
         fileAssetTransfer.cancel?.(fileInfo.id);

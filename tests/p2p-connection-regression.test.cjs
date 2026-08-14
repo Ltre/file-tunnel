@@ -467,14 +467,16 @@ test('a provider-started transfer remains active while peer-first recovery is wa
     assert.equal(transfer.hasDownloadWork('asset-a'), true);
 });
 
-test('SNS peer-first recovery does not mistake a queued request for an active transfer', () => {
+test('SNS peer-first recovery keeps an accepted provider before the first byte arrives', () => {
     const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
     const start = source.indexOf('async function requestServerAssetWithPeerPreference');
     const end = source.indexOf('\nfunction scheduleServerAssetRecovery', start);
     const recoverySource = source.slice(start, end);
 
     assert.match(recoverySource, /providerTransfers\?\.has\(fileInfo\.id\)/);
-    assert.match(recoverySource, /peerTransferActive && Number\(peerProgress\?\.progress\) > 0/);
+    assert.match(recoverySource, /if \(peerTransferActive\)/);
+    assert.match(recoverySource, /已找到在线设备，正在建立 P2P 传输/);
+    assert.doesNotMatch(recoverySource, /peerTransferActive && Number\(peerProgress\?\.progress\) > 0/);
     assert.doesNotMatch(recoverySource, /hasDownloadWork\?\.\(fileInfo\.id\)/);
 });
 
