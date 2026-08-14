@@ -518,7 +518,7 @@ https://tunnel.example.com/sns-cookies
 
 这些 cookies 只供服务端 `yt-dlp` 在识别和下载 SNS 媒体时使用。它们可能包含敏感登录态，应像 Bot Token 一样保护，不要提交到 Git 仓库，也不要交给不可信用户。
 
-如果 YouTube 出现 JS challenge 相关警告，服务端默认会为 YouTube / YT Music 调用 `yt-dlp --remote-components ejs:github`。可通过环境变量 `SOCIAL_YTDLP_REMOTE_COMPONENTS=false` 禁用，或设置为其他值覆盖默认来源。
+服务端默认使用随官方 `yt-dlp` 或 `yt-dlp[default]` 安装的本地 `yt-dlp-ejs`，避免解析时依赖 GitHub 网络。只有本地 EJS 不可用且服务器能稳定访问 GitHub 时，才应设置 `SOCIAL_YTDLP_REMOTE_COMPONENTS=ejs:github`。SNS 元数据解析默认最多等待 90 秒，也可通过 `SOCIAL_YTDLP_TIMEOUT_MS` 调整。
 
 ## 音视频 ICE 配置
 

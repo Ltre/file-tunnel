@@ -2132,20 +2132,30 @@ function runYtDlpJson(url, options = {}) {
         });
         let stdout = '';
         let stderr = '';
+        let settled = false;
+        const timeoutMs = Math.max(1000, Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS) || 90000);
         const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
             child.kill('SIGTERM');
-            reject(new Error('yt-dlp-timeout'));
-        }, Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS || 25000));
+            cookies.cleanup();
+            const detail = getYtDlpFailureMessage(stderr, '');
+            reject(new Error(`yt-dlp-timeout-${timeoutMs}ms${detail ? `: ${detail}` : ''}`));
+        }, timeoutMs);
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', chunk => { stdout += chunk; });
         child.stderr.on('data', chunk => { stderr += chunk; });
         child.on('error', err => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timer);
             cookies.cleanup();
             reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
         });
         child.on('close', code => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timer);
             cookies.cleanup();
             if (code !== 0) {
@@ -2167,12 +2177,13 @@ function runYtDlpJson(url, options = {}) {
 }
 
 function getYtDlpRemoteComponentArgs(url) {
-    if (process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS === 'false') return [];
     if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(String(url || ''))) return [];
-    return [
-        '--js-runtimes', process.env.SOCIAL_YTDLP_JS_RUNTIME || 'node',
-        '--remote-components', process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || 'ejs:github'
-    ];
+    const args = ['--js-runtimes', process.env.SOCIAL_YTDLP_JS_RUNTIME || 'node'];
+    const remoteComponents = String(process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || '').trim();
+    if (remoteComponents && remoteComponents !== 'false') {
+        args.push('--remote-components', remoteComponents);
+    }
+    return args;
 }
 
 function getYtDlpCookieArgs(url) {

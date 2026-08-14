@@ -639,19 +639,17 @@ https://tunnel.example.com/tgbot
 
 YT Music 获取完成后还会整理曲名、艺术家、专辑、年份和来源 URL，裁剪封面两侧黑边，并将方形封面和元数据写入 M4A；文件名采用“艺术家 - 曲名.m4a”。普通 YouTube 链接按视频处理，不会一律转成音频。
 
-YouTube / YT Music 默认会调用：
+YouTube / YT Music 默认使用随官方 `yt-dlp` 或 `yt-dlp[default]` 安装的本地 `yt-dlp-ejs`，不再为每次解析依赖 GitHub。元数据解析默认最多等待 90 秒，可按服务器网络情况调整：
 
 ```bash
-yt-dlp --remote-components ejs:github
+SOCIAL_YTDLP_TIMEOUT_MS=90000
 ```
 
-如果部署环境不允许自动获取 remote components，可设置：
+只有本地 EJS 不可用且服务器能稳定访问 GitHub 时，才启用远程组件：
 
 ```bash
-SOCIAL_YTDLP_REMOTE_COMPONENTS=false
+SOCIAL_YTDLP_REMOTE_COMPONENTS=ejs:github
 ```
-
-或设置为其他 yt-dlp 支持的值。
 
 ### 12.5 SNS Cookies 配置
 

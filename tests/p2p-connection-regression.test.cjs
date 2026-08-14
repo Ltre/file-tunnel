@@ -7,6 +7,14 @@ const vm = require('node:vm');
 // Unit-level regression coverage only; browser ICE/DataChannel behavior requires an end-to-end test.
 const ROOT = path.resolve(__dirname, '..');
 
+test('SNS metadata parsing prefers local EJS and allows a bounded production wait', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    assert.match(source, /Number\(process\.env\.SOCIAL_YTDLP_TIMEOUT_MS\) \|\| 90000/);
+    assert.doesNotMatch(source, /SOCIAL_YTDLP_REMOTE_COMPONENTS \|\| 'ejs:github'/);
+    assert.match(source, /let settled = false;/);
+    assert.match(source, /yt-dlp-timeout-\$\{timeoutMs\}ms/);
+});
+
 class MockDataChannel extends EventTarget {
     constructor(label, readyState = 'connecting') {
         super();
