@@ -1,5 +1,6 @@
 'use strict';
 
+const webext = globalThis.browser || globalThis.chrome;
 const PERIODIC_ALARM = 'drop2tunnel-cookie-periodic';
 const PAGE_ALARM = 'drop2tunnel-cookie-page';
 const DEFAULTS = Object.freeze({
@@ -29,7 +30,7 @@ const SNS_PLATFORMS = Object.freeze([
 let activeSync = null;
 
 async function getSettings() {
-    const settings = { ...DEFAULTS, ...await chrome.storage.local.get(DEFAULTS) };
+    const settings = { ...DEFAULTS, ...await webext.storage.local.get(DEFAULTS) };
     const hasServers = Array.isArray(settings.servers) && settings.servers.length > 0;
     if (!hasServers && settings.serverUrl && settings.syncToken) {
         settings.servers = [{
@@ -37,8 +38,8 @@ async function getSettings() {
             serverUrl: normalizeServerUrl(settings.serverUrl),
             syncToken: String(settings.syncToken).trim()
         }];
-        await chrome.storage.local.set({ servers: settings.servers, lastCookieHash: '', lastSyncAt: 0, lastResult: '', lastError: '' });
-        await chrome.storage.local.remove(['serverUrl', 'syncToken']);
+        await webext.storage.local.set({ servers: settings.servers, lastCookieHash: '', lastSyncAt: 0, lastResult: '', lastError: '' });
+        await webext.storage.local.remove(['serverUrl', 'syncToken']);
     }
     settings.servers = (Array.isArray(settings.servers) ? settings.servers : [])
         .filter(server => server?.serverUrl && server?.syncToken);
@@ -82,7 +83,7 @@ async function collectSnsCookieFiles() {
     const files = [];
     const skipped = [];
     for (const platform of SNS_PLATFORMS) {
-        const groups = await Promise.all(platform.domains.map(domain => chrome.cookies.getAll({ domain })));
+        const groups = await Promise.all(platform.domains.map(domain => webext.cookies.getAll({ domain })));
         const cookies = [...new Map(groups.flat().map(cookie => [
             `${cookie.storeId || ''}\t${cookie.domain}\t${cookie.path}\t${cookie.name}`,
             cookie
@@ -93,7 +94,7 @@ async function collectSnsCookieFiles() {
         }
         files.push({ platform: platform.id, content: makeNetscapeCookies(cookies) });
     }
-    if (!files.length) throw new Error('当前 Chrome 未发现任何受支持 SNS 平台的可用登录 Cookie');
+    if (!files.length) throw new Error('当前浏览器未发现任何受支持 SNS 平台的可用登录 Cookie');
     return { files, skipped };
 }
 
@@ -141,7 +142,7 @@ async function syncSnsCookies(trigger, force = false) {
         }
         const now = Date.now();
         const totalBytes = files.reduce((sum, file) => sum + new TextEncoder().encode(file.content).byteLength, 0);
-        await chrome.storage.local.set({
+        await webext.storage.local.set({
             lastSyncAt: now,
             lastCookieHash: cookieHash,
             lastResult: `${new Date(now).toLocaleString()} · ${trigger} · ${results.length} 台服务器 · ${files.length} 个平台 · ${(totalBytes / 1024).toFixed(1)} KB${skipped.length ? ` · 跳过：${skipped.join('、')}` : ''}`,
@@ -149,7 +150,7 @@ async function syncSnsCookies(trigger, force = false) {
         });
         return { ok: true, servers: results, platforms: files.map(file => file.platform), skipped };
     })().catch(async error => {
-        await chrome.storage.local.set({ lastError: `${new Date().toLocaleString()} · ${error.message}` });
+        await webext.storage.local.set({ lastError: `${new Date().toLocaleString()} · ${error.message}` });
         throw error;
     }).finally(() => {
         activeSync = null;
@@ -159,30 +160,30 @@ async function syncSnsCookies(trigger, force = false) {
 
 async function configureAlarm() {
     const settings = await getSettings();
-    await chrome.alarms.clear(PERIODIC_ALARM);
+    await webext.alarms.clear(PERIODIC_ALARM);
     if (settings.enabled) {
         const periodInMinutes = Math.max(5, Number(settings.intervalMinutes) || 15);
-        chrome.alarms.create(PERIODIC_ALARM, { delayInMinutes: 1, periodInMinutes });
+        webext.alarms.create(PERIODIC_ALARM, { delayInMinutes: 1, periodInMinutes });
     }
 }
 
-chrome.runtime.onInstalled.addListener(() => configureAlarm());
-chrome.runtime.onStartup.addListener(() => configureAlarm());
-chrome.storage.onChanged.addListener((changes, area) => {
+webext.runtime.onInstalled.addListener(() => configureAlarm());
+webext.runtime.onStartup.addListener(() => configureAlarm());
+webext.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && (changes.enabled || changes.intervalMinutes)) configureAlarm();
 });
 
-chrome.alarms.onAlarm.addListener(alarm => {
+webext.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === PERIODIC_ALARM) syncSnsCookies('定时同步').catch(() => {});
     if (alarm.name === PAGE_ALARM) syncSnsCookies('打开 SNS 页面后同步').catch(() => {});
 });
 
-chrome.cookies.onChanged.addListener(change => {
+webext.cookies.onChanged.addListener(change => {
     if (!isSupportedCookieDomain(change.cookie?.domain)) return;
-    chrome.alarms.create(PAGE_ALARM, { delayInMinutes: 1 });
+    webext.alarms.create(PAGE_ALARM, { delayInMinutes: 1 });
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+webext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'get-settings') {
         getSettings()
             .then(settings => sendResponse({ ok: true, settings }))
@@ -194,9 +195,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             const now = Date.now();
             const threshold = Math.max(5, Number(settings.pageResyncMinutes) || 30) * 60000;
             const lastOpenedAt = settings.lastSnsOpenedAt || settings.lastYoutubeOpenedAt;
-            chrome.storage.local.set({ lastSnsOpenedAt: now });
+            webext.storage.local.set({ lastSnsOpenedAt: now });
             if (settings.enabled && now - lastOpenedAt >= threshold) {
-                chrome.alarms.create(PAGE_ALARM, { delayInMinutes: 0.05 });
+                webext.alarms.create(PAGE_ALARM, { delayInMinutes: 0.05 });
             }
         });
         return;

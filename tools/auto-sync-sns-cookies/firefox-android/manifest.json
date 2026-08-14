@@ -1,0 +1,65 @@
+{
+  "manifest_version": 2,
+  "name": "Drop2Tunnel SNS Cookie Sync",
+  "version": "1.4.0",
+  "description": "管理员专用：自动将 Firefox for Android 中的 SNS Cookie 同步到多台 Drop2Tunnel 服务器。",
+  "permissions": [
+    "alarms",
+    "cookies",
+    "storage",
+    "*://*.youtube.com/*",
+    "*://*.tiktok.com/*",
+    "*://*.facebook.com/*",
+    "*://*.instagram.com/*",
+    "*://*.threads.com/*",
+    "*://*.threads.net/*",
+    "*://*.line.me/*",
+    "*://*.twitter.com/*",
+    "*://*.x.com/*"
+  ],
+  "optional_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_title": "Drop2Tunnel SNS Cookie Sync",
+    "default_popup": "options.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.tiktok.com/*",
+        "*://*.facebook.com/*",
+        "*://*.instagram.com/*",
+        "*://*.threads.com/*",
+        "*://*.threads.net/*",
+        "*://*.line.me/*",
+        "*://*.twitter.com/*",
+        "*://*.x.com/*"
+      ],
+      "js": ["sns-opened.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "drop2tunnel-sns-cookie-sync-android@ltre.local",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["authenticationInfo"]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  }
+}

@@ -7,7 +7,7 @@
     <style>
         :root { color-scheme: light dark; --bg:#f4f6fa; --panel:#fff; --text:#172033; --muted:#667085; --line:#d7deea; --primary:#2563eb; --ok:#047857; --error:#c62828; }
         * { box-sizing: border-box; }
-        body { margin:0; min-width:360px; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+        body { margin:0; min-width:min(360px,100vw); background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
         main { width:min(620px,100%); margin:auto; padding:18px; }
         h1 { margin:0 0 4px; font-size:20px; letter-spacing:0; }
         p { margin:0 0 14px; color:var(--muted); }
@@ -44,7 +44,7 @@
         .dialog-status { min-height:20px; color:var(--error); font-size:13px; }
         #status { min-height:42px; margin-top:12px; padding:9px 10px; border-radius:6px; background:color-mix(in srgb,var(--muted) 10%,transparent); white-space:pre-wrap; word-break:break-word; }
         #status.ok { color:var(--ok); } #status.error { color:var(--error); }
-        @media (max-width:460px) { .row { grid-template-columns:1fr; } }
+        @media (max-width:460px) { main { padding:12px; } .panel { padding:13px; } .row { grid-template-columns:1fr; } .backup-foot { align-items:stretch; flex-direction:column; } }
         @media (prefers-color-scheme:dark) { :root { --bg:#0f1521; --panel:#171f2d; --text:#edf2ff; --muted:#a7b1c2; --line:#334055; } }
     </style>
 </head>

@@ -912,6 +912,10 @@ app.post('/api/telegram/assets/check', async (req, res) => {
             results.push({ assetId, valid: false, repairable: false, reason: 'asset-not-registered' });
             continue;
         }
+        if (!isTelegramBotOriginAsset(asset)) {
+            results.push({ assetId, valid: false, repairable: false, reason: 'not-telegram-bot-origin' });
+            continue;
+        }
         if (!asset.fileId) {
             results.push({ assetId, valid: false, repairable: true, reason: 'telegram-file-id-missing' });
             continue;
@@ -933,6 +937,7 @@ app.post('/api/telegram/assets/:assetId/repair', async (req, res) => {
     const sessionId = sanitizeString(req.query?.sessionId, 80);
     const asset = resolveTelegramServerAsset(assetId);
     if (!asset || asset.sessionId !== sessionId) return res.status(404).json({ error: 'asset-not-registered' });
+    if (!isTelegramBotOriginAsset(asset)) return res.status(409).json({ error: 'not-telegram-bot-origin' });
     if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
     if (!telegramConfig.backupChatId) return res.status(409).json({ error: 'telegram-backup-chat-not-configured' });
     const chunks = [];
@@ -1774,6 +1779,12 @@ function createServerAssetId() {
 
 function isValidServerAssetId(assetId) {
     return typeof assetId === 'string' && /^[a-zA-Z0-9_-]{12,64}$/.test(assetId);
+}
+
+function isTelegramBotOriginAsset(asset) {
+    const source = String(asset?.source || '');
+    if (asset?.snsTaskId || asset?.snsMediaItemId || /^sns(?:-|$)/.test(source)) return false;
+    return source === 'telegram-bot' || Boolean(asset?.fileId || asset?.fileUniqueId || asset?.fileIdHistory?.length);
 }
 
 function isRecoverableSnsAsset(asset) {
@@ -3027,6 +3038,7 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         size: Number(telegramFile.size) || 0,
         sessionId,
         createdAt: Date.now(),
+        source: 'telegram-bot',
         fileId: telegramFile.fileId,
         fileUniqueId: telegramFile.fileUniqueId || '',
         fileIdUpdatedAt: Date.now()
@@ -3094,6 +3106,7 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         size: Number(telegramFile.size) || 0,
         sessionId,
         createdAt: Date.now(),
+        source: 'telegram-bot',
         fileId: telegramFile.fileId,
         fileUniqueId: telegramFile.fileUniqueId || '',
         fileIdUpdatedAt: Date.now()

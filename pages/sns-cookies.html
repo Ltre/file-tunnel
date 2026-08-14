@@ -218,12 +218,12 @@
         <section class="card">
             <div class="card-head">
                 <div class="platform-title">
-                    <strong>Chrome 自动同步 SNS Cookie</strong>
-                    <span>tools/auto-sync-sns-cookies</span>
+                    <strong>浏览器自动同步 SNS Cookie</strong>
+                    <span>Chrome / Firefox Windows / Firefox Android</span>
                 </div>
                 <span class="badge empty" id="syncBadge">未配置</span>
             </div>
-            <p class="subtle">管理员专用扩展会定时读取当前 Chrome 中 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到本服务器。未登录或没有可用 Cookie 的平台会被跳过，不会清空服务器中已有的配置。同步密钥只在生成时显示，请勿泄露。</p>
+            <p class="subtle">管理员专用扩展会定时读取当前浏览器中 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到本服务器。仓库分别提供 Chrome、Firefox Windows 和 Firefox Android 安装目录。未登录或没有可用 Cookie 的平台会被跳过，不会清空服务器中已有的配置。同步密钥只在生成时显示，请勿泄露。</p>
             <input class="sync-field" id="syncServerUrl" type="text" readonly>
             <input class="sync-field" id="syncToken" type="text" readonly hidden style="margin-top: 10px;">
             <div class="actions">
@@ -379,7 +379,7 @@
                 syncToken.hidden = false;
                 copySyncTokenBtn.hidden = false;
                 await loadSyncStatus();
-                syncStatus.textContent = '新密钥只显示这一次，请复制到 Chrome 扩展设置中。';
+                syncStatus.textContent = '新密钥只显示这一次，请复制到浏览器扩展设置中。';
             } catch (err) {
                 syncStatus.textContent = err.message || '生成失败';
             } finally {
@@ -399,7 +399,7 @@
         });
 
         revokeSyncTokenBtn.addEventListener('click', async () => {
-            if (!confirm('确定撤销 Chrome 扩展同步密钥吗？')) return;
+            if (!confirm('确定撤销浏览器扩展同步密钥吗？')) return;
             const response = await fetch('/api/sns-cookie-sync/token', { method: 'DELETE' });
             if (!response.ok) return void (syncStatus.textContent = '撤销失败');
             syncToken.value = '';

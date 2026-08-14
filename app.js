@@ -11361,6 +11361,7 @@ async function getSessionResourceInventory() {
                 isEditorAsset: false,
                 isFileAsset: false,
                 isTelegramSource: false,
+                isSnsSource: false,
                 isFavorite: false,
                 isFileFavorite: false,
                 isRecordFavorite: false,
@@ -11384,8 +11385,10 @@ async function getSessionResourceInventory() {
         resource.isFileFavorite = resource.isFileFavorite || candidate.mediaFavorite === true || favoriteMusicIds.has(id);
         resource.isRecordFavorite = resource.isRecordFavorite || candidate.recordFavorite === true || candidate.favorite === true;
         resource.isFavorite = resource.isFavorite || resource.isFileFavorite || resource.isRecordFavorite;
-        resource.isTelegramSource = resource.isTelegramSource || candidate.isServerAsset === true || Boolean(candidate.telegramFileId) ||
-            String(candidate.serverAssetUrl || '').startsWith('/api/server-assets/');
+        resource.isSnsSource = resource.isSnsSource || Boolean(candidate.snsTaskId || candidate.snsMediaItemId || candidate.snsSourceUrl) ||
+            /^sns(?:-|$)/.test(String(candidate.source || ''));
+        resource.isTelegramSource = resource.isTelegramSource || candidate.telegramBotOrigin === true ||
+            Boolean(candidate.telegramFileId || candidate.telegramFileUniqueId);
         if (candidate.serverAssetUrl) resource.serverAssetUrl = candidate.serverAssetUrl;
         if (candidate.telegramFileId && Number(candidate.telegramFileIdUpdatedAt || 0) >= resource.telegramFileIdUpdatedAt) {
             resource.telegramFileId = candidate.telegramFileId;
@@ -11409,7 +11412,11 @@ async function getSessionResourceInventory() {
 
     messages.forEach(message => {
         if (message.fileInfo?.id) {
-            upsertResource({ ...message.fileInfo, recordFavorite: message.favorite === true });
+            upsertResource({
+                ...message.fileInfo,
+                recordFavorite: message.favorite === true,
+                telegramBotOrigin: message.senderName === 'Telegram Bot' && !message.snsAcquisition
+            });
             addReference(message.fileInfo.id, {
                 kind: 'chat-file',
                 messageId: message.id,
@@ -11419,7 +11426,11 @@ async function getSessionResourceInventory() {
         if (message.type === 'collection') {
             getCollectionFiles(message).forEach(fileInfo => {
                 if (!fileInfo?.id) return;
-                upsertResource({ ...fileInfo, recordFavorite: message.favorite === true });
+                upsertResource({
+                    ...fileInfo,
+                    recordFavorite: message.favorite === true,
+                    telegramBotOrigin: message.senderName === 'Telegram Bot' && !message.snsAcquisition
+                });
                 addReference(fileInfo.id, {
                     kind: 'collection-file',
                     messageId: message.id,
@@ -11472,6 +11483,7 @@ async function getSessionResourceInventory() {
     });
 
     return Array.from(resources.values()).map(resource => {
+        resource.isTelegramSource = resource.isTelegramSource && !resource.isSnsSource;
         resource.name = resource.name || `未命名资源 ${resource.id.slice(0, 8)}`;
         resource.hasLocalData = hasCompleteFileInventoryCache(resource.file, resource);
         resource.isExternalFile = Boolean(resource.file?.externalFileHandle || resource.isExternalFile);
@@ -11481,6 +11493,7 @@ async function getSessionResourceInventory() {
         resource.isPartial = Boolean(resource.file?.isPartial || resource.file?.transferInterrupted);
         resource.timestamp = Number(resource.file?.timestamp || 0);
         resource.references.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        delete resource.isSnsSource;
         delete resource.referenceKeys;
         return resource;
     }).sort((a, b) => {

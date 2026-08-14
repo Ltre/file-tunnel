@@ -1,5 +1,6 @@
 'use strict';
 
+const webext = globalThis.browser || globalThis.chrome;
 const fields = {
     intervalMinutes: document.getElementById('intervalMinutes'),
     pageResyncMinutes: document.getElementById('pageResyncMinutes'),
@@ -99,7 +100,7 @@ function renderServers() {
         actions.className = 'server-actions';
         actions.append(
             createIconButton('↗', '打开此服务器的 SNS Cookie 管理页', () => {
-                chrome.tabs.create({ url: `${server.serverUrl}/sns-cookies` });
+                webext.tabs.create({ url: `${server.serverUrl}/sns-cookies` });
             }),
             createIconButton('✎', '修改服务器', () => openServerDialog(server)),
             createIconButton('×', '删除服务器', () => {
@@ -112,7 +113,7 @@ function renderServers() {
 }
 
 async function loadSettings() {
-    const response = await chrome.runtime.sendMessage({ type: 'get-settings' });
+    const response = await webext.runtime.sendMessage({ type: 'get-settings' });
     if (!response?.ok) throw new Error(response?.error || '读取设置失败');
     const settings = response.settings;
     servers = Array.isArray(settings.servers) ? settings.servers : [];
@@ -135,7 +136,7 @@ function openServerDialog(server = null) {
 
 async function removeUnusedPermission(serverUrl) {
     if (servers.some(server => server.serverUrl === serverUrl)) return;
-    await chrome.permissions.remove({ origins: [`${serverUrl}/*`] }).catch(() => false);
+    await webext.permissions.remove({ origins: [`${serverUrl}/*`] }).catch(() => false);
 }
 
 async function saveServer() {
@@ -148,12 +149,12 @@ async function saveServer() {
     const previous = servers.find(server => server.id === editingServerId);
     const next = { id: editingServerId || crypto.randomUUID(), serverUrl, syncToken };
     servers = previous ? servers.map(server => server.id === editingServerId ? next : server) : [...servers, next];
-    await chrome.storage.local.set({ servers, lastCookieHash: '', lastSyncAt: 0, lastResult: '', lastError: '' });
+    await webext.storage.local.set({ servers, lastCookieHash: '', lastSyncAt: 0, lastResult: '', lastError: '' });
     if (previous && previous.serverUrl !== serverUrl) await removeUnusedPermission(previous.serverUrl);
     serverDialog.close();
     renderServers();
     setStatus('服务器配置已保存，正在请求访问权限...');
-    const granted = await chrome.permissions.request({ origins: [`${serverUrl}/*`] });
+    const granted = await webext.permissions.request({ origins: [`${serverUrl}/*`] });
     if (!granted) throw new Error(`服务器配置已保存，但尚未授予访问 ${serverUrl} 的权限`);
     setStatus(previous ? '服务器配置已更新。' : '服务器已添加。', 'ok');
 }
@@ -161,7 +162,7 @@ async function saveServer() {
 async function deleteServer(server) {
     if (!confirm(`确定删除服务器 ${server.serverUrl} 吗？`)) return;
     servers = servers.filter(item => item.id !== server.id);
-    await chrome.storage.local.set({
+    await webext.storage.local.set({
         servers,
         lastCookieHash: '',
         lastSyncAt: 0,
@@ -171,7 +172,7 @@ async function deleteServer(server) {
     });
     if (!servers.length) {
         fields.enabled.checked = false;
-        await chrome.runtime.sendMessage({ type: 'configure-alarm' });
+        await webext.runtime.sendMessage({ type: 'configure-alarm' });
     }
     await removeUnusedPermission(server.serverUrl);
     renderServers();
@@ -180,13 +181,13 @@ async function deleteServer(server) {
 
 async function saveSettings() {
     if (fields.enabled.checked && !servers.length) throw new Error('启用自动同步前请先添加服务器');
-    await chrome.storage.local.set({
+    await webext.storage.local.set({
         intervalMinutes: Math.max(5, Number(fields.intervalMinutes.value) || 15),
         pageResyncMinutes: Math.max(5, Number(fields.pageResyncMinutes.value) || 30),
         enabled: fields.enabled.checked,
         lastError: ''
     });
-    await chrome.runtime.sendMessage({ type: 'configure-alarm' });
+    await webext.runtime.sendMessage({ type: 'configure-alarm' });
     setStatus('设置已保存。', 'ok');
 }
 
@@ -227,7 +228,7 @@ async function importConfig() {
     fields.enabled.checked = imported.enabled;
     fields.intervalMinutes.value = imported.intervalMinutes;
     fields.pageResyncMinutes.value = imported.pageResyncMinutes;
-    await chrome.storage.local.set({
+    await webext.storage.local.set({
         ...imported,
         lastCookieHash: '',
         lastSyncAt: 0,
@@ -238,7 +239,7 @@ async function importConfig() {
     renderServers();
     setStatus('配置已导入，正在请求服务器访问权限...');
     const origins = servers.map(server => `${server.serverUrl}/*`);
-    const granted = await chrome.permissions.request({ origins });
+    const granted = await webext.permissions.request({ origins });
     if (!granted) throw new Error('配置已导入，但尚未授予全部服务器的访问权限');
     configBackupInput.value = '';
     setStatus(`已导入 ${servers.length} 台服务器配置。`, 'ok');
@@ -270,7 +271,7 @@ document.getElementById('syncBtn').addEventListener('click', async event => {
         event.currentTarget.disabled = true;
         await saveSettings();
         setStatus(`正在读取各 SNS 平台 Cookie 并同步到 ${servers.length} 台服务器...`);
-        const response = await chrome.runtime.sendMessage({ type: 'sync-now' });
+        const response = await webext.runtime.sendMessage({ type: 'sync-now' });
         if (!response?.ok) throw new Error(response?.error || '同步失败');
         await loadSettings();
     } catch (error) {

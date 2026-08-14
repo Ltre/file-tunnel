@@ -679,22 +679,32 @@ https://tunnel.example.com/sns-cookies
 
 YouTube 会轮换仍在浏览器中使用的账号 Cookie。如果选择手动导出，yt-dlp 官方建议在新的无痕窗口登录 YouTube，在同一标签打开 `https://www.youtube.com/robots.txt`，导出后立即关闭该无痕窗口，避免该会话继续被浏览器轮换。
 
-#### 12.5.2 Chrome 自动同步扩展（Drop2Tunnel SNS Cookie Sync）
+#### 12.5.2 浏览器自动同步扩展（Drop2Tunnel SNS Cookie Sync）
 
 仓库内置管理员专用扩展：
 
 ```text
-tools/auto-sync-sns-cookies
+tools/auto-sync-sns-cookies/chrome
+tools/auto-sync-sns-cookies/firefox-windows
+tools/auto-sync-sns-cookies/firefox-android
 ```
+
+修改公共 JS/HTML 后，先生成两个 Firefox 包中的公共文件：
+
+```bash
+npm run build:sns-cookie-extension
+```
+
+从旧版根目录安装方式迁移到 `chrome/` 前，应先在旧扩展中导出 Base64 配置，再在新扩展中导入；加载路径改变后 Chrome 可能分配新的扩展 ID，本地设置不会自动继承。三种浏览器包之间也通过该 Base64 完成服务器配置迁移。
 
 服务端升级并重启后，按以下步骤配置：
 
-1. 分别进入每台 Drop2Tunnel 服务器的 `/sns-cookies`，在“Chrome 自动同步 SNS Cookie”区域生成各自的同步密钥。
-2. Chrome 打开 `chrome://extensions`，启用“开发者模式”，点击“加载已解压的扩展程序”。
-3. 选择部署源码中的 `tools/auto-sync-sns-cookies` 目录；升级旧版扩展后点击“重新加载”，并确认新增的 SNS 域名访问权限。
-4. 打开扩展，点击 `+`，填写一台服务器地址和它自己的同步密钥；重复操作即可添加多台服务器。
-5. Chrome 会逐一询问是否允许扩展访问对应的 Drop2Tunnel Origin。服务器列表中的 `↗`、`✎`、`×` 分别用于打开后台、修改配置和删除配置。
-6. 勾选“启用自动同步”并保存，然后点击“立即同步”。扩展会读取 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并将本次检测到的平台批量同步到列表中的全部服务器。
+1. 分别进入每台 Drop2Tunnel 服务器的 `/sns-cookies`，在“浏览器自动同步 SNS Cookie”区域生成各自的同步密钥。
+2. Chrome：在 `chrome://extensions` 启用开发者模式，加载 `tools/auto-sync-sns-cookies/chrome`。
+3. Firefox Windows 临时调试：在 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开 `firefox-windows/manifest.json`；长期使用需通过 Mozilla AMO 签名 XPI。
+4. Firefox Android 临时调试：使用 ADB 与 `web-ext run --target=firefox-android --source-dir tools/auto-sync-sns-cookies/firefox-android`；长期使用需安装签名 XPI。
+5. 打开扩展，点击 `+`，填写服务器地址和对应同步密钥；重复操作即可添加多台服务器。三个版本都会按服务器 Origin 动态申请访问权限。
+6. 勾选“启用自动同步”并保存，然后点击“立即同步”。扩展会读取 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到全部已配置服务器。
 7. 分别回到各服务器的 `/sns-cookies` 点击“刷新”，检查各平台 Cookie 的更新时间和大小。
 
 扩展读取的域名与 `/sns-cookies` 中的平台一一对应：YouTube / YT Music 使用 `youtube.com`，TikTok 使用 `tiktok.com`，Facebook 使用 `facebook.com`，Instagram 使用 `instagram.com`，Threads 使用 `threads.com`、旧域名 `threads.net` 及其可能复用的 `instagram.com` 登录态，LINE 使用 `line.me`，Twitter / X 使用 `twitter.com` 和 `x.com`。未登录或没有可用 Cookie 的平台会被跳过，服务器中该平台原有的 Cookie 文件保持不变。
@@ -723,12 +733,12 @@ tools/auto-sync-sns-cookies
 
 常见错误：
 
-- `youtube-login-cookie-missing`：当前 Chrome 中没有可识别的 YouTube 登录态，扩展不会覆盖服务器文件；
+- `youtube-login-cookie-missing`：当前浏览器中没有可识别的 YouTube 登录态，扩展不会覆盖服务器文件；
 - `<platform>-login-cookie-missing`：该平台 Cookie 中没有服务端可识别的登录态，整批请求会被拒绝且不会写入任何平台；
 - `<platform>-cookie-domain-missing`：上传内容中没有该平台对应域名的 Cookie，整批请求会被拒绝；
 - `sns-cookie-sync-auth-invalid`：扩展中的同步密钥已被撤销或重新生成；
 - 经过反向代理后持续返回 401：确认代理没有剥离扩展请求的 `Authorization: Bearer ...` 请求头；
-- YouTube 仍提示登录验证：先确认扩展读取的是已登录账号所在的 Chrome Profile，再检查服务器出口 IP 是否触发 YouTube 风控；
+- YouTube 仍提示登录验证：先确认扩展读取的是已登录账号所在的浏览器 Profile，再检查服务器出口 IP 是否触发 YouTube 风控；
 - 手动导出内容明显偏小：换用能够导出 HttpOnly Cookie 的工具，并以 Netscape 格式重新导出。Firefox 的 Cookie-Editor 通常比只能读取页面 Cookie 的脚本更完整。
 
 ### 12.6 Telegram 云端 Bot API 的 20MB 下载边界

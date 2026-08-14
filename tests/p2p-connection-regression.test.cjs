@@ -30,6 +30,24 @@ test('SNS collection downloads keep the selected media item', () => {
     assert.match(source, /runYtDlpDownload\(task\.sourceUrl, asset\.id, undefined, task\.playlistItem\)/);
 });
 
+test('Telegram continuity repair excludes SNS and generic server assets', () => {
+    const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const start = serverSource.indexOf('function isTelegramBotOriginAsset');
+    const end = serverSource.indexOf('\nfunction isRecoverableSnsAsset', start);
+    const context = {};
+    vm.runInNewContext(`${serverSource.slice(start, end)}; this.isTelegramOrigin = isTelegramBotOriginAsset;`, context);
+
+    assert.equal(context.isTelegramOrigin({ source: 'telegram-bot' }), true);
+    assert.equal(context.isTelegramOrigin({ fileId: 'legacy-telegram-file-id' }), true);
+    assert.equal(context.isTelegramOrigin({ source: 'sns', snsTaskId: 'task', fileId: 'mistaken-backup-id' }), false);
+    assert.equal(context.isTelegramOrigin({ path: 'server-copy', isServerAsset: true }), false);
+    assert.match(serverSource, /if \(!isTelegramBotOriginAsset\(asset\)\) return res\.status\(409\)/);
+
+    const appSource = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    assert.match(appSource, /resource\.isTelegramSource = resource\.isTelegramSource && !resource\.isSnsSource/);
+    assert.doesNotMatch(appSource, /isTelegramSource = resource\.isTelegramSource \|\| candidate\.isServerAsset/);
+});
+
 class MockDataChannel extends EventTarget {
     constructor(label, readyState = 'connecting') {
         super();
@@ -555,12 +573,23 @@ test('SNS recovery exposes each fallback stage and resets a failed restore for r
 test('administrator SNS cookie sync covers every configured platform and rejects missing login state', () => {
     const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     const extensionRoot = path.join(ROOT, 'tools', 'auto-sync-sns-cookies');
-    const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
-    const background = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
-    const options = fs.readFileSync(path.join(extensionRoot, 'options.js'), 'utf8');
+    const buildNames = ['chrome', 'firefox-windows', 'firefox-android'];
+    const manifests = Object.fromEntries(buildNames.map(name => [
+        name,
+        JSON.parse(fs.readFileSync(path.join(extensionRoot, name, 'manifest.json'), 'utf8'))
+    ]));
+    const background = fs.readFileSync(path.join(extensionRoot, 'chrome', 'background.js'), 'utf8');
+    const options = fs.readFileSync(path.join(extensionRoot, 'chrome', 'options.js'), 'utf8');
+    const sharedFiles = ['background.js', 'options.html', 'options.js', 'sns-opened.js'];
 
-    assert.equal(manifest.manifest_version, 3);
-    assert.ok(manifest.permissions.includes('cookies'));
+    assert.equal(manifests.chrome.manifest_version, 3);
+    assert.equal(manifests.chrome.background.service_worker, 'background.js');
+    assert.equal(manifests['firefox-windows'].manifest_version, 3);
+    assert.deepEqual(manifests['firefox-windows'].background.scripts, ['background.js']);
+    assert.equal(manifests['firefox-android'].manifest_version, 2);
+    assert.deepEqual(manifests['firefox-android'].background.scripts, ['background.js']);
+    assert.equal(manifests['firefox-android'].background.persistent, false);
+    for (const manifest of Object.values(manifests)) assert.ok(manifest.permissions.includes('cookies'));
     for (const permission of [
         '*://*.youtube.com/*',
         '*://*.tiktok.com/*',
@@ -571,8 +600,19 @@ test('administrator SNS cookie sync covers every configured platform and rejects
         '*://*.line.me/*',
         '*://*.twitter.com/*',
         '*://*.x.com/*'
-    ]) assert.ok(manifest.host_permissions.includes(permission), `missing ${permission}`);
-    assert.equal(manifest.content_scripts[0].js[0], 'sns-opened.js');
+    ]) {
+        for (const [name, manifest] of Object.entries(manifests)) {
+            const hostPermissions = manifest.host_permissions || manifest.permissions;
+            assert.ok(hostPermissions.includes(permission), `${name} missing ${permission}`);
+        }
+    }
+    for (const manifest of Object.values(manifests)) assert.equal(manifest.content_scripts[0].js[0], 'sns-opened.js');
+    for (const file of sharedFiles) {
+        const source = fs.readFileSync(path.join(extensionRoot, 'chrome', file), 'utf8');
+        for (const name of buildNames.slice(1)) {
+            assert.equal(fs.readFileSync(path.join(extensionRoot, name, file), 'utf8'), source, `${name}/${file} is stale`);
+        }
+    }
     assert.match(serverSource, /requireSnsCookieSyncToken/);
     assert.match(serverSource, /SNS_COOKIE_LOGIN_NAMES/);
     assert.match(serverSource, /-login-cookie-missing/);
@@ -581,10 +621,11 @@ test('administrator SNS cookie sync covers every configured platform and rejects
     assert.match(serverSource, /X-Drop2Tunnel-Asset-Origin/);
     assert.match(background, /const SNS_PLATFORMS/);
     assert.match(background, /collectSnsCookieFiles/);
+    assert.match(background, /globalThis\.browser \|\| globalThis\.chrome/);
     assert.match(background, /normalizeSyncToken\(server\.syncToken\)/);
     assert.match(background, /api\/sns-cookie-sync`/);
     assert.match(background, /settings\.servers\.map\(server => syncServer\(server, files\)\)/);
-    assert.match(background, /chrome\.storage\.local\.remove\(\['serverUrl', 'syncToken'\]\)/);
+    assert.match(background, /webext\.storage\.local\.remove\(\['serverUrl', 'syncToken'\]\)/);
     assert.match(options, /addServerBtn/);
     assert.match(options, /deleteServer\(server\)/);
     assert.match(options, /drop2tunnel-sns-cookie-sync/);
@@ -592,9 +633,9 @@ test('administrator SNS cookie sync covers every configured platform and rejects
     assert.match(options, /parseConfigBackup/);
     assert.match(options, /importConfig/);
     const importConfigSource = options.slice(options.indexOf('async function importConfig'), options.indexOf("\ndocument.getElementById('addServerBtn')"));
-    assert.ok(importConfigSource.indexOf('chrome.storage.local.set') < importConfigSource.indexOf('chrome.permissions.request'));
+    assert.ok(importConfigSource.indexOf('webext.storage.local.set') < importConfigSource.indexOf('webext.permissions.request'));
     const saveServerSource = options.slice(options.indexOf('async function saveServer'), options.indexOf('\nasync function deleteServer'));
-    assert.ok(saveServerSource.indexOf('chrome.storage.local.set') < saveServerSource.indexOf('chrome.permissions.request'));
+    assert.ok(saveServerSource.indexOf('webext.storage.local.set') < saveServerSource.indexOf('webext.permissions.request'));
 });
 
 test('a P2P channel failure falls back to Socket.IO relay once', async () => {
