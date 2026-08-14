@@ -15,6 +15,21 @@ test('SNS metadata parsing prefers local EJS and allows a bounded production wai
     assert.match(source, /yt-dlp-timeout-\$\{timeoutMs\}ms/);
 });
 
+test('SNS collection downloads keep the selected media item', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const start = source.indexOf('function getYtDlpDownloadSelectionArgs');
+    const end = source.indexOf('\nasync function runYtDlpDownload', start);
+    const context = {};
+    vm.runInNewContext(`${source.slice(start, end)}; this.select = getYtDlpDownloadSelectionArgs;`, context);
+
+    assert.equal(JSON.stringify(context.select(0)), JSON.stringify(['--no-playlist']));
+    assert.equal(JSON.stringify(context.select(2)), JSON.stringify(['--yes-playlist', '--playlist-items', '2']));
+    assert.match(source, /args\.push\(options\.noPlaylist === false \? '--yes-playlist' : '--no-playlist'\)/);
+    assert.match(source, /playlistItem: Math\.max\(1, Math\.trunc\(Number\(meta\?\.playlist_index\) \|\| mediaIndex \+ 1\)\)/);
+    assert.match(source, /taskRecord\.playlistItem \? item\.sourceUrl : \(item\.mediaUrl \|\| item\.sourceUrl\)/);
+    assert.match(source, /runYtDlpDownload\(task\.sourceUrl, asset\.id, undefined, task\.playlistItem\)/);
+});
+
 class MockDataChannel extends EventTarget {
     constructor(label, readyState = 'connecting') {
         super();

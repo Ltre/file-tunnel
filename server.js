@@ -1923,7 +1923,7 @@ async function restoreSnsServerAssetFile(asset) {
                 resetRestoredServerAsset(target);
             }
         } else {
-            const downloadedPath = await runYtDlpDownload(task.sourceUrl, asset.id);
+            const downloadedPath = await runYtDlpDownload(task.sourceUrl, asset.id, undefined, task.playlistItem);
             const probe = await probeMediaFile(downloadedPath);
             if (!probe.streams?.some(stream => stream.codec_type === 'video')) throw new Error('sns-restored-video-invalid');
             moveSnsFileToAsset(downloadedPath, asset.id);
@@ -2263,7 +2263,7 @@ function runYtDlpJson(url, options = {}) {
         ];
         if (options.ignoreNoFormats === true) args.push('--ignore-no-formats-error');
         if (options.flatPlaylist === true) args.push('--flat-playlist');
-        if (options.noPlaylist !== false) args.push('--no-playlist');
+        args.push(options.noPlaylist === false ? '--yes-playlist' : '--no-playlist');
         args.push(...getYtDlpRemoteComponentArgs(url));
         args.push(...getYtDlpFfmpegArgs());
         args.push(url);
@@ -2410,6 +2410,7 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
             year: getReleaseYear(meta)
         } : null,
         mediaIndex,
+        playlistItem: Math.max(1, Math.trunc(Number(meta?.playlist_index) || mediaIndex + 1)),
         serverState: 'not_fetched',
         serverProgress: 0,
         serverAssetId: '',
@@ -2453,8 +2454,8 @@ async function buildSnsMetadata(rawText, messageId) {
             const entries = youtube ? [] : (Array.isArray(meta?.entries) ? meta.entries.filter(Boolean).slice(0, 100) : []);
             source.title = sanitizeString(meta?.title || meta?.fulltitle || sourceUrl, 240);
             source.coverUrl = sanitizeString(meta?.thumbnail || meta?.thumbnails?.slice(-1)?.[0]?.url || '', 1000);
-            source.sourceType = entries.length > 1 ? 'collection' : 'single';
-            const mediaMetas = entries.length > 1 ? entries : [meta];
+            source.sourceType = entries.length ? 'collection' : 'single';
+            const mediaMetas = entries.length ? entries : [meta];
             mediaMetas.forEach((entry, mediaIndex) => {
                 const item = buildSnsMediaItemFromMeta(messageId, source, entry, mediaIndex);
                 item.sourceType = source.sourceType;
@@ -3396,12 +3397,19 @@ function parseYtDlpProgress(chunk, onProgress, state) {
     });
 }
 
-async function runYtDlpDownload(url, assetId, onProgress = () => {}) {
+function getYtDlpDownloadSelectionArgs(playlistItem = 0) {
+    playlistItem = Math.trunc(Number(playlistItem));
+    return playlistItem > 0
+        ? ['--yes-playlist', '--playlist-items', String(playlistItem)]
+        : ['--no-playlist'];
+}
+
+async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistItem = 0) {
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
     cleanupSnsWorkFiles(`${assetId}.`);
     const progressState = { lastAt: 0 };
     await spawnYtDlpCapture([
-        '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
+        '--newline', ...getYtDlpDownloadSelectionArgs(playlistItem), '--cache-dir', YT_DLP_CACHE_DIR,
         ...getYtDlpRemoteComponentArgs(url),
         ...getYtDlpFfmpegArgs(),
         '-f', getYtDlpFormatSelector(url),
@@ -3658,7 +3666,12 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
             coverAssetId: item.mediaKind === 'song' ? createServerAssetId() : '',
             videoAssetId: item.mediaKind === 'song' ? '' : createServerAssetId()
         };
-        taskRecord = persistSnsTask(taskRecord);
+        taskRecord = persistSnsTask({
+            ...taskRecord,
+            playlistItem: item.sourceType === 'collection'
+                ? Math.max(1, Math.trunc(Number(item.playlistItem) || Number(item.mediaIndex) + 1 || 1))
+                : 0
+        });
         let lastStateEmit = 0;
         const updateItem = (patch, reason = 'sns-media-status') => {
             const now = Date.now();
@@ -3745,13 +3758,18 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                     };
                 } else {
                     updateStage('fetching_video');
-                    const downloadedPath = await runYtDlpDownload(item.mediaUrl || item.sourceUrl, taskRecord.videoAssetId, progress => {
-                        updateTask({ status: 'fetching_video', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
-                        updateItem({
-                            serverState: 'fetching', serverStage: 'fetching_video', serverProgress: progress.percent,
-                            serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
-                        }, 'sns-media-progress');
-                    });
+                    const downloadedPath = await runYtDlpDownload(
+                        taskRecord.playlistItem ? item.sourceUrl : (item.mediaUrl || item.sourceUrl),
+                        taskRecord.videoAssetId,
+                        progress => {
+                            updateTask({ status: 'fetching_video', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
+                            updateItem({
+                                serverState: 'fetching', serverStage: 'fetching_video', serverProgress: progress.percent,
+                                serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
+                            }, 'sns-media-progress');
+                        },
+                        taskRecord.playlistItem
+                    );
                     if (fs.statSync(downloadedPath).size > getTelegramMaxFileSize()) {
                         cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
                         throw new Error('sns-media-file-too-large');
