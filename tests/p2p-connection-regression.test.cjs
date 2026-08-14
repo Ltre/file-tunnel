@@ -459,7 +459,63 @@ test('SNS peer-first recovery does not mistake a queued request for an active tr
     const recoverySource = source.slice(start, end);
 
     assert.match(recoverySource, /providerTransfers\?\.has\(fileInfo\.id\)/);
+    assert.match(recoverySource, /peerTransferActive && Number\(peerProgress\?\.progress\) > 0/);
     assert.doesNotMatch(recoverySource, /hasDownloadWork\?\.\(fileInfo\.id\)/);
+});
+
+test('SNS recovery exposes each fallback stage and resets a failed restore for retry', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+
+    for (const label of [
+        '1/4 正在查找在线设备副本',
+        '2/4 正在请求服务器副本',
+        '3/4 SNS 原链接重新获取完成',
+        '4/4 正在写入、校验并确认本机缓存'
+    ]) {
+        assert.match(source, new RegExp(label));
+    }
+    const failureStart = source.indexOf('async function markServerAssetRecoveryFailed');
+    const failureEnd = source.indexOf('\nfunction confirmServerAssetCache', failureStart);
+    const failureSource = source.slice(failureStart, failureEnd);
+    assert.match(failureSource, /restoreRequested: false/);
+    assert.match(failureSource, /transferInterrupted: true/);
+});
+
+test('administrator SNS cookie sync covers every configured platform and rejects missing login state', () => {
+    const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const extensionRoot = path.join(ROOT, 'tools', 'auto-sync-sns-cookies');
+    const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
+    const background = fs.readFileSync(path.join(extensionRoot, 'background.js'), 'utf8');
+    const options = fs.readFileSync(path.join(extensionRoot, 'options.js'), 'utf8');
+
+    assert.equal(manifest.manifest_version, 3);
+    assert.ok(manifest.permissions.includes('cookies'));
+    for (const permission of [
+        '*://*.youtube.com/*',
+        '*://*.tiktok.com/*',
+        '*://*.facebook.com/*',
+        '*://*.instagram.com/*',
+        '*://*.threads.com/*',
+        '*://*.threads.net/*',
+        '*://*.line.me/*',
+        '*://*.twitter.com/*',
+        '*://*.x.com/*'
+    ]) assert.ok(manifest.host_permissions.includes(permission), `missing ${permission}`);
+    assert.equal(manifest.content_scripts[0].js[0], 'sns-opened.js');
+    assert.match(serverSource, /requireSnsCookieSyncToken/);
+    assert.match(serverSource, /SNS_COOKIE_LOGIN_NAMES/);
+    assert.match(serverSource, /-login-cookie-missing/);
+    assert.match(serverSource, /app\.post\('\/api\/sns-cookie-sync'/);
+    assert.match(serverSource, /prepareSyncedSnsCookies/);
+    assert.match(serverSource, /X-Drop2Tunnel-Asset-Origin/);
+    assert.match(background, /const SNS_PLATFORMS/);
+    assert.match(background, /collectSnsCookieFiles/);
+    assert.match(background, /normalizeSyncToken\(server\.syncToken\)/);
+    assert.match(background, /api\/sns-cookie-sync`/);
+    assert.match(background, /settings\.servers\.map\(server => syncServer\(server, files\)\)/);
+    assert.match(background, /chrome\.storage\.local\.remove\(\['serverUrl', 'syncToken'\]\)/);
+    assert.match(options, /addServerBtn/);
+    assert.match(options, /deleteServer\(server\)/);
 });
 
 test('a P2P channel failure falls back to Socket.IO relay once', async () => {

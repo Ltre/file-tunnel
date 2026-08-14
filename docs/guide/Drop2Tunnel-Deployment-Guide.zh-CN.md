@@ -670,14 +670,66 @@ https://tunnel.example.com/sns-cookies
 - Twitter：`.tunnel-data/twitter-cookies.txt`；
 - X：`.tunnel-data/x-cookies.txt`。
 
-这些 cookies 可能包含登录态。建议：
+#### 12.5.1 在管理页手动配置
+
+1. 使用浏览器登录管理页，并打开 `/sns-cookies`。
+2. 在对应平台粘贴 Netscape cookies.txt 内容；YouTube 和 YT Music 共用同一个输入框。
+3. YouTube Cookie 必须包含登录态及 HttpOnly Cookie。只通过 `document.cookie` 导出的内容不完整，不能用于 yt-dlp。
+4. 点击“保存”，确认状态中显示的文件大小符合预期，再用一条 YouTube 链接验证“解析”和“获取文件内容”。
+
+YouTube 会轮换仍在浏览器中使用的账号 Cookie。如果选择手动导出，yt-dlp 官方建议在新的无痕窗口登录 YouTube，在同一标签打开 `https://www.youtube.com/robots.txt`，导出后立即关闭该无痕窗口，避免该会话继续被浏览器轮换。
+
+#### 12.5.2 Chrome 自动同步扩展（Drop2Tunnel SNS Cookie Sync）
+
+仓库内置管理员专用扩展：
+
+```text
+tools/auto-sync-sns-cookies
+```
+
+服务端升级并重启后，按以下步骤配置：
+
+1. 分别进入每台 Drop2Tunnel 服务器的 `/sns-cookies`，在“Chrome 自动同步 SNS Cookie”区域生成各自的同步密钥。
+2. Chrome 打开 `chrome://extensions`，启用“开发者模式”，点击“加载已解压的扩展程序”。
+3. 选择部署源码中的 `tools/auto-sync-sns-cookies` 目录；升级旧版扩展后点击“重新加载”，并确认新增的 SNS 域名访问权限。
+4. 打开扩展，点击 `+`，填写一台服务器地址和它自己的同步密钥；重复操作即可添加多台服务器。
+5. Chrome 会逐一询问是否允许扩展访问对应的 Drop2Tunnel Origin。服务器列表中的 `↗`、`✎`、`×` 分别用于打开后台、修改配置和删除配置。
+6. 勾选“启用自动同步”并保存，然后点击“立即同步”。扩展会读取 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并将本次检测到的平台批量同步到列表中的全部服务器。
+7. 分别回到各服务器的 `/sns-cookies` 点击“刷新”，检查各平台 Cookie 的更新时间和大小。
+
+扩展读取的域名与 `/sns-cookies` 中的平台一一对应：YouTube / YT Music 使用 `youtube.com`，TikTok 使用 `tiktok.com`，Facebook 使用 `facebook.com`，Instagram 使用 `instagram.com`，Threads 使用 `threads.com`、旧域名 `threads.net` 及其可能复用的 `instagram.com` 登录态，LINE 使用 `line.me`，Twitter / X 使用 `twitter.com` 和 `x.com`。未登录或没有可用 Cookie 的平台会被跳过，服务器中该平台原有的 Cookie 文件保持不变。
+
+扩展的自动触发规则：
+
+- 默认每 15 分钟检查一次；
+- 任一受支持平台的 Cookie 发生变化后延迟约 1 分钟同步，避免页面加载期间反复写入；
+- 任一受支持 SNS 页面久未打开后再次打开，会在页面稳定数秒后同步；
+- Cookie 内容未变化且刚同步过时不会重复上传；
+- 未检测到某个平台的 Cookie 或可识别登录态时会跳过该平台，客户端不会在批量请求中携带它，服务端也不会覆盖其已有 Cookie。
+
+每台服务器的同步接口使用各自独立的 Bearer 密钥，不复用管理会话 Cookie。服务端只在 `.tunnel-data/.sns-cookie-sync.json` 中保存密钥哈希，原始密钥仅在管理页生成当次显示并保存在扩展本地存储中。怀疑某台服务器的密钥泄露时，应在该服务器的 `/sns-cookies` 立即撤销或重新生成。从扩展列表删除服务器只会停止同步并撤销扩展对该 Origin 的访问权限，不会自动撤销服务端密钥。
+
+#### 12.5.3 安全与故障排查
+
+这些 Cookie 可能包含完整登录态。建议：
 
 - 只使用专用低权限账号导出；
 - 限制 `.tunnel-data` 文件权限；
 - 不写入 `tunnel.config.json`；
 - 不提交到 Git；
-- 定期更新或清理失效 cookies。
-- 使用firefox的cookie-editor插件（https://addons.mozilla.org/zh-CN/firefox/addon/cookie-editor/），以Netscape格式导出cookie （不建议使用chrome的cookie-editor，因为可能导出不完整）
+- 不把同步密钥、Cookie 内容写入日志或聊天记录；
+- 公网服务器必须使用 HTTPS；HTTP 只适合可信局域网内的临时调试；
+- 不再使用时撤销同步密钥并卸载扩展。
+
+常见错误：
+
+- `youtube-login-cookie-missing`：当前 Chrome 中没有可识别的 YouTube 登录态，扩展不会覆盖服务器文件；
+- `<platform>-login-cookie-missing`：该平台 Cookie 中没有服务端可识别的登录态，整批请求会被拒绝且不会写入任何平台；
+- `<platform>-cookie-domain-missing`：上传内容中没有该平台对应域名的 Cookie，整批请求会被拒绝；
+- `sns-cookie-sync-auth-invalid`：扩展中的同步密钥已被撤销或重新生成；
+- 经过反向代理后持续返回 401：确认代理没有剥离扩展请求的 `Authorization: Bearer ...` 请求头；
+- YouTube 仍提示登录验证：先确认扩展读取的是已登录账号所在的 Chrome Profile，再检查服务器出口 IP 是否触发 YouTube 风控；
+- 手动导出内容明显偏小：换用能够导出 HttpOnly Cookie 的工具，并以 Netscape 格式重新导出。Firefox 的 Cookie-Editor 通常比只能读取页面 Cookie 的脚本更完整。
 
 ### 12.6 Telegram 云端 Bot API 的 20MB 下载边界
 

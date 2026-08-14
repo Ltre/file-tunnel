@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Drop2Tunnel SNS Cookie Sync",
+  "version": "1.2.0",
+  "description": "管理员专用：自动将浏览器中的 SNS Cookie 同步到多台 Drop2Tunnel 服务器。",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "alarms",
+    "cookies",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://*.tiktok.com/*",
+    "*://*.facebook.com/*",
+    "*://*.instagram.com/*",
+    "*://*.threads.com/*",
+    "*://*.threads.net/*",
+    "*://*.line.me/*",
+    "*://*.twitter.com/*",
+    "*://*.x.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Drop2Tunnel SNS Cookie Sync",
+    "default_popup": "options.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://*.tiktok.com/*",
+        "*://*.facebook.com/*",
+        "*://*.instagram.com/*",
+        "*://*.threads.com/*",
+        "*://*.threads.net/*",
+        "*://*.line.me/*",
+        "*://*.twitter.com/*",
+        "*://*.x.com/*"
+      ],
+      "js": ["sns-opened.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

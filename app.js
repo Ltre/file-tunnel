@@ -2917,6 +2917,7 @@ function initFileAssetTransfer() {
             const staleUrl = fileObjectUrls.get(asset.id);
             if (staleUrl) URL.revokeObjectURL(staleUrl);
             fileObjectUrls.delete(asset.id);
+            clearServerAssetRecoveryStage(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
             notifyMusicLibraryAssetAvailable(asset, storedFile);
@@ -4980,8 +4981,56 @@ const serverAssetRecoveries = {
     active: 0,
     promises: new Map(),
     fetches: new Map(),
-    metadata: new Map()
+    metadata: new Map(),
+    stages: new Map()
 };
+
+function setServerAssetRecoveryStage(fileInfo, label, active = true) {
+    if (!fileInfo?.id) return;
+    const stage = { label: String(label || ''), active };
+    serverAssetRecoveries.stages.set(fileInfo.id, stage);
+    showFileMessagePlaceholder(fileInfo.id, stage.label, true, active);
+    if (activeFilePreviewMode === 'file' && activeFilePreviewFileId === fileInfo.id) {
+        renderFileMetadataPreview(document.getElementById('filePreviewContent'), fileInfo, stage.label);
+        renderSingleFilePreviewActions({
+            messageId: activeFilePreviewMessageId || activeCollectionPreviewMessageId || '',
+            fileInfo,
+            ownerDeviceId: activeFilePreviewOwnerDeviceId || fileInfo.ownerDeviceId || '',
+            collectionMessageId: activeCollectionPreviewMessageId || '',
+            hasLocalData: false,
+            cacheCleared: true,
+            restoreRequested: active
+        }).catch(err => historyLog('server-asset-recovery-actions-failed', { fileId: fileInfo.id, error: err.message }));
+    }
+    refreshCollectionPreviewCardForFile(fileInfo.id).catch(() => {});
+    refreshOpenSnsMediaClientStates();
+    historyLog('server-asset-recovery-stage', { fileId: fileInfo.id, label: stage.label, active });
+}
+
+function clearServerAssetRecoveryStage(fileId) {
+    if (fileId) serverAssetRecoveries.stages.delete(fileId);
+}
+
+async function markServerAssetRecoveryFailed(fileInfo, error) {
+    const current = await getFromStore('files', fileInfo.id).catch(() => null);
+    if (hasCompleteFileCache(current, fileInfo)) {
+        clearServerAssetRecoveryStage(fileInfo.id);
+        return;
+    }
+    await saveToStore('files', {
+        ...(current || {}),
+        ...fileInfo,
+        id: fileInfo.id,
+        sessionId: state.sessionId,
+        isFileAsset: true,
+        isServerAsset: true,
+        cacheCleared: true,
+        restoreRequested: false,
+        transferInterrupted: true,
+        isPartial: false
+    });
+    setServerAssetRecoveryStage(fileInfo, `还原失败：${String(error?.message || error || '未知错误')}`, false);
+}
 
 function confirmServerAssetCache(fileInfo, cachedFile = fileInfo) {
     if (!fileInfo?.id || !fileInfo.isServerAsset || state.db?._isMemory || !state.socket?.connected) return;
@@ -4998,6 +5047,10 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
         return serverAssetRecoveries.fetches.get(fileInfo.id);
     }
     const task = fetchServerAssetCacheOnce(fileInfo, reason)
+        .catch(async err => {
+            await markServerAssetRecoveryFailed(fileInfo, err);
+            throw err;
+        })
         .finally(() => serverAssetRecoveries.fetches.delete(fileInfo.id));
     serverAssetRecoveries.fetches.set(fileInfo.id, task);
     return task;
@@ -5009,10 +5062,13 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
         await fileAssetTransfer?.announce?.(storedFile);
         confirmServerAssetCache(fileInfo, storedFile);
         serverAssetRecoveries.metadata.delete(fileInfo.id);
+        clearServerAssetRecoveryStage(fileInfo.id);
         return true;
     }
     if (storedFile?.cacheCleared && !storedFile.restoreRequested) return false;
 
+    const refetchSource = fileInfo.snsTaskId || fileInfo.snsSourceUrl ? 'SNS 原链接' : '原始渠道';
+    setServerAssetRecoveryStage(fileInfo, `2/4 正在请求服务器副本（缺失时从${refetchSource}重新获取）`);
     const response = await fetch(fileInfo.serverAssetUrl, { cache: 'no-store' });
     if (!response.ok) {
         let serverError = '';
@@ -5022,6 +5078,14 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
         throw new Error(serverError && serverError !== 'server-asset-fetch-failed'
             ? serverError
             : `server-asset-fetch-${response.status}`);
+    }
+    const serverOrigin = response.headers.get('x-drop2tunnel-asset-origin');
+    if (serverOrigin === 'sns-refetch') {
+        setServerAssetRecoveryStage(fileInfo, '3/4 SNS 原链接重新获取完成，正在下载');
+    } else if (serverOrigin === 'telegram-refetch') {
+        setServerAssetRecoveryStage(fileInfo, '3/4 Telegram 文件重新获取完成，正在下载');
+    } else {
+        setServerAssetRecoveryStage(fileInfo, '2/4 服务器副本可用，正在下载');
     }
     const buffer = await response.arrayBuffer();
     const expectedSize = Number(response.headers.get('content-length')) || Number(fileInfo.size) || 0;
@@ -5046,6 +5110,7 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
         transferInterrupted: false,
         isPartial: false
     };
+    setServerAssetRecoveryStage(fileInfo, '4/4 正在写入、校验并确认本机缓存');
     await saveToStore('files', nextFile);
     const verifiedFile = await getFromStore('files', fileInfo.id);
     if (!hasCompleteFileCache(verifiedFile, { ...fileInfo, size: buffer.byteLength })) {
@@ -5059,6 +5124,7 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     }));
     confirmServerAssetCache(fileInfo, verifiedFile);
     serverAssetRecoveries.metadata.delete(fileInfo.id);
+    clearServerAssetRecoveryStage(fileInfo.id);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
     fileObjectUrls.delete(fileInfo.id);
     await refreshFileMessage(fileInfo.id);
@@ -5075,25 +5141,41 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
 async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, reason, options = {}) {
     if (!fileInfo?.id || !fileInfo.serverAssetUrl) return false;
     serverAssetRecoveries.metadata.set(fileInfo.id, fileInfo);
-    const initial = await getFromStore('files', fileInfo.id).catch(() => null);
+    let initial = await getFromStore('files', fileInfo.id).catch(() => null);
     if (initial?.cacheCleared && !initial.restoreRequested) {
         if (!options.priority && !options.force) {
             serverAssetRecoveries.metadata.delete(fileInfo.id);
             return false;
         }
-        await saveToStore('files', {
+        initial = {
             ...initial,
             restoreRequested: true,
             transferInterrupted: false
-        });
+        };
+        await saveToStore('files', initial);
+    } else if (!hasCompleteFileCache(initial, fileInfo) && (options.priority || options.force) && !initial?.restoreRequested) {
+        initial = {
+            ...(initial || {}),
+            ...fileInfo,
+            sessionId: state.sessionId,
+            isFileAsset: true,
+            isServerAsset: true,
+            cacheCleared: true,
+            restoreRequested: true,
+            transferInterrupted: false,
+            isPartial: false
+        };
+        await saveToStore('files', initial);
     }
     if (hasCompleteFileCache(initial, fileInfo) && !initial?.cacheCleared) {
         await fileAssetTransfer?.announce?.(initial);
         confirmServerAssetCache(fileInfo, initial);
         serverAssetRecoveries.metadata.delete(fileInfo.id);
+        clearServerAssetRecoveryStage(fileInfo.id);
         return true;
     }
 
+    setServerAssetRecoveryStage(fileInfo, '1/4 正在查找在线设备副本');
     if (fileAssetTransfer) {
         await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || '', {
             ...fileInfo,
@@ -5111,12 +5193,15 @@ async function requestServerAssetWithPeerPreference(fileInfo, ownerDeviceId, rea
         if (hasCompleteFileCache(peerResult, fileInfo)) {
             confirmServerAssetCache(fileInfo, peerResult);
             serverAssetRecoveries.metadata.delete(fileInfo.id);
+            clearServerAssetRecoveryStage(fileInfo.id);
             return true;
         }
         const peerTransferActive = fileAssetTransfer.transfers?.has(fileInfo.id) ||
             fileAssetTransfer.multiSourceTransfers?.has(fileInfo.id) ||
             fileAssetTransfer.providerTransfers?.has(fileInfo.id);
-        if (peerTransferActive) {
+        const peerProgress = getFileReceiveProgressState(fileInfo.id);
+        if (peerTransferActive && Number(peerProgress?.progress) > 0) {
+            setServerAssetRecoveryStage(fileInfo, `1/4 正在从在线设备接收（${Math.round(peerProgress.progress)}%）`);
             return true;
         }
         fileAssetTransfer.cancel?.(fileInfo.id);
@@ -5866,6 +5951,10 @@ async function addMessageToChat(message, isOwn, options = {}) {
         messageEl.dataset.fileSize = String(message.fileInfo.size || 0);
         messageEl.dataset.fileOwnerId = message.fileInfo.ownerDeviceId || message.sender || '';
         messageEl.dataset.fileIsAsset = String(Boolean(message.fileInfo.isAsset));
+        messageEl.dataset.fileIsServerAsset = String(Boolean(message.fileInfo.isServerAsset));
+        messageEl.dataset.fileServerAssetUrl = message.fileInfo.serverAssetUrl || '';
+        messageEl.dataset.fileSnsTaskId = message.fileInfo.snsTaskId || '';
+        messageEl.dataset.fileSnsSourceUrl = message.fileInfo.snsSourceUrl || '';
     }
 
     let contentHtml = '';
@@ -6058,7 +6147,11 @@ function getFileInfoFromMessageElement(messageEl) {
         type: messageEl.dataset.fileType || 'application/octet-stream',
         size: Number(messageEl.dataset.fileSize || 0),
         ownerDeviceId: messageEl.dataset.fileOwnerId || '',
-        isAsset: messageEl.dataset.fileIsAsset === 'true'
+        isAsset: messageEl.dataset.fileIsAsset === 'true',
+        isServerAsset: messageEl.dataset.fileIsServerAsset === 'true',
+        serverAssetUrl: messageEl.dataset.fileServerAssetUrl || '',
+        snsTaskId: messageEl.dataset.fileSnsTaskId || '',
+        snsSourceUrl: messageEl.dataset.fileSnsSourceUrl || ''
     };
 }
 
@@ -6122,8 +6215,10 @@ async function getRecordFileDetail(fileInfo = {}) {
         ? await materializeExternalFileRecord(persistedFile)
         : persistedFile;
     const sourceState = getExternalFileSourceState(persistedFile, readableFile, fileInfo);
+    const recoveryStage = serverAssetRecoveries.stages.get(fileInfo.id);
     let cacheStatus = '本机无缓存';
-    if (sourceState.handleReadable) cacheStatus = '本机原文件句柄有效';
+    if (recoveryStage?.label) cacheStatus = recoveryStage.label;
+    else if (sourceState.handleReadable) cacheStatus = '本机原文件句柄有效';
     else if (hasCompleteFileCache(persistedFile, fileInfo)) cacheStatus = '浏览器缓存完整';
     else if (persistedFile?.restoreRequested) cacheStatus = '正在请求还原';
     else if (persistedFile?.isPartial || persistedFile?.transferInterrupted) cacheStatus = '传输中断或存在分片';
@@ -6300,12 +6395,13 @@ async function refreshSnsMediaClientStates(container, message) {
         const files = generated.type === 'collection' ? getCollectionFiles(generated) : [generated.fileInfo].filter(Boolean);
         const stored = await Promise.all(files.map(file => getFromStore('files', file.id).catch(() => null)));
         const completeCount = stored.filter((file, index) => hasCompleteFileCache(file, files[index])).length;
+        const recoveryStage = files.map(file => serverAssetRecoveries.stages.get(file.id)).find(Boolean);
         const downloading = files.some(file => serverAssetRecoveries.promises.has(file.id) || fileAssetTransfer?.hasDownloadWork?.(file.id));
         const partial = stored.some(file => file?.isPartial || file?.transferInterrupted);
         const released = stored.length > 0 && stored.every(file => file?.cacheCleared);
         const status = completeCount === files.length && files.length
             ? '浏览器缓存完整'
-            : downloading
+            : recoveryStage?.label || (downloading
                 ? '正在请求还原'
                 : partial
                     ? '传输中断或存在分片'
@@ -6313,7 +6409,7 @@ async function refreshSnsMediaClientStates(container, message) {
                         ? '缓存已释放'
                         : completeCount
                             ? '传输中断或存在分片'
-                            : '本机无缓存';
+                            : '本机无缓存');
         target.textContent = status;
     }
 }
@@ -7263,6 +7359,8 @@ function renderFileMetadataPreview(content, fileInfo, stateLabel = '') {
 }
 
 function getMissingFileStateLabel(storedFile) {
+    const recoveryStage = serverAssetRecoveries.stages.get(storedFile?.id);
+    if (recoveryStage?.label) return recoveryStage.label;
     if (storedFile?.externalFilePermissionRequired) return '需要重新授权本机原文件';
     if (storedFile?.externalFileMissing) return '本机原文件无法读取';
     if (storedFile?.restoreRequested) return '正在还原';
@@ -9541,7 +9639,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
                 error: err.message
             }));
         }
-        renderFileMetadataPreview(content, fileInfo, getMissingFileStateLabel(storedFile));
+        renderFileMetadataPreview(content, fileInfo, getMissingFileStateLabel(storedFile || fileInfo));
         await renderSingleFilePreviewActions({
             messageId: options.messageId || '',
             fileInfo,
@@ -10059,12 +10157,13 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     }
     if (!thumb.childNodes.length) {
         thumb.classList.add('collection-file-thumb--metadata');
+        const recoveryStage = serverAssetRecoveries.stages.get(fileInfo.id);
         const stateLabel = hasLocalData
             ? (type.startsWith('video/') ? '视频' : type.startsWith('audio/') ? '音频' : '不可预览')
-            : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存');
+            : (recoveryStage?.label || (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存'));
         thumb.innerHTML = `
             <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
-            <div class="collection-file-state">${stateLabel}</div>
+            <div class="collection-file-state">${escapeHtml(stateLabel)}</div>
         `;
         if (type.startsWith('video/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
         if (type.startsWith('audio/') || isAudioLike) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('audio'));
@@ -10520,7 +10619,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
             <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
             <div class="file-info">
                 <div class="file-name">${escapeHtml(fileInfo.name)}</div>
-                <div class="file-size">${formatFileSize(fileInfo.size)} (${label})</div>
+                <div class="file-size">${formatFileSize(fileInfo.size)} (${escapeHtml(label)})</div>
             </div>
         `;
         renderFileMessageActions(messageEl, fileInfo, { hasLocalData: false, cacheCleared, restoreRequested });

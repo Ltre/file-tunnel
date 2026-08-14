@@ -135,6 +135,16 @@
             outline: none;
         }
 
+        .sync-field {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+            background: #fff;
+            color: var(--text);
+        }
+
         textarea:focus {
             border-color: var(--primary);
             box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
@@ -174,6 +184,7 @@
             }
 
             textarea,
+            .sync-field,
             .btn {
                 background: #101827;
                 color: var(--text);
@@ -204,6 +215,25 @@
             <div class="status" id="status">正在读取...</div>
         </section>
 
+        <section class="card">
+            <div class="card-head">
+                <div class="platform-title">
+                    <strong>Chrome 自动同步 SNS Cookie</strong>
+                    <span>tools/auto-sync-sns-cookies</span>
+                </div>
+                <span class="badge empty" id="syncBadge">未配置</span>
+            </div>
+            <p class="subtle">管理员专用扩展会定时读取当前 Chrome 中 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到本服务器。未登录或没有可用 Cookie 的平台会被跳过，不会清空服务器中已有的配置。同步密钥只在生成时显示，请勿泄露。</p>
+            <input class="sync-field" id="syncServerUrl" type="text" readonly>
+            <input class="sync-field" id="syncToken" type="text" readonly hidden style="margin-top: 10px;">
+            <div class="actions">
+                <button class="btn" id="copySyncTokenBtn" type="button" hidden>复制同步密钥</button>
+                <button class="btn danger" id="revokeSyncTokenBtn" type="button" hidden>撤销同步密钥</button>
+                <button class="btn primary" id="createSyncTokenBtn" type="button">生成同步密钥</button>
+            </div>
+            <div class="status" id="syncStatus"></div>
+        </section>
+
         <section class="grid" id="platformList" aria-live="polite"></section>
     </main>
 
@@ -221,6 +251,13 @@
         const listEl = document.getElementById('platformList');
         const statusEl = document.getElementById('status');
         const reloadBtn = document.getElementById('reloadBtn');
+        const syncBadge = document.getElementById('syncBadge');
+        const syncStatus = document.getElementById('syncStatus');
+        const syncToken = document.getElementById('syncToken');
+        const createSyncTokenBtn = document.getElementById('createSyncTokenBtn');
+        const copySyncTokenBtn = document.getElementById('copySyncTokenBtn');
+        const revokeSyncTokenBtn = document.getElementById('revokeSyncTokenBtn');
+        document.getElementById('syncServerUrl').value = location.origin;
 
         function setStatus(text, type = '') {
             statusEl.textContent = text;
@@ -280,6 +317,19 @@
             setStatus(warningCount ? '配置已读取，但有 cookies 登录态不完整，请按提示重新导出。' : '配置已读取。', warningCount ? 'error' : 'ok');
         }
 
+        async function loadSyncStatus() {
+            const response = await fetch('/api/sns-cookie-sync', { cache: 'no-store' });
+            if (!response.ok) throw new Error('读取自动同步配置失败');
+            const data = await response.json();
+            syncBadge.textContent = data.configured ? '已配置' : '未配置';
+            syncBadge.className = `badge ${data.configured ? 'ok' : 'empty'}`;
+            createSyncTokenBtn.textContent = data.configured ? '重新生成同步密钥' : '生成同步密钥';
+            revokeSyncTokenBtn.hidden = !data.configured;
+            syncStatus.textContent = data.configured
+                ? `同步密钥创建于 ${new Date(data.createdAt).toLocaleString()}。重新生成会立即使旧密钥失效。`
+                : '尚未生成扩展同步密钥。';
+        }
+
         async function savePlatform(card, content) {
             const platform = card.dataset.platform;
             const response = await fetch(`/api/sns-cookies/${encodeURIComponent(platform)}`, {
@@ -318,7 +368,48 @@
             loadCookies().catch(err => setStatus(err.message || '读取失败', 'error'));
         });
 
+        createSyncTokenBtn.addEventListener('click', async () => {
+            if (!confirm('生成新密钥会立即使旧密钥失效，确定继续吗？')) return;
+            try {
+                createSyncTokenBtn.disabled = true;
+                const response = await fetch('/api/sns-cookie-sync/token', { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.token) throw new Error(data.error || '生成失败');
+                syncToken.value = data.token;
+                syncToken.hidden = false;
+                copySyncTokenBtn.hidden = false;
+                await loadSyncStatus();
+                syncStatus.textContent = '新密钥只显示这一次，请复制到 Chrome 扩展设置中。';
+            } catch (err) {
+                syncStatus.textContent = err.message || '生成失败';
+            } finally {
+                createSyncTokenBtn.disabled = false;
+            }
+        });
+
+        copySyncTokenBtn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(syncToken.value);
+                syncStatus.textContent = '同步密钥已复制。';
+            } catch (_) {
+                syncToken.hidden = false;
+                syncToken.select();
+                syncStatus.textContent = '浏览器未允许自动复制，请按 Ctrl+C 复制已选中的密钥。';
+            }
+        });
+
+        revokeSyncTokenBtn.addEventListener('click', async () => {
+            if (!confirm('确定撤销 Chrome 扩展同步密钥吗？')) return;
+            const response = await fetch('/api/sns-cookie-sync/token', { method: 'DELETE' });
+            if (!response.ok) return void (syncStatus.textContent = '撤销失败');
+            syncToken.value = '';
+            syncToken.hidden = true;
+            copySyncTokenBtn.hidden = true;
+            await loadSyncStatus();
+        });
+
         loadCookies().catch(err => setStatus(err.message || '读取失败', 'error'));
+        loadSyncStatus().catch(err => { syncStatus.textContent = err.message || '读取失败'; });
     </script>
 </body>
 </html>

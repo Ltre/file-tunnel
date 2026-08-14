@@ -28,6 +28,7 @@ const YT_DLP_CACHE_DIR = path.join(SERVER_DATA_DIR, 'yt-dlp-cache');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
+const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -37,6 +38,25 @@ const SNS_COOKIE_FILES = Object.freeze({
     line: 'line-cookies.txt',
     twitter: 'twitter-cookies.txt',
     x: 'x-cookies.txt'
+});
+const SNS_COOKIE_DOMAINS = Object.freeze({
+    youtube: ['youtube.com'],
+    tiktok: ['tiktok.com'],
+    facebook: ['facebook.com'],
+    instagram: ['instagram.com'],
+    thread: ['threads.com', 'threads.net', 'instagram.com'],
+    line: ['line.me'],
+    twitter: ['twitter.com', 'x.com'],
+    x: ['x.com', 'twitter.com']
+});
+const SNS_COOKIE_LOGIN_NAMES = Object.freeze({
+    youtube: /^(?:LOGIN_INFO|SID|HSID|SSID|APISID|SAPISID|__Secure-[13]P(?:SID|APISID)(?:TS|CC)?)$/,
+    tiktok: /^(?:sessionid|sessionid_ss|sid_tt|sid_guard)$/i,
+    facebook: /^(?:c_user|xs)$/i,
+    instagram: /^(?:sessionid|ds_user_id)$/i,
+    thread: /^(?:sessionid|ds_user_id)$/i,
+    twitter: /^auth_token$/i,
+    x: /^auth_token$/i
 });
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
@@ -86,6 +106,14 @@ const adminAuthRateLimit = rateLimit({
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
     message: { error: 'admin-auth-rate-limited' }
+});
+const snsCookieSyncRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'sns-cookie-sync-rate-limited' }
 });
 
 // 会话限制
@@ -190,7 +218,7 @@ function getSnsCookieFileForUrl(url) {
     if (/tiktok\.com/i.test(raw)) return getSnsCookiePath('tiktok');
     if (/(?:facebook\.com|fb\.watch)/i.test(raw)) return getSnsCookiePath('facebook');
     if (/instagram\.com/i.test(raw)) return getSnsCookiePath('instagram');
-    if (/threads\.net/i.test(raw)) return getSnsCookiePath('thread');
+    if (/threads\.(?:com|net)/i.test(raw)) return getSnsCookiePath('thread');
     if (/line\.me/i.test(raw)) return getSnsCookiePath('line');
     if (/twitter\.com/i.test(raw)) return getSnsCookiePath('twitter');
     if (/x\.com/i.test(raw)) return getSnsCookiePath('x');
@@ -213,6 +241,82 @@ function getSnsCookieEntries({ includeContent = false } = {}) {
         } catch (_) {}
         return { platform, fileName, exists, size, updatedAt, content };
     });
+}
+
+function readSnsCookieSyncConfig() {
+    try {
+        const config = JSON.parse(fs.readFileSync(SNS_COOKIE_SYNC_CONFIG_PATH, 'utf8'));
+        return /^[a-f0-9]{64}$/i.test(config?.tokenHash || '') ? config : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function createSnsCookieSyncToken() {
+    const token = crypto.randomBytes(32).toString('base64url');
+    const config = {
+        tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+        createdAt: new Date().toISOString()
+    };
+    writeDataFileAtomic(SNS_COOKIE_SYNC_CONFIG_PATH, JSON.stringify(config, null, 2));
+    try { fs.chmodSync(SNS_COOKIE_SYNC_CONFIG_PATH, 0o600); } catch (_) {}
+    return { token, createdAt: config.createdAt };
+}
+
+function requireSnsCookieSyncToken(req, res, next) {
+    const config = readSnsCookieSyncConfig();
+    const match = String(req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+    const candidate = match?.[1] || '';
+    if (!config || !candidate) return res.status(401).json({ error: 'sns-cookie-sync-auth-required' });
+    const actual = crypto.createHash('sha256').update(candidate).digest();
+    const expected = Buffer.from(config.tokenHash, 'hex');
+    if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+        return res.status(401).json({ error: 'sns-cookie-sync-auth-invalid' });
+    }
+    next();
+}
+
+function prepareSyncedSnsCookies(platform, rawContent) {
+    const normalizedPlatform = normalizeSnsCookiePlatform(platform);
+    if (!normalizedPlatform) throw new Error('invalid-platform');
+    const content = String(rawContent || '').replace(/\r\n?/g, '\n').trimEnd();
+    if (Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024) throw new Error('cookie-file-too-large');
+    if (!/^# (?:Netscape )?HTTP Cookie File/im.test(content)) throw new Error('invalid-netscape-cookie-header');
+    const rows = content.split('\n').flatMap(line => {
+        if (!line || (line.startsWith('#') && !line.startsWith('#HttpOnly_'))) return [];
+        const fields = line.split('\t');
+        if (fields.length < 7) return [];
+        return [{
+            domain: String(fields[0] || '').replace(/^#HttpOnly_/, '').replace(/^\./, '').toLowerCase(),
+            name: String(fields[5] || '')
+        }];
+    });
+    const domains = SNS_COOKIE_DOMAINS[normalizedPlatform] || [];
+    const platformRows = rows.filter(row => domains.some(domain => row.domain === domain || row.domain.endsWith(`.${domain}`)));
+    if (!platformRows.length) throw new Error(`${normalizedPlatform}-cookie-domain-missing`);
+    const loginPattern = SNS_COOKIE_LOGIN_NAMES[normalizedPlatform];
+    if (loginPattern && !platformRows.some(row => loginPattern.test(row.name))) {
+        throw new Error(`${normalizedPlatform}-login-cookie-missing`);
+    }
+    return {
+        platform: normalizedPlatform,
+        content: `${content}\n`,
+        size: Buffer.byteLength(content, 'utf8')
+    };
+}
+
+function saveSyncedSnsCookieFiles(entries) {
+    entries.forEach(entry => writeDataFileAtomic(getSnsCookiePath(entry.platform), entry.content));
+    sessions.forEach((session, sessionId) => {
+        resumePendingSnsMetadataScans(sessionId, session.history.map(entry => entry.message));
+    });
+    return Object.fromEntries(entries.map(entry => [entry.platform, { size: entry.size }]));
+}
+
+function getSnsCookieSyncErrorStatus(message) {
+    if (message === 'cookie-file-too-large') return 413;
+    if (message === 'invalid-platform' || message === 'invalid-netscape-cookie-header' || /-(?:cookie-domain|login-cookie)-missing$/.test(message)) return 422;
+    return 500;
 }
 
 function isTelegramBotEnabled() {
@@ -441,6 +545,7 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
     const asset = resolveTelegramServerAsset(assetId);
     if (!asset) return res.status(404).json({ error: 'Asset not found' });
     try {
+        const hadServerCopy = fs.existsSync(asset.path);
         await ensureTelegramServerAssetFile(asset);
         const stat = fs.statSync(asset.path);
         const totalSize = stat.size;
@@ -464,6 +569,9 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
         res.setHeader('Cache-Control', 'private, no-store');
         res.setHeader('Content-Type', asset.type || 'application/octet-stream');
         res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('X-Drop2Tunnel-Asset-Origin', hadServerCopy
+            ? 'server-cache'
+            : isRecoverableSnsAsset(asset) ? 'sns-refetch' : 'telegram-refetch');
         res.setHeader('Content-Length', String(end - start + 1));
         res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
         res.status(statusCode);
@@ -485,7 +593,7 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
             else res.destroy(err);
         }).pipe(res);
     } catch (err) {
-        console.warn(`Telegram asset ${assetId} fetch failed: ${err.message}`);
+        console.warn(`Telegram/SNS asset ${assetId} fetch failed: ${err.message}`);
         if (!res.headersSent) {
             const message = String(err?.message || '');
             const error = /YouTube 要求登录验证|sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(message)
@@ -641,6 +749,48 @@ app.get(['/sns-cookies', '/sns-cookies.html'], (req, res) => {
 
 app.get('/api/sns-cookies', adminAuth.requireAuth, (req, res) => {
     res.json({ platforms: getSnsCookieEntries({ includeContent: true }) });
+});
+
+app.get('/api/sns-cookie-sync', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const config = readSnsCookieSyncConfig();
+    res.json({ configured: Boolean(config), createdAt: config?.createdAt || '' });
+});
+
+app.post('/api/sns-cookie-sync/token', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, ...createSnsCookieSyncToken() });
+});
+
+app.delete('/api/sns-cookie-sync/token', adminAuth.requireAuth, (req, res) => {
+    try { fs.unlinkSync(SNS_COOKIE_SYNC_CONFIG_PATH); } catch (err) {
+        if (err.code !== 'ENOENT') return res.status(500).json({ error: 'sns-cookie-sync-revoke-failed' });
+    }
+    res.json({ ok: true });
+});
+
+app.post('/api/sns-cookie-sync', snsCookieSyncRateLimit, requireSnsCookieSyncToken, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const source = req.body?.platforms;
+        if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('invalid-platform');
+        const entries = Object.entries(source).map(([platform, content]) => prepareSyncedSnsCookies(platform, content));
+        if (!entries.length) throw new Error('invalid-platform');
+        res.json({ ok: true, platforms: saveSyncedSnsCookieFiles(entries), updatedAt: Date.now() });
+    } catch (err) {
+        res.status(getSnsCookieSyncErrorStatus(err.message)).json({ error: err.message || 'sns-cookie-sync-save-failed' });
+    }
+});
+
+app.post('/api/sns-cookie-sync/:platform', snsCookieSyncRateLimit, requireSnsCookieSyncToken, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const entry = prepareSyncedSnsCookies(req.params.platform, req.body?.content);
+        const result = saveSyncedSnsCookieFiles([entry]);
+        res.json({ ok: true, platform: entry.platform, size: result[entry.platform].size, updatedAt: Date.now() });
+    } catch (err) {
+        res.status(getSnsCookieSyncErrorStatus(err.message)).json({ error: err.message || 'sns-cookie-sync-save-failed' });
+    }
 });
 
 app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
@@ -1740,7 +1890,7 @@ function resetRestoredServerAsset(asset) {
     const task = asset.snsTaskId ? readSnsTask(asset.snsTaskId) : null;
     const messageId = task?.generatedMessageId || task?.generatedMessage?.id;
     const message = sessions.get(asset.sessionId)?.history.find(entry => entry.message?.id === messageId)?.message;
-    if (task && message) persistSnsTask({ ...task, generatedMessage: message });
+    if (task) persistSnsTask({ ...task, ...(message ? { generatedMessage: message } : {}), status: 'ready', error: '' });
 }
 
 async function restoreSnsServerAssetFile(asset) {
@@ -1919,6 +2069,8 @@ const SUPPORTED_SOCIAL_HOSTS = Object.freeze({
     'fb.watch': 'facebook',
     'instagram.com': 'instagram',
     'www.instagram.com': 'instagram',
+    'threads.com': 'threads',
+    'www.threads.com': 'threads',
     'threads.net': 'threads',
     'www.threads.net': 'threads',
     'line.me': 'line',
@@ -3631,7 +3783,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
             }
 
             const generatedMessage = ensureGeneratedSnsMessage(sessionId, session, taskRecord);
-            updateTask({ status: 'ready', generatedMessage });
+            updateTask({ status: 'ready', generatedMessage, error: '' });
             const resultFileName = generatedMessage.type === 'collection'
                 ? generatedMessage.collection?.files?.find(file => String(file.type || '').startsWith('audio/'))?.name
                 : generatedMessage.fileInfo?.name;
