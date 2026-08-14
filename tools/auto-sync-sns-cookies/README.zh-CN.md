@@ -14,6 +14,8 @@
 
 同步后分别写入 `/sns-cookies` 页面列出的 `yt-cookies.txt`、`tiktok-cookies.txt`、`facebook-cookies.txt`、`instagram-cookies.txt`、`thread-cookies.txt`、`line-cookies.txt`、`twitter-cookies.txt` 和 `x-cookies.txt`。未登录或没有可用 Cookie 的平台会被跳过，不会删除或覆盖服务器中的原配置。
 
+每台服务器还可单独勾选“同时同步为私人 YouTube Premium Cookie”。启用后，同一份已登录 YouTube Cookie 会在该服务器中另存为私人下载凭据，只供 `/youtube-premium-dl` 使用；它不会与公共 `yt-cookies.txt` 共用文件，同步接口也不会把私人内容回传给扩展。通过鉴权的 `/sns-cookies` 管理页会回显已保存内容，便于管理员核对和覆盖。这个选项适合扩展所在浏览器 Profile 登录了管理员自己的 Premium 账号时使用。
+
 ## 目录与构建
 
 ```text
@@ -38,9 +40,13 @@ npm run build:sns-cookie-extension
 
 1. 分别打开每台 Drop2Tunnel 服务器的 `/sns-cookies` 管理页，在“浏览器自动同步 SNS Cookie”区域生成各自的同步密钥。
 2. 按下方对应浏览器的方式加载扩展。
-3. 打开扩展，点击 `+`，填写一台服务器的地址和对应同步密钥；按相同步骤添加其它服务器。
+3. 打开扩展，点击 `+`，填写一台服务器的地址和对应同步密钥；需要让该服务器的私人下载页使用当前 YouTube 登录态时，再勾选“同时同步为私人 YouTube Premium Cookie”。按相同步骤添加其它服务器。
 4. 服务器列表中的 `↗`、`✎`、`×` 分别用于打开后台、修改配置和删除配置。
 5. 勾选“启用自动同步”，保存后点击“立即同步”。
+
+扩展源码升级后，必须在 `chrome://extensions` 或 Firefox 调试页点击一次“重新加载”；否则新打开的设置页可能已经显示新选项，但驻留的后台脚本仍执行旧逻辑。当前前后台会校验同步协议版本，检测到这种情况时会明确要求重新加载。
+
+勾选私人同步的服务器必须能读取到有效的 YouTube 登录 Cookie，否则本次同步会直接报错，不再静默跳过。成功摘要会显示“私人 Premium 1/1 台”等确认信息；还应在对应服务器 `/sns-cookies` 页面确认私人 Cookie 的更新时间和大小已经更新。
 
 ### Chrome
 
@@ -71,7 +77,7 @@ web-ext run --target=firefox-android --source-dir tools/auto-sync-sns-cookies/fi
 ## 配置备份
 
 - 点击“导出配置”会在插件面板中显示 Base64，并可点击“复制”保存。
-- 备份包含全部服务器地址、同步密钥、启用状态和同步间隔，不包含 SNS Cookie 或同步结果。
+- 备份包含全部服务器地址、同步密钥、私人 Premium 同步选项、启用状态和同步间隔，不包含 SNS Cookie 或同步结果。
 - 将 Base64 粘贴回同一输入框并点击“导入配置”，会整体替换当前服务器列表，并一次申请所有服务器的访问权限。
 - Base64 只是编码而非加密，必须按同步密钥同等级别保管。
 
@@ -85,6 +91,7 @@ web-ext run --target=firefox-android --source-dir tools/auto-sync-sns-cookies/fi
 ## 安全边界
 
 - 扩展只读取上方列出的 SNS 域名 Cookie，不读取其它网站 Cookie，也不会把 Cookie 写入日志。
+- 私人 Premium 同步是逐服务器选择的；关闭某台服务器的选项只会停止后续私人凭据更新，不会自动删除服务器上已经保存的私人 Cookie，可在该服务器 `/sns-cookies` 手动清空。
 - 每台服务器使用自己的同步密钥。密钥保存在当前浏览器的扩展本地存储中；对应服务端只保存其 SHA-256 哈希。
 - 从扩展删除服务器会停止向它同步并撤销扩展的 Origin 访问权限，但不会替你撤销服务端密钥；应在该服务器的 `/sns-cookies` 单独撤销。
 - 可随时在 `/sns-cookies` 撤销或重新生成密钥。重新生成后，扩展内该服务器的旧密钥会立即失效，需要使用 `✎` 更新。

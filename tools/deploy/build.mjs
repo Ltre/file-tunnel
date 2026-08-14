@@ -11,6 +11,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const DEFAULT_OUT_DIR = 'dist';
 const SCRIPT_SOURCES = [
   'app.js',
+  'client/cache-store.js',
   'client/file-assets.js',
   'client/folder-archive.js',
   'client/media.js',

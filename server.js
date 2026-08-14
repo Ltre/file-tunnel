@@ -16,6 +16,14 @@ const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-se
 const { createInfraStore } = require('./server/infra-store');
 const { createAdminAuth } = require('./server/admin-auth');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
+const {
+    createYoutubePremiumService,
+    getPreferredMusicAudioFormat,
+    getPreferredPremiumVideoFormat,
+    getSelectedFormatIds,
+    normalizeYtDlpFormats,
+    validateFormatSelection
+} = require('./server/youtube-premium');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
@@ -29,6 +37,7 @@ const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json')
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
 const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
+const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -65,6 +74,13 @@ const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
 const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
+const youtubePremiumService = createYoutubePremiumService({
+    dataDir: SERVER_DATA_DIR,
+    analyze: analyzeYoutubePremiumUrl,
+    download: downloadYoutubePremiumTask,
+    sanitizeError: sanitizeYoutubePremiumError,
+    concurrency: Number(process.env.YOUTUBE_PREMIUM_DOWNLOAD_CONCURRENCY) || 1
+});
 
 // ==================== 安全配置 ====================
 
@@ -114,6 +130,14 @@ const snsCookieSyncRateLimit = rateLimit({
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
     message: { error: 'sns-cookie-sync-rate-limited' }
+});
+const youtubePremiumRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'youtube-premium-rate-limited' }
 });
 
 // 会话限制
@@ -241,6 +265,40 @@ function getSnsCookieEntries({ includeContent = false } = {}) {
         } catch (_) {}
         return { platform, fileName, exists, size, updatedAt, content };
     });
+}
+
+function getYoutubePremiumCookieStatus({ includeContent = false } = {}) {
+    try {
+        const stat = fs.statSync(YOUTUBE_PREMIUM_COOKIE_PATH);
+        const status = {
+            configured: stat.isFile() && stat.size > 0,
+            fileName: path.basename(YOUTUBE_PREMIUM_COOKIE_PATH),
+            size: stat.size,
+            updatedAt: stat.mtimeMs
+        };
+        if (includeContent && stat.isFile()) status.content = fs.readFileSync(YOUTUBE_PREMIUM_COOKIE_PATH, 'utf8');
+        return status;
+    } catch (_) {
+        return { configured: false, fileName: path.basename(YOUTUBE_PREMIUM_COOKIE_PATH), size: 0, updatedAt: 0, ...(includeContent ? { content: '' } : {}) };
+    }
+}
+
+function saveYoutubePremiumCookies(rawContent) {
+    const content = String(rawContent || '').replace(/\r\n?/g, '\n');
+    if (!content.trim()) {
+        try { fs.unlinkSync(YOUTUBE_PREMIUM_COOKIE_PATH); } catch (error) {
+            if (error.code !== 'ENOENT') throw new Error('youtube-premium-cookie-save-failed');
+        }
+        return getYoutubePremiumCookieStatus();
+    }
+    const prepared = prepareSyncedSnsCookies('youtube', content);
+    try {
+        writeDataFileAtomic(YOUTUBE_PREMIUM_COOKIE_PATH, prepared.content);
+    } catch (_) {
+        throw new Error('youtube-premium-cookie-save-failed');
+    }
+    try { fs.chmodSync(YOUTUBE_PREMIUM_COOKIE_PATH, 0o600); } catch (_) {}
+    return getYoutubePremiumCookieStatus();
 }
 
 function readSnsCookieSyncConfig() {
@@ -702,8 +760,13 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
-//禁止直接从pages目录，以无校验态访问admin、tgbot和SNS cookies配置页
-app.use(['/pages/admin.html', '/pages/tgbot.html', '/pages/sns-cookies.html'], adminAuth.requireAuth);
+//禁止直接从pages目录，以无校验态访问管理页面
+app.use([
+    '/pages/admin.html',
+    '/pages/tgbot.html',
+    '/pages/sns-cookies.html',
+    '/pages/youtube-premium-dl.html'
+], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
     dotfiles: 'deny',
@@ -747,8 +810,26 @@ app.get(['/sns-cookies', '/sns-cookies.html'], (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'sns-cookies.html'));
 });
 
+app.get('/youtube-premium-dl', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'youtube-premium-dl.html'));
+});
+
 app.get('/api/sns-cookies', adminAuth.requireAuth, (req, res) => {
-    res.json({ platforms: getSnsCookieEntries({ includeContent: true }) });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+        platforms: getSnsCookieEntries({ includeContent: true }),
+        youtubePremium: getYoutubePremiumCookieStatus({ includeContent: true })
+    });
+});
+
+app.post('/api/youtube-premium/cookies', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.json({ ok: true, ...saveYoutubePremiumCookies(req.body?.content) });
+    } catch (error) {
+        res.status(getSnsCookieSyncErrorStatus(error.message)).json({ error: sanitizeYoutubePremiumError(error) });
+    }
 });
 
 app.get('/api/sns-cookie-sync', adminAuth.requireAuth, (req, res) => {
@@ -776,7 +857,15 @@ app.post('/api/sns-cookie-sync', snsCookieSyncRateLimit, requireSnsCookieSyncTok
         if (!source || typeof source !== 'object' || Array.isArray(source)) throw new Error('invalid-platform');
         const entries = Object.entries(source).map(([platform, content]) => prepareSyncedSnsCookies(platform, content));
         if (!entries.length) throw new Error('invalid-platform');
-        res.json({ ok: true, platforms: saveSyncedSnsCookieFiles(entries), updatedAt: Date.now() });
+        const premium = Object.prototype.hasOwnProperty.call(req.body || {}, 'youtubePremium')
+            ? saveYoutubePremiumCookies(req.body.youtubePremium)
+            : null;
+        res.json({
+            ok: true,
+            platforms: saveSyncedSnsCookieFiles(entries),
+            youtubePremium: premium ? { configured: premium.configured, size: premium.size, updatedAt: premium.updatedAt } : null,
+            updatedAt: Date.now()
+        });
     } catch (err) {
         res.status(getSnsCookieSyncErrorStatus(err.message)).json({ error: err.message || 'sns-cookie-sync-save-failed' });
     }
@@ -819,6 +908,110 @@ app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
         console.error('sns-cookies-save error:', err);
         res.status(500).json({ error: 'save-failed', message: err.message });
     }
+});
+
+app.post('/api/youtube-premium/formats', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const analysis = await analyzeYoutubePremiumUrl(req.body?.url, {
+            includeFormats: true,
+            forceMusic: req.body?.asMusic === true
+        });
+        res.json(analysis);
+    } catch (error) {
+        res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.get('/api/youtube-premium/tasks', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(youtubePremiumService.list(req.query.page, req.query.pageSize));
+});
+
+app.get('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = youtubePremiumService.get(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+    res.json(task);
+});
+
+app.post('/api/youtube-premium/tasks', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.status(202).json(youtubePremiumService.create(req.body));
+    } catch (error) {
+        res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/cancel', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = youtubePremiumService.cancel(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+    res.json(task);
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/clear', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const task = youtubePremiumService.clear(req.params.taskId);
+        if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+        res.json(task);
+    } catch (error) {
+        res.status(409).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/retry', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const task = youtubePremiumService.retry(req.params.taskId);
+        if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+        res.status(202).json(task);
+    } catch (error) {
+        res.status(409).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.delete('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        if (!youtubePremiumService.remove(req.params.taskId)) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(409).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.get('/api/youtube-premium/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
+    const file = youtubePremiumService.getFile(req.params.taskId);
+    if (!file) return res.status(404).json({ error: 'youtube-premium-file-not-found' });
+    const stat = fs.statSync(file.path);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('ETag', `"ytp-${req.params.taskId}-${stat.size}-${Math.trunc(stat.mtimeMs)}"`);
+    if (req.query.inline === '1') {
+        res.type(file.name);
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+        return res.sendFile(file.path);
+    }
+    res.download(file.path, file.name);
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.status(201).json(forwardYoutubePremiumTaskToTunnel(req.params.taskId, req.body?.sessionId));
+    } catch (error) {
+        res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, (req, res) => {
+    const file = youtubePremiumService.getFile(req.params.taskId, 'cover');
+    if (!file) return res.status(404).end();
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(file.path);
 });
 
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
@@ -1958,6 +2151,7 @@ function removeTelegramAssetTemporaryFile(asset) {
 
 function removeConfirmedServerAssetFile(asset) {
     if (!asset?.cacheConfirmedAt || (telegramAssetReaders.get(asset.id) || 0) > 0) return false;
+    if (asset.source === 'youtube-premium') return false;
     if (/^sns(?:-|$)/.test(String(asset.source || '')) && !isRecoverableSnsAsset(asset)) return false;
     if (!removeTelegramAssetTemporaryFile(asset)) return false;
     asset.temporaryFileRemovedAt = Date.now();
@@ -2277,8 +2471,9 @@ function runYtDlpJson(url, options = {}) {
         args.push(options.noPlaylist === false ? '--yes-playlist' : '--no-playlist');
         args.push(...getYtDlpRemoteComponentArgs(url));
         args.push(...getYtDlpFfmpegArgs());
+        if (options.formatSelector) args.push('-f', String(options.formatSelector));
         args.push(url);
-        const cookiePath = getSnsCookieFileForUrl(url);
+        const cookiePath = String(options.cookiePath || getSnsCookieFileForUrl(url) || '');
         if (cookiePath && fs.existsSync(cookiePath)) {
             try {
                 if (fs.statSync(cookiePath).size > 0) {
@@ -2296,15 +2491,31 @@ function runYtDlpJson(url, options = {}) {
         let stdout = '';
         let stderr = '';
         let settled = false;
-        const timeoutMs = Math.max(1000, Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS) || 90000);
+        const signal = options.signal;
+        const finish = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+            cookies.cleanup();
+        };
+        const abort = () => {
+            if (settled) return;
+            settled = true;
+            child.kill('SIGTERM');
+            finish();
+            reject(new Error('download-cancelled'));
+        };
+        const defaultTimeoutMs = Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS) || 90000;
+        const timeoutMs = Math.max(1000, Number(options.timeoutMs) || defaultTimeoutMs);
         const timer = setTimeout(() => {
             if (settled) return;
             settled = true;
             child.kill('SIGTERM');
-            cookies.cleanup();
+            finish();
             const detail = getYtDlpFailureMessage(stderr, '');
             reject(new Error(`yt-dlp-timeout-${timeoutMs}ms${detail ? `: ${detail}` : ''}`));
         }, timeoutMs);
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) return abort();
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', chunk => { stdout += chunk; });
@@ -2312,17 +2523,15 @@ function runYtDlpJson(url, options = {}) {
         child.on('error', err => {
             if (settled) return;
             settled = true;
-            clearTimeout(timer);
-            cookies.cleanup();
+            finish();
             reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
         });
         child.on('close', code => {
             if (settled) return;
             settled = true;
-            clearTimeout(timer);
-            cookies.cleanup();
+            finish();
             if (code !== 0) {
-                if (options.ignoreNoFormats !== true &&
+                if (options.allowIgnoreNoFormatsFallback !== false && options.ignoreNoFormats !== true &&
                     ((/challenge solver|signature solving failed/i.test(stderr) &&
                         /requested format is not available|only images are available/i.test(stderr)) ||
                         /sign in to confirm you(?:'|’)?re not a bot/i.test(stderr))) {
@@ -2349,8 +2558,8 @@ function getYtDlpRemoteComponentArgs(url) {
     return args;
 }
 
-function getYtDlpCookieArgs(url) {
-    const cookiePath = getSnsCookieFileForUrl(url);
+function getYtDlpCookieArgs(url, cookiePathOverride = '') {
+    const cookiePath = cookiePathOverride || getSnsCookieFileForUrl(url);
     if (!cookiePath || !fs.existsSync(cookiePath)) return [];
     try {
         if (fs.statSync(cookiePath).size > 0) return ['--cookies', cookiePath];
@@ -3014,6 +3223,54 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
     return session;
 }
 
+function forwardYoutubePremiumTaskToTunnel(taskId, sessionId) {
+    const task = youtubePremiumService.get(taskId);
+    const file = youtubePremiumService.getFile(taskId);
+    const tunnel = isValidSessionId(sessionId) ? infraStore?.getTunnel(sessionId) : null;
+    if (!task || !file) throw new Error('youtube-premium-file-not-found');
+    if (!tunnel) throw new Error('youtube-premium-target-tunnel-not-found');
+
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    const assetId = createServerAssetId();
+    const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+    try {
+        fs.linkSync(file.path, assetPath);
+    } catch (_) {
+        fs.copyFileSync(file.path, assetPath);
+    }
+    const asset = {
+        id: assetId,
+        path: assetPath,
+        name: sanitizeString(file.name || task.outputFileName || 'youtube-premium-media', 180),
+        type: getMimeTypeFromFileName(file.name),
+        size: fs.statSync(assetPath).size,
+        sessionId,
+        createdAt: Date.now(),
+        source: 'youtube-premium'
+    };
+    persistTelegramServerAsset(asset);
+
+    const shortCode = normalizeShortCode(tunnel.short_code || findShortCodeForSession(sessionId));
+    const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const remark = String(task.url || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    const message = {
+        id: crypto.randomUUID(),
+        type: 'file',
+        fileInfo: {
+            id: asset.id, name: asset.name, size: asset.size, type: asset.type, timestamp: Date.now(),
+            sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'YouTube Premium', ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
+            isAsset: false, isServerAsset: true, serverAssetUrl: `/api/server-assets/${asset.id}`,
+            sourceChannel: 'youtube-premium', remark
+        },
+        timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'YouTube Premium', sessionId, remark
+    };
+    addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'youtube-premium' });
+    session.lastActivity = Date.now();
+    emitToReadableSessionDevices(session, 'message', { message });
+    scheduleSessionHistoryBroadcast(sessionId, 'youtube-premium-forward', 300);
+    return { ok: true, messageId: message.id, sessionId, shortCode };
+}
+
 async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
     const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
     if (!sessionId || !isValidSessionId(sessionId)) {
@@ -3269,11 +3526,14 @@ function getMimeTypeFromFileName(fileName = '') {
     if (ext === 'webp') return 'image/webp';
     if (ext === 'mp4') return 'video/mp4';
     if (ext === 'webm') return 'video/webm';
+    if (ext === 'mkv') return 'video/x-matroska';
     if (ext === 'mov') return 'video/quicktime';
     if (ext === 'mp3') return 'audio/mpeg';
     if (ext === 'm4a') return 'audio/mp4';
     if (ext === 'aac') return 'audio/aac';
     if (ext === 'ogg') return 'audio/ogg';
+    if (ext === 'opus') return 'audio/ogg';
+    if (ext === 'wav') return 'audio/wav';
     if (ext === 'flac') return 'audio/flac';
     return 'application/octet-stream';
 }
@@ -3334,6 +3594,19 @@ function spawnCapture(command, args, options = {}) {
         let stdout = '';
         let stderr = '';
         let settled = false;
+        let timer = null;
+        const signal = options.signal;
+        const finish = () => {
+            if (timer) clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+        };
+        const abort = () => {
+            if (settled) return;
+            settled = true;
+            child.kill('SIGTERM');
+            finish();
+            reject(new Error('download-cancelled'));
+        };
         const maxOutput = Number(options.maxOutput || 2 * 1024 * 1024);
         const append = (current, chunk) => (current + String(chunk || '')).slice(-maxOutput);
         child.stdout.setEncoding('utf8');
@@ -3346,22 +3619,25 @@ function spawnCapture(command, args, options = {}) {
             stderr = append(stderr, chunk);
             options.onOutput?.(chunk);
         });
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
             if (settled) return;
             settled = true;
             child.kill('SIGTERM');
+            finish();
             reject(new Error(options.timeoutError || `${path.basename(command)}-timeout`));
         }, Math.max(1000, Number(options.timeoutMs) || 10 * 60 * 1000));
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) return abort();
         child.on('error', err => {
             if (settled) return;
             settled = true;
-            clearTimeout(timer);
+            finish();
             reject(new Error(err.code === 'ENOENT' ? `${path.basename(command)}-not-found` : err.message));
         });
         child.on('close', code => {
             if (settled) return;
             settled = true;
-            clearTimeout(timer);
+            finish();
             if (code !== 0) {
                 const fallback = stderr.trim().slice(-1000) || `${path.basename(command)}-exit-${code}`;
                 return reject(new Error(options.ytDlp ? getYtDlpFailureMessage(stderr, fallback) : fallback));
@@ -3381,10 +3657,10 @@ function spawnYtDlpCapture(args, options = {}) {
     }).finally(cookies.cleanup);
 }
 
-async function probeMediaFile(filePath) {
+async function probeMediaFile(filePath, options = {}) {
     const result = await spawnCapture(FFPROBE_COMMAND, [
         '-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath
-    ], { timeoutMs: 30000, timeoutError: 'ffprobe-timeout' });
+    ], { timeoutMs: 30000, timeoutError: 'ffprobe-timeout', signal: options.signal });
     try {
         return JSON.parse(result.stdout);
     } catch (err) {
@@ -3399,12 +3675,14 @@ function parseYtDlpProgress(chunk, onProgress, state) {
     const now = Date.now();
     if (now - state.lastAt < 900 && Number(percentMatch[1]) < 99.9) return;
     state.lastAt = now;
-    const sizeMatch = text.match(/of\s+~?\s*([0-9.]+\w+i?B)/i);
+    const sizeMatch = text.match(/of\s+~?\s*([0-9.]+)(\w+i?B)/i);
     const speedMatch = text.match(/at\s+([0-9.]+\w+i?B\/s)/i);
     const etaMatch = text.match(/ETA\s+([0-9:]+)/i);
+    const percent = Math.max(0, Math.min(100, Number(percentMatch[1]) || 0));
     onProgress({
-        percent: Math.max(0, Math.min(100, Number(percentMatch[1]) || 0)),
-        totalText: sizeMatch?.[1] || '',
+        percent,
+        downloadedText: sizeMatch ? `${(Number(sizeMatch[1]) * percent / 100).toFixed(1)}${sizeMatch[2]}` : '',
+        totalText: sizeMatch ? `${sizeMatch[1]}${sizeMatch[2]}` : '',
         speedText: speedMatch?.[1] || '',
         etaText: etaMatch?.[1] || ''
     });
@@ -3417,24 +3695,34 @@ function getYtDlpDownloadSelectionArgs(playlistItem = 0) {
         : ['--no-playlist'];
 }
 
-async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistItem = 0) {
+async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistItem = 0, options = {}) {
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
     cleanupSnsWorkFiles(`${assetId}.`);
     const progressState = { lastAt: 0 };
-    await spawnYtDlpCapture([
+    const maxFileSize = options.maxFileSize === null ? 0 : Number(options.maxFileSize || getTelegramMaxFileSize());
+    let merging = false;
+    const args = [
         '--newline', ...getYtDlpDownloadSelectionArgs(playlistItem), '--cache-dir', YT_DLP_CACHE_DIR,
         ...getYtDlpRemoteComponentArgs(url),
         ...getYtDlpFfmpegArgs(),
-        '-f', getYtDlpFormatSelector(url),
-        '--max-filesize', String(getTelegramMaxFileSize()),
-        '--merge-output-format', 'mp4',
+        '-f', options.formatSelector || getYtDlpFormatSelector(url),
+        '--merge-output-format', options.mergeOutputFormat || 'mp4',
         '-o', path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`),
-        ...getYtDlpCookieArgs(url),
+        ...getYtDlpCookieArgs(url, options.cookiePath),
         url
-    ], {
+    ];
+    if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
+    await spawnYtDlpCapture(args, {
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
         timeoutError: 'yt-dlp-download-timeout',
-        onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
+        signal: options.signal,
+        onOutput: chunk => {
+            parseYtDlpProgress(chunk, onProgress, progressState);
+            if (!merging && /\[(?:Merger|VideoRemuxer|Fixup)/i.test(String(chunk || ''))) {
+                merging = true;
+                options.onStage?.('merging');
+            }
+        }
     });
     const filePath = findDownloadedSnsFile(`${assetId}.`);
     if (!filePath) throw new Error('yt-dlp-output-missing');
@@ -3478,8 +3766,8 @@ function getAudioProbeSummary(probe = {}) {
     };
 }
 
-async function createSquareCover(sourcePath, outputPath) {
-    const probe = await probeMediaFile(sourcePath);
+async function createSquareCover(sourcePath, outputPath, options = {}) {
+    const probe = await probeMediaFile(sourcePath, options);
     const image = probe.streams?.find(stream => stream.codec_type === 'video');
     const width = Number(image?.width) || 0;
     const height = Number(image?.height) || 0;
@@ -3490,7 +3778,7 @@ async function createSquareCover(sourcePath, outputPath) {
             const detection = await spawnCapture(FFMPEG_COMMAND, [
                 '-hide_banner', '-loglevel', 'info', '-loop', '1', '-i', sourcePath,
                 '-t', '0.15', '-vf', 'cropdetect=24:2:0', '-f', 'null', '-'
-            ], { timeoutMs: 30000, timeoutError: 'song-cover-cropdetect-timeout' });
+            ], { timeoutMs: 30000, timeoutError: 'song-cover-cropdetect-timeout', signal: options.signal });
             const matches = Array.from(detection.stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g));
             const values = matches.at(-1)?.slice(1).map(Number);
             if (values?.length === 4) {
@@ -3514,33 +3802,36 @@ async function createSquareCover(sourcePath, outputPath) {
         '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
         '-vf', `crop=${crop.side}:${crop.side}:${crop.x}:${crop.y}`,
         '-frames:v', '1', '-q:v', '2', outputPath
-    ], { timeoutMs: 60000, timeoutError: 'song-cover-process-timeout' });
-    const finalProbe = await probeMediaFile(outputPath);
+    ], { timeoutMs: 60000, timeoutError: 'song-cover-process-timeout', signal: options.signal });
+    const finalProbe = await probeMediaFile(outputPath, options);
     const finalImage = finalProbe.streams?.find(stream => stream.codec_type === 'video');
     if (!finalImage || Number(finalImage.width) !== Number(finalImage.height)) throw new Error('song-cover-not-square');
     return outputPath;
 }
 
-async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onStage) {
+async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onStage, options = {}) {
     const url = item.sourceUrl || item.mediaUrl;
     const prefix = `${taskRecord.id}.source.`;
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
     cleanupSnsWorkFiles(prefix);
     const progressState = { lastAt: 0 };
     onStage('fetching_song');
-    await spawnYtDlpCapture([
+    const maxFileSize = options.maxFileSize === null ? 0 : Number(options.maxFileSize || getTelegramMaxFileSize());
+    const args = [
         '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
         ...getYtDlpRemoteComponentArgs(url),
         ...getYtDlpFfmpegArgs(),
-        '-f', getYtDlpAudioFormatSelector(),
-        '--max-filesize', String(getTelegramMaxFileSize()),
+        '-f', options.formatSelector || getYtDlpAudioFormatSelector(),
         '--write-thumbnail', '--convert-thumbnails', 'jpg',
         '-o', path.join(SNS_MEDIA_WORK_DIR, `${prefix}%(ext)s`),
-        ...getYtDlpCookieArgs(url),
+        ...getYtDlpCookieArgs(url, options.cookiePath),
         url
-    ], {
+    ];
+    if (maxFileSize > 0) args.splice(args.indexOf('--write-thumbnail'), 0, '--max-filesize', String(maxFileSize));
+    await spawnYtDlpCapture(args, {
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
         timeoutError: 'yt-dlp-song-download-timeout',
+        signal: options.signal,
         onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
     });
     const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp']);
@@ -3548,12 +3839,12 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     const sourceCover = findDownloadedSnsFile(prefix, filePath => imageExts.has(path.extname(filePath).toLowerCase()));
     if (!sourceAudio) throw new Error('yt-dlp-song-audio-missing');
     if (!sourceCover) throw new Error('yt-dlp-song-cover-missing');
-    if (fs.statSync(sourceAudio).size > getTelegramMaxFileSize()) throw new Error('sns-media-file-too-large');
+    if (maxFileSize > 0 && fs.statSync(sourceAudio).size > maxFileSize) throw new Error('sns-media-file-too-large');
 
     onStage('processing_cover');
     const squareCover = path.join(SNS_MEDIA_WORK_DIR, `${taskRecord.id}.cover.jpg`);
-    await createSquareCover(sourceCover, squareCover);
-    const sourceProbe = await probeMediaFile(sourceAudio);
+    await createSquareCover(sourceCover, squareCover, options);
+    const sourceProbe = await probeMediaFile(sourceAudio, options);
     const sourceSummary = getAudioProbeSummary(sourceProbe);
     const metadata = item.songMetadata || {};
     const track = sanitizeString(metadata.track || item.title || item.youtubeVideoId || '未知曲名', 240);
@@ -3576,9 +3867,9 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         '-metadata', `comment=${sourceUrl}`,
         '-metadata:s:v:0', 'title=Album cover', '-metadata:s:v:0', 'comment=Cover (front)',
         '-movflags', '+faststart', finalAudio
-    ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-metadata-write-timeout' });
+    ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-metadata-write-timeout', signal: options.signal });
 
-    const finalProbe = await probeMediaFile(finalAudio);
+    const finalProbe = await probeMediaFile(finalAudio, options);
     const finalAudioStream = finalProbe.streams?.find(stream => stream.codec_type === 'audio');
     const coverStream = finalProbe.streams?.find(stream => stream.codec_type === 'video' && Number(stream.disposition?.attached_pic) === 1);
     const formatName = String(finalProbe.format?.format_name || '');
@@ -3597,6 +3888,173 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         },
         probe: finalSummary
     };
+}
+
+function requireYoutubePremiumCookies() {
+    const status = getYoutubePremiumCookieStatus();
+    if (!status.configured) throw new Error('youtube-premium-cookie-required');
+    return YOUTUBE_PREMIUM_COOKIE_PATH;
+}
+
+async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
+    const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());
+    if (!parsed || !['youtube', 'ytmusic'].includes(parsed.platform) || isYouTubePlaylistOnly(parsed.parsed.href)) {
+        throw new Error('youtube-url-required');
+    }
+    const url = parsed.parsed.href;
+    const cookiePath = requireYoutubePremiumCookies();
+    const baseMeta = await runYtDlpJson(url, {
+        noPlaylist: true,
+        cookiePath,
+        allowIgnoreNoFormatsFallback: false,
+        signal: options.signal
+    });
+    const mediaType = options.forceMusic === true ? 'song' : classifySnsMedia(url, baseMeta);
+    if (mediaType === 'unsupported') throw new Error('youtube-playlist-not-supported');
+    const defaultSelector = mediaType === 'song' ? getYtDlpAudioFormatSelector() : getYtDlpFormatSelector(url);
+    const selectedMeta = await runYtDlpJson(url, {
+        noPlaylist: true,
+        cookiePath,
+        formatSelector: defaultSelector,
+        allowIgnoreNoFormatsFallback: false,
+        signal: options.signal
+    });
+    const formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
+    const preferredMusicFormat = getPreferredMusicAudioFormat(formats);
+    const automaticIds = getSelectedFormatIds(selectedMeta);
+    const formatById = new Map(formats.map(format => [format.id, format]));
+    const preferredVideoFormat = getPreferredPremiumVideoFormat(formats);
+    const preferredVideoAudio = automaticIds.map(id => formatById.get(id)).find(format => format?.kind === 'audio') ||
+        formats.filter(format => format.kind === 'audio' && (format.ext === 'm4a' || /^(?:mp4a|aac)/i.test(format.audioCodec)))
+            .sort((a, b) => (b.audioBitrate || b.totalBitrate) - (a.audioBitrate || a.totalBitrate))[0];
+    const requestedIds = Array.isArray(options.selectedFormatIds) && options.selectedFormatIds.length
+        ? options.selectedFormatIds
+        : (options.forceMusic === true
+            ? [preferredMusicFormat?.id].filter(Boolean)
+            : (mediaType === 'video' && preferredVideoFormat && preferredVideoAudio
+                ? [preferredVideoFormat.id, preferredVideoAudio.id]
+                : automaticIds));
+    if (options.forceMusic === true && !requestedIds.length) throw new Error('youtube-premium-audio-format-missing');
+    const selection = validateFormatSelection(formats, requestedIds, mediaType, options.forceMusic === true);
+    const artist = normalizeArtistValue(baseMeta);
+    const track = String(baseMeta.track || baseMeta.title || baseMeta.fulltitle || '').trim();
+    const fallbackArtist = artist || String(baseMeta.creator || baseMeta.channel || baseMeta.uploader || baseMeta.uploader_id || 'YouTube').trim();
+    return {
+        url,
+        title: sanitizeString(baseMeta.title || baseMeta.fulltitle || track || 'YouTube 媒体', 240),
+        cover: sanitizeString(baseMeta.thumbnail || baseMeta.thumbnails?.slice(-1)?.[0]?.url || '', 1000),
+        duration: Number(baseMeta.duration) || 0,
+        mediaType,
+        youtubeVideoId: sanitizeString(baseMeta.id || '', 80),
+        songMetadata: mediaType === 'song' ? {
+            track: sanitizeString(track || baseMeta.id || '未知曲名', 240),
+            artist: sanitizeString(fallbackArtist || 'YouTube', 240),
+            album: sanitizeString(baseMeta.album || baseMeta.playlist_title || baseMeta.channel || baseMeta.uploader || 'YouTube', 240),
+            year: getReleaseYear(baseMeta) || String(baseMeta.upload_date || '').match(/^(19|20)\d{2}/)?.[0] || ''
+        } : null,
+        musicFormatId: preferredMusicFormat?.id || '',
+        selection,
+        formats: options.includeFormats ? formats : []
+    };
+}
+
+function moveYoutubePremiumOutput(sourcePath, targetPath) {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    try {
+        fs.renameSync(sourcePath, targetPath);
+    } catch (_) {
+        fs.copyFileSync(sourcePath, targetPath);
+        try { fs.unlinkSync(sourcePath); } catch (_) {}
+    }
+    return targetPath;
+}
+
+async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onProgress, onStage }) {
+    const workId = `premium-${task.id}`;
+    const customSelector = task.mode === 'custom' ? analysis.selection.formatSelector : '';
+    const singleTrack = task.mode === 'custom' && analysis.selection.formats.length === 1
+        ? analysis.selection.formats[0].kind
+        : '';
+    try {
+        if (analysis.mediaType === 'song' && (task.mode !== 'custom' || ['audio', 'video_audio'].includes(singleTrack))) {
+            const song = await downloadAndProcessYoutubeSong({
+                sourceUrl: analysis.url,
+                mediaUrl: analysis.url,
+                title: analysis.title,
+                youtubeVideoId: analysis.youtubeVideoId,
+                songMetadata: analysis.songMetadata
+            }, { id: workId }, onProgress, stage => {
+                onStage(stage === 'writing_metadata' || stage === 'processing_cover' ? 'metadata' : 'downloading');
+            }, {
+                cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
+                formatSelector: customSelector || (task.asMusic ? analysis.selection.formatSelector : getYtDlpAudioFormatSelector()),
+                maxFileSize: null,
+                signal
+            });
+            const outputFileName = song.fileName;
+            const outputPath = moveYoutubePremiumOutput(song.finalAudio, path.join(taskDir, outputFileName));
+            const coverPath = moveYoutubePremiumOutput(song.squareCover, path.join(taskDir, 'cover.jpg'));
+            return {
+                outputPath,
+                coverPath,
+                outputFileName,
+                outputFileSize: fs.statSync(outputPath).size,
+                title: song.metadata.track || analysis.title
+            };
+        }
+
+        onStage('downloading');
+        const downloadedPath = await runYtDlpDownload(analysis.url, workId, onProgress, 0, {
+            cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
+            formatSelector: customSelector || analysis.selection.formatSelector || getYtDlpFormatSelector(analysis.url),
+            mergeOutputFormat: analysis.selection.outputContainer || 'mp4',
+            maxFileSize: null,
+            signal,
+            onStage
+        });
+        const probe = await probeMediaFile(downloadedPath, { signal });
+        if (!probe.streams?.some(stream => stream.codec_type === (singleTrack === 'audio' ? 'audio' : 'video'))) {
+            throw new Error(singleTrack === 'audio' ? 'youtube-premium-audio-stream-missing' : 'youtube-premium-video-stream-missing');
+        }
+        const extension = path.extname(downloadedPath) || `.${analysis.selection.outputContainer || 'mp4'}`;
+        const outputFileName = `${sanitizeMediaFilePart(analysis.title, 'youtube-video')}${extension}`;
+        const outputPath = moveYoutubePremiumOutput(downloadedPath, path.join(taskDir, outputFileName));
+        return {
+            outputPath,
+            outputFileName,
+            outputFileSize: fs.statSync(outputPath).size,
+            title: analysis.title
+        };
+    } finally {
+        cleanupSnsWorkFiles(`${workId}.`);
+    }
+}
+
+function sanitizeYoutubePremiumError(error) {
+    const message = String(error?.message || 'youtube-premium-download-failed')
+        .replaceAll(YOUTUBE_PREMIUM_COOKIE_PATH, '[private-cookie]')
+        .replaceAll(SERVER_DATA_DIR, '[server-data]')
+        .replace(/--cookies\s+\S+/gi, '--cookies [private-cookie]')
+        .replace(/YouTube 要求登录验证[^\n]*/i, '私人 YouTube Premium Cookie 已失效或不完整，请在 /sns-cookies 重新保存')
+        .trim();
+    const labels = {
+        'youtube-url-required': '请输入有效的单个 YouTube 或 YT Music URL',
+        'youtube-playlist-not-supported': '私人下载页暂不支持整张播放列表',
+        'youtube-premium-cookie-required': '请先在 /sns-cookies 配置私人 YouTube Premium Cookie',
+        'youtube-premium-cookie-save-failed': '私人 YouTube Premium Cookie 保存失败',
+        'youtube-premium-task-active': '任务仍在运行，请先取消并等待任务停止',
+        'custom-format-required': '自定义模式至少选择一个媒体格式',
+        'custom-format-count-invalid': '只能选择一个媒体格式，或一个视频格式加一个音频格式',
+        'custom-format-not-found': '所选媒体格式已失效，请重新解析',
+        'custom-single-format-invalid': '单选编号必须包含音频或视频轨',
+        'custom-music-format-invalid': '以音乐形式下载时只能选择一个纯音频媒体编号',
+        'youtube-premium-audio-format-missing': '没有找到可用于音乐下载的纯音频媒体编号',
+        'custom-video-format-conflict': '请选择一个纯视频格式和一个纯音频格式',
+        'youtube-premium-audio-stream-missing': '下载结果中没有找到音频轨',
+        'youtube-premium-target-tunnel-not-found': '目标隧道不存在或已退出',
+        'download-cancelled': '任务已取消'
+    };
+    return labels[message] || message.slice(0, 500);
 }
 
 function moveSnsFileToAsset(sourcePath, assetId) {

@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>私人 YouTube Premium 下载</title>
+    <style>
+        :root { color-scheme:light dark; --bg:#f4f6fa; --panel:#fff; --text:#172033; --muted:#667085; --line:#d8dfeb; --primary:#1d5fd1; --primary-soft:#eaf1ff; --danger:#be2f36; --ok:#08774f; --shadow:0 10px 30px rgba(24,39,75,.08); }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+        button,input,select { font:inherit; }
+        button,a.command { border:0; border-radius:6px; padding:9px 13px; background:#e8edf5; color:var(--text); font-weight:700; text-decoration:none; cursor:pointer; }
+        button.primary,a.primary { background:var(--primary); color:#fff; }
+        button.danger { color:var(--danger); }
+        button:disabled { cursor:not-allowed; opacity:.55; }
+        .page { width:min(1160px,100%); margin:auto; padding:22px; }
+        .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+        h1,h2 { margin:0; letter-spacing:0; }
+        h1 { font-size:24px; }
+        h2 { font-size:18px; }
+        .subtle,.meta { color:var(--muted); }
+        .panel { margin-bottom:18px; padding:18px; border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:var(--shadow); }
+        .form-grid { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+        input[type="url"] { min-width:0; width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; }
+        .mode-row { display:flex; align-items:center; gap:14px; margin-top:14px; }
+        .segmented { display:inline-flex; padding:3px; border:1px solid var(--line); border-radius:7px; background:var(--bg); }
+        .segmented label { position:relative; margin:0; }
+        .segmented input { position:absolute; opacity:0; pointer-events:none; }
+        .segmented span { display:block; min-width:76px; padding:7px 12px; border-radius:5px; text-align:center; cursor:pointer; }
+        .segmented input:checked + span { background:var(--primary); color:#fff; }
+        .music-option { display:flex; align-items:center; gap:7px; font-weight:700; cursor:pointer; }
+        .music-option input { width:18px; height:18px; margin:0; accent-color:var(--primary); }
+        .credential { margin-top:12px; }
+        .custom { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+        .custom[hidden] { display:none; }
+        .custom-head,.section-head,.pager,.task-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .format-status,.notice { min-height:22px; color:var(--muted); }
+        .format-list { max-height:520px; margin-top:10px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
+        .format-row { display:grid; grid-template-columns:34px minmax(90px,130px) 1fr; gap:10px; align-items:start; padding:10px 12px; border-bottom:1px solid var(--line); }
+        .format-row:last-child { border-bottom:0; }
+        .format-row.is-disabled { background:#f0f2f6; color:var(--muted); cursor:not-allowed; opacity:.52; }
+        .format-row.is-disabled .format-detail strong,.format-row.is-disabled .format-id { color:var(--muted); }
+        .format-row input:disabled { cursor:not-allowed; filter:grayscale(1); }
+        .format-id { font-weight:800; word-break:break-all; }
+        .format-kind { display:block; margin-top:2px; color:var(--muted); font-size:12px; }
+        .format-detail { display:flex; flex-wrap:wrap; gap:5px 12px; min-width:0; color:var(--muted); }
+        .format-detail strong { color:var(--text); font-weight:650; }
+        .selection { margin-top:10px; padding:10px 12px; border-radius:6px; background:var(--primary-soft); color:#174680; white-space:pre-wrap; }
+        .selection.warning { background:#fff4bf; color:#715100; }
+        .selection.error { background:#fff0f0; color:var(--danger); }
+        .task-list { display:grid; gap:10px; margin-top:14px; }
+        .task { display:grid; grid-template-columns:116px minmax(0,1fr); gap:14px; padding:14px 0; border-bottom:1px solid var(--line); transition:background-color .2s,box-shadow .2s; }
+        .task:last-child { border-bottom:0; }
+        .task.created-highlight { border-radius:6px; background:#fff4bf; box-shadow:0 0 0 3px #e8a100; }
+        .cover { width:116px; aspect-ratio:1; object-fit:cover; border-radius:6px; background:#e5e9f0; }
+        .task-main { min-width:0; }
+        .task-title { margin:0 0 4px; overflow-wrap:anywhere; font-size:16px; }
+        .source { display:block; margin-bottom:8px; overflow:hidden; color:var(--primary); text-overflow:ellipsis; white-space:nowrap; }
+        .status-line { display:flex; align-items:center; gap:8px; margin:7px 0; }
+        .badge { padding:3px 7px; border-radius:5px; background:#edf1f7; color:var(--muted); font-size:12px; font-weight:750; }
+        .badge.completed { background:#e2f5ec; color:var(--ok); }
+        .badge.failed,.badge.cancelled { background:#fff0f0; color:var(--danger); }
+        progress { width:100%; height:8px; accent-color:var(--primary); }
+        .task-meta { display:flex; flex-wrap:wrap; gap:4px 14px; margin:7px 0; color:var(--muted); }
+        .error-text { margin:7px 0; color:var(--danger); overflow-wrap:anywhere; }
+        .task-actions { justify-content:flex-end; flex-wrap:wrap; margin-top:9px; }
+        .empty { padding:34px 10px; color:var(--muted); text-align:center; }
+        .pager { justify-content:center; margin-top:14px; }
+        dialog { width:min(720px,calc(100% - 24px)); max-height:calc(100dvh - 32px); padding:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 18px 60px rgba(0,0,0,.28); }
+        dialog::backdrop { background:rgba(12,18,28,.62); }
+        .dialog-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 16px; border-bottom:1px solid var(--line); }
+        .dialog-head button { width:36px; height:36px; padding:0; font-size:20px; }
+        .dialog-body { padding:16px; overflow:auto; }
+        .preview-media { display:block; width:100%; max-height:70dvh; margin:auto; background:#000; }
+        .preview-audio { display:grid; gap:14px; }
+        .preview-audio img { width:min(360px,100%); aspect-ratio:1; margin:auto; object-fit:cover; border-radius:6px; }
+        .preview-audio audio { width:100%; }
+        .forward-form { display:grid; gap:12px; }
+        .forward-form select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); }
+        .dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
+        @media (max-width:680px) {
+            .page { padding:12px; }
+            .topbar { align-items:flex-start; }
+            h1 { font-size:20px; }
+            .panel { padding:14px; }
+            .form-grid { grid-template-columns:1fr; }
+            .mode-row { align-items:flex-start; flex-direction:column; }
+            .format-row { grid-template-columns:30px 78px minmax(0,1fr); padding:9px; }
+            .task { grid-template-columns:78px minmax(0,1fr); }
+            .cover { width:78px; }
+        }
+        @media (prefers-color-scheme:dark) {
+            :root { --bg:#0e1521; --panel:#17202e; --text:#edf3ff; --muted:#a4afc1; --line:#334157; --primary:#6d9fff; --primary-soft:#192d4a; --shadow:none; }
+            button,a.command { background:#273449; }
+            .selection { color:#c6d9ff; }
+            .selection.warning { background:#4a3c12; color:#ffe187; }
+            .format-row.is-disabled { background:#111a27; }
+            .task.created-highlight { background:#4a3c12; box-shadow:0 0 0 3px #ffd45b; }
+            .badge { background:#283448; }
+            .badge.completed { background:#173c31; }
+            .badge.failed,.badge.cancelled,.selection.error { background:#422226; }
+        }
+    </style>
+</head>
+<body>
+<main class="page">
+    <header class="topbar">
+        <div>
+            <h1>私人 YouTube Premium 下载</h1>
+            <div class="subtle">私人任务、Cookie 和输出文件均与普通隧道隔离。</div>
+        </div>
+        <a class="command" href="/admin">返回 admin</a>
+    </header>
+
+    <section class="panel">
+        <div class="form-grid">
+            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=...">
+            <button class="primary" id="startBtn" type="button">开始下载</button>
+        </div>
+        <div class="mode-row">
+            <strong>抓取方案</strong>
+            <div class="segmented" role="radiogroup" aria-label="抓取方案">
+                <label><input name="mode" type="radio" value="default" checked><span>默认</span></label>
+                <label><input name="mode" type="radio" value="custom"><span>自定义</span></label>
+            </div>
+            <label class="music-option"><input id="asMusicInput" type="checkbox">以音乐形式下载</label>
+        </div>
+        <div class="credential subtle">私人 Cookie 在 <a href="/sns-cookies">SNS cookies 管理页</a>配置，页面和任务 API 均不会读取其内容。</div>
+        <div class="notice" id="notice"></div>
+
+        <div class="custom" id="customPanel" hidden>
+            <div class="custom-head">
+                <div>
+                    <h2>媒体格式</h2>
+                    <div class="format-status" id="formatStatus">输入 URL 后将自动解析。</div>
+                </div>
+                <button id="analyzeBtn" type="button">重新解析</button>
+            </div>
+            <div class="format-list" id="formatList"></div>
+            <div class="selection" id="selectionSummary" hidden></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="section-head">
+            <div>
+                <h2>私人下载任务</h2>
+                <div class="subtle" id="taskCount">正在读取...</div>
+            </div>
+            <button id="refreshBtn" type="button">刷新</button>
+        </div>
+        <div class="task-list" id="taskList"></div>
+        <div class="pager" id="pager" hidden>
+            <button id="prevBtn" type="button">上一页</button>
+            <span id="pageLabel"></span>
+            <button id="nextBtn" type="button">下一页</button>
+        </div>
+    </section>
+</main>
+
+<dialog id="previewDialog">
+    <div class="dialog-head"><strong id="previewTitle">文件预览</strong><button type="button" data-close-preview aria-label="关闭">×</button></div>
+    <div class="dialog-body" id="previewBody"></div>
+</dialog>
+
+<dialog id="forwardDialog">
+    <div class="dialog-head"><strong>转发到隧道</strong><button type="button" data-close-forward aria-label="关闭">×</button></div>
+    <div class="dialog-body forward-form">
+        <select id="forwardTarget" aria-label="目标隧道"></select>
+        <div class="subtle" id="forwardStatus"></div>
+        <div class="dialog-actions"><button type="button" data-close-forward>取消</button><button class="primary" id="forwardConfirm" type="button">确认转发</button></div>
+    </div>
+</dialog>
+
+<script>
+    const urlInput = document.getElementById('urlInput');
+    const startBtn = document.getElementById('startBtn');
+    const customPanel = document.getElementById('customPanel');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const asMusicInput = document.getElementById('asMusicInput');
+    const formatStatus = document.getElementById('formatStatus');
+    const formatList = document.getElementById('formatList');
+    const selectionSummary = document.getElementById('selectionSummary');
+    const notice = document.getElementById('notice');
+    const taskList = document.getElementById('taskList');
+    const taskCount = document.getElementById('taskCount');
+    const pager = document.getElementById('pager');
+    const pageLabel = document.getElementById('pageLabel');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const previewDialog = document.getElementById('previewDialog');
+    const previewBody = document.getElementById('previewBody');
+    const previewTitle = document.getElementById('previewTitle');
+    const forwardDialog = document.getElementById('forwardDialog');
+    const forwardTarget = document.getElementById('forwardTarget');
+    const forwardStatus = document.getElementById('forwardStatus');
+    const forwardConfirm = document.getElementById('forwardConfirm');
+    let analysis = null;
+    let analysisInputUrl = '';
+    let analysisRequest = 0;
+    let analyzeTimer = 0;
+    let page = 1;
+    let pages = 1;
+
+    const statusLabels = {
+        queued: '等待中', parsing: '解析中', downloading: '下载中', merging: '合并中',
+        metadata: '元数据处理中', completed: '已完成', failed: '失败', cancelled: '已取消', cleared: '缓存已清除'
+    };
+    const statusDetails = {
+        queued: '已进入服务端任务队列，等待下载槽位',
+        parsing: '正在读取链接信息并确认媒体格式',
+        downloading: '正在从 YouTube 抓取媒体数据',
+        merging: '正在使用 ffmpeg 合并媒体轨道',
+        metadata: '正在写入歌曲元数据和封面',
+        completed: '服务端成品已就绪',
+        failed: '抓取失败，可查看错误后重新抓取',
+        cancelled: '任务已取消，可重新抓取',
+        cleared: '服务端成品已删除，可重新抓取'
+    };
+    const kindLabels = { video: '视频', audio: '音频', video_audio: '视频+音频', other: '其他' };
+
+    function mode() {
+        return document.querySelector('input[name="mode"]:checked').value;
+    }
+
+    async function api(url, options = {}) {
+        const response = await fetch(url, { cache: 'no-store', ...options });
+        if (response.status === 401) {
+            location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+            throw new Error('管理会话已失效');
+        }
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+    }
+
+    function formatSize(bytes) {
+        const value = Number(bytes) || 0;
+        if (!value) return '未知';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let size = value;
+        let unit = 0;
+        while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+        return `${size.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+    }
+
+    function detail(label, value) {
+        if (!value) return null;
+        const item = document.createElement('span');
+        const strong = document.createElement('strong');
+        strong.textContent = `${label}：`;
+        item.append(strong, String(value));
+        return item;
+    }
+
+    function selectedFormats() {
+        const ids = [...formatList.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value);
+        return ids.map(id => analysis?.formats.find(format => format.id === id)).filter(Boolean);
+    }
+
+    function updateSelectionSummary() {
+        const selected = selectedFormats();
+        selectionSummary.hidden = false;
+        selectionSummary.className = 'selection';
+        let error = '';
+        if (!selected.length || selected.length > 2) error = '请选择一个媒体格式，或一个纯视频格式加一个纯音频格式。';
+        if (!error && selected.length === 1 && !['video', 'audio', 'video_audio'].includes(selected[0].kind)) error = '所选编号不包含可下载的音频或视频轨。';
+        if (!error && selected.length === 2 && !(selected.some(item => item.kind === 'video') && selected.some(item => item.kind === 'audio'))) error = '双选时必须选择一个纯视频格式和一个纯音频格式。';
+        if (!error && asMusicInput.checked && (selected.length !== 1 || selected[0].kind !== 'audio')) error = '以音乐形式下载时只能选择一个纯音频媒体编号。';
+        if (error) {
+            selectionSummary.classList.add('error');
+            selectionSummary.textContent = error;
+            return false;
+        }
+        const video = selected.find(item => item.kind === 'video' || item.kind === 'video_audio');
+        const audio = selected.find(item => item.kind === 'audio' || item.kind === 'video_audio');
+        const singleTrack = selected.length === 1 && ['video', 'audio'].includes(selected[0].kind);
+        const output = (asMusicInput.checked || analysis.mediaType === 'song') && selected.length === 1 && selected[0].kind === 'audio' ? 'M4A' : (selected.length === 1 ? selected[0].ext.toUpperCase() : (/^(?:avc1|av01|h26)/i.test(video.videoCodec) && /^(?:mp4a|aac)/i.test(audio.audioCodec) ? 'MP4' : 'MKV'));
+        if (singleTrack) selectionSummary.classList.add('warning');
+        selectionSummary.textContent = [
+            singleTrack ? `提示：当前仅下载纯${selected[0].kind === 'video' ? '视频' : '音频'}轨，成品不包含${selected[0].kind === 'video' ? '音频' : '视频'}。` : '',
+            `最终格式：${selected.map(item => item.id).join(' + ')}`,
+            video ? `视频：${video.height ? `${video.height}p` : video.resolution || '未知'} / ${video.videoCodec}` : '',
+            audio ? `音频：${audio.audioCodec} / ${audio.audioBitrate ? `${Math.round(audio.audioBitrate)}kbps` : '码率未知'}` : '',
+            `输出：${output}`
+        ].filter(Boolean).join('\n');
+        return true;
+    }
+
+    function applyFormatMode(data) {
+        const defaults = new Set(asMusicInput.checked && data.musicFormatId ? [data.musicFormatId] : (data.selection?.ids || []));
+        for (const checkbox of formatList.querySelectorAll('input[type="checkbox"]')) {
+            checkbox.disabled = asMusicInput.checked && checkbox.dataset.kind !== 'audio';
+            checkbox.checked = !checkbox.disabled && defaults.has(checkbox.value);
+            const row = checkbox.closest('.format-row');
+            row.classList.toggle('is-disabled', checkbox.disabled);
+            row.title = checkbox.disabled ? '音乐模式只能选择纯音频媒体编号' : '';
+        }
+        formatStatus.textContent = `${data.title} · ${asMusicInput.checked || data.mediaType === 'song' ? '音乐' : '视频'} · 共 ${data.formats.length} 个格式，${asMusicInput.checked ? '已自动勾选最高音质纯音频编号' : '已按默认方案勾选'}。`;
+        updateSelectionSummary();
+    }
+
+    function renderFormats(data) {
+        formatList.replaceChildren();
+        for (const format of data.formats || []) {
+            const row = document.createElement('label');
+            row.className = 'format-row';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = format.id;
+            checkbox.dataset.kind = format.kind;
+            checkbox.addEventListener('change', updateSelectionSummary);
+            const identity = document.createElement('div');
+            const id = document.createElement('div');
+            id.className = 'format-id';
+            id.textContent = format.id;
+            const kind = document.createElement('span');
+            kind.className = 'format-kind';
+            kind.textContent = kindLabels[format.kind] || format.kind;
+            identity.append(id, kind);
+            const details = document.createElement('div');
+            details.className = 'format-detail';
+            [
+                detail('容器', format.ext),
+                format.kind !== 'audio' ? detail('分辨率', format.resolution) : null,
+                format.kind !== 'audio' ? detail('FPS', format.fps) : null,
+                format.kind !== 'audio' ? detail('视频编码', format.videoCodec) : null,
+                format.videoBitrate ? detail('视频码率', `${Math.round(format.videoBitrate)}kbps`) : null,
+                format.kind !== 'video' ? detail('音频编码', format.audioCodec) : null,
+                format.audioBitrate ? detail('音频码率', `${Math.round(format.audioBitrate)}kbps`) : null,
+                format.sampleRate ? detail('采样率', `${format.sampleRate}Hz`) : null,
+                detail('大小', formatSize(format.fileSize)),
+                detail('协议', format.protocol),
+                detail('说明', format.note)
+            ].filter(Boolean).forEach(item => details.appendChild(item));
+            row.append(checkbox, identity, details);
+            formatList.appendChild(row);
+        }
+        applyFormatMode(data);
+    }
+
+    async function analyzeFormats() {
+        const url = urlInput.value.trim();
+        if (!url) return;
+        const request = ++analysisRequest;
+        analysis = null;
+        analysisInputUrl = '';
+        formatList.replaceChildren();
+        selectionSummary.hidden = true;
+        formatStatus.textContent = '正在解析媒体格式...';
+        analyzeBtn.disabled = true;
+        try {
+            const data = await api('/api/youtube-premium/formats', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url })
+            });
+            if (request !== analysisRequest) return;
+            analysis = data;
+            analysisInputUrl = url;
+            renderFormats(data);
+        } catch (error) {
+            if (request !== analysisRequest) return;
+            formatStatus.textContent = `解析失败：${error.message}`;
+        } finally {
+            if (request === analysisRequest) analyzeBtn.disabled = false;
+        }
+    }
+
+    function scheduleAnalyze() {
+        clearTimeout(analyzeTimer);
+        if (mode() !== 'custom' || !urlInput.value.trim()) return;
+        analyzeTimer = setTimeout(analyzeFormats, 700);
+    }
+
+    async function startDownload() {
+        const url = urlInput.value.trim();
+        if (!url) return void (notice.textContent = '请先填写 URL。');
+        const selectedFormatIds = mode() === 'custom'
+            ? selectedFormats().map(format => format.id)
+            : [];
+        if (mode() === 'custom' && (!analysis || analysisInputUrl !== url || !updateSelectionSummary())) {
+            return void (notice.textContent = '请先完成格式解析并确认有效组合。');
+        }
+        try {
+            startBtn.disabled = true;
+            notice.textContent = '正在创建私人下载任务...';
+            const created = await api('/api/youtube-premium/tasks', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, selectedFormatIds }), keepalive: true
+            });
+            notice.textContent = '任务已创建。';
+            page = 1;
+            await loadTasks();
+            const card = [...taskList.children].find(item => item.dataset.taskId === created.id);
+            if (card) {
+                card.tabIndex = -1;
+                card.classList.add('created-highlight');
+                card.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+                card.focus({ preventScroll: true });
+                setTimeout(() => card.classList.remove('created-highlight'), 2000);
+            }
+        } catch (error) {
+            notice.textContent = `创建失败：${error.message}`;
+        } finally {
+            startBtn.disabled = false;
+        }
+    }
+
+    function taskButton(task, label, action, method = 'POST', confirmation = '', danger = false) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        if (danger) button.className = 'danger';
+        button.addEventListener('click', async () => {
+            if (confirmation && !confirm(confirmation)) return;
+            button.disabled = true;
+            try {
+                if (action === '/retry') {
+                    button.textContent = '正在提交...';
+                    notice.textContent = '正在清理旧成品并提交重新抓取任务...';
+                }
+                const updated = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}${action}`, { method });
+                if (action === '/retry') notice.textContent = `重新抓取已提交：${statusDetails[updated.status] || statusLabels[updated.status] || updated.status}`;
+                await loadTasks();
+            } catch (error) {
+                notice.textContent = error.message;
+                button.disabled = false;
+            }
+        });
+        return button;
+    }
+
+    function showPreview(task) {
+        previewTitle.textContent = task.outputFileName || task.title || '文件预览';
+        previewBody.replaceChildren();
+        const isAudio = task.mediaType === 'song' || /\.(?:m4a|mp3|aac|opus|ogg|wav|flac)$/i.test(task.outputFileName || '');
+        const media = document.createElement(isAudio ? 'audio' : 'video');
+        media.controls = true;
+        media.preload = 'metadata';
+        media.src = task.previewUrl || `${task.downloadUrl}${task.downloadUrl.includes('?') ? '&' : '?'}inline=1`;
+        if (isAudio) {
+            const wrap = document.createElement('div');
+            wrap.className = 'preview-audio';
+            if (task.cover) {
+                const cover = document.createElement('img');
+                cover.src = task.cover;
+                cover.alt = '';
+                wrap.appendChild(cover);
+            }
+            wrap.appendChild(media);
+            previewBody.appendChild(wrap);
+        } else {
+            media.className = 'preview-media';
+            media.playsInline = true;
+            previewBody.appendChild(media);
+        }
+        previewDialog.showModal();
+    }
+
+    function closePreview() {
+        const media = previewBody.querySelector('audio,video');
+        if (media) { media.pause(); media.removeAttribute('src'); media.load(); }
+        previewDialog.close();
+        previewBody.replaceChildren();
+    }
+
+    async function showForward(task) {
+        forwardDialog.dataset.taskId = task.id;
+        forwardTarget.replaceChildren();
+        forwardStatus.textContent = '正在读取隧道列表...';
+        forwardConfirm.disabled = true;
+        forwardDialog.showModal();
+        try {
+            const data = await api('/api/sessions');
+            const previous = localStorage.getItem('youtubePremiumLastForwardSession') || '';
+            for (const tunnel of data.sessions || []) {
+                const option = document.createElement('option');
+                option.value = tunnel.id;
+                option.textContent = [tunnel.shortCode || tunnel.id, tunnel.remark].filter(Boolean).join(' · ');
+                option.selected = tunnel.id === previous;
+                forwardTarget.appendChild(option);
+            }
+            forwardStatus.textContent = forwardTarget.options.length ? '' : '没有可转发的隧道。';
+            forwardConfirm.disabled = !forwardTarget.options.length;
+        } catch (error) {
+            forwardStatus.textContent = error.message;
+        }
+    }
+
+    function renderTask(task) {
+        const card = document.createElement('article');
+        card.className = 'task';
+        card.dataset.taskId = task.id;
+        const cover = document.createElement('img');
+        cover.className = 'cover';
+        cover.alt = '';
+        cover.loading = 'lazy';
+        if (task.cover) cover.src = task.cover;
+        const main = document.createElement('div');
+        main.className = 'task-main';
+        const title = document.createElement('h3');
+        title.className = 'task-title';
+        title.textContent = task.title || '等待解析标题';
+        const source = document.createElement('a');
+        source.className = 'source';
+        source.href = task.url;
+        source.target = '_blank';
+        source.rel = 'noopener noreferrer';
+        source.textContent = task.url;
+        const statusLine = document.createElement('div');
+        statusLine.className = 'status-line';
+        const badge = document.createElement('span');
+        badge.className = `badge ${task.status}`;
+        badge.textContent = statusLabels[task.status] || task.status;
+        const statusText = document.createElement('span');
+        const progress = task.progress || {};
+        statusText.className = 'meta';
+        statusText.textContent = [statusDetails[task.status] || '', progress.downloadedText && progress.totalText ? `${progress.downloadedText} / ${progress.totalText}` : '', progress.speedText, progress.etaText ? `剩余 ${progress.etaText}` : ''].filter(Boolean).join(' · ');
+        statusLine.append(badge, statusText);
+        main.append(title, source, statusLine);
+        if (['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status)) {
+            const bar = document.createElement('progress');
+            bar.max = 100;
+            bar.value = Number(progress.percent) || 0;
+            main.appendChild(bar);
+        }
+        const meta = document.createElement('div');
+        meta.className = 'task-meta';
+        [
+            `方案：${task.mode === 'custom' ? '自定义' : '默认'}`,
+            task.asMusic ? '音乐形式：是' : '',
+            task.mediaType ? `类型：${task.mediaType === 'song' ? '音乐' : '视频'}` : '',
+            task.selectedFormatIds?.length ? `格式：${task.selectedFormatIds.join(' + ')}` : '',
+            task.outputFileName ? `文件：${task.outputFileName}` : '',
+            task.outputFileSize ? `大小：${formatSize(task.outputFileSize)}` : '',
+            `创建：${new Date(task.createdAt).toLocaleString()}`,
+            task.completedAt ? `完成：${new Date(task.completedAt).toLocaleString()}` : ''
+        ].filter(Boolean).forEach(text => {
+            const item = document.createElement('span');
+            item.textContent = text;
+            meta.appendChild(item);
+        });
+        main.appendChild(meta);
+        if (task.error) {
+            const error = document.createElement('div');
+            error.className = 'error-text';
+            error.textContent = task.error;
+            main.appendChild(error);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'task-actions';
+        const running = ['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status);
+        if (task.hasFile) {
+            const download = document.createElement('a');
+            download.className = 'command primary';
+            download.href = task.downloadUrl;
+            download.download = task.outputFileName || '';
+            download.textContent = '下载';
+            actions.appendChild(download);
+            const preview = document.createElement('button');
+            preview.type = 'button';
+            preview.textContent = '预览';
+            preview.addEventListener('click', () => showPreview(task));
+            actions.appendChild(preview);
+            const forward = document.createElement('button');
+            forward.type = 'button';
+            forward.textContent = '发到隧道';
+            forward.addEventListener('click', () => showForward(task));
+            actions.appendChild(forward);
+            actions.appendChild(taskButton(task, '清除缓存', '/clear', 'POST', '只删除服务端生成的成品并保留任务记录，确定继续吗？'));
+        }
+        if (running) {
+            actions.appendChild(taskButton(task, '取消任务', '/cancel', 'POST', '', true));
+        } else {
+            if (!task.hasFile) actions.appendChild(taskButton(task, '重新抓取', '/retry', 'POST', '确定重新抓取这个任务吗？'));
+            actions.appendChild(taskButton(task, '完全删除', '', 'DELETE', '任务记录和服务端成品都会被删除，且无法恢复，确定继续吗？', true));
+        }
+        main.appendChild(actions);
+        card.append(cover, main);
+        return card;
+    }
+
+    async function loadTasks() {
+        const data = await api(`/api/youtube-premium/tasks?page=${page}&pageSize=10`);
+        page = data.page;
+        pages = data.pages;
+        taskCount.textContent = `共 ${data.total} 条任务`;
+        taskList.replaceChildren();
+        if (!data.tasks.length) {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = '尚无私人下载任务。';
+            taskList.appendChild(empty);
+        } else {
+            data.tasks.forEach(task => taskList.appendChild(renderTask(task)));
+        }
+        pager.hidden = data.total <= data.pageSize;
+        pageLabel.textContent = `${page} / ${pages}`;
+        prevBtn.disabled = page <= 1;
+        nextBtn.disabled = page >= pages;
+    }
+
+    document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
+        customPanel.hidden = mode() !== 'custom';
+        if (!customPanel.hidden) scheduleAnalyze();
+    }));
+    asMusicInput.addEventListener('change', () => {
+        if (mode() !== 'custom') return;
+        if (analysis && analysisInputUrl === urlInput.value.trim()) applyFormatMode(analysis);
+        else analyzeFormats();
+    });
+    urlInput.addEventListener('input', scheduleAnalyze);
+    analyzeBtn.addEventListener('click', analyzeFormats);
+    startBtn.addEventListener('click', startDownload);
+    document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));
+    document.querySelectorAll('[data-close-preview]').forEach(button => button.addEventListener('click', closePreview));
+    document.querySelectorAll('[data-close-forward]').forEach(button => button.addEventListener('click', () => forwardDialog.close()));
+    previewDialog.addEventListener('click', event => { if (event.target === previewDialog) closePreview(); });
+    forwardDialog.addEventListener('click', event => { if (event.target === forwardDialog) forwardDialog.close(); });
+    forwardConfirm.addEventListener('click', async () => {
+        const sessionId = forwardTarget.value;
+        if (!sessionId) return;
+        forwardConfirm.disabled = true;
+        forwardStatus.textContent = '正在写入目标隧道...';
+        try {
+            const result = await api(`/api/youtube-premium/tasks/${encodeURIComponent(forwardDialog.dataset.taskId)}/forward`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId })
+            });
+            localStorage.setItem('youtubePremiumLastForwardSession', sessionId);
+            forwardDialog.close();
+            notice.textContent = `已转发到隧道 ${result.shortCode || ''}`.trim();
+        } catch (error) {
+            forwardStatus.textContent = error.message;
+            forwardConfirm.disabled = false;
+        }
+    });
+    prevBtn.addEventListener('click', () => { page -= 1; loadTasks(); });
+    nextBtn.addEventListener('click', () => { page += 1; loadTasks(); });
+    loadTasks().catch(error => { taskCount.textContent = error.message; });
+    setInterval(() => { if (!document.hidden) loadTasks().catch(() => {}); }, 2000);
+</script>
+</body>
+</html>

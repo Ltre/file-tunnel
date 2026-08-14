@@ -234,6 +234,23 @@
             <div class="status" id="syncStatus"></div>
         </section>
 
+        <section class="card" id="youtubePremiumCard">
+            <div class="card-head">
+                <div class="platform-title">
+                    <strong>私人 YouTube Premium</strong>
+                    <span id="youtubePremiumFileName">yt-premium-cookies.txt</span>
+                </div>
+                <span class="badge empty" id="youtubePremiumBadge">未配置</span>
+            </div>
+            <p class="subtle">仅供 <code>/youtube-premium-dl</code> 私人下载任务使用，与公共 YouTube / YT Music Cookie 完全分离。Cookie 仅在已通过鉴权的本管理页回显，扩展同步接口不会返回其内容。</p>
+            <textarea id="youtubePremiumContent" spellcheck="false" autocomplete="off" placeholder="# Netscape HTTP Cookie File"></textarea>
+            <div class="actions">
+                <button class="btn danger" id="clearYoutubePremiumBtn" type="button">清空</button>
+                <button class="btn primary" id="saveYoutubePremiumBtn" type="button">保存私人 Cookie</button>
+            </div>
+            <div class="status" id="youtubePremiumStatus">尚未读取状态。</div>
+        </section>
+
         <section class="grid" id="platformList" aria-live="polite"></section>
     </main>
 
@@ -257,6 +274,11 @@
         const createSyncTokenBtn = document.getElementById('createSyncTokenBtn');
         const copySyncTokenBtn = document.getElementById('copySyncTokenBtn');
         const revokeSyncTokenBtn = document.getElementById('revokeSyncTokenBtn');
+        const youtubePremiumBadge = document.getElementById('youtubePremiumBadge');
+        const youtubePremiumContent = document.getElementById('youtubePremiumContent');
+        const youtubePremiumStatus = document.getElementById('youtubePremiumStatus');
+        const saveYoutubePremiumBtn = document.getElementById('saveYoutubePremiumBtn');
+        const clearYoutubePremiumBtn = document.getElementById('clearYoutubePremiumBtn');
         document.getElementById('syncServerUrl').value = location.origin;
 
         function setStatus(text, type = '') {
@@ -314,7 +336,26 @@
             if (!response.ok) throw new Error('读取 cookies 配置失败');
             const data = await response.json();
             const warningCount = renderPlatforms(data.platforms || []);
+            const premium = data.youtubePremium || {};
+            youtubePremiumBadge.textContent = premium.configured ? `已配置 · ${formatSize(premium.size)}` : '未配置';
+            youtubePremiumBadge.className = `badge ${premium.configured ? 'ok' : 'empty'}`;
+            youtubePremiumStatus.textContent = premium.configured
+                ? `私人 Cookie 已保存，最后更新于 ${new Date(premium.updatedAt).toLocaleString()}。`
+                : '尚未配置私人 YouTube Premium Cookie。';
+            document.getElementById('youtubePremiumFileName').textContent = premium.fileName || 'yt-premium-cookies.txt';
+            youtubePremiumContent.value = premium.content || '';
             setStatus(warningCount ? '配置已读取，但有 cookies 登录态不完整，请按提示重新导出。' : '配置已读取。', warningCount ? 'error' : 'ok');
+        }
+
+        async function saveYoutubePremiumCookies(content) {
+            const response = await fetch('/api/youtube-premium/cookies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || '保存私人 Cookie 失败');
+            await loadCookies();
         }
 
         async function loadSyncStatus() {
@@ -366,6 +407,34 @@
 
         reloadBtn.addEventListener('click', () => {
             loadCookies().catch(err => setStatus(err.message || '读取失败', 'error'));
+        });
+
+        saveYoutubePremiumBtn.addEventListener('click', async () => {
+            if (!youtubePremiumContent.value.trim()) return void (youtubePremiumStatus.textContent = '请粘贴完整的 Netscape Cookie 内容。');
+            try {
+                saveYoutubePremiumBtn.disabled = true;
+                youtubePremiumStatus.textContent = '正在保存...';
+                await saveYoutubePremiumCookies(youtubePremiumContent.value);
+                youtubePremiumStatus.textContent = '私人 YouTube Premium Cookie 已保存，内容已从输入框清除。';
+            } catch (error) {
+                youtubePremiumStatus.textContent = error.message || '保存失败';
+            } finally {
+                saveYoutubePremiumBtn.disabled = false;
+            }
+        });
+
+        clearYoutubePremiumBtn.addEventListener('click', async () => {
+            if (!confirm('确定清空私人 YouTube Premium Cookie 吗？')) return;
+            try {
+                clearYoutubePremiumBtn.disabled = true;
+                youtubePremiumStatus.textContent = '正在清空...';
+                await saveYoutubePremiumCookies('');
+                youtubePremiumStatus.textContent = '私人 YouTube Premium Cookie 已清空。';
+            } catch (error) {
+                youtubePremiumStatus.textContent = error.message || '清空失败';
+            } finally {
+                clearYoutubePremiumBtn.disabled = false;
+            }
         });
 
         createSyncTokenBtn.addEventListener('click', async () => {

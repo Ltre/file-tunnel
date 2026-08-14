@@ -1,6 +1,7 @@
 'use strict';
 
 const webext = globalThis.browser || globalThis.chrome;
+const REQUIRED_SYNC_PROTOCOL_VERSION = 2;
 const fields = {
     intervalMinutes: document.getElementById('intervalMinutes'),
     pageResyncMinutes: document.getElementById('pageResyncMinutes'),
@@ -10,6 +11,7 @@ const serverList = document.getElementById('serverList');
 const serverDialog = document.getElementById('serverDialog');
 const serverUrlInput = document.getElementById('serverUrl');
 const syncTokenInput = document.getElementById('syncToken');
+const syncYoutubePremiumInput = document.getElementById('syncYoutubePremium');
 const serverDialogStatus = document.getElementById('serverDialogStatus');
 const configBackupInput = document.getElementById('configBackup');
 const statusEl = document.getElementById('status');
@@ -54,7 +56,12 @@ function parseConfigBackup(value) {
     if (!backup.servers.length || backup.servers.length > 50) throw new Error('配置备份中的服务器数量无效');
     const importedServers = [...new Map(backup.servers.map(server => {
         const serverUrl = normalizeServerUrl(server?.serverUrl);
-        return [serverUrl, { id: crypto.randomUUID(), serverUrl, syncToken: normalizeSyncToken(server?.syncToken) }];
+        return [serverUrl, {
+            id: crypto.randomUUID(),
+            serverUrl,
+            syncToken: normalizeSyncToken(server?.syncToken),
+            syncYoutubePremium: server?.syncYoutubePremium === true
+        }];
     })).values()];
     return {
         servers: importedServers,
@@ -93,7 +100,7 @@ function renderServers() {
         name.textContent = server.serverUrl;
         const meta = document.createElement('span');
         meta.className = 'server-meta';
-        meta.textContent = '同步密钥已配置';
+        meta.textContent = server.syncYoutubePremium ? '公共 SNS + 私人 YouTube Premium' : '公共 SNS Cookie';
         main.append(name, meta);
 
         const actions = document.createElement('div');
@@ -115,6 +122,9 @@ function renderServers() {
 async function loadSettings() {
     const response = await webext.runtime.sendMessage({ type: 'get-settings' });
     if (!response?.ok) throw new Error(response?.error || '读取设置失败');
+    if (response.protocolVersion !== REQUIRED_SYNC_PROTOCOL_VERSION) {
+        throw new Error('扩展后台仍在运行旧版本，请到扩展管理页点击“重新加载”后再试');
+    }
     const settings = response.settings;
     servers = Array.isArray(settings.servers) ? settings.servers : [];
     fields.intervalMinutes.value = settings.intervalMinutes;
@@ -129,6 +139,7 @@ function openServerDialog(server = null) {
     document.getElementById('serverDialogTitle').textContent = server ? '修改服务器' : '添加服务器';
     serverUrlInput.value = server?.serverUrl || '';
     syncTokenInput.value = server?.syncToken || '';
+    syncYoutubePremiumInput.checked = server?.syncYoutubePremium === true;
     serverDialogStatus.textContent = '';
     serverDialog.showModal();
     serverUrlInput.focus();
@@ -147,7 +158,12 @@ async function saveServer() {
     }
 
     const previous = servers.find(server => server.id === editingServerId);
-    const next = { id: editingServerId || crypto.randomUUID(), serverUrl, syncToken };
+    const next = {
+        id: editingServerId || crypto.randomUUID(),
+        serverUrl,
+        syncToken,
+        syncYoutubePremium: syncYoutubePremiumInput.checked
+    };
     servers = previous ? servers.map(server => server.id === editingServerId ? next : server) : [...servers, next];
     await webext.storage.local.set({ servers, lastCookieHash: '', lastSyncAt: 0, lastResult: '', lastError: '' });
     if (previous && previous.serverUrl !== serverUrl) await removeUnusedPermission(previous.serverUrl);
@@ -156,7 +172,7 @@ async function saveServer() {
     setStatus('服务器配置已保存，正在请求访问权限...');
     const granted = await webext.permissions.request({ origins: [`${serverUrl}/*`] });
     if (!granted) throw new Error(`服务器配置已保存，但尚未授予访问 ${serverUrl} 的权限`);
-    setStatus(previous ? '服务器配置已更新。' : '服务器已添加。', 'ok');
+    setStatus(`${previous ? '服务器配置已更新' : '服务器已添加'}${next.syncYoutubePremium ? '，私人 Premium 同步已启用' : ''}。`, 'ok');
 }
 
 async function deleteServer(server) {
@@ -196,7 +212,11 @@ function exportConfig() {
     configBackupInput.value = encodeConfigBackup({
         format: 'drop2tunnel-sns-cookie-sync',
         version: 1,
-        servers: servers.map(({ serverUrl, syncToken }) => ({ serverUrl, syncToken: normalizeSyncToken(syncToken) })),
+        servers: servers.map(({ serverUrl, syncToken, syncYoutubePremium }) => ({
+            serverUrl,
+            syncToken: normalizeSyncToken(syncToken),
+            syncYoutubePremium: syncYoutubePremium === true
+        })),
         settings: {
             enabled: fields.enabled.checked,
             intervalMinutes: Math.max(5, Number(fields.intervalMinutes.value) || 15),
@@ -273,6 +293,9 @@ document.getElementById('syncBtn').addEventListener('click', async event => {
         setStatus(`正在读取各 SNS 平台 Cookie 并同步到 ${servers.length} 台服务器...`);
         const response = await webext.runtime.sendMessage({ type: 'sync-now' });
         if (!response?.ok) throw new Error(response?.error || '同步失败');
+        if (response.protocolVersion !== REQUIRED_SYNC_PROTOCOL_VERSION) {
+            throw new Error('扩展后台仍在运行旧版本，请到扩展管理页点击“重新加载”后再试');
+        }
         await loadSettings();
     } catch (error) {
         setStatus(error.message, 'error');

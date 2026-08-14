@@ -3,6 +3,7 @@
 const webext = globalThis.browser || globalThis.chrome;
 const PERIODIC_ALARM = 'drop2tunnel-cookie-periodic';
 const PAGE_ALARM = 'drop2tunnel-cookie-page';
+const SYNC_PROTOCOL_VERSION = 2;
 const DEFAULTS = Object.freeze({
     enabled: false,
     servers: [],
@@ -42,7 +43,8 @@ async function getSettings() {
         await webext.storage.local.remove(['serverUrl', 'syncToken']);
     }
     settings.servers = (Array.isArray(settings.servers) ? settings.servers : [])
-        .filter(server => server?.serverUrl && server?.syncToken);
+        .filter(server => server?.serverUrl && server?.syncToken)
+        .map(server => ({ ...server, syncYoutubePremium: server.syncYoutubePremium === true }));
     return settings;
 }
 
@@ -106,6 +108,12 @@ async function sha256(value) {
 async function syncServer(server, files) {
     const serverUrl = normalizeServerUrl(server.serverUrl);
     const syncToken = normalizeSyncToken(server.syncToken);
+    const youtube = files.find(file => file.platform === 'youtube');
+    const body = { platforms: Object.fromEntries(files.map(file => [file.platform, file.content])) };
+    if (server.syncYoutubePremium) {
+        if (!youtube) throw new Error(`${serverUrl}：未发现有效的 YouTube 登录 Cookie，私人 Premium Cookie 未同步`);
+        body.youtubePremium = youtube.content;
+    }
     const response = await fetch(`${serverUrl}/api/sns-cookie-sync`, {
         method: 'POST',
         cache: 'no-store',
@@ -113,11 +121,19 @@ async function syncServer(server, files) {
             'Authorization': `Bearer ${syncToken}`,
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ platforms: Object.fromEntries(files.map(file => [file.platform, file.content])) })
+        body: JSON.stringify(body)
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(`${serverUrl}：${result.error || `HTTP ${response.status}`}`);
-    return { serverUrl, ...result };
+    if (server.syncYoutubePremium && result.youtubePremium?.configured !== true) {
+        throw new Error(`${serverUrl}：服务器未确认私人 YouTube Premium Cookie 已保存，请确认服务端已升级`);
+    }
+    return {
+        ...result,
+        serverUrl,
+        premiumRequested: server.syncYoutubePremium,
+        premiumConfigured: result.youtubePremium?.configured === true
+    };
 }
 
 async function syncSnsCookies(trigger, force = false) {
@@ -128,7 +144,11 @@ async function syncSnsCookies(trigger, force = false) {
         if (!settings.servers.length) throw new Error('请先添加至少一个 Drop2Tunnel 服务器');
 
         const { files, skipped } = await collectSnsCookieFiles();
-        const cookieHash = await sha256(files.map(file => `${file.platform}\n${file.content}`).join('\n'));
+        const serverPolicy = settings.servers
+            .map(server => `${normalizeServerUrl(server.serverUrl)}\t${server.syncYoutubePremium ? 'premium' : 'public'}`)
+            .sort()
+            .join('\n');
+        const cookieHash = await sha256(`${files.map(file => `${file.platform}\n${file.content}`).join('\n')}\n--server-policy--\n${serverPolicy}`);
         const minRepeatMs = Math.max(5, Number(settings.intervalMinutes) || 15) * 45000;
         if (!force && cookieHash === settings.lastCookieHash && Date.now() - settings.lastSyncAt < minRepeatMs) {
             return { skipped: true, reason: 'unchanged' };
@@ -142,10 +162,12 @@ async function syncSnsCookies(trigger, force = false) {
         }
         const now = Date.now();
         const totalBytes = files.reduce((sum, file) => sum + new TextEncoder().encode(file.content).byteLength, 0);
+        const premiumTargets = settings.servers.filter(server => server.syncYoutubePremium).length;
+        const premiumConfigured = results.filter(result => result.premiumConfigured).length;
         await webext.storage.local.set({
             lastSyncAt: now,
             lastCookieHash: cookieHash,
-            lastResult: `${new Date(now).toLocaleString()} · ${trigger} · ${results.length} 台服务器 · ${files.length} 个平台 · ${(totalBytes / 1024).toFixed(1)} KB${skipped.length ? ` · 跳过：${skipped.join('、')}` : ''}`,
+            lastResult: `${new Date(now).toLocaleString()} · ${trigger} · ${results.length} 台服务器 · ${files.length} 个平台 · ${(totalBytes / 1024).toFixed(1)} KB${premiumTargets ? ` · 私人 Premium ${premiumConfigured}/${premiumTargets} 台` : ''}${skipped.length ? ` · 跳过：${skipped.join('、')}` : ''}`,
             lastError: ''
         });
         return { ok: true, servers: results, platforms: files.map(file => file.platform), skipped };
@@ -186,7 +208,7 @@ webext.cookies.onChanged.addListener(change => {
 webext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'get-settings') {
         getSettings()
-            .then(settings => sendResponse({ ok: true, settings }))
+            .then(settings => sendResponse({ ok: true, settings, protocolVersion: SYNC_PROTOCOL_VERSION }))
             .catch(error => sendResponse({ ok: false, error: error.message }));
         return true;
     }
@@ -204,7 +226,7 @@ webext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     if (message?.type === 'sync-now') {
         syncSnsCookies('手动立即同步', true)
-            .then(result => sendResponse({ ok: true, result }))
+            .then(result => sendResponse({ ok: true, result, protocolVersion: SYNC_PROTOCOL_VERSION }))
             .catch(error => sendResponse({ ok: false, error: error.message }));
         return true;
     }

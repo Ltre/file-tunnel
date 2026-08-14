@@ -662,6 +662,7 @@ https://tunnel.example.com/sns-cookies
 可配置：
 
 - YouTube / YT Music：`.tunnel-data/yt-cookies.txt`；
+- 私人 YouTube Premium 下载：`.tunnel-data/yt-premium-cookies.txt`，与公共 YouTube Cookie 分开；
 - TikTok：`.tunnel-data/tiktok-cookies.txt`；
 - Facebook：`.tunnel-data/facebook-cookies.txt`；
 - Instagram：`.tunnel-data/instagram-cookies.txt`；
@@ -673,9 +674,17 @@ https://tunnel.example.com/sns-cookies
 #### 12.5.1 在管理页手动配置
 
 1. 使用浏览器登录管理页，并打开 `/sns-cookies`。
-2. 在对应平台粘贴 Netscape cookies.txt 内容；YouTube 和 YT Music 共用同一个输入框。
+2. 在对应平台粘贴 Netscape cookies.txt 内容；公共 YouTube 和 YT Music 共用同一个输入框。私人下载使用页面上独立的“私人 YouTube Premium”输入框。
 3. YouTube Cookie 必须包含登录态及 HttpOnly Cookie。只通过 `document.cookie` 导出的内容不完整，不能用于 yt-dlp。
-4. 点击“保存”，确认状态中显示的文件大小符合预期，再用一条 YouTube 链接验证“解析”和“获取文件内容”。
+4. 点击“保存”，确认状态中显示的文件大小符合预期，再用一条 YouTube 链接验证“解析”和“获取文件内容”。通过鉴权的管理页会回显私人 Cookie 内容，并显示文件大小和更新时间；扩展同步接口不会返回 Cookie 内容。
+
+私人下载入口为 `/youtube-premium-dl`，同时受管理会话鉴权保护。它会把任务历史写入 `.tunnel-data/youtube-premium-tasks.json`，输出文件写入 `.tunnel-data/youtube-premium-downloads/`；这些任务不会进入普通隧道或注册为公共 server asset。默认仅运行一个任务，可通过 `YOUTUBE_PREMIUM_DOWNLOAD_CONCURRENCY` 调整并发数。
+
+勾选“以音乐形式下载”后，普通 YouTube 视频也会按音乐处理：优先自动选择最高码率 M4A；最高 M4A 高于 `136 kbps` 时保留 M4A，处于 `120–136 kbps` 的 128K 档或更低时改选最高码率 Opus，没有 Opus 才回退到 M4A 或其他纯音频格式。页面禁止选择非纯音频编号；系统会使用标题及创作者、频道、上传者、上传年份等可用信息补齐歌曲元数据，并把视频缩略图裁成方形封面后写入 M4A。
+
+切换“以音乐形式下载”只会原地调整已解析列表中的可选项和默认勾选，不会重建列表或重复执行 yt-dlp 格式解析；修改 URL 或主动点击“重新解析”时才会重新读取格式。
+
+私人下载页所称“缓存”是服务器上的任务成品，不是浏览器缓存。“清除缓存”删除 `.tunnel-data/youtube-premium-downloads/<taskId>/` 中的成品但保留历史；成品存在时只显示“清除缓存”，清除后才改为“重新抓取”。重新抓取会按原 URL、抓取方案、格式选择和音乐模式重新执行，并在任务卡显示排队、解析、下载、合并和元数据处理状态；“完全删除”同时删除成品和任务记录。浏览器已经保存到系统下载目录的文件不受这些操作影响。
 
 YouTube 会轮换仍在浏览器中使用的账号 Cookie。如果选择手动导出，yt-dlp 官方建议在新的无痕窗口登录 YouTube，在同一标签打开 `https://www.youtube.com/robots.txt`，导出后立即关闭该无痕窗口，避免该会话继续被浏览器轮换。
 
@@ -704,8 +713,11 @@ npm run build:sns-cookie-extension
 3. Firefox Windows 临时调试：在 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开 `firefox-windows/manifest.json`；长期使用需通过 Mozilla AMO 签名 XPI。
 4. Firefox Android 临时调试：使用 ADB 与 `web-ext run --target=firefox-android --source-dir tools/auto-sync-sns-cookies/firefox-android`；长期使用需安装签名 XPI。
 5. 打开扩展，点击 `+`，填写服务器地址和对应同步密钥；重复操作即可添加多台服务器。三个版本都会按服务器 Origin 动态申请访问权限。
-6. 勾选“启用自动同步”并保存，然后点击“立即同步”。扩展会读取 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到全部已配置服务器。
-7. 分别回到各服务器的 `/sns-cookies` 点击“刷新”，检查各平台 Cookie 的更新时间和大小。
+6. 对需要使用当前浏览器 YouTube 登录态执行私人下载的服务器，可在服务器编辑框中勾选“同时同步为私人 YouTube Premium Cookie”；该选项按服务器独立保存。
+7. 勾选“启用自动同步”并保存，然后点击“立即同步”。扩展会读取 YouTube / YT Music、TikTok、Facebook、Instagram、Threads、LINE、Twitter 和 X 的 Cookie，并批量同步到全部已配置服务器。
+8. 分别回到各服务器的 `/sns-cookies` 点击“刷新”，检查各平台 Cookie 以及可选私人 Premium Cookie 的更新时间和大小。
+
+更新扩展目录中的代码后，应先在浏览器扩展管理页点击“重新加载”，再打开设置页执行同步。若设置页与后台脚本版本不一致，扩展会提示后台仍为旧版本。私人同步成功时，扩展结果会显示“私人 Premium x/y 台”；若浏览器未发现有效的 YouTube 登录 Cookie，或服务端没有确认私人 Cookie 已保存，本次同步会明确失败，不会以普通 SNS 同步成功掩盖该问题。
 
 扩展读取的域名与 `/sns-cookies` 中的平台一一对应：YouTube / YT Music 使用 `youtube.com`，TikTok 使用 `tiktok.com`，Facebook 使用 `facebook.com`，Instagram 使用 `instagram.com`，Threads 使用 `threads.com`、旧域名 `threads.net` 及其可能复用的 `instagram.com` 登录态，LINE 使用 `line.me`，Twitter / X 使用 `twitter.com` 和 `x.com`。未登录或没有可用 Cookie 的平台会被跳过，服务器中该平台原有的 Cookie 文件保持不变。
 
