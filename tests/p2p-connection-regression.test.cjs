@@ -518,6 +518,22 @@ test('SNS peer-first timeout starts after the asset leaves the local download qu
     assert.match(recoverySource, /已排队，等待在线设备传输/);
 });
 
+test('the tunnel short-code inputs use one browser input path', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+    const start = source.indexOf('function initSessionLanding()');
+    const end = source.indexOf('\nfunction openSession', start);
+    const landingSource = source.slice(start, end);
+    const inputStart = landingSource.indexOf("input.addEventListener('input'");
+    const inputEnd = landingSource.indexOf("input.addEventListener('keydown'", inputStart);
+    const inputSource = landingSource.slice(inputStart, inputEnd);
+
+    assert.match(landingSource, /addEventListener\('input'/);
+    assert.doesNotMatch(landingSource, /addEventListener\('beforeinput'/);
+    assert.match(inputSource, /event\.data \|\| event\.target\.value/);
+    assert.match(inputSource, /window\.setTimeout/);
+    assert.doesNotMatch(inputSource, /fillCode/);
+});
+
 test('SNS recovery exposes each fallback stage and resets a failed restore for retry', () => {
     const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
 

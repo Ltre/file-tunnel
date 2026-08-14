@@ -1175,24 +1175,14 @@ function initSessionLanding() {
     };
 
     inputs.forEach((input, index) => {
-        input.addEventListener('beforeinput', event => {
-            if (event.inputType !== 'insertText' || !event.data) return;
-            const value = event.data.toUpperCase().replace(/[^A-Z0-9]/g, '');
-            event.preventDefault();
-            if (!value) return;
-            if (value.length > 1) {
-                fillCode(value);
-                return;
-            }
-            input.value = value;
-            if (inputs[index + 1]) inputs[index + 1].focus();
-            maybeAutoJoin();
-        });
         input.addEventListener('input', event => {
-            const value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+            const value = String(event.data || event.target.value).toUpperCase().replace(/[^A-Z0-9]/g, '');
             event.target.value = value.slice(-1);
-            if (value.length > 1) fillCode(value);
-            else if (event.target.value && inputs[index + 1]) inputs[index + 1].focus();
+            if (event.target.value && inputs[index + 1]) {
+                window.setTimeout(() => {
+                    if (document.activeElement === input) inputs[index + 1].focus();
+                }, 0);
+            }
             maybeAutoJoin();
         });
         input.addEventListener('keydown', event => {
