@@ -127,6 +127,7 @@
                 <label><input name="mode" type="radio" value="custom"><span>自定义</span></label>
             </div>
             <label class="music-option"><input id="asMusicInput" type="checkbox">以音乐形式下载</label>
+            <label class="music-option"><input id="cacheFilesInput" type="checkbox" checked>缓存文件到浏览器</label>
         </div>
         <div class="credential subtle">私人 Cookie 在 <a href="/sns-cookies">SNS cookies 管理页</a>配置，页面和任务 API 均不会读取其内容。</div>
         <div class="notice" id="notice"></div>
@@ -180,12 +181,15 @@
     </div>
 </dialog>
 
+<script src="/client/cache-store.js"></script>
+<script src="/client/youtube-premium-cache.js"></script>
 <script>
     const urlInput = document.getElementById('urlInput');
     const startBtn = document.getElementById('startBtn');
     const customPanel = document.getElementById('customPanel');
     const analyzeBtn = document.getElementById('analyzeBtn');
     const asMusicInput = document.getElementById('asMusicInput');
+    const cacheFilesInput = document.getElementById('cacheFilesInput');
     const formatStatus = document.getElementById('formatStatus');
     const formatList = document.getElementById('formatList');
     const selectionSummary = document.getElementById('selectionSummary');
@@ -213,6 +217,16 @@
     let page = 1;
     let pages = 1;
     const thumbnailDownloads = new Set();
+    const browserCacheStates = new Map();
+    const browserCacheJobs = new Map();
+    let browserCacheTail = Promise.resolve();
+    let currentTasks = [];
+    const premiumBrowserCache = window.createYoutubePremiumBrowserCache?.({
+        onProgress(taskId, progress) {
+            setBrowserCacheState(taskId, { status: 'browser_cache_caching', progress });
+        }
+    }) || null;
+    cacheFilesInput.checked = localStorage.getItem('youtubePremiumCacheFiles') !== '0';
 
     const statusLabels = {
         queued: '等待中', parsing: '解析中', downloading: '下载中', merging: '合并中',
@@ -227,7 +241,13 @@
         completed: '服务端成品已就绪',
         failed: '抓取失败，可查看错误后重新抓取',
         cancelled: '任务已取消，可重新抓取',
-        cleared: '服务端成品已删除，可重新抓取'
+        cleared: '服务端成品已删除，可重新抓取',
+        browser_cache_waiting: '等待缓存到浏览器',
+        browser_cache_caching: '缓存中',
+        browser_cache_cached: '已缓存到浏览器',
+        browser_cache_cleared: '已清除浏览器缓存',
+        browser_cache_disabled: '未启用浏览器缓存',
+        browser_cache_failed: '浏览器缓存失败'
     };
     const kindLabels = { video: '视频', audio: '音频', video_audio: '视频+音频', other: '其他' };
 
@@ -449,14 +469,165 @@
         return button;
     }
 
-    function showPreview(task) {
+    function taskCacheVersion(task) {
+        return `${Number(task.completedAt) || 0}-${Number(task.outputFileSize) || 0}`;
+    }
+
+    function browserCacheMessage(state = {}) {
+        const label = statusDetails[state.status] || state.status || '';
+        if (state.status === 'browser_cache_caching') return `${label} ${Math.round(Number(state.progress) || 0)}%`;
+        return state.error ? `${label}：${state.error}` : label;
+    }
+
+    function updateBrowserCacheUi(taskId) {
+        const state = browserCacheStates.get(taskId);
+        const card = [...taskList.children].find(item => item.dataset.taskId === taskId);
+        const line = card?.querySelector('[data-browser-cache-status]');
+        if (!state || !line) return;
+        const badge = line.querySelector('.badge');
+        badge.className = `badge ${state.status === 'browser_cache_cached' ? 'completed' : (state.status === 'browser_cache_failed' ? 'failed' : '')}`;
+        line.querySelector('.meta').textContent = browserCacheMessage(state);
+        const progress = card.querySelector('[data-browser-cache-progress]');
+        progress.hidden = state.status !== 'browser_cache_caching';
+        progress.value = Number(state.progress) || 0;
+    }
+
+    function setBrowserCacheState(taskId, patch) {
+        browserCacheStates.set(taskId, { ...(browserCacheStates.get(taskId) || {}), ...patch });
+        updateBrowserCacheUi(taskId);
+    }
+
+    async function hydrateBrowserCacheStates(tasks) {
+        await Promise.all(tasks.filter(task => task.hasFile).map(async task => {
+            const version = taskCacheVersion(task);
+            const current = browserCacheStates.get(task.id);
+            if (current?.version === version && (browserCacheJobs.has(task.id) ||
+                ['browser_cache_caching', 'browser_cache_cached', 'browser_cache_cleared',
+                    'browser_cache_disabled', 'browser_cache_failed'].includes(current.status))) return;
+            if (!premiumBrowserCache) {
+                return setBrowserCacheState(task.id, {
+                    status: 'browser_cache_failed', version, error: '当前浏览器不支持文件缓存'
+                });
+            }
+            try {
+                const stored = await premiumBrowserCache.inspect(task);
+                setBrowserCacheState(task.id, {
+                    version,
+                    status: stored.status === 'cached' ? 'browser_cache_cached' :
+                        (stored.status === 'cleared' ? 'browser_cache_cleared' :
+                            (cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled')),
+                    progress: stored.status === 'cached' ? 100 : 0,
+                    error: ''
+                });
+            } catch (error) {
+                setBrowserCacheState(task.id, { status: 'browser_cache_failed', version, error: error.message });
+            }
+        }));
+    }
+
+    function queueBrowserCache(task, force = false) {
+        if (!task?.hasFile || !premiumBrowserCache) return Promise.resolve(false);
+        if (browserCacheJobs.has(task.id)) return browserCacheJobs.get(task.id);
+        const state = browserCacheStates.get(task.id);
+        if (!force && state?.status === 'browser_cache_cached') return Promise.resolve(true);
+        if (!force && state?.status === 'browser_cache_cleared') return Promise.resolve(false);
+        const job = browserCacheTail.then(async () => {
+            if (!force && !cacheFilesInput.checked) {
+                setBrowserCacheState(task.id, { status: 'browser_cache_disabled', progress: 0 });
+                return false;
+            }
+            setBrowserCacheState(task.id, { status: 'browser_cache_caching', progress: 0, error: '' });
+            try {
+                await premiumBrowserCache.store(task);
+                setBrowserCacheState(task.id, { status: 'browser_cache_cached', progress: 100 });
+                return true;
+            } catch (error) {
+                if (error.message === 'browser-cache-auth-required') {
+                    location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+                }
+                setBrowserCacheState(task.id, { status: 'browser_cache_failed', error: error.message });
+                notice.textContent = `浏览器缓存失败：${error.message}`;
+                return false;
+            }
+        }).finally(() => browserCacheJobs.delete(task.id));
+        browserCacheJobs.set(task.id, job);
+        browserCacheTail = job.then(() => undefined);
+        setBrowserCacheState(task.id, {
+            status: 'browser_cache_waiting', version: taskCacheVersion(task), progress: 0, error: ''
+        });
+        return job;
+    }
+
+    async function clearBrowserCachedFile(task, button) {
+        button.disabled = true;
+        try {
+            await premiumBrowserCache.clear(task);
+            setBrowserCacheState(task.id, { status: 'browser_cache_cleared', progress: 0, error: '' });
+            notice.textContent = '已清除该任务的浏览器缓存。';
+            await loadTasks();
+        } catch (error) {
+            notice.textContent = `清除浏览器缓存失败：${error.message}`;
+            button.disabled = false;
+        }
+    }
+
+    async function getBrowserCachedBlob(task) {
+        if (browserCacheStates.get(task.id)?.status !== 'browser_cache_cached') return null;
+        const blob = await premiumBrowserCache?.getBlob(task);
+        if (blob) return blob;
+        setBrowserCacheState(task.id, {
+            status: cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled', progress: 0
+        });
+        if (cacheFilesInput.checked) queueBrowserCache(task);
+        return null;
+    }
+
+    async function ensureBrowserCachedBlob(task) {
+        if (!premiumBrowserCache) throw new Error('当前浏览器不支持文件缓存');
+        let blob = await premiumBrowserCache.getBlob(task);
+        const expected = Number(task.outputFileSize) || 0;
+        if (blob && (!expected || blob.size === expected)) {
+            setBrowserCacheState(task.id, { status: 'browser_cache_cached', progress: 100, error: '' });
+            return blob;
+        }
+        if (!task.hasFile) throw new Error('服务端成品不存在，无法补齐浏览器缓存');
+        if (!await queueBrowserCache(task, true)) {
+            throw new Error(browserCacheStates.get(task.id)?.error || '缓存文件到浏览器失败');
+        }
+        blob = await premiumBrowserCache.getBlob(task);
+        if (!blob || (expected && blob.size !== expected)) throw new Error('浏览器缓存完整性校验失败');
+        return blob;
+    }
+
+    function downloadBlob(blob, name) {
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = name || 'youtube-premium-file';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    }
+
+    async function showPreview(task) {
         previewTitle.textContent = task.outputFileName || task.title || '文件预览';
+        previewBody.textContent = '正在读取文件...';
+        previewDialog.dataset.taskId = task.id;
+        if (!previewDialog.open) previewDialog.showModal();
+        const cachedBlob = await getBrowserCachedBlob(task).catch(() => null);
+        if (previewDialog.dataset.taskId !== task.id) return;
         previewBody.replaceChildren();
         const isAudio = task.mediaType === 'song' || /\.(?:m4a|mp3|aac|opus|ogg|wav|flac)$/i.test(task.outputFileName || '');
         const media = document.createElement(isAudio ? 'audio' : 'video');
         media.controls = true;
         media.preload = 'metadata';
-        media.src = task.previewUrl || `${task.downloadUrl}${task.downloadUrl.includes('?') ? '&' : '?'}inline=1`;
+        if (cachedBlob) {
+            previewBody.dataset.objectUrl = URL.createObjectURL(cachedBlob);
+            media.src = previewBody.dataset.objectUrl;
+        } else {
+            media.src = task.previewUrl || `${task.downloadUrl}${task.downloadUrl.includes('?') ? '&' : '?'}inline=1`;
+        }
         if (isAudio) {
             const wrap = document.createElement('div');
             wrap.className = 'preview-audio';
@@ -473,12 +644,14 @@
             media.playsInline = true;
             previewBody.appendChild(media);
         }
-        previewDialog.showModal();
     }
 
     function closePreview() {
         const media = previewBody.querySelector('audio,video');
         if (media) { media.pause(); media.removeAttribute('src'); media.load(); }
+        if (previewBody.dataset.objectUrl) URL.revokeObjectURL(previewBody.dataset.objectUrl);
+        delete previewBody.dataset.objectUrl;
+        delete previewDialog.dataset.taskId;
         previewDialog.close();
         previewBody.replaceChildren();
     }
@@ -622,6 +795,27 @@
             bar.value = Number(progress.percent) || 0;
             main.appendChild(bar);
         }
+        const cacheState = browserCacheStates.get(task.id);
+        if (task.hasFile && cacheState) {
+            const cacheLine = document.createElement('div');
+            cacheLine.className = 'status-line';
+            cacheLine.dataset.browserCacheStatus = '';
+            const cacheBadge = document.createElement('span');
+            cacheBadge.className = 'badge';
+            cacheBadge.textContent = '浏览器缓存';
+            const cacheText = document.createElement('span');
+            cacheText.className = 'meta';
+            cacheBadge.className = `badge ${cacheState.status === 'browser_cache_cached' ? 'completed' :
+                (cacheState.status === 'browser_cache_failed' ? 'failed' : '')}`;
+            cacheText.textContent = browserCacheMessage(cacheState);
+            cacheLine.append(cacheBadge, cacheText);
+            const cacheProgress = document.createElement('progress');
+            cacheProgress.max = 100;
+            cacheProgress.value = Number(cacheState.progress) || 0;
+            cacheProgress.hidden = cacheState.status !== 'browser_cache_caching';
+            cacheProgress.dataset.browserCacheProgress = '';
+            main.append(cacheLine, cacheProgress);
+        }
         const meta = document.createElement('div');
         meta.className = 'task-meta';
         [
@@ -655,17 +849,30 @@
         thumbnail.addEventListener('click', () => downloadOriginalThumbnail(task, thumbnail));
         actions.appendChild(thumbnail);
         if (task.hasFile) {
-            const download = document.createElement('a');
+            const download = document.createElement(cacheState?.status === 'browser_cache_cached' ? 'button' : 'a');
             download.className = 'command primary';
-            download.href = task.downloadUrl;
-            download.download = task.outputFileName || '';
+            if (download instanceof HTMLAnchorElement) {
+                download.href = task.downloadUrl;
+                download.download = task.outputFileName || '';
+            } else {
+                download.type = 'button';
+                download.addEventListener('click', async () => {
+                    download.disabled = true;
+                    const blob = await getBrowserCachedBlob(task).catch(() => null);
+                    if (blob) downloadBlob(blob, task.outputFileName);
+                    else location.href = task.downloadUrl;
+                    download.disabled = false;
+                });
+            }
             download.textContent = '下载';
             actions.appendChild(download);
             download.after(thumbnail);
             const preview = document.createElement('button');
             preview.type = 'button';
             preview.textContent = '预览';
-            preview.addEventListener('click', () => showPreview(task));
+            preview.addEventListener('click', () => showPreview(task).catch(error => {
+                notice.textContent = `预览失败：${error.message}`;
+            }));
             actions.appendChild(preview);
             const info = document.createElement('button');
             info.type = 'button';
@@ -677,7 +884,20 @@
             forward.textContent = '发到隧道';
             forward.addEventListener('click', () => showForward(task));
             actions.appendChild(forward);
-            actions.appendChild(taskButton(task, '清除缓存', '/clear', 'POST', '只删除服务端生成的成品并保留任务记录，确定继续吗？'));
+            if (cacheState?.status === 'browser_cache_cached') {
+                const clearBrowserCache = document.createElement('button');
+                clearBrowserCache.type = 'button';
+                clearBrowserCache.textContent = '清除浏览器缓存';
+                clearBrowserCache.addEventListener('click', () => clearBrowserCachedFile(task, clearBrowserCache));
+                actions.appendChild(clearBrowserCache);
+            } else if (premiumBrowserCache && ['browser_cache_cleared', 'browser_cache_disabled', 'browser_cache_failed'].includes(cacheState?.status)) {
+                const cacheNow = document.createElement('button');
+                cacheNow.type = 'button';
+                cacheNow.textContent = '缓存到浏览器';
+                cacheNow.addEventListener('click', () => queueBrowserCache(task, true));
+                actions.appendChild(cacheNow);
+            }
+            actions.appendChild(taskButton(task, '清除服务端缓存', '/clear', 'POST', '将删除服务端生成的成品，确定继续吗？'));
         }
         if (running) {
             actions.appendChild(taskButton(task, '取消任务', '/cancel', 'POST', '', true));
@@ -694,6 +914,8 @@
         const data = await api(`/api/youtube-premium/tasks?page=${page}&pageSize=10`);
         page = data.page;
         pages = data.pages;
+        currentTasks = data.tasks;
+        await hydrateBrowserCacheStates(currentTasks);
         taskCount.textContent = `共 ${data.total} 条任务`;
         taskList.replaceChildren();
         if (!data.tasks.length) {
@@ -708,6 +930,9 @@
         pageLabel.textContent = `${page} / ${pages}`;
         prevBtn.disabled = page <= 1;
         nextBtn.disabled = page >= pages;
+        if (cacheFilesInput.checked) currentTasks.forEach(task => {
+            if (browserCacheStates.get(task.id)?.status === 'browser_cache_waiting') queueBrowserCache(task);
+        });
     }
 
     document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
@@ -718,6 +943,19 @@
         if (mode() !== 'custom') return;
         if (analysis && analysisInputUrl === urlInput.value.trim()) applyFormatMode(analysis);
         else analyzeFormats();
+    });
+    cacheFilesInput.addEventListener('change', () => {
+        localStorage.setItem('youtubePremiumCacheFiles', cacheFilesInput.checked ? '1' : '0');
+        currentTasks.forEach(task => {
+            const state = browserCacheStates.get(task.id);
+            if (cacheFilesInput.checked) {
+                if (task.hasFile && ['browser_cache_disabled', 'browser_cache_failed', 'browser_cache_waiting'].includes(state?.status)) {
+                    queueBrowserCache(task);
+                }
+            } else if (task.hasFile && state?.status === 'browser_cache_waiting' && !browserCacheJobs.has(task.id)) {
+                setBrowserCacheState(task.id, { status: 'browser_cache_disabled' });
+            }
+        });
     });
     urlInput.addEventListener('input', scheduleAnalyze);
     analyzeBtn.addEventListener('click', analyzeFormats);
@@ -732,11 +970,21 @@
     forwardConfirm.addEventListener('click', async () => {
         const sessionId = forwardTarget.value;
         if (!sessionId) return;
+        const task = currentTasks.find(item => item.id === forwardDialog.dataset.taskId);
+        if (!task) return;
         forwardConfirm.disabled = true;
-        forwardStatus.textContent = '正在写入目标隧道...';
+        forwardStatus.textContent = '正在确认浏览器缓存...';
         try {
-            const result = await api(`/api/youtube-premium/tasks/${encodeURIComponent(forwardDialog.dataset.taskId)}/forward`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId })
+            const blob = await ensureBrowserCachedBlob(task);
+            forwardStatus.textContent = '正在从浏览器缓存复制到目标隧道...';
+            const result = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/forward?sessionId=${encodeURIComponent(sessionId)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-Drop2Tunnel-File-Size': String(blob.size),
+                    'X-Drop2Tunnel-Cache-Version': taskCacheVersion(task)
+                },
+                body: blob
             });
             localStorage.setItem('youtubePremiumLastForwardSession', sessionId);
             forwardDialog.close();

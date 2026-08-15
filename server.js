@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const { pipeline } = require('stream/promises');
 const { spawn, spawnSync } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays, cleanupFileAssetAssignments } = require('./server/file-assets');
@@ -1050,9 +1051,22 @@ app.post('/api/youtube-premium/tasks/:taskId/thumbnail', adminAuth.requireAuth, 
 
 app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
+    let upload;
     try {
-        res.status(201).json(await forwardYoutubePremiumTaskToTunnel(req.params.taskId, req.body?.sessionId));
+        const task = youtubePremiumService.get(req.params.taskId);
+        if (!task) throw new Error('youtube-premium-file-not-found');
+        const sessionId = req.query?.sessionId;
+        if (!isValidSessionId(sessionId) || !infraStore?.getTunnel(sessionId)) {
+            throw new Error('youtube-premium-target-tunnel-not-found');
+        }
+        upload = await receiveYoutubePremiumForwardUpload(req, task);
+        res.status(201).json(await forwardYoutubePremiumTaskToTunnel(
+            req.params.taskId,
+            sessionId,
+            upload
+        ));
     } catch (error) {
+        if (upload?.path) fs.rmSync(upload.path, { force: true });
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
     }
 });
@@ -3273,28 +3287,61 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
     return session;
 }
 
-async function forwardYoutubePremiumTaskToTunnel(taskId, sessionId) {
+async function receiveYoutubePremiumForwardUpload(req, task) {
+    const expected = Number(task.outputFileSize) || 0;
+    const declared = Number(req.get('X-Drop2Tunnel-File-Size')) || 0;
+    const expectedVersion = `${Number(task.completedAt) || 0}-${expected}`;
+    if (!req.is('application/octet-stream')) throw new Error('youtube-premium-forward-upload-required');
+    if (!expected || declared !== expected) throw new Error('youtube-premium-forward-size-mismatch');
+    if (req.get('X-Drop2Tunnel-Cache-Version') !== expectedVersion) {
+        throw new Error('youtube-premium-forward-cache-stale');
+    }
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    const uploadPath = path.join(TELEGRAM_ASSET_DIR, `.premium-upload-${crypto.randomUUID()}`);
+    let received = 0;
+    try {
+        await pipeline(
+            req,
+            async function* validateUpload(source) {
+                for await (const chunk of source) {
+                    received += chunk.length;
+                    if (received > expected) throw new Error('youtube-premium-forward-size-mismatch');
+                    yield chunk;
+                }
+            },
+            fs.createWriteStream(uploadPath, { flags: 'wx' })
+        );
+        if (received !== expected) throw new Error('youtube-premium-forward-size-mismatch');
+        return { path: uploadPath, size: received };
+    } catch (error) {
+        fs.rmSync(uploadPath, { force: true });
+        throw error;
+    }
+}
+
+async function forwardYoutubePremiumTaskToTunnel(taskId, sessionId, upload) {
     const task = youtubePremiumService.get(taskId);
-    const file = youtubePremiumService.getFile(taskId);
     const tunnel = isValidSessionId(sessionId) ? infraStore?.getTunnel(sessionId) : null;
-    if (!task || !file) throw new Error('youtube-premium-file-not-found');
+    if (!task || !upload?.path || Number(upload.size) !== Number(task.outputFileSize)) {
+        throw new Error('youtube-premium-file-not-found');
+    }
     if (!tunnel) throw new Error('youtube-premium-target-tunnel-not-found');
 
-    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
     const assetId = createServerAssetId();
     const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
     try {
-        await fs.promises.copyFile(file.path, assetPath);
+        await fs.promises.rename(upload.path, assetPath);
     } catch (error) {
+        fs.rmSync(upload.path, { force: true });
         fs.rmSync(assetPath, { force: true });
         throw error;
     }
     const asset = {
         id: assetId,
         path: assetPath,
-        name: sanitizeString(file.name || task.outputFileName || 'youtube-premium-media', 180),
-        type: getMimeTypeFromFileName(file.name),
-        size: fs.statSync(assetPath).size,
+        name: sanitizeString(task.outputFileName || 'youtube-premium-media', 180),
+        type: getMimeTypeFromFileName(task.outputFileName),
+        size: upload.size,
         sessionId,
         createdAt: Date.now(),
         source: 'youtube-premium'
@@ -4136,6 +4183,9 @@ function sanitizeYoutubePremiumError(error) {
         'custom-video-format-conflict': '请选择一个纯视频格式和一个纯音频格式',
         'youtube-premium-audio-stream-missing': '下载结果中没有找到音频轨',
         'youtube-premium-target-tunnel-not-found': '目标隧道不存在或已退出',
+        'youtube-premium-forward-upload-required': '请先将成品缓存到浏览器，再从浏览器缓存转发',
+        'youtube-premium-forward-size-mismatch': '浏览器缓存大小与任务成品不一致，请重新缓存后再转发',
+        'youtube-premium-forward-cache-stale': '浏览器缓存版本已过期，请重新缓存后再转发',
         'download-cancelled': '任务已取消'
     };
     return labels[message] || message.slice(0, 500);

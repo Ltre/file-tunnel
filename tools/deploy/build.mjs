@@ -18,6 +18,7 @@ const SCRIPT_SOURCES = [
   'client/i18n-catalog.js',
   'client/i18n.js',
   'client/localization-runtime.js',
+  'client/youtube-premium-cache.js',
   'client/qrcode-1.0.0.min.js'
 ];
 const PAGE_ROUTES = {

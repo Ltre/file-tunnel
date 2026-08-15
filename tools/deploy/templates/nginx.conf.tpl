@@ -12,6 +12,7 @@ server {
     listen {{nginxListenPort}};
     listen [::]:{{nginxListenPort}};
     server_name {{domain}};
+    client_max_body_size 1g;
 
     gzip on;
     gzip_comp_level 5;

@@ -3,6 +3,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 
 const {
     createYoutubePremiumService,
@@ -48,6 +51,15 @@ function loadExtensionSyncServer(fetchImpl) {
         value => value,
         value => value
     );
+}
+
+function loadPremiumForwardReceiver(assetDir) {
+    const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+    const implementation = source.match(/async function receiveYoutubePremiumForwardUpload\(req, task\) \{[\s\S]*?\n\}(?=\n\nasync function forwardYoutubePremiumTaskToTunnel)/)?.[0];
+    assert.ok(implementation, 'Premium forward upload receiver not found');
+    return new Function('pipeline', 'fs', 'path', 'crypto', 'TELEGRAM_ASSET_DIR',
+        `${implementation}; return receiveYoutubePremiumForwardUpload;`
+    )(pipeline, fs, path, crypto, assetDir);
 }
 
 test('yt-dlp formats are normalized and default requested IDs are recovered', () => {
@@ -224,6 +236,7 @@ test('routes, page and extension preserve the private credential boundary', () =
     const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
     const service = fs.readFileSync(path.join(ROOT, 'server', 'youtube-premium.js'), 'utf8');
     const page = fs.readFileSync(path.join(ROOT, 'pages', 'youtube-premium-dl.html'), 'utf8');
+    const browserCache = fs.readFileSync(path.join(ROOT, 'client', 'youtube-premium-cache.js'), 'utf8');
     const cookiesPage = fs.readFileSync(path.join(ROOT, 'pages', 'sns-cookies.html'), 'utf8');
     const background = fs.readFileSync(path.join(ROOT, 'tools', 'auto-sync-sns-cookies', 'chrome', 'background.js'), 'utf8');
     const options = fs.readFileSync(path.join(ROOT, 'tools', 'auto-sync-sns-cookies', 'chrome', 'options.js'), 'utf8');
@@ -268,7 +281,13 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(thumbnailHelper, /getYtDlpCookieArgs\(task\.url, requireYoutubePremiumCookies\(\)\)/);
     assert.doesNotMatch(thumbnailHelper, /--convert-thumbnails/);
     assert.match(server, /mimeType:\s*getMimeTypeFromFileName\(file\.name\)/);
-    assert.match(server, /await fs\.promises\.copyFile\(file\.path, assetPath\)/);
+    const forwardHelper = server.slice(
+        server.indexOf('async function receiveYoutubePremiumForwardUpload'),
+        server.indexOf('async function publishTelegramFileToTunnel')
+    );
+    assert.match(forwardHelper, /await pipeline\(/);
+    assert.match(forwardHelper, /await fs\.promises\.rename\(upload\.path, assetPath\)/);
+    assert.doesNotMatch(forwardHelper, /copyFile\(file\.path, assetPath\)/);
     assert.doesNotMatch(server, /fs\.linkSync\(file\.path, assetPath\)/);
     assert.match(server, /Accept-Ranges/);
     assert.match(server, /analysis\.selection\.formatSelector/);
@@ -278,6 +297,21 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /downloadOriginalThumbnail\(task, thumbnail\)/);
     assert.match(page, /原尺寸封面/);
     assert.match(page, /showForward\(task\)/);
+    assert.match(page, /id="cacheFilesInput"[^>]*checked/);
+    assert.match(page, /browser_cache_caching:\s*'缓存中'/);
+    assert.match(page, /browser_cache_cached:\s*'已缓存到浏览器'/);
+    assert.match(page, /browser_cache_cleared:\s*'已清除浏览器缓存'/);
+    assert.match(page, /premiumBrowserCache\?\.getBlob\(task\)/);
+    assert.match(page, /ensureBrowserCachedBlob\(task\)/);
+    assert.match(page, /'X-Drop2Tunnel-Cache-Version': taskCacheVersion\(task\)/);
+    assert.match(page, /body: blob/);
+    assert.match(page, /client\/cache-store\.js/);
+    assert.match(browserCache, /createDrop2TunnelCacheStore/);
+    assert.match(browserCache, /cacheStore\.beginWrite\(/);
+    assert.match(browserCache, /await writer\.writeChunk\(/);
+    assert.match(browserCache, /committed = await writer\.commit\(\)/);
+    assert.match(browserCache, /indexedDB\.open\(DB_NAME, 1\)/);
+    assert.doesNotMatch(browserCache, /CacheStorage|global\.caches|caches\.open/);
     assert.match(app, /fileInfo\.sourceChannel === 'youtube-premium'/);
     assert.match(app, /premium-ready-copy/);
     assert.match(page, /keepalive: true/);
@@ -294,9 +328,37 @@ test('routes, page and extension preserve the private credential boundary', () =
         assert.equal(manifest.version, '1.5.0');
     }
 
-    const scripts = [...page.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)];
+    const scripts = [...page.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
+        .map(match => match[1]).filter(source => source.trim());
     assert.equal(scripts.length, 1);
-    assert.doesNotThrow(() => new Function(scripts[0][1]));
+    assert.doesNotThrow(() => new Function(scripts[0]));
+});
+
+test('Premium tunnel forwarding accepts only a complete current browser-cache upload', async () => {
+    const assetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'premium-forward-'));
+    const receiveUpload = loadPremiumForwardReceiver(assetDir);
+    const task = { outputFileSize: 4, completedAt: 123 };
+    const request = Readable.from([Buffer.from('ab'), Buffer.from('cd')]);
+    request.get = name => ({
+        'X-Drop2Tunnel-File-Size': '4',
+        'X-Drop2Tunnel-Cache-Version': '123-4'
+    })[name] || '';
+    request.is = type => type === 'application/octet-stream';
+
+    try {
+        const upload = await receiveUpload(request, task);
+        assert.equal(upload.size, 4);
+        assert.equal(fs.readFileSync(upload.path, 'utf8'), 'abcd');
+        fs.rmSync(upload.path, { force: true });
+
+        const stale = Readable.from([Buffer.from('abcd')]);
+        stale.get = name => name === 'X-Drop2Tunnel-File-Size' ? '4' : 'old-version';
+        stale.is = type => type === 'application/octet-stream';
+        await assert.rejects(() => receiveUpload(stale, task), /youtube-premium-forward-cache-stale/);
+        assert.deepEqual(fs.readdirSync(assetDir), []);
+    } finally {
+        fs.rmSync(assetDir, { recursive: true, force: true });
+    }
 });
 
 test('extension sends and verifies the per-server Premium cookie payload', async () => {
