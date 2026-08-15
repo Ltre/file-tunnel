@@ -75,16 +75,20 @@
         .metadata-form label { display:grid; gap:4px; color:var(--muted); font-weight:700; }
         .metadata-form .wide { grid-column:1/-1; }
         .metadata-form textarea { min-height:88px; resize:vertical; }
-        .reference-panel { margin-top:16px; padding:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); white-space:pre-wrap; overflow-wrap:anywhere; }
+        .reference-panel { margin-top:16px; padding:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-wrap:anywhere; }
+        .reference-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+        .reference-content { margin:0; white-space:pre-wrap; font:inherit; }
         .error-text { margin:7px 0; color:var(--danger); overflow-wrap:anywhere; }
         .task-actions { justify-content:flex-end; flex-wrap:wrap; margin-top:9px; }
         .empty { padding:34px 10px; color:var(--muted); text-align:center; }
         .pager { justify-content:center; margin-top:14px; }
-        dialog { width:min(720px,calc(100% - 24px)); max-height:calc(100dvh - 32px); padding:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 18px 60px rgba(0,0,0,.28); }
+        html:has(dialog[open]),body:has(dialog[open]) { overflow:hidden; }
+        dialog { width:min(720px,calc(100% - 24px)); height:max-content; max-height:calc(100dvh - 32px); padding:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); box-shadow:0 18px 60px rgba(0,0,0,.28); overscroll-behavior:none; }
+        dialog[open] { display:grid; grid-template-rows:auto minmax(0,1fr); }
         dialog::backdrop { background:rgba(12,18,28,.62); }
         .dialog-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 16px; border-bottom:1px solid var(--line); }
         .dialog-head button { width:36px; height:36px; padding:0; font-size:20px; }
-        .dialog-body { padding:16px; overflow:auto; }
+        .dialog-body { min-height:0; padding:16px; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; touch-action:pan-y; }
         .preview-media { display:block; width:100%; max-height:70dvh; margin:auto; background:#000; }
         .preview-audio { display:grid; gap:14px; }
         .preview-audio img { width:min(360px,100%); aspect-ratio:1; margin:auto; object-fit:cover; border-radius:6px; }
@@ -197,7 +201,10 @@
     <div class="dialog-head"><strong>编辑歌曲元信息</strong><button type="button" data-close-metadata aria-label="关闭">×</button></div>
     <div class="dialog-body">
         <form class="metadata-form" id="metadataForm"></form>
-        <div class="reference-panel" id="metadataReference">正在读取参考信息...</div>
+        <div class="reference-panel">
+            <div class="reference-head"><strong>页面参考信息</strong><button id="refreshMetadataReference" type="button">重新采集</button></div>
+            <pre class="reference-content" id="metadataReference">正在读取参考信息...</pre>
+        </div>
         <div class="dialog-actions"><button type="button" data-close-metadata>取消</button><button class="primary" id="saveMetadataBtn" type="button">保存并写入文件</button></div>
     </div>
 </dialog>
@@ -428,7 +435,7 @@
         applyFormatMode(data);
     }
 
-    async function analyzeFormats() {
+    async function analyzeFormats(forceRefresh = false) {
         const url = urlInput.value.trim();
         if (!url) return;
         const request = ++analysisRequest;
@@ -440,7 +447,7 @@
         analyzeBtn.disabled = true;
         try {
             const data = await api('/api/youtube-premium/formats', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url })
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, refresh: forceRefresh === true })
             });
             if (request !== analysisRequest) return;
             analysis = data;
@@ -461,7 +468,7 @@
             renderFormats(analysis);
             return;
         }
-        analyzeTimer = setTimeout(analyzeFormats, 700);
+        analyzeTimer = setTimeout(() => analyzeFormats(false), 700);
     }
 
     async function startDownload() {
@@ -884,6 +891,24 @@
         }
     }
 
+    async function refreshMetadataReference() {
+        const taskId = metadataDialog.dataset.taskId;
+        const button = document.getElementById('refreshMetadataReference');
+        if (!taskId) return;
+        button.disabled = true;
+        metadataReference.textContent = '正在重新采集页面参考信息...';
+        try {
+            const data = await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-metadata?refresh=1`);
+            metadataReference.textContent = Object.entries(data.referenceInfo || {})
+                .filter(([, value]) => value !== '' && value != null && value !== 0)
+                .map(([key, value]) => `${key}: ${value}`).join('\n') || '没有可用的页面参考信息。';
+        } catch (error) {
+            metadataReference.textContent = `重新采集失败：${error.message}`;
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     async function cleanupBrowserCacheGarbage() {
         const button = document.getElementById('cleanupCacheBtn');
         button.disabled = true;
@@ -1154,7 +1179,8 @@
         });
     });
     urlInput.addEventListener('input', scheduleAnalyze);
-    analyzeBtn.addEventListener('click', analyzeFormats);
+    analyzeBtn.addEventListener('click', () => analyzeFormats(true));
+    document.getElementById('refreshMetadataReference').addEventListener('click', refreshMetadataReference);
     startBtn.addEventListener('click', startDownload);
     document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));
     document.getElementById('cleanupCacheBtn').addEventListener('click', cleanupBrowserCacheGarbage);

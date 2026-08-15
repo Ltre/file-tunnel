@@ -39,6 +39,7 @@ const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tun
 const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
 const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
 const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
+const YOUTUBE_PREMIUM_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'youtube-premium-metadata-cache.json');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -75,6 +76,7 @@ const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
 const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
+const youtubePremiumMetadataCache = loadYoutubePremiumMetadataCache();
 const youtubePremiumService = createYoutubePremiumService({
     dataDir: SERVER_DATA_DIR,
     analyze: analyzeYoutubePremiumUrl,
@@ -219,6 +221,26 @@ function writeDataFileAtomic(targetPath, content) {
         fs.copyFileSync(tmpPath, targetPath);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
     }
+}
+
+function loadYoutubePremiumMetadataCache() {
+    try {
+        const stored = JSON.parse(fs.readFileSync(YOUTUBE_PREMIUM_METADATA_CACHE_PATH, 'utf8'));
+        return new Map(Object.entries(stored && typeof stored === 'object' ? stored : {}));
+    } catch (_) {
+        return new Map();
+    }
+}
+
+function setYoutubePremiumMetadataCache(url, patch) {
+    const key = normalizeYoutubeSourceUrl(url);
+    if (!key) return;
+    youtubePremiumMetadataCache.set(key, {
+        ...(youtubePremiumMetadataCache.get(key) || {}),
+        ...patch,
+        updatedAt: Date.now()
+    });
+    writeDataFileAtomic(YOUTUBE_PREMIUM_METADATA_CACHE_PATH, JSON.stringify(Object.fromEntries(youtubePremiumMetadataCache), null, 2));
 }
 
 function normalizeSnsCookiePlatform(platform) {
@@ -915,10 +937,19 @@ app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
 app.post('/api/youtube-premium/formats', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-        const analysis = await analyzeYoutubePremiumUrl(req.body?.url, {
-            includeFormats: true,
-            forceMusic: req.body?.asMusic === true
-        });
+        const url = normalizeYoutubeSourceUrl(req.body?.url);
+        const cacheField = req.body?.asMusic === true ? 'musicAnalysis' : 'analysis';
+        let analysis = req.body?.refresh === true ? null : youtubePremiumMetadataCache.get(url)?.[cacheField];
+        if (!analysis) {
+            analysis = await analyzeYoutubePremiumUrl(req.body?.url, {
+                includeFormats: true,
+                forceMusic: req.body?.asMusic === true
+            });
+            setYoutubePremiumMetadataCache(url, {
+                [cacheField]: analysis,
+                referenceInfo: analysis.referenceInfo
+            });
+        }
         res.json(analysis);
     } catch (error) {
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
@@ -960,7 +991,10 @@ app.get('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
                 date: tags.date || tags.year
             });
         }
-        let referenceInfo = youtubePremiumService.getReferenceInfo(task.id);
+        const cacheKey = normalizeYoutubeSourceUrl(task.url);
+        const forceRefresh = req.query.refresh === '1';
+        let referenceInfo = forceRefresh ? null : youtubePremiumMetadataCache.get(cacheKey)?.referenceInfo;
+        referenceInfo ||= forceRefresh ? null : youtubePremiumService.getReferenceInfo(task.id);
         if (!referenceInfo) {
             const meta = await runYtDlpJson(task.url, {
                 noPlaylist: true,
@@ -968,8 +1002,9 @@ app.get('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
                 allowIgnoreNoFormatsFallback: false
             });
             referenceInfo = buildYoutubeReferenceInfo(meta, task.url);
-            youtubePremiumService.setReferenceInfo(task.id, referenceInfo);
         }
+        setYoutubePremiumMetadataCache(cacheKey, { referenceInfo });
+        youtubePremiumService.setReferenceInfo(task.id, referenceInfo);
         res.json({ metadata, referenceInfo });
     } catch (error) {
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
@@ -2514,6 +2549,15 @@ function extractMediaYear(value) {
     return String(value || '').match(/\b(19|20)\d{2}\b/)?.[0] || '';
 }
 
+function extractUploadYear(meta = {}) {
+    const calendarYear = extractMediaYear(meta.upload_date || meta.release_timestamp || meta.timestamp);
+    if (calendarYear) return calendarYear;
+    const timestamp = Number(meta.timestamp || meta.release_timestamp);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+    const year = new Date(timestamp * (timestamp < 1e12 ? 1000 : 1)).getUTCFullYear();
+    return year >= 1900 && year <= 2100 ? String(year) : '';
+}
+
 function normalizeYoutubeSourceUrl(value) {
     try {
         const url = new URL(String(value || ''));
@@ -2552,7 +2596,7 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '') {
         discNumber: sanitizeString(meta.disc_number || '', 40),
         albumYear: extractMediaYear(meta.album_release_year || meta.album_year || (meta.album ? meta.release_year || meta.release_date : '')),
         songYear: extractMediaYear(meta.track_year || meta.release_year || meta.release_date || meta.year),
-        uploadYear: extractMediaYear(meta.upload_date || meta.timestamp),
+        uploadYear: extractUploadYear(meta),
         uploadDate: sanitizeString(meta.upload_date || '', 40),
         releaseDate: sanitizeString(meta.release_date || '', 40),
         duration: Number(meta.duration) || 0,

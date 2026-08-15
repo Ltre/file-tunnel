@@ -274,7 +274,7 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /row\.classList\.toggle\('is-disabled', checkbox\.disabled\)/);
     assert.match(page, /已自动勾选最高音质纯音频编号/);
     assert.match(page, /data\.musicFormatId \? \[data\.musicFormatId\]/);
-    assert.match(page, /body: JSON\.stringify\(\{ url \}\)/);
+    assert.match(page, /body: JSON\.stringify\(\{ url, refresh: forceRefresh === true \}\)/);
     assert.match(page, /if \(analysis && analysisInputUrl === urlInput\.value\.trim\(\)\) applyFormatMode\(analysis\)/);
     assert.match(page, /清除服务端缓存/);
     assert.match(page, /重新抓取/);
@@ -323,6 +323,9 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /编辑歌曲元信息/);
     assert.match(server, /album_artist/);
     assert.match(server, /normalizeYoutubeSourceUrl/);
+    assert.match(server, /youtube-premium-metadata-cache\.json/);
+    assert.match(server, /req\.body\?\.refresh === true/);
+    assert.match(server, /extractUploadYear/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/song-metadata/);
     assert.match(service, /referenceInfo/);
     assert.match(service, /task\.coverPath \|\| \(task\.cover[\s\S]*`\/api\/youtube-premium\/tasks/);
@@ -340,6 +343,10 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(app, /fileInfo\.sourceChannel === 'youtube-premium'/);
     assert.match(app, /premium-ready-copy/);
     assert.match(page, /keepalive: true/);
+    assert.match(page, /dialog\[open\][^}]*display:grid/);
+    assert.match(page, /overscroll-behavior:contain/);
+    assert.match(page, /重新采集/);
+    assert.match(page, /song-metadata\?refresh=1/);
     assert.match(background, /if \(server\.syncYoutubePremium\) \{\s*if \(!youtube\) throw new Error/);
     assert.match(background, /body\.youtubePremium = youtube\.content/);
     assert.match(background, /result\.youtubePremium\?\.configured !== true/);

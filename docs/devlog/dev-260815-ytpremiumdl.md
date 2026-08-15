@@ -331,3 +331,10 @@
 - Premium 页面内联脚本编译检查通过，`npm run test:youtube-premium` 共 9 项通过。
 - `npm run test:p2p:unit` 共 38 项通过；`npm run deploy:build -- --profile txsl` 与对应 `deploy:verify` 通过。
 - 本轮没有执行真实 yt-dlp 下载，没有读取或修改 `.tunnel-data` 中的 Cookie，也没有改动隧道 P2P/Socket.IO 传输策略。
+
+## 十三、浮层滚动、年份回退与 URL 级解析缓存
+
+- 标签浮层和歌曲元信息浮层改为固定标题栏、内部独立滚动区域；打开浮层时锁定底层页面滚动，并阻止移动端滚动链穿透。
+- YouTube 上传年份兼容 `upload_date` 以及秒/毫秒 Unix 时间戳；强制以音乐形式下载非歌曲视频时，继续按“专辑年份、歌曲年份、上传年份”依次回退。
+- `yt-dlp -F` 分析结果按去除会话及跟踪参数后的 YouTube URL 持久化到服务端，刷新页面后仍可复用；只有点击“重新解析”才强制覆盖缓存。
+- 页面参考信息从任务级缓存提升为规范化 YouTube URL 级永久缓存；元信息浮层增加“重新采集”按钮，管理员可显式刷新并覆盖同 URL 的参考信息。
