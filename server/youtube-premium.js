@@ -187,12 +187,18 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             id: task.id,
             url: task.url,
             title: task.title || '',
-            cover: task.coverPath ? `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/cover` : (task.cover || ''),
+            cover: task.coverPath || (task.cover && !RUNNING_STATUSES.has(task.status))
+                ? `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/cover`
+                : '',
             mode: task.mode,
             asMusic: task.asMusic === true,
             selectedFormatIds: task.selectedFormatIds || [],
             formatSummary: task.formatSummary || null,
             mediaType: task.mediaType || '',
+            remark: task.remark || '',
+            tags: Array.isArray(task.tags) ? task.tags : [],
+            songMetadata: task.songMetadata || null,
+            songMetadataEditedAt: Number(task.songMetadataEditedAt) || 0,
             status: task.status,
             progress: task.progress || { percent: 0 },
             outputFileName: task.outputFileName || '',
@@ -219,12 +225,16 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 forceMusic: task.asMusic === true,
                 signal: controller.signal
             });
+            if (task.songMetadataOverride && analysis.songMetadata) {
+                analysis.songMetadata = { ...analysis.songMetadata, ...task.songMetadataOverride };
+            }
             update(task, {
                 title: analysis.title,
                 cover: analysis.cover,
                 mediaType: analysis.mediaType,
                 selectedFormatIds: analysis.selection.ids,
                 formatSummary: analysis.selection.summary,
+                referenceInfo: task.referenceInfo || analysis.referenceInfo || null,
                 status: 'downloading'
             });
             fs.mkdirSync(taskDir, { recursive: true });
@@ -248,6 +258,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 coverPath: result.coverPath || '',
                 outputFileName: result.outputFileName,
                 outputFileSize: Number(result.outputFileSize) || 0,
+                songMetadata: result.songMetadata || null,
                 title: result.title || task.title,
                 completedAt: Date.now(),
                 error: ''
@@ -303,7 +314,8 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 id: crypto.randomUUID(), url, title: '', cover: '', mode, asMusic: input.asMusic === true, selectedFormatIds,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
-                updatedAt: now, completedAt: 0
+                updatedAt: now, completedAt: 0, remark: '', tags: [], songMetadata: null,
+                songMetadataOverride: null, songMetadataEditedAt: 0, referenceInfo: null
             };
             tasks.set(task.id, task);
             persist();
@@ -317,7 +329,11 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             const total = sorted.length;
             const pages = Math.max(1, Math.ceil(total / size));
             const current = Math.max(1, Math.min(pages, Math.trunc(Number(page) || 1)));
-            return { page: current, pageSize: size, pages, total, tasks: sorted.slice((current - 1) * size, current * size).map(publicTask) };
+            return {
+                page: current, pageSize: size, pages, total,
+                ids: sorted.map(task => task.id),
+                tasks: sorted.slice((current - 1) * size, current * size).map(publicTask)
+            };
         },
         get(id) {
             const task = getTask(id);
@@ -339,7 +355,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             fs.rmSync(path.join(outputDir, task.id), { recursive: true, force: true });
             return publicTask(update(task, {
                 status: 'cleared', progress: { percent: 0 }, outputPath: '', coverPath: '',
-                outputFileName: '', outputFileSize: 0, error: ''
+                error: ''
             }));
         },
         retry(id) {
@@ -363,6 +379,43 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             tasks.delete(task.id);
             persist();
             return true;
+        },
+        updateDetails(id, input = {}) {
+            const task = getTask(id);
+            if (!task) return null;
+            const remark = String(input.remark ?? task.remark ?? '').slice(0, 4000);
+            const tags = [...new Set((Array.isArray(input.tags) ? input.tags : task.tags || [])
+                .map(tag => String(tag || '').trim().slice(0, 80)).filter(Boolean))].slice(0, 100);
+            return publicTask(update(task, { remark, tags }));
+        },
+        setCoverPath(id, coverPath) {
+            const task = getTask(id);
+            if (!task) return null;
+            return publicTask(update(task, { coverPath: String(coverPath || '') }));
+        },
+        setReferenceInfo(id, referenceInfo) {
+            const task = getTask(id);
+            if (!task) return null;
+            return publicTask(update(task, { referenceInfo: referenceInfo || null }));
+        },
+        getReferenceInfo(id) {
+            return getTask(id)?.referenceInfo || null;
+        },
+        setSongMetadata(id, metadata, output = {}) {
+            const task = getTask(id);
+            if (!task) return null;
+            return publicTask(update(task, {
+                songMetadata: metadata,
+                songMetadataOverride: metadata,
+                songMetadataEditedAt: Date.now(),
+                outputPath: output.outputPath || task.outputPath,
+                outputFileName: output.outputFileName || task.outputFileName,
+                outputFileSize: Number(output.outputFileSize) || task.outputFileSize,
+                completedAt: Date.now()
+            }));
+        },
+        getTaskDirectory(id) {
+            return getTask(id) ? path.join(outputDir, String(id)) : null;
         },
         getFile(id, kind = 'output') {
             const task = getTask(id);

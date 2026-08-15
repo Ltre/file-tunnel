@@ -33,8 +33,10 @@
         .credential { margin-top:12px; }
         .custom { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
         .custom[hidden] { display:none; }
-        .custom-head,.section-head,.pager,.task-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-        .format-status,.notice { min-height:22px; color:var(--muted); }
+        .custom-head,.section-head,.section-tools,.pager,.task-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .format-status { min-height:22px; color:var(--muted); }
+        .notice { min-height:22px; color:#2aa4a5; margin-top:10px; }
+        .notice:empty { min-height: 0; margin-top: 0; padding: 0; /* 如果以后加了 padding，这里也能一起重置 */ }
         .format-list { max-height:520px; margin-top:10px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
         .format-row { display:grid; grid-template-columns:34px minmax(90px,130px) 1fr; gap:10px; align-items:start; padding:10px 12px; border-bottom:1px solid var(--line); }
         .format-row:last-child { border-bottom:0; }
@@ -62,6 +64,18 @@
         .badge.failed,.badge.cancelled { background:#fff0f0; color:var(--danger); }
         progress { width:100%; height:8px; accent-color:var(--primary); }
         .task-meta { display:flex; flex-wrap:wrap; gap:4px 14px; margin:7px 0; color:var(--muted); }
+        .task-tags { display:flex; min-height:27px; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px; }
+        .task-tag { padding:3px 7px; border-radius:5px; background:var(--primary-soft); color:var(--primary); font-size:12px; font-weight:750; }
+        .task-remark { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:8px; }
+        .task-remark input,.tag-entry input,.metadata-form input,.metadata-form textarea { width:100%; min-width:0; padding:9px 10px; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; }
+        .tag-entry { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+        .tag-list,.tag-options { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }
+        .tag-list button { color:var(--danger); }
+        .metadata-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+        .metadata-form label { display:grid; gap:4px; color:var(--muted); font-weight:700; }
+        .metadata-form .wide { grid-column:1/-1; }
+        .metadata-form textarea { min-height:88px; resize:vertical; }
+        .reference-panel { margin-top:16px; padding:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); white-space:pre-wrap; overflow-wrap:anywhere; }
         .error-text { margin:7px 0; color:var(--danger); overflow-wrap:anywhere; }
         .task-actions { justify-content:flex-end; flex-wrap:wrap; margin-top:9px; }
         .empty { padding:34px 10px; color:var(--muted); text-align:center; }
@@ -91,6 +105,8 @@
             .format-row { grid-template-columns:30px 78px minmax(0,1fr); padding:9px; }
             .task { grid-template-columns:78px minmax(0,1fr); }
             .cover { width:78px; }
+            .metadata-form { grid-template-columns:1fr; }
+            .metadata-form .wide { grid-column:auto; }
         }
         @media (prefers-color-scheme:dark) {
             :root { --bg:#0e1521; --panel:#17202e; --text:#edf3ff; --muted:#a4afc1; --line:#334157; --primary:#6d9fff; --primary-soft:#192d4a; --shadow:none; }
@@ -151,7 +167,7 @@
                 <h2>私人下载任务</h2>
                 <div class="subtle" id="taskCount">正在读取...</div>
             </div>
-            <button id="refreshBtn" type="button">刷新</button>
+            <div class="section-tools"><button id="cleanupCacheBtn" type="button">清理垃圾</button><button id="refreshBtn" type="button">刷新</button></div>
         </div>
         <div class="task-list" id="taskList"></div>
         <div class="pager" id="pager" hidden>
@@ -165,6 +181,25 @@
 <dialog id="previewDialog">
     <div class="dialog-head"><strong id="previewTitle">文件预览</strong><button type="button" data-close-preview aria-label="关闭">×</button></div>
     <div class="dialog-body" id="previewBody"></div>
+</dialog>
+
+<dialog id="tagDialog">
+    <div class="dialog-head"><strong>任务标签</strong><button type="button" data-close-tags aria-label="关闭">×</button></div>
+    <div class="dialog-body">
+        <div class="tag-list" id="currentTags"></div>
+        <div class="tag-entry"><input id="tagInput" type="text" maxlength="80" placeholder="输入新标签"><button class="primary" id="addTagBtn" type="button">添加</button></div>
+        <div class="tag-options" id="tagOptions"></div>
+        <div class="dialog-actions"><button type="button" data-close-tags>取消</button><button class="primary" id="saveTagsBtn" type="button">保存标签</button></div>
+    </div>
+</dialog>
+
+<dialog id="metadataDialog">
+    <div class="dialog-head"><strong>编辑歌曲元信息</strong><button type="button" data-close-metadata aria-label="关闭">×</button></div>
+    <div class="dialog-body">
+        <form class="metadata-form" id="metadataForm"></form>
+        <div class="reference-panel" id="metadataReference">正在读取参考信息...</div>
+        <div class="dialog-actions"><button type="button" data-close-metadata>取消</button><button class="primary" id="saveMetadataBtn" type="button">保存并写入文件</button></div>
+    </div>
 </dialog>
 
 <dialog id="fileInfoDialog">
@@ -210,6 +245,19 @@
     const forwardTarget = document.getElementById('forwardTarget');
     const forwardStatus = document.getElementById('forwardStatus');
     const forwardConfirm = document.getElementById('forwardConfirm');
+    const tagDialog = document.getElementById('tagDialog');
+    const currentTags = document.getElementById('currentTags');
+    const tagInput = document.getElementById('tagInput');
+    const tagOptions = document.getElementById('tagOptions');
+    const metadataDialog = document.getElementById('metadataDialog');
+    const metadataForm = document.getElementById('metadataForm');
+    const metadataReference = document.getElementById('metadataReference');
+    const predefinedTags = 'AlarmClock、DNA、Epic、HSL、HSPL、Public、S+、S+ 候选、Vocalize／Moderate、Youth、不吵闹、不行、亢、元気、删、剧、历久弥新、反、呕摸西裸衣、地雷系 Pure、寄、尬爽｜地雷系、巴闲、幻咏：神｜鬼｜虚｜圣、惋、日常｜平和｜普通、暖｜幸せ、某推荐、柔、梗、正、清、特殊结构、秘封晚期、耐、至喜、至喜²｜H↑、舒、车播：保守、车播：常规、车播：自用、险些埋没、静、韩大狗、高雅、８９０／Best Vintage、８９０／Mugen／Free／Relax'.split('、');
+    const metadataFields = [
+        ['title', 'Title'], ['album', 'Album'], ['artist', 'Artist'], ['album_artist', 'Album artist'],
+        ['composer', 'Composer'], ['genre', 'Genre'], ['track', 'Track'], ['disc', 'Disc'], ['date', 'Date'],
+        ['comment', 'Comment', true], ['lyrics', 'Lyrics', true]
+    ];
     let analysis = null;
     let analysisInputUrl = '';
     let analysisRequest = 0;
@@ -221,6 +269,7 @@
     const browserCacheJobs = new Map();
     let browserCacheTail = Promise.resolve();
     let currentTasks = [];
+    let editingTags = [];
     const premiumBrowserCache = window.createYoutubePremiumBrowserCache?.({
         onProgress(taskId, progress) {
             setBrowserCacheState(taskId, { status: 'browser_cache_caching', progress });
@@ -408,6 +457,10 @@
     function scheduleAnalyze() {
         clearTimeout(analyzeTimer);
         if (mode() !== 'custom' || !urlInput.value.trim()) return;
+        if (analysis && analysisInputUrl === urlInput.value.trim()) {
+            renderFormats(analysis);
+            return;
+        }
         analyzeTimer = setTimeout(analyzeFormats, 700);
     }
 
@@ -498,7 +551,7 @@
     }
 
     async function hydrateBrowserCacheStates(tasks) {
-        await Promise.all(tasks.filter(task => task.hasFile).map(async task => {
+        await Promise.all(tasks.filter(task => task.hasFile || task.outputFileSize).map(async task => {
             const version = taskCacheVersion(task);
             const current = browserCacheStates.get(task.id);
             if (current?.version === version && (browserCacheJobs.has(task.id) ||
@@ -758,6 +811,93 @@
         }
     }
 
+    async function saveTaskDetails(task, patch) {
+        return api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
+        });
+    }
+
+    function renderTagEditor() {
+        currentTags.replaceChildren();
+        for (const tag of editingTags) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = `${tag} ×`;
+            button.addEventListener('click', () => {
+                editingTags = editingTags.filter(value => value !== tag);
+                renderTagEditor();
+            });
+            currentTags.appendChild(button);
+        }
+        tagOptions.replaceChildren();
+        for (const tag of predefinedTags) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = tag;
+            button.disabled = editingTags.includes(tag);
+            button.addEventListener('click', () => {
+                if (!editingTags.includes(tag)) editingTags.push(tag);
+                renderTagEditor();
+            });
+            tagOptions.appendChild(button);
+        }
+    }
+
+    function showTagDialog(task) {
+        tagDialog.dataset.taskId = task.id;
+        editingTags = [...(task.tags || [])];
+        tagInput.value = '';
+        renderTagEditor();
+        tagDialog.showModal();
+    }
+
+    function addTagFromInput() {
+        const tag = tagInput.value.trim().slice(0, 80);
+        if (tag && !editingTags.includes(tag)) editingTags.push(tag);
+        tagInput.value = '';
+        renderTagEditor();
+    }
+
+    async function showMetadataDialog(task) {
+        metadataDialog.dataset.taskId = task.id;
+        metadataForm.replaceChildren();
+        metadataReference.textContent = '正在读取参考信息...';
+        metadataDialog.showModal();
+        try {
+            const data = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/song-metadata`);
+            if (metadataDialog.dataset.taskId !== task.id) return;
+            for (const [name, label, multiline] of metadataFields) {
+                const wrapper = document.createElement('label');
+                if (multiline) wrapper.className = 'wide';
+                wrapper.append(label);
+                const field = document.createElement(multiline ? 'textarea' : 'input');
+                field.name = name;
+                field.value = data.metadata?.[name] || '';
+                wrapper.appendChild(field);
+                metadataForm.appendChild(wrapper);
+            }
+            metadataReference.textContent = Object.entries(data.referenceInfo || {})
+                .filter(([, value]) => value !== '' && value != null && value !== 0)
+                .map(([key, value]) => `${key}: ${value}`).join('\n') || '没有可用的页面参考信息。';
+        } catch (error) {
+            metadataReference.textContent = `读取失败：${error.message}`;
+        }
+    }
+
+    async function cleanupBrowserCacheGarbage() {
+        const button = document.getElementById('cleanupCacheBtn');
+        button.disabled = true;
+        try {
+            const data = await api('/api/youtube-premium/tasks?page=1&pageSize=1');
+            const count = await premiumBrowserCache?.cleanupOrphans(data.ids || []) || 0;
+            notice.textContent = count ? `已清理 ${count} 条游离浏览器缓存。` : '没有发现游离浏览器缓存。';
+        } catch (error) {
+            notice.textContent = `清理垃圾失败：${error.message}`;
+        } finally {
+            button.disabled = false;
+        }
+    }
+
     function renderTask(task) {
         const card = document.createElement('article');
         card.className = 'task';
@@ -796,7 +936,7 @@
             main.appendChild(bar);
         }
         const cacheState = browserCacheStates.get(task.id);
-        if (task.hasFile && cacheState) {
+        if (cacheState) {
             const cacheLine = document.createElement('div');
             cacheLine.className = 'status-line';
             cacheLine.dataset.browserCacheStatus = '';
@@ -825,6 +965,7 @@
             task.selectedFormatIds?.length ? `格式：${task.selectedFormatIds.join(' + ')}` : '',
             task.outputFileName ? `文件：${task.outputFileName}` : '',
             task.outputFileSize ? `大小：${formatSize(task.outputFileSize)}` : '',
+            task.songMetadataEditedAt ? '已修改歌曲元信息' : '',
             `创建：${new Date(task.createdAt).toLocaleString()}`,
             task.completedAt ? `完成：${new Date(task.completedAt).toLocaleString()}` : ''
         ].filter(Boolean).forEach(text => {
@@ -833,6 +974,37 @@
             meta.appendChild(item);
         });
         main.appendChild(meta);
+        const tags = document.createElement('div');
+        tags.className = 'task-tags';
+        for (const tag of task.tags || []) {
+            const label = document.createElement('span');
+            label.className = 'task-tag';
+            label.textContent = tag;
+            tags.appendChild(label);
+        }
+        const remark = document.createElement('div');
+        remark.className = 'task-remark';
+        const remarkInput = document.createElement('input');
+        remarkInput.type = 'text';
+        remarkInput.maxLength = 4000;
+        remarkInput.placeholder = '任务备注';
+        remarkInput.value = task.remark || '';
+        const saveRemark = document.createElement('button');
+        saveRemark.type = 'button';
+        saveRemark.textContent = '保存备注';
+        saveRemark.addEventListener('click', async () => {
+            saveRemark.disabled = true;
+            try {
+                await saveTaskDetails(task, { remark: remarkInput.value });
+                notice.textContent = '备注已保存。';
+                await loadTasks();
+            } catch (error) {
+                notice.textContent = `保存备注失败：${error.message}`;
+                saveRemark.disabled = false;
+            }
+        });
+        remark.append(remarkInput, saveRemark);
+        main.append(tags, remark);
         if (task.error) {
             const error = document.createElement('div');
             error.className = 'error-text';
@@ -848,8 +1020,9 @@
         thumbnail.textContent = thumbnail.disabled ? '获取封面中...' : '原尺寸封面';
         thumbnail.addEventListener('click', () => downloadOriginalThumbnail(task, thumbnail));
         actions.appendChild(thumbnail);
-        if (task.hasFile) {
-            const download = document.createElement(cacheState?.status === 'browser_cache_cached' ? 'button' : 'a');
+        const hasBrowserFile = cacheState?.status === 'browser_cache_cached';
+        if (task.hasFile || hasBrowserFile) {
+            const download = document.createElement(hasBrowserFile ? 'button' : 'a');
             download.className = 'command primary';
             if (download instanceof HTMLAnchorElement) {
                 download.href = task.downloadUrl;
@@ -860,7 +1033,7 @@
                     download.disabled = true;
                     const blob = await getBrowserCachedBlob(task).catch(() => null);
                     if (blob) downloadBlob(blob, task.outputFileName);
-                    else location.href = task.downloadUrl;
+                    else if (task.downloadUrl) location.href = task.downloadUrl;
                     download.disabled = false;
                 });
             }
@@ -877,14 +1050,20 @@
             const info = document.createElement('button');
             info.type = 'button';
             info.textContent = '文件信息';
+            info.disabled = !task.hasFile;
             info.addEventListener('click', () => showFileInfo(task));
             actions.appendChild(info);
+            const tagButton = document.createElement('button');
+            tagButton.type = 'button';
+            tagButton.textContent = '打标签';
+            tagButton.addEventListener('click', () => showTagDialog(task));
+            actions.appendChild(tagButton);
             const forward = document.createElement('button');
             forward.type = 'button';
             forward.textContent = '发到隧道';
             forward.addEventListener('click', () => showForward(task));
             actions.appendChild(forward);
-            if (cacheState?.status === 'browser_cache_cached') {
+            if (hasBrowserFile) {
                 const clearBrowserCache = document.createElement('button');
                 clearBrowserCache.type = 'button';
                 clearBrowserCache.textContent = '清除浏览器缓存';
@@ -897,7 +1076,21 @@
                 cacheNow.addEventListener('click', () => queueBrowserCache(task, true));
                 actions.appendChild(cacheNow);
             }
-            actions.appendChild(taskButton(task, '清除服务端缓存', '/clear', 'POST', '将删除服务端生成的成品，确定继续吗？'));
+            if (task.hasFile) actions.appendChild(taskButton(task, '清除服务端缓存', '/clear', 'POST', '将删除服务端生成的成品，但保留浏览器缓存，确定继续吗？'));
+        }
+        if (!(task.hasFile || hasBrowserFile)) {
+            const tagButton = document.createElement('button');
+            tagButton.type = 'button';
+            tagButton.textContent = '打标签';
+            tagButton.addEventListener('click', () => showTagDialog(task));
+            actions.appendChild(tagButton);
+        }
+        if (task.mediaType === 'song' && task.hasFile && task.status === 'completed') {
+            const editMetadata = document.createElement('button');
+            editMetadata.type = 'button';
+            editMetadata.textContent = '编辑歌曲元信息';
+            editMetadata.addEventListener('click', () => showMetadataDialog(task));
+            actions.appendChild(editMetadata);
         }
         if (running) {
             actions.appendChild(taskButton(task, '取消任务', '/cancel', 'POST', '', true));
@@ -937,7 +1130,10 @@
 
     document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
         customPanel.hidden = mode() !== 'custom';
-        if (!customPanel.hidden) scheduleAnalyze();
+        if (!customPanel.hidden) {
+            if (analysis && analysisInputUrl === urlInput.value.trim()) renderFormats(analysis);
+            else scheduleAnalyze();
+        }
     }));
     asMusicInput.addEventListener('change', () => {
         if (mode() !== 'custom') return;
@@ -961,12 +1157,52 @@
     analyzeBtn.addEventListener('click', analyzeFormats);
     startBtn.addEventListener('click', startDownload);
     document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));
+    document.getElementById('cleanupCacheBtn').addEventListener('click', cleanupBrowserCacheGarbage);
+    document.getElementById('addTagBtn').addEventListener('click', addTagFromInput);
+    tagInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); addTagFromInput(); }
+    });
+    document.getElementById('saveTagsBtn').addEventListener('click', async () => {
+        const task = currentTasks.find(item => item.id === tagDialog.dataset.taskId);
+        if (!task) return;
+        try {
+            await saveTaskDetails(task, { tags: editingTags });
+            tagDialog.close();
+            notice.textContent = '标签已保存。';
+            await loadTasks();
+        } catch (error) {
+            notice.textContent = `保存标签失败：${error.message}`;
+        }
+    });
+    document.getElementById('saveMetadataBtn').addEventListener('click', async () => {
+        const taskId = metadataDialog.dataset.taskId;
+        const button = document.getElementById('saveMetadataBtn');
+        if (!taskId || !metadataForm.elements.length) return;
+        button.disabled = true;
+        try {
+            const metadata = Object.fromEntries(metadataFields.map(([name]) => [name, metadataForm.elements[name]?.value || '']));
+            await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-metadata`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata)
+            });
+            metadataDialog.close();
+            notice.textContent = '歌曲元信息已写入成品，浏览器缓存将按新版本更新。';
+            await loadTasks();
+        } catch (error) {
+            notice.textContent = `写入歌曲元信息失败：${error.message}`;
+        } finally {
+            button.disabled = false;
+        }
+    });
     document.querySelectorAll('[data-close-preview]').forEach(button => button.addEventListener('click', closePreview));
     document.querySelectorAll('[data-close-file-info]').forEach(button => button.addEventListener('click', () => fileInfoDialog.close()));
     document.querySelectorAll('[data-close-forward]').forEach(button => button.addEventListener('click', () => forwardDialog.close()));
+    document.querySelectorAll('[data-close-tags]').forEach(button => button.addEventListener('click', () => tagDialog.close()));
+    document.querySelectorAll('[data-close-metadata]').forEach(button => button.addEventListener('click', () => metadataDialog.close()));
     previewDialog.addEventListener('click', event => { if (event.target === previewDialog) closePreview(); });
     fileInfoDialog.addEventListener('click', event => { if (event.target === fileInfoDialog) fileInfoDialog.close(); });
     forwardDialog.addEventListener('click', event => { if (event.target === forwardDialog) forwardDialog.close(); });
+    tagDialog.addEventListener('click', event => { if (event.target === tagDialog) tagDialog.close(); });
+    metadataDialog.addEventListener('click', event => { if (event.target === metadataDialog) metadataDialog.close(); });
     forwardConfirm.addEventListener('click', async () => {
         const sessionId = forwardTarget.value;
         if (!sessionId) return;
@@ -997,7 +1233,11 @@
     prevBtn.addEventListener('click', () => { page -= 1; loadTasks(); });
     nextBtn.addEventListener('click', () => { page += 1; loadTasks(); });
     loadTasks().catch(error => { taskCount.textContent = error.message; });
-    setInterval(() => { if (!document.hidden) loadTasks().catch(() => {}); }, 2000);
+    setInterval(() => {
+        if (!document.hidden && !document.querySelector('dialog[open]') && !document.activeElement?.closest('.task-remark')) {
+            loadTasks().catch(() => {});
+        }
+    }, 2000);
 </script>
 </body>
 </html>

@@ -296,3 +296,38 @@
 - “发到隧道”先校验当前浏览器中的完整缓存；命中时直接读取该 Blob，缺失时先从 Premium 服务端成品接口补齐浏览器缓存，再执行转发。
 - 转发由浏览器上传已校验的缓存副本。服务端按任务完成版本和文件大小校验上传流，写入新的独立隧道资产后再创建记录；不再从 Premium 成品路径做服务器内部复制，不使用硬链接，也不会再次执行 yt-dlp。
 - Nginx 部署模板同步设置 `client_max_body_size 1g`，避免反代环境按默认小请求体限制拦截浏览器缓存副本上传。
+
+## 十二、歌曲元信息、任务整理与封面本地化
+
+### 12.1 YouTube 歌曲元信息
+
+- 音乐成品新增标准 `album_artist` 标签；FFmpeg 会将其写入 M4A/MP4 的专辑艺术家字段，兼容显示为 Album Artist、Album-Artist 或 Album/Performer 的播放器。
+- 统一支持 `title`、`album`、`artist`、`album_artist`、`composer`、`genre`、`track`、`disc`、`date`、`comment` 与 `lyrics` 标签；旧任务中以 `track` 表示曲名的历史结构仍可兼容恢复。
+- 年份按“专辑年份、歌曲发行年份、YouTube 上传年份”依次降级，不再直接把上传年份覆盖专辑发行年份。
+- comment 中的 YouTube URL 会去除 `si`、`is`、`feature`、`pp`、`ab_channel` 和 UTM 等会话或跟踪参数，并附加作者主页、作者名称、页面标题及 description 摘要。
+
+### 12.2 格式解析与任务资料
+
+- 自定义格式第一次解析后会保留同 URL 的结果；从“自定义”切到“默认”再切回时直接恢复已有媒体编号列表，只有 URL 变化或管理员点击“重新解析”才再次请求 yt-dlp。
+- 每条任务增加标签展示、备注输入与保存；标签支持自定义文字、删除及预定义标签快速选择，数据随任务记录持久化。
+- 已完成且服务端成品仍存在的音乐任务增加“编辑歌曲元信息”；保存后通过 FFmpeg 无损复制音频及封面流并重写标签，任务显示“已修改歌曲元信息”。
+- 初次任务解析时保存 YouTube 页面参考信息。历史任务第一次打开编辑浮层时补取并持久化一次，之后重复打开不再重新请求页面。
+- 重新抓取会继续使用管理员保存的歌曲元信息覆盖值；元信息写入会更新成品缓存版本，使浏览器按新版本重新缓存。
+
+### 12.3 服务端与浏览器缓存边界
+
+- “清除服务端缓存”仅删除服务端成品路径，保留文件名、大小、完成版本与自定义元信息；已经缓存到当前浏览器的副本仍可下载、预览和转发。
+- 任务列表新增“清理垃圾”，根据服务端当前全部任务 ID 删除本浏览器中已失去任务记录引用的 Premium 缓存及其 OPFS/IndexedDB 引用。
+- 任务被另一台设备完全删除后，本机不会自动误删仍有关联任务的文件；仅管理员主动点击“清理垃圾”时清理已确认的游离副本。
+
+### 12.4 封面本地化
+
+- 视频任务不再把 `i.ytimg.com` 等远程地址直接交给页面；任务统一使用 `/api/youtube-premium/tasks/:taskId/cover` 本地服务端地址。
+- 视频封面第一次请求时通过私人 Premium Cookie 下载到任务目录并持久化，后续复用服务器本地文件；音乐任务继续使用已经裁切并嵌入歌曲的方形封面。
+
+### 12.5 验证
+
+- `node --check server.js`、`node --check server/youtube-premium.js`、`node --check client/youtube-premium-cache.js` 通过。
+- Premium 页面内联脚本编译检查通过，`npm run test:youtube-premium` 共 9 项通过。
+- `npm run test:p2p:unit` 共 38 项通过；`npm run deploy:build -- --profile txsl` 与对应 `deploy:verify` 通过。
+- 本轮没有执行真实 yt-dlp 下载，没有读取或修改 `.tunnel-data` 中的 Cookie，也没有改动隧道 P2P/Socket.IO 传输策略。

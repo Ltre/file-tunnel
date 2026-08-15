@@ -82,6 +82,7 @@ const youtubePremiumService = createYoutubePremiumService({
     sanitizeError: sanitizeYoutubePremiumError,
     concurrency: Number(process.env.YOUTUBE_PREMIUM_DOWNLOAD_CONCURRENCY) || 1
 });
+const youtubePremiumCoverJobs = new Map();
 
 // ==================== 安全配置 ====================
 
@@ -936,6 +937,55 @@ app.get('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) 
     res.json(task);
 });
 
+app.patch('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = youtubePremiumService.updateDetails(req.params.taskId, req.body);
+    if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+    res.json(task);
+});
+
+app.get('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = youtubePremiumService.get(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+    if (task.mediaType !== 'song') return res.status(409).json({ error: 'youtube-premium-task-not-song' });
+    try {
+        let metadata = task.songMetadata;
+        if (!metadata) {
+            const file = youtubePremiumService.getFile(task.id);
+            const tags = file ? (await probeMediaFile(file.path)).format?.tags || {} : {};
+            metadata = normalizeEditableSongMetadata({
+                ...tags,
+                album_artist: tags.album_artist || tags.album_artist_sort,
+                date: tags.date || tags.year
+            });
+        }
+        let referenceInfo = youtubePremiumService.getReferenceInfo(task.id);
+        if (!referenceInfo) {
+            const meta = await runYtDlpJson(task.url, {
+                noPlaylist: true,
+                cookiePath: requireYoutubePremiumCookies(),
+                allowIgnoreNoFormatsFallback: false
+            });
+            referenceInfo = buildYoutubeReferenceInfo(meta, task.url);
+            youtubePremiumService.setReferenceInfo(task.id, referenceInfo);
+        }
+        res.json({ metadata, referenceInfo });
+    } catch (error) {
+        res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.put('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.json(await rewriteYoutubePremiumSongMetadata(req.params.taskId, req.body));
+    } catch (error) {
+        const status = error.message === 'youtube-premium-task-not-found' ? 404 : 422;
+        res.status(status).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
 app.post('/api/youtube-premium/tasks', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
@@ -1071,11 +1121,16 @@ app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, yo
     }
 });
 
-app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, (req, res) => {
-    const file = youtubePremiumService.getFile(req.params.taskId, 'cover');
-    if (!file) return res.status(404).end();
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.sendFile(file.path);
+app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, async (req, res) => {
+    try {
+        const file = youtubePremiumService.getFile(req.params.taskId, 'cover') ||
+            await ensureYoutubePremiumTaskCover(req.params.taskId);
+        if (!file) return res.status(404).end();
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.sendFile(file.path);
+    } catch (_) {
+        res.status(404).end();
+    }
 });
 
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
@@ -2455,10 +2510,88 @@ function normalizeArtistValue(meta = {}) {
     return String(meta.uploader || meta.channel || '').trim();
 }
 
-function getReleaseYear(meta = {}) {
-    const releaseYear = String(meta.release_year || '').match(/\b(19|20)\d{2}\b/)?.[0];
-    if (releaseYear) return releaseYear;
-    return String(meta.release_date || '').match(/^(19|20)\d{2}/)?.[0] || '';
+function extractMediaYear(value) {
+    return String(value || '').match(/\b(19|20)\d{2}\b/)?.[0] || '';
+}
+
+function normalizeYoutubeSourceUrl(value) {
+    try {
+        const url = new URL(String(value || ''));
+        for (const key of [...url.searchParams.keys()]) {
+            if (key === 'si' || key === 'is' || key === 'feature' || key === 'pp' || key === 'ab_channel' || key.startsWith('utm_')) {
+                url.searchParams.delete(key);
+            }
+        }
+        url.hash = '';
+        return url.href;
+    } catch (_) {
+        return String(value || '').trim();
+    }
+}
+
+function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '') {
+    const uploaderId = String(meta.uploader_id || '').trim();
+    const authorUrl = uploaderId.startsWith('@')
+        ? `https://www.youtube.com/${uploaderId}`
+        : String(meta.uploader_url || meta.channel_url || '').trim();
+    return {
+        webpageUrl: normalizeYoutubeSourceUrl(meta.webpage_url || meta.original_url || sourceUrl),
+        title: sanitizeString(meta.title || meta.fulltitle || '', 500),
+        description: sanitizeString(meta.description || meta.caption || '', 12000),
+        authorName: sanitizeString(meta.artist || meta.creator || meta.channel || meta.uploader || '', 500),
+        authorHandle: sanitizeString(uploaderId.startsWith('@') ? uploaderId : '', 200),
+        authorUrl: sanitizeString(authorUrl, 1000),
+        videoId: sanitizeString(meta.id || '', 100),
+        channelId: sanitizeString(meta.channel_id || '', 200),
+        album: sanitizeString(meta.album || meta.playlist_title || '', 500),
+        albumArtist: sanitizeString(meta.album_artist || meta.album_artists || '', 500),
+        track: sanitizeString(meta.track || meta.title || '', 500),
+        composer: sanitizeString(meta.composer || '', 500),
+        genre: sanitizeString(Array.isArray(meta.genres) ? meta.genres.join(', ') : meta.genre || '', 500),
+        trackNumber: sanitizeString(meta.track_number || '', 40),
+        discNumber: sanitizeString(meta.disc_number || '', 40),
+        albumYear: extractMediaYear(meta.album_release_year || meta.album_year || (meta.album ? meta.release_year || meta.release_date : '')),
+        songYear: extractMediaYear(meta.track_year || meta.release_year || meta.release_date || meta.year),
+        uploadYear: extractMediaYear(meta.upload_date || meta.timestamp),
+        uploadDate: sanitizeString(meta.upload_date || '', 40),
+        releaseDate: sanitizeString(meta.release_date || '', 40),
+        duration: Number(meta.duration) || 0,
+        language: sanitizeString(meta.language || '', 100),
+        categories: sanitizeString(Array.isArray(meta.categories) ? meta.categories.join(', ') : '', 1000),
+        tags: sanitizeString(Array.isArray(meta.tags) ? meta.tags.join(', ') : '', 3000),
+        license: sanitizeString(meta.license || '', 300),
+        availability: sanitizeString(meta.availability || '', 100),
+        viewCount: Number(meta.view_count) || 0,
+        likeCount: Number(meta.like_count) || 0,
+        channelFollowerCount: Number(meta.channel_follower_count) || 0
+    };
+}
+
+function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
+    const reference = buildYoutubeReferenceInfo(meta, sourceUrl);
+    const artist = normalizeArtistValue(meta) || reference.authorName || '未知艺术家';
+    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(', ') : meta.album_artists) || artist).trim();
+    const description = reference.description.replace(/\s+/g, ' ').trim();
+    const comment = [
+        reference.webpageUrl,
+        reference.authorUrl ? `作者主页：${reference.authorUrl}` : '',
+        reference.authorName ? `作者：${reference.authorName}` : '',
+        reference.title ? `标题：${reference.title}` : '',
+        description ? `简介：${description.slice(0, 1000)}${description.length > 1000 ? '…' : ''}` : ''
+    ].filter(Boolean).join('\n');
+    return {
+        title: sanitizeString(meta.track || meta.title || meta.fulltitle || '未知曲名', 240),
+        artist: sanitizeString(artist, 240),
+        album: sanitizeString(meta.album || meta.playlist_title || meta.channel || meta.uploader || 'YouTube', 240),
+        album_artist: sanitizeString(albumArtist, 240),
+        composer: sanitizeString(meta.composer || '', 240),
+        genre: sanitizeString(Array.isArray(meta.genres) ? meta.genres.join(', ') : meta.genre || '', 240),
+        track: sanitizeString(meta.track_number || '', 40),
+        disc: sanitizeString(meta.disc_number || '', 40),
+        date: reference.albumYear || reference.songYear || reference.uploadYear,
+        comment: sanitizeString(comment, 4000),
+        lyrics: sanitizeString(meta.lyrics || '', 12000)
+    };
 }
 
 function getYtDlpInvocation(args = []) {
@@ -2672,8 +2805,6 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
     }
     if (getSocialPlatform(source.sourceUrl) === 'ytmusic') mediaUrl = source.sourceUrl;
     const mediaId = createStableSnsId(messageId, source.id, mediaUrl, mediaIndex);
-    const artist = normalizeArtistValue(meta);
-    const track = String(meta?.track || meta?.title || meta?.fulltitle || '').trim();
     return {
         id: mediaId,
         sourceId: source.id,
@@ -2687,12 +2818,7 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
         mediaKind,
         youtubeVideoId: sanitizeString(meta?.id || '', 80),
         acquisitionTaskId: createStableSnsId('sns-task', messageId, mediaId, meta?.id || mediaUrl),
-        songMetadata: mediaKind === 'song' ? {
-            track: sanitizeString(track, 240),
-            artist: sanitizeString(artist || '未知艺术家', 240),
-            album: sanitizeString(meta?.album || '', 240),
-            year: getReleaseYear(meta)
-        } : null,
+        songMetadata: mediaKind === 'song' ? buildYoutubeSongMetadata(meta, mediaUrl || source.sourceUrl) : null,
         mediaIndex,
         playlistItem: Math.max(1, Math.trunc(Number(meta?.playlist_index) || mediaIndex + 1)),
         serverState: 'not_fetched',
@@ -3944,12 +4070,21 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     await createSquareCover(sourceCover, squareCover, options);
     const sourceProbe = await probeMediaFile(sourceAudio, options);
     const sourceSummary = getAudioProbeSummary(sourceProbe);
-    const metadata = item.songMetadata || {};
-    const track = sanitizeString(metadata.track || item.title || item.youtubeVideoId || '未知曲名', 240);
-    const artist = sanitizeString(metadata.artist || '未知艺术家', 240);
-    const album = sanitizeString(metadata.album || '', 240);
-    const year = String(metadata.year || '').match(/\b(19|20)\d{2}\b/)?.[0] || '';
-    const sourceUrl = String(item.sourceUrl || item.mediaUrl || '').slice(0, 1000);
+    const sourceUrl = normalizeYoutubeSourceUrl(item.sourceUrl || item.mediaUrl || '');
+    const providedMetadata = item.songMetadata || {};
+    const metadata = {
+        title: sanitizeString(providedMetadata.title || providedMetadata.track || item.title || item.youtubeVideoId || '未知曲名', 240),
+        artist: sanitizeString(providedMetadata.artist || '未知艺术家', 240),
+        album: sanitizeString(providedMetadata.album || '', 240),
+        album_artist: sanitizeString(providedMetadata.album_artist || providedMetadata.albumArtist || providedMetadata.artist || '未知艺术家', 240),
+        composer: sanitizeString(providedMetadata.composer || '', 240),
+        genre: sanitizeString(providedMetadata.genre || '', 240),
+        track: sanitizeString(providedMetadata.trackNumber || (providedMetadata.title ? providedMetadata.track : '') || '', 40),
+        disc: sanitizeString(providedMetadata.disc || providedMetadata.discNumber || '', 40),
+        date: extractMediaYear(providedMetadata.date || providedMetadata.year),
+        comment: sanitizeString(providedMetadata.comment || sourceUrl, 4000),
+        lyrics: sanitizeString(providedMetadata.lyrics || '', 12000)
+    };
     const finalAudio = path.join(SNS_MEDIA_WORK_DIR, `${taskRecord.id}.final.m4a`);
     const audioCodecArgs = sourceSummary.codecName === 'aac'
         ? ['-c:a', 'copy']
@@ -3960,9 +4095,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         '-i', sourceAudio, '-i', squareCover,
         '-map', '0:a:0', '-map', '1:v:0',
         ...audioCodecArgs, '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic',
-        '-metadata', `title=${track}`, '-metadata', `artist=${artist}`,
-        '-metadata', `album=${album}`, '-metadata', `date=${year}`,
-        '-metadata', `comment=${sourceUrl}`,
+        ...Object.entries(metadata).flatMap(([key, value]) => ['-metadata', `${key}=${value}`]),
         '-metadata:s:v:0', 'title=Album cover', '-metadata:s:v:0', 'comment=Cover (front)',
         '-movflags', '+faststart', finalAudio
     ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-metadata-write-timeout', signal: options.signal });
@@ -3978,11 +4111,20 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     return {
         finalAudio,
         squareCover,
-        fileName: `${sanitizeMediaFilePart(artist, '未知艺术家')} - ${sanitizeMediaFilePart(track, '未知曲名')}.m4a`,
-        coverName: `${sanitizeMediaFilePart(artist, '未知艺术家')} - ${sanitizeMediaFilePart(track, '未知曲名')} - 封面.jpg`,
+        fileName: `${sanitizeMediaFilePart(metadata.artist, '未知艺术家')} - ${sanitizeMediaFilePart(metadata.title, '未知曲名')}.m4a`,
+        coverName: `${sanitizeMediaFilePart(metadata.artist, '未知艺术家')} - ${sanitizeMediaFilePart(metadata.title, '未知曲名')} - 封面.jpg`,
         metadata: {
-            track: String(tags.title || track), artist: String(tags.artist || artist),
-            album: String(tags.album || album), year: String(tags.date || year), comment: String(tags.comment || sourceUrl)
+            title: String(tags.title || metadata.title),
+            artist: String(tags.artist || metadata.artist),
+            album: String(tags.album || metadata.album),
+            album_artist: String(tags.album_artist || metadata.album_artist),
+            composer: String(tags.composer || metadata.composer),
+            genre: String(tags.genre || metadata.genre),
+            track: String(tags.track || metadata.track),
+            disc: String(tags.disc || metadata.disc),
+            date: String(tags.date || metadata.date),
+            comment: String(tags.comment || metadata.comment),
+            lyrics: String(tags.lyrics || metadata.lyrics)
         },
         probe: finalSummary
     };
@@ -4075,12 +4217,12 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         duration: Number(baseMeta.duration) || 0,
         mediaType,
         youtubeVideoId: sanitizeString(baseMeta.id || '', 80),
-        songMetadata: mediaType === 'song' ? {
-            track: sanitizeString(track || baseMeta.id || '未知曲名', 240),
-            artist: sanitizeString(fallbackArtist || 'YouTube', 240),
-            album: sanitizeString(baseMeta.album || baseMeta.playlist_title || baseMeta.channel || baseMeta.uploader || 'YouTube', 240),
-            year: getReleaseYear(baseMeta) || String(baseMeta.upload_date || '').match(/^(19|20)\d{2}/)?.[0] || ''
-        } : null,
+        songMetadata: mediaType === 'song' ? buildYoutubeSongMetadata({
+            ...baseMeta,
+            track: track || baseMeta.id || '未知曲名',
+            artist: fallbackArtist || 'YouTube'
+        }, url) : null,
+        referenceInfo: buildYoutubeReferenceInfo(baseMeta, url),
         musicFormatId: preferredMusicFormat?.id || '',
         selection,
         formats: options.includeFormats ? formats : []
@@ -4128,7 +4270,8 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
                 coverPath,
                 outputFileName,
                 outputFileSize: fs.statSync(outputPath).size,
-                title: song.metadata.track || analysis.title
+                title: song.metadata.title || analysis.title,
+                songMetadata: song.metadata
             };
         }
 
@@ -4159,6 +4302,75 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
     }
 }
 
+function normalizeEditableSongMetadata(input = {}, fallback = {}) {
+    const value = (key, max = 4000) => sanitizeString(input[key] ?? fallback[key] ?? '', max);
+    return {
+        title: value('title', 240) || '未知曲名',
+        album: value('album', 240),
+        artist: value('artist', 240) || '未知艺术家',
+        album_artist: value('album_artist', 240) || value('artist', 240) || '未知艺术家',
+        composer: value('composer', 240),
+        genre: value('genre', 240),
+        track: value('track', 40),
+        disc: value('disc', 40),
+        date: value('date', 40),
+        comment: value('comment', 4000),
+        lyrics: value('lyrics', 12000)
+    };
+}
+
+async function rewriteYoutubePremiumSongMetadata(taskId, input) {
+    const task = youtubePremiumService.get(taskId);
+    const file = youtubePremiumService.getFile(taskId);
+    if (!task || !file) throw new Error('youtube-premium-task-not-found');
+    if (task.mediaType !== 'song') throw new Error('youtube-premium-task-not-song');
+    const metadata = normalizeEditableSongMetadata(input, task.songMetadata || {});
+    const temporaryPath = path.join(path.dirname(file.path), `.metadata-${crypto.randomBytes(6).toString('hex')}.m4a`);
+    try {
+        await spawnCapture(FFMPEG_COMMAND, [
+            '-y', '-hide_banner', '-loglevel', 'error', '-i', file.path,
+            '-map', '0', '-map_metadata', '0', '-c', 'copy',
+            ...Object.entries(metadata).flatMap(([key, value]) => ['-metadata', `${key}=${value}`]),
+            '-movflags', '+faststart', temporaryPath
+        ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-metadata-write-timeout' });
+        const outputFileName = `${sanitizeMediaFilePart(metadata.artist, '未知艺术家')} - ${sanitizeMediaFilePart(metadata.title, '未知曲名')}.m4a`;
+        const outputPath = path.join(path.dirname(file.path), outputFileName);
+        fs.copyFileSync(temporaryPath, outputPath);
+        if (path.resolve(outputPath) !== path.resolve(file.path)) fs.rmSync(file.path, { force: true });
+        const probe = await probeMediaFile(outputPath);
+        if (!probe.streams?.some(stream => stream.codec_type === 'audio')) throw new Error('song-final-m4a-invalid');
+        return youtubePremiumService.setSongMetadata(taskId, metadata, {
+            outputPath,
+            outputFileName,
+            outputFileSize: fs.statSync(outputPath).size
+        });
+    } finally {
+        fs.rmSync(temporaryPath, { force: true });
+    }
+}
+
+function ensureYoutubePremiumTaskCover(taskId) {
+    if (youtubePremiumService.getFile(taskId, 'cover')) return Promise.resolve(youtubePremiumService.getFile(taskId, 'cover'));
+    if (youtubePremiumCoverJobs.has(taskId)) return youtubePremiumCoverJobs.get(taskId);
+    const job = (async () => {
+        const thumbnail = await downloadYoutubePremiumOriginalThumbnail(taskId);
+        try {
+            const taskDir = youtubePremiumService.getTaskDirectory(taskId);
+            if (!taskDir) throw new Error('youtube-premium-task-not-found');
+            fs.mkdirSync(taskDir, { recursive: true });
+            const extension = path.extname(thumbnail.path) || '.jpg';
+            const coverPath = path.join(taskDir, `cover${extension}`);
+            fs.copyFileSync(thumbnail.path, coverPath);
+            youtubePremiumService.setCoverPath(taskId, coverPath);
+            return youtubePremiumService.getFile(taskId, 'cover');
+        } finally {
+            thumbnail.cleanup();
+        }
+    })().finally(() => youtubePremiumCoverJobs.delete(taskId));
+    youtubePremiumCoverJobs.set(taskId, job);
+    return job;
+}
+
 function sanitizeYoutubePremiumError(error) {
     const message = String(error?.message || 'youtube-premium-download-failed')
         .replaceAll(YOUTUBE_PREMIUM_COOKIE_PATH, '[private-cookie]')
@@ -4173,6 +4385,7 @@ function sanitizeYoutubePremiumError(error) {
         'youtube-premium-cookie-save-failed': '私人 YouTube Premium Cookie 保存失败',
         'youtube-premium-thumbnail-missing': 'yt-dlp 没有返回可下载的封面',
         'youtube-premium-thumbnail-timeout': '获取原尺寸封面超时，请稍后重试',
+        'youtube-premium-task-not-song': '只有音乐类型任务可以编辑歌曲元数据',
         'youtube-premium-task-active': '任务仍在运行，请先取消并等待任务停止',
         'custom-format-required': '自定义模式至少选择一个媒体格式',
         'custom-format-count-invalid': '只能选择一个媒体格式，或一个视频格式加一个音频格式',
@@ -4216,9 +4429,9 @@ function createServerAssetFileInfo(asset, extra = {}) {
 function buildSongRemark(fileName, metadata, probe) {
     return [
         fileName,
-        `    - Track name：${metadata.track || '未知'}`,
+        `    - Track name：${metadata.title || '未知'}`,
         `    - Performer：${metadata.artist || '未知'}`,
-        `    - Recorded date：${metadata.year || '未知'}`,
+        `    - Recorded date：${metadata.date || '未知'}`,
         `    - Bit Rate：${probe.bitRateLabel || '未知'}`,
         `    - Fomat：${probe.formatLabel || '未知'}`,
         `    - Duration：${probe.durationLabel || '未知'}`,
@@ -4354,7 +4567,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                             id: crypto.randomUUID(),
                             files: [
                                 createServerAssetFileInfo(coverAsset, { sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId }),
-                                createServerAssetFileInfo(audioAsset, { sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId, audioTitle: song.metadata.track, audioArtist: song.metadata.artist, audioAlbum: song.metadata.album, audioYear: song.metadata.year })
+                                createServerAssetFileInfo(audioAsset, { sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId, audioTitle: song.metadata.title, audioArtist: song.metadata.artist, audioAlbum: song.metadata.album, audioYear: song.metadata.date })
                             ],
                             count: 2, totalSize: coverAsset.size + audioAsset.size, remark
                         },

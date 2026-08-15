@@ -61,6 +61,15 @@
             });
         }
 
+        async getAllRecords() {
+            const db = await this.openDatabase();
+            return new Promise((resolve, reject) => {
+                const request = db.transaction(STORE_NAME).objectStore(STORE_NAME).getAll();
+                request.onsuccess = () => resolve(request.result || []);
+                request.onerror = () => reject(request.error || new Error('browser-cache-list-failed'));
+            });
+        }
+
         async deleteRecord(record) {
             if (!record) return;
             const cacheStore = await this.cacheStorePromise;
@@ -158,6 +167,14 @@
             await this.deleteRecord(await this.getRecord(task.id));
             await this.writeRecord({ id: task.id, version: taskVersion(task), status: 'cleared', clearedAt: Date.now() });
             return { status: 'cleared' };
+        }
+
+        async cleanupOrphans(validTaskIds) {
+            const valid = new Set(Array.isArray(validTaskIds) ? validTaskIds.map(String) : []);
+            const records = await this.getAllRecords();
+            const orphans = records.filter(record => !valid.has(String(record.id)));
+            for (const record of orphans) await this.deleteRecord(record);
+            return orphans.length;
         }
 
         async getBlob(task) {
