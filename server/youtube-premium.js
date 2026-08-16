@@ -206,6 +206,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 : '',
             mode: task.mode,
             asMusic: task.asMusic === true,
+            downloadSections: task.downloadSections || '',
             selectedFormatIds: task.selectedFormatIds || [],
             formatSummary: task.formatSummary || null,
             mediaType: task.mediaType || '',
@@ -323,9 +324,10 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 : [];
             if (mode === 'custom' && !selectedFormatIds.length) throw new Error('custom-format-required');
             if (selectedFormatIds.length > 2) throw new Error('custom-format-count-invalid');
+            const downloadSections = String(input.downloadSections || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 500);
             const now = Date.now();
             const task = {
-                id: crypto.randomUUID(), url, title: '', cover: '', mode, asMusic: input.asMusic === true, selectedFormatIds,
+                id: crypto.randomUUID(), url, title: '', cover: '', mode, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
                 updatedAt: now, completedAt: 0, remark: '', tags: [], songMetadata: null,

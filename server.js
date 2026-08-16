@@ -776,6 +776,37 @@ app.post('/api/admin/auth/logout', (req, res) => {
     res.json({ ok: true });
 });
 
+
+app.post('/api/light-transfer/network/:taskId', async (req, res) => {
+    const taskId = String(req.params.taskId || '').trim().toLowerCase();
+    const providerDeviceId = String(req.query.provider || '').trim();
+    const indices = [...new Set((Array.isArray(req.body?.indices) ? req.body.indices : [])
+        .map(Number)
+        .filter(index => Number.isInteger(index) && index >= 0 && index < 100000000))].slice(0, 32);
+    if (!/^[a-f0-9]{64}$/.test(taskId) || !isValidDeviceId(providerDeviceId) || !indices.length) {
+        return res.status(400).json({ error: 'invalid-light-network-request' });
+    }
+    const requestId = crypto.randomUUID();
+    const targets = emitToDevice(providerDeviceId, 'light-network-chunks-request', { requestId, taskId, indices });
+    if (!targets.length) return res.status(503).json({ error: 'light-provider-offline' });
+    let settled = false;
+    const finish = (status, payload) => {
+        if (settled || res.headersSent) return;
+        settled = true;
+        const pending = lightNetworkPendingRequests.get(requestId);
+        if (pending?.timer) clearTimeout(pending.timer);
+        lightNetworkPendingRequests.delete(requestId);
+        res.status(status).json(payload);
+    };
+    const timer = setTimeout(() => finish(504, { error: 'light-provider-timeout' }), 3500);
+    lightNetworkPendingRequests.set(requestId, { providerDeviceId, taskId, timer, finish });
+});
+
+app.get(['/light-file-parts', '/light-file-parts.html'], (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(path.join(__dirname, 'pages', 'light-file-parts.html'));
+});
+
 app.get('/record/:sessionId/:messageId', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
@@ -997,14 +1028,11 @@ app.get('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
         const forceRefresh = req.query.refresh === '1';
         let referenceInfo = forceRefresh ? null : youtubePremiumMetadataCache.get(cacheKey)?.referenceInfo;
         referenceInfo ||= forceRefresh ? null : youtubePremiumService.getReferenceInfo(task.id);
-        if (!referenceInfo) {
-            const meta = await runYtDlpJson(task.url, {
-                noPlaylist: true,
+        if (!referenceInfo || referenceInfo.sourceLanguageCheckCompleted !== true) {
+            referenceInfo = await collectYoutubeReferenceInfo(task.url, {
                 cookiePath: requireYoutubePremiumCookies(),
-                allowIgnoreNoFormatsFallback: false,
                 bypassCache: forceRefresh
             });
-            referenceInfo = buildYoutubeReferenceInfo(meta, task.url);
         }
         setYoutubePremiumMetadataCache(cacheKey, { referenceInfo });
         youtubePremiumService.setReferenceInfo(task.id, referenceInfo);
@@ -1935,6 +1963,8 @@ function emitToDevice(deviceId, eventName, payload) {
     targets.forEach(target => target.emit(eventName, payload));
     return targets;
 }
+
+const lightNetworkPendingRequests = new Map();
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const MAX_MAGNETS = 1000;
 const MAX_MAGNET_FILE_ASSET_SIZE = 1024 * 1024 * 1024;
@@ -2536,8 +2566,11 @@ function createStableSnsId(...parts) {
 }
 
 function getStructuredArtistValue(meta = {}) {
+    if (Array.isArray(meta.artists)) {
+        const artists = meta.artists.map(value => String(value || '').trim()).filter(Boolean);
+        if (artists.length) return artists.join('/');
+    }
     if (typeof meta.artist === 'string' && meta.artist.trim()) return meta.artist.trim();
-    if (Array.isArray(meta.artists)) return meta.artists.map(value => String(value || '').trim()).filter(Boolean).join(', ');
     if (typeof meta.artists === 'string' && meta.artists.trim()) return meta.artists.trim();
     return '';
 }
@@ -2576,7 +2609,46 @@ function normalizeYoutubeSourceUrl(value) {
     }
 }
 
-function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '') {
+function normalizeYoutubeLanguageCode(value) {
+    const raw = String(value || '').trim().toLowerCase().replace('_', '-');
+    if (!raw) return '';
+    const primary = raw.split('-')[0];
+    return /^[a-z]{2,3}$/.test(primary) ? primary : '';
+}
+
+function guessYoutubeSourceLanguage(meta = {}) {
+    const explicit = normalizeYoutubeLanguageCode(meta.language || meta.audio_language || meta.original_language);
+    if (explicit) return explicit;
+    const text = [
+        meta.track, meta.title, meta.fulltitle, getStructuredArtistValue(meta), meta.album,
+        Array.isArray(meta.album_artists) ? meta.album_artists.join(' ') : meta.album_artists
+    ].filter(Boolean).join(' ');
+    if (/[ぁ-ゟ゠-ヿ]/u.test(text)) return 'ja';
+    if (/[가-힣]/u.test(text)) return 'ko';
+    if (/[ก-๙]/u.test(text)) return 'th';
+    if (/[؀-ۿ]/u.test(text)) return 'ar';
+    if (/[֐-׿]/u.test(text)) return 'he';
+    if (/[ऀ-ॿ]/u.test(text)) return 'hi';
+    if (/[Ѐ-ӿ]/u.test(text)) return 'ru';
+    if (/\p{Script=Han}/u.test(text)) return 'zh';
+    return '';
+}
+
+function getYoutubeSourceLanguageFields(meta = {}) {
+    const artist = normalizeArtistValue(meta);
+    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists)
+        ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/')
+        : meta.album_artists) || '').trim();
+    return {
+        sourceTitle: sanitizeString(meta.track || meta.title || meta.fulltitle || '', 500),
+        sourceTrack: sanitizeString(meta.track || '', 500),
+        sourceAlbum: sanitizeString(meta.album || '', 500),
+        sourceArtist: sanitizeString(artist, 500),
+        sourceAlbumArtist: sanitizeString(albumArtist, 500)
+    };
+}
+
+function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta = null) {
     const uploaderId = String(meta.uploader_id || '').trim();
     const authorUrl = uploaderId.startsWith('@')
         ? `https://www.youtube.com/${uploaderId}`
@@ -2585,13 +2657,13 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '') {
         webpageUrl: normalizeYoutubeSourceUrl(meta.webpage_url || meta.original_url || sourceUrl),
         title: sanitizeString(meta.title || meta.fulltitle || '', 500),
         description: sanitizeString(meta.description || meta.caption || '', 12000),
-        authorName: sanitizeString(meta.artist || meta.creator || meta.channel || meta.uploader || '', 500),
+        authorName: sanitizeString(normalizeArtistValue(meta) || meta.creator || meta.channel || meta.uploader || '', 500),
         authorHandle: sanitizeString(uploaderId.startsWith('@') ? uploaderId : '', 200),
         authorUrl: sanitizeString(authorUrl, 1000),
         videoId: sanitizeString(meta.id || '', 100),
         channelId: sanitizeString(meta.channel_id || '', 200),
         album: sanitizeString(meta.album || meta.playlist_title || '', 500),
-        albumArtist: sanitizeString(meta.album_artist || meta.album_artists || '', 500),
+        albumArtist: sanitizeString(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/') : meta.album_artists) || '', 500),
         track: sanitizeString(meta.track || meta.title || '', 500),
         composer: sanitizeString(meta.composer || '', 500),
         genre: sanitizeString(Array.isArray(meta.genres) ? meta.genres.join(', ') : meta.genre || '', 500),
@@ -2610,14 +2682,50 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '') {
         availability: sanitizeString(meta.availability || '', 100),
         viewCount: Number(meta.view_count) || 0,
         likeCount: Number(meta.like_count) || 0,
-        channelFollowerCount: Number(meta.channel_follower_count) || 0
+        channelFollowerCount: Number(meta.channel_follower_count) || 0,
+        sourceLanguage: guessYoutubeSourceLanguage(sourceLanguageMeta || meta),
+        sourceLanguageVersionAttempted: Boolean(sourceLanguageMeta),
+        sourceLanguageVersionResolved: Boolean(sourceLanguageMeta),
+        sourceLanguageCheckCompleted: false,
+        ...getYoutubeSourceLanguageFields(sourceLanguageMeta || meta)
     };
+}
+
+async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
+    const meta = options.meta || await runYtDlpJson(rawUrl, {
+        noPlaylist: true,
+        cookiePath: options.cookiePath,
+        allowIgnoreNoFormatsFallback: false,
+        bypassCache: options.bypassCache === true,
+        signal: options.signal
+    });
+    const language = guessYoutubeSourceLanguage(meta);
+    let sourceLanguageMeta = null;
+    if (language) {
+        try {
+            sourceLanguageMeta = await runYtDlpJson(rawUrl, {
+                noPlaylist: true,
+                cookiePath: options.cookiePath,
+                allowIgnoreNoFormatsFallback: false,
+                bypassCache: options.bypassCache === true,
+                youtubeLanguage: language,
+                signal: options.signal
+            });
+        } catch (_) {
+            sourceLanguageMeta = null;
+        }
+    }
+    const reference = buildYoutubeReferenceInfo(meta, rawUrl, sourceLanguageMeta || meta);
+    reference.sourceLanguageVersionAttempted = Boolean(language);
+    reference.sourceLanguageVersionResolved = Boolean(sourceLanguageMeta);
+    reference.sourceLanguageCheckCompleted = true;
+    return reference;
 }
 
 function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
     const reference = buildYoutubeReferenceInfo(meta, sourceUrl);
     const artist = normalizeArtistValue(meta) || reference.authorName || '未知艺术家';
-    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(', ') : meta.album_artists) || artist).trim();
+    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/') : meta.album_artists) || artist).trim();
     const description = reference.description.replace(/\s+/g, ' ').trim();
     const comment = [
         reference.webpageUrl,
@@ -2724,6 +2832,7 @@ function runYtDlpJson(url, options = {}) {
         args.push(...getYtDlpRemoteComponentArgs(url));
         args.push(...getYtDlpFfmpegArgs());
         if (options.formatSelector) args.push('-f', String(options.formatSelector));
+        if (options.youtubeLanguage) args.push('--extractor-args', `youtube:lang=${String(options.youtubeLanguage).trim()}`);
         args.push(url);
         const cookiePath = String(options.cookiePath || getSnsCookieFileForUrl(url) || '');
         if (cookiePath && fs.existsSync(cookiePath)) {
@@ -3990,6 +4099,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
         ...getYtDlpCookieArgs(url, options.cookiePath),
         url
     ];
+    if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
     if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
     await spawnYtDlpCapture(args, {
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
@@ -4106,6 +4216,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         ...getYtDlpCookieArgs(url, options.cookiePath),
         url
     ];
+    if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
     if (maxFileSize > 0) args.splice(args.indexOf('--write-thumbnail'), 0, '--max-filesize', String(maxFileSize));
     await spawnYtDlpCapture(args, {
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
@@ -4315,6 +4426,7 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
             }, {
                 cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
                 formatSelector: customSelector || (task.asMusic ? analysis.selection.formatSelector : getYtDlpAudioFormatSelector()),
+                downloadSections: task.downloadSections || '',
                 maxFileSize: null,
                 signal
             });
@@ -4336,6 +4448,7 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
             cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
             formatSelector: customSelector || analysis.selection.formatSelector || getYtDlpFormatSelector(analysis.url),
             mergeOutputFormat: analysis.selection.outputContainer || 'mp4',
+            downloadSections: task.downloadSections || '',
             maxFileSize: null,
             signal,
             onStage
@@ -5321,6 +5434,71 @@ io.on('connection', (socket) => {
             accepted: data.accepted !== false,
             link: sanitizeString(data.link || '', 500)
         });
+    });
+
+    socket.on('device-camera-request', data => {
+        const from = data?.from;
+        const to = data?.to;
+        const requestId = sanitizeString(data?.requestId || '', 100);
+        const mode = data?.mode === 'share-mine' ? 'share-mine' : 'open-remote';
+        if (!isValidDeviceId(from) || !isValidDeviceId(to) || !requestId || socket.data?.deviceId !== from) return;
+        emitToDevice(to, 'device-camera-request', {
+            requestId,
+            from,
+            to,
+            mode,
+            senderName: sanitizeString(data?.senderName || '', 80),
+            createdAt: Number(data?.createdAt) || Date.now()
+        });
+        historyLog('device-camera-request', { deviceId: from, targetDeviceId: to, requestId, mode, socketId: socket.id, clientIp });
+    });
+
+    socket.on('device-camera-response', data => {
+        const from = data?.from;
+        const to = data?.to;
+        const requestId = sanitizeString(data?.requestId || '', 100);
+        if (!isValidDeviceId(from) || !isValidDeviceId(to) || !requestId || socket.data?.deviceId !== from) return;
+        emitToDevice(to, 'device-camera-response', {
+            requestId,
+            from,
+            to,
+            mode: data?.mode === 'share-mine' ? 'share-mine' : 'open-remote',
+            accepted: data?.accepted !== false
+        });
+    });
+
+    socket.on('device-camera-signal', data => {
+        const from = data?.from;
+        const to = data?.to;
+        const requestId = sanitizeString(data?.requestId || '', 100);
+        const kind = ['offer', 'answer', 'ice'].includes(data?.kind) ? data.kind : '';
+        if (!isValidDeviceId(from) || !isValidDeviceId(to) || !requestId || !kind || socket.data?.deviceId !== from) return;
+        const payload = { requestId, from, to, kind };
+        if (kind === 'ice') payload.candidate = data?.candidate || null;
+        else payload.description = data?.description || null;
+        emitToDevice(to, 'device-camera-signal', payload);
+    });
+
+    socket.on('device-camera-stop', data => {
+        const from = data?.from;
+        const to = data?.to;
+        const requestId = sanitizeString(data?.requestId || '', 100);
+        if (!isValidDeviceId(from) || !isValidDeviceId(to) || !requestId || socket.data?.deviceId !== from) return;
+        emitToDevice(to, 'device-camera-stop', { requestId, from, to });
+    });
+
+
+    socket.on('light-network-chunks-response', data => {
+        const requestId = sanitizeString(data?.requestId || '', 100);
+        const pending = lightNetworkPendingRequests.get(requestId);
+        if (!pending || socket.data?.deviceId !== pending.providerDeviceId) return;
+        const chunks = (Array.isArray(data?.chunks) ? data.chunks : []).slice(0, 32).map(chunk => ({
+            s: Number(chunk?.s),
+            c: Number(chunk?.c) || 1,
+            x: sanitizeString(chunk?.x || '', 16),
+            p: typeof chunk?.p === 'string' && chunk.p.length <= 65536 ? chunk.p : ''
+        })).filter(chunk => Number.isInteger(chunk.s) && chunk.s >= 0 && chunk.p);
+        pending.finish(200, { taskId: pending.taskId, chunks, unavailable: Boolean(data?.unavailable) });
     });
 
     socket.on('device-remark-backup', (data, ack) => {

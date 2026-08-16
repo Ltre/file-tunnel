@@ -149,6 +149,11 @@
             <label class="music-option"><input id="asMusicInput" type="checkbox">以音乐形式下载</label>
             <label class="music-option"><input id="cacheFilesInput" type="checkbox" checked>缓存文件到浏览器</label>
         </div>
+        <div class="download-sections-row">
+            <label for="downloadSectionsInput">指定片段（可选 · <code>--download-sections</code> 参数值）</label>
+            <input id="downloadSectionsInput" type="text" autocomplete="off" spellcheck="false" placeholder="例如：*00:01:30-00:03:15">
+            <div class="subtle">留空则下载完整内容；这里只填写参数值，不要重复填写 <code>--download-sections</code>。</div>
+        </div>
         <div class="credential subtle">私人 Cookie 在 <a href="/sns-cookies">SNS cookies 管理页</a>配置，页面和任务 API 均不会读取其内容。</div>
         <div class="notice" id="notice"></div>
 
@@ -232,6 +237,7 @@
     const analyzeBtn = document.getElementById('analyzeBtn');
     const asMusicInput = document.getElementById('asMusicInput');
     const cacheFilesInput = document.getElementById('cacheFilesInput');
+    const downloadSectionsInput = document.getElementById('downloadSectionsInput');
     const formatStatus = document.getElementById('formatStatus');
     const formatList = document.getElementById('formatList');
     const selectionSummary = document.getElementById('selectionSummary');
@@ -485,7 +491,7 @@
             notice.textContent = '正在创建私人下载任务...';
             const created = await api('/api/youtube-premium/tasks', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, selectedFormatIds }), keepalive: true
+                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, downloadSections: downloadSectionsInput.value.trim(), selectedFormatIds }), keepalive: true
             });
             notice.textContent = '任务已创建。';
             page = 1;
@@ -865,6 +871,68 @@
         renderTagEditor();
     }
 
+    function formatMetadataReferenceInfo(referenceInfo = {}) {
+        const labels = {
+            sourceLanguage: '推测源语言',
+            sourceTitle: '源语言标题',
+            sourceTrack: '源语言歌曲名',
+            sourceAlbum: '源语言专辑名',
+            sourceArtist: '源语言艺术家',
+            sourceAlbumArtist: '源语言专辑艺术家',
+            title: 'YouTube 当前标题',
+            track: '歌曲名',
+            album: '专辑名',
+            albumArtist: '专辑艺术家',
+            authorName: '艺术家/作者',
+            authorHandle: '作者 Handle',
+            authorUrl: '作者链接',
+            webpageUrl: 'YouTube 链接',
+            videoId: '视频 ID',
+            channelId: '频道 ID',
+            composer: '作曲',
+            genre: '流派',
+            trackNumber: '曲序',
+            discNumber: '碟序',
+            albumYear: '专辑年份',
+            songYear: '歌曲年份',
+            uploadYear: '上传年份',
+            uploadDate: '上传日期',
+            releaseDate: '发行日期',
+            duration: '时长（秒）',
+            language: 'YouTube 语言标记',
+            categories: '分类',
+            tags: '标签',
+            license: '许可',
+            availability: '可用性',
+            viewCount: '播放量',
+            likeCount: '点赞数',
+            channelFollowerCount: '频道订阅数',
+            description: '页面说明'
+        };
+        const order = [
+            'sourceLanguage','sourceTitle','sourceTrack','sourceAlbum','sourceArtist','sourceAlbumArtist',
+            'title','track','album','authorName','albumArtist','composer','genre','albumYear','songYear','uploadYear',
+            'releaseDate','uploadDate','duration','language','webpageUrl','authorHandle','authorUrl','videoId','channelId',
+            'categories','tags','license','availability','viewCount','likeCount','channelFollowerCount','description'
+        ];
+        const values = [];
+        for (const key of order) {
+            const value = referenceInfo[key];
+            if (value === '' || value == null || value === 0 || value === false) continue;
+            values.push(`${labels[key] || key}: ${value}`);
+        }
+        for (const [key, value] of Object.entries(referenceInfo)) {
+            if (order.includes(key) || ['sourceLanguageVersionAttempted','sourceLanguageVersionResolved','sourceLanguageCheckCompleted'].includes(key) || value === '' || value == null || value === 0 || value === false) continue;
+            values.push(`${labels[key] || key}: ${value}`);
+        }
+        if (referenceInfo.sourceLanguageVersionAttempted) {
+            values.unshift(referenceInfo.sourceLanguageVersionResolved
+                ? '源语言版本：已按推测源语言重新采集，下列“源语言…”字段优先显示该版本。'
+                : '源语言版本：已尝试按推测源语言重新采集，但 YouTube 未返回独立版本，已回退为当前页面值。');
+        }
+        return values.join('\n') || '没有可用的页面参考信息。';
+    }
+
     async function showMetadataDialog(task) {
         metadataDialog.dataset.taskId = task.id;
         metadataForm.replaceChildren();
@@ -883,9 +951,7 @@
                 wrapper.appendChild(field);
                 metadataForm.appendChild(wrapper);
             }
-            metadataReference.textContent = Object.entries(data.referenceInfo || {})
-                .filter(([, value]) => value !== '' && value != null && value !== 0)
-                .map(([key, value]) => `${key}: ${value}`).join('\n') || '没有可用的页面参考信息。';
+            metadataReference.textContent = formatMetadataReferenceInfo(data.referenceInfo || {});
         } catch (error) {
             metadataReference.textContent = `读取失败：${error.message}`;
         }
@@ -899,9 +965,7 @@
         metadataReference.textContent = '正在重新采集页面参考信息...';
         try {
             const data = await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-metadata?refresh=1`);
-            metadataReference.textContent = Object.entries(data.referenceInfo || {})
-                .filter(([, value]) => value !== '' && value != null && value !== 0)
-                .map(([key, value]) => `${key}: ${value}`).join('\n') || '没有可用的页面参考信息。';
+            metadataReference.textContent = formatMetadataReferenceInfo(data.referenceInfo || {});
         } catch (error) {
             metadataReference.textContent = `重新采集失败：${error.message}`;
         } finally {
@@ -986,6 +1050,7 @@
         [
             `方案：${task.mode === 'custom' ? '自定义' : '默认'}`,
             task.asMusic ? '音乐形式：是' : '',
+            task.downloadSections ? `指定片段：${task.downloadSections}` : '',
             task.mediaType ? `类型：${task.mediaType === 'song' ? '音乐' : '视频'}` : '',
             task.selectedFormatIds?.length ? `格式：${task.selectedFormatIds.join(' + ')}` : '',
             task.outputFileName ? `文件：${task.outputFileName}` : '',

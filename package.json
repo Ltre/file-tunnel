@@ -12,7 +12,8 @@
     "test:youtube-premium": "node tests/youtube-premium.test.cjs",
     "build:sns-cookie-extension": "node tools/auto-sync-sns-cookies/build.mjs",
     "deploy:build": "node tools/deploy/build.mjs",
-    "deploy:verify": "node tools/deploy/verify.mjs"
+    "deploy:verify": "node tools/deploy/verify.mjs",
+    "test:2608b": "node tests/features-2608B.test.cjs"
   },
   "keywords": [
     "p2p",

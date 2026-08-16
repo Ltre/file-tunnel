@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设备主页</title>
     <script defer src="/client/qrcode-1.0.0.min.js"></script>
+    <script defer src="/client/device-camera.js"></script>
     <script defer src="/socket.io/socket.io.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -221,6 +222,8 @@
             <div class="quick-actions">
                 <button type="button" id="profileVoiceBtn"><span class="action-icon">☎</span><span>语音通话</span></button>
                 <button type="button" id="profileIntercomBtn"><span class="action-icon">📢</span><span>对讲机</span></button>
+                <button type="button" id="profileOpenCameraBtn"><span class="action-icon">📷</span><span>打开对方的摄像头</span></button>
+                <button type="button" id="profileShareCameraBtn"><span class="action-icon">◉</span><span>共享我的摄像头</span></button>
                 <button type="button" id="profileTunnelBtn"><span class="action-icon">⇄</span><span>开始隧道传输</span></button>
             </div>
             <div class="fields" id="profileFields"></div>
@@ -239,6 +242,7 @@
     const qr = document.getElementById('profileQr');
     let currentDeviceProfile = null;
     let inviteSocket = null;
+    let cameraBridge = null;
     let toastTimer = null;
     const pendingIncomingInvites = new Map();
     const invitePageId = `page-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -323,6 +327,20 @@
         });
         inviteSocket.on('device-tunnel-invite', handleIncomingTunnelInvite);
         return inviteSocket;
+    }
+
+    function getCameraBridge() {
+        const socket = connectInviteSocket();
+        if (!cameraBridge && window.DeviceCameraBridge && socket) {
+            cameraBridge = new window.DeviceCameraBridge({
+                getSocket: () => inviteSocket,
+                getSelfDeviceId,
+                getSelfDeviceName,
+                toast: message => showToast(message, 'info')
+            });
+        }
+        cameraBridge?.bindSocket?.();
+        return cameraBridge;
     }
 
     function getInviteSenderName(invite) {
@@ -620,8 +638,17 @@ function acceptIncomingInvite(invite) {
         };
         document.getElementById('profileVoiceBtn').onclick = () => alert('语音通话请先在功能首页关注设备后发起。');
         document.getElementById('profileIntercomBtn').onclick = () => alert('对讲机请先在功能首页关注设备后发起。');
+        document.getElementById('profileOpenCameraBtn').onclick = () => {
+            try { getCameraBridge()?.openRemoteCamera(device.deviceId, device.deviceName || '对方设备'); }
+            catch (error) { showToast(error.message); }
+        };
+        document.getElementById('profileShareCameraBtn').onclick = () => {
+            try { getCameraBridge()?.shareMyCamera(device.deviceId, device.deviceName || '对方设备'); }
+            catch (error) { showToast(error.message); }
+        };
         document.getElementById('profileTunnelBtn').onclick = startTunnelTransfer;
         connectInviteSocket();
+        getCameraBridge();
     }
 
     function renderError(message) {

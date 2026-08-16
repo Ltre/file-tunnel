@@ -15,6 +15,8 @@ const SCRIPT_SOURCES = [
   'client/file-assets.js',
   'client/folder-archive.js',
   'client/media.js',
+  'client/device-camera.js',
+  'client/light-transfer.js',
   'client/i18n-catalog.js',
   'client/i18n.js',
   'client/localization-runtime.js',
@@ -28,6 +30,7 @@ const PAGE_ROUTES = {
   'downloader.html': ['/downloader', '/downloader.html'],
   'downloadList.html': ['/downloadList', '/downloadList.html'],
   'device.html': ['/device.html'],
+  'light-file-parts.html': ['/light-file-parts', '/light-file-parts.html'],
   'tgbot.html': ['/tgbot']
 };
 

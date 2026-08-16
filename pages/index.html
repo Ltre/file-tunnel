@@ -2243,6 +2243,15 @@
             white-space: nowrap;
         }
 
+        .connection-panel-header { position: relative; }
+        .connection-header-menu-wrap { margin-left:auto; position:relative; }
+        .connection-header-menu-btn { border:0; background:transparent; color:inherit; font-size:1.18rem; line-height:1; padding:6px 7px; cursor:pointer; border-radius:8px; }
+        .connection-header-menu-btn:hover { background:rgba(100,116,139,.12); }
+        .connection-header-menu { position:absolute; right:0; top:calc(100% + 7px); z-index:80; min-width:150px; padding:6px; border-radius:10px; background:var(--card-bg,#fff); border:1px solid rgba(100,116,139,.22); box-shadow:0 12px 32px rgba(15,23,42,.18); }
+        .connection-header-menu[hidden] { display:none; }
+        .connection-header-menu button { width:100%; border:0; background:transparent; color:black; font-weight:bold; padding:9px 10px; text-align:left; border-radius:7px; cursor:pointer; white-space:nowrap; }
+        .connection-header-menu button:hover { background:rgba(79,70,229,.1); }
+
         .file-preview-source-icon {
             flex: 0 0 auto;
             margin-right: .5ch;
@@ -2264,6 +2273,7 @@
         }
 
         .file-preview-fullscreen-btn,
+        .file-preview-light-btn,
         .file-preview-music-btn,
         .file-preview-close-btn {
             display: inline-grid;
@@ -2276,6 +2286,16 @@
             cursor: pointer;
             line-height: 1;
         }
+
+        .file-preview-light-btn {
+            background: rgba(14, 165, 233, .12);
+            color: #0369a1;
+            font-size: .94rem;
+        }
+
+        .file-preview-light-btn:hover { background: rgba(14, 165, 233, .2); }
+
+        .file-preview-light-btn[hidden] { display:none; }
 
         .file-preview-fullscreen-btn {
             background: #eef2ff;
@@ -4577,9 +4597,16 @@
             <!-- 左侧：会话信息和设备列表 -->
             <div class="left-panel">
                 <div class="panel">
-                    <div class="panel-header">
+                    <div class="panel-header connection-panel-header">
                         <span>📱</span>
                         <span>连接设备</span>
+                        <div class="connection-header-menu-wrap">
+                            <button class="connection-header-menu-btn" id="connectionHeaderMenuBtn" type="button" title="更多" aria-label="连接设备菜单">☰</button>
+                            <div class="connection-header-menu" id="connectionHeaderMenu" hidden>
+                                <button type="button" id="scanTunnelCodeBtn">扫描隧道码</button>
+                                <button type="button" id="receiveLightBtn">接收光媒</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="panel-content qr-section">
                         <div id="qrcode"></div>
@@ -4773,6 +4800,7 @@
                 <h3 id="filePreviewTitle"></h3>
                 <div class="file-preview-header-actions">
                     <button class="file-preview-music-btn" id="filePreviewMusicBtn" type="button" title="进入音乐播放器" aria-label="进入音乐播放器" hidden><span class="music-note-live">♪</span></button>
+                    <button class="file-preview-light-btn" id="filePreviewLightShareBtn" type="button" title="使用光媒分享" aria-label="使用光媒分享" hidden>✴↗</button>
                     <button class="file-preview-fullscreen-btn" id="filePreviewFullscreenBtn" type="button" title="全屏预览" aria-label="全屏预览" hidden>『 』</button>
                     <button class="file-preview-close-btn" id="closeFilePreviewBtn" type="button" title="关闭" aria-label="关闭">×</button>
                 </div>
@@ -4858,6 +4886,8 @@
             document.write(`<script src="/client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script src="/client/folder-archive.js${suffix}"><\/script>`);
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/device-camera.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/light-transfer.js${suffix}"><\/script>`);
             document.write(`<script src="/app.js${suffix}"><\/script>`);
         })();
     </script>

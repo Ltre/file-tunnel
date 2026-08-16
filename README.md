@@ -317,7 +317,9 @@ flowchart TD
 
 - Node.js 18 或更高版本；
 - npm；
-- `yt-dlp`，用于解析和按需下载 Telegram 备注中的 SNS 媒体链接；
+- `yt-dlp`，用于解析和按需下载 SNS 媒体链接；
+- `yt-dlp-ejs`，用于解析和按需下载 SNS 媒体链接；
+- `deno`，用于辅助yt-dlp命令执行；
 - `ffmpeg`，用于 `yt-dlp` 合并视频轨/音频轨、转封装和处理部分平台媒体；
 - 支持 WebSocket、WebRTC 和 IndexedDB 的现代浏览器；
 - PWA、文件句柄、摄像头和麦克风等完整能力需要 HTTPS，`localhost` 除外。

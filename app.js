@@ -227,6 +227,8 @@ let musicPlayerLastPersistAt = 0;
 let homeHistoryGuardReady = false;
 let nearbyPresenceTimer = null;
 let nearbyLocation = null;
+let deviceCameraBridge = null;
+let tunnelCodeScannerState = null;
 
 function nextHistoryTimestamp() {
     const now = Date.now();
@@ -603,6 +605,14 @@ function initLandingNearbyPresence() {
     state.socket = io(CONFIG.SOCKET_SERVER, {
         transports: ['websocket', 'polling'],
         auth: { language: window.TunnelI18n?.currentLanguage?.() || navigator.language || 'zh-Hans' }
+    });
+
+    configureLightTransfer();
+    ensureDeviceCameraBridge();
+    state.socket.on('light-network-chunks-request', data => {
+        getLightTransferApi()?.handleNetworkChunkRequest(data, result => {
+            state.socket?.emit('light-network-chunks-response', { requestId: data?.requestId, ...(result || {}) });
+        });
     });
     state.socket.on('connect', () => {
         state.socket.emit('register-profile-device', {
@@ -1366,11 +1376,312 @@ function generateQRCode() {
     }
 }
 
+// ==================== 光媒分享 / 接收 ====================
+function getLightTransferApi() {
+    return window.Drop2TunnelLightTransfer || null;
+}
+
+function setFilePreviewLightShareButton(visible) {
+    const button = document.getElementById('filePreviewLightShareBtn');
+    if (!button) return;
+    button.hidden = !visible;
+}
+
+async function readFileBytesForLight(fileInfo) {
+    if (!fileInfo?.id) throw new Error('文件信息无效');
+    const persisted = await getFromStore('files', fileInfo.id).catch(() => null);
+    let stored = await materializeCachedFileRecord(persisted);
+    if (stored?.externalFileHandle) {
+        stored = await materializeExternalFileRecord(stored, { requestPermission: true });
+    }
+    if (!hasCompleteFileCache(stored, fileInfo)) {
+        throw new Error(`“${fileInfo.name || fileInfo.id}”在本机没有完整数据，请先还原该文件`);
+    }
+    const bytes = await getStoredFileBytes(stored);
+    if (bytes.byteLength !== Number(fileInfo.size || stored?.size || bytes.byteLength)) {
+        historyLog('light-share-size-difference', { fileId: fileInfo.id, declaredSize: fileInfo.size, actualSize: bytes.byteLength });
+    }
+    return bytes;
+}
+
+function buildStandaloneLightFileRecord(message, fileInfo) {
+    return {
+        id: fileInfo?.id ? `light-source-${fileInfo.id}` : message?.id || '',
+        type: 'file',
+        fileInfo: { ...(fileInfo || {}) },
+        timestamp: Number(message?.timestamp) || Date.now(),
+        sender: message?.sender || '',
+        senderName: message?.senderName || '',
+        remark: String(fileInfo?.remark || message?.remark || '').slice(0, RECORD_REMARK_MAX_LENGTH)
+    };
+}
+
+async function buildLightBundleFromMessage(message, onlyFileInfo = null) {
+    if (!message) throw new Error('找不到传输记录');
+    const collectionFiles = message.type === 'collection' ? getCollectionFiles(message) : [];
+    const selectedFiles = onlyFileInfo
+        ? [onlyFileInfo]
+        : message.type === 'collection'
+            ? collectionFiles
+            : message.fileInfo?.id ? [message.fileInfo] : [];
+    if (!selectedFiles.length) throw new Error('此记录没有可分享的文件');
+    const files = [];
+    for (const fileInfo of selectedFiles) {
+        files.push({ fileInfo: { ...fileInfo }, bytes: await readFileBytesForLight(fileInfo) });
+    }
+    const isWholeCollection = message.type === 'collection' && !onlyFileInfo;
+    const record = isWholeCollection
+        ? createHistoryReconcileMessage(message)
+        : buildStandaloneLightFileRecord(message, selectedFiles[0]);
+    return {
+        kind: isWholeCollection ? 'collection' : 'file',
+        tunnelId: state.sessionId,
+        shortCode: state.shortCode || '',
+        sourceMessageId: isWholeCollection || message.type === 'file' ? message.id : '',
+        title: isWholeCollection
+            ? (message.collection?.name || message.remark || `合辑 · ${selectedFiles.length} 个文件`)
+            : selectedFiles[0].name || '光媒文件',
+        record,
+        files,
+        createdAt: Number(message.timestamp) || Date.now()
+    };
+}
+
+function getLightNetworkProviderUrl(taskId, providerDeviceId) {
+    if (!state.socket?.connected || !taskId || !providerDeviceId) return '';
+    return `${location.origin}/api/light-transfer/network/${encodeURIComponent(taskId)}?provider=${encodeURIComponent(providerDeviceId)}`;
+}
+
+async function shareHistoryMessageViaLight(messageId) {
+    const api = getLightTransferApi();
+    if (!api) throw new Error('光媒模块未加载');
+    const message = await getFromStore('messages', messageId);
+    const bundle = await buildLightBundleFromMessage(message);
+    return api.openSender(bundle);
+}
+
+async function shareCurrentPreviewViaLight() {
+    const api = getLightTransferApi();
+    if (!api) throw new Error('光媒模块未加载');
+    const fileInfo = await getActivePreviewFileInfo();
+    if (!fileInfo?.id) throw new Error('当前没有可分享的文件');
+    const messageId = activeFilePreviewMessageId || activeCollectionPreviewMessageId;
+    const sourceMessage = messageId ? await getFromStore('messages', messageId) : null;
+    const message = sourceMessage || { id: '', type: 'file', fileInfo, timestamp: Date.now(), sender: state.deviceId, senderName: state.deviceName };
+    const bundle = await buildLightBundleFromMessage(message, fileInfo);
+    return api.openSender(bundle);
+}
+
+function createLightReceivedMessageId(taskId) {
+    const h = String(taskId || '').replace(/[^a-f0-9]/gi, '').padEnd(32, '0');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+function createLightReceivedFileId(taskId, order = 0) {
+    const orderHex = Math.max(0, Number(order) || 0).toString(16).padStart(8, '0').slice(-8);
+    const seed = `${String(taskId || '').replace(/[^a-f0-9]/gi, '').slice(0, 24)}${orderHex}`.padEnd(32, '0');
+    return `${seed.slice(0, 8)}-${seed.slice(8, 12)}-4${seed.slice(13, 16)}-8${seed.slice(17, 20)}-${seed.slice(20, 32)}`;
+}
+
+async function finalizeReceivedLightTransfer({ manifest, files }) {
+    if (!manifest?.taskId || !Array.isArray(files) || !files.length) throw new Error('光媒任务数据不完整');
+    const targetSessionId = String(manifest.tunnelId || state.sessionId || '');
+    const sourceMessageId = String(manifest.sourceMessageId || '');
+    for (const item of files) {
+        const fileInfo = { ...(item.fileInfo || {}) };
+        if (!fileInfo.id) fileInfo.id = createLightReceivedFileId(manifest.taskId, item.order);
+        const bytes = item.bytes instanceof Uint8Array ? item.bytes : new Uint8Array(item.bytes || 0);
+        const existing = await getFromStore('files', fileInfo.id).catch(() => null);
+        await saveToStore('files', {
+            ...(existing || {}),
+            ...fileInfo,
+            id: fileInfo.id,
+            sessionId: targetSessionId,
+            size: bytes.byteLength,
+            data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+            receivedSize: bytes.byteLength,
+            isPartial: false,
+            transferInterrupted: false,
+            cacheCleared: false,
+            restoreRequested: false,
+            isFileAsset: true,
+            lightTransferTaskId: manifest.taskId
+        });
+        if (targetSessionId === state.sessionId && fileAssetTransfer) {
+            await fileAssetTransfer.announce({
+                ...fileInfo,
+                id: fileInfo.id,
+                size: bytes.byteLength,
+                ownerDeviceId: fileInfo.ownerDeviceId || state.deviceId,
+                isFileAsset: true
+            }).catch(err => historyLog('light-file-asset-announce-failed', { fileId: fileInfo.id, error: err.message }));
+        }
+    }
+
+    const existingSource = sourceMessageId ? await getFromStore('messages', sourceMessageId).catch(() => null) : null;
+    if (existingSource && existingSource.sessionId === targetSessionId) {
+        await saveToStore('messages', {
+            ...existingSource,
+            lightTransfer: {
+                ...(existingSource.lightTransfer || {}),
+                taskId: manifest.taskId,
+                receivedAt: Date.now(),
+                sourceMessageId
+            }
+        });
+        if (targetSessionId === state.sessionId) {
+            await applyHistoryMessageUpdate({
+                ...existingSource,
+                lightTransfer: {
+                    ...(existingSource.lightTransfer || {}),
+                    taskId: manifest.taskId,
+                    receivedAt: Date.now(),
+                    sourceMessageId
+                }
+            }, { remote: false }).catch(err => historyLog('light-existing-record-refresh-failed', { messageId: existingSource.id, error: err.message }));
+        }
+        return { messageId: existingSource.id, recordUrl: `/record/${encodeURIComponent(targetSessionId)}/${encodeURIComponent(existingSource.id)}` };
+    }
+
+    const sourceRecord = manifest.record && typeof manifest.record === 'object' ? JSON.parse(JSON.stringify(manifest.record)) : {};
+    const receivedFiles = files.map(item => ({ ...(item.fileInfo || {}), size: Number(item.bytes?.byteLength ?? item.fileInfo?.size ?? 0) }));
+    const isCollection = manifest.kind === 'collection';
+    const message = {
+        ...sourceRecord,
+        id: createLightReceivedMessageId(manifest.taskId),
+        type: isCollection ? 'collection' : 'file',
+        timestamp: nextHistoryTimestamp(),
+        sender: state.deviceId,
+        senderName: state.deviceName,
+        lightTransfer: {
+            taskId: manifest.taskId,
+            sourceMessageId,
+            sourceSender: sourceRecord.sender || '',
+            sourceSenderName: sourceRecord.senderName || '',
+            receivedAt: Date.now()
+        }
+    };
+    if (isCollection) {
+        message.collection = {
+            ...(sourceRecord.collection || {}),
+            id: sourceRecord.collection?.id || `light-${manifest.taskId.slice(0, 24)}`,
+            files: receivedFiles,
+            count: receivedFiles.length,
+            totalSize: receivedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0)
+        };
+        delete message.fileInfo;
+    } else {
+        message.fileInfo = receivedFiles[0];
+        delete message.collection;
+    }
+
+    if (targetSessionId === state.sessionId && state.socket?.connected) {
+        await publishHistoryMessage(message, { autoRequestAsset: false });
+    } else {
+        await saveToStore('messages', { ...message, sessionId: targetSessionId });
+        const known = await getFromStore('sessions', targetSessionId).catch(() => null);
+        if (!known) {
+            await saveToStore('sessions', {
+                sessionId: targetSessionId,
+                shortCode: String(manifest.shortCode || ''),
+                timestamp: Date.now(),
+                lastAccess: Date.now(),
+                source: 'light-transfer'
+            }).catch(() => {});
+        }
+    }
+    historyLog('light-transfer-finalized', { taskId: manifest.taskId, sessionId: targetSessionId, messageId: message.id, fileCount: receivedFiles.length });
+    return { messageId: message.id, recordUrl: `/record/${encodeURIComponent(targetSessionId)}/${encodeURIComponent(message.id)}` };
+}
+
+function configureLightTransfer() {
+    const api = getLightTransferApi();
+    if (!api) return;
+    api.configure({
+        getDeviceId: () => state.deviceId || '',
+        getNetworkUrl: (taskId, providerDeviceId) => getLightNetworkProviderUrl(taskId, providerDeviceId || state.deviceId),
+        toast: message => showAppToast(message),
+        finalizeTask: finalizeReceivedLightTransfer
+    });
+}
+
+function ensureDeviceCameraBridge() {
+    if (deviceCameraBridge || !window.DeviceCameraBridge || !state.socket) return deviceCameraBridge;
+    deviceCameraBridge = new window.DeviceCameraBridge({
+        getSocket: () => state.socket,
+        getSelfDeviceId: () => state.deviceId,
+        getSelfDeviceName: () => state.deviceName,
+        toast: message => showAppToast(message)
+    });
+    return deviceCameraBridge;
+}
+
+function closeTunnelCodeScanner() {
+    const scanner = tunnelCodeScannerState;
+    tunnelCodeScannerState = null;
+    if (!scanner) return;
+    clearInterval(scanner.timer);
+    scanner.stream?.getTracks?.().forEach(track => track.stop());
+    scanner.layer?.remove();
+}
+
+function applyScannedTunnelCode(rawValue) {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return false;
+    try {
+        const url = new URL(raw, location.origin);
+        if (url.origin === location.origin && (url.hash || url.searchParams.get('code') || url.searchParams.get('shortCode'))) {
+            closeTunnelCodeScanner();
+            location.assign(url.href);
+            return true;
+        }
+    } catch (_) {}
+    if (/^[A-Z0-9]{5}$/i.test(raw)) {
+        const input = document.getElementById('shortCodeInput');
+        if (input) input.value = raw.toUpperCase();
+        closeTunnelCodeScanner();
+        joinByShortCode();
+        return true;
+    }
+    return false;
+}
+
+async function openTunnelCodeScanner() {
+    closeTunnelCodeScanner();
+    if (!('BarcodeDetector' in window)) throw new Error('当前浏览器不支持二维码扫描，请使用支持 BarcodeDetector 的 Chromium 浏览器');
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    const layer = document.createElement('div');
+    layer.style.cssText = 'position:fixed;inset:0;z-index:2147483100;background:#05070a;color:#fff;display:flex;flex-direction:column;padding:max(14px,env(safe-area-inset-top)) 14px 18px;';
+    layer.innerHTML = '<div style="display:flex;align-items:center;gap:12px"><strong style="flex:1">扫描隧道码</strong><button data-close type="button" style="border:0;border-radius:999px;width:38px;height:38px;font-size:22px">×</button></div><div style="flex:1;min-height:0;display:grid;place-items:center"><video data-video playsinline muted style="width:min(92vw,680px);max-height:72vh;border-radius:18px;background:#000;object-fit:cover"></video></div><div data-status style="text-align:center;color:#cbd5e1">将隧道二维码置于扫描框内</div>';
+    document.body.appendChild(layer);
+    const video = layer.querySelector('[data-video]');
+    video.srcObject = stream;
+    await video.play();
+    layer.querySelector('[data-close]').onclick = closeTunnelCodeScanner;
+    const timer = setInterval(async () => {
+        if (!tunnelCodeScannerState || video.readyState < 2) return;
+        try {
+            const results = await detector.detect(video);
+            for (const result of results || []) if (applyScannedTunnelCode(result.rawValue)) return;
+        } catch (_) {}
+    }, 180);
+    tunnelCodeScannerState = { layer, stream, timer };
+}
+
 // ==================== Socket.io 连接 ====================
 function initSocket() {
     state.socket = io(CONFIG.SOCKET_SERVER, {
         transports: ['websocket', 'polling'],
         auth: { language: window.TunnelI18n?.currentLanguage?.() || navigator.language || 'zh-Hans' }
+    });
+
+    configureLightTransfer();
+    ensureDeviceCameraBridge();
+    state.socket.on('light-network-chunks-request', data => {
+        getLightTransferApi()?.handleNetworkChunkRequest(data, result => {
+            state.socket?.emit('light-network-chunks-response', { requestId: data?.requestId, ...(result || {}) });
+        });
     });
 
     state.socket.on('connect', async () => {
@@ -6529,6 +6840,14 @@ function renderMessageRecordActions(messageEl, message) {
             });
         }));
     }
+    if (message.type === 'file' || message.type === 'collection') {
+        menuItems.push(createFileActionButton('✴↗ 使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
+            shareHistoryMessageViaLight(message.id).catch(err => {
+                alert(`光媒分享失败：${err.message}`);
+                historyLog('light-share-record-failed', { messageId: message.id, error: err.message });
+            });
+        }));
+    }
     menuItems.push(createFileActionButton('⎇ 发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
@@ -7120,6 +7439,7 @@ function closeFilePreview(options = {}) {
     activeFilePreviewObjectUrl = '';
     musicPlayer.previewControls = null;
     setFilePreviewFullscreenButton(false);
+    setFilePreviewLightShareButton(false);
     setFilePreviewMusicButton(false);
     viewer.classList.remove('active');
     filePreviewPointerStart = null;
@@ -9597,6 +9917,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     activeFilePreviewStoredFile = null;
     activeFilePreviewObjectUrl = '';
     setFilePreviewFullscreenButton(false);
+    setFilePreviewLightShareButton(true);
     setFilePreviewMusicButton(false);
 
     setFilePreviewTitle(fileInfo.name);
@@ -10470,6 +10791,7 @@ async function downloadCollectionFiles(files, collectionMessageId = '') {
 
 async function openCollectionRecord(messageId, options = {}) {
     setFilePreviewFullscreenButton(false);
+    setFilePreviewLightShareButton(false);
     activeFilePreviewCanFullscreen = false;
     activeFilePreviewMediaType = '';
     const message = await getFromStore('messages', messageId);
@@ -15143,6 +15465,28 @@ function initUI() {
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape') closeShortCodeSwitchMenu();
     });
+    document.getElementById('connectionHeaderMenuBtn')?.addEventListener('click', event => {
+        event.stopPropagation();
+        const menu = document.getElementById('connectionHeaderMenu');
+        if (menu) menu.hidden = !menu.hidden;
+    });
+    document.getElementById('scanTunnelCodeBtn')?.addEventListener('click', () => {
+        const menu = document.getElementById('connectionHeaderMenu');
+        if (menu) menu.hidden = true;
+        openTunnelCodeScanner().catch(err => alert(`无法扫描隧道码：${err.message}`));
+    });
+    document.getElementById('receiveLightBtn')?.addEventListener('click', () => {
+        const menu = document.getElementById('connectionHeaderMenu');
+        if (menu) menu.hidden = true;
+        getLightTransferApi()?.openReceiver().catch(err => alert(`无法开始光媒接收：${err.message}`));
+    });
+    document.addEventListener('click', event => {
+        if (!event.target.closest?.('.connection-header-menu-wrap')) {
+            const menu = document.getElementById('connectionHeaderMenu');
+            if (menu) menu.hidden = true;
+        }
+    });
+    configureLightTransfer();
     document.getElementById('joinShortCodeBtn').addEventListener('click', joinByShortCode);
     document.getElementById('shortCodeInput').addEventListener('keydown', event => {
         if (event.key === 'Enter') joinByShortCode();
@@ -15255,6 +15599,12 @@ function initUI() {
         await downloadFileFromMessage(activeFileDetailsMessageId);
     });
     document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
+    document.getElementById('filePreviewLightShareBtn')?.addEventListener('click', () => {
+        shareCurrentPreviewViaLight().catch(err => {
+            alert(`光媒分享失败：${err.message}`);
+            historyLog('light-share-preview-failed', { fileId: activeFilePreviewFileId, error: err.message });
+        });
+    });
     document.getElementById('filePreviewFullscreenBtn')?.addEventListener('click', () => {
         openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
     });
