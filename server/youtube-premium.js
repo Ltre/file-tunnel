@@ -6,6 +6,20 @@ const path = require('path');
 
 const RUNNING_STATUSES = new Set(['queued', 'parsing', 'downloading', 'merging', 'metadata']);
 
+function extractYoutubeMetadataYear(value) {
+    const text = String(value || '').trim();
+    const compactDate = text.match(/^((?:19|20)\d{2})(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/);
+    if (compactDate) return compactDate[1];
+    return text.match(/(?:^|\D)((?:19|20)\d{2})(?=$|\D)/)?.[1] || '';
+}
+
+function resolveYoutubePremiumMediaType(detectedMediaType, selection, forceMusic = false) {
+    if (forceMusic === true) return 'song';
+    const selectedFormats = Array.isArray(selection?.formats) ? selection.formats : [];
+    if (selectedFormats.some(format => format?.kind === 'video' || format?.kind === 'video_audio')) return 'video';
+    return detectedMediaType === 'song' ? 'song' : 'video';
+}
+
 function normalizeYtDlpFormats(formats = []) {
     return (Array.isArray(formats) ? formats : []).flatMap(format => {
         const id = String(format?.format_id || '').trim();
@@ -430,9 +444,11 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
 
 module.exports = {
     createYoutubePremiumService,
+    extractYoutubeMetadataYear,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
     normalizeYtDlpFormats,
+    resolveYoutubePremiumMediaType,
     validateFormatSelection
 };

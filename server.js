@@ -19,10 +19,12 @@ const { createAdminAuth } = require('./server/admin-auth');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
 const {
     createYoutubePremiumService,
+    extractYoutubeMetadataYear,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
     normalizeYtDlpFormats,
+    resolveYoutubePremiumMediaType,
     validateFormatSelection
 } = require('./server/youtube-premium');
 
@@ -999,7 +1001,8 @@ app.get('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
             const meta = await runYtDlpJson(task.url, {
                 noPlaylist: true,
                 cookiePath: requireYoutubePremiumCookies(),
-                allowIgnoreNoFormatsFallback: false
+                allowIgnoreNoFormatsFallback: false,
+                bypassCache: forceRefresh
             });
             referenceInfo = buildYoutubeReferenceInfo(meta, task.url);
         }
@@ -2546,7 +2549,7 @@ function normalizeArtistValue(meta = {}) {
 }
 
 function extractMediaYear(value) {
-    return String(value || '').match(/\b(19|20)\d{2}\b/)?.[0] || '';
+    return extractYoutubeMetadataYear(value);
 }
 
 function extractUploadYear(meta = {}) {
@@ -2704,9 +2707,17 @@ function runYtDlpJson(url, options = {}) {
     return new Promise((resolve, reject) => {
         const args = [
             '--dump-single-json',
-            '--skip-download',
-            '--cache-dir', YT_DLP_CACHE_DIR,
+            '--skip-download'
         ];
+        if (options.bypassCache === true) {
+            args.push(
+                '--no-cache-dir',
+                '--add-headers', 'Cache-Control:no-cache',
+                '--add-headers', 'Pragma:no-cache'
+            );
+        } else {
+            args.push('--cache-dir', YT_DLP_CACHE_DIR);
+        }
         if (options.ignoreNoFormats === true) args.push('--ignore-no-formats-error');
         if (options.flatPlaylist === true) args.push('--flat-playlist');
         args.push(options.noPlaylist === false ? '--yes-playlist' : '--no-playlist');
@@ -4224,9 +4235,9 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         allowIgnoreNoFormatsFallback: false,
         signal: options.signal
     });
-    const mediaType = options.forceMusic === true ? 'song' : classifySnsMedia(url, baseMeta);
-    if (mediaType === 'unsupported') throw new Error('youtube-playlist-not-supported');
-    const defaultSelector = mediaType === 'song' ? getYtDlpAudioFormatSelector() : getYtDlpFormatSelector(url);
+    const detectedMediaType = options.forceMusic === true ? 'song' : classifySnsMedia(url, baseMeta);
+    if (detectedMediaType === 'unsupported') throw new Error('youtube-playlist-not-supported');
+    const defaultSelector = detectedMediaType === 'song' ? getYtDlpAudioFormatSelector() : getYtDlpFormatSelector(url);
     const selectedMeta = await runYtDlpJson(url, {
         noPlaylist: true,
         cookiePath,
@@ -4246,11 +4257,12 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         ? options.selectedFormatIds
         : (options.forceMusic === true
             ? [preferredMusicFormat?.id].filter(Boolean)
-            : (mediaType === 'video' && preferredVideoFormat && preferredVideoAudio
+            : (detectedMediaType === 'video' && preferredVideoFormat && preferredVideoAudio
                 ? [preferredVideoFormat.id, preferredVideoAudio.id]
                 : automaticIds));
     if (options.forceMusic === true && !requestedIds.length) throw new Error('youtube-premium-audio-format-missing');
-    const selection = validateFormatSelection(formats, requestedIds, mediaType, options.forceMusic === true);
+    const selection = validateFormatSelection(formats, requestedIds, detectedMediaType, options.forceMusic === true);
+    const mediaType = resolveYoutubePremiumMediaType(detectedMediaType, selection, options.forceMusic === true);
     const artist = normalizeArtistValue(baseMeta);
     const track = String(baseMeta.track || baseMeta.title || baseMeta.fulltitle || '').trim();
     const fallbackArtist = artist || String(baseMeta.creator || baseMeta.channel || baseMeta.uploader || baseMeta.uploader_id || 'YouTube').trim();

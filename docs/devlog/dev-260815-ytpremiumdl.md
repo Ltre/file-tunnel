@@ -338,3 +338,11 @@
 - YouTube 上传年份兼容 `upload_date` 以及秒/毫秒 Unix 时间戳；强制以音乐形式下载非歌曲视频时，继续按“专辑年份、歌曲年份、上传年份”依次回退。
 - `yt-dlp -F` 分析结果按去除会话及跟踪参数后的 YouTube URL 持久化到服务端，刷新页面后仍可复用；只有点击“重新解析”才强制覆盖缓存。
 - 页面参考信息从任务级缓存提升为规范化 YouTube URL 级永久缓存；元信息浮层增加“重新采集”按钮，管理员可显式刷新并覆盖同 URL 的参考信息。
+
+## 十四、参考信息强制重采集、年份补全与任务类型纠正
+
+- “编辑歌曲元信息”中的“重新采集”继续绕过 URL 级参考信息缓存和任务级参考信息缓存，并在本次 `yt-dlp` 元数据请求中显式使用 `--no-cache-dir`，同时发送 `Cache-Control: no-cache` 与 `Pragma: no-cache`，确保该操作真正重新发起 YouTube 元数据抓取；正常打开浮层和普通格式解析仍保留原有服务端缓存策略。
+- 年份解析补充兼容 `yt-dlp` 常见的紧凑日期 `YYYYMMDD`，例如 `upload_date=20250816` 会得到 `2025`。音乐元信息的 `date` 继续严格按“专辑年份 → 歌曲年份 → 上传年份”回退，普通日期字符串和 Unix 时间戳回退逻辑保持不变。
+- Premium 任务的最终类型不再只继承 YouTube 页面本身的歌曲/视频分类。未勾选“以音乐形式下载”时，如果自定义格式实际包含纯视频轨或音视频混合轨，则任务类型按“视频”保存；因此音乐类型链接仅选择例如 `160` 纯视频轨时会正确显示“视频”。显式勾选“以音乐形式下载”仍强制按音乐任务处理。
+- 新增回归覆盖：`YYYYMMDD` 年份提取、音乐来源选择 `160` 纯视频轨时的任务类型、视频+音频组合类型，以及强制音乐模式优先级。
+- 本轮执行 `node --check server.js`、`node --check server/youtube-premium.js`、`npm run test:youtube-premium`（11 项通过）、`npm run test:p2p:unit`（38 项通过），并完成 `npm run deploy:build -- --profile txsl` 与 `npm run deploy:verify -- --profile txsl`；未执行真实 YouTube 下载，也未读取或修改 `.tunnel-data` 中的私人 Cookie。

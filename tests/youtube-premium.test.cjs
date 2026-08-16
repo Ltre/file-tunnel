@@ -9,10 +9,12 @@ const { pipeline } = require('node:stream/promises');
 
 const {
     createYoutubePremiumService,
+    extractYoutubeMetadataYear,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
     normalizeYtDlpFormats,
+    resolveYoutubePremiumMediaType,
     validateFormatSelection
 } = require('../server/youtube-premium');
 
@@ -101,6 +103,27 @@ test('Premium video default descends by short-edge tier with AV1, VP9, AVC codec
     assert.equal(getPreferredPremiumVideoFormat(without('400', '701', '264', '248', '137', '247')).id, '136');
     assert.equal(getPreferredPremiumVideoFormat(formats.filter(format => format.id === '401')), null);
     assert.equal(validateFormatSelection(formats, ['401'], 'video').formats[0].id, '401');
+});
+
+test('YouTube compact upload dates expose their four-digit year', () => {
+    assert.equal(extractYoutubeMetadataYear('20250816'), '2025');
+    assert.equal(extractYoutubeMetadataYear('2025-08-16'), '2025');
+    assert.equal(extractYoutubeMetadataYear(2025), '2025');
+    assert.equal(extractYoutubeMetadataYear('1760000000'), '');
+});
+
+test('custom video tracks override a detected music source unless music mode is forced', () => {
+    const formats = normalizeYtDlpFormats([
+        { format_id: '160', ext: 'mp4', width: 144, height: 144, vcodec: 'avc1.4d400b', acodec: 'none' },
+        { format_id: '140', ext: 'm4a', vcodec: 'none', acodec: 'mp4a.40.2', abr: 129 }
+    ]);
+    const videoOnly = validateFormatSelection(formats, ['160'], 'song');
+    const videoAndAudio = validateFormatSelection(formats, ['160', '140'], 'song');
+    const audioOnly = validateFormatSelection(formats, ['140'], 'song');
+    assert.equal(resolveYoutubePremiumMediaType('song', videoOnly, false), 'video');
+    assert.equal(resolveYoutubePremiumMediaType('song', videoAndAudio, false), 'video');
+    assert.equal(resolveYoutubePremiumMediaType('song', audioOnly, false), 'song');
+    assert.equal(resolveYoutubePremiumMediaType('video', audioOnly, true), 'song');
 });
 
 test('custom format validation accepts only useful music and video combinations', () => {
@@ -326,6 +349,10 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(server, /youtube-premium-metadata-cache\.json/);
     assert.match(server, /req\.body\?\.refresh === true/);
     assert.match(server, /extractUploadYear/);
+    assert.match(server, /bypassCache: forceRefresh/);
+    assert.match(server, /--no-cache-dir/);
+    assert.match(server, /Cache-Control:no-cache/);
+    assert.match(server, /resolveYoutubePremiumMediaType/);
     assert.match(server, /\/api\/youtube-premium\/tasks\/:taskId\/song-metadata/);
     assert.match(service, /referenceInfo/);
     assert.match(service, /task\.coverPath \|\| \(task\.cover[\s\S]*`\/api\/youtube-premium\/tasks/);
