@@ -644,6 +644,7 @@ async function startTunnelApplication() {
     initAssetPresenceRefresh();
     ensureHomeHistoryGuard();
     handlePendingRecordNavigation().catch(err => historyLog('record-deep-link-failed', { error: err.message }));
+    handlePendingDeviceCallOrIntercom().catch(err => historyLog('device-call-deep-link-failed', { error: err.message }));
 }
 
 function registerServiceWorker() {
@@ -1452,6 +1453,11 @@ function getLightNetworkProviderUrl(taskId, providerDeviceId) {
     return `${location.origin}/api/light-transfer/network/${encodeURIComponent(taskId)}?provider=${encodeURIComponent(providerDeviceId)}`;
 }
 
+function getLightReportUrl(taskId, providerDeviceId) {
+    if (!taskId || !providerDeviceId) return '';
+    return `${location.origin}/api/light-transfer/report/${encodeURIComponent(taskId)}?provider=${encodeURIComponent(providerDeviceId)}`;
+}
+
 async function shareHistoryMessageViaLight(messageId) {
     const api = getLightTransferApi();
     if (!api) throw new Error('光媒模块未加载');
@@ -1599,7 +1605,9 @@ function configureLightTransfer() {
     if (!api) return;
     api.configure({
         getDeviceId: () => state.deviceId || '',
+        getDeviceName: () => state.deviceName || '',
         getNetworkUrl: (taskId, providerDeviceId) => getLightNetworkProviderUrl(taskId, providerDeviceId || state.deviceId),
+        getReportUrl: (taskId, providerDeviceId) => getLightReportUrl(taskId, providerDeviceId || state.deviceId),
         toast: message => showAppToast(message),
         finalizeTask: finalizeReceivedLightTransfer
     });
@@ -1632,7 +1640,20 @@ function applyScannedTunnelCode(rawValue) {
         const url = new URL(raw, location.origin);
         if (url.origin === location.origin && (url.hash || url.searchParams.get('code') || url.searchParams.get('shortCode'))) {
             closeTunnelCodeScanner();
+            const newHash = url.hash;
+            const currentHash = window.location.hash;
+            // If only the hash differs (same path + no new query params), a plain
+            // location.assign() would just update the URL bar without reloading —
+            // the app's DOMContentLoaded listener only fires once on initial load
+            // and there is no hashchange listener that re-initialises the session.
+            // Force a full page reload so the new tunnel session takes effect.
+            if (newHash && newHash !== currentHash && url.pathname === window.location.pathname && !url.search) {
+                location.hash = newHash;
+                location.reload();
+                return true;
+            }
             location.assign(url.href);
+            location.reload();
             return true;
         }
     } catch (_) {}
@@ -14486,6 +14507,44 @@ async function handlePendingRecordNavigation() {
     state.pendingRecordId = '';
     if (state.pendingRecordDetails) {
         await showTransferRecordDetails(messageId);
+    }
+}
+
+async function handlePendingDeviceCallOrIntercom() {
+    const params = new URLSearchParams(window.location.search);
+    const callDeviceId = params.get('call');
+    const intercomDeviceId = params.get('intercom');
+    if (!callDeviceId && !intercomDeviceId) return;
+
+    // Wait for socket to connect and device list to settle
+    const deadline = Date.now() + 15000;
+    while ((!state.socket?.connected || state.devices.size === 0) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    if (!state.socket?.connected) {
+        showAppToast('网络连接未就绪，无法发起通话');
+        return;
+    }
+
+    if (callDeviceId) {
+        const name = params.get('callName') || `设备-${callDeviceId.slice(-4)}`;
+        const contact = state.contacts.get(callDeviceId) || { deviceId: callDeviceId, deviceName: name };
+        try {
+            await mediaController.startContactCall(contact);
+        } catch (err) {
+            showAppToast(`无法发起语音通话: ${err.message}`);
+            historyLog('device-call-start-failed', { contactDeviceId: callDeviceId, error: err.message });
+        }
+        return;
+    }
+
+    if (intercomDeviceId) {
+        try {
+            await mediaController.startIntercom([intercomDeviceId]);
+        } catch (err) {
+            showAppToast(`无法发起对讲机: ${err.message}`);
+            historyLog('device-intercom-start-failed', { contactDeviceId: intercomDeviceId, error: err.message });
+        }
     }
 }
 

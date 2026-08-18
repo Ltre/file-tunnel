@@ -636,8 +636,22 @@ function acceptIncomingInvite(invite) {
                 prompt('复制设备链接', link);
             }
         };
-        document.getElementById('profileVoiceBtn').onclick = () => alert('语音通话请先在功能首页关注设备后发起。');
-        document.getElementById('profileIntercomBtn').onclick = () => alert('对讲机请先在功能首页关注设备后发起。');
+        document.getElementById('profileVoiceBtn').onclick = () => {
+            const origin = window.location.origin;
+            const selfId = getSelfDeviceId();
+            const sessionId = getDirectTunnelSessionId(device.deviceId);
+            const link = `${origin}/?open=1&from=${encodeURIComponent(selfId)}&call=${encodeURIComponent(device.deviceId)}&callName=${encodeURIComponent(device.deviceName || '对方设备')}#${sessionId}`;
+            showToast('正在跳转到功能首页发起语音通话...', 'info');
+            setTimeout(() => { window.location.href = link; }, 400);
+        };
+        document.getElementById('profileIntercomBtn').onclick = () => {
+            const origin = window.location.origin;
+            const selfId = getSelfDeviceId();
+            const sessionId = getDirectTunnelSessionId(device.deviceId);
+            const link = `${origin}/?open=1&from=${encodeURIComponent(selfId)}&intercom=${encodeURIComponent(device.deviceId)}&intercomName=${encodeURIComponent(device.deviceName || '对方设备')}#${sessionId}`;
+            showToast('正在跳转到功能首页发起对讲机...', 'info');
+            setTimeout(() => { window.location.href = link; }, 400);
+        };
         document.getElementById('profileOpenCameraBtn').onclick = () => {
             try { getCameraBridge()?.openRemoteCamera(device.deviceId, device.deviceName || '对方设备'); }
             catch (error) { showToast(error.message); }

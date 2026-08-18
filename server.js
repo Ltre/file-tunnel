@@ -178,12 +178,18 @@ function normalizeTelegramBotConfig(config = {}) {
     const webhookSecret = sanitizeString(config.webhookSecret || '', 160);
     const maxFileSize = Math.max(1, Number(config.maxFileSize || 500 * 1024 * 1024));
     const backupChatId = sanitizeString(config.backupChatId || '', 120);
+    const songShareChannels = {
+        base: sanitizeString(config.songShareChannels?.base || '', 120),
+        pro: sanitizeString(config.songShareChannels?.pro || '', 120),
+        ultimate: sanitizeString(config.songShareChannels?.ultimate || '', 120)
+    };
     return {
         enabled: Boolean(token),
         token,
         webhookSecret,
         maxFileSize,
-        backupChatId
+        backupChatId,
+        songShareChannels
     };
 }
 
@@ -802,6 +808,61 @@ app.post('/api/light-transfer/network/:taskId', async (req, res) => {
     lightNetworkPendingRequests.set(requestId, { providerDeviceId, taskId, timer, finish });
 });
 
+// ---- Download status report endpoint ----
+// Receivers POST their progress here; the sender polls GET to see who's downloading
+app.post('/api/light-transfer/report/:taskId', async (req, res) => {
+    const taskId = String(req.params.taskId || '').trim().toLowerCase();
+    const providerDeviceId = String(req.query.provider || '').trim();
+    const body = req.body || {};
+    const receiverId = String(body.receiverId || '').trim().slice(0, 64);
+    if (!/^[a-f0-9]{64}$/.test(taskId) || !receiverId) {
+        return res.status(400).json({ error: 'invalid-report-request' });
+    }
+    const now = Date.now();
+    let reportMap = lightDownloadReports.get(taskId);
+    if (!reportMap) { reportMap = new Map(); lightDownloadReports.set(taskId, reportMap); }
+    // Purge stale entries
+    for (const [id, entry] of reportMap) {
+        if (now - entry.updatedAt > LIGHT_REPORT_TTL) reportMap.delete(id);
+    }
+    reportMap.set(receiverId, {
+        receiverId,
+        receiverName: String(body.receiverName || '').slice(0, 80),
+        received: Number(body.received) || 0,
+        blockCount: Number(body.blockCount) || 0,
+        percent: Number(body.percent) || 0,
+        receivedBytes: Number(body.receivedBytes) || 0,
+        totalSize: Number(body.totalSize) || 0,
+        status: String(body.status || 'receiving').slice(0, 20),
+        updatedAt: now
+    });
+    // If status is terminal, schedule cleanup
+    if (['completed', 'closed'].includes(String(body.status))) {
+        setTimeout(() => {
+            const m = lightDownloadReports.get(taskId);
+            if (m) { m.delete(receiverId); if (!m.size) lightDownloadReports.delete(taskId); }
+        }, 5000);
+    }
+    res.json({ ok: true });
+});
+
+app.get('/api/light-transfer/report/:taskId', async (req, res) => {
+    const taskId = String(req.params.taskId || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(taskId)) {
+        return res.status(400).json({ error: 'invalid-task-id' });
+    }
+    const now = Date.now();
+    const reportMap = lightDownloadReports.get(taskId);
+    const downloaders = [];
+    if (reportMap) {
+        for (const [id, entry] of reportMap) {
+            if (now - entry.updatedAt > LIGHT_REPORT_TTL) { reportMap.delete(id); continue; }
+            downloaders.push(entry);
+        }
+    }
+    res.json({ taskId, downloaders });
+});
+
 app.get(['/light-file-parts', '/light-file-parts.html'], (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.sendFile(path.join(__dirname, 'pages', 'light-file-parts.html'));
@@ -1208,7 +1269,8 @@ app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
         webhookSecretConfigured: Boolean(config.webhookSecret),
         webhookSecretPreview: config.webhookSecret ? `${config.webhookSecret.slice(0, 6)}...${config.webhookSecret.slice(-4)}` : '',
         maxFileSize: config.maxFileSize,
-        backupChatId: config.backupChatId || ''
+        backupChatId: config.backupChatId || '',
+        songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' }
     });
 });
 
@@ -1223,7 +1285,12 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             token: finalToken,
             webhookSecret,
             maxFileSize: req.body?.maxFileSize || 500 * 1024 * 1024,
-            backupChatId: req.body?.backupChatId ?? currentConfig.backupChatId
+            backupChatId: req.body?.backupChatId ?? currentConfig.backupChatId,
+            songShareChannels: {
+                base: req.body?.songShareChannels?.base ?? currentConfig.songShareChannels?.base ?? '',
+                pro: req.body?.songShareChannels?.pro ?? currentConfig.songShareChannels?.pro ?? '',
+                ultimate: req.body?.songShareChannels?.ultimate ?? currentConfig.songShareChannels?.ultimate ?? ''
+            }
         });
         let webhookRegistered = false;
         if (nextConfig.enabled) {
@@ -1268,11 +1335,198 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             tokenConfigured: Boolean(config.token),
             webhookSecretConfigured: Boolean(config.webhookSecret),
             maxFileSize: config.maxFileSize,
-            webhookRegistered
+            webhookRegistered,
+            songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' }
         });
     } catch (err) {
         console.error('save telegram config error:', err);
         res.status(500).json({ ok: false, error: 'save-telegram-config-failed' });
+    }
+});
+
+// ---- Telegram song share: send song file + captioned records to Base/Pro/Ultimate channels ----
+function resolveTelegramChatId(input) {
+    const value = String(input || '').trim();
+    if (!value) return '';
+    // @username format
+    if (/^@[A-Za-z0-9_]{3,64}$/.test(value)) return value;
+    // t.me/username format
+    const match = value.match(/(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{3,64})/);
+    if (match) return `@${match[1]}`;
+    // numeric chat ID (e.g. -1001234567890)
+    if (/^-?\d{5,20}$/.test(value)) return value;
+    return value;
+}
+
+app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => {
+    if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
+    const config = loadTelegramBotConfig();
+    const channels = config.songShareChannels || {};
+    const body = req.body || {};
+
+    // Resolve channel targets
+    const baseChat = resolveTelegramChatId(body.baseChannel || channels.base);
+    const proChat = body.proChannel ? resolveTelegramChatId(body.proChannel) : resolveTelegramChatId(channels.pro);
+    const ultimateChat = body.ultimateChannel ? resolveTelegramChatId(body.ultimateChannel) : resolveTelegramChatId(channels.ultimate);
+
+    if (!baseChat) return res.status(400).json({ error: 'base-channel-not-configured' });
+    const sendPro = Boolean(body.sendPro);
+    const sendUltimate = Boolean(body.sendUltimate);
+    if (sendUltimate && !sendPro) return res.status(400).json({ error: 'ultimate-requires-pro' });
+    if (sendUltimate && !ultimateChat) return res.status(400).json({ error: 'ultimate-channel-not-configured' });
+    if (sendPro && !proChat) return res.status(400).json({ error: 'pro-channel-not-configured' });
+
+    // Ultimate mode: 'formal' (图文记录) or 'trial' (入选试行)
+    const ultimateMode = body.ultimateMode === 'trial' ? 'trial' : 'formal';
+
+    // Caption text: "艺术家 - 歌曲名"
+    const captionBase = String(body.captionBase || '').trim().slice(0, 200) || '未知 - 未知';
+    const captionPro = String(body.captionPro || '').trim().slice(0, 200) || captionBase;
+    const captionUltimate = String(body.captionUltimate || '').trim().slice(0, 200) || captionBase;
+
+    // Cover image (base64 data URL, 'original' for task default cover, or empty for square default)
+    const coverBase = String(body.coverBase || '').trim();
+    const coverPro = String(body.coverPro || '').trim() || coverBase;
+    const coverUltimate = String(body.coverUltimate || '').trim() || coverBase;
+
+    // Song file from YouTube Premium task
+    const taskId = String(body.taskId || '').trim();
+    if (!taskId) return res.status(400).json({ error: 'task-id-required' });
+
+    // Transaction log: [{ chatId, messageId }] — only messages we actually created
+    const createdMessages = [];
+    let completed = false;
+
+    async function rollback() {
+        // Delete in reverse order
+        for (let i = createdMessages.length - 1; i >= 0; i--) {
+            const { chatId, messageId } = createdMessages[i];
+            try {
+                await telegramApi('deleteMessage', { chat_id: chatId, message_id: messageId });
+            } catch (_) { /* best-effort */ }
+        }
+    }
+
+    async function sendPhotoWithCaption(chatId, photoData, caption, defaultCoverPath = '') {
+        // Send photo with caption via multipart form
+        const form = new FormData();
+        form.set('chat_id', chatId);
+        form.set('caption', caption);
+        const effectiveCover = (photoData === 'original' || !photoData) ? defaultCoverPath : photoData;
+        if (effectiveCover) {
+            if (effectiveCover.startsWith('data:')) {
+                // base64 data URL
+                const resp = await fetch(effectiveCover);
+                const blob = await resp.blob();
+                form.set('photo', blob, 'cover.jpg');
+            } else if (fs.existsSync(effectiveCover)) {
+                // file path
+                const buffer = await fs.promises.readFile(effectiveCover);
+                form.set('photo', new Blob([buffer]), 'cover.jpg');
+            }
+        }
+        const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendPhoto`, {
+            method: 'POST',
+            body: form
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.ok === false) throw new Error(result.description || `telegram-sendPhoto-failed`);
+        return result.result;
+    }
+
+    async function sendAudioFile(chatId, audioBlob, fileName, caption) {
+        const form = new FormData();
+        form.set('chat_id', chatId);
+        if (caption) form.set('caption', caption);
+        form.set('audio', audioBlob, fileName || 'song.m4a');
+        const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendAudio`, {
+            method: 'POST',
+            body: form
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || result.ok === false) throw new Error(result.description || `telegram-sendAudio-failed`);
+        return result.result;
+    }
+
+    function getMessageTmeLink(chatId, messageId) {
+        // For public channels, chatId is @username; link is t.me/username/msgId
+        if (typeof chatId === 'string' && chatId.startsWith('@')) {
+            return `https://t.me/${chatId.slice(1)}/${messageId}`;
+        }
+        // For private channels (numeric -100...), link is t.me/c/internalId/msgId
+        const match = String(chatId).match(/^-100(\d+)$/);
+        if (match) return `https://t.me/c/${match[1]}/${messageId}`;
+        return '';
+    }
+
+    try {
+        // Step 1: Get the song file from YouTube Premium task
+        const fileResult = youtubePremiumService.getFile(taskId, 'output');
+        if (!fileResult) return res.status(404).json({ error: 'song-file-not-found' });
+        const audioBlob = new Blob([await fs.promises.readFile(fileResult.path)]);
+        const fileName = fileResult.name || 'song.m4a';
+
+        // Also try to get the cover image path
+        const coverFileResult = youtubePremiumService.getFile(taskId, 'cover');
+        const defaultCoverPath = coverFileResult?.path || '';
+
+        // Step 2: Send song file to Base channel
+        const baseAudioMsg = await sendAudioFile(baseChat, audioBlob, fileName, '');
+        if (!baseAudioMsg?.message_id) throw new Error('base-audio-send-failed');
+        createdMessages.push({ chatId: baseChat, messageId: baseAudioMsg.message_id });
+        const baseAudioLink = getMessageTmeLink(baseChat, baseAudioMsg.message_id);
+
+        // Step 3: Send Tb (Base captioned record: cover + caption + baseAudioLink)
+        const tbCaption = `${captionBase}\n\n${baseAudioLink}`;
+        const tbMsg = await sendPhotoWithCaption(baseChat, coverBase, tbCaption, defaultCoverPath);
+        if (!tbMsg?.message_id) throw new Error('tb-send-failed');
+        createdMessages.push({ chatId: baseChat, messageId: tbMsg.message_id });
+        const tbLink = getMessageTmeLink(baseChat, tbMsg.message_id);
+
+        // Step 4: If Pro selected, send Tp (cover + caption + tbLink)
+        let tpLink = '';
+        if (sendPro) {
+            const tpCaption = `${captionPro}\n\n${tbLink}`;
+            const tpMsg = await sendPhotoWithCaption(proChat, coverPro, tpCaption, defaultCoverPath);
+            if (!tpMsg?.message_id) throw new Error('tp-send-failed');
+            createdMessages.push({ chatId: proChat, messageId: tpMsg.message_id });
+            tpLink = getMessageTmeLink(proChat, tpMsg.message_id);
+
+            // Step 5: If Ultimate selected
+            if (sendUltimate) {
+                if (ultimateMode === 'formal') {
+                    // Formal: cover + caption + tpLink
+                    const ultCaption = `${captionUltimate}\n\n${tpLink}`;
+                    const ultMsg = await sendPhotoWithCaption(ultimateChat, coverUltimate, ultCaption, defaultCoverPath);
+                    if (!ultMsg?.message_id) throw new Error('ultimate-formal-send-failed');
+                    createdMessages.push({ chatId: ultimateChat, messageId: ultMsg.message_id });
+                } else {
+                    // Trial: "入选试行：\n" + hyperlink[艺术家 - 歌曲名](tpLink)
+                    const trialCaption = `入选试行：\n${captionUltimate}`;
+                    const trialMsg = await telegramApi('sendMessage', {
+                        chat_id: ultimateChat,
+                        text: trialCaption,
+                        link_preview_options: { url: tpLink, is_disabled: false },
+                        disable_web_page_preview: false
+                    });
+                    if (!trialMsg?.message_id) throw new Error('ultimate-trial-send-failed');
+                    createdMessages.push({ chatId: ultimateChat, messageId: trialMsg.message_id });
+                }
+            }
+        }
+
+        completed = true;
+        res.json({
+            ok: true,
+            completed: true,
+            createdMessages: createdMessages.map(m => ({ chatId: m.chatId, messageId: m.messageId, link: getMessageTmeLink(m.chatId, m.messageId) }))
+        });
+    } catch (err) {
+        if (!completed) {
+            await rollback();
+        }
+        console.error('telegram song-share error:', err);
+        res.status(500).json({ ok: false, error: err.message || 'song-share-failed' });
     }
 });
 
@@ -1965,6 +2219,9 @@ function emitToDevice(deviceId, eventName, payload) {
 }
 
 const lightNetworkPendingRequests = new Map();
+// Download status reports: taskId → Map(receiverId → { ...report, updatedAt })
+const lightDownloadReports = new Map();
+const LIGHT_REPORT_TTL = 5 * 60 * 1000;
 const SHORT_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const MAX_MAGNETS = 1000;
 const MAX_MAGNET_FILE_ASSET_SIZE = 1024 * 1024 * 1024;

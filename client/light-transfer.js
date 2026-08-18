@@ -168,12 +168,64 @@
         return out;
     }
 
+    // ---- SHA-256 fallback for non-secure (HTTP) contexts ----
+    const _sha256K = new Uint32Array([
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    ]);
+    function _fallbackSha256(data) {
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        const len = bytes.length;
+        const bitLen = len * 8;
+        const paddedLen = Math.ceil((len + 9) / 64) * 64;
+        const msg = new Uint8Array(paddedLen);
+        msg.set(bytes);
+        msg[len] = 0x80;
+        // 64-bit big-endian length (we only handle <= 2^32 bits)
+        msg[paddedLen - 4] = (bitLen >>> 24) & 0xff;
+        msg[paddedLen - 3] = (bitLen >>> 16) & 0xff;
+        msg[paddedLen - 2] = (bitLen >>> 8) & 0xff;
+        msg[paddedLen - 1] = bitLen & 0xff;
+        let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+        const w = new Uint32Array(64);
+        for (let off = 0; off < paddedLen; off += 64) {
+            for (let i = 0; i < 16; i++) w[i] = (msg[off+i*4]<<24)|(msg[off+i*4+1]<<16)|(msg[off+i*4+2]<<8)|msg[off+i*4+3];
+            for (let i = 16; i < 64; i++) {
+                const s0 = (((w[i-15]>>>7)|(w[i-15]<<25))>>>0) ^ (((w[i-15]>>>18)|(w[i-15]<<14))>>>0) ^ (w[i-15]>>>3);
+                const s1 = (((w[i-2]>>>17)|(w[i-2]<<15))>>>0) ^ (((w[i-2]>>>19)|(w[i-2]<<13))>>>0) ^ (w[i-2]>>>10);
+                w[i] = (w[i-16]+s0+w[i-7]+s1) >>> 0;
+            }
+            let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+            for (let i = 0; i < 64; i++) {
+                const S1 = (((e>>>6)|(e<<26))>>>0) ^ (((e>>>11)|(e<<21))>>>0) ^ (((e>>>25)|(e<<7))>>>0);
+                const ch = (e & f) ^ (~e & g);
+                const t1 = (h + S1 + ch + _sha256K[i] + w[i]) >>> 0;
+                const S0 = (((a>>>2)|(a<<30))>>>0) ^ (((a>>>13)|(a<<19))>>>0) ^ (((a>>>22)|(a<<10))>>>0);
+                const maj = (a & b) ^ (a & c) ^ (b & c);
+                const t2 = (S0 + maj) >>> 0;
+                h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t2)>>>0;
+            }
+            h0=(h0+a)>>>0; h1=(h1+b)>>>0; h2=(h2+c)>>>0; h3=(h3+d)>>>0;
+            h4=(h4+e)>>>0; h5=(h5+f)>>>0; h6=(h6+g)>>>0; h7=(h7+h)>>>0;
+        }
+        return [h0,h1,h2,h3,h4,h5,h6,h7].map(v => v.toString(16).padStart(8,'0')).join('');
+    }
+
     async function sha256(bytes) {
         const buffer = bytes instanceof ArrayBuffer
             ? bytes
             : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        const digest = await crypto.subtle.digest('SHA-256', buffer);
-        return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        if (global.crypto?.subtle?.digest) {
+            const digest = await crypto.subtle.digest('SHA-256', buffer);
+            return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        }
+        return _fallbackSha256(buffer);
     }
 
     function stable(value) {
@@ -269,6 +321,7 @@
         for (let i = 0; i < encodedManifest.length; i += MANIFEST_PART_CHARS) parts.push(encodedManifest.slice(i, i + MANIFEST_PART_CHARS));
         const providerDeviceId = String(options.getDeviceId?.() || '');
         const networkUrl = options.getNetworkUrl?.(taskId, providerDeviceId) || '';
+        const reportUrl = options.getReportUrl?.(taskId, providerDeviceId) || '';
         const share = {
             taskId,
             manifest,
@@ -280,6 +333,7 @@
             providerDeviceId,
             networkUrl,
             networkEnabled: Boolean(networkUrl),
+            reportUrl,
             senderSalt: hashNumber(providerDeviceId || `${Math.random()}`),
             createdAt: Date.now()
         };
@@ -333,7 +387,8 @@
             n: share.manifest.files.length, q: share.manifest.title,
             ty: share.manifest.kind, si: share.manifest.tunnelId,
             mi: share.manifest.sourceMessageId,
-            nu: networkEnabled ? share.networkUrl : ''
+            nu: networkEnabled ? share.networkUrl : '',
+            ru: share.reportUrl || ''
         });
     }
 
@@ -407,6 +462,7 @@
                         <div class="light-info-item"><b>所属隧道</b><span>${escapeHtml(share.manifest.shortCode || share.manifest.tunnelId || '-')}</span></div>
                         <div class="light-info-item"><b>网络加速</b><span>${share.networkUrl ? '可选；接收端需主动勾选' : '当前不可用'}</span></div>
                     </div>
+                    <div class="light-info-item" data-light-downloaders><b>下载者</b><span>暂无接收端</span></div>
                 </div>
             </div>`;
         document.body.appendChild(layer);
@@ -447,19 +503,37 @@
                 label = `数据块 ${start + 1}–${Math.min(share.blockCount, start + count)}/${share.blockCount}`;
             }
             qr.replaceChildren();
-            try {
-                new global.QRCode(qr, {
-                    text: frame,
-                    width: mode.qrSize,
-                    height: mode.qrSize,
-                    colorDark: '#000000',
-                    colorLight: '#ffffff',
-                    correctLevel: global.QRCode.CorrectLevel?.[mode.level] ?? global.QRCode.CorrectLevel?.M
-                });
-                qr.style.padding = `${mode.quiet}px`;
-                status.textContent = `${mode.label} · ${mode.fps} fps · ${label}`;
-            } catch (error) {
-                status.textContent = `二维码帧生成失败：${error.message}`;
+            const qrLevels = ['L', 'M', 'Q', 'H'];
+            const baseLevel = global.QRCode.CorrectLevel?.[mode.level] ?? global.QRCode.CorrectLevel?.M;
+            const levelRank = qrLevels.indexOf(mode.level);
+            let rendered = false;
+            // Auto-degrade error correction if the frame is too large for the QR capacity
+            for (let levelDegradation = 0; levelDegradation <= levelRank; levelDegradation++) {
+                const tryLevel = qrLevels[levelRank - levelDegradation];
+                const correctLevel = global.QRCode.CorrectLevel?.[tryLevel] ?? baseLevel;
+                try {
+                    new global.QRCode(qr, {
+                        text: frame,
+                        width: mode.qrSize,
+                        height: mode.qrSize,
+                        colorDark: '#000000',
+                        colorLight: '#ffffff',
+                        correctLevel
+                    });
+                    qr.style.padding = `${mode.quiet}px`;
+                    const levelTag = levelDegradation > 0 ? ` [降级${tryLevel}]` : '';
+                    status.textContent = `${mode.label} · ${mode.fps} fps · ${label}${levelTag}`;
+                    rendered = true;
+                    break;
+                } catch (error) {
+                    // "code length overflow" or similar — try lower EC level
+                    if (levelDegradation < levelRank) continue;
+                    status.textContent = `二维码帧生成失败（已尝试最低纠错）：${error.message}`;
+                }
+            }
+            if (!rendered) {
+                // Even at lowest EC the frame is too large; skip silently and try next frame
+                status.textContent = `帧过长已跳过 · ${label} · 等待下一帧`;
             }
             frameNo++;
             clearTimeout(timer);
@@ -468,12 +542,31 @@
         const cleanup = () => {
             closed = true;
             clearTimeout(timer);
+            clearTimeout(downloaderPollTimer);
             closeLayer(layer);
             if (senderOptions.keepNetworkSource !== true) activeShares.delete(share.taskId);
         };
         layer.querySelector('[data-light-close]').addEventListener('click', cleanup);
         networkToggle.addEventListener('change', () => { share.networkEnabled = Boolean(networkToggle.checked && share.networkUrl); });
         modeSelect.addEventListener('change', () => { frameNo = 0; manifestFrameNo = 0; dataFrameNo = 0; render(); });
+        // Poll download status reports from receivers
+        let downloaderPollTimer = null;
+        const downloadersEl = layer.querySelector('[data-light-downloaders] span');
+        const pollDownloaders = async () => {
+            if (closed) return;
+            if (!share.reportUrl) { downloaderPollTimer = setTimeout(pollDownloaders, 4000); return; }
+            try {
+                const resp = await fetch(share.reportUrl, { cache: 'no-store' });
+                const data = await resp.json().catch(() => ({}));
+                const list = Array.isArray(data.downloaders) ? data.downloaders : [];
+                if (downloadersEl) {
+                    if (!list.length) downloadersEl.textContent = '暂无接收端';
+                    else downloadersEl.textContent = `${list.length} 个接收端：${list.map(d => `${d.receiverName || d.receiverId?.slice(0,8) || '?'} ${d.percent ?? 0}%`).join('，')}`;
+                }
+            } catch (_) { /* best-effort */ }
+            downloaderPollTimer = setTimeout(pollDownloaders, 3000);
+        };
+        pollDownloaders();
         render();
         return { taskId: share.taskId, close: cleanup, share };
     }
@@ -569,6 +662,7 @@
         if (!receiverState) return;
         stopCameraScanner();
         stopNetworkAcceleration('');
+        stopProgressReporting('closed');
         const layer = receiverState.layer;
         if (deleteState && receiverState.taskId) await deleteTaskData(receiverState.taskId);
         receiverState = null;
@@ -688,8 +782,10 @@
             task.blockCount ||= task.summary.blockCount;
             task.totalSize ||= task.summary.totalSize;
             if (frame.nu && !task.networkSources.includes(frame.nu)) task.networkSources.push(String(frame.nu));
+            if (frame.ru) task.reportUrl = String(frame.ru);
             task.lastSource = source;
             await saveTask(task);
+            startProgressReporting();
         } else if (frame.k === 'm') {
             if (!Array.isArray(task.manifestParts)) task.manifestParts = [];
             if (Number.isInteger(frame.i) && frame.i >= 0 && frame.i < Number(frame.c) && frame.p) {
@@ -947,6 +1043,7 @@
             await deleteTaskData(task.taskId);
             stopCameraScanner();
             stopNetworkAcceleration('');
+            stopProgressReporting('completed');
             setReceiverStatus('光媒数据已完整接收并通过整体/文件完整性校验，已生成正式隧道传输记录。');
             const panel = state.layer.querySelector('[data-light-preview]');
             panel.hidden = false;
@@ -1024,6 +1121,70 @@
         if (message) {
             const status = receiverState.layer.querySelector('[data-light-network-status]');
             if (status) status.textContent = message;
+        }
+    }
+
+    // ---- Download progress reporting (receiver → sender via server) ----
+    function startProgressReporting() {
+        if (!receiverState || receiverState.reportTimer) return;
+        const tick = async () => {
+            if (!receiverState) return;
+            const task = receiverState.task;
+            const url = task?.reportUrl;
+            if (!url) { receiverState.reportTimer = setTimeout(tick, 3000); return; }
+            const blockCount = Number(task?.blockCount || 0);
+            const received = receiverState.receivedSet.size;
+            const payload = {
+                taskId: task.taskId,
+                receiverId: String(options.getDeviceId?.() || 'anon'),
+                receiverName: String(options.getDeviceName?.() || ''),
+                received,
+                blockCount,
+                percent: blockCount ? Math.round(received / blockCount * 100) : 0,
+                receivedBytes: Number(task?.receivedBytes || 0),
+                totalSize: Number(task?.totalSize || 0),
+                status: receiverState.finalizing ? 'finalizing' : (received >= blockCount && blockCount > 0 ? 'completed' : 'receiving')
+            };
+            try {
+                await fetch(url, {
+                    method: 'POST',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    keepalive: true
+                });
+            } catch (_) { /* reporting is best-effort */ }
+            receiverState.reportTimer = setTimeout(tick, 2500);
+        };
+        tick();
+    }
+
+    function stopProgressReporting(finalStatus = '') {
+        if (!receiverState?.reportTimer) return;
+        clearTimeout(receiverState.reportTimer);
+        receiverState.reportTimer = null;
+        const task = receiverState?.task;
+        const url = task?.reportUrl;
+        if (url && finalStatus) {
+            const blockCount = Number(task?.blockCount || 0);
+            const received = receiverState.receivedSet.size;
+            fetch(url, {
+                method: 'POST',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    taskId: task.taskId,
+                    receiverId: String(options.getDeviceId?.() || 'anon'),
+                    receiverName: String(options.getDeviceName?.() || ''),
+                    received,
+                    blockCount,
+                    percent: blockCount ? Math.round(received / blockCount * 100) : 0,
+                    receivedBytes: Number(task?.receivedBytes || 0),
+                    totalSize: Number(task?.totalSize || 0),
+                    status: finalStatus
+                }),
+                keepalive: true
+            }).catch(() => {});
         }
     }
 

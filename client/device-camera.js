@@ -60,7 +60,11 @@
             this.pendingRequests.set(requestId, {
                 requestId, targetDeviceId, targetDeviceName, mode, initiated: true, createdAt: Date.now()
             });
-            this.emit('device-camera-request', {
+            this.toast(mode === 'open-remote' ? '已请求打开对方摄像头' : '已请求向对方共享摄像头');
+            // Emit asynchronously so that socket connection has a chance to be ready.
+            // The synchronous emit() can throw if the socket isn't connected yet on
+            // the very first click — which is why the first click appeared to do nothing.
+            this._safeEmit('device-camera-request', {
                 requestId,
                 from,
                 to: targetDeviceId,
@@ -68,8 +72,29 @@
                 senderName: this.getSelfDeviceName(),
                 createdAt: Date.now()
             });
-            this.toast(mode === 'open-remote' ? '已请求打开对方摄像头' : '已请求向对方共享摄像头');
             return requestId;
+        }
+
+        _safeEmit(event, payload) {
+            this.bindSocket();
+            const socket = this.getSocket();
+            if (!socket) {
+                this.toast('连接通道未就绪，请稍后重试');
+                return;
+            }
+            if (!socket.connected) {
+                // Queue the emit for when the socket reconnects
+                const once = () => {
+                    socket.off('connect', once);
+                    try { socket.emit(event, payload); }
+                    catch (err) { this.toast(`发送失败：${err.message}`); }
+                };
+                socket.on('connect', once);
+                this.toast('正在等待连接通道就绪…');
+                return;
+            }
+            try { socket.emit(event, payload); }
+            catch (err) { this.toast(`发送失败：${err.message}`); }
         }
 
         async handleRequest(data = {}) {
@@ -115,6 +140,11 @@
         async handleResponse(data = {}) {
             const pending = this.pendingRequests.get(data.requestId);
             if (!pending || data.to !== this.getSelfDeviceId()) return;
+            // Guard against duplicate / late responses — a response was already
+            // processed for this requestId, so ignore the stale one instead of
+            // showing a spurious "对方拒绝了摄像头请求" toast.
+            if (pending.responseProcessed) return;
+            pending.responseProcessed = true;
             if (data.accepted === false) {
                 this.pendingRequests.delete(data.requestId);
                 this.toast('对方拒绝了摄像头请求');

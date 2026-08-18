@@ -228,6 +228,64 @@
     </div>
 </dialog>
 
+<dialog id="tgShareDialog">
+    <div class="dialog-head"><strong>转发到 Telegram 频道</strong><button type="button" data-close-tg-share aria-label="关闭">×</button></div>
+    <div class="dialog-body" id="tgShareBody">
+        <div class="subtle" id="tgShareStatus">正在读取频道配置...</div>
+        <div id="tgShareForm" hidden>
+            <div style="margin-bottom:12px">
+                <strong>选择频道</strong>
+                <label class="music-option" style="margin-top:6px"><input type="checkbox" id="tgShareBase" checked disabled> Base 频道（必选）</label>
+                <label class="music-option"><input type="checkbox" id="tgSharePro"> Pro 频道</label>
+                <label class="music-option"><input type="checkbox" id="tgShareUltimate"> Ultimate 频道</label>
+            </div>
+            <div id="tgUltimateModeRow" hidden style="margin-bottom:12px">
+                <strong>Ultimate 发送形式</strong>
+                <div class="segmented" style="margin-top:6px">
+                    <label><input name="tgUltimateMode" type="radio" value="formal" checked><span>正式图文记录</span></label>
+                    <label><input name="tgUltimateMode" type="radio" value="trial"><span>入选试行</span></label>
+                </div>
+            </div>
+            <div id="tgCaptionSection" style="margin-bottom:12px">
+                <strong>文案（艺术家 - 歌曲名）</strong>
+                <label class="music-option" style="margin-top:6px"><input type="checkbox" id="tgCaptionUnified" checked> 全级别共用</label>
+                <div id="tgCaptionUnifiedRow" style="margin-top:4px">
+                    <input id="tgCaptionBase" type="text" maxlength="200" placeholder="艺术家 - 歌曲名" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit">
+                </div>
+                <div id="tgCaptionSplitRows" hidden style="margin-top:6px;display:grid;gap:8px">
+                    <div><label class="subtle">Base (Tb)</label><input id="tgCaptionBaseSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                    <div id="tgCaptionProSplitRow"><label class="subtle">Pro (Tp)</label><input id="tgCaptionProSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                    <div id="tgCaptionUltimateSplitRow"><label class="subtle">Ultimate</label><input id="tgCaptionUltimateSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                </div>
+            </div>
+            <div id="tgCoverSection" style="margin-bottom:12px">
+                <strong>封面图</strong>
+                <label class="music-option" style="margin-top:6px"><input type="checkbox" id="tgCoverUnified" checked> 全级别共用</label>
+                <div id="tgCoverUnifiedRow" style="margin-top:6px">
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <img id="tgCoverPreview" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#e5e9f0" alt="">
+                        <select id="tgCoverSource" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)">
+                            <option value="square">正方形裁剪封面</option>
+                            <option value="original">原尺寸封面</option>
+                            <option value="upload">自己上传...</option>
+                        </select>
+                        <input id="tgCoverUpload" type="file" accept="image/*" hidden>
+                    </div>
+                </div>
+                <div id="tgCoverSplitRows" hidden style="margin-top:6px;display:grid;gap:8px">
+                    <div><label class="subtle">Base 封面</label><select id="tgCoverBaseSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
+                    <div id="tgCoverProSplitRow"><label class="subtle">Pro 封面</label><select id="tgCoverProSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
+                    <div id="tgCoverUltimateSplitRow"><label class="subtle">Ultimate 封面</label><select id="tgCoverUltimateSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
+                </div>
+            </div>
+            <div class="dialog-actions">
+                <button type="button" data-close-tg-share>取消</button>
+                <button class="primary" id="tgShareConfirm" type="button">发送到 Telegram</button>
+            </div>
+        </div>
+    </div>
+</dialog>
+
 <script src="/client/cache-store.js"></script>
 <script src="/client/youtube-premium-cache.js"></script>
 <script>
@@ -258,6 +316,36 @@
     const forwardTarget = document.getElementById('forwardTarget');
     const forwardStatus = document.getElementById('forwardStatus');
     const forwardConfirm = document.getElementById('forwardConfirm');
+    const tgShareDialog = document.getElementById('tgShareDialog');
+    const tgShareStatus = document.getElementById('tgShareStatus');
+    const tgShareForm = document.getElementById('tgShareForm');
+    const tgShareConfirm = document.getElementById('tgShareConfirm');
+    const tgShareBase = document.getElementById('tgShareBase');
+    const tgSharePro = document.getElementById('tgSharePro');
+    const tgShareUltimate = document.getElementById('tgShareUltimate');
+    const tgUltimateModeRow = document.getElementById('tgUltimateModeRow');
+    const tgCaptionUnified = document.getElementById('tgCaptionUnified');
+    const tgCaptionUnifiedRow = document.getElementById('tgCaptionUnifiedRow');
+    const tgCaptionSplitRows = document.getElementById('tgCaptionSplitRows');
+    const tgCaptionBase = document.getElementById('tgCaptionBase');
+    const tgCaptionBaseSplit = document.getElementById('tgCaptionBaseSplit');
+    const tgCaptionProSplit = document.getElementById('tgCaptionProSplit');
+    const tgCaptionProSplitRow = document.getElementById('tgCaptionProSplitRow');
+    const tgCaptionUltimateSplit = document.getElementById('tgCaptionUltimateSplit');
+    const tgCaptionUltimateSplitRow = document.getElementById('tgCaptionUltimateSplitRow');
+    const tgCoverUnified = document.getElementById('tgCoverUnified');
+    const tgCoverUnifiedRow = document.getElementById('tgCoverUnifiedRow');
+    const tgCoverSplitRows = document.getElementById('tgCoverSplitRows');
+    const tgCoverPreview = document.getElementById('tgCoverPreview');
+    const tgCoverSource = document.getElementById('tgCoverSource');
+    const tgCoverUpload = document.getElementById('tgCoverUpload');
+    const tgCoverBaseSelect = document.getElementById('tgCoverBaseSelect');
+    const tgCoverProSelect = document.getElementById('tgCoverProSelect');
+    const tgCoverProSplitRow = document.getElementById('tgCoverProSplitRow');
+    const tgCoverUltimateSelect = document.getElementById('tgCoverUltimateSelect');
+    const tgCoverUltimateSplitRow = document.getElementById('tgCoverUltimateSplitRow');
+    let tgShareTask = null;
+    let tgUploadedCover = null;
     const tagDialog = document.getElementById('tagDialog');
     const currentTags = document.getElementById('currentTags');
     const tagInput = document.getElementById('tagInput');
@@ -785,6 +873,169 @@
         }
     }
 
+    async function showTelegramShare(task) {
+        tgShareTask = task;
+        tgUploadedCover = null;
+        tgShareStatus.textContent = '正在读取频道配置...';
+        tgShareForm.hidden = true;
+        tgShareDialog.showModal();
+        try {
+            const config = await api('/api/telegram/config');
+            const channels = config.songShareChannels || {};
+            if (!channels.base) {
+                tgShareStatus.textContent = '未配置 Base 频道，请先在 Telegram bot 配置页设置歌曲分享频道。';
+                return;
+            }
+            // Pre-fill caption from song metadata
+            const defaultCaption = task.songMetadataOverride
+                ? [task.songMetadataOverride.artist, task.songMetadataOverride.title].filter(Boolean).join(' - ')
+                : task.title || '';
+            tgCaptionBase.value = defaultCaption;
+            tgCaptionBaseSplit.value = defaultCaption;
+            tgCaptionProSplit.value = defaultCaption;
+            tgCaptionUltimateSplit.value = defaultCaption;
+            // Preview cover
+            if (task.cover) tgCoverPreview.src = task.cover;
+            // Reset form state
+            tgShareBase.checked = true;
+            tgSharePro.checked = false;
+            tgShareUltimate.checked = false;
+            tgUltimateModeRow.hidden = true;
+            tgCaptionUnified.checked = true;
+            tgCaptionUnifiedRow.hidden = false;
+            tgCaptionSplitRows.hidden = true;
+            tgCoverUnified.checked = true;
+            tgCoverUnifiedRow.hidden = false;
+            tgCoverSplitRows.hidden = true;
+            tgCoverSource.value = 'square';
+            tgShareStatus.textContent = '';
+            tgShareForm.hidden = false;
+        } catch (error) {
+            tgShareStatus.textContent = error.message;
+        }
+    }
+
+    function updateTgShareVisibility() {
+        const showUltimate = tgShareUltimate.checked;
+        const showPro = tgSharePro.checked;
+        tgUltimateModeRow.hidden = !showUltimate;
+        // If Ultimate selected but Pro not, force Pro on
+        if (showUltimate && !showPro) {
+            tgSharePro.checked = true;
+        }
+        // Caption split visibility
+        if (tgCaptionUnified.checked) {
+            tgCaptionUnifiedRow.hidden = false;
+            tgCaptionSplitRows.hidden = true;
+        } else {
+            tgCaptionUnifiedRow.hidden = true;
+            tgCaptionSplitRows.hidden = false;
+            tgCaptionProSplitRow.hidden = !showPro;
+            tgCaptionUltimateSplitRow.hidden = !showUltimate;
+        }
+        // Cover split visibility
+        if (tgCoverUnified.checked) {
+            tgCoverUnifiedRow.hidden = false;
+            tgCoverSplitRows.hidden = true;
+        } else {
+            tgCoverUnifiedRow.hidden = true;
+            tgCoverSplitRows.hidden = false;
+            tgCoverProSplitRow.hidden = !showPro;
+            tgCoverUltimateSplitRow.hidden = !showUltimate;
+        }
+    }
+
+    async function fileToDataUrl(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('文件读取失败'));
+            reader.readAsDataURL(file);
+        });
+    }
+
+    tgSharePro.addEventListener('change', updateTgShareVisibility);
+    tgShareUltimate.addEventListener('change', updateTgShareVisibility);
+    tgCaptionUnified.addEventListener('change', updateTgShareVisibility);
+    tgCoverUnified.addEventListener('change', updateTgShareVisibility);
+    tgCoverSource.addEventListener('change', () => {
+        if (tgCoverSource.value === 'upload') tgCoverUpload.click();
+    });
+    tgCoverUpload.addEventListener('change', async () => {
+        const file = tgCoverUpload.files?.[0];
+        if (!file) return;
+        tgUploadedCover = await fileToDataUrl(file);
+        tgCoverPreview.src = tgUploadedCover;
+        tgCoverSource.value = 'upload';
+    });
+    document.querySelectorAll('[data-close-tg-share]').forEach(button => button.addEventListener('click', () => tgShareDialog.close()));
+    tgShareDialog.addEventListener('click', event => { if (event.target === tgShareDialog) tgShareDialog.close(); });
+
+    tgShareConfirm.addEventListener('click', async () => {
+        if (!tgShareTask) return;
+        tgShareConfirm.disabled = true;
+        tgShareStatus.textContent = '正在发送到 Telegram...';
+        const sendPro = tgSharePro.checked;
+        const sendUltimate = tgShareUltimate.checked;
+        const ultimateMode = document.querySelector('input[name="tgUltimateMode"]:checked')?.value || 'formal';
+        // Build captions
+        let captionBase, captionPro, captionUltimate;
+        if (tgCaptionUnified.checked) {
+            captionBase = tgCaptionBase.value;
+            captionPro = captionBase;
+            captionUltimate = captionBase;
+        } else {
+            captionBase = tgCaptionBaseSplit.value;
+            captionPro = tgCaptionProSplit.value || captionBase;
+            captionUltimate = tgCaptionUltimateSplit.value || captionBase;
+        }
+        // Build covers
+        let coverBase, coverPro, coverUltimate;
+        if (tgCoverUnified.checked) {
+            const src = tgCoverSource.value;
+            if (src === 'upload' && tgUploadedCover) coverBase = tgUploadedCover;
+            else if (src === 'original') coverBase = 'original'; // server will use default cover path
+            else coverBase = ''; // square = default
+            coverPro = coverBase;
+            coverUltimate = coverBase;
+        } else {
+            function resolveCover(select) {
+                if (select.value === 'upload') return tgUploadedCover || '';
+                if (select.value === 'original') return 'original';
+                return '';
+            }
+            coverBase = resolveCover(tgCoverBaseSelect);
+            coverPro = resolveCover(tgCoverProSelect) || coverBase;
+            coverUltimate = resolveCover(tgCoverUltimateSelect) || coverBase;
+        }
+        try {
+            const result = await api('/api/telegram/song-share', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    taskId: tgShareTask.id,
+                    sendPro,
+                    sendUltimate,
+                    ultimateMode,
+                    captionBase,
+                    captionPro,
+                    captionUltimate,
+                    coverBase,
+                    coverPro,
+                    coverUltimate
+                })
+            });
+            tgShareStatus.textContent = `发送完成，共创建 ${result.createdMessages?.length || 0} 条消息。`;
+            notice.textContent = '已转发到 Telegram 频道。';
+            tgShareDialog.close();
+        } catch (error) {
+            tgShareStatus.textContent = `发送失败：${error.message}`;
+            if (error.message.includes('rollback')) tgShareStatus.textContent += '（已回滚删除已发送的消息）';
+        } finally {
+            tgShareConfirm.disabled = false;
+        }
+    });
+
     async function downloadOriginalThumbnail(task, button) {
         if (thumbnailDownloads.has(task.id)) return;
         thumbnailDownloads.add(task.id);
@@ -1181,6 +1432,11 @@
             editMetadata.textContent = '编辑歌曲元信息';
             editMetadata.addEventListener('click', () => showMetadataDialog(task));
             actions.appendChild(editMetadata);
+            const shareToTg = document.createElement('button');
+            shareToTg.type = 'button';
+            shareToTg.textContent = '转发到telegram频道';
+            shareToTg.addEventListener('click', () => showTelegramShare(task));
+            actions.appendChild(shareToTg);
         }
         if (running) {
             actions.appendChild(taskButton(task, '取消任务', '/cancel', 'POST', '', true));

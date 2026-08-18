@@ -687,3 +687,101 @@ package script：
 7. 两台设备跨 NAT 时摄像头 WebRTC 是否需要项目现有 TURN 配置进一步接入；当前 bridge 默认使用公共 STUN，信令本身已打通。
 8. YouTube 的源语言字段受 YouTube/yt-dlp 返回能力影响，需用日语、韩语、多语言显示歌曲各抽样验收；无法获取独立源语言版本时 UI 已明确回退。
 
+---
+
+## 7. 2608B 第二轮 Bugfix 与新功能（2026-08-17）
+
+本轮处理用户在灰度测试中反馈的 8 个 Bug 和 2 组新功能需求。
+
+### 7.1 Bug#3：光媒分享在 HTTP 环境报 `Cannot read properties of undefined (reading 'digest')`
+
+**根因**：`client/light-transfer.js` 中的 `sha256()` 直接调用 `crypto.subtle.digest()`。在非安全上下文（如 `http://10.0.0.11`）中，`crypto.subtle` 为 `undefined`。
+
+**修复**：在 `sha256()` 调用前检测 `global.crypto?.subtle?.digest` 是否可用；不可用时回退到纯 JS 实现的 SHA-256（`_fallbackSha256`），算法正确性等价于标准 SHA-256。
+
+文件：`client/light-transfer.js`
+
+### 7.2 Bug#7：光媒分享二维码 `code length overflow`
+
+**根因**：合辑数据较大时，manifest 分片或数据帧的 base64 payload 超过了 QR 码在当前纠错级别下的容量上限。QRCode 库抛出 "code length overflow" 异常。
+
+**修复**：在 QR 码渲染时实现自动降级策略——从当前模式指定的纠错级别开始（如 H），逐级尝试更低的级别（Q → M → L），直到成功或已到最低。若最低仍失败则跳过该帧（不阻塞后续帧）。状态栏显示降级标记。
+
+文件：`client/light-transfer.js`
+
+### 7.3 Bug#6：扫描隧道码后不自动切换隧道
+
+**根因**：`applyScannedTunnelCode()` 使用 `location.assign(url.href)` 切换隧道。当扫描到的 URL 与当前页面同源同路径仅 hash 不同时，`location.assign` 只更新地址栏不触发页面重新加载。`DOMContentLoaded` 监听器只在首次加载时执行 `initSession()`，不存在 `hashchange` 监听器重新初始化会话。
+
+**修复**：检测到仅 hash 变化时先设置 `location.hash` 再调用 `location.reload()` 强制重载。非纯 hash 变化的场景也统一添加 `location.reload()` 确保页面刷新。
+
+文件：`app.js`（`applyScannedTunnelCode()` 函数）
+
+### 7.4 Bug#2：设备页语音通话/对讲机误提示"请先在功能首页关注设备后发起"
+
+**根因**：`pages/device.html` 中的语音通话和对讲机按钮硬编码为 `alert('请先在功能首页关注设备后发起。')`，无论用户是否已关注都只弹提示。设备页是独立页面无 `mediaController`，无法直接发起通话。
+
+**修复**：按钮点击后构造 URL 跳转到功能首页（`/?open=1&from=...&call=DEVICE_ID#SESSION_ID` 或 `&intercom=DEVICE_ID`），首页 `startTunnelApplication` 完成后由 `handlePendingDeviceCallOrIntercom()` 读取 URL 参数自动发起对应操作。
+
+文件：`pages/device.html`、`app.js`
+
+### 7.5 Bug#8：摄像头共享第一次点击无反应/误报对方拒绝
+
+**根因 A**：`client/device-camera.js` 的 `beginRequest()` 同步调用 `this.emit()` 发送 `device-camera-request`。若 socket 尚未连接（首次点击常见），`emit()` 抛异常被 device.html 的 `try/catch` 静默吞掉——表现为第一次点击无反应。
+
+**修复 A**：`beginRequest()` 改为使用 `_safeEmit()`：先 toast 再异步发送。若 socket 未连接则注册 `once('connect')` 监听器等待连接就绪后发送。
+
+**根因 B**：`handleResponse()` 收到 `accepted === false` 时 toast "对方拒绝了"。但同一 requestId 的 `handleResponse` 可能被重复触发（网络重传、迟到消息），导致用户在对方实际已接受后仍看到拒绝提示。
+
+**修复 B**：在 `pendingRequests` 条目中增加 `responseProcessed` 标记，重复响应直接忽略。
+
+文件：`client/device-camera.js`
+
+### 7.6 Feature#1：光媒分享下载状态上报
+
+**需求**：分享者在发送端能看到有多少接收端在下载、各自进度如何。
+
+**实现**：
+- **协议扩展**：Summary 帧新增 `ru` 字段（report URL），指向服务端 `/api/light-transfer/report/:taskId`。
+- **接收端上报**：扫描到 Summary 帧后启动 `startProgressReporting()`，每 2.5 秒 POST 自己的 `receiverId`、`receiverName`、`received`、`blockCount`、`percent`、`status` 到 report URL。完成或关闭时发送终态上报。
+- **发送端轮询**：`openSender` 界面每 3 秒 GET report URL 获取下载者列表，在 info-panel 的"下载者"信息项中展示。
+- **服务端**：新增 POST/GET `/api/light-transfer/report/:taskId` 端点，内存存储 `Map<taskId, Map<receiverId, report>>`，5 分钟无更新自动清理。
+
+文件：`client/light-transfer.js`、`app.js`、`server.js`
+
+### 7.7 Feature#4：Telegram 频道歌曲分享配置
+
+**需求**：在 tgbot.html 后台配置页新增三个频道（Base/Pro/Ultimate）地址填写框。
+
+**实现**：
+- 服务端 `normalizeTelegramBotConfig` 新增 `songShareChannels: { base, pro, ultimate }` 字段。
+- GET/POST `/api/telegram/config` 读写 `songShareChannels`。
+- `pages/tgbot.html` 新增三个输入框：Base 频道、Pro 频道、Ultimate 频道。支持 `t.me/xxx` 或 `@username` 格式。
+
+文件：`server.js`、`pages/tgbot.html`
+
+### 7.8 Feature#5：YouTube Premium 转发到 Telegram 频道
+
+**需求**：音乐任务完成后可点击"转发到telegram频道"按钮，选择频道级别、编辑文案和封面，按 Base→Pro→Ultimate 引用链发送，失败时事务级回滚。
+
+**实现**：
+- **服务端**：新增 `POST /api/telegram/song-share` 端点：
+  - 读取 YouTube Premium 任务成品文件和封面
+  - 按引用链发送：Base 歌曲文件 → Base Tb 图文 → Pro Tp 图文 → Ultimate 正式/试行
+  - 每成功创建一条消息立即记录 `chat_id + message_id` 到事务清单
+  - 失败时逆序 `deleteMessage` 回滚事务清单中的消息
+  - 已完成成功后不再回滚
+- **前端**：`pages/youtube-premium-dl.html` 新增 `tgShareDialog` 浮层：
+  - 频道选择（Base 必选、Pro 可选、Ultimate 可选且需先选 Pro）
+  - Ultimate 二选一：正式图文记录 / 入选试行
+  - 文案默认从歌曲元数据提取，支持全级别共用或分级别自定义
+  - 封面默认正方形裁剪，可选原尺寸或自己上传（上传仅用于本次发布，不反向修改歌曲文件封面）
+  - 发送时显示进度，完成后展示创建的消息链接
+
+**事务安全保证**：
+- 只有 Telegram API 明确返回成功并拿到 `chat_id + message_id` 的消息才加入事务清单
+- 回滚只删除事务清单中的消息，绝不按标题/链接/歌曲名搜索删除
+- 全流程成功后关闭浮层、刷新页面均不触发回滚
+
+文件：`server.js`、`pages/youtube-premium-dl.html`
+
