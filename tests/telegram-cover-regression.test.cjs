@@ -45,3 +45,16 @@ test('Frontend only resolves covers for selected photo-producing levels', () => 
     assert.match(page, /const coverPro = sendPro \? await resolveTelegramShareCover\(tgCoverProSelect\) : '';/);
     assert.match(page, /const coverUltimate = sendUltimate && ultimateMode === 'formal'[\s\S]*\? await resolveTelegramShareCover\(tgCoverUltimateSelect\)[\s\S]*: '';/);
 });
+
+test('Telegram share caption defaults to public song metadata as artist - title', () => {
+    assert.match(page, /const songArtist = String\(task\.songMetadata\?\.artist \|\| ''\)\.trim\(\);/);
+    assert.match(page, /const songTitle = String\(task\.songMetadata\?\.title \|\| task\.title \|\| ''\)\.trim\(\);/);
+    assert.match(page, /const defaultCaption = `\$\{songArtist \|\| '未知艺术家'\} - \$\{songTitle \|\| '未知曲名'\}`;/);
+    assert.doesNotMatch(page, /task\.songMetadataOverride/);
+});
+
+test('Ultimate trial Telegram message disables link preview', () => {
+    assert.match(server, /link_preview_options:\s*\{\s*is_disabled:\s*true\s*\}/);
+    assert.match(server, /disable_web_page_preview:\s*true/);
+    assert.doesNotMatch(server, /link_preview_options:\s*\{[^}]*is_disabled:\s*false[^}]*\}/);
+});

@@ -1653,8 +1653,8 @@ async function runSongShareJob(job, params) {
                     const trialMsg = await telegramApi('sendMessage', {
                         chat_id: ultimateChat,
                         text: trialCaption,
-                        link_preview_options: { url: tpLink, is_disabled: false },
-                        disable_web_page_preview: false
+                        link_preview_options: { is_disabled: true },
+                        disable_web_page_preview: true
                     });
                     if (!trialMsg?.message_id) throw new Error('ultimate-trial-send-failed');
                     const ultLink = getMessageTmeLink(ultimateChat, trialMsg.message_id);

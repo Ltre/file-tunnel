@@ -1039,3 +1039,40 @@ package script：
 **补充构建校验说明**：
 - `deploy:build --profile txsl` 构建成功。
 - `deploy:verify --profile txsl` 在构建后的 `server.js` 第 52 行报 `Illegal return statement`。该问题与本轮修改无关：使用用户原始 ZIP 不做任何修改重新执行同样的 build/verify，可稳定复现完全相同的错误；来源是既有代理重拉引导代码中的顶层 `return` 与 `tools/deploy/verify.mjs` 的 `vm.Script` 检查方式不兼容。本轮未擅自修改该无关基线问题。
+
+### 7.15 Telegram 转发：Ultimate 入选试行关闭链接预览 + 默认文案修复
+
+**用户反馈**：
+1. Ultimate 频道选择“入选试行”发送形式时，Telegram 消息中的链接预览应关闭。
+2. YouTube Premium 音乐任务打开“转发到telegram频道”面板后，“文案（艺术家 - 歌曲名）”实际预填为单独“歌曲名”，没有按预期带上艺术家。
+
+**排查结论**：
+- `server.js` 的 Ultimate trial 分支明确设置了 `link_preview_options.is_disabled = false` 和 `disable_web_page_preview = false`，等于主动开启链接预览。
+- `pages/youtube-premium-dl.html` 的默认文案逻辑读取 `task.songMetadataOverride`；但 YouTube Premium 任务列表 API 对前端公开的是 `songMetadata`，并不公开 `songMetadataOverride`。因此该判断通常为 false，代码退回 `task.title`，而 `task.title` 通常只是歌曲名。
+
+**修改**：
+- `server.js`
+  - Ultimate“入选试行”调用 `sendMessage` 时改为 `link_preview_options: { is_disabled: true }`，同时保留兼容字段 `disable_web_page_preview: true`，确保 Telegram 不展开链接预览。
+- `pages/youtube-premium-dl.html`
+  - 转发面板默认文案改为直接读取任务公开字段 `task.songMetadata.artist` 与 `task.songMetadata.title`。
+  - 默认严格按 `艺术家 - 歌曲名` 格式生成；缺少字段时分别使用“未知艺术家”“未知曲名”兜底，避免再次退化成只有歌曲名。
+  - 用户在面板内对 Base / Pro / Ultimate 的独立编辑逻辑保持不变。
+- `tests/telegram-cover-regression.test.cjs`
+  - 增加默认文案必须由公开 `songMetadata` 生成 `artist - title` 的回归断言。
+  - 增加 Ultimate trial 必须关闭链接预览的回归断言。
+
+**验证**：
+- `node --check server.js`。
+- 抽取 `pages/youtube-premium-dl.html` 内联 JavaScript 后执行 `node --check`。
+- `node tests/telegram-cover-regression.test.cjs`。
+- `node tests/features-2608B.test.cjs`、`node tests/youtube-premium.test.cjs`、`node tests/p2p-connection-regression.test.cjs`。
+
+文件：`server.js`、`pages/youtube-premium-dl.html`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`
+
+**本次实际回归结果**：
+- `server.js` 语法检查：通过。
+- `pages/youtube-premium-dl.html` 内联 JavaScript 语法检查：通过。
+- Telegram 转发专项：7/7 通过。
+- 2608B 功能回归：8/8 通过。
+- YouTube Premium 专项：11/11 通过。
+- P2P 回归：38/38 通过。

@@ -894,10 +894,13 @@
                 tgShareStatus.textContent = '未配置 Base 频道，请先在 Telegram bot 配置页设置歌曲分享频道。';
                 return;
             }
-            // Pre-fill caption from song metadata
-            const defaultCaption = task.songMetadataOverride
-                ? [task.songMetadataOverride.artist, task.songMetadataOverride.title].filter(Boolean).join(' - ')
-                : task.title || '';
+            // Pre-fill caption from the task's public song metadata. songMetadataOverride is
+            // intentionally not exposed by the task-list API, so using it here caused the UI
+            // to fall back to task.title (usually only the song title) instead of
+            // "艺术家 - 歌曲名".
+            const songArtist = String(task.songMetadata?.artist || '').trim();
+            const songTitle = String(task.songMetadata?.title || task.title || '').trim();
+            const defaultCaption = `${songArtist || '未知艺术家'} - ${songTitle || '未知曲名'}`;
             tgCaptionBaseSplit.value = defaultCaption;
             tgCaptionProSplit.value = defaultCaption;
             tgCaptionUltimateSplit.value = defaultCaption;
