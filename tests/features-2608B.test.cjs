@@ -107,6 +107,18 @@ test('yt-dlp "page needs to be reloaded" is mapped and retried with a fallback p
   const server = read('server.js');
   assert.match(server, /page needs to be reloaded\|must be reloaded\|reload the page/);
   assert.match(server, /player_client=\$\{String\(options\.playerClient\)/);
-  assert.match(server, /playerClient: 'web_embedded'/);
+  assert.match(server, /playerClient: 'web_embedded,android,tv_embedded'/);
   assert.match(server, /playerClientFallback !== false/);
+});
+
+test('Telegram share panel always shows per-level caption/cover fields without the unified toggle', () => {
+  const page = read('pages/youtube-premium-dl.html');
+  assert.doesNotMatch(page, /id="tgCaptionUnified"/);
+  assert.doesNotMatch(page, /id="tgCoverUnified"/);
+  assert.doesNotMatch(page, /id="tgCoverSource"/);
+  assert.match(page, /id="tgCoverUploadBtn"/);
+  assert.match(page, /id="tgCaptionBaseSplit"/);
+  assert.match(page, /id="tgCoverProSelect"/);
+  assert.match(page, /\[hidden\] \{ display:none !important; \}/);
+  assert.match(page, /let showPro = tgSharePro\.checked/);
 });

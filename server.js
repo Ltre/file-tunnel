@@ -3313,7 +3313,7 @@ function runYtDlpJson(url, options = {}) {
                     return runYtDlpJson(url, { ...options, ignoreNoFormats: true }).then(resolve, reject);
                 }
                 if (options.playerClientFallback !== false && !options.playerClient && /page needs to be reloaded/i.test(stderr)) {
-                    return runYtDlpJson(url, { ...options, playerClient: 'web_embedded', bypassCache: true, playerClientFallback: false }).then(resolve, reject);
+                    return runYtDlpJson(url, { ...options, playerClient: 'web_embedded,android,tv_embedded', bypassCache: true, playerClientFallback: false }).then(resolve, reject);
                 }
                 return reject(new Error(getYtDlpFailureMessage(stderr, `yt-dlp-exit-${code}`)));
             }

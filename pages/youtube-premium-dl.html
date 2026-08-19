@@ -33,6 +33,7 @@
         .credential { margin-top:12px; }
         .custom { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
         .custom[hidden] { display:none; }
+        [hidden] { display:none !important; }
         .custom-head,.section-head,.section-tools,.pager,.task-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; }
         .format-status { min-height:22px; color:var(--muted); }
         .notice { min-height:22px; color:#2aa4a5; margin-top:10px; }
@@ -248,34 +249,23 @@
             </div>
             <div id="tgCaptionSection" style="margin-bottom:12px">
                 <strong>文案（艺术家 - 歌曲名）</strong>
-                <label class="music-option" style="margin-top:6px"><input type="checkbox" id="tgCaptionUnified" checked> 全级别共用</label>
-                <div id="tgCaptionUnifiedRow" style="margin-top:4px">
-                    <input id="tgCaptionBase" type="text" maxlength="200" placeholder="艺术家 - 歌曲名" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit">
-                </div>
-                <div id="tgCaptionSplitRows" hidden style="margin-top:6px;display:grid;gap:8px">
-                    <div><label class="subtle">Base (Tb)</label><input id="tgCaptionBaseSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
-                    <div id="tgCaptionProSplitRow"><label class="subtle">Pro (Tp)</label><input id="tgCaptionProSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
-                    <div id="tgCaptionUltimateSplitRow"><label class="subtle">Ultimate</label><input id="tgCaptionUltimateSplit" type="text" maxlength="200" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                <div style="margin-top:6px;display:grid;gap:8px">
+                    <div><label class="subtle">Base (Tb)</label><input id="tgCaptionBaseSplit" type="text" maxlength="200" placeholder="艺术家 - 歌曲名" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                    <div id="tgCaptionProSplitRow"><label class="subtle">Pro (Tp)</label><input id="tgCaptionProSplit" type="text" maxlength="200" placeholder="艺术家 - 歌曲名" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
+                    <div id="tgCaptionUltimateSplitRow"><label class="subtle">Ultimate</label><input id="tgCaptionUltimateSplit" type="text" maxlength="200" placeholder="艺术家 - 歌曲名" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit"></div>
                 </div>
             </div>
             <div id="tgCoverSection" style="margin-bottom:12px">
                 <strong>封面图</strong>
-                <label class="music-option" style="margin-top:6px"><input type="checkbox" id="tgCoverUnified" checked> 全级别共用</label>
-                <div id="tgCoverUnifiedRow" style="margin-top:6px">
-                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                        <img id="tgCoverPreview" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#e5e9f0" alt="">
-                        <select id="tgCoverSource" style="flex:1;min-width:160px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)">
-                            <option value="square">正方形裁剪封面</option>
-                            <option value="original">原尺寸封面</option>
-                            <option value="upload">自己上传...</option>
-                        </select>
-                        <input id="tgCoverUpload" type="file" accept="image/*" hidden>
-                    </div>
+                <div style="margin-top:6px;display:grid;gap:8px">
+                    <div><label class="subtle">Base 封面</label><select id="tgCoverBaseSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
+                    <div id="tgCoverProSplitRow"><label class="subtle">Pro 封面</label><select id="tgCoverProSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
+                    <div id="tgCoverUltimateSplitRow"><label class="subtle">Ultimate 封面</label><select id="tgCoverUltimateSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
                 </div>
-                <div id="tgCoverSplitRows" hidden style="margin-top:6px;display:grid;gap:8px">
-                    <div><label class="subtle">Base 封面</label><select id="tgCoverBaseSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
-                    <div id="tgCoverProSplitRow"><label class="subtle">Pro 封面</label><select id="tgCoverProSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
-                    <div id="tgCoverUltimateSplitRow"><label class="subtle">Ultimate 封面</label><select id="tgCoverUltimateSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">上传...</option></select></div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+                    <img id="tgCoverPreview" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#e5e9f0" alt="">
+                    <button type="button" id="tgCoverUploadBtn">上传封面...</button>
+                    <input id="tgCoverUpload" type="file" accept="image/*" hidden>
                 </div>
             </div>
             <div class="dialog-actions">
@@ -337,21 +327,14 @@
     const tgSharePro = document.getElementById('tgSharePro');
     const tgShareUltimate = document.getElementById('tgShareUltimate');
     const tgUltimateModeRow = document.getElementById('tgUltimateModeRow');
-    const tgCaptionUnified = document.getElementById('tgCaptionUnified');
-    const tgCaptionUnifiedRow = document.getElementById('tgCaptionUnifiedRow');
-    const tgCaptionSplitRows = document.getElementById('tgCaptionSplitRows');
-    const tgCaptionBase = document.getElementById('tgCaptionBase');
     const tgCaptionBaseSplit = document.getElementById('tgCaptionBaseSplit');
     const tgCaptionProSplit = document.getElementById('tgCaptionProSplit');
     const tgCaptionProSplitRow = document.getElementById('tgCaptionProSplitRow');
     const tgCaptionUltimateSplit = document.getElementById('tgCaptionUltimateSplit');
     const tgCaptionUltimateSplitRow = document.getElementById('tgCaptionUltimateSplitRow');
-    const tgCoverUnified = document.getElementById('tgCoverUnified');
-    const tgCoverUnifiedRow = document.getElementById('tgCoverUnifiedRow');
-    const tgCoverSplitRows = document.getElementById('tgCoverSplitRows');
     const tgCoverPreview = document.getElementById('tgCoverPreview');
-    const tgCoverSource = document.getElementById('tgCoverSource');
     const tgCoverUpload = document.getElementById('tgCoverUpload');
+    const tgCoverUploadBtn = document.getElementById('tgCoverUploadBtn');
     const tgCoverBaseSelect = document.getElementById('tgCoverBaseSelect');
     const tgCoverProSelect = document.getElementById('tgCoverProSelect');
     const tgCoverProSplitRow = document.getElementById('tgCoverProSplitRow');
@@ -911,24 +894,20 @@
             const defaultCaption = task.songMetadataOverride
                 ? [task.songMetadataOverride.artist, task.songMetadataOverride.title].filter(Boolean).join(' - ')
                 : task.title || '';
-            tgCaptionBase.value = defaultCaption;
             tgCaptionBaseSplit.value = defaultCaption;
             tgCaptionProSplit.value = defaultCaption;
             tgCaptionUltimateSplit.value = defaultCaption;
             // Preview cover
-            if (task.cover) tgCoverPreview.src = task.cover;
+            tgCoverPreview.src = task.cover || '';
             // Reset form state
             tgShareBase.checked = true;
             tgSharePro.checked = false;
             tgShareUltimate.checked = false;
             tgUltimateModeRow.hidden = true;
-            tgCaptionUnified.checked = true;
-            tgCaptionUnifiedRow.hidden = false;
-            tgCaptionSplitRows.hidden = true;
-            tgCoverUnified.checked = true;
-            tgCoverUnifiedRow.hidden = false;
-            tgCoverSplitRows.hidden = true;
-            tgCoverSource.value = 'square';
+            tgCoverBaseSelect.value = 'square';
+            tgCoverProSelect.value = 'square';
+            tgCoverUltimateSelect.value = 'square';
+            updateTgShareVisibility();
             tgShareStatus.textContent = '';
             tgShareForm.hidden = false;
         } catch (error) {
@@ -938,32 +917,17 @@
 
     function updateTgShareVisibility() {
         const showUltimate = tgShareUltimate.checked;
-        const showPro = tgSharePro.checked;
+        let showPro = tgSharePro.checked;
         tgUltimateModeRow.hidden = !showUltimate;
         // If Ultimate selected but Pro not, force Pro on
         if (showUltimate && !showPro) {
             tgSharePro.checked = true;
+            showPro = true;
         }
-        // Caption split visibility
-        if (tgCaptionUnified.checked) {
-            tgCaptionUnifiedRow.hidden = false;
-            tgCaptionSplitRows.hidden = true;
-        } else {
-            tgCaptionUnifiedRow.hidden = true;
-            tgCaptionSplitRows.hidden = false;
-            tgCaptionProSplitRow.hidden = !showPro;
-            tgCaptionUltimateSplitRow.hidden = !showUltimate;
-        }
-        // Cover split visibility
-        if (tgCoverUnified.checked) {
-            tgCoverUnifiedRow.hidden = false;
-            tgCoverSplitRows.hidden = true;
-        } else {
-            tgCoverUnifiedRow.hidden = true;
-            tgCoverSplitRows.hidden = false;
-            tgCoverProSplitRow.hidden = !showPro;
-            tgCoverUltimateSplitRow.hidden = !showUltimate;
-        }
+        tgCaptionProSplitRow.hidden = !showPro;
+        tgCaptionUltimateSplitRow.hidden = !showUltimate;
+        tgCoverProSplitRow.hidden = !showPro;
+        tgCoverUltimateSplitRow.hidden = !showUltimate;
     }
 
     async function fileToDataUrl(file) {
@@ -977,17 +941,17 @@
 
     tgSharePro.addEventListener('change', updateTgShareVisibility);
     tgShareUltimate.addEventListener('change', updateTgShareVisibility);
-    tgCaptionUnified.addEventListener('change', updateTgShareVisibility);
-    tgCoverUnified.addEventListener('change', updateTgShareVisibility);
-    tgCoverSource.addEventListener('change', () => {
-        if (tgCoverSource.value === 'upload') tgCoverUpload.click();
+    tgCoverUploadBtn.addEventListener('click', () => tgCoverUpload.click());
+    [tgCoverBaseSelect, tgCoverProSelect, tgCoverUltimateSelect].forEach(select => {
+        select.addEventListener('change', () => {
+            if (select.value === 'upload' && !tgUploadedCover) tgCoverUpload.click();
+        });
     });
     tgCoverUpload.addEventListener('change', async () => {
         const file = tgCoverUpload.files?.[0];
         if (!file) return;
         tgUploadedCover = await fileToDataUrl(file);
         tgCoverPreview.src = tgUploadedCover;
-        tgCoverSource.value = 'upload';
     });
     document.querySelectorAll('[data-close-tg-share]').forEach(button => button.addEventListener('click', () => tgShareDialog.close()));
     tgShareDialog.addEventListener('click', event => { if (event.target === tgShareDialog) tgShareDialog.close(); });
@@ -1006,36 +970,21 @@
         const sendPro = tgSharePro.checked;
         const sendUltimate = tgShareUltimate.checked;
         const ultimateMode = document.querySelector('input[name="tgUltimateMode"]:checked')?.value || 'formal';
-        // Build captions
+        // Build captions (three levels, each can be set independently)
         let captionBase, captionPro, captionUltimate;
-        if (tgCaptionUnified.checked) {
-            captionBase = tgCaptionBase.value;
-            captionPro = captionBase;
-            captionUltimate = captionBase;
-        } else {
-            captionBase = tgCaptionBaseSplit.value;
-            captionPro = tgCaptionProSplit.value || captionBase;
-            captionUltimate = tgCaptionUltimateSplit.value || captionBase;
-        }
-        // Build covers
+        captionBase = tgCaptionBaseSplit.value;
+        captionPro = tgCaptionProSplit.value || captionBase;
+        captionUltimate = tgCaptionUltimateSplit.value || captionBase;
+        // Build covers (three levels, each can be set independently)
         let coverBase, coverPro, coverUltimate;
-        if (tgCoverUnified.checked) {
-            const src = tgCoverSource.value;
-            if (src === 'upload' && tgUploadedCover) coverBase = tgUploadedCover;
-            else if (src === 'original') coverBase = 'original'; // server will use default cover path
-            else coverBase = ''; // square = default
-            coverPro = coverBase;
-            coverUltimate = coverBase;
-        } else {
-            function resolveCover(select) {
-                if (select.value === 'upload') return tgUploadedCover || '';
-                if (select.value === 'original') return 'original';
-                return '';
-            }
-            coverBase = resolveCover(tgCoverBaseSelect);
-            coverPro = resolveCover(tgCoverProSelect) || coverBase;
-            coverUltimate = resolveCover(tgCoverUltimateSelect) || coverBase;
+        function resolveCover(select) {
+            if (select.value === 'upload') return tgUploadedCover || '';
+            if (select.value === 'original') return 'original';
+            return '';
         }
+        coverBase = resolveCover(tgCoverBaseSelect);
+        coverPro = resolveCover(tgCoverProSelect) || coverBase;
+        coverUltimate = resolveCover(tgCoverUltimateSelect) || coverBase;
         try {
             const start = await api('/api/telegram/song-share', {
                 method: 'POST',

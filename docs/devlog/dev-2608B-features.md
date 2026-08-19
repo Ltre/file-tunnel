@@ -930,3 +930,41 @@ package script：
 
 文件：`server.js`、`tests/features-2608B.test.cjs`
 
+### 7.12 非 Premium 账号解析仍报 reload + 转发面板「全级别共用」改造
+
+**一、非 Premium 账号解析普通视频仍报 `page needs to be reloaded`**
+
+用户反馈：同一普通视频，用**无 YouTube Premium 资格**的账号即使是最新 cookie 也会间歇性报
+`The page needs to be reloaded`，换成**有 Premium 资格**的账号即可正常解析。说明问题跟账号类型（Premium 与否）相关，
+单靠 `web_embedded` 一个兜底客户端不够。
+
+处理（`server.js`）：
+- 把 7.11 的兜底 player client 从单一的 `web_embedded` 扩展为 `web_embedded,android,tv_embedded`，
+  让 yt-dlp 按顺序在多个客户端间回退（不同客户端对 `visitorData`/登录态/广告注入的依赖不同），提高非 Premium 账号的成功率。
+
+**二、转发到 Telegram 面板：去掉「全级别共用」，始终分级别设置**
+
+原面板用 `tgCaptionUnified` / `tgCoverUnified` 两个「全级别共用」checkbox 在「共用一个输入框」与
+「分三个级别输入」之间切换。用户反馈该切换不好用，且存在两个 bug：
+- BUG1：取消勾选 Pro/Ultimate 后，对应级别的表单控件没有隐藏。
+- BUG2：勾选 Pro/Ultimate 后，「封面图」区域对应级别的控件没有显示出来。
+
+根因：`tgCaptionSplitRows` / `tgCoverSplitRows` 容器同时写了 `hidden` 属性和内联 `style="display:grid"`，
+内联 `display` 优先级高于 UA 样式表的 `[hidden]{display:none}`，导致 `hidden` 切换失效；另外
+`updateTgShareVisibility()` 里强制勾选 Pro 时没有同步更新局部 `showPro`，造成可见性与实际勾选不一致。
+
+处理（`pages/youtube-premium-dl.html`）：
+- 移除 `tgCaptionUnified` / `tgCoverUnified` 两个「全级别共用」checkbox 及各自的统一输入行，
+  改为**始终展示** Base/Pro/Ultimate 三级的「文案」输入框和「封面图」下拉（square/original/upload）。
+- 新增全局 CSS `[hidden]{display:none!important}`，杜绝内联 `display` 覆盖 `hidden` 的隐患。
+- 封面「上传」改为独立按钮 `tgCoverUploadBtn`（原来藏在 `tgCoverSource` 下拉的 upload 选项里），
+  三个级别下拉选到「上传...」且尚未上传时自动打开文件选择器。
+- `updateTgShareVisibility()` 简化：只做三级行显隐，并在强制勾选 Pro 后同步 `showPro = true`（修复 BUG1/BUG2 的可见性错乱）。
+- 确认发送时始终读取三个级别的文案/封面值（`captionPro = Pro 值 || captionBase`，封面同理）。
+
+**验证**：
+- 抽出前端内联脚本 `node --check` 通过；`node --check server.js` 通过。
+- `node tests/features-2608B.test.cjs` 8/8 通过（新增"三级表单恒展示 + 无统一开关"断言，并把 fallback 断言更新为 `web_embedded,android,tv_embedded`）。
+
+文件：`server.js`、`pages/youtube-premium-dl.html`、`tests/features-2608B.test.cjs`
+
