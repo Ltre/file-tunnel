@@ -1470,10 +1470,14 @@ app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => 
     const captionPro = String(body.captionPro || '').trim().slice(0, 200) || captionBase;
     const captionUltimate = String(body.captionUltimate || '').trim().slice(0, 200) || captionBase;
 
-    // Cover image (base64 data URL, 'original' for task default cover, or empty for square default)
+    // Cover image: each channel level is independent.
+    // Empty string means this level explicitly uses the task's square default cover;
+    // a data URL means this level uses the resolved original/custom image.
+    // Do not fall back Pro/Ultimate to Base here, otherwise an explicit square selection
+    // would be overwritten by Base's original/custom cover.
     const coverBase = String(body.coverBase || '').trim();
-    const coverPro = String(body.coverPro || '').trim() || coverBase;
-    const coverUltimate = String(body.coverUltimate || '').trim() || coverBase;
+    const coverPro = String(body.coverPro || '').trim();
+    const coverUltimate = String(body.coverUltimate || '').trim();
 
     // Song file from YouTube Premium task
     const taskId = String(body.taskId || '').trim();

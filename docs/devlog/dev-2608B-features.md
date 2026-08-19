@@ -1008,3 +1008,34 @@ package script：
 - 由于本次 ZIP 基线缺少 `server.js`，无法执行依赖主服务端入口的整套启动检查和既有 `tests/features-2608B.test.cjs`；该缺口来自输入包本身，不在本次改动中用其他版本文件覆盖。
 
 文件：`pages/youtube-premium-dl.html`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`
+
+### 7.14 Telegram 转发：原尺寸封面获取进度 + 三级封面串用修复
+
+**用户反馈**：
+1. 转发面板选择“原尺寸”后，提交时会先调用 `/api/youtube-premium/tasks/:id/thumbnail`，该过程可能较慢，但此前 `#tgProgressSteps` 只有真正创建 song-share job 之后的 Telegram 发送步骤，用户看不到原尺寸封面的获取状态。
+2. Base / Pro / Ultimate 混合选择“正方形”和“原尺寸”时，实际多个频道可能都收到原尺寸封面；自定义上传封面未复现该问题。
+
+**根因**：
+- 原尺寸封面在前端创建 `/api/telegram/song-share` 任务之前同步获取，因此服务端 job 的步骤列表天然看不到这段耗时。
+- 前端已经把三个级别分别提交，但“正方形”使用空字符串表示；服务端仍保留旧逻辑 `coverPro || coverBase` / `coverUltimate || coverBase`，于是当 Base 是原尺寸 Data URL，而 Pro/Ultimate 明确选择正方形（空字符串）时，空值会被错误替换成 Base 原图，造成封面串用。
+
+**修改**：
+- `pages/youtube-premium-dl.html`
+  - 新增 `tgProgressPrefixSteps`，作为客户端预处理步骤前缀，与服务端返回的 song-share steps 一起渲染到 `#tgProgressSteps`。
+  - 本次发送只要实际会发图的级别选用了“原尺寸”，点击提交后立即关闭配置浮层并打开进度浮层，先显示“获取原尺寸封面”运行中；thumbnail API 成功后改为完成，再继续创建 Telegram song-share job，因此该步骤始终排在“发送歌曲到 Base 频道”等 Telegram 步骤之前。
+  - 原图获取失败时直接在进度浮层标记该步骤失败并显示错误，不再让用户停留在看不到状态的等待阶段。
+  - 只解析本次真正会发送的封面：未勾选 Pro 不解析 Pro；Ultimate 使用“入选试行”时没有封面，不再无意义解析 Ultimate 封面。
+  - 已完成历史分享结果重新打开时清空客户端预处理步骤，避免沿用上一次发送的“获取原尺寸封面”状态。
+- `server.js`
+  - Base / Pro / Ultimate 的 `coverBase` / `coverPro` / `coverUltimate` 改为完全独立读取请求值，移除 Pro/Ultimate 向 Base 的封面回退。
+  - 空字符串继续只表示“该级别明确使用任务正方形封面”；Data URL 表示原尺寸或自定义封面，从而确保混合设置严格按各级别选择发送。
+
+**验证**：
+- 扩展 `tests/telegram-cover-regression.test.cjs`，覆盖原尺寸获取步骤位于 Telegram 发送步骤之前、服务端三级封面不再继承 Base、以及未发送级别不做无意义封面解析。
+- 执行前端内联脚本语法检查、`node --check server.js`、Telegram 封面专项回归、2608B 回归、YouTube Premium 专项测试和 P2P 回归。
+
+文件：`pages/youtube-premium-dl.html`、`server.js`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`
+
+**补充构建校验说明**：
+- `deploy:build --profile txsl` 构建成功。
+- `deploy:verify --profile txsl` 在构建后的 `server.js` 第 52 行报 `Illegal return statement`。该问题与本轮修改无关：使用用户原始 ZIP 不做任何修改重新执行同样的 build/verify，可稳定复现完全相同的错误；来源是既有代理重拉引导代码中的顶层 `return` 与 `tools/deploy/verify.mjs` 的 `vm.Script` 检查方式不兼容。本轮未擅自修改该无关基线问题。

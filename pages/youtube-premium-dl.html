@@ -351,6 +351,7 @@
     const tgProgressMessageList = document.getElementById('tgProgressMessageList');
     const tgReShareBtn = document.getElementById('tgReShareBtn');
     let tgSharePolling = null;
+    let tgProgressPrefixSteps = [];
     const tagDialog = document.getElementById('tagDialog');
     const currentTags = document.getElementById('currentTags');
     const tagInput = document.getElementById('tagInput');
@@ -882,6 +883,7 @@
         tgShareTask = task;
         tgUploadedCover = null;
         tgOriginalCoverDataUrl = null;
+        tgProgressPrefixSteps = [];
         tgShareStatus.textContent = '正在读取频道配置...';
         tgShareForm.hidden = true;
         tgShareDialog.showModal();
@@ -944,7 +946,6 @@
     async function getTelegramOriginalCoverDataUrl(task) {
         if (tgOriginalCoverDataUrl) return tgOriginalCoverDataUrl;
         if (!task?.id) throw new Error('任务不存在');
-        tgShareStatus.textContent = '正在获取原尺寸封面...';
         const response = await fetch(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/thumbnail`, {
             method: 'POST', cache: 'no-store'
         });
@@ -1009,12 +1010,50 @@
         captionBase = tgCaptionBaseSplit.value;
         captionPro = tgCaptionProSplit.value || captionBase;
         captionUltimate = tgCaptionUltimateSplit.value || captionBase;
+
+        // Only resolve covers for levels that will actually send a photo. Ultimate trial has no cover.
+        const coverSelections = [
+            ['Base', tgCoverBaseSelect],
+            ...(sendPro ? [['Pro', tgCoverProSelect]] : []),
+            ...(sendUltimate && ultimateMode === 'formal' ? [['Ultimate', tgCoverUltimateSelect]] : [])
+        ];
+        const originalCoverLevels = coverSelections.filter(([, select]) => select.value === 'original').map(([label]) => label);
+        let progressOpenedForCover = false;
+
         try {
-            // Resolve each level independently. "original" is converted to the actual original-size image
-            // before POSTing, avoiding server-side fallback to the task's square cover.
+            if (originalCoverLevels.length) {
+                tgProgressPrefixSteps = [{
+                    key: 'original-cover',
+                    label: '获取原尺寸封面',
+                    status: 'running',
+                    detail: `正在获取，供 ${originalCoverLevels.join(' / ')} 使用…`,
+                    link: ''
+                }];
+                tgShareDialog.close();
+                if (!tgProgressDialog.open) tgProgressDialog.showModal();
+                progressOpenedForCover = true;
+                renderTgShareProgress({ status: 'running', steps: [], messages: [] });
+            } else {
+                tgProgressPrefixSteps = [];
+            }
+
+            // Resolve each selected level independently. "original" is converted to the actual
+            // original-size image before POSTing; an empty value remains an explicit square cover.
             const coverBase = await resolveTelegramShareCover(tgCoverBaseSelect);
-            const coverPro = await resolveTelegramShareCover(tgCoverProSelect);
-            const coverUltimate = await resolveTelegramShareCover(tgCoverUltimateSelect);
+            const coverPro = sendPro ? await resolveTelegramShareCover(tgCoverProSelect) : '';
+            const coverUltimate = sendUltimate && ultimateMode === 'formal'
+                ? await resolveTelegramShareCover(tgCoverUltimateSelect)
+                : '';
+
+            if (originalCoverLevels.length) {
+                tgProgressPrefixSteps[0] = {
+                    ...tgProgressPrefixSteps[0],
+                    status: 'done',
+                    detail: `已获取，供 ${originalCoverLevels.join(' / ')} 使用`
+                };
+                renderTgShareProgress({ status: 'running', steps: [], messages: [] });
+            }
+
             tgShareStatus.textContent = '正在创建发送任务...';
             const start = await api('/api/telegram/song-share', {
                 method: 'POST',
@@ -1033,10 +1072,21 @@
                 })
             });
             tgShareStatus.textContent = '';
-            tgShareDialog.close();
+            if (tgShareDialog.open) tgShareDialog.close();
             startTelegramSharePolling(start.jobId, tgShareTask);
         } catch (error) {
-            tgShareStatus.textContent = `发送失败：${error.message}`;
+            if (progressOpenedForCover) {
+                if (tgProgressPrefixSteps[0]?.key === 'original-cover' && tgProgressPrefixSteps[0].status === 'running') {
+                    tgProgressPrefixSteps[0] = {
+                        ...tgProgressPrefixSteps[0],
+                        status: 'failed',
+                        detail: error.message
+                    };
+                }
+                renderTgShareProgress({ status: 'failed', error: `发送失败：${error.message}`, steps: [], messages: [] });
+            } else {
+                tgShareStatus.textContent = `发送失败：${error.message}`;
+            }
         } finally {
             tgShareConfirm.disabled = false;
         }
@@ -1051,7 +1101,8 @@
 
     function renderTgShareSteps(steps) {
         tgProgressSteps.replaceChildren();
-        for (const step of (steps || [])) {
+        const allSteps = [...tgProgressPrefixSteps, ...(steps || [])];
+        for (const step of allSteps) {
             const row = document.createElement('div');
             row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;';
             const icon = document.createElement('span');
@@ -1111,7 +1162,7 @@
     }
 
     async function startTelegramSharePolling(jobId, task) {
-        tgProgressDialog.showModal();
+        if (!tgProgressDialog.open) tgProgressDialog.showModal();
         renderTgShareProgress({ status: 'running', steps: [], messages: [] });
         if (tgSharePolling) clearTimeout(tgSharePolling);
         const poll = async () => {
@@ -1143,6 +1194,7 @@
     function showTelegramShareResult(task) {
         const share = task.telegramShare;
         tgShareTask = task;
+        tgProgressPrefixSteps = [];
         tgProgressTitle.textContent = '已发送到 Telegram 的链接';
         tgProgressError.hidden = true;
         tgProgressError.textContent = '';
