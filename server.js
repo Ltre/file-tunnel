@@ -70,6 +70,7 @@ const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = 
 const {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
@@ -1089,11 +1090,15 @@ app.post('/api/youtube-premium/formats', adminAuth.requireAuth, youtubePremiumRa
                 includeFormats: true,
                 forceMusic: req.body?.asMusic === true
             });
-            setYoutubePremiumMetadataCache(url, {
-                [cacheField]: analysis,
-                referenceInfo: analysis.referenceInfo
+        } else {
+            analysis = await enrichYoutubePremiumAnalysisOrdinals(analysis, {
+                cookiePath: requireYoutubePremiumCookies()
             });
         }
+        setYoutubePremiumMetadataCache(url, {
+            [cacheField]: analysis,
+            referenceInfo: analysis.referenceInfo
+        });
         res.json(analysis);
     } catch (error) {
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
@@ -1570,10 +1575,42 @@ async function runSongShareJob(job, params) {
         return result.result;
     }
 
-    async function sendAudioFile(chatId, audioBlob, fileName, caption) {
+    async function prepareTelegramAudioThumbnail(sourcePath) {
+        if (!sourcePath || !fs.existsSync(sourcePath)) return null;
+        fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
+        const outputPath = path.join(SNS_MEDIA_WORK_DIR, `telegram-audio-thumb-${crypto.randomBytes(8).toString('hex')}.jpg`);
+        const qualityLevels = [5, 8, 12, 18, 24];
+        try {
+            for (const quality of qualityLevels) {
+                await spawnCapture(FFMPEG_COMMAND, [
+                    '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
+                    '-vf', 'scale=320:320:force_original_aspect_ratio=decrease',
+                    '-frames:v', '1', '-q:v', String(quality), outputPath
+                ], { timeoutMs: 60000, timeoutError: 'telegram-audio-thumbnail-timeout' });
+                if (fs.statSync(outputPath).size < 200 * 1024) {
+                    return {
+                        path: outputPath,
+                        cleanup: () => { try { fs.rmSync(outputPath, { force: true }); } catch (_) {} }
+                    };
+                }
+            }
+            throw new Error('telegram-audio-thumbnail-too-large');
+        } catch (error) {
+            try { fs.rmSync(outputPath, { force: true }); } catch (_) {}
+            throw error;
+        }
+    }
+
+    async function sendAudioFile(chatId, audioBlob, fileName, caption, options = {}) {
         const form = new FormData();
         form.set('chat_id', chatId);
         if (caption) form.set('caption', caption);
+        if (options.performer) form.set('performer', String(options.performer));
+        if (options.title) form.set('title', String(options.title));
+        if (options.thumbnailPath) {
+            const thumbnail = await fs.promises.readFile(options.thumbnailPath);
+            form.set('thumbnail', new Blob([thumbnail], { type: 'image/jpeg' }), 'thumbnail.jpg');
+        }
         form.set('audio', audioBlob, fileName || 'song.m4a');
         const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendAudio`, {
             method: 'POST',
@@ -1609,12 +1646,27 @@ async function runSongShareJob(job, params) {
         setSongShareStep(job, 'prepare', { status: 'done', detail: `已读取 ${fileName}` });
 
         // Step 2: Send song file to Base channel
-        setSongShareStep(job, 'base-audio', { status: 'running', detail: '正在上传音频（可能较慢）…' });
-        const baseAudioMsg = await sendAudioFile(baseChat, audioBlob, fileName, '');
+        setSongShareStep(job, 'base-audio', { status: 'running', detail: '正在生成 Telegram 音频封面并上传音频（可能较慢）…' });
+        const telegramAudioThumbnail = await prepareTelegramAudioThumbnail(defaultCoverPath);
+        let baseAudioMsg;
+        try {
+            const taskInfo = youtubePremiumService.get(job.taskId);
+            baseAudioMsg = await sendAudioFile(baseChat, audioBlob, fileName, '', {
+                thumbnailPath: telegramAudioThumbnail?.path || '',
+                performer: taskInfo?.songMetadata?.artist || '',
+                title: taskInfo?.songMetadata?.title || taskInfo?.title || ''
+            });
+        } finally {
+            telegramAudioThumbnail?.cleanup?.();
+        }
         if (!baseAudioMsg?.message_id) throw new Error('base-audio-send-failed');
         const baseAudioLink = getMessageTmeLink(baseChat, baseAudioMsg.message_id);
         createdMessages.push({ role: 'base-audio', label: 'Base 音频', chatId: baseChat, messageId: baseAudioMsg.message_id, link: baseAudioLink });
-        setSongShareStep(job, 'base-audio', { status: 'done', detail: '已发送', link: baseAudioLink });
+        setSongShareStep(job, 'base-audio', {
+            status: 'done',
+            detail: baseAudioMsg.audio?.thumbnail ? '已发送（Telegram 已返回歌曲封面缩略图）' : '已发送（Telegram 未返回歌曲封面缩略图）',
+            link: baseAudioLink
+        });
 
         // Step 3: Send Tb (Base captioned record: cover + caption + baseAudioLink)
         setSongShareStep(job, 'base-tb', { status: 'running', detail: '正在发送图文记录…' });
@@ -3023,6 +3075,30 @@ function normalizeYoutubeSourceUrl(value) {
     }
 }
 
+async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', options = {}) {
+    let ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl);
+    if (!ordinal.trackNumber && ordinal.albumPlaylistId && meta.id) {
+        try {
+            const playlistUrl = `https://www.youtube.com/playlist?list=${encodeURIComponent(ordinal.albumPlaylistId)}`;
+            const playlistMeta = await runYtDlpJson(playlistUrl, {
+                noPlaylist: false,
+                flatPlaylist: true,
+                cookiePath: options.cookiePath,
+                allowIgnoreNoFormatsFallback: false,
+                signal: options.signal
+            });
+            ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl, playlistMeta?.entries);
+        } catch (_) {
+            // Track number is optional; keep the song usable when the album playlist cannot be queried.
+        }
+    }
+    return {
+        ...meta,
+        track_number: meta.track_number || ordinal.trackNumber || '',
+        disc_number: meta.disc_number || ordinal.discNumber || '1'
+    };
+}
+
 function normalizeYoutubeLanguageCode(value) {
     const raw = String(value || '').trim().toLowerCase().replace('_', '-');
     if (!raw) return '';
@@ -3076,6 +3152,8 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
         authorUrl: sanitizeString(authorUrl, 1000),
         videoId: sanitizeString(meta.id || '', 100),
         channelId: sanitizeString(meta.channel_id || '', 200),
+        playlistId: sanitizeString(meta.playlist_id || '', 200),
+        playlistTitle: sanitizeString(meta.playlist_title || '', 500),
         album: sanitizeString(meta.album || meta.playlist_title || '', 500),
         albumArtist: sanitizeString(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/') : meta.album_artists) || '', 500),
         track: sanitizeString(meta.track || meta.title || '', 500),
@@ -3106,13 +3184,19 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
 }
 
 async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
-    const meta = options.meta || await runYtDlpJson(rawUrl, {
+    let meta = options.meta || await runYtDlpJson(rawUrl, {
         noPlaylist: true,
         cookiePath: options.cookiePath,
         allowIgnoreNoFormatsFallback: false,
         bypassCache: options.bypassCache === true,
         signal: options.signal
     });
+    if (classifySnsMedia(rawUrl, meta) === 'song') {
+        meta = await enrichYoutubeMusicOrdinalMetadata(meta, rawUrl, {
+            cookiePath: options.cookiePath,
+            signal: options.signal
+        });
+    }
     const language = guessYoutubeSourceLanguage(meta);
     let sourceLanguageMeta = null;
     if (language) {
@@ -3156,7 +3240,7 @@ function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
         composer: sanitizeString(meta.composer || '', 240),
         genre: sanitizeString(Array.isArray(meta.genres) ? meta.genres.join(', ') : meta.genre || '', 240),
         track: sanitizeString(meta.track_number || '', 40),
-        disc: sanitizeString(meta.disc_number || '', 40),
+        disc: sanitizeString(meta.disc_number || '1', 40),
         date: reference.albumYear || reference.songYear || reference.uploadYear,
         comment: sanitizeString(comment, 4000),
         lyrics: sanitizeString(meta.lyrics || '', 12000)
@@ -4766,6 +4850,30 @@ async function downloadYoutubePremiumOriginalThumbnail(taskId) {
     }
 }
 
+async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
+    if (!analysis || analysis.mediaType !== 'song' || !analysis.songMetadata) return analysis;
+    const currentTrack = String(analysis.songMetadata.track || '').trim();
+    const currentDisc = String(analysis.songMetadata.disc || '').trim();
+    if (currentTrack && currentDisc) return analysis;
+    const enriched = await enrichYoutubeMusicOrdinalMetadata({
+        id: analysis.youtubeVideoId || '',
+        track_number: currentTrack,
+        disc_number: currentDisc,
+        playlist_id: analysis.referenceInfo?.playlistId || ''
+    }, analysis.url, options);
+    const nextTrack = currentTrack || String(enriched.track_number || '');
+    const nextDisc = currentDisc || String(enriched.disc_number || '1');
+    return {
+        ...analysis,
+        songMetadata: { ...analysis.songMetadata, track: nextTrack, disc: nextDisc },
+        referenceInfo: analysis.referenceInfo ? {
+            ...analysis.referenceInfo,
+            trackNumber: analysis.referenceInfo.trackNumber || nextTrack,
+            discNumber: analysis.referenceInfo.discNumber || nextDisc
+        } : analysis.referenceInfo
+    };
+}
+
 async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());
     if (!parsed || !['youtube', 'ytmusic'].includes(parsed.platform) || isYouTubePlaylistOnly(parsed.parsed.href)) {
@@ -4773,7 +4881,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     }
     const url = parsed.parsed.href;
     const cookiePath = requireYoutubePremiumCookies();
-    const baseMeta = await runYtDlpJson(url, {
+    let baseMeta = await runYtDlpJson(url, {
         noPlaylist: true,
         cookiePath,
         allowIgnoreNoFormatsFallback: false,
@@ -4807,10 +4915,13 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     if (options.forceMusic === true && !requestedIds.length) throw new Error('youtube-premium-audio-format-missing');
     const selection = validateFormatSelection(formats, requestedIds, detectedMediaType, options.forceMusic === true);
     const mediaType = resolveYoutubePremiumMediaType(detectedMediaType, selection, options.forceMusic === true);
+    if (mediaType === 'song') {
+        baseMeta = await enrichYoutubeMusicOrdinalMetadata(baseMeta, url, { cookiePath, signal: options.signal });
+    }
     const artist = normalizeArtistValue(baseMeta);
     const track = String(baseMeta.track || baseMeta.title || baseMeta.fulltitle || '').trim();
     const fallbackArtist = artist || String(baseMeta.creator || baseMeta.channel || baseMeta.uploader || baseMeta.uploader_id || 'YouTube').trim();
-    return {
+    const analysis = {
         url,
         title: sanitizeString(baseMeta.title || baseMeta.fulltitle || track || 'YouTube 媒体', 240),
         cover: sanitizeString(baseMeta.thumbnail || baseMeta.thumbnails?.slice(-1)?.[0]?.url || '', 1000),
@@ -4827,6 +4938,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         selection,
         formats: options.includeFormats ? formats : []
     };
+    return enrichYoutubePremiumAnalysisOrdinals(analysis, { cookiePath, signal: options.signal });
 }
 
 function moveYoutubePremiumOutput(sourcePath, targetPath) {
@@ -4914,7 +5026,7 @@ function normalizeEditableSongMetadata(input = {}, fallback = {}) {
         composer: value('composer', 240),
         genre: value('genre', 240),
         track: value('track', 40),
-        disc: value('disc', 40),
+        disc: value('disc', 40) || '1',
         date: value('date', 40),
         comment: value('comment', 4000),
         lyrics: value('lyrics', 12000)

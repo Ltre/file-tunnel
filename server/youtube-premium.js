@@ -13,6 +13,43 @@ function extractYoutubeMetadataYear(value) {
     return text.match(/(?:^|\D)((?:19|20)\d{2})(?=$|\D)/)?.[1] || '';
 }
 
+function normalizePositiveOrdinal(value) {
+    const number = Math.trunc(Number(value));
+    return Number.isFinite(number) && number > 0 ? String(number) : '';
+}
+
+function getYoutubeAlbumPlaylistId(meta = {}, sourceUrl = '') {
+    let sourceListId = '';
+    try {
+        sourceListId = new URL(String(sourceUrl || '')).searchParams.get('list') || '';
+    } catch (_) {}
+    const playlistId = String(meta.playlist_id || sourceListId || '').trim();
+    return /^OLAK5uy_/i.test(playlistId) ? playlistId : '';
+}
+
+function resolveYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', playlistEntries = []) {
+    const albumPlaylistId = getYoutubeAlbumPlaylistId(meta, sourceUrl);
+    let trackNumber = normalizePositiveOrdinal(meta.track_number);
+    if (!trackNumber && albumPlaylistId) {
+        trackNumber = normalizePositiveOrdinal(meta.playlist_index);
+        if (!trackNumber) {
+            try {
+                trackNumber = normalizePositiveOrdinal(new URL(String(sourceUrl || '')).searchParams.get('index'));
+            } catch (_) {}
+        }
+        if (!trackNumber && meta.id && Array.isArray(playlistEntries)) {
+            const wantedId = String(meta.id);
+            const index = playlistEntries.findIndex(entry => String(entry?.id || entry?.url || '').includes(wantedId));
+            if (index >= 0) trackNumber = String(index + 1);
+        }
+    }
+    return {
+        trackNumber,
+        discNumber: normalizePositiveOrdinal(meta.disc_number) || '1',
+        albumPlaylistId
+    };
+}
+
 function resolveYoutubePremiumMediaType(detectedMediaType, selection, forceMusic = false) {
     if (forceMusic === true) return 'song';
     const selectedFormats = Array.isArray(selection?.formats) ? selection.formats : [];
@@ -457,6 +494,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
 module.exports = {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,

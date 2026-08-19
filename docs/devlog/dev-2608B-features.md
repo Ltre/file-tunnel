@@ -1076,3 +1076,49 @@ package script：
 - 2608B 功能回归：8/8 通过。
 - YouTube Premium 专项：11/11 通过。
 - P2P 回归：38/38 通过。
+
+### 7.16 YouTube Premium Track/Disc 补全 + Telegram `sendAudio` 显式歌曲封面
+
+**用户反馈/目标**：
+1. 真正的 YouTube / YT Music 歌曲任务希望尽量补全 Track / Disc。yt-dlp 若直接给出 `track_number` / `disc_number` 应优先使用；Track 缺失时，如果当前歌曲带有 YouTube Music 专辑播放列表上下文，至少可按专辑列表中的位置得到曲序；Disc 无可靠来源时按需求默认 `1`。
+2. Premium 任务转发到 Telegram Base 频道时，音频文件内部虽然已经嵌入歌曲封面，但 Bot API 发出的音频消息没有显示歌曲封面；Android Telegram 客户端直接分享同一类歌曲时则可以显示。
+
+**外部接口核对结论**：
+- yt-dlp 的通用 info-dict 定义包含 `track_number` 与 `disc_number`，但 YouTube / YouTube Music 单曲提取并不保证返回 Track，因此不能把字段存在于通用模型等同于 YouTube 一定会给值。
+- Telegram Bot API 的 `sendAudio` 明确支持 `thumbnail` 参数；要求 JPEG、小于 200KB、宽高均不超过 320，并且在 multipart/form-data 上传文件时随本次请求上传。Telegram 返回的 `Audio` 对象也包含可选 `thumbnail` 字段。
+- 因此此前 Bot 发送与 Android 客户端直接分享的关键实现差异之一是：项目的 `sendAudioFile()` 原先只传 `audio`，完全没有显式上传 `thumbnail`；不能仅依赖 M4A 内部 `attached_pic` 让 Telegram 自动生成音频消息封面。
+
+**修改：Track / Disc**：
+- `server/youtube-premium.js`
+  - 新增 `resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl, playlistEntries)`。
+  - Track 优先级：
+    1. yt-dlp 原生 `track_number`；
+    2. 当且仅当确认是 `OLAK5uy_...` 类型 YouTube Music 专辑列表时，使用 `playlist_index`；
+    3. 使用 URL 的 `index`；
+    4. 如果仍缺失但存在专辑列表 ID，则根据当前 video ID 在专辑 entries 中查找位置并使用 `index + 1`。
+  - 不会把普通用户播放列表（`PL...` 等）的顺序误写成专辑 Track。
+  - Disc 优先使用 yt-dlp `disc_number`，缺失时按需求默认 `1`。
+- `server.js`
+  - 新增 `enrichYoutubeMusicOrdinalMetadata()`：真正歌曲分析时，如果 Track 缺失且存在 `OLAK5uy_...` 专辑上下文，会用 yt-dlp `--flat-playlist --yes-playlist` 读取专辑列表并按 video ID 数位置。
+  - `buildYoutubeSongMetadata()` 的 `disc` 缺失时默认 `1`；手工元信息编辑归一化也保持同一默认值。
+  - `buildYoutubeReferenceInfo()` 增加 `playlistId` / `playlistTitle`，并让参考信息中的 Track / Disc 使用补全后的结果。
+  - 对持久化格式分析缓存增加补全步骤：即使 URL 之前已经缓存过 analysis，新代码读取缓存时发现歌曲 Track / Disc 缺失，也会尝试补齐，不要求用户必须先点“重新解析”。
+- 边界：如果单曲 URL 本身没有 yt-dlp `track_number`，也没有 `OLAK5uy_...` 专辑上下文/专辑 ID，则没有可靠依据判断它在专辑中的真实位置，此时 Track 保持空值，不凭歌曲名搜索或猜序号；Disc 仍为 `1`。
+
+**修改：Telegram 音频封面**：
+- `server.js`
+  - 新增 `prepareTelegramAudioThumbnail(sourcePath)`：从 Premium 任务已有的正方形歌曲封面生成 Telegram 专用 JPEG；尺寸限制在 320×320 范围，并按多档 JPEG 质量重试，直到文件严格小于 200KB。
+  - `sendAudioFile()` 新增 `thumbnailPath`、`performer`、`title` 参数：通过 multipart 的 `thumbnail` 字段显式上传歌曲封面，同时显式提供 artist/title。
+  - Base 音频发送前生成 Telegram thumbnail，发送完成或失败后立即清理临时缩略图，不把它作为长期任务文件保存。
+  - 发送进度完成状态会检查 Telegram 返回的 `message.audio.thumbnail`：存在时显示“Telegram 已返回歌曲封面缩略图”，不存在时显示“Telegram 未返回歌曲封面缩略图”，方便真实 Telegram 客户端验收。
+
+**验证**：
+- `node --check server.js`：通过。
+- `node --check server/youtube-premium.js`：通过。
+- `node tests/youtube-premium.test.cjs`：12/12 通过；新增 Track/Disc 优先级、OLAK 专辑 index/entries 推导、普通播放列表不误用等断言。
+- `node tests/telegram-cover-regression.test.cjs`：8/8 通过；新增 `sendAudio` 显式 thumbnail、320px/200KB 限制及 Base 音频接入断言。
+- `node tests/features-2608B.test.cjs`：8/8 通过。
+- `node tests/p2p-connection-regression.test.cjs`：38/38 通过。
+- 本轮没有执行真实 yt-dlp 下载、没有读取/修改真实 Cookie、没有向真实 Telegram 频道发送测试消息；Telegram 客户端最终是否展示该 thumbnail 仍需线上 Bot API 实发验收。
+
+文件：`server.js`、`server/youtube-premium.js`、`tests/youtube-premium.test.cjs`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`

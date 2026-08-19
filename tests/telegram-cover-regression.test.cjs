@@ -58,3 +58,13 @@ test('Ultimate trial Telegram message disables link preview', () => {
     assert.match(server, /disable_web_page_preview:\s*true/);
     assert.doesNotMatch(server, /link_preview_options:\s*\{[^}]*is_disabled:\s*false[^}]*\}/);
 });
+
+
+test('Telegram Base audio uploads an explicit Bot API thumbnail', () => {
+    assert.match(server, /async function prepareTelegramAudioThumbnail\(sourcePath\)/);
+    assert.match(server, /scale=320:320:force_original_aspect_ratio=decrease/);
+    assert.match(server, /fs\.statSync\(outputPath\)\.size < 200 \* 1024/);
+    assert.match(server, /form\.set\('thumbnail', new Blob\(\[thumbnail\], \{ type: 'image\/jpeg' \}\), 'thumbnail\.jpg'\)/);
+    assert.match(server, /sendAudioFile\(baseChat, audioBlob, fileName, '', \{/);
+    assert.match(server, /thumbnailPath: telegramAudioThumbnail\?\.path \|\| ''/);
+});

@@ -10,6 +10,7 @@ const { pipeline } = require('node:stream/promises');
 const {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
@@ -110,6 +111,29 @@ test('YouTube compact upload dates expose their four-digit year', () => {
     assert.equal(extractYoutubeMetadataYear('2025-08-16'), '2025');
     assert.equal(extractYoutubeMetadataYear(2025), '2025');
     assert.equal(extractYoutubeMetadataYear('1760000000'), '');
+});
+
+test('YouTube Music song ordinals prefer native track/disc and can derive album position', () => {
+    assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({
+        id: 'song-a', track_number: 7, disc_number: 2
+    }, 'https://music.youtube.com/watch?v=song-a'), {
+        trackNumber: '7', discNumber: '2', albumPlaylistId: ''
+    });
+
+    assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-b' },
+        'https://music.youtube.com/watch?v=song-b&list=OLAK5uy_album&index=4'), {
+        trackNumber: '4', discNumber: '1', albumPlaylistId: 'OLAK5uy_album'
+    });
+
+    assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-c', playlist_id: 'OLAK5uy_album' },
+        'https://music.youtube.com/watch?v=song-c', [{ id: 'song-a' }, { id: 'song-b' }, { id: 'song-c' }]), {
+        trackNumber: '3', discNumber: '1', albumPlaylistId: 'OLAK5uy_album'
+    });
+
+    assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-d' },
+        'https://www.youtube.com/watch?v=song-d&list=PL_user_playlist&index=9'), {
+        trackNumber: '', discNumber: '1', albumPlaylistId: ''
+    });
 });
 
 test('custom video tracks override a detected music source unless music mode is forced', () => {
