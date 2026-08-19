@@ -264,7 +264,7 @@
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
                     <img id="tgCoverPreview" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#e5e9f0" alt="">
-                    <button type="button" id="tgCoverUploadBtn">上传封面...</button>
+                    <button type="button" id="tgCoverUploadBtn">自定义封面上传</button>
                     <input id="tgCoverUpload" type="file" accept="image/*" hidden>
                 </div>
             </div>
@@ -342,6 +342,7 @@
     const tgCoverUltimateSplitRow = document.getElementById('tgCoverUltimateSplitRow');
     let tgShareTask = null;
     let tgUploadedCover = null;
+    let tgOriginalCoverDataUrl = null;
     const tgProgressDialog = document.getElementById('tgProgressDialog');
     const tgProgressTitle = document.getElementById('tgProgressTitle');
     const tgProgressError = document.getElementById('tgProgressError');
@@ -880,6 +881,7 @@
     async function showTelegramShare(task) {
         tgShareTask = task;
         tgUploadedCover = null;
+        tgOriginalCoverDataUrl = null;
         tgShareStatus.textContent = '正在读取频道配置...';
         tgShareForm.hidden = true;
         tgShareDialog.showModal();
@@ -939,6 +941,38 @@
         });
     }
 
+    async function getTelegramOriginalCoverDataUrl(task) {
+        if (tgOriginalCoverDataUrl) return tgOriginalCoverDataUrl;
+        if (!task?.id) throw new Error('任务不存在');
+        tgShareStatus.textContent = '正在获取原尺寸封面...';
+        const response = await fetch(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/thumbnail`, {
+            method: 'POST', cache: 'no-store'
+        });
+        if (response.status === 401) {
+            location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+            throw new Error('管理会话已失效');
+        }
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `原尺寸封面获取失败（HTTP ${response.status}）`);
+        }
+        const blob = await response.blob();
+        if (!blob.size || (blob.type && !blob.type.startsWith('image/'))) {
+            throw new Error('服务器没有返回有效的原尺寸封面');
+        }
+        tgOriginalCoverDataUrl = await fileToDataUrl(blob);
+        return tgOriginalCoverDataUrl;
+    }
+
+    async function resolveTelegramShareCover(select) {
+        if (select.value === 'upload') {
+            if (!tgUploadedCover) throw new Error('请先上传自定义封面');
+            return tgUploadedCover;
+        }
+        if (select.value === 'original') return getTelegramOriginalCoverDataUrl(tgShareTask);
+        return ''; // empty means the task's existing square cover on the server side
+    }
+
     tgSharePro.addEventListener('change', updateTgShareVisibility);
     tgShareUltimate.addEventListener('change', updateTgShareVisibility);
     tgCoverUploadBtn.addEventListener('click', () => tgCoverUpload.click());
@@ -975,17 +1009,13 @@
         captionBase = tgCaptionBaseSplit.value;
         captionPro = tgCaptionProSplit.value || captionBase;
         captionUltimate = tgCaptionUltimateSplit.value || captionBase;
-        // Build covers (three levels, each can be set independently)
-        let coverBase, coverPro, coverUltimate;
-        function resolveCover(select) {
-            if (select.value === 'upload') return tgUploadedCover || '';
-            if (select.value === 'original') return 'original';
-            return '';
-        }
-        coverBase = resolveCover(tgCoverBaseSelect);
-        coverPro = resolveCover(tgCoverProSelect) || coverBase;
-        coverUltimate = resolveCover(tgCoverUltimateSelect) || coverBase;
         try {
+            // Resolve each level independently. "original" is converted to the actual original-size image
+            // before POSTing, avoiding server-side fallback to the task's square cover.
+            const coverBase = await resolveTelegramShareCover(tgCoverBaseSelect);
+            const coverPro = await resolveTelegramShareCover(tgCoverProSelect);
+            const coverUltimate = await resolveTelegramShareCover(tgCoverUltimateSelect);
+            tgShareStatus.textContent = '正在创建发送任务...';
             const start = await api('/api/telegram/song-share', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

@@ -968,3 +968,43 @@ package script：
 
 文件：`server.js`、`pages/youtube-premium-dl.html`、`tests/features-2608B.test.cjs`
 
+
+### 7.13 Telegram 频道转发：原尺寸封面修复 + “自定义封面上传”标识
+
+**需求/现象**：
+- YouTube Premium 下载页的“转发到 Telegram 频道”面板选择“原尺寸”封面后，实际发送出的仍可能是任务内现有的正方形封面。
+- 面板底部的上传按钮原文案为“上传封面...”，用途不够明确，应标注为“自定义封面上传”。
+
+**排查结论**：
+- 前端原逻辑在选择“原尺寸”时只向 `/api/telegram/song-share` 发送字符串哨兵值 `original`，实际原图并没有随请求提交；因此最终是否能取到原图依赖服务端对该哨兵值的额外解释和回退逻辑。
+- 同时三级封面虽然注释说明“each can be set independently”，但 `Pro`/`Ultimate` 使用 `resolveCover(...) || coverBase`，当 Base 使用非默认封面而 Pro/Ultimate 明确选择“正方形”时，空字符串会被错误回退成 Base 封面，三级设置实际上并不完全独立。
+- 本次用户提供的 ZIP 中缺少 `server.js`（但 `package.json` 的 `main/start` 仍指向 `server.js`），因此不能基于该 ZIP 对主服务端的 song-share 实现做可信的直接修改。为避免混入远端或旧版本 `server.js`，本次在现有前端和既有 API 能力内闭环修复。
+
+**修改**（`pages/youtube-premium-dl.html`）：
+1. 底部 `tgCoverUploadBtn` 文案改为 **“自定义封面上传”**。
+2. 新增 `getTelegramOriginalCoverDataUrl(task)`：
+   - 当任一级别选择“原尺寸”时，发送前复用现有 `POST /api/youtube-premium/tasks/:id/thumbnail` 原尺寸封面接口；
+   - 读取服务端返回的真实图片 Blob，并转换成 Data URL；
+   - 同一次转发面板会话内缓存该 Data URL，Base/Pro/Ultimate 多处选择原尺寸时只取一次原图；
+   - 保留 401 管理会话失效处理、HTTP 错误和非图片响应校验。
+3. 新增 `resolveTelegramShareCover(select)`：
+   - `square` -> 传空值，继续使用服务端现有正方形任务封面；
+   - `original` -> 传真实原尺寸图片 Data URL，不再传 `original` 哨兵字符串；
+   - `upload` -> 传用户上传的自定义封面 Data URL；如果选了自定义但没有真正上传，明确报错而不是悄悄退回正方形。
+4. Base / Pro / Ultimate 三个级别分别独立解析封面，移除 `coverPro || coverBase`、`coverUltimate || coverBase` 的隐式继承，避免明确选择“正方形”却被 Base 非默认封面覆盖。
+
+**兼容性说明**：
+- 自定义封面原本已经通过 Data URL 传给 song-share 接口，因此“原尺寸”复用同一数据形态，不新增服务端协议字段。
+- 正方形仍保持原有空值语义，不改变现有默认封面流程。
+
+**验证**：
+- 新增 `tests/telegram-cover-regression.test.cjs`，覆盖：
+  - “自定义封面上传”文案；
+  - 原尺寸封面必须调用现有 thumbnail API 并转为实际 Data URL；
+  - 不再把 `original` 字符串作为封面值发送；
+  - Base / Pro / Ultimate 封面选择互相独立。
+- 对 `pages/youtube-premium-dl.html` 的内联 JavaScript 做 `node --check` 语法检查。
+- 对现有 `server/youtube-premium.js` 做 `node --check`。
+- 由于本次 ZIP 基线缺少 `server.js`，无法执行依赖主服务端入口的整套启动检查和既有 `tests/features-2608B.test.cjs`；该缺口来自输入包本身，不在本次改动中用其他版本文件覆盖。
+
+文件：`pages/youtube-premium-dl.html`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`
