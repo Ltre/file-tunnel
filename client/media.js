@@ -27,6 +27,7 @@
     class MediaController {
         constructor(deps) {
             this.deps = deps;
+            this.externalLog = deps.externalLog || ((event, details) => console.warn(`[external-dependency][webrtc-ice-services][${event}]`, details));
             this.connections = new Map();
             this.pendingCandidates = new Map();
             this.camera = null;
@@ -320,11 +321,26 @@
                     to: peerId, kind, sessionKey, type: 'ice-candidate', candidate: event.candidate
                 });
             };
+            pc.onicecandidateerror = event => {
+                this.externalLog('media-ice-server-error', {
+                    dependency: 'webrtc-ice-services', kind, sessionKey, peerId,
+                    url: event.url || '',
+                    errorCode: Number(event.errorCode) || 0,
+                    errorText: event.errorText || '',
+                    warning: '媒体 WebRTC 使用的公共/配置 STUN-TURN 服务或网络策略可能已变化。'
+                });
+            };
             pc.ontrack = event => {
                 const stream = event.streams?.[0] || new MediaStream([event.track]);
                 this.handleRemoteTrack(kind, sessionKey, peerId, stream);
             };
             pc.onconnectionstatechange = () => {
+                if (pc.connectionState === 'failed') {
+                    this.externalLog('media-peer-failed', {
+                        dependency: 'webrtc-ice-services', kind, sessionKey, peerId,
+                        warning: '媒体 WebRTC 连接失败；请检查 STUN/TURN、NAT、防火墙与浏览器网络策略。'
+                    });
+                }
                 if (['failed', 'closed'].includes(pc.connectionState)) this.closeConnection(key, false);
             };
             return pc;

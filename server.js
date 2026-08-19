@@ -70,6 +70,9 @@ const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = 
 const {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    finalizeYoutubeMusicTrackNumber,
+    findYoutubeMusicTrackPosition,
+    rankYoutubeMusicAlbumCandidates,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -755,7 +758,13 @@ app.post('/api/telegram/webhook/:secret?', async (req, res) => {
         return res.status(403).json({ ok: false, error: 'invalid-secret' });
     }
     res.json({ ok: true });
-    handleTelegramUpdate(req.body).catch(err => console.error('telegram webhook error:', err));
+    handleTelegramUpdate(req.body).catch(err => {
+        recordExternalDependencyEvent('telegram-bot-api', 'webhook-update-handler', {
+            level: 'error', endpoint: '/api/telegram/webhook', error: err,
+            hint: 'Telegram webhook payload/semantics may have changed, or this update exposed an integration incompatibility.',
+            details: { updateId: Number(req.body?.update_id) || undefined, updateKeys: Object.keys(req.body || {}).slice(0, 20) }
+        });
+    });
 });
 function normalizeStaticPath(filePath) {
     return filePath.replace(/\\/g, '/');
@@ -1566,12 +1575,10 @@ async function runSongShareJob(job, params) {
                 form.set('photo', new Blob([buffer]), 'cover.jpg');
             }
         }
-        const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendPhoto`, {
+        const result = await telegramFetchJson('sendPhoto', {
             method: 'POST',
             body: form
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || result.ok === false) throw new Error(result.description || `telegram-sendPhoto-failed`);
+        }, { operation: 'song-share-sendPhoto' });
         return result.result;
     }
 
@@ -1612,12 +1619,10 @@ async function runSongShareJob(job, params) {
             form.set('thumbnail', new Blob([thumbnail], { type: 'image/jpeg' }), 'thumbnail.jpg');
         }
         form.set('audio', audioBlob, fileName || 'song.m4a');
-        const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendAudio`, {
+        const result = await telegramFetchJson('sendAudio', {
             method: 'POST',
             body: form
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || result.ok === false) throw new Error(result.description || `telegram-sendAudio-failed`);
+        }, { operation: 'song-share-sendAudio' });
         return result.result;
     }
 
@@ -2172,6 +2177,16 @@ app.get('/api/debug-logs', adminAuth.requireAuth, (req, res) => {
     });
 });
 
+app.get('/api/admin/external-dependencies', adminAuth.requireAuth, (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const logs = debugLogs.filter(entry => entry.source === 'external-dependency').slice(-limit);
+    res.json({
+        generatedAt: new Date().toISOString(),
+        dependencies: EXTERNAL_DEPENDENCY_REGISTRY,
+        recentEvents: logs
+    });
+});
+
 // ==================== Socket.io 配置 ====================
 
 app.get('/api/short-codes/:shortCode', (req, res) => {
@@ -2215,6 +2230,50 @@ const sessions = new Map();
 const deviceSockets = new Map();
 const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
+const EXTERNAL_DEPENDENCY_REGISTRY = Object.freeze([
+    {
+        id: 'telegram-bot-api',
+        kind: 'remote-api',
+        systems: ['api.telegram.org', 'Telegram Bot API / file API / webhook'],
+        integrationPoints: ['telegramApi', 'sendPhoto', 'sendAudio', 'sendDocument', 'downloadTelegramFile', '/api/telegram/webhook'],
+        impact: 'Bot API schema/limits/auth/network changes can break tunnel forwarding, backups and song-channel publishing.'
+    },
+    {
+        id: 'youtube-yt-dlp',
+        kind: 'remote-crawler',
+        systems: ['youtube.com', 'music.youtube.com', 'yt-dlp YouTube extractor'],
+        integrationPoints: ['runYtDlpJson', 'spawnYtDlpCapture', 'YouTube Premium analysis/download', 'YouTube metadata/reference lookup'],
+        impact: 'YouTube page/player/signature/cookie/extractor changes can break parsing, formats, metadata and downloads.'
+    },
+    {
+        id: 'sns-yt-dlp',
+        kind: 'remote-crawler',
+        systems: ['TikTok', 'Facebook', 'Instagram', 'Threads', 'LINE', 'Twitter/X', 'yt-dlp extractors'],
+        integrationPoints: ['SNS URL parse/metadata scan', 'runYtDlpJson', 'runYtDlpDownload'],
+        impact: 'Third-party page/API/login/extractor changes can break SNS parsing or media recovery.'
+    },
+    {
+        id: 'yt-dlp-remote-components',
+        kind: 'remote-component',
+        systems: ['yt-dlp remote JS components', 'configured component provider (for example GitHub)'],
+        integrationPoints: ['getYtDlpRemoteComponentArgs'],
+        impact: 'Remote component availability/version changes can break YouTube signature solving.'
+    },
+    {
+        id: 'webrtc-ice-services',
+        kind: 'remote-network-service',
+        systems: ['Google public STUN', 'Cloudflare public STUN', 'stunprotocol.org public STUN', 'runtime-configured STUN/TURN services'],
+        integrationPoints: ['app.js createPeerConnection', 'client/media.js RTC config', 'client/device-camera.js RTC config'],
+        impact: 'STUN/TURN availability, DNS, credentials or policy changes can reduce or prevent WebRTC connectivity.'
+    },
+    {
+        id: 'local-media-toolchain',
+        kind: 'external-runtime',
+        systems: ['yt-dlp', 'yt-dlp-ejs/JS runtime', 'ffmpeg', 'ffprobe'],
+        integrationPoints: ['getYtDlpInvocation', 'spawnYtDlpCapture', 'spawnCapture', 'probeMediaFile'],
+        impact: 'Missing/incompatible executable versions can break crawler extraction, remuxing, thumbnails and probing.'
+    }
+]);
 const editorAssetRelays = new Map();
 const shortCodes = new Map();
 const magnets = new Map();
@@ -2493,6 +2552,43 @@ function recordDebugLog({ source, event, details, sessionId = null, deviceId = n
         console.log(`[debug][${entry.source}][${entry.event}]`, entry);
     }
 
+    return entry;
+}
+
+function describeExternalEndpoint(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw);
+        return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.slice(0, MAX_DEBUG_STRING_LENGTH);
+    } catch (_) {
+        return raw.replace(/bot\d+:[^/\s]+/gi, 'bot[redacted]').slice(0, MAX_DEBUG_STRING_LENGTH);
+    }
+}
+
+function recordExternalDependencyEvent(dependency, operation, options = {}) {
+    const level = ['info', 'warn', 'error'].includes(options.level) ? options.level : 'warn';
+    const dependencyId = sanitizeString(dependency || 'unknown-external', 80);
+    const operationName = sanitizeString(operation || 'unknown-operation', 100);
+    const error = options.error;
+    const details = {
+        dependency: dependencyId,
+        operation: operationName,
+        level,
+        endpoint: describeExternalEndpoint(options.endpoint),
+        upstreamStatus: Number(options.upstreamStatus) || undefined,
+        errorCode: sanitizeString(error?.cause?.code || error?.code || options.errorCode || '', 80),
+        error: sanitizeString(error?.message || options.message || '', 500),
+        hint: sanitizeString(options.hint || '', 500),
+        ...sanitizeDebugValue(options.details || {})
+    };
+    const entry = recordDebugLog({
+        source: 'external-dependency',
+        event: `${dependencyId}:${operationName}:${level}`,
+        details
+    });
+    const method = level === 'error' ? 'error' : (level === 'warn' ? 'warn' : 'info');
+    console[method](`[external-dependency][${dependencyId}][${operationName}]`, details);
     return entry;
 }
 
@@ -3075,6 +3171,86 @@ function normalizeYoutubeSourceUrl(value) {
     }
 }
 
+function getYoutubeMusicAlbumCandidateUrl(entry = {}) {
+    const values = [entry.webpage_url, entry.original_url, entry.url].map(value => String(value || '').trim()).filter(Boolean);
+    for (const value of values) {
+        if (/^https?:\/\//i.test(value) && /(?:music\.)?youtube\.com|youtu\.be/i.test(value)) return value;
+        if (/^\/browse\/[^/?#]+/i.test(value)) return `https://music.youtube.com${value}`;
+        if (/^browse\/[^/?#]+/i.test(value)) return `https://music.youtube.com/${value}`;
+    }
+    const browseId = String(entry.id || '').trim();
+    if (/^MP(?:RE|AD|ED|CL|TR)?[A-Za-z0-9_-]+$/i.test(browseId)) {
+        return `https://music.youtube.com/browse/${encodeURIComponent(browseId)}`;
+    }
+    const playlistId = String(entry.playlist_id || '').trim();
+    if (/^OLAK5uy_/i.test(playlistId)) {
+        return `https://music.youtube.com/playlist?list=${encodeURIComponent(playlistId)}`;
+    }
+    return '';
+}
+
+async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '', options = {}) {
+    const album = String(meta.album || '').trim();
+    if (!album || !meta.id) return '';
+    const albumArtist = String(
+        meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(' ') : meta.album_artists) ||
+        getStructuredArtistValue(meta) || meta.artist || ''
+    ).trim();
+    const query = [album, albumArtist].filter(Boolean).join(' ');
+    const searchUrl = `https://music.youtube.com/search?q=${encodeURIComponent(query)}#albums`;
+    let searchMeta;
+    try {
+        searchMeta = await runYtDlpJson(searchUrl, {
+            noPlaylist: false,
+            flatPlaylist: true,
+            cookiePath: options.cookiePath,
+            allowIgnoreNoFormatsFallback: false,
+            signal: options.signal,
+            timeoutMs: Math.min(Number(options.timeoutMs) || 45000, 60000),
+            operation: 'youtube-music-album-search'
+        });
+    } catch (error) {
+        recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-album-search', {
+            level: 'warn', endpoint: searchUrl, error,
+            hint: 'Track number fallback could not search YouTube Music albums; the song remains usable and Track will fall back to 1.'
+        });
+        return '';
+    }
+
+    const candidates = rankYoutubeMusicAlbumCandidates(meta, searchMeta?.entries).slice(0, 8);
+    const visited = new Set();
+    for (const candidate of candidates) {
+        const candidateUrl = getYoutubeMusicAlbumCandidateUrl(candidate);
+        if (!candidateUrl || visited.has(candidateUrl)) continue;
+        visited.add(candidateUrl);
+        try {
+            const albumMeta = await runYtDlpJson(candidateUrl, {
+                noPlaylist: false,
+                flatPlaylist: true,
+                cookiePath: options.cookiePath,
+                allowIgnoreNoFormatsFallback: false,
+                signal: options.signal,
+                timeoutMs: Math.min(Number(options.timeoutMs) || 45000, 60000),
+                operation: 'youtube-music-album-traverse'
+            });
+            const trackNumber = findYoutubeMusicTrackPosition(meta, albumMeta?.entries);
+            if (trackNumber) {
+                recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-track-number-resolved', {
+                    level: 'info', endpoint: candidateUrl,
+                    details: { videoId: String(meta.id), album, trackNumber, strategy: 'album-search-traverse' }
+                });
+                return trackNumber;
+            }
+        } catch (error) {
+            recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-album-traverse', {
+                level: 'warn', endpoint: candidateUrl, error,
+                hint: 'A candidate album could not be expanded; remaining candidates will still be tried.'
+            });
+        }
+    }
+    return '';
+}
+
 async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', options = {}) {
     let ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl);
     if (!ordinal.trackNumber && ordinal.albumPlaylistId && meta.id) {
@@ -3085,16 +3261,32 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
                 flatPlaylist: true,
                 cookiePath: options.cookiePath,
                 allowIgnoreNoFormatsFallback: false,
-                signal: options.signal
+                signal: options.signal,
+                operation: 'youtube-music-known-album-traverse'
             });
             ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl, playlistMeta?.entries);
-        } catch (_) {
-            // Track number is optional; keep the song usable when the album playlist cannot be queried.
+        } catch (error) {
+            recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-known-album-traverse', {
+                level: 'warn', endpoint: `https://www.youtube.com/playlist?list=${ordinal.albumPlaylistId}`, error,
+                hint: 'Known album playlist traversal failed; album search fallback will still be attempted.'
+            });
         }
+    }
+    if (!ordinal.trackNumber && meta.album && meta.id) {
+        const searchedTrackNumber = await findYoutubeMusicTrackNumberByAlbumSearch(meta, sourceUrl, options);
+        if (searchedTrackNumber) ordinal = { ...ordinal, trackNumber: searchedTrackNumber };
+    }
+    const trackNumber = finalizeYoutubeMusicTrackNumber(meta, ordinal.trackNumber);
+    if (!meta.track_number && !ordinal.trackNumber) {
+        recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-track-number-defaulted', {
+            level: 'warn', endpoint: sourceUrl,
+            message: 'No native or album-derived Track number was available; Track=1 was applied.',
+            details: { videoId: String(meta.id || ''), album: String(meta.album || ''), fallbackTrackNumber: '1' }
+        });
     }
     return {
         ...meta,
-        track_number: meta.track_number || ordinal.trackNumber || '',
+        track_number: trackNumber,
         disc_number: meta.disc_number || ordinal.discNumber || '1'
     };
 }
@@ -3281,7 +3473,17 @@ function getYtDlpFailureMessage(stderr, fallback) {
     if (/page needs to be reloaded|must be reloaded|reload the page/i.test(output)) {
         return 'YouTube 返回"页面需要重新加载"（通常是 cookies 已失效/被轮换，或触发机器人校验）。请在 /sns-cookies 重新导出包含 VISITOR_INFO1_LIVE、SOCS、LOGIN_INFO 等完整登录态的 cookies.txt 后重试；若仍失败请稍等片刻或更换代理出口节点';
     }
+    if (/unable to extract|extractor(?:\s+)?error|no video formats found|failed to extract/i.test(output)) {
+        return `外部平台页面/API 或 yt-dlp extractor 可能已经变化：${String(errorLine || fallback).replace(/^ERROR:\s*/i, '')}`;
+    }
+    if (/HTTP Error\s+(?:403|429)|Too Many Requests|rate.?limit/i.test(output)) {
+        return `外部平台拒绝或限制了抓取请求（可能是登录态、频率、IP策略或接口规则变化）：${String(errorLine || fallback).replace(/^ERROR:\s*/i, '')}`;
+    }
     return String(errorLine || fallback).replace(/^ERROR:\s*/i, '');
+}
+
+function getYtDlpDependencyId(url) {
+    return isYouTubeUrl(url) ? 'youtube-yt-dlp' : 'sns-yt-dlp';
 }
 
 function buildYtDlpEnv() {
@@ -3314,6 +3516,8 @@ function classifySnsMedia(sourceUrl, meta = {}) {
 
 function runYtDlpJson(url, options = {}) {
     return new Promise((resolve, reject) => {
+        const dependencyId = getYtDlpDependencyId(url);
+        const operation = options.operation || (options.flatPlaylist ? 'metadata-flat-playlist' : 'metadata-json');
         const args = [
             '--dump-single-json',
             '--skip-download'
@@ -3375,7 +3579,12 @@ function runYtDlpJson(url, options = {}) {
             child.kill('SIGTERM');
             finish();
             const detail = getYtDlpFailureMessage(stderr, '');
-            reject(new Error(`yt-dlp-timeout-${timeoutMs}ms${detail ? `: ${detail}` : ''}`));
+            const error = new Error(`yt-dlp-timeout-${timeoutMs}ms${detail ? `: ${detail}` : ''}`);
+            recordExternalDependencyEvent(dependencyId, operation, {
+                level: 'error', endpoint: url, error,
+                hint: 'External crawler timed out; check upstream availability, cookies/proxy and yt-dlp compatibility.'
+            });
+            reject(error);
         }, timeoutMs);
         signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted) return abort();
@@ -3387,7 +3596,13 @@ function runYtDlpJson(url, options = {}) {
             if (settled) return;
             settled = true;
             finish();
-            reject(new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message));
+            const error = new Error(err.code === 'ENOENT' ? 'yt-dlp-not-found' : err.message);
+            error.code = err.code;
+            recordExternalDependencyEvent('local-media-toolchain', 'yt-dlp-spawn', {
+                level: 'error', endpoint: url, error,
+                hint: 'yt-dlp executable/runtime is missing or could not be started.'
+            });
+            reject(error);
         });
         child.on('close', code => {
             if (settled) return;
@@ -3398,17 +3613,38 @@ function runYtDlpJson(url, options = {}) {
                     ((/challenge solver|signature solving failed/i.test(stderr) &&
                         /requested format is not available|only images are available/i.test(stderr)) ||
                         /sign in to confirm you(?:'|’)?re not a bot/i.test(stderr))) {
+                    recordExternalDependencyEvent(dependencyId, `${operation}-fallback-ignore-no-formats`, {
+                        level: 'warn', endpoint: url,
+                        message: getYtDlpFailureMessage(stderr, 'yt-dlp extractor/challenge fallback'),
+                        hint: 'Upstream extraction changed or requires authentication; retrying metadata-only fallback.'
+                    });
                     return runYtDlpJson(url, { ...options, ignoreNoFormats: true }).then(resolve, reject);
                 }
                 if (options.playerClientFallback !== false && !options.playerClient && /page needs to be reloaded/i.test(stderr)) {
+                    recordExternalDependencyEvent(dependencyId, `${operation}-fallback-player-client`, {
+                        level: 'warn', endpoint: url,
+                        message: getYtDlpFailureMessage(stderr, 'YouTube player client fallback'),
+                        hint: 'YouTube requested a reload; retrying alternate player clients without cache.'
+                    });
                     return runYtDlpJson(url, { ...options, playerClient: 'web_embedded,android,tv_embedded', bypassCache: true, playerClientFallback: false }).then(resolve, reject);
                 }
-                return reject(new Error(getYtDlpFailureMessage(stderr, `yt-dlp-exit-${code}`)));
+                const error = new Error(getYtDlpFailureMessage(stderr, `yt-dlp-exit-${code}`));
+                recordExternalDependencyEvent(dependencyId, operation, {
+                    level: 'error', endpoint: url, error,
+                    details: { exitCode: code, platform: getSocialPlatform(url) || 'unknown' },
+                    hint: 'External site/extractor/authentication behavior may have changed; inspect this log before treating it as an internal bug.'
+                });
+                return reject(error);
             }
             try {
                 resolve(JSON.parse(stdout));
             } catch (err) {
-                reject(new Error(`yt-dlp-json-parse-failed: ${err.message}`));
+                const error = new Error(`yt-dlp-json-parse-failed: ${err.message}`);
+                recordExternalDependencyEvent(dependencyId, `${operation}-json-parse`, {
+                    level: 'error', endpoint: url, error,
+                    hint: 'yt-dlp output contract may have changed or non-JSON diagnostics reached stdout.'
+                });
+                reject(error);
             }
         });
     });
@@ -3906,17 +4142,60 @@ function describeTelegramNetworkError(error) {
     return message || 'telegram-request-failed';
 }
 
-async function telegramApi(method, payload, token = getTelegramBotToken()) {
+async function telegramFetchJson(method, init = {}, options = {}) {
+    const token = options.token || getTelegramBotToken();
     if (!token) throw new Error('telegram-bot-disabled');
-    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    const endpoint = `https://api.telegram.org/bot[redacted]/${method}`;
+    let response;
+    try {
+        response = await fetch(`https://api.telegram.org/bot${token}/${method}`, init);
+    } catch (cause) {
+        const error = new Error(describeTelegramNetworkError(cause));
+        error.cause = cause;
+        recordExternalDependencyEvent('telegram-bot-api', options.operation || method, {
+            level: 'error', endpoint, error,
+            hint: 'Telegram API network/DNS/proxy availability may have changed.'
+        });
+        throw error;
+    }
+    let payload;
+    try {
+        payload = await response.json();
+    } catch (cause) {
+        const error = new Error(`Telegram Bot API 返回了无法解析的响应（HTTP ${response.status}），外部 API/代理响应格式可能已经变化`);
+        error.cause = cause;
+        recordExternalDependencyEvent('telegram-bot-api', `${options.operation || method}-response-parse`, {
+            level: 'error', endpoint, upstreamStatus: response.status, error,
+            hint: 'Expected Telegram Bot API JSON but received another response format.'
+        });
+        throw error;
+    }
+    if (!response.ok || payload?.ok === false) {
+        const error = new Error(payload?.description || `telegram-${method}-${response.status}`);
+        recordExternalDependencyEvent('telegram-bot-api', options.operation || method, {
+            level: 'error', endpoint, upstreamStatus: response.status, error,
+            details: { telegramErrorCode: Number(payload?.error_code) || undefined },
+            hint: 'Telegram Bot API rejected the request; permissions, limits or API behavior may have changed.'
+        });
+        throw error;
+    }
+    if (!payload || payload.ok !== true) {
+        const error = new Error(`telegram-${method}-unexpected-response`);
+        recordExternalDependencyEvent('telegram-bot-api', `${options.operation || method}-schema`, {
+            level: 'error', endpoint, upstreamStatus: response.status, error,
+            hint: 'Telegram Bot API response contract did not contain the expected ok=true marker.'
+        });
+        throw error;
+    }
+    return payload;
+}
+
+async function telegramApi(method, payload, token = getTelegramBotToken()) {
+    const result = await telegramFetchJson(method, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {})
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.ok === false) {
-        throw new Error(result.description || `telegram-${method}-failed`);
-    }
+    }, { token, operation: method });
     return result.result;
 }
 
@@ -3926,12 +4205,10 @@ async function uploadTelegramAssetBackup(asset, data) {
     form.set('chat_id', telegramConfig.backupChatId);
     form.set('caption', `Drop2Tunnel backup · ${asset.id}`);
     form.set('document', new Blob([data], { type: asset.type || 'application/octet-stream' }), asset.name || 'file');
-    const response = await fetch(`https://api.telegram.org/bot${getTelegramBotToken()}/sendDocument`, {
+    const payload = await telegramFetchJson('sendDocument', {
         method: 'POST',
         body: form
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.ok === false) throw new Error(payload.description || `telegram-sendDocument-${response.status}`);
+    }, { operation: 'asset-backup-sendDocument' });
     const document = payload.result?.document;
     if (!document?.file_id) throw new Error('telegram-repair-file-id-missing');
     const updatedAt = Date.now();
@@ -4023,6 +4300,17 @@ function getTelegramCloudOversizedFiles(files) {
 async function rejectTelegramCloudOversizedFiles(chatId, files) {
     const oversized = getTelegramCloudOversizedFiles(files);
     if (!oversized.length) return false;
+    recordExternalDependencyEvent('telegram-bot-api', 'getFile-size-policy-block', {
+        level: 'warn',
+        endpoint: TELEGRAM_GET_FILE_DOC_URL,
+        message: 'A file was blocked by the locally enforced Telegram Bot API getFile size limit.',
+        details: {
+            configuredLimitBytes: TELEGRAM_CLOUD_GET_FILE_MAX_SIZE,
+            blockedCount: oversized.length,
+            largestBlockedBytes: Math.max(...oversized.map(file => Number(file?.size) || 0))
+        },
+        hint: 'This limit mirrors an external Telegram API rule; re-check the upstream Bot API documentation if Telegram changes the limit.'
+    });
     const names = oversized.slice(0, 3).map(file => file.name || 'telegram-file').join('\n');
     const remaining = oversized.length > 3 ? `\n……以及另外 ${oversized.length - 3} 个文件` : '';
     await telegramSendMessage(chatId,
@@ -4063,8 +4351,27 @@ async function downloadTelegramFile(fileId, maxSize = TELEGRAM_CLOUD_GET_FILE_MA
         err.fileSize = expectedSize;
         throw err;
     }
-    const response = await fetch(`https://api.telegram.org/file/bot${getTelegramBotToken()}/${file.file_path}`);
-    if (!response.ok) throw new Error(`telegram-file-download-${response.status}`);
+    const endpoint = 'https://api.telegram.org/file/bot[redacted]/<file_path>';
+    let response;
+    try {
+        response = await fetch(`https://api.telegram.org/file/bot${getTelegramBotToken()}/${file.file_path}`);
+    } catch (cause) {
+        const error = new Error(describeTelegramNetworkError(cause));
+        error.cause = cause;
+        recordExternalDependencyEvent('telegram-bot-api', 'file-download', {
+            level: 'error', endpoint, error,
+            hint: 'Telegram file API could not be reached; check network/proxy and upstream availability.'
+        });
+        throw error;
+    }
+    if (!response.ok) {
+        const error = new Error(`telegram-file-download-${response.status}`);
+        recordExternalDependencyEvent('telegram-bot-api', 'file-download', {
+            level: 'error', endpoint, upstreamStatus: response.status, error,
+            hint: 'Telegram file API rejected the stored file path; file lifetime/limits/API behavior may have changed.'
+        });
+        throw error;
+    }
     return Buffer.from(await response.arrayBuffer());
 }
 
@@ -4491,6 +4798,16 @@ function findDownloadedSnsFile(prefix, predicate = () => true) {
 
 function spawnCapture(command, args, options = {}) {
     return new Promise((resolve, reject) => {
+        const commandName = path.basename(String(command || '')).toLowerCase();
+        const externallyManagedTool = options.ytDlp || /^(?:ffmpeg|ffprobe)(?:\.exe)?$/.test(commandName);
+        const reportToolFailure = (operation, error, extra = {}) => {
+            if (!externallyManagedTool || String(error?.message || '') === 'download-cancelled') return;
+            recordExternalDependencyEvent('local-media-toolchain', operation, {
+                level: 'error', error,
+                details: { command: commandName, ...extra },
+                hint: 'An external executable failed. Check installation/version compatibility before treating this as an application logic failure.'
+            });
+        };
         const child = spawn(command, args, {
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -4529,7 +4846,9 @@ function spawnCapture(command, args, options = {}) {
             settled = true;
             child.kill('SIGTERM');
             finish();
-            reject(new Error(options.timeoutError || `${path.basename(command)}-timeout`));
+            const error = new Error(options.timeoutError || `${path.basename(command)}-timeout`);
+            reportToolFailure(`${commandName || 'tool'}-timeout`, error);
+            reject(error);
         }, Math.max(1000, Number(options.timeoutMs) || 10 * 60 * 1000));
         signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted) return abort();
@@ -4537,7 +4856,10 @@ function spawnCapture(command, args, options = {}) {
             if (settled) return;
             settled = true;
             finish();
-            reject(new Error(err.code === 'ENOENT' ? `${path.basename(command)}-not-found` : err.message));
+            const error = new Error(err.code === 'ENOENT' ? `${path.basename(command)}-not-found` : err.message);
+            error.code = err.code;
+            reportToolFailure(`${commandName || 'tool'}-spawn`, error);
+            reject(error);
         });
         child.on('close', code => {
             if (settled) return;
@@ -4545,7 +4867,9 @@ function spawnCapture(command, args, options = {}) {
             finish();
             if (code !== 0) {
                 const fallback = stderr.trim().slice(-1000) || `${path.basename(command)}-exit-${code}`;
-                return reject(new Error(options.ytDlp ? getYtDlpFailureMessage(stderr, fallback) : fallback));
+                const error = new Error(options.ytDlp ? getYtDlpFailureMessage(stderr, fallback) : fallback);
+                reportToolFailure(`${commandName || 'tool'}-exit`, error, { exitCode: code });
+                return reject(error);
             }
             resolve({ stdout, stderr });
         });
@@ -4559,6 +4883,14 @@ function spawnYtDlpCapture(args, options = {}) {
         ...options,
         ytDlp: true,
         env: buildYtDlpEnv()
+    }).catch(error => {
+        if (options.sourceUrl && error?.message !== 'download-cancelled') {
+            recordExternalDependencyEvent(getYtDlpDependencyId(options.sourceUrl), options.operation || 'media-download', {
+                level: 'error', endpoint: options.sourceUrl, error,
+                hint: 'External media download failed; upstream site behavior, authentication, formats or extractor compatibility may have changed.'
+            });
+        }
+        throw error;
     }).finally(cookies.cleanup);
 }
 
@@ -4619,6 +4951,8 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
     if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
     if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
     await spawnYtDlpCapture(args, {
+        sourceUrl: url,
+        operation: 'sns-media-download',
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
         timeoutError: 'yt-dlp-download-timeout',
         signal: options.signal,
@@ -4736,6 +5070,8 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
     if (maxFileSize > 0) args.splice(args.indexOf('--write-thumbnail'), 0, '--max-filesize', String(maxFileSize));
     await spawnYtDlpCapture(args, {
+        sourceUrl: url,
+        operation: 'youtube-song-download',
         timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
         timeoutError: 'yt-dlp-song-download-timeout',
         signal: options.signal,
@@ -4833,6 +5169,8 @@ async function downloadYoutubePremiumOriginalThumbnail(taskId) {
             ...getYtDlpCookieArgs(task.url, requireYoutubePremiumCookies()),
             task.url
         ], {
+            sourceUrl: task.url,
+            operation: 'youtube-premium-original-cover',
             timeoutMs: Number(process.env.YOUTUBE_PREMIUM_THUMBNAIL_TIMEOUT_MS || 5 * 60 * 1000),
             timeoutError: 'youtube-premium-thumbnail-timeout'
         });
@@ -7043,10 +7381,11 @@ io.on('connection', (socket) => {
     });
 
     socket.on('debug-log', (data) => {
-        if (!HISTORY_DEBUG) return;
         if (!data || typeof data !== 'object') return;
 
         const { event, details, sessionId, deviceId, clientTimestamp } = data;
+        const isExternalDependencyEvent = typeof event === 'string' && event.startsWith('external-dependency-');
+        if (!HISTORY_DEBUG && !isExternalDependencyEvent) return;
         if (sessionId !== currentSession || deviceId !== currentDevice || typeof event !== 'string') {
             recordDebugLog({
                 source: 'server',
@@ -7062,7 +7401,7 @@ io.on('connection', (socket) => {
 
         const device = sessions.get(currentSession)?.devices.get(currentDevice);
         recordDebugLog({
-            source: 'client',
+            source: isExternalDependencyEvent ? 'external-dependency' : 'client',
             event,
             details,
             sessionId: currentSession,
@@ -7614,6 +7953,69 @@ function logStartup() {
     console.log(`🔒 Nginx should proxy public HTTP/HTTPS traffic to this upstream`);
     console.log(`🔒 CORS: ${ALLOWED_ORIGINS.join(', ')}`);
     console.log(`🎞️ Media tools: ffmpeg=${FFMPEG_COMMAND}; ffprobe=${FFPROBE_COMMAND}; yt-dlp ffmpeg-location=${getYtDlpFfmpegArgs()[1] || '(PATH)'}`);
+    console.log(`⚠️ External dependency audit: GET /api/admin/external-dependencies ; logs: /api/debug-logs?source=external-dependency`);
+}
+
+function auditExternalRuntimeDependencies() {
+    const checks = [];
+    const ytDlpInvocation = getYtDlpInvocation(['--version']);
+    checks.push({ name: 'yt-dlp', command: ytDlpInvocation.command, args: ytDlpInvocation.args });
+    checks.push({ name: 'ffmpeg', command: FFMPEG_COMMAND, args: ['-version'] });
+    checks.push({ name: 'ffprobe', command: FFPROBE_COMMAND, args: ['-version'] });
+
+    for (const check of checks) {
+        let result;
+        try {
+            result = spawnSync(check.command, check.args, {
+                encoding: 'utf8', windowsHide: true, env: buildYtDlpEnv(), timeout: 10000
+            });
+        } catch (error) {
+            recordExternalDependencyEvent('local-media-toolchain', `startup-${check.name}`, {
+                level: 'error', error,
+                hint: `${check.name} could not be executed; related media/crawler features will fail.`
+            });
+            continue;
+        }
+        if (result.error || result.status !== 0) {
+            const error = result.error || new Error(
+                String(result.stderr || result.stdout || `${check.name}-exit-${result.status}`).trim().slice(-500)
+            );
+            recordExternalDependencyEvent('local-media-toolchain', `startup-${check.name}`, {
+                level: 'error', error,
+                details: { status: result.status },
+                hint: `${check.name} is missing or incompatible; related features will fail until the runtime is repaired.`
+            });
+            continue;
+        }
+        const version = String(result.stdout || result.stderr || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || 'available';
+        recordExternalDependencyEvent('local-media-toolchain', `startup-${check.name}`, {
+            level: 'info', details: { version: version.slice(0, 180) }
+        });
+    }
+
+    const jsRuntime = String(process.env.SOCIAL_YTDLP_JS_RUNTIME || 'node').trim();
+    if (jsRuntime === 'node') {
+        recordExternalDependencyEvent('local-media-toolchain', 'startup-yt-dlp-js-runtime', {
+            level: 'info', details: { runtime: 'node', version: process.version }
+        });
+    } else {
+        const runtimeCommand = jsRuntime.split(':')[0].trim();
+        const executable = runtimeCommand ? locateExecutable(runtimeCommand) : '';
+        recordExternalDependencyEvent('local-media-toolchain', 'startup-yt-dlp-js-runtime', {
+            level: executable ? 'info' : 'error',
+            message: executable ? '' : `Configured yt-dlp JS runtime not found: ${runtimeCommand || jsRuntime}`,
+            details: { runtime: jsRuntime, executable: executable || '' },
+            hint: executable ? '' : 'YouTube signature solving may fail when the configured JS runtime is unavailable.'
+        });
+    }
+
+    const remoteComponents = String(process.env.SOCIAL_YTDLP_REMOTE_COMPONENTS || '').trim();
+    if (remoteComponents && remoteComponents !== 'false') {
+        recordExternalDependencyEvent('yt-dlp-remote-components', 'startup-configured', {
+            level: 'warn', details: { remoteComponents },
+            hint: 'This feature intentionally depends on a remote component provider; provider availability/version changes can break YouTube extraction.'
+        });
+    }
 }
 
 async function startServer() {
@@ -7622,6 +8024,7 @@ async function startServer() {
     migrateLegacyShortCodeStore();
     hydrateShortCodeCache();
     hydrateTelegramServerAssets();
+    auditExternalRuntimeDependencies();
     webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
 }
 

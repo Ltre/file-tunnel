@@ -10,6 +10,9 @@ const { pipeline } = require('node:stream/promises');
 const {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    finalizeYoutubeMusicTrackNumber,
+    findYoutubeMusicTrackPosition,
+    rankYoutubeMusicAlbumCandidates,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -134,6 +137,53 @@ test('YouTube Music song ordinals prefer native track/disc and can derive album 
         'https://www.youtube.com/watch?v=song-d&list=PL_user_playlist&index=9'), {
         trackNumber: '', discNumber: '1', albumPlaylistId: ''
     });
+});
+
+test('YouTube Music album traversal locates the true song position by video id before title fallback', () => {
+    const entries = [
+        { id: 'album-song-1', title: 'Prelude' },
+        { id: 'album-song-2', title: 'Same Song' },
+        { id: 'album-song-3', title: 'Same Song' },
+        { id: 'album-song-4', title: 'Finale' }
+    ];
+    assert.equal(findYoutubeMusicTrackPosition({ id: 'album-song-3', title: 'Same Song' }, entries), '3');
+    assert.equal(findYoutubeMusicTrackPosition({ title: 'Same Song' }, entries), '');
+    assert.equal(findYoutubeMusicTrackPosition({ title: 'Finale' }, entries), '4');
+});
+
+test('YouTube Music Track number falls back to 1 only after native and album-derived values are absent', () => {
+    assert.equal(finalizeYoutubeMusicTrackNumber({ track_number: 8 }, '3'), '8');
+    assert.equal(finalizeYoutubeMusicTrackNumber({}, '3'), '3');
+    assert.equal(finalizeYoutubeMusicTrackNumber({}, ''), '1');
+});
+
+test('real-world YouTube Music album fixture can recover 鹿港小鎮 as Track 1 from album order', () => {
+    const meta = {
+        id: 'pErfv9ss264',
+        track: '鹿港小鎮',
+        artist: '羅大佑',
+        album: '之乎者也'
+    };
+    const albumEntries = [
+        { id: 'pErfv9ss264', title: '鹿港小鎮' },
+        { id: 'fixture-track-2', title: '戀曲1980' },
+        { id: 'fixture-track-3', title: '童年' }
+    ];
+    assert.equal(findYoutubeMusicTrackPosition(meta, albumEntries), '1');
+    assert.equal(finalizeYoutubeMusicTrackNumber(meta, findYoutubeMusicTrackPosition(meta, albumEntries)), '1');
+});
+
+test('YouTube Music album search candidates prefer exact album and artist matches', () => {
+    const ranked = rankYoutubeMusicAlbumCandidates({
+        album: 'Example Album',
+        album_artist: 'Example Artist'
+    }, [
+        { id: 'MP_wrong', title: 'Example Album Deluxe', artist: 'Other Artist' },
+        { id: 'MP_exact', title: 'Example Album', artist: 'Example Artist' },
+        { id: 'MP_title', title: 'Example Album', artist: 'Someone Else' }
+    ]);
+    assert.equal(ranked[0].id, 'MP_exact');
+    assert.equal(ranked[1].id, 'MP_title');
 });
 
 test('custom video tracks override a detected music source unless music mode is forced', () => {

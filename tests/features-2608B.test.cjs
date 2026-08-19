@@ -122,3 +122,31 @@ test('Telegram share panel always shows per-level caption/cover fields without t
   assert.match(page, /\[hidden\] \{ display:none !important; \}/);
   assert.match(page, /let showPro = tgSharePro\.checked/);
 });
+
+test('external integrations expose a centralized dependency inventory and always-on failure diagnostics', () => {
+  const server = read('server.js');
+  const app = read('app.js');
+  const media = read('client/media.js');
+  const camera = read('client/device-camera.js');
+  for (const dependency of [
+    'telegram-bot-api',
+    'youtube-yt-dlp',
+    'sns-yt-dlp',
+    'yt-dlp-remote-components',
+    'webrtc-ice-services',
+    'local-media-toolchain'
+  ]) {
+    assert.ok(server.includes(`id: '${dependency}'`), dependency);
+  }
+  assert.match(server, /function recordExternalDependencyEvent/);
+  assert.match(server, /source: 'external-dependency'/);
+  assert.match(server, /\/api\/admin\/external-dependencies/);
+  assert.match(server, /function telegramFetchJson/);
+  assert.match(server, /function auditExternalRuntimeDependencies/);
+  assert.match(server, /youtube-music-album-search/);
+  assert.match(server, /youtube-music-album-traverse/);
+  assert.match(server, /No native or album-derived Track number was available; Track=1 was applied/);
+  assert.match(app, /webrtc-ice-server-error/);
+  assert.match(media, /media-ice-server-error/);
+  assert.match(camera, /device-camera-ice-server-error/);
+});

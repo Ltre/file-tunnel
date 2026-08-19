@@ -18,6 +18,67 @@ function normalizePositiveOrdinal(value) {
     return Number.isFinite(number) && number > 0 ? String(number) : '';
 }
 
+function normalizeYoutubeMusicLookupText(value) {
+    return String(value || '')
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/[\s\p{P}\p{S}]+/gu, ' ')
+        .trim();
+}
+
+function finalizeYoutubeMusicTrackNumber(meta = {}, derivedTrackNumber = '') {
+    return normalizePositiveOrdinal(meta.track_number) || normalizePositiveOrdinal(derivedTrackNumber) || '1';
+}
+
+function findYoutubeMusicTrackPosition(meta = {}, playlistEntries = []) {
+    if (!Array.isArray(playlistEntries) || !playlistEntries.length) return '';
+    const wantedId = String(meta.id || '').trim();
+    if (wantedId) {
+        const index = playlistEntries.findIndex(entry => {
+            const entryId = String(entry?.id || '').trim();
+            if (entryId && entryId === wantedId) return true;
+            return [entry?.url, entry?.webpage_url, entry?.original_url]
+                .filter(Boolean)
+                .some(value => String(value).includes(wantedId));
+        });
+        if (index >= 0) return String(index + 1);
+    }
+
+    // Some flat-playlist responses may omit video IDs. Only use title matching when it
+    // resolves to one unique entry; duplicate song names in the same album are otherwise
+    // too risky to guess.
+    const wantedTitle = normalizeYoutubeMusicLookupText(meta.track || meta.title || meta.fulltitle);
+    if (!wantedTitle) return '';
+    const titleMatches = playlistEntries
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => normalizeYoutubeMusicLookupText(entry?.track || entry?.title || entry?.fulltitle) === wantedTitle);
+    return titleMatches.length === 1 ? String(titleMatches[0].index + 1) : '';
+}
+
+function rankYoutubeMusicAlbumCandidates(meta = {}, entries = []) {
+    const album = normalizeYoutubeMusicLookupText(meta.album || meta.playlist_title);
+    const artist = normalizeYoutubeMusicLookupText(
+        meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(' ') : meta.album_artists) ||
+        (Array.isArray(meta.artists) ? meta.artists.join(' ') : meta.artist)
+    );
+    return (Array.isArray(entries) ? entries : [])
+        .map((entry, index) => {
+            const title = normalizeYoutubeMusicLookupText(entry?.album || entry?.title || entry?.playlist_title);
+            const entryArtist = normalizeYoutubeMusicLookupText(
+                entry?.album_artist || (Array.isArray(entry?.album_artists) ? entry.album_artists.join(' ') : entry?.album_artists) ||
+                (Array.isArray(entry?.artists) ? entry.artists.join(' ') : entry?.artist) || entry?.channel || entry?.uploader
+            );
+            let score = 0;
+            if (album && title === album) score += 100;
+            else if (album && title && (title.includes(album) || album.includes(title))) score += 45;
+            if (artist && entryArtist === artist) score += 30;
+            else if (artist && entryArtist && (entryArtist.includes(artist) || artist.includes(entryArtist))) score += 12;
+            return { entry, index, score };
+        })
+        .sort((left, right) => right.score - left.score || left.index - right.index)
+        .map(item => item.entry);
+}
+
 function getYoutubeAlbumPlaylistId(meta = {}, sourceUrl = '') {
     let sourceListId = '';
     try {
@@ -38,9 +99,7 @@ function resolveYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', playlistE
             } catch (_) {}
         }
         if (!trackNumber && meta.id && Array.isArray(playlistEntries)) {
-            const wantedId = String(meta.id);
-            const index = playlistEntries.findIndex(entry => String(entry?.id || entry?.url || '').includes(wantedId));
-            if (index >= 0) trackNumber = String(index + 1);
+            trackNumber = findYoutubeMusicTrackPosition(meta, playlistEntries);
         }
     }
     return {
@@ -494,6 +553,10 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
 module.exports = {
     createYoutubePremiumService,
     extractYoutubeMetadataYear,
+    finalizeYoutubeMusicTrackNumber,
+    findYoutubeMusicTrackPosition,
+    normalizeYoutubeMusicLookupText,
+    rankYoutubeMusicAlbumCandidates,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,

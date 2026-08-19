@@ -553,6 +553,26 @@ function historyLog(event, details = {}) {
     }
 }
 
+function externalDependencyClientLog(event, details = {}) {
+    const normalizedEvent = `external-dependency-${String(event || 'unknown').slice(0, 80)}`;
+    const entry = {
+        event: normalizedEvent,
+        details,
+        clientTimestamp: new Date().toISOString()
+    };
+    console.warn(`[external-dependency][client][${event}]`, {
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        ...details
+    });
+    if (!sendClientDebugLog(entry)) {
+        state.debugLogQueue.push(entry);
+        if (state.debugLogQueue.length > MAX_CLIENT_DEBUG_LOGS) {
+            state.debugLogQueue.splice(0, state.debugLogQueue.length - MAX_CLIENT_DEBUG_LOGS);
+        }
+    }
+}
+
 function sendClientDebugLog(entry) {
     if (!state.socket || !state.socket.connected || !state.debugLogReady) {
         return false;
@@ -1619,6 +1639,7 @@ function ensureDeviceCameraBridge() {
         getSocket: () => state.socket,
         getSelfDeviceId: () => state.deviceId,
         getSelfDeviceName: () => state.deviceName,
+        externalLog: (event, details) => externalDependencyClientLog(event, details),
         toast: message => showAppToast(message)
     });
     return deviceCameraBridge;
@@ -2051,6 +2072,13 @@ function stopTunnelHeartbeat() {
 
 // ==================== WebRTC P2P ====================
 async function createPeerConnection(deviceId) {
+    const reportExternalIceDependency = (event, details) => {
+        if (typeof externalDependencyClientLog === 'function') {
+            externalDependencyClientLog(event, details);
+        } else {
+            console.warn(`[external-dependency][webrtc-ice-services][${event}]`, details);
+        }
+    };
     const config = {
         iceServers: [
             // Google STUN servers
@@ -2082,6 +2110,17 @@ async function createPeerConnection(deviceId) {
         }
     };
 
+    pc.onicecandidateerror = (event) => {
+        reportExternalIceDependency('webrtc-ice-server-error', {
+            dependency: 'webrtc-ice-services',
+            peerDeviceId: deviceId,
+            url: event.url || '',
+            errorCode: Number(event.errorCode) || 0,
+            errorText: event.errorText || '',
+            warning: '公共 STUN/TURN 服务、DNS、浏览器策略或网络环境可能已变化；P2P 可能降级或失败。'
+        });
+    };
+
     pc.oniceconnectionstatechange = () => {
         console.log('ICE connection state for', deviceId, ':', pc.iceConnectionState);
         historyLog('p2p-ice-state', {
@@ -2094,6 +2133,12 @@ async function createPeerConnection(deviceId) {
             console.info('P2P connection temporarily disconnected with', deviceId);
         } else if (pc.iceConnectionState === 'failed') {
             console.warn('P2P connection failed with', deviceId);
+            reportExternalIceDependency('webrtc-ice-failed', {
+                dependency: 'webrtc-ice-services',
+                peerDeviceId: deviceId,
+                iceConnectionState: pc.iceConnectionState,
+                warning: 'ICE 已失败；请检查公共 STUN 可达性、NAT/防火墙以及浏览器网络策略变化。'
+            });
             if (pc.iceConnectionState === 'failed') {
                 editorAssetP2PUnavailablePeers.set(deviceId, Date.now() + EDITOR_ASSET_P2P_COOLDOWN);
             }
@@ -3273,6 +3318,7 @@ function initMediaController() {
         getSessionId: () => state.sessionId,
         getDeviceId: () => state.deviceId,
         log: historyLog,
+        externalLog: (event, details) => externalDependencyClientLog(event, details),
         onLocalCamera: (stream, active) => showCameraStream(stream, active, true),
         onRemoteCamera: stream => showCameraStream(stream, Boolean(stream), false),
         onRemoteAudio: (kind, sessionKey, peerId, stream) => playRemoteAudio(kind, sessionKey, peerId, stream),

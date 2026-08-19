@@ -22,6 +22,7 @@
             this.getSelfDeviceName = options.getSelfDeviceName || (() => '当前设备');
             this.getRtcConfig = options.getRtcConfig || (() => DEFAULT_RTC_CONFIG);
             this.toast = options.toast || (() => {});
+            this.externalLog = options.externalLog || ((event, details) => console.warn(`[external-dependency][webrtc-ice-services][${event}]`, details));
             this.sessions = new Map();
             this.pendingRequests = new Map();
             this.boundSocket = null;
@@ -183,6 +184,17 @@
                     });
                 } catch (_) {}
             };
+            pc.onicecandidateerror = event => {
+                this.externalLog('device-camera-ice-server-error', {
+                    dependency: 'webrtc-ice-services',
+                    requestId,
+                    targetDeviceId,
+                    url: event.url || '',
+                    errorCode: Number(event.errorCode) || 0,
+                    errorText: event.errorText || '',
+                    warning: '摄像头 WebRTC 使用的公共 STUN/TURN、DNS、浏览器策略或网络环境可能已变化。'
+                });
+            };
             pc.ontrack = event => {
                 session.remoteStream ||= new MediaStream();
                 event.streams?.[0]?.getTracks().forEach(track => {
@@ -192,6 +204,12 @@
                 this.attachRemoteStream(requestId, session.remoteStream);
             };
             pc.onconnectionstatechange = () => {
+                if (pc.connectionState === 'failed') {
+                    this.externalLog('device-camera-peer-failed', {
+                        dependency: 'webrtc-ice-services', requestId, targetDeviceId,
+                        warning: '摄像头 WebRTC 连接失败；请检查 STUN/TURN 可达性与 NAT/防火墙策略。'
+                    });
+                }
                 if (['failed', 'closed'].includes(pc.connectionState)) this.stopSession(requestId, false);
             };
             return pc;

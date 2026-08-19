@@ -1122,3 +1122,107 @@ package script：
 - 本轮没有执行真实 yt-dlp 下载、没有读取/修改真实 Cookie、没有向真实 Telegram 频道发送测试消息；Telegram 客户端最终是否展示该 thumbnail 仍需线上 Bot API 实发验收。
 
 文件：`server.js`、`server/youtube-premium.js`、`tests/youtube-premium.test.cjs`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`
+
+### 7.17 外部系统变化防护审计 + YouTube Music 专辑遍历补 Track
+
+**需求**：
+1. 系统存在 yt-dlp/外部站点、Telegram Bot API、公共 STUN 等外部依赖。外部页面、API、协议规则、限额或本地第三方工具版本变化时，需要让异常具备明显的错误、告警与可追踪日志，避免被误判成 Drop2Tunnel 内部随机故障。
+2. YouTube Premium 对真正歌曲且存在所属专辑时，若 yt-dlp 没有直接返回 Track，应继续进入专辑遍历定位当前歌曲；仍无法取得时 Track 默认 `1`。
+
+#### 外部依赖面审计
+
+本轮按源码中的出站 URL、`fetch()`、yt-dlp 调用、外部二进制进程、WebRTC ICE 配置逐项检查。确认的运行时外部依赖如下：
+
+| 依赖 | 主要接入点 | 外部变化可能造成的影响 | 本轮防护 |
+| --- | --- | --- | --- |
+| Telegram Bot API / file API / webhook | `telegramApi()`、歌曲分享 `sendPhoto/sendAudio`、备份 `sendDocument`、`downloadTelegramFile()`、`/api/telegram/webhook` | API 返回结构、权限、限额、文件规则、网络/代理变化导致转发、备份、Bot 收发失败 | 统一 Telegram JSON 请求层；网络/HTTP/API-schema 错误进入 `external-dependency`；token 始终脱敏；webhook handler 异常记录 update 类型摘要 |
+| YouTube / YouTube Music + yt-dlp | `runYtDlpJson()`、`spawnYtDlpCapture()`、Premium 分析/下载、参考信息、专辑查找 | 页面/player/signature/cookie/格式/extractor 变化导致解析、格式枚举、元信息、下载失败 | timeout/spawn/非零退出/JSON contract/fallback 全部记录外部依赖日志；已知签名、Bot challenge、reload、403/429/extractor 变化给出明确错误 |
+| TikTok / Facebook / Instagram / Threads / LINE / Twitter/X + yt-dlp | SNS URL 解析、metadata scan、下载与恢复 | 各站页面/API/登录态/extractor 变化 | 与 yt-dlp 统一错误分类，标记为 `sns-yt-dlp`，最终错误仍回传现有任务状态 |
+| yt-dlp remote components（仅配置时） | `getYtDlpRemoteComponentArgs()` | 远端组件提供方不可用或组件版本变化导致 YouTube signature solving 失败 | 启动时若启用 remote components 明确 warning；运行失败仍走 yt-dlp 外部依赖日志 |
+| WebRTC ICE 服务 | `app.js` 文件 P2P；`client/media.js` 媒体；`client/device-camera.js` 设备摄像头 | Google/Cloudflare/stunprotocol 公共 STUN，或 runtime 自定义 STUN/TURN 的 DNS、凭据、服务策略变化导致 P2P/媒体失败 | 三条 RTC 路径均监听 `icecandidateerror` / connection failed；浏览器控制台明确 warning，并把事件通过 Socket.IO 写入服务端 `external-dependency` 日志，即使 HISTORY_DEBUG 未打开也保留 |
+| 本机第三方媒体/抓取工具链 | `yt-dlp`、yt-dlp JS runtime、`ffmpeg`、`ffprobe` | 程序缺失、版本不兼容、执行异常 | 启动时做非阻断版本/可执行性检查；runtime timeout/spawn/exit 失败统一记录；不会因为诊断检查失败阻止不相关的隧道功能启动 |
+
+同时检查了其它 URL/网络调用：
+- `client/light-transfer.js` 的网络加速 URL 来自同一光媒任务的 Drop2Tunnel provider，不属于固定第三方 API；
+- 自动同步 cookies 浏览器扩展只调用用户配置的 Drop2Tunnel 自身 `/api/sns-cookie-sync`；
+- PWA host manifest、Nginx upstream、浏览器到本服务的 `/api/*` 均属于本系统部署/内部接口；
+- `pages/sns-cookies.html` 的 GitHub URL只是 yt-dlp 官方说明链接，不是运行时 API 接入点；
+- 项目未发现运行时 CDN script/style 依赖。
+
+#### 统一外部依赖日志与可观测性
+
+`server.js` 新增：
+- `EXTERNAL_DEPENDENCY_REGISTRY`：登记 Telegram、YouTube/yt-dlp、SNS/yt-dlp、remote component、WebRTC ICE、local media toolchain，并列出具体 integration points / impact；
+- `recordExternalDependencyEvent()`：所有此类事件统一使用 `source = external-dependency`；warning/error 无论 `HISTORY_DEBUG` 是否开启都输出服务端控制台并进入内存诊断日志；
+- endpoint 只保留 protocol/host/path，Telegram Bot token 使用 `[redacted]`，不记录 cookies 内容；
+- 管理员接口 `GET /api/admin/external-dependencies`：返回依赖清单与最近外部依赖事件；
+- 原有 `GET /api/debug-logs?source=external-dependency` 可直接过滤查看；
+- 启动日志明确打印上述诊断入口。
+
+Telegram：
+- 新增 `telegramFetchJson()`，将原本散落的 `telegramApi()`、歌曲频道 `sendPhoto/sendAudio`、资产备份 `sendDocument` 收口到统一错误层；
+- 网络/DNS/代理异常、HTTP 状态异常、Telegram `ok=false`、非 JSON/意外 schema 都有明确 external-dependency 记录；
+- `downloadTelegramFile()` 的文件 API fetch 同样单独记录；
+- Bot webhook handler 抛错时记录 update id / update keys，不记录消息正文；
+- 本地 20MB `getFile` 拦截发生时记录 warning，明确该阈值属于跟随 Telegram 外部规则的本地策略，未来上游限额变化时可快速定位。
+
+WebRTC：
+- `app.js` 普通 P2P、`client/media.js`、`client/device-camera.js` 都新增 ICE server 错误与连接失败提示；
+- 客户端 `externalDependencyClientLog()` 不依赖普通 `HISTORY_DEBUG`，已加入隧道且 Socket 在线时可上报服务端；
+- 服务端 `debug-log` 对 `external-dependency-*` 事件特判为 always-on，并保存为统一 `external-dependency` source。
+
+外部工具链：
+- `auditExternalRuntimeDependencies()` 在启动时检查 yt-dlp / ffmpeg / ffprobe 版本与可执行性；
+- 检查 yt-dlp 使用的 JS runtime；
+- custom remote components 启用时明确提示这是额外远程依赖；
+- 检查仅用于诊断，不让 yt-dlp 缺失阻断纯隧道/聊天等其它功能。
+
+#### YouTube Premium Track：三级回退
+
+原实现的问题：
+- `resolveYoutubeMusicOrdinalMetadata()` 已能使用 yt-dlp 原生 `track_number`；
+- 如果 URL/metadata 已经带 `OLAK5uy_...` 专辑 playlist，也可以按 `playlist_index` / URL `index` / entries 中 video ID 找位置；
+- 但真正的 YouTube Music 单曲链接经常只含 `v=`，即使 metadata 有 `album`，也未必带 `playlist_id/list`。因此此前根本不会进入专辑列表遍历，Track 会保持空。
+
+本轮改为：
+1. **原生字段优先**：合法 `meta.track_number` 直接使用；
+2. **已知专辑 playlist**：若已有 `OLAK5uy_...`，继续展开该 album playlist，并按当前 video ID 定位 `index + 1`；
+3. **按 album 反查并遍历**：若歌曲具有 `album + video id` 但没有可用专辑 playlist：
+   - 使用 `album + album_artist/artist` 构造 YouTube Music `search?...#albums`；
+   - 对 album search entries 按专辑名、艺术家相关度排序；
+   - 最多展开前 8 个候选 album；
+   - 在每个候选专辑 entries 中优先按**当前 video ID**精确定位；
+   - 只有 entries 缺 ID 且歌曲标题在该专辑中**唯一匹配**时才允许标题兜底，避免同专辑重名歌曲误判；
+4. **最终默认 1**：原生值、已知专辑遍历、album search 遍历全部无法取得后，`Track=1`；`Disc` 继续保持缺失时默认 `1`。
+
+专辑搜索/遍历本身也属于外部 crawler 操作：搜索失败、候选专辑展开失败都会留下 `youtube-yt-dlp` warning，但不会把整个歌曲任务打成失败；仍按需求进入 `Track=1`。
+
+新增纯逻辑函数：
+- `findYoutubeMusicTrackPosition()`：video ID 优先、唯一标题兜底；
+- `rankYoutubeMusicAlbumCandidates()`：对专辑搜索结果排序；
+- `finalizeYoutubeMusicTrackNumber()`：严格落实 `native -> derived -> 1`。
+
+#### 真实歌曲验证边界
+
+- 使用真实 YouTube Music 歌曲 fixture：`pErfv9ss264`（羅大佑《鹿港小鎮》，所属专辑《之乎者也》）；公开专辑曲目资料中该曲位于第 1 首，本轮 regression fixture 验证 album entries 遍历得到 Track `1`。
+- 本次执行容器本身没有安装 yt-dlp，输入 ZIP 也没有附带 yt-dlp/cookies；尝试临时下载官方 yt-dlp 时容器 DNS 无法解析 `github.com`。因此**没有伪称完成真实 Premium cookie + yt-dlp 联网下载**。
+- 实际生产环境只要 yt-dlp 能正常访问 YouTube Music，上述 album search / traverse 会真实执行；若上游再次改变导致搜索失效，系统会留下明确 external-dependency warning 并安全回退 Track `1`。
+
+#### 回归验证
+
+- `node --check server.js`：通过。
+- `node --check server/youtube-premium.js`：通过。
+- `node --check app.js`：通过。
+- `node --check client/media.js`：通过。
+- `node --check client/device-camera.js`：通过。
+- YouTube Premium：16/16 通过（新增专辑 entries video-ID 定位、唯一标题兜底、native/derived/default=1、真实歌曲 fixture、album candidate ranking）。
+- 2608B 功能回归：9/9 通过（新增外部依赖 registry / logs / Telegram 收口 / Track 搜索 / RTC 告警静态断言）。
+- Telegram 专项：8/8 通过。
+- P2P 回归：38/38 通过。最初新增 RTC 告警时独立 VM 单测暴露 `externalDependencyClientLog` 不在抽取上下文的问题，随后把 `createPeerConnection()` 内的告警改为安全探测并在缺少全局日志器时退回 `console.warn`，最终 38/38。
+
+文件：`server.js`、`server/youtube-premium.js`、`app.js`、`client/media.js`、`client/device-camera.js`、`tests/youtube-premium.test.cjs`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`
+
+**部署构建补充验证**：
+- `node tools/deploy/build.mjs --profile txsl --out .dist-check-260820`：构建成功；当前环境未安装 Terser，构建器按既有降级策略生成 hashed assets/cache 产物。
+- `node tools/deploy/verify.mjs --profile txsl --dist .dist-check-260820`：仍在构建产物 `server.js` 的代理重拉代码顶层 `return` 处报 `Illegal return statement`。已用本次用户原始 ZIP 的 `server.js` 对照，输入基线同一位置原本就存在该顶层 `return`；这与 `7.14` 已记录的 deploy verifier 基线兼容问题一致，本轮没有为无关需求擅自改动该启动结构。
+- 本次执行环境没有 `node_modules`，所以未直接启动完整 Express/Socket.IO 服务进程；所有不依赖安装包的源码语法、专项/回归测试已实际执行并通过。
