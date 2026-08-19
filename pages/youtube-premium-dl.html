@@ -286,6 +286,19 @@
     </div>
 </dialog>
 
+<dialog id="tgProgressDialog">
+    <div class="dialog-head"><strong id="tgProgressTitle">发送到 Telegram 频道</strong><button type="button" data-close-tg-progress aria-label="关闭">×</button></div>
+    <div class="dialog-body">
+        <div id="tgProgressError" class="error-text" hidden style="margin-bottom:10px"></div>
+        <div id="tgProgressSteps"></div>
+        <div id="tgProgressMessages" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+            <strong>已发送的消息链接</strong>
+            <div id="tgProgressMessageList" style="margin-top:8px"></div>
+        </div>
+        <div class="dialog-actions" style="margin-top:12px"><button type="button" id="tgReShareBtn" hidden>重新转发</button><button type="button" data-close-tg-progress>关闭</button></div>
+    </div>
+</dialog>
+
 <script src="/client/cache-store.js"></script>
 <script src="/client/youtube-premium-cache.js"></script>
 <script>
@@ -346,6 +359,14 @@
     const tgCoverUltimateSplitRow = document.getElementById('tgCoverUltimateSplitRow');
     let tgShareTask = null;
     let tgUploadedCover = null;
+    const tgProgressDialog = document.getElementById('tgProgressDialog');
+    const tgProgressTitle = document.getElementById('tgProgressTitle');
+    const tgProgressError = document.getElementById('tgProgressError');
+    const tgProgressSteps = document.getElementById('tgProgressSteps');
+    const tgProgressMessages = document.getElementById('tgProgressMessages');
+    const tgProgressMessageList = document.getElementById('tgProgressMessageList');
+    const tgReShareBtn = document.getElementById('tgReShareBtn');
+    let tgSharePolling = null;
     const tagDialog = document.getElementById('tagDialog');
     const currentTags = document.getElementById('currentTags');
     const tagInput = document.getElementById('tagInput');
@@ -970,11 +991,18 @@
     });
     document.querySelectorAll('[data-close-tg-share]').forEach(button => button.addEventListener('click', () => tgShareDialog.close()));
     tgShareDialog.addEventListener('click', event => { if (event.target === tgShareDialog) tgShareDialog.close(); });
+    document.querySelectorAll('[data-close-tg-progress]').forEach(button => button.addEventListener('click', () => tgProgressDialog.close()));
+    tgProgressDialog.addEventListener('click', event => { if (event.target === tgProgressDialog) tgProgressDialog.close(); });
+    tgReShareBtn.addEventListener('click', () => {
+        if (!tgShareTask) return;
+        tgProgressDialog.close();
+        showTelegramShare(tgShareTask);
+    });
 
     tgShareConfirm.addEventListener('click', async () => {
         if (!tgShareTask) return;
         tgShareConfirm.disabled = true;
-        tgShareStatus.textContent = '正在发送到 Telegram...';
+        tgShareStatus.textContent = '正在创建发送任务...';
         const sendPro = tgSharePro.checked;
         const sendUltimate = tgShareUltimate.checked;
         const ultimateMode = document.querySelector('input[name="tgUltimateMode"]:checked')?.value || 'formal';
@@ -1009,7 +1037,7 @@
             coverUltimate = resolveCover(tgCoverUltimateSelect) || coverBase;
         }
         try {
-            const result = await api('/api/telegram/song-share', {
+            const start = await api('/api/telegram/song-share', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1025,16 +1053,125 @@
                     coverUltimate
                 })
             });
-            tgShareStatus.textContent = `发送完成，共创建 ${result.createdMessages?.length || 0} 条消息。`;
-            notice.textContent = '已转发到 Telegram 频道。';
+            tgShareStatus.textContent = '';
             tgShareDialog.close();
+            startTelegramSharePolling(start.jobId, tgShareTask);
         } catch (error) {
             tgShareStatus.textContent = `发送失败：${error.message}`;
-            if (error.message.includes('rollback')) tgShareStatus.textContent += '（已回滚删除已发送的消息）';
         } finally {
             tgShareConfirm.disabled = false;
         }
     });
+
+    function tgStepIcon(status) {
+        if (status === 'done') return '✅';
+        if (status === 'running') return '⏳';
+        if (status === 'failed') return '❌';
+        return '⏺';
+    }
+
+    function renderTgShareSteps(steps) {
+        tgProgressSteps.replaceChildren();
+        for (const step of (steps || [])) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;';
+            const icon = document.createElement('span');
+            icon.textContent = tgStepIcon(step.status);
+            icon.style.flexShrink = '0';
+            const label = document.createElement('span');
+            label.style.flex = '1';
+            label.textContent = step.detail ? `${step.label} — ${step.detail}` : step.label;
+            row.append(icon, label);
+            if (step.link) {
+                const link = document.createElement('a');
+                link.href = step.link;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = '查看';
+                link.style.flexShrink = '0';
+                row.appendChild(link);
+            }
+            tgProgressSteps.appendChild(row);
+        }
+    }
+
+    function renderTgShareMessages(messages) {
+        tgProgressMessages.hidden = !(messages && messages.length);
+        tgProgressMessageList.replaceChildren();
+        for (const msg of (messages || [])) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:4px 0;';
+            const label = document.createElement('span');
+            label.textContent = msg.label || msg.role || '消息';
+            label.style.cssText = 'min-width:9em;flex-shrink:0;';
+            const link = document.createElement('a');
+            if (msg.link) {
+                link.href = msg.link;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = msg.link;
+            } else {
+                link.textContent = '（无链接）';
+                link.style.color = 'var(--muted, #888)';
+            }
+            link.style.cssText += ';word-break:break-all;';
+            row.append(label, link);
+            tgProgressMessageList.appendChild(row);
+        }
+    }
+
+    function renderTgShareProgress(job) {
+        tgProgressError.hidden = !(job.status === 'failed' && job.error);
+        tgProgressError.textContent = job.error || '';
+        tgReShareBtn.hidden = true;
+        if (job.status === 'completed') tgProgressTitle.textContent = '已发送到 Telegram 频道';
+        else if (job.status === 'failed') tgProgressTitle.textContent = '发送到 Telegram 失败';
+        else tgProgressTitle.textContent = '正在发送到 Telegram 频道…';
+        renderTgShareSteps(job.steps);
+        renderTgShareMessages(job.messages);
+    }
+
+    async function startTelegramSharePolling(jobId, task) {
+        tgProgressDialog.showModal();
+        renderTgShareProgress({ status: 'running', steps: [], messages: [] });
+        if (tgSharePolling) clearTimeout(tgSharePolling);
+        const poll = async () => {
+            let job;
+            try {
+                job = await api(`/api/telegram/song-share/${encodeURIComponent(jobId)}`);
+            } catch (error) {
+                renderTgShareProgress({ status: 'failed', error: `读取进度失败：${error.message}`, steps: [], messages: [] });
+                tgSharePolling = null;
+                return;
+            }
+            renderTgShareProgress(job);
+            if (job.status === 'completed') {
+                tgSharePolling = null;
+                notice.textContent = '已转发到 Telegram 频道。';
+                await loadTasks();
+                return;
+            }
+            if (job.status === 'failed') {
+                tgSharePolling = null;
+                notice.textContent = `转发到 Telegram 失败：${job.error}`;
+                return;
+            }
+            tgSharePolling = setTimeout(poll, 700);
+        };
+        tgSharePolling = setTimeout(poll, 150);
+    }
+
+    function showTelegramShareResult(task) {
+        const share = task.telegramShare;
+        tgShareTask = task;
+        tgProgressTitle.textContent = '已发送到 Telegram 的链接';
+        tgProgressError.hidden = true;
+        tgProgressError.textContent = '';
+        tgProgressSteps.replaceChildren();
+        tgReShareBtn.hidden = false;
+        renderTgShareMessages(share?.messages || []);
+        tgProgressDialog.showModal();
+    }
 
     async function downloadOriginalThumbnail(task, button) {
         if (thumbnailDownloads.has(task.id)) return;
@@ -1434,8 +1571,10 @@
             actions.appendChild(editMetadata);
             const shareToTg = document.createElement('button');
             shareToTg.type = 'button';
-            shareToTg.textContent = '转发到telegram频道';
-            shareToTg.addEventListener('click', () => showTelegramShare(task));
+            const alreadyShared = Boolean(task.telegramShare && task.telegramShare.messages && task.telegramShare.messages.length);
+            shareToTg.textContent = alreadyShared ? '已发到telegram' : '转发到telegram频道';
+            shareToTg.className = alreadyShared ? 'command' : '';
+            shareToTg.addEventListener('click', () => alreadyShared ? showTelegramShareResult(task) : showTelegramShare(task));
             actions.appendChild(shareToTg);
         }
         if (running) {

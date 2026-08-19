@@ -69,3 +69,44 @@ test('light file parts page is local-only resume and receipt UI', () => {
   assert.match(page, /light-transfer-resume/);
   assert.match(page, /light-parts-close/);
 });
+
+test('Telegram outbound proxy bootstrap and actionable error messages', () => {
+  const server = read('server.js');
+  assert.match(server, /function resolveTelegramProxyUrl/);
+  assert.match(server, /NODE_USE_ENV_PROXY/);
+  assert.match(server, /DR2T_PROXY_REEXEC/);
+  assert.match(server, /DR2T_PROXY/);
+  assert.match(server, /DR2T_ALL_PROXY/);
+  assert.match(server, /function describeTelegramNetworkError/);
+  assert.match(server, /UND_ERR_CONNECT_TIMEOUT/);
+  assert.match(server, /describeTelegramNetworkError\(err\)/);
+  assert.match(server, /yt-dlp-song-audio-missing/);
+});
+
+test('Telegram song-share runs as a progress-reporting job and persists links to the task', () => {
+  const server = read('server.js');
+  const service = read('server/youtube-premium.js');
+  const page = read('pages/youtube-premium-dl.html');
+  assert.match(server, /const telegramSongShareJobs = new Map\(\)/);
+  assert.match(server, /async function runSongShareJob/);
+  assert.match(server, /function publicSongShareJob/);
+  assert.match(server, /setSongShareStep\(job, 'prepare'/);
+  assert.match(server, /app\.get\('\/api\/telegram\/song-share\/:jobId'/);
+  assert.match(server, /res\.json\(\{ ok: true, jobId: job\.jobId \}\)/);
+  assert.match(server, /youtubePremiumService\.setTelegramShare\(job\.taskId/);
+  assert.match(service, /setTelegramShare\(id, share\)/);
+  assert.match(service, /telegramShare: task\.telegramShare \|\| null/);
+  assert.match(service, /telegramShare: null/);
+  assert.match(page, /id="tgProgressDialog"/);
+  assert.match(page, /startTelegramSharePolling/);
+  assert.match(page, /showTelegramShareResult/);
+  assert.match(page, /已发到telegram/);
+});
+
+test('yt-dlp "page needs to be reloaded" is mapped and retried with a fallback player client', () => {
+  const server = read('server.js');
+  assert.match(server, /page needs to be reloaded\|must be reloaded\|reload the page/);
+  assert.match(server, /player_client=\$\{String\(options\.playerClient\)/);
+  assert.match(server, /playerClient: 'web_embedded'/);
+  assert.match(server, /playerClientFallback !== false/);
+});

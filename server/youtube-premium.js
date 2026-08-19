@@ -214,6 +214,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             tags: Array.isArray(task.tags) ? task.tags : [],
             songMetadata: task.songMetadata || null,
             songMetadataEditedAt: Number(task.songMetadataEditedAt) || 0,
+            telegramShare: task.telegramShare || null,
             status: task.status,
             progress: task.progress || { percent: 0 },
             outputFileName: task.outputFileName || '',
@@ -331,7 +332,8 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
                 updatedAt: now, completedAt: 0, remark: '', tags: [], songMetadata: null,
-                songMetadataOverride: null, songMetadataEditedAt: 0, referenceInfo: null
+                songMetadataOverride: null, songMetadataEditedAt: 0, referenceInfo: null,
+                telegramShare: null
             };
             tasks.set(task.id, task);
             persist();
@@ -371,7 +373,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             fs.rmSync(path.join(outputDir, task.id), { recursive: true, force: true });
             return publicTask(update(task, {
                 status: 'cleared', progress: { percent: 0 }, outputPath: '', coverPath: '',
-                error: ''
+                error: '', telegramShare: null
             }));
         },
         retry(id) {
@@ -381,7 +383,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             fs.rmSync(path.join(outputDir, task.id), { recursive: true, force: true });
             update(task, {
                 status: 'queued', progress: { percent: 0 }, outputPath: '', coverPath: '',
-                outputFileName: '', outputFileSize: 0, error: '', completedAt: 0
+                outputFileName: '', outputFileSize: 0, error: '', completedAt: 0, telegramShare: null
             });
             queue.push(task.id);
             pump();
@@ -416,6 +418,14 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
         },
         getReferenceInfo(id) {
             return getTask(id)?.referenceInfo || null;
+        },
+        setTelegramShare(id, share) {
+            const task = getTask(id);
+            if (!task) return null;
+            return publicTask(update(task, { telegramShare: share || null }));
+        },
+        getTelegramShare(id) {
+            return getTask(id)?.telegramShare || null;
         },
         setSongMetadata(id, metadata, output = {}) {
             const task = getTask(id);

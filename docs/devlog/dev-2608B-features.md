@@ -785,3 +785,148 @@ package script：
 
 文件：`server.js`、`pages/youtube-premium-dl.html`
 
+### 7.9 Bug#9：转发到 Telegram 报 `fetch failed`（ConnectTimeoutError 连不上 api.telegram.org）
+
+**现象**：`/api/telegram/song-share` 返回 `{"ok":false,"error":"fetch failed"}`；服务端日志为
+`TypeError: fetch failed → [cause] ConnectTimeoutError: Connect Timeout Error (attempted address: api.telegram.org:443, timeout: 10000ms)`。
+前端仅显示"发送失败：fetch failed"，无法定位原因。
+
+**根因（两层）**：
+
+1. **代码层：Telegram API 的 fetch 从没显式走代理**。`git blame` 显示 `telegramApi()` / `sendDocument` / `getFile` 等自 2026-07 引入起
+   一直是裸 `fetch('https://api.telegram.org/...')`；全历史搜索 `ProxyAgent` / `dispatcher` / `NODE_USE_ENV_PROXY` 零命中。
+   yt-dlp 之所以能成功，是因为 `buildYtDlpEnv()` 会把 `DR2T_PROXY / DR2T_ALL_PROXY / HTTPS_PROXY / HTTP_PROXY / ALL_PROXY` 显式注入 yt-dlp 子进程环境；
+   而 `server.js` 内所有对 `api.telegram.org` 的 `fetch()`（`sendAudio` / `sendPhoto` / `sendDocument` / `telegramApi` / `getFile`）完全忽略代理。
+
+   **为什么"以前能用"（重要澄清）**：Telegram 的出站请求（扫描 bot 的 `getMe`、防失联检测的 `getFile`/`sendDocument` 等）之所以历史上可用，
+   是因为**生产服务器本身能直连 Telegram**——部署配置 `tools/deploy/profiles/*.json` 中 `txsl` 标注为 `"Seoul direct Node.js"`（首尔直连）、
+   `txhk`/`alyhk` 为香港节点，这些机房不墙 Telegram，裸 `fetch` 即可直连，无需代理。
+   本次报错发生在 `http://10.0.0.56`（内网/大陆环境）：`api.telegram.org:443` 被墙（TCP 握手 10 秒超时），
+   而 Node 的 fetch 又没有像 yt-dlp 那样显式走本机 Clash，于是超时。即"以前靠直连，现在这台机器无直连又没走代理"。
+
+2. **Node 全局 fetch 的代理支持是「启动期」语义**。Node 24 的 `fetch`（undici）只有在**进程启动时**设置了
+   `NODE_USE_ENV_PROXY=1` 才会读取 `HTTP_PROXY / HTTPS_PROXY`；运行期修改 `process.env.NODE_USE_ENV_PROXY` 无效（已实测验证）。
+   因此无法在业务代码里临时打开，必须保证进程启动环境里就带上该开关。
+
+**修复**：
+
+1. **出站代理引导（进程重拉一次）**：在 `server.js` 顶部（任何出站请求之前）新增 `resolveTelegramProxyUrl()` 与一次性引导块：
+   - 代理解析优先级：`DR2T_PROXY`（HTTP 代理）→ `DR2T_ALL_PROXY`（SOCKS/通用代理）→ `HTTPS_PROXY` → `HTTP_PROXY` → `ALL_PROXY`（标准变量仅作兜底）。
+   - 若解析到代理但缺少 `NODE_USE_ENV_PROXY`，则设置 `NODE_USE_ENV_PROXY=1` 与 `HTTPS_PROXY/HTTP_PROXY`（未配置时才覆盖），
+     用 `spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)])` 重新拉起一次本进程（`DR2T_PROXY_REEXEC` 防重复），
+     父进程转发 `SIGINT/SIGTERM/SIGHUP` 并透传退出码后等待子进程退出。
+   - 这样既兼容 `node server.js` 直启，也兼容 `npm run dev` 的 `node -e "...require('./server.js')"` 形式（`execArgv` 里包含 `-e` 脚本）。
+   - 代理为 SOCKS（如 `socks5://`）时 Node 也能支持（会打印 experimental 警告），HTTP(S) 代理最稳定。
+
+2. **错误信息可读化**：新增 `describeTelegramNetworkError()`，把 undici 的
+   `UND_ERR_CONNECT_TIMEOUT / ConnectTimeoutError / ETIMEDOUT / ECONNREFUSED / ECONNRESET / ENOTFOUND` 等映射为
+   "无法连接 Telegram API（连接超时）。请确认服务器能访问 api.telegram.org，或配置出站代理后重启服务（环境变量 DR2T_PROXY / DR2T_ALL_PROXY）"，
+   `song-share` 的 catch 改用该函数返回 `error`。
+
+3. **yt-dlp 歌曲错误信息可读化（顺带）**：`sanitizeYoutubePremiumError` 的 labels 补齐
+   `yt-dlp-song-download-timeout` / `yt-dlp-song-audio-missing` / `yt-dlp-song-cover-missing` 的中文提示，
+   不再把 "yt-dlp-song-audio-missing" 这类内部码直接甩给前端（对应首条反馈里的 `yt-dlp-song-audio-missing`）。
+
+**验证**：
+- `node --check server.js` 通过。
+- 用独立脚本模拟引导块：`node script.js`（直启）与 `node -e "require(script)"`（-e 模式）两种入口均能正确重拉一次，
+  子进程继承 `NODE_USE_ENV_PROXY=1` 与 `HTTPS_PROXY`，且 `DR2T_PROXY_REEXEC` 防止二次重拉。
+- 实测 `NODE_USE_ENV_PROXY` 运行期修改无效（fetch 仍直连）、启动期设置有效（fetch 走代理）。
+
+**运维提示**：
+- 首尔/香港等**直连机房**（`txsl`/`txhk`/`alyhk`）通常不设 `DR2T_PROXY`，引导块会直接跳过，行为与以前完全一致（零影响）。
+- 若服务器已有可用的 `DR2T_PROXY`（yt-dlp 能下载即说明有），本修复会自动复用该代理访问 Telegram，无需额外配置；
+- 若 Telegram 需要走不同代理，显式设置 `DR2T_PROXY` 即可（优先级最高，`DR2T_ALL_PROXY` 次之）。
+- 注意：走代理后最终能否连通 Telegram，还取决于本机代理（如 Clash）的规则是否把 `api.telegram.org` 路由到代理节点而非「直连/拒绝」；yt-dlp 能下 YouTube 通常说明 Clash 规则对墙内被墙域名是走代理的。
+
+文件：`server.js`
+
+### 7.10 代理变量统一 + 转发到 Telegram 的进度浮层（Feature）
+
+用户反馈两点：一是代理环境变量名太杂，要求统一为 `DR2T_PROXY`（HTTP）/ `DR2T_ALL_PROXY`（SOCKS）；
+二是"转发到 telegram 频道"要等待很久、看不到中间过程，要求加浮层面板逐步展示状态、最后展示消息链接并关联到任务记录。
+
+**一、代理变量统一为 `DR2T_PROXY` / `DR2T_ALL_PROXY`**
+
+- `resolveTelegramProxyUrl()`（`server.js` 顶部引导块）优先级简化为：
+  `DR2T_PROXY` → `DR2T_ALL_PROXY` → `HTTPS_PROXY` → `HTTP_PROXY` → `ALL_PROXY`（标准变量仅兜底）。
+  删除了 `TELEGRAM_API_PROXY` 与 `YT_DLP_PROXY` 两个自造名。
+- `buildYtDlpEnv()`（`server.js`）把 `YT_DLP_PROXY` → `DR2T_PROXY`、`YT_DLP_ALL_PROXY` → `DR2T_ALL_PROXY`。
+- `describeTelegramNetworkError()` 的提示文案改为 `DR2T_PROXY / DR2T_ALL_PROXY`。
+- `package.json` 的 `dev` 脚本：`process.env.YT_DLP_PROXY=...` → `process.env.DR2T_PROXY=...`，
+  `process.env.YT_DLP_ALL_PROXY=...` → `process.env.DR2T_ALL_PROXY=...`（值不变：`http://127.0.0.1:58591` / `socks5://127.0.0.1:51837`）。
+- 语义不变：`DR2T_PROXY` 是 HTTP 代理（Telegram fetch + yt-dlp 的 HTTP_PROXY/HTTPS_PROXY），
+  `DR2T_ALL_PROXY` 是 SOCKS/通用代理（yt-dlp 的 ALL_PROXY，也作为 fetch 的兜底代理）。
+
+**二、转发到 Telegram 频道的进度浮层 + 链接持久化**
+
+改造前 `/api/telegram/song-share` 是**同步**接口：一次性把所有请求做完才返回 JSON，前端只看到"正在发送…"，
+中途卡在哪个请求、每个请求成功失败都不可见。
+
+改造后：
+
+- **后端异步任务化**（`server.js`）：
+  - 新增内存任务表 `telegramSongShareJobs`（Map）+ `pruneSongShareJobs()`（30 分钟 TTL）。
+  - `POST /api/telegram/song-share` 仅做参数校验、创建 `job`（含动态 `steps` 步骤列表），**立即**返回 `{ ok, jobId }`，
+    实际发送在后台 `runSongShareJob(job, params)` 里异步执行。
+  - 新增 `GET /api/telegram/song-share/:jobId` 返回 `publicSongShareJob(job)`：
+    `{ status: running|completed|failed, steps:[{key,label,status,detail,link}], messages:[{role,label,link}], error }`。
+  - 每个步骤在开始/完成时用 `setSongShareStep(job, key, patch)` 更新状态与细节；失败时标记该步骤 `failed` 并回滚已发消息。
+  - 步骤顺序：`prepare`（读文件）→ `base-audio`（发 Base 音频）→ `base-tb`（Base 图文）→ 可选 `pro-tp` → 可选 `ultimate`。
+  - 成功后把 `{ messages, sharedAt }` 通过新增的 `youtubePremiumService.setTelegramShare(taskId, share)` 持久化到任务记录。
+
+- **任务记录持久化**（`server/youtube-premium.js`）：
+  - 任务对象新增 `telegramShare` 字段；`publicTask()` 透出 `telegramShare`。
+  - 新增 `setTelegramShare(id, share)` / `getTelegramShare(id)` 方法。
+  - `clear()` / `retry()` 清空成品时同时清空 `telegramShare: null`（旧链接随成品失效而失效）。
+
+- **前端浮层**（`pages/youtube-premium-dl.html`）：
+  - 新增 `<dialog id="tgProgressDialog">`，含错误条、步骤列表、消息链接列表三块。
+  - `tgShareConfirm` 点击后先 `POST` 拿到 `jobId`，关闭配置弹窗，调用 `startTelegramSharePolling(jobId, task)`：
+    `showModal()` 后每 700ms 轮询 `GET /api/telegram/song-share/:jobId`，用 `renderTgShareProgress()` 刷新
+    步骤状态（✅完成 / ⏳进行中 / ❌失败 / ⏺待处理）与最终链接；完成后 `loadTasks()` 刷新任务列表。
+  - 任务卡片按钮：若 `task.telegramShare.messages.length` 存在，按钮文字变为 **"已发到telegram"**，
+    点击调用 `showTelegramShareResult(task)` 弹出浮层展示各条消息链接（`https://t.me/...`，新窗口打开）。
+
+**验证**：
+- `node --check server.js`、`node --check server/youtube-premium.js` 通过；抽出前端内联脚本 `node --check` 通过。
+- `node tests/features-2608B.test.cjs` 6/6 通过（新增"Telegram song-share 任务化 + 链接持久化"断言）。
+- 代理变量：`package.json` dev 脚本与 `resolveTelegramProxyUrl` / `buildYtDlpEnv` 已全部改为 `DR2T_PROXY` / `DR2T_ALL_PROXY`。
+
+**运维提示**：
+- 部署时在 systemd 或启动脚本里设置 `Environment=DR2T_PROXY=...`（HTTP）与 `Environment=DR2T_ALL_PROXY=...`（SOCKS）即可，
+  之前若用 `YT_DLP_PROXY`/`YT_DLP_ALL_PROXY` 需要同步改名，否则 yt-dlp 与 Telegram 都将回到"无代理直连"。
+- 转发任务为内存态，重启服务会丢失进行中的 job（但已完成的结果已持久化到 `telegramShare`，不受影响）。
+
+文件：`server.js`、`server/youtube-premium.js`、`pages/youtube-premium-dl.html`、`package.json`、`tests/features-2608B.test.cjs`
+
+### 7.11 Bug#10：媒体格式解析失败 `[youtube] <id>: The page needs to be reloaded.`
+
+**现象**：youtube premium 页「媒体格式」处解析失败，前端直接显示
+`解析失败：[youtube] 5OlwM1L1b6Q: The page needs to be reloaded.`，无法定位原因。
+
+**根因**：这是 yt-dlp 的 YouTube 提取器错误——YouTube 对请求返回了「需要重新加载」的拦截页。
+通常由 cookies 失效/被轮换（`VISITOR_INFO1_LIVE` / `LOGIN_INFO`）、缺少 `SOCS` 同意 cookie，
+或出口 IP 触发机器人校验导致；yt-dlp 自身给出的建议也是 `--cookies-from-browser`（即刷新 cookies）。
+
+**修复**（`server.js`）：
+
+1. **错误可读化**：`getYtDlpFailureMessage()` 新增对 `page needs to be reloaded / must be reloaded / reload the page`
+   的匹配，映射为「YouTube 返回"页面需要重新加载"（通常是 cookies 已失效/被轮换，或触发机器人校验）。
+   请在 /sns-cookies 重新导出包含 VISITOR_INFO1_LIVE、SOCS、LOGIN_INFO 等完整登录态的 cookies.txt 后重试；
+   若仍失败请稍等片刻或更换代理出口节点」。该函数同时服务于分析（`runYtDlpJson`）与下载（`spawnCapture`）两条路径。
+
+2. **自动兜底重试（player client 切换）**：`runYtDlpJson()` 支持 `options.playerClient`（拼 `--extractor-args youtube:player_client=...`）。
+   当首次失败且 stderr 命中 `page needs to be reloaded` 且尚未指定 player client 时，自动以
+   `playerClient: 'web_embedded'` + `bypassCache: true` 重试一次（`playerClientFallback: false` 防重复），
+   用 `web_embedded` 客户端（嵌入式播放器端点，对 `visitorData` 依赖更弱）绕过默认 `web` 客户端被拦截的情况。
+
+**验证**：
+- `node --check server.js` 通过。
+- `node tests/features-2608B.test.cjs` 7/7 通过（新增"reload 映射 + player client 兜底重试"断言）。
+
+**运维提示**：兜底重试只是缓解；若频繁出现该错误，根因大概率是 cookies 过期或出口 IP 信誉下降，
+应在 `/sns-cookies` 重新导出完整 cookies（含 `SOCS`、`VISITOR_INFO1_LIVE`），必要时更换代理出口节点。
+
+文件：`server.js`、`tests/features-2608B.test.cjs`
+

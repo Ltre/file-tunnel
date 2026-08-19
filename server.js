@@ -3,6 +3,56 @@
  * 用于会话管理和信令中转
  */
 
+// ==================== 出站网络代理引导 ====================
+// Node 的全局 fetch 只有在「进程启动时」设置了 NODE_USE_ENV_PROXY=1 才会读取
+// HTTP_PROXY / HTTPS_PROXY 环境变量（运行期修改 process.env 无效）。
+// 服务器若部署在无法直连 api.telegram.org 的网络环境（例如需要代理访问 Telegram），
+// 则必须让 Telegram API 请求走代理。这里在启动阶段解析代理配置：如果已配置代理
+// 但缺少该开关，则带着代理环境变量重新拉起一次本进程（仅一次），使 fetch 走代理。
+// 代理统一使用两类环境变量：DR2T_PROXY（HTTP 代理）与 DR2T_ALL_PROXY（SOCKS/通用代理），
+// 与 yt-dlp 的 buildYtDlpEnv 保持同一套命名；标准 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY 仅作兜底。
+function resolveTelegramProxyUrl() {
+    const candidates = [
+        process.env.DR2T_PROXY,
+        process.env.DR2T_ALL_PROXY,
+        process.env.HTTPS_PROXY,
+        process.env.HTTP_PROXY,
+        process.env.ALL_PROXY
+    ];
+    for (const value of candidates) {
+        const proxy = value && String(value).trim();
+        if (proxy) return proxy;
+    }
+    return '';
+}
+
+if (!process.env.NODE_USE_ENV_PROXY && !process.env.DR2T_PROXY_REEXEC) {
+    const telegramProxy = resolveTelegramProxyUrl();
+    if (telegramProxy) {
+        process.env.NODE_USE_ENV_PROXY = '1';
+        process.env.DR2T_PROXY_REEXEC = '1';
+        if (!process.env.HTTPS_PROXY && !process.env.https_proxy) process.env.HTTPS_PROXY = telegramProxy;
+        if (!process.env.HTTP_PROXY && !process.env.http_proxy) process.env.HTTP_PROXY = telegramProxy;
+        console.log(`🔌 检测到出站代理 ${telegramProxy}，以代理模式重新启动进程（Telegram API 将经代理访问）`);
+        const { spawn } = require('child_process');
+        const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+            stdio: 'inherit',
+            env: process.env,
+            windowsHide: false
+        });
+        for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+            process.on(signal, () => { try { child.kill(signal); } catch (_) {} });
+        }
+        child.on('exit', (code, signal) => {
+            process.exit(code ?? (signal ? 1 : 0));
+        });
+        // 父进程保持存活，等待子进程退出，以正确传递信号与退出码。
+        setInterval(() => {}, 1 << 30);
+        // 停止继续执行本模块，避免父进程再启动一份服务实例。
+        return;
+    }
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -1358,6 +1408,42 @@ function resolveTelegramChatId(input) {
     return value;
 }
 
+// ==================== Telegram 歌曲分享（转发到频道，带进度汇报） ====================
+// POST 立即返回 jobId，实际发送在后台异步执行；前端轮询 GET /api/telegram/song-share/:jobId
+// 查看每一步的细节/状态与最终结果（Telegram 消息链接）。最终结果持久化到任务记录的 telegramShare 字段。
+const telegramSongShareJobs = new Map();
+const SONG_SHARE_JOB_TTL_MS = 30 * 60 * 1000;
+
+function pruneSongShareJobs() {
+    const cutoff = Date.now() - SONG_SHARE_JOB_TTL_MS;
+    for (const [jobId, job] of telegramSongShareJobs) {
+        if (job.updatedAt < cutoff) telegramSongShareJobs.delete(jobId);
+    }
+}
+
+function touchSongShareJob(job) {
+    job.updatedAt = Date.now();
+}
+
+function setSongShareStep(job, key, patch) {
+    const step = job.steps.find(s => s.key === key);
+    if (step) Object.assign(step, patch);
+    touchSongShareJob(job);
+}
+
+function publicSongShareJob(job) {
+    return {
+        jobId: job.jobId,
+        taskId: job.taskId,
+        status: job.status,
+        steps: job.steps,
+        messages: job.messages,
+        error: job.error,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt
+    };
+}
+
 app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => {
     if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
     const config = loadTelegramBotConfig();
@@ -1393,9 +1479,55 @@ app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => 
     const taskId = String(body.taskId || '').trim();
     if (!taskId) return res.status(400).json({ error: 'task-id-required' });
 
-    // Transaction log: [{ chatId, messageId }] — only messages we actually created
+    // 构建进度步骤（根据是否勾选 Pro/Ultimate 动态决定步骤数）
+    const steps = [
+        { key: 'prepare', label: '读取歌曲文件与封面', status: 'pending', detail: '', link: '' },
+        { key: 'base-audio', label: '发送歌曲到 Base 频道', status: 'pending', detail: '', link: '' },
+        { key: 'base-tb', label: '发送 Base 图文记录', status: 'pending', detail: '', link: '' }
+    ];
+    if (sendPro) steps.push({ key: 'pro-tp', label: '发送 Pro 图文记录', status: 'pending', detail: '', link: '' });
+    if (sendUltimate) steps.push({ key: 'ultimate', label: ultimateMode === 'trial' ? '发送 Ultimate 记录（入选试行）' : '发送 Ultimate 记录（正式图文）', status: 'pending', detail: '', link: '' });
+
+    const job = {
+        jobId: crypto.randomUUID(),
+        taskId,
+        status: 'running',
+        steps,
+        messages: [],
+        error: '',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+    };
+    telegramSongShareJobs.set(job.jobId, job);
+    pruneSongShareJobs();
+
+    // 后台异步执行，不阻塞响应
+    runSongShareJob(job, {
+        baseChat, proChat, ultimateChat,
+        sendPro, sendUltimate, ultimateMode,
+        captionBase, captionPro, captionUltimate,
+        coverBase, coverPro, coverUltimate
+    }).catch(() => {});
+
+    res.json({ ok: true, jobId: job.jobId });
+});
+
+app.get('/api/telegram/song-share/:jobId', adminAuth.requireAuth, (req, res) => {
+    const job = telegramSongShareJobs.get(String(req.params.jobId || ''));
+    if (!job) return res.status(404).json({ error: 'song-share-job-not-found' });
+    res.json(publicSongShareJob(job));
+});
+
+async function runSongShareJob(job, params) {
+    const {
+        baseChat, proChat, ultimateChat,
+        sendPro, sendUltimate, ultimateMode,
+        captionBase, captionPro, captionUltimate,
+        coverBase, coverPro, coverUltimate
+    } = params;
+
+    // 已创建消息日志：[{ role, label, chatId, messageId, link }]，仅记录实际创建成功的消息
     const createdMessages = [];
-    let completed = false;
 
     async function rollback() {
         // Delete in reverse order
@@ -1461,45 +1593,56 @@ app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => 
 
     try {
         // Step 1: Get the song file from YouTube Premium task
-        const fileResult = youtubePremiumService.getFile(taskId, 'output');
-        if (!fileResult) return res.status(404).json({ error: 'song-file-not-found' });
+        setSongShareStep(job, 'prepare', { status: 'running', detail: '正在读取任务文件…' });
+        const fileResult = youtubePremiumService.getFile(job.taskId, 'output');
+        if (!fileResult) throw new Error('song-file-not-found');
         const audioBlob = new Blob([await fs.promises.readFile(fileResult.path)]);
         const fileName = fileResult.name || 'song.m4a';
 
         // Also try to get the cover image path
-        const coverFileResult = youtubePremiumService.getFile(taskId, 'cover');
+        const coverFileResult = youtubePremiumService.getFile(job.taskId, 'cover');
         const defaultCoverPath = coverFileResult?.path || '';
+        setSongShareStep(job, 'prepare', { status: 'done', detail: `已读取 ${fileName}` });
 
         // Step 2: Send song file to Base channel
+        setSongShareStep(job, 'base-audio', { status: 'running', detail: '正在上传音频（可能较慢）…' });
         const baseAudioMsg = await sendAudioFile(baseChat, audioBlob, fileName, '');
         if (!baseAudioMsg?.message_id) throw new Error('base-audio-send-failed');
-        createdMessages.push({ chatId: baseChat, messageId: baseAudioMsg.message_id });
         const baseAudioLink = getMessageTmeLink(baseChat, baseAudioMsg.message_id);
+        createdMessages.push({ role: 'base-audio', label: 'Base 音频', chatId: baseChat, messageId: baseAudioMsg.message_id, link: baseAudioLink });
+        setSongShareStep(job, 'base-audio', { status: 'done', detail: '已发送', link: baseAudioLink });
 
         // Step 3: Send Tb (Base captioned record: cover + caption + baseAudioLink)
+        setSongShareStep(job, 'base-tb', { status: 'running', detail: '正在发送图文记录…' });
         const tbCaption = `${captionBase}\n\n${baseAudioLink}`;
         const tbMsg = await sendPhotoWithCaption(baseChat, coverBase, tbCaption, defaultCoverPath);
         if (!tbMsg?.message_id) throw new Error('tb-send-failed');
-        createdMessages.push({ chatId: baseChat, messageId: tbMsg.message_id });
         const tbLink = getMessageTmeLink(baseChat, tbMsg.message_id);
+        createdMessages.push({ role: 'base-tb', label: 'Base 图文记录', chatId: baseChat, messageId: tbMsg.message_id, link: tbLink });
+        setSongShareStep(job, 'base-tb', { status: 'done', detail: '已发送', link: tbLink });
 
         // Step 4: If Pro selected, send Tp (cover + caption + tbLink)
-        let tpLink = '';
         if (sendPro) {
+            setSongShareStep(job, 'pro-tp', { status: 'running', detail: '正在发送…' });
             const tpCaption = `${captionPro}\n\n${tbLink}`;
             const tpMsg = await sendPhotoWithCaption(proChat, coverPro, tpCaption, defaultCoverPath);
             if (!tpMsg?.message_id) throw new Error('tp-send-failed');
-            createdMessages.push({ chatId: proChat, messageId: tpMsg.message_id });
-            tpLink = getMessageTmeLink(proChat, tpMsg.message_id);
+            const tpLink = getMessageTmeLink(proChat, tpMsg.message_id);
+            createdMessages.push({ role: 'pro-tp', label: 'Pro 图文记录', chatId: proChat, messageId: tpMsg.message_id, link: tpLink });
+            setSongShareStep(job, 'pro-tp', { status: 'done', detail: '已发送', link: tpLink });
 
             // Step 5: If Ultimate selected
             if (sendUltimate) {
+                setSongShareStep(job, 'ultimate', { status: 'running', detail: '正在发送…' });
+                let ultMsg;
                 if (ultimateMode === 'formal') {
                     // Formal: cover + caption + tpLink
                     const ultCaption = `${captionUltimate}\n\n${tpLink}`;
-                    const ultMsg = await sendPhotoWithCaption(ultimateChat, coverUltimate, ultCaption, defaultCoverPath);
+                    ultMsg = await sendPhotoWithCaption(ultimateChat, coverUltimate, ultCaption, defaultCoverPath);
                     if (!ultMsg?.message_id) throw new Error('ultimate-formal-send-failed');
-                    createdMessages.push({ chatId: ultimateChat, messageId: ultMsg.message_id });
+                    const ultLink = getMessageTmeLink(ultimateChat, ultMsg.message_id);
+                    createdMessages.push({ role: 'ultimate', label: 'Ultimate 记录', chatId: ultimateChat, messageId: ultMsg.message_id, link: ultLink });
+                    setSongShareStep(job, 'ultimate', { status: 'done', detail: '已发送', link: ultLink });
                 } else {
                     // Trial: "入选试行：\n" + hyperlink[艺术家 - 歌曲名](tpLink)
                     const trialCaption = `入选试行：\n${captionUltimate}`;
@@ -1510,25 +1653,35 @@ app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => 
                         disable_web_page_preview: false
                     });
                     if (!trialMsg?.message_id) throw new Error('ultimate-trial-send-failed');
-                    createdMessages.push({ chatId: ultimateChat, messageId: trialMsg.message_id });
+                    const ultLink = getMessageTmeLink(ultimateChat, trialMsg.message_id);
+                    createdMessages.push({ role: 'ultimate', label: 'Ultimate 记录', chatId: ultimateChat, messageId: trialMsg.message_id, link: ultLink });
+                    setSongShareStep(job, 'ultimate', { status: 'done', detail: '已发送', link: ultLink });
                 }
             }
         }
 
-        completed = true;
-        res.json({
-            ok: true,
-            completed: true,
-            createdMessages: createdMessages.map(m => ({ chatId: m.chatId, messageId: m.messageId, link: getMessageTmeLink(m.chatId, m.messageId) }))
-        });
+        // 持久化发送结果到任务记录，供前端「已发到telegram」按钮展示链接
+        const shareMessages = createdMessages.map(m => ({ role: m.role, label: m.label, link: m.link }));
+        youtubePremiumService.setTelegramShare(job.taskId, { messages: shareMessages, sharedAt: Date.now() });
+
+        job.status = 'completed';
+        job.messages = shareMessages;
+        touchSongShareJob(job);
     } catch (err) {
-        if (!completed) {
+        const message = describeTelegramNetworkError(err) || 'song-share-failed';
+        const runningStep = job.steps.find(s => s.status === 'running');
+        if (runningStep) setSongShareStep(job, runningStep.key, { status: 'failed', detail: message });
+        if (createdMessages.length) {
             await rollback();
+            // 提示用户已回滚
+            if (runningStep) setSongShareStep(job, runningStep.key, { status: 'failed', detail: `${message}（已回滚删除已发送的消息）` });
         }
         console.error('telegram song-share error:', err);
-        res.status(500).json({ ok: false, error: err.message || 'song-share-failed' });
+        job.status = 'failed';
+        job.error = message;
+        touchSongShareJob(job);
     }
-});
+}
 
 app.post('/api/telegram/assets/check', async (req, res) => {
     if (!isTelegramBotEnabled()) return res.status(503).json({ error: 'telegram-bot-disabled' });
@@ -3037,6 +3190,9 @@ function getYtDlpFailureMessage(stderr, fallback) {
     if (/sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(output)) {
         return 'YouTube 要求登录验证；当前 cookies 无效或不完整，请在 SNS cookies 管理页重新导出包含 HttpOnly 登录态的完整 Netscape cookies.txt';
     }
+    if (/page needs to be reloaded|must be reloaded|reload the page/i.test(output)) {
+        return 'YouTube 返回"页面需要重新加载"（通常是 cookies 已失效/被轮换，或触发机器人校验）。请在 /sns-cookies 重新导出包含 VISITOR_INFO1_LIVE、SOCS、LOGIN_INFO 等完整登录态的 cookies.txt 后重试；若仍失败请稍等片刻或更换代理出口节点';
+    }
     return String(errorLine || fallback).replace(/^ERROR:\s*/i, '');
 }
 
@@ -3044,8 +3200,8 @@ function buildYtDlpEnv() {
     const env = { ...process.env };
     env.PYTHONUTF8 = '1';
     env.PYTHONIOENCODING = 'utf-8';
-    const proxy = env.YT_DLP_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '';
-    const allProxy = env.YT_DLP_ALL_PROXY || env.ALL_PROXY || proxy;
+    const proxy = env.DR2T_PROXY || env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '';
+    const allProxy = env.DR2T_ALL_PROXY || env.ALL_PROXY || proxy;
     if (proxy) {
         env.HTTP_PROXY ||= proxy;
         env.HTTPS_PROXY ||= proxy;
@@ -3090,6 +3246,7 @@ function runYtDlpJson(url, options = {}) {
         args.push(...getYtDlpFfmpegArgs());
         if (options.formatSelector) args.push('-f', String(options.formatSelector));
         if (options.youtubeLanguage) args.push('--extractor-args', `youtube:lang=${String(options.youtubeLanguage).trim()}`);
+        if (options.playerClient) args.push('--extractor-args', `youtube:player_client=${String(options.playerClient).trim()}`);
         args.push(url);
         const cookiePath = String(options.cookiePath || getSnsCookieFileForUrl(url) || '');
         if (cookiePath && fs.existsSync(cookiePath)) {
@@ -3154,6 +3311,9 @@ function runYtDlpJson(url, options = {}) {
                         /requested format is not available|only images are available/i.test(stderr)) ||
                         /sign in to confirm you(?:'|’)?re not a bot/i.test(stderr))) {
                     return runYtDlpJson(url, { ...options, ignoreNoFormats: true }).then(resolve, reject);
+                }
+                if (options.playerClientFallback !== false && !options.playerClient && /page needs to be reloaded/i.test(stderr)) {
+                    return runYtDlpJson(url, { ...options, playerClient: 'web_embedded', bypassCache: true, playerClientFallback: false }).then(resolve, reject);
                 }
                 return reject(new Error(getYtDlpFailureMessage(stderr, `yt-dlp-exit-${code}`)));
             }
@@ -3644,6 +3804,18 @@ async function handleTelegramUpdate(update = {}) {
         setTelegramPendingFile(chatKey, { kind: 'text', textPayload, createdAt: Date.now() });
         await promptTelegramShortCode(chatId);
     }
+}
+
+function describeTelegramNetworkError(error) {
+    const code = String(error?.cause?.code || error?.code || '');
+    const message = String(error?.message || error?.cause?.message || '');
+    if (/UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|ETIMEDOUT/.test(code) || /connect timeout/i.test(message)) {
+        return '无法连接 Telegram API（连接超时）。请确认服务器能访问 api.telegram.org，或配置出站代理后重启服务（环境变量 DR2T_PROXY / DR2T_ALL_PROXY）';
+    }
+    if (/ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|UND_ERR_SOCKET/.test(code)) {
+        return `无法连接 Telegram API（${code}）。请检查服务器网络或配置出站代理后重试`;
+    }
+    return message || 'telegram-request-failed';
 }
 
 async function telegramApi(method, payload, token = getTelegramBotToken()) {
@@ -4821,6 +4993,9 @@ function sanitizeYoutubePremiumError(error) {
         'youtube-premium-audio-format-missing': '没有找到可用于音乐下载的纯音频媒体编号',
         'custom-video-format-conflict': '请选择一个纯视频格式和一个纯音频格式',
         'youtube-premium-audio-stream-missing': '下载结果中没有找到音频轨',
+        'yt-dlp-song-download-timeout': '歌曲下载超时，请检查服务器网络或代理后重新抓取',
+        'yt-dlp-song-audio-missing': 'yt-dlp 未下载到音频文件（网络或代理波动可能导致下载中断），请检查网络/代理后重新抓取',
+        'yt-dlp-song-cover-missing': 'yt-dlp 未下载到封面文件，请检查网络或代理后重新抓取',
         'youtube-premium-target-tunnel-not-found': '目标隧道不存在或已退出',
         'youtube-premium-forward-upload-required': '请先将成品缓存到浏览器，再从浏览器缓存转发',
         'youtube-premium-forward-size-mismatch': '浏览器缓存大小与任务成品不一致，请重新缓存后再转发',
