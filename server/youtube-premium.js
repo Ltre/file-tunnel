@@ -254,7 +254,14 @@ function writeJsonAtomic(filePath, value) {
     }
 }
 
-function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError = error => error?.message || 'download-failed', concurrency = 1 }) {
+function createYoutubePremiumService({
+    dataDir,
+    analyze,
+    download,
+    sanitizeError = error => error?.message || 'download-failed',
+    concurrency = 1,
+    onLog = () => {}
+}) {
     const tasksPath = path.join(dataDir, 'youtube-premium-tasks.json');
     const outputDir = path.join(dataDir, 'youtube-premium-downloads');
     const tasks = new Map();
@@ -262,6 +269,21 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
     const controllers = new Map();
     const interruptedTaskIds = [];
     let active = 0;
+
+    const emitLog = (task, message, details = {}, level = 'info') => {
+        try {
+            onLog({
+                taskId: String(task?.id || ''),
+                createdAt: Number(task?.createdAt) || Date.now(),
+                elapsedMs: Math.max(0, Date.now() - (Number(task?.createdAt) || Date.now())),
+                level,
+                message: String(message || ''),
+                details: details && typeof details === 'object' ? details : { value: details }
+            });
+        } catch (_) {
+            // Console/reporting failures must never change the download task result.
+        }
+    };
 
     try {
         const stored = JSON.parse(fs.readFileSync(tasksPath, 'utf8'));
@@ -329,17 +351,47 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
         const controller = new AbortController();
         controllers.set(task.id, controller);
         const taskDir = path.join(outputDir, task.id);
+        const progressLog = { lastPercent: -1, lastAt: 0 };
         try {
+            emitLog(task, '任务开始执行', {
+                mode: task.mode,
+                asMusic: task.asMusic === true,
+                selectedFormatIds: task.selectedFormatIds || [],
+                downloadSections: task.downloadSections || '完整媒体',
+                queueRemaining: queue.length,
+                active,
+                concurrency: Math.max(1, Number(concurrency) || 1)
+            });
             update(task, { status: 'parsing', error: '', progress: { percent: 0 } });
+            emitLog(task, '开始解析 YouTube 页面与媒体格式', { sourceUrl: task.url });
             const analysis = await analyze(task.url, {
                 includeFormats: task.mode === 'custom',
                 selectedFormatIds: task.selectedFormatIds,
                 forceMusic: task.asMusic === true,
-                signal: controller.signal
+                signal: controller.signal,
+                onDetail(entry = {}) {
+                    emitLog(task, entry.message || 'YouTube 解析细节', entry.details || {}, entry.level || 'info');
+                }
             });
             if (task.songMetadataOverride && analysis.songMetadata) {
                 analysis.songMetadata = { ...analysis.songMetadata, ...task.songMetadataOverride };
+                emitLog(task, '已应用用户编辑过的歌曲元信息', {
+                    fields: Object.keys(task.songMetadataOverride).filter(key => task.songMetadataOverride[key] !== '')
+                });
             }
+            emitLog(task, 'YouTube 信息解析完成', {
+                title: analysis.title || '',
+                youtubeVideoId: analysis.youtubeVideoId || '',
+                mediaType: analysis.mediaType || '',
+                durationSeconds: Number(analysis.duration) || 0,
+                selectedFormatIds: analysis.selection?.ids || [],
+                formatSelector: analysis.selection?.formatSelector || '',
+                outputContainer: analysis.selection?.outputContainer || '',
+                selectedFormats: analysis.selection?.summary || null,
+                listedFormats: Array.isArray(analysis.formats) ? analysis.formats.length : 0,
+                hasCover: Boolean(analysis.cover),
+                hasSongMetadata: Boolean(analysis.songMetadata)
+            });
             update(task, {
                 title: analysis.title,
                 cover: analysis.cover,
@@ -350,6 +402,14 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 status: 'downloading'
             });
             fs.mkdirSync(taskDir, { recursive: true });
+            emitLog(task, '开始下载并处理媒体', {
+                taskDir,
+                mediaType: analysis.mediaType,
+                selectedFormatIds: analysis.selection?.ids || [],
+                formatSelector: analysis.selection?.formatSelector || '',
+                outputContainer: analysis.selection?.outputContainer || '',
+                downloadSections: task.downloadSections || '完整媒体'
+            });
             const result = await download({
                 task: { ...task },
                 analysis,
@@ -357,11 +417,40 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 signal: controller.signal,
                 onProgress(progress) {
                     try { update(task, { progress: { ...(task.progress || {}), ...progress } }); } catch (_) {}
+                    const percent = Math.max(0, Math.min(100, Number(progress?.percent) || 0));
+                    const now = Date.now();
+                    if (progressLog.lastPercent < 0 || percent >= 99.9 || percent - progressLog.lastPercent >= 5 || now - progressLog.lastAt >= 5000) {
+                        progressLog.lastPercent = percent;
+                        progressLog.lastAt = now;
+                        emitLog(task, '下载进度', {
+                            percent: Number(percent.toFixed(1)),
+                            downloaded: progress?.downloadedText || '',
+                            total: progress?.totalText || '',
+                            speed: progress?.speedText || '',
+                            eta: progress?.etaText || ''
+                        });
+                    }
                 },
                 onStage(status) {
                     if (!['downloading', 'merging', 'metadata'].includes(status)) return;
+                    const previousStatus = task.status;
                     try { update(task, { status }); } catch (_) {}
+                    if (status !== previousStatus) {
+                        const labels = { downloading: '下载媒体数据', merging: '合并音视频轨', metadata: '处理封面与写入歌曲元信息' };
+                        emitLog(task, '处理阶段变化', { status, label: labels[status] || status });
+                    }
+                },
+                onDetail(entry = {}) {
+                    emitLog(task, entry.message || '下载处理细节', entry.details || {}, entry.level || 'info');
                 }
+            });
+            emitLog(task, '下载处理流程已返回成品', {
+                outputPath: result.outputPath || '',
+                coverPath: result.coverPath || '',
+                outputFileName: result.outputFileName || '',
+                outputFileSize: Number(result.outputFileSize) || 0,
+                title: result.title || task.title || '',
+                hasSongMetadata: Boolean(result.songMetadata)
             });
             update(task, {
                 status: 'completed',
@@ -375,16 +464,29 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 completedAt: Date.now(),
                 error: ''
             });
+            emitLog(task, '任务完成', {
+                outputFileName: result.outputFileName || '',
+                outputFileSize: Number(result.outputFileSize) || 0,
+                elapsedSeconds: Number(((Date.now() - task.createdAt) / 1000).toFixed(1))
+            });
         } catch (error) {
             fs.rmSync(taskDir, { recursive: true, force: true });
             const cancelled = controller.signal.aborted || error?.message === 'download-cancelled';
+            const safeError = cancelled ? '' : String(sanitizeError(error) || '下载失败').slice(0, 500);
+            const statusBeforeFailure = task.status;
             update(task, {
                 status: cancelled ? 'cancelled' : 'failed',
-                error: cancelled ? '' : String(sanitizeError(error) || '下载失败').slice(0, 500),
+                error: safeError,
                 completedAt: Date.now()
             });
+            emitLog(task, cancelled ? '任务已取消' : '任务失败', {
+                statusBeforeFailure,
+                error: safeError,
+                elapsedSeconds: Number(((Date.now() - task.createdAt) / 1000).toFixed(1))
+            }, cancelled ? 'warn' : 'error');
         } finally {
             controllers.delete(task.id);
+            emitLog(task, '任务执行槽已释放', { status: task.status, activeBeforeRelease: active });
         }
     }
 
@@ -402,6 +504,10 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
 
     if (interruptedTaskIds.length) {
         queue.push(...interruptedTaskIds);
+        for (const taskId of interruptedTaskIds) {
+            const task = getTask(taskId);
+            if (task) emitLog(task, '服务重启后恢复未完成任务到队列', { queuePosition: queue.indexOf(taskId) + 1 }, 'warn');
+        }
         setImmediate(pump);
     }
 
@@ -434,6 +540,14 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             tasks.set(task.id, task);
             persist();
             queue.push(task.id);
+            emitLog(task, '任务已创建并进入队列', {
+                sourceUrl: url,
+                mode,
+                asMusic: task.asMusic,
+                selectedFormatIds,
+                downloadSections: downloadSections || '完整媒体',
+                queuePosition: queue.length
+            });
             pump();
             return publicTask(task);
         },
@@ -458,8 +572,12 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
             if (!task) return null;
             if (!RUNNING_STATUSES.has(task.status)) return publicTask(task);
             const controller = controllers.get(task.id);
+            emitLog(task, '收到取消任务请求', { status: task.status, running: Boolean(controller) }, 'warn');
             if (controller) controller.abort();
-            else update(task, { status: 'cancelled', completedAt: Date.now(), error: '' });
+            else {
+                update(task, { status: 'cancelled', completedAt: Date.now(), error: '' });
+                emitLog(task, '排队任务已取消', {}, 'warn');
+            }
             return publicTask(task);
         },
         clear(id) {
@@ -482,6 +600,7 @@ function createYoutubePremiumService({ dataDir, analyze, download, sanitizeError
                 outputFileName: '', outputFileSize: 0, error: '', completedAt: 0, telegramShare: null
             });
             queue.push(task.id);
+            emitLog(task, '任务已重新加入队列', { queuePosition: queue.length }, 'warn');
             pump();
             return publicTask(task);
         },

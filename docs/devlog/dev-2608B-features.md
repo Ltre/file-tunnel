@@ -1308,3 +1308,275 @@ yt-dlp 的音乐元数据接口存在复数字段 `composers`、`genres`，同�
 - `node tools/deploy/build.mjs --profile txsl --out .dist-check-260820-0757`：构建成功，Build id `txsl-20260820-000622-unknown`；当前执行环境没有 Terser，构建器按项目既有降级策略继续生成 hashed assets/cache 产物。
 - `node tools/deploy/verify.mjs --profile txsl --dist .dist-check-260820-0757`：仍在构建产物 `server.js:52` 的代理重拉顶层 `return` 报 `Illegal return statement`。对照本次用户上传的原始 `file-tunnel-260820-0757.zip`，原包同一行/同一结构已经存在该 `return`，因此这是输入基线已有的 deploy verifier 兼容问题，不是本轮四项修改引入的回归。
 - 最终代码级回归：YouTube Premium 16/16、Telegram 8/8、2608B 14/14、P2P 38/38。
+
+### 7.16 2026-08-20：光媒二维码完整显示/提帧、Ultimate trial 强制 Tp 超链接、YouTube Premium cookies 格式集合降级
+
+#### 1. “使用光媒分享”二维码底边被裁与实际 FPS 偏低
+
+现场问题：
+- 二维码底边附近看起来被白色舞台裁掉，二维码没有完整显示；
+- 即使选择“近距离”，动态二维码切换仍明显偏慢。
+
+根因：
+1. 发送器原来用 `mode.qrSize` 直接生成二维码，然后再给二维码容器追加 `padding=quiet`。二维码本体尺寸 + 后加 padding 会大于原预期尺寸；外层 `.light-qr-stage` 又使用 `overflow:hidden`，在可用高度较紧时底边会被裁掉。
+2. 原调度逻辑是在同步二维码生成完成后，再执行 `setTimeout(render, 1000 / fps)`。因此真实帧周期实际为“二维码生成耗时 + 目标帧间隔”，必然低于界面标称 FPS；帧内容越复杂、二维码生成越慢，偏差越明显。
+3. sender 主区此前强制二维码区域 `minmax(280px,1fr)`，信息面板较高时容易出现二维码视觉区与真实可用区尺寸不一致。
+
+修复：
+- 距离模式目标帧率提升为：远距离 4fps、常规距离 8fps、近距离 12fps；仍保留远距离更高纠错、近距离更高载荷的差异。
+- 二维码生成前读取 `.light-qr-stage` 的实时宽高，以实际可用区域计算 `displaySize`，完整二维码不得超过舞台可用宽/高。
+- quiet zone 改为二维码完整方框内部的白边（按模式比例计算），二维码有效码区使用 `displaySize - 2*quietPx`；不再在二维码生成后向外追加尺寸。
+- detached staging 现在包含完整 `light-qr-frame + light-qr-render`，确认生成成功后一次性替换上一帧；既保留 7.15 的“失败不白屏”，又保证 quiet zone/底边属于被尺寸约束的二维码整体。
+- sender grid 改为 `minmax(0,1fr)`；信息面板设置最大高度并可内部滚动，避免属性区域把二维码区域挤到错误尺寸。
+- 帧调度改为统计本帧二维码同步生成耗时：下一次等待 `1000/fps - renderCost`，使“生成耗时”包含在目标帧周期内，而不是额外叠加。这样实际视觉 FPS 会更接近模式标称值。
+
+#### 2. Ultimate“入选试行”仍被用户验收为纯文本：不再依赖 parse_mode
+
+上一版 7.15 使用 HTML：
+
+`入选试行：\n<a href="Tp链接">艺术家 - 歌曲名</a>` + `parse_mode=HTML`
+
+但实际验收仍出现“艺术家 - 歌曲名”只是纯文本、没有指向 Pro Tp 的可点击链接。此前代码只检查 `sendMessage` 返回了 `message_id`，没有验证 Telegram 最终消息实体中是否真的生成超链接，因此“Telegram 接受了消息但链接实体没按预期形成”仍会被错误标记为成功。
+
+本轮改为 Bot API 原生 MessageEntity：
+- `text = "入选试行：\n" + captionUltimate`；
+- `entities = [{ type: "text_link", offset, length, url: tpLink }]`；
+- `offset = trialPrefix.length`、`length = captionUltimate.length`，JS 字符串长度对应 Telegram Bot API 使用的 UTF-16 code units；
+- `url` 必须是刚刚成功发送的 Pro Tp 的 t.me 链接；如果 `tpLink` 无法生成，直接判定该步骤失败；
+- 不再依赖 HTML/Markdown `parse_mode`；
+- 保持 `link_preview_options.is_disabled=true` 与兼容字段 `disable_web_page_preview=true`，因此可点击但不展开链接预览。
+
+额外的强校验：
+- Telegram API 返回成功后，检查返回 Message 的 `entities`；必须存在与本次 offset/length/url 完全一致的 `text_link`；
+- 如果返回消息没有该实体，抛出 `ultimate-trial-link-entity-missing`，该次频道分享事务不会被标记成功，而是进入既有精确回滚逻辑。
+
+因此现在不允许再出现“消息成功但实际上是纯文本”的静默成功状态。
+
+#### 3. YouTube Premium：Chrome 等浏览器导出登录 cookies 后偶发 `Requested format is not available`
+
+用户现场特征：
+- Chrome 导出的 YouTube Premium cookies 近期更容易出现：`Requested format is not available`；
+- 改用 Android Firefox 导出的 Premium cookies 后同一流程明显更稳定。
+
+上游背景核对：
+- yt-dlp 官方 issue #15330、#16229、#16569 等已有“加入登录 cookies 后反而只暴露有限格式/出现 Requested format is not available”的现场报告；
+- yt-dlp YouTube extractor wiki 也说明 YouTube 会在打开的登录浏览器会话中频繁轮换 account cookies，推荐在新的隐私/无痕会话中导出并随后关闭该会话，避免导出值马上被浏览器轮换；
+- 因此外部登录态/player-client 返回格式集合变化，不能继续当作固定 Format ID 或固定 `-f` 一定长期有效。
+
+本轮程序侧改动：
+
+**解析阶段**
+- 第一次元数据抓取改为 `--ignore-no-formats-error`：解析标题、音乐信息和原始 formats 库存不能因为默认格式选择失败而直接终止。
+- 对“歌曲”不再执行第二次带 `-f <音频选择器>` 的元数据抓取。此前这一步只是为了让 yt-dlp替程序选 format，却会在 cookies 对应客户端只返回有限格式时直接触发 `Requested format is not available`。
+- 改为在第一次返回的 `formats[]` 上用本地 `getPreferredMusicAudioFormat()` 选择可用音频编号。
+- 如果当前登录态返回的 formats 中完全没有可用纯音频，额外做一次绕过缓存的备用 client 探测：`web_safari,web,android_vr,tv_embedded`；只采用其恢复出的 format 库存，不覆盖原歌曲标题/专辑等主 metadata。
+- 备用探测成功/失败均记录 `external-dependency` warning，便于判断是否是 YouTube 登录客户端/格式集合变化。
+
+**下载阶段**
+- 自动音乐模式如果“解析时选中的具体 Format ID”到真正下载时已经不可用，不立即把任务判失败，而按顺序尝试：
+  1. 解析时首选格式；
+  2. 当前通用 `getYtDlpAudioFormatSelector()`；
+  3. `bestaudio/best[acodec!=none]/best`，必要时允许从带视频的可用格式中提取音频，后续仍统一处理为歌曲 M4A。
+- 每次因为 `Requested format is not available` 进入下一档都会留下 `youtube-song-download-format-fallback` 日志。
+- 普通 Premium 视频的自动模式也允许从解析时 format selector 降级到当前通用 YouTube selector / `bv*+ba/best`。
+- **用户明确选择的自定义 Format ID 不做自动降级**，避免程序违背用户指定的媒体编号。
+
+**错误提示**
+- `Requested format is not available` 单独归类，不再因为 stderr 前部可能同时出现 403/客户端警告就笼统显示成“外部平台拒绝或限制抓取”。
+- 新提示会明确说明“当前登录态/播放器客户端返回的格式集合不完整，或原选择格式已经变化”，并提示系统已对自动模式提供降级；仍失败时建议重新导出有效 cookies。
+
+#### 回归验证
+
+- `node --check server.js`：通过。
+- `node --check client/light-transfer.js`：通过。
+- YouTube Premium：16/16 通过。
+- Telegram 专项：8/8 通过。
+- 2608B 功能回归：15/15 通过（新增 MessageEntity text_link 强校验、二维码完整尺寸/提帧、cookies 格式集合解析/下载降级断言）。
+- P2P 回归：38/38 通过。
+- 合计执行的四组回归：77/77 通过。
+
+部署检查：
+- `node tools/deploy/build.mjs --profile txsl --out .dist-check-260820-1122`：构建成功，Build id `txsl-20260820-032845-unknown`；当前环境没有 Terser，沿用项目既有降级构建路径。
+- `node tools/deploy/verify.mjs --profile txsl --dist .dist-check-260820-1122`：仍在构建产物 `server.js:52` 报顶层 `return` 的 `Illegal return statement`。重新从本次用户原始 `file-tunnel-260820-1122.zip` 单独解出 `server.js` 对照，同一 `return` 原本就位于原包第 52 行，因此继续属于既有 deploy verifier 基线兼容问题，不是本轮三项修改产生。
+- 当前执行容器没有 `node_modules`，未启动完整 Express/Socket.IO 实例，也没有用户 Telegram token/Premium cookies，因此没有伪称完成真实 Telegram 发频道或真实 Premium 联网下载；本轮通过源码逻辑、Telegram 返回 entity 强校验设计及已有回归测试确保失败不会静默成功。
+
+涉及文件：`server.js`、`client/light-transfer.js`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.18 2026-08-20：光媒摘要帧 `code length overflow` 与 YouTube Premium → Telegram 服务端过程日志
+
+#### 需求与可公开工程分析
+
+本轮处理两个现场问题：
+
+1. “使用光媒分享”界面隔几帧出现“当前帧容量异常，已保留上一帧……code length overflow (4220>2960)”；
+2. YouTube Premium 下载页把歌曲转发到 Telegram 时，服务器 console 缺少当前处理对象、YouTube 信息、文件信息、上传进度、各频道消息和回滚细节。
+
+这里记录的是可复核的根因、设计依据和验证过程，不记录内部逐字思维链。
+
+#### 1. 光媒为什么固定隔几帧溢出
+
+发送循环按固定节奏混排三类帧：
+
+- 每 4 帧插入一次摘要帧；
+- 部分帧发送 Base64URL 编码的 manifest 分片；
+- 其余帧发送 Base64URL 编码的数据块。
+
+manifest/data 帧基本都是 ASCII；摘要帧则直接在 JSON 的 `q` 字段携带文件或合辑标题。因此“隔几帧”并不是随机容量波动，而是带 Unicode 标题的摘要帧固定进入二维码编码器。
+
+项目使用的 `qrcode.js 1.0.0` 在补充平面 Unicode 字符（emoji 等，由一对 UTF-16 surrogate code units 表示）上存在长度估算与实际写入不一致：
+
+- 选择 QR version 时，`encodeURI` 路径把一个 emoji 估算为 4 个 UTF-8 bytes；
+- 真正写入时，旧库逐个 UTF-16 code unit 编码，把一对 surrogate 当成两个三字节字符，共写 6 bytes；
+- 因此先按偏小长度选择 QR version，随后实际写入才抛出 `code length overflow`；
+- 纠错等级一路降到 L 仍可能因为同一个错误估算再次选小版本，所以旧的纠错降级/保留上一帧机制只能避免白屏，不能根治提示。
+
+使用 20 个 `🎵` 构造与摘要相同字段的帧，旧路径能稳定复现 `code length overflow (4228>2960)`；现场的 `4220>2960` 只因其它字段长度略有差异，错误形态和容量上限完全一致。
+
+#### 2. 光媒修复方案
+
+`makeFrame()` 现在在 `JSON.stringify()` 后把所有 UTF-16 surrogate code units 转成 JSON 标准的 `\uXXXX` ASCII escape，再加上 `D2L1:` 前缀：
+
+- 二维码库的“估算字节数”和“实际编码字节数”都看到同一份 ASCII 文本，不再选到过小 QR version；
+- `JSON.parse()` 会把 surrogate pair 原样恢复为原 emoji，因此协议对象、摘要标题和任务哈希语义没有变化；
+- BMP 中文无需转义，正常标题不会无谓膨胀；
+- manifest/data 帧继续沿用原协议，不需要减小 256B 原子块，也不会牺牲光媒传输吞吐；
+- 旧的“生成成功后才替换上一帧”、纠错等级降级、摘要精简和数据块自动缩减仍作为其它容量异常的防线保留。
+
+为了做行为级回归，内部测试 API 增加 `_makeFrame`。测试在 VM 中加载项目实际的 `qrcode-1.0.0.min.js`：先证明旧 JSON 帧稳定抛出 overflow，再证明新帧在相同 L 纠错等级成功生成二维码，并验证 `parseFrame(...).q` 仍严格等于原 emoji 标题。
+
+#### 3. YouTube Premium → Telegram console 日志
+
+每个转发任务现在有统一前缀：
+
+`[Telegram歌曲转发][job:xxxxxxxx][task:xxxxxxxx][+N.Ns]`
+
+console 会按实际生命周期输出：
+
+- 创建任务：Base/Pro/Ultimate 目标、Ultimate 模式、各层封面来源；
+- 获取 YouTube Premium 任务信息：源 URL、标题、媒体类型、任务状态、artist、album；
+- 确认服务端文件：绝对路径、文件名、大小、MIME、封面路径；
+- ffmpeg 生成 Telegram audio thumbnail 的每次质量档位与输出大小；
+- 开始上传歌曲：频道、音频大小、thumbnail 大小、完整 multipart 请求大小、performer/title；
+- Telegram 音频上传的字节数和百分比；
+- Base/Pro/Ultimate 每条图片/文案消息的频道、封面来源/大小、文案长度、返回 message_id；
+- 完成时的消息角色和链接；
+- 失败时的具体步骤、异常，以及逐条删除已创建 Telegram 消息的回滚过程；某条回滚删除失败时会继续处理其它消息并留下日志。
+
+“获取 YouTube 信息”在分享阶段明确读取已经完成的 Premium 任务缓存，不重新执行 yt-dlp、也不重复访问 YouTube。转发依赖的是任务下载时已经解析并持久化的元信息；console 会明确写出“读取任务缓存，不重复请求 YouTube”，避免把本地读取误判为新的外部请求。日志不输出 Telegram bot token 或 Premium cookies。
+
+#### 4. Telegram 音频真实上传进度
+
+原实现先 `readFile()` 把整首歌曲读成 `Blob`，再把 `FormData` 直接交给 Node `fetch`。这个接口没有上传进度回调，服务端只能知道“请求开始/结束”，无法显示真实字节进度。
+
+本轮新增 `server/telegram-multipart.js`：
+
+- 从歌曲文件建立 `fs.createReadStream()`，不再为了 Telegram 上传把整首歌曲额外读入内存；
+- 以 async generator 生成标准 multipart/form-data，字段、thumbnail、歌曲文件和 closing boundary 均计入精确 `Content-Length`；
+- 文件名按 UTF-8 header bytes 参与长度计算，中文文件名不会让 Content-Length 偏差；
+- `Readable.from(generate())` 交给 Node fetch，并设置流式请求所需的 `duplex: 'half'`；
+- 每当 fetch 消费一个歌曲文件 chunk 就累计上传字节；console 约每跨过 5% 输出一次，若长时间没有跨档则至少每 5 秒输出一次，最终必有 100%；
+- 同一进度会更新前端轮询任务的 `base-audio.detail`，所以页面也能看到当前百分比，而不是一直停留在“可能较慢”。
+
+进度表示 Node 正在向 Telegram 请求体写出的歌曲字节。Telegram 收完整个请求并返回 `ok=true` 后，才输出“上传完成并收到 API 响应”，两种状态不会混为一谈。
+
+#### 5. 验证记录
+
+- `node --check client/light-transfer.js`：通过；
+- `node --check server/telegram-multipart.js`：通过；
+- `node --check server.js`：通过；
+- `tests/features-2608B.test.cjs`：17/17 通过，其中新增：
+  - 使用实际旧二维码库复现 surrogate/emoji 摘要帧 overflow；
+  - 新帧可成功编码且解析标题无损；
+  - multipart 流的实际总字节严格等于 `Content-Length`；
+  - audio/thumbnail 原始 bytes 都存在于请求体；
+  - 中文文件名 header 正确；
+  - 上传进度最终严格到达 `audio.length / audio.length`；
+- `tests/telegram-cover-regression.test.cjs`：8/8 通过，已同步为流式 thumbnail/audio 断言。
+- `tests/youtube-premium.test.cjs`：16/16 通过；
+- `tests/p2p-connection-regression.test.cjs`：38/38 通过；
+- 本轮四组相关回归合计：79/79 通过。
+- 本地验证未使用用户的 Telegram bot token/频道执行真实发帖，也没有重新请求真实 YouTube 页面；外部副作用不属于本轮自动测试。已覆盖二维码实际旧库行为、multipart 字节流/长度/进度，以及现有 Telegram/YouTube/P2P 代码级回归。
+
+涉及文件：`client/light-transfer.js`、`server.js`、`server/telegram-multipart.js`、`tests/features-2608B.test.cjs`、`tests/telegram-cover-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.19 2026-08-20：YouTube Premium 抓取全过程服务端 console 细节与进度
+
+#### 需求
+
+YouTube Premium 下载任务不能只在网页上显示状态；Node.js 服务器 console 也需要明确显示当前处理的是哪个任务、正在获取什么信息、选择了哪些格式、下载到了多少、是否正在合并或写入元信息，以及最终成品或失败原因。
+
+#### 日志关联方式
+
+所有 Premium 抓取日志统一使用：
+
+`[YouTube Premium抓取][task:xxxxxxxx][+N.Ns]`
+
+- `task` 是任务 UUID 的前 8 位，可与下载页任务对应；
+- `+N.Ns` 是从任务创建起算的耗时；
+- 普通过程使用 `console.log`，格式降级/恢复/取消使用 `console.warn`，失败使用 `console.error`；
+- 日志事件由 `server/youtube-premium.js` 的任务服务产生，再交给 `server.js` 统一格式化。日志回调自身即使异常也不会改变抓取任务的成功或失败。
+
+#### 现在会输出的全过程
+
+**队列和任务生命周期**
+
+- 创建任务并入队：URL、默认/自定义模式、是否强制音乐、所选 Format ID、下载区间、队列位置；
+- 开始执行：当前并发、剩余队列、任务处理选项；
+- 服务重启恢复：原本处于运行态的任务重新入队；
+- 重试、取消、排队任务取消、运行任务取消；
+- 完成、失败，以及执行槽释放。
+
+**YouTube 解析过程**
+
+- URL 规范化结果和平台（YouTube/YT Music）；
+- 确认私人 Premium cookies 已配置，但不输出 cookie 文件内容；
+- 基础 `yt-dlp` 元信息结果：video ID、标题、extractor、时长、原始格式数量、是否有封面；
+- 媒体判型以及默认格式选择器；
+- 视频默认轨道确认结果；
+- 标准化后的 audio/video/combined 格式数量和首选音频 ID；
+- 登录态返回的格式不足时，备用 player client 探测的开始、恢复结果或失败原因；
+- 最终 requested/selected Format IDs、完整 selector、输出容器和格式摘要；
+- 音乐任务的专辑 Track/Disc 补充；
+- 最终标题、艺术家、专辑、年份、Track、Disc 等解析结果。
+
+**下载与成品处理**
+
+- 选择歌曲工作流，还是视频/自定义单轨工作流；
+- 每次启动 yt-dlp 的尝试序号、选择器、输出容器、下载区间；
+- `Requested format is not available` 时失败 selector 和下一备用 selector；
+- 下载百分比、已下载量、总量、速度、ETA；
+- yt-dlp 输出文件路径和大小；
+- 视频任务的音视频合并阶段；
+- ffprobe 轨道校验，包括 codec、分辨率和轨道类型；
+- 音乐任务的源音频/封面路径与大小、封面裁切、源音频 codec/码率/时长；
+- 写入歌曲元信息和嵌入封面时的字段摘要；歌词和 comment 只记录“是否存在”，不把整段内容刷入 console；
+- 最终 M4A 封面嵌入校验、文件大小、codec、码率、时长；
+- 成品移入私人任务目录后的文件名、路径、大小和封面路径。
+
+#### 下载进度节流
+
+网页原有进度持久化行为保持不变；console 额外输出的进度采用独立节流：
+
+- 第一个有效进度立即输出；
+- 百分比相对上次至少增加 5% 时输出；
+- 如果下载很慢、5 秒仍未跨过 5%，至少输出一次当前状态；
+- 99.9% 以上和最终完成状态一定输出。
+
+这样既能看到持续进度、速度和 ETA，也不会把 yt-dlp 每一个小 chunk 都刷到 console。
+
+#### 安全与错误处理
+
+- console 不输出 Premium cookie 内容、Telegram token 或带 cookie 的完整命令行；
+- 失败日志先经过既有 `sanitizeYoutubePremiumError()`，cookie 路径和服务器数据目录继续脱敏；
+- 解析/下载内部通过 `onDetail` 回调报告细节，任务服务通过 `onLog` 输出生命周期；两层都属于观测逻辑，不改变格式选择、下载或持久化结果；
+- 取消会记录取消前所处阶段；失败会记录脱敏后的最终错误和累计耗时。
+
+#### 回归覆盖
+
+- YouTube Premium 服务测试注入日志收集器，验证入队、解析细节、解析完成、yt-dlp 启动、42%/速度进度、merging、metadata 和完成事件；
+- 2608B 回归增加 console 前缀、解析细节、两种下载工作流、5%/5 秒节流断言；
+- 未为了测试而请求真实 YouTube 或读取真实 Premium cookies，现有模拟下载保证日志观测不会改变任务行为。
+- `node --check server/youtube-premium.js`、`node --check server.js`：通过；
+- YouTube Premium 16/16、2608B 17/17、Telegram 8/8、P2P 38/38，合计 79/79 通过。
+
+涉及文件：`server/youtube-premium.js`、`server.js`、`tests/youtube-premium.test.cjs`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。

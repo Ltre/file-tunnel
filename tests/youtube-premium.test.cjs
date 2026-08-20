@@ -230,9 +230,11 @@ test('private task service persists history, paginates and hides server paths', 
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drop2tunnel-premium-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const formats = sampleFormats();
+    const logEvents = [];
     let analyzeOptions = null;
     const analyze = async (url, options) => {
         analyzeOptions = options;
+        options.onDetail({ message: '测试：基础元信息获取完成', details: { rawFormatCount: formats.length } });
         return {
             url,
             title: 'Private test',
@@ -241,20 +243,34 @@ test('private task service persists history, paginates and hides server paths', 
             selection: validateFormatSelection(formats, ['137', '140'], 'video')
         };
     };
-    const download = async ({ taskDir, onProgress }) => {
+    const download = async ({ taskDir, onProgress, onStage, onDetail }) => {
         fs.mkdirSync(taskDir, { recursive: true });
         const outputPath = path.join(taskDir, 'private-test.mp4');
         fs.writeFileSync(outputPath, 'private-output');
+        onDetail({ message: '测试：yt-dlp 已启动', details: { formatSelector: '137+140' } });
         onProgress({ percent: 42, speedText: '1MiB/s' });
+        onStage('merging');
+        onStage('metadata');
         return { outputPath, outputFileName: 'private-test.mp4', outputFileSize: fs.statSync(outputPath).size };
     };
-    const service = createYoutubePremiumService({ dataDir, analyze, download });
+    const service = createYoutubePremiumService({ dataDir, analyze, download, onLog: event => logEvents.push(event) });
     const created = service.create({ url: 'https://www.youtube.com/watch?v=test', mode: 'default', asMusic: true });
     const completed = await waitFor(() => service.get(created.id).status === 'completed' && service.get(created.id));
 
     assert.equal(completed.hasFile, true);
     assert.equal(completed.asMusic, true);
     assert.equal(analyzeOptions.forceMusic, true);
+    assert.equal(typeof analyzeOptions.onDetail, 'function');
+    assert.ok(logEvents.some(event => event.message === '任务已创建并进入队列'));
+    assert.ok(logEvents.some(event => event.message === '开始解析 YouTube 页面与媒体格式'));
+    assert.ok(logEvents.some(event => event.message === '测试：基础元信息获取完成' && event.details.rawFormatCount === formats.length));
+    assert.ok(logEvents.some(event => event.message === 'YouTube 信息解析完成'));
+    assert.ok(logEvents.some(event => event.message === '测试：yt-dlp 已启动'));
+    assert.ok(logEvents.some(event => event.message === '下载进度' && event.details.percent === 42 && event.details.speed === '1MiB/s'));
+    assert.ok(logEvents.some(event => event.message === '处理阶段变化' && event.details.status === 'merging'));
+    assert.ok(logEvents.some(event => event.message === '处理阶段变化' && event.details.status === 'metadata'));
+    assert.ok(logEvents.some(event => event.message === '任务完成' && event.details.outputFileName === 'private-test.mp4'));
+    assert.ok(logEvents.every(event => event.taskId === created.id));
     assert.match(completed.downloadUrl, new RegExp(created.id));
     assert.match(completed.previewUrl, /inline=1/);
     assert.equal('outputPath' in completed, false);

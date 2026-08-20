@@ -8,9 +8,9 @@
     const MANIFEST_PART_CHARS = 240;
     const MAX_NETWORK_INDICES = 32;
     const MODES = {
-        far: { label: '远距离', blocksPerFrame: 1, fps: 2, qrSize: 560, level: 'H', quiet: 6 },
-        normal: { label: '常规距离', blocksPerFrame: 1, fps: 4, qrSize: 500, level: 'Q', quiet: 4 },
-        near: { label: '近距离', blocksPerFrame: 2, fps: 6, qrSize: 460, level: 'M', quiet: 3 }
+        far: { label: '远距离', blocksPerFrame: 1, fps: 4, qrSize: 560, level: 'H', quietRatio: 0.035 },
+        normal: { label: '常规距离', blocksPerFrame: 1, fps: 8, qrSize: 500, level: 'Q', quietRatio: 0.03 },
+        near: { label: '近距离', blocksPerFrame: 2, fps: 12, qrSize: 460, level: 'M', quietRatio: 0.025 }
     };
 
     const textEncoder = new TextEncoder();
@@ -247,7 +247,16 @@
     }
 
     function makeFrame(body) {
-        return `${PROTOCOL}:${JSON.stringify(body)}`;
+        // qrcode.js 1.0.0 counts supplementary Unicode characters (for example emoji)
+        // as four UTF-8 bytes while its encoder later writes the two UTF-16 surrogate
+        // code units as six bytes. Near a QR version boundary that mismatch makes the
+        // library choose a version that is too small and then throw "code length overflow".
+        // JSON \uXXXX escapes round-trip to the exact same value through JSON.parse, but
+        // keep QR version selection and actual encoding on the same all-ASCII byte count.
+        const json = JSON.stringify(body).replace(/[\uD800-\uDFFF]/g, unit =>
+            `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`
+        );
+        return `${PROTOCOL}:${json}`;
     }
 
     function parseFrame(raw) {
@@ -443,8 +452,8 @@
             .light-transfer-topbar{display:flex;align-items:center;gap:10px;padding:11px 14px;background:#121722;border-bottom:1px solid #252d3b;min-height:48px}
             .light-transfer-title{font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.light-transfer-topbar .spacer{flex:1}
             .light-transfer-btn,.light-transfer-select{border:1px solid #344055;background:#1a2230;color:#f5f7fb;border-radius:8px;padding:8px 10px;font:inherit}.light-transfer-btn{cursor:pointer}.light-transfer-btn.primary{background:#2c65d8;border-color:#2c65d8}.light-transfer-btn.danger{background:#3a1d22;border-color:#6f3039}
-            .light-sender-main{flex:1;min-height:0;display:grid;grid-template-rows:minmax(280px,1fr) auto;overflow:hidden}.light-qr-stage{display:grid;place-items:center;padding:18px;overflow:hidden;background:#fff}.light-qr-box{max-width:min(88vw,72vh);max-height:min(88vw,72vh);display:grid;place-items:center}.light-qr-box img,.light-qr-box canvas{max-width:100%;max-height:100%;image-rendering:pixelated}
-            .light-info-panel{padding:14px 16px 18px;background:#121722;border-top:1px solid #252d3b;display:grid;gap:10px}.light-info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}.light-info-item{background:#181f2b;border:1px solid #283245;border-radius:8px;padding:9px 10px}.light-info-item b{display:block;font-size:12px;color:#8f9bb0;margin-bottom:4px}.light-info-item span{word-break:break-all;font-size:13px}
+            .light-sender-main{flex:1;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;overflow:hidden}.light-qr-stage{min-height:0;display:grid;place-items:center;padding:18px;overflow:hidden;background:#fff}.light-qr-box{width:100%;height:100%;min-width:0;min-height:0;display:grid;place-items:center;overflow:visible}.light-qr-frame{display:grid;place-items:center;background:#fff;box-sizing:border-box;overflow:hidden}.light-qr-render{width:100%;height:100%;display:grid;place-items:center;min-width:0;min-height:0}.light-qr-render img,.light-qr-render canvas{width:100%!important;height:100%!important;max-width:100%;max-height:100%;display:block;image-rendering:pixelated}
+            .light-info-panel{padding:14px 16px 18px;background:#121722;border-top:1px solid #252d3b;display:grid;gap:10px;max-height:38vh;overflow:auto}.light-info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}.light-info-item{background:#181f2b;border:1px solid #283245;border-radius:8px;padding:9px 10px}.light-info-item b{display:block;font-size:12px;color:#8f9bb0;margin-bottom:4px}.light-info-item span{word-break:break-all;font-size:13px}
             .light-receiver-main{flex:1;min-height:0;overflow:auto;padding:14px;display:grid;gap:14px;background:#0b0e14}.light-camera-stage{position:relative;width:min(92vw,760px);aspect-ratio:4/3;margin:auto;background:#000;border-radius:12px;overflow:hidden;border:1px solid #2d3749}.light-camera-stage video{width:100%;height:100%;object-fit:cover}.light-scan-frame{position:absolute;inset:12%;border:2px solid rgba(100,180,255,.88);box-shadow:0 0 0 9999px rgba(0,0,0,.18);pointer-events:none}.light-camera-message{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);background:rgba(0,0,0,.65);padding:6px 10px;border-radius:999px;font-size:12px;white-space:nowrap}
             .light-progress-card{width:min(92vw,760px);margin:auto;display:grid;gap:10px}.light-progress-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.light-progress-bar{height:10px;background:#212a38;border-radius:999px;overflow:hidden;flex:1;min-width:150px}.light-progress-bar>i{display:block;height:100%;background:#4a88ff;width:0}.light-bitmap{width:100%;height:110px;image-rendering:pixelated;background:#111720;border:1px solid #2a3447;border-radius:8px}.light-status{font-size:13px;color:#aeb8c8;line-height:1.5}.light-error{color:#ff9e9e;font-weight:700}.light-preview{border:1px solid #2b3547;background:#151c27;border-radius:10px;padding:10px;display:grid;gap:8px}.light-preview img,.light-preview video{max-width:100%;max-height:320px;margin:auto}.light-preview audio{width:100%}.light-file-status-list{display:grid;gap:5px;font-size:12px;color:#bac3d2}.light-file-status-row{display:flex;gap:8px;justify-content:space-between;border-bottom:1px dashed #2b3547;padding:5px 0}.light-parts-entry{width:min(92vw,760px);margin:auto;display:flex;justify-content:flex-end;padding-bottom:max(18px,env(safe-area-inset-bottom))}
             .light-iframe-layer{position:fixed;inset:0;z-index:13100;background:#fff}.light-iframe-layer iframe{width:100%;height:100%;border:0;display:block}
@@ -503,6 +512,7 @@
 
         const render = () => {
             if (closed || !layer.isConnected) return;
+            const renderStartedAt = performance.now();
             const mode = MODES[modeSelect.value] || MODES.normal;
             let frame;
             let label;
@@ -531,24 +541,41 @@
             const levelRank = qrLevels.indexOf(mode.level);
             const tryRenderFrame = (candidateFrame, candidateLabel) => {
                 let lastError = null;
+                const stage = layer.querySelector('.light-qr-stage');
+                const stageRect = stage?.getBoundingClientRect?.() || { width: mode.qrSize, height: mode.qrSize };
+                const availableWidth = Math.max(120, Math.floor(stageRect.width - 20));
+                const availableHeight = Math.max(120, Math.floor(stageRect.height - 20));
+                // The complete QR, including its white quiet zone, must fit inside the actual
+                // stage. Previously the QR was rendered at qrSize and padding was added after,
+                // so the bottom edge could be clipped by the stage's overflow:hidden.
+                const displaySize = Math.max(120, Math.min(mode.qrSize, availableWidth, availableHeight));
+                const quietPx = Math.max(8, Math.round(displaySize * Number(mode.quietRatio || 0.03)));
+                const codeSize = Math.max(96, displaySize - quietPx * 2);
                 for (let levelDegradation = 0; levelDegradation <= levelRank; levelDegradation++) {
                     const tryLevel = qrLevels[levelRank - levelDegradation];
                     const correctLevel = global.QRCode.CorrectLevel?.[tryLevel] ?? baseLevel;
                     const staging = document.createElement('div');
+                    const renderTarget = document.createElement('div');
+                    staging.className = 'light-qr-frame';
+                    renderTarget.className = 'light-qr-render';
+                    staging.style.width = `${displaySize}px`;
+                    staging.style.height = `${displaySize}px`;
+                    staging.style.padding = `${quietPx}px`;
+                    staging.appendChild(renderTarget);
                     try {
-                        new global.QRCode(staging, {
+                        new global.QRCode(renderTarget, {
                             text: candidateFrame,
-                            width: mode.qrSize,
-                            height: mode.qrSize,
+                            width: codeSize,
+                            height: codeSize,
                             colorDark: '#000000',
                             colorLight: '#ffffff',
                             correctLevel
                         });
                         // Only replace the visible QR after the next frame has been generated
-                        // successfully. A capacity error can therefore never create a white gap.
-                        qr.replaceChildren(...Array.from(staging.childNodes));
+                        // successfully. The quiet zone is part of the staged frame itself, so
+                        // no edge can be cropped by adding size after generation.
+                        qr.replaceChildren(staging);
                         qr.title = candidateFrame;
-                        qr.style.padding = `${mode.quiet}px`;
                         const levelTag = levelDegradation > 0 ? ` [降级${tryLevel}]` : '';
                         status.textContent = `${mode.label} · ${mode.fps} fps · ${candidateLabel}${levelTag}`;
                         return true;
@@ -581,7 +608,11 @@
             }
             frameNo++;
             clearTimeout(timer);
-            timer = setTimeout(render, 1000 / mode.fps);
+            // Compensate for synchronous QR generation time. The previous scheduler waited a
+            // full frame interval *after* QR generation, making the real FPS noticeably lower
+            // than the selected mode. Keep the total frame period close to 1000/fps instead.
+            const renderCostMs = performance.now() - renderStartedAt;
+            timer = setTimeout(render, Math.max(0, (1000 / mode.fps) - renderCostMs));
         };
         const cleanup = () => {
             closed = true;
@@ -1305,6 +1336,7 @@
         openPartsPage,
         closePartsPage,
         parseFrame,
+        _makeFrame: makeFrame,
         _acceptFrame: acceptFrame
     };
 

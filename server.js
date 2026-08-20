@@ -66,6 +66,7 @@ const { registerFileAssetHandlers, cleanupFileAssetRelays, cleanupFileAssetAssig
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
 const { createAdminAuth } = require('./server/admin-auth');
+const { buildTelegramAudioMultipart } = require('./server/telegram-multipart');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
 const {
     createYoutubePremiumService,
@@ -133,12 +134,25 @@ const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 const youtubePremiumMetadataCache = loadYoutubePremiumMetadataCache();
+
+function logYoutubePremiumTaskEvent(event = {}) {
+    const taskId = String(event.taskId || '-').slice(0, 8);
+    const elapsedSeconds = (Math.max(0, Number(event.elapsedMs) || 0) / 1000).toFixed(1);
+    const prefix = `[YouTube Premium抓取][task:${taskId}][+${elapsedSeconds}s]`;
+    const message = `${prefix} ${String(event.message || '任务事件')}`;
+    const details = event.details && typeof event.details === 'object' ? event.details : {};
+    const writer = event.level === 'error' ? console.error : event.level === 'warn' ? console.warn : console.log;
+    if (Object.keys(details).length) writer.call(console, message, details);
+    else writer.call(console, message);
+}
+
 const youtubePremiumService = createYoutubePremiumService({
     dataDir: SERVER_DATA_DIR,
     analyze: analyzeYoutubePremiumUrl,
     download: downloadYoutubePremiumTask,
     sanitizeError: sanitizeYoutubePremiumError,
-    concurrency: Number(process.env.YOUTUBE_PREMIUM_DOWNLOAD_CONCURRENCY) || 1
+    concurrency: Number(process.env.YOUTUBE_PREMIUM_DOWNLOAD_CONCURRENCY) || 1,
+    onLog: logYoutubePremiumTaskEvent
 });
 const youtubePremiumCoverJobs = new Map();
 
@@ -1439,10 +1453,64 @@ function touchSongShareJob(job) {
     job.updatedAt = Date.now();
 }
 
+function formatSongShareBytes(value) {
+    const bytes = Math.max(0, Number(value) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let size = bytes;
+    let unit = units[0];
+    for (const candidate of units) {
+        size /= 1024;
+        unit = candidate;
+        if (size < 1024 || candidate === units[units.length - 1]) break;
+    }
+    return `${size.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function logSongShare(job, message, details) {
+    const jobId = String(job?.jobId || '-').slice(0, 8);
+    const taskId = String(job?.taskId || '-').slice(0, 8);
+    const elapsedSeconds = job?.createdAt ? ((Date.now() - job.createdAt) / 1000).toFixed(1) : '0.0';
+    const prefix = `[Telegram歌曲转发][job:${jobId}][task:${taskId}][+${elapsedSeconds}s]`;
+    if (details && typeof details === 'object' && Object.keys(details).length) console.log(`${prefix} ${message}`, details);
+    else console.log(`${prefix} ${message}`);
+}
+
 function setSongShareStep(job, key, patch) {
     const step = job.steps.find(s => s.key === key);
-    if (step) Object.assign(step, patch);
+    if (step) {
+        Object.assign(step, patch);
+        if (patch?.status || patch?.detail) {
+            logSongShare(job, `步骤「${step.label}」${patch.status ? ` → ${patch.status}` : ''}`, patch.detail ? { detail: patch.detail } : undefined);
+        }
+    }
     touchSongShareJob(job);
+}
+
+function createSongShareUploadReporter(job, totalBytes) {
+    let lastPercentBucket = -1;
+    let lastLogAt = 0;
+    return (uploadedBytes, total = totalBytes) => {
+        const safeTotal = Math.max(1, Number(total) || Number(totalBytes) || 1);
+        const safeUploaded = Math.min(safeTotal, Math.max(0, Number(uploadedBytes) || 0));
+        const percent = Math.min(100, safeUploaded / safeTotal * 100);
+        const bucket = Math.floor(percent / 5);
+        const now = Date.now();
+        if (safeUploaded !== 0 && safeUploaded !== safeTotal && bucket <= lastPercentBucket && now - lastLogAt < 5000) return;
+        lastPercentBucket = Math.max(lastPercentBucket, bucket);
+        lastLogAt = now;
+        const detail = `正在上传 Telegram 音频：${percent.toFixed(percent >= 10 ? 0 : 1)}%（${formatSongShareBytes(safeUploaded)} / ${formatSongShareBytes(safeTotal)}）`;
+        const step = job.steps.find(item => item.key === 'base-audio');
+        if (step?.status === 'running') {
+            step.detail = detail;
+            touchSongShareJob(job);
+        }
+        logSongShare(job, 'Telegram 音频上传进度', {
+            percent: Number(percent.toFixed(1)),
+            uploaded: formatSongShareBytes(safeUploaded),
+            total: formatSongShareBytes(safeTotal)
+        });
+    };
 }
 
 function publicSongShareJob(job) {
@@ -1518,6 +1586,17 @@ app.post('/api/telegram/song-share', adminAuth.requireAuth, async (req, res) => 
     };
     telegramSongShareJobs.set(job.jobId, job);
     pruneSongShareJobs();
+    logSongShare(job, '已创建转发任务', {
+        baseChannel: baseChat,
+        proChannel: sendPro ? proChat : '未选择',
+        ultimateChannel: sendUltimate ? ultimateChat : '未选择',
+        ultimateMode: sendUltimate ? ultimateMode : '未选择',
+        coverModes: {
+            base: coverBase ? '原尺寸/自定义封面' : '任务方形封面',
+            pro: sendPro ? (coverPro ? '原尺寸/自定义封面' : '任务方形封面') : '未发送',
+            ultimate: sendUltimate ? (coverUltimate ? '原尺寸/自定义封面' : '任务方形封面') : '未发送'
+        }
+    });
 
     // 后台异步执行，不阻塞响应
     runSongShareJob(job, {
@@ -1549,52 +1628,75 @@ async function runSongShareJob(job, params) {
 
     async function rollback() {
         // Delete in reverse order
+        logSongShare(job, '开始回滚已发送的 Telegram 消息', { count: createdMessages.length });
         for (let i = createdMessages.length - 1; i >= 0; i--) {
-            const { chatId, messageId } = createdMessages[i];
+            const { chatId, messageId, label } = createdMessages[i];
             try {
+                logSongShare(job, `回滚删除「${label}」`, { chatId, messageId });
                 await telegramApi('deleteMessage', { chat_id: chatId, message_id: messageId });
-            } catch (_) { /* best-effort */ }
+            } catch (error) {
+                logSongShare(job, `回滚删除「${label}」失败（继续处理其余消息）`, { error: describeTelegramNetworkError(error) });
+            }
         }
     }
 
-    async function sendPhotoWithCaption(chatId, photoData, caption, defaultCoverPath = '') {
+    async function sendPhotoWithCaption(chatId, photoData, caption, defaultCoverPath = '', role = '图文记录') {
         // Send photo with caption via multipart form
         const form = new FormData();
         form.set('chat_id', chatId);
         form.set('caption', caption);
         const effectiveCover = (photoData === 'original' || !photoData) ? defaultCoverPath : photoData;
+        let coverBytes = 0;
+        let coverSource = '无封面';
         if (effectiveCover) {
             if (effectiveCover.startsWith('data:')) {
                 // base64 data URL
                 const resp = await fetch(effectiveCover);
                 const blob = await resp.blob();
+                coverBytes = blob.size;
+                coverSource = '浏览器上传/原尺寸封面';
                 form.set('photo', blob, 'cover.jpg');
             } else if (fs.existsSync(effectiveCover)) {
                 // file path
                 const buffer = await fs.promises.readFile(effectiveCover);
+                coverBytes = buffer.length;
+                coverSource = 'YouTube Premium 任务封面';
                 form.set('photo', new Blob([buffer]), 'cover.jpg');
             }
         }
+        logSongShare(job, `开始上传 Telegram ${role}`, {
+            chatId,
+            coverSource,
+            coverSize: formatSongShareBytes(coverBytes),
+            captionChars: String(caption || '').length
+        });
         const result = await telegramFetchJson('sendPhoto', {
             method: 'POST',
             body: form
         }, { operation: 'song-share-sendPhoto' });
+        logSongShare(job, `Telegram ${role}上传完成`, { chatId, messageId: result.result?.message_id || '' });
         return result.result;
     }
 
     async function prepareTelegramAudioThumbnail(sourcePath) {
-        if (!sourcePath || !fs.existsSync(sourcePath)) return null;
+        if (!sourcePath || !fs.existsSync(sourcePath)) {
+            logSongShare(job, '任务没有可用封面，Telegram 音频将不附带 thumbnail');
+            return null;
+        }
         fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
         const outputPath = path.join(SNS_MEDIA_WORK_DIR, `telegram-audio-thumb-${crypto.randomBytes(8).toString('hex')}.jpg`);
         const qualityLevels = [5, 8, 12, 18, 24];
         try {
             for (const quality of qualityLevels) {
+                logSongShare(job, '正在生成 Telegram 音频 thumbnail', { quality, source: path.basename(sourcePath) });
                 await spawnCapture(FFMPEG_COMMAND, [
                     '-y', '-hide_banner', '-loglevel', 'error', '-i', sourcePath,
                     '-vf', 'scale=320:320:force_original_aspect_ratio=decrease',
                     '-frames:v', '1', '-q:v', String(quality), outputPath
                 ], { timeoutMs: 60000, timeoutError: 'telegram-audio-thumbnail-timeout' });
-                if (fs.statSync(outputPath).size < 200 * 1024) {
+                const thumbnailSize = fs.statSync(outputPath).size;
+                logSongShare(job, 'Telegram 音频 thumbnail 已生成', { quality, size: formatSongShareBytes(thumbnailSize) });
+                if (thumbnailSize < 200 * 1024) {
                     return {
                         path: outputPath,
                         cleanup: () => { try { fs.rmSync(outputPath, { force: true }); } catch (_) {} }
@@ -1608,21 +1710,42 @@ async function runSongShareJob(job, params) {
         }
     }
 
-    async function sendAudioFile(chatId, audioBlob, fileName, caption, options = {}) {
-        const form = new FormData();
-        form.set('chat_id', chatId);
-        if (caption) form.set('caption', caption);
-        if (options.performer) form.set('performer', String(options.performer));
-        if (options.title) form.set('title', String(options.title));
-        if (options.thumbnailPath) {
-            const thumbnail = await fs.promises.readFile(options.thumbnailPath);
-            form.set('thumbnail', new Blob([thumbnail], { type: 'image/jpeg' }), 'thumbnail.jpg');
-        }
-        form.set('audio', audioBlob, fileName || 'song.m4a');
+    async function sendAudioFile(chatId, audioPath, fileName, caption, options = {}) {
+        const request = buildTelegramAudioMultipart({
+            fields: {
+                chat_id: chatId,
+                caption,
+                performer: options.performer ? String(options.performer) : '',
+                title: options.title ? String(options.title) : ''
+            },
+            audioPath,
+            audioFileName: fileName,
+            thumbnailPath: options.thumbnailPath || '',
+            onAudioProgress: createSongShareUploadReporter(job, fs.statSync(audioPath).size)
+        });
+        logSongShare(job, '开始向 Telegram 上传歌曲文件', {
+            chatId,
+            fileName,
+            audioSize: formatSongShareBytes(request.audioSize),
+            thumbnailSize: formatSongShareBytes(request.thumbnailSize),
+            requestSize: formatSongShareBytes(request.contentLength),
+            performer: options.performer || '',
+            title: options.title || ''
+        });
         const result = await telegramFetchJson('sendAudio', {
             method: 'POST',
-            body: form
+            headers: {
+                'Content-Type': request.contentType,
+                'Content-Length': String(request.contentLength)
+            },
+            body: request.body,
+            duplex: 'half'
         }, { operation: 'song-share-sendAudio' });
+        logSongShare(job, 'Telegram 歌曲文件上传完成并收到 API 响应', {
+            chatId,
+            messageId: result.result?.message_id || '',
+            telegramFileSize: formatSongShareBytes(result.result?.audio?.file_size || request.audioSize)
+        });
         return result.result;
     }
 
@@ -1638,25 +1761,42 @@ async function runSongShareJob(job, params) {
     }
 
     try {
-        // Step 1: Get the song file from YouTube Premium task
-        setSongShareStep(job, 'prepare', { status: 'running', detail: '正在读取任务文件…' });
+        // Step 1: Get the already-resolved YouTube information and song file from the
+        // completed Premium task. Sharing must not execute yt-dlp or hit YouTube again.
+        setSongShareStep(job, 'prepare', { status: 'running', detail: '正在获取 YouTube Premium 任务信息…' });
+        const taskInfo = youtubePremiumService.get(job.taskId);
+        if (!taskInfo) throw new Error('youtube-premium-task-not-found');
+        logSongShare(job, '已获取 YouTube Premium 任务信息（读取任务缓存，不重复请求 YouTube）', {
+            sourceUrl: taskInfo.url || '',
+            title: taskInfo.title || '',
+            mediaType: taskInfo.mediaType || '',
+            status: taskInfo.status || '',
+            artist: taskInfo.songMetadata?.artist || '',
+            album: taskInfo.songMetadata?.album || ''
+        });
         const fileResult = youtubePremiumService.getFile(job.taskId, 'output');
         if (!fileResult) throw new Error('song-file-not-found');
-        const audioBlob = new Blob([await fs.promises.readFile(fileResult.path)]);
         const fileName = fileResult.name || 'song.m4a';
+        const audioStat = await fs.promises.stat(fileResult.path);
 
         // Also try to get the cover image path
         const coverFileResult = youtubePremiumService.getFile(job.taskId, 'cover');
         const defaultCoverPath = coverFileResult?.path || '';
-        setSongShareStep(job, 'prepare', { status: 'done', detail: `已读取 ${fileName}` });
+        logSongShare(job, '已确认待发送文件', {
+            audioPath: fileResult.path,
+            audioFileName: fileName,
+            audioSize: formatSongShareBytes(audioStat.size),
+            audioMime: getMimeTypeFromFileName(fileName),
+            coverPath: defaultCoverPath || '无'
+        });
+        setSongShareStep(job, 'prepare', { status: 'done', detail: `已读取 ${fileName}（${formatSongShareBytes(audioStat.size)}）` });
 
         // Step 2: Send song file to Base channel
         setSongShareStep(job, 'base-audio', { status: 'running', detail: '正在生成 Telegram 音频封面并上传音频（可能较慢）…' });
         const telegramAudioThumbnail = await prepareTelegramAudioThumbnail(defaultCoverPath);
         let baseAudioMsg;
         try {
-            const taskInfo = youtubePremiumService.get(job.taskId);
-            baseAudioMsg = await sendAudioFile(baseChat, audioBlob, fileName, '', {
+            baseAudioMsg = await sendAudioFile(baseChat, fileResult.path, fileName, '', {
                 thumbnailPath: telegramAudioThumbnail?.path || '',
                 performer: taskInfo?.songMetadata?.artist || '',
                 title: taskInfo?.songMetadata?.title || taskInfo?.title || ''
@@ -1676,7 +1816,7 @@ async function runSongShareJob(job, params) {
         // Step 3: Send Tb (Base captioned record: cover + caption + baseAudioLink)
         setSongShareStep(job, 'base-tb', { status: 'running', detail: '正在发送图文记录…' });
         const tbCaption = `${captionBase}\n\n${baseAudioLink}`;
-        const tbMsg = await sendPhotoWithCaption(baseChat, coverBase, tbCaption, defaultCoverPath);
+        const tbMsg = await sendPhotoWithCaption(baseChat, coverBase, tbCaption, defaultCoverPath, 'Base 图文记录');
         if (!tbMsg?.message_id) throw new Error('tb-send-failed');
         const tbLink = getMessageTmeLink(baseChat, tbMsg.message_id);
         createdMessages.push({ role: 'base-tb', label: 'Base 图文记录', chatId: baseChat, messageId: tbMsg.message_id, link: tbLink });
@@ -1686,7 +1826,7 @@ async function runSongShareJob(job, params) {
         if (sendPro) {
             setSongShareStep(job, 'pro-tp', { status: 'running', detail: '正在发送…' });
             const tpCaption = `${captionPro}\n\n${tbLink}`;
-            const tpMsg = await sendPhotoWithCaption(proChat, coverPro, tpCaption, defaultCoverPath);
+            const tpMsg = await sendPhotoWithCaption(proChat, coverPro, tpCaption, defaultCoverPath, 'Pro 图文记录');
             if (!tpMsg?.message_id) throw new Error('tp-send-failed');
             const tpLink = getMessageTmeLink(proChat, tpMsg.message_id);
             createdMessages.push({ role: 'pro-tp', label: 'Pro 图文记录', chatId: proChat, messageId: tpMsg.message_id, link: tpLink });
@@ -1699,27 +1839,44 @@ async function runSongShareJob(job, params) {
                 if (ultimateMode === 'formal') {
                     // Formal: cover + caption + tpLink
                     const ultCaption = `${captionUltimate}\n\n${tpLink}`;
-                    ultMsg = await sendPhotoWithCaption(ultimateChat, coverUltimate, ultCaption, defaultCoverPath);
+                    ultMsg = await sendPhotoWithCaption(ultimateChat, coverUltimate, ultCaption, defaultCoverPath, 'Ultimate 正式图文记录');
                     if (!ultMsg?.message_id) throw new Error('ultimate-formal-send-failed');
                     const ultLink = getMessageTmeLink(ultimateChat, ultMsg.message_id);
                     createdMessages.push({ role: 'ultimate', label: 'Ultimate 记录', chatId: ultimateChat, messageId: ultMsg.message_id, link: ultLink });
                     setSongShareStep(job, 'ultimate', { status: 'done', detail: '已发送', link: ultLink });
                 } else {
-                    // Trial: "入选试行：\n" + hyperlink[艺术家 - 歌曲名](tpLink).
-                    // Use Telegram HTML parse mode so the visible caption remains exactly the
-                    // user-edited "艺术家 - 歌曲名" while the text itself points to the Pro Tp.
-                    const trialCaption = `入选试行：\n<a href="${escapeHtmlServer(tpLink)}">${escapeHtmlServer(captionUltimate)}</a>`;
+                    // Trial: "入选试行：\n" + a Bot API text_link entity whose visible text is
+                    // exactly the user-edited "艺术家 - 歌曲名" and whose URL is the Pro Tp.
+                    // Do not rely on parse_mode here: explicit entities avoid HTML/Markdown
+                    // parsing differences and let us verify that Telegram actually created the link.
+                    if (!tpLink) throw new Error('telegram-pro-tp-link-unavailable');
+                    const trialPrefix = '入选试行：\n';
+                    const trialText = `${trialPrefix}${captionUltimate}`;
+                    const trialEntity = {
+                        type: 'text_link',
+                        offset: trialPrefix.length,
+                        length: captionUltimate.length,
+                        url: tpLink
+                    };
                     const trialMsg = await telegramApi('sendMessage', {
                         chat_id: ultimateChat,
-                        text: trialCaption,
-                        parse_mode: 'HTML',
+                        text: trialText,
+                        entities: [trialEntity],
                         link_preview_options: { is_disabled: true },
                         disable_web_page_preview: true
                     });
                     if (!trialMsg?.message_id) throw new Error('ultimate-trial-send-failed');
+                    const returnedEntities = Array.isArray(trialMsg.entities) ? trialMsg.entities : [];
+                    const linkedToTp = returnedEntities.some(entity =>
+                        entity?.type === 'text_link' &&
+                        Number(entity.offset) === trialEntity.offset &&
+                        Number(entity.length) === trialEntity.length &&
+                        String(entity.url || '') === tpLink
+                    );
+                    if (!linkedToTp) throw new Error('ultimate-trial-link-entity-missing');
                     const ultLink = getMessageTmeLink(ultimateChat, trialMsg.message_id);
                     createdMessages.push({ role: 'ultimate', label: 'Ultimate 记录', chatId: ultimateChat, messageId: trialMsg.message_id, link: ultLink });
-                    setSongShareStep(job, 'ultimate', { status: 'done', detail: '已发送', link: ultLink });
+                    setSongShareStep(job, 'ultimate', { status: 'done', detail: '已发送（文案已链接到 Pro Tp）', link: ultLink });
                 }
             }
         }
@@ -1731,6 +1888,7 @@ async function runSongShareJob(job, params) {
         job.status = 'completed';
         job.messages = shareMessages;
         touchSongShareJob(job);
+        logSongShare(job, '转发任务全部完成', { messages: shareMessages });
     } catch (err) {
         const message = describeTelegramNetworkError(err) || 'song-share-failed';
         const runningStep = job.steps.find(s => s.status === 'running');
@@ -1740,7 +1898,7 @@ async function runSongShareJob(job, params) {
             // 提示用户已回滚
             if (runningStep) setSongShareStep(job, runningStep.key, { status: 'failed', detail: `${message}（已回滚删除已发送的消息）` });
         }
-        console.error('telegram song-share error:', err);
+        console.error(`[Telegram歌曲转发][job:${String(job.jobId).slice(0, 8)}][task:${String(job.taskId).slice(0, 8)}] 转发失败:`, err);
         job.status = 'failed';
         job.error = message;
         touchSongShareJob(job);
@@ -3528,6 +3686,9 @@ function getYtDlpFailureMessage(stderr, fallback) {
     if (/unable to extract|extractor(?:\s+)?error|no video formats found|failed to extract/i.test(output)) {
         return `外部平台页面/API 或 yt-dlp extractor 可能已经变化：${String(errorLine || fallback).replace(/^ERROR:\s*/i, '')}`;
     }
+    if (/requested format is not available|only images are available/i.test(errorLine)) {
+        return `YouTube 当前登录态/播放器客户端返回的可用格式集合不完整，或原先选择的格式已经变化：${String(errorLine || fallback).replace(/^ERROR:\s*/i, '')}。系统会对自动模式尝试可用格式降级；若仍失败，请重新导出有效 Premium cookies（建议按 yt-dlp 官方方式在新的隐私/无痕会话中导出后立即关闭该会话）`;
+    }
     if (/HTTP Error\s+(?:403|429)|Too Many Requests|rate.?limit/i.test(output)) {
         return `外部平台拒绝或限制了抓取请求（可能是登录态、频率、IP策略或接口规则变化）：${String(errorLine || fallback).replace(/^ERROR:\s*/i, '')}`;
     }
@@ -3661,6 +3822,21 @@ function runYtDlpJson(url, options = {}) {
             settled = true;
             finish();
             if (code !== 0) {
+                if (options.formatSelector && options.formatSelectionFallback !== false &&
+                    /requested format is not available|only images are available/i.test(stderr)) {
+                    recordExternalDependencyEvent(dependencyId, `${operation}-fallback-format-metadata`, {
+                        level: 'warn', endpoint: url,
+                        message: getYtDlpFailureMessage(stderr, 'yt-dlp format selection became unavailable'),
+                        details: { requestedSelector: String(options.formatSelector).slice(0, 500) },
+                        hint: 'The authenticated YouTube client returned a different/limited format set; retrying metadata extraction without forcing a format.'
+                    });
+                    return runYtDlpJson(url, {
+                        ...options,
+                        formatSelector: '',
+                        ignoreNoFormats: true,
+                        formatSelectionFallback: false
+                    }).then(resolve, reject);
+                }
                 if (options.allowIgnoreNoFormatsFallback !== false && options.ignoreNoFormats !== true &&
                     ((/challenge solver|signature solving failed/i.test(stderr) &&
                         /requested format is not available|only images are available/i.test(stderr)) ||
@@ -4984,40 +5160,91 @@ function getYtDlpDownloadSelectionArgs(playlistItem = 0) {
         : ['--no-playlist'];
 }
 
+function isYtDlpRequestedFormatUnavailable(error) {
+    return /requested format is not available|only images are available/i.test(String(error?.message || error || ''));
+}
+
 async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistItem = 0, options = {}) {
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
     cleanupSnsWorkFiles(`${assetId}.`);
     const progressState = { lastAt: 0 };
     const maxFileSize = options.maxFileSize === null ? 0 : Number(options.maxFileSize || getTelegramMaxFileSize());
     let merging = false;
-    const args = [
-        '--newline', ...getYtDlpDownloadSelectionArgs(playlistItem), '--cache-dir', YT_DLP_CACHE_DIR,
-        ...getYtDlpRemoteComponentArgs(url),
-        ...getYtDlpFfmpegArgs(),
-        '-f', options.formatSelector || getYtDlpFormatSelector(url),
-        '--merge-output-format', options.mergeOutputFormat || 'mp4',
-        '-o', path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`),
-        ...getYtDlpCookieArgs(url, options.cookiePath),
-        url
-    ];
-    if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
-    if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
-    await spawnYtDlpCapture(args, {
-        sourceUrl: url,
-        operation: 'sns-media-download',
-        timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
-        timeoutError: 'yt-dlp-download-timeout',
-        signal: options.signal,
-        onOutput: chunk => {
-            parseYtDlpProgress(chunk, onProgress, progressState);
-            if (!merging && /\[(?:Merger|VideoRemuxer|Fixup)/i.test(String(chunk || ''))) {
-                merging = true;
-                options.onStage?.('merging');
+    const primarySelector = options.formatSelector || getYtDlpFormatSelector(url);
+    const selectors = [primarySelector];
+    if (isYouTubeUrl(url) && options.allowFormatFallback === true) {
+        selectors.push(getYtDlpFormatSelector(url), 'bv*+ba/best');
+    }
+    const uniqueSelectors = [...new Set(selectors.filter(Boolean))];
+    let lastFormatError = null;
+    for (let attempt = 0; attempt < uniqueSelectors.length; attempt++) {
+        const selector = uniqueSelectors[attempt];
+        options.onDetail?.({
+            message: '启动 yt-dlp 媒体下载',
+            details: {
+                attempt: attempt + 1,
+                attempts: uniqueSelectors.length,
+                formatSelector: selector,
+                mergeOutputFormat: options.mergeOutputFormat || 'mp4',
+                downloadSections: options.downloadSections || '完整媒体'
             }
+        });
+        cleanupSnsWorkFiles(`${assetId}.`);
+        const args = [
+            '--newline', ...getYtDlpDownloadSelectionArgs(playlistItem), '--cache-dir', YT_DLP_CACHE_DIR,
+            ...getYtDlpRemoteComponentArgs(url),
+            ...getYtDlpFfmpegArgs(),
+            '-f', selector,
+            '--merge-output-format', options.mergeOutputFormat || 'mp4',
+            '-o', path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`),
+            ...getYtDlpCookieArgs(url, options.cookiePath),
+            url
+        ];
+        if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
+        if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
+        try {
+            await spawnYtDlpCapture(args, {
+                sourceUrl: url,
+                operation: attempt ? 'sns-media-download-format-fallback' : 'sns-media-download',
+                timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
+                timeoutError: 'yt-dlp-download-timeout',
+                signal: options.signal,
+                onOutput: chunk => {
+                    parseYtDlpProgress(chunk, onProgress, progressState);
+                    if (!merging && /\[(?:Merger|VideoRemuxer|Fixup)/i.test(String(chunk || ''))) {
+                        merging = true;
+                        options.onStage?.('merging');
+                    }
+                }
+            });
+            lastFormatError = null;
+            options.onDetail?.({
+                message: 'yt-dlp 媒体下载命令执行成功',
+                details: { attempt: attempt + 1, formatSelector: selector }
+            });
+            break;
+        } catch (error) {
+            if (!isYtDlpRequestedFormatUnavailable(error) || attempt >= uniqueSelectors.length - 1) throw error;
+            lastFormatError = error;
+            options.onDetail?.({
+                level: 'warn',
+                message: '当前格式选择不可用，准备使用备用选择器重试',
+                details: { failedSelector: selector, nextSelector: uniqueSelectors[attempt + 1] }
+            });
+            recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-premium-download-format-fallback', {
+                level: 'warn', endpoint: url, error,
+                details: { failedSelector: selector, nextSelector: uniqueSelectors[attempt + 1] },
+                hint: 'Authenticated YouTube format inventory changed between parse/download; retrying an automatic selector instead of failing the task immediately.'
+            });
         }
-    });
+    }
+    if (lastFormatError) throw lastFormatError;
     const filePath = findDownloadedSnsFile(`${assetId}.`);
     if (!filePath) throw new Error('yt-dlp-output-missing');
+    options.onDetail?.({
+        message: '已找到 yt-dlp 下载输出',
+        details: { filePath, fileSize: fs.statSync(filePath).size }
+    });
     return filePath;
 }
 
@@ -5109,38 +5336,95 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     const progressState = { lastAt: 0 };
     onStage('fetching_song');
     const maxFileSize = options.maxFileSize === null ? 0 : Number(options.maxFileSize || getTelegramMaxFileSize());
-    const args = [
-        '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
-        ...getYtDlpRemoteComponentArgs(url),
-        ...getYtDlpFfmpegArgs(),
-        '-f', options.formatSelector || getYtDlpAudioFormatSelector(),
-        '--write-thumbnail', '--convert-thumbnails', 'jpg',
-        '-o', path.join(SNS_MEDIA_WORK_DIR, `${prefix}%(ext)s`),
-        ...getYtDlpCookieArgs(url, options.cookiePath),
-        url
-    ];
-    if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
-    if (maxFileSize > 0) args.splice(args.indexOf('--write-thumbnail'), 0, '--max-filesize', String(maxFileSize));
-    await spawnYtDlpCapture(args, {
-        sourceUrl: url,
-        operation: 'youtube-song-download',
-        timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
-        timeoutError: 'yt-dlp-song-download-timeout',
-        signal: options.signal,
-        onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
-    });
+    const primarySelector = options.formatSelector || getYtDlpAudioFormatSelector();
+    const selectors = [primarySelector];
+    if (options.strictFormatSelection !== true) {
+        selectors.push(getYtDlpAudioFormatSelector(), 'bestaudio/best[acodec!=none]/best');
+    }
+    const uniqueSelectors = [...new Set(selectors.filter(Boolean))];
+    let downloaded = false;
+    let lastFormatError = null;
+    for (let attempt = 0; attempt < uniqueSelectors.length; attempt++) {
+        const selector = uniqueSelectors[attempt];
+        options.onDetail?.({
+            message: '启动 yt-dlp 歌曲与封面下载',
+            details: {
+                attempt: attempt + 1,
+                attempts: uniqueSelectors.length,
+                formatSelector: selector,
+                strictFormatSelection: options.strictFormatSelection === true,
+                downloadSections: options.downloadSections || '完整媒体'
+            }
+        });
+        cleanupSnsWorkFiles(prefix);
+        const args = [
+            '--newline', '--no-playlist', '--cache-dir', YT_DLP_CACHE_DIR,
+            ...getYtDlpRemoteComponentArgs(url),
+            ...getYtDlpFfmpegArgs(),
+            '-f', selector,
+            '--write-thumbnail', '--convert-thumbnails', 'jpg',
+            '-o', path.join(SNS_MEDIA_WORK_DIR, `${prefix}%(ext)s`),
+            ...getYtDlpCookieArgs(url, options.cookiePath),
+            url
+        ];
+        if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
+        if (maxFileSize > 0) args.splice(args.indexOf('--write-thumbnail'), 0, '--max-filesize', String(maxFileSize));
+        try {
+            await spawnYtDlpCapture(args, {
+                sourceUrl: url,
+                operation: attempt ? 'youtube-song-download-format-fallback' : 'youtube-song-download',
+                timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
+                timeoutError: 'yt-dlp-song-download-timeout',
+                signal: options.signal,
+                onOutput: chunk => parseYtDlpProgress(chunk, onProgress, progressState)
+            });
+            downloaded = true;
+            lastFormatError = null;
+            options.onDetail?.({
+                message: 'yt-dlp 歌曲与封面下载命令执行成功',
+                details: { attempt: attempt + 1, formatSelector: selector }
+            });
+            break;
+        } catch (error) {
+            if (!isYtDlpRequestedFormatUnavailable(error) || attempt >= uniqueSelectors.length - 1) throw error;
+            lastFormatError = error;
+            options.onDetail?.({
+                level: 'warn',
+                message: '歌曲格式选择不可用，准备使用备用音频选择器重试',
+                details: { failedSelector: selector, nextSelector: uniqueSelectors[attempt + 1] }
+            });
+            recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-song-download-format-fallback', {
+                level: 'warn', endpoint: url, error,
+                details: { failedSelector: selector, nextSelector: uniqueSelectors[attempt + 1] },
+                hint: 'YouTube logged-in cookie/player-client format availability changed; retrying with a broader audio/combined selector.'
+            });
+        }
+    }
+    if (!downloaded && lastFormatError) throw lastFormatError;
     const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp']);
     const sourceAudio = findDownloadedSnsFile(prefix, filePath => !imageExts.has(path.extname(filePath).toLowerCase()));
     const sourceCover = findDownloadedSnsFile(prefix, filePath => imageExts.has(path.extname(filePath).toLowerCase()));
     if (!sourceAudio) throw new Error('yt-dlp-song-audio-missing');
     if (!sourceCover) throw new Error('yt-dlp-song-cover-missing');
     if (maxFileSize > 0 && fs.statSync(sourceAudio).size > maxFileSize) throw new Error('sns-media-file-too-large');
+    options.onDetail?.({
+        message: '已取得歌曲源文件与 YouTube 封面',
+        details: {
+            sourceAudio,
+            sourceAudioSize: fs.statSync(sourceAudio).size,
+            sourceCover,
+            sourceCoverSize: fs.statSync(sourceCover).size
+        }
+    });
 
     onStage('processing_cover');
     const squareCover = path.join(SNS_MEDIA_WORK_DIR, `${taskRecord.id}.cover.jpg`);
+    options.onDetail?.({ message: '开始裁切并验证方形歌曲封面', details: { sourceCover, squareCover } });
     await createSquareCover(sourceCover, squareCover, options);
+    options.onDetail?.({ message: '方形歌曲封面处理完成', details: { squareCover, size: fs.statSync(squareCover).size } });
     const sourceProbe = await probeMediaFile(sourceAudio, options);
     const sourceSummary = getAudioProbeSummary(sourceProbe);
+    options.onDetail?.({ message: '源音频探测完成', details: sourceSummary });
     const sourceUrl = normalizeYoutubeSourceUrl(item.sourceUrl || item.mediaUrl || '');
     const providedMetadata = item.songMetadata || {};
     const metadata = {
@@ -5161,6 +5445,26 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         ? ['-c:a', 'copy']
         : ['-c:a', 'aac', '-b:a', `${Math.max(96, Math.min(256, Math.round((sourceSummary.bitRate || 128000) / 1000)))}k`];
     onStage('writing_metadata');
+    options.onDetail?.({
+        message: '开始写入歌曲元信息并嵌入封面',
+        details: {
+            output: finalAudio,
+            audioMode: sourceSummary.codecName === 'aac' ? '复制 AAC 音轨' : `转码 ${audioCodecArgs.at(-1)}`,
+            metadata: {
+                title: metadata.title,
+                artist: metadata.artist,
+                album: metadata.album,
+                albumArtist: metadata.album_artist,
+                composer: metadata.composer,
+                genre: metadata.genre,
+                track: metadata.track,
+                disc: metadata.disc,
+                date: metadata.date,
+                hasComment: Boolean(metadata.comment),
+                hasLyrics: Boolean(metadata.lyrics)
+            }
+        }
+    });
     await spawnCapture(FFMPEG_COMMAND, [
         '-y', '-hide_banner', '-loglevel', 'error',
         '-i', sourceAudio, '-i', squareCover,
@@ -5179,6 +5483,10 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
     if (!coverStream) throw new Error('song-cover-not-embedded');
     const finalSummary = getAudioProbeSummary(finalProbe);
     const tags = finalProbe.format?.tags || {};
+    options.onDetail?.({
+        message: '歌曲成品校验完成',
+        details: { finalAudio, fileSize: fs.statSync(finalAudio).size, embeddedCover: true, ...finalSummary }
+    });
     return {
         finalAudio,
         squareCover,
@@ -5270,26 +5578,115 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         throw new Error('youtube-url-required');
     }
     const url = parsed.parsed.href;
+    const report = (message, details = {}, level = 'info') => options.onDetail?.({ message, details, level });
+    report('已规范化 YouTube 地址', { sourceUrl: url, platform: parsed.platform });
     const cookiePath = requireYoutubePremiumCookies();
+    report('已确认私人 YouTube Premium cookies 可用，准备获取基础元信息', {
+        cookieConfigured: true,
+        includeFormats: options.includeFormats === true,
+        forceMusic: options.forceMusic === true
+    });
+    // Metadata parsing must not fail merely because yt-dlp's default/current format
+    // selector cannot be satisfied. Logged-in YouTube cookies can expose a different or
+    // temporarily reduced format set depending on the player client, so first collect the
+    // raw metadata/format inventory with --ignore-no-formats-error.
     let baseMeta = await runYtDlpJson(url, {
         noPlaylist: true,
         cookiePath,
+        ignoreNoFormats: true,
         allowIgnoreNoFormatsFallback: false,
         signal: options.signal
+    });
+    report('基础元信息与格式库存获取完成', {
+        youtubeVideoId: sanitizeString(baseMeta.id || '', 80),
+        title: sanitizeString(baseMeta.title || baseMeta.fulltitle || '', 240),
+        extractor: sanitizeString(baseMeta.extractor_key || baseMeta.extractor || '', 80),
+        durationSeconds: Number(baseMeta.duration) || 0,
+        rawFormatCount: Array.isArray(baseMeta.formats) ? baseMeta.formats.length : 0,
+        hasThumbnail: Boolean(baseMeta.thumbnail || baseMeta.thumbnails?.length)
     });
     const detectedMediaType = options.forceMusic === true ? 'song' : classifySnsMedia(url, baseMeta);
     if (detectedMediaType === 'unsupported') throw new Error('youtube-playlist-not-supported');
     const defaultSelector = detectedMediaType === 'song' ? getYtDlpAudioFormatSelector() : getYtDlpFormatSelector(url);
-    const selectedMeta = await runYtDlpJson(url, {
-        noPlaylist: true,
-        cookiePath,
-        formatSelector: defaultSelector,
-        allowIgnoreNoFormatsFallback: false,
-        signal: options.signal
+    report('媒体类型识别与默认格式策略已确定', { detectedMediaType, defaultSelector });
+    // For songs, do not run a second metadata command with -f. It is unnecessary and was
+    // the direct source of "Requested format is not available" during parsing when an
+    // authenticated browser cookie caused YouTube to return a limited client format set.
+    let selectedMeta = baseMeta;
+    if (detectedMediaType !== 'song') {
+        report('正在按默认视频格式策略确认可下载轨道', { formatSelector: defaultSelector });
+        selectedMeta = await runYtDlpJson(url, {
+            noPlaylist: true,
+            cookiePath,
+            formatSelector: defaultSelector,
+            allowIgnoreNoFormatsFallback: true,
+            signal: options.signal
+        });
+        report('默认视频轨道确认完成', {
+            requestedFormats: Array.isArray(selectedMeta.requested_formats)
+                ? selectedMeta.requested_formats.map(format => String(format?.format_id || '')).filter(Boolean)
+                : [String(selectedMeta.format_id || '')].filter(Boolean),
+            rawFormatCount: Array.isArray(selectedMeta.formats) ? selectedMeta.formats.length : 0
+        });
+    }
+    let formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
+    let preferredMusicFormat = getPreferredMusicAudioFormat(formats);
+    report('格式库存已标准化', {
+        normalizedFormatCount: formats.length,
+        audioFormats: formats.filter(format => format.kind === 'audio').length,
+        videoFormats: formats.filter(format => format.kind === 'video').length,
+        combinedFormats: formats.filter(format => format.kind === 'video_audio').length,
+        preferredMusicFormatId: preferredMusicFormat?.id || ''
     });
-    const formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
-    const preferredMusicFormat = getPreferredMusicAudioFormat(formats);
-    const automaticIds = getSelectedFormatIds(selectedMeta);
+    // Some logged-in YouTube sessions currently expose only a narrow client set. If the
+    // initial authenticated metadata has no audio at all, make one cache-bypassed probe with
+    // alternate clients. This is best-effort and never replaces the original metadata fields.
+    if (detectedMediaType === 'song' && !preferredMusicFormat) {
+        try {
+            report('主播放器客户端没有可用纯音频，开始备用客户端探测', {
+                playerClients: 'web_safari,web,android_vr,tv_embedded'
+            }, 'warn');
+            const alternateMeta = await runYtDlpJson(url, {
+                noPlaylist: true,
+                cookiePath,
+                ignoreNoFormats: true,
+                playerClient: 'web_safari,web,android_vr,tv_embedded',
+                playerClientFallback: false,
+                bypassCache: true,
+                allowIgnoreNoFormatsFallback: false,
+                operation: 'youtube-premium-audio-format-probe',
+                signal: options.signal
+            });
+            const alternateFormats = normalizeYtDlpFormats(alternateMeta.formats);
+            const alternatePreferred = getPreferredMusicAudioFormat(alternateFormats);
+            if (alternatePreferred) {
+                formats = alternateFormats;
+                preferredMusicFormat = alternatePreferred;
+                selectedMeta = alternateMeta;
+                report('备用播放器客户端已恢复音频格式', {
+                    recoveredFormatId: alternatePreferred.id,
+                    recoveredFormatCount: alternateFormats.length
+                }, 'warn');
+                recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-premium-audio-format-probe-recovered', {
+                    level: 'warn', endpoint: url,
+                    message: 'Primary authenticated player-client format inventory had no usable audio; alternate client probe recovered audio formats.',
+                    details: { recoveredFormatId: alternatePreferred.id },
+                    hint: 'Browser-exported YouTube cookies can alter/limit the available logged-in player clients. Consider refreshing cookies if this recurs frequently.'
+                });
+            }
+        } catch (probeError) {
+            report('备用播放器客户端探测失败，将继续使用现有格式库存', {
+                error: sanitizeYoutubePremiumError(probeError)
+            }, 'warn');
+            recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-premium-audio-format-probe-failed', {
+                level: 'warn', endpoint: url, error: probeError,
+                hint: 'Alternate player-client probing is best-effort; the normal missing-audio fallback will handle the result.'
+            });
+        }
+    }
+    const automaticIds = detectedMediaType === 'song'
+        ? [preferredMusicFormat?.id].filter(Boolean)
+        : getSelectedFormatIds(selectedMeta);
     const formatById = new Map(formats.map(format => [format.id, format]));
     const preferredVideoFormat = getPreferredPremiumVideoFormat(formats);
     const preferredVideoAudio = automaticIds.map(id => formatById.get(id)).find(format => format?.kind === 'audio') ||
@@ -5305,8 +5702,21 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     if (options.forceMusic === true && !requestedIds.length) throw new Error('youtube-premium-audio-format-missing');
     const selection = validateFormatSelection(formats, requestedIds, detectedMediaType, options.forceMusic === true);
     const mediaType = resolveYoutubePremiumMediaType(detectedMediaType, selection, options.forceMusic === true);
+    report('最终格式选择已通过校验', {
+        requestedIds,
+        selectedIds: selection.ids,
+        mediaType,
+        formatSelector: selection.formatSelector,
+        outputContainer: selection.outputContainer,
+        summary: selection.summary
+    });
     if (mediaType === 'song') {
+        report('正在补充 YouTube Music 专辑曲序与唱片编号', {});
         baseMeta = await enrichYoutubeMusicOrdinalMetadata(baseMeta, url, { cookiePath, signal: options.signal });
+        report('歌曲专辑序号补充完成', {
+            track: String(baseMeta.track_number || baseMeta.track || ''),
+            disc: String(baseMeta.disc_number || baseMeta.disc || '')
+        });
     }
     const artist = normalizeArtistValue(baseMeta);
     const track = String(baseMeta.track || baseMeta.title || baseMeta.fulltitle || '').trim();
@@ -5328,7 +5738,19 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         selection,
         formats: options.includeFormats ? formats : []
     };
-    return enrichYoutubePremiumAnalysisOrdinals(analysis, { cookiePath, signal: options.signal });
+    const enrichedAnalysis = await enrichYoutubePremiumAnalysisOrdinals(analysis, { cookiePath, signal: options.signal });
+    report('YouTube Premium 解析结果已组装', {
+        title: enrichedAnalysis.title,
+        youtubeVideoId: enrichedAnalysis.youtubeVideoId,
+        mediaType: enrichedAnalysis.mediaType,
+        selectedFormatIds: enrichedAnalysis.selection?.ids || [],
+        artist: enrichedAnalysis.songMetadata?.artist || '',
+        album: enrichedAnalysis.songMetadata?.album || '',
+        date: enrichedAnalysis.songMetadata?.date || '',
+        track: enrichedAnalysis.songMetadata?.track || '',
+        disc: enrichedAnalysis.songMetadata?.disc || ''
+    });
+    return enrichedAnalysis;
 }
 
 function moveYoutubePremiumOutput(sourcePath, targetPath) {
@@ -5342,14 +5764,29 @@ function moveYoutubePremiumOutput(sourcePath, targetPath) {
     return targetPath;
 }
 
-async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onProgress, onStage }) {
+async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onProgress, onStage, onDetail }) {
     const workId = `premium-${task.id}`;
     const customSelector = task.mode === 'custom' ? analysis.selection.formatSelector : '';
     const singleTrack = task.mode === 'custom' && analysis.selection.formats.length === 1
         ? analysis.selection.formats[0].kind
         : '';
     try {
+        onDetail?.({
+            message: '已进入 Premium 成品处理器',
+            details: {
+                mediaType: analysis.mediaType,
+                mode: task.mode,
+                asMusic: task.asMusic === true,
+                singleTrack: singleTrack || '否',
+                customSelector: customSelector || '',
+                taskDir
+            }
+        });
         if (analysis.mediaType === 'song' && (task.mode !== 'custom' || ['audio', 'video_audio'].includes(singleTrack))) {
+            onDetail?.({
+                message: '采用歌曲工作流：下载音频与封面、裁切封面、写入元信息',
+                details: { formatSelector: customSelector || (task.asMusic ? analysis.selection.formatSelector : getYtDlpAudioFormatSelector()) }
+            });
             const song = await downloadAndProcessYoutubeSong({
                 sourceUrl: analysis.url,
                 mediaUrl: analysis.url,
@@ -5361,13 +5798,19 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
             }, {
                 cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
                 formatSelector: customSelector || (task.asMusic ? analysis.selection.formatSelector : getYtDlpAudioFormatSelector()),
+                strictFormatSelection: Boolean(customSelector),
                 downloadSections: task.downloadSections || '',
                 maxFileSize: null,
-                signal
+                signal,
+                onDetail
             });
             const outputFileName = song.fileName;
             const outputPath = moveYoutubePremiumOutput(song.finalAudio, path.join(taskDir, outputFileName));
             const coverPath = moveYoutubePremiumOutput(song.squareCover, path.join(taskDir, 'cover.jpg'));
+            onDetail?.({
+                message: '歌曲与封面已移入任务成品目录',
+                details: { outputPath, coverPath, outputFileName, outputFileSize: fs.statSync(outputPath).size }
+            });
             return {
                 outputPath,
                 coverPath,
@@ -5379,15 +5822,26 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
         }
 
         onStage('downloading');
+        onDetail?.({
+            message: '采用视频/单轨工作流',
+            details: {
+                formatSelector: customSelector || analysis.selection.formatSelector || getYtDlpFormatSelector(analysis.url),
+                outputContainer: analysis.selection.outputContainer || 'mp4',
+                singleTrack: singleTrack || '自动音视频组合'
+            }
+        });
         const downloadedPath = await runYtDlpDownload(analysis.url, workId, onProgress, 0, {
             cookiePath: YOUTUBE_PREMIUM_COOKIE_PATH,
             formatSelector: customSelector || analysis.selection.formatSelector || getYtDlpFormatSelector(analysis.url),
+            allowFormatFallback: !customSelector,
             mergeOutputFormat: analysis.selection.outputContainer || 'mp4',
             downloadSections: task.downloadSections || '',
             maxFileSize: null,
             signal,
-            onStage
+            onStage,
+            onDetail
         });
+        onDetail?.({ message: '开始使用 ffprobe 校验下载成品轨道', details: { downloadedPath } });
         const probe = await probeMediaFile(downloadedPath, { signal });
         if (!probe.streams?.some(stream => stream.codec_type === (singleTrack === 'audio' ? 'audio' : 'video'))) {
             throw new Error(singleTrack === 'audio' ? 'youtube-premium-audio-stream-missing' : 'youtube-premium-video-stream-missing');
@@ -5395,6 +5849,20 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
         const extension = path.extname(downloadedPath) || `.${analysis.selection.outputContainer || 'mp4'}`;
         const outputFileName = `${sanitizeMediaFilePart(analysis.title, 'youtube-video')}${extension}`;
         const outputPath = moveYoutubePremiumOutput(downloadedPath, path.join(taskDir, outputFileName));
+        onDetail?.({
+            message: '视频/单轨成品校验并移动完成',
+            details: {
+                outputPath,
+                outputFileName,
+                outputFileSize: fs.statSync(outputPath).size,
+                streams: (probe.streams || []).map(stream => ({
+                    type: stream.codec_type || '',
+                    codec: stream.codec_name || '',
+                    width: Number(stream.width) || 0,
+                    height: Number(stream.height) || 0
+                }))
+            }
+        });
         return {
             outputPath,
             outputFileName,
