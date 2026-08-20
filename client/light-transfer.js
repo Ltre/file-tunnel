@@ -247,23 +247,23 @@
     }
 
     function makeFrame(body) {
-        // qrcode.js 1.0.0 counts supplementary Unicode characters (for example emoji)
-        // as four UTF-8 bytes while its encoder later writes the two UTF-16 surrogate
-        // code units as six bytes. Near a QR version boundary that mismatch makes the
-        // library choose a version that is too small and then throw "code length overflow".
-        // JSON \uXXXX escapes round-trip to the exact same value through JSON.parse, but
-        // keep QR version selection and actual encoding on the same all-ASCII byte count.
-        const json = JSON.stringify(body).replace(/[\uD800-\uDFFF]/g, unit =>
-            `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`
-        );
-        return `${PROTOCOL}:${json}`;
+        // qrcode.js 1.0.0 uses two different Unicode byte-counting paths while selecting
+        // and encoding a QR version. An ASCII envelope makes those paths identical for
+        // every possible title/device/URL value, while UTF-8 JSON preserves the payload.
+        return `${PROTOCOL}:B${b64url(textEncoder.encode(JSON.stringify(body)))}`;
     }
 
     function parseFrame(raw) {
         const text = String(raw || '');
         if (!text.startsWith(`${PROTOCOL}:`)) return null;
         try {
-            const frame = JSON.parse(text.slice(PROTOCOL.length + 1));
+            const payload = text.slice(PROTOCOL.length + 1);
+            // New senders use the deterministic ASCII envelope. Retain legacy JSON support
+            // so an updated receiver can still scan an optical transfer already in progress.
+            const json = payload.startsWith('B')
+                ? textDecoder.decode(unb64url(payload.slice(1)))
+                : payload;
+            const frame = JSON.parse(json);
             return frame?.v === 1 && frame?.t ? frame : null;
         } catch (_) {
             return null;
@@ -328,7 +328,7 @@
         const parts = [];
         const encodedManifest = b64url(textEncoder.encode(manifestText));
         for (let i = 0; i < encodedManifest.length; i += MANIFEST_PART_CHARS) parts.push(encodedManifest.slice(i, i + MANIFEST_PART_CHARS));
-        const providerDeviceId = String(options.getDeviceId?.() || '');
+        const providerDeviceId = String(options.getDeviceId?.() || '').slice(0, 120);
         const networkUrl = options.getNetworkUrl?.(taskId, providerDeviceId) || '';
         const reportUrl = options.getReportUrl?.(taskId, providerDeviceId) || '';
         const share = {
@@ -405,7 +405,8 @@
         const body = {
             v: 1, t: share.taskId, k: 's', mh: share.manifestHash,
             z: share.totalSize, bc: share.blockCount, bs: ATOMIC_BLOCK_SIZE,
-            n: share.manifest.files.length, q: String(share.manifest.title || '').slice(0, compact ? 48 : 120),
+            n: share.manifest.files.length,
+            q: Array.from(String(share.manifest.title || '')).slice(0, compact ? 48 : 120).join(''),
             ty: share.manifest.kind
         };
         if (!compact) {
@@ -418,7 +419,7 @@
             body.o = providerOrigin;
             body.pd = providerDeviceId;
             body.ne = Boolean(networkEnabled && share.networkUrl);
-        } else {
+        } else if (!compact) {
             body.nu = networkEnabled ? share.networkUrl : '';
             body.ru = share.reportUrl || '';
         }
@@ -441,6 +442,91 @@
             c: actualCount, bc: share.blockCount, bs: ATOMIC_BLOCK_SIZE,
             x: crc32(bytes), p: b64url(bytes)
         });
+    }
+
+    const QR_LEVELS = ['L', 'M', 'Q', 'H'];
+
+    function qrLevelCandidates(preferredLevel) {
+        const preferredIndex = Math.max(0, QR_LEVELS.indexOf(preferredLevel));
+        return QR_LEVELS.slice(0, preferredIndex + 1).reverse();
+    }
+
+    function canRenderQrFrame(frame, level) {
+        if (!global.QRCode) return false;
+        const target = document.createElement('div');
+        try {
+            new global.QRCode(target, {
+                text: frame,
+                width: 128,
+                height: 128,
+                colorDark: '#000000',
+                colorLight: '#ffffff',
+                correctLevel: global.QRCode.CorrectLevel?.[level] ?? global.QRCode.CorrectLevel?.M
+            });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function findSafeQrLevel(frames, preferredLevel) {
+        for (const level of qrLevelCandidates(preferredLevel)) {
+            if (frames.every(frame => canRenderQrFrame(frame, level))) return level;
+        }
+        return '';
+    }
+
+    function createManifestCapacityProbeFrame(share) {
+        const part = share.manifestParts.reduce((longest, value) => value.length > longest.length ? value : longest, '');
+        return makeFrame({
+            v: 1, t: share.taskId, k: 'm', mh: share.manifestHash,
+            i: Math.max(0, share.manifestParts.length - 1), c: share.manifestParts.length,
+            p: part
+        });
+    }
+
+    function createDataCapacityProbeFrame(share, count) {
+        const byteLength = Math.max(1, Math.min(count * ATOMIC_BLOCK_SIZE, share.totalSize));
+        const actualCount = Math.ceil(byteLength / ATOMIC_BLOCK_SIZE);
+        return makeFrame({
+            v: 1, t: share.taskId, k: 'd', s: Math.max(0, share.blockCount - actualCount),
+            c: actualCount, bc: share.blockCount, bs: ATOMIC_BLOCK_SIZE,
+            x: 'ffffffff', p: b64url(new Uint8Array(byteLength))
+        });
+    }
+
+    function buildSafeModePlan(share, modeKey = 'normal') {
+        const mode = MODES[modeKey] || MODES.normal;
+        let summary = null;
+        for (const compact of [false, true]) {
+            const frames = [
+                createSummaryFrame(share, false, compact),
+                createSummaryFrame(share, true, compact)
+            ];
+            const level = findSafeQrLevel(frames, mode.level);
+            if (level) {
+                summary = { compact, level };
+                break;
+            }
+        }
+        const manifestLevel = findSafeQrLevel([createManifestCapacityProbeFrame(share)], mode.level);
+        let data = null;
+        for (let blocksPerFrame = mode.blocksPerFrame; blocksPerFrame >= 1; blocksPerFrame--) {
+            const level = findSafeQrLevel([createDataCapacityProbeFrame(share, blocksPerFrame)], mode.level);
+            if (level) {
+                data = { blocksPerFrame, level };
+                break;
+            }
+        }
+        if (!summary || !manifestLevel || !data) {
+            throw new Error('无法为当前任务建立安全的二维码容量方案');
+        }
+        return {
+            modeKey,
+            summary,
+            manifest: { level: manifestLevel },
+            data
+        };
     }
 
     function ensureStyle() {
@@ -509,24 +595,41 @@
         let manifestFrameNo = 0;
         let dataFrameNo = 0;
         let closed = false;
+        const modePlans = new Map();
 
         const render = () => {
             if (closed || !layer.isConnected) return;
             const renderStartedAt = performance.now();
-            const mode = MODES[modeSelect.value] || MODES.normal;
+            const modeKey = MODES[modeSelect.value] ? modeSelect.value : 'normal';
+            const mode = MODES[modeKey];
+            let plan = modePlans.get(modeKey);
+            if (!plan) {
+                try {
+                    plan = buildSafeModePlan(share, modeKey);
+                    modePlans.set(modeKey, plan);
+                } catch (error) {
+                    clearTimeout(timer);
+                    status.textContent = `二维码安全预检未通过，轮播未启动：${error.message}`;
+                    status.classList.add('light-error');
+                    return;
+                }
+            }
             let frame;
             let label;
+            let frameLevel;
             // Summary is never more than ~2 seconds away, even in the slow far-distance mode.
             if (frameNo % 4 === 0) {
-                frame = createSummaryFrame(share, networkToggle.checked);
-                label = '摘要 / Manifest 索引';
+                frame = createSummaryFrame(share, networkToggle.checked, plan.summary.compact);
+                label = `摘要 / Manifest 索引${plan.summary.compact ? ' [精简]' : ''}`;
+                frameLevel = plan.summary.level;
             } else if (frameNo % 7 === 0 || frameNo < 3) {
                 const part = manifestFrameNo % share.manifestParts.length;
                 manifestFrameNo++;
                 frame = createManifestFrame(share, part);
                 label = `Manifest ${part + 1}/${share.manifestParts.length}`;
+                frameLevel = plan.manifest.level;
             } else {
-                const group = mode.blocksPerFrame;
+                const group = plan.data.blocksPerFrame;
                 const groupCount = Math.max(1, Math.ceil(share.blockCount / group));
                 const groupOffset = share.senderSalt % groupCount;
                 const groupIndex = (groupOffset + dataFrameNo) % groupCount;
@@ -534,77 +637,46 @@
                 const start = groupIndex * group;
                 const count = Math.min(group, share.blockCount - start);
                 frame = createDataFrame(share, start, count);
-                label = `数据块 ${start + 1}–${Math.min(share.blockCount, start + count)}/${share.blockCount}`;
+                label = `数据块 ${start + 1}–${Math.min(share.blockCount, start + count)}/${share.blockCount}${group < mode.blocksPerFrame ? ' [预检降载]' : ''}`;
+                frameLevel = plan.data.level;
             }
-            const qrLevels = ['L', 'M', 'Q', 'H'];
-            const baseLevel = global.QRCode.CorrectLevel?.[mode.level] ?? global.QRCode.CorrectLevel?.M;
-            const levelRank = qrLevels.indexOf(mode.level);
-            const tryRenderFrame = (candidateFrame, candidateLabel) => {
-                let lastError = null;
-                const stage = layer.querySelector('.light-qr-stage');
-                const stageRect = stage?.getBoundingClientRect?.() || { width: mode.qrSize, height: mode.qrSize };
-                const availableWidth = Math.max(120, Math.floor(stageRect.width - 20));
-                const availableHeight = Math.max(120, Math.floor(stageRect.height - 20));
-                // The complete QR, including its white quiet zone, must fit inside the actual
-                // stage. Previously the QR was rendered at qrSize and padding was added after,
-                // so the bottom edge could be clipped by the stage's overflow:hidden.
-                const displaySize = Math.max(120, Math.min(mode.qrSize, availableWidth, availableHeight));
-                const quietPx = Math.max(8, Math.round(displaySize * Number(mode.quietRatio || 0.03)));
-                const codeSize = Math.max(96, displaySize - quietPx * 2);
-                for (let levelDegradation = 0; levelDegradation <= levelRank; levelDegradation++) {
-                    const tryLevel = qrLevels[levelRank - levelDegradation];
-                    const correctLevel = global.QRCode.CorrectLevel?.[tryLevel] ?? baseLevel;
-                    const staging = document.createElement('div');
-                    const renderTarget = document.createElement('div');
-                    staging.className = 'light-qr-frame';
-                    renderTarget.className = 'light-qr-render';
-                    staging.style.width = `${displaySize}px`;
-                    staging.style.height = `${displaySize}px`;
-                    staging.style.padding = `${quietPx}px`;
-                    staging.appendChild(renderTarget);
-                    try {
-                        new global.QRCode(renderTarget, {
-                            text: candidateFrame,
-                            width: codeSize,
-                            height: codeSize,
-                            colorDark: '#000000',
-                            colorLight: '#ffffff',
-                            correctLevel
-                        });
-                        // Only replace the visible QR after the next frame has been generated
-                        // successfully. The quiet zone is part of the staged frame itself, so
-                        // no edge can be cropped by adding size after generation.
-                        qr.replaceChildren(staging);
-                        qr.title = candidateFrame;
-                        const levelTag = levelDegradation > 0 ? ` [降级${tryLevel}]` : '';
-                        status.textContent = `${mode.label} · ${mode.fps} fps · ${candidateLabel}${levelTag}`;
-                        return true;
-                    } catch (error) {
-                        lastError = error;
-                    }
-                }
-                return lastError || new Error('qr-frame-render-failed');
-            };
-
-            let renderResult = tryRenderFrame(frame, label);
-            if (renderResult !== true && frameNo % 4 === 0) {
-                // Summary frames must remain high-frequency. If unusually long title/origin data
-                // exceeds the selected distance mode, retry with the compact summary form.
-                const compactSummary = createSummaryFrame(share, networkToggle.checked, true);
-                renderResult = tryRenderFrame(compactSummary, '摘要 / Manifest 索引 [精简]');
-            } else if (renderResult !== true && !(frameNo % 7 === 0 || frameNo < 3)) {
-                // Data frames can always reduce the number of atomic blocks without changing the
-                // resumable block protocol. This is preferable to dropping an optical frame.
-                const originalStart = Number((parseFrame(frame) || {}).s) || 0;
-                for (let fallbackCount = Math.max(1, mode.blocksPerFrame - 1); fallbackCount >= 1 && renderResult !== true; fallbackCount--) {
-                    const smaller = createDataFrame(share, originalStart, Math.min(fallbackCount, share.blockCount - originalStart));
-                    renderResult = tryRenderFrame(smaller, `数据块 ${originalStart + 1}–${Math.min(share.blockCount, originalStart + fallbackCount)}/${share.blockCount} [自动缩减]`);
-                }
-            }
-            if (renderResult !== true) {
-                // Keep the previous valid QR visible. The status is diagnostic only; the next
-                // scheduled frame will still run, so the sender never flashes an empty QR box.
-                status.textContent = `当前帧容量异常，已保留上一帧 · ${label} · ${renderResult?.message || '二维码生成失败'}`;
+            const stage = layer.querySelector('.light-qr-stage');
+            const stageRect = stage?.getBoundingClientRect?.() || { width: mode.qrSize, height: mode.qrSize };
+            const availableWidth = Math.max(120, Math.floor(stageRect.width - 20));
+            const availableHeight = Math.max(120, Math.floor(stageRect.height - 20));
+            // The complete QR, including its white quiet zone, must fit inside the actual stage.
+            const displaySize = Math.max(120, Math.min(mode.qrSize, availableWidth, availableHeight));
+            const quietPx = Math.max(8, Math.round(displaySize * Number(mode.quietRatio || 0.03)));
+            const codeSize = Math.max(96, displaySize - quietPx * 2);
+            const staging = document.createElement('div');
+            const renderTarget = document.createElement('div');
+            staging.className = 'light-qr-frame';
+            renderTarget.className = 'light-qr-render';
+            staging.style.width = `${displaySize}px`;
+            staging.style.height = `${displaySize}px`;
+            staging.style.padding = `${quietPx}px`;
+            staging.appendChild(renderTarget);
+            try {
+                new global.QRCode(renderTarget, {
+                    text: frame,
+                    width: codeSize,
+                    height: codeSize,
+                    colorDark: '#000000',
+                    colorLight: '#ffffff',
+                    correctLevel: global.QRCode.CorrectLevel?.[frameLevel] ?? global.QRCode.CorrectLevel?.M
+                });
+                // Capacity has already been verified with the same ASCII byte-mode envelope.
+                // Swap the visible frame only after the renderer has completed successfully.
+                qr.replaceChildren(staging);
+                qr.title = frame;
+                status.classList.remove('light-error');
+                const levelTag = frameLevel !== mode.level ? ` [纠错级别${frameLevel}]` : '';
+                status.textContent = `${mode.label} · ${mode.fps} fps · ${label}${levelTag}`;
+            } catch (error) {
+                clearTimeout(timer);
+                status.textContent = `二维码渲染器异常，轮播已暂停：${error.message || '未知错误'}`;
+                status.classList.add('light-error');
+                return;
             }
             frameNo++;
             clearTimeout(timer);
@@ -623,7 +695,13 @@
         };
         layer.querySelector('[data-light-close]').addEventListener('click', cleanup);
         networkToggle.addEventListener('change', () => { share.networkEnabled = Boolean(networkToggle.checked && share.networkUrl); });
-        modeSelect.addEventListener('change', () => { frameNo = 0; manifestFrameNo = 0; dataFrameNo = 0; render(); });
+        modeSelect.addEventListener('change', () => {
+            clearTimeout(timer);
+            frameNo = 0;
+            manifestFrameNo = 0;
+            dataFrameNo = 0;
+            render();
+        });
         // Poll download status reports from receivers
         let downloaderPollTimer = null;
         const downloadersEl = layer.querySelector('[data-light-downloaders] span');
@@ -1337,6 +1415,10 @@
         closePartsPage,
         parseFrame,
         _makeFrame: makeFrame,
+        _createSummaryFrame: createSummaryFrame,
+        _createManifestFrame: createManifestFrame,
+        _createDataFrame: createDataFrame,
+        _buildSafeModePlan: buildSafeModePlan,
         _acceptFrame: acceptFrame
     };
 

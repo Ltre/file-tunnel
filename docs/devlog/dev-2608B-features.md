@@ -1580,3 +1580,116 @@ YouTube Premium 下载任务不能只在网页上显示状态；Node.js 服务�
 - YouTube Premium 16/16、2608B 17/17、Telegram 8/8、P2P 38/38，合计 79/79 通过。
 
 涉及文件：`server/youtube-premium.js`、`server.js`、`tests/youtube-premium.test.cjs`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.20 2026-08-20：YouTube Premium 最小配置向导与光媒帧容量确定性修复
+
+#### 需求边界
+
+本轮继续处理两项需求：
+
+1. 在 YouTube Premium 下载页提供配置向导，但只检查真正必要的配置；不修改后台原有 `/tgbot`、`/sns-cookies` 页面，不在向导中代填或保存配置；
+2. 不再依赖“某一帧失败后保留上一帧”的补救方式，而是在光媒轮播开始前科学判断每类帧是否能被当前二维码库编码，从生成路径上杜绝容量异常帧进入轮播。
+
+本文记录可公开复核的工程分析、实现和测试，不记录内部逐字思维链。
+
+#### 1. 最小配置向导
+
+新增只读接口 `GET /api/youtube-premium/setup-status`。接口只返回以下布尔状态：
+
+- 私人 YouTube Premium Cookie 是否已配置，以及最后更新时间；
+- Telegram Bot Token 是否已经由管理员保存；
+- 歌曲分享的 Base、Pro、Ultimate 三个频道是否分别已配置，以及三项是否全部完成；
+- 三个步骤是否全部完成。
+
+接口不返回 Cookie 内容、Bot Token、Token 预览或频道值，也不执行 Telegram API，不写配置文件。
+
+下载页新增三步向导：
+
+1. 引导管理员打开 `/sns-cookies`，并明确说明只需要保存“私人 YouTube Premium Cookie”，不要求填写其它 SNS Cookie；
+2. 引导管理员打开 `/tgbot` 手动保存 Bot Token，明确说明向导不会读取、填写、修改或自动配置 Token；
+3. 引导管理员仍在 `/tgbot` 中只配置歌曲分享的 Base、Pro、Ultimate，备份频道、文件大小等不属于本向导必要项。
+
+向导打开时每 2.5 秒轮询只读状态，也提供“立即检测”。检测通过后：
+
+- 当前步骤和对应配置项显示绿色勾选；
+- “下一步”按钮才会解除禁用；
+- 三步全部完成后，顶部按钮显示“配置向导 ✓”。
+
+私人 Premium Cookie 未配置时，首次进入下载页会主动打开第一步；已经配置 Cookie 时不强行打断正常下载操作。`pages/tgbot.html` 与 `pages/sns-cookies.html` 均未改动，向导只通过新窗口链接引导管理员使用原页面。
+
+#### 2. 为什么此前仍会看到 `code length overflow`
+
+光媒循环固定穿插摘要、Manifest、数据三类帧，所以“隔几帧”出现一次通常指向高频摘要帧，而不是随机故障。项目内置的 `qrcode.js 1.0.0` 有两个相互独立的处理路径：
+
+- QR version 选择阶段使用 `encodeURI()` 估计字节长度；
+- 真正写入阶段逐个读取 UTF-16 code unit 并生成 byte 数组。
+
+对于 emoji 等补充平面字符，一对 surrogate 在前一条路径按 4 个 UTF-8 bytes 估算，在后一条路径会被旧库当成两个三字节单元，实际写成 6 bytes。于是库先选择偏小的 QR version，写入时才抛出类似 `code length overflow (4220>2960)`。
+
+7.18 的 surrogate escape 已修正已知 emoji 触发器，但仍有两个工程缺口：
+
+- 它仍是“生成当前帧、失败后再降级”的反应式流程，没有在启动轮播前证明摘要、Manifest 和最大数据帧全部可编码；
+- `client/light-transfer.js` 当时不在 Service Worker 的显式应用壳清单中，旧缓存可能让浏览器继续执行未修复脚本。这个部署层风险会造成源码已更新、现场提示仍存在的现象。
+
+#### 3. 确定性协议与发送前预检
+
+新帧统一改成：
+
+`D2L1:B<base64url(UTF-8(JSON))>`
+
+这样送入二维码库的整帧只包含 ASCII：
+
+- version 估算和真实写入看到完全相同的 byte 数；
+- 中文、emoji、设备 ID、URL 等原始值先按 UTF-8 编码，接收端解包后严格恢复；
+- `parseFrame()` 仍兼容旧的 `D2L1:{JSON}`，因此更新后的接收端可以继续识别旧发送端正在进行的任务。
+
+Base64URL 外层会增加字符数，但字符数变得确定且可以预先验证。发送器现在针对所选距离模式，在第一帧显示前使用项目实际的 `qrcode.js` 做容量预检：
+
+- 摘要：同时验证网络入口开启/关闭，普通摘要放不下时在轮播前选择精简摘要；
+- Manifest：使用最长分片、最大分片索引位数构造上界帧；
+- 数据：使用最大数据块数量、最大块索引位数和完整 payload 构造上界帧；
+- 纠错等级按当前模式首选等级向下验证；数据帧必要时在轮播前减少每帧块数；
+- 只有摘要、Manifest、数据三类上界都通过真实编码器后，模式方案才进入轮播并缓存复用。
+
+由于新协议始终进入同一个 QR byte mode，容量只由 ASCII 帧长度决定；实际帧不会比对应上界探针更长。因此运行时不再存在“先展示轮播、过几帧才发现容量不够”的路径，原“当前帧容量异常，已保留上一帧”提示及其事后重试代码已删除。若二维码库发生与容量无关的意外异常，轮播会暂停并明确报告“二维码渲染器异常”，不会把它伪装成容量问题。
+
+另外把 provider device ID 限制为 120 字符，标题按 Unicode code point 截断；精简摘要在无法形成紧凑 provider descriptor 时不携带可能无限增长的直连 URL。这些是对摘要输入上界的额外约束。
+
+#### 4. 缓存更新
+
+- Service Worker 缓存从 `instant-tunnel-v25` 升级到 `instant-tunnel-v26`；
+- `/client/light-transfer.js` 加入 `APP_SHELL`，安装新 Worker 时显式刷新并缓存；
+- 激活阶段继续删除旧版本缓存并立即接管客户端。
+
+这保证部署后不会因为旧 Service Worker 缓存继续运行上一版光媒发送代码。
+
+#### 5. 回归验证
+
+语法检查：
+
+- `node --check server.js`：通过；
+- `node --check client/light-transfer.js`：通过；
+- `node --check service-worker.js`：通过；
+- 提取并编译 `pages/youtube-premium-dl.html` 内联脚本：通过。
+
+行为测试：
+
+- 配置向导测试确认只链接 `/sns-cookies`、`/tgbot`，向导内没有 Cookie/Token/频道输入框或写接口；
+- 状态接口测试确认只读取 Premium Cookie、Token 是否存在和三级频道布尔状态，不读取 Cookie 内容、不返回 Token 预览、不调用 Telegram API；
+- 向导轮询、绿色完成态和“当前步骤未通过时禁用下一步”均有回归断言；
+- VM 中加载项目实际 `client/qrcode-1.0.0.min.js`，旧 Unicode JSON 帧稳定复现 overflow；
+- 新帧严格匹配 ASCII `D2L1:B[A-Za-z0-9_-]+`，Unicode 标题往返无损，旧 JSON 帧仍可解析；
+- 使用长 emoji/中文标题、超长隧道/消息字段、完整 Manifest 分片和 1025B 数据，分别对远距离、常规距离、近距离建立安全方案；三种模式的摘要、Manifest、数据帧均由实际二维码库成功生成；
+- 源码回归确认“当前帧容量异常”提示已不存在，Service Worker 缓存版本和应用壳资源已更新。
+
+完整相关回归：
+
+- `tests/features-2608B.test.cjs`：18/18；
+- `tests/youtube-premium.test.cjs`：16/16；
+- `tests/telegram-cover-regression.test.cjs`：8/8；
+- `tests/p2p-connection-regression.test.cjs`：38/38；
+- 合计：80/80 通过。
+
+本地测试没有使用真实 Premium Cookie、Telegram Token 或频道执行外部操作；这轮验证覆盖的是配置边界、轮询逻辑、真实内置二维码库容量行为及现有 YouTube/Telegram/P2P 回归。
+
+涉及文件：`server.js`、`pages/youtube-premium-dl.html`、`client/light-transfer.js`、`service-worker.js`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。

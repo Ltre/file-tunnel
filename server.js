@@ -1024,6 +1024,37 @@ app.post('/api/youtube-premium/cookies', adminAuth.requireAuth, (req, res) => {
     }
 });
 
+app.get('/api/youtube-premium/setup-status', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const premiumCookie = getYoutubePremiumCookieStatus();
+    const telegram = loadTelegramBotConfig();
+    const channels = telegram.songShareChannels || {};
+    const channelStatus = {
+        base: Boolean(String(channels.base || '').trim()),
+        pro: Boolean(String(channels.pro || '').trim()),
+        ultimate: Boolean(String(channels.ultimate || '').trim())
+    };
+    const status = {
+        youtubePremiumCookie: {
+            configured: premiumCookie.configured,
+            updatedAt: premiumCookie.updatedAt || 0
+        },
+        telegramBotToken: {
+            configured: Boolean(telegram.token)
+        },
+        telegramSongShareChannels: {
+            configured: Object.values(channelStatus).every(Boolean),
+            channels: channelStatus
+        }
+    };
+    res.json({
+        ...status,
+        complete: status.youtubePremiumCookie.configured
+            && status.telegramBotToken.configured
+            && status.telegramSongShareChannels.configured
+    });
+});
+
 app.get('/api/sns-cookie-sync', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const config = readSnsCookieSyncConfig();

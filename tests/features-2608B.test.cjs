@@ -166,6 +166,31 @@ test('Telegram share panel always shows per-level caption/cover fields without t
   assert.match(page, /let showPro = tgSharePro\.checked/);
 });
 
+test('YouTube Premium setup wizard only guides existing admin pages and polls minimal readiness', () => {
+  const server = read('server.js');
+  const page = read('pages/youtube-premium-dl.html');
+  const wizard = page.match(/<dialog id="setupWizardDialog">[\s\S]*?<\/dialog>/)?.[0] || '';
+  const statusRoute = server.match(/app\.get\('\/api\/youtube-premium\/setup-status'[\s\S]*?\n\}\);/)?.[0] || '';
+  assert.ok(wizard);
+  assert.ok(statusRoute);
+  assert.match(wizard, /href="\/sns-cookies"/);
+  assert.match(wizard, /只需填写并保存“私人 YouTube Premium Cookie”/);
+  assert.match(wizard, /其他 SNS Cookie 不是本向导的必要配置/);
+  assert.match(wizard, /href="\/tgbot"/);
+  assert.match(wizard, /不会读取、填写或修改 Bot Token/);
+  for (const channel of ['base', 'pro', 'ultimate']) assert.match(wizard, new RegExp(`data-setup-channel="${channel}"`));
+  assert.doesNotMatch(wizard, /<input[^>]+(?:token|channel|cookie)/i);
+  assert.match(page, /api\('\/api\/youtube-premium\/setup-status'\)/);
+  assert.match(page, /setInterval\([\s\S]{0,180}refreshSetupWizardStatus/);
+  assert.match(page, /setupNextBtn\.disabled = !setupStepComplete\(setupWizardStep\)/);
+  assert.match(page, /indicator\.classList\.toggle\('is-complete', complete\)/);
+  assert.doesNotMatch(page, /api\('\/api\/sns-cookies'\)/);
+  assert.match(statusRoute, /getYoutubePremiumCookieStatus\(\)/);
+  assert.match(statusRoute, /Boolean\(telegram\.token\)/);
+  assert.match(statusRoute, /Object\.values\(channelStatus\)\.every\(Boolean\)/);
+  assert.doesNotMatch(statusRoute, /includeContent|tokenPreview|saveTelegramBotConfig|telegramApi\(/);
+});
+
 test('external integrations expose a centralized dependency inventory and always-on failure diagnostics', () => {
   const server = read('server.js');
   const app = read('app.js');
@@ -210,8 +235,9 @@ test('Ultimate trial record is a verified Telegram text_link to Pro Tp with prev
 });
 
 
-test('light transfer keeps the last valid QR visible and adaptively shrinks optical frames', () => {
+test('light transfer preflights deterministic ASCII QR frames before optical cycling', () => {
   const light = read('client/light-transfer.js');
+  const worker = read('service-worker.js');
   assert.match(light, /const MANIFEST_PART_CHARS = 240/);
   assert.match(light, /normal: \{ label: '常规距离', blocksPerFrame: 1/);
   assert.match(light, /near: \{ label: '近距离', blocksPerFrame: 2/);
@@ -223,19 +249,24 @@ test('light transfer keeps the last valid QR visible and adaptively shrinks opti
   assert.match(light, /const renderCostMs = performance\.now\(\) - renderStartedAt/);
   assert.match(light, /\(1000 \/ mode\.fps\) - renderCostMs/);
   assert.match(light, /const staging = document\.createElement\('div'\)/);
-  assert.match(light, /Only replace the visible QR after the next frame has been generated/);
+  assert.match(light, /Capacity has already been verified with the same ASCII byte-mode envelope/);
   assert.match(light, /qr\.replaceChildren\(staging\)/);
-  assert.match(light, /createSummaryFrame\(share, networkToggle\.checked, true\)/);
-  assert.match(light, /\[自动缩减\]/);
-  assert.match(light, /当前帧容量异常，已保留上一帧/);
-  assert.doesNotMatch(light, /帧过长已跳过/);
+  assert.match(light, /function buildSafeModePlan\(share, modeKey = 'normal'\)/);
+  assert.match(light, /createManifestCapacityProbeFrame/);
+  assert.match(light, /createDataCapacityProbeFrame/);
+  assert.match(light, /const modePlans = new Map\(\)/);
+  assert.match(light, /\[预检降载\]/);
+  assert.doesNotMatch(light, /当前帧容量异常/);
   assert.match(light, /body\.o = providerOrigin/);
   assert.match(light, /body\.pd = providerDeviceId/);
-  assert.match(light, /JSON\.stringify\(body\)\.replace\(\/\[\\uD800-\\uDFFF\]\//);
+  assert.match(light, /`\$\{PROTOCOL\}:B\$\{b64url\(textEncoder\.encode\(JSON\.stringify\(body\)\)\)\}`/);
   assert.match(light, /_makeFrame: makeFrame/);
+  assert.match(light, /_buildSafeModePlan: buildSafeModePlan/);
+  assert.match(worker, /instant-tunnel-v26/);
+  assert.match(worker, /'\/client\/light-transfer\.js'/);
 });
 
-test('light transfer QR frames escape surrogate pairs without changing parsed emoji titles', () => {
+test('light transfer ASCII envelopes preserve Unicode and every planned worst-case frame fits qrcode.js', () => {
   const makeNode = () => ({
     children: [],
     setAttribute() {},
@@ -250,11 +281,14 @@ test('light transfer QR frames escape surrogate pairs without changing parsed em
     TextDecoder,
     Uint8Array,
     ArrayBuffer,
+    btoa,
+    atob,
     encodeURI,
     navigator: { userAgent: '' },
     document: {
       documentElement: { tagName: 'svg' },
       getElementById: makeNode,
+      createElement: makeNode,
       createElementNS: makeNode
     },
     window: {
@@ -281,14 +315,56 @@ test('light transfer QR frames escape surrogate pairs without changing parsed em
   }), /code length overflow/);
 
   const safeFrame = context.window.Drop2TunnelLightTransfer._makeFrame(body);
-  assert.match(safeFrame, /\\ud83c\\udfb5/);
+  assert.match(safeFrame, /^D2L1:B[A-Za-z0-9_-]+$/);
+  assert.equal(/[^\x00-\x7f]/.test(safeFrame), false);
   assert.equal(context.window.Drop2TunnelLightTransfer.parseFrame(safeFrame).q, title);
+  assert.equal(context.window.Drop2TunnelLightTransfer.parseFrame(legacyFrame).q, title);
   assert.doesNotThrow(() => new context.window.QRCode(makeNode(), {
     text: safeFrame,
     width: 500,
     height: 500,
     correctLevel: context.window.QRCode.CorrectLevel.L
   }));
+
+  const share = {
+    taskId: 'a'.repeat(64),
+    manifestHash: 'b'.repeat(64),
+    totalSize: 1025,
+    blockCount: 5,
+    manifestParts: ['A'.repeat(240), 'B'.repeat(240), 'C'.repeat(19)],
+    manifest: {
+      title: '🎵超长标题'.repeat(30),
+      kind: 'file',
+      tunnelId: 'tunnel-'.repeat(80),
+      sourceMessageId: 'message-'.repeat(80),
+      files: [{ fileInfo: { name: 'song.m4a' } }]
+    },
+    providerDeviceId: 'device-'.repeat(16),
+    networkUrl: 'https://example.test/api/light-transfer/network/task/provider',
+    reportUrl: 'https://example.test/api/light-transfer/report/task/provider',
+    sources: [new Uint8Array(1025)]
+  };
+  for (const modeName of ['far', 'normal', 'near']) {
+    const plan = context.window.Drop2TunnelLightTransfer._buildSafeModePlan(share, modeName);
+    assert.ok(['L', 'M', 'Q', 'H'].includes(plan.summary.level));
+    assert.ok(['L', 'M', 'Q', 'H'].includes(plan.manifest.level));
+    assert.ok(plan.data.blocksPerFrame >= 1);
+    const plannedFrames = [
+      context.window.Drop2TunnelLightTransfer._createSummaryFrame(share, true, plan.summary.compact),
+      context.window.Drop2TunnelLightTransfer._createManifestFrame(share, 0),
+      context.window.Drop2TunnelLightTransfer._createDataFrame(share, 0, plan.data.blocksPerFrame)
+    ];
+    for (const [index, frame] of plannedFrames.entries()) {
+      const level = [plan.summary.level, plan.manifest.level, plan.data.level][index];
+      assert.match(frame, /^D2L1:B[A-Za-z0-9_-]+$/);
+      assert.doesNotThrow(() => new context.window.QRCode(makeNode(), {
+        text: frame,
+        width: 500,
+        height: 500,
+        correctLevel: context.window.QRCode.CorrectLevel[level]
+      }));
+    }
+  }
 });
 
 test('YouTube Premium song parsing and automatic download tolerate logged-in cookie format-set changes', () => {

@@ -15,6 +15,7 @@
         button:disabled { cursor:not-allowed; opacity:.55; }
         .page { width:min(1160px,100%); margin:auto; padding:22px; }
         .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+        .topbar-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
         h1,h2 { margin:0; letter-spacing:0; }
         h1 { font-size:24px; }
         h2 { font-size:18px; }
@@ -100,9 +101,27 @@
         .forward-form { display:grid; gap:12px; }
         .forward-form select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); }
         .dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
+        .setup-stepper { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:16px; }
+        .setup-step-indicator { display:flex; align-items:center; gap:7px; min-width:0; padding:9px; border:1px solid var(--line); border-radius:7px; color:var(--muted); font-weight:750; }
+        .setup-step-indicator.is-active { border-color:var(--primary); color:var(--primary); background:var(--primary-soft); }
+        .setup-step-indicator.is-complete { color:var(--ok); }
+        .setup-check { display:grid; flex:0 0 23px; width:23px; height:23px; place-items:center; border-radius:50%; background:#e8edf5; color:var(--muted); font-size:13px; }
+        .setup-step-indicator.is-complete .setup-check { background:#dff5e9; color:var(--ok); }
+        .setup-step-panel { display:grid; gap:13px; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+        .setup-step-panel h2 { font-size:17px; }
+        .setup-guidance { margin:0; padding-left:20px; color:var(--muted); }
+        .setup-live-status { display:flex; align-items:center; gap:8px; min-height:36px; padding:8px 10px; border-radius:6px; background:var(--panel); color:var(--muted); }
+        .setup-live-status.is-complete { color:var(--ok); font-weight:750; }
+        .setup-live-status.is-error { color:var(--danger); }
+        .setup-channel-status { display:flex; gap:7px; flex-wrap:wrap; }
+        .setup-channel-status span { padding:4px 8px; border-radius:999px; background:#edf1f7; color:var(--muted); font-size:12px; font-weight:750; }
+        .setup-channel-status span.is-complete { background:#dff5e9; color:var(--ok); }
+        .setup-wizard-actions { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:16px; }
+        .setup-wizard-actions > div { display:flex; gap:8px; }
         @media (max-width:680px) {
             .page { padding:12px; }
             .topbar { align-items:flex-start; }
+            .topbar-actions { align-items:stretch; flex-direction:column; }
             h1 { font-size:20px; }
             .panel { padding:14px; }
             .form-grid { grid-template-columns:1fr; }
@@ -112,6 +131,7 @@
             .cover { width:78px; }
             .metadata-form { grid-template-columns:1fr; }
             .metadata-form .wide { grid-column:auto; }
+            .setup-stepper { grid-template-columns:1fr; }
         }
         @media (prefers-color-scheme:dark) {
             :root { --bg:#0e1521; --panel:#17202e; --text:#edf3ff; --muted:#a4afc1; --line:#334157; --primary:#6d9fff; --primary-soft:#192d4a; --shadow:none; }
@@ -133,7 +153,10 @@
             <h1>私人 YouTube Premium 下载</h1>
             <div class="subtle">私人任务、Cookie 和输出文件均与普通隧道隔离。</div>
         </div>
-        <a class="command" href="/admin">返回 admin</a>
+        <div class="topbar-actions">
+            <button id="setupWizardBtn" type="button">配置向导</button>
+            <a class="command" href="/admin">返回 admin</a>
+        </div>
     </header>
 
     <section class="panel">
@@ -187,6 +210,55 @@
         </div>
     </section>
 </main>
+
+<dialog id="setupWizardDialog">
+    <div class="dialog-head"><strong>下载与 Telegram 分享配置向导</strong><button type="button" data-close-setup aria-label="关闭">×</button></div>
+    <div class="dialog-body">
+        <div class="setup-stepper" aria-label="配置进度">
+            <div class="setup-step-indicator" data-setup-indicator="0"><span class="setup-check">1</span><span>YouTube Cookie</span></div>
+            <div class="setup-step-indicator" data-setup-indicator="1"><span class="setup-check">2</span><span>Bot Token</span></div>
+            <div class="setup-step-indicator" data-setup-indicator="2"><span class="setup-check">3</span><span>三级频道</span></div>
+        </div>
+
+        <section class="setup-step-panel" data-setup-panel="0">
+            <h2>1. 配置私人 YouTube Premium Cookie</h2>
+            <ol class="setup-guidance">
+                <li>打开 SNS cookies 管理页。</li>
+                <li>只需填写并保存“私人 YouTube Premium Cookie”。</li>
+                <li>其他 SNS Cookie 不是本向导的必要配置，无需逐项填写。</li>
+            </ol>
+            <div class="setup-live-status" data-setup-status="0">正在检测...</div>
+            <div><a class="command primary" href="/sns-cookies" target="_blank" rel="noopener">前往 SNS cookies 管理页</a></div>
+        </section>
+
+        <section class="setup-step-panel" data-setup-panel="1" hidden>
+            <h2>2. 由管理员手动配置 Telegram Bot Token</h2>
+            <p class="subtle">向导不会读取、填写或修改 Bot Token，也不会自动调用 Telegram 完成 Token 配置。请管理员在原 Telegram bot 配置页手动保存。</p>
+            <div class="setup-live-status" data-setup-status="1">等待上一步完成...</div>
+            <div><a class="command primary" href="/tgbot" target="_blank" rel="noopener">前往 Telegram bot 配置页</a></div>
+        </section>
+
+        <section class="setup-step-panel" data-setup-panel="2" hidden>
+            <h2>3. 配置歌曲分享的三级频道</h2>
+            <p class="subtle">只检查歌曲分享频道中的 Base、Pro、Ultimate 三项；备份频道、文件大小等其他 Telegram 设置不属于本向导必要项。</p>
+            <div class="setup-channel-status">
+                <span data-setup-channel="base">Base</span>
+                <span data-setup-channel="pro">Pro</span>
+                <span data-setup-channel="ultimate">Ultimate</span>
+            </div>
+            <div class="setup-live-status" data-setup-status="2">等待上一步完成...</div>
+            <div><a class="command primary" href="/tgbot" target="_blank" rel="noopener">前往 Telegram bot 配置页</a></div>
+        </section>
+
+        <div class="setup-wizard-actions">
+            <button id="setupCheckNowBtn" type="button">立即检测</button>
+            <div>
+                <button id="setupPreviousBtn" type="button">上一步</button>
+                <button class="primary" id="setupNextBtn" type="button" disabled>下一步</button>
+            </div>
+        </div>
+    </div>
+</dialog>
 
 <dialog id="previewDialog">
     <div class="dialog-head"><strong id="previewTitle">文件预览</strong><button type="button" data-close-preview aria-label="关闭">×</button></div>
@@ -303,6 +375,11 @@
     const formatList = document.getElementById('formatList');
     const selectionSummary = document.getElementById('selectionSummary');
     const notice = document.getElementById('notice');
+    const setupWizardBtn = document.getElementById('setupWizardBtn');
+    const setupWizardDialog = document.getElementById('setupWizardDialog');
+    const setupCheckNowBtn = document.getElementById('setupCheckNowBtn');
+    const setupPreviousBtn = document.getElementById('setupPreviousBtn');
+    const setupNextBtn = document.getElementById('setupNextBtn');
     const taskList = document.getElementById('taskList');
     const taskCount = document.getElementById('taskCount');
     const pager = document.getElementById('pager');
@@ -376,6 +453,10 @@
     const browserCacheJobs = new Map();
     let browserCacheTail = Promise.resolve();
     let currentTasks = [];
+    let setupWizardStep = 0;
+    let setupWizardStatus = null;
+    let setupWizardPolling = null;
+    let setupWizardLoading = false;
     let editingTags = [];
     const premiumBrowserCache = window.createYoutubePremiumBrowserCache?.({
         onProgress(taskId, progress) {
@@ -420,6 +501,85 @@
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         return data;
+    }
+
+    function setupStepComplete(index) {
+        if (!setupWizardStatus) return false;
+        if (index === 0) return Boolean(setupWizardStatus.youtubePremiumCookie?.configured);
+        if (index === 1) return Boolean(setupWizardStatus.telegramBotToken?.configured);
+        return Boolean(setupWizardStatus.telegramSongShareChannels?.configured);
+    }
+
+    function renderSetupWizard() {
+        const labels = [
+            setupStepComplete(0) ? '✓ 已检测到私人 YouTube Premium Cookie' : '尚未检测到私人 YouTube Premium Cookie',
+            setupStepComplete(1) ? '✓ 已检测到管理员手动保存的 Bot Token' : '尚未检测到 Telegram Bot Token',
+            setupStepComplete(2) ? '✓ Base、Pro、Ultimate 三级频道均已配置' : 'Base、Pro、Ultimate 必须全部配置'
+        ];
+        document.querySelectorAll('[data-setup-indicator]').forEach((indicator, index) => {
+            const complete = setupStepComplete(index);
+            indicator.classList.toggle('is-active', index === setupWizardStep);
+            indicator.classList.toggle('is-complete', complete);
+            indicator.querySelector('.setup-check').textContent = complete ? '✓' : String(index + 1);
+        });
+        document.querySelectorAll('[data-setup-panel]').forEach((panel, index) => {
+            panel.hidden = index !== setupWizardStep;
+        });
+        document.querySelectorAll('[data-setup-status]').forEach((element, index) => {
+            const complete = setupStepComplete(index);
+            element.textContent = labels[index];
+            element.classList.toggle('is-complete', complete);
+            element.classList.remove('is-error');
+        });
+        const channels = setupWizardStatus?.telegramSongShareChannels?.channels || {};
+        document.querySelectorAll('[data-setup-channel]').forEach(element => {
+            const complete = Boolean(channels[element.dataset.setupChannel]);
+            element.classList.toggle('is-complete', complete);
+            const name = element.dataset.setupChannel;
+            element.textContent = `${complete ? '✓ ' : ''}${name[0].toUpperCase()}${name.slice(1)}`;
+        });
+        setupPreviousBtn.disabled = setupWizardStep === 0;
+        setupNextBtn.disabled = !setupStepComplete(setupWizardStep);
+        setupNextBtn.textContent = setupWizardStep === 2 ? '完成' : '下一步';
+        const completed = [0, 1, 2].filter(setupStepComplete).length;
+        setupWizardBtn.textContent = completed === 3 ? '配置向导 ✓' : `配置向导 · ${3 - completed} 项待完成`;
+    }
+
+    async function refreshSetupWizardStatus() {
+        if (setupWizardLoading) return setupWizardStatus;
+        setupWizardLoading = true;
+        try {
+            setupWizardStatus = await api('/api/youtube-premium/setup-status');
+            renderSetupWizard();
+            return setupWizardStatus;
+        } catch (error) {
+            if (setupWizardDialog.open) {
+                const currentStatus = document.querySelector(`[data-setup-status="${setupWizardStep}"]`);
+                currentStatus.textContent = `检测失败：${error.message}`;
+                currentStatus.classList.remove('is-complete');
+                currentStatus.classList.add('is-error');
+            }
+            throw error;
+        } finally {
+            setupWizardLoading = false;
+        }
+    }
+
+    function showSetupWizard(step = 0) {
+        setupWizardStep = Math.max(0, Math.min(2, Number(step) || 0));
+        renderSetupWizard();
+        if (!setupWizardDialog.open) setupWizardDialog.showModal();
+        clearInterval(setupWizardPolling);
+        setupWizardPolling = setInterval(() => {
+            if (!document.hidden && setupWizardDialog.open) refreshSetupWizardStatus().catch(() => {});
+        }, 2500);
+        refreshSetupWizardStatus().catch(() => {});
+    }
+
+    function closeSetupWizard() {
+        clearInterval(setupWizardPolling);
+        setupWizardPolling = null;
+        setupWizardDialog.close();
     }
 
     function formatSize(bytes) {
@@ -1677,6 +1837,18 @@
     document.getElementById('refreshMetadataReference').addEventListener('click', refreshMetadataReference);
     startBtn.addEventListener('click', startDownload);
     document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));
+    setupWizardBtn.addEventListener('click', () => showSetupWizard(0));
+    setupCheckNowBtn.addEventListener('click', () => refreshSetupWizardStatus().catch(() => {}));
+    setupPreviousBtn.addEventListener('click', () => {
+        setupWizardStep = Math.max(0, setupWizardStep - 1);
+        renderSetupWizard();
+    });
+    setupNextBtn.addEventListener('click', () => {
+        if (!setupStepComplete(setupWizardStep)) return;
+        if (setupWizardStep === 2) return closeSetupWizard();
+        setupWizardStep += 1;
+        renderSetupWizard();
+    });
     document.getElementById('cleanupCacheBtn').addEventListener('click', cleanupBrowserCacheGarbage);
     document.getElementById('addTagBtn').addEventListener('click', addTagFromInput);
     tagInput.addEventListener('keydown', event => {
@@ -1718,11 +1890,17 @@
     document.querySelectorAll('[data-close-forward]').forEach(button => button.addEventListener('click', () => forwardDialog.close()));
     document.querySelectorAll('[data-close-tags]').forEach(button => button.addEventListener('click', () => tagDialog.close()));
     document.querySelectorAll('[data-close-metadata]').forEach(button => button.addEventListener('click', () => metadataDialog.close()));
+    document.querySelectorAll('[data-close-setup]').forEach(button => button.addEventListener('click', closeSetupWizard));
     previewDialog.addEventListener('click', event => { if (event.target === previewDialog) closePreview(); });
     fileInfoDialog.addEventListener('click', event => { if (event.target === fileInfoDialog) fileInfoDialog.close(); });
     forwardDialog.addEventListener('click', event => { if (event.target === forwardDialog) forwardDialog.close(); });
     tagDialog.addEventListener('click', event => { if (event.target === tagDialog) tagDialog.close(); });
     metadataDialog.addEventListener('click', event => { if (event.target === metadataDialog) metadataDialog.close(); });
+    setupWizardDialog.addEventListener('click', event => { if (event.target === setupWizardDialog) closeSetupWizard(); });
+    setupWizardDialog.addEventListener('close', () => {
+        clearInterval(setupWizardPolling);
+        setupWizardPolling = null;
+    });
     forwardConfirm.addEventListener('click', async () => {
         const sessionId = forwardTarget.value;
         if (!sessionId) return;
@@ -1752,6 +1930,11 @@
     });
     prevBtn.addEventListener('click', () => { page -= 1; loadTasks(); });
     nextBtn.addEventListener('click', () => { page += 1; loadTasks(); });
+    refreshSetupWizardStatus()
+        .then(status => {
+            if (!status.youtubePremiumCookie?.configured) showSetupWizard(0);
+        })
+        .catch(() => {});
     loadTasks().catch(error => { taskCount.textContent = error.message; });
     setInterval(() => {
         if (!document.hidden && !document.querySelector('dialog[open]') && !document.activeElement?.closest('.task-remark')) {
