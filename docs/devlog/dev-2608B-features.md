@@ -1226,3 +1226,85 @@ WebRTC：
 - `node tools/deploy/build.mjs --profile txsl --out .dist-check-260820`：构建成功；当前环境未安装 Terser，构建器按既有降级策略生成 hashed assets/cache 产物。
 - `node tools/deploy/verify.mjs --profile txsl --dist .dist-check-260820`：仍在构建产物 `server.js` 的代理重拉代码顶层 `return` 处报 `Illegal return statement`。已用本次用户原始 ZIP 的 `server.js` 对照，输入基线同一位置原本就存在该顶层 `return`；这与 `7.14` 已记录的 deploy verifier 基线兼容问题一致，本轮没有为无关需求擅自改动该启动结构。
 - 本次执行环境没有 `node_modules`，所以未直接启动完整 Express/Socket.IO 服务进程；所有不依赖安装包的源码语法、专项/回归测试已实际执行并通过。
+
+### 7.15 2026-08-20：Telegram Ultimate 试行链接、光媒二维码容量、音乐 Composer/Genre、relay 已缓存短路
+
+#### 1. Ultimate“入选试行”消息缺少 Tp 超链接
+
+现象：选择 Ultimate 的“入选试行”后，实际只发送：
+
+`入选试行：\n艺术家 - 歌曲名`
+
+虽然此前已关闭 Telegram 链接预览，但文案本身没有把“艺术家 - 歌曲名”包装成指向 Pro Tp 的超链接。
+
+根因：服务端 trial 分支只是把 `captionUltimate` 拼进普通 `sendMessage.text`，没有构造 Telegram 可解析的链接实体。
+
+修复：
+- 试行消息改为 HTML：`入选试行：\n<a href="Tp链接">艺术家 - 歌曲名</a>`；
+- `parse_mode=HTML`；
+- Tp URL 与显示文案均做 HTML 转义；
+- 保持 `link_preview_options.is_disabled=true` 与 `disable_web_page_preview=true`，因此链接可点击但不展开网页预览。
+
+#### 2. 光媒二维码偶发“帧过长已跳过”并白屏
+
+现象：动态二维码播放几帧后提示帧过长，并出现二维码区域空白。
+
+根因有两层：
+1. 旧发送器在生成下一帧前先 `replaceChildren()` 清空当前二维码；若新帧因 QR 容量超限失败，上一张有效二维码已被删除，所以出现白屏；
+2. Manifest 分片和 DATA 单帧载荷偏激进，且 summary 带两条较长的绝对网络 URL，叠加 task/hash/文件属性后更容易在高纠错等级或较远距离模式下越过二维码容量。
+
+修复：
+- 新二维码先在 detached staging 容器中生成，确认成功后才替换屏幕上的旧二维码；生成失败时保留上一张有效二维码，不再白屏；
+- Manifest 单片字符数由 420 下调为 240；
+- DATA 调度调整为更保守的基础块数：far=1、normal=1、near=2；
+- DATA 帧若仍超长，自动逐级减少同帧携带的数据块，最低降至 1 个原子块后再判定不可编码；
+- summary 优先广播精简的 `origin + providerDeviceId + networkEnabled`，接收端本地重建 network/report URL，避免每轮重复携带两条长绝对 URL；仍保留旧 `nu/ru` 解析兼容；
+- summary 正常版本无法编码时自动切 compact summary；
+- 最终无法编码的单帧只提示容量异常并继续轮播，不清空当前 QR。
+
+目标是同时解决“某帧过长”和“失败后视觉空白”两个问题，而不是仅隐藏错误提示。
+
+#### 3. YouTube Premium 音乐 Composer / Genre
+
+yt-dlp 的音乐元数据接口存在复数字段 `composers`、`genres`，同时历史版本/部分 extractor 仍可能出现兼容单值字段 `composer`、`genre`。因此本轮将歌曲元信息解析统一为：
+- Composer：优先 `composers[]`，多个值使用 `/` 连接；其次兼容字符串 `composers`；最后兼容旧 `composer`；
+- Genre：优先 `genres[]`，多个值使用 `, ` 连接；其次兼容字符串 `genres`；最后兼容旧 `genre`；
+- reference info 与最终写入歌曲 metadata 共用同一套解析；
+- 若结构化 Composer/Genre 字段均缺失，且该条 metadata 明确呈现为音乐内容（track/album、Music category 或 YouTube 自动生成音乐说明特征），再从 description 的显式信用行中识别 `Composer:` / `Composer, Writer:` / `作曲:` / `作曲者:` / `作曲家:` / `작곡:` 以及 `Genre:` / `ジャンル:` / `曲风/曲風:` / `流派:` / `장르:`；这只是对上游原文中的明确键值做兜底，不根据标题、标签自行猜测；
+- 上游没有提供时保持空值，不把 YouTube 常见 `categories=["Music"]` 伪装成具体曲风。
+
+因此“能否获得”仍取决于当前 YouTube/YouTube Music 是否实际暴露结构化字段或明确信用行；本系统现在会在有可靠值时填写，没有值时不伪造。
+
+#### 4. Socket.IO relay 的 `receiver-already-cached` 被误记成服务端错误
+
+用户现场日志中，在两个合辑合计 32 个文件、P2P 不可用转 Socket.IO relay 时，服务端连续出现：
+
+`file-asset-relay-start error: Error: receiver-already-cached`
+
+代码追踪确认这不是 relay 传输故障，而是接收端在 `file-asset-relay-start` 阶段检查 IndexedDB 后发现该 asset 已有完整缓存，主动返回 `{ok:false, reason:'receiver-already-cached'}`。旧服务端通用 `emitWithAck()` 将任何 `ok:false` 一律抛为 Error，于是正常的幂等短路被打印成服务端错误；文件数量多时会成批出现。
+
+修复：
+- 新增 `emitWithAckResult()`：仍对 ACK timeout / transport error 抛异常，但允许调用方自行解释业务层 `ok:false`；
+- relay-start 对 `receiver-already-cached` 单独识别为正常 `skipped`：删除刚创建的临时 relay，向 source ACK `{ok:true, skipped:true, reason:'receiver-already-cached'}`，记录 `file-asset-relay-skipped`，不进入 error 日志；
+- source 的 `sendViaSocketRelay()` 收到该 ACK 后直接把该 asset 视为已完成/100%，不再发送任何 relay chunk；
+- 其他 receiver 拒绝原因仍按原来的错误路径处理，不把真正异常吞掉。
+
+这使“接收端已有完整文件”成为幂等成功条件，而不是错误；同时避免无意义的重复数据传输。
+
+#### 回归验证
+
+- `node --check server.js`：通过。
+- `node --check server/file-assets.js`：通过。
+- `node --check client/file-assets.js`：通过。
+- `node --check client/light-transfer.js`：通过。
+- YouTube Premium：16/16 通过。
+- Telegram 专项：8/8 通过。
+- 2608B 功能回归：14/14 通过（新增 Ultimate trial 超链接、光媒 staging/容量自适应、Composer/Genre 结构化字段与自动生成信用行兜底、relay already-cached 幂等短路断言）。
+- P2P 回归：38/38 通过。
+
+涉及文件：`server.js`、`client/light-transfer.js`、`server/file-assets.js`、`client/file-assets.js`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+**7.15 最终部署检查补充**：
+- `node tools/deploy/build.mjs --profile txsl --out .dist-check-260820-0757`：构建成功，Build id `txsl-20260820-000622-unknown`；当前执行环境没有 Terser，构建器按项目既有降级策略继续生成 hashed assets/cache 产物。
+- `node tools/deploy/verify.mjs --profile txsl --dist .dist-check-260820-0757`：仍在构建产物 `server.js:52` 的代理重拉顶层 `return` 报 `Illegal return statement`。对照本次用户上传的原始 `file-tunnel-260820-0757.zip`，原包同一行/同一结构已经存在该 `return`，因此这是输入基线已有的 deploy verifier 兼容问题，不是本轮四项修改引入的回归。
+- 最终代码级回归：YouTube Premium 16/16、Telegram 8/8、2608B 14/14、P2P 38/38。

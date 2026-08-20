@@ -5,12 +5,12 @@
     const DB_NAME = 'drop2tunnel-light-transfer-v1';
     const DB_VERSION = 1;
     const ATOMIC_BLOCK_SIZE = 256;
-    const MANIFEST_PART_CHARS = 420;
+    const MANIFEST_PART_CHARS = 240;
     const MAX_NETWORK_INDICES = 32;
     const MODES = {
         far: { label: '远距离', blocksPerFrame: 1, fps: 2, qrSize: 560, level: 'H', quiet: 6 },
-        normal: { label: '常规距离', blocksPerFrame: 2, fps: 4, qrSize: 500, level: 'Q', quiet: 4 },
-        near: { label: '近距离', blocksPerFrame: 4, fps: 6, qrSize: 460, level: 'M', quiet: 3 }
+        normal: { label: '常规距离', blocksPerFrame: 1, fps: 4, qrSize: 500, level: 'Q', quiet: 4 },
+        near: { label: '近距离', blocksPerFrame: 2, fps: 6, qrSize: 460, level: 'M', quiet: 3 }
     };
 
     const textEncoder = new TextEncoder();
@@ -380,16 +380,40 @@
         return readGlobalRange(share, byteStart, length);
     }
 
-    function createSummaryFrame(share, networkEnabled = true) {
-        return makeFrame({
+    function getProviderOrigin(share) {
+        for (const value of [share.networkUrl, share.reportUrl]) {
+            try {
+                const url = new URL(String(value || ''));
+                if (/^https?:$/i.test(url.protocol)) return url.origin;
+            } catch (_) {}
+        }
+        return '';
+    }
+
+    function createSummaryFrame(share, networkEnabled = true, compact = false) {
+        const providerOrigin = getProviderOrigin(share);
+        const providerDeviceId = String(share.providerDeviceId || '');
+        const body = {
             v: 1, t: share.taskId, k: 's', mh: share.manifestHash,
             z: share.totalSize, bc: share.blockCount, bs: ATOMIC_BLOCK_SIZE,
-            n: share.manifest.files.length, q: share.manifest.title,
-            ty: share.manifest.kind, si: share.manifest.tunnelId,
-            mi: share.manifest.sourceMessageId,
-            nu: networkEnabled ? share.networkUrl : '',
-            ru: share.reportUrl || ''
-        });
+            n: share.manifest.files.length, q: String(share.manifest.title || '').slice(0, compact ? 48 : 120),
+            ty: share.manifest.kind
+        };
+        if (!compact) {
+            body.si = share.manifest.tunnelId;
+            body.mi = share.manifest.sourceMessageId;
+        }
+        // The network and report URLs share the same origin/task/provider. Broadcasting both
+        // absolute URLs wastes hundreds of QR bytes, so prefer a compact provider descriptor.
+        if (providerOrigin && providerDeviceId) {
+            body.o = providerOrigin;
+            body.pd = providerDeviceId;
+            body.ne = Boolean(networkEnabled && share.networkUrl);
+        } else {
+            body.nu = networkEnabled ? share.networkUrl : '';
+            body.ru = share.reportUrl || '';
+        }
+        return makeFrame(body);
     }
 
     function createManifestFrame(share, partIndex) {
@@ -502,38 +526,58 @@
                 frame = createDataFrame(share, start, count);
                 label = `数据块 ${start + 1}–${Math.min(share.blockCount, start + count)}/${share.blockCount}`;
             }
-            qr.replaceChildren();
             const qrLevels = ['L', 'M', 'Q', 'H'];
             const baseLevel = global.QRCode.CorrectLevel?.[mode.level] ?? global.QRCode.CorrectLevel?.M;
             const levelRank = qrLevels.indexOf(mode.level);
-            let rendered = false;
-            // Auto-degrade error correction if the frame is too large for the QR capacity
-            for (let levelDegradation = 0; levelDegradation <= levelRank; levelDegradation++) {
-                const tryLevel = qrLevels[levelRank - levelDegradation];
-                const correctLevel = global.QRCode.CorrectLevel?.[tryLevel] ?? baseLevel;
-                try {
-                    new global.QRCode(qr, {
-                        text: frame,
-                        width: mode.qrSize,
-                        height: mode.qrSize,
-                        colorDark: '#000000',
-                        colorLight: '#ffffff',
-                        correctLevel
-                    });
-                    qr.style.padding = `${mode.quiet}px`;
-                    const levelTag = levelDegradation > 0 ? ` [降级${tryLevel}]` : '';
-                    status.textContent = `${mode.label} · ${mode.fps} fps · ${label}${levelTag}`;
-                    rendered = true;
-                    break;
-                } catch (error) {
-                    // "code length overflow" or similar — try lower EC level
-                    if (levelDegradation < levelRank) continue;
-                    status.textContent = `二维码帧生成失败（已尝试最低纠错）：${error.message}`;
+            const tryRenderFrame = (candidateFrame, candidateLabel) => {
+                let lastError = null;
+                for (let levelDegradation = 0; levelDegradation <= levelRank; levelDegradation++) {
+                    const tryLevel = qrLevels[levelRank - levelDegradation];
+                    const correctLevel = global.QRCode.CorrectLevel?.[tryLevel] ?? baseLevel;
+                    const staging = document.createElement('div');
+                    try {
+                        new global.QRCode(staging, {
+                            text: candidateFrame,
+                            width: mode.qrSize,
+                            height: mode.qrSize,
+                            colorDark: '#000000',
+                            colorLight: '#ffffff',
+                            correctLevel
+                        });
+                        // Only replace the visible QR after the next frame has been generated
+                        // successfully. A capacity error can therefore never create a white gap.
+                        qr.replaceChildren(...Array.from(staging.childNodes));
+                        qr.title = candidateFrame;
+                        qr.style.padding = `${mode.quiet}px`;
+                        const levelTag = levelDegradation > 0 ? ` [降级${tryLevel}]` : '';
+                        status.textContent = `${mode.label} · ${mode.fps} fps · ${candidateLabel}${levelTag}`;
+                        return true;
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+                return lastError || new Error('qr-frame-render-failed');
+            };
+
+            let renderResult = tryRenderFrame(frame, label);
+            if (renderResult !== true && frameNo % 4 === 0) {
+                // Summary frames must remain high-frequency. If unusually long title/origin data
+                // exceeds the selected distance mode, retry with the compact summary form.
+                const compactSummary = createSummaryFrame(share, networkToggle.checked, true);
+                renderResult = tryRenderFrame(compactSummary, '摘要 / Manifest 索引 [精简]');
+            } else if (renderResult !== true && !(frameNo % 7 === 0 || frameNo < 3)) {
+                // Data frames can always reduce the number of atomic blocks without changing the
+                // resumable block protocol. This is preferable to dropping an optical frame.
+                const originalStart = Number((parseFrame(frame) || {}).s) || 0;
+                for (let fallbackCount = Math.max(1, mode.blocksPerFrame - 1); fallbackCount >= 1 && renderResult !== true; fallbackCount--) {
+                    const smaller = createDataFrame(share, originalStart, Math.min(fallbackCount, share.blockCount - originalStart));
+                    renderResult = tryRenderFrame(smaller, `数据块 ${originalStart + 1}–${Math.min(share.blockCount, originalStart + fallbackCount)}/${share.blockCount} [自动缩减]`);
                 }
             }
-            if (!rendered) {
-                // Even at lowest EC the frame is too large; skip silently and try next frame
-                status.textContent = `帧过长已跳过 · ${label} · 等待下一帧`;
+            if (renderResult !== true) {
+                // Keep the previous valid QR visible. The status is diagnostic only; the next
+                // scheduled frame will still run, so the sender never flashes an empty QR box.
+                status.textContent = `当前帧容量异常，已保留上一帧 · ${label} · ${renderResult?.message || '二维码生成失败'}`;
             }
             frameNo++;
             clearTimeout(timer);
@@ -781,8 +825,23 @@
             };
             task.blockCount ||= task.summary.blockCount;
             task.totalSize ||= task.summary.totalSize;
-            if (frame.nu && !task.networkSources.includes(frame.nu)) task.networkSources.push(String(frame.nu));
-            if (frame.ru) task.reportUrl = String(frame.ru);
+            if (frame.o && frame.pd) {
+                try {
+                    const providerOrigin = new URL(String(frame.o));
+                    if (/^https?:$/i.test(providerOrigin.protocol)) {
+                        const provider = encodeURIComponent(String(frame.pd));
+                        const taskId = encodeURIComponent(String(frame.t));
+                        if (frame.ne) {
+                            const networkUrl = `${providerOrigin.origin}/api/light-transfer/network/${taskId}?provider=${provider}`;
+                            if (!task.networkSources.includes(networkUrl)) task.networkSources.push(networkUrl);
+                        }
+                        task.reportUrl = `${providerOrigin.origin}/api/light-transfer/report/${taskId}?provider=${provider}`;
+                    }
+                } catch (_) {}
+            } else {
+                if (frame.nu && !task.networkSources.includes(frame.nu)) task.networkSources.push(String(frame.nu));
+                if (frame.ru) task.reportUrl = String(frame.ru);
+            }
             task.lastSource = source;
             await saveTask(task);
             startProgressReporting();

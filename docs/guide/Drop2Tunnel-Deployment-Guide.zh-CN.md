@@ -662,7 +662,7 @@ https://tunnel.example.com/sns-cookies
 可配置：
 
 - YouTube / YT Music：`.tunnel-data/yt-cookies.txt`；
-- 私人 YouTube Premium 下载：`.tunnel-data/yt-premium-cookies.txt`，与公共 YouTube Cookie 分开；
+- 私人 YouTube Premium 下载：`.tunnel-data/yt-premium-cookies.txt`，与公共 YouTube Cookie 分开（这里特别注意，202608近期发现官方对于爬虫限制变严，PC端chrome导出的premium cookie也面临抓取失败，后来改成了android firefox导出premium cookie才稳定抓取）；
 - TikTok：`.tunnel-data/tiktok-cookies.txt`；
 - Facebook：`.tunnel-data/facebook-cookies.txt`；
 - Instagram：`.tunnel-data/instagram-cookies.txt`；

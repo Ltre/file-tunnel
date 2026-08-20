@@ -194,6 +194,18 @@ function emitWithAck(socket, eventName, payload, timeout = RELAY_TARGET_ACK_TIME
     });
 }
 
+function emitWithAckResult(socket, eventName, payload, timeout = RELAY_TARGET_ACK_TIMEOUT) {
+    return new Promise((resolve, reject) => {
+        socket.timeout(timeout).emit(eventName, payload, (err, response) => {
+            if (err) {
+                reject(new Error(err.message || `${eventName} acknowledgement timed out`));
+                return;
+            }
+            resolve(response || { ok: true });
+        });
+    });
+}
+
 function isRelayAckTimeout(reason) {
     const value = String(reason || '').toLowerCase();
     return value.includes('timed out') || value.includes('timeout') || value.includes('acknowledgement');
@@ -553,9 +565,26 @@ function registerFileAssetHandlers(socket, context) {
                 sessionId, from: deviceId, to, asset, transfer, attemptId: relayAttemptId, receivedSize: 0,
                 expectedSize: transfer ? transfer.rangeEnd - transfer.rangeStart : asset.size
             });
-            await emitWithAck(target, 'file-asset-relay-start', {
+            const targetResponse = await emitWithAckResult(target, 'file-asset-relay-start', {
                 asset, from: deviceId, transfer, attemptId: relayAttemptId, requestId: relayRequestId
             });
+            if (targetResponse?.ok === false) {
+                const rejectionReason = String(targetResponse.reason || targetResponse.error || 'relay-start-rejected');
+                if (rejectionReason === 'receiver-already-cached') {
+                    // This is an idempotent success: the receiver already owns the complete file.
+                    // Do not print an exception and do not send any relay chunks. Tell the provider
+                    // to finish the request as satisfied so its assignment/load is released normally.
+                    relays.delete(key);
+                    ackOk(ack, { skipped: true, reason: rejectionReason });
+                    historyLog('file-asset-relay-skipped', {
+                        sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
+                        assetId: asset.id, transfer, attemptId: relayAttemptId, requestId: relayRequestId,
+                        reason: rejectionReason
+                    });
+                    return;
+                }
+                throw new Error(rejectionReason);
+            }
             ackOk(ack);
             historyLog('file-asset-relay-started', {
                 sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,

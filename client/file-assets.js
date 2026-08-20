@@ -1669,11 +1669,19 @@
             const transport = transfer ? `sending-multi-source-relay:${routeId}` : `sending-relay:${routeId}`;
             const cancelKey = this.uploadCancelKey(asset.id, deviceId, transfer?.transferId || 'full');
             this.rejectedUploadKeys.delete(cancelKey);
-            await this.emitWithAck('file-asset-relay-start', {
+            const startAck = await this.emitWithAck('file-asset-relay-start', {
                 sessionId: this.deps.getSessionId(), to: deviceId, asset: metadata,
                 transferId: transfer?.transferId, rangeStart: transfer?.rangeStart, rangeEnd: transfer?.rangeEnd,
                 attemptId, requestId
             }, RELAY_ACK_TIMEOUT);
+            if (startAck?.skipped && startAck.reason === 'receiver-already-cached') {
+                this.deps.onProgress(asset.id, asset.name, 100, transport);
+                this.routeLog('relay-skipped-receiver-already-cached', {
+                    assetId: asset.id, peerDeviceId: deviceId, transferId: transfer?.transferId || null,
+                    attemptId, requestId
+                });
+                return { skipped: true, reason: startAck.reason };
+            }
             for (let offset = rangeStart; offset < rangeEnd; offset += RELAY_CHUNK_SIZE) {
                 if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 if (this.rejectedUploadKeys.has(cancelKey)) throw new Error('File asset receiver rejected relay');
