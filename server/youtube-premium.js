@@ -18,12 +18,35 @@ function normalizePositiveOrdinal(value) {
     return Number.isFinite(number) && number > 0 ? String(number) : '';
 }
 
+const VARIOUS_ARTISTS_LOOKUP_VALUES = new Set([
+    'various artists', 'various artist', 'various', 'va', 'v a',
+    '群星', 'オムニバス', '여러 아티스트'
+]);
+
 function normalizeYoutubeMusicLookupText(value) {
-    return String(value || '')
+    const normalized = String(value || '')
         .normalize('NFKC')
         .toLowerCase()
         .replace(/[\s\p{P}\p{S}]+/gu, ' ')
         .trim();
+    return VARIOUS_ARTISTS_LOOKUP_VALUES.has(normalized) ? 'various artists' : normalized;
+}
+
+function resolveYoutubeAlbumArtist(meta = {}) {
+    const rawValue = Array.isArray(meta.album_artists)
+        ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/')
+        : String(meta.album_artist || meta.album_artists || '').trim();
+    if (rawValue) {
+        return normalizeYoutubeMusicLookupText(rawValue) === 'various artists' ? '群星' : rawValue;
+    }
+    const album = String(meta.album || meta.playlist_title || '').trim();
+    if (!album) return '';
+    const albumArtistFieldKnown = Object.prototype.hasOwnProperty.call(meta, 'album_artist')
+        || Object.prototype.hasOwnProperty.call(meta, 'album_artists');
+    const compilationFlag = [meta.compilation, meta.is_compilation, meta.album_is_compilation]
+        .some(value => value === true || /^(?:1|true|yes)$/i.test(String(value || '')))
+        || /compilation|various artists?/i.test(String(meta.album_type || ''));
+    return albumArtistFieldKnown || compilationFlag ? '群星' : '';
 }
 
 function finalizeYoutubeMusicTrackNumber(meta = {}, derivedTrackNumber = '') {
@@ -57,10 +80,7 @@ function findYoutubeMusicTrackPosition(meta = {}, playlistEntries = []) {
 
 function rankYoutubeMusicAlbumCandidates(meta = {}, entries = []) {
     const album = normalizeYoutubeMusicLookupText(meta.album || meta.playlist_title);
-    const artist = normalizeYoutubeMusicLookupText(
-        meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(' ') : meta.album_artists) ||
-        (Array.isArray(meta.artists) ? meta.artists.join(' ') : meta.artist)
-    );
+    const artist = normalizeYoutubeMusicLookupText(resolveYoutubeAlbumArtist(meta));
     return (Array.isArray(entries) ? entries : [])
         .map((entry, index) => {
             const title = normalizeYoutubeMusicLookupText(entry?.album || entry?.title || entry?.playlist_title);
@@ -676,6 +696,7 @@ module.exports = {
     findYoutubeMusicTrackPosition,
     normalizeYoutubeMusicLookupText,
     rankYoutubeMusicAlbumCandidates,
+    resolveYoutubeAlbumArtist,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,

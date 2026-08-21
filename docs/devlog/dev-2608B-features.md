@@ -1693,3 +1693,130 @@ Base64URL 外层会增加字符数，但字符数变得确定且可以预先验�
 本地测试没有使用真实 Premium Cookie、Telegram Token 或频道执行外部操作；这轮验证覆盖的是配置边界、轮询逻辑、真实内置二维码库容量行为及现有 YouTube/Telegram/P2P 回归。
 
 涉及文件：`server.js`、`pages/youtube-premium-dl.html`、`client/light-transfer.js`、`service-worker.js`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.21 2026-08-21：Telegram 配置保存与 Webhook 注册彻底解耦
+
+#### 问题
+
+多个测试服务器使用同一个 Telegram Bot Token 时，只要在任意服务器的 `/tgbot` 页面点击“保存配置”，旧实现就会根据当前请求域名自动执行 `setWebhook`。Telegram 每个 Bot 同时只能注册一个 Webhook，因此后保存配置的测试域名会抢占原生产域名，造成 Bot 更新改投其它服务器。
+
+进一步检查发现，旧保存路径还有两个隐含 Webhook 副作用：
+
+- 每次保存都会生成新的 `webhookSecret`，使已经注册的旧回调路径立即失效；
+- 清空 Token 时会自动调用 `deleteWebhook`。
+
+所以只把 `setWebhook` 调用删掉并不足够；配置保存必须同时停止 secret 轮换、Webhook 删除和 Bot 命令同步，才能保证“保存本地配置”不会改变 Telegram 当前投递目标。
+
+#### 实现
+
+`POST /api/telegram/config` 现在只负责：
+
+- 解析和校验页面提交的 Token、文件上限、备份目标、Base/Pro/Ultimate；
+- Token 存在时继续通过 `getMe` 做无状态有效性校验；
+- 保存本地 `telegram-bot.json`；
+- 始终保留已有 `webhookSecret`，包括编辑或清空 Token 的情况；仅全新配置且没有 secret 时才生成本地回调 secret；
+- 返回 `webhookUnchanged: true`。
+
+该路由不再包含 `setWebhook`、`deleteWebhook` 或 `setMyCommands`。
+
+新增独立管理员接口：
+
+- `GET /api/telegram/webhook-config`：显式调用 Telegram `getWebhookInfo`，只返回脱敏后的目标地址、待处理更新数和最近错误；回调路径中的 secret 替换为 `***`；
+- `POST /api/telegram/webhook-config`：只有管理员明确操作时，才把 Webhook 设置到本次请求对应的服务器域名。成功后同步 Bot 命令，并复查 Telegram 当前 Webhook；命令同步或复查失败会单独报告，不把已经成功的 Webhook 设置误报为完全失败。
+
+`/tgbot` 页面新增独立“Webhook 管理”面板：
+
+- 保存按钮文案明确提示“现有 Webhook 未被修改”；
+- 显示当前页面域名和 Telegram 实际 Webhook 的脱敏目标；
+- 提供“检查当前 Webhook”和“设置 Webhook 到当前服务器”两个独立按钮；
+- 没有 Token 时禁用设置按钮；
+- 点击设置前必须确认，并明确警告：如果 Bot 正由另一个服务器使用，原服务器将停止收到新的更新；
+- 页面初始化先读取本地配置，再查询 Telegram Webhook，避免 Token 状态读取竞态；
+- 页面不存在任何自动 POST Webhook 的初始化或配置保存路径。
+
+#### 安全与多服务器行为
+
+- 服务器返回的 Webhook 地址不会暴露 secret；
+- Token 和 Webhook secret 仍只保存在服务器配置文件；
+- 测试服务器可自由保存相同 Bot 的频道或其它本地配置，不会影响生产服务器；
+- 只有管理员在目标服务器上确认“设置 Webhook 到当前服务器”，Telegram 的唯一投递目标才会发生切换；
+- 清空某台服务器的本地 Token 也不会远程删除 Bot 当前 Webhook。
+
+#### 回归覆盖
+
+- 静态路由隔离测试确认配置保存段不包含 `setWebhook`、`deleteWebhook`、`setMyCommands`；
+- 确认配置保存保留 `currentConfig.webhookSecret` 并返回 `webhookUnchanged: true`；
+- 确认只有独立 Webhook POST 接口调用 `setWebhook` 和命令同步；
+- 页面测试确认设置按钮初始禁用、保存提示不再宣称自动注册、切换前存在域名影响确认，并且 POST 只出现在独立按钮事件中；
+- `node --check server.js` 与 `/tgbot` 内联脚本编译通过；
+- `tests/features-2608B.test.cjs`：19/19；
+- `tests/youtube-premium.test.cjs`：16/16；
+- `tests/telegram-cover-regression.test.cjs`：8/8；
+- `tests/p2p-connection-regression.test.cjs`：38/38；
+- 四组相关回归合计：81/81 通过。
+
+涉及文件：`server.js`、`pages/tgbot.html`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.22 2026-08-21：YouTube Music 群星专辑的 Album artist 语义修复
+
+#### 现象与根因
+
+当歌曲所属专辑没有单一专辑作者、中文 YouTube Music 显示为“群星”时，下载成品的 `album_artist` 却被写成当前歌曲的 `artist`。
+
+根因不是 yt-dlp 写标签，而是本地元信息链存在三次主动回填：
+
+1. `buildYoutubeSongMetadata()` 在 `album_artist/album_artists` 为空时使用 `|| artist`；
+2. SNS/Premium 歌曲成品处理再次使用 `providedMetadata.artist` 兜底；
+3. 手工编辑歌曲元信息时，`normalizeEditableSongMetadata()` 又使用 `artist` 兜底，因此管理员即使清空 Album artist，保存后仍会恢复成歌曲艺人。
+
+Track artist 与 Album artist 是两个独立语义。合辑中的歌曲艺人只能说明这一首歌的表演者，不能据此推断整张专辑的作者。
+
+#### 修复规则
+
+在 `server/youtube-premium.js` 新增可独立测试的 `resolveYoutubeAlbumArtist()`：
+
+- `album_artist` 或非空 `album_artists` 明确存在时保留原值；
+- `Various Artists`、`Various`、`V.A.`、`群星` 这些等价写法统一输出中文 `群星`；
+- 已知存在 `album_artist/album_artists` 字段，但值为 `null`、空字符串或空数组，并且歌曲有专辑时，解释为无单一专辑作者，输出 `群星`；
+- `compilation`、`is_compilation`、`album_is_compilation` 或 `album_type=Compilation` 同样输出 `群星`；
+- 如果上游完全没有提供专辑作者字段，也没有 compilation 信号，则保持空白，表示“未知”，不再猜成歌曲艺人；
+- 没有专辑时保持空白。
+
+该解析器现在统一用于：
+
+- YouTube Premium/SNS 歌曲元信息构建；
+- 下载页参考信息和源语言参考字段；
+- YouTube Music 专辑搜索查询与候选排序；群星专辑会优先匹配 `Various Artists` 候选，不会按当前歌曲艺人误匹配；
+- 服务端 Premium 抓取完成日志中的 `albumArtist`。
+
+后续写成品和手工编辑路径已删除歌曲艺人兜底：
+
+- `providedMetadata.album_artist/albumArtist` 不存在时写空值；
+- 手工编辑输入空 Album artist 会保持为空；
+- ffmpeg 最终标签不会再由后置处理重新填入 Track artist。
+
+#### 回归验证
+
+专项行为测试覆盖：
+
+- `album_artist: null` + Track artist → `群星`；
+- `album_artists: []` + Track artists → `群星`；
+- `Various Artists` → `群星`；
+- 明确的普通 Album artist 原样保留；
+- 完全未知的 Album artist 保持空白；
+- compilation 标记 → `群星`；
+- 相同专辑名候选中，`Various Artists` 排在当前 Track artist 候选之前；
+- 静态回归确认元信息构建、成品处理、手工编辑三个路径都不再以歌曲 artist 回填 `album_artist`。
+
+执行结果：
+
+- `node --check server.js`、`node --check server/youtube-premium.js`：通过；
+- `tests/features-2608B.test.cjs`：20/20；
+- `tests/youtube-premium.test.cjs`：17/17；
+- `tests/telegram-cover-regression.test.cjs`：8/8；
+- `tests/p2p-connection-regression.test.cjs`：38/38；
+- 四组相关回归合计：83/83 通过。
+
+测试没有请求真实 YouTube Music 页面或修改已有下载文件。已有错误标签的成品需要重新抓取，或者在“编辑歌曲元信息”中将 Album artist 改为“群星”/清空并重新保存。
+
+涉及文件：`server/youtube-premium.js`、`server.js`、`tests/youtube-premium.test.cjs`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。

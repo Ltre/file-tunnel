@@ -74,6 +74,7 @@ const {
     finalizeYoutubeMusicTrackNumber,
     findYoutubeMusicTrackPosition,
     rankYoutubeMusicAlbumCandidates,
+    resolveYoutubeAlbumArtist,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -1383,13 +1384,65 @@ app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
     });
 });
 
+function getTelegramWebhookTarget(req, webhookSecret) {
+    const protocol = String(req.get('x-forwarded-proto') || '').split(',')[0].trim() || req.protocol;
+    const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+    if (!host) throw new Error('telegram-webhook-host-required');
+    return {
+        url: `${protocol}://${host}/api/telegram/webhook/${webhookSecret}`,
+        displayUrl: `${protocol}://${host}/api/telegram/webhook/***`
+    };
+}
+
+function getPublicTelegramWebhookInfo(info = {}) {
+    const rawUrl = String(info.url || '').trim();
+    let target = '';
+    if (rawUrl) {
+        try {
+            const parsed = new URL(rawUrl);
+            const knownPath = parsed.pathname.match(/^(\/api\/telegram\/webhook\/)[^/]+$/i);
+            target = knownPath ? `${parsed.origin}${knownPath[1]}***` : parsed.origin;
+        } catch (_) {
+            target = '已设置（地址无法解析）';
+        }
+    }
+    return {
+        configured: Boolean(rawUrl),
+        target,
+        pendingUpdateCount: Math.max(0, Number(info.pending_update_count) || 0),
+        lastErrorAt: Number(info.last_error_date) > 0 ? Number(info.last_error_date) * 1000 : 0,
+        lastErrorMessage: sanitizeString(info.last_error_message || '', 300)
+    };
+}
+
+async function syncTelegramBotCommands(token) {
+    const commands = [
+        { command: 'tunnel', description: '进入指定的传输隧道中转模式' },
+        { command: 'leave_tunnel', description: '退出当前隧道中转模式' }
+    ];
+    await telegramApi('setMyCommands', { commands }, token);
+    await Promise.all(['en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th'].map(languageCode =>
+        telegramApi('setMyCommands', {
+            language_code: languageCode,
+            commands: commands.map(command => ({
+                command: command.command,
+                description: translateTelegramText(command.description, languageCode)
+            }))
+        }, token)
+    ));
+}
+
 app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
     try {
         const keepExistingToken = req.body?.keepExistingToken === true;
         const token = sanitizeString(req.body?.token || '', 260);
         const currentConfig = loadTelegramBotConfig();
         const finalToken = token || (keepExistingToken ? currentConfig.token : '');
-        const webhookSecret = finalToken ? crypto.randomBytes(32).toString('base64url') : '';
+        // Saving local configuration must never rotate, register or delete a webhook.
+        // Preserve the route secret even when the token is edited or cleared so another
+        // server/domain cannot be displaced merely by saving this form.
+        const webhookSecret = currentConfig.webhookSecret
+            || (finalToken ? crypto.randomBytes(32).toString('base64url') : '');
         const nextConfig = normalizeTelegramBotConfig({
             token: finalToken,
             webhookSecret,
@@ -1401,41 +1454,8 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
                 ultimate: req.body?.songShareChannels?.ultimate ?? currentConfig.songShareChannels?.ultimate ?? ''
             }
         });
-        let webhookRegistered = false;
-        if (nextConfig.enabled) {
-            await telegramApi('getMe', {}, nextConfig.token);
-            saveTelegramBotConfig(nextConfig);
-            const protocol = String(req.get('x-forwarded-proto') || '').split(',')[0].trim() || req.protocol;
-            const host = req.get('x-forwarded-host') || req.get('host');
-            const webhookUrl = `${protocol}://${host}/api/telegram/webhook/${nextConfig.webhookSecret}`;
-            await telegramApi('setWebhook', {
-                url: webhookUrl,
-                secret_token: nextConfig.webhookSecret,
-                allowed_updates: ['message', 'edited_message', 'callback_query'],
-                drop_pending_updates: false
-            }, nextConfig.token);
-            await telegramApi('setMyCommands', {
-                commands: [
-                    { command: 'tunnel', description: '进入指定的传输隧道中转模式' },
-                    { command: 'leave_tunnel', description: '退出当前隧道中转模式' }
-                ]
-            }, nextConfig.token);
-            await Promise.all(['en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th'].map(languageCode =>
-                telegramApi('setMyCommands', {
-                    language_code: languageCode,
-                    commands: [
-                        { command: 'tunnel', description: translateTelegramText('进入指定的传输隧道中转模式', languageCode) },
-                        { command: 'leave_tunnel', description: translateTelegramText('退出当前隧道中转模式', languageCode) }
-                    ]
-                }, nextConfig.token)
-            ));
-            webhookRegistered = true;
-        } else if (currentConfig.token) {
-            await telegramApi('deleteWebhook', { drop_pending_updates: false }, currentConfig.token);
-            saveTelegramBotConfig(nextConfig);
-        } else {
-            saveTelegramBotConfig(nextConfig);
-        }
+        if (nextConfig.enabled) await telegramApi('getMe', {}, nextConfig.token);
+        saveTelegramBotConfig(nextConfig);
         const config = loadTelegramBotConfig();
         telegramConfig = config;
         res.json({
@@ -1444,12 +1464,82 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             tokenConfigured: Boolean(config.token),
             webhookSecretConfigured: Boolean(config.webhookSecret),
             maxFileSize: config.maxFileSize,
-            webhookRegistered,
+            webhookUnchanged: true,
             songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' }
         });
     } catch (err) {
         console.error('save telegram config error:', err);
         res.status(500).json({ ok: false, error: 'save-telegram-config-failed' });
+    }
+});
+
+app.get('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const config = loadTelegramBotConfig();
+        if (!config.token) return res.status(409).json({ ok: false, error: 'telegram-bot-token-required' });
+        const info = await telegramApi('getWebhookInfo', {}, config.token);
+        res.json({ ok: true, ...getPublicTelegramWebhookInfo(info) });
+    } catch (error) {
+        console.error('read telegram webhook error:', error);
+        res.status(502).json({ ok: false, error: describeTelegramNetworkError(error) });
+    }
+});
+
+app.post('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        let config = loadTelegramBotConfig();
+        if (!config.token) return res.status(409).json({ ok: false, error: 'telegram-bot-token-required' });
+        await telegramApi('getMe', {}, config.token);
+        if (!config.webhookSecret) {
+            config = normalizeTelegramBotConfig({
+                ...config,
+                webhookSecret: crypto.randomBytes(32).toString('base64url')
+            });
+            saveTelegramBotConfig(config);
+            telegramConfig = config;
+        }
+        const target = getTelegramWebhookTarget(req, config.webhookSecret);
+        await telegramApi('setWebhook', {
+            url: target.url,
+            secret_token: config.webhookSecret,
+            allowed_updates: ['message', 'edited_message', 'callback_query'],
+            drop_pending_updates: false
+        }, config.token);
+        let commandsConfigured = true;
+        let commandsError = '';
+        try {
+            await syncTelegramBotCommands(config.token);
+        } catch (error) {
+            commandsConfigured = false;
+            commandsError = describeTelegramNetworkError(error);
+            console.warn('sync telegram bot commands after webhook registration error:', error);
+        }
+        let webhookInfo = {
+            configured: true,
+            target: target.displayUrl,
+            pendingUpdateCount: 0,
+            lastErrorAt: 0,
+            lastErrorMessage: ''
+        };
+        let verificationError = '';
+        try {
+            webhookInfo = getPublicTelegramWebhookInfo(await telegramApi('getWebhookInfo', {}, config.token));
+        } catch (error) {
+            verificationError = describeTelegramNetworkError(error);
+            console.warn('verify telegram webhook after registration error:', error);
+        }
+        res.json({
+            ok: true,
+            commandsConfigured,
+            commandsError,
+            verificationError,
+            ...webhookInfo
+        });
+    } catch (error) {
+        console.error('set telegram webhook error:', error);
+        res.status(502).json({ ok: false, error: describeTelegramNetworkError(error) });
     }
 });
 
@@ -3433,11 +3523,8 @@ function getYoutubeMusicAlbumCandidateUrl(entry = {}) {
 async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '', options = {}) {
     const album = String(meta.album || '').trim();
     if (!album || !meta.id) return '';
-    const albumArtist = String(
-        meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.join(' ') : meta.album_artists) ||
-        getStructuredArtistValue(meta) || meta.artist || ''
-    ).trim();
-    const query = [album, albumArtist].filter(Boolean).join(' ');
+    const albumArtist = resolveYoutubeAlbumArtist(meta);
+    const query = [album, albumArtist === '群星' ? '' : albumArtist].filter(Boolean).join(' ');
     const searchUrl = `https://music.youtube.com/search?q=${encodeURIComponent(query)}#albums`;
     let searchMeta;
     try {
@@ -3559,9 +3646,7 @@ function guessYoutubeSourceLanguage(meta = {}) {
 
 function getYoutubeSourceLanguageFields(meta = {}) {
     const artist = normalizeArtistValue(meta);
-    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists)
-        ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/')
-        : meta.album_artists) || '').trim();
+    const albumArtist = resolveYoutubeAlbumArtist(meta);
     return {
         sourceTitle: sanitizeString(meta.track || meta.title || meta.fulltitle || '', 500),
         sourceTrack: sanitizeString(meta.track || '', 500),
@@ -3588,7 +3673,7 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
         playlistId: sanitizeString(meta.playlist_id || '', 200),
         playlistTitle: sanitizeString(meta.playlist_title || '', 500),
         album: sanitizeString(meta.album || meta.playlist_title || '', 500),
-        albumArtist: sanitizeString(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/') : meta.album_artists) || '', 500),
+        albumArtist: sanitizeString(resolveYoutubeAlbumArtist(meta), 500),
         track: sanitizeString(meta.track || meta.title || '', 500),
         composer: sanitizeString(getYoutubeComposerValue(meta), 500),
         genre: sanitizeString(getYoutubeGenreValue(meta), 500),
@@ -3656,7 +3741,7 @@ async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
 function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
     const reference = buildYoutubeReferenceInfo(meta, sourceUrl);
     const artist = normalizeArtistValue(meta) || reference.authorName || '未知艺术家';
-    const albumArtist = String(meta.album_artist || (Array.isArray(meta.album_artists) ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/') : meta.album_artists) || artist).trim();
+    const albumArtist = resolveYoutubeAlbumArtist(meta);
     const description = reference.description.replace(/\s+/g, ' ').trim();
     const comment = [
         reference.webpageUrl,
@@ -5462,7 +5547,7 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         title: sanitizeString(providedMetadata.title || providedMetadata.track || item.title || item.youtubeVideoId || '未知曲名', 240),
         artist: sanitizeString(providedMetadata.artist || '未知艺术家', 240),
         album: sanitizeString(providedMetadata.album || '', 240),
-        album_artist: sanitizeString(providedMetadata.album_artist || providedMetadata.albumArtist || providedMetadata.artist || '未知艺术家', 240),
+        album_artist: sanitizeString(providedMetadata.album_artist || providedMetadata.albumArtist || '', 240),
         composer: sanitizeString(providedMetadata.composer || '', 240),
         genre: sanitizeString(providedMetadata.genre || '', 240),
         track: sanitizeString(providedMetadata.trackNumber || (providedMetadata.title ? providedMetadata.track : '') || '', 40),
@@ -5777,6 +5862,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         selectedFormatIds: enrichedAnalysis.selection?.ids || [],
         artist: enrichedAnalysis.songMetadata?.artist || '',
         album: enrichedAnalysis.songMetadata?.album || '',
+        albumArtist: enrichedAnalysis.songMetadata?.album_artist || '',
         date: enrichedAnalysis.songMetadata?.date || '',
         track: enrichedAnalysis.songMetadata?.track || '',
         disc: enrichedAnalysis.songMetadata?.disc || ''
@@ -5911,7 +5997,7 @@ function normalizeEditableSongMetadata(input = {}, fallback = {}) {
         title: value('title', 240) || '未知曲名',
         album: value('album', 240),
         artist: value('artist', 240) || '未知艺术家',
-        album_artist: value('album_artist', 240) || value('artist', 240) || '未知艺术家',
+        album_artist: value('album_artist', 240),
         composer: value('composer', 240),
         genre: value('genre', 240),
         track: value('track', 40),

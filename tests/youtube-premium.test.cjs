@@ -13,6 +13,7 @@ const {
     finalizeYoutubeMusicTrackNumber,
     findYoutubeMusicTrackPosition,
     rankYoutubeMusicAlbumCandidates,
+    resolveYoutubeAlbumArtist,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -184,6 +185,35 @@ test('YouTube Music album search candidates prefer exact album and artist matche
     ]);
     assert.equal(ranked[0].id, 'MP_exact');
     assert.equal(ranked[1].id, 'MP_title');
+});
+
+test('YouTube Music compilation albums never inherit the track artist as album artist', () => {
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Compilation Album', album_artist: null, artist: 'Track Artist'
+    }), '群星');
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Compilation Album', album_artists: [], artists: ['Track Artist']
+    }), '群星');
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Compilation Album', album_artist: 'Various Artists', artist: 'Track Artist'
+    }), '群星');
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Artist Album', album_artist: 'Album Artist', artist: 'Track Artist'
+    }), 'Album Artist');
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Unknown Metadata Album', artist: 'Track Artist'
+    }), '');
+    assert.equal(resolveYoutubeAlbumArtist({
+        album: 'Flagged Compilation', compilation: true, artist: 'Track Artist'
+    }), '群星');
+
+    const ranked = rankYoutubeMusicAlbumCandidates({
+        album: 'Compilation Album', album_artist: null, artist: 'Track Artist'
+    }, [
+        { id: 'MP_track_artist', title: 'Compilation Album', artist: 'Track Artist' },
+        { id: 'MP_various', title: 'Compilation Album', artist: 'Various Artists' }
+    ]);
+    assert.equal(ranked[0].id, 'MP_various');
 });
 
 test('custom video tracks override a detected music source unless music mode is forced', () => {

@@ -65,6 +65,25 @@
             padding: 22px;
         }
 
+        .panel + .panel {
+            margin-top: 18px;
+        }
+
+        .panel h2 {
+            margin: 0;
+            font-size: 20px;
+        }
+
+        .webhook-target {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: var(--bg);
+            overflow-wrap: anywhere;
+            line-height: 1.6;
+        }
+
         .field {
             display: grid;
             gap: 8px;
@@ -235,6 +254,20 @@
                 <div class="status" id="status"></div>
             </form>
         </section>
+
+        <section class="panel" aria-labelledby="webhookTitle">
+            <h2 id="webhookTitle">Webhook 管理</h2>
+            <p class="subtle">保存上方配置不会再设置、切换或删除 Webhook。Telegram 一个 Bot 同时只能使用一个 Webhook；只有点击下方按钮，才会把它明确切换到当前服务器域名。</p>
+            <div class="webhook-target">
+                <div><strong>当前页面域名：</strong><span id="currentWebhookOrigin"></span></div>
+                <div id="webhookInfo">正在读取 Telegram 当前 Webhook...</div>
+            </div>
+            <div class="actions">
+                <button class="btn" type="button" id="reloadWebhookBtn">检查当前 Webhook</button>
+                <button class="btn primary" type="button" id="setWebhookBtn" disabled>设置 Webhook 到当前服务器</button>
+            </div>
+            <div class="status" id="webhookStatus"></div>
+        </section>
     </main>
 
     <script>
@@ -249,11 +282,47 @@
         const songUltimateChannelInput = document.getElementById('songUltimateChannel');
         const statusEl = document.getElementById('status');
         const reloadBtn = document.getElementById('reloadBtn');
+        const currentWebhookOriginEl = document.getElementById('currentWebhookOrigin');
+        const webhookInfoEl = document.getElementById('webhookInfo');
+        const webhookStatusEl = document.getElementById('webhookStatus');
+        const reloadWebhookBtn = document.getElementById('reloadWebhookBtn');
+        const setWebhookBtn = document.getElementById('setWebhookBtn');
         let tokenConfigured = false;
+
+        currentWebhookOriginEl.textContent = location.origin;
 
         function setStatus(text, type = '') {
             statusEl.textContent = text;
             statusEl.className = `status ${type}`.trim();
+        }
+
+        function setWebhookStatus(text, type = '') {
+            webhookStatusEl.textContent = text;
+            webhookStatusEl.className = `status ${type}`.trim();
+        }
+
+        function renderWebhookInfo(info) {
+            if (!info.configured) {
+                webhookInfoEl.textContent = 'Telegram 当前未设置 Webhook。';
+                return;
+            }
+            const details = [`Telegram 当前目标：${info.target || '已设置'}`];
+            details.push(`待处理更新：${Number(info.pendingUpdateCount) || 0}`);
+            if (info.lastErrorMessage) {
+                const time = info.lastErrorAt ? new Date(info.lastErrorAt).toLocaleString() : '时间未知';
+                details.push(`最近错误（${time}）：${info.lastErrorMessage}`);
+            }
+            webhookInfoEl.textContent = details.join('；');
+        }
+
+        async function loadWebhookStatus() {
+            setWebhookStatus('正在向 Telegram 查询当前 Webhook...');
+            const response = await fetch('/api/telegram/webhook-config', { cache: 'no-store' });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.error || '读取 Webhook 失败');
+            renderWebhookInfo(result);
+            setWebhookStatus('Webhook 状态已更新。', 'ok');
+            return result;
         }
 
         async function loadConfig() {
@@ -273,6 +342,7 @@
             songBaseChannelInput.value = channels.base || '';
             songProChannelInput.value = channels.pro || '';
             songUltimateChannelInput.value = channels.ultimate || '';
+            setWebhookBtn.disabled = !tokenConfigured;
             setStatus('配置已读取。', 'ok');
         }
 
@@ -303,7 +373,11 @@
                     throw new Error(error.error || '保存配置失败');
                 }
                 await loadConfig();
-                setStatus('telegram bot 配置已保存，webhook 已自动注册。', 'ok');
+                loadWebhookStatus().catch((err) => {
+                    webhookInfoEl.textContent = tokenConfigured ? '暂时无法读取 Telegram Webhook。' : '请先保存 Bot Token。';
+                    setWebhookStatus(err.message, 'error');
+                });
+                setStatus('Telegram bot 配置已保存；现有 Webhook 未被修改。', 'ok');
             } catch (err) {
                 setStatus(err.message || '保存配置失败', 'error');
             }
@@ -313,7 +387,52 @@
             loadConfig().catch((err) => setStatus(err.message, 'error'));
         });
 
-        loadConfig().catch((err) => setStatus(err.message, 'error'));
+        reloadWebhookBtn.addEventListener('click', () => {
+            loadWebhookStatus().catch((err) => setWebhookStatus(err.message, 'error'));
+        });
+
+        setWebhookBtn.addEventListener('click', async () => {
+            if (!tokenConfigured) {
+                setWebhookStatus('请先保存 Bot Token，再单独设置 Webhook。', 'error');
+                return;
+            }
+            const confirmed = window.confirm(
+                `确定把 Telegram Bot 的 Webhook 切换到当前服务器 ${location.origin} 吗？\n\n` +
+                '如果该 Bot 正由另一个服务器域名使用，原服务器将停止收到新的 Bot 更新。'
+            );
+            if (!confirmed) return;
+            setWebhookBtn.disabled = true;
+            setWebhookStatus('正在设置 Webhook 到当前服务器...');
+            try {
+                const response = await fetch('/api/telegram/webhook-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}'
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(result.error || '设置 Webhook 失败');
+                renderWebhookInfo(result);
+                const commandNote = result.commandsConfigured
+                    ? 'Bot 命令已同步。'
+                    : `Webhook 已设置，但 Bot 命令同步失败：${result.commandsError || '未知错误'}`;
+                const verificationNote = result.verificationError
+                    ? ` 设置已成功，但状态复查失败：${result.verificationError}`
+                    : '';
+                setWebhookStatus(`Webhook 已明确切换到 ${result.target || location.origin}。${commandNote}${verificationNote}`,
+                    result.commandsConfigured && !result.verificationError ? 'ok' : 'error');
+            } catch (err) {
+                setWebhookStatus(err.message || '设置 Webhook 失败', 'error');
+            } finally {
+                setWebhookBtn.disabled = !tokenConfigured;
+            }
+        });
+
+        loadConfig()
+            .then(() => loadWebhookStatus().catch((err) => {
+                webhookInfoEl.textContent = tokenConfigured ? '暂时无法读取 Telegram Webhook。' : '请先保存 Bot Token。';
+                setWebhookStatus(err.message, 'error');
+            }))
+            .catch((err) => setStatus(err.message, 'error'));
     </script>
 </body>
 </html>

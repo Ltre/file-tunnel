@@ -191,6 +191,30 @@ test('YouTube Premium setup wizard only guides existing admin pages and polls mi
   assert.doesNotMatch(statusRoute, /includeContent|tokenPreview|saveTelegramBotConfig|telegramApi\(/);
 });
 
+test('Telegram config saving cannot switch webhooks and registration requires an explicit confirmed action', () => {
+  const server = read('server.js');
+  const page = read('pages/tgbot.html');
+  const saveStart = server.indexOf("app.post('/api/telegram/config'");
+  const webhookStart = server.indexOf("app.get('/api/telegram/webhook-config'");
+  const songShareStart = server.indexOf('// ---- Telegram song share', webhookStart);
+  assert.ok(saveStart > 0 && webhookStart > saveStart && songShareStart > webhookStart);
+  const saveRoute = server.slice(saveStart, webhookStart);
+  const webhookRoutes = server.slice(webhookStart, songShareStart);
+  assert.doesNotMatch(saveRoute, /setWebhook|deleteWebhook|setMyCommands/);
+  assert.match(saveRoute, /const webhookSecret = currentConfig\.webhookSecret/);
+  assert.match(saveRoute, /webhookUnchanged: true/);
+  assert.match(webhookRoutes, /app\.post\('\/api\/telegram\/webhook-config'/);
+  assert.match(webhookRoutes, /telegramApi\('setWebhook'/);
+  assert.match(webhookRoutes, /syncTelegramBotCommands\(config\.token\)/);
+  assert.match(page, /id="setWebhookBtn"[^>]*disabled/);
+  assert.match(page, /保存上方配置不会再设置、切换或删除 Webhook/);
+  assert.match(page, /现有 Webhook 未被修改/);
+  assert.match(page, /window\.confirm\(/);
+  assert.match(page, /原服务器将停止收到新的 Bot 更新/);
+  assert.match(page, /fetch\('\/api\/telegram\/webhook-config', \{[\s\S]{0,120}method: 'POST'/);
+  assert.doesNotMatch(page, /webhook 已自动注册/);
+});
+
 test('external integrations expose a centralized dependency inventory and always-on failure diagnostics', () => {
   const server = read('server.js');
   const app = read('app.js');
@@ -405,6 +429,19 @@ test('YouTube song metadata consumes yt-dlp plural composer and genre fields', (
   assert.match(server, /genres\.join\(', '\)/);
   assert.match(server, /composer: sanitizeString\(getYoutubeComposerValue\(meta\), 240\)/);
   assert.match(server, /genre: sanitizeString\(getYoutubeGenreValue\(meta\), 240\)/);
+});
+
+test('YouTube album artist is resolved independently and is never backfilled from the track artist', () => {
+  const server = read('server.js');
+  const service = read('server/youtube-premium.js');
+  assert.match(service, /function resolveYoutubeAlbumArtist\(meta = \{\}\)/);
+  assert.match(service, /return albumArtistFieldKnown \|\| compilationFlag \? '群星' : ''/);
+  assert.match(service, /VARIOUS_ARTISTS_LOOKUP_VALUES/);
+  assert.match(server, /const albumArtist = resolveYoutubeAlbumArtist\(meta\)/);
+  assert.match(server, /albumArtist: sanitizeString\(resolveYoutubeAlbumArtist\(meta\), 500\)/);
+  assert.match(server, /album_artist: sanitizeString\(providedMetadata\.album_artist \|\| providedMetadata\.albumArtist \|\| '', 240\)/);
+  assert.match(server, /album_artist: value\('album_artist', 240\),/);
+  assert.doesNotMatch(server, /album_artist:[^\n]{0,180}(?:providedMetadata\.)?artist \|\| '未知艺术家'/);
 });
 
 test('YouTube song credits can fall back to explicit credit lines in auto-generated music descriptions', () => {
