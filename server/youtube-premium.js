@@ -32,6 +32,20 @@ function normalizeYoutubeMusicLookupText(value) {
     return VARIOUS_ARTISTS_LOOKUP_VALUES.has(normalized) ? 'various artists' : normalized;
 }
 
+function getSingleYoutubeTrackArtist(meta = {}) {
+    const values = Array.isArray(meta.artists)
+        ? meta.artists
+        : (typeof meta.artist === 'string' && meta.artist.trim() ? [meta.artist] : []);
+    const artists = [];
+    for (const value of values) {
+        const artist = String(value || '').trim();
+        if (!artist) continue;
+        const key = normalizeYoutubeMusicLookupText(artist);
+        if (!artists.some(item => item.key === key)) artists.push({ key, value: artist });
+    }
+    return artists.length === 1 ? artists[0].value : '';
+}
+
 function resolveYoutubeAlbumArtist(meta = {}) {
     const rawValue = Array.isArray(meta.album_artists)
         ? meta.album_artists.map(value => String(value || '').trim()).filter(Boolean).join('/')
@@ -46,7 +60,14 @@ function resolveYoutubeAlbumArtist(meta = {}) {
     const compilationFlag = [meta.compilation, meta.is_compilation, meta.album_is_compilation]
         .some(value => value === true || /^(?:1|true|yes)$/i.test(String(value || '')))
         || /compilation|various artists?/i.test(String(meta.album_type || ''));
-    return albumArtistFieldKnown || compilationFlag ? '群星' : '';
+    if (albumArtistFieldKnown || compilationFlag) return '群星';
+
+    // yt-dlp's YouTube/YouTube Music single-track metadata does not always expose
+    // album_artist/album_artists even when the release is a normal single-artist album.
+    // 7.22 deliberately removed the old unconditional artist fallback to protect
+    // compilations. Restore only the narrow unambiguous case: the album-artist fields
+    // are absent (not explicitly empty) and the track has exactly one primary artist.
+    return getSingleYoutubeTrackArtist(meta);
 }
 
 function finalizeYoutubeMusicTrackNumber(meta = {}, derivedTrackNumber = '') {

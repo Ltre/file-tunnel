@@ -1820,3 +1820,44 @@ Track artist 与 Album artist 是两个独立语义。合辑中的歌曲艺人�
 测试没有请求真实 YouTube Music 页面或修改已有下载文件。已有错误标签的成品需要重新抓取，或者在“编辑歌曲元信息”中将 Album artist 改为“群星”/清空并重新保存。
 
 涉及文件：`server/youtube-premium.js`、`server.js`、`tests/youtube-premium.test.cjs`、`tests/features-2608B.test.cjs`、`docs/devlog/dev-2608B-features.md`。
+
+### 7.23 2026-08-22：YouTube Premium 普通单艺人专辑 Album artist 缺失回归
+
+#### 现象与根因
+
+现场链接：`https://music.youtube.com/watch?v=XnWxihjgR-E`。该音乐条目存在所属专辑，专辑也存在明确作者，但抓取后的成品元数据 `album_artist` 为空。
+
+根因与 7.22 的“群星”修复直接相关。7.22 为避免把合辑中某一首歌的 Track artist 无条件写成 Album artist，删除了原先的 `artist -> album_artist` 后置回填，并规定：当 yt-dlp 完全没有提供 `album_artist/album_artists` 字段时保持空白。这个规则对群星专辑是安全的，但对 YouTube/YouTube Music 的另一种真实返回形态过于保守：部分普通单艺人专辑的单曲 JSON 有 `album + artist`，却根本不包含 Album artist 字段，因此最终被留空。
+
+需要区分两种此前容易混淆的情况：
+
+- **字段明确存在但为空**：沿用 7.22 语义，仍视为“没有单一专辑作者”的上游信号，写 `群星`；
+- **字段压根不存在**：不能再直接判定未知。若该条音乐只有一个明确主艺人，则可作为普通单艺人专辑的受限兜底；多艺人仍不猜。
+
+#### 修复规则
+
+`server/youtube-premium.js`：
+
+- 新增 `getSingleYoutubeTrackArtist()`，只读取 yt-dlp 的结构化 `artists[]/artist`，不拿 uploader/channel 代替专辑作者；
+- `resolveYoutubeAlbumArtist()` 调整为以下优先级：
+  1. 非空 `album_artist/album_artists`：直接使用，Various Artists 等仍归一为 `群星`；
+  2. `album_artist/album_artists` 字段明确存在但为空：仍为 `群星`，不撤销 7.22 的保护；
+  3. 明确 `compilation/is_compilation/album_is_compilation/album_type=Compilation`：仍为 `群星`；
+  4. Album artist 字段完全缺失，且 `artists[]/artist` 去重后恰好只有一个主艺人：用该艺人补 `album_artist`；
+  5. Album artist 字段缺失但存在多个不同主艺人：继续留空，避免把协作歌曲或不确定合辑错误归属给某一个艺人。
+- `server.js` 的下载、ffmpeg 写标签、手工编辑链路不做重新回填；它们继续只消费 `resolveYoutubeAlbumArtist()` 的最终结果，因此没有重新引入 7.22 已删除的无条件 Track artist 覆盖。
+- `rankYoutubeMusicAlbumCandidates()` 也会自然得到这个受限的单艺人 fallback，因此普通专辑的专辑搜索排序不再因为 Album artist 字段缺失而丢失艺人相关度。
+
+#### 回归与验证
+
+新增 `tests/youtube-album-artist-regression.test.cjs`，覆盖：
+
+- `XnWxihjgR-E` 对应的“有 album、无 Album artist 字段、单一 artist”数据形态必须得到单一艺人；
+- `artists[]` 重复同一艺人仍视为单一艺人；
+- `album_artist: null`、`album_artists: []`、`Various Artists`、明确 compilation 仍得到 `群星`；
+- Album artist 字段缺失且存在两个不同主艺人时保持空白；
+- 明确的普通 Album artist 始终优先，不被 Track artist 覆盖。
+
+本地对上述纯函数边界执行 8 个断言，结果 `8/8 passed`。当前执行环境没有可用的真实 Premium Cookie/yt-dlp 联网链路，因此没有伪称重新在线抓取 `XnWxihjgR-E`；该链接仍需要在部署该提交后的实际 Premium 环境重新抓取，确认上游返回形态与现场一致并检查最终 M4A 标签。
+
+涉及文件：`server/youtube-premium.js`、`tests/youtube-album-artist-regression.test.cjs`、`docs/devlog/dev-2608B-features.md`。
