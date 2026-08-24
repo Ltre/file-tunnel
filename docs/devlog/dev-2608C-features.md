@@ -218,3 +218,123 @@ Description：
 - 完善中继断线收敛、控制面单实例、缓存 SHA-256 校验和浏览器特殊客户端兼容
 - 增加审计持久化、缓存完整性、进程生命周期及页面契约回归测试
 ```
+
+---
+
+## 七、YouTube Premium 封面状态与专辑作者补丁（2026-08-24）
+
+### 7.1 本轮约束
+
+本轮只处理两个已明确的小问题：
+
+1. “编辑歌曲元信息”重新打开时，预览必须来自歌曲成品中的内嵌封面，而不是任务列表使用的方形参考封面；编辑器与 Telegram 转发可以复用封面数据，但不能覆盖或丢失方形封面。
+2. 指定歌曲 `https://music.youtube.com/watch?v=XnWxihjgR-E` 的专辑作者为空，需要在有专辑证据时恢复真实专辑作者，同时继续保护“群星”和未知专辑作者场景。
+
+修改控制在 `pages/youtube-premium-dl.html`、`server.js` 和两份相关回归测试内，没有重构 YouTube Premium 服务或跨文件改写整套下载流程。
+
+### 7.2 内嵌封面读取根因
+
+歌曲封面写入函数只替换 M4A 成品里的 attached picture，故意不调用 `setCoverPath`；这是为了保留下载阶段已经抓取、裁切好的方形封面。此前编辑浮层初始化却直接使用公开任务字段 `task.cover`，而该字段正是外层列表和 Telegram“正方形”选项使用的 `coverPath`，所以自定义内嵌封面虽然写入成功，重新打开浮层仍会显示旧方形图。
+
+修复方式：
+
+- 新增只读 `GET /api/youtube-premium/tasks/:taskId/song-cover`。
+- 服务端用 ffprobe 找出 `attached_pic` 流，再用 ffmpeg 抽取为临时 JPEG；响应完成立即清理临时文件。
+- 编辑浮层打开后并行读取该接口，初始预览只显示成品文件内嵌封面；读取失败时显示明确错误，不再用任务方形图冒充。
+- 保持当前封面时不上传图片，也不会触发二次封面写入。
+
+### 7.3 与 Telegram 封面数据互通
+
+页面增加按任务 ID 隔离的轻量封面资源槽，分别保存：
+
+- `squareUrl`：既有方形封面 URL；
+- `originalBlob/originalDataUrl`：按需取得的原尺寸图；
+- `embeddedBlob/embeddedDataUrl`：当前歌曲文件内嵌封面；
+- `uploadedBlob/uploadedDataUrl`：两个浮层共享的用户上传图。
+
+两处功能共享图片资源，不强行同步 Base/Pro/Ultimate 三个独立下拉框的选择值：
+
+- 元信息编辑器上传的自定义图，可以在 Telegram 的“使用自定义封面”中直接复用。
+- Telegram 上传的自定义图，可以在元信息编辑器选择“上传...”时复用；同时提供“重新选择上传文件”按钮。
+- Telegram 打开时也会读取歌曲当前内嵌封面，页面重新加载后仍可把已经写入歌曲的封面当作自定义封面使用。
+- 原尺寸图在两处之间缓存复用，避免同一页面会话中重复抓取。
+- 自定义图、内嵌图、原尺寸图从不写入或替换 `squareUrl/coverPath`；因此上传自定义封面后，原方形裁切结果仍保留，选择“正方形”不需要重新抓取和裁剪。
+
+### 7.4 指定歌曲专辑作者根因
+
+使用当前 yt-dlp 对公开链接做了真实元数据复现：
+
+```text
+视频 ID：XnWxihjgR-E
+歌曲：ボーイフレンド
+专辑：サマー・イン・ブルー
+单曲艺术家：Yuri Kunizane
+频道：Yuri Kunizane - Topic
+album_artist：原始单曲响应没有该字段
+```
+
+随后遍历 YouTube Music 专辑搜索的首个匹配专辑，确认：
+
+```text
+专辑：Album - Summer in Blue
+播放列表：OLAK5uy_n2VlxbpMqN9Jm-2up1Oig_cNzSjJf81ew
+目标歌曲位于第 3 首
+该专辑条目均来自 Yuri Kunizane - Topic
+```
+
+现有新鲜解析逻辑能够用这组专辑条目确认 `Yuri Kunizane`，而不是从单曲艺术家字段盲猜。真正遗漏发生在持久元数据缓存的再次富化：只要缓存中的 Track 和 Disc 已齐全，函数就提前返回，即使 `album_artist` 仍为空；而且再次富化的输入没有携带专辑名，无法发起专辑匹配。
+
+修复方式：
+
+- 提前返回条件改为 Track、Disc、Album artist 三者都存在。
+- 重新富化时补传专辑名、已有专辑作者和单曲艺术家上下文。
+- 将专辑遍历得到的 `album_artist` 同时回填到 `songMetadata.album_artist` 和 `referenceInfo.albumArtist`。
+- 仍然不把单曲艺术家直接复制为专辑作者；只有显式 `album_artist`、编译/群星证据或命中包含目标视频的专辑条目时才填写。
+
+这使旧缓存中的空专辑作者也会在下次加载格式时得到修复，不要求管理员手工删除整个持久缓存。
+
+### 7.5 验证
+
+专题回归：
+
+```text
+node --test tests/youtube-premium.test.cjs tests/youtube-album-artist-regression.test.cjs tests/telegram-cover-regression.test.cjs tests/features-2608B.test.cjs
+```
+
+结果：49/49 通过。
+
+全量回归：
+
+```text
+node --test tests/*.test.cjs
+```
+
+结果：103/103 通过，0 失败、0 跳过。
+
+另外用临时文件执行了真实媒体烟雾测试：生成一段带 `attached_pic` 的 M4A，按新接口相同的 ffprobe 流索引和 ffmpeg `-map 0:<stream.index>` 方式抽取封面，成功得到 JPEG；临时目录随后已清理。
+
+新增/更新覆盖：
+
+- 编辑浮层初始化调用歌曲内嵌封面接口，且不再把 `task.cover` 当作当前内嵌封面。
+- 服务端只提取 `attached_pic`，并保持封面写入逻辑不调用 `setCoverPath`。
+- 上传封面在元信息编辑器与 Telegram 之间按任务复用。
+- 方形封面使用独立槽位，不被自定义封面覆盖。
+- Track/Disc 已存在但专辑作者为空的旧缓存仍会继续富化。
+- 指定视频的专辑条目 fixture 能确认 `Yuri Kunizane`，同时保留群星和歧义保护。
+
+### 7.6 本补丁建议提交日志
+
+Title：
+
+```text
+fix: 修复歌曲内嵌封面预览与专辑作者回填
+```
+
+Description：
+
+```text
+- 编辑歌曲元信息时直接读取成品内嵌封面，并与 Telegram 转发共享原图和自定义封面资源
+- 独立保留方形裁切封面，避免上传自定义图片后重复抓取和裁剪
+- 修复旧缓存 Track/Disc 已齐时跳过专辑作者富化的问题，补全指定 YT Music 歌曲的专辑作者
+- 增加内嵌封面、共享封面状态及缓存专辑作者回填的回归测试
+```

@@ -299,7 +299,8 @@
                         <option value="upload">上传...</option>
                     </select>
                     <input id="metadataCoverUpload" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-                    <span class="subtle" id="metadataCoverStatus">只替换歌曲文件内嵌封面，不会改动 Telegram 转发封面。</span>
+                    <button id="metadataCoverUploadBtn" type="button" hidden>重新选择上传文件</button>
+                    <span class="subtle" id="metadataCoverStatus">正在读取歌曲文件中的内嵌封面...</span>
                 </div>
             </div>
         </div>
@@ -462,6 +463,7 @@
     const metadataReference = document.getElementById('metadataReference');
     const metadataCoverSelect = document.getElementById('metadataCoverSelect');
     const metadataCoverUpload = document.getElementById('metadataCoverUpload');
+    const metadataCoverUploadBtn = document.getElementById('metadataCoverUploadBtn');
     const metadataCoverPreview = document.getElementById('metadataCoverPreview');
     const metadataCoverStatus = document.getElementById('metadataCoverStatus');
     const metadataCoverTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -471,6 +473,7 @@
     let metadataCoverPreviewUrl = '';
     let metadataCoverGeneration = 0;
     let metadataCoverUploadGeneration = 0;
+    const taskCoverAssets = new Map();
     const predefinedTags = 'AlarmClock、DNA、Epic、HSL、HSPL、Public、S+、S+ 候选、Vocalize／Moderate、Youth、不吵闹、不行、亢、元気、删、剧、历久弥新、反、呕摸西裸衣、地雷系 Pure、寄、尬爽｜地雷系、巴闲、幻咏：神｜鬼｜虚｜圣、惋、日常｜平和｜普通、暖｜幸せ、某推荐、柔、梗、正、清、特殊结构、秘封晚期、耐、至喜、至喜²｜H↑、舒、车播：保守、车播：常规、车播：自用、险些埋没、静、韩大狗、高雅、８９０／Best Vintage、８９０／Mugen／Free／Relax'.split('、');
     const metadataFields = [
         ['title', 'Title'], ['album', 'Album'], ['artist', 'Artist'], ['album_artist', 'Album artist'],
@@ -1076,14 +1079,26 @@
 
     async function showTelegramShare(task) {
         tgShareTask = task;
-        tgUploadedCover = null;
-        tgOriginalCoverDataUrl = null;
+        const coverAssets = getTaskCoverAssets(task);
+        tgUploadedCover = coverAssets?.uploadedDataUrl || coverAssets?.embeddedDataUrl || null;
+        tgOriginalCoverDataUrl = coverAssets?.originalDataUrl || null;
         tgProgressPrefixSteps = [];
         tgShareStatus.textContent = '正在读取频道配置...';
         tgShareForm.hidden = true;
         tgShareDialog.showModal();
         try {
             const config = await api('/api/telegram/config');
+            if (!coverAssets?.embeddedBlob) {
+                try {
+                    coverAssets.embeddedBlob = await fetchMetadataCover(
+                        `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/song-cover`
+                    );
+                } catch (_) {}
+            }
+            if (!coverAssets?.embeddedDataUrl && coverAssets?.embeddedBlob) {
+                coverAssets.embeddedDataUrl = await fileToDataUrl(coverAssets.embeddedBlob);
+            }
+            tgUploadedCover = coverAssets?.uploadedDataUrl || coverAssets?.embeddedDataUrl || null;
             const channels = config.songShareChannels || {};
             if (!channels.base) {
                 tgShareStatus.textContent = '未配置 Base 频道，请先在 Telegram bot 配置页设置歌曲分享频道。';
@@ -1141,9 +1156,30 @@
         });
     }
 
+    function getTaskCoverAssets(taskOrId) {
+        const taskId = typeof taskOrId === 'string' ? taskOrId : taskOrId?.id;
+        if (!taskId) return null;
+        if (!taskCoverAssets.has(taskId)) {
+            taskCoverAssets.set(taskId, {
+                squareUrl: '', originalBlob: null, originalDataUrl: '',
+                embeddedBlob: null, embeddedDataUrl: '', uploadedBlob: null, uploadedDataUrl: ''
+            });
+        }
+        const assets = taskCoverAssets.get(taskId);
+        if (typeof taskOrId === 'object' && taskOrId?.cover) assets.squareUrl = taskOrId.cover;
+        return assets;
+    }
+
     async function getTelegramOriginalCoverDataUrl(task) {
         if (tgOriginalCoverDataUrl) return tgOriginalCoverDataUrl;
         if (!task?.id) throw new Error('任务不存在');
+        const assets = getTaskCoverAssets(task);
+        if (assets?.originalDataUrl) return (tgOriginalCoverDataUrl = assets.originalDataUrl);
+        if (assets?.originalBlob) {
+            tgOriginalCoverDataUrl = await fileToDataUrl(assets.originalBlob);
+            assets.originalDataUrl = tgOriginalCoverDataUrl;
+            return tgOriginalCoverDataUrl;
+        }
         const response = await fetch(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/thumbnail`, {
             method: 'POST', cache: 'no-store'
         });
@@ -1160,6 +1196,10 @@
             throw new Error('服务器没有返回有效的原尺寸封面');
         }
         tgOriginalCoverDataUrl = await fileToDataUrl(blob);
+        if (assets) {
+            assets.originalBlob = blob;
+            assets.originalDataUrl = tgOriginalCoverDataUrl;
+        }
         return tgOriginalCoverDataUrl;
     }
 
@@ -1176,14 +1216,27 @@
     tgShareUltimate.addEventListener('change', updateTgShareVisibility);
     tgCoverUploadBtn.addEventListener('click', () => tgCoverUpload.click());
     [tgCoverBaseSelect, tgCoverProSelect, tgCoverUltimateSelect].forEach(select => {
-        select.addEventListener('change', () => {
-            if (select.value === 'upload' && !tgUploadedCover) tgCoverUpload.click();
+        select.addEventListener('change', async () => {
+            if (select.value === 'upload') {
+                if (!tgUploadedCover) tgCoverUpload.click();
+                else tgCoverPreview.src = tgUploadedCover;
+            } else if (select.value === 'original') {
+                try { tgCoverPreview.src = await getTelegramOriginalCoverDataUrl(tgShareTask); }
+                catch (error) { tgShareStatus.textContent = error.message; }
+            } else {
+                tgCoverPreview.src = tgShareTask?.cover || '';
+            }
         });
     });
     tgCoverUpload.addEventListener('change', async () => {
         const file = tgCoverUpload.files?.[0];
         if (!file) return;
         tgUploadedCover = await fileToDataUrl(file);
+        const assets = getTaskCoverAssets(tgShareTask);
+        if (assets) {
+            assets.uploadedBlob = file;
+            assets.uploadedDataUrl = tgUploadedCover;
+        }
         tgCoverPreview.src = tgUploadedCover;
     });
     document.querySelectorAll('[data-close-tg-share]').forEach(button => button.addEventListener('click', () => tgShareDialog.close()));
@@ -1559,12 +1612,12 @@
         metadataCoverBlob = null;
         metadataCoverSelect.value = '';
         metadataCoverSelect.disabled = false;
+        metadataCoverUploadBtn.hidden = true;
         metadataCoverUpload.value = '';
-        if (task?.cover) metadataCoverPreview.src = task.cover;
-        else metadataCoverPreview.removeAttribute('src');
-        metadataCoverStatus.textContent = task?.cover
-            ? '当前显示任务参考封面，不是歌曲内嵌封面的读取结果；保持当前封面不会写入它，也不会改动 Telegram 转发封面。'
-            : '保持当前封面不会写入图片；这里只替换歌曲内嵌封面，不会改动 Telegram 转发封面。';
+        metadataCoverPreview.removeAttribute('src');
+        getTaskCoverAssets(task);
+        metadataCoverStatus.textContent = '正在读取歌曲文件中的内嵌封面...';
+        return metadataCoverGeneration;
     }
 
     function validateMetadataCover(blob) {
@@ -1598,18 +1651,27 @@
         const generation = ++metadataCoverGeneration;
         metadataCoverUploadGeneration = 0;
         metadataCoverBlob = null;
+        metadataCoverUploadBtn.hidden = mode !== 'upload';
         if (!mode) {
             if (metadataCoverPreviewUrl) URL.revokeObjectURL(metadataCoverPreviewUrl);
             metadataCoverPreviewUrl = '';
-            if (metadataCoverTask?.cover) metadataCoverPreview.src = metadataCoverTask.cover;
+            const embedded = getTaskCoverAssets(metadataCoverTask)?.embeddedBlob;
+            if (embedded) previewMetadataCover(embedded);
             else metadataCoverPreview.removeAttribute('src');
-            metadataCoverStatus.textContent = metadataCoverTask?.cover
-                ? '将保持歌曲文件当前的内嵌封面；预览仍是任务参考封面，不会被写入。'
+            metadataCoverStatus.textContent = embedded
+                ? '当前预览直接读取自歌曲文件内嵌封面；保存其他字段时会保持它。'
                 : '将保持歌曲文件当前的内嵌封面。';
             return;
         }
         if (mode === 'upload') {
             metadataCoverUploadGeneration = generation;
+            const sharedUpload = getTaskCoverAssets(metadataCoverTask)?.uploadedBlob;
+            if (sharedUpload) {
+                metadataCoverBlob = validateMetadataCover(sharedUpload);
+                previewMetadataCover(metadataCoverBlob);
+                metadataCoverStatus.textContent = '已复用 Telegram/元信息编辑器中的自定义封面；可点“重新选择上传文件”更换。';
+                return;
+            }
             metadataCoverStatus.textContent = '请选择不超过 10MB 的 JPEG、PNG 或 WebP 图片。';
             metadataCoverUpload.value = '';
             metadataCoverUpload.click();
@@ -1629,6 +1691,8 @@
             );
             if (generation !== metadataCoverGeneration || metadataCoverTask?.id !== selectedTaskId) return;
             metadataCoverBlob = coverBlob;
+            const assets = getTaskCoverAssets(metadataCoverTask);
+            if (mode === 'original' && assets) assets.originalBlob = coverBlob;
             previewMetadataCover(coverBlob);
             metadataCoverStatus.textContent = mode === 'original' ? '已选择原尺寸封面。' : '已选择正方形封面。';
         } catch (error) {
@@ -1641,12 +1705,31 @@
         }
     }
 
+    async function loadMetadataEmbeddedCover(task, generation) {
+        try {
+            const coverBlob = await fetchMetadataCover(
+                `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/song-cover`
+            );
+            if (generation !== metadataCoverGeneration || metadataCoverTask?.id !== task.id) return;
+            const assets = getTaskCoverAssets(task);
+            assets.embeddedBlob = coverBlob;
+            assets.embeddedDataUrl = '';
+            previewMetadataCover(coverBlob);
+            metadataCoverStatus.textContent = '当前预览直接读取自歌曲文件中的内嵌封面。';
+        } catch (error) {
+            if (generation !== metadataCoverGeneration || metadataCoverTask?.id !== task.id) return;
+            metadataCoverPreview.removeAttribute('src');
+            metadataCoverStatus.textContent = `歌曲内嵌封面读取失败：${error.message}`;
+        }
+    }
+
     async function showMetadataDialog(task) {
-        resetMetadataCoverEditor(task);
+        const coverGeneration = resetMetadataCoverEditor(task);
         metadataDialog.dataset.taskId = task.id;
         metadataForm.replaceChildren();
         metadataReference.textContent = '正在读取参考信息...';
         metadataDialog.showModal();
+        loadMetadataEmbeddedCover(task, coverGeneration);
         try {
             const data = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/song-metadata`);
             if (metadataDialog.dataset.taskId !== task.id) return;
@@ -1990,13 +2073,24 @@
             metadataCoverStatus.textContent = `封面读取失败：${error.message}`;
         }
     });
-    metadataCoverUpload.addEventListener('change', () => {
+    metadataCoverUploadBtn.addEventListener('click', () => {
+        metadataCoverUploadGeneration = metadataCoverGeneration;
+        metadataCoverUpload.value = '';
+        metadataCoverUpload.click();
+    });
+    metadataCoverUpload.addEventListener('change', async () => {
         const file = metadataCoverUpload.files?.[0];
         const generation = metadataCoverUploadGeneration;
         if (!file || !generation || generation !== metadataCoverGeneration || metadataCoverSelect.value !== 'upload') return;
         try {
             metadataCoverBlob = validateMetadataCover(file);
             previewMetadataCover(metadataCoverBlob);
+            const assets = getTaskCoverAssets(metadataCoverTask);
+            if (assets) {
+                assets.uploadedBlob = file;
+                assets.uploadedDataUrl = await fileToDataUrl(file);
+            }
+            if (generation !== metadataCoverGeneration || metadataCoverSelect.value !== 'upload') return;
             metadataCoverSelect.value = 'upload';
             metadataCoverStatus.textContent = `已选择上传封面：${file.name}`;
         } catch (error) {
@@ -2035,6 +2129,11 @@
                     headers: { 'Content-Type': metadataCoverBlob.type },
                     body: metadataCoverBlob
                 });
+                const assets = getTaskCoverAssets(metadataCoverTask);
+                if (assets) {
+                    assets.embeddedBlob = metadataCoverBlob;
+                    assets.embeddedDataUrl = '';
+                }
                 coverSaved = true;
             }
             await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-metadata`, {

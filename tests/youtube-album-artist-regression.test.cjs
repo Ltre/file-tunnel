@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
     resolveYoutubeAlbumArtist,
     resolveYoutubeAlbumArtistFromEntries
@@ -21,6 +23,19 @@ test('a matched YouTube Music album derives one album artist from Topic channels
         { id: 'SDLoNI2xElM', uploader: 'Yuri Kunizane - Topic' }
     ];
     assert.equal(resolveYoutubeAlbumArtistFromEntries(albumEntries), 'Yuri Kunizane');
+});
+
+test('cached analyses with complete ordinals still repair a missing album artist', () => {
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const helper = server.slice(
+        server.indexOf('async function enrichYoutubePremiumAnalysisOrdinals'),
+        server.indexOf('async function analyzeYoutubePremiumUrl')
+    );
+    assert.match(helper, /currentTrack && currentDisc && currentAlbumArtist/);
+    assert.match(helper, /album: analysis\.songMetadata\.album \|\| analysis\.referenceInfo\?\.album/);
+    assert.match(helper, /album_artist: currentAlbumArtist \|\| analysis\.referenceInfo\?\.albumArtist/);
+    assert.match(helper, /album_artist: nextAlbumArtist/);
+    assert.match(helper, /albumArtist: analysis\.referenceInfo\.albumArtist \|\| nextAlbumArtist/);
 });
 
 test('album artist resolution preserves compilation and ambiguous-album protection', () => {

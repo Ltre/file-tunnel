@@ -476,9 +476,19 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /id="metadataCoverUpload"[^>]*accept="image\/jpeg,image\/png,image\/webp"/);
     assert.match(page, /metadataCoverMaxBytes = 10 \* 1024 \* 1024/);
     assert.match(page, /\/song-cover`, \{\s*method: 'PUT'/);
+    assert.match(page, /\/song-cover`\s*\n\s*\);/);
     assert.match(page, /let metadataCoverGeneration = 0/);
     assert.match(page, /generation !== metadataCoverGeneration \|\| metadataCoverTask\?\.id !== selectedTaskId/);
-    assert.match(page, /当前显示任务参考封面，不是歌曲内嵌封面的读取结果/);
+    assert.match(page, /loadMetadataEmbeddedCover\(task, coverGeneration\)/);
+    assert.match(page, /当前预览直接读取自歌曲文件中的内嵌封面/);
+    assert.match(page, /const taskCoverAssets = new Map\(\)/);
+    assert.match(page, /assets\.uploadedBlob = file/);
+    assert.match(page, /assets\.squareUrl = taskOrId\.cover/);
+    const resetCoverCode = page.slice(
+        page.indexOf('function resetMetadataCoverEditor'),
+        page.indexOf('function validateMetadataCover')
+    );
+    assert.doesNotMatch(resetCoverCode, /metadataCoverPreview\.src = task\?\.cover/);
     assert.match(page, /if \(coverSaved && !metadataSaved\)/);
     assert.match(page, /所选封面已写入歌曲，但其他元信息保存失败/);
     const metadataCoverCode = page.slice(
@@ -494,6 +504,10 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(songCoverServerCode, /fs\.renameSync\(completedPath, targetPath\)/);
     assert.match(songCoverServerCode, /rollback\(\)/);
     assert.doesNotMatch(songCoverServerCode, /setCoverPath/);
+    assert.match(server, /app\.get\('\/api\/youtube-premium\/tasks\/:taskId\/song-cover'/);
+    assert.match(server, /async function extractYoutubePremiumSongCover/);
+    assert.match(server, /Number\(stream\.disposition\?\.attached_pic\) === 1/);
+    assert.match(server, /'-map', `0:\$\{coverStream\.index\}`/);
     assert.match(server, /'youtube-premium-song-cover-invalid': '歌曲封面无效/);
     assert.match(server, /'youtube-premium-song-cover-write-failed': '歌曲封面写入失败，原成品已保留/);
     assert.match(server, /'youtube-premium-song-cover-verify-failed': '歌曲封面写入结果无法校验，原成品已保留'/);

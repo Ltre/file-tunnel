@@ -1232,6 +1232,27 @@ app.put('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
     }
 });
 
+app.get('/api/youtube-premium/tasks/:taskId/song-cover', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    let cover;
+    try {
+        cover = await extractYoutubePremiumSongCover(req.params.taskId);
+        res.type('image/jpeg');
+        res.sendFile(cover.path, error => {
+            cover.cleanup();
+            if (error && !res.headersSent) res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+        });
+    } catch (error) {
+        cover?.cleanup();
+        const status = error.message === 'youtube-premium-task-not-found'
+            ? 404
+            : error.message === 'youtube-premium-task-not-song'
+                ? 409
+                : 422;
+        res.status(status).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
 app.put(
     '/api/youtube-premium/tasks/:taskId/song-cover',
     adminAuth.requireAuth,
@@ -5732,22 +5753,28 @@ async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
     if (!analysis || analysis.mediaType !== 'song' || !analysis.songMetadata) return analysis;
     const currentTrack = String(analysis.songMetadata.track || '').trim();
     const currentDisc = String(analysis.songMetadata.disc || '').trim();
-    if (currentTrack && currentDisc) return analysis;
+    const currentAlbumArtist = String(analysis.songMetadata.album_artist || '').trim();
+    if (currentTrack && currentDisc && currentAlbumArtist) return analysis;
     const enriched = await enrichYoutubeMusicOrdinalMetadata({
         id: analysis.youtubeVideoId || '',
+        album: analysis.songMetadata.album || analysis.referenceInfo?.album || '',
+        album_artist: currentAlbumArtist || analysis.referenceInfo?.albumArtist || '',
+        artist: analysis.songMetadata.artist || '',
         track_number: currentTrack,
         disc_number: currentDisc,
         playlist_id: analysis.referenceInfo?.playlistId || ''
     }, analysis.url, options);
     const nextTrack = currentTrack || String(enriched.track_number || '');
     const nextDisc = currentDisc || String(enriched.disc_number || '1');
+    const nextAlbumArtist = currentAlbumArtist || String(enriched.album_artist || '');
     return {
         ...analysis,
-        songMetadata: { ...analysis.songMetadata, track: nextTrack, disc: nextDisc },
+        songMetadata: { ...analysis.songMetadata, track: nextTrack, disc: nextDisc, album_artist: nextAlbumArtist },
         referenceInfo: analysis.referenceInfo ? {
             ...analysis.referenceInfo,
             trackNumber: analysis.referenceInfo.trackNumber || nextTrack,
-            discNumber: analysis.referenceInfo.discNumber || nextDisc
+            discNumber: analysis.referenceInfo.discNumber || nextDisc,
+            albumArtist: analysis.referenceInfo.albumArtist || nextAlbumArtist
         } : analysis.referenceInfo
     };
 }
@@ -6102,6 +6129,32 @@ async function rewriteYoutubePremiumSongMetadata(taskId, input) {
     }
 }
 
+async function extractYoutubePremiumSongCover(taskId) {
+    const task = youtubePremiumService.get(taskId);
+    const file = youtubePremiumService.getFile(taskId);
+    if (!task || !file) throw new Error('youtube-premium-task-not-found');
+    if (task.mediaType !== 'song') throw new Error('youtube-premium-task-not-song');
+    const probe = await probeMediaFile(file.path);
+    const coverStream = probe.streams?.find(stream =>
+        stream.codec_type === 'video' && Number(stream.disposition?.attached_pic) === 1
+    );
+    if (!coverStream) throw new Error('song-cover-not-embedded');
+    const coverPath = path.join(path.dirname(file.path), `.embedded-cover-${crypto.randomBytes(6).toString('hex')}.jpg`);
+    const cleanup = () => fs.rmSync(coverPath, { force: true });
+    try {
+        await spawnCapture(FFMPEG_COMMAND, [
+            '-y', '-hide_banner', '-loglevel', 'error', '-i', file.path,
+            '-map', `0:${coverStream.index}`, '-frames:v', '1', '-c:v', 'mjpeg', coverPath
+        ], { timeoutMs: 60 * 1000, timeoutError: 'song-cover-read-timeout' });
+        const coverBuffer = fs.readFileSync(coverPath);
+        if (detectYoutubePremiumCoverExtension(coverBuffer) !== '.jpg') throw new Error('song-cover-not-embedded');
+        return { path: coverPath, cleanup };
+    } catch (error) {
+        cleanup();
+        throw error;
+    }
+}
+
 function detectYoutubePremiumCoverExtension(buffer) {
     if (!Buffer.isBuffer(buffer) || buffer.length < 12) return '';
     if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg';
@@ -6246,6 +6299,7 @@ function sanitizeYoutubePremiumError(error) {
         'youtube-premium-task-not-song': '只有音乐类型任务可以编辑歌曲元数据',
         'youtube-premium-task-active': '任务仍在运行，请先取消并等待任务停止',
         'youtube-premium-song-cover-invalid': '歌曲封面无效，仅支持不超过 10MB 的 JPEG、PNG 或 WebP 图片',
+        'song-cover-read-timeout': '读取歌曲内嵌封面超时，请稍后重试',
         'song-cover-write-timeout': '写入歌曲封面超时，请稍后重试',
         'youtube-premium-song-cover-write-failed': '歌曲封面写入失败，原成品已保留；请检查图片或服务器媒体工具',
         'youtube-premium-song-cover-verify-failed': '歌曲封面写入结果无法校验，原成品已保留',
