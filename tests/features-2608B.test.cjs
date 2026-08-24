@@ -237,7 +237,7 @@ test('external integrations expose a centralized dependency inventory and always
   assert.match(server, /function auditExternalRuntimeDependencies/);
   assert.match(server, /youtube-music-album-search/);
   assert.match(server, /youtube-music-album-traverse/);
-  assert.match(server, /No native or album-derived Track number was available; Track=1 was applied/);
+  assert.match(server, /No native or album-verified Track number was available; Track remains empty/);
   assert.match(app, /webrtc-ice-server-error/);
   assert.match(media, /media-ice-server-error/);
   assert.match(camera, /device-camera-ice-server-error/);

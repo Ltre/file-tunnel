@@ -25,17 +25,33 @@ test('a matched YouTube Music album derives one album artist from Topic channels
     assert.equal(resolveYoutubeAlbumArtistFromEntries(albumEntries), 'Yuri Kunizane');
 });
 
-test('cached analyses with complete ordinals still repair a missing album artist', () => {
+test('legacy cached analyses repair album artist and discard fabricated Track/Disc defaults', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
     const helper = server.slice(
         server.indexOf('async function enrichYoutubePremiumAnalysisOrdinals'),
         server.indexOf('async function analyzeYoutubePremiumUrl')
     );
-    assert.match(helper, /currentTrack && currentDisc && currentAlbumArtist/);
+    assert.match(helper, /musicAlbumLookupCompleted === true/);
+    assert.match(helper, /const trustedCurrentTrack = currentTrack === '1' \? '' : currentTrack/);
+    assert.match(helper, /const trustedCurrentDisc = currentDisc === '1' \? '' : currentDisc/);
     assert.match(helper, /album: analysis\.songMetadata\.album \|\| analysis\.referenceInfo\?\.album/);
     assert.match(helper, /album_artist: currentAlbumArtist \|\| analysis\.referenceInfo\?\.albumArtist/);
     assert.match(helper, /album_artist: nextAlbumArtist/);
     assert.match(helper, /albumArtist: analysis\.referenceInfo\.albumArtist \|\| nextAlbumArtist/);
+    assert.match(helper, /musicAlbumLookupCompleted: true/);
+});
+
+test('fresh analysis performs only one bounded album lookup and never fabricates ordinals', () => {
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const analyze = server.slice(
+        server.indexOf('async function analyzeYoutubePremiumUrl'),
+        server.indexOf('function moveYoutubePremiumOutput')
+    );
+    assert.match(server, /YOUTUBE_MUSIC_ALBUM_LOOKUP_TIMEOUT_MS/);
+    assert.match(server, /slice\(0, 3\)/);
+    assert.doesNotMatch(analyze, /await enrichYoutubePremiumAnalysisOrdinals/);
+    assert.doesNotMatch(server, /youtube-music-track-number-defaulted/);
+    assert.doesNotMatch(server, /disc_number: meta\.disc_number \|\| ordinal\.discNumber \|\| '1'/);
 });
 
 test('album artist resolution preserves compilation and ambiguous-album protection', () => {

@@ -355,9 +355,9 @@
             <div id="tgCoverSection" style="margin-bottom:12px">
                 <strong>封面图</strong>
                 <div style="margin-top:6px;display:grid;gap:8px">
-                    <div><label class="subtle">Base 封面</label><select id="tgCoverBaseSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
-                    <div id="tgCoverProSplitRow"><label class="subtle">Pro 封面</label><select id="tgCoverProSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
-                    <div id="tgCoverUltimateSplitRow"><label class="subtle">Ultimate 封面</label><select id="tgCoverUltimateSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option></select></div>
+                    <div><label class="subtle">Base 封面</label><select id="tgCoverBaseSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option><option value="embedded">使用缓存歌曲文件的元数据之封面</option></select></div>
+                    <div id="tgCoverProSplitRow"><label class="subtle">Pro 封面</label><select id="tgCoverProSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option><option value="embedded">使用缓存歌曲文件的元数据之封面</option></select></div>
+                    <div id="tgCoverUltimateSplitRow"><label class="subtle">Ultimate 封面</label><select id="tgCoverUltimateSelect" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text)"><option value="square">正方形</option><option value="original">原尺寸</option><option value="upload">使用自定义封面</option><option value="embedded">使用缓存歌曲文件的元数据之封面</option></select></div>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
                     <img id="tgCoverPreview" style="width:64px;height:64px;object-fit:cover;border-radius:4px;background:#e5e9f0" alt="">
@@ -1080,7 +1080,7 @@
     async function showTelegramShare(task) {
         tgShareTask = task;
         const coverAssets = getTaskCoverAssets(task);
-        tgUploadedCover = coverAssets?.uploadedDataUrl || coverAssets?.embeddedDataUrl || null;
+        tgUploadedCover = coverAssets?.uploadedDataUrl || null;
         tgOriginalCoverDataUrl = coverAssets?.originalDataUrl || null;
         tgProgressPrefixSteps = [];
         tgShareStatus.textContent = '正在读取频道配置...';
@@ -1098,7 +1098,7 @@
             if (!coverAssets?.embeddedDataUrl && coverAssets?.embeddedBlob) {
                 coverAssets.embeddedDataUrl = await fileToDataUrl(coverAssets.embeddedBlob);
             }
-            tgUploadedCover = coverAssets?.uploadedDataUrl || coverAssets?.embeddedDataUrl || null;
+            tgUploadedCover = coverAssets?.uploadedDataUrl || null;
             const channels = config.songShareChannels || {};
             if (!channels.base) {
                 tgShareStatus.textContent = '未配置 Base 频道，请先在 Telegram bot 配置页设置歌曲分享频道。';
@@ -1203,11 +1203,25 @@
         return tgOriginalCoverDataUrl;
     }
 
+    async function getTelegramEmbeddedCoverDataUrl(task) {
+        if (!task?.id) throw new Error('任务不存在');
+        const assets = getTaskCoverAssets(task);
+        if (assets?.embeddedDataUrl) return assets.embeddedDataUrl;
+        if (!assets?.embeddedBlob) {
+            assets.embeddedBlob = await fetchMetadataCover(
+                `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/song-cover`
+            );
+        }
+        assets.embeddedDataUrl = await fileToDataUrl(assets.embeddedBlob);
+        return assets.embeddedDataUrl;
+    }
+
     async function resolveTelegramShareCover(select) {
         if (select.value === 'upload') {
             if (!tgUploadedCover) throw new Error('请先上传自定义封面');
             return tgUploadedCover;
         }
+        if (select.value === 'embedded') return getTelegramEmbeddedCoverDataUrl(tgShareTask);
         if (select.value === 'original') return getTelegramOriginalCoverDataUrl(tgShareTask);
         return ''; // empty means the task's existing square cover on the server side
     }
@@ -1220,6 +1234,9 @@
             if (select.value === 'upload') {
                 if (!tgUploadedCover) tgCoverUpload.click();
                 else tgCoverPreview.src = tgUploadedCover;
+            } else if (select.value === 'embedded') {
+                try { tgCoverPreview.src = await getTelegramEmbeddedCoverDataUrl(tgShareTask); }
+                catch (error) { tgShareStatus.textContent = error.message; }
             } else if (select.value === 'original') {
                 try { tgCoverPreview.src = await getTelegramOriginalCoverDataUrl(tgShareTask); }
                 catch (error) { tgShareStatus.textContent = error.message; }

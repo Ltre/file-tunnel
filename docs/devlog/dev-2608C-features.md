@@ -338,3 +338,122 @@ Description：
 - 修复旧缓存 Track/Disc 已齐时跳过专辑作者富化的问题，补全指定 YT Music 歌曲的专辑作者
 - 增加内嵌封面、共享封面状态及缓存专辑作者回填的回归测试
 ```
+
+---
+
+## 八、服务器 Shell 推送、专辑核验提速与 Telegram 内嵌封面（2026-08-25）
+
+### 8.1 任务边界与现状核对
+
+本轮在 `dev/2608C-step1` 上继续修改，不提交、不暂存，并保留用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 工作区修改。需求分为四条独立链路：
+
+1. 从服务器 Shell 指定本地文件/合辑、备注、隧道短码或长 ID，推送给该隧道的 VClient 缓存节点；
+2. 修复 `XnWxihjgR-E` 的专辑作者、Track 序号，并解释 HEAD 相比旧版的额外耗时；
+3. Telegram 图文封面增加“使用缓存歌曲文件的元数据之封面”；
+4. `sendAudio.thumbnail` 必须来自缓存歌曲文件本身的内嵌封面，并满足 Bot API 缩略图约束。
+
+### 8.2 HEAD 抓取变慢和序号错误的根因
+
+对比 `0c57a525994cdf501f3de99ef36646d5d6cee658` 与旧线上版本 `db7d6f8d1aed604d57b8f56e32d9bd2253abbf6f`，并逐段核对附件中的两次服务端日志后，确认不是基础音频格式选择整体退化，而是后加的专辑作者修复与旧序号兜底产生了叠加回归：
+
+- HEAD 在新鲜解析中先调用 `enrichYoutubeMusicOrdinalMetadata`；当专辑搜索超时、`album_artist` 仍为空时，又立即调用缓存修复函数，重复同一轮专辑搜索。
+- 附件日志中每轮专辑搜索都耗尽 45 秒，两轮合计额外等待约 90 秒；这正是 HEAD 明显慢于旧版的主要增量。旧版只做第一轮，因此即使同样存在 45 秒超时和错误兜底，表面耗时也较短。
+- 旧逻辑在没有原生值、也没有匹配到专辑时强行写 `Track=1`、`Disc=1`。这不是抓到了正确序号，而是用一个看起来合法的值掩盖失败。
+- 更严重的是，这些 `1` 已经进入旧缓存。后续即使专辑遍历找到了真正的第 3 首，`currentTrack || derivedTrack` 仍会让旧 `1` 压住新结果。
+
+修复策略：
+
+- 新鲜解析只执行一次专辑核验，并写入 `musicAlbumLookupCompleted` 标记；同一分析对象不再进入第二轮缓存修复。
+- 专辑搜索使用“专辑名 + 单曲结构化艺术家”缩小候选集。单曲艺术家只参与检索，不直接当作专辑作者证据；最终专辑作者仍必须来自匹配专辑条目的 Topic 频道，避免把群星合辑误写成某一首歌的艺术家。
+- 专辑核验共享一个总时限，默认 12 秒、最大 15 秒，可用 `YOUTUBE_MUSIC_ALBUM_LOOKUP_TIMEOUT_MS` 调整；搜索和最多 3 个候选遍历共同消耗这一个预算，不再每个子请求各等 45 秒。
+- 老缓存没有核验标记时，历史 `Track=1`、`Disc=1` 被视为旧版占位值并重新验证。能匹配专辑则写真实 Track；不能验证则清空，不继续保留伪造的 `1`。
+- Disc 只接受原生正整数；无法取得时按需求留空。
+
+### 8.3 指定歌曲的真实验证
+
+本轮再次使用当前 yt-dlp 对指定歌曲关联专辑做联网验证：
+
+```text
+搜索：https://music.youtube.com/search?q=サマー・イン・ブルー Yuri Kunizane#albums
+搜索耗时：约 2.1 秒
+命中 browse ID：MPREb_Vo6hJMDSJ0T
+展开专辑耗时：约 3.4 秒
+专辑播放列表：OLAK5uy_n2VlxbpMqN9Jm-2up1Oig_cNzSjJf81ew
+XnWxihjgR-E 的位置：第 3 首
+专辑条目 Topic 频道：Yuri Kunizane - Topic
+```
+
+因此当前证据链会得到：`Track=3`、`album_artist=Yuri Kunizane`、`Disc` 留空。实测搜索加展开约 5.5 秒，位于新的 12 秒总预算内；如果线上网络异常，最坏情况也会在总预算到期后留下空值，而不是再阻塞第二个 45 秒或伪造序号。
+
+### 8.4 服务器 Shell 到 VClient 的推送接口
+
+新增 `npm run vclient:push`，用法包括：
+
+```text
+npm run vclient:push -- --tunnel <5位短码或长ID> --file <文件> --remark <备注>
+npm run vclient:push -- --tunnel <短码或长ID> --file <文件1> --file <文件2> --name <合辑名>
+npm run vclient:push -- --tunnel <短码或长ID> --collection <目录> --name <合辑名>
+```
+
+设计要点：
+
+- `--collection` 读取目录直属普通文件；重复 `--file` 也生成合辑记录。单文件最大 1GB，单合辑最多 500 个文件，与现有文件资产协议上限一致。
+- 命令使用 `.tunnel-data/vclient-control.token`（或 `VCLIENT_TOKEN` / `VCLIENT_TOKEN_FILE` / `--token-file`）鉴权，以临时的 `server-shell` 内部客户端加入隧道。
+- 服务端只允许通过控制令牌认证的 `server-shell` 获得发送权限；目标隧道必须已经存在且已启用缓存节点，避免长 ID 输入错误时意外创建隧道。
+- 先登记文件资产，再写普通文件/合辑传输记录；VClient 看到记录后沿用既有 Socket.IO relay 请求文件。
+- Shell 按 240KB 分块发送，输出每个文件的进度。只有 `file-asset-relay-complete` 已得到 VClient 的完整性校验和落盘确认，命令才报告成功并退出。
+- 多个隧道仍由既有独立 VClient 进程复用；本接口不会在主服务内创建第二套缓存实现。
+
+README 已补充操作示例与令牌、服务器地址、超时参数说明。
+
+### 8.5 Telegram 内嵌封面
+
+Base、Pro、Ultimate 三个图文封面下拉框均新增独立选项“使用缓存歌曲文件的元数据之封面”。该选项调用既有只读 `song-cover` 接口取得当前 M4A attached picture；“使用自定义封面”只读取显式上传槽，不再把内嵌封面冒充成自定义上传。
+
+`sendAudio.thumbnail` 不受三个图文封面下拉框影响，服务端每次发送前直接从该任务的缓存歌曲成品提取 attached picture，再生成 JPEG thumbnail。根据 Telegram Bot API 当前约束，ffmpeg 使用保持比例的最大 `320x320` 缩放，并逐级降低 JPEG 质量直到严格小于 `200000` 字节；生成后及异常时都清理临时图片。
+
+这保证：
+
+- 图文记录仍可分别选择方形、内嵌、原尺寸、自定义封面；
+- 音频消息的 `thumbnail` 始终忠实反映缓存歌曲文件当前元数据中的封面；
+- 修改歌曲内嵌封面后，无需同步覆盖任务的方形封面，下一次 Telegram 音频发送会自动使用新内嵌图。
+
+### 8.6 测试记录
+
+已完成：
+
+```text
+node --check server.js
+node --check server/youtube-premium.js
+node --check scripts/vclient-push.js
+node --test tests/youtube-premium.test.cjs tests/youtube-album-artist-regression.test.cjs tests/telegram-cover-regression.test.cjs tests/vclient-shell-push.test.cjs
+```
+
+专题测试 33 项通过。Shell 测试包含真实本地 Socket.IO 协议烟雾测试：创建临时文件、解析短码、加入模拟 VClient 隧道、写入消息、分块中继，并在接收端完成确认后退出；测试临时目录已清理。
+
+全量回归：
+
+```text
+node --test tests/*.test.cjs
+```
+
+结果：107/107 通过，0 失败、0 跳过。首次全量执行发现旧的 `features-2608B` 契约仍断言“失败时强写 Track=1”；已将该断言更新为新的“无法验证则留空”诊断语义，再次执行后全绿。
+
+还执行了目标文件范围的 `git diff --check`，没有新增空白错误。用户原有 `prompts/dev-prompt-logs/dev-2608B.md` 修改本身含历史尾随空格，本轮未触碰、未格式化该文件。
+
+### 8.7 本轮建议提交日志
+
+Title：
+
+```text
+feat: 增加 VClient Shell 推送并修复歌曲专辑核验
+```
+
+Description：
+
+```text
+- 新增服务器 Shell 单文件/合辑推送命令，通过受控文件中继等待 VClient 确认缓存落盘
+- 合并并限时执行 YouTube Music 专辑核验，修复重复搜索、旧 Track/Disc 占位值及专辑作者空缺
+- Telegram 图文增加歌曲内嵌封面选项，sendAudio 缩略图改为读取缓存歌曲元数据封面
+- 补充 Shell 协议、专辑证据、封面来源与 Telegram 尺寸约束回归测试
+```

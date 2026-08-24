@@ -1871,7 +1871,7 @@ async function runSongShareJob(job, params) {
                 ], { timeoutMs: 60000, timeoutError: 'telegram-audio-thumbnail-timeout' });
                 const thumbnailSize = fs.statSync(outputPath).size;
                 logSongShare(job, 'Telegram 音频 thumbnail 已生成', { quality, size: formatSongShareBytes(thumbnailSize) });
-                if (thumbnailSize < 200 * 1024) {
+                if (thumbnailSize < 200000) {
                     return {
                         path: outputPath,
                         cleanup: () => { try { fs.rmSync(outputPath, { force: true }); } catch (_) {} }
@@ -1954,7 +1954,8 @@ async function runSongShareJob(job, params) {
         const fileName = fileResult.name || 'song.m4a';
         const audioStat = await fs.promises.stat(fileResult.path);
 
-        // Also try to get the cover image path
+        // The square task cover remains the default for sendPhoto. The sendAudio thumbnail
+        // is deliberately derived from the completed song file's embedded metadata cover.
         const coverFileResult = youtubePremiumService.getFile(job.taskId, 'cover');
         const defaultCoverPath = coverFileResult?.path || '';
         logSongShare(job, '已确认待发送文件', {
@@ -1968,7 +1969,17 @@ async function runSongShareJob(job, params) {
 
         // Step 2: Send song file to Base channel
         setSongShareStep(job, 'base-audio', { status: 'running', detail: '正在生成 Telegram 音频封面并上传音频（可能较慢）…' });
-        const telegramAudioThumbnail = await prepareTelegramAudioThumbnail(defaultCoverPath);
+        let embeddedAudioCover;
+        let telegramAudioThumbnail;
+        try {
+            embeddedAudioCover = await extractYoutubePremiumSongCover(job.taskId);
+            logSongShare(job, '已从缓存歌曲文件的元数据读取 sendAudio thumbnail 来源', {
+                source: path.basename(embeddedAudioCover.path)
+            });
+            telegramAudioThumbnail = await prepareTelegramAudioThumbnail(embeddedAudioCover.path);
+        } finally {
+            embeddedAudioCover?.cleanup?.();
+        }
         let baseAudioMsg;
         try {
             baseAudioMsg = await sendAudioFile(baseChat, fileResult.path, fileName, '', {
@@ -2740,7 +2751,9 @@ function canManageTunnel(session, deviceId) {
 
 function canUseTunnelCapability(session, deviceId, capability) {
     if (!session || !deviceId) return false;
-    if (session.devices?.get(deviceId)?.clientType === 'vclient') return capability === 'read';
+    const clientType = session.devices?.get(deviceId)?.clientType;
+    if (clientType === 'vclient') return capability === 'read';
+    if (clientType === 'server-shell') return true;
     if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
     const adminRecord = getTunnelAdminRecord(session, deviceId);
     if (adminRecord) return adminRecord.permissions?.[capability] !== false;
@@ -3594,30 +3607,43 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
     const album = String(meta.album || '').trim();
     if (!album || !meta.id) return { trackNumber: '', albumArtist: '' };
     const albumArtist = resolveYoutubeAlbumArtist(meta);
-    const query = [album, albumArtist === '群星' ? '' : albumArtist].filter(Boolean).join(' ');
+    // A track artist is useful for narrowing the album search, but is not itself proof of
+    // the album artist (compilations must still be decided from the matched album entries).
+    const searchArtist = albumArtist === '群星' ? '' : (albumArtist || getStructuredArtistValue(meta));
+    const query = [album, searchArtist].filter(Boolean).join(' ');
     const searchUrl = `https://music.youtube.com/search?q=${encodeURIComponent(query)}#albums`;
+    const configuredBudget = Number(
+        options.albumLookupTimeoutMs ?? process.env.YOUTUBE_MUSIC_ALBUM_LOOKUP_TIMEOUT_MS ?? options.timeoutMs
+    );
+    const budgetMs = Math.max(3000, Math.min(Number.isFinite(configuredBudget) && configuredBudget > 0
+        ? configuredBudget
+        : 12000, 15000));
+    const deadline = Number(options.albumLookupDeadline) || (Date.now() + budgetMs);
+    const remainingTime = () => Math.max(0, deadline - Date.now());
     let searchMeta;
     try {
+        if (remainingTime() < 1000) return { trackNumber: '', albumArtist: '' };
         searchMeta = await runYtDlpJson(searchUrl, {
             noPlaylist: false,
             flatPlaylist: true,
             cookiePath: options.cookiePath,
             allowIgnoreNoFormatsFallback: false,
             signal: options.signal,
-            timeoutMs: Math.min(Number(options.timeoutMs) || 45000, 60000),
+            timeoutMs: remainingTime(),
             operation: 'youtube-music-album-search'
         });
     } catch (error) {
         recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-album-search', {
             level: 'warn', endpoint: searchUrl, error,
-            hint: 'Track number fallback could not search YouTube Music albums; the song remains usable and Track will fall back to 1.'
+            hint: 'The bounded YouTube Music album lookup did not finish; Track/Disc remain empty instead of being guessed.'
         });
         return { trackNumber: '', albumArtist: '' };
     }
 
-    const candidates = rankYoutubeMusicAlbumCandidates(meta, searchMeta?.entries).slice(0, 8);
+    const candidates = rankYoutubeMusicAlbumCandidates(meta, searchMeta?.entries).slice(0, 3);
     const visited = new Set();
     for (const candidate of candidates) {
+        if (remainingTime() < 1000) break;
         const candidateUrl = getYoutubeMusicAlbumCandidateUrl(candidate);
         if (!candidateUrl || visited.has(candidateUrl)) continue;
         visited.add(candidateUrl);
@@ -3628,7 +3654,7 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
                 cookiePath: options.cookiePath,
                 allowIgnoreNoFormatsFallback: false,
                 signal: options.signal,
-                timeoutMs: Math.min(Number(options.timeoutMs) || 45000, 60000),
+                timeoutMs: remainingTime(),
                 operation: 'youtube-music-album-traverse'
             });
             const trackNumber = findYoutubeMusicTrackPosition(meta, albumMeta?.entries);
@@ -3657,6 +3683,13 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
 async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', options = {}) {
     let ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl);
     let albumArtist = resolveYoutubeAlbumArtist(meta);
+    const configuredBudget = Number(
+        options.albumLookupTimeoutMs ?? process.env.YOUTUBE_MUSIC_ALBUM_LOOKUP_TIMEOUT_MS ?? options.timeoutMs
+    );
+    const lookupBudgetMs = Math.max(3000, Math.min(Number.isFinite(configuredBudget) && configuredBudget > 0
+        ? configuredBudget
+        : 12000, 15000));
+    const lookupDeadline = Date.now() + lookupBudgetMs;
     if ((!ordinal.trackNumber || !albumArtist) && ordinal.albumPlaylistId && meta.id) {
         try {
             const playlistUrl = `https://www.youtube.com/playlist?list=${encodeURIComponent(ordinal.albumPlaylistId)}`;
@@ -3666,6 +3699,7 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
                 cookiePath: options.cookiePath,
                 allowIgnoreNoFormatsFallback: false,
                 signal: options.signal,
+                timeoutMs: Math.max(1000, lookupDeadline - Date.now()),
                 operation: 'youtube-music-known-album-traverse'
             });
             const matchedTrackNumber = findYoutubeMusicTrackPosition(meta, playlistMeta?.entries);
@@ -3683,24 +3717,29 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
             });
         }
     }
-    if ((!ordinal.trackNumber || !albumArtist) && meta.album && meta.id) {
-        const searched = await findYoutubeMusicTrackNumberByAlbumSearch(meta, sourceUrl, options);
+    if ((!ordinal.trackNumber || !albumArtist) && meta.album && meta.id && lookupDeadline - Date.now() >= 1000) {
+        const searched = await findYoutubeMusicTrackNumberByAlbumSearch(meta, sourceUrl, {
+            ...options,
+            albumLookupDeadline: lookupDeadline,
+            albumLookupTimeoutMs: lookupBudgetMs
+        });
         if (searched.trackNumber) ordinal = { ...ordinal, trackNumber: ordinal.trackNumber || searched.trackNumber };
         albumArtist ||= searched.albumArtist;
     }
     const trackNumber = finalizeYoutubeMusicTrackNumber(meta, ordinal.trackNumber);
     if (!meta.track_number && !ordinal.trackNumber) {
-        recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-track-number-defaulted', {
+        recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-track-number-unresolved', {
             level: 'warn', endpoint: sourceUrl,
-            message: 'No native or album-derived Track number was available; Track=1 was applied.',
-            details: { videoId: String(meta.id || ''), album: String(meta.album || ''), fallbackTrackNumber: '1' }
+            message: 'No native or album-verified Track number was available; Track remains empty.',
+            details: { videoId: String(meta.id || ''), album: String(meta.album || '') }
         });
     }
     return {
         ...meta,
         album_artist: albumArtist,
         track_number: trackNumber,
-        disc_number: meta.disc_number || ordinal.discNumber || '1'
+        disc_number: meta.disc_number || ordinal.discNumber || '',
+        youtube_music_album_lookup_completed: true
     };
 }
 
@@ -3782,6 +3821,7 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
         sourceLanguageVersionAttempted: Boolean(sourceLanguageMeta),
         sourceLanguageVersionResolved: Boolean(sourceLanguageMeta),
         sourceLanguageCheckCompleted: false,
+        musicAlbumLookupCompleted: meta.youtube_music_album_lookup_completed === true,
         ...getYoutubeSourceLanguageFields(sourceLanguageMeta || meta)
     };
 }
@@ -3843,7 +3883,7 @@ function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
         composer: sanitizeString(getYoutubeComposerValue(meta), 240),
         genre: sanitizeString(getYoutubeGenreValue(meta), 240),
         track: sanitizeString(meta.track_number || '', 40),
-        disc: sanitizeString(meta.disc_number || '1', 40),
+        disc: sanitizeString(meta.disc_number || '', 40),
         date: reference.albumYear || reference.songYear || reference.uploadYear,
         comment: sanitizeString(comment, 4000),
         lyrics: sanitizeString(meta.lyrics || '', 12000)
@@ -5754,30 +5794,37 @@ async function downloadYoutubePremiumOriginalThumbnail(taskId) {
 
 async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
     if (!analysis || analysis.mediaType !== 'song' || !analysis.songMetadata) return analysis;
-    const currentTrack = String(analysis.songMetadata.track || '').trim();
-    const currentDisc = String(analysis.songMetadata.disc || '').trim();
+    const currentTrack = String(analysis.songMetadata.track || analysis.referenceInfo?.trackNumber || '').trim();
+    const currentDisc = String(analysis.songMetadata.disc || analysis.referenceInfo?.discNumber || '').trim();
     const currentAlbumArtist = String(analysis.songMetadata.album_artist || '').trim();
-    if (currentTrack && currentDisc && currentAlbumArtist) return analysis;
+    if (analysis.referenceInfo?.musicAlbumLookupCompleted === true) return analysis;
+    // Analyses written before the lookup marker existed used "1" as a generic fallback for
+    // both ordinals. Treat those two legacy values as unverified and let album evidence
+    // replace (or clear) them; otherwise an old fake Track=1 permanently defeats Track=3.
+    const trustedCurrentTrack = currentTrack === '1' ? '' : currentTrack;
+    const trustedCurrentDisc = currentDisc === '1' ? '' : currentDisc;
     const enriched = await enrichYoutubeMusicOrdinalMetadata({
         id: analysis.youtubeVideoId || '',
         album: analysis.songMetadata.album || analysis.referenceInfo?.album || '',
         album_artist: currentAlbumArtist || analysis.referenceInfo?.albumArtist || '',
         artist: analysis.songMetadata.artist || '',
-        track_number: currentTrack,
-        disc_number: currentDisc,
+        track: analysis.songMetadata.title || analysis.referenceInfo?.track || '',
+        track_number: trustedCurrentTrack,
+        disc_number: trustedCurrentDisc,
         playlist_id: analysis.referenceInfo?.playlistId || ''
     }, analysis.url, options);
-    const nextTrack = currentTrack || String(enriched.track_number || '');
-    const nextDisc = currentDisc || String(enriched.disc_number || '1');
+    const nextTrack = trustedCurrentTrack || String(enriched.track_number || '');
+    const nextDisc = trustedCurrentDisc || String(enriched.disc_number || '');
     const nextAlbumArtist = currentAlbumArtist || String(enriched.album_artist || '');
     return {
         ...analysis,
         songMetadata: { ...analysis.songMetadata, track: nextTrack, disc: nextDisc, album_artist: nextAlbumArtist },
         referenceInfo: analysis.referenceInfo ? {
             ...analysis.referenceInfo,
-            trackNumber: analysis.referenceInfo.trackNumber || nextTrack,
-            discNumber: analysis.referenceInfo.discNumber || nextDisc,
-            albumArtist: analysis.referenceInfo.albumArtist || nextAlbumArtist
+            trackNumber: trustedCurrentTrack || nextTrack,
+            discNumber: trustedCurrentDisc || nextDisc,
+            albumArtist: analysis.referenceInfo.albumArtist || nextAlbumArtist,
+            musicAlbumLookupCompleted: true
         } : analysis.referenceInfo
     };
 }
@@ -5948,7 +5995,10 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         selection,
         formats: options.includeFormats ? formats : []
     };
-    const enrichedAnalysis = await enrichYoutubePremiumAnalysisOrdinals(analysis, { cookiePath, signal: options.signal });
+    // Fresh song analysis has already completed one bounded album lookup above. Calling the
+    // cached-analysis repair helper here used to repeat the same lookup when album_artist was
+    // still empty, adding up to another full timeout to every affected request.
+    const enrichedAnalysis = analysis;
     report('YouTube Premium 解析结果已组装', {
         title: enrichedAnalysis.title,
         youtubeVideoId: enrichedAnalysis.youtubeVideoId,
@@ -7112,7 +7162,7 @@ function getSessionDeviceList(session, excludeDeviceId = '') {
             localIp: d.localIp,
             internalIp: d.localIp,
             externalIp: d.externalIp,
-            clientType: d.clientType === 'vclient' ? 'vclient' : 'browser'
+            clientType: ['vclient', 'server-shell'].includes(d.clientType) ? d.clientType : 'browser'
         });
     });
     return deviceList;
@@ -7173,8 +7223,12 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
-    const trustedVClient = Boolean(vclientControl?.isDataSocketAuthenticated(socket));
+    const trustedInternalClient = Boolean(vclientControl?.isDataSocketAuthenticated(socket));
+    const requestedInternalType = String(socket.handshake.auth?.clientType || '');
+    const trustedVClient = trustedInternalClient && requestedInternalType === 'vclient';
+    const trustedServerShell = trustedInternalClient && requestedInternalType === 'server-shell';
     socket.data.isVClient = trustedVClient;
+    socket.data.isServerShell = trustedServerShell;
     let socketLanguage = normalizeLanguageCode(
         socket.handshake.auth?.language || socket.handshake.headers['accept-language'] || 'zh-Hans'
     );
@@ -7216,7 +7270,7 @@ io.on('connection', (socket) => {
     }
     const ipSockets = ipConnections.get(clientIp);
     
-    if (!trustedVClient && ipSockets.size >= 20) { // 普通客户端每个IP最多20个连接；可信缓存节点可管理多个隧道
+    if (!trustedInternalClient && ipSockets.size >= 20) { // 普通客户端每个IP最多20个连接；可信内部客户端不受此限制
         console.warn(`IP ${clientIp} exceeded connection limit`);
         emitSocketError('error', '连接数超限');
         socket.disconnect();
@@ -7446,7 +7500,9 @@ io.on('connection', (socket) => {
             }
             
             const { sessionId, deviceId, deviceName } = data;
-            const clientType = trustedVClient && data.clientType === 'vclient' ? 'vclient' : 'browser';
+            const clientType = trustedVClient && data.clientType === 'vclient'
+                ? 'vclient'
+                : (trustedServerShell && data.clientType === 'server-shell' ? 'server-shell' : 'browser');
             const requestedShortCode = normalizeShortCode(data.shortCode);
             
             // 验证 sessionId
@@ -7455,6 +7511,12 @@ io.on('connection', (socket) => {
             }
             if (clientType === 'vclient' && !vclientControl?.isTunnelEnabled(sessionId)) {
                 return emitSocketError('error', '缓存节点未获准加入该隧道', { code: 'VCLIENT_TUNNEL_NOT_ENABLED' });
+            }
+            if (clientType === 'server-shell' &&
+                (!infraStore?.getTunnel(sessionId) || !vclientControl?.isTunnelEnabled(sessionId))) {
+                return emitSocketError('error', '目标隧道不存在或尚未启用缓存节点', {
+                    code: 'SERVER_SHELL_VCLIENT_TUNNEL_NOT_READY'
+                });
             }
             
             // 验证 deviceId

@@ -127,17 +127,17 @@ test('YouTube Music song ordinals prefer native track/disc and can derive album 
 
     assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-b' },
         'https://music.youtube.com/watch?v=song-b&list=OLAK5uy_album&index=4'), {
-        trackNumber: '4', discNumber: '1', albumPlaylistId: 'OLAK5uy_album'
+        trackNumber: '4', discNumber: '', albumPlaylistId: 'OLAK5uy_album'
     });
 
     assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-c', playlist_id: 'OLAK5uy_album' },
         'https://music.youtube.com/watch?v=song-c', [{ id: 'song-a' }, { id: 'song-b' }, { id: 'song-c' }]), {
-        trackNumber: '3', discNumber: '1', albumPlaylistId: 'OLAK5uy_album'
+        trackNumber: '3', discNumber: '', albumPlaylistId: 'OLAK5uy_album'
     });
 
     assert.deepEqual(resolveYoutubeMusicOrdinalMetadata({ id: 'song-d' },
         'https://www.youtube.com/watch?v=song-d&list=PL_user_playlist&index=9'), {
-        trackNumber: '', discNumber: '1', albumPlaylistId: ''
+        trackNumber: '', discNumber: '', albumPlaylistId: ''
     });
 });
 
@@ -153,10 +153,10 @@ test('YouTube Music album traversal locates the true song position by video id b
     assert.equal(findYoutubeMusicTrackPosition({ title: 'Finale' }, entries), '4');
 });
 
-test('YouTube Music Track number falls back to 1 only after native and album-derived values are absent', () => {
+test('YouTube Music Track number stays empty when neither native nor album-derived evidence exists', () => {
     assert.equal(finalizeYoutubeMusicTrackNumber({ track_number: 8 }, '3'), '8');
     assert.equal(finalizeYoutubeMusicTrackNumber({}, '3'), '3');
-    assert.equal(finalizeYoutubeMusicTrackNumber({}, ''), '1');
+    assert.equal(finalizeYoutubeMusicTrackNumber({}, ''), '');
 });
 
 test('real-world YouTube Music album fixture can recover 鹿港小鎮 as Track 1 from album order', () => {

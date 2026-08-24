@@ -17,6 +17,9 @@ test('Telegram share original-size cover resolves to real image data and custom 
 });
 
 test('Telegram share cover choices remain independent for Base Pro and Ultimate', () => {
+    assert.equal((page.match(/value="embedded">使用缓存歌曲文件的元数据之封面/g) || []).length, 3);
+    assert.match(page, /async function getTelegramEmbeddedCoverDataUrl\(task\)/);
+    assert.match(page, /if \(select\.value === 'embedded'\) return getTelegramEmbeddedCoverDataUrl\(tgShareTask\)/);
     assert.match(page, /const coverBase = await resolveTelegramShareCover\(tgCoverBaseSelect\)/);
     assert.match(page, /const coverPro = sendPro \? await resolveTelegramShareCover\(tgCoverProSelect\) : '';/);
     assert.match(page, /const coverUltimate = sendUltimate && ultimateMode === 'formal'[\s\S]*\? await resolveTelegramShareCover\(tgCoverUltimateSelect\)[\s\S]*: '';/);
@@ -63,10 +66,13 @@ test('Ultimate trial Telegram message disables link preview', () => {
 test('Telegram Base audio uploads an explicit Bot API thumbnail', () => {
     assert.match(server, /async function prepareTelegramAudioThumbnail\(sourcePath\)/);
     assert.match(server, /scale=320:320:force_original_aspect_ratio=decrease/);
-    assert.match(server, /thumbnailSize < 200 \* 1024/);
+    assert.match(server, /thumbnailSize < 200000/);
     const multipart = fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-multipart.js'), 'utf8');
     assert.match(multipart, /fieldName: 'thumbnail', fileName: 'thumbnail\.jpg'/);
     assert.match(multipart, /Readable\.from\(generate\(\)\)/);
     assert.match(server, /sendAudioFile\(baseChat, fileResult\.path, fileName, '', \{/);
     assert.match(server, /thumbnailPath: telegramAudioThumbnail\?\.path \|\| ''/);
+    assert.match(server, /embeddedAudioCover = await extractYoutubePremiumSongCover\(job\.taskId\)/);
+    assert.match(server, /prepareTelegramAudioThumbnail\(embeddedAudioCover\.path\)/);
+    assert.doesNotMatch(server, /prepareTelegramAudioThumbnail\(defaultCoverPath\)/);
 });

@@ -67,7 +67,7 @@ function resolveYoutubeAlbumArtistFromEntries(entries = []) {
 }
 
 function finalizeYoutubeMusicTrackNumber(meta = {}, derivedTrackNumber = '') {
-    return normalizePositiveOrdinal(meta.track_number) || normalizePositiveOrdinal(derivedTrackNumber) || '1';
+    return normalizePositiveOrdinal(meta.track_number) || normalizePositiveOrdinal(derivedTrackNumber);
 }
 
 function findYoutubeMusicTrackPosition(meta = {}, playlistEntries = []) {
@@ -141,7 +141,7 @@ function resolveYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', playlistE
     }
     return {
         trackNumber,
-        discNumber: normalizePositiveOrdinal(meta.disc_number) || '1',
+        discNumber: normalizePositiveOrdinal(meta.disc_number),
         albumPlaylistId
     };
 }

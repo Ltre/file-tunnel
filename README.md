@@ -461,6 +461,23 @@ server {
 
 修改 Service Worker 应用壳资源后，也要同步更新 `CACHE_NAME`，避免旧 PWA 长期使用缓存版本。
 
+## 从服务器 Shell 推送到缓存节点
+
+目标隧道已经在管理后台启用缓存节点、且独立 VClient 进程在线时，可以把服务器本地文件直接写入该隧道的传输记录并等待 VClient 确认落盘：
+
+```bash
+# 单文件；--tunnel 同时接受 5 位短码和隧道长 ID
+npm run vclient:push -- --tunnel A1B2C --file /srv/media/song.m4a --remark "管理员推送"
+
+# 重复 --file 会创建一条合辑记录
+npm run vclient:push -- --tunnel A1B2C --file /srv/media/01.m4a --file /srv/media/02.m4a --name "示例合辑"
+
+# 目录合辑只读取目录直属普通文件
+npm run vclient:push -- --tunnel A1B2C --collection /srv/media/album --name "示例合辑"
+```
+
+命令默认读取 `.tunnel-data/vclient-control.token`，也可通过 `VCLIENT_TOKEN`、`VCLIENT_TOKEN_FILE` 或 `--token-file` 指定；`--server` 可指定主服务地址，`--timeout` 可调整等待缓存完成的秒数。命令使用现有 Socket.IO 文件中继协议，只有 VClient 确认文件完整落盘后才以成功状态退出。
+
 ## 管理后台
 
 打开：
