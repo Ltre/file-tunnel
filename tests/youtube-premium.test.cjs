@@ -506,6 +506,7 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.doesNotMatch(songCoverServerCode, /setCoverPath/);
     assert.match(server, /app\.get\('\/api\/youtube-premium\/tasks\/:taskId\/song-cover'/);
     assert.match(server, /async function extractYoutubePremiumSongCover/);
+    assert.match(server, /res\.sendFile\(cover\.path, \{ dotfiles: 'allow' \}/);
     assert.match(server, /Number\(stream\.disposition\?\.attached_pic\) === 1/);
     assert.match(server, /'-map', `0:\$\{coverStream\.index\}`/);
     assert.match(server, /'youtube-premium-song-cover-invalid': '歌曲封面无效/);

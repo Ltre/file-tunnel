@@ -1238,7 +1238,10 @@ app.get('/api/youtube-premium/tasks/:taskId/song-cover', adminAuth.requireAuth, 
     try {
         cover = await extractYoutubePremiumSongCover(req.params.taskId);
         res.type('image/jpeg');
-        res.sendFile(cover.path, error => {
+        // The extracted cover is intentionally a dot-prefixed temporary file.
+        // Express sendFile rejects dotfiles by default, which made a valid cover
+        // look like a missing route/file (HTTP 404) in the metadata editor.
+        res.sendFile(cover.path, { dotfiles: 'allow' }, error => {
             cover.cleanup();
             if (error && !res.headersSent) res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
         });
