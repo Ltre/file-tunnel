@@ -139,6 +139,7 @@ const EDITOR_ASSET_CHUNK_SIZE = 64 * 1024;
 const EDITOR_ASSET_BUFFER_LIMIT = 512 * 1024;
 const EDITOR_ASSET_P2P_TIMEOUT = 1500;
 const EDITOR_ASSET_P2P_COOLDOWN = 5 * 60 * 1000;
+const EDITOR_ASSET_RELAY_IDLE_TIMEOUT = 45000;
 const editorAssetUrls = new Map();
 const editorAssetRequests = new Map();
 const editorAssetTransfers = new Map();
@@ -2178,6 +2179,9 @@ async function createPeerConnection(deviceId) {
 }
 
 async function connectToPeer(deviceId) {
+    if (state.devices.get(deviceId)?.clientType === 'vclient') {
+        throw new Error('Cache nodes use Socket.IO relay instead of WebRTC');
+    }
     console.log('Connecting to peer:', deviceId);
     
     // 检查是否已有连接
@@ -2241,6 +2245,9 @@ function shouldInitiatePeerConnection(deviceId) {
 }
 
 async function connectToPeerForFileAsset(deviceId) {
+    if (state.devices.get(deviceId)?.clientType === 'vclient') {
+        throw new Error('Cache node requires Socket.IO relay');
+    }
     let pc = state.peers.get(deviceId);
     console.info('[file-asset-route]', {
         phase: 'app-connect-peer-for-file-asset-start',
@@ -2804,7 +2811,7 @@ function setupEditorAssetDataChannel(deviceId, assetId, channel) {
     channel.onmessage = event => {
         handleEditorAssetDataChannelMessage(deviceId, assetId, event.data, channel).catch(err => {
             console.error('Editor asset channel message failed:', err);
-            editorAssetTransfers.delete(assetId);
+            clearEditorAssetTransfer(assetId);
             historyLog('editor-asset-receive-failed', { assetId, peerDeviceId: deviceId, error: err.message });
             channel.close();
         });
@@ -2899,6 +2906,26 @@ async function handleEditorAssetRequest(data) {
         return;
     }
 
+    if (data.transportHint === 'relay-only') {
+        try {
+            await sendEditorAssetViaSocketRelay(from, storedAsset);
+        } catch (relayError) {
+            historyLog('editor-asset-send-failed', {
+                assetId: asset.id,
+                peerDeviceId: from,
+                transport: 'socket-relay',
+                error: relayError.message
+            });
+            state.socket.emit('editor-asset-unavailable', {
+                sessionId: state.sessionId,
+                assetId: asset.id,
+                to: from,
+                reason: 'asset-transfer-failed'
+            });
+        }
+        return;
+    }
+
     try {
         const unavailableUntil = editorAssetP2PUnavailablePeers.get(from);
         if (unavailableUntil && unavailableUntil > Date.now()) {
@@ -2945,16 +2972,41 @@ function beginEditorAssetTransfer(assetId, asset, deviceId, transport) {
         throw new Error('Invalid editor asset metadata');
     }
 
-    editorAssetTransfers.set(assetId, {
+    const transfer = {
         asset,
         chunks: [],
         receivedSize: 0,
         from: deviceId,
         transport,
-        pendingChunks: Promise.resolve()
-    });
+        pendingChunks: Promise.resolve(),
+        idleTimer: null
+    };
+    editorAssetTransfers.set(assetId, transfer);
+    armEditorAssetTransferIdle(assetId, transfer);
     setEditorAssetStatus(assetId, `正在获取图片（${getEditorAssetTransportLabel(transport)}，0%）`, 'transferring');
     historyLog('editor-asset-receiving', { asset, peerDeviceId: deviceId, transport });
+}
+
+function clearEditorAssetTransfer(assetId) {
+    const transfer = editorAssetTransfers.get(assetId);
+    if (transfer?.idleTimer) clearTimeout(transfer.idleTimer);
+    editorAssetTransfers.delete(assetId);
+}
+
+function armEditorAssetTransferIdle(assetId, transfer) {
+    if (!transfer || editorAssetTransfers.get(assetId) !== transfer) return;
+    if (transfer.idleTimer) clearTimeout(transfer.idleTimer);
+    transfer.idleTimer = setTimeout(() => {
+        if (editorAssetTransfers.get(assetId) !== transfer) return;
+        clearEditorAssetTransfer(assetId);
+        editorAssetRequests.delete(assetId);
+        setEditorAssetUnavailable(assetId, 'relay-idle-timeout');
+        historyLog('editor-asset-relay-timeout', {
+            assetId,
+            peerDeviceId: transfer.from,
+            receivedSize: transfer.receivedSize
+        });
+    }, EDITOR_ASSET_RELAY_IDLE_TIMEOUT);
 }
 
 async function appendEditorAssetChunk(assetId, data) {
@@ -2971,8 +3023,9 @@ async function appendEditorAssetChunk(assetId, data) {
 
     transfer.chunks.push(chunk);
     transfer.receivedSize += chunk.byteLength;
+    armEditorAssetTransferIdle(assetId, transfer);
     if (transfer.receivedSize > transfer.asset.size) {
-        editorAssetTransfers.delete(assetId);
+        clearEditorAssetTransfer(assetId);
         throw new Error('Editor asset exceeded advertised size');
     }
 
@@ -3028,7 +3081,7 @@ async function completeEditorAssetTransfer(assetId, deviceId, transport) {
         sessionId: cachedAsset.sessionId
     });
     editorAssetCacheVersions.set(assetId, (editorAssetCacheVersions.get(assetId) || 0) + 1);
-    editorAssetTransfers.delete(assetId);
+    clearEditorAssetTransfer(assetId);
     editorAssetRequests.delete(assetId);
     editorAssetRetryCounts.delete(assetId);
     announceEditorAsset(storedAsset);
@@ -3093,7 +3146,7 @@ function handleEditorAssetRelayChunk(data) {
     const { assetId, chunk } = data || {};
     if (!assetId || !chunk) return;
     queueEditorAssetChunk(assetId, chunk).catch(err => {
-        editorAssetTransfers.delete(assetId);
+        clearEditorAssetTransfer(assetId);
         historyLog('editor-asset-relay-failed', { assetId, error: err.message });
     });
 }
@@ -3102,7 +3155,7 @@ function handleEditorAssetRelayComplete(data) {
     const { assetId, from } = data || {};
     if (!assetId || !from) return;
     completeEditorAssetTransfer(assetId, from, 'socket-relay').catch(err => {
-        editorAssetTransfers.delete(assetId);
+        clearEditorAssetTransfer(assetId);
         historyLog('editor-asset-relay-failed', { assetId, error: err.message });
     });
 }
@@ -3110,6 +3163,7 @@ function handleEditorAssetRelayComplete(data) {
 function handleEditorAssetUnavailable(data) {
     const { assetId, reason } = data || {};
     if (!assetId) return;
+    clearEditorAssetTransfer(assetId);
     editorAssetRequests.delete(assetId);
     setEditorAssetUnavailable(assetId, reason);
     historyLog('editor-asset-unavailable', { assetId, reason });
@@ -3143,6 +3197,7 @@ function handleEditorAssetProvider(data) {
         : '正在获取图片（P2P 直连，正在建立连接）';
     setEditorAssetStatus(assetId, status);
     historyLog('editor-asset-provider-selected', { assetId, providerDeviceId });
+    if (state.devices.get(providerDeviceId)?.clientType === 'vclient') return;
     connectToPeer(providerDeviceId).catch(err => {
         historyLog('editor-asset-peer-connect-failed', { assetId, providerDeviceId, error: err.message });
     });
@@ -13563,14 +13618,15 @@ function handleDeviceJoined(data) {
         model: data.deviceModel,
         internalIp: data.internalIp || data.localIp,
         externalIp: data.externalIp,
-        joinedAt: Date.now()
+        joinedAt: Date.now(),
+        clientType: data.clientType === 'vclient' ? 'vclient' : 'browser'
     });
 
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
 
     // 尝试建立P2P连接
-    connectToPeer(deviceId);
+    if (data.clientType !== 'vclient') connectToPeer(deviceId);
     scheduleStoredFileAssetAnnounce('device-joined');
     setTimeout(() => {
         reconcileLocalHistory([], [])
@@ -13583,6 +13639,13 @@ function handleDeviceJoined(data) {
 
 function handleDeviceLeft(data) {
     const { deviceId } = data;
+
+    for (const [assetId, transfer] of editorAssetTransfers) {
+        if (transfer.from !== deviceId) continue;
+        clearEditorAssetTransfer(assetId);
+        editorAssetRequests.delete(assetId);
+        setEditorAssetUnavailable(assetId, 'provider-disconnected');
+    }
 
     state.devices.delete(deviceId);
 
@@ -13612,11 +13675,12 @@ function handleSessionDevices(data) {
                 model: device.deviceModel,
                 internalIp: device.internalIp || device.localIp,
                 externalIp: device.externalIp,
-                joinedAt: device.joinedAt
+                joinedAt: device.joinedAt,
+                clientType: device.clientType === 'vclient' ? 'vclient' : 'browser'
             });
 
             // 建立P2P连接
-            connectToPeer(device.deviceId);
+            if (device.clientType !== 'vclient') connectToPeer(device.deviceId);
         }
     });
     Array.from(state.devices.keys()).forEach(deviceId => {
@@ -13644,9 +13708,10 @@ function handleDeviceUpdated(data) {
         name: data.deviceName || existing?.name || '未知设备',
         model: data.deviceModel || existing?.model || '',
         internalIp: data.internalIp || data.localIp || existing?.internalIp || null,
-        externalIp: data.externalIp || existing?.externalIp || null
+        externalIp: data.externalIp || existing?.externalIp || null,
+        clientType: data.clientType === 'vclient' ? 'vclient' : (existing?.clientType || 'browser')
     });
-    if (!existing) connectToPeer(data.deviceId);
+    if (!existing && data.clientType !== 'vclient') connectToPeer(data.deviceId);
     updateDeviceList();
     refreshTunnelAdminDevicePicker();
     scheduleStoredFileAssetAnnounce('device-updated');
@@ -13681,6 +13746,7 @@ function normalizeContactProfile(device = {}) {
         sessionId: device.sessionId || state.sessionId || '',
         shortCode: device.shortCode || state.shortCode || '',
         profileUrl: getDeviceProfileUrl(deviceId) || device.profileUrl || '',
+        clientType: device.clientType === 'vclient' ? 'vclient' : 'browser',
         followedAt: device.followedAt || Date.now(),
         lastSeenAt: Date.now()
     };
@@ -13809,6 +13875,7 @@ function syncDeviceRemarkWithHelper(deviceId) {
 async function startIntercomWithDevice(device) {
     try {
         if (!device?.deviceId) return;
+        if (device.clientType === 'vclient') return;
         const recipients = mediaController?.intercom?.recipients || [];
         const directIntercomTargetId = recipients.length === 1 ? recipients[0] : null;
         if (device.deviceId === directIntercomTargetId) {
@@ -13826,6 +13893,7 @@ async function startIntercomWithDevice(device) {
 function renderDeviceRow(device, options = {}) {
     const normalized = normalizeContactProfile(device);
     const isSelf = normalized.deviceId === state.deviceId;
+    const isCacheNode = normalized.clientType === 'vclient';
     const dataChannelId = device.id || normalized.deviceId;
     const recipients = mediaController?.intercom?.recipients || [];
     const directIntercomTargetId = recipients.length === 1 ? recipients[0] : null;
@@ -13846,11 +13914,13 @@ function renderDeviceRow(device, options = {}) {
     const status = el.querySelector('.status');
     status.textContent = isSelf
         ? '在线'
+        : isCacheNode
+            ? '缓存节点 · 在线（Socket.IO 中继）'
         : (options.contact
             ? `${normalized.model || '未知设备'} · ${normalized.deviceId.slice(0, 8)}...`
             : `在线 · P2P${state.dataChannels.has(dataChannelId) ? '已连接' : '连接中'}`);
 
-    if (!isSelf) {
+    if (!isSelf && !isCacheNode) {
         const actions = document.createElement('div');
         actions.className = 'device-actions';
         const intercomButton = document.createElement('button');
@@ -15657,7 +15727,12 @@ function initUI() {
             if (mediaController.intercom) {
                 mediaController.stopIntercom();
             } else {
-                await mediaController.startIntercom(Array.from(state.devices.keys()));
+                const recipients = Array.from(state.devices.values())
+                    .filter(device => device.clientType !== 'vclient')
+                    .map(device => device.id || device.deviceId)
+                    .filter(Boolean);
+                if (!recipients.length) return;
+                await mediaController.startIntercom(recipients);
             }
         } catch (err) {
             alert(`无法启动对讲机: ${err.message}`);

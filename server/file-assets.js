@@ -213,6 +213,8 @@ function isRelayAckTimeout(reason) {
 
 function registerFileAssetHandlers(socket, context) {
     const { sessions, deviceSockets, getSessionId, getDeviceId, sanitize, historyLog, clientIp } = context;
+    const recordFileAsset = typeof context.recordFileAsset === 'function' ? context.recordFileAsset : () => {};
+    const recordTransferEvent = typeof context.recordTransferEvent === 'function' ? context.recordTransferEvent : () => {};
     const isValidAssetId = context.isValidAssetId || context.isValidId;
     const isValidDeviceId = context.isValidDeviceId || context.isValidId;
     const isValidSessionId = context.isValidSessionId || context.isValidId;
@@ -255,6 +257,13 @@ function registerFileAssetHandlers(socket, context) {
             }
             record.providers.add(deviceId);
             session.lastActivity = Date.now();
+            recordFileAsset(sessionId, record.metadata, { sourceDeviceId: deviceId, now: session.lastActivity });
+            recordTransferEvent(sessionId, 'announced', record.metadata, {
+                sourceDeviceId: deviceId,
+                now: session.lastActivity,
+                transport: 'provider-announcement',
+                details: { providerCount: record.providers.size }
+            });
             socket.to(sessionId).emit('file-asset-available', { asset: record.metadata, from: deviceId });
             historyLog('file-asset-available', {
                 sessionId, deviceId, socketId: socket.id, clientIp, asset: record.metadata,
@@ -304,6 +313,9 @@ function registerFileAssetHandlers(socket, context) {
             if (!record.assignments) record.assignments = new Map();
             if (!record.assignmentMeta) record.assignmentMeta = new Map();
             const forced = data?.force === true;
+            const transportHint = socket.data?.isVClient === true && data?.relayOnly === true
+                ? 'relay-only'
+                : undefined;
             const requestId = typeof data?.requestId === 'string' && data.requestId.length <= 120
                 ? sanitize(data.requestId, 120)
                 : undefined;
@@ -373,7 +385,37 @@ function registerFileAssetHandlers(socket, context) {
             }
             releaseAssignment(record, assetId, deviceId, transfer?.transferId);
             setAssignment(record, assetId, deviceId, transfer?.transferId, providerId, requestId);
-            providerSocket.emit('file-asset-request', { asset: record.metadata, from: deviceId, transfer, requestId });
+            const assignmentMeta = getAssignmentMeta(record, assetId, deviceId, transfer?.transferId);
+            if (assignmentMeta) {
+                assignmentMeta.transportHint = transportHint;
+                assignmentMeta.rangeStart = transfer?.rangeStart;
+                assignmentMeta.rangeEnd = transfer?.rangeEnd;
+            }
+            const requestAudit = {
+                sourceDeviceId: providerId,
+                targetDeviceId: deviceId,
+                transferId: transfer?.transferId,
+                requestId,
+                now: Date.now(),
+                transport: transportHint || 'negotiated-client-path',
+                details: {
+                    sourceSessionId: assetSessionId,
+                    requesterSessionId: sessionId,
+                    rangeStart: transfer?.rangeStart,
+                    rangeEnd: transfer?.rangeEnd
+                }
+            };
+            recordTransferEvent(sessionId, 'requested', record.metadata, requestAudit);
+            if (assetSessionId !== sessionId) {
+                recordTransferEvent(assetSessionId, 'requested', record.metadata, requestAudit);
+            }
+            providerSocket.emit('file-asset-request', {
+                asset: record.metadata,
+                from: deviceId,
+                transfer,
+                requestId,
+                transportHint
+            });
             historyLog('file-asset-request-forwarded', {
                 sessionId, sourceSessionId: assetSessionId, deviceId, targetDeviceId: providerId,
                 socketId: socket.id, clientIp, asset: record.metadata,
@@ -412,6 +454,8 @@ function registerFileAssetHandlers(socket, context) {
                 }
             }
             if (record && reason === 'provider-missing-local-data') {
+                const previousMeta = getAssignmentMeta(record, assetId, to, transfer?.transferId);
+                const transportHint = previousMeta?.transportHint;
                 releaseAssignment(record, assetId, to, transfer?.transferId);
                 record.providers.delete(deviceId);
                 const alternative = findProvider(session, assetId, to, null, deviceSockets);
@@ -425,7 +469,19 @@ function registerFileAssetHandlers(socket, context) {
                     if (!record.providerLoads) record.providerLoads = new Map();
                     if (!record.assignmentMeta) record.assignmentMeta = new Map();
                     setAssignment(record, assetId, to, transfer?.transferId, alternative, requestId);
-                    alternativeSocket.emit('file-asset-request', { asset: record.metadata, from: to, transfer, requestId });
+                    const nextMeta = getAssignmentMeta(record, assetId, to, transfer?.transferId);
+                    if (nextMeta) {
+                        nextMeta.transportHint = transportHint;
+                        nextMeta.rangeStart = transfer?.rangeStart;
+                        nextMeta.rangeEnd = transfer?.rangeEnd;
+                    }
+                    alternativeSocket.emit('file-asset-request', {
+                        asset: record.metadata,
+                        from: to,
+                        transfer,
+                        requestId,
+                        transportHint
+                    });
                     return;
                 }
             }
@@ -499,6 +555,20 @@ function registerFileAssetHandlers(socket, context) {
                 meta.status = status;
                 if (requestId) meta.requestId = requestId;
             }
+            recordTransferEvent(sessionId, status === 'completed' ? 'client-completed' : 'failed', record.metadata, {
+                sourceDeviceId: deviceId,
+                targetDeviceId: to,
+                transferId,
+                requestId: requestId || meta?.requestId || '',
+                now: Date.now(),
+                transport: meta?.transportHint || 'client-reported-path',
+                bytesTransferred: status === 'completed'
+                    ? (transferId && meta?.rangeEnd > meta?.rangeStart
+                        ? meta.rangeEnd - meta.rangeStart
+                        : record.metadata.size)
+                    : 0,
+                details: { status }
+            });
             if (status === 'completed' || status === 'failed') releaseAssignment(record, assetId, to, transferId);
             const targetSocket = deviceSockets.get(to);
             if (targetSocket) {
@@ -563,6 +633,7 @@ function registerFileAssetHandlers(socket, context) {
             const key = relayKey(sessionId, deviceId, to, asset.id, relayTransferToken(transfer?.transferId, relayAttemptId));
             relays.set(key, {
                 sessionId, from: deviceId, to, asset, transfer, attemptId: relayAttemptId, receivedSize: 0,
+                requestId: relayRequestId,
                 expectedSize: transfer ? transfer.rangeEnd - transfer.rangeStart : asset.size
             });
             const targetResponse = await emitWithAckResult(target, 'file-asset-relay-start', {
@@ -681,6 +752,20 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             await emitWithAck(target, 'file-asset-relay-complete', { assetId, from: deviceId, transferId, attemptId: relay.attemptId || relayAttemptId }, RELAY_COMPLETE_ACK_TIMEOUT);
+            recordTransferEvent(sessionId, 'relay-completed', relay.asset, {
+                sourceDeviceId: deviceId,
+                targetDeviceId: to,
+                transferId,
+                requestId: relay.requestId || '',
+                now: Date.now(),
+                transport: 'socket.io-relay',
+                bytesTransferred: relay.expectedSize,
+                details: {
+                    rangeStart: relay.transfer?.rangeStart,
+                    rangeEnd: relay.transfer?.rangeEnd,
+                    attemptId: relay.attemptId || relayAttemptId
+                }
+            });
             ackOk(ack);
             historyLog('file-asset-relay-completed', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset: relay.asset, transfer: relay.transfer, attemptId: relay.attemptId || relayAttemptId });
         } catch (err) {
@@ -691,9 +776,13 @@ function registerFileAssetHandlers(socket, context) {
 }
 
 function cleanupFileAssetRelays(sessionId, deviceId) {
+    const removed = [];
     for (const [key, relay] of relays) {
-        if (relay.sessionId === sessionId && (!deviceId || relay.from === deviceId || relay.to === deviceId)) relays.delete(key);
+        if (relay.sessionId !== sessionId || (deviceId && relay.from !== deviceId && relay.to !== deviceId)) continue;
+        removed.push(relay);
+        relays.delete(key);
     }
+    return removed;
 }
 
 function cleanupFileAssetAssignments(session, deviceId) {

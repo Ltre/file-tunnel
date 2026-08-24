@@ -338,7 +338,7 @@ test('a Socket.IO reconnect does not discard an in-progress WebRTC peer', () => 
     const handler = source.slice(start, end);
 
     assert.ok(start >= 0 && end > start, 'device update handler must be discoverable');
-    assert.match(handler, /if \(!existing\) connectToPeer\(data\.deviceId\);/);
+    assert.match(handler, /if \(!existing && data\.clientType !== 'vclient'\) connectToPeer\(data\.deviceId\);/);
     assert.doesNotMatch(handler, /data\.reconnected|pc\.close\(\)/);
 });
 

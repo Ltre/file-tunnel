@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>缓存节点</title>
+    <style>
+        :root { color-scheme:light dark; --bg:#f5f7fb; --panel:#fff; --text:#202534; --muted:#687084; --line:#dce1ea; --accent:#5865f2; --ok:#16834b; --warn:#a96900; --bad:#b3261e; }
+        @media(prefers-color-scheme:dark){:root{--bg:#11141b;--panel:#1c202a;--text:#eef1f7;--muted:#aeb6c8;--line:#343b49;--accent:#8590ff;--ok:#62d69a;--warn:#ffc266;--bad:#ff8a82}}
+        *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif} .wrap{width:min(1120px,calc(100% - 28px));margin:24px auto}.head,.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}.head{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:18px}.head h1{margin:0;font-size:21px}.subtle{color:var(--muted)}a,button{color:inherit}.head a,.pager button,.detail-close{border:1px solid var(--line);border-radius:6px;padding:7px 11px;text-decoration:none;background:transparent;cursor:pointer}.status-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}.stat strong{display:block;font-size:17px;margin-top:4px}.panel{overflow:hidden}.panel-title{display:flex;justify-content:space-between;padding:13px 15px;border-bottom:1px solid var(--line)}.records{display:grid}.record{display:grid;grid-template-columns:180px minmax(0,1fr);gap:16px;padding:14px 15px;border-bottom:1px solid var(--line)}.record:last-child{border-bottom:0}.record-time{color:var(--muted)}.record-title{font-weight:700}.record-summary{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere}.files{display:grid;gap:7px;margin-top:8px}.file{display:grid;grid-template-columns:minmax(0,1fr) 210px;gap:12px;align-items:center}.file-name{overflow-wrap:anywhere}.file-status{text-align:right;color:var(--muted);font-weight:700}.state-completed,.state-cached{color:var(--ok)}.state-failed,.state-unavailable{color:var(--bad)}.state-transferring,.state-receiving{color:var(--accent)}.state-waiting,.state-pending,.state-discovering,.state-requesting,.state-waiting-provider{color:var(--warn)}.empty{padding:46px 20px;text-align:center;color:var(--muted)}.pager{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.more{border:0;background:none;color:var(--accent);padding:0;cursor:pointer}.detail-preview{margin-bottom:14px;padding:10px;border:1px solid var(--line);border-radius:7px;white-space:pre-wrap;overflow-wrap:anywhere}dialog{width:min(720px,calc(100% - 28px));border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);padding:0}dialog::backdrop{background:#0008}.dialog-head{display:flex;justify-content:space-between;align-items:center;padding:14px;border-bottom:1px solid var(--line)}.dialog-body{padding:14px}.detail-files{display:grid;gap:10px}@media(max-width:720px){.status-grid{grid-template-columns:1fr 1fr}.record{grid-template-columns:1fr}.file{grid-template-columns:1fr}.file-status{text-align:left}}
+    </style>
+</head>
+<body>
+<main class="wrap">
+    <header class="head"><div><h1>缓存节点传输记录</h1><div class="subtle" id="tunnelLabel">正在读取隧道...</div></div><a href="/admin">返回管理后台</a></header>
+    <section class="status-grid">
+        <div class="stat"><span class="subtle">独立进程</span><strong id="processState">--</strong></div>
+        <div class="stat"><span class="subtle">隧道节点状态</span><strong id="tunnelState">--</strong></div>
+        <div class="stat"><span class="subtle">已缓存文件</span><strong id="cachedFiles">0</strong></div>
+        <div class="stat"><span class="subtle">已缓存大小</span><strong id="cachedBytes">0 B</strong></div>
+    </section>
+    <section class="panel"><div class="panel-title"><strong>传输记录列表</strong><span class="subtle" id="syncTime">最后同步：--</span></div><div class="records" id="records"><div class="empty">正在读取...</div></div></section>
+    <nav class="pager"><button id="prevBtn">上一页</button><button id="nextBtn">下一页</button></nav>
+</main>
+<dialog id="detailDialog"><div class="dialog-head"><strong id="detailTitle">记录详情</strong><button class="detail-close" type="button">关闭</button></div><div class="dialog-body"><div class="detail-files" id="detailFiles"></div></div></dialog>
+<script>
+    const sessionId = new URLSearchParams(location.search).get('sessionId') || '';
+    const validSessionId = /^[a-zA-Z0-9_-]{8,64}$/.test(sessionId);
+    const recordsElement = document.getElementById('records');
+    const detailDialog = document.getElementById('detailDialog');
+    let offset = 0;
+    const limit = 40;
+    let total = 0;
+    let latestItems = [];
+    let assetStates = new Map();
+    let detailMessageId = '';
+
+    const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const formatBytes = value => { let size=Number(value)||0; const units=['B','KB','MB','GB','TB']; let unit=0; while(size>=1024&&unit<units.length-1){size/=1024;unit++} return `${size<10&&unit?size.toFixed(1):Math.round(size)} ${units[unit]}`; };
+    const statusLabel = state => ({pending:'等待处理',waiting:'等待来源',discovering:'正在发现来源',requesting:'正在请求',retrying:'重试中','waiting-provider':'等待在线来源',downloading:'缓存中',receiving:'缓存中',transferring:'缓存中',cached:'已缓存',completed:'已缓存',failed:'失败',unavailable:'暂无在线来源',interrupted:'已中断',orphaned:'记录已移除'}[state] || state || '等待缓存');
+    const tunnelStateLabel = state => ({disabled:'未启用',starting:'启动中',syncing:'同步中',active:'在线',reconnecting:'重连中',stopping:'停止中',stopped:'已停止','waiting-process':'等待缓存节点进程',error:'异常'}[state] || state || '未启用');
+    const plainText = value => String(value || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    const recordId = item => String(item.message_id || item.message?.id || '');
+
+    function filesFor(item) {
+        if (Array.isArray(item.files) && item.files.length) return item.files.map(file => ({
+            id:file.file_id||file.id, name:file.name||file.file_name||'未命名文件', type:file.mime_type||file.type||'', size:Number(file.declared_size??file.size??file.file_size)||0
+        }));
+        const message=item.message||{};
+        if (message.type==='collection') return (message.collection?.files||[]).map(file=>({id:file.id,name:file.name,type:file.type,size:Number(file.size)||0}));
+        if (message.fileInfo) return [{id:message.fileInfo.id,name:message.fileInfo.name,type:message.fileInfo.type,size:Number(message.fileInfo.size)||0}];
+        return [];
+    }
+
+    function fileHtml(file) {
+        const state=assetStates.get(file.id)||{};
+        const name=escapeHtml(file.name||file.id||'未命名文件');
+        const mode=state.state||'waiting';
+        const totalBytes=Number(state.bytes_total)||Number(file.size)||0;
+        const cached=Number(state.bytes_cached)||0;
+        const complete=mode==='completed'||mode==='cached';
+        const transferring=['transferring','downloading','receiving'].includes(mode);
+        const percent=complete?100:(totalBytes?Math.min(99,Math.floor(cached*100/totalBytes)):0);
+        const icon=String(file.type||'').startsWith('image/')?'🖼️':String(file.type||'').startsWith('audio/')?'🎵':String(file.type||'').startsWith('video/')?'🎬':'📄';
+        const label=complete?'100%':transferring?`${percent}%`:statusLabel(mode);
+        return `<div class="file"><div><div class="file-name">${icon} ${name}</div><div class="subtle">${escapeHtml(file.type||'未知类型')} · ${formatBytes(file.size)}</div></div><div class="file-status state-${escapeHtml(mode)}">${escapeHtml(label)}</div></div>`;
+    }
+
+    function renderRecords() {
+        if (!latestItems.length) { recordsElement.innerHTML='<div class="empty">该隧道暂无传输记录。</div>'; return; }
+        recordsElement.innerHTML=latestItems.map((item,index)=>{
+            const message=item.message||{};
+            const files=filesFor(item);
+            const kind=message.type==='collection'?'Album / 文件合集':message.type==='rich'?'富文本记录':message.type==='file'?'文件记录':'文本记录';
+            let body='';
+            if(message.type==='file') body=`<div class="files">${files[0]?fileHtml(files[0]):'<span class="subtle">文件元信息缺失</span>'}</div>`;
+            else if(message.type==='collection') body=`<div class="record-summary">${escapeHtml(message.collection?.name||message.collection?.title||`${files.length} 个文件`)}</div><button class="more" data-detail="${index}">查看 ${files.length} 个文件的详情</button>`;
+            else if(message.type==='rich') body=`<div class="record-summary">${escapeHtml(plainText(message.content).slice(0,180)||'富文本内容')}</div><button class="more" data-detail="${index}">查看正文与 ${files.length} 个媒体资源</button>`;
+            else body=`<div class="record-summary">${escapeHtml(String(message.text||message.content||'').slice(0,500)||'（空文本）')}</div>`;
+            return `<article class="record"><div class="record-time">${new Date(Number(message.timestamp||item.created_at)||Date.now()).toLocaleString('zh-CN')}<br><span>${escapeHtml(message.senderName||message.sender||'未知设备')}</span></div><div><div class="record-title">${kind}</div>${body}</div></article>`;
+        }).join('');
+        recordsElement.querySelectorAll('[data-detail]').forEach(button=>button.addEventListener('click',()=>showDetail(Number(button.dataset.detail))));
+    }
+
+    function showDetail(index) {
+        const item=latestItems[index];
+        if(!item)return;
+        const files=filesFor(item);
+        detailMessageId=recordId(item);
+        const message=item.message||{};
+        document.getElementById('detailTitle').textContent=`记录详情 · ${files.length} 个文件`;
+        const preview=message.type==='rich'?`<div class="detail-preview">${escapeHtml(plainText(message.content)||'（空正文）')}</div>`:'';
+        document.getElementById('detailFiles').innerHTML=preview+(files.length?files.map(fileHtml).join(''):'<div class="empty">没有可缓存的文件引用。</div>');
+        if(!detailDialog.open)detailDialog.showModal();
+    }
+
+    async function load() {
+        if (!validSessionId) { recordsElement.innerHTML='<div class="empty">缺少有效的 sessionId。</div>'; return; }
+        const response=await fetch(`/api/vclient/tunnels/${encodeURIComponent(sessionId)}/records?offset=${offset}&limit=${limit}`,{cache:'no-store'});
+        if(response.status===401){location.href=`/admin-auth?next=${encodeURIComponent(location.pathname+location.search)}`;return}
+        const data=await response.json().catch(()=>({}));
+        if(!response.ok) throw new Error(data.error||`HTTP ${response.status}`);
+        total=Number(data.total)||0; latestItems=data.items||[];
+        assetStates=new Map((data.assetStates||[]).map(state=>[state.file_id||state.asset_id,state]));
+        const tunnel=data.tunnel||{};
+        document.getElementById('tunnelLabel').textContent=`隧道 ${sessionId}`;
+        document.getElementById('processState').textContent=data.processOnline?'在线':'离线';
+        document.getElementById('tunnelState').textContent=tunnelStateLabel(tunnel.state);
+        document.getElementById('cachedFiles').textContent=Number(tunnel.cached_files)||[...assetStates.values()].filter(x=>['cached','completed'].includes(x.state)).length;
+        document.getElementById('cachedBytes').textContent=formatBytes(Number(tunnel.cached_bytes)||[...assetStates.values()].reduce((sum,x)=>sum+(['cached','completed'].includes(x.state)?Number(x.bytes_cached)||0:0),0));
+        document.getElementById('syncTime').textContent=`最后同步：${tunnel.last_sync_at?new Date(Number(tunnel.last_sync_at)).toLocaleString('zh-CN'):'--'}`;
+        document.getElementById('prevBtn').disabled=offset===0;
+        document.getElementById('nextBtn').disabled=offset+limit>=total;
+        renderRecords();
+        if(detailDialog.open&&detailMessageId){const detailIndex=latestItems.findIndex(item=>recordId(item)===detailMessageId);if(detailIndex>=0)showDetail(detailIndex)}
+    }
+    document.getElementById('prevBtn').addEventListener('click',()=>{offset=Math.max(0,offset-limit);load().catch(showError)});
+    document.getElementById('nextBtn').addEventListener('click',()=>{if(offset+limit<total){offset+=limit;load().catch(showError)}});
+    document.querySelector('.detail-close').addEventListener('click',()=>detailDialog.close());
+    detailDialog.addEventListener('click',event=>{if(event.target===detailDialog)detailDialog.close()});
+    detailDialog.addEventListener('close',()=>{detailMessageId=''});
+    function showError(error){recordsElement.innerHTML=`<div class="empty">读取失败：${escapeHtml(error.message)}</div>`}
+    load().catch(showError);
+    setInterval(()=>load().catch(()=>{}),3000);
+</script>
+</body>
+</html>

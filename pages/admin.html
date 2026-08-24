@@ -192,11 +192,17 @@
         .session-meta {
             font-size: 0.85rem;
             color: #666;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(210px, 1fr));
+            gap: 3px 14px;
         }
         
         .session-actions {
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            max-width: 390px;
         }
         
         .btn {
@@ -214,7 +220,7 @@
         
         .btn-primary {
             /* background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 备选，不要删 */
-            background: linear-gradient(135deg, #90a1bd 0%, #202317fc 100%)
+            background: linear-gradient(135deg, #90a1bd 0%, #202317fc 100%);
             color: white;
         }
         
@@ -238,6 +244,11 @@
         
         .btn-danger:hover {
             background: #c82333;
+        }
+
+        .btn-cache {
+            background: #0f766e;
+            color: white;
         }
         
         .empty-state {
@@ -313,7 +324,10 @@
             .session-actions {
                 width: 100%;
                 justify-content: flex-end;
+                max-width: none;
             }
+
+            .session-meta { grid-template-columns: 1fr; }
         }
     </style>
     <script defer src="/client/i18n-catalog.js?v=20260812-1"></script>
@@ -345,19 +359,19 @@
                 <div class="stats-grid">
                     <div class="stat-card">
                         <div class="stat-value" id="totalSessions">0</div>
-                        <div class="stat-label">活跃会话</div>
+                        <div class="stat-label">审计隧道总数</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" id="totalDevices">0</div>
-                        <div class="stat-label">在线设备</div>
+                        <div class="stat-label">真实在线设备</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" id="totalMessages">0</div>
-                        <div class="stat-label">消息总数</div>
+                        <div class="stat-label">传输记录总数</div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-value" id="totalFiles">0</div>
-                        <div class="stat-label">文件总数</div>
+                        <div class="stat-label">传输文件总数</div>
                     </div>
                 </div>
             </div>
@@ -455,11 +469,16 @@
                         ...session,
                         source: 'server',
                         messageCount: Number(session.messageCount) || 0,
-                        fileCount: Number(session.fileCount) || 0
+                        fileCount: Number(session.fileCount) || 0,
+                        activeDeviceCount: Number(session.activeDeviceCount) || 0,
+                        realActiveDeviceCount: Number(session.realActiveDeviceCount) || 0,
+                        historicalDeviceCount: Number(session.historicalDeviceCount) || 0,
+                        historicalAllDeviceCount: Number(session.historicalAllDeviceCount) || 0,
+                        totalFileSize: Number(session.totalFileSize) || 0
                     }));
                 updateStats({
                     sessions,
-                    totalDevices: deviceData.onlineDevices ?? data.totalDevices ?? 0,
+                    totalDevices: data.totalDevices ?? deviceData.onlineDevices ?? 0,
                     totalMessages: sessions.reduce((total, session) => total + (session.messageCount || 0), 0),
                     totalFiles: sessions.reduce((total, session) => total + (session.fileCount || 0), 0)
                 });
@@ -492,6 +511,17 @@
                 '"': '&quot;',
                 "'": '&#39;'
             }[char]));
+        }
+
+        function formatBytes(value) {
+            let size = Math.max(0, Number(value) || 0);
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let unit = 0;
+            while (size >= 1024 && unit < units.length - 1) {
+                size /= 1024;
+                unit++;
+            }
+            return `${unit && size < 10 ? size.toFixed(1) : Math.round(size)} ${units[unit]}`;
         }
 
         function openTunnelDb() {
@@ -770,16 +800,31 @@
                 const lastActivity = new Date(session.lastActivity || session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const isActive = session.isActive === true;
                 const isOnline = session.isOnline === true;
+                const isDeleted = session.isDeleted === true;
                 const statusClass = isOnline ? 'status-active' : (session.isLocalHistory ? 'status-local' : 'status-inactive');
-                const statusText = isOnline ? '在线' : (session.isLocalHistory ? '离线历史' : '离线');
+                const statusText = isDeleted ? '已删除（审计留痕）' : (isOnline ? '真实设备在线' : (session.isLocalHistory ? '离线历史' : '真实设备离线'));
                 const activityText = isActive ? '活跃' : '非活跃';
+                const cacheEnabled = session.cacheNodeEnabled === true;
+                const cacheOnline = session.cacheNodeOnline === true;
+                const cacheState = escapeHtml({
+                    disabled: '未启用', starting: '正在启动', 'waiting-process': '等待独立进程',
+                    syncing: '正在同步', active: '运行中', reconnecting: '正在重连',
+                    stopping: '正在停止', stopped: '已停止', error: '异常'
+                }[session.cacheNodeState] || session.cacheNodeState || '未启用');
+                const showCacheDetails = cacheEnabled || Number(session.cacheNodeCachedFiles) > 0 || !['', 'disabled'].includes(session.cacheNodeState || '');
+                const cacheAction = !isDeleted ? `<button class="btn ${cacheEnabled ? 'btn-danger' : 'btn-cache'}" onclick="toggleCacheNode('${safeId}', ${cacheEnabled ? 'false' : 'true'})">
+                                <span>${cacheEnabled ? '停止缓存节点' : '启用缓存节点'}</span>
+                            </button>` : '';
+                const cacheView = showCacheDetails ? `<a class="btn btn-secondary" href="/vclient?sessionId=${encodeURIComponent(session.id)}">
+                                <span>查看缓存节点</span>
+                            </a>` : '';
                 
                 return `
                     <div class="session-item" data-session-id="${safeId}">
                         <div class="session-icon">🔗</div>
                         <div class="session-info">
                             <div class="session-id">
-                                会话 ${shortId}
+                                隧道 ${shortId}
                                 <span class="status-badge ${statusClass}">
                                     ${statusText}
                                 </span>
@@ -788,24 +833,32 @@
                                 </span>
                             </div>
                             <div class="session-meta">
-                                <div>设备数: <span class="device-count">📱 ${session.deviceCount || 1}</span></div>
-                                <div>历史: ${session.messageCount || 0} messages / ${session.fileCount || 0} files</div>
-                                <div>创建: ${createdTime}</div>
-                                <div>最后活动: ${lastActivity}</div>
+                                <div>隧道 ID：<code>${safeId}</code></div>
+                                <div>活跃设备：<span class="device-count">📱 ${Number(session.activeDeviceCount) || 0} 台</span>（真实设备 ${Number(session.realActiveDeviceCount) || 0}${cacheOnline ? '，缓存节点在线' : ''}）</div>
+                                <div>历史总设备：${Number(session.historicalAllDeviceCount) || Number(session.historicalDeviceCount) || 0}（真实设备 ${Number(session.historicalDeviceCount) || 0}）</div>
+                                <div>缓存节点：${cacheState}${session.cacheNodeError ? ` · ${escapeHtml(session.cacheNodeError)}` : ''}</div>
+                                <div>创建时间：${createdTime}</div>
+                                <div>最后活动：${lastActivity}</div>
+                                <div>传输记录：${Number(session.messageCount) || 0}</div>
+                                <div>传输文件：${Number(session.fileCount) || 0}</div>
+                                <div>唯一文件：${Number(session.uniqueFileCount) || 0}</div>
+                                <div>文件占用总大小：${formatBytes(session.totalFileSize)}</div>
                             </div>
                         </div>
                         <div class="session-actions">
-                            <a href="/#${safeId}" target="_blank" class="btn btn-primary">
+                            ${isDeleted ? '' : `<a href="/#${safeId}" target="_blank" class="btn btn-primary">
                                 <span>🔗</span>
                                 <span>进入隧道</span>
-                            </a>
-                            <button class="btn btn-secondary" onclick="copyLink('${safeId}')">
+                            </a>`}
+                            ${isDeleted ? '' : `<button class="btn btn-secondary" onclick="copyLink('${safeId}')">
                                 <span>📋</span>
                                 <span>复制链接</span>
-                            </button>
-                            <button class="btn btn-danger" onclick="deleteSession('${safeId}')">
+                            </button>`}
+                            ${cacheAction}
+                            ${cacheView}
+                            ${isDeleted ? '' : `<button class="btn btn-danger" onclick="deleteSession('${safeId}')">
                                 <span>删除</span>
-                            </button>
+                            </button>`}
                         </div>
                     </div>
                 `;
@@ -986,6 +1039,26 @@
                 await loadData();
             } catch (err) {
                 alert(err.message);
+            }
+        }
+
+        async function toggleCacheNode(sessionId, enable) {
+            if (!isValidSessionId(sessionId)) return;
+            const prompt = enable
+                ? `为隧道 ${sessionId} 启用缓存节点？\n\n独立 VClient 进程将加入隧道并缓存可获取的历史及后续文件。`
+                : `停止隧道 ${sessionId} 的缓存节点？\n\n节点会退出隧道，但已缓存的记录和文件不会删除；若其他真实供源全部离线，尚未缓存完成的文件可能暂时无法获取。`;
+            if (!confirm(prompt)) return;
+            try {
+                const action = enable ? 'enable' : 'disable';
+                const response = await fetch(`/api/vclient/tunnels/${encodeURIComponent(sessionId)}/${action}`, { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `缓存节点${enable ? '启用' : '停止'}失败`);
+                if (enable && !data.processOnline) {
+                    alert('启用意图已保存；当前独立 VClient 进程尚未连接。请启动 npm run vclient，连接后会自动加入该隧道。');
+                }
+                await loadData();
+            } catch (error) {
+                alert(error.message);
             }
         }
         

@@ -1228,6 +1228,30 @@
             }
 
             this.emitTransferStatus(asset.id, from, 'started', transfer?.transferId, requestId);
+            if (data?.transportHint === 'relay-only') {
+                try {
+                    this.routeLog('relay-only-start', { assetId: asset.id, peerDeviceId: from, requestId });
+                    await this.sendViaSocketRelay(
+                        from,
+                        stored,
+                        transfer,
+                        this.transferAttemptId(requestId, 'relay', transfer),
+                        requestId
+                    );
+                    this.emitTransferStatus(asset.id, from, 'completed', transfer?.transferId, requestId);
+                    return true;
+                } catch (error) {
+                    this.routeLog('relay-only-failed', {
+                        assetId: asset.id,
+                        peerDeviceId: from,
+                        requestId,
+                        error: error.message
+                    });
+                    this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
+                    this.emitUnavailable(asset.id, from, 'asset-transfer-failed', transfer, requestId);
+                    return false;
+                }
+            }
             try {
                 if (this.cancelledAssets.has(asset.id)) throw new Error('File asset transfer cancelled');
                 const unavailableUntil = this.p2pUnavailablePeers.get(from);

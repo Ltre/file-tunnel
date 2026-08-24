@@ -435,9 +435,11 @@ test('YouTube album artist is resolved independently and is never backfilled fro
   const server = read('server.js');
   const service = read('server/youtube-premium.js');
   assert.match(service, /function resolveYoutubeAlbumArtist\(meta = \{\}\)/);
-  assert.match(service, /return albumArtistFieldKnown \|\| compilationFlag \? '群星' : ''/);
+  assert.match(service, /return compilationFlag \? '群星' : ''/);
+  assert.match(service, /function resolveYoutubeAlbumArtistFromEntries\(entries = \[\]\)/);
   assert.match(service, /VARIOUS_ARTISTS_LOOKUP_VALUES/);
   assert.match(server, /const albumArtist = resolveYoutubeAlbumArtist\(meta\)/);
+  assert.match(server, /resolveYoutubeAlbumArtistFromEntries\(albumMeta\?\.entries\)/);
   assert.match(server, /albumArtist: sanitizeString\(resolveYoutubeAlbumArtist\(meta\), 500\)/);
   assert.match(server, /album_artist: sanitizeString\(providedMetadata\.album_artist \|\| providedMetadata\.albumArtist \|\| '', 240\)/);
   assert.match(server, /album_artist: value\('album_artist', 240\),/);

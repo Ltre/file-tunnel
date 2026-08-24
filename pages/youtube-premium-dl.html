@@ -77,6 +77,12 @@
         .metadata-form label { display:grid; gap:4px; color:var(--muted); font-weight:700; }
         .metadata-form .wide { grid-column:1/-1; }
         .metadata-form textarea { min-height:88px; resize:vertical; }
+        .metadata-cover-editor { display:grid; gap:8px; margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:6px; }
+        .metadata-cover-row { display:grid; grid-template-columns:96px minmax(0,1fr); align-items:center; gap:12px; }
+        .metadata-cover-preview { width:96px; height:96px; object-fit:contain; border-radius:6px; background:#e5e9f0; }
+        .metadata-cover-controls { display:grid; gap:7px; }
+        .metadata-cover-controls select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); }
+        .metadata-cover-editor + .dialog-actions { margin-top:14px; }
         .reference-panel { margin-top:16px; padding:12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); overflow-wrap:anywhere; }
         .reference-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
         .reference-content { margin:0; white-space:pre-wrap; font:inherit; }
@@ -131,6 +137,8 @@
             .cover { width:78px; }
             .metadata-form { grid-template-columns:1fr; }
             .metadata-form .wide { grid-column:auto; }
+            .metadata-cover-row { grid-template-columns:78px minmax(0,1fr); }
+            .metadata-cover-preview { width:78px; height:78px; }
             .setup-stepper { grid-template-columns:1fr; }
         }
         @media (prefers-color-scheme:dark) {
@@ -279,6 +287,22 @@
     <div class="dialog-head"><strong>编辑歌曲元信息</strong><button type="button" data-close-metadata aria-label="关闭">×</button></div>
     <div class="dialog-body">
         <form class="metadata-form" id="metadataForm"></form>
+        <div class="metadata-cover-editor">
+            <strong>歌曲封面</strong>
+            <div class="metadata-cover-row">
+                <img class="metadata-cover-preview" id="metadataCoverPreview" alt="任务参考封面预览">
+                <div class="metadata-cover-controls">
+                    <select id="metadataCoverSelect" aria-label="歌曲封面选择">
+                        <option value="">保持当前封面</option>
+                        <option value="square">正方形</option>
+                        <option value="original">原尺寸</option>
+                        <option value="upload">上传...</option>
+                    </select>
+                    <input id="metadataCoverUpload" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+                    <span class="subtle" id="metadataCoverStatus">只替换歌曲文件内嵌封面，不会改动 Telegram 转发封面。</span>
+                </div>
+            </div>
+        </div>
         <div class="dialog-actions"><button type="button" data-close-metadata>取消</button><button class="primary" id="saveMetadataBtn" type="button">保存并写入文件</button></div>
         <div class="reference-panel">
             <div class="reference-head"><strong>页面参考信息</strong><button id="refreshMetadataReference" type="button">重新采集</button></div>
@@ -436,6 +460,17 @@
     const metadataDialog = document.getElementById('metadataDialog');
     const metadataForm = document.getElementById('metadataForm');
     const metadataReference = document.getElementById('metadataReference');
+    const metadataCoverSelect = document.getElementById('metadataCoverSelect');
+    const metadataCoverUpload = document.getElementById('metadataCoverUpload');
+    const metadataCoverPreview = document.getElementById('metadataCoverPreview');
+    const metadataCoverStatus = document.getElementById('metadataCoverStatus');
+    const metadataCoverTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    const metadataCoverMaxBytes = 10 * 1024 * 1024;
+    let metadataCoverTask = null;
+    let metadataCoverBlob = null;
+    let metadataCoverPreviewUrl = '';
+    let metadataCoverGeneration = 0;
+    let metadataCoverUploadGeneration = 0;
     const predefinedTags = 'AlarmClock、DNA、Epic、HSL、HSPL、Public、S+、S+ 候选、Vocalize／Moderate、Youth、不吵闹、不行、亢、元気、删、剧、历久弥新、反、呕摸西裸衣、地雷系 Pure、寄、尬爽｜地雷系、巴闲、幻咏：神｜鬼｜虚｜圣、惋、日常｜平和｜普通、暖｜幸せ、某推荐、柔、梗、正、清、特殊结构、秘封晚期、耐、至喜、至喜²｜H↑、舒、车播：保守、车播：常规、车播：自用、险些埋没、静、韩大狗、高雅、８９０／Best Vintage、８９０／Mugen／Free／Relax'.split('、');
     const metadataFields = [
         ['title', 'Title'], ['album', 'Album'], ['artist', 'Artist'], ['album_artist', 'Album artist'],
@@ -1515,7 +1550,99 @@
         return values.join('\n') || '没有可用的页面参考信息。';
     }
 
+    function resetMetadataCoverEditor(task = null) {
+        metadataCoverGeneration += 1;
+        metadataCoverUploadGeneration = 0;
+        if (metadataCoverPreviewUrl) URL.revokeObjectURL(metadataCoverPreviewUrl);
+        metadataCoverPreviewUrl = '';
+        metadataCoverTask = task;
+        metadataCoverBlob = null;
+        metadataCoverSelect.value = '';
+        metadataCoverSelect.disabled = false;
+        metadataCoverUpload.value = '';
+        if (task?.cover) metadataCoverPreview.src = task.cover;
+        else metadataCoverPreview.removeAttribute('src');
+        metadataCoverStatus.textContent = task?.cover
+            ? '当前显示任务参考封面，不是歌曲内嵌封面的读取结果；保持当前封面不会写入它，也不会改动 Telegram 转发封面。'
+            : '保持当前封面不会写入图片；这里只替换歌曲内嵌封面，不会改动 Telegram 转发封面。';
+    }
+
+    function validateMetadataCover(blob) {
+        const type = String(blob?.type || '').split(';')[0].toLowerCase();
+        if (!metadataCoverTypes.has(type)) throw new Error('封面仅支持 JPEG、PNG 或 WebP 图片');
+        if (!blob.size) throw new Error('封面文件为空');
+        if (blob.size > metadataCoverMaxBytes) throw new Error('封面不能超过 10MB');
+        return blob;
+    }
+
+    function previewMetadataCover(blob) {
+        if (metadataCoverPreviewUrl) URL.revokeObjectURL(metadataCoverPreviewUrl);
+        metadataCoverPreviewUrl = URL.createObjectURL(blob);
+        metadataCoverPreview.src = metadataCoverPreviewUrl;
+    }
+
+    async function fetchMetadataCover(url, options = {}) {
+        const response = await fetch(url, { cache: 'no-store', ...options });
+        if (response.status === 401) {
+            location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+            throw new Error('管理会话已失效');
+        }
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `封面获取失败（HTTP ${response.status}）`);
+        }
+        return validateMetadataCover(await response.blob());
+    }
+
+    async function selectMetadataCover(mode) {
+        const generation = ++metadataCoverGeneration;
+        metadataCoverUploadGeneration = 0;
+        metadataCoverBlob = null;
+        if (!mode) {
+            if (metadataCoverPreviewUrl) URL.revokeObjectURL(metadataCoverPreviewUrl);
+            metadataCoverPreviewUrl = '';
+            if (metadataCoverTask?.cover) metadataCoverPreview.src = metadataCoverTask.cover;
+            else metadataCoverPreview.removeAttribute('src');
+            metadataCoverStatus.textContent = metadataCoverTask?.cover
+                ? '将保持歌曲文件当前的内嵌封面；预览仍是任务参考封面，不会被写入。'
+                : '将保持歌曲文件当前的内嵌封面。';
+            return;
+        }
+        if (mode === 'upload') {
+            metadataCoverUploadGeneration = generation;
+            metadataCoverStatus.textContent = '请选择不超过 10MB 的 JPEG、PNG 或 WebP 图片。';
+            metadataCoverUpload.value = '';
+            metadataCoverUpload.click();
+            return;
+        }
+        if (!metadataCoverTask?.id) throw new Error('任务不存在');
+        const selectedTaskId = metadataCoverTask.id;
+        metadataCoverSelect.disabled = true;
+        metadataCoverStatus.textContent = mode === 'original' ? '正在获取原尺寸封面...' : '正在读取正方形封面...';
+        try {
+            const taskId = encodeURIComponent(selectedTaskId);
+            const coverBlob = await fetchMetadataCover(
+                mode === 'original'
+                    ? `/api/youtube-premium/tasks/${taskId}/thumbnail`
+                    : `/api/youtube-premium/tasks/${taskId}/cover`,
+                mode === 'original' ? { method: 'POST' } : {}
+            );
+            if (generation !== metadataCoverGeneration || metadataCoverTask?.id !== selectedTaskId) return;
+            metadataCoverBlob = coverBlob;
+            previewMetadataCover(coverBlob);
+            metadataCoverStatus.textContent = mode === 'original' ? '已选择原尺寸封面。' : '已选择正方形封面。';
+        } catch (error) {
+            if (generation !== metadataCoverGeneration || metadataCoverTask?.id !== selectedTaskId) return;
+            throw error;
+        } finally {
+            if (generation === metadataCoverGeneration && metadataCoverTask?.id === selectedTaskId) {
+                metadataCoverSelect.disabled = false;
+            }
+        }
+    }
+
     async function showMetadataDialog(task) {
+        resetMetadataCoverEditor(task);
         metadataDialog.dataset.taskId = task.id;
         metadataForm.replaceChildren();
         metadataReference.textContent = '正在读取参考信息...';
@@ -1854,6 +1981,31 @@
     tagInput.addEventListener('keydown', event => {
         if (event.key === 'Enter') { event.preventDefault(); addTagFromInput(); }
     });
+    metadataCoverSelect.addEventListener('change', async () => {
+        try {
+            await selectMetadataCover(metadataCoverSelect.value);
+        } catch (error) {
+            metadataCoverBlob = null;
+            metadataCoverSelect.value = '';
+            metadataCoverStatus.textContent = `封面读取失败：${error.message}`;
+        }
+    });
+    metadataCoverUpload.addEventListener('change', () => {
+        const file = metadataCoverUpload.files?.[0];
+        const generation = metadataCoverUploadGeneration;
+        if (!file || !generation || generation !== metadataCoverGeneration || metadataCoverSelect.value !== 'upload') return;
+        try {
+            metadataCoverBlob = validateMetadataCover(file);
+            previewMetadataCover(metadataCoverBlob);
+            metadataCoverSelect.value = 'upload';
+            metadataCoverStatus.textContent = `已选择上传封面：${file.name}`;
+        } catch (error) {
+            metadataCoverBlob = null;
+            metadataCoverSelect.value = '';
+            metadataCoverUpload.value = '';
+            metadataCoverStatus.textContent = `封面选择失败：${error.message}`;
+        }
+    });
     document.getElementById('saveTagsBtn').addEventListener('click', async () => {
         const task = currentTasks.find(item => item.id === tagDialog.dataset.taskId);
         if (!task) return;
@@ -1871,16 +2023,40 @@
         const button = document.getElementById('saveMetadataBtn');
         if (!taskId || !metadataForm.elements.length) return;
         button.disabled = true;
+        let coverSaved = false;
+        let metadataSaved = false;
         try {
             const metadata = Object.fromEntries(metadataFields.map(([name]) => [name, metadataForm.elements[name]?.value || '']));
+            const coverChanged = Boolean(metadataCoverSelect.value);
+            if (coverChanged) {
+                if (!metadataCoverBlob) throw new Error('请先完成封面选择');
+                await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-cover`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': metadataCoverBlob.type },
+                    body: metadataCoverBlob
+                });
+                coverSaved = true;
+            }
             await api(`/api/youtube-premium/tasks/${encodeURIComponent(taskId)}/song-metadata`, {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata)
             });
+            metadataSaved = true;
             metadataDialog.close();
-            notice.textContent = '歌曲元信息已写入成品，浏览器缓存将按新版本更新。';
+            notice.textContent = coverChanged
+                ? '歌曲元信息与所选封面已写入成品，浏览器缓存将按新版本更新。'
+                : '歌曲元信息已写入成品，浏览器缓存将按新版本更新。';
             await loadTasks();
         } catch (error) {
-            notice.textContent = `写入歌曲元信息失败：${error.message}`;
+            if (coverSaved && !metadataSaved) {
+                metadataCoverSelect.value = '';
+                metadataCoverBlob = null;
+                metadataCoverStatus.textContent = '所选封面已经写入歌曲；再次保存时只会重试其他元信息。';
+                notice.textContent = `所选封面已写入歌曲，但其他元信息保存失败：${error.message}。请保留当前浮层并重试保存元信息。`;
+            } else if (metadataSaved) {
+                notice.textContent = `歌曲文件已写入成功，但任务列表刷新失败：${error.message}`;
+            } else {
+                notice.textContent = `写入歌曲元信息失败：${error.message}`;
+            }
         } finally {
             button.disabled = false;
         }
@@ -1896,6 +2072,7 @@
     forwardDialog.addEventListener('click', event => { if (event.target === forwardDialog) forwardDialog.close(); });
     tagDialog.addEventListener('click', event => { if (event.target === tagDialog) tagDialog.close(); });
     metadataDialog.addEventListener('click', event => { if (event.target === metadataDialog) metadataDialog.close(); });
+    metadataDialog.addEventListener('close', () => resetMetadataCoverEditor());
     setupWizardDialog.addEventListener('click', event => { if (event.target === setupWizardDialog) closeSetupWizard(); });
     setupWizardDialog.addEventListener('close', () => {
         clearInterval(setupWizardPolling);

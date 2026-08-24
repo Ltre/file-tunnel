@@ -65,6 +65,7 @@ const rateLimit = require('express-rate-limit');
 const { registerFileAssetHandlers, cleanupFileAssetRelays, cleanupFileAssetAssignments } = require('./server/file-assets');
 const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-session');
 const { createInfraStore } = require('./server/infra-store');
+const { createVClientControl } = require('./server/vclient-control');
 const { createAdminAuth } = require('./server/admin-auth');
 const { buildTelegramAudioMultipart } = require('./server/telegram-multipart');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
@@ -75,6 +76,7 @@ const {
     findYoutubeMusicTrackPosition,
     rankYoutubeMusicAlbumCandidates,
     resolveYoutubeAlbumArtist,
+    resolveYoutubeAlbumArtistFromEntries,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -133,6 +135,7 @@ const manifestHostMap = loadManifestHostMap();
 const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
 const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
+let vclientControl = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 const youtubePremiumMetadataCache = loadYoutubePremiumMetadataCache();
 
@@ -958,7 +961,8 @@ app.use([
     '/pages/admin.html',
     '/pages/tgbot.html',
     '/pages/sns-cookies.html',
-    '/pages/youtube-premium-dl.html'
+    '/pages/youtube-premium-dl.html',
+    '/pages/vclient.html'
 ], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
@@ -991,6 +995,11 @@ app.get('/downloadList.html', (req, res) => {
 app.get('/admin', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'admin.html'));
+});
+
+app.get('/vclient', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'vclient.html'));
 });
 
 app.get('/tgbot', (req, res) => {
@@ -1222,6 +1231,27 @@ app.put('/api/youtube-premium/tasks/:taskId/song-metadata', adminAuth.requireAut
         res.status(status).json({ error: sanitizeYoutubePremiumError(error) });
     }
 });
+
+app.put(
+    '/api/youtube-premium/tasks/:taskId/song-cover',
+    adminAuth.requireAuth,
+    youtubePremiumRateLimit,
+    express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '10mb' }),
+    async (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        try {
+            if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error('youtube-premium-song-cover-invalid');
+            res.json(await rewriteYoutubePremiumSongCover(req.params.taskId, req.body));
+        } catch (error) {
+            const status = error.message === 'youtube-premium-task-not-found'
+                ? 404
+                : error.message === 'youtube-premium-task-not-song'
+                    ? 409
+                    : 422;
+            res.status(status).json({ error: sanitizeYoutubePremiumError(error) });
+        }
+    }
+);
 
 app.post('/api/youtube-premium/tasks', adminAuth.requireAuth, youtubePremiumRateLimit, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -2253,57 +2283,67 @@ app.get('/api/magnets/:magnetId', (req, res) => {
 app.get('/api/sessions', adminAuth.requireAuth, (req, res) => {
     try {
         const sessionMap = new Map();
-        let totalDevices = 0;
-        let totalMessages = 0;
-        let totalFiles = 0;
-
-        for (const tunnel of infraStore?.listTunnels() || []) {
+        const vclientBySession = new Map((infraStore?.listVClientTunnels?.() || [])
+            .map(row => [row.session_id, row]));
+        for (const tunnel of infraStore?.listTunnelsWithStats?.({ includeDeleted: true }) || infraStore?.listTunnels() || []) {
             const sessionId = tunnel.session_id;
             if (!isValidSessionId(sessionId)) continue;
+            const vclient = vclientBySession.get(sessionId) || null;
+            const activeDeviceCount = Number(tunnel.active_device_count) || 0;
             sessionMap.set(sessionId, {
                 id: sessionId,
                 shortCode: tunnel.short_code || '',
                 remark: tunnel.remark || '',
-                deviceCount: 0,
+                isDeleted: Boolean(tunnel.deleted_at),
+                deviceCount: activeDeviceCount,
+                activeDeviceCount,
+                realActiveDeviceCount: activeDeviceCount,
+                historicalDeviceCount: Number(tunnel.historical_real_device_count ?? tunnel.historical_device_count) || 0,
+                historicalAllDeviceCount: Number(tunnel.historical_device_count) || 0,
                 createdAt: Number(tunnel.created_at) || Date.now(),
                 lastActivity: Number(tunnel.last_activity) || Date.now(),
                 isActive: false,
-                isOnline: false,
-                messageCount: 0,
-                fileCount: 0
+                isOnline: activeDeviceCount > 0,
+                messageCount: Number(tunnel.transfer_record_count) || 0,
+                fileCount: Number(tunnel.transfer_file_count) || 0,
+                uniqueFileCount: Number(tunnel.unique_file_count) || 0,
+                totalFileSize: Number(tunnel.total_file_size) || 0,
+                cacheNodeEnabled: Number(vclient?.desired_enabled) === 1,
+                cacheNodeOnline: false,
+                cacheNodeState: vclient?.state || 'disabled',
+                cacheNodeHeartbeatAt: Number(vclient?.heartbeat_at) || 0,
+                cacheNodeCachedFiles: Number(vclient?.cached_files) || 0,
+                cacheNodeCachedBytes: Number(vclient?.cached_bytes) || 0,
+                cacheNodeError: vclient?.last_error || ''
             });
         }
         
         sessions.forEach((session, sessionId) => {
-            totalDevices += session.devices.size;
-            const messages = Array.isArray(session.history) ? session.history.map(entry => entry && entry.message).filter(Boolean) : [];
-            const messageCount = messages.length;
-            const fileCount = messages.reduce((count, message) => {
-                if (message.type === 'collection' && Array.isArray(message.collection?.files)) {
-                    return count + message.collection.files.length;
-                }
-                return count + ((message.type === 'file' || message.fileInfo) ? 1 : 0);
-            }, 0);
-            totalMessages += messageCount;
-            totalFiles += fileCount;
             const current = sessionMap.get(sessionId) || {
                 id: sessionId,
                 createdAt: session.createdAt,
                 shortCode: session.shortCode || '',
                 remark: session.remark || '',
                 messageCount: 0,
-                fileCount: 0
+                fileCount: 0,
+                historicalDeviceCount: 0,
+                totalFileSize: 0
             };
+            const liveDevices = Array.from(session.devices.values());
+            const activeDeviceCount = liveDevices.length;
+            const realActiveDeviceCount = liveDevices.filter(device => device.clientType !== 'vclient').length;
+            const cacheNodeOnline = liveDevices.some(device => device.clientType === 'vclient');
             sessionMap.set(sessionId, {
                 ...current,
-                deviceCount: session.devices.size,
+                deviceCount: activeDeviceCount,
+                activeDeviceCount,
+                realActiveDeviceCount,
                 createdAt: current.createdAt || session.createdAt,
-                lastActivity: session.lastActivity,
+                lastActivity: Math.max(Number(current.lastActivity) || 0, Number(session.lastActivity) || 0),
                 remark: session.remark || current.remark || '',
                 isActive: Date.now() - session.lastActivity < 5 * 60 * 1000,
-                isOnline: session.devices.size > 0,
-                messageCount,
-                fileCount
+                isOnline: realActiveDeviceCount > 0,
+                cacheNodeOnline
             });
         });
         
@@ -2314,9 +2354,10 @@ app.get('/api/sessions', adminAuth.requireAuth, (req, res) => {
         
         res.json({
             sessions: sessionList,
-            totalDevices,
-            totalMessages,
-            totalFiles
+            totalDevices: sessionList.reduce((sum, session) => sum + (session.realActiveDeviceCount || 0), 0),
+            totalMessages: sessionList.reduce((sum, session) => sum + (session.messageCount || 0), 0),
+            totalFiles: sessionList.reduce((sum, session) => sum + (session.fileCount || 0), 0),
+            totalFileSize: sessionList.reduce((sum, session) => sum + (session.totalFileSize || 0), 0)
         });
     } catch (err) {
         console.error('API error:', err);
@@ -2400,21 +2441,23 @@ app.delete('/api/sessions/:sessionId', adminAuth.requireAuth, (req, res) => {
         const session = sessions.get(sessionId);
         if (!session) {
             deleteShortCodesForSession(sessionId);
+            vclientControl?.emitAssignments();
             return res.json({ ok: true, deleted: false, reason: 'not-found' });
         }
 
         deleteShortCodesForSession(sessionId);
+        vclientControl?.emitAssignments();
         for (const deviceId of session.devices.keys()) {
             const socket = deviceSockets.get(deviceId);
             if (socket) {
                 socket.emit('session-deleted', { sessionId });
+                socket.leave(sessionId);
                 deviceSockets.delete(deviceId);
             }
+            markAccessDeviceOffline(deviceId, { deviceId, sessionId });
         }
         cleanupFileAssetRelays(sessionId, null);
-        for (const key of editorAssetRelays.keys()) {
-            if (key.startsWith(`${sessionId}:`)) editorAssetRelays.delete(key);
-        }
+        cleanupEditorAssetRelays(sessionId, null);
         for (const [magnetId, magnet] of magnets) {
             if (magnet.sessionId === sessionId) magnets.delete(magnetId);
         }
@@ -2562,6 +2605,7 @@ const magnets = new Map();
 const accessDevices = new Map();
 const nearbyPresence = new Map();
 const sessionHistoryBroadcastTimers = new Map();
+const tunnelActivityPersistedAt = new Map();
 const telegramPendingFiles = loadTelegramPendingFiles();
 const telegramChatTunnels = loadTelegramChatTunnels();
 const telegramServerAssets = new Map();
@@ -2672,6 +2716,7 @@ function canManageTunnel(session, deviceId) {
 
 function canUseTunnelCapability(session, deviceId, capability) {
     if (!session || !deviceId) return false;
+    if (session.devices?.get(deviceId)?.clientType === 'vclient') return capability === 'read';
     if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
     const adminRecord = getTunnelAdminRecord(session, deviceId);
     if (adminRecord) return adminRecord.permissions?.[capability] !== false;
@@ -2948,6 +2993,7 @@ function deleteShortCodesForSession(sessionId) {
             shortCodes.delete(code);
         }
     }
+    tunnelActivityPersistedAt.delete(sessionId);
     infraStore?.deleteTunnel(sessionId);
 }
 
@@ -3522,7 +3568,7 @@ function getYoutubeMusicAlbumCandidateUrl(entry = {}) {
 
 async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '', options = {}) {
     const album = String(meta.album || '').trim();
-    if (!album || !meta.id) return '';
+    if (!album || !meta.id) return { trackNumber: '', albumArtist: '' };
     const albumArtist = resolveYoutubeAlbumArtist(meta);
     const query = [album, albumArtist === '群星' ? '' : albumArtist].filter(Boolean).join(' ');
     const searchUrl = `https://music.youtube.com/search?q=${encodeURIComponent(query)}#albums`;
@@ -3542,7 +3588,7 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
             level: 'warn', endpoint: searchUrl, error,
             hint: 'Track number fallback could not search YouTube Music albums; the song remains usable and Track will fall back to 1.'
         });
-        return '';
+        return { trackNumber: '', albumArtist: '' };
     }
 
     const candidates = rankYoutubeMusicAlbumCandidates(meta, searchMeta?.entries).slice(0, 8);
@@ -3563,11 +3609,16 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
             });
             const trackNumber = findYoutubeMusicTrackPosition(meta, albumMeta?.entries);
             if (trackNumber) {
+                const resolvedAlbumArtist = resolveYoutubeAlbumArtistFromEntries(albumMeta?.entries);
                 recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-track-number-resolved', {
                     level: 'info', endpoint: candidateUrl,
-                    details: { videoId: String(meta.id), album, trackNumber, strategy: 'album-search-traverse' }
+                    details: {
+                        videoId: String(meta.id), album, trackNumber,
+                        albumArtist: resolvedAlbumArtist,
+                        strategy: 'album-search-traverse'
+                    }
                 });
-                return trackNumber;
+                return { trackNumber, albumArtist: resolvedAlbumArtist };
             }
         } catch (error) {
             recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-album-traverse', {
@@ -3576,12 +3627,13 @@ async function findYoutubeMusicTrackNumberByAlbumSearch(meta = {}, sourceUrl = '
             });
         }
     }
-    return '';
+    return { trackNumber: '', albumArtist: '' };
 }
 
 async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', options = {}) {
     let ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl);
-    if (!ordinal.trackNumber && ordinal.albumPlaylistId && meta.id) {
+    let albumArtist = resolveYoutubeAlbumArtist(meta);
+    if ((!ordinal.trackNumber || !albumArtist) && ordinal.albumPlaylistId && meta.id) {
         try {
             const playlistUrl = `https://www.youtube.com/playlist?list=${encodeURIComponent(ordinal.albumPlaylistId)}`;
             const playlistMeta = await runYtDlpJson(playlistUrl, {
@@ -3592,7 +3644,14 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
                 signal: options.signal,
                 operation: 'youtube-music-known-album-traverse'
             });
-            ordinal = resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl, playlistMeta?.entries);
+            const matchedTrackNumber = findYoutubeMusicTrackPosition(meta, playlistMeta?.entries);
+            if (matchedTrackNumber) {
+                ordinal = {
+                    ...resolveYoutubeMusicOrdinalMetadata(meta, sourceUrl, playlistMeta?.entries),
+                    trackNumber: ordinal.trackNumber || matchedTrackNumber
+                };
+                albumArtist ||= resolveYoutubeAlbumArtistFromEntries(playlistMeta?.entries);
+            }
         } catch (error) {
             recordExternalDependencyEvent('youtube-yt-dlp', 'youtube-music-known-album-traverse', {
                 level: 'warn', endpoint: `https://www.youtube.com/playlist?list=${ordinal.albumPlaylistId}`, error,
@@ -3600,9 +3659,10 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
             });
         }
     }
-    if (!ordinal.trackNumber && meta.album && meta.id) {
-        const searchedTrackNumber = await findYoutubeMusicTrackNumberByAlbumSearch(meta, sourceUrl, options);
-        if (searchedTrackNumber) ordinal = { ...ordinal, trackNumber: searchedTrackNumber };
+    if ((!ordinal.trackNumber || !albumArtist) && meta.album && meta.id) {
+        const searched = await findYoutubeMusicTrackNumberByAlbumSearch(meta, sourceUrl, options);
+        if (searched.trackNumber) ordinal = { ...ordinal, trackNumber: ordinal.trackNumber || searched.trackNumber };
+        albumArtist ||= searched.albumArtist;
     }
     const trackNumber = finalizeYoutubeMusicTrackNumber(meta, ordinal.trackNumber);
     if (!meta.track_number && !ordinal.trackNumber) {
@@ -3614,6 +3674,7 @@ async function enrichYoutubeMusicOrdinalMetadata(meta = {}, sourceUrl = '', opti
     }
     return {
         ...meta,
+        album_artist: albumArtist,
         track_number: trackNumber,
         disc_number: meta.disc_number || ordinal.discNumber || '1'
     };
@@ -4607,6 +4668,7 @@ function updateTelegramAssetMetadataInSession(asset) {
         const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
         session.history[index] = { message: historyMessage, size };
         session.historySize = Math.max(0, session.historySize - previous.size + size);
+        persistHistoryAudit(asset.sessionId, session, historyMessage, 'telegram-asset-metadata-updated');
         emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage });
     }
     scheduleSessionHistoryBroadcast(asset.sessionId, 'telegram-file-id-repaired');
@@ -4723,20 +4785,21 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
     let session = sessions.get(sessionId);
     if (!session) {
         const storedTunnel = infraStore?.getTunnel(sessionId);
+        const persistedHistory = hydratePersistedSessionHistory(sessionId);
         session = {
             devices: new Map(),
             editorAssets: new Map(),
             fileAssets: new Map(),
-            history: [],
-            deletedMessageIds: [],
+            history: persistedHistory.history,
+            deletedMessageIds: persistedHistory.deletedMessageIds,
             shortCode: normalizeShortCode(shortCode),
             remark: sanitizeString(storedTunnel?.remark || '', 60),
             ownerDeviceId: sanitizeString(storedTunnel?.owner_device_id || '', 80),
             permissions: parseStoredTunnelPermissions(storedTunnel?.permissions_json),
             admins: parseStoredTunnelAdmins(storedTunnel?.permissions_json),
-            historySize: 0,
-            createdAt: Date.now(),
-            lastActivity: Date.now()
+            historySize: persistedHistory.historySize,
+            createdAt: Number(storedTunnel?.created_at) || Date.now(),
+            lastActivity: Number(storedTunnel?.last_activity) || Date.now()
         };
         sessions.set(sessionId, session);
     }
@@ -5052,6 +5115,7 @@ function replaceHistoryMessage(sessionId, session, message, reason = 'message-up
     session.history[historyIndex] = { message: historyMessage, size };
     session.historySize = Math.max(0, session.historySize - previous.size + size);
     session.lastActivity = Date.now();
+    persistHistoryAudit(sessionId, session, historyMessage, reason);
     emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage });
     scheduleSessionHistoryBroadcast(sessionId, reason, 500);
     return true;
@@ -6038,6 +6102,110 @@ async function rewriteYoutubePremiumSongMetadata(taskId, input) {
     }
 }
 
+function detectYoutubePremiumCoverExtension(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 12) return '';
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg';
+    if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png';
+    if (buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp';
+    return '';
+}
+
+function replaceCompletedFileWithRollback(completedPath, targetPath) {
+    const backupPath = path.join(
+        path.dirname(targetPath),
+        `.metadata-cover-backup-${crypto.randomBytes(6).toString('hex')}${path.extname(targetPath) || '.m4a'}`
+    );
+    let replacementActive = false;
+    fs.copyFileSync(targetPath, backupPath, fs.constants.COPYFILE_EXCL);
+    try {
+        // Both files live in the same directory. Rename publishes only the already
+        // completed and probed result, while the backup remains available for rollback.
+        fs.renameSync(completedPath, targetPath);
+        replacementActive = true;
+    } catch (error) {
+        fs.rmSync(backupPath, { force: true });
+        throw error;
+    }
+    return {
+        commit() {
+            if (!replacementActive) return;
+            fs.rmSync(backupPath, { force: true });
+            replacementActive = false;
+        },
+        rollback() {
+            if (!replacementActive) return;
+            fs.renameSync(backupPath, targetPath);
+            replacementActive = false;
+        }
+    };
+}
+
+async function rewriteYoutubePremiumSongCover(taskId, coverBuffer) {
+    const task = youtubePremiumService.get(taskId);
+    const file = youtubePremiumService.getFile(taskId);
+    if (!task || !file) throw new Error('youtube-premium-task-not-found');
+    if (task.mediaType !== 'song') throw new Error('youtube-premium-task-not-song');
+    const extension = detectYoutubePremiumCoverExtension(coverBuffer);
+    if (!extension || coverBuffer.length > 10 * 1024 * 1024) throw new Error('youtube-premium-song-cover-invalid');
+
+    const nonce = crypto.randomBytes(6).toString('hex');
+    const coverPath = path.join(path.dirname(file.path), `.metadata-cover-${nonce}${extension}`);
+    const temporaryPath = path.join(path.dirname(file.path), `.metadata-cover-${nonce}.m4a`);
+    let replacement = null;
+    try {
+        fs.writeFileSync(coverPath, coverBuffer, { flag: 'wx' });
+        try {
+            await spawnCapture(FFMPEG_COMMAND, [
+                '-y', '-hide_banner', '-loglevel', 'error',
+                '-i', file.path, '-i', coverPath,
+                '-map', '0:a:0', '-map', '1:v:0', '-map_metadata', '0',
+                '-c:a', 'copy', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic',
+                '-metadata:s:v:0', 'title=Album cover', '-metadata:s:v:0', 'comment=Cover (front)',
+                '-movflags', '+faststart', temporaryPath
+            ], { timeoutMs: 10 * 60 * 1000, timeoutError: 'song-cover-write-timeout' });
+        } catch (error) {
+            if (error?.message === 'song-cover-write-timeout') throw error;
+            console.error('[YouTube Premium] 写入歌曲封面失败:', error);
+            throw new Error('youtube-premium-song-cover-write-failed', { cause: error });
+        }
+        let probe;
+        try {
+            probe = await probeMediaFile(temporaryPath);
+        } catch (error) {
+            console.error('[YouTube Premium] 校验歌曲封面失败:', error);
+            throw new Error('youtube-premium-song-cover-verify-failed', { cause: error });
+        }
+        const hasAudio = probe.streams?.some(stream => stream.codec_type === 'audio');
+        const hasCover = probe.streams?.some(stream =>
+            stream.codec_type === 'video' && Number(stream.disposition?.attached_pic) === 1
+        );
+        if (!hasAudio || !hasCover) throw new Error('song-cover-not-embedded');
+        replacement = replaceCompletedFileWithRollback(temporaryPath, file.path);
+        const metadata = normalizeEditableSongMetadata(task.songMetadata || {});
+        const updatedTask = youtubePremiumService.setSongMetadata(taskId, metadata, {
+            outputPath: file.path,
+            outputFileName: file.name,
+            outputFileSize: fs.statSync(file.path).size
+        });
+        replacement.commit();
+        replacement = null;
+        return updatedTask;
+    } catch (error) {
+        if (replacement) {
+            try {
+                replacement.rollback();
+            } catch (rollbackError) {
+                console.error('[YouTube Premium] 歌曲封面写入回滚失败:', rollbackError);
+                throw new Error('youtube-premium-song-cover-rollback-failed', { cause: error });
+            }
+        }
+        throw error;
+    } finally {
+        fs.rmSync(coverPath, { force: true });
+        fs.rmSync(temporaryPath, { force: true });
+    }
+}
+
 function ensureYoutubePremiumTaskCover(taskId) {
     if (youtubePremiumService.getFile(taskId, 'cover')) return Promise.resolve(youtubePremiumService.getFile(taskId, 'cover'));
     if (youtubePremiumCoverJobs.has(taskId)) return youtubePremiumCoverJobs.get(taskId);
@@ -6074,8 +6242,17 @@ function sanitizeYoutubePremiumError(error) {
         'youtube-premium-cookie-save-failed': '私人 YouTube Premium Cookie 保存失败',
         'youtube-premium-thumbnail-missing': 'yt-dlp 没有返回可下载的封面',
         'youtube-premium-thumbnail-timeout': '获取原尺寸封面超时，请稍后重试',
+        'youtube-premium-task-not-found': '下载任务不存在或成品文件已经清理',
         'youtube-premium-task-not-song': '只有音乐类型任务可以编辑歌曲元数据',
         'youtube-premium-task-active': '任务仍在运行，请先取消并等待任务停止',
+        'youtube-premium-song-cover-invalid': '歌曲封面无效，仅支持不超过 10MB 的 JPEG、PNG 或 WebP 图片',
+        'song-cover-write-timeout': '写入歌曲封面超时，请稍后重试',
+        'youtube-premium-song-cover-write-failed': '歌曲封面写入失败，原成品已保留；请检查图片或服务器媒体工具',
+        'youtube-premium-song-cover-verify-failed': '歌曲封面写入结果无法校验，原成品已保留',
+        'song-cover-not-embedded': '封面写入后的歌曲文件校验失败，原成品已保留',
+        'youtube-premium-song-cover-rollback-failed': '封面写入失败且自动回滚异常，请检查服务器日志与任务成品',
+        'song-metadata-write-timeout': '写入歌曲元信息超时，请稍后重试',
+        'song-final-m4a-invalid': '歌曲元信息写入后的成品校验失败',
         'custom-format-required': '自定义模式至少选择一个媒体格式',
         'custom-format-count-invalid': '只能选择一个媒体格式，或一个视频格式加一个音频格式',
         'custom-format-not-found': '所选媒体格式已失效，请重新解析',
@@ -6568,6 +6745,36 @@ function getEditorAssetRelayKey(sessionId, from, to, assetId) {
     return `${sessionId}:${from}:${to}:${assetId}`;
 }
 
+function cleanupEditorAssetRelays(sessionId, deviceId) {
+    const removed = [];
+    for (const [key, relay] of editorAssetRelays) {
+        if (relay.sessionId !== sessionId || (deviceId && relay.from !== deviceId && relay.to !== deviceId)) continue;
+        removed.push(relay);
+        editorAssetRelays.delete(key);
+    }
+    return removed;
+}
+
+function notifyInterruptedAssetRelays(fileRelays, editorRelays, disconnectedDeviceId) {
+    for (const relay of fileRelays || []) {
+        const peerDeviceId = relay.from === disconnectedDeviceId ? relay.to : relay.from;
+        deviceSockets.get(peerDeviceId)?.emit('file-asset-unavailable', {
+            assetId: relay.asset?.id,
+            from: disconnectedDeviceId,
+            transferId: relay.transfer?.transferId,
+            reason: 'peer-disconnected'
+        });
+    }
+    for (const relay of editorRelays || []) {
+        const peerDeviceId = relay.from === disconnectedDeviceId ? relay.to : relay.from;
+        deviceSockets.get(peerDeviceId)?.emit('editor-asset-unavailable', {
+            assetId: relay.asset?.id,
+            from: disconnectedDeviceId,
+            reason: 'peer-disconnected'
+        });
+    }
+}
+
 function getBinaryDataSize(value) {
     if (Buffer.isBuffer(value)) return value.length;
     if (value instanceof ArrayBuffer) return value.byteLength;
@@ -6672,6 +6879,72 @@ function summarizeHistoryMessage(message) {
     };
 }
 
+function hydratePersistedSessionHistory(sessionId) {
+    const persisted = infraStore?.hydrateTunnelHistory?.(sessionId, { limit: MAX_HISTORY_MESSAGES }) || {
+        messages: [],
+        deletedMessageIds: []
+    };
+    const entries = [];
+    let historySize = 0;
+    const messages = Array.isArray(persisted.messages) ? persisted.messages : [];
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (!message || !isValidDeviceId(message.id)) continue;
+        const size = Buffer.byteLength(JSON.stringify(message), 'utf8');
+        if (size > MAX_HISTORY_SIZE || historySize + size > MAX_HISTORY_SIZE) continue;
+        entries.unshift({ message, size });
+        historySize += size;
+    }
+    return {
+        history: entries,
+        historySize,
+        deletedMessageIds: Array.isArray(persisted.deletedMessageIds)
+            ? persisted.deletedMessageIds.slice(-MAX_HISTORY_MESSAGES)
+            : []
+    };
+}
+
+function getSessionAuditFileAssets(session) {
+    const assets = new Map();
+    for (const [assetId, record] of session?.fileAssets || []) {
+        assets.set(assetId, {
+            ...record,
+            metadata: { ...(record?.metadata || record || {}), assetKind: 'file' }
+        });
+    }
+    for (const [assetId, record] of session?.editorAssets || []) {
+        if (!assets.has(assetId)) {
+            assets.set(assetId, {
+                ...record,
+                metadata: { ...(record?.metadata || record || {}), assetKind: 'editor' }
+            });
+        }
+    }
+    return assets;
+}
+
+function persistHistoryAudit(sessionId, session, message, source = '', fileAssets = null) {
+    const result = infraStore?.recordHistoryMessage?.(sessionId, message, {
+        source,
+        fileAssets: fileAssets || getSessionAuditFileAssets(session)
+    });
+    if (result) tunnelActivityPersistedAt.set(sessionId, Date.now());
+    return result;
+}
+
+function persistTunnelActivity(sessionId, session, force = false) {
+    if (!infraStore || !sessionId || !session) return;
+    const now = Number(session.lastActivity) || Date.now();
+    const previous = tunnelActivityPersistedAt.get(sessionId) || 0;
+    if (!force && now - previous < 60 * 1000) return;
+    infraStore.touchTunnel(sessionId, {
+        shortCode: session.shortCode || '',
+        createdAt: session.createdAt || now,
+        lastActivity: now
+    });
+    tunnelActivityPersistedAt.set(sessionId, now);
+}
+
 function historyLog(event, details) {
     if (HISTORY_DEBUG) {
         recordDebugLog({
@@ -6687,6 +6960,15 @@ function historyLog(event, details) {
 }
 
 function addToSessionHistory(sessionId, session, message, context = {}) {
+    if (Array.isArray(session.deletedMessageIds) && session.deletedMessageIds.includes(message?.id)) {
+        historyLog('store-skipped', {
+            sessionId,
+            ...context,
+            reason: 'deleted-tombstone',
+            message: summarizeHistoryMessage(message)
+        });
+        return { stored: false, reason: 'deleted-tombstone', evicted: 0 };
+    }
     if (session.history.some(entry => entry.message.id === message.id)) {
         historyLog('store-skipped', {
             sessionId,
@@ -6699,6 +6981,15 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
     }
     const fileId = message?.type === 'file' ? message.fileInfo?.id : null;
     if (fileId && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
+        // The bounded browser history de-duplicates the same file asset, but the audit
+        // ledger must still retain every distinct transfer record/message id.
+        persistHistoryAudit(
+            sessionId,
+            session,
+            createHistoryMessage(message),
+            context.source || 'socket-duplicate-file',
+            context.auditFileAssets || null
+        );
         historyLog('store-skipped', {
             sessionId,
             ...context,
@@ -6732,6 +7023,13 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
 
     session.history.push({ message: historyMessage, size });
     session.historySize += size;
+    persistHistoryAudit(
+        sessionId,
+        session,
+        historyMessage,
+        context.source || 'socket-history',
+        context.auditFileAssets || null
+    );
     historyLog('stored', {
         sessionId,
         ...context,
@@ -6756,7 +7054,8 @@ function getSessionDeviceList(session, excludeDeviceId = '') {
             deviceModel: d.deviceModel,
             localIp: d.localIp,
             internalIp: d.localIp,
-            externalIp: d.externalIp
+            externalIp: d.externalIp,
+            clientType: d.clientType === 'vclient' ? 'vclient' : 'browser'
         });
     });
     return deviceList;
@@ -6817,6 +7116,8 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
+    const trustedVClient = Boolean(vclientControl?.isDataSocketAuthenticated(socket));
+    socket.data.isVClient = trustedVClient;
     let socketLanguage = normalizeLanguageCode(
         socket.handshake.auth?.language || socket.handshake.headers['accept-language'] || 'zh-Hans'
     );
@@ -6858,7 +7159,7 @@ io.on('connection', (socket) => {
     }
     const ipSockets = ipConnections.get(clientIp);
     
-    if (ipSockets.size >= 20) { // 每个IP最多20个连接
+    if (!trustedVClient && ipSockets.size >= 20) { // 普通客户端每个IP最多20个连接；可信缓存节点可管理多个隧道
         console.warn(`IP ${clientIp} exceeded connection limit`);
         emitSocketError('error', '连接数超限');
         socket.disconnect();
@@ -7088,11 +7389,15 @@ io.on('connection', (socket) => {
             }
             
             const { sessionId, deviceId, deviceName } = data;
+            const clientType = trustedVClient && data.clientType === 'vclient' ? 'vclient' : 'browser';
             const requestedShortCode = normalizeShortCode(data.shortCode);
             
             // 验证 sessionId
             if (!isValidSessionId(sessionId)) {
                 return emitSocketError('error', '无效的会话ID');
+            }
+            if (clientType === 'vclient' && !vclientControl?.isTunnelEnabled(sessionId)) {
+                return emitSocketError('error', '缓存节点未获准加入该隧道', { code: 'VCLIENT_TUNNEL_NOT_ENABLED' });
             }
             
             // 验证 deviceId
@@ -7115,6 +7420,8 @@ io.on('connection', (socket) => {
             
             currentSession = sessionId;
             currentDevice = deviceId;
+            socket.data.vclientSessionId = clientType === 'vclient' ? sessionId : '';
+            socket.data.vclientDeviceId = clientType === 'vclient' ? deviceId : '';
             const storedTunnel = infraStore?.getTunnel(sessionId);
             const storedRemark = sanitizeString(storedTunnel?.remark || '', 60);
             const storedOwnerDeviceId = sanitizeString(storedTunnel?.owner_device_id || '', 80);
@@ -7127,19 +7434,20 @@ io.on('connection', (socket) => {
             
             // 获取或创建会话
             if (!sessions.has(sessionId)) {
+                const persistedHistory = hydratePersistedSessionHistory(sessionId);
                 sessions.set(sessionId, {
                 devices: new Map(),
                 editorAssets: new Map(),
                 fileAssets: new Map(),
-                history: [],
-                deletedMessageIds: [],
+                history: persistedHistory.history,
+                deletedMessageIds: persistedHistory.deletedMessageIds,
                 shortCode: createShortCode(sessionId, requestedShortCode),
                 remark: storedRemark,
                 ownerDeviceId: storedOwnerDeviceId || deviceId,
                 permissions: storedPermissions,
                 admins: storedAdmins,
-                historySize: 0,
-                    createdAt: Date.now(),
+                historySize: persistedHistory.historySize,
+                    createdAt: Number(storedTunnel?.created_at) || Date.now(),
                     lastActivity: Date.now()
                 });
             }
@@ -7151,11 +7459,8 @@ io.on('connection', (socket) => {
             if (!session.admins) session.admins = storedAdmins;
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
-            infraStore?.touchTunnel(sessionId, {
-                shortCode: session.shortCode || '',
-                createdAt: session.createdAt || Date.now(),
-                lastActivity: Date.now()
-            });
+            session.lastActivity = Date.now();
+            persistTunnelActivity(sessionId, session, true);
             infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now(), session.admins);
             
             // 设备数量限制
@@ -7167,7 +7472,11 @@ io.on('connection', (socket) => {
             }
 
             if (reconnected) {
-                cleanupFileAssetRelays(sessionId, deviceId);
+                notifyInterruptedAssetRelays(
+                    cleanupFileAssetRelays(sessionId, deviceId),
+                    cleanupEditorAssetRelays(sessionId, deviceId),
+                    deviceId
+                );
                 cleanupFileAssetAssignments(session, deviceId);
             }
             
@@ -7181,8 +7490,14 @@ io.on('connection', (socket) => {
                 localIp: sanitizeString(data.localIp || existingDevice?.localIp || '', 80),
                 externalIp: clientIp,
                 lastSeenAt: Date.now(),
+                clientType,
                 editorContent: existingDevice ? existingDevice.editorContent : '',
                 editorUpdatedAt: existingDevice ? existingDevice.editorUpdatedAt : 0
+            });
+            infraStore?.recordTunnelMember?.(sessionId, {
+                deviceId,
+                deviceName: sanitizeString(deviceName),
+                deviceType: clientType
             });
             accessDevices.delete(socketAccessKey);
             touchAccessDevice(deviceId, {
@@ -7225,7 +7540,8 @@ io.on('connection', (socket) => {
                     joinedAt: Date.now(),
                     deviceModel: session.devices.get(deviceId)?.deviceModel || '',
                     localIp: session.devices.get(deviceId)?.localIp || '',
-                    externalIp: clientIp
+                    externalIp: clientIp,
+                    clientType
                 });
             } else {
                 socket.to(sessionId).emit('device-updated', {
@@ -7236,6 +7552,7 @@ io.on('connection', (socket) => {
                     localIp: session.devices.get(deviceId)?.localIp || '',
                     internalIp: session.devices.get(deviceId)?.localIp || '',
                     externalIp: clientIp,
+                    clientType,
                     refreshedAt: Date.now()
                 });
             }
@@ -7305,6 +7622,14 @@ io.on('connection', (socket) => {
         try {
             const { sessionId } = data || {};
             if (sessionId !== currentSession || !currentDevice) return;
+            if (socket.data?.isVClient === true && !vclientControl?.isTunnelEnabled(sessionId)) {
+                socket.emit('error', {
+                    code: 'VCLIENT_TUNNEL_NOT_ENABLED',
+                    message: socketText('缓存节点已被管理员停止')
+                });
+                socket.disconnect(true);
+                return;
+            }
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
             const remark = sanitizeString(String(data.remark || '').trim(), 60);
@@ -7463,6 +7788,7 @@ io.on('connection', (socket) => {
             device.localIp = sanitizeString(data.localIp || device.localIp || '', 80);
             device.externalIp = clientIp;
             session.lastActivity = Date.now();
+            persistTunnelActivity(sessionId, session);
             touchAccessDevice(currentDevice, {
                 deviceId: currentDevice,
                 sessionId,
@@ -7487,6 +7813,7 @@ io.on('connection', (socket) => {
                 localIp: device.localIp,
                 internalIp: device.localIp,
                 externalIp: device.externalIp,
+                clientType: device.clientType === 'vclient' ? 'vclient' : 'browser',
                 refreshedAt: Date.now()
             });
             historyLog('tunnel-heartbeat', {
@@ -7549,11 +7876,11 @@ io.on('connection', (socket) => {
             
             const { sessionId, message } = data;
             
-            if (!isValidSessionId(sessionId)) return;
+            if (!isValidSessionId(sessionId) || sessionId !== currentSession) return;
             if (!message || typeof message !== 'object') return;
             if (message.sender !== currentDevice) return;
             const session = sessions.get(sessionId);
-            if (!session) return;
+            if (!session || !session.devices.has(currentDevice)) return;
             const requiredCapability = message.type === 'text'
                 ? 'sendText'
                 : message.type === 'rich'
@@ -7625,6 +7952,10 @@ io.on('connection', (socket) => {
             if (!infraStore?.getTunnel(targetSessionId)) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'target-tunnel-not-found' });
             }
+            const sourceSession = sessions.get(currentSession);
+            if (!sourceSession?.devices?.has(currentDevice)) {
+                return typeof ack === 'function' && ack({ ok: false, error: 'source-device-not-joined' });
+            }
             if (message.sender !== currentDevice || JSON.stringify(message).length > MAX_MESSAGE_SIZE) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'invalid-forward-message' });
             }
@@ -7640,7 +7971,8 @@ io.on('connection', (socket) => {
                 fromDeviceId: currentDevice,
                 socketId: socket.id,
                 clientIp,
-                source: 'cross-tunnel-forward'
+                source: 'cross-tunnel-forward',
+                auditFileAssets: getSessionAuditFileAssets(sourceSession)
             });
             emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
@@ -7682,6 +8014,10 @@ io.on('connection', (socket) => {
             }
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
+            if (historyIndex < 0 && !infraStore?.get?.(
+                'SELECT 1 AS found FROM transfer_records WHERE session_id = ? AND message_id = ?',
+                [sessionId, messageId]
+            )) return;
             let fileId = null;
             let fileIds = [];
             let fileStillReferenced = false;
@@ -7705,6 +8041,7 @@ io.on('connection', (socket) => {
                 if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) session.deletedMessageIds.shift();
             }
             session.lastActivity = Date.now();
+            infraStore?.markHistoryDeleted?.(sessionId, messageId, session.lastActivity);
             emitToReadableSessionDevices(session, 'message-deleted', { messageId }, currentDevice);
             historyLog('message-deleted', {
                 sessionId,
@@ -7761,6 +8098,7 @@ io.on('connection', (socket) => {
                 });
             }
             session.lastActivity = Date.now();
+            persistHistoryAudit(sessionId, session, historyMessage, 'message-updated');
             emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage }, currentDevice);
             scheduleSessionHistoryBroadcast(sessionId, 'message-updated');
             historyLog('message-updated', {
@@ -7865,6 +8203,7 @@ io.on('connection', (socket) => {
             session.history[historyIndex] = { message: updated, size };
             session.historySize = Math.max(0, session.historySize - previous.size + size);
             session.lastActivity = Date.now();
+            persistHistoryAudit(sessionId, session, updated, 'rich-message-edited');
             emitToReadableSessionDevices(session, 'message-updated', { message: updated });
             scheduleSessionHistoryBroadcast(sessionId, 'rich-message-edited');
             respond({ ok: true, message: updated });
@@ -8160,6 +8499,19 @@ io.on('connection', (socket) => {
 
             record.providers.add(currentDevice);
             session.lastActivity = Date.now();
+            infraStore?.recordFileAsset?.(sessionId, record.metadata, {
+                sourceDeviceId: currentDevice,
+                now: session.lastActivity,
+                metadata: { ...record.metadata, assetKind: 'editor' }
+            });
+            infraStore?.recordAssetTransferEvent?.(sessionId, 'announced', {
+                ...record.metadata,
+                assetKind: 'editor'
+            }, {
+                sourceDeviceId: currentDevice,
+                now: session.lastActivity,
+                transport: 'editor-provider-announcement'
+            });
             socket.to(sessionId).emit('editor-asset-available', {
                 asset: record.metadata,
                 from: currentDevice
@@ -8215,9 +8567,19 @@ io.on('connection', (socket) => {
                 assetId,
                 providerDeviceId
             });
+            infraStore?.recordAssetTransferEvent?.(sessionId, 'requested', {
+                ...record.metadata,
+                assetKind: 'editor'
+            }, {
+                sourceDeviceId: providerDeviceId,
+                targetDeviceId: currentDevice,
+                now: Date.now(),
+                transport: socket.data?.isVClient === true ? 'socket.io-relay' : 'negotiated-editor-path'
+            });
             providerSocket.emit('editor-asset-request', {
                 asset: record.metadata,
-                from: currentDevice
+                from: currentDevice,
+                transportHint: socket.data?.isVClient === true ? 'relay-only' : undefined
             });
             historyLog('editor-asset-request-forwarded', {
                 sessionId,
@@ -8245,9 +8607,11 @@ io.on('connection', (socket) => {
                 const alternativeProviderId = getAvailableEditorAssetProvider(session, assetId, to, null);
                 const alternativeSocket = alternativeProviderId && deviceSockets.get(alternativeProviderId);
                 if (alternativeSocket) {
+                    const requesterSocket = deviceSockets.get(to);
                     alternativeSocket.emit('editor-asset-request', {
                         asset: record.metadata,
-                        from: to
+                        from: to,
+                        transportHint: requesterSocket?.data?.isVClient === true ? 'relay-only' : undefined
                     });
                     return;
                 }
@@ -8356,6 +8720,16 @@ io.on('connection', (socket) => {
                     from: currentDevice
                 });
             }
+            infraStore?.recordAssetTransferEvent?.(sessionId, 'relay-completed', {
+                ...relay.asset,
+                assetKind: 'editor'
+            }, {
+                sourceDeviceId: currentDevice,
+                targetDeviceId: to,
+                now: Date.now(),
+                transport: 'socket.io-editor-relay',
+                bytesTransferred: relay.receivedSize
+            });
             historyLog('editor-asset-relay-completed', {
                 sessionId,
                 deviceId: currentDevice,
@@ -8380,9 +8754,10 @@ io.on('connection', (socket) => {
             
             const { sessionId, from, fileInfo } = data;
             
-            if (!isValidSessionId(sessionId)) return;
+            if (!isValidSessionId(sessionId) || sessionId !== currentSession) return;
             if (from !== currentDevice) return;
             if (!fileInfo || typeof fileInfo !== 'object') return;
+            if (!isValidDeviceId(fileInfo.id)) return;
             
             // 验证文件信息
             if (typeof fileInfo.name !== 'string' || fileInfo.name.length > 255) return;
@@ -8390,19 +8765,33 @@ io.on('connection', (socket) => {
             if (typeof fileInfo.type !== 'string' || fileInfo.type.length > 100) return;
             
             const session = sessions.get(sessionId);
-            if (!session) return;
+            if (!session || !session.devices.has(currentDevice)) return;
             
             session.lastActivity = Date.now();
+            const auditedFile = {
+                id: fileInfo.id,
+                name: sanitizeString(fileInfo.name, 255),
+                size: fileInfo.size,
+                type: sanitizeString(fileInfo.type, 100)
+            };
+            infraStore?.recordHistoryMessage?.(sessionId, {
+                id: `legacy-${fileInfo.id}`.slice(0, 64),
+                type: 'file',
+                sender: from,
+                senderName: session.devices.get(currentDevice)?.deviceName || '',
+                timestamp: session.lastActivity,
+                fileInfo: auditedFile
+            }, {
+                source: 'legacy-file-offer',
+                fileAssets: getSessionAuditFileAssets(session),
+                now: session.lastActivity
+            });
+            tunnelActivityPersistedAt.set(sessionId, session.lastActivity);
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('file-offer', { 
                 from, 
-                fileInfo: {
-                    id: fileInfo.id,
-                    name: sanitizeString(fileInfo.name, 255),
-                    size: fileInfo.size,
-                    type: sanitizeString(fileInfo.type, 100)
-                }
+                fileInfo: auditedFile
             });
         } catch (err) {
             console.error('file-offer error:', err);
@@ -8416,9 +8805,10 @@ io.on('connection', (socket) => {
             
             const { sessionId, to, from, fileId, accepted } = data;
             
-            if (!isValidSessionId(sessionId)) return;
+            if (!isValidSessionId(sessionId) || sessionId !== currentSession) return;
             if (!isValidDeviceId(to) || !isValidDeviceId(from)) return;
             if (from !== currentDevice) return;
+            if (!sessions.get(sessionId)?.devices.has(currentDevice)) return;
             
             const targetSocket = deviceSockets.get(to);
             if (targetSocket) {
@@ -8444,6 +8834,9 @@ io.on('connection', (socket) => {
         sanitize: sanitizeString,
         historyLog,
         clientIp,
+        recordFileAsset: (sessionId, asset, options) => infraStore?.recordFileAsset?.(sessionId, asset, options),
+        recordTransferEvent: (sessionId, eventType, asset, options) =>
+            infraStore?.recordAssetTransferEvent?.(sessionId, eventType, asset, options),
         translateText: socketText
     });
 
@@ -8479,12 +8872,11 @@ io.on('connection', (socket) => {
 
                 // A reloaded page may already have replaced this socket.
                 if (device && device.socketId === socket.id) {
-                    cleanupFileAssetRelays(currentSession, currentDevice);
-                    for (const [key, relay] of editorAssetRelays) {
-                        if (relay.sessionId === currentSession && (relay.from === currentDevice || relay.to === currentDevice)) {
-                            editorAssetRelays.delete(key);
-                        }
-                    }
+                    notifyInterruptedAssetRelays(
+                        cleanupFileAssetRelays(currentSession, currentDevice),
+                        cleanupEditorAssetRelays(currentSession, currentDevice),
+                        currentDevice
+                    );
                     markAccessDeviceOffline(currentDevice, {
                         deviceId: currentDevice,
                         sessionId: currentSession,
@@ -8657,6 +9049,14 @@ function auditExternalRuntimeDependencies() {
 
 async function startServer() {
     infraStore = await createInfraStore({ dataDir: SERVER_DATA_DIR });
+    vclientControl = createVClientControl({
+        io,
+        app,
+        adminAuth,
+        infraStore,
+        dataDir: SERVER_DATA_DIR,
+        isValidSessionId
+    });
     cleanupSnsWorkFiles('.cookies-');
     migrateLegacyShortCodeStore();
     hydrateShortCodeCache();

@@ -1,31 +1,39 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveYoutubeAlbumArtist } = require('../server/youtube-premium');
+const {
+    resolveYoutubeAlbumArtist,
+    resolveYoutubeAlbumArtistFromEntries
+} = require('../server/youtube-premium');
 
-test('YouTube Music normal single-artist albums recover album artist when yt-dlp omits album_artist fields', () => {
+test('missing album_artist fields do not guess from the single track artist', () => {
     const fieldMissingFixture = {
         id: 'XnWxihjgR-E',
-        album: 'fixture-album',
-        artist: 'fixture-album-artist'
+        album: 'Summer in Blue',
+        artist: 'Yuri Kunizane'
     };
-    assert.equal(resolveYoutubeAlbumArtist(fieldMissingFixture), 'fixture-album-artist');
-    assert.equal(resolveYoutubeAlbumArtist({
-        album: 'Artist Album',
-        artists: ['Album Artist', 'Album Artist']
-    }), 'Album Artist');
+    assert.equal(resolveYoutubeAlbumArtist(fieldMissingFixture), '');
 });
 
-test('album artist fallback does not undo compilation and ambiguous multi-artist protection', () => {
+test('a matched YouTube Music album derives one album artist from Topic channels', () => {
+    const albumEntries = [
+        { id: 'uSMg9u5Mezg', channel: 'Yuri Kunizane - Topic' },
+        { id: 'XnWxihjgR-E', channel: 'Yuri Kunizane - Topic' },
+        { id: 'SDLoNI2xElM', uploader: 'Yuri Kunizane - Topic' }
+    ];
+    assert.equal(resolveYoutubeAlbumArtistFromEntries(albumEntries), 'Yuri Kunizane');
+});
+
+test('album artist resolution preserves compilation and ambiguous-album protection', () => {
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album',
         album_artist: null,
         artist: 'Track Artist'
-    }), '群星');
+    }), '');
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album',
         album_artists: [],
         artists: ['Track Artist']
-    }), '群星');
+    }), '');
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album',
         album_artist: 'Various Artists',
@@ -45,4 +53,14 @@ test('album artist fallback does not undo compilation and ambiguous multi-artist
         album_artist: 'Explicit Album Artist',
         artist: 'Track Artist'
     }), 'Explicit Album Artist');
+    assert.equal(resolveYoutubeAlbumArtistFromEntries([
+        { channel: 'Artist A - Topic' },
+        { channel: 'Artist B - Topic' }
+    ]), '群星');
+    assert.equal(resolveYoutubeAlbumArtistFromEntries([
+        { channel: 'Various Artists - Topic' }
+    ]), '群星');
+    assert.equal(resolveYoutubeAlbumArtistFromEntries([
+        { channel: 'Ordinary upload channel' }
+    ]), '');
 });

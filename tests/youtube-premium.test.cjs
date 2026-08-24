@@ -14,6 +14,7 @@ const {
     findYoutubeMusicTrackPosition,
     rankYoutubeMusicAlbumCandidates,
     resolveYoutubeAlbumArtist,
+    resolveYoutubeAlbumArtistFromEntries,
     resolveYoutubeMusicOrdinalMetadata,
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
@@ -187,13 +188,13 @@ test('YouTube Music album search candidates prefer exact album and artist matche
     assert.equal(ranked[1].id, 'MP_title');
 });
 
-test('YouTube Music compilation albums never inherit the track artist as album artist', () => {
+test('YouTube Music album artist requires explicit or matched-album evidence', () => {
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album', album_artist: null, artist: 'Track Artist'
-    }), '群星');
+    }), '');
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album', album_artists: [], artists: ['Track Artist']
-    }), '群星');
+    }), '');
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Compilation Album', album_artist: 'Various Artists', artist: 'Track Artist'
     }), '群星');
@@ -206,6 +207,13 @@ test('YouTube Music compilation albums never inherit the track artist as album a
     assert.equal(resolveYoutubeAlbumArtist({
         album: 'Flagged Compilation', compilation: true, artist: 'Track Artist'
     }), '群星');
+    assert.equal(resolveYoutubeAlbumArtistFromEntries([
+        { id: 'uSMg9u5Mezg', channel: 'Yuri Kunizane - Topic' },
+        { id: 'XnWxihjgR-E', channel: 'Yuri Kunizane - Topic' }
+    ]), 'Yuri Kunizane');
+    assert.equal(resolveYoutubeAlbumArtistFromEntries([
+        { channel: 'Artist A - Topic' }, { channel: 'Artist B - Topic' }
+    ]), '群星');
 
     const ranked = rankYoutubeMusicAlbumCandidates({
         album: 'Compilation Album', album_artist: null, artist: 'Track Artist'
@@ -213,7 +221,7 @@ test('YouTube Music compilation albums never inherit the track artist as album a
         { id: 'MP_track_artist', title: 'Compilation Album', artist: 'Track Artist' },
         { id: 'MP_various', title: 'Compilation Album', artist: 'Various Artists' }
     ]);
-    assert.equal(ranked[0].id, 'MP_various');
+    assert.equal(ranked[0].id, 'MP_track_artist', 'ambiguous empty metadata must not invent a compilation ranking signal');
 });
 
 test('custom video tracks override a detected music source unless music mode is forced', () => {
@@ -464,6 +472,32 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(browserCache, /cleanupOrphans\(validTaskIds\)/);
     assert.match(page, /任务标签/);
     assert.match(page, /编辑歌曲元信息/);
+    assert.match(page, /id="metadataCoverSelect"/);
+    assert.match(page, /id="metadataCoverUpload"[^>]*accept="image\/jpeg,image\/png,image\/webp"/);
+    assert.match(page, /metadataCoverMaxBytes = 10 \* 1024 \* 1024/);
+    assert.match(page, /\/song-cover`, \{\s*method: 'PUT'/);
+    assert.match(page, /let metadataCoverGeneration = 0/);
+    assert.match(page, /generation !== metadataCoverGeneration \|\| metadataCoverTask\?\.id !== selectedTaskId/);
+    assert.match(page, /当前显示任务参考封面，不是歌曲内嵌封面的读取结果/);
+    assert.match(page, /if \(coverSaved && !metadataSaved\)/);
+    assert.match(page, /所选封面已写入歌曲，但其他元信息保存失败/);
+    const metadataCoverCode = page.slice(
+        page.indexOf('function resetMetadataCoverEditor'),
+        page.indexOf('async function showMetadataDialog')
+    );
+    assert.doesNotMatch(metadataCoverCode, /\btg[A-Z]/);
+    const songCoverServerCode = server.slice(
+        server.indexOf('function replaceCompletedFileWithRollback'),
+        server.indexOf('function ensureYoutubePremiumTaskCover')
+    );
+    assert.match(songCoverServerCode, /COPYFILE_EXCL/);
+    assert.match(songCoverServerCode, /fs\.renameSync\(completedPath, targetPath\)/);
+    assert.match(songCoverServerCode, /rollback\(\)/);
+    assert.doesNotMatch(songCoverServerCode, /setCoverPath/);
+    assert.match(server, /'youtube-premium-song-cover-invalid': '歌曲封面无效/);
+    assert.match(server, /'youtube-premium-song-cover-write-failed': '歌曲封面写入失败，原成品已保留/);
+    assert.match(server, /'youtube-premium-song-cover-verify-failed': '歌曲封面写入结果无法校验，原成品已保留'/);
+    assert.match(server, /'song-cover-not-embedded': '封面写入后的歌曲文件校验失败，原成品已保留'/);
     assert.match(server, /album_artist/);
     assert.match(server, /normalizeYoutubeSourceUrl/);
     assert.match(server, /youtube-premium-metadata-cache\.json/);
