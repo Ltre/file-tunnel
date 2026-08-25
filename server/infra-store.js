@@ -3,6 +3,12 @@ const path = require('path');
 const crypto = require('crypto');
 const initSqlJs = require('sql.js');
 
+const INFRA_SAVE_DEBOUNCE_MS = Math.max(100, Number(process.env.INFRA_SAVE_DEBOUNCE_MS) || 1500);
+const INFRA_SAVE_MAX_WAIT_MS = Math.max(
+    INFRA_SAVE_DEBOUNCE_MS,
+    Number(process.env.INFRA_SAVE_MAX_WAIT_MS) || 15000
+);
+
 async function createInfraStore({ dataDir }) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, 'infra.sqlite');
@@ -23,6 +29,9 @@ class InfraStore {
     constructor(db, dbPath) {
         this.db = db;
         this.dbPath = dbPath;
+        this.saveTimer = null;
+        this.saveDirty = false;
+        this.saveScheduledAt = 0;
         this.saveRetryTimer = null;
         this.lastSaveError = null;
     }
@@ -207,17 +216,49 @@ class InfraStore {
     }
 
     save() {
+        if (this.saveTimer) {
+            clearTimeout(this.saveTimer);
+            this.saveTimer = null;
+        }
+        if (this.saveRetryTimer) {
+            clearTimeout(this.saveRetryTimer);
+            this.saveRetryTimer = null;
+        }
+        this.saveDirty = false;
+        this.saveScheduledAt = 0;
         try {
             const bytes = Buffer.from(this.db.export());
             this.writeDatabaseFile(bytes);
             this.lastSaveError = null;
             return true;
         } catch (err) {
+            this.saveDirty = true;
             this.lastSaveError = err;
             console.error('Failed to persist SQLite infra store:', err);
             this.scheduleSaveRetry();
             return false;
         }
+    }
+
+    scheduleSave() {
+        this.saveDirty = true;
+        const now = Date.now();
+        if (!this.saveScheduledAt) this.saveScheduledAt = now;
+        if (this.saveRetryTimer) return;
+
+        const elapsed = now - this.saveScheduledAt;
+        const delay = Math.max(0, Math.min(INFRA_SAVE_DEBOUNCE_MS, INFRA_SAVE_MAX_WAIT_MS - elapsed));
+        if (this.saveTimer) clearTimeout(this.saveTimer);
+        this.saveTimer = setTimeout(() => {
+            this.saveTimer = null;
+            this.flush();
+        }, delay);
+        this.saveTimer.unref?.();
+    }
+
+    flush() {
+        if (!this.saveDirty) return true;
+        return this.save();
     }
 
     writeDatabaseFile(bytes) {
@@ -258,7 +299,7 @@ class InfraStore {
         if (this.saveRetryTimer) return;
         this.saveRetryTimer = setTimeout(() => {
             this.saveRetryTimer = null;
-            this.save();
+            this.flush();
         }, 1000);
         this.saveRetryTimer.unref?.();
     }
@@ -313,13 +354,13 @@ class InfraStore {
                 last_activity = MAX(tunnels.last_activity, excluded.last_activity),
                 deleted_at = NULL
         `, [sessionId, shortCode, now, now]);
-        this.save();
+        this.scheduleSave();
         return shortCode;
     }
 
     touchTunnel(sessionId, { shortCode = '', createdAt = Date.now(), lastActivity = Date.now() } = {}) {
         this.touchTunnelRow(sessionId, { shortCode, createdAt, lastActivity });
-        this.save();
+        this.scheduleSave();
     }
 
     touchTunnelRow(sessionId, { shortCode = '', createdAt = Date.now(), lastActivity = Date.now() } = {}) {
@@ -350,7 +391,7 @@ class InfraStore {
                 permissions_json = excluded.permissions_json,
                 last_activity = MAX(tunnels.last_activity, excluded.last_activity)
         `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify({ permissions: permissions || {}, admins: admins || {} })]);
-        this.save();
+        this.scheduleSave();
     }
 
     setTunnelRemark(sessionId, remark = '', lastActivity = Date.now()) {
@@ -433,7 +474,7 @@ class InfraStore {
             this.run('ROLLBACK');
             throw err;
         }
-        this.save();
+        this.scheduleSave();
         return { inserted: !existed };
     }
 
@@ -528,7 +569,7 @@ class InfraStore {
             this.run('ROLLBACK');
             throw err;
         }
-        this.save();
+        this.scheduleSave();
         return {
             inserted: !previous,
             updated: Boolean(previous),
@@ -566,6 +607,8 @@ class InfraStore {
             this.run('ROLLBACK');
             throw err;
         }
+        // A deletion tombstone prevents an offline client from resurrecting a
+        // removed record after restart, so persist this low-frequency action now.
         this.save();
         return true;
     }
@@ -594,6 +637,25 @@ class InfraStore {
             LIMIT ?
         `, [sessionId, nonNegativeInteger(since), clampLimit(limit, 1000, 5000)])
             .map(row => row.message_id);
+    }
+
+    findDeletedHistoryIds(sessionId, messageIds = []) {
+        if (!sessionId || !Array.isArray(messageIds) || !messageIds.length) return [];
+        const ids = Array.from(new Set(messageIds.map(value => String(value || '').trim()).filter(Boolean)));
+        const deleted = new Set();
+        // Keep comfortably below SQLite's common bind-parameter limit.
+        for (let offset = 0; offset < ids.length; offset += 400) {
+            const chunk = ids.slice(offset, offset + 400);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const rows = this.query(`
+                SELECT message_id
+                FROM transfer_records
+                WHERE session_id = ? AND deleted_at IS NOT NULL
+                  AND message_id IN (${placeholders})
+            `, [sessionId, ...chunk]);
+            rows.forEach(row => deleted.add(row.message_id));
+        }
+        return ids.filter(id => deleted.has(id));
     }
 
     hydrateTunnelHistory(sessionId, { limit = 1000 } = {}) {
@@ -823,7 +885,7 @@ class InfraStore {
             this.run('ROLLBACK');
             throw err;
         }
-        this.save();
+        this.scheduleSave();
         return this.getFileAsset(sessionId, asset.id);
     }
 
@@ -885,7 +947,7 @@ class InfraStore {
             this.run('ROLLBACK');
             throw err;
         }
-        this.save();
+        this.scheduleSave();
         return this.get(
             'SELECT * FROM asset_transfer_events WHERE session_id = ? AND event_id = ?',
             [sessionId, eventId]
@@ -961,7 +1023,7 @@ class InfraStore {
             WHERE session_id = ? AND file_id = ?
         `, [removedAt, removedAt, sessionId, fileId]);
         const changed = this.db.getRowsModified() > 0;
-        this.save();
+        this.scheduleSave();
         return changed;
     }
 
@@ -1051,7 +1113,7 @@ class InfraStore {
             stoppedAt,
             now
         ]);
-        this.save();
+        this.scheduleSave();
         return this.getVClientTunnel(sessionId);
     }
 
@@ -1120,7 +1182,7 @@ class InfraStore {
             now,
             completedAt
         ]);
-        this.save();
+        this.scheduleSave();
         return this.getVClientAssetState(sessionId, fileId);
     }
 
@@ -1180,7 +1242,7 @@ class InfraStore {
             device.online ? 1 : 0,
             device.active ? 1 : 0
         ]);
-        this.save();
+        this.scheduleSave();
     }
 
     markDeviceOffline(deviceId, lastAccess = Date.now()) {
@@ -1188,7 +1250,7 @@ class InfraStore {
             'UPDATE devices SET online = 0, active = 0, last_access = MAX(last_access, ?) WHERE device_id = ?',
             [lastAccess, deviceId]
         );
-        this.save();
+        this.scheduleSave();
     }
 
     listDevices(limit = 2000) {

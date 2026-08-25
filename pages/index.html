@@ -614,27 +614,6 @@
         .chat-messages.history-loading .message {
             animation: none;
         }
-
-        .history-load-control {
-            display: block;
-            width: min(100%, 420px);
-            margin: 0 auto 15px;
-            padding: 9px 14px;
-            border: 1px solid var(--border-color, rgba(127, 127, 127, 0.28));
-            border-radius: 999px;
-            background: var(--card-bg, rgba(127, 127, 127, 0.08));
-            color: inherit;
-            cursor: pointer;
-        }
-
-        .history-load-control:hover {
-            border-color: var(--primary-color, #667eea);
-        }
-
-        .history-load-control:disabled {
-            cursor: wait;
-            opacity: 0.65;
-        }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }

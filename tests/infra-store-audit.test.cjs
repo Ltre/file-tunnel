@@ -135,6 +135,10 @@ async function run() {
         assert.strictEqual(store.markHistoryDeleted(sessionId, firstMessage.id, firstSeen + 6), true);
         assert.strictEqual(store.markHistoryDeleted(sessionId, 'never-existed', firstSeen + 6), false);
         assert.deepStrictEqual(store.listDeletedHistoryIds(sessionId), [firstMessage.id]);
+        assert.deepStrictEqual(
+            store.findDeletedHistoryIds(sessionId, [secondMessage.id, firstMessage.id, 'never-existed']),
+            [firstMessage.id]
+        );
         assert.strictEqual(store.listHistoryRecords(sessionId).length, 2);
         assert.strictEqual(store.listHistoryRecords(sessionId, { includeDeleted: true }).length, 3);
 
@@ -166,6 +170,7 @@ async function run() {
 
         // Reopening the old file exercises additive migration and verifies durable,
         // idempotent audit data. Runtime-only device presence intentionally resets.
+        assert.strictEqual(store.flush(), true, 'queued audit writes must flush before reopen');
         const reopened = await createInfraStore({ dataDir });
         stats = reopened.listTunnelsWithStats()[0];
         assert.strictEqual(stats.active_device_count, 0);
@@ -174,6 +179,7 @@ async function run() {
         assert.strictEqual(stats.total_file_size, 42);
         assert.strictEqual(reopened.getVClientTunnel(sessionId).state, 'active');
         assert.strictEqual(reopened.getFileAsset(sessionId, 'asset-two').file_size, 20);
+        assert.deepStrictEqual(reopened.listDeletedHistoryIds(sessionId), [firstMessage.id]);
         reopened.deleteTunnel(sessionId);
         assert.strictEqual(reopened.getTunnel(sessionId), null);
         assert.strictEqual(reopened.listTunnelsWithStats({ includeDeleted: true })[0].transfer_record_count, 4);
@@ -181,6 +187,7 @@ async function run() {
         reopened.recordFileAsset(sessionId, { id: 'late-asset', name: 'late.bin', size: 1 }, { now: firstSeen + 20 });
         reopened.recordTunnelMember(sessionId, { deviceId: 'late-device' }, firstSeen + 21);
         assert.strictEqual(reopened.getTunnel(sessionId), null, 'late audit callbacks must not resurrect a deleted tunnel');
+        assert.strictEqual(reopened.flush(), true);
 
         const legacyDir = path.join(dataDir, 'legacy');
         fs.mkdirSync(legacyDir);

@@ -2641,6 +2641,10 @@ const accessDevices = new Map();
 const nearbyPresence = new Map();
 const sessionHistoryBroadcastTimers = new Map();
 const tunnelActivityPersistedAt = new Map();
+const infraAuditQueue = [];
+const infraAuditPendingByKey = new Map();
+const INFRA_AUDIT_MAX_ATTEMPTS = 3;
+let infraAuditDrainScheduled = false;
 const telegramPendingFiles = loadTelegramPendingFiles();
 const telegramChatTunnels = loadTelegramChatTunnels();
 const telegramServerAssets = new Map();
@@ -4849,19 +4853,18 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
     let session = sessions.get(sessionId);
     if (!session) {
         const storedTunnel = infraStore?.getTunnel(sessionId);
-        const persistedHistory = hydratePersistedSessionHistory(sessionId);
         session = {
             devices: new Map(),
             editorAssets: new Map(),
             fileAssets: new Map(),
-            history: persistedHistory.history,
-            deletedMessageIds: persistedHistory.deletedMessageIds,
+            history: [],
+            deletedMessageIds: loadPersistedDeletionTombstones(sessionId),
             shortCode: normalizeShortCode(shortCode),
             remark: sanitizeString(storedTunnel?.remark || '', 60),
             ownerDeviceId: sanitizeString(storedTunnel?.owner_device_id || '', 80),
             permissions: parseStoredTunnelPermissions(storedTunnel?.permissions_json),
             admins: parseStoredTunnelAdmins(storedTunnel?.permissions_json),
-            historySize: persistedHistory.historySize,
+            historySize: 0,
             createdAt: Number(storedTunnel?.created_at) || Date.now(),
             lastActivity: Number(storedTunnel?.last_activity) || Date.now()
         };
@@ -6986,31 +6989,6 @@ function summarizeHistoryMessage(message) {
     };
 }
 
-function hydratePersistedSessionHistory(sessionId) {
-    const persisted = infraStore?.hydrateTunnelHistory?.(sessionId, { limit: MAX_HISTORY_MESSAGES }) || {
-        messages: [],
-        deletedMessageIds: []
-    };
-    const entries = [];
-    let historySize = 0;
-    const messages = Array.isArray(persisted.messages) ? persisted.messages : [];
-    for (let index = messages.length - 1; index >= 0; index--) {
-        const message = messages[index];
-        if (!message || !isValidDeviceId(message.id)) continue;
-        const size = Buffer.byteLength(JSON.stringify(message), 'utf8');
-        if (size > MAX_HISTORY_SIZE || historySize + size > MAX_HISTORY_SIZE) continue;
-        entries.unshift({ message, size });
-        historySize += size;
-    }
-    return {
-        history: entries,
-        historySize,
-        deletedMessageIds: Array.isArray(persisted.deletedMessageIds)
-            ? persisted.deletedMessageIds.slice(-MAX_HISTORY_MESSAGES)
-            : []
-    };
-}
-
 function getSessionAuditFileAssets(session) {
     const assets = new Map();
     for (const [assetId, record] of session?.fileAssets || []) {
@@ -7030,13 +7008,122 @@ function getSessionAuditFileAssets(session) {
     return assets;
 }
 
+function loadPersistedDeletionTombstones(sessionId) {
+    if (!infraStore || !sessionId) return [];
+    try {
+        const ids = infraStore.listDeletedHistoryIds?.(sessionId, { limit: MAX_HISTORY_MESSAGES }) || [];
+        // Storage returns newest first, while runtime uses push + shift as an
+        // oldest-to-newest bounded queue.
+        return Array.from(new Set(ids.filter(isValidDeviceId))).slice(0, MAX_HISTORY_MESSAGES).reverse();
+    } catch (err) {
+        console.error('[infra-audit] failed to restore deletion tombstones:', err);
+        return [];
+    }
+}
+
+function finishInfraAuditEntry(entry, succeeded, error = null) {
+    if (entry.key && infraAuditPendingByKey.get(entry.key) === entry) {
+        infraAuditPendingByKey.delete(entry.key);
+    }
+    const callback = succeeded ? entry.onSuccess : entry.onFinalFailure;
+    if (typeof callback !== 'function') return;
+    try {
+        callback(error);
+    } catch (callbackError) {
+        console.error('[infra-audit] completion callback failed:', callbackError);
+    }
+}
+
+function runInfraAuditEntry(entry) {
+    if (!entry) return;
+    try {
+        const result = entry.task();
+        if (result && typeof result.then === 'function') {
+            Promise.resolve(result).catch(err => console.error('[infra-audit] unsupported async task failed:', err));
+            const contractError = new Error('infra audit tasks must be synchronous');
+            contractError.nonRetryable = true;
+            throw contractError;
+        }
+        finishInfraAuditEntry(entry, true);
+        return true;
+    } catch (err) {
+        entry.attempts = Number(entry.attempts || 0) + 1;
+        if (!err?.nonRetryable && entry.attempts < INFRA_AUDIT_MAX_ATTEMPTS) {
+            console.warn(`[infra-audit] task failed; retrying (${entry.attempts}/${INFRA_AUDIT_MAX_ATTEMPTS}):`, err);
+            infraAuditQueue.push(entry);
+            return false;
+        }
+        finishInfraAuditEntry(entry, false, err);
+        console.error(`[infra-audit] task failed permanently after ${entry.attempts} attempt(s):`, err);
+        return false;
+    }
+}
+
+function drainInfraAuditQueue() {
+    infraAuditDrainScheduled = false;
+    const batchSize = 32;
+    for (let index = 0; index < batchSize && infraAuditQueue.length; index++) {
+        runInfraAuditEntry(infraAuditQueue.shift());
+    }
+    if (infraAuditQueue.length && !infraAuditDrainScheduled) {
+        infraAuditDrainScheduled = true;
+        setImmediate(drainInfraAuditQueue);
+    }
+}
+
+function enqueueInfraAudit(task, key = '', options = {}) {
+    if (typeof task !== 'function') return false;
+    const normalizedKey = String(key || '');
+    if (normalizedKey) {
+        const pending = infraAuditPendingByKey.get(normalizedKey);
+        if (pending) {
+            pending.task = task;
+            pending.attempts = 0;
+            pending.onSuccess = options.onSuccess;
+            pending.onFinalFailure = options.onFinalFailure;
+            return true;
+        }
+    }
+    const entry = {
+        task,
+        key: normalizedKey,
+        attempts: 0,
+        onSuccess: options.onSuccess,
+        onFinalFailure: options.onFinalFailure
+    };
+    infraAuditQueue.push(entry);
+    if (normalizedKey) infraAuditPendingByKey.set(normalizedKey, entry);
+    if (!infraAuditDrainScheduled) {
+        infraAuditDrainScheduled = true;
+        setImmediate(drainInfraAuditQueue);
+    }
+    return true;
+}
+
+function flushInfraAuditQueue() {
+    while (infraAuditQueue.length) runInfraAuditEntry(infraAuditQueue.shift());
+    infraAuditDrainScheduled = false;
+    return infraStore?.flush?.() !== false;
+}
+
 function persistHistoryAudit(sessionId, session, message, source = '', fileAssets = null) {
-    const result = infraStore?.recordHistoryMessage?.(sessionId, message, {
-        source,
-        fileAssets: fileAssets || getSessionAuditFileAssets(session)
+    if (!infraStore || !sessionId || !message?.id) return { queued: false };
+    // Capture rich-asset metadata before yielding. Providers may disconnect and
+    // clear the live maps while this audit entry is waiting in the side queue.
+    const auditFileAssets = fileAssets || (message.type === 'rich' ? getSessionAuditFileAssets(session) : null);
+    const activityAt = Date.now();
+    const queued = enqueueInfraAudit(() => {
+        infraStore.recordHistoryMessage?.(sessionId, message, {
+            source,
+            fileAssets: auditFileAssets
+        });
+    }, `history:${sessionId}:${message.id}`, {
+        onSuccess: () => tunnelActivityPersistedAt.set(
+            sessionId,
+            Math.max(tunnelActivityPersistedAt.get(sessionId) || 0, activityAt)
+        )
     });
-    if (result) tunnelActivityPersistedAt.set(sessionId, Date.now());
-    return result;
+    return { queued };
 }
 
 function persistTunnelActivity(sessionId, session, force = false) {
@@ -7044,12 +7131,18 @@ function persistTunnelActivity(sessionId, session, force = false) {
     const now = Number(session.lastActivity) || Date.now();
     const previous = tunnelActivityPersistedAt.get(sessionId) || 0;
     if (!force && now - previous < 60 * 1000) return;
-    infraStore.touchTunnel(sessionId, {
-        shortCode: session.shortCode || '',
-        createdAt: session.createdAt || now,
+    const shortCode = session.shortCode || '';
+    const createdAt = session.createdAt || now;
+    enqueueInfraAudit(() => infraStore.touchTunnel(sessionId, {
+        shortCode,
+        createdAt,
         lastActivity: now
+    }), `tunnel-activity:${sessionId}`, {
+        onSuccess: () => tunnelActivityPersistedAt.set(
+            sessionId,
+            Math.max(tunnelActivityPersistedAt.get(sessionId) || 0, now)
+        )
     });
-    tunnelActivityPersistedAt.set(sessionId, now);
 }
 
 function historyLog(event, details) {
@@ -7187,8 +7280,25 @@ function calculateSessionHistoryRevision(session) {
 
 function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context = {}) {
     const historyMessages = session.history.map(entry => entry.message);
-    const historyRevision = calculateSessionHistoryRevision(session);
     const supportsRevision = Number(context.historyProtocolVersion) >= 2;
+    if (!supportsRevision) {
+        socket.emit('session-history', {
+            messages: historyMessages,
+            deletedMessageIds: session.deletedMessageIds || [],
+            reason: context.reason || 'snapshot'
+        });
+        historyLog('snapshot-sent', {
+            sessionId,
+            targetDeviceId,
+            targetSocketId: socket.id,
+            clientIp: context.clientIp,
+            reason: context.reason || 'snapshot',
+            messageCount: historyMessages.length,
+            ...(HISTORY_DEBUG ? { messages: historyMessages.map(summarizeHistoryMessage) } : {})
+        });
+        return;
+    }
+    const historyRevision = calculateSessionHistoryRevision(session);
     const clientRevision = sanitizeString(context.historyRevision || '', 100);
     const clientMessageCount = Number(context.historyMessageCount);
     const unchanged = Boolean(
@@ -7237,13 +7347,10 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
         const session = sessions.get(sessionId);
         if (!session) return;
         const historyMessages = session.history.map(entry => entry.message);
-        const historyRevision = calculateSessionHistoryRevision(session);
         emitToReadableSessionDevices(session, 'session-history', {
             messages: historyMessages,
             deletedMessageIds: session.deletedMessageIds || [],
             authoritative: true,
-            unchanged: false,
-            historyRevision,
             reason
         });
         historyLog('snapshot-broadcast', {
@@ -7589,19 +7696,18 @@ io.on('connection', (socket) => {
             
             // 获取或创建会话
             if (!sessions.has(sessionId)) {
-                const persistedHistory = hydratePersistedSessionHistory(sessionId);
                 sessions.set(sessionId, {
                 devices: new Map(),
                 editorAssets: new Map(),
                 fileAssets: new Map(),
-                history: persistedHistory.history,
-                deletedMessageIds: persistedHistory.deletedMessageIds,
+                history: [],
+                deletedMessageIds: loadPersistedDeletionTombstones(sessionId),
                 shortCode: createShortCode(sessionId, requestedShortCode),
                 remark: storedRemark,
                 ownerDeviceId: storedOwnerDeviceId || deviceId,
                 permissions: storedPermissions,
                 admins: storedAdmins,
-                historySize: persistedHistory.historySize,
+                historySize: 0,
                     createdAt: Number(storedTunnel?.created_at) || Date.now(),
                     lastActivity: Date.now()
                 });
@@ -7821,6 +7927,7 @@ io.on('connection', (socket) => {
             session.permissions = normalizeTunnelPermissions(data?.permissions);
             session.lastActivity = Date.now();
             infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            infraStore?.flush?.();
             session.devices.forEach((_, deviceId) => {
                 const target = deviceSockets.get(deviceId);
                 if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
@@ -7853,6 +7960,7 @@ io.on('connection', (socket) => {
             session.admins = records;
             session.lastActivity = Date.now();
             infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            infraStore?.flush?.();
             session.devices.forEach((_, deviceId) => {
                 const target = deviceSockets.get(deviceId);
                 if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
@@ -8205,7 +8313,6 @@ io.on('connection', (socket) => {
                 if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) session.deletedMessageIds.shift();
             }
             session.lastActivity = Date.now();
-            infraStore?.markHistoryDeleted?.(sessionId, messageId, session.lastActivity);
             emitToReadableSessionDevices(session, 'message-deleted', { messageId }, currentDevice);
             historyLog('message-deleted', {
                 sessionId,
@@ -8218,6 +8325,11 @@ io.on('connection', (socket) => {
                 fileStillReferenced,
                 historyCount: session.history.length
             });
+            const auditDeletedAt = session.lastActivity;
+            enqueueInfraAudit(
+                () => infraStore?.markHistoryDeleted?.(sessionId, messageId, auditDeletedAt),
+                `history-delete:${sessionId}:${messageId}`
+            );
         } catch (err) {
             console.error('delete-message error:', err);
         }
@@ -8388,6 +8500,22 @@ io.on('connection', (socket) => {
             let mergedCount = 0;
             let rejectedCount = 0;
             const candidates = messages.slice(-MAX_HISTORY_MESSAGES);
+            let persistedDeletedIds = [];
+            try {
+                persistedDeletedIds = infraStore?.findDeletedHistoryIds?.(
+                    sessionId,
+                    candidates.map(message => message?.id).filter(isValidDeviceId)
+                ) || [];
+            } catch (auditError) {
+                console.error('[infra-audit] failed to verify reconcile tombstones:', auditError);
+            }
+            for (const messageId of persistedDeletedIds) {
+                deletedMessageIds.add(messageId);
+                if (!session.deletedMessageIds.includes(messageId)) session.deletedMessageIds.push(messageId);
+            }
+            if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) {
+                session.deletedMessageIds = session.deletedMessageIds.slice(-MAX_HISTORY_MESSAGES);
+            }
 
             for (const message of candidates) {
                 if (!message || !isValidDeviceId(message.id) ||
@@ -8642,6 +8770,7 @@ io.on('connection', (socket) => {
             if (!session.editorAssets) session.editorAssets = new Map();
 
             let record = session.editorAssets.get(asset.id);
+            const isNewRecord = !record;
             if (!record) {
                 if (session.editorAssets.size >= MAX_EDITOR_ASSETS_PER_SESSION) {
                     return socket.emit('error', {
@@ -8663,19 +8792,6 @@ io.on('connection', (socket) => {
 
             record.providers.add(currentDevice);
             session.lastActivity = Date.now();
-            infraStore?.recordFileAsset?.(sessionId, record.metadata, {
-                sourceDeviceId: currentDevice,
-                now: session.lastActivity,
-                metadata: { ...record.metadata, assetKind: 'editor' }
-            });
-            infraStore?.recordAssetTransferEvent?.(sessionId, 'announced', {
-                ...record.metadata,
-                assetKind: 'editor'
-            }, {
-                sourceDeviceId: currentDevice,
-                now: session.lastActivity,
-                transport: 'editor-provider-announcement'
-            });
             socket.to(sessionId).emit('editor-asset-available', {
                 asset: record.metadata,
                 from: currentDevice
@@ -8688,6 +8804,15 @@ io.on('connection', (socket) => {
                 asset: record.metadata,
                 providerCount: record.providers.size
             });
+            if (isNewRecord) {
+                const auditMetadata = { ...record.metadata, assetKind: 'editor' };
+                const auditNow = session.lastActivity;
+                enqueueInfraAudit(() => infraStore?.recordFileAsset?.(sessionId, auditMetadata, {
+                    sourceDeviceId: currentDevice,
+                    now: auditNow,
+                    metadata: auditMetadata
+                }), `editor-asset:${sessionId}:${asset.id}`);
+            }
         } catch (err) {
             console.error('editor-asset-available error:', err);
         }
@@ -8731,15 +8856,6 @@ io.on('connection', (socket) => {
                 assetId,
                 providerDeviceId
             });
-            infraStore?.recordAssetTransferEvent?.(sessionId, 'requested', {
-                ...record.metadata,
-                assetKind: 'editor'
-            }, {
-                sourceDeviceId: providerDeviceId,
-                targetDeviceId: currentDevice,
-                now: Date.now(),
-                transport: socket.data?.isVClient === true ? 'socket.io-relay' : 'negotiated-editor-path'
-            });
             providerSocket.emit('editor-asset-request', {
                 asset: record.metadata,
                 from: currentDevice,
@@ -8753,6 +8869,15 @@ io.on('connection', (socket) => {
                 clientIp,
                 asset: record.metadata
             });
+            const auditMetadata = { ...record.metadata, assetKind: 'editor' };
+            const auditNow = Date.now();
+            const auditTransport = socket.data?.isVClient === true ? 'socket.io-relay' : 'negotiated-editor-path';
+            enqueueInfraAudit(() => infraStore?.recordAssetTransferEvent?.(sessionId, 'requested', auditMetadata, {
+                sourceDeviceId: providerDeviceId,
+                targetDeviceId: currentDevice,
+                now: auditNow,
+                transport: auditTransport
+            }));
         } catch (err) {
             console.error('editor-asset-request error:', err);
         }
@@ -8884,16 +9009,6 @@ io.on('connection', (socket) => {
                     from: currentDevice
                 });
             }
-            infraStore?.recordAssetTransferEvent?.(sessionId, 'relay-completed', {
-                ...relay.asset,
-                assetKind: 'editor'
-            }, {
-                sourceDeviceId: currentDevice,
-                targetDeviceId: to,
-                now: Date.now(),
-                transport: 'socket.io-editor-relay',
-                bytesTransferred: relay.receivedSize
-            });
             historyLog('editor-asset-relay-completed', {
                 sessionId,
                 deviceId: currentDevice,
@@ -8902,6 +9017,15 @@ io.on('connection', (socket) => {
                 clientIp,
                 asset: relay.asset
             });
+            const auditAsset = { ...relay.asset, assetKind: 'editor' };
+            const auditNow = Date.now();
+            enqueueInfraAudit(() => infraStore?.recordAssetTransferEvent?.(sessionId, 'relay-completed', auditAsset, {
+                sourceDeviceId: currentDevice,
+                targetDeviceId: to,
+                now: auditNow,
+                transport: 'socket.io-editor-relay',
+                bytesTransferred: relay.receivedSize
+            }));
         } catch (err) {
             console.error('editor-asset-relay-complete error:', err);
         }
@@ -8938,25 +9062,21 @@ io.on('connection', (socket) => {
                 size: fileInfo.size,
                 type: sanitizeString(fileInfo.type, 100)
             };
-            infraStore?.recordHistoryMessage?.(sessionId, {
+            const auditMessage = {
                 id: `legacy-${fileInfo.id}`.slice(0, 64),
                 type: 'file',
                 sender: from,
                 senderName: session.devices.get(currentDevice)?.deviceName || '',
                 timestamp: session.lastActivity,
                 fileInfo: auditedFile
-            }, {
-                source: 'legacy-file-offer',
-                fileAssets: getSessionAuditFileAssets(session),
-                now: session.lastActivity
-            });
-            tunnelActivityPersistedAt.set(sessionId, session.lastActivity);
+            };
             
             // 广播给会话中的其他设备
             socket.to(sessionId).emit('file-offer', { 
                 from, 
                 fileInfo: auditedFile
             });
+            persistHistoryAudit(sessionId, session, auditMessage, 'legacy-file-offer');
         } catch (err) {
             console.error('file-offer error:', err);
         }
@@ -8998,6 +9118,7 @@ io.on('connection', (socket) => {
         sanitize: sanitizeString,
         historyLog,
         clientIp,
+        enqueueAudit: enqueueInfraAudit,
         recordFileAsset: (sessionId, asset, options) => infraStore?.recordFileAsset?.(sessionId, asset, options),
         recordTransferEvent: (sessionId, eventType, asset, options) =>
             infraStore?.recordAssetTransferEvent?.(sessionId, eventType, asset, options),
@@ -9257,15 +9378,28 @@ startServer().catch(err => {
 });
 
 // 优雅关闭
+let shutdownStarted = false;
 function shutdown(signal) {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.log(`${signal} received, shutting down gracefully`);
+    flushInfraAuditQueue();
+    if (!webServer.listening) {
+        process.exit(0);
+        return;
+    }
     webServer.close(() => {
+        flushInfraAuditQueue();
         console.log('Server closed');
         process.exit(0);
     });
 
-    setTimeout(() => process.exit(1), 10000).unref();
+    setTimeout(() => {
+        flushInfraAuditQueue();
+        process.exit(1);
+    }, 10000).unref();
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGHUP', () => shutdown('SIGHUP'));

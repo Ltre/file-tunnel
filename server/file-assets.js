@@ -213,8 +213,22 @@ function isRelayAckTimeout(reason) {
 
 function registerFileAssetHandlers(socket, context) {
     const { sessions, deviceSockets, getSessionId, getDeviceId, sanitize, historyLog, clientIp } = context;
-    const recordFileAsset = typeof context.recordFileAsset === 'function' ? context.recordFileAsset : () => {};
-    const recordTransferEvent = typeof context.recordTransferEvent === 'function' ? context.recordTransferEvent : () => {};
+    const recordFileAsset = typeof context.recordFileAsset === 'function' ? context.recordFileAsset : null;
+    const recordTransferEvent = typeof context.recordTransferEvent === 'function' ? context.recordTransferEvent : null;
+    const enqueueAudit = typeof context.enqueueAudit === 'function' ? context.enqueueAudit : null;
+    const enqueueAuditTask = task => {
+        if (!enqueueAudit || typeof task !== 'function') return;
+        try {
+            // The server queue owns execution, retries and error reporting. Do not
+            // swallow a task failure here or the audit entry could be lost silently.
+            const queued = enqueueAudit(task);
+            if (queued && typeof queued.catch === 'function') {
+                queued.catch(err => console.error('file asset audit enqueue error:', err));
+            }
+        } catch (err) {
+            console.error('file asset audit enqueue error:', err);
+        }
+    };
     const isValidAssetId = context.isValidAssetId || context.isValidId;
     const isValidDeviceId = context.isValidDeviceId || context.isValidId;
     const isValidSessionId = context.isValidSessionId || context.isValidId;
@@ -231,6 +245,7 @@ function registerFileAssetHandlers(socket, context) {
             if (!session.fileAssets) session.fileAssets = new Map();
 
             let record = session.fileAssets.get(asset.id);
+            const isNewRecord = !record;
             if (!record) {
                 if (session.fileAssets.size >= MAX_FILE_ASSETS_PER_SESSION) {
                     socket.emit('error', { message: translateText('会话文件数量已达上限'), code: 'FILE_ASSET_LIMIT_REACHED' });
@@ -257,18 +272,21 @@ function registerFileAssetHandlers(socket, context) {
             }
             record.providers.add(deviceId);
             session.lastActivity = Date.now();
-            recordFileAsset(sessionId, record.metadata, { sourceDeviceId: deviceId, now: session.lastActivity });
-            recordTransferEvent(sessionId, 'announced', record.metadata, {
-                sourceDeviceId: deviceId,
-                now: session.lastActivity,
-                transport: 'provider-announcement',
-                details: { providerCount: record.providers.size }
-            });
             socket.to(sessionId).emit('file-asset-available', { asset: record.metadata, from: deviceId });
             historyLog('file-asset-available', {
                 sessionId, deviceId, socketId: socket.id, clientIp, asset: record.metadata,
                 providerCount: record.providers.size, providerDeviceIds: Array.from(record.providers)
             });
+            // Presence is renewed in bulk by clients. Persist metadata only for a
+            // newly discovered asset; a heartbeat is not an append-only transfer.
+            if (isNewRecord && recordFileAsset) {
+                const auditMetadata = { ...record.metadata };
+                const auditNow = session.lastActivity;
+                enqueueAuditTask(() => recordFileAsset(sessionId, auditMetadata, {
+                    sourceDeviceId: deviceId,
+                    now: auditNow
+                }));
+            }
         } catch (err) {
             console.error('file-asset-available error:', err);
         }
@@ -391,24 +409,6 @@ function registerFileAssetHandlers(socket, context) {
                 assignmentMeta.rangeStart = transfer?.rangeStart;
                 assignmentMeta.rangeEnd = transfer?.rangeEnd;
             }
-            const requestAudit = {
-                sourceDeviceId: providerId,
-                targetDeviceId: deviceId,
-                transferId: transfer?.transferId,
-                requestId,
-                now: Date.now(),
-                transport: transportHint || 'negotiated-client-path',
-                details: {
-                    sourceSessionId: assetSessionId,
-                    requesterSessionId: sessionId,
-                    rangeStart: transfer?.rangeStart,
-                    rangeEnd: transfer?.rangeEnd
-                }
-            };
-            recordTransferEvent(sessionId, 'requested', record.metadata, requestAudit);
-            if (assetSessionId !== sessionId) {
-                recordTransferEvent(assetSessionId, 'requested', record.metadata, requestAudit);
-            }
             providerSocket.emit('file-asset-request', {
                 asset: record.metadata,
                 from: deviceId,
@@ -424,6 +424,29 @@ function registerFileAssetHandlers(socket, context) {
                 forced,
                 requestId
             });
+            if (recordTransferEvent) {
+                const auditMetadata = { ...record.metadata };
+                const requestAudit = {
+                    sourceDeviceId: providerId,
+                    targetDeviceId: deviceId,
+                    transferId: transfer?.transferId,
+                    requestId,
+                    now: Date.now(),
+                    transport: transportHint || 'negotiated-client-path',
+                    details: {
+                        sourceSessionId: assetSessionId,
+                        requesterSessionId: sessionId,
+                        rangeStart: transfer?.rangeStart,
+                        rangeEnd: transfer?.rangeEnd
+                    }
+                };
+                enqueueAuditTask(() => {
+                    recordTransferEvent(sessionId, 'requested', auditMetadata, requestAudit);
+                    if (assetSessionId !== sessionId) {
+                        recordTransferEvent(assetSessionId, 'requested', auditMetadata, requestAudit);
+                    }
+                });
+            }
         } catch (err) {
             console.error('file-asset-request error:', err);
         }
@@ -555,20 +578,6 @@ function registerFileAssetHandlers(socket, context) {
                 meta.status = status;
                 if (requestId) meta.requestId = requestId;
             }
-            recordTransferEvent(sessionId, status === 'completed' ? 'client-completed' : 'failed', record.metadata, {
-                sourceDeviceId: deviceId,
-                targetDeviceId: to,
-                transferId,
-                requestId: requestId || meta?.requestId || '',
-                now: Date.now(),
-                transport: meta?.transportHint || 'client-reported-path',
-                bytesTransferred: status === 'completed'
-                    ? (transferId && meta?.rangeEnd > meta?.rangeStart
-                        ? meta.rangeEnd - meta.rangeStart
-                        : record.metadata.size)
-                    : 0,
-                details: { status }
-            });
             if (status === 'completed' || status === 'failed') releaseAssignment(record, assetId, to, transferId);
             const targetSocket = deviceSockets.get(to);
             if (targetSocket) {
@@ -584,6 +593,30 @@ function registerFileAssetHandlers(socket, context) {
                 sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, assetId, transferId, status, requestId,
                 providerLoads: Object.fromEntries(record.providerLoads || [])
             });
+            if ((status === 'completed' || status === 'failed') && recordTransferEvent) {
+                const auditMetadata = { ...record.metadata };
+                const auditMeta = meta ? { ...meta } : null;
+                const auditNow = Date.now();
+                enqueueAuditTask(() => recordTransferEvent(
+                    sessionId,
+                    status === 'completed' ? 'client-completed' : 'failed',
+                    auditMetadata,
+                    {
+                        sourceDeviceId: deviceId,
+                        targetDeviceId: to,
+                        transferId,
+                        requestId: requestId || auditMeta?.requestId || '',
+                        now: auditNow,
+                        transport: auditMeta?.transportHint || 'client-reported-path',
+                        bytesTransferred: status === 'completed'
+                            ? (transferId && auditMeta?.rangeEnd > auditMeta?.rangeStart
+                                ? auditMeta.rangeEnd - auditMeta.rangeStart
+                                : auditMetadata.size)
+                            : 0,
+                        details: { status }
+                    }
+                ));
+            }
         } catch (err) {
             console.error('file-asset-transfer-status error:', err);
         }
@@ -752,22 +785,27 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             await emitWithAck(target, 'file-asset-relay-complete', { assetId, from: deviceId, transferId, attemptId: relay.attemptId || relayAttemptId }, RELAY_COMPLETE_ACK_TIMEOUT);
-            recordTransferEvent(sessionId, 'relay-completed', relay.asset, {
-                sourceDeviceId: deviceId,
-                targetDeviceId: to,
-                transferId,
-                requestId: relay.requestId || '',
-                now: Date.now(),
-                transport: 'socket.io-relay',
-                bytesTransferred: relay.expectedSize,
-                details: {
-                    rangeStart: relay.transfer?.rangeStart,
-                    rangeEnd: relay.transfer?.rangeEnd,
-                    attemptId: relay.attemptId || relayAttemptId
-                }
-            });
             ackOk(ack);
             historyLog('file-asset-relay-completed', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset: relay.asset, transfer: relay.transfer, attemptId: relay.attemptId || relayAttemptId });
+            if (recordTransferEvent) {
+                const auditAsset = { ...relay.asset };
+                const auditTransfer = relay.transfer ? { ...relay.transfer } : null;
+                const auditNow = Date.now();
+                enqueueAuditTask(() => recordTransferEvent(sessionId, 'relay-completed', auditAsset, {
+                    sourceDeviceId: deviceId,
+                    targetDeviceId: to,
+                    transferId,
+                    requestId: relay.requestId || '',
+                    now: auditNow,
+                    transport: 'socket.io-relay',
+                    bytesTransferred: relay.expectedSize,
+                    details: {
+                        rangeStart: auditTransfer?.rangeStart,
+                        rangeEnd: auditTransfer?.rangeEnd,
+                        attemptId: relay.attemptId || relayAttemptId
+                    }
+                }));
+            }
         } catch (err) {
             console.error('file-asset-relay-complete error:', err);
             ackFail(ack, err.message || 'relay-complete-failed');
