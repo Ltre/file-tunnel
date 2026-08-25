@@ -7168,11 +7168,42 @@ function getSessionDeviceList(session, excludeDeviceId = '') {
     return deviceList;
 }
 
+function calculateSessionHistoryRevision(session) {
+    const hash = crypto.createHash('sha256');
+    hash.update('tunnel-history-v2\0');
+    for (const entry of session?.history || []) {
+        hash.update(String(Number(entry?.size) || 0));
+        hash.update('\0');
+        hash.update(JSON.stringify(entry?.message || null));
+        hash.update('\0');
+    }
+    hash.update('deleted\0');
+    for (const messageId of session?.deletedMessageIds || []) {
+        hash.update(String(messageId));
+        hash.update('\0');
+    }
+    return hash.digest('base64url');
+}
+
 function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context = {}) {
     const historyMessages = session.history.map(entry => entry.message);
+    const historyRevision = calculateSessionHistoryRevision(session);
+    const supportsRevision = Number(context.historyProtocolVersion) >= 2;
+    const clientRevision = sanitizeString(context.historyRevision || '', 100);
+    const clientMessageCount = Number(context.historyMessageCount);
+    const unchanged = Boolean(
+        supportsRevision &&
+        clientRevision &&
+        clientRevision === historyRevision &&
+        Number.isInteger(clientMessageCount) &&
+        clientMessageCount === historyMessages.length
+    );
     socket.emit('session-history', {
-        messages: historyMessages,
-        deletedMessageIds: session.deletedMessageIds || [],
+        messages: unchanged ? [] : historyMessages,
+        deletedMessageIds: unchanged ? [] : (session.deletedMessageIds || []),
+        authoritative: supportsRevision,
+        unchanged,
+        historyRevision,
         reason: context.reason || 'snapshot'
     });
     historyLog('snapshot-sent', {
@@ -7181,8 +7212,10 @@ function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context
         targetSocketId: socket.id,
         clientIp: context.clientIp,
         reason: context.reason || 'snapshot',
-        messageCount: historyMessages.length,
-        messages: historyMessages.map(summarizeHistoryMessage)
+        messageCount: unchanged ? 0 : historyMessages.length,
+        unchanged,
+        historyRevision,
+        ...(HISTORY_DEBUG && !unchanged ? { messages: historyMessages.map(summarizeHistoryMessage) } : {})
     });
 }
 
@@ -7204,10 +7237,13 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
         const session = sessions.get(sessionId);
         if (!session) return;
         const historyMessages = session.history.map(entry => entry.message);
+        const historyRevision = calculateSessionHistoryRevision(session);
         emitToReadableSessionDevices(session, 'session-history', {
             messages: historyMessages,
             deletedMessageIds: session.deletedMessageIds || [],
             authoritative: true,
+            unchanged: false,
+            historyRevision,
             reason
         });
         historyLog('snapshot-broadcast', {
@@ -7710,7 +7746,13 @@ io.on('connection', (socket) => {
             });
 
             if (canUseTunnelCapability(session, deviceId, 'read')) {
-                emitSessionSnapshot(socket, sessionId, session, deviceId, { clientIp, reason: 'join' });
+                emitSessionSnapshot(socket, sessionId, session, deviceId, {
+                    clientIp,
+                    reason: 'join',
+                    historyProtocolVersion: Number(data.historyProtocolVersion) || 0,
+                    historyRevision: data.historyRevision,
+                    historyMessageCount: data.historyMessageCount
+                });
             } else {
                 socket.emit('session-history', { messages: [], deletedMessageIds: [], authoritative: true });
             }
@@ -7877,7 +7919,10 @@ io.on('connection', (socket) => {
             if (!session || !session.devices.has(currentDevice)) return;
             emitSessionSnapshot(socket, sessionId, session, currentDevice, {
                 clientIp,
-                reason: sanitizeString(reason || 'client-request', 80)
+                reason: sanitizeString(reason || 'client-request', 80),
+                historyProtocolVersion: Number(data?.historyProtocolVersion) || 0,
+                historyRevision: data?.historyRevision,
+                historyMessageCount: data?.historyMessageCount
             });
             socket.emit('session-devices', {
                 devices: getSessionDeviceList(session, currentDevice),
@@ -9181,11 +9226,33 @@ async function startServer() {
     hydrateShortCodeCache();
     hydrateTelegramServerAssets();
     auditExternalRuntimeDependencies();
-    webServer.listen(WEB_PORT, '0.0.0.0', logStartup);
+    await new Promise((resolve, reject) => {
+        const handleStartupError = error => {
+            webServer.off('listening', handleListening);
+            reject(error);
+        };
+        const handleListening = () => {
+            webServer.off('error', handleStartupError);
+            logStartup();
+            resolve();
+        };
+        webServer.once('error', handleStartupError);
+        webServer.once('listening', handleListening);
+        webServer.listen(WEB_PORT, '0.0.0.0');
+    });
+    webServer.on('error', error => {
+        console.error('[服务端运行错误]', error);
+    });
 }
 
 startServer().catch(err => {
-    console.error('Failed to start server:', err);
+    if (err?.code === 'EADDRINUSE') {
+        console.error(`[启动失败] 端口 ${WEB_PORT} 已被其他进程占用，本次 npm start 没有启动成功。`);
+        console.error('[排查提示] Linux 可执行：ss -ltnp | grep :' + WEB_PORT + '；Windows PowerShell 可执行：Get-NetTCPConnection -LocalPort ' + WEB_PORT + ' | Select-Object OwningProcess');
+        console.error('[处理建议] 先确认占用者确实是应被替换的旧服务，再通过原进程管理器停止它；不要直接按名称批量杀死所有 Node 进程。');
+    } else {
+        console.error('Failed to start server:', err);
+    }
     process.exit(1);
 });
 

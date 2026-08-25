@@ -103,6 +103,7 @@ const state = {
     isSyncing: false,
     debugLogQueue: [],
     debugLogReady: false,
+    historyRevision: '',
     shortCode: '',
     remoteClipboardText: '',
     clipboardShareEnabled: false,
@@ -289,6 +290,17 @@ const PROGRESS_UI_MIN_INTERVAL = 120;
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
 const HISTORY_RECONCILE_MESSAGE_LIMIT = 1000;
+// Durable tunnel history can contain hundreds of file records. Keep only a
+// bounded DOM window on startup; the complete history remains in IndexedDB and
+// can be restored in batches from the top of the record list.
+const INITIAL_HISTORY_RENDER_LIMIT = 80;
+const HISTORY_RENDER_BATCH_SIZE = 80;
+let historyMessageIndex = [];
+let historyRenderStartIndex = 0;
+let historyBatchRenderRunning = false;
+let deferredHistoryHydrationObserver = null;
+const deferredHistoryHydrationQueue = [];
+let deferredHistoryHydrationRunning = false;
 const directoryMirror = {
     handle: null,
     timer: null,
@@ -1745,7 +1757,10 @@ function initSocket() {
             deviceName: state.deviceName,
             deviceModel: state.deviceModel,
             localIp: state.reportedLanIp,
-            shortCode: state.shortCode
+            shortCode: state.shortCode,
+            historyProtocolVersion: 2,
+            historyRevision: state.historyRevision || '',
+            historyMessageCount: historyMessageIndex.length
         });
         announceNearbyPresence();
         if (nearbyPresenceTimer) clearInterval(nearbyPresenceTimer);
@@ -1892,7 +1907,9 @@ function initSocket() {
         const messages = data && Array.isArray(data.messages) ? data.messages : [];
         historyLog('snapshot-received', {
             messageCount: messages.length,
-            messages: messages.map(summarizeHistoryMessage)
+            unchanged: data?.unchanged === true,
+            historyRevision: String(data?.historyRevision || '').slice(0, 80),
+            ...(HISTORY_DEBUG ? { messages: messages.map(summarizeHistoryMessage) } : {})
         });
         enqueueSessionHistory(data);
     });
@@ -2027,7 +2044,10 @@ function requestSessionHistory(reason = 'manual') {
     state.socket.emit('session-history-request', {
         sessionId: state.sessionId,
         deviceId: state.deviceId,
-        reason
+        reason,
+        historyProtocolVersion: 2,
+        historyRevision: state.historyRevision || '',
+        historyMessageCount: historyMessageIndex.length
     });
     historyLog('snapshot-requested', { reason });
 }
@@ -2039,7 +2059,10 @@ function clearSessionHistoryFallbacks() {
 
 function scheduleSessionHistoryFallbacks() {
     clearSessionHistoryFallbacks();
-    [0, 3000, 12000].forEach((delay, index) => {
+    // join-session already asks the server for a snapshot. Only retry if that
+    // response is actually missing; an immediate 0ms request duplicated every
+    // large history payload on normal joins.
+    [3000, 12000].forEach((delay, index) => {
         const timer = setTimeout(() => {
             requestSessionHistory(index === 0 ? 'join-immediate' : `join-fallback-${index}`);
         }, delay);
@@ -5873,9 +5896,46 @@ function enqueueHistoryAssetRecovery(messages) {
         });
 }
 
+async function rememberSessionHistoryRevision(revision, messageCount = historyMessageIndex.length) {
+    const normalized = String(revision || '').trim().slice(0, 100);
+    if (!normalized || normalized === state.historyRevision) return;
+    state.historyRevision = normalized;
+    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
+    await saveToStore('sessions', {
+        ...(existing || {}),
+        sessionId: state.sessionId,
+        deviceId: state.deviceId,
+        historyRevision: normalized,
+        historyRevisionMessageCount: Math.max(0, Number(messageCount) || 0),
+        historyRevisionAt: Date.now()
+    });
+}
+
 async function handleSessionHistory(data) {
     if (!data || !Array.isArray(data.messages)) {
         historyLog('snapshot-skipped', { reason: 'invalid-payload' });
+        return;
+    }
+
+    if (data.unchanged === true && data.historyRevision) {
+        await rememberSessionHistoryRevision(data.historyRevision, historyMessageIndex.length);
+        const result = {
+            receivedCount: 0,
+            restoredCount: 0,
+            duplicateCount: 0,
+            failedCount: 0,
+            unchanged: true
+        };
+        state.socket?.emit('session-history-ack', {
+            sessionId: state.sessionId,
+            deviceId: state.deviceId,
+            historyRevision: state.historyRevision,
+            ...result
+        });
+        historyLog('snapshot-processing-skipped', {
+            reason: 'history-revision-unchanged',
+            historyRevision: state.historyRevision
+        });
         return;
     }
 
@@ -5887,6 +5947,15 @@ async function handleSessionHistory(data) {
     }
 
     const messages = [...data.messages].sort(compareHistoryMessages);
+    const snapshotRenderIds = new Set(messages
+        .slice(-INITIAL_HISTORY_RENDER_LIMIT)
+        .map(message => message?.id)
+        .filter(Boolean));
+    if (state.pendingRecordId) snapshotRenderIds.add(state.pendingRecordId);
+    const existingMessages = await getCurrentSessionMessages();
+    const existingById = new Map(existingMessages
+        .filter(message => message?.id)
+        .map(message => [message.id, message]));
     let restored = 0;
     let duplicates = 0;
     let failed = 0;
@@ -5906,7 +5975,8 @@ async function handleSessionHistory(data) {
         }
 
         try {
-            const existing = await getFromStore('messages', message.id);
+            const existing = existingById.get(message.id);
+            const shouldRender = snapshotRenderIds.has(message.id) || Boolean(getMessageElement(message.id));
             if (existing) {
                 duplicates++;
                 historyLog('snapshot-message-skipped', {
@@ -5916,14 +5986,19 @@ async function handleSessionHistory(data) {
                 if (isAuthoritativeHistoryMessageChanged(existing, message)) {
                     await applyHistoryMessageUpdate(message, {
                         remote: true,
-                        snapshot: true
+                        snapshot: true,
+                        render: shouldRender
                     });
+                    existingById.set(message.id, { ...message, sessionId: state.sessionId });
                     historyLog('snapshot-message-updated', {
                         reason: 'authoritative-message-changed',
                         message: summarizeHistoryMessage(message)
                     });
-                } else if (!getMessageElement(message.id)) {
-                    await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
+                } else if (shouldRender && !getMessageElement(message.id)) {
+                    await addMessageToChat(existing, existing.sender === state.deviceId, {
+                        autoRequestAsset: false,
+                        deferFileCache: true
+                    });
                     historyLog('snapshot-message-rendered', {
                         reason: 'existing-not-rendered',
                         message: summarizeHistoryMessage(existing)
@@ -5943,14 +6018,20 @@ async function handleSessionHistory(data) {
                 ...message,
                 sessionId: state.sessionId
             });
+            existingById.set(message.id, { ...message, sessionId: state.sessionId });
             historyLog('snapshot-message-stored', {
                 message: summarizeHistoryMessage(message)
             });
 
-            await addMessageToChat(message, message.sender === state.deviceId, { autoRequestAsset: false });
-            historyLog('snapshot-message-rendered', {
-                message: summarizeHistoryMessage(message)
-            });
+            if (shouldRender) {
+                await addMessageToChat(message, message.sender === state.deviceId, {
+                    autoRequestAsset: false,
+                    deferFileCache: true
+                });
+                historyLog('snapshot-message-rendered', {
+                    message: summarizeHistoryMessage(message)
+                });
+            }
             restored++;
         } catch (err) {
             failed++;
@@ -5986,10 +6067,14 @@ async function handleSessionHistory(data) {
         await reconcileLocalHistory(messages, deletedMessageIds);
     }
 
+    setHistoryMessageIndex(await getCurrentSessionMessages(), { preserveStart: true });
+    await rememberSessionHistoryRevision(data.historyRevision, historyMessageIndex.length);
+
     if (state.socket) {
         state.socket.emit('session-history-ack', {
             sessionId: state.sessionId,
             deviceId: state.deviceId,
+            historyRevision: state.historyRevision,
             ...result
         });
         historyLog('snapshot-ack-emitted', result);
@@ -6259,6 +6344,153 @@ function initChatScrollAnchorTracking() {
     });
 }
 
+function setHistoryMessageIndex(messages, options = {}) {
+    const previousBoundaryId = options.preserveStart === true
+        ? historyMessageIndex[historyRenderStartIndex]?.id || ''
+        : '';
+    historyMessageIndex = (Array.isArray(messages) ? messages : [])
+        .filter(message => message?.id)
+        .sort(compareHistoryMessages)
+        .map(message => ({
+            id: message.id,
+            timestamp: Number(message.timestamp || 0),
+            localOrder: Number(message.localOrder || message.fileInfo?.localOrder || 0)
+        }));
+    const preservedIndex = previousBoundaryId
+        ? historyMessageIndex.findIndex(message => message.id === previousBoundaryId)
+        : -1;
+    historyRenderStartIndex = preservedIndex >= 0
+        ? preservedIndex
+        : Math.max(0, historyMessageIndex.length - INITIAL_HISTORY_RENDER_LIMIT);
+    syncHistoryLoadControl();
+}
+
+function removeHistoryLoadControl() {
+    document.querySelectorAll('#chatMessages .history-load-control').forEach(button => button.remove());
+}
+
+function syncHistoryLoadControl() {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    removeHistoryLoadControl();
+    if (historyRenderStartIndex <= 0) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'history-load-control';
+    button.textContent = `加载更早记录（剩余 ${historyRenderStartIndex} 条）`;
+    button.disabled = historyBatchRenderRunning;
+    button.addEventListener('click', () => {
+        loadOlderHistoryBatch().catch(err => {
+            historyLog('indexeddb-history-batch-render-failed', { error: err.message });
+            showAppToast(`加载更早记录失败：${err.message}`);
+        });
+    });
+    container.prepend(button);
+}
+
+async function loadOlderHistoryBatch() {
+    if (historyBatchRenderRunning || historyRenderStartIndex <= 0) return;
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    historyBatchRenderRunning = true;
+    const previousHeight = container.scrollHeight;
+    const previousTop = container.scrollTop;
+    const nextStart = Math.max(0, historyRenderStartIndex - HISTORY_RENDER_BATCH_SIZE);
+    const batch = historyMessageIndex.slice(nextStart, historyRenderStartIndex);
+    removeHistoryLoadControl();
+    container.classList.add('history-loading');
+    try {
+        for (let index = 0; index < batch.length; index++) {
+            const item = batch[index];
+            const message = await getFromStore('messages', item.id).catch(() => null);
+            if (message?.sessionId === state.sessionId) {
+                await addMessageToChat(message, message.sender === state.deviceId, {
+                    scroll: false,
+                    autoRequestAsset: false,
+                    deferFileCache: true
+                });
+            }
+            if (index > 0 && index % 8 === 0) await sleep(0);
+        }
+        historyRenderStartIndex = nextStart;
+    } finally {
+        historyBatchRenderRunning = false;
+        container.classList.remove('history-loading');
+        syncHistoryLoadControl();
+        requestAnimationFrame(() => {
+            container.scrollTop = previousTop + Math.max(0, container.scrollHeight - previousHeight);
+            scheduleChatScrollAnchorSave();
+        });
+    }
+}
+
+function enqueueDeferredHistoryHydration(messageEl) {
+    if (!messageEl?.dataset.messageId || messageEl.dataset.historyCacheDeferred !== 'true') return;
+    deferredHistoryHydrationQueue.push({
+        messageId: messageEl.dataset.messageId,
+        messageEl
+    });
+    if (deferredHistoryHydrationRunning) return;
+    deferredHistoryHydrationRunning = true;
+    (async () => {
+        while (deferredHistoryHydrationQueue.length) {
+            const pending = deferredHistoryHydrationQueue.shift();
+            const element = pending?.messageEl;
+            if (!element?.isConnected || element.dataset.historyCacheDeferred !== 'true') continue;
+            element.dataset.historyCacheDeferred = 'hydrating';
+            try {
+                const message = await getFromStore('messages', pending.messageId).catch(() => null);
+                if (message?.type === 'file' && message.fileInfo?.id) {
+                    await refreshFileMessage(message.fileInfo.id);
+                } else if (message?.type === 'collection') {
+                    const html = await renderCollectionPreviewHtml(message);
+                    const current = getMessageElement(message.id);
+                    const bubble = current?.querySelector('.message-bubble');
+                    if (bubble) preserveChatScroll(() => { bubble.outerHTML = html; });
+                }
+            } catch (err) {
+                historyLog('indexeddb-history-visible-cache-hydration-failed', {
+                    messageId: pending.messageId,
+                    error: err.message
+                });
+            } finally {
+                if (element?.isConnected) element.dataset.historyCacheDeferred = 'false';
+            }
+            await sleep(0);
+        }
+    })().finally(() => {
+        deferredHistoryHydrationRunning = false;
+        if (deferredHistoryHydrationQueue.length) {
+            enqueueDeferredHistoryHydration(deferredHistoryHydrationQueue.shift()?.messageEl);
+        }
+    });
+}
+
+function observeDeferredHistoryHydration(messageEl) {
+    if (!messageEl || !['file', 'collection'].includes(messageEl.dataset.historyMessageType)) return;
+    messageEl.dataset.historyCacheDeferred = 'true';
+    if (!('IntersectionObserver' in window)) {
+        const hydrate = () => enqueueDeferredHistoryHydration(messageEl);
+        if ('requestIdleCallback' in window) requestIdleCallback(hydrate, { timeout: 2500 });
+        else setTimeout(hydrate, 0);
+        return;
+    }
+    if (!deferredHistoryHydrationObserver) {
+        deferredHistoryHydrationObserver = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                deferredHistoryHydrationObserver.unobserve(entry.target);
+                enqueueDeferredHistoryHydration(entry.target);
+            });
+        }, {
+            root: document.getElementById('chatMessages'),
+            rootMargin: '320px 0px',
+            threshold: 0.01
+        });
+    }
+    deferredHistoryHydrationObserver.observe(messageEl);
+}
+
 function insertMessageElementByTimestamp(container, messageEl) {
     const messages = Array.from(container.querySelectorAll('.message'));
     const next = messages.find(element => compareHistoryMessages(element, messageEl) > 0);
@@ -6287,10 +6519,12 @@ function getCollectionFiles(message) {
     return Array.isArray(message?.collection?.files) ? message.collection.files.filter(file => file?.id) : [];
 }
 
-async function createCollectionTileHtml(fileInfo, index, total) {
+async function createCollectionTileHtml(fileInfo, index, total, options = {}) {
     const type = String(fileInfo.type || '').toLowerCase();
     let body = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
-    const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+    const persistedFile = options.deferFileCache === true
+        ? null
+        : await getFromStore('files', fileInfo.id).catch(() => null);
     let storedFile = persistedFile;
     if (persistedFile?.externalFileHandle) storedFile = await materializeExternalFileRecord(persistedFile);
     const externalSourceState = getExternalFileSourceState(persistedFile, storedFile, fileInfo);
@@ -6321,19 +6555,19 @@ async function createCollectionTileHtml(fileInfo, index, total) {
     const externalBadge = externalSourceState.handleReadable
         ? '<span class="external-file-badge collection-external-file-badge" title="内容按需读取自供源设备的本机文件系统">🖴</span>'
         : '';
-    const favoriteBadge = !isMoreTile && await isFileFavorite(fileInfo)
+    const favoriteBadge = !isMoreTile && options.deferFileCache !== true && await isFileFavorite(fileInfo)
         ? '<span class="collection-file-favorite-badge" title="单文件收藏">★</span>'
         : '';
     const fileAttribute = isMoreTile ? 'data-collection-more="true"' : `data-collection-file-id="${escapeHtml(fileInfo.id || '')}"`;
     return `<div class="collection-preview-tile" ${fileAttribute} role="button" tabindex="0">${body}${favoriteBadge}${externalBadge}${remaining}</div>`;
 }
 
-async function renderCollectionPreviewHtml(message) {
+async function renderCollectionPreviewHtml(message, options = {}) {
     const files = getCollectionFiles(message);
     const visible = files.slice(0, Math.min(files.length, 4));
     const tiles = [];
     for (let index = 0; index < visible.length; index++) {
-        tiles.push(await createCollectionTileHtml(visible[index], index, files.length));
+        tiles.push(await createCollectionTileHtml(visible[index], index, files.length, options));
     }
     const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
     const remark = String(message?.remark || message?.collection?.remark || '').trim();
@@ -6378,6 +6612,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     const messageEl = document.createElement('div');
     messageEl.className = `message ${isOwn ? 'own' : ''}`;
     messageEl.dataset.messageId = message.id;
+    messageEl.dataset.historyMessageType = message.type || '';
     messageEl.dataset.messageTimestamp = String(message.timestamp || Date.now());
     messageEl.dataset.messageLocalOrder = String(message.localOrder || message.fileInfo?.localOrder || 0);
     if (message.type === 'file' && message.fileInfo?.id) {
@@ -6413,7 +6648,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         let storedFile = null;
         let externalSourceState = getExternalFileSourceState(null, null, fileInfo);
 
-        if (fileInfo.id) {
+        if (fileInfo.id && options.deferFileCache !== true) {
             try {
                 const persistedFile = await getFromStore('files', fileInfo.id);
                 storedFile = persistedFile;
@@ -6507,7 +6742,9 @@ async function addMessageToChat(message, isOwn, options = {}) {
         messageEl.dataset.collectionId = message.collection?.id || message.id;
         messageEl.dataset.collectionCount = String(files.length);
         messageEl.dataset.collectionFileIds = files.map(file => file.id).join(',');
-        contentHtml = await renderCollectionPreviewHtml(message);
+        contentHtml = await renderCollectionPreviewHtml(message, {
+            deferFileCache: options.deferFileCache === true
+        });
     } else if (message.type === 'rich') {
         // 富文本消息
         const preview = getRichMessagePreviewText(message).slice(0, 100);
@@ -6555,6 +6792,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     }
 
     insertMessageElementByTimestamp(container, messageEl);
+    if (options.deferFileCache === true) observeDeferredHistoryHydration(messageEl);
     if (shouldScroll) {
         container.scrollTop = container.scrollHeight;
     }
@@ -11319,17 +11557,20 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     });
 
     const wasOwn = message.sender === state.deviceId;
+    const existingElement = getMessageElement(message.id);
+    const shouldRender = options.render !== false || Boolean(existingElement);
     if (previous?.type === 'collection' && message.type === 'collection') {
-        await updateCollectionMessageElement(message);
-        await applyCollectionPreviewIncrementalUpdate(previous, message);
-        const existingElement = getMessageElement(message.id);
-        if (existingElement) {
-            syncTransferRecordFavoriteBadge(existingElement, message);
-            syncTransferRecordSnsBadge(existingElement, message);
-            renderMessageRecordActions(existingElement, message);
+        if (shouldRender) {
+            await updateCollectionMessageElement(message);
+            await applyCollectionPreviewIncrementalUpdate(previous, message);
+            const liveElement = getMessageElement(message.id);
+            if (liveElement) {
+                syncTransferRecordFavoriteBadge(liveElement, message);
+                syncTransferRecordSnsBadge(liveElement, message);
+                renderMessageRecordActions(liveElement, message);
+            }
         }
-    } else {
-        const existingElement = getMessageElement(message.id);
+    } else if (shouldRender) {
         const shouldScroll = Boolean(existingElement && isChatNearBottom(document.getElementById('chatMessages')));
         existingElement?.remove();
         await addMessageToChat(message, wasOwn, {
@@ -17042,26 +17283,41 @@ async function loadSessionData() {
         messages.sort(compareHistoryMessages);
         historyLog('indexeddb-history-loaded', {
             messageCount: messages.length,
-            messages: messages.map(summarizeHistoryMessage)
+            ...(HISTORY_DEBUG ? { messages: messages.map(summarizeHistoryMessage) } : {})
         });
 
         const chatMessages = document.getElementById('chatMessages');
         const storedSessionForAnchor = await getFromStore('sessions', state.sessionId).catch(() => null);
+        const storedRevisionCount = Number(storedSessionForAnchor?.historyRevisionMessageCount);
+        state.historyRevision = Number.isInteger(storedRevisionCount) && storedRevisionCount === messages.length
+            ? String(storedSessionForAnchor?.historyRevision || '').slice(0, 100)
+            : '';
         const deepLinkedMessage = state.pendingRecordId
             ? messages.find(message => message.id === state.pendingRecordId)
             : null;
-        const orderedMessages = deepLinkedMessage
-            ? [deepLinkedMessage, ...messages.filter(message => message.id !== deepLinkedMessage.id)]
-            : messages;
+        const savedAnchorMessage = !deepLinkedMessage && storedSessionForAnchor?.scrollAnchorMessageId
+            ? messages.find(message => message.id === storedSessionForAnchor.scrollAnchorMessageId)
+            : null;
+        const preferredAnchorMessage = deepLinkedMessage || savedAnchorMessage;
+        const initialMessages = messages.slice(-INITIAL_HISTORY_RENDER_LIMIT);
+        if (preferredAnchorMessage && !initialMessages.some(message => message.id === preferredAnchorMessage.id)) {
+            initialMessages.unshift(preferredAnchorMessage);
+            initialMessages.sort(compareHistoryMessages);
+        }
+        setHistoryMessageIndex(messages);
         chatScrollAnchorMessageId = deepLinkedMessage?.id || storedSessionForAnchor?.scrollAnchorMessageId || '';
         chatMessages?.classList.add('history-loading');
         try {
             // 使用 for...of 确保按顺序异步处理，但不要每条都滚动，避免刷新时列表抖动。
             let renderedCount = 0;
-            for (const msg of orderedMessages) {
+            for (const msg of initialMessages) {
                 try {
                     const isOwn = msg.sender === state.deviceId;
-                    await addMessageToChat(msg, isOwn, { scroll: false });
+                    await addMessageToChat(msg, isOwn, {
+                        scroll: false,
+                        autoRequestAsset: false,
+                        deferFileCache: true
+                    });
                     renderedCount += 1;
                     if (msg.id === deepLinkedMessage?.id) {
                         settleMobileWorkspaceView('chat');
@@ -17072,7 +17328,7 @@ async function loadSessionData() {
                             flashResourceTarget(target);
                         }
                     }
-                    if (deepLinkedMessage && renderedCount % 8 === 0) await sleep(0);
+                    if (renderedCount % 8 === 0) await sleep(0);
                 } catch (err) {
                     console.error('Failed to render stored message:', msg && msg.id, err);
                     historyLog('indexeddb-history-message-render-failed', {
@@ -17101,7 +17357,8 @@ async function loadSessionData() {
             }
         }
         historyLog('indexeddb-history-rendered', {
-            messageCount: messages.length
+            messageCount: initialMessages.length,
+            deferredCount: Math.max(0, messages.length - initialMessages.length)
         });
 
         // 加载协同编辑内容
