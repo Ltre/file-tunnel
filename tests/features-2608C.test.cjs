@@ -33,6 +33,7 @@ test('admin exposes durable tunnel audit fields and cache-node actions', () => {
     ]) assert.match(page, new RegExp(label));
     assert.match(page, /\/vclient\?sessionId=/);
     assert.match(page, /若其他真实供源全部离线，尚未缓存完成的文件可能暂时无法获取/);
+    assert.match(page, /5 位短码：<code>\$\{safeShortCode\}<\/code>/);
 });
 
 test('audit ledger stays durable without putting synchronous persistence on the live file path', () => {
@@ -145,7 +146,104 @@ test('/vclient is a read-only record/status view without misleading progress bar
     assert.match(page, /富文本记录/);
     assert.match(page, /showModal\(\)/);
     assert.match(page, /retrying:'重试中'/);
+    assert.match(page, /id="tunnelSelect"/);
+    assert.match(page, /Number\(row\.desired_enabled\)===1/);
+    assert.match(page, /row\.shortCode\|\|'-----'/);
     assert.doesNotMatch(page, /<input\b/i);
     assert.doesNotMatch(page, /<textarea\b/i);
     assert.doesNotMatch(page, /<progress\b/i);
+});
+
+test('contact calls and remote preview commands are authenticated state machines', () => {
+    assert.match(read('server.js'), /registerMediaHandlers\(socket, \{[\s\S]{0,180}getDeviceId: \(\) => currentDevice \|\| profileDevice/);
+    const { registerMediaHandlers, cleanupMediaDevice } = require('../server/media-session');
+    class FakeSocket {
+        constructor(id) {
+            this.id = id;
+            this.data = {};
+            this.handlers = new Map();
+            this.events = [];
+        }
+        on(event, handler) { this.handlers.set(event, handler); }
+        emit(event, payload) { this.events.push({ event, payload }); }
+        to() { return { emit() {} }; }
+        trigger(event, payload, ack) { return this.handlers.get(event)?.(payload, ack); }
+        last(event) { return this.events.filter(entry => entry.event === event).at(-1); }
+    }
+
+    const sessionOne = { devices:new Map(), media:null };
+    const sessionTwo = { devices:new Map(), media:null };
+    const sessions = new Map([['session-0001', sessionOne], ['session-0002', sessionTwo]]);
+    const sockets = new Map();
+    const identities = new Map();
+    const add = (deviceId, sessionId) => {
+        const socket = new FakeSocket(`socket-${deviceId}`);
+        identities.set(socket, { deviceId, sessionId });
+        sessions.get(sessionId).devices.set(deviceId, {});
+        sockets.set(deviceId, socket);
+        registerMediaHandlers(socket, {
+            sessions,
+            deviceSockets:sockets,
+            getSessionId:() => identities.get(socket).sessionId,
+            getDeviceId:() => identities.get(socket).deviceId,
+            isValidId:value => /^[a-zA-Z0-9_-]{8,64}$/.test(String(value || '')),
+            canUseCapability:() => true,
+            historyLog() {},
+            clientIp:'127.0.0.1'
+        });
+        return socket;
+    };
+    const caller = add('device-caller', 'session-0001');
+    const callee = add('device-callee', 'session-0001');
+    const outsider = add('device-outside', 'session-0002');
+
+    caller.trigger('contact-call-request', { to:'device-callee', callId:'call-0000001', caller:{ name:'主叫' } });
+    assert.equal(callee.last('contact-call-request').payload.caller.name, '主叫');
+    outsider.trigger('contact-call-request', { to:'device-callee', callId:'call-0000002', caller:{ name:'第三方' } });
+    assert.equal(outsider.last('contact-call-rejected').payload.reason, 'busy');
+    callee.trigger('contact-call-accepted', { to:'device-caller', callId:'call-0000001', callee:{ name:'被叫' } });
+    assert.equal(caller.last('contact-call-accepted').payload.callee.name, '被叫');
+    const beforeForgedSignals = callee.events.filter(entry => entry.event === 'contact-media-signal').length;
+    outsider.trigger('contact-media-signal', { to:'device-callee', kind:'contactVoice', sessionKey:'call-0000001', type:'offer', sdp:{} });
+    assert.equal(callee.events.filter(entry => entry.event === 'contact-media-signal').length, beforeForgedSignals);
+    caller.trigger('contact-media-signal', { to:'device-callee', kind:'contactVoice', sessionKey:'call-0000001', type:'offer', sdp:{} });
+    assert.equal(callee.last('contact-media-signal').payload.from, 'device-caller');
+    caller.trigger('contact-call-ended', { to:'device-callee', callId:'call-0000001', reason:'ended' });
+    assert.equal(callee.last('contact-call-ended').payload.reason, 'ended');
+
+    let crossSessionAck;
+    outsider.trigger('remote-preview-cache-check', {
+        requestId:'preview-00001', to:'device-callee', fileId:'file-00000001', fileInfo:{ id:'file-00000001', type:'image/png' }
+    }, result => { crossSessionAck = result; });
+    assert.equal(crossSessionAck.ok, false);
+
+    let checkAck;
+    caller.trigger('remote-preview-cache-check', {
+        requestId:'preview-00002', to:'device-callee', fileId:'file-00000001', fileInfo:{ id:'file-00000001', name:'图.png', type:'image/png', size:12 }
+    }, result => { checkAck = result; });
+    assert.equal(checkAck.ok, true);
+    assert.equal(callee.last('remote-preview-cache-check').payload.fileInfo.name, '图.png');
+    let prematureOpenAck;
+    caller.trigger('remote-preview-open', { requestId:'preview-00002', to:'device-callee' }, result => { prematureOpenAck = result; });
+    assert.equal(prematureOpenAck.ok, false);
+    callee.trigger('remote-preview-cache-result', { requestId:'preview-00002', to:'device-caller', fileId:'file-00000001', available:true });
+    assert.equal(caller.last('remote-preview-cache-result').payload.available, true);
+    let openAck;
+    caller.trigger('remote-preview-open', { requestId:'preview-00002', to:'device-callee' }, result => { openAck = result; });
+    assert.equal(openAck.ok, true);
+    assert.equal(callee.last('remote-preview-open').payload.fileId, 'file-00000001');
+    callee.trigger('remote-preview-open-result', { requestId:'preview-00002', to:'device-caller', ok:true });
+    assert.equal(caller.last('remote-preview-open-result').payload.ok, true);
+    cleanupMediaDevice(sessionOne, 'device-caller', () => {}, () => {});
+});
+
+test('preview remote-control UI keeps the command next to music and supports every previewable media type', () => {
+    const page = read('pages/index.html');
+    const app = read('app.js');
+    assertAppearsBefore(page, 'id="filePreviewRemoteBtn"', 'id="filePreviewMusicBtn"', 'remote preview button must sit immediately before music');
+    assert.match(page, /id="remotePreviewDeviceModal"/);
+    assert.match(app, /hasCompleteFileCache\(storedFile, data\.fileInfo\)/);
+    assert.match(app, /clientType !== 'vclient'/);
+    assert.match(app, /function isFullscreenPreviewableType\(type\) \{\s*return isPreviewableFileType\(type\);/);
+    assert.match(app, /media-fullscreen-audio-card/);
 });

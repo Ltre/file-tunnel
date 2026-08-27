@@ -795,6 +795,7 @@
             
             container.innerHTML = sessions.map(session => {
                 const safeId = escapeHtml(session.id);
+                const safeShortCode = escapeHtml(session.shortCode || '-----');
                 const shortId = escapeHtml(session.id.substring(0, 8) + '...');
                 const createdTime = new Date(session.createdAt || Date.now()).toLocaleString('zh-CN');
                 const lastActivity = new Date(session.lastActivity || session.createdAt || Date.now()).toLocaleString('zh-CN');
@@ -825,6 +826,7 @@
                         <div class="session-info">
                             <div class="session-id">
                                 隧道 ${shortId}
+                                <span class="status-badge status-local">短码 ${safeShortCode}</span>
                                 <span class="status-badge ${statusClass}">
                                     ${statusText}
                                 </span>
@@ -833,6 +835,7 @@
                                 </span>
                             </div>
                             <div class="session-meta">
+                                <div>5 位短码：<code>${safeShortCode}</code></div>
                                 <div>隧道 ID：<code>${safeId}</code></div>
                                 <div>活跃设备：<span class="device-count">📱 ${Number(session.activeDeviceCount) || 0} 台</span>（真实设备 ${Number(session.realActiveDeviceCount) || 0}${cacheOnline ? '，缓存节点在线' : ''}）</div>
                                 <div>历史总设备：${Number(session.historicalAllDeviceCount) || Number(session.historicalDeviceCount) || 0}（真实设备 ${Number(session.historicalDeviceCount) || 0}）</div>

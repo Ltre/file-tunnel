@@ -37,6 +37,12 @@ function createVClientControl({ io, app, adminAuth, infraStore, dataDir, isValid
     const namespace = io.of('/vclient-control');
     let controller = null;
 
+    const presentTunnel = row => {
+        if (!row) return null;
+        const tunnel = infraStore.getTunnel?.(row.session_id) || {};
+        return { ...row, shortCode: String(tunnel.short_code || '') };
+    };
+
     const enabledAssignments = () => (infraStore.listVClientTunnels?.() || [])
         .filter(row => Number(row.desired_enabled) === 1)
         .map(row => ({
@@ -153,7 +159,7 @@ function createVClientControl({ io, app, adminAuth, infraStore, dataDir, isValid
         res.json({
             processOnline: Boolean(controller?.connected),
             instanceId: String(controller?.handshake.auth?.instanceId || ''),
-            tunnels: infraStore.listVClientTunnels?.() || []
+            tunnels: (infraStore.listVClientTunnels?.() || []).map(presentTunnel)
         });
     });
 
@@ -203,7 +209,7 @@ function createVClientControl({ io, app, adminAuth, infraStore, dataDir, isValid
         res.json({
             ...records,
             processOnline: Boolean(controller?.connected),
-            tunnel: infraStore.getVClientTunnel(sessionId),
+            tunnel: presentTunnel(infraStore.getVClientTunnel(sessionId)),
             assetStates: infraStore.listVClientAssetStates?.(sessionId) || []
         });
     });

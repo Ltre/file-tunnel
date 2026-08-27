@@ -9129,7 +9129,7 @@ io.on('connection', (socket) => {
         sessions,
         deviceSockets,
         getSessionId: () => currentSession,
-        getDeviceId: () => currentDevice,
+        getDeviceId: () => currentDevice || profileDevice,
         isValidId: isValidDeviceId,
         canUseCapability: canUseTunnelCapability,
         historyLog,
@@ -9191,7 +9191,12 @@ io.on('connection', (socket) => {
                         }
                     }
 
-                    cleanupMediaDevice(session, currentDevice, (event, payload) => socket.to(currentSession).emit(event, payload));
+                    cleanupMediaDevice(
+                        session,
+                        currentDevice,
+                        (event, payload) => socket.to(currentSession).emit(event, payload),
+                        (targetDeviceId, event, payload) => deviceSockets.get(targetDeviceId)?.emit(event, payload)
+                    );
 
                     // 通知会话中的其他设备
                     socket.to(currentSession).emit('device-left', {
@@ -9211,6 +9216,12 @@ io.on('connection', (socket) => {
         } else if (profileDevice) {
             if (deviceSockets.get(profileDevice) === socket) {
                 deviceSockets.delete(profileDevice);
+                cleanupMediaDevice(
+                    null,
+                    profileDevice,
+                    () => {},
+                    (targetDeviceId, event, payload) => deviceSockets.get(targetDeviceId)?.emit(event, payload)
+                );
             }
             markAccessDeviceOffline(profileDevice, {
                 deviceId: profileDevice,

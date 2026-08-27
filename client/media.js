@@ -1,4 +1,15 @@
 (function attachMediaController(global) {
+    function createUuid() {
+        if (global.crypto?.randomUUID) return global.crypto.randomUUID();
+        const bytes = new Uint8Array(16);
+        if (global.crypto?.getRandomValues) global.crypto.getRandomValues(bytes);
+        else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+        return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+    }
+
     function normalizeIceServers(value) {
         return Array.isArray(value)
             ? value.filter(item => item && typeof item === 'object' && item.urls)
@@ -232,10 +243,25 @@
 
         async startContactCall(contact) {
             if (!contact?.deviceId) throw new Error('联系人设备无效');
-            if (this.contactCall) this.endContactCall('replaced');
-            const callId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-            const stream = await this.getMedia({ audio: true, video: false });
-            this.contactCall = { callId, peerId: contact.deviceId, stream, state: 'dialing', startedAt: Date.now(), contact };
+            if (this.contactCall) throw new Error('当前已有语音通话');
+            const callId = createUuid();
+            this.contactCall = { callId, peerId: contact.deviceId, stream: null, state: 'preparing', startedAt: 0, contact, timer: null };
+            this.deps.onContactCallState({ state: 'preparing', callId, contact });
+            let stream;
+            try {
+                stream = await this.getMedia({ audio: true, video: false });
+            } catch (error) {
+                this.contactCall = null;
+                this.deps.onContactCallState({ state: 'idle', reason: 'microphone-denied', callId, peerId: contact.deviceId });
+                throw error;
+            }
+            if (!this.contactCall || this.contactCall.callId !== callId) {
+                stream.getTracks().forEach(track => track.stop());
+                return;
+            }
+            this.contactCall.stream = stream;
+            this.contactCall.state = 'dialing';
+            this.contactCall.timer = setTimeout(() => this.endContactCall('no-answer'), 50_000);
             this.emitGlobal('contact-call-request', {
                 callId,
                 to: contact.deviceId,
@@ -247,16 +273,35 @@
 
         async acceptContactCall(call) {
             if (!call?.callId || !call?.from) return;
-            if (this.contactCall) this.endContactCall('replaced');
-            const stream = await this.getMedia({ audio: true, video: false });
+            if (this.contactCall) {
+                this.rejectContactCall(call, 'busy');
+                throw new Error('当前已有语音通话');
+            }
             this.contactCall = {
                 callId: call.callId,
                 peerId: call.from,
-                stream,
-                state: 'active',
-                startedAt: Date.now(),
-                contact: call.caller || { deviceId: call.from }
+                stream: null,
+                state: 'preparing',
+                startedAt: 0,
+                contact: call.caller || { deviceId: call.from },
+                timer: null
             };
+            this.deps.onContactCallState({ state: 'preparing-accept', callId: call.callId, contact: this.contactCall.contact });
+            let stream;
+            try {
+                stream = await this.getMedia({ audio: true, video: false });
+            } catch (error) {
+                this.contactCall = null;
+                this.rejectContactCall(call, 'microphone-denied');
+                throw error;
+            }
+            if (!this.contactCall || this.contactCall.callId !== call.callId) {
+                stream.getTracks().forEach(track => track.stop());
+                return;
+            }
+            this.contactCall.stream = stream;
+            this.contactCall.state = 'active';
+            this.contactCall.startedAt = Date.now();
             this.emitGlobal('contact-call-accepted', { callId: call.callId, to: call.from, callee: this.deps.getContactSelfProfile() });
             this.deps.onContactCallState({ state: 'active', callId: call.callId, contact: this.contactCall.contact, startedAt: this.contactCall.startedAt });
             this.log('contact-call-accepted', { callId: call.callId, peerId: call.from });
@@ -270,6 +315,8 @@
 
         async handleContactCallAccepted(data) {
             if (!this.contactCall || data?.callId !== this.contactCall.callId || data?.from !== this.contactCall.peerId) return;
+            clearTimeout(this.contactCall.timer);
+            this.contactCall.timer = null;
             this.contactCall.state = 'active';
             this.contactCall.startedAt = Date.now();
             if (data.callee) this.contactCall.contact = { ...this.contactCall.contact, ...data.callee, deviceId: data.from };
@@ -284,12 +331,13 @@
 
         endContactCall(reason = 'ended', notify = true) {
             if (!this.contactCall) return;
-            const { callId, peerId, stream } = this.contactCall;
+            const { callId, peerId, stream, timer } = this.contactCall;
+            clearTimeout(timer);
             stream?.getTracks().forEach(track => track.stop());
             this.closeConnection(this.key('contactVoice', callId, peerId));
             if (notify) this.emitGlobal('contact-call-ended', { callId, to: peerId, reason });
             this.contactCall = null;
-            this.deps.onContactCallState({ state: 'idle', reason });
+            this.deps.onContactCallState({ state: 'idle', reason, callId, peerId });
             this.log('contact-call-ended', { callId, peerId, reason });
         }
 
@@ -355,6 +403,7 @@
         async handleSignal(data) {
             const { from, kind, sessionKey, type, sdp, candidate } = data || {};
             if (!from || !kind || !sessionKey || !type) return;
+            if (kind === 'contactVoice' && (!this.contactCall || this.contactCall.callId !== sessionKey || this.contactCall.peerId !== from || this.contactCall.state !== 'active')) return;
             const key = this.key(kind, sessionKey, from);
             let pc = this.connections.get(key);
             if (!pc) {
