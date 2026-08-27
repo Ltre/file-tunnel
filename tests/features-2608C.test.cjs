@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(ROOT, relative), 'utf8');
@@ -234,6 +235,17 @@ test('contact calls and remote preview commands are authenticated state machines
     assert.equal(callee.last('remote-preview-open').payload.fileId, 'file-00000001');
     callee.trigger('remote-preview-open-result', { requestId:'preview-00002', to:'device-caller', ok:true });
     assert.equal(caller.last('remote-preview-open-result').payload.ok, true);
+
+    caller.trigger('remote-preview-cache-check', {
+        requestId:'preview-00003', to:'device-callee', fileId:'file-00000002', fileInfo:{ id:'file-00000002', name:'第二张图.png', type:'image/png', size:24 }
+    });
+    callee.trigger('remote-preview-cache-result', { requestId:'preview-00003', to:'device-caller', fileId:'file-00000002', available:true });
+    let repeatedOpenAck;
+    caller.trigger('remote-preview-open', { requestId:'preview-00003', to:'device-callee' }, result => { repeatedOpenAck = result; });
+    assert.equal(repeatedOpenAck.ok, true, 'a completed remote open must not make the target unusable for the next file');
+    assert.equal(callee.last('remote-preview-open').payload.fileId, 'file-00000002');
+    callee.trigger('remote-preview-open-result', { requestId:'preview-00003', to:'device-caller', ok:true });
+    assert.equal(caller.last('remote-preview-open-result').payload.fileId, 'file-00000002');
     cleanupMediaDevice(sessionOne, 'device-caller', () => {}, () => {});
 });
 
@@ -246,4 +258,84 @@ test('preview remote-control UI keeps the command next to music and supports eve
     assert.match(app, /clientType !== 'vclient'/);
     assert.match(app, /function isFullscreenPreviewableType\(type\) \{\s*return isPreviewableFileType\(type\);/);
     assert.match(app, /media-fullscreen-audio-card/);
+});
+
+test('remote preview picker stays above preview G and repeated commands are idempotent and retryable', () => {
+    const page = read('pages/index.html');
+    const app = read('app.js');
+    const previewZ = Number(page.match(/#filePreviewViewer\s*\{\s*z-index:\s*(\d+)/)?.[1]);
+    const pickerZ = Number(page.match(/#remotePreviewDeviceModal\s*\{\s*z-index:\s*(\d+)/)?.[1]);
+    assert.ok(pickerZ > previewZ, `remote picker z-index ${pickerZ} must exceed preview G z-index ${previewZ}`);
+
+    const pickerOpen = readBlock(app, 'function openRemotePreviewDeviceModal()', 'async function handleRemotePreviewCacheCheck');
+    assert.doesNotMatch(pickerOpen, /closeFilePreview|classList\.remove\(['"]active['"]\)/);
+
+    const targetOpen = readBlock(app, 'async function handleRemotePreviewOpen(data)', 'function handleRemotePreviewOpenResult');
+    assertAppearsBefore(
+        targetOpen,
+        "currentFullscreenFileId === data.fileId",
+        'closeFilePreview({ fromHistory:true, forceClose:true })',
+        'the target must acknowledge an already-open file before replacing its active fullscreen'
+    );
+    assert.doesNotMatch(targetOpen, /closeMediaFullscreen/);
+    assert.match(targetOpen, /openActivePreviewFullscreen\(\{ focusedOnly:true/);
+    assert.match(app, /entry\.status === 'unavailable' \? '重新检测'/);
+    assert.match(app, /setTimeout\(\(\) => beginRemotePreviewCacheCheck\(entry\), 500\)/);
+});
+
+test('remote preview target keeps the same fullscreen open and switches other files through the focused fast path', async () => {
+    const app = read('app.js');
+    const targetOpen = readBlock(app, 'async function handleRemotePreviewOpen(data)', 'function handleRemotePreviewOpenResult');
+    const incomingRemotePreviewRequests = new Map();
+    const emitted = [];
+    const calls = { close:0, history:0, preview:0, fullscreen:[] };
+    const context = vm.createContext({
+        incomingRemotePreviewRequests,
+        mediaFullscreenItems:[{ fileInfo:{ id:'file-same' } }],
+        mediaFullscreenIndex:0,
+        document:{ getElementById:() => ({ classList:{ contains:() => true } }) },
+        getFromStore:async (_store, fileId) => ({ id:fileId, name:`${fileId}.png`, type:'image/png', size:16, data:new Uint8Array([1]) }),
+        materializeCachedFileRecord:async value => value,
+        hasCompleteFileCache:() => true,
+        isPreviewableFileType:() => true,
+        closeFilePreview:() => { calls.close += 1; },
+        replaceCurrentHistoryWithoutPreviewLayers:() => { calls.history += 1; },
+        openFilePreviewForInfo:async () => { calls.preview += 1; return true; },
+        openActivePreviewFullscreen:async options => { calls.fullscreen.push(options); return true; },
+        state:{ socket:{ emit:(event, payload) => emitted.push({ event, payload }) } },
+        historyLog() {}
+    });
+    vm.runInContext(`${targetOpen}\nthis.testHandleRemotePreviewOpen = handleRemotePreviewOpen;`, context);
+
+    incomingRemotePreviewRequests.set('request-same', {
+        requestId:'request-same', from:'device-controller', fileId:'file-same', fileInfo:{ id:'file-same', type:'image/png', size:16 }
+    });
+    await context.testHandleRemotePreviewOpen({ requestId:'request-same', from:'device-controller', fileId:'file-same' });
+    assert.equal(calls.close, 0, 'an idempotent command must not tear down the current fullscreen');
+    assert.equal(calls.preview, 0);
+    assert.equal(emitted.at(-1).payload.ok, true);
+
+    incomingRemotePreviewRequests.set('request-other', {
+        requestId:'request-other', from:'device-controller', fileId:'file-other', fileInfo:{ id:'file-other', type:'image/png', size:16 }
+    });
+    await context.testHandleRemotePreviewOpen({ requestId:'request-other', from:'device-controller', fileId:'file-other' });
+    assert.equal(calls.close, 1);
+    assert.equal(calls.history, 1);
+    assert.equal(calls.preview, 1);
+    assert.equal(calls.fullscreen.length, 1);
+    assert.equal(calls.fullscreen[0].focusedOnly, true, 'remote switching must not scan the whole tunnel history');
+    assert.equal(emitted.at(-1).payload.ok, true);
+});
+
+test('homepage exposes visible global voice-call entries above preview overlays', () => {
+    const page = read('pages/index.html');
+    const app = read('app.js');
+    assert.match(page, /id="deviceVoiceCallBtn"[^>]*>☎ 语音通话</);
+    assert.match(page, /\.contact-call-overlay\s*\{[\s\S]*?z-index:\s*10000/);
+    const deviceRow = readBlock(app, 'function renderDeviceRow(device, options = {})', 'function renderContacts()');
+    assert.match(deviceRow, /voiceButton\.textContent = '☎'/);
+    assert.match(deviceRow, /startContactVoiceCall\(normalized\)/);
+    const profile = readBlock(app, 'function showDeviceProfile(device, options = {})', 'function closeDeviceProfile()');
+    assert.match(profile, /deviceVoiceCallBtn/);
+    assert.match(profile, /startContactVoiceCall\(profile\)/);
 });

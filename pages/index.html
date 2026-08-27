@@ -494,7 +494,7 @@
             position: fixed;
             top: calc(12px + env(safe-area-inset-top));
             left: 50%;
-            z-index: 4300;
+            z-index: 10000;
             width: min(520px, calc(100vw - 24px));
             transform: translateX(-50%);
             border: 1px solid var(--panel-border);
@@ -2473,6 +2473,7 @@
         .media-fullscreen-audio-cover img { width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:cover; }
         .media-fullscreen-audio-card audio { width:100%; }
 
+        #remotePreviewDeviceModal { z-index:5600; }
         .remote-preview-device-modal { width:min(560px,calc(100vw - 24px)); }
         .remote-preview-device-modal h3 { margin:0 0 6px; }
         .remote-preview-file-name { margin:0 0 14px;color:var(--text-muted);overflow-wrap:anywhere; }
@@ -4960,6 +4961,7 @@
             </div>
             <div class="modal-actions">
                 <button class="btn btn-secondary" id="closeDeviceProfileBtn" type="button">关闭</button>
+                <button class="btn btn-secondary" id="deviceVoiceCallBtn" type="button" hidden>☎ 语音通话</button>
                 <button class="btn btn-primary" id="followDeviceBtn" type="button">关注</button>
             </div>
         </div>

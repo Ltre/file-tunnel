@@ -7588,6 +7588,17 @@ function closeFilePreview(options = {}) {
     if (shouldGoBack) history.back();
 }
 
+function replaceCurrentHistoryWithoutPreviewLayers() {
+    const current = history.state && typeof history.state === 'object' ? history.state : {};
+    if (!current[FILE_PREVIEW_HISTORY_KEY] && !current[MEDIA_FULLSCREEN_HISTORY_KEY] && !current.filePreviewStage) return;
+    const next = { ...current };
+    delete next[FILE_PREVIEW_HISTORY_KEY];
+    delete next[MEDIA_FULLSCREEN_HISTORY_KEY];
+    delete next.filePreviewStage;
+    history.replaceState(next, '', window.location.href);
+    suppressNextFilePreviewPopstate = false;
+}
+
 function captureCollectionPreviewReturnState(collectionMessageId, anchorFileId = '') {
     const content = document.getElementById('filePreviewContent');
     const actions = document.getElementById('filePreviewActions');
@@ -7794,7 +7805,16 @@ function remotePreviewStatusText(entry) {
     if (entry.status === 'checking') return '正在检测目标设备的完整缓存…';
     if (entry.status === 'available') return '已确认完整缓存，可以远程打开';
     if (entry.status === 'opening') return '正在目标设备打开并进入全屏…';
-    const reason = ({offline:'设备已离线','not-previewable':'该文件不能预览','cache-incomplete':'目标设备没有完整缓存','target-unavailable':'设备不在当前隧道或已离线','cache-verification-required':'缓存验证已失效'}[entry.reason]);
+    const reason = ({
+        offline:'设备已离线',
+        'not-previewable':'该文件不能预览',
+        'cache-incomplete':'目标设备没有完整缓存',
+        'target-unavailable':'设备不在当前隧道或已离线',
+        'cache-verification-required':'缓存验证已失效',
+        'preview-open-failed':'目标设备打开预览失败',
+        'fullscreen-open-failed':'目标设备进入全屏失败',
+        'open-timeout':'目标设备打开超时'
+    }[entry.reason]);
     return reason || '目标设备不可用';
 }
 
@@ -7824,9 +7844,14 @@ function renderRemotePreviewDeviceList() {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-primary';
-        button.textContent = entry.status === 'opening' ? '打开中…' : '在此设备打开';
-        button.disabled = entry.status !== 'available';
-        button.addEventListener('click', () => requestRemotePreviewOpen(entry));
+        button.textContent = entry.status === 'opening'
+            ? '打开中…'
+            : (entry.status === 'unavailable' ? '重新检测' : '在此设备打开');
+        button.disabled = entry.status === 'checking' || entry.status === 'opening';
+        button.addEventListener('click', () => {
+            if (entry.status === 'available') requestRemotePreviewOpen(entry);
+            else if (entry.status === 'unavailable') beginRemotePreviewCacheCheck(entry);
+        });
         row.append(detail, button);
         list.appendChild(row);
     });
@@ -7850,12 +7875,41 @@ function closeRemotePreviewDeviceModal() {
 
 function requestRemotePreviewOpen(entry) {
     if (!remotePreviewSelection || entry.status !== 'available' || !state.socket?.connected) return;
+    const requestId = entry.requestId;
     entry.status = 'opening';
     renderRemotePreviewDeviceList();
-    entry.timer = setTimeout(() => updateRemotePreviewEntry(entry.requestId, { status:'unavailable', reason:'open-timeout' }), 8_000);
-    state.socket.emit('remote-preview-open', { requestId: entry.requestId, to: entry.deviceId }, result => {
+    entry.timer = setTimeout(() => {
+        const current = updateRemotePreviewEntry(requestId, { status:'unavailable', reason:'open-timeout' });
+        if (current) setTimeout(() => beginRemotePreviewCacheCheck(current), 500);
+    }, 15_000);
+    state.socket.emit('remote-preview-open', { requestId, to: entry.deviceId }, result => {
         if (result?.ok) return;
-        updateRemotePreviewEntry(entry.requestId, { status:'unavailable', reason:result?.reason || 'target-unavailable' });
+        const current = updateRemotePreviewEntry(requestId, { status:'unavailable', reason:result?.reason || 'target-unavailable' });
+        if (current && result?.reason === 'cache-verification-required') {
+            setTimeout(() => beginRemotePreviewCacheCheck(current), 500);
+        }
+    });
+}
+
+function beginRemotePreviewCacheCheck(entry) {
+    if (!remotePreviewSelection || remotePreviewSelection.devices.get(entry.deviceId) !== entry) return;
+    clearTimeout(entry.timer);
+    const requestId = createRemotePreviewRequestId();
+    entry.requestId = requestId;
+    entry.status = 'checking';
+    entry.reason = '';
+    renderRemotePreviewDeviceList();
+    const { fileInfo, messageId } = remotePreviewSelection;
+    entry.timer = setTimeout(() => updateRemotePreviewEntry(requestId, { status:'unavailable', reason:'offline' }), 5_500);
+    state.socket?.emit('remote-preview-cache-check', {
+        requestId,
+        to:entry.deviceId,
+        fileId:fileInfo.id,
+        fileInfo,
+        messageId
+    }, result => {
+        if (result?.ok) return;
+        updateRemotePreviewEntry(requestId, { status:'unavailable', reason:result?.reason || 'target-unavailable' });
     });
 }
 
@@ -7871,16 +7925,9 @@ function openRemotePreviewDeviceModal() {
     };
     remotePreviewSelection = { fileInfo, messageId: activeFilePreviewMessageId, devices:new Map() };
     devices.forEach((device, deviceId) => {
-        const requestId = createRemotePreviewRequestId();
-        const entry = { deviceId, device, requestId, status:'checking', reason:'', timer:null };
+        const entry = { deviceId, device, requestId:'', status:'checking', reason:'', timer:null };
         remotePreviewSelection.devices.set(deviceId, entry);
-        entry.timer = setTimeout(() => updateRemotePreviewEntry(requestId, { status:'unavailable', reason:'offline' }), 5_500);
-        state.socket?.emit('remote-preview-cache-check', {
-            requestId, to:deviceId, fileId:fileInfo.id, fileInfo, messageId:activeFilePreviewMessageId
-        }, result => {
-            if (result?.ok) return;
-            updateRemotePreviewEntry(requestId, { status:'unavailable', reason:result?.reason || 'target-unavailable' });
-        });
+        beginRemotePreviewCacheCheck(entry);
     });
     document.getElementById('remotePreviewFileName').textContent = `文件：${fileInfo.name}`;
     renderRemotePreviewDeviceList();
@@ -7925,8 +7972,15 @@ async function handleRemotePreviewOpen(data) {
         if (!hasCompleteFileCache(storedFile, request.fileInfo)) throw new Error('cache-incomplete');
         const type = String(request.fileInfo?.type || storedFile?.type || '').toLowerCase();
         if (!isPreviewableFileType(type)) throw new Error('not-previewable');
-        closeMediaFullscreen({ forceClose:true });
-        closeFilePreview({ forceClose:true });
+        const currentFullscreenFileId = mediaFullscreenItems[mediaFullscreenIndex]?.fileInfo?.id || '';
+        if (currentFullscreenFileId === data.fileId &&
+            document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
+            ok = true;
+            reason = '';
+            return;
+        }
+        closeFilePreview({ fromHistory:true, forceClose:true });
+        replaceCurrentHistoryWithoutPreviewLayers();
         ok = await openFilePreviewForInfo({ ...request.fileInfo, ...storedFile, data:undefined, id:data.fileId }, {
             messageId:request.messageId || '',
             ownerDeviceId:request.fileInfo?.ownerDeviceId || storedFile?.ownerDeviceId || '',
@@ -7934,8 +7988,7 @@ async function handleRemotePreviewOpen(data) {
             returnToCollection:false
         });
         if (!ok) throw new Error('preview-open-failed');
-        await openActivePreviewFullscreen();
-        ok = document.getElementById('mediaFullscreenViewer')?.classList.contains('active') === true;
+        ok = await openActivePreviewFullscreen({ focusedOnly:true, focusedFileInfo:request.fileInfo });
         if (!ok) throw new Error('fullscreen-open-failed');
         reason = '';
     } catch (error) {
@@ -7956,6 +8009,8 @@ function handleRemotePreviewOpenResult(data) {
     if (data.ok === true) {
         showAppToast(`已在 ${getDeviceDisplayName(entry.device)} 打开并进入全屏`);
         closeRemotePreviewDeviceModal();
+    } else {
+        setTimeout(() => beginRemotePreviewCacheCheck(entry), 500);
     }
 }
 
@@ -10619,16 +10674,31 @@ async function locateMediaFullscreenRecord() {
     await focusTransferRecordById(messageId, { timeoutMs: 7000 });
 }
 
-async function openActivePreviewFullscreen() {
-    if (!activeFilePreviewCanFullscreen || !activeFilePreviewFileId) return;
-    mediaFullscreenItems = await getFullscreenPreviewItems();
-    mediaFullscreenIndex = Math.max(0, mediaFullscreenItems.findIndex(item => item.fileInfo.id === activeFilePreviewFileId));
-    if (!mediaFullscreenItems.length || mediaFullscreenIndex < 0) {
-        alert('当前文件尚未缓存到本机，不能全屏预览。');
-        return;
+async function openActivePreviewFullscreen(options = {}) {
+    if (!activeFilePreviewCanFullscreen || !activeFilePreviewFileId) return false;
+    if (options.focusedOnly) {
+        const storedFile = activeFilePreviewStoredFile;
+        const fileInfo = {
+            ...(options.focusedFileInfo || {}),
+            id:activeFilePreviewFileId,
+            name:options.focusedFileInfo?.name || storedFile?.name || '文件预览',
+            type:options.focusedFileInfo?.type || activeFilePreviewMediaType || storedFile?.type || ''
+        };
+        const type = String(fileInfo.type || '').toLowerCase();
+        mediaFullscreenItems = storedFile && hasCompleteFileCache(storedFile, fileInfo) && isFullscreenPreviewableType(type)
+            ? [{ fileInfo, storedFile, type, url:getStoredFileUrl(fileInfo.id, storedFile), messageId:activeFilePreviewMessageId }]
+            : [];
+    } else {
+        mediaFullscreenItems = await getFullscreenPreviewItems();
     }
+    const activeIndex = mediaFullscreenItems.findIndex(item => item.fileInfo.id === activeFilePreviewFileId);
+    if (!mediaFullscreenItems.length || activeIndex < 0) {
+        if (!options.focusedOnly) alert('当前文件尚未缓存到本机，不能全屏预览。');
+        return false;
+    }
+    mediaFullscreenIndex = activeIndex;
     const overlay = document.getElementById('mediaFullscreenViewer');
-    if (!overlay) return;
+    if (!overlay) return false;
     overlay.classList.add('active');
     renderMediaFullscreenItem();
     if (!mediaFullscreenHistoryOpen) {
@@ -10636,6 +10706,7 @@ async function openActivePreviewFullscreen() {
         history.pushState({ ...baseState, [MEDIA_FULLSCREEN_HISTORY_KEY]: true }, '', window.location.href);
         mediaFullscreenHistoryOpen = true;
     }
+    return true;
 }
 
 function closeMediaFullscreen(options = {}) {
@@ -14145,13 +14216,20 @@ function renderDeviceRow(device, options = {}) {
     if (!isSelf && !isCacheNode) {
         const actions = document.createElement('div');
         actions.className = 'device-actions';
+        const voiceButton = document.createElement('button');
+        voiceButton.className = 'icon-action';
+        voiceButton.type = 'button';
+        voiceButton.title = '发起语音通话（不受隧道限制）';
+        voiceButton.setAttribute('aria-label', `向 ${getDeviceDisplayName(normalized)} 发起语音通话`);
+        voiceButton.textContent = '☎';
+        voiceButton.addEventListener('click', () => startContactVoiceCall(normalized));
         const intercomButton = document.createElement('button');
         intercomButton.className = 'icon-action';
         intercomButton.type = 'button';
         intercomButton.title = `${normalized.deviceId === directIntercomTargetId ? '关闭' : '发起'}对讲`;
         intercomButton.textContent = normalized.deviceId === directIntercomTargetId ? '×' : '📢';
         intercomButton.addEventListener('click', () => startIntercomWithDevice(normalized));
-        actions.appendChild(intercomButton);
+        actions.append(voiceButton, intercomButton);
         el.appendChild(actions);
     }
     return el;
@@ -14181,7 +14259,8 @@ function showDeviceProfile(device, options = {}) {
     const fields = document.getElementById('deviceProfileFields');
     const qr = document.getElementById('deviceProfileQr');
     const followButton = document.getElementById('followDeviceBtn');
-    if (!modal || !title || !fields || !qr || !followButton) return;
+    const voiceButton = document.getElementById('deviceVoiceCallBtn');
+    if (!modal || !title || !fields || !qr || !followButton || !voiceButton) return;
 
     title.textContent = profile.name || '设备资料';
     fields.innerHTML = '';
@@ -14222,6 +14301,11 @@ function showDeviceProfile(device, options = {}) {
     const followed = state.contacts.has(profile.deviceId);
     followButton.textContent = followed ? '取消关注' : '关注';
     followButton.disabled = profile.deviceId === state.deviceId;
+    voiceButton.hidden = profile.deviceId === state.deviceId || profile.clientType === 'vclient';
+    voiceButton.onclick = () => {
+        closeDeviceProfile();
+        startContactVoiceCall(profile);
+    };
     followButton.onclick = async () => {
         if (state.contacts.has(profile.deviceId)) {
             await unfollowDevice(profile.deviceId);
