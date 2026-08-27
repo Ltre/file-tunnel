@@ -79,7 +79,9 @@ const CONFIG = {
     // 存储键前缀
     STORAGE_PREFIX: 'tunnel_',
     // 会话超时 (30分钟)
-    SESSION_TIMEOUT: 30 * 60 * 1000
+    SESSION_TIMEOUT: 30 * 60 * 1000,
+	// 用于增加数据库版本号以强制升级，确保所有对象存储都存在
+	TUNNEL_DB_VER: 7
 };
 const RECORD_REMARK_MAX_LENGTH = 2000;
 
@@ -748,7 +750,7 @@ async function initStorage() {
 
         console.log('Opening IndexedDB...');
         // 增加数据库版本号以强制升级，确保所有对象存储都存在
-        const request = indexedDB.open('TunnelDB', 5);
+        const request = indexedDB.open('TunnelDB', CONFIG.TUNNEL_DB_VER);
 
         request.onerror = (event) => {
             console.error('IndexedDB open error:', event.target.error);
@@ -1992,6 +1994,9 @@ function initSocket() {
     state.socket.on('remote-preview-cache-result', handleRemotePreviewCacheResult);
     state.socket.on('remote-preview-open', (data) => handleRemotePreviewOpen(data).catch(err => historyLog('remote-preview-open-failed', { error:err.message })));
     state.socket.on('remote-preview-open-result', handleRemotePreviewOpenResult);
+    state.socket.on('remote-preview-control', (data) => handleRemotePreviewControl(data).catch(err => historyLog('remote-preview-control-failed', { error:err.message })));
+    state.socket.on('remote-preview-control-result', handleRemotePreviewControlResult);
+    state.socket.on('remote-preview-control-ended', handleRemotePreviewControlEnded);
     state.socket.on('media-signal', (data) => mediaController?.handleSignal(data).catch(err => historyLog('media-signal-failed', { error: err.message })));
     state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
     state.socket.on('device-tunnel-invite', handleDeviceTunnelInvite);
@@ -7468,6 +7473,8 @@ let activeFilePreviewStoredFile = null;
 let activeFilePreviewObjectUrl = '';
 let filePreviewOpenTask = null;
 let remotePreviewSelection = null;
+let remotePreviewControl = null;
+let activeRemotePreviewControl = null;
 const incomingRemotePreviewRequests = new Map();
 
 function runExclusiveFilePreviewOpen(task, details = {}) {
@@ -7868,9 +7875,24 @@ function updateRemotePreviewEntry(requestId, update) {
 }
 
 function closeRemotePreviewDeviceModal() {
-    document.getElementById('remotePreviewDeviceModal')?.classList.remove('active');
+    const modal = document.getElementById('remotePreviewDeviceModal');
+    if (modal?.open && typeof modal.close === 'function') modal.close();
+    modal?.removeAttribute('open');
+    modal?.classList.remove('active');
     for (const entry of remotePreviewSelection?.devices?.values?.() || []) clearTimeout(entry.timer);
     remotePreviewSelection = null;
+}
+
+function showRemotePreviewDeviceModal() {
+    const modal = document.getElementById('remotePreviewDeviceModal');
+    if (!modal) return;
+    document.body.appendChild(modal);
+    if (typeof modal.showModal === 'function') {
+        if (!modal.open) modal.showModal();
+        return;
+    }
+    modal.setAttribute('open', '');
+    modal.classList.add('active');
 }
 
 function requestRemotePreviewOpen(entry) {
@@ -7931,7 +7953,7 @@ function openRemotePreviewDeviceModal() {
     });
     document.getElementById('remotePreviewFileName').textContent = `文件：${fileInfo.name}`;
     renderRemotePreviewDeviceList();
-    document.getElementById('remotePreviewDeviceModal')?.classList.add('active');
+    showRemotePreviewDeviceModal();
     historyLog('remote-preview-device-picker-opened', { fileId:fileInfo.id, candidateCount:devices.size });
 }
 
@@ -7996,7 +8018,21 @@ async function handleRemotePreviewOpen(data) {
         reason = error.message || reason;
     } finally {
         incomingRemotePreviewRequests.delete(data?.requestId);
-        state.socket?.emit('remote-preview-open-result', { requestId:data?.requestId, to:data?.from, ok, reason });
+        const fullscreenState = getRemotePreviewFullscreenState();
+        if (ok) {
+            activeRemotePreviewControl = {
+                controlId:data.requestId,
+                controllerDeviceId:data.from,
+                fileId:fullscreenState.fileId || data.fileId
+            };
+        }
+        state.socket?.emit('remote-preview-open-result', {
+            requestId:data?.requestId,
+            to:data?.from,
+            ok,
+            reason,
+            ...fullscreenState
+        });
         historyLog('remote-preview-open-handled', { fileId:data?.fileId, controllerDeviceId:data?.from, ok, reason });
     }
 }
@@ -8008,9 +8044,142 @@ function handleRemotePreviewOpenResult(data) {
     if (!entry) return;
     if (data.ok === true) {
         showAppToast(`已在 ${getDeviceDisplayName(entry.device)} 打开并进入全屏`);
+        startRemotePreviewControl(data, entry);
         closeRemotePreviewDeviceModal();
     } else {
         setTimeout(() => beginRemotePreviewCacheCheck(entry), 500);
+    }
+}
+
+function remotePreviewControlReasonText(reason) {
+    return ({
+        'control-session-invalid':'控制会话已失效',
+        'target-unavailable':'目标设备已离线',
+        'no-adjacent-file':'没有其他已完整缓存的可预览文件',
+        'fullscreen-not-active':'目标设备已经退出全屏',
+        'playback-unavailable':'当前文件不支持播放控制',
+        'playback-failed':'目标设备无法开始播放',
+        'command-timeout':'目标设备响应超时',
+        replaced:'控制已由新的远程预览替换',
+        offline:'控制设备或目标设备已离线',
+        exited:'目标设备已退出全屏'
+    }[reason]) || '远程控制失败';
+}
+
+function renderRemotePreviewControlPanel() {
+    const panel = document.getElementById('remotePreviewControlPanel');
+    if (!panel) return;
+    panel.hidden = !remotePreviewControl;
+    if (!remotePreviewControl) return;
+    const control = remotePreviewControl;
+    const title = document.getElementById('remotePreviewControlTitle');
+    const status = document.getElementById('remotePreviewControlStatus');
+    const previous = document.getElementById('remotePreviewControlPrevBtn');
+    const next = document.getElementById('remotePreviewControlNextBtn');
+    const playback = document.getElementById('remotePreviewControlPlaybackBtn');
+    const exit = document.getElementById('remotePreviewControlExitBtn');
+    const pending = Boolean(control.pendingAction);
+    if (title) title.textContent = `${control.targetName} · ${control.fileName || '文件预览'}`;
+    if (status) status.textContent = control.statusText || '已进入全屏';
+    [previous, next, exit].forEach(button => { if (button) button.disabled = pending; });
+    if (playback) {
+        playback.hidden = !/^audio\/|^video\//.test(control.mediaType || '');
+        playback.disabled = pending;
+        playback.textContent = control.playing ? '⏸ 暂停' : '▶ 播放';
+    }
+}
+
+function startRemotePreviewControl(data, entry) {
+    clearTimeout(remotePreviewControl?.timer);
+    remotePreviewControl = {
+        controlId:data.controlId || data.requestId,
+        targetDeviceId:entry.deviceId,
+        targetName:getDeviceDisplayName(entry.device),
+        fileId:data.fileId || remotePreviewSelection?.fileInfo?.id || '',
+        fileName:data.fileName || remotePreviewSelection?.fileInfo?.name || '文件预览',
+        mediaType:String(data.mediaType || remotePreviewSelection?.fileInfo?.type || '').toLowerCase(),
+        playing:data.playing === true,
+        pendingAction:'',
+        statusText:'已进入全屏',
+        timer:null
+    };
+    renderRemotePreviewControlPanel();
+    historyLog('remote-preview-control-started', { controlId:remotePreviewControl.controlId, targetDeviceId:entry.deviceId, fileId:remotePreviewControl.fileId });
+}
+
+function finishRemotePreviewControl(reason = '', options = {}) {
+    const control = remotePreviewControl;
+    if (!control) return;
+    clearTimeout(control.timer);
+    remotePreviewControl = null;
+    renderRemotePreviewControlPanel();
+    if (options.toast !== false && reason) showAppToast(remotePreviewControlReasonText(reason));
+    historyLog('remote-preview-control-finished', { controlId:control.controlId, targetDeviceId:control.targetDeviceId, reason });
+}
+
+function sendRemotePreviewControl(action) {
+    const control = remotePreviewControl;
+    if (!control || control.pendingAction || !state.socket?.connected) return;
+    control.pendingAction = action;
+    control.statusText = ({previous:'正在切换到上一个文件…',next:'正在切换到下一个文件…','toggle-playback':'正在切换播放状态…',exit:'正在退出目标设备全屏…'}[action]) || '正在执行远程操作…';
+    renderRemotePreviewControlPanel();
+    const { controlId, targetDeviceId } = control;
+    control.timer = setTimeout(() => {
+        if (remotePreviewControl?.controlId !== controlId) return;
+        remotePreviewControl.pendingAction = '';
+        remotePreviewControl.statusText = remotePreviewControlReasonText('command-timeout');
+        renderRemotePreviewControlPanel();
+    }, 15_000);
+    state.socket.emit('remote-preview-control', { controlId, to:targetDeviceId, action }, result => {
+        if (result?.ok || remotePreviewControl?.controlId !== controlId) return;
+        if (['control-session-invalid', 'target-unavailable'].includes(result?.reason)) {
+            finishRemotePreviewControl(result.reason);
+            return;
+        }
+        clearTimeout(remotePreviewControl.timer);
+        remotePreviewControl.pendingAction = '';
+        remotePreviewControl.statusText = remotePreviewControlReasonText(result?.reason || 'control-session-invalid');
+        renderRemotePreviewControlPanel();
+    });
+}
+
+function handleRemotePreviewControlResult(data) {
+    const control = remotePreviewControl;
+    if (!control || control.controlId !== data?.controlId || control.targetDeviceId !== data?.from) return;
+    clearTimeout(control.timer);
+    control.timer = null;
+    control.pendingAction = '';
+    if (data.ok !== true) {
+        if (['control-session-invalid', 'fullscreen-not-active'].includes(data.reason)) {
+            finishRemotePreviewControl(data.reason);
+            return;
+        }
+        control.statusText = remotePreviewControlReasonText(data.reason || 'control-session-invalid');
+        renderRemotePreviewControlPanel();
+        return;
+    }
+    if (data.action === 'exit') {
+        finishRemotePreviewControl('', { toast:false });
+        showAppToast('目标设备已退出全屏');
+        return;
+    }
+    control.fileId = data.fileId || control.fileId;
+    control.fileName = data.fileName || control.fileName;
+    control.mediaType = String(data.mediaType || '').toLowerCase();
+    control.playing = data.playing === true;
+    control.statusText = data.action === 'toggle-playback'
+        ? (control.playing ? '目标设备正在播放' : '目标设备已暂停')
+        : '已切换文件';
+    renderRemotePreviewControlPanel();
+}
+
+function handleRemotePreviewControlEnded(data) {
+    if (remotePreviewControl?.controlId === data?.controlId) {
+        finishRemotePreviewControl(data.reason || 'exited');
+    }
+    if (activeRemotePreviewControl?.controlId === data?.controlId) {
+        activeRemotePreviewControl = null;
+        closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
     }
 }
 
@@ -10658,6 +10827,103 @@ function renderMediaFullscreenItem() {
     });
 }
 
+function getRemotePreviewFullscreenState() {
+    const item = mediaFullscreenItems[mediaFullscreenIndex];
+    const media = document.getElementById('mediaFullscreenContent')?.querySelector('video, audio');
+    return {
+        fileId:item?.fileInfo?.id || '',
+        fileName:item?.fileInfo?.name || '文件预览',
+        mediaType:String(item?.type || item?.fileInfo?.type || '').toLowerCase(),
+        playing:Boolean(media && !media.paused && !media.ended)
+    };
+}
+
+async function findRemotePreviewAdjacentItem(delta) {
+    const currentFileId = mediaFullscreenItems[mediaFullscreenIndex]?.fileInfo?.id || activeRemotePreviewControl?.fileId || '';
+    if (!currentFileId) return null;
+    const candidates = [];
+    const seen = new Set();
+    const add = (fileInfo, messageId) => {
+        if (!fileInfo?.id || seen.has(fileInfo.id)) return;
+        seen.add(fileInfo.id);
+        candidates.push({ fileInfo, messageId });
+    };
+    const messages = (await getCurrentSessionMessages().catch(() => []))
+        .filter(message => message?.id)
+        .sort(compareHistoryMessages);
+    for (const message of messages) {
+        if (message.type === 'collection') getCollectionFiles(message).forEach(fileInfo => add(fileInfo, message.id));
+        else if (message.type === 'file') add(message.fileInfo, message.id);
+    }
+    const currentIndex = candidates.findIndex(entry => entry.fileInfo.id === currentFileId);
+    if (currentIndex < 0 || candidates.length <= 1) return null;
+    const direction = delta < 0 ? -1 : 1;
+    for (let step = 1; step < candidates.length; step += 1) {
+        const candidate = candidates[(currentIndex + direction * step + candidates.length) % candidates.length];
+        const persisted = await getFromStore('files', candidate.fileInfo.id).catch(() => null);
+        const storedFile = persisted?.externalFileHandle
+            ? await materializeExternalFileRecord(persisted, { requestPermission:false })
+            : await materializeCachedFileRecord(persisted);
+        if (!hasCompleteFileCache(storedFile, candidate.fileInfo)) continue;
+        const type = String(candidate.fileInfo.type || storedFile?.type || '').toLowerCase();
+        if (!isFullscreenPreviewableType(type)) continue;
+        return {
+            fileInfo:candidate.fileInfo,
+            storedFile,
+            type,
+            url:getStoredFileUrl(candidate.fileInfo.id, storedFile),
+            messageId:candidate.messageId
+        };
+    }
+    return null;
+}
+
+async function handleRemotePreviewControl(data) {
+    const control = activeRemotePreviewControl;
+    const action = String(data?.action || '');
+    let ok = false;
+    let reason = 'control-session-invalid';
+    try {
+        if (!control || control.controlId !== data?.controlId || control.controllerDeviceId !== data?.from) throw new Error(reason);
+        if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) throw new Error('fullscreen-not-active');
+        if (action === 'previous' || action === 'next') {
+            const item = await findRemotePreviewAdjacentItem(action === 'previous' ? -1 : 1);
+            if (!item) throw new Error('no-adjacent-file');
+            mediaFullscreenItems = [item];
+            mediaFullscreenIndex = 0;
+            renderMediaFullscreenItem();
+            control.fileId = item.fileInfo.id;
+        } else if (action === 'toggle-playback') {
+            const media = document.getElementById('mediaFullscreenContent')?.querySelector('video, audio');
+            if (!media) throw new Error('playback-unavailable');
+            if (media.paused || media.ended) {
+                await media.play().catch(() => { throw new Error('playback-failed'); });
+            } else {
+                media.pause();
+            }
+        } else if (action === 'exit') {
+            closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
+            activeRemotePreviewControl = null;
+        } else {
+            throw new Error(reason);
+        }
+        ok = true;
+        reason = '';
+    } catch (error) {
+        reason = error.message || reason;
+    } finally {
+        state.socket?.emit('remote-preview-control-result', {
+            controlId:data?.controlId,
+            to:data?.from,
+            action,
+            ok,
+            reason,
+            ...getRemotePreviewFullscreenState()
+        });
+        historyLog('remote-preview-control-handled', { controlId:data?.controlId, controllerDeviceId:data?.from, action, ok, reason });
+    }
+}
+
 function navigateMediaFullscreen(delta) {
     if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
     if (mediaFullscreenItems.length <= 1) return;
@@ -10723,6 +10989,15 @@ function closeMediaFullscreen(options = {}) {
     });
     content?.replaceChildren();
     mediaFullscreenPointerStart = null;
+    const remoteControl = activeRemotePreviewControl;
+    activeRemotePreviewControl = null;
+    if (remoteControl && !options.remoteControlCommand) {
+        state.socket?.emit('remote-preview-control-ended', {
+            controlId:remoteControl.controlId,
+            to:remoteControl.controllerDeviceId,
+            reason:'exited'
+        });
+    }
     if (shouldGoBack) {
         suppressNextFilePreviewPopstate = document.getElementById('filePreviewViewer')?.classList.contains('active') === true;
         history.back();
@@ -16126,6 +16401,14 @@ function initUI() {
     document.getElementById('remotePreviewDeviceModal')?.addEventListener('click', event => {
         if (event.target === event.currentTarget) closeRemotePreviewDeviceModal();
     });
+    document.getElementById('remotePreviewDeviceModal')?.addEventListener('cancel', event => {
+        event.preventDefault();
+        closeRemotePreviewDeviceModal();
+    });
+    document.getElementById('remotePreviewControlPrevBtn')?.addEventListener('click', () => sendRemotePreviewControl('previous'));
+    document.getElementById('remotePreviewControlNextBtn')?.addEventListener('click', () => sendRemotePreviewControl('next'));
+    document.getElementById('remotePreviewControlPlaybackBtn')?.addEventListener('click', () => sendRemotePreviewControl('toggle-playback'));
+    document.getElementById('remotePreviewControlExitBtn')?.addEventListener('click', () => sendRemotePreviewControl('exit'));
     document.getElementById('filePreviewPrevBtn')?.addEventListener('click', () => {
         navigateFilePreview(-1).catch(err => historyLog('file-preview-navigate-failed', { direction: -1, error: err.message }));
     });

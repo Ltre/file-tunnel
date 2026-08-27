@@ -2473,7 +2473,24 @@
         .media-fullscreen-audio-cover img { width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;object-fit:cover; }
         .media-fullscreen-audio-card audio { width:100%; }
 
-        #remotePreviewDeviceModal { z-index:5600; }
+        .remote-preview-device-layer {
+            position:fixed;
+            inset:0;
+            z-index:2147483000;
+            width:100vw;
+            height:100dvh;
+            max-width:none;
+            max-height:none;
+            margin:0;
+            padding:18px;
+            border:0;
+            overflow:auto;
+            background:transparent;
+            box-sizing:border-box;
+        }
+        .remote-preview-device-layer[open] { display:grid;place-items:center; }
+        .remote-preview-device-layer::backdrop { background:rgba(0,0,0,.58);backdrop-filter:blur(2px); }
+        .remote-preview-device-layer.active { display:grid;place-items:center;background:rgba(0,0,0,.58); }
         .remote-preview-device-modal { width:min(560px,calc(100vw - 24px)); }
         .remote-preview-device-modal h3 { margin:0 0 6px; }
         .remote-preview-file-name { margin:0 0 14px;color:var(--text-muted);overflow-wrap:anywhere; }
@@ -2484,6 +2501,38 @@
         .remote-preview-device-status.available { color:#16834b;font-weight:750; }
         .remote-preview-device-status.unavailable { color:#b3261e; }
         .remote-preview-device-empty { padding:24px;text-align:center;color:var(--text-muted);border:1px dashed var(--panel-border);border-radius:10px; }
+
+        .remote-preview-control-panel {
+            position:fixed;
+            right:max(14px,env(safe-area-inset-right));
+            bottom:max(14px,env(safe-area-inset-bottom));
+            z-index:2147482000;
+            display:grid;
+            width:min(520px,calc(100vw - 28px));
+            gap:12px;
+            padding:14px;
+            border:1px solid rgba(255,255,255,.28);
+            border-radius:16px;
+            background:rgba(24,28,40,.94);
+            box-shadow:0 24px 70px rgba(0,0,0,.42);
+            color:#fff;
+            backdrop-filter:blur(18px);
+            box-sizing:border-box;
+        }
+        .remote-preview-control-panel[hidden] { display:none; }
+        .remote-preview-control-heading { display:flex;align-items:flex-start;justify-content:space-between;gap:12px; }
+        .remote-preview-control-kicker { color:#aeb9ff;font-size:.72rem;font-weight:850;letter-spacing:.08em; }
+        .remote-preview-control-title { margin-top:3px;font-weight:850;overflow-wrap:anywhere; }
+        .remote-preview-control-status { margin-top:3px;color:rgba(255,255,255,.72);font-size:.8rem; }
+        .remote-preview-control-actions { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px; }
+        .remote-preview-control-actions button { min-height:42px;border:1px solid rgba(255,255,255,.22);border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font-weight:780;cursor:pointer; }
+        .remote-preview-control-actions button:hover:not(:disabled) { background:rgba(255,255,255,.2); }
+        .remote-preview-control-actions button:disabled { opacity:.48;cursor:wait; }
+        #remotePreviewControlExitBtn { border-color:rgba(255,110,110,.42);background:rgba(180,42,42,.28); }
+        @media (max-width:560px) {
+            .remote-preview-control-panel { left:14px;right:14px;width:auto; }
+            .remote-preview-control-actions { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        }
 
         .file-preview-loading {
             display: flex;
@@ -4902,14 +4951,30 @@
         </div>
     </div>
 
-    <div class="modal-overlay" id="remotePreviewDeviceModal">
-        <div class="modal remote-preview-device-modal" role="dialog" aria-modal="true" aria-labelledby="remotePreviewDeviceTitle">
+    <dialog class="remote-preview-device-layer" id="remotePreviewDeviceModal" aria-labelledby="remotePreviewDeviceTitle">
+        <div class="modal remote-preview-device-modal">
             <h3 id="remotePreviewDeviceTitle">选择被控设备</h3>
             <p class="remote-preview-file-name" id="remotePreviewFileName"></p>
             <div class="remote-preview-device-list" id="remotePreviewDeviceList"></div>
             <div class="modal-actions"><button class="btn btn-secondary" id="closeRemotePreviewDeviceBtn" type="button">取消</button></div>
         </div>
-    </div>
+    </dialog>
+
+    <aside class="remote-preview-control-panel" id="remotePreviewControlPanel" aria-label="远程预览控制面板" hidden>
+        <div class="remote-preview-control-heading">
+            <div>
+                <div class="remote-preview-control-kicker">远程预览控制</div>
+                <div class="remote-preview-control-title" id="remotePreviewControlTitle">正在控制目标设备</div>
+                <div class="remote-preview-control-status" id="remotePreviewControlStatus">已进入全屏</div>
+            </div>
+        </div>
+        <div class="remote-preview-control-actions">
+            <button id="remotePreviewControlPrevBtn" type="button">← 上一个</button>
+            <button id="remotePreviewControlPlaybackBtn" type="button" hidden>▶ 播放</button>
+            <button id="remotePreviewControlNextBtn" type="button">下一个 →</button>
+            <button id="remotePreviewControlExitBtn" type="button">退出全屏</button>
+        </div>
+    </aside>
 
     <div class="media-fullscreen-viewer" id="mediaFullscreenViewer" aria-label="全屏预览" role="dialog" aria-modal="true">
         <div class="media-fullscreen-topbar">

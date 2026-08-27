@@ -235,6 +235,19 @@ test('contact calls and remote preview commands are authenticated state machines
     assert.equal(callee.last('remote-preview-open').payload.fileId, 'file-00000001');
     callee.trigger('remote-preview-open-result', { requestId:'preview-00002', to:'device-caller', ok:true });
     assert.equal(caller.last('remote-preview-open-result').payload.ok, true);
+    assert.equal(caller.last('remote-preview-open-result').payload.controlId, 'preview-00002');
+    let controlAck;
+    caller.trigger('remote-preview-control', { controlId:'preview-00002', to:'device-callee', action:'previous' }, result => { controlAck = result; });
+    assert.equal(controlAck.ok, true);
+    assert.equal(callee.last('remote-preview-control').payload.action, 'previous');
+    let forgedControlAck;
+    outsider.trigger('remote-preview-control', { controlId:'preview-00002', to:'device-callee', action:'exit' }, result => { forgedControlAck = result; });
+    assert.equal(forgedControlAck.ok, false);
+    callee.trigger('remote-preview-control-result', {
+        controlId:'preview-00002', to:'device-caller', action:'previous', ok:true,
+        fileId:'file-00000003', fileName:'上一张图.png', mediaType:'image/png'
+    });
+    assert.equal(caller.last('remote-preview-control-result').payload.fileName, '上一张图.png');
 
     caller.trigger('remote-preview-cache-check', {
         requestId:'preview-00003', to:'device-callee', fileId:'file-00000002', fileInfo:{ id:'file-00000002', name:'第二张图.png', type:'image/png', size:24 }
@@ -246,6 +259,19 @@ test('contact calls and remote preview commands are authenticated state machines
     assert.equal(callee.last('remote-preview-open').payload.fileId, 'file-00000002');
     callee.trigger('remote-preview-open-result', { requestId:'preview-00003', to:'device-caller', ok:true });
     assert.equal(caller.last('remote-preview-open-result').payload.fileId, 'file-00000002');
+    assert.equal(caller.last('remote-preview-open-result').payload.controlId, 'preview-00003');
+    caller.trigger('remote-preview-control', { controlId:'preview-00003', to:'device-callee', action:'toggle-playback' });
+    assert.equal(callee.last('remote-preview-control').payload.action, 'toggle-playback');
+    callee.trigger('remote-preview-control-result', {
+        controlId:'preview-00003', to:'device-caller', action:'toggle-playback', ok:true,
+        fileId:'file-00000002', fileName:'第二张图.png', mediaType:'video/mp4', playing:true
+    });
+    assert.equal(caller.last('remote-preview-control-result').payload.playing, true);
+    caller.trigger('remote-preview-control', { controlId:'preview-00003', to:'device-callee', action:'exit' });
+    callee.trigger('remote-preview-control-result', { controlId:'preview-00003', to:'device-caller', action:'exit', ok:true });
+    let expiredControlAck;
+    caller.trigger('remote-preview-control', { controlId:'preview-00003', to:'device-callee', action:'next' }, result => { expiredControlAck = result; });
+    assert.equal(expiredControlAck.ok, false);
     cleanupMediaDevice(sessionOne, 'device-caller', () => {}, () => {});
 });
 
@@ -264,11 +290,15 @@ test('remote preview picker stays above preview G and repeated commands are idem
     const page = read('pages/index.html');
     const app = read('app.js');
     const previewZ = Number(page.match(/#filePreviewViewer\s*\{\s*z-index:\s*(\d+)/)?.[1]);
-    const pickerZ = Number(page.match(/#remotePreviewDeviceModal\s*\{\s*z-index:\s*(\d+)/)?.[1]);
+    const pickerZ = Number(page.match(/\.remote-preview-device-layer\s*\{[\s\S]*?z-index:\s*(\d+)/)?.[1]);
     assert.ok(pickerZ > previewZ, `remote picker z-index ${pickerZ} must exceed preview G z-index ${previewZ}`);
+    assert.match(page, /<dialog class="remote-preview-device-layer" id="remotePreviewDeviceModal"/);
+    assert.match(app, /typeof modal\.showModal === 'function'/);
+    assert.match(app, /modal\.showModal\(\)/);
 
     const pickerOpen = readBlock(app, 'function openRemotePreviewDeviceModal()', 'async function handleRemotePreviewCacheCheck');
     assert.doesNotMatch(pickerOpen, /closeFilePreview|classList\.remove\(['"]active['"]\)/);
+    assert.match(pickerOpen, /showRemotePreviewDeviceModal\(\)/);
 
     const targetOpen = readBlock(app, 'async function handleRemotePreviewOpen(data)', 'function handleRemotePreviewOpenResult');
     assertAppearsBefore(
@@ -281,6 +311,26 @@ test('remote preview picker stays above preview G and repeated commands are idem
     assert.match(targetOpen, /openActivePreviewFullscreen\(\{ focusedOnly:true/);
     assert.match(app, /entry\.status === 'unavailable' \? '重新检测'/);
     assert.match(app, /setTimeout\(\(\) => beginRemotePreviewCacheCheck\(entry\), 500\)/);
+});
+
+test('remote preview control panel exposes authenticated navigation, playback and exit commands', () => {
+    const page = read('pages/index.html');
+    const app = read('app.js');
+    const server = read('server/media-session.js');
+    for (const id of [
+        'remotePreviewControlPanel', 'remotePreviewControlPrevBtn', 'remotePreviewControlNextBtn',
+        'remotePreviewControlPlaybackBtn', 'remotePreviewControlExitBtn'
+    ]) assert.match(page, new RegExp(`id="${id}"`));
+    assert.match(page, /远程预览控制/);
+    assert.match(app, /sendRemotePreviewControl\('previous'\)/);
+    assert.match(app, /sendRemotePreviewControl\('next'\)/);
+    assert.match(app, /sendRemotePreviewControl\('toggle-playback'\)/);
+    assert.match(app, /sendRemotePreviewControl\('exit'\)/);
+    assert.match(app, /findRemotePreviewAdjacentItem/);
+    assert.match(app, /querySelector\('video, audio'\)/);
+    assert.match(server, /REMOTE_PREVIEW_CONTROL_ACTIONS/);
+    assert.match(server, /control\.controllerId !== deviceId/);
+    assert.match(server, /control\.targetId !== deviceId/);
 });
 
 test('remote preview target keeps the same fullscreen open and switches other files through the focused fast path', async () => {
@@ -302,6 +352,8 @@ test('remote preview target keeps the same fullscreen open and switches other fi
         replaceCurrentHistoryWithoutPreviewLayers:() => { calls.history += 1; },
         openFilePreviewForInfo:async () => { calls.preview += 1; return true; },
         openActivePreviewFullscreen:async options => { calls.fullscreen.push(options); return true; },
+        getRemotePreviewFullscreenState:() => ({ fileId:'file-same', fileName:'同一张图.png', mediaType:'image/png', playing:false }),
+        activeRemotePreviewControl:null,
         state:{ socket:{ emit:(event, payload) => emitted.push({ event, payload }) } },
         historyLog() {}
     });
@@ -325,6 +377,49 @@ test('remote preview target keeps the same fullscreen open and switches other fi
     assert.equal(calls.fullscreen.length, 1);
     assert.equal(calls.fullscreen[0].focusedOnly, true, 'remote switching must not scan the whole tunnel history');
     assert.equal(emitted.at(-1).payload.ok, true);
+});
+
+test('remote preview target executes navigation, media playback and fullscreen exit controls', async () => {
+    const app = read('app.js');
+    const targetControl = readBlock(app, 'async function handleRemotePreviewControl(data)', 'function navigateMediaFullscreen(delta)');
+    const emitted = [];
+    const calls = { render:0, close:0 };
+    const media = {
+        paused:true,
+        ended:false,
+        async play() { this.paused = false; },
+        pause() { this.paused = true; }
+    };
+    const nextItem = { fileInfo:{ id:'file-next', name:'下一段.mp4', type:'video/mp4' }, type:'video/mp4' };
+    const context = vm.createContext({
+        activeRemotePreviewControl:{ controlId:'control-0001', controllerDeviceId:'device-controller', fileId:'file-current' },
+        mediaFullscreenItems:[{ fileInfo:{ id:'file-current', name:'当前图片.png', type:'image/png' }, type:'image/png' }],
+        mediaFullscreenIndex:0,
+        document:{ getElementById:id => id === 'mediaFullscreenViewer'
+            ? { classList:{ contains:() => true } }
+            : { querySelector:() => media } },
+        findRemotePreviewAdjacentItem:async () => nextItem,
+        renderMediaFullscreenItem:() => { calls.render += 1; },
+        closeMediaFullscreen:() => { calls.close += 1; },
+        getRemotePreviewFullscreenState:() => ({ fileId:'file-next', fileName:'下一段.mp4', mediaType:'video/mp4', playing:!media.paused }),
+        state:{ socket:{ emit:(event, payload) => emitted.push({ event, payload }) } },
+        historyLog() {}
+    });
+    vm.runInContext(`${targetControl}\nthis.testHandleRemotePreviewControl = handleRemotePreviewControl;`, context);
+
+    await context.testHandleRemotePreviewControl({ controlId:'control-0001', from:'device-controller', action:'next' });
+    assert.equal(calls.render, 1);
+    assert.equal(emitted.at(-1).payload.fileId, 'file-next');
+    assert.equal(emitted.at(-1).payload.ok, true);
+
+    await context.testHandleRemotePreviewControl({ controlId:'control-0001', from:'device-controller', action:'toggle-playback' });
+    assert.equal(media.paused, false);
+    assert.equal(emitted.at(-1).payload.playing, true);
+
+    await context.testHandleRemotePreviewControl({ controlId:'control-0001', from:'device-controller', action:'exit' });
+    assert.equal(calls.close, 1);
+    assert.equal(context.activeRemotePreviewControl, null);
+    assert.equal(emitted.at(-1).payload.action, 'exit');
 });
 
 test('homepage exposes visible global voice-call entries above preview overlays', () => {

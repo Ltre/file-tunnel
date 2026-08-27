@@ -10,6 +10,8 @@ const REMOTE_PREVIEW_TIMEOUT_MS = 20_000;
 const contactCalls = new Map();
 const contactDeviceCalls = new Map();
 const remotePreviewRequests = new Map();
+const remotePreviewControls = new Map();
+const REMOTE_PREVIEW_CONTROL_ACTIONS = new Set(['previous', 'next', 'toggle-playback', 'exit']);
 
 function simpleContactProfile(profile, fallbackDeviceId = '') {
     const value = profile && typeof profile === 'object' ? profile : {};
@@ -38,6 +40,10 @@ function clearRemotePreviewRequest(requestId) {
     if (!request) return;
     clearTimeout(request.timer);
     remotePreviewRequests.delete(requestId);
+}
+
+function clearRemotePreviewControl(controlId) {
+    remotePreviewControls.delete(controlId);
 }
 
 function simplePreviewFileInfo(fileInfo, fileId) {
@@ -299,14 +305,98 @@ function registerMediaHandlers(socket, context) {
         const requestId = String(data?.requestId || '');
         const request = remotePreviewRequests.get(requestId);
         if (!request || request.sessionId !== sessionId || request.targetId !== deviceId || request.controllerId !== data?.to) return;
+        const ok = data?.ok === true;
+        let controlId = '';
+        if (ok) {
+            controlId = requestId;
+            for (const [existingId, existing] of remotePreviewControls) {
+                if (existing.controllerId !== request.controllerId && existing.targetId !== request.targetId) continue;
+                deviceSockets.get(existing.targetId)?.emit('remote-preview-control', {
+                    controlId:existingId,
+                    from:existing.controllerId,
+                    action:'exit',
+                    reason:'replaced'
+                });
+                deviceSockets.get(existing.controllerId)?.emit('remote-preview-control-ended', {
+                    controlId:existingId,
+                    from:existing.targetId,
+                    reason:'replaced'
+                });
+                clearRemotePreviewControl(existingId);
+            }
+            remotePreviewControls.set(controlId, {
+                controlId,
+                sessionId:request.sessionId,
+                controllerId:request.controllerId,
+                targetId:request.targetId,
+                fileId:String(data?.fileId || request.fileId).slice(0, 128),
+                createdAt:Date.now()
+            });
+        }
         deviceSockets.get(request.controllerId)?.emit('remote-preview-open-result', {
             requestId,
+            controlId,
             from: deviceId,
             fileId: request.fileId,
-            ok: data?.ok === true,
-            reason: String(data?.reason || '').slice(0, 120)
+            fileName:String(data?.fileName || '').slice(0, 240),
+            mediaType:String(data?.mediaType || '').slice(0, 160),
+            playing:data?.playing === true,
+            ok,
+            reason:String(data?.reason || '').slice(0, 120)
         });
         clearRemotePreviewRequest(requestId);
+    });
+
+    socket.on('remote-preview-control', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        const { sessionId, deviceId } = current();
+        const controlId = String(data?.controlId || '');
+        const action = String(data?.action || '');
+        const control = remotePreviewControls.get(controlId);
+        const session = sessions.get(sessionId);
+        const target = control && deviceSockets.get(control.targetId);
+        if (!isValidId(controlId) || !REMOTE_PREVIEW_CONTROL_ACTIONS.has(action) || !control ||
+            control.sessionId !== sessionId || control.controllerId !== deviceId || control.targetId !== data?.to ||
+            !session?.devices.has(deviceId) || !session.devices.has(control.targetId) || !target) {
+            return respond({ ok:false, reason:'control-session-invalid' });
+        }
+        target.emit('remote-preview-control', { controlId, from:deviceId, action });
+        respond({ ok:true });
+    });
+
+    socket.on('remote-preview-control-result', data => {
+        const { sessionId, deviceId } = current();
+        const controlId = String(data?.controlId || '');
+        const action = String(data?.action || '');
+        const control = remotePreviewControls.get(controlId);
+        if (!control || control.sessionId !== sessionId || control.targetId !== deviceId ||
+            control.controllerId !== data?.to || !REMOTE_PREVIEW_CONTROL_ACTIONS.has(action)) return;
+        control.fileId = String(data?.fileId || control.fileId).slice(0, 128);
+        deviceSockets.get(control.controllerId)?.emit('remote-preview-control-result', {
+            controlId,
+            from:deviceId,
+            action,
+            ok:data?.ok === true,
+            reason:String(data?.reason || '').slice(0, 120),
+            fileId:control.fileId,
+            fileName:String(data?.fileName || '').slice(0, 240),
+            mediaType:String(data?.mediaType || '').slice(0, 160),
+            playing:data?.playing === true
+        });
+        if (action === 'exit' && data?.ok === true) clearRemotePreviewControl(controlId);
+    });
+
+    socket.on('remote-preview-control-ended', data => {
+        const { sessionId, deviceId } = current();
+        const controlId = String(data?.controlId || '');
+        const control = remotePreviewControls.get(controlId);
+        if (!control || control.sessionId !== sessionId || control.targetId !== deviceId || control.controllerId !== data?.to) return;
+        deviceSockets.get(control.controllerId)?.emit('remote-preview-control-ended', {
+            controlId,
+            from:deviceId,
+            reason:String(data?.reason || 'exited').slice(0, 80)
+        });
+        clearRemotePreviewControl(controlId);
     });
 }
 
@@ -329,6 +419,12 @@ function cleanupMediaDevice(session, deviceId, emit, emitToDevice) {
     }
     for (const [requestId, request] of remotePreviewRequests) {
         if (request.controllerId === deviceId || request.targetId === deviceId) clearRemotePreviewRequest(requestId);
+    }
+    for (const [controlId, control] of remotePreviewControls) {
+        if (control.controllerId !== deviceId && control.targetId !== deviceId) continue;
+        const peerId = control.controllerId === deviceId ? control.targetId : control.controllerId;
+        clearRemotePreviewControl(controlId);
+        emitToDevice?.(peerId, 'remote-preview-control-ended', { controlId, from:deviceId, reason:'offline' });
     }
 }
 
