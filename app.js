@@ -273,6 +273,10 @@ let sessionHistoryFallbackTimers = [];
 let tunnelHeartbeatTimer = null;
 let clipboardShareTimer = null;
 let lastClipboardText = null;
+let pendingClipboardImageFiles = [];
+let clipboardImagePermissionStatus = null;
+let clipboardImageProbeRunning = false;
+let clipboardImageSendInProgress = false;
 let remoteAudioContext = null;
 let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
@@ -661,6 +665,7 @@ async function startTunnelApplication() {
     await restoreMusicPlayerState();
     initEditor();
     initDragDrop();
+    initClipboardImagePaste();
     await loadContacts();
     await loadSessionData();
     initSocket();
@@ -4654,6 +4659,164 @@ async function getDroppedFileEntries(dataTransfer) {
     return entries;
 }
 
+function clipboardImageExtension(type = '') {
+    return ({
+        'image/jpeg':'jpg',
+        'image/png':'png',
+        'image/gif':'gif',
+        'image/webp':'webp',
+        'image/bmp':'bmp',
+        'image/svg+xml':'svg',
+        'image/avif':'avif'
+    })[String(type).toLowerCase()] || 'png';
+}
+
+function createClipboardImageFile(blob, index = 0, timestamp = Date.now()) {
+    const type = String(blob?.type || 'image/png').toLowerCase();
+    const stamp = new Date(timestamp).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    const name = `粘贴图片-${stamp}${index ? `-${index + 1}` : ''}.${clipboardImageExtension(type)}`;
+    try {
+        return new File([blob], name, { type, lastModified:timestamp });
+    } catch (_) {
+        const file = new Blob([blob], { type });
+        file.name = name;
+        file.lastModified = timestamp;
+        return file;
+    }
+}
+
+async function extractClipboardImageFiles(items, timestamp = Date.now()) {
+    const files = [];
+    for (const item of Array.from(items || [])) {
+        const type = Array.from(item?.types || []).find(candidate => /^image\//i.test(candidate));
+        if (!type || typeof item.getType !== 'function') continue;
+        try {
+            const blob = await item.getType(type);
+            if (blob) files.push(createClipboardImageFile(blob, files.length, timestamp));
+        } catch (_) {}
+    }
+    return files;
+}
+
+function extractPastedImageFiles(clipboardData, timestamp = Date.now()) {
+    return Array.from(clipboardData?.items || [])
+        .filter(item => item?.kind === 'file' && /^image\//i.test(item.type || ''))
+        .map(item => item.getAsFile?.())
+        .filter(Boolean)
+        .map((file, index) => file.name
+            ? file
+            : createClipboardImageFile(file, index, timestamp));
+}
+
+function renderClipboardImagePasteArea() {
+    const composer = document.getElementById('fileUploadComposer');
+    const zone = document.getElementById('pasteImageZone');
+    const available = pendingClipboardImageFiles.length > 0;
+    composer?.classList.toggle('clipboard-image-ready', available);
+    if (!zone) return;
+    zone.hidden = !available;
+    zone.disabled = clipboardImageSendInProgress;
+    zone.setAttribute('aria-label', available
+        ? `将剪贴板中的${pendingClipboardImageFiles.length > 1 ? `${pendingClipboardImageFiles.length}张` : ''}图片发送到当前隧道`
+        : '剪贴板中没有可粘贴的图片');
+}
+
+function setPendingClipboardImageFiles(files) {
+    pendingClipboardImageFiles = Array.from(files || []).filter(file => /^image\//i.test(file?.type || ''));
+    renderClipboardImagePasteArea();
+    return pendingClipboardImageFiles;
+}
+
+async function getClipboardImagePermissionStatus() {
+    if (clipboardImagePermissionStatus) return clipboardImagePermissionStatus;
+    if (!navigator.permissions?.query) return null;
+    try {
+        clipboardImagePermissionStatus = await navigator.permissions.query({ name:'clipboard-read' });
+        const handlePermissionChange = () => {
+            if (clipboardImagePermissionStatus?.state === 'granted') {
+                refreshClipboardImageAvailability().catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
+            } else if (clipboardImagePermissionStatus?.state === 'denied') {
+                setPendingClipboardImageFiles([]);
+            }
+        };
+        clipboardImagePermissionStatus.addEventListener?.('change', handlePermissionChange);
+        return clipboardImagePermissionStatus;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function refreshClipboardImageAvailability(options = {}) {
+    if (clipboardImageProbeRunning || !window.isSecureContext || typeof navigator.clipboard?.read !== 'function') {
+        return pendingClipboardImageFiles;
+    }
+    const permission = await getClipboardImagePermissionStatus();
+    if (!options.allowPrompt && permission?.state !== 'granted') return pendingClipboardImageFiles;
+    if (!options.allowPrompt && !permission) return pendingClipboardImageFiles;
+    clipboardImageProbeRunning = true;
+    try {
+        const items = await navigator.clipboard.read();
+        const files = await extractClipboardImageFiles(items);
+        return setPendingClipboardImageFiles(files);
+    } catch (err) {
+        if (!['NotAllowedError', 'SecurityError'].includes(err?.name)) {
+            historyLog('clipboard-image-probe-failed', { name:err?.name || '', error:err?.message || String(err) });
+        }
+        return pendingClipboardImageFiles;
+    } finally {
+        clipboardImageProbeRunning = false;
+    }
+}
+
+async function sendClipboardImagesToTunnel() {
+    if (clipboardImageSendInProgress || !requireTunnelPermission('sendFile')) return;
+    let files = pendingClipboardImageFiles;
+    if (!files.length) files = await refreshClipboardImageAvailability({ allowPrompt:true });
+    if (!files.length) {
+        showAppToast('剪贴板中没有可发送的图片');
+        return;
+    }
+    clipboardImageSendInProgress = true;
+    renderClipboardImagePasteArea();
+    try {
+        await sendSelectedFiles(files);
+        historyLog('clipboard-images-sent', {
+            count:files.length,
+            totalSize:files.reduce((sum, file) => sum + (Number(file.size) || 0), 0)
+        });
+    } catch (err) {
+        historyLog('clipboard-images-send-failed', { count:files.length, error:err.message });
+        alert(`粘贴图片发送失败：${err.message}`);
+    } finally {
+        clipboardImageSendInProgress = false;
+        renderClipboardImagePasteArea();
+    }
+}
+
+function initClipboardImagePaste() {
+    const zone = document.getElementById('pasteImageZone');
+    if (!zone) return;
+    zone.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendClipboardImagesToTunnel().catch(err => historyLog('clipboard-images-send-failed', { error:err.message }));
+    });
+    document.addEventListener('paste', event => {
+        const files = extractPastedImageFiles(event.clipboardData);
+        if (!files.length) return;
+        setPendingClipboardImageFiles(files);
+        historyLog('clipboard-images-detected', { count:files.length, source:'paste-event' });
+    });
+    const refresh = () => {
+        if (document.visibilityState !== 'hidden') {
+            refreshClipboardImageAvailability().catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
+        }
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    refresh();
+}
+
 async function consumePendingSharedFiles() {
     if (sharedFileImportInProgress || !state.sessionId) return;
     const queued = await getAllFromStore('shareQueue').catch(() => []);
@@ -7475,6 +7638,9 @@ let filePreviewOpenTask = null;
 let remotePreviewSelection = null;
 let remotePreviewControl = null;
 let activeRemotePreviewControl = null;
+let remotePreviewBubbleDrag = null;
+let remotePreviewBubblePosition = null;
+let remotePreviewBubbleSuppressClick = false;
 const incomingRemotePreviewRequests = new Map();
 
 function runExclusiveFilePreviewOpen(task, details = {}) {
@@ -8068,38 +8234,132 @@ function remotePreviewControlReasonText(reason) {
 
 function renderRemotePreviewControlPanel() {
     const panel = document.getElementById('remotePreviewControlPanel');
-    if (!panel) return;
-    panel.hidden = !remotePreviewControl;
+    const bubble = document.getElementById('remotePreviewControlBubble');
+    if (!panel || !bubble) return;
+    const visible = Boolean(remotePreviewControl && !remotePreviewControl.minimized && !remotePreviewControl.closing);
+    const bubbleVisible = Boolean(remotePreviewControl?.minimized && !remotePreviewControl.closing);
+    panel.hidden = !visible;
+    bubble.hidden = !bubbleVisible;
+    if (bubbleVisible && remotePreviewBubblePosition) {
+        positionRemotePreviewControlBubble(remotePreviewBubblePosition.x, remotePreviewBubblePosition.y);
+    }
     if (!remotePreviewControl) return;
     const control = remotePreviewControl;
     const title = document.getElementById('remotePreviewControlTitle');
+    const logo = document.getElementById('remotePreviewControlDeviceLogo');
     const status = document.getElementById('remotePreviewControlStatus');
     const previous = document.getElementById('remotePreviewControlPrevBtn');
     const next = document.getElementById('remotePreviewControlNextBtn');
+    const playbackRow = document.getElementById('remotePreviewControlPlaybackRow');
     const playback = document.getElementById('remotePreviewControlPlaybackBtn');
-    const exit = document.getElementById('remotePreviewControlExitBtn');
     const pending = Boolean(control.pendingAction);
     if (title) title.textContent = `${control.targetName} · ${control.fileName || '文件预览'}`;
+    if (logo) logo.textContent = control.targetLogo || '📱';
     if (status) status.textContent = control.statusText || '已进入全屏';
-    [previous, next, exit].forEach(button => { if (button) button.disabled = pending; });
+    [previous, next].forEach(button => { if (button) button.disabled = pending; });
+    const playbackAvailable = /^audio\/|^video\//.test(control.mediaType || '');
+    if (playbackRow) playbackRow.hidden = !playbackAvailable;
     if (playback) {
-        playback.hidden = !/^audio\/|^video\//.test(control.mediaType || '');
+        playback.hidden = !playbackAvailable;
         playback.disabled = pending;
-        playback.textContent = control.playing ? '⏸ 暂停' : '▶ 播放';
+        playback.textContent = control.playing ? '暂停' : '播放';
     }
+}
+
+function minimizeRemotePreviewControlPanel() {
+    if (!remotePreviewControl || remotePreviewControl.closing) return;
+    remotePreviewControl.minimized = true;
+    renderRemotePreviewControlPanel();
+    document.getElementById('remotePreviewControlBubble')?.focus({ preventScroll:true });
+}
+
+function restoreRemotePreviewControlPanel() {
+    if (!remotePreviewControl || remotePreviewControl.closing) return;
+    remotePreviewControl.minimized = false;
+    renderRemotePreviewControlPanel();
+    document.getElementById('remotePreviewControlMinimizeBtn')?.focus({ preventScroll:true });
+}
+
+function positionRemotePreviewControlBubble(x, y) {
+    const bubble = document.getElementById('remotePreviewControlBubble');
+    if (!bubble) return;
+    const rect = bubble.getBoundingClientRect();
+    const width = rect.width || 56;
+    const height = rect.height || 56;
+    const maxX = Math.max(8, window.innerWidth - width - 8);
+    const maxY = Math.max(8, window.innerHeight - height - 8);
+    const next = {
+        x:Math.min(Math.max(8, Number(x) || 8), maxX),
+        y:Math.min(Math.max(8, Number(y) || 8), maxY)
+    };
+    remotePreviewBubblePosition = next;
+    bubble.style.left = `${next.x}px`;
+    bubble.style.top = `${next.y}px`;
+    bubble.style.right = 'auto';
+    bubble.style.bottom = 'auto';
+}
+
+function beginRemotePreviewBubbleDrag(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    const bubble = event.currentTarget;
+    const rect = bubble.getBoundingClientRect();
+    remotePreviewBubbleDrag = {
+        pointerId:event.pointerId,
+        startX:event.clientX,
+        startY:event.clientY,
+        originX:rect.left,
+        originY:rect.top,
+        moved:false
+    };
+    remotePreviewBubbleSuppressClick = false;
+    bubble.classList.add('dragging');
+    bubble.setPointerCapture?.(event.pointerId);
+}
+
+function moveRemotePreviewBubble(event) {
+    const drag = remotePreviewBubbleDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) + Math.abs(dy) > 5) drag.moved = true;
+    positionRemotePreviewControlBubble(drag.originX + dx, drag.originY + dy);
+    event.preventDefault();
+}
+
+function finishRemotePreviewBubbleDrag(event) {
+    const drag = remotePreviewBubbleDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bubble = event.currentTarget;
+    remotePreviewBubbleSuppressClick = drag.moved;
+    remotePreviewBubbleDrag = null;
+    bubble.classList.remove('dragging');
+    try { bubble.releasePointerCapture?.(event.pointerId); } catch (_) {}
+}
+
+function getRemotePreviewDevicePresentation(device = {}) {
+    const displayName = getDeviceDisplayName(device);
+    const match = displayName.match(/^(📱|💻|🖥️?|⌚)\s*(.+)$/u);
+    return {
+        logo:match?.[1] || '📱',
+        name:match?.[2] || displayName
+    };
 }
 
 function startRemotePreviewControl(data, entry) {
     clearTimeout(remotePreviewControl?.timer);
+    const target = getRemotePreviewDevicePresentation(entry.device);
     remotePreviewControl = {
         controlId:data.controlId || data.requestId,
         targetDeviceId:entry.deviceId,
-        targetName:getDeviceDisplayName(entry.device),
+        targetName:target.name,
         fileId:data.fileId || remotePreviewSelection?.fileInfo?.id || '',
         fileName:data.fileName || remotePreviewSelection?.fileInfo?.name || '文件预览',
         mediaType:String(data.mediaType || remotePreviewSelection?.fileInfo?.type || '').toLowerCase(),
+        targetLogo:target.logo,
         playing:data.playing === true,
         pendingAction:'',
+        minimized:false,
+        closing:false,
         statusText:'已进入全屏',
         timer:null
     };
@@ -8117,38 +8377,54 @@ function finishRemotePreviewControl(reason = '', options = {}) {
     historyLog('remote-preview-control-finished', { controlId:control.controlId, targetDeviceId:control.targetDeviceId, reason });
 }
 
-function sendRemotePreviewControl(action) {
+function sendRemotePreviewControl(action, options = {}) {
     const control = remotePreviewControl;
-    if (!control || control.pendingAction || !state.socket?.connected) return;
+    if (!control) return false;
+    if (!state.socket?.connected) {
+        finishRemotePreviewControl('target-unavailable');
+        return false;
+    }
+    if (control.pendingAction && action !== 'exit') return false;
+    clearTimeout(control.timer);
     control.pendingAction = action;
+    control.closing = action === 'exit' && options.closePanel === true;
     control.statusText = ({previous:'正在切换到上一个文件…',next:'正在切换到下一个文件…','toggle-playback':'正在切换播放状态…',exit:'正在退出目标设备全屏…'}[action]) || '正在执行远程操作…';
     renderRemotePreviewControlPanel();
     const { controlId, targetDeviceId } = control;
     control.timer = setTimeout(() => {
         if (remotePreviewControl?.controlId !== controlId) return;
+        if (remotePreviewControl.closing) {
+            finishRemotePreviewControl('', { toast:false });
+            showAppToast('退出命令响应超时，本机控制面板已关闭');
+            return;
+        }
         remotePreviewControl.pendingAction = '';
         remotePreviewControl.statusText = remotePreviewControlReasonText('command-timeout');
         renderRemotePreviewControlPanel();
     }, 15_000);
     state.socket.emit('remote-preview-control', { controlId, to:targetDeviceId, action }, result => {
-        if (result?.ok || remotePreviewControl?.controlId !== controlId) return;
+        if (result?.ok || remotePreviewControl?.controlId !== controlId || remotePreviewControl.pendingAction !== action) return;
         if (['control-session-invalid', 'target-unavailable'].includes(result?.reason)) {
             finishRemotePreviewControl(result.reason);
             return;
         }
         clearTimeout(remotePreviewControl.timer);
         remotePreviewControl.pendingAction = '';
+        remotePreviewControl.closing = false;
         remotePreviewControl.statusText = remotePreviewControlReasonText(result?.reason || 'control-session-invalid');
         renderRemotePreviewControlPanel();
     });
+    return true;
 }
 
 function handleRemotePreviewControlResult(data) {
     const control = remotePreviewControl;
     if (!control || control.controlId !== data?.controlId || control.targetDeviceId !== data?.from) return;
+    if (control.pendingAction && control.pendingAction !== data.action) return;
     clearTimeout(control.timer);
     control.timer = null;
     control.pendingAction = '';
+    control.closing = false;
     if (data.ok !== true) {
         if (['control-session-invalid', 'fullscreen-not-active'].includes(data.reason)) {
             finishRemotePreviewControl(data.reason);
@@ -16408,7 +16684,24 @@ function initUI() {
     document.getElementById('remotePreviewControlPrevBtn')?.addEventListener('click', () => sendRemotePreviewControl('previous'));
     document.getElementById('remotePreviewControlNextBtn')?.addEventListener('click', () => sendRemotePreviewControl('next'));
     document.getElementById('remotePreviewControlPlaybackBtn')?.addEventListener('click', () => sendRemotePreviewControl('toggle-playback'));
-    document.getElementById('remotePreviewControlExitBtn')?.addEventListener('click', () => sendRemotePreviewControl('exit'));
+    document.getElementById('remotePreviewControlMinimizeBtn')?.addEventListener('click', minimizeRemotePreviewControlPanel);
+    document.getElementById('remotePreviewControlCloseBtn')?.addEventListener('click', () => sendRemotePreviewControl('exit', { closePanel:true }));
+    const remotePreviewBubble = document.getElementById('remotePreviewControlBubble');
+    remotePreviewBubble?.addEventListener('click', event => {
+        if (remotePreviewBubbleSuppressClick) {
+            remotePreviewBubbleSuppressClick = false;
+            event.preventDefault();
+            return;
+        }
+        restoreRemotePreviewControlPanel();
+    });
+    remotePreviewBubble?.addEventListener('pointerdown', beginRemotePreviewBubbleDrag);
+    remotePreviewBubble?.addEventListener('pointermove', moveRemotePreviewBubble);
+    remotePreviewBubble?.addEventListener('pointerup', finishRemotePreviewBubbleDrag);
+    remotePreviewBubble?.addEventListener('pointercancel', finishRemotePreviewBubbleDrag);
+    window.addEventListener('resize', () => {
+        if (remotePreviewBubblePosition) positionRemotePreviewControlBubble(remotePreviewBubblePosition.x, remotePreviewBubblePosition.y);
+    });
     document.getElementById('filePreviewPrevBtn')?.addEventListener('click', () => {
         navigateFilePreview(-1).catch(err => historyLog('file-preview-navigate-failed', { direction: -1, error: err.message }));
     });

@@ -313,24 +313,127 @@ test('remote preview picker stays above preview G and repeated commands are idem
     assert.match(app, /setTimeout\(\(\) => beginRemotePreviewCacheCheck\(entry\), 500\)/);
 });
 
-test('remote preview control panel exposes authenticated navigation, playback and exit commands', () => {
+test('remote preview control panel exposes the five-row layout, draggable bubble and authenticated commands', () => {
     const page = read('pages/index.html');
     const app = read('app.js');
     const server = read('server/media-session.js');
     for (const id of [
         'remotePreviewControlPanel', 'remotePreviewControlPrevBtn', 'remotePreviewControlNextBtn',
-        'remotePreviewControlPlaybackBtn', 'remotePreviewControlExitBtn'
+        'remotePreviewControlPlaybackBtn', 'remotePreviewControlMinimizeBtn',
+        'remotePreviewControlPlaybackRow', 'remotePreviewControlCloseBtn',
+        'remotePreviewControlDeviceLogo', 'remotePreviewControlBubble'
     ]) assert.match(page, new RegExp(`id="${id}"`));
     assert.match(page, /远程预览控制/);
+    assert.match(page, /id="remotePreviewControlBubble"[^>]*hidden>#️⃣<\/button>/);
+    assert.match(page, /\.remote-preview-control-window-actions button\s*\{[\s\S]*?border:0/);
+    assert.match(page, /\.remote-preview-control-bubble\s*\{[\s\S]*?touch-action:none/);
+    assertAppearsBefore(page, 'id="remotePreviewControlPrevBtn"', 'id="remotePreviewControlPlaybackBtn"', 'navigation row must precede optional playback row');
     assert.match(app, /sendRemotePreviewControl\('previous'\)/);
     assert.match(app, /sendRemotePreviewControl\('next'\)/);
     assert.match(app, /sendRemotePreviewControl\('toggle-playback'\)/);
-    assert.match(app, /sendRemotePreviewControl\('exit'\)/);
+    assert.match(app, /sendRemotePreviewControl\('exit', \{ closePanel:true \}\)/);
+    assert.match(app, /setPointerCapture/);
+    assert.match(app, /positionRemotePreviewControlBubble/);
     assert.match(app, /findRemotePreviewAdjacentItem/);
     assert.match(app, /querySelector\('video, audio'\)/);
     assert.match(server, /REMOTE_PREVIEW_CONTROL_ACTIONS/);
     assert.match(server, /control\.controllerId !== deviceId/);
     assert.match(server, /control\.targetId !== deviceId/);
+});
+
+test('remote preview panel minimizes to the bubble and restores without ending control', () => {
+    const app = read('app.js');
+    const panelBlock = readBlock(app, 'function renderRemotePreviewControlPanel()', 'function startRemotePreviewControl');
+    const elements = new Map();
+    for (const id of [
+        'remotePreviewControlPanel', 'remotePreviewControlBubble', 'remotePreviewControlTitle',
+        'remotePreviewControlDeviceLogo', 'remotePreviewControlStatus', 'remotePreviewControlPrevBtn',
+        'remotePreviewControlNextBtn', 'remotePreviewControlPlaybackRow',
+        'remotePreviewControlPlaybackBtn', 'remotePreviewControlMinimizeBtn'
+    ]) elements.set(id, {
+        hidden:true,
+        disabled:false,
+        textContent:'',
+        style:{},
+        classList:{ add() {}, remove() {} },
+        focus() {},
+        setPointerCapture() {},
+        releasePointerCapture() {},
+        getBoundingClientRect:() => ({ left:900, top:600, width:56, height:56 })
+    });
+    const context = vm.createContext({
+        remotePreviewControl:{
+            targetName:'测试设备', fileName:'示例.mp4', targetLogo:'💻', mediaType:'video/mp4',
+            playing:false, pendingAction:'', minimized:false, closing:false, statusText:'已进入全屏'
+        },
+        remotePreviewBubblePosition:null,
+        remotePreviewBubbleDrag:null,
+        remotePreviewBubbleSuppressClick:false,
+        document:{ getElementById:id => elements.get(id) || null },
+        window:{ innerWidth:1280, innerHeight:720 },
+        getDeviceDisplayName:() => '测试设备'
+    });
+    const originalControl = context.remotePreviewControl;
+    vm.runInContext(`${panelBlock}\nthis.render = renderRemotePreviewControlPanel;this.minimize = minimizeRemotePreviewControlPanel;this.restore = restoreRemotePreviewControlPanel;this.beginDrag = beginRemotePreviewBubbleDrag;this.moveDrag = moveRemotePreviewBubble;this.finishDrag = finishRemotePreviewBubbleDrag;`, context);
+    context.render();
+    assert.equal(elements.get('remotePreviewControlPanel').hidden, false);
+    assert.equal(elements.get('remotePreviewControlBubble').hidden, true);
+    assert.equal(elements.get('remotePreviewControlTitle').textContent, '测试设备 · 示例.mp4');
+    assert.equal(elements.get('remotePreviewControlPlaybackRow').hidden, false);
+    assert.equal(elements.get('remotePreviewControlPlaybackBtn').hidden, false);
+    context.minimize();
+    assert.equal(elements.get('remotePreviewControlPanel').hidden, true);
+    assert.equal(elements.get('remotePreviewControlBubble').hidden, false);
+    const bubble = elements.get('remotePreviewControlBubble');
+    context.beginDrag({ button:0, pointerId:7, clientX:928, clientY:628, currentTarget:bubble });
+    context.moveDrag({ pointerId:7, clientX:808, clientY:508, preventDefault() {} });
+    context.finishDrag({ pointerId:7, currentTarget:bubble });
+    assert.equal(bubble.style.left, '780px');
+    assert.equal(bubble.style.top, '480px');
+    context.restore();
+    assert.equal(elements.get('remotePreviewControlPanel').hidden, false);
+    assert.equal(context.remotePreviewControl, originalControl, 'minimize/restore must retain the same control object');
+});
+
+test('clipboard image paste area uses a two-thirds split and converts only image clipboard items', async () => {
+    const page = read('pages/index.html');
+    const app = read('app.js');
+    for (const id of ['fileUploadComposer', 'dropZone', 'pasteImageZone']) {
+        assert.match(page, new RegExp(`id="${id}"`));
+    }
+    assert.match(page, /\.file-upload-composer\.clipboard-image-ready\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 2fr\) minmax\(0, 1fr\)/);
+    assert.match(page, /\.paste-image-zone\s*\{[\s\S]*?aspect-ratio:\s*1/);
+    assert.match(page, /点此粘贴图片/);
+    assert.match(app, /initClipboardImagePaste\(\)/);
+    assert.match(app, /await sendSelectedFiles\(files\)/);
+
+    class TestFile {
+        constructor(parts, name, options = {}) {
+            this.parts = parts;
+            this.name = name;
+            this.type = options.type || '';
+            this.lastModified = options.lastModified || 0;
+            this.size = parts.reduce((sum, part) => sum + (part.size || 0), 0);
+        }
+    }
+    class TestBlob {
+        constructor(size, type) { this.size = size;this.type = type; }
+    }
+    const helpers = readBlock(app, 'function clipboardImageExtension', 'function renderClipboardImagePasteArea');
+    const context = vm.createContext({ File:TestFile, Blob:TestBlob, Date });
+    vm.runInContext(`${helpers}\nthis.extractItems = extractClipboardImageFiles;this.extractPaste = extractPastedImageFiles;`, context);
+    const files = await context.extractItems([
+        { types:['text/plain'], getType:async () => new TestBlob(2, 'text/plain') },
+        { types:['text/plain', 'image/webp'], getType:async type => new TestBlob(17, type) }
+    ], Date.UTC(2026, 7, 28, 1, 2, 3));
+    assert.equal(files.length, 1);
+    assert.equal(files[0].type, 'image/webp');
+    assert.equal(files[0].size, 17);
+    assert.match(files[0].name, /^粘贴图片-20260828-010203\.webp$/);
+    assert.equal(context.extractPaste({ items:[
+        { kind:'string', type:'text/plain', getAsFile:() => null },
+        { kind:'file', type:'image/png', getAsFile:() => ({ name:'截图.png', type:'image/png' }) }
+    ] }).length, 1);
 });
 
 test('remote preview target keeps the same fullscreen open and switches other files through the focused fast path', async () => {

@@ -1356,6 +1356,18 @@
         }
         
         /* 文件上传 */
+        .file-upload-composer {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr);
+            margin-bottom: 10px;
+        }
+
+        .file-upload-composer.clipboard-image-ready {
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+            gap: 10px;
+            align-items: stretch;
+        }
+
         .file-upload-area {
             border: 3px dashed #ddd;
             border-radius: 12px;
@@ -1363,7 +1375,8 @@
             text-align: center;
             cursor: pointer;
             transition: all 0.2s;
-            margin-bottom: 10px;
+            margin: 0;
+            box-sizing: border-box;
         }
 
         .file-upload-area > div:first-child {
@@ -1391,6 +1404,32 @@
             color: #999;
             margin-bottom: 10px;
         }
+
+        .paste-image-zone {
+            display: grid;
+            place-items: center;
+            width: 100%;
+            min-width: 0;
+            aspect-ratio: 1;
+            padding: 12px;
+            border: 2px solid #b9c4f5;
+            border-radius: 12px;
+            background: linear-gradient(145deg, #f7f8ff, #eef1ff);
+            color: #4658b8;
+            font: inherit;
+            font-size: .88rem;
+            font-weight: 800;
+            line-height: 1.45;
+            text-align: center;
+            cursor: pointer;
+            box-sizing: border-box;
+            transition: border-color .2s, background .2s, transform .2s;
+        }
+
+        .paste-image-zone[hidden] { display: none; }
+        .paste-image-zone:hover { border-color:#667eea;background:#e9edff;transform:translateY(-1px); }
+        .paste-image-zone:focus-visible { outline:3px solid rgba(102,126,234,.28);outline-offset:2px; }
+        .paste-image-zone:disabled { opacity:.58;cursor:wait;transform:none; }
 
         .session-tools {
             display: grid;
@@ -2508,8 +2547,8 @@
             bottom:max(14px,env(safe-area-inset-bottom));
             z-index:2147482000;
             display:grid;
-            width:min(520px,calc(100vw - 28px));
-            gap:12px;
+            width:min(390px,calc(100vw - 28px));
+            gap:11px;
             padding:14px;
             border:1px solid rgba(255,255,255,.28);
             border-radius:16px;
@@ -2520,18 +2559,69 @@
             box-sizing:border-box;
         }
         .remote-preview-control-panel[hidden] { display:none; }
-        .remote-preview-control-heading { display:flex;align-items:flex-start;justify-content:space-between;gap:12px; }
-        .remote-preview-control-kicker { color:#aeb9ff;font-size:.72rem;font-weight:850;letter-spacing:.08em; }
-        .remote-preview-control-title { margin-top:3px;font-weight:850;overflow-wrap:anywhere; }
-        .remote-preview-control-status { margin-top:3px;color:rgba(255,255,255,.72);font-size:.8rem; }
-        .remote-preview-control-actions { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px; }
-        .remote-preview-control-actions button { min-height:42px;border:1px solid rgba(255,255,255,.22);border-radius:10px;background:rgba(255,255,255,.1);color:#fff;font-weight:780;cursor:pointer; }
-        .remote-preview-control-actions button:hover:not(:disabled) { background:rgba(255,255,255,.2); }
-        .remote-preview-control-actions button:disabled { opacity:.48;cursor:wait; }
-        #remotePreviewControlExitBtn { border-color:rgba(255,110,110,.42);background:rgba(180,42,42,.28); }
+        .remote-preview-control-topbar { display:flex;align-items:center;justify-content:space-between;gap:12px; }
+        .remote-preview-control-heading { margin:0;color:#fff;font-size:.96rem;font-weight:850; }
+        .remote-preview-control-window-actions { display:flex;align-items:center;gap:2px; }
+        .remote-preview-control-window-actions button {
+            display:grid;
+            place-items:center;
+            width:34px;
+            height:30px;
+            padding:0;
+            border:0;
+            background:transparent;
+            color:rgba(255,255,255,.82);
+            font:inherit;
+            font-size:1rem;
+            font-weight:850;
+            cursor:pointer;
+        }
+        .remote-preview-control-window-actions button:hover { border-radius:8px;background:rgba(255,255,255,.13);color:#fff; }
+        #remotePreviewControlCloseBtn:hover { background:rgba(206,48,48,.78); }
+        .remote-preview-control-identity { display:flex;align-items:center;gap:9px;min-width:0; }
+        .remote-preview-control-device-logo { display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.12);font-size:1.15rem; }
+        .remote-preview-control-title { min-width:0;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+        .remote-preview-control-status { min-height:1.3em;color:rgba(255,255,255,.72);font-size:.8rem;overflow-wrap:anywhere; }
+        .remote-preview-control-nav-actions { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px; }
+        .remote-preview-control-playback-actions { display:grid;grid-template-columns:minmax(0,1fr); }
+        .remote-preview-control-playback-actions[hidden] { display:none; }
+        .remote-preview-control-panel .remote-preview-command {
+            min-height:42px;
+            border:1px solid rgba(255,255,255,.22);
+            border-radius:10px;
+            background:rgba(255,255,255,.1);
+            color:#fff;
+            font-weight:780;
+            cursor:pointer;
+        }
+        .remote-preview-control-panel .remote-preview-command:hover:not(:disabled) { background:rgba(255,255,255,.2); }
+        .remote-preview-control-panel .remote-preview-command:disabled { opacity:.48;cursor:wait; }
+        .remote-preview-control-bubble {
+            position:fixed;
+            right:max(18px,env(safe-area-inset-right));
+            bottom:max(18px,env(safe-area-inset-bottom));
+            z-index:2147482000;
+            display:grid;
+            place-items:center;
+            width:56px;
+            height:56px;
+            padding:0;
+            border:1px solid rgba(255,255,255,.42);
+            border-radius:50%;
+            background:rgba(31,36,52,.96);
+            box-shadow:0 14px 38px rgba(0,0,0,.38);
+            color:#fff;
+            font-size:1.35rem;
+            cursor:grab;
+            touch-action:none;
+            user-select:none;
+            -webkit-user-select:none;
+        }
+        .remote-preview-control-bubble[hidden] { display:none; }
+        .remote-preview-control-bubble.dragging { cursor:grabbing;box-shadow:0 18px 46px rgba(0,0,0,.48); }
+        .remote-preview-control-bubble:focus-visible { outline:3px solid rgba(174,185,255,.55);outline-offset:3px; }
         @media (max-width:560px) {
             .remote-preview-control-panel { left:14px;right:14px;width:auto; }
-            .remote-preview-control-actions { grid-template-columns:repeat(2,minmax(0,1fr)); }
         }
 
         .file-preview-loading {
@@ -4836,10 +4926,13 @@
                                 <div style="font-size: 0.85rem; margin-top: 10px;">发送文件或文本来开始对话</div>
                             </div>
                         </div>
-                        <div class="file-upload-area" id="dropZone">
-                            <div style="font-size: 2.5rem; margin-bottom: 10px;">📁</div>
-                            <div>拖拽文件到这里</div>
-                            <div style="font-size: 0.85rem; color: #999; margin-top: 5px;">或点击选择文件</div>
+                        <div class="file-upload-composer" id="fileUploadComposer">
+                            <div class="file-upload-area" id="dropZone">
+                                <div style="font-size: 2.5rem; margin-bottom: 10px;">📁</div>
+                                <div>拖拽文件到这里</div>
+                                <div style="font-size: 0.85rem; color: #999; margin-top: 5px;">或点击选择文件</div>
+                            </div>
+                            <button class="paste-image-zone" id="pasteImageZone" type="button" title="将剪贴板中的图片发送到当前隧道" hidden>点此粘贴图片</button>
                         </div>
                         <div class="input-area">
                             <input type="text" id="textInput" placeholder="输入消息..." maxlength="1000">
@@ -4961,20 +5054,27 @@
     </dialog>
 
     <aside class="remote-preview-control-panel" id="remotePreviewControlPanel" aria-label="远程预览控制面板" hidden>
-        <div class="remote-preview-control-heading">
-            <div>
-                <div class="remote-preview-control-kicker">远程预览控制</div>
-                <div class="remote-preview-control-title" id="remotePreviewControlTitle">正在控制目标设备</div>
-                <div class="remote-preview-control-status" id="remotePreviewControlStatus">已进入全屏</div>
+        <div class="remote-preview-control-topbar">
+            <h3 class="remote-preview-control-heading">远程预览控制</h3>
+            <div class="remote-preview-control-window-actions">
+                <button id="remotePreviewControlMinimizeBtn" type="button" title="最小化" aria-label="最小化远程预览控制面板">_</button>
+                <button id="remotePreviewControlCloseBtn" type="button" title="退出控制" aria-label="退出远程预览控制和目标设备全屏">Ｘ</button>
             </div>
         </div>
-        <div class="remote-preview-control-actions">
-            <button id="remotePreviewControlPrevBtn" type="button">← 上一个</button>
-            <button id="remotePreviewControlPlaybackBtn" type="button" hidden>▶ 播放</button>
-            <button id="remotePreviewControlNextBtn" type="button">下一个 →</button>
-            <button id="remotePreviewControlExitBtn" type="button">退出全屏</button>
+        <div class="remote-preview-control-identity">
+            <span class="remote-preview-control-device-logo" id="remotePreviewControlDeviceLogo" aria-hidden="true">📱</span>
+            <div class="remote-preview-control-title" id="remotePreviewControlTitle">目标设备 · 文件预览</div>
+        </div>
+        <div class="remote-preview-control-status" id="remotePreviewControlStatus" role="status" aria-live="polite">已进入全屏</div>
+        <div class="remote-preview-control-nav-actions">
+            <button class="remote-preview-command" id="remotePreviewControlPrevBtn" type="button">上一个</button>
+            <button class="remote-preview-command" id="remotePreviewControlNextBtn" type="button">下一个</button>
+        </div>
+        <div class="remote-preview-control-playback-actions" id="remotePreviewControlPlaybackRow" hidden>
+            <button class="remote-preview-command" id="remotePreviewControlPlaybackBtn" type="button" hidden>播放</button>
         </div>
     </aside>
+    <button class="remote-preview-control-bubble" id="remotePreviewControlBubble" type="button" aria-label="恢复远程预览控制面板" hidden>#️⃣</button>
 
     <div class="media-fullscreen-viewer" id="mediaFullscreenViewer" aria-label="全屏预览" role="dialog" aria-modal="true">
         <div class="media-fullscreen-topbar">
