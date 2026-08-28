@@ -274,9 +274,18 @@ let tunnelHeartbeatTimer = null;
 let clipboardShareTimer = null;
 let lastClipboardText = null;
 let pendingClipboardImageFiles = [];
+let clipboardImageAvailable = false;
+let clipboardImageSignature = '';
+let clipboardImageConsumedSignature = '';
 let clipboardImagePermissionStatus = null;
 let clipboardImageProbeRunning = false;
 let clipboardImageSendInProgress = false;
+let clipboardImageReadAllowed = false;
+let clipboardImagePermissionRequested = false;
+let clipboardImagePermissionRetryAt = 0;
+let clipboardImageMonitorTimer = null;
+let clipboardImageChangeSequence = 0;
+const CLIPBOARD_IMAGE_POLL_INTERVAL = 2000;
 let remoteAudioContext = null;
 let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
@@ -4711,7 +4720,7 @@ function extractPastedImageFiles(clipboardData, timestamp = Date.now()) {
 function renderClipboardImagePasteArea() {
     const composer = document.getElementById('fileUploadComposer');
     const zone = document.getElementById('pasteImageZone');
-    const available = pendingClipboardImageFiles.length > 0;
+    const available = clipboardImageAvailable || pendingClipboardImageFiles.length > 0;
     composer?.classList.toggle('clipboard-image-ready', available);
     if (!zone) return;
     zone.hidden = !available;
@@ -4721,10 +4730,45 @@ function renderClipboardImagePasteArea() {
         : '剪贴板中没有可粘贴的图片');
 }
 
-function setPendingClipboardImageFiles(files) {
+function setPendingClipboardImageFiles(files, options = {}) {
     pendingClipboardImageFiles = Array.from(files || []).filter(file => /^image\//i.test(file?.type || ''));
+    clipboardImageAvailable = options.available === true || pendingClipboardImageFiles.length > 0;
+    if (Object.prototype.hasOwnProperty.call(options, 'signature')) {
+        clipboardImageSignature = String(options.signature || '');
+    } else if (!clipboardImageAvailable) {
+        clipboardImageSignature = '';
+    }
     renderClipboardImagePasteArea();
     return pendingClipboardImageFiles;
+}
+
+async function createClipboardImageFingerprint(files) {
+    const entries = [];
+    for (const file of Array.from(files || [])) {
+        const type = String(file?.type || 'application/octet-stream').toLowerCase();
+        const size = Number(file?.size) || 0;
+        if (globalThis.crypto?.subtle && typeof file?.arrayBuffer === 'function') {
+            const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+            const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+            entries.push(`${type}:${size}:${hash}`);
+        } else {
+            entries.push(`${type}:${size}:${Number(file?.lastModified) || 0}`);
+        }
+    }
+    return entries.length ? `image:${entries.join('|')}` : 'clipboard:none';
+}
+
+function handleClipboardImageChange(event) {
+    const types = Array.from(event?.types || []).map(type => String(type).toLowerCase());
+    const hasImage = types.some(type => type.startsWith('image/'));
+    const changeId = String(event?.changeId || ++clipboardImageChangeSequence);
+    const signature = `change:${changeId}`;
+    setPendingClipboardImageFiles([], { available:hasImage, signature });
+    historyLog('clipboard-images-detected', { count:hasImage ? 1 : 0, source:'clipboardchange' });
+    if (hasImage && clipboardImagePermissionStatus?.state === 'granted') {
+        refreshClipboardImageAvailability({ expectedSignature:signature, source:'clipboardchange' })
+            .catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
+    }
 }
 
 async function getClipboardImagePermissionStatus() {
@@ -4736,7 +4780,8 @@ async function getClipboardImagePermissionStatus() {
             if (clipboardImagePermissionStatus?.state === 'granted') {
                 refreshClipboardImageAvailability().catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
             } else if (clipboardImagePermissionStatus?.state === 'denied') {
-                setPendingClipboardImageFiles([]);
+                clipboardImageReadAllowed = false;
+                setPendingClipboardImageFiles([], { available:false, signature:'' });
             }
         };
         clipboardImagePermissionStatus.addEventListener?.('change', handlePermissionChange);
@@ -4751,14 +4796,23 @@ async function refreshClipboardImageAvailability(options = {}) {
         return pendingClipboardImageFiles;
     }
     const permission = await getClipboardImagePermissionStatus();
-    if (!options.allowPrompt && permission?.state !== 'granted') return pendingClipboardImageFiles;
-    if (!options.allowPrompt && !permission) return pendingClipboardImageFiles;
+    if (!options.allowPrompt && permission && permission.state !== 'granted' && !clipboardImageReadAllowed) return pendingClipboardImageFiles;
+    if (!options.allowPrompt && !permission && !clipboardImageReadAllowed) return pendingClipboardImageFiles;
     clipboardImageProbeRunning = true;
     try {
         const items = await navigator.clipboard.read();
         const files = await extractClipboardImageFiles(items);
-        return setPendingClipboardImageFiles(files);
+        const signature = await createClipboardImageFingerprint(files);
+        clipboardImageReadAllowed = true;
+        if (options.expectedSignature && clipboardImageSignature !== options.expectedSignature) {
+            return pendingClipboardImageFiles;
+        }
+        const available = files.length > 0 && signature !== clipboardImageConsumedSignature;
+        return setPendingClipboardImageFiles(available ? files : [], { available, signature });
     } catch (err) {
+        if (['NotAllowedError', 'SecurityError'].includes(err?.name)) {
+            clipboardImagePermissionRetryAt = Date.now() + 30_000;
+        }
         if (!['NotAllowedError', 'SecurityError'].includes(err?.name)) {
             historyLog('clipboard-image-probe-failed', { name:err?.name || '', error:err?.message || String(err) });
         }
@@ -4780,6 +4834,11 @@ async function sendClipboardImagesToTunnel() {
     renderClipboardImagePasteArea();
     try {
         await sendSelectedFiles(files);
+        const sentSignature = clipboardImageSignature.startsWith('image:')
+            ? clipboardImageSignature
+            : await createClipboardImageFingerprint(files);
+        clipboardImageConsumedSignature = sentSignature;
+        setPendingClipboardImageFiles([], { available:false, signature:sentSignature });
         historyLog('clipboard-images-sent', {
             count:files.length,
             totalSize:files.reduce((sum, file) => sum + (Number(file.size) || 0), 0)
@@ -4804,14 +4863,30 @@ function initClipboardImagePaste() {
     document.addEventListener('paste', event => {
         const files = extractPastedImageFiles(event.clipboardData);
         if (!files.length) return;
-        setPendingClipboardImageFiles(files);
+        setPendingClipboardImageFiles(files, { signature:`paste:${Date.now()}:${++clipboardImageChangeSequence}` });
         historyLog('clipboard-images-detected', { count:files.length, source:'paste-event' });
     });
     const refresh = () => {
-        if (document.visibilityState !== 'hidden') {
+        if (document.visibilityState !== 'hidden' && document.hasFocus?.() !== false) {
             refreshClipboardImageAvailability().catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
         }
     };
+    const clipboard = navigator.clipboard;
+    const supportsClipboardChange = typeof clipboard?.addEventListener === 'function' && 'onclipboardchange' in clipboard;
+    if (supportsClipboardChange) {
+        clipboard.addEventListener('clipboardchange', handleClipboardImageChange);
+    }
+    clipboardImageMonitorTimer = window.setInterval(refresh, CLIPBOARD_IMAGE_POLL_INTERVAL);
+    const requestClipboardReadAfterActivation = event => {
+        if (event?.target?.closest?.('#pasteImageZone') || clipboardImagePermissionRequested || clipboardImageReadAllowed ||
+            Date.now() < clipboardImagePermissionRetryAt) return;
+        clipboardImagePermissionRequested = true;
+        refreshClipboardImageAvailability({ allowPrompt:true, source:'user-activation' })
+            .catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }))
+            .finally(() => { clipboardImagePermissionRequested = false; });
+    };
+    document.addEventListener('pointerdown', requestClipboardReadAfterActivation, { passive:true });
+    document.addEventListener('keydown', requestClipboardReadAfterActivation, { passive:true });
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     refresh();
@@ -8153,6 +8228,7 @@ async function handleRemotePreviewOpen(data) {
     const request = incomingRemotePreviewRequests.get(data?.requestId);
     let ok = false;
     let reason = 'cache-verification-required';
+    let presentation = 'media';
     try {
         if (!request || request.from !== data?.from || request.fileId !== data?.fileId) throw new Error(reason);
         const persisted = await getFromStore('files', data.fileId).catch(() => null);
@@ -8160,12 +8236,23 @@ async function handleRemotePreviewOpen(data) {
         if (!hasCompleteFileCache(storedFile, request.fileInfo)) throw new Error('cache-incomplete');
         const type = String(request.fileInfo?.type || storedFile?.type || '').toLowerCase();
         if (!isPreviewableFileType(type)) throw new Error('not-previewable');
+        const useMusicPlayer = isAudioFileLike(storedFile, request.fileInfo);
+        presentation = useMusicPlayer ? 'music' : 'media';
+        const currentMusicTrack = getCurrentMusicTrack();
+        if (useMusicPlayer && currentMusicTrack?.id === data.fileId && musicPlayer.overlay?.classList.contains('active')) {
+            ok = true;
+            reason = '';
+            return;
+        }
         const currentFullscreenFileId = mediaFullscreenItems[mediaFullscreenIndex]?.fileInfo?.id || '';
-        if (currentFullscreenFileId === data.fileId &&
+        if (!useMusicPlayer && currentFullscreenFileId === data.fileId &&
             document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
             ok = true;
             reason = '';
             return;
+        }
+        if (!useMusicPlayer && musicPlayer.overlay?.classList.contains('active')) {
+            closeMusicPlayer({ fromHistory:true, remoteControlCommand:true });
         }
         closeFilePreview({ fromHistory:true, forceClose:true });
         replaceCurrentHistoryWithoutPreviewLayers();
@@ -8176,7 +8263,9 @@ async function handleRemotePreviewOpen(data) {
             returnToCollection:false
         });
         if (!ok) throw new Error('preview-open-failed');
-        ok = await openActivePreviewFullscreen({ focusedOnly:true, focusedFileInfo:request.fileInfo });
+        ok = useMusicPlayer
+            ? await openMusicPlayerFromActivePreview({ pushHistory:false })
+            : await openActivePreviewFullscreen({ focusedOnly:true, focusedFileInfo:request.fileInfo });
         if (!ok) throw new Error('fullscreen-open-failed');
         reason = '';
     } catch (error) {
@@ -8184,12 +8273,13 @@ async function handleRemotePreviewOpen(data) {
         reason = error.message || reason;
     } finally {
         incomingRemotePreviewRequests.delete(data?.requestId);
-        const fullscreenState = getRemotePreviewFullscreenState();
+        const fullscreenState = getRemotePreviewFullscreenState({ presentation });
         if (ok) {
             activeRemotePreviewControl = {
                 controlId:data.requestId,
                 controllerDeviceId:data.from,
-                fileId:fullscreenState.fileId || data.fileId
+                fileId:fullscreenState.fileId || data.fileId,
+                presentation
             };
         }
         state.socket?.emit('remote-preview-open-result', {
@@ -8454,8 +8544,13 @@ function handleRemotePreviewControlEnded(data) {
         finishRemotePreviewControl(data.reason || 'exited');
     }
     if (activeRemotePreviewControl?.controlId === data?.controlId) {
+        const presentation = activeRemotePreviewControl.presentation;
         activeRemotePreviewControl = null;
-        closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
+        if (presentation === 'music') {
+            closeMusicPlayer({ fromHistory:true, remoteControlCommand:true });
+        } else {
+            closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
+        }
     }
 }
 
@@ -10463,8 +10558,8 @@ async function activateMusicTrack(track, options = {}) {
     return track;
 }
 
-async function openMusicPlayerFromActivePreview() {
-    if (!activeFilePreviewFileId || !activeFilePreviewStoredFile || !activeFilePreviewObjectUrl) return;
+async function openMusicPlayerFromActivePreview(options = {}) {
+    if (!activeFilePreviewFileId || !activeFilePreviewStoredFile || !activeFilePreviewObjectUrl) return false;
     const fileInfo = await getActivePreviewFileInfo(activeFilePreviewFileId);
     const track = await buildAudioTrack(fileInfo || activeFilePreviewStoredFile, activeFilePreviewStoredFile, activeFilePreviewObjectUrl);
     await ensureMusicTrackPosterForPreview(track, fileInfo || activeFilePreviewStoredFile, activeFilePreviewStoredFile);
@@ -10480,8 +10575,10 @@ async function openMusicPlayerFromActivePreview() {
     const startTime = tempAudio?.dataset?.previewFileId === activeFilePreviewFileId ? Number(tempAudio.currentTime || 0) : 0;
     handoffTemporaryPreviewToBackground(activeFilePreviewFileId);
     const activatedTrack = await activateMusicTrack(track, { play: true, startTime });
-    openMusicPlayerOverlay({ resetQueue: true });
+    if (!activatedTrack) return false;
+    openMusicPlayerOverlay({ resetQueue:true, pushHistory:options.pushHistory });
     forceMusicPlayerCoverForTrack(activatedTrack?.id || track.id, activatedTrack?.poster || track.poster || '');
+    return musicPlayer.overlay?.classList.contains('active') === true;
 }
 
 function handoffTemporaryPreviewToBackground(fileId) {
@@ -10509,6 +10606,19 @@ async function playMusicQueueIndex(index) {
     scheduleMusicQueueTailFill();
 }
 
+function finishActiveRemoteMusicControl(options = {}) {
+    const remoteControl = activeRemotePreviewControl;
+    if (remoteControl?.presentation !== 'music') return;
+    activeRemotePreviewControl = null;
+    if (!options.remoteControlCommand) {
+        state.socket?.emit('remote-preview-control-ended', {
+            controlId:remoteControl.controlId,
+            to:remoteControl.controllerDeviceId,
+            reason:options.reason || 'exited'
+        });
+    }
+}
+
 function minimizeMusicPlayer(options = {}) {
     if (!options.fromHistory && musicPlayer.queueOpen && history.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
         musicPlayer.pendingQueueExitAction = '';
@@ -10522,6 +10632,7 @@ function minimizeMusicPlayer(options = {}) {
     if (shouldGoBack) {
         replaceCurrentHistoryWithoutMusicPlayer();
     }
+    finishActiveRemoteMusicControl(options);
     musicPlayer.overlay?.classList.remove('active');
     musicPlayer.miniEnabled = true;
     if (!options.keepHistory) musicPlayer.historyOpen = false;
@@ -10542,6 +10653,7 @@ function closeMusicPlayer(options = {}) {
         musicPlayer.closeAfterHistory = false;
         replaceCurrentHistoryWithoutMusicPlayer();
     }
+    finishActiveRemoteMusicControl(options);
     musicPlayer.overlay?.classList.remove('active');
     if (options.stop !== false) ensureBackgroundAudio().pause();
     musicPlayer.miniEnabled = false;
@@ -11103,7 +11215,18 @@ function renderMediaFullscreenItem() {
     });
 }
 
-function getRemotePreviewFullscreenState() {
+function getRemotePreviewFullscreenState(options = {}) {
+    const presentation = options.presentation || activeRemotePreviewControl?.presentation || 'media';
+    if (presentation === 'music') {
+        const track = getCurrentMusicTrack();
+        const audio = musicPlayer.audio;
+        return {
+            fileId:track?.id || '',
+            fileName:track?.fileInfo?.name || track?.name || '音乐播放',
+            mediaType:String(track?.type || track?.fileInfo?.type || 'audio/*').toLowerCase(),
+            playing:Boolean(audio && !audio.paused && !audio.ended)
+        };
+    }
     const item = mediaFullscreenItems[mediaFullscreenIndex];
     const media = document.getElementById('mediaFullscreenContent')?.querySelector('video, audio');
     return {
@@ -11157,31 +11280,53 @@ async function findRemotePreviewAdjacentItem(delta) {
 async function handleRemotePreviewControl(data) {
     const control = activeRemotePreviewControl;
     const action = String(data?.action || '');
+    const presentation = control?.presentation || 'media';
     let ok = false;
     let reason = 'control-session-invalid';
     try {
         if (!control || control.controlId !== data?.controlId || control.controllerDeviceId !== data?.from) throw new Error(reason);
-        if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) throw new Error('fullscreen-not-active');
-        if (action === 'previous' || action === 'next') {
-            const item = await findRemotePreviewAdjacentItem(action === 'previous' ? -1 : 1);
-            if (!item) throw new Error('no-adjacent-file');
-            mediaFullscreenItems = [item];
-            mediaFullscreenIndex = 0;
-            renderMediaFullscreenItem();
-            control.fileId = item.fileInfo.id;
-        } else if (action === 'toggle-playback') {
-            const media = document.getElementById('mediaFullscreenContent')?.querySelector('video, audio');
-            if (!media) throw new Error('playback-unavailable');
-            if (media.paused || media.ended) {
-                await media.play().catch(() => { throw new Error('playback-failed'); });
+        if (presentation === 'music') {
+            if (!musicPlayer.overlay?.classList.contains('active') || !getCurrentMusicTrack()) throw new Error('fullscreen-not-active');
+            if (action === 'previous' || action === 'next') {
+                if (action === 'previous') await playPreviousMusicTrack();
+                else await playNextMusicTrack();
+                control.fileId = getCurrentMusicTrack()?.id || control.fileId;
+            } else if (action === 'toggle-playback') {
+                const audio = ensureBackgroundAudio();
+                if (audio.paused || audio.ended) {
+                    await audio.play().catch(() => { throw new Error('playback-failed'); });
+                } else {
+                    audio.pause();
+                }
+            } else if (action === 'exit') {
+                closeMusicPlayer({ fromHistory:true, remoteControlCommand:true });
+                activeRemotePreviewControl = null;
             } else {
-                media.pause();
+                throw new Error(reason);
             }
-        } else if (action === 'exit') {
-            closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
-            activeRemotePreviewControl = null;
         } else {
-            throw new Error(reason);
+            if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) throw new Error('fullscreen-not-active');
+            if (action === 'previous' || action === 'next') {
+                const item = await findRemotePreviewAdjacentItem(action === 'previous' ? -1 : 1);
+                if (!item) throw new Error('no-adjacent-file');
+                mediaFullscreenItems = [item];
+                mediaFullscreenIndex = 0;
+                renderMediaFullscreenItem();
+                control.fileId = item.fileInfo.id;
+            } else if (action === 'toggle-playback') {
+                const media = document.getElementById('mediaFullscreenContent')?.querySelector('video, audio');
+                if (!media) throw new Error('playback-unavailable');
+                if (media.paused || media.ended) {
+                    await media.play().catch(() => { throw new Error('playback-failed'); });
+                } else {
+                    media.pause();
+                }
+            } else if (action === 'exit') {
+                closeMediaFullscreen({ fromHistory:true, forceClose:true, remoteControlCommand:true });
+                activeRemotePreviewControl = null;
+            } else {
+                throw new Error(reason);
+            }
         }
         ok = true;
         reason = '';
@@ -11194,7 +11339,7 @@ async function handleRemotePreviewControl(data) {
             action,
             ok,
             reason,
-            ...getRemotePreviewFullscreenState()
+            ...getRemotePreviewFullscreenState({ presentation })
         });
         historyLog('remote-preview-control-handled', { controlId:data?.controlId, controllerDeviceId:data?.from, action, ok, reason });
     }

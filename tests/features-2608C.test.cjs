@@ -405,6 +405,8 @@ test('clipboard image paste area uses a two-thirds split and converts only image
     assert.match(page, /\.paste-image-zone\s*\{[\s\S]*?aspect-ratio:\s*1/);
     assert.match(page, /点此粘贴图片/);
     assert.match(app, /initClipboardImagePaste\(\)/);
+    assert.match(app, /addEventListener\('clipboardchange', handleClipboardImageChange\)/);
+    assert.match(app, /CLIPBOARD_IMAGE_POLL_INTERVAL/);
     assert.match(app, /await sendSelectedFiles\(files\)/);
 
     class TestFile {
@@ -434,6 +436,58 @@ test('clipboard image paste area uses a two-thirds split and converts only image
         { kind:'string', type:'text/plain', getAsFile:() => null },
         { kind:'file', type:'image/png', getAsFile:() => ({ name:'截图.png', type:'image/png' }) }
     ] }).length, 1);
+
+    const clipboardBlock = readBlock(app, 'function renderClipboardImagePasteArea()', 'function initClipboardImagePaste()');
+    const zone = {
+        hidden:true,
+        disabled:false,
+        attributes:{},
+        setAttribute(name, value) { this.attributes[name] = value; }
+    };
+    const composer = { classList:{ toggle(_name, active) { composer.ready = active; } }, ready:false };
+    const sent = [];
+    const clipboardContext = vm.createContext({
+        crypto:require('node:crypto').webcrypto,
+        navigator:{},
+        window:{ isSecureContext:true },
+        document:{ getElementById:id => id === 'pasteImageZone' ? zone : composer },
+        requireTunnelPermission:() => true,
+        sendSelectedFiles:async filesToSend => { sent.push(...filesToSend); },
+        showAppToast() {},
+        historyLog() {},
+        alert() {}
+    });
+    vm.runInContext(`
+        let pendingClipboardImageFiles = [];
+        let clipboardImageAvailable = false;
+        let clipboardImageSignature = '';
+        let clipboardImageConsumedSignature = '';
+        let clipboardImagePermissionStatus = null;
+        let clipboardImageProbeRunning = false;
+        let clipboardImageSendInProgress = false;
+        let clipboardImageReadAllowed = false;
+        let clipboardImageChangeSequence = 0;
+        ${clipboardBlock}
+        this.handleChange = handleClipboardImageChange;
+        this.setPending = setPendingClipboardImageFiles;
+        this.sendPending = sendClipboardImagesToTunnel;
+        this.snapshot = () => ({ available:clipboardImageAvailable, pending:pendingClipboardImageFiles.length, consumed:clipboardImageConsumedSignature });
+    `, clipboardContext);
+    clipboardContext.handleChange({ types:['image/png'], changeId:'change-1' });
+    assert.equal(zone.hidden, false, 'clipboardchange must show the paste area without Ctrl+V');
+    assert.equal(composer.ready, true);
+    const imageBytes = Uint8Array.from([1, 2, 3, 4]);
+    clipboardContext.setPending([{
+        name:'截图.png', type:'image/png', size:imageBytes.byteLength, lastModified:1,
+        arrayBuffer:async () => imageBytes.buffer
+    }], { signature:'change:change-1' });
+    await clipboardContext.sendPending();
+    assert.equal(sent.length, 1);
+    assert.equal(zone.hidden, true, 'successful send must immediately hide the paste area');
+    assert.deepEqual(clipboardContext.snapshot().pending, 0);
+    assert.match(clipboardContext.snapshot().consumed, /^image:/);
+    clipboardContext.handleChange({ types:['image/png'], changeId:'change-2' });
+    assert.equal(zone.hidden, false, 'a later clipboard image change must show the paste area again');
 });
 
 test('remote preview target keeps the same fullscreen open and switches other files through the focused fast path', async () => {
@@ -441,20 +495,25 @@ test('remote preview target keeps the same fullscreen open and switches other fi
     const targetOpen = readBlock(app, 'async function handleRemotePreviewOpen(data)', 'function handleRemotePreviewOpenResult');
     const incomingRemotePreviewRequests = new Map();
     const emitted = [];
-    const calls = { close:0, history:0, preview:0, fullscreen:[] };
+    const calls = { close:0, history:0, preview:0, fullscreen:[], music:[] };
     const context = vm.createContext({
         incomingRemotePreviewRequests,
         mediaFullscreenItems:[{ fileInfo:{ id:'file-same' } }],
         mediaFullscreenIndex:0,
+        musicPlayer:{ overlay:null },
         document:{ getElementById:() => ({ classList:{ contains:() => true } }) },
         getFromStore:async (_store, fileId) => ({ id:fileId, name:`${fileId}.png`, type:'image/png', size:16, data:new Uint8Array([1]) }),
         materializeCachedFileRecord:async value => value,
         hasCompleteFileCache:() => true,
         isPreviewableFileType:() => true,
+        isAudioFileLike:() => false,
+        getCurrentMusicTrack:() => null,
         closeFilePreview:() => { calls.close += 1; },
+        closeMusicPlayer() {},
         replaceCurrentHistoryWithoutPreviewLayers:() => { calls.history += 1; },
         openFilePreviewForInfo:async () => { calls.preview += 1; return true; },
         openActivePreviewFullscreen:async options => { calls.fullscreen.push(options); return true; },
+        openMusicPlayerFromActivePreview:async options => { calls.music.push(options); return true; },
         getRemotePreviewFullscreenState:() => ({ fileId:'file-same', fileName:'同一张图.png', mediaType:'image/png', playing:false }),
         activeRemotePreviewControl:null,
         state:{ socket:{ emit:(event, payload) => emitted.push({ event, payload }) } },
@@ -480,6 +539,20 @@ test('remote preview target keeps the same fullscreen open and switches other fi
     assert.equal(calls.fullscreen.length, 1);
     assert.equal(calls.fullscreen[0].focusedOnly, true, 'remote switching must not scan the whole tunnel history');
     assert.equal(emitted.at(-1).payload.ok, true);
+
+    context.isAudioFileLike = () => true;
+    context.getRemotePreviewFullscreenState = options => options.presentation === 'music'
+        ? { fileId:'file-audio', fileName:'歌曲.flac', mediaType:'audio/flac', playing:true }
+        : { fileId:'', fileName:'', mediaType:'', playing:false };
+    incomingRemotePreviewRequests.set('request-audio', {
+        requestId:'request-audio', from:'device-controller', fileId:'file-audio', fileInfo:{ id:'file-audio', name:'歌曲.flac', type:'audio/flac', size:16 }
+    });
+    await context.testHandleRemotePreviewOpen({ requestId:'request-audio', from:'device-controller', fileId:'file-audio' });
+    assert.equal(calls.music.length, 1, 'remote audio must reuse the full-screen music player');
+    assert.equal(calls.music[0].pushHistory, false);
+    assert.equal(calls.fullscreen.length, 1, 'remote audio must not open the generic media fullscreen');
+    assert.equal(context.activeRemotePreviewControl.presentation, 'music');
+    assert.equal(emitted.at(-1).payload.mediaType, 'audio/flac');
 });
 
 test('remote preview target executes navigation, media playback and fullscreen exit controls', async () => {
@@ -523,6 +596,56 @@ test('remote preview target executes navigation, media playback and fullscreen e
     assert.equal(calls.close, 1);
     assert.equal(context.activeRemotePreviewControl, null);
     assert.equal(emitted.at(-1).payload.action, 'exit');
+});
+
+test('remote audio control delegates navigation, playback and exit to the music player', async () => {
+    const app = read('app.js');
+    const targetControl = readBlock(app, 'async function handleRemotePreviewControl(data)', 'function navigateMediaFullscreen(delta)');
+    const emitted = [];
+    const tracks = [
+        { id:'song-1', name:'第一首', type:'audio/flac', fileInfo:{ name:'第一首.flac', type:'audio/flac' } },
+        { id:'song-2', name:'第二首', type:'audio/flac', fileInfo:{ name:'第二首.flac', type:'audio/flac' } }
+    ];
+    let trackIndex = 0;
+    const audio = {
+        paused:true,
+        ended:false,
+        async play() { this.paused = false; },
+        pause() { this.paused = true; }
+    };
+    const musicPlayer = { overlay:{ classList:{ contains:name => name === 'active' } }, audio };
+    const calls = { close:0, next:0, previous:0 };
+    const context = vm.createContext({
+        activeRemotePreviewControl:{
+            controlId:'control-music', controllerDeviceId:'device-controller', fileId:'song-1', presentation:'music'
+        },
+        musicPlayer,
+        getCurrentMusicTrack:() => tracks[trackIndex],
+        playPreviousMusicTrack:async () => { calls.previous += 1;trackIndex = 0; },
+        playNextMusicTrack:async () => { calls.next += 1;trackIndex = 1; },
+        ensureBackgroundAudio:() => audio,
+        closeMusicPlayer:() => { calls.close += 1; },
+        getRemotePreviewFullscreenState:() => ({
+            fileId:tracks[trackIndex].id,
+            fileName:tracks[trackIndex].fileInfo.name,
+            mediaType:'audio/flac',
+            playing:!audio.paused
+        }),
+        document:{ getElementById:() => null },
+        state:{ socket:{ emit:(event, payload) => emitted.push({ event, payload }) } },
+        historyLog() {}
+    });
+    vm.runInContext(`${targetControl}\nthis.testHandleRemotePreviewControl = handleRemotePreviewControl;`, context);
+
+    await context.testHandleRemotePreviewControl({ controlId:'control-music', from:'device-controller', action:'next' });
+    assert.equal(calls.next, 1);
+    assert.equal(emitted.at(-1).payload.fileId, 'song-2');
+    await context.testHandleRemotePreviewControl({ controlId:'control-music', from:'device-controller', action:'toggle-playback' });
+    assert.equal(audio.paused, false);
+    assert.equal(emitted.at(-1).payload.playing, true);
+    await context.testHandleRemotePreviewControl({ controlId:'control-music', from:'device-controller', action:'exit' });
+    assert.equal(calls.close, 1);
+    assert.equal(context.activeRemotePreviewControl, null);
 });
 
 test('homepage exposes visible global voice-call entries above preview overlays', () => {
