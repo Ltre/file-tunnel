@@ -31,9 +31,20 @@
             iceServers: runtime.replaceDefaultIceServers === true ? configured : [...defaults, ...configured],
             iceTransportPolicy: 'all',
             bundlePolicy: 'max-bundle',
-            rtcpMuxPolicy: 'require'
+            rtcpMuxPolicy: 'require',
+            iceCandidatePoolSize: 10
         };
     }
+
+    const CONTACT_VOICE_AUDIO_CONSTRAINTS = Object.freeze({
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48000 },
+        sampleSize: { ideal: 16 },
+        latency: { ideal: 0.02 }
+    });
 
     class MediaController {
         constructor(deps) {
@@ -46,6 +57,8 @@
             this.intercom = null;
             this.cameraBroadcast = null;
             this.contactCall = null;
+            this.contactOffererKeys = new Set();
+            this.contactRecovery = new Map();
         }
 
         socket() { return this.deps.getSocket(); }
@@ -113,6 +126,24 @@
                 wrapped.name = error?.name || 'MediaCaptureError';
                 throw wrapped;
             }
+        }
+
+        async getContactVoiceMedia() {
+            const stream = await this.getMedia({ audio: CONTACT_VOICE_AUDIO_CONSTRAINTS, video: false });
+            const track = stream.getAudioTracks()[0];
+            if (track) {
+                try { track.contentHint = 'speech'; } catch (_) {}
+                const settings = track.getSettings?.() || {};
+                this.log('contact-audio-capture-ready', {
+                    sampleRate: Number(settings.sampleRate) || 0,
+                    channelCount: Number(settings.channelCount) || 0,
+                    echoCancellation: settings.echoCancellation,
+                    noiseSuppression: settings.noiseSuppression,
+                    autoGainControl: settings.autoGainControl,
+                    latency: Number(settings.latency) || 0
+                });
+            }
+            return stream;
         }
 
         async startCamera() {
@@ -249,7 +280,7 @@
             this.deps.onContactCallState({ state: 'preparing', callId, contact });
             let stream;
             try {
-                stream = await this.getMedia({ audio: true, video: false });
+                stream = await this.getContactVoiceMedia();
             } catch (error) {
                 this.contactCall = null;
                 this.deps.onContactCallState({ state: 'idle', reason: 'microphone-denied', callId, peerId: contact.deviceId });
@@ -289,7 +320,7 @@
             this.deps.onContactCallState({ state: 'preparing-accept', callId: call.callId, contact: this.contactCall.contact });
             let stream;
             try {
-                stream = await this.getMedia({ audio: true, video: false });
+                stream = await this.getContactVoiceMedia();
             } catch (error) {
                 this.contactCall = null;
                 this.rejectContactCall(call, 'microphone-denied');
@@ -354,16 +385,58 @@
             const key = this.key(kind, sessionKey, peerId);
             if (this.connections.has(key)) return;
             const pc = this.createConnection(kind, sessionKey, peerId, stream);
+            if (kind === 'contactVoice') this.contactOffererKeys.add(key);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-                this.sendMediaSignal({ to: peerId, kind, sessionKey, type: 'offer', sdp: offer });
+            await this.configureContactAudioSender(kind, pc);
+            this.sendMediaSignal({ to: peerId, kind, sessionKey, type: 'offer', sdp: pc.localDescription || offer });
+        }
+
+        preferSpeechCodec(kind, pc) {
+            if (kind !== 'contactVoice' || typeof RTCRtpReceiver === 'undefined' || !RTCRtpReceiver.getCapabilities) return;
+            const codecs = RTCRtpReceiver.getCapabilities('audio')?.codecs || [];
+            const preferred = [...codecs].sort((left, right) => {
+                const leftOpus = /audio\/opus/i.test(left.mimeType || '') ? 1 : 0;
+                const rightOpus = /audio\/opus/i.test(right.mimeType || '') ? 1 : 0;
+                return rightOpus - leftOpus;
+            });
+            if (!preferred.length) return;
+            for (const transceiver of pc.getTransceivers?.() || []) {
+                if (transceiver.receiver?.track?.kind !== 'audio' || !transceiver.setCodecPreferences) continue;
+                try { transceiver.setCodecPreferences(preferred); } catch (_) {}
+            }
+        }
+
+        async configureContactAudioSender(kind, pc) {
+            if (kind !== 'contactVoice') return;
+            for (const sender of pc.getSenders?.() || []) {
+                if (sender.track?.kind !== 'audio' || !sender.getParameters || !sender.setParameters) continue;
+                try {
+                    const parameters = sender.getParameters();
+                    if (!parameters.encodings?.length) continue;
+                    parameters.encodings.forEach(encoding => {
+                        encoding.maxBitrate = 64000;
+                        if ('priority' in encoding) encoding.priority = 'high';
+                        if ('networkPriority' in encoding) encoding.networkPriority = 'high';
+                    });
+                    await sender.setParameters(parameters);
+                } catch (error) {
+                    this.log('contact-audio-parameters-skipped', { error: error?.message || String(error) });
+                }
+            }
         }
 
         createConnection(kind, sessionKey, peerId, stream) {
             const key = this.key(kind, sessionKey, peerId);
             const pc = new RTCPeerConnection(getRtcConfig());
             this.connections.set(key, pc);
-            if (stream) stream.getTracks().forEach(track => pc.addTrack(track, stream));
+            if (stream) stream.getTracks().forEach(track => {
+                if (kind === 'contactVoice' && track.kind === 'audio') {
+                    try { track.contentHint = 'speech'; } catch (_) {}
+                }
+                pc.addTrack(track, stream);
+            });
+            this.preferSpeechCodec(kind, pc);
             pc.onicecandidate = event => {
                 if (event.candidate) this.sendMediaSignal({
                     to: peerId, kind, sessionKey, type: 'ice-candidate', candidate: event.candidate
@@ -389,9 +462,63 @@
                         warning: '媒体 WebRTC 连接失败；请检查 STUN/TURN、NAT、防火墙与浏览器网络策略。'
                     });
                 }
-                if (['failed', 'closed'].includes(pc.connectionState)) this.closeConnection(key, false);
+                if (pc.connectionState === 'closed') this.closeConnection(key, false);
+                else if (pc.connectionState === 'failed' && kind !== 'contactVoice') this.closeConnection(key, false);
+            };
+            pc.oniceconnectionstatechange = () => {
+                this.log('ice-state', { kind, sessionKey, peerId, state: pc.iceConnectionState });
+                if (kind !== 'contactVoice') return;
+                if (['connected', 'completed'].includes(pc.iceConnectionState)) {
+                    this.clearContactRecovery(key);
+                    this.configureContactAudioSender(kind, pc);
+                } else if (['disconnected', 'failed'].includes(pc.iceConnectionState)) {
+                    this.scheduleContactIceRecovery(key, pc, sessionKey, peerId, pc.iceConnectionState);
+                }
             };
             return pc;
+        }
+
+        clearContactRecovery(key) {
+            const recovery = this.contactRecovery.get(key);
+            if (recovery?.timer) clearTimeout(recovery.timer);
+            this.contactRecovery.delete(key);
+        }
+
+        scheduleContactIceRecovery(key, pc, sessionKey, peerId, state) {
+            if (!this.contactOffererKeys.has(key) || this.contactRecovery.get(key)?.timer) return;
+            const previous = this.contactRecovery.get(key) || { attempts: 0, timer: null };
+            const timer = setTimeout(async () => {
+                const current = this.contactRecovery.get(key) || previous;
+                current.timer = null;
+                if (!this.connections.has(key) || ['connected', 'completed', 'closed'].includes(pc.iceConnectionState)) {
+                    this.clearContactRecovery(key);
+                    return;
+                }
+                if (current.attempts >= 2) {
+                    this.externalLog('contact-call-ice-recovery-exhausted', {
+                        dependency: 'webrtc-ice-services', sessionKey, peerId,
+                        warning: '语音通话 ICE 恢复失败；跨蜂窝网络通常需要在 tunnel.config.json 配置可用 TURN。'
+                    });
+                    this.endContactCall('connection-failed');
+                    return;
+                }
+                current.attempts += 1;
+                this.contactRecovery.set(key, current);
+                try {
+                    pc.restartIce?.();
+                    const offer = await pc.createOffer({ iceRestart: true });
+                    await pc.setLocalDescription(offer);
+                    this.sendMediaSignal({
+                        to: peerId, kind: 'contactVoice', sessionKey, type: 'offer',
+                        sdp: pc.localDescription || offer
+                    });
+                    this.log('contact-ice-restart-sent', { sessionKey, peerId, attempt: current.attempts });
+                } catch (error) {
+                    this.log('contact-ice-restart-failed', { sessionKey, peerId, attempt: current.attempts, error: error?.message || String(error) });
+                }
+                this.scheduleContactIceRecovery(key, pc, sessionKey, peerId, pc.iceConnectionState);
+            }, state === 'failed' ? 300 : 2500);
+            this.contactRecovery.set(key, { ...previous, timer });
         }
 
         handleRemoteTrack(kind, sessionKey, peerId, stream) {
@@ -417,7 +544,8 @@
                 await this.flushCandidates(key, pc);
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
-                this.sendMediaSignal({ to: from, kind, sessionKey, type: 'answer', sdp: answer });
+                await this.configureContactAudioSender(kind, pc);
+                this.sendMediaSignal({ to: from, kind, sessionKey, type: 'answer', sdp: pc.localDescription || answer });
             } else if (type === 'answer') {
                 await pc.setRemoteDescription(new RTCSessionDescription(sdp));
                 await this.flushCandidates(key, pc);
@@ -453,6 +581,8 @@
             const pc = this.connections.get(key);
             this.connections.delete(key);
             this.pendingCandidates.delete(key);
+            this.contactOffererKeys.delete(key);
+            this.clearContactRecovery(key);
             if (close && pc && pc.signalingState !== 'closed') pc.close();
         }
     }

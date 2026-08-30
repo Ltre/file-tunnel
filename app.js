@@ -287,6 +287,15 @@ let clipboardImageMonitorTimer = null;
 let clipboardImageChangeSequence = 0;
 const CLIPBOARD_IMAGE_POLL_INTERVAL = 2000;
 let remoteAudioContext = null;
+const remoteAudioPipelines = new Map();
+const CALL_RINGTONE_STORAGE_KEY = 'drop2tunnel.callRingtone:v1';
+const CALL_RINGTONE_DB_NAME = 'Drop2TunnelCallSettings';
+const CALL_RINGTONE_STORE_NAME = 'audio';
+const CALL_RINGTONE_FILE_ID = 'ringtone';
+let contactCallToneGeneration = 0;
+let contactCallToneState = null;
+let callRingtoneDbPromise = null;
+let callRingtonePreviewing = false;
 let sharedFileImportInProgress = false;
 const completedFileProgress = new Set();
 const activeFileProgress = new Set();
@@ -3464,6 +3473,242 @@ function initRemoteAudioUnlock() {
     });
 }
 
+function getCallRingtoneChoice() {
+    const value = localStorage.getItem(CALL_RINGTONE_STORAGE_KEY) || 'classic';
+    return ['classic', 'gentle', 'digital', 'custom'].includes(value) ? value : 'classic';
+}
+
+function openCallRingtoneDatabase() {
+    if (!window.indexedDB) return Promise.reject(new Error('当前浏览器不支持保存自定义铃声'));
+    if (!callRingtoneDbPromise) {
+        callRingtoneDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(CALL_RINGTONE_DB_NAME, 1);
+            request.onupgradeneeded = () => {
+                if (!request.result.objectStoreNames.contains(CALL_RINGTONE_STORE_NAME)) {
+                    request.result.createObjectStore(CALL_RINGTONE_STORE_NAME, { keyPath: 'id' });
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('打开铃声存储失败'));
+        });
+    }
+    return callRingtoneDbPromise;
+}
+
+async function readCustomCallRingtone() {
+    const db = await openCallRingtoneDatabase();
+    return new Promise((resolve, reject) => {
+        const request = db.transaction(CALL_RINGTONE_STORE_NAME).objectStore(CALL_RINGTONE_STORE_NAME).get(CALL_RINGTONE_FILE_ID);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error('读取自定义铃声失败'));
+    });
+}
+
+async function saveCustomCallRingtone(file) {
+    if (!(file instanceof Blob) || !file.size || file.size > 20 * 1024 * 1024) throw new Error('请选择不超过 20MB 的音频文件');
+    if (file.type && !file.type.startsWith('audio/')) throw new Error('所选文件不是浏览器可识别的音频');
+    const db = await openCallRingtoneDatabase();
+    await new Promise((resolve, reject) => {
+        const transaction = db.transaction(CALL_RINGTONE_STORE_NAME, 'readwrite');
+        transaction.objectStore(CALL_RINGTONE_STORE_NAME).put({
+            id: CALL_RINGTONE_FILE_ID,
+            blob: file,
+            name: String(file.name || '本地音频').slice(0, 220),
+            type: file.type || 'application/octet-stream',
+            size: file.size,
+            updatedAt: Date.now()
+        });
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('保存自定义铃声失败'));
+        transaction.onabort = () => reject(transaction.error || new Error('保存自定义铃声失败'));
+    });
+}
+
+function stopContactCallTone() {
+    contactCallToneGeneration += 1;
+    const tone = contactCallToneState;
+    contactCallToneState = null;
+    callRingtonePreviewing = false;
+    if (!tone) return;
+    tone.timers?.forEach(timer => clearInterval(timer));
+    tone.timeouts?.forEach(timer => clearTimeout(timer));
+    tone.nodes?.forEach(node => { try { node.stop(); } catch (_) {} });
+    if (tone.audio) {
+        tone.audio.pause();
+        tone.audio.src = '';
+    }
+    if (tone.objectUrl) URL.revokeObjectURL(tone.objectUrl);
+    const previewButton = document.getElementById('previewCallRingtoneBtn');
+    if (previewButton) previewButton.textContent = '试听';
+}
+
+async function ensureCallAudioContext() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) throw new Error('当前浏览器不支持通话提示音');
+    if (!remoteAudioContext) remoteAudioContext = new AudioContextCtor();
+    if (remoteAudioContext.state === 'suspended') await remoteAudioContext.resume();
+    if (remoteAudioContext.state !== 'running') {
+        throw new Error('浏览器尚未授权播放通话音频');
+    }
+    return remoteAudioContext;
+}
+
+function scheduleCallToneChord(context, state, frequencies, offsetSeconds, durationSeconds, volume = 0.045) {
+    const startAt = context.currentTime + Math.max(0.015, offsetSeconds);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(volume, startAt + 0.025);
+    gain.gain.setValueAtTime(volume, startAt + Math.max(0.04, durationSeconds - 0.045));
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + durationSeconds);
+    gain.connect(context.destination);
+    for (const frequency of frequencies) {
+        const oscillator = context.createOscillator();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(frequency, startAt);
+        oscillator.connect(gain);
+        oscillator.start(startAt);
+        oscillator.stop(startAt + durationSeconds + 0.02);
+        state.nodes.push(oscillator);
+    }
+}
+
+async function startSynthesizedCallTone(kind, style = 'classic', preview = false) {
+    stopContactCallTone();
+    const generation = contactCallToneGeneration;
+    const context = await ensureCallAudioContext();
+    if (generation !== contactCallToneGeneration) return;
+    const state = { kind, style, preview, timers: [], timeouts: [], nodes: [], audio: null, objectUrl: '' };
+    contactCallToneState = state;
+    callRingtonePreviewing = preview;
+    const schedule = () => {
+        if (contactCallToneState !== state) return;
+        if (kind === 'ringback') {
+            scheduleCallToneChord(context, state, [440, 480], 0, 1.05, 0.032);
+        } else if (style === 'gentle') {
+            scheduleCallToneChord(context, state, [523.25], 0, .28, .04);
+            scheduleCallToneChord(context, state, [659.25], .34, .34, .035);
+        } else if (style === 'digital') {
+            [0, .18, .36].forEach((offset, index) => scheduleCallToneChord(context, state, [740 + index * 95], offset, .11, .038));
+        } else {
+            scheduleCallToneChord(context, state, [440, 480], 0, .72, .04);
+            scheduleCallToneChord(context, state, [440, 480], .94, .72, .04);
+        }
+    };
+    schedule();
+    const cycleMs = kind === 'ringback' ? 4000 : (style === 'gentle' ? 3000 : style === 'digital' ? 2400 : 3600);
+    state.timers.push(setInterval(schedule, cycleMs));
+    if (preview) {
+        const button = document.getElementById('previewCallRingtoneBtn');
+        if (button) button.textContent = '停止试听';
+        state.timeouts.push(setTimeout(() => { if (contactCallToneState === state) stopContactCallTone(); }, 7000));
+    }
+}
+
+async function startIncomingCallRingtone(preview = false) {
+    const choice = getCallRingtoneChoice();
+    if (choice !== 'custom') return startSynthesizedCallTone('ringtone', choice, preview);
+    stopContactCallTone();
+    const generation = contactCallToneGeneration;
+    const record = await readCustomCallRingtone().catch(() => null);
+    if (generation !== contactCallToneGeneration) return;
+    if (!record?.blob) return startSynthesizedCallTone('ringtone', 'classic', preview);
+    const objectUrl = URL.createObjectURL(record.blob);
+    const audio = new Audio(objectUrl);
+    audio.loop = true;
+    audio.volume = .9;
+    audio.playsInline = true;
+    const state = { kind: 'ringtone', style: 'custom', preview, timers: [], timeouts: [], nodes: [], audio, objectUrl };
+    contactCallToneState = state;
+    callRingtonePreviewing = preview;
+    try {
+        await audio.play();
+        if (preview) {
+            const button = document.getElementById('previewCallRingtoneBtn');
+            if (button) button.textContent = '停止试听';
+            state.timeouts.push(setTimeout(() => { if (contactCallToneState === state) stopContactCallTone(); }, 7000));
+        }
+    } catch (error) {
+        stopContactCallTone();
+        showRemoteAudioUnlockButton('浏览器阻止了来电铃声自动播放，请点按启用声音');
+        historyLog('contact-ringtone-play-blocked', { error: error.message });
+    }
+}
+
+function syncContactCallTone(call) {
+    const desired = call?.state === 'dialing' ? 'ringback' : call?.state === 'incoming' ? 'ringtone' : '';
+    if (!desired) return stopContactCallTone();
+    if (contactCallToneState?.kind === desired && !contactCallToneState.preview) return;
+    const start = desired === 'ringback'
+        ? startSynthesizedCallTone('ringback', 'classic', false)
+        : startIncomingCallRingtone(false);
+    start.catch(error => historyLog('contact-call-tone-failed', { desired, error: error.message }));
+}
+
+async function refreshCallRingtoneSettingsUi() {
+    const select = document.getElementById('callRingtoneSelect');
+    const status = document.getElementById('callRingtoneFileStatus');
+    if (!select || !status) return;
+    const choice = getCallRingtoneChoice();
+    select.value = choice;
+    if (choice !== 'custom') {
+        status.textContent = '当前使用内置铃声。';
+        return;
+    }
+    const record = await readCustomCallRingtone().catch(() => null);
+    status.textContent = record?.blob
+        ? `当前本地铃声：${record.name}（${formatFileSize(record.size)}）`
+        : '尚未选择本地音频；来电时将暂用经典双音铃。';
+}
+
+function initCallRingtoneSettings() {
+    const select = document.getElementById('callRingtoneSelect');
+    const chooseButton = document.getElementById('chooseCallRingtoneBtn');
+    const previewButton = document.getElementById('previewCallRingtoneBtn');
+    const fileInput = document.getElementById('callRingtoneFileInput');
+    if (!select || select.dataset.initialized === '1') return;
+    select.dataset.initialized = '1';
+    select.addEventListener('change', async () => {
+        localStorage.setItem(CALL_RINGTONE_STORAGE_KEY, select.value);
+        stopContactCallTone();
+        await refreshCallRingtoneSettingsUi();
+        if (select.value === 'custom' && !(await readCustomCallRingtone().catch(() => null))) fileInput?.click();
+    });
+    chooseButton?.addEventListener('click', () => fileInput?.click());
+    fileInput?.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+            await saveCustomCallRingtone(file);
+            localStorage.setItem(CALL_RINGTONE_STORAGE_KEY, 'custom');
+            select.value = 'custom';
+            await refreshCallRingtoneSettingsUi();
+            showAppToast('本地来电铃声已保存');
+        } catch (error) {
+            showAppToast(error.message);
+        } finally {
+            fileInput.value = '';
+        }
+    });
+    previewButton?.addEventListener('click', async () => {
+        if (previewButton.dataset.starting === '1') return;
+        if (callRingtonePreviewing) return stopContactCallTone();
+        previewButton.dataset.starting = '1';
+        previewButton.disabled = true;
+        previewButton.textContent = '准备试听…';
+        try {
+            await startIncomingCallRingtone(true);
+        } catch (error) {
+            stopContactCallTone();
+            showAppToast(error.message);
+        } finally {
+            previewButton.dataset.starting = '';
+            previewButton.disabled = false;
+            if (!callRingtonePreviewing) previewButton.textContent = '试听';
+        }
+    });
+    refreshCallRingtoneSettingsUi();
+}
+
 function playRemoteAudio(kind, sessionKey, peerId, stream) {
     const container = document.getElementById('remoteAudio');
     const id = `remote-audio-${kind}-${sessionKey}-${peerId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -3482,16 +3727,53 @@ function playRemoteAudio(kind, sessionKey, peerId, stream) {
     if (shouldShowPersistentAudioUnlock()) {
         showRemoteAudioUnlockButton('移动浏览器可能需要点按一次才能播放对讲声音');
     }
-    audio.play()
+    const prepareOutput = kind === 'contactVoice'
+        ? createContactVoiceOutputPipeline(id, stream).then(enhanced => { audio.muted = enhanced; return enhanced; })
+        : Promise.resolve(false);
+    prepareOutput.then(() => audio.play())
         .then(() => document.getElementById('remoteAudioUnlockBtn')?.remove())
         .catch(err => {
+            audio.muted = false;
+            audio.play().catch(() => {});
             historyLog('remote-audio-play-blocked', { kind, sessionKey, peerId, error: err.message });
             showRemoteAudioUnlockButton(err.message);
         });
 }
 
+async function createContactVoiceOutputPipeline(id, stream) {
+    try {
+        const context = await ensureCallAudioContext();
+        const previous = remoteAudioPipelines.get(id);
+        previous?.source?.disconnect();
+        previous?.compressor?.disconnect();
+        previous?.gain?.disconnect();
+        const source = context.createMediaStreamSource(stream);
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = -24;
+        compressor.knee.value = 18;
+        compressor.ratio.value = 4;
+        compressor.attack.value = .004;
+        compressor.release.value = .22;
+        const gain = context.createGain();
+        // Browser media elements already stop at volume=1. Web Audio provides a modest,
+        // compressor-protected speech boost for quiet phone microphones.
+        gain.gain.value = 1.35;
+        source.connect(compressor).connect(gain).connect(context.destination);
+        remoteAudioPipelines.set(id, { source, compressor, gain });
+        return true;
+    } catch (error) {
+        historyLog('contact-voice-output-enhancement-failed', { error: error.message });
+        return false;
+    }
+}
+
 function removeRemoteAudio(kind, sessionKey, peerId) {
     const id = `remote-audio-${kind}-${sessionKey}-${peerId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const pipeline = remoteAudioPipelines.get(id);
+    pipeline?.source?.disconnect();
+    pipeline?.compressor?.disconnect();
+    pipeline?.gain?.disconnect();
+    remoteAudioPipelines.delete(id);
     const audio = document.getElementById(id);
     if (audio) {
         audio.srcObject = null;
@@ -15078,6 +15360,7 @@ function updateContactCallOverlay(call) {
     const stateLabel = document.getElementById('contactCallState');
     const avatar = document.getElementById('contactCallAvatar');
     if (!overlay || !title || !subtitle) return;
+    syncContactCallTone(call);
     clearInterval(contactCallTimer);
     contactCallTimer = null;
 
@@ -15085,7 +15368,7 @@ function updateContactCallOverlay(call) {
         overlay.hidden = true;
         overlay.dataset.state = 'idle';
         if (call?.callId && call?.peerId) removeRemoteAudio('contactVoice', call.callId, call.peerId);
-        const reasonText = ({busy:'对方正在通话中',offline:'对方当前离线','no-answer':'对方暂未接听',rejected:'对方已拒接','microphone-denied':'麦克风不可用'}[call?.reason]);
+        const reasonText = ({busy:'对方正在通话中',offline:'对方当前离线','no-answer':'对方暂未接听',rejected:'对方已拒接','microphone-denied':'麦克风不可用','connection-failed':'语音链路中断；跨网络通话请检查 TURN 配置'}[call?.reason]);
         if (reasonText) showAppToast(reasonText);
         state.activeContactCall = null;
         setContactCallActions([]);
@@ -16528,6 +16811,7 @@ async function grantLanP2pPermission() {
 }
 
 function initTunnelSettings() {
+    initCallRingtoneSettings();
     const settingsToolGrid = document.getElementById('settingsToolGrid');
     const connectionTools = document.querySelector('.left-panel .session-tools');
     if (settingsToolGrid && connectionTools && connectionTools !== settingsToolGrid) {
@@ -16538,6 +16822,7 @@ function initTunnelSettings() {
     const open = () => {
         renderTunnelPermissionSettings();
         updateLanP2pPermissionUi();
+        refreshCallRingtoneSettingsUi();
         layer.hidden = false;
     };
     const close = () => { layer.hidden = true; };

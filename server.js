@@ -85,6 +85,10 @@ const {
     resolveYoutubePremiumMediaType,
     validateFormatSelection
 } = require('./server/youtube-premium');
+const {
+    createSnsDownloadService,
+    normalizeSnsDownloadUrl
+} = require('./server/sns-downloader');
 
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
@@ -100,6 +104,7 @@ const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending
 const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
 const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
 const YOUTUBE_PREMIUM_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'youtube-premium-metadata-cache.json');
+const SNS_DOWNLOAD_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'sns-download-metadata-cache.json');
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -138,6 +143,7 @@ let infraStore = null;
 let vclientControl = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 const youtubePremiumMetadataCache = loadYoutubePremiumMetadataCache();
+const snsDownloadMetadataCache = loadSnsDownloadMetadataCache();
 
 function logYoutubePremiumTaskEvent(event = {}) {
     const taskId = String(event.taskId || '-').slice(0, 8);
@@ -159,6 +165,27 @@ const youtubePremiumService = createYoutubePremiumService({
     onLog: logYoutubePremiumTaskEvent
 });
 const youtubePremiumCoverJobs = new Map();
+
+function logSnsDownloadTaskEvent(event = {}) {
+    const taskId = String(event.taskId || '-').slice(0, 8);
+    const platform = String(event.platform || 'sns').slice(0, 24);
+    const elapsedSeconds = (Math.max(0, Number(event.elapsedMs) || 0) / 1000).toFixed(1);
+    const message = `[SNS下载][${platform}][task:${taskId}][+${elapsedSeconds}s] ${String(event.message || '任务事件')}`;
+    const details = event.details && typeof event.details === 'object' ? event.details : {};
+    const writer = event.level === 'error' ? console.error : event.level === 'warn' ? console.warn : console.log;
+    if (Object.keys(details).length) writer.call(console, message, details);
+    else writer.call(console, message);
+}
+
+const snsDownloadService = createSnsDownloadService({
+    dataDir: SERVER_DATA_DIR,
+    analyze: analyzeSnsDownloadUrl,
+    download: downloadSnsDownloadTask,
+    sanitizeError: sanitizeSnsDownloadError,
+    concurrency: Number(process.env.SNS_DOWNLOAD_CONCURRENCY) || 1,
+    onLog: logSnsDownloadTaskEvent
+});
+const snsDownloadCoverJobs = new Map();
 
 // ==================== 安全配置 ====================
 
@@ -216,6 +243,14 @@ const youtubePremiumRateLimit = rateLimit({
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
     message: { error: 'youtube-premium-rate-limited' }
+});
+const snsDownloadRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
+    message: { error: 'sns-download-rate-limited' }
 });
 
 // 会话限制
@@ -321,6 +356,27 @@ function setYoutubePremiumMetadataCache(url, patch) {
         updatedAt: Date.now()
     });
     writeDataFileAtomic(YOUTUBE_PREMIUM_METADATA_CACHE_PATH, JSON.stringify(Object.fromEntries(youtubePremiumMetadataCache), null, 2));
+}
+
+function loadSnsDownloadMetadataCache() {
+    try {
+        const stored = JSON.parse(fs.readFileSync(SNS_DOWNLOAD_METADATA_CACHE_PATH, 'utf8'));
+        return new Map(Object.entries(stored && typeof stored === 'object' ? stored : {}));
+    } catch (_) {
+        return new Map();
+    }
+}
+
+function setSnsDownloadMetadataCache(url, analysis) {
+    let key;
+    try { key = normalizeSnsDownloadUrl(url).url; } catch (_) { return; }
+    snsDownloadMetadataCache.set(key, { analysis, updatedAt: Date.now() });
+    // Keep the durable parse cache bounded without changing the existing YouTube cache.
+    const oldest = [...snsDownloadMetadataCache.entries()]
+        .sort((left, right) => Number(right[1]?.updatedAt) - Number(left[1]?.updatedAt))
+        .slice(800);
+    oldest.forEach(([cacheKey]) => snsDownloadMetadataCache.delete(cacheKey));
+    writeDataFileAtomic(SNS_DOWNLOAD_METADATA_CACHE_PATH, JSON.stringify(Object.fromEntries(snsDownloadMetadataCache), null, 2));
 }
 
 function normalizeSnsCookiePlatform(platform) {
@@ -961,6 +1017,7 @@ app.use([
     '/pages/admin.html',
     '/pages/tgbot.html',
     '/pages/sns-cookies.html',
+    '/pages/sns-dl.html',
     '/pages/youtube-premium-dl.html',
     '/pages/vclient.html'
 ], adminAuth.requireAuth);
@@ -1015,6 +1072,11 @@ app.get(['/sns-cookies', '/sns-cookies.html'], (req, res) => {
 app.get('/youtube-premium-dl', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'youtube-premium-dl.html'));
+});
+
+app.get(['/sns-dl', '/sns-dl.html'], (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'sns-dl.html'));
 });
 
 app.get('/api/sns-cookies', adminAuth.requireAuth, (req, res) => {
@@ -1140,6 +1202,177 @@ app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
     } catch (err) {
         console.error('sns-cookies-save error:', err);
         res.status(500).json({ error: 'save-failed', message: err.message });
+    }
+});
+
+app.post('/api/sns-dl/formats', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.json(await analyzeSnsDownloadUrl(req.body?.url, {
+            includeFormats: true,
+            refresh: req.body?.refresh === true
+        }));
+    } catch (error) {
+        res.status(422).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.get('/api/sns-dl/tasks', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(snsDownloadService.list(req.query.page, req.query.pageSize));
+});
+
+app.get('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = snsDownloadService.get(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+    res.json(task);
+});
+
+app.patch('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = snsDownloadService.updateDetails(req.params.taskId, req.body);
+    if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+    res.json(task);
+});
+
+app.post('/api/sns-dl/tasks', adminAuth.requireAuth, snsDownloadRateLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.status(202).json(snsDownloadService.create(req.body));
+    } catch (error) {
+        res.status(422).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.post('/api/sns-dl/tasks/:taskId/cancel', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const task = snsDownloadService.cancel(req.params.taskId);
+    if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+    res.json(task);
+});
+
+app.post('/api/sns-dl/tasks/:taskId/clear', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const task = snsDownloadService.clear(req.params.taskId);
+        if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+        res.json(task);
+    } catch (error) {
+        res.status(409).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.post('/api/sns-dl/tasks/:taskId/retry', adminAuth.requireAuth, snsDownloadRateLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const task = snsDownloadService.retry(req.params.taskId);
+        if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+        res.status(202).json(task);
+    } catch (error) {
+        res.status(409).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.delete('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        if (!snsDownloadService.remove(req.params.taskId)) {
+            return res.status(404).json({ error: 'sns-download-task-not-found' });
+        }
+        res.json({ ok: true });
+    } catch (error) {
+        res.status(409).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.get('/api/sns-dl/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
+    const file = snsDownloadService.getFile(req.params.taskId);
+    if (!file) return res.status(404).json({ error: 'sns-download-file-not-found' });
+    const stat = fs.statSync(file.path);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('ETag', `"sns-${req.params.taskId}-${stat.size}-${Math.trunc(stat.mtimeMs)}"`);
+    if (req.query.inline === '1') {
+        res.type(file.name);
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+        return res.sendFile(file.path);
+    }
+    res.download(file.path, file.name);
+});
+
+app.get('/api/sns-dl/tasks/:taskId/info', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const file = snsDownloadService.getFile(req.params.taskId);
+    if (!file) return res.status(404).json({ error: 'sns-download-file-not-found' });
+    try {
+        const probe = await probeMediaFile(file.path);
+        const video = probe.streams?.find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
+        const audio = probe.streams?.find(stream => stream.codec_type === 'audio');
+        const [rateNumber, rateDivisor] = String(video?.avg_frame_rate || video?.r_frame_rate || '').split('/').map(Number);
+        res.json({
+            name: file.name,
+            size: fs.statSync(file.path).size,
+            mimeType: getMimeTypeFromFileName(file.name),
+            container: String(probe.format?.format_long_name || probe.format?.format_name || ''),
+            duration: Number(probe.format?.duration || video?.duration || audio?.duration) || 0,
+            bitRate: Number(probe.format?.bit_rate) || 0,
+            resolution: video?.width && video?.height ? `${video.width} × ${video.height}` : '',
+            frameRate: rateNumber ? rateNumber / (rateDivisor || 1) : 0,
+            videoCodec: String(video?.codec_long_name || video?.codec_name || ''),
+            audioCodec: String(audio?.codec_long_name || audio?.codec_name || ''),
+            audioBitRate: Number(audio?.bit_rate) || 0,
+            sampleRate: Number(audio?.sample_rate) || 0,
+            channels: Number(audio?.channels) || 0
+        });
+    } catch (error) {
+        res.status(422).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.post('/api/sns-dl/tasks/:taskId/thumbnail', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    let thumbnail;
+    try {
+        thumbnail = await downloadSnsDownloadOriginalThumbnail(req.params.taskId);
+        res.download(thumbnail.path, thumbnail.name, error => {
+            thumbnail.cleanup();
+            if (error && !res.headersSent) res.status(500).json({ error: sanitizeSnsDownloadError(error) });
+        });
+    } catch (error) {
+        thumbnail?.cleanup();
+        res.status(error.message === 'sns-download-task-not-found' ? 404 : 422)
+            .json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.post('/api/sns-dl/tasks/:taskId/forward', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    let upload;
+    try {
+        const task = snsDownloadService.get(req.params.taskId);
+        if (!task) throw new Error('sns-download-file-not-found');
+        const sessionId = req.query?.sessionId;
+        if (!isValidSessionId(sessionId) || !infraStore?.getTunnel(sessionId)) {
+            throw new Error('sns-download-target-tunnel-not-found');
+        }
+        upload = await receiveSnsDownloadForwardUpload(req, task);
+        res.status(201).json(await forwardSnsDownloadTaskToTunnel(req.params.taskId, sessionId, upload));
+    } catch (error) {
+        if (upload?.path) fs.rmSync(upload.path, { force: true });
+        res.status(422).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.get('/api/sns-dl/tasks/:taskId/cover', adminAuth.requireAuth, async (req, res) => {
+    try {
+        const file = snsDownloadService.getFile(req.params.taskId, 'cover') ||
+            await ensureSnsDownloadTaskCover(req.params.taskId);
+        if (!file) return res.status(404).end();
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.sendFile(file.path);
+    } catch (_) {
+        res.status(404).end();
     }
 });
 
@@ -5754,6 +5987,359 @@ async function downloadAndProcessYoutubeSong(item, taskRecord, onProgress, onSta
         },
         probe: finalSummary
     };
+}
+
+// ==================== 独立 SNS 下载器（不复用 YouTube Premium 任务/解析逻辑） ====================
+
+function normalizeSnsDownloadReferenceInfo(meta = {}, url = '', platform = '') {
+    const reference = {};
+    const setText = (key, value, maxLength = 2000) => {
+        const text = String(value ?? '').trim();
+        if (text) reference[key] = text.slice(0, maxLength);
+    };
+    const setNumber = (key, value) => {
+        const number = Number(value);
+        if (Number.isFinite(number) && number >= 0) reference[key] = number;
+    };
+    const setList = (key, value, limit = 100) => {
+        const list = (Array.isArray(value) ? value : [])
+            .map(item => String(item || '').trim()).filter(Boolean).slice(0, limit);
+        if (list.length) reference[key] = list;
+    };
+    setText('platform', platform, 40);
+    setText('sourceUrl', url, 2048);
+    setText('extractor', meta.extractor_key || meta.extractor, 120);
+    setText('id', meta.id, 160);
+    setText('webpageUrl', meta.webpage_url || meta.original_url, 2048);
+    setText('title', meta.title || meta.fulltitle, 500);
+    setText('description', meta.description || meta.caption, 12000);
+    setText('uploader', meta.uploader || meta.channel || meta.creator, 500);
+    setText('uploaderId', meta.uploader_id || meta.channel_id, 240);
+    setText('uploaderUrl', meta.uploader_url || meta.channel_url, 2048);
+    setText('uploadDate', meta.upload_date, 40);
+    setText('releaseDate', meta.release_date, 40);
+    setText('availability', meta.availability, 80);
+    setText('liveStatus', meta.live_status, 80);
+    setText('language', meta.language, 80);
+    setText('location', meta.location, 500);
+    setNumber('duration', meta.duration);
+    setNumber('timestamp', meta.timestamp);
+    setNumber('viewCount', meta.view_count);
+    setNumber('likeCount', meta.like_count);
+    setNumber('repostCount', meta.repost_count);
+    setNumber('commentCount', meta.comment_count);
+    setNumber('followerCount', meta.channel_follower_count || meta.uploader_follower_count);
+    setNumber('ageLimit', meta.age_limit);
+    setList('categories', meta.categories, 40);
+    setList('tags', meta.tags, 100);
+    if (Array.isArray(meta.entries)) reference.entryCount = meta.entries.length;
+    return reference;
+}
+
+function getSnsSuggestedFormatIds(formats = []) {
+    const score = format =>
+        (Number(format.height) || 0) * 1e9 + (Number(format.totalBitrate) || 0) * 1e4 + (Number(format.fileSize) || 0);
+    const best = items => [...items].sort((left, right) => score(right) - score(left))[0];
+    const combined = best(formats.filter(format => format.kind === 'video_audio'));
+    if (combined) return [combined.id];
+    const video = best(formats.filter(format => format.kind === 'video'));
+    const audio = best(formats.filter(format => format.kind === 'audio'));
+    if (video && audio) return [video.id, audio.id];
+    return [video?.id || audio?.id].filter(Boolean);
+}
+
+function buildSnsDefaultSelection(formats = [], mediaType = 'video') {
+    const ids = getSnsSuggestedFormatIds(formats);
+    const selected = ids.map(id => formats.find(format => format.id === id)).filter(Boolean);
+    const video = selected.find(format => ['video', 'video_audio'].includes(format.kind));
+    const audio = selected.find(format => ['audio', 'video_audio'].includes(format.kind));
+    return {
+        ids,
+        formats: selected,
+        formatSelector: ids.length ? 'bv*+ba/best' : '',
+        outputContainer: mediaType === 'audio' && selected.length === 1
+            ? (selected[0].ext || 'm4a')
+            : 'mp4',
+        summary: ids.length ? {
+            finalFormat: '自动选择最佳可用媒体',
+            video: video ? [video.height ? `${video.height}p` : video.resolution, video.videoCodec].filter(Boolean).join(' / ') : '',
+            audio: audio ? [audio.audioCodec, audio.audioBitrate ? `${Math.round(audio.audioBitrate)}kbps` : ''].filter(Boolean).join(' / ') : '',
+            output: mediaType === 'audio' ? String(selected[0]?.ext || 'm4a').toUpperCase() : 'MP4'
+        } : null
+    };
+}
+
+async function analyzeSnsDownloadUrl(rawUrl, options = {}) {
+    const normalized = normalizeSnsDownloadUrl(rawUrl);
+    const report = (message, details = {}, level = 'info') => options.onDetail?.({ message, details, level });
+    let base = options.refresh === true ? null : snsDownloadMetadataCache.get(normalized.url)?.analysis;
+    const cacheHit = Boolean(base);
+    if (base) {
+        report('命中 SNS 解析缓存', {
+            sourceUrl: normalized.url,
+            platform: normalized.platform,
+            cachedFormatCount: Array.isArray(base.formats) ? base.formats.length : 0
+        });
+    } else {
+        report('开始使用普通 SNS Cookie 获取页面信息', {
+            sourceUrl: normalized.url,
+            platform: normalized.platform,
+            cookieFile: path.basename(getSnsCookieFileForUrl(normalized.url) || '') || '未配置（公开页面模式）'
+        });
+        const meta = await runYtDlpJson(normalized.url, {
+            noPlaylist: true,
+            ignoreNoFormats: true,
+            allowIgnoreNoFormatsFallback: false,
+            signal: options.signal,
+            operation: `sns-download-${normalized.platform}-metadata`
+        });
+        const formats = normalizeYtDlpFormats(meta.formats);
+        const hasVideo = formats.some(format => ['video', 'video_audio'].includes(format.kind));
+        const hasAudio = formats.some(format => ['audio', 'video_audio'].includes(format.kind));
+        const mediaType = hasVideo ? 'video' : (hasAudio ? 'audio' : 'unsupported');
+        base = {
+            url: normalized.url,
+            platform: normalized.platform,
+            title: String(meta.title || meta.fulltitle || '').trim().slice(0, 500),
+            cover: String(meta.thumbnail || meta.thumbnails?.at(-1)?.url || '').trim().slice(0, 2048),
+            duration: Number(meta.duration) || 0,
+            mediaType,
+            downloadable: mediaType !== 'unsupported',
+            formats,
+            referenceInfo: normalizeSnsDownloadReferenceInfo(meta, normalized.url, normalized.platform)
+        };
+        setSnsDownloadMetadataCache(normalized.url, base);
+        report('SNS 页面信息已解析并写入独立缓存', {
+            platform: normalized.platform,
+            title: base.title,
+            extractor: base.referenceInfo.extractor || '',
+            mediaType,
+            formatCount: formats.length,
+            fields: Object.keys(base.referenceInfo)
+        });
+    }
+
+    const requestedIds = Array.isArray(options.selectedFormatIds)
+        ? options.selectedFormatIds.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    let selection;
+    if (requestedIds.length) {
+        selection = validateFormatSelection(base.formats || [], requestedIds, base.mediaType, false);
+        const selectedHasVideo = selection.formats.some(format => ['video', 'video_audio'].includes(format.kind));
+        const selectedHasAudio = selection.formats.some(format => ['audio', 'video_audio'].includes(format.kind));
+        base = { ...base, mediaType: selectedHasVideo ? 'video' : (selectedHasAudio ? 'audio' : base.mediaType) };
+    } else {
+        selection = buildSnsDefaultSelection(base.formats || [], base.mediaType);
+    }
+    return { ...base, selection, cacheHit };
+}
+
+function moveSnsDownloadOutput(sourcePath, targetPath) {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    try {
+        fs.renameSync(sourcePath, targetPath);
+    } catch (_) {
+        fs.copyFileSync(sourcePath, targetPath);
+        try { fs.unlinkSync(sourcePath); } catch (_) {}
+    }
+    return targetPath;
+}
+
+async function downloadSnsDownloadTask({ task, analysis, taskDir, signal, onProgress, onStage, onDetail }) {
+    const workId = `sns-download-${task.id}`;
+    const customSelector = task.mode === 'custom' ? analysis.selection.formatSelector : '';
+    const selector = customSelector || analysis.selection.formatSelector || 'bv*+ba/best';
+    const selectedFormats = task.mode === 'custom' ? analysis.selection.formats : [];
+    const expectedType = selectedFormats.length === 1 && selectedFormats[0].kind === 'audio' ? 'audio' : analysis.mediaType;
+    onStage('downloading');
+    onDetail?.({
+        message: '进入独立 SNS 成品处理器',
+        details: {
+            platform: analysis.platform,
+            formatSelector: selector,
+            outputContainer: analysis.selection.outputContainer || 'mp4',
+            ordinaryCookieFile: path.basename(getSnsCookieFileForUrl(analysis.url) || '') || '无'
+        }
+    });
+    const downloadedPath = await runYtDlpDownload(analysis.url, workId, onProgress, 0, {
+        formatSelector: selector,
+        mergeOutputFormat: analysis.selection.outputContainer || 'mp4',
+        downloadSections: task.downloadSections || '',
+        maxFileSize: null,
+        signal,
+        onStage,
+        onDetail
+    });
+    const probe = await probeMediaFile(downloadedPath, { signal });
+    const requiredStream = expectedType === 'audio' ? 'audio' : 'video';
+    if (!probe.streams?.some(stream => stream.codec_type === requiredStream)) {
+        throw new Error(requiredStream === 'audio' ? 'sns-download-audio-stream-missing' : 'sns-download-video-stream-missing');
+    }
+    const extension = path.extname(downloadedPath) || `.${analysis.selection.outputContainer || 'mp4'}`;
+    const outputFileName = `${sanitizeMediaFilePart(analysis.title, `${analysis.platform || 'sns'}-media`)}${extension}`;
+    const outputPath = moveSnsDownloadOutput(downloadedPath, path.join(taskDir, outputFileName));
+    onDetail?.({
+        message: 'SNS 成品校验与归档完成',
+        details: {
+            outputFileName,
+            outputFileSize: fs.statSync(outputPath).size,
+            streams: (probe.streams || []).map(stream => ({ type: stream.codec_type || '', codec: stream.codec_name || '' }))
+        }
+    });
+    return {
+        outputPath,
+        outputFileName,
+        outputFileSize: fs.statSync(outputPath).size,
+        title: analysis.title
+    };
+}
+
+async function downloadSnsDownloadOriginalThumbnail(taskId) {
+    const task = snsDownloadService.get(taskId);
+    if (!task) throw new Error('sns-download-task-not-found');
+    const workDir = path.join(SNS_MEDIA_WORK_DIR, `sns-download-thumbnail-${task.id}-${crypto.randomBytes(6).toString('hex')}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) {} };
+    try {
+        await spawnYtDlpCapture([
+            '--no-playlist', '--skip-download', '--write-thumbnail', '--cache-dir', YT_DLP_CACHE_DIR,
+            '-o', path.join(workDir, 'thumbnail.%(ext)s'),
+            ...getYtDlpCookieArgs(task.url),
+            task.url
+        ], {
+            sourceUrl: task.url,
+            operation: `sns-download-${task.platform || 'sns'}-thumbnail`,
+            timeoutMs: Number(process.env.SNS_DOWNLOAD_THUMBNAIL_TIMEOUT_MS || 5 * 60 * 1000),
+            timeoutError: 'sns-download-thumbnail-timeout'
+        });
+        const fileName = fs.readdirSync(workDir).find(name => !name.endsWith('.part') && !name.endsWith('.ytdl'));
+        if (!fileName) throw new Error('sns-download-thumbnail-missing');
+        return {
+            path: path.join(workDir, fileName),
+            name: `${sanitizeMediaFilePart(task.title, task.platform || 'sns')} - 原尺寸封面${path.extname(fileName)}`,
+            cleanup
+        };
+    } catch (error) {
+        cleanup();
+        throw error;
+    }
+}
+
+function ensureSnsDownloadTaskCover(taskId) {
+    const existing = snsDownloadService.getFile(taskId, 'cover');
+    if (existing) return Promise.resolve(existing);
+    if (snsDownloadCoverJobs.has(taskId)) return snsDownloadCoverJobs.get(taskId);
+    const job = (async () => {
+        const thumbnail = await downloadSnsDownloadOriginalThumbnail(taskId);
+        try {
+            const taskDir = snsDownloadService.getTaskDirectory(taskId);
+            if (!taskDir) throw new Error('sns-download-task-not-found');
+            const coverPath = path.join(taskDir, `cover${path.extname(thumbnail.path) || '.jpg'}`);
+            fs.copyFileSync(thumbnail.path, coverPath);
+            snsDownloadService.setCoverPath(taskId, coverPath);
+            return snsDownloadService.getFile(taskId, 'cover');
+        } finally {
+            thumbnail.cleanup();
+        }
+    })().finally(() => snsDownloadCoverJobs.delete(taskId));
+    snsDownloadCoverJobs.set(taskId, job);
+    return job;
+}
+
+function sanitizeSnsDownloadError(error) {
+    let message = String(error?.message || 'sns-download-failed');
+    for (const fileName of Object.values(SNS_COOKIE_FILES)) {
+        message = message.replaceAll(path.join(SERVER_DATA_DIR, fileName), '[sns-cookie]');
+    }
+    message = message.replaceAll(SERVER_DATA_DIR, '[server-data]').replace(/--cookies\s+\S+/gi, '--cookies [sns-cookie]').trim();
+    const labels = {
+        'sns-download-url-required': '请输入有效的 TikTok、Facebook、Instagram、Threads、LINE、Twitter 或 X 链接',
+        'sns-download-media-unavailable': '页面信息可以读取，但没有发现可下载的音频或视频格式',
+        'sns-download-task-not-found': 'SNS 下载任务不存在',
+        'sns-download-file-not-found': 'SNS 下载成品不存在或已清理',
+        'sns-download-task-active': '任务仍在运行，请先取消并等待任务停止',
+        'sns-download-thumbnail-missing': '来源页面没有返回可下载的封面',
+        'sns-download-thumbnail-timeout': '获取原尺寸封面超时，请稍后重试',
+        'sns-download-audio-stream-missing': '下载结果中没有音频轨',
+        'sns-download-video-stream-missing': '下载结果中没有视频轨',
+        'sns-download-target-tunnel-not-found': '目标隧道不存在或已退出',
+        'sns-download-forward-upload-required': '请先把成品缓存到浏览器，再从浏览器缓存转发',
+        'sns-download-forward-size-mismatch': '浏览器缓存大小与 SNS 成品不一致，请重新缓存',
+        'sns-download-forward-cache-stale': '浏览器缓存版本已经过期，请重新缓存',
+        'custom-format-required': '自定义模式至少选择一个媒体格式',
+        'custom-format-count-invalid': '只能选择一个媒体格式，或一个视频格式加一个音频格式',
+        'custom-format-not-found': '所选媒体格式已失效，请重新解析',
+        'custom-single-format-invalid': '单选编号必须包含音频或视频轨',
+        'custom-video-format-conflict': '请选择一个纯视频格式和一个纯音频格式',
+        'download-cancelled': '任务已取消'
+    };
+    return labels[message] || message.slice(0, 500);
+}
+
+async function receiveSnsDownloadForwardUpload(req, task) {
+    const expected = Number(task.outputFileSize) || 0;
+    const declared = Number(req.get('X-Drop2Tunnel-File-Size')) || 0;
+    const expectedVersion = `${Number(task.completedAt) || 0}-${expected}`;
+    if (!req.is('application/octet-stream')) throw new Error('sns-download-forward-upload-required');
+    if (!expected || declared !== expected) throw new Error('sns-download-forward-size-mismatch');
+    if (req.get('X-Drop2Tunnel-Cache-Version') !== expectedVersion) throw new Error('sns-download-forward-cache-stale');
+    fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
+    const uploadPath = path.join(TELEGRAM_ASSET_DIR, `.sns-download-upload-${crypto.randomUUID()}`);
+    let received = 0;
+    try {
+        await pipeline(req, async function* validateUpload(source) {
+            for await (const chunk of source) {
+                received += chunk.length;
+                if (received > expected) throw new Error('sns-download-forward-size-mismatch');
+                yield chunk;
+            }
+        }, fs.createWriteStream(uploadPath, { flags: 'wx' }));
+        if (received !== expected) throw new Error('sns-download-forward-size-mismatch');
+        return { path: uploadPath, size: received };
+    } catch (error) {
+        fs.rmSync(uploadPath, { force: true });
+        throw error;
+    }
+}
+
+async function forwardSnsDownloadTaskToTunnel(taskId, sessionId, upload) {
+    const task = snsDownloadService.get(taskId);
+    const tunnel = isValidSessionId(sessionId) ? infraStore?.getTunnel(sessionId) : null;
+    if (!task || !upload?.path || Number(upload.size) !== Number(task.outputFileSize)) throw new Error('sns-download-file-not-found');
+    if (!tunnel) throw new Error('sns-download-target-tunnel-not-found');
+    const assetId = createServerAssetId();
+    const assetPath = path.join(TELEGRAM_ASSET_DIR, assetId);
+    try { await fs.promises.rename(upload.path, assetPath); } catch (error) {
+        fs.rmSync(upload.path, { force: true });
+        fs.rmSync(assetPath, { force: true });
+        throw error;
+    }
+    const asset = {
+        id: assetId, path: assetPath,
+        name: sanitizeString(task.outputFileName || 'sns-media', 180),
+        type: getMimeTypeFromFileName(task.outputFileName), size: upload.size,
+        sessionId, createdAt: Date.now(), source: 'sns-download'
+    };
+    persistTelegramServerAsset(asset);
+    const shortCode = normalizeShortCode(tunnel.short_code || findShortCodeForSession(sessionId));
+    const session = getOrCreateTelegramSession(sessionId, shortCode);
+    const remark = String(task.remark || task.url || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    const senderName = `SNS 下载 · ${task.platform || 'SNS'}`;
+    const message = {
+        id: crypto.randomUUID(), type: 'file',
+        fileInfo: {
+            id: asset.id, name: asset.name, size: asset.size, type: asset.type, timestamp: Date.now(),
+            sender: TELEGRAM_BOT_DEVICE_ID, senderName, ownerDeviceId: TELEGRAM_BOT_DEVICE_ID,
+            isAsset: false, isServerAsset: true, serverAssetUrl: `/api/server-assets/${asset.id}`,
+            sourceChannel: 'sns-download', remark
+        },
+        timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName, sessionId, remark
+    };
+    addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'sns-download' });
+    session.lastActivity = Date.now();
+    emitToReadableSessionDevices(session, 'message', { message });
+    scheduleSessionHistoryBroadcast(sessionId, 'sns-download-forward', 300);
+    return { ok: true, messageId: message.id, sessionId, shortCode };
 }
 
 function requireYoutubePremiumCookies() {

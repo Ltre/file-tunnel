@@ -1061,3 +1061,90 @@ Description：
 - 按音乐或通用媒体展示类型清理远程控制会话，避免浮层和控制状态残留
 - 增加剪贴板状态转换、远程音乐分流及控制命令回归测试
 ```
+
+---
+
+## 十六、独立 SNS 下载中心与设备语音通话增强（2026-08-28）
+
+### 16.1 需求边界与技术判断
+
+本轮首先逐项梳理了现有 YouTube Premium 下载页的任务队列、格式选择、解析信息缓存、成品缓存、标签备注、预览、封面与隧道转发流程。SNS 页需要复用这些已经验证过的交互模式，但不能把 TikTok、Facebook、Instagram、Twitter/X、Threads、LINE 的分支塞进 YouTube Premium 的抓取状态机，更不能改变其私人 Cookie、音乐元数据和专辑补全逻辑。
+
+因此采用“共享底层工具、隔离业务状态”的设计：SNS 使用独立服务模块、独立 API 前缀、独立任务文件、独立下载目录、独立解析缓存和独立浏览器成品缓存；只复用通用的 `yt-dlp`/`ffprobe` 执行器及现有普通 SNS Cookie 选择器。`server/youtube-premium.js` 与 `pages/youtube-premium-dl.html` 本轮保持零改动，并用原 17 项 YouTube Premium 测试验证没有回归。
+
+SNS 元信息遵循“上游实际给什么就展示什么”：保留标题、说明、上传者、时间、时长、计数、标签、分类、语言、位置和可用格式等通用字段，不为不同站点强行补造 YouTube 专属字段。解析结果以规范化 URL 为键持久化，带有效期并限制最多 800 项；命中时直接恢复，未命中才调用上游解析。任务和浏览器缓存均使用 SNS 专属命名空间，避免与 YouTube Premium 成品串用。
+
+标签预设没有沿用 YouTube Premium 内容。代码中仅保留空的 `SNS_PREDEFINED_TAGS` 配置数组和自定义标签入口，管理员后续可以直接填写自己的预选项。
+
+语音质量问题不是单一音量值造成的。原实现只请求 `audio: true`，浏览器是否启用回声消除、降噪、自动增益和适合语音的采样参数完全取决于默认策略；输出端把元素音量设为 1 也不能把偏小的输入继续放大；移动网络还会遇到对称 NAT 或 UDP 受限，仅靠 STUN 无法保证媒体路径建立。改造据此分为采集、编码、播放和网络恢复四层：
+
+- 联系人语音单独请求回声消除、降噪、自动增益、单声道、48kHz 和低延迟，不改变文件/屏幕等其他媒体链路；
+- 优先协商 Opus，并在浏览器允许时把语音发送上限设为 64kbps、优先级设为 high；
+- 接收端使用 Web Audio 压缩器和 1.35 倍增益放大安静语音；AudioContext 未真正进入 running 时不静音原生 audio，自动退回浏览器原播放路径，避免“增强失败反而无声”；
+- ICE 失败后只由原 offer 发起方执行有限次数 ICE restart，避免双方同时重协商产生 glare；仍失败时明确结束并提示检查 TURN。
+
+上述采集约束对应 [Media Capture and Streams](https://www.w3.org/TR/mediacapture-streams/) 定义的 `echoCancellation`、`noiseSuppression`、`autoGainControl` 等音频约束；ICE 重启和发送参数能力参考 [WebRTC 规范](https://www.w3.org/TR/webrtc/)。当前仓库配置未提供 TURN，因此同 Wi-Fi 和一般公网条件可由这些改造改善，但跨运营商蜂窝网络不能承诺仅靠代码彻底解决；正式环境仍应在 `rtc.turnServers` 配置可用的 TURN 服务。
+
+### 16.2 修改记录
+
+- `server/sns-downloader.js`：新增与 YouTube Premium 分离的 SNS 任务服务，负责平台校验、持久化、排队、取消、重试、删除、进度与下载文件生命周期；明确拒绝 YouTube/YouTube Music URL；
+- `server.js`：接入 `/api/sns-dl/*` 独立接口、SNS 解析缓存、普通 `/sns-cookies` Cookie、格式查询、封面和隧道转发；保留原 YouTube Premium 路由和调用关系；
+- `client/sns-download-cache.js`：增加 SNS 专用 IndexedDB 成品缓存，供下载、预览和隧道转发复用；
+- `pages/sns-dl.html`：新增 `/sns-dl` 页面，支持自定义/默认格式、单条或合辑区间、持久任务进度、解析详情、预览、文件信息、标签备注、原缩略图、缓存管理、失败重试/删除与隧道转发；
+- `pages/admin.html`：增加 SNS 媒体下载入口；
+- `app.js`、`pages/index.html`：联系人拨号阶段播放等待音，被叫端播放来电铃声；设置页提供经典、轻柔、数字三个内置铃声，以及仅保存在本机浏览器中的自定义音频，支持试听；
+- `client/media.js`、`app.js`：增加语音采集约束、Opus 优先、发送参数、接收增益、连接诊断和 ICE 恢复；
+- `tests/sns-download.test.cjs`、`package.json`：增加 SNS 隔离、持久任务、普通 Cookie/独立缓存、空标签预设和通话增强回归入口。
+
+### 16.3 验证记录
+
+自动化验证全部通过：
+
+```text
+npm run test:sns-download
+# 4/4 通过
+
+npm run test:youtube-premium
+# 17/17 通过，确认原 YouTube Premium 抓取链路未受影响
+
+node --test tests/features-2608C.test.cjs
+# 14/14 通过
+
+npm run test:p2p:unit
+# 38/38 通过
+
+node --check server.js
+node --check app.js
+node --check client/media.js
+node --check client/sns-download-cache.js
+node --check server/sns-downloader.js
+git diff --check
+# 全部通过
+```
+
+真实浏览器验证使用端口 18083 的隔离临时服务和全新数据目录，不读取或写入用户现有任务：
+
+- `/sns-dl` 可正常打开，页面无控制台错误；提交 YouTube URL 会在建立任务前被明确拒绝，证明 SNS 入口不会误入 YouTube 抓取；
+- `/admin` 的“SNS 媒体下载”入口正确指向 `/sns-dl`；
+- 前台设置页能看到三个内置铃声和本地文件选项，数字铃声可开始/停止试听，快速连续点击不会建立重复播放器；
+- 390×844 窄屏下 document/body 宽度均为 390px，没有横向溢出。
+
+隔离浏览器标签、临时服务进程和 `.codex-sns-e2e` 目录已清理。所有本轮文件保持未暂存、未提交。
+
+### 16.4 本轮建议提交日志
+
+Title：
+
+```text
+feat: 新增独立 SNS 下载中心并增强设备语音通话
+```
+
+Description：
+
+```text
+- 新增 /sns-dl 独立任务队列、普通 SNS Cookie 解析、持久化信息缓存与浏览器成品缓存
+- 支持 TikTok、Facebook、Instagram、Twitter/X、Threads、LINE 的格式选择、进度、预览、标签备注和隧道转发
+- 保持 YouTube Premium 抓取、私人凭据、任务文件和下载目录不变，并补充隔离回归测试
+- 为设备通话加入拨号等待音、内置及本地来电铃声配置
+- 启用语音采集处理、Opus 优先、输出增益和 ICE 断线恢复，并记录蜂窝网络所需 TURN 边界
+```

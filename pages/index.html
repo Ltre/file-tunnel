@@ -4114,6 +4114,9 @@
         .tunnel-admin-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
         .language-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .language-settings-row label { color: #273451; font-weight: 700; }
+        .call-ringtone-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; gap: 9px; align-items: center; }
+        .call-ringtone-row select { width: 100%; min-height: 38px; border: 1px solid #dfe5f1; border-radius: 8px; background: #fff; color: #273451; padding: 7px 9px; }
+        .call-ringtone-file-status { display: block; margin-top: 8px; color: #6d788e; font-size: .82rem; overflow-wrap: anywhere; }
         .lan-p2p-enhancement-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
         .lan-p2p-status { color: #6d788e; font-size: .82rem; }
         .lan-p2p-guide {
@@ -4155,6 +4158,7 @@
             .settings-tool-grid,
             .tunnel-permission-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .tunnel-admin-picker { grid-template-columns: 1fr; }
+            .call-ringtone-row { grid-template-columns: 1fr; }
         }
 
         .leave-tunnel-btn::before {
@@ -4781,6 +4785,22 @@
                         <button class="btn btn-secondary" id="grantLanP2pPermissionBtn" type="button">授权增强 P2P</button>
                         <span class="lan-p2p-status" id="lanP2pPermissionStatus" aria-live="polite">未授权</span>
                     </div>
+                </section>
+                <section class="tunnel-settings-section call-ringtone-settings">
+                    <h3>设备语音通话铃声</h3>
+                    <p>主叫在接通前播放等待音；被叫使用下方铃声。自定义音频只保存在当前设备浏览器，不上传服务器。</p>
+                    <div class="call-ringtone-row">
+                        <select id="callRingtoneSelect" aria-label="选择来电铃声">
+                            <option value="classic">经典双音铃</option>
+                            <option value="gentle">轻柔提示铃</option>
+                            <option value="digital">数字短促铃</option>
+                            <option value="custom">本地自定义音频</option>
+                        </select>
+                        <button class="btn btn-secondary" id="chooseCallRingtoneBtn" type="button">选择本地文件</button>
+                        <button class="btn btn-secondary" id="previewCallRingtoneBtn" type="button">试听</button>
+                    </div>
+                    <input id="callRingtoneFileInput" type="file" accept="audio/*" hidden>
+                    <span class="call-ringtone-file-status" id="callRingtoneFileStatus">当前使用内置铃声。</span>
                 </section>
                 <section class="tunnel-settings-section tunnel-permission-settings">
                     <div class="tunnel-permission-heading"><h3>隧道权限</h3><span id="tunnelPermissionOwnerHint"></span></div>

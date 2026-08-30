@@ -12,6 +12,7 @@
     "ytdlp:doctor": "node -e \"const {spawnSync}=require('child_process');for(const cmd of [['yt-dlp','--version'],['py','-m','yt_dlp','--version'],['python','-m','yt_dlp','--version'],['python3','-m','yt_dlp','--version']]){const r=spawnSync(cmd[0],cmd.slice(1),{encoding:'utf8'});console.log(cmd.join(' '),'=>',(r.stdout||r.stderr||r.error?.message||'').trim())}\"",
     "test:p2p:unit": "node tests/p2p-connection-regression.test.cjs",
     "test:youtube-premium": "node tests/youtube-premium.test.cjs",
+    "test:sns-download": "node --test tests/sns-download.test.cjs",
     "build:sns-cookie-extension": "node tools/auto-sync-sns-cookies/build.mjs",
     "deploy:build": "node tools/deploy/build.mjs",
     "deploy:verify": "node tools/deploy/verify.mjs",

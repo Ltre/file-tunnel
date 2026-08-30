@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SNS 媒体下载</title>
+    <style>
+        :root { color-scheme:light dark; --bg:#eef2f7; --panel:#fff; --text:#162033; --muted:#69758a; --line:#d9e0ea; --accent:#3567d6; --danger:#c83c4a; --ok:#15805f; --warn:#a76a08; --shadow:0 14px 42px rgba(34,48,80,.09); }
+        @media (prefers-color-scheme:dark) { :root { --bg:#111722; --panel:#1b2433; --text:#edf2fb; --muted:#9ca9bb; --line:#344054; --accent:#75a2ff; --danger:#ff8490; --ok:#55d2a6; --warn:#e4ad4e; --shadow:0 18px 48px rgba(0,0,0,.22); } }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
+        button,input,select,textarea { font:inherit; color:inherit; }
+        button,.button { border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:8px 13px; cursor:pointer; text-decoration:none; }
+        button:hover,.button:hover { border-color:var(--accent); }
+        button:disabled { opacity:.48; cursor:not-allowed; }
+        button.primary { background:var(--accent); border-color:var(--accent); color:white; font-weight:700; }
+        button.danger { color:var(--danger); }
+        a { color:var(--accent); }
+        .shell { width:min(1180px,calc(100% - 28px)); margin:24px auto 60px; }
+        .topbar,.panel,.task { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); }
+        .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:17px 20px; margin-bottom:16px; }
+        h1,h2,h3,p { margin-top:0; }
+        h1 { margin-bottom:3px; font-size:1.35rem; }
+        .subtle { color:var(--muted); }
+        .links,.row,.actions,.pager,.task-head,.task-main,.section-head { display:flex; align-items:center; gap:10px; }
+        .links,.actions { flex-wrap:wrap; }
+        .panel { padding:18px; margin-bottom:16px; }
+        .url-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+        input[type=url],input[type=text],textarea,select { width:100%; border:1px solid var(--line); border-radius:9px; background:transparent; padding:9px 11px; }
+        textarea { min-height:72px; resize:vertical; }
+        .options { display:flex; flex-wrap:wrap; gap:14px 22px; margin-top:13px; }
+        .options label { display:flex; align-items:center; gap:6px; }
+        .sections { display:grid; grid-template-columns:auto minmax(240px,1fr); gap:8px 10px; align-items:center; margin-top:12px; }
+        .notice { min-height:22px; margin-top:9px; color:var(--muted); white-space:pre-wrap; }
+        .notice.error,.error { color:var(--danger); }
+        .custom { margin-top:17px; padding-top:16px; border-top:1px solid var(--line); }
+        .format-list { display:grid; gap:8px; max-height:390px; overflow:auto; margin-top:12px; }
+        .format { display:grid; grid-template-columns:auto 115px 105px minmax(0,1fr); align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:9px 11px; }
+        .format small { color:var(--muted); }
+        .selection { margin-top:10px; padding:10px; border-radius:9px; background:color-mix(in srgb,var(--accent) 9%,transparent); white-space:pre-wrap; }
+        .selection.error { background:color-mix(in srgb,var(--danger) 9%,transparent); }
+        .analysis-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px 14px; margin-top:11px; color:var(--muted); }
+        .analysis-fields strong { color:var(--text); }
+        .section-head { justify-content:space-between; margin-bottom:12px; }
+        .section-head h2 { margin:0; font-size:1.08rem; }
+        .task-list { display:grid; gap:12px; }
+        .task { padding:14px; box-shadow:none; }
+        .task-head { align-items:flex-start; justify-content:space-between; }
+        .task-main { align-items:flex-start; min-width:0; flex:1; }
+        .cover { width:96px; aspect-ratio:1; flex:none; border-radius:10px; object-fit:cover; background:color-mix(in srgb,var(--muted) 14%,transparent); }
+        .title { font-size:1.02rem; font-weight:750; overflow-wrap:anywhere; }
+        .badges { display:flex; gap:7px; flex-wrap:wrap; margin:5px 0; }
+        .badge { padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); font-size:.78rem; }
+        .badge.completed { color:var(--ok); border-color:color-mix(in srgb,var(--ok) 48%,var(--line)); }
+        .badge.failed { color:var(--danger); }
+        .progress { height:7px; border-radius:99px; overflow:hidden; background:color-mix(in srgb,var(--muted) 14%,transparent); margin:11px 0 5px; }
+        .progress > div { height:100%; background:var(--accent); transition:width .25s; }
+        .details { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px 13px; margin:10px 0; }
+        .details span { min-width:0; color:var(--muted); overflow-wrap:anywhere; }
+        .details strong { color:var(--text); }
+        .tags { display:flex; flex-wrap:wrap; gap:6px; margin:7px 0; }
+        .tag { background:color-mix(in srgb,var(--accent) 10%,transparent); border-radius:999px; padding:3px 8px; }
+        .remark-editor { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; margin:9px 0; }
+        .task-error { color:var(--danger); white-space:pre-wrap; overflow-wrap:anywhere; }
+        .pager { justify-content:center; margin-top:14px; }
+        dialog { width:min(780px,calc(100% - 24px)); max-height:86vh; padding:0; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--text); box-shadow:0 28px 90px rgba(0,0,0,.3); }
+        dialog::backdrop { background:rgba(8,13,24,.62); }
+        .dialog-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 17px; border-bottom:1px solid var(--line); }
+        .dialog-head button { border:0; font-size:1.35rem; padding:2px 7px; }
+        .dialog-body { padding:17px; overflow:auto; }
+        .dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:15px; }
+        .preview { width:100%; max-height:68vh; background:#000; border-radius:9px; }
+        dl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:7px 15px; margin:0; }
+        dt { color:var(--muted); } dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+        .tag-options,.current-tags { display:flex; flex-wrap:wrap; gap:7px; margin:10px 0; }
+        .tag-options button.active { background:var(--accent); color:white; }
+        @media (max-width:720px) {
+            .shell { width:min(100% - 16px,1180px); margin-top:8px; }
+            .topbar,.task-head,.task-main { align-items:stretch; flex-direction:column; }
+            .topbar .links { justify-content:flex-start; }
+            .url-row,.remark-editor,.sections { grid-template-columns:1fr; }
+            .format { grid-template-columns:auto 1fr; }
+            .format > :last-child { grid-column:2; }
+            .details,.analysis-fields { grid-template-columns:1fr 1fr; }
+            .cover { width:100%; max-height:240px; aspect-ratio:16/9; }
+        }
+    </style>
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <div><h1>其它 SNS 媒体下载</h1><div class="subtle">TikTok · Facebook · Instagram · Twitter / X · Threads · LINE</div></div>
+        <nav class="links"><a class="button" href="/sns-cookies">配置普通 SNS Cookie</a><a class="button" href="/admin">返回后台</a></nav>
+    </header>
+
+    <section class="panel">
+        <div class="url-row">
+            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 TikTok / Facebook / Instagram / Twitter / Threads / LINE 链接">
+            <button class="primary" id="startBtn" type="button">开始下载</button>
+        </div>
+        <div class="options">
+            <label><input type="radio" name="mode" value="default" checked>默认格式</label>
+            <label><input type="radio" name="mode" value="custom">自选媒体编号</label>
+            <label><input id="cacheFilesInput" type="checkbox" checked>完成后缓存到浏览器</label>
+        </div>
+        <div class="sections"><label for="downloadSectionsInput">截取媒体区间（可选）</label><input id="downloadSectionsInput" type="text" placeholder="例如：*00:00:15-00:00:45"></div>
+        <div class="notice" id="notice">本页仅使用 /sns-cookies 中对应平台的普通 Cookie；公开页面未配置 Cookie 时也会直接尝试。解析不到的字段会保持为空。</div>
+        <div class="custom" id="customPanel" hidden>
+            <div class="section-head"><div><strong>媒体编号</strong><div class="subtle" id="formatStatus">输入 URL 后将自动解析。</div></div><button id="analyzeBtn" type="button">重新解析（忽略缓存）</button></div>
+            <div class="analysis-fields" id="analysisFields"></div>
+            <div class="format-list" id="formatList"></div>
+            <div class="selection" id="selectionSummary" hidden></div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="section-head"><div><h2>下载任务</h2><div class="subtle" id="taskCount">正在读取…</div></div><div class="actions"><button id="cleanupCacheBtn" type="button">清理浏览器垃圾</button><button id="refreshBtn" type="button">刷新</button></div></div>
+        <div class="task-list" id="taskList"></div>
+        <div class="pager" id="pager" hidden><button id="prevBtn" type="button">上一页</button><span id="pageLabel"></span><button id="nextBtn" type="button">下一页</button></div>
+    </section>
+</main>
+
+<dialog id="previewDialog"><div class="dialog-head"><strong id="previewTitle">文件预览</strong><button type="button" data-close-dialog>×</button></div><div class="dialog-body" id="previewBody"></div></dialog>
+<dialog id="infoDialog"><div class="dialog-head"><strong id="infoTitle">文件信息</strong><button type="button" data-close-dialog>×</button></div><div class="dialog-body" id="infoBody"></div></dialog>
+<dialog id="tagDialog"><div class="dialog-head"><strong>抓取标签</strong><button type="button" data-close-dialog>×</button></div><div class="dialog-body"><div class="subtle">预选标签在页面脚本的 SNS_PREDEFINED_TAGS 中预留，当前不会沿用 YouTube Premium 的标签。</div><div class="current-tags" id="currentTags"></div><div class="row"><input id="tagInput" type="text" maxlength="80" placeholder="输入标签"><button class="primary" id="addTagBtn" type="button">添加</button></div><div class="tag-options" id="tagOptions"></div><div class="dialog-actions"><button type="button" data-close-dialog>取消</button><button class="primary" id="saveTagsBtn" type="button">保存标签</button></div></div></dialog>
+<dialog id="forwardDialog"><div class="dialog-head"><strong>转发到隧道</strong><button type="button" data-close-dialog>×</button></div><div class="dialog-body"><select id="forwardTarget"></select><div class="subtle" id="forwardStatus"></div><div class="dialog-actions"><button type="button" data-close-dialog>取消</button><button class="primary" id="forwardConfirm" type="button">确认转发</button></div></div></dialog>
+
+<script src="/client/cache-store.js"></script>
+<script src="/client/sns-download-cache.js"></script>
+<script>
+(() => {
+    const API_ROOT = '/api/sns-dl';
+    // 用户预留配置区：请按需把标签字符串填入数组；故意不继承 YouTube Premium 页的内置标签。
+    const SNS_PREDEFINED_TAGS = Object.freeze([
+        // '示例标签一', '示例标签二'
+    ]);
+    const $ = id => document.getElementById(id);
+    const urlInput = $('urlInput');
+    const startBtn = $('startBtn');
+    const customPanel = $('customPanel');
+    const analyzeBtn = $('analyzeBtn');
+    const cacheFilesInput = $('cacheFilesInput');
+    const downloadSectionsInput = $('downloadSectionsInput');
+    const formatStatus = $('formatStatus');
+    const formatList = $('formatList');
+    const analysisFields = $('analysisFields');
+    const selectionSummary = $('selectionSummary');
+    const notice = $('notice');
+    const taskList = $('taskList');
+    const taskCount = $('taskCount');
+    const pager = $('pager');
+    const pageLabel = $('pageLabel');
+    const previewDialog = $('previewDialog');
+    const previewBody = $('previewBody');
+    const infoDialog = $('infoDialog');
+    const infoBody = $('infoBody');
+    const tagDialog = $('tagDialog');
+    const currentTags = $('currentTags');
+    const tagInput = $('tagInput');
+    const tagOptions = $('tagOptions');
+    const forwardDialog = $('forwardDialog');
+    const forwardTarget = $('forwardTarget');
+    const forwardStatus = $('forwardStatus');
+    let analysis = null;
+    let analysisUrl = '';
+    let analysisRequest = 0;
+    let analyzeTimer = 0;
+    let page = 1;
+    let pages = 1;
+    let currentTasks = [];
+    let editingTask = null;
+    let editingTags = [];
+    let forwardTask = null;
+    const cacheStates = new Map();
+    const cacheJobs = new Map();
+    const browserCache = window.createSnsDownloadBrowserCache?.({
+        onProgress(taskId, progress) { cacheStates.set(taskId, { status:'caching', progress }); renderTaskCache(taskId); }
+    });
+    cacheFilesInput.checked = localStorage.getItem('snsDownloadCacheFiles') !== '0';
+
+    const statusLabels = { queued:'等待中', parsing:'解析中', downloading:'下载中', merging:'合并中', completed:'已完成', failed:'失败', cancelled:'已取消', cleared:'缓存已清除' };
+    const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE' };
+    const kindLabels = { video:'视频', audio:'音频', video_audio:'视频+音频', other:'其它' };
+    const fieldLabels = {
+        extractor:'提取器', id:'媒体 ID', webpageUrl:'页面地址', title:'标题', description:'描述', uploader:'发布者', uploaderId:'发布者 ID',
+        uploaderUrl:'发布者页面', uploadDate:'上传日期', releaseDate:'发布日期', availability:'可见性', liveStatus:'直播状态', language:'语言', location:'地点',
+        duration:'时长（秒）', timestamp:'时间戳', viewCount:'播放量', likeCount:'点赞量', repostCount:'转发量', commentCount:'评论量', followerCount:'粉丝数',
+        ageLimit:'年龄限制', categories:'分类', tags:'来源标签', entryCount:'条目数', sourceUrl:'来源 URL', platform:'平台'
+    };
+
+    function mode() { return document.querySelector('input[name="mode"]:checked')?.value || 'default'; }
+    async function api(path, options = {}) {
+        const response = await fetch(path, { cache:'no-store', credentials:'same-origin', ...options });
+        if (response.status === 401) {
+            location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
+            throw new Error('管理会话已失效');
+        }
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data;
+    }
+    function formatSize(bytes) {
+        let value = Number(bytes) || 0;
+        if (!value) return '未知';
+        const units = ['B','KB','MB','GB']; let unit = 0;
+        while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+        return `${value.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+    }
+    function formatDuration(seconds) {
+        const value = Math.max(0, Math.round(Number(seconds) || 0));
+        const hours = Math.floor(value / 3600); const minutes = Math.floor(value % 3600 / 60); const rest = value % 60;
+        return hours ? `${hours}:${String(minutes).padStart(2,'0')}:${String(rest).padStart(2,'0')}` : `${minutes}:${String(rest).padStart(2,'0')}`;
+    }
+    function formatDate(timestamp) { return timestamp ? new Date(timestamp).toLocaleString() : ''; }
+    function element(tag, className = '', text = '') {
+        const node = document.createElement(tag); if (className) node.className = className; if (text !== '') node.textContent = text; return node;
+    }
+    function showNotice(message, error = false) { notice.textContent = message; notice.classList.toggle('error', error); }
+    function selectedFormats() {
+        const ids = [...formatList.querySelectorAll('input:checked')].map(input => input.value);
+        return ids.map(id => analysis?.formats?.find(format => format.id === id)).filter(Boolean);
+    }
+    function validateSelection() {
+        const selected = selectedFormats(); let error = '';
+        if (!selected.length || selected.length > 2) error = '请选择一个媒体编号，或一个纯视频编号加一个纯音频编号。';
+        else if (selected.length === 1 && !['video','audio','video_audio'].includes(selected[0].kind)) error = '该编号不包含可下载的音视频轨。';
+        else if (selected.length === 2 && !(selected.some(item => item.kind === 'video') && selected.some(item => item.kind === 'audio'))) error = '双选时必须是一个纯视频和一个纯音频。';
+        selectionSummary.hidden = false;
+        selectionSummary.classList.toggle('error', Boolean(error));
+        if (error) { selectionSummary.textContent = error; return false; }
+        const video = selected.find(item => ['video','video_audio'].includes(item.kind));
+        const audio = selected.find(item => ['audio','video_audio'].includes(item.kind));
+        selectionSummary.textContent = [
+            `最终编号：${selected.map(item => item.id).join(' + ')}`,
+            video ? `视频：${video.height ? `${video.height}p` : video.resolution || '未知'} / ${video.videoCodec}` : '',
+            audio ? `音频：${audio.audioCodec} / ${audio.audioBitrate ? `${Math.round(audio.audioBitrate)}kbps` : '码率未知'}` : '',
+            selected.length === 1 && ['video','audio'].includes(selected[0].kind) ? `提示：成品只包含${selected[0].kind === 'video' ? '视频' : '音频'}轨。` : ''
+        ].filter(Boolean).join('\n');
+        return true;
+    }
+    function renderAnalysisFields(data) {
+        analysisFields.replaceChildren();
+        const fields = [['平台',platformLabels[data.platform] || data.platform],['标题',data.title],['时长',data.duration ? formatDuration(data.duration) : ''],['提取器',data.referenceInfo?.extractor],['解析缓存',data.cacheHit ? '已复用' : '新解析']];
+        fields.filter(([,value]) => value !== '' && value != null).forEach(([label,value]) => {
+            const item = element('span'); const strong = element('strong','',`${label}：`); item.append(strong,String(value)); analysisFields.append(item);
+        });
+    }
+    function renderFormats(data) {
+        formatList.replaceChildren(); renderAnalysisFields(data);
+        const suggested = new Set(data.selection?.ids || []);
+        for (const format of data.formats || []) {
+            const row = element('label','format');
+            const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = format.id; checkbox.checked = suggested.has(format.id);
+            checkbox.addEventListener('change', validateSelection);
+            row.append(checkbox, element('strong','',`ID ${format.id}`), element('span','badge',kindLabels[format.kind] || format.kind));
+            row.append(element('small','',[
+                format.height ? `${format.width || '?'}×${format.height}${format.fps ? ` · ${format.fps}fps` : ''}` : format.resolution,
+                format.videoCodec !== 'none' ? format.videoCodec : '', format.audioCodec !== 'none' ? format.audioCodec : '',
+                format.audioBitrate ? `${Math.round(format.audioBitrate)}kbps` : '', format.fileSize ? formatSize(format.fileSize) : '', format.note
+            ].filter(Boolean).join(' · ')));
+            formatList.append(row);
+        }
+        formatStatus.textContent = data.downloadable
+            ? `${data.title || platformLabels[data.platform] || 'SNS 媒体'} · ${data.formats.length} 个格式${data.cacheHit ? ' · 已复用解析缓存' : ' · 新解析并已缓存'}`
+            : '页面信息已解析，但没有发现可下载的音频或视频格式。';
+        if (data.formats?.length) validateSelection();
+        else { selectionSummary.hidden = false; selectionSummary.className = 'selection error'; selectionSummary.textContent = '没有可选媒体格式。'; }
+    }
+    async function analyzeFormats(refresh = false) {
+        const url = urlInput.value.trim(); if (!url) return;
+        const request = ++analysisRequest;
+        formatStatus.textContent = refresh ? '正在跳过缓存重新解析…' : '正在查询解析缓存或来源页面…';
+        analyzeBtn.disabled = true;
+        try {
+            const data = await api(`${API_ROOT}/formats`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ url, refresh }) });
+            if (request !== analysisRequest) return;
+            analysis = data; analysisUrl = url; renderFormats(data);
+        } catch (error) {
+            if (request === analysisRequest) { analysis = null; formatList.replaceChildren(); analysisFields.replaceChildren(); formatStatus.textContent = `解析失败：${error.message}`; }
+        } finally { if (request === analysisRequest) analyzeBtn.disabled = false; }
+    }
+    function scheduleAnalyze() {
+        clearTimeout(analyzeTimer); if (mode() !== 'custom' || !urlInput.value.trim()) return;
+        analyzeTimer = setTimeout(() => analyzeFormats(false), 650);
+    }
+    async function startDownload() {
+        const url = urlInput.value.trim(); if (!url) return showNotice('请先输入 SNS 链接。', true);
+        if (mode() === 'custom' && (analysisUrl !== url || !analysis)) await analyzeFormats(false);
+        if (mode() === 'custom' && !validateSelection()) return;
+        startBtn.disabled = true; showNotice('正在创建独立 SNS 下载任务…');
+        try {
+            const task = await api(`${API_ROOT}/tasks`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+                url, mode:mode(), selectedFormatIds:mode() === 'custom' ? selectedFormats().map(item => item.id) : [], downloadSections:downloadSectionsInput.value.trim()
+            }) });
+            showNotice(`任务 ${task.id.slice(0,8)} 已进入 ${platformLabels[task.platform] || 'SNS'} 队列。`); page = 1; await loadTasks();
+        } catch (error) { showNotice(error.message, true); } finally { startBtn.disabled = false; }
+    }
+    function cacheStateText(task) {
+        const state = cacheStates.get(task.id);
+        if (!state) return cacheFilesInput.checked ? '浏览器缓存：待检查' : '浏览器缓存：未启用';
+        return ({ cached:'浏览器缓存：已完成', caching:`浏览器缓存：${Math.round(state.progress || 0)}%`, missing:'浏览器缓存：未缓存', cleared:'浏览器缓存：已清除', failed:`浏览器缓存失败：${state.error || ''}` })[state.status] || '';
+    }
+    function renderTaskCache(taskId) {
+        const task = currentTasks.find(item => item.id === taskId); const node = taskList.querySelector(`[data-task-id="${CSS.escape(taskId)}"] [data-cache-state]`);
+        if (task && node) node.textContent = cacheStateText(task);
+    }
+    async function ensureBrowserCache(task) {
+        if (!browserCache || cacheJobs.has(task.id)) return;
+        const job = (async () => {
+            try {
+                let state = await browserCache.inspect(task);
+                if (state.status !== 'cached' && cacheFilesInput.checked && task.hasFile) {
+                    cacheStates.set(task.id,{status:'caching',progress:0}); renderTaskCache(task.id); state = await browserCache.store(task);
+                }
+                cacheStates.set(task.id,{status:state.status});
+            } catch (error) { cacheStates.set(task.id,{status:'failed',error:error.message}); }
+            renderTaskCache(task.id);
+        })().finally(() => cacheJobs.delete(task.id));
+        cacheJobs.set(task.id,job); await job;
+    }
+    function makeAction(label, handler, options = {}) {
+        const button = element('button',options.danger ? 'danger' : '',label); button.type = 'button';
+        button.addEventListener('click',async () => { if (options.confirm && !confirm(options.confirm)) return; button.disabled = true; try { await handler(); } catch (error) { alert(error.message); } finally { button.disabled = false; } });
+        return button;
+    }
+    function taskReferenceDetails(task) {
+        const details = element('details'); const summary = element('summary','','已抓取的页面信息'); details.append(summary);
+        const list = document.createElement('dl'); const info = task.referenceInfo || {};
+        Object.entries(info).forEach(([key,value]) => {
+            if (value === '' || value == null || key === 'sourceUrl') return;
+            const dt = element('dt','',fieldLabels[key] || key); const dd = element('dd','',Array.isArray(value) ? value.join('、') : String(value)); list.append(dt,dd);
+        });
+        details.append(list); return details;
+    }
+    function renderTask(task) {
+        const card = element('article','task'); card.dataset.taskId = task.id;
+        const head = element('div','task-head'); const main = element('div','task-main');
+        const cover = document.createElement('img'); cover.className='cover'; cover.alt=''; cover.loading='lazy'; if (task.cover) cover.src=task.cover;
+        const text = element('div'); text.style.minWidth='0'; text.append(element('div','title',task.title || '等待解析页面信息…'));
+        const badges = element('div','badges'); badges.append(element('span','badge',platformLabels[task.platform] || task.platform || 'SNS'),element('span',`badge ${task.status}`,statusLabels[task.status] || task.status));
+        if (task.mediaType) badges.append(element('span','badge',task.mediaType === 'audio' ? '音频' : task.mediaType === 'video' ? '视频' : task.mediaType));
+        text.append(badges);
+        const link = document.createElement('a'); link.href=task.url; link.target='_blank'; link.rel='noopener noreferrer'; link.textContent=task.url; text.append(link);
+        main.append(cover,text); head.append(main); card.append(head);
+        if (['queued','parsing','downloading','merging'].includes(task.status)) {
+            const progress=element('div','progress'); const bar=element('div'); bar.style.width=`${Math.max(0,Math.min(100,Number(task.progress?.percent)||0))}%`; progress.append(bar); card.append(progress);
+            card.append(element('div','subtle',[`${Math.round(Number(task.progress?.percent)||0)}%`,task.progress?.speedText,task.progress?.etaText ? `ETA ${task.progress.etaText}` : ''].filter(Boolean).join(' · ')));
+        }
+        const details=element('div','details');
+        [['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
+        card.append(details,taskReferenceDetails(task));
+        if (task.tags?.length) { const tags=element('div','tags'); task.tags.forEach(tag=>tags.append(element('span','tag',tag))); card.append(tags); }
+        const remark=element('div','remark-editor'); const textarea=document.createElement('textarea'); textarea.value=task.remark||''; textarea.placeholder='任务备注（转发时优先作为文件备注）';
+        remark.append(textarea,makeAction('保存备注',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({remark:textarea.value})});await loadTasks();})); card.append(remark);
+        if (task.error) card.append(element('div','task-error',task.error));
+        const cacheLabel=element('div','subtle',cacheStateText(task)); cacheLabel.dataset.cacheState=''; card.append(cacheLabel);
+        const actions=element('div','actions');
+        if (task.hasFile) {
+            actions.append(makeAction('预览',()=>showPreview(task)),makeAction('文件信息',()=>showInfo(task)));
+            const download=document.createElement('a');download.className='button';download.href=task.downloadUrl;download.textContent='下载';actions.append(download);
+            actions.append(makeAction('缓存到浏览器',async()=>{cacheFilesInput.checked=true;localStorage.setItem('snsDownloadCacheFiles','1');await ensureBrowserCache(task);}));
+            actions.append(makeAction('转发到隧道',()=>showForward(task)));
+            actions.append(makeAction('原尺寸封面',()=>downloadThumbnail(task)));
+        }
+        actions.append(makeAction('抓取标签',()=>showTags(task)));
+        if (['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('取消',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/cancel`,{method:'POST'});await loadTasks();}));
+        if (['failed','cancelled','cleared'].includes(task.status)) actions.append(makeAction('重新抓取',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/retry`,{method:'POST'});await loadTasks();}));
+        if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
+        if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
+        card.append(actions); return card;
+    }
+    async function loadTasks() {
+        try {
+            const data=await api(`${API_ROOT}/tasks?page=${page}&pageSize=10`); page=data.page; pages=data.pages; currentTasks=data.tasks||[];
+            taskList.replaceChildren(...currentTasks.map(renderTask)); taskCount.textContent=`共 ${data.total} 个任务`; pager.hidden=pages<=1; pageLabel.textContent=`${page} / ${pages}`; $('prevBtn').disabled=page<=1; $('nextBtn').disabled=page>=pages;
+            currentTasks.filter(task=>task.status==='completed').forEach(task=>ensureBrowserCache(task));
+        } catch(error) { taskCount.textContent=`读取失败：${error.message}`; }
+    }
+    async function showPreview(task) {
+        $('previewTitle').textContent=task.outputFileName||'文件预览'; previewBody.replaceChildren(element('div','subtle','正在载入…')); previewDialog.showModal();
+        const media=document.createElement(task.mediaType==='audio'?'audio':'video'); media.className='preview'; media.controls=true; media.playsInline=true; media.src=task.previewUrl; previewBody.replaceChildren(media);
+    }
+    async function showInfo(task) {
+        $('infoTitle').textContent=task.outputFileName||'文件信息'; infoBody.textContent='正在读取…'; infoDialog.showModal();
+        try { const data=await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/info`); const dl=document.createElement('dl');
+            [['文件名',data.name],['大小',formatSize(data.size)],['类型',data.mimeType],['容器',data.container],['时长',formatDuration(data.duration)],['分辨率',data.resolution],['帧率',data.frameRate?`${data.frameRate.toFixed(2)} fps`:''],['视频编码',data.videoCodec],['音频编码',data.audioCodec],['音频码率',data.audioBitRate?`${Math.round(data.audioBitRate/1000)} kbps`:''],['采样率',data.sampleRate?`${data.sampleRate} Hz`:''],['声道',data.channels]].filter(([,value])=>value!==''&&value!=null).forEach(([label,value])=>dl.append(element('dt','',label),element('dd','',String(value)))); infoBody.replaceChildren(dl);
+        } catch(error){infoBody.textContent=`读取失败：${error.message}`;}
+    }
+    function showTags(task) { editingTask=task;editingTags=[...(task.tags||[])];renderTags();tagDialog.showModal(); }
+    function renderTags() {
+        currentTags.replaceChildren(...editingTags.map(tag=>{const button=element('button','','× '+tag);button.onclick=()=>{editingTags=editingTags.filter(value=>value!==tag);renderTags();};return button;}));
+        tagOptions.replaceChildren(...SNS_PREDEFINED_TAGS.map(tag=>{const button=element('button',editingTags.includes(tag)?'active':'',tag);button.onclick=()=>{editingTags=editingTags.includes(tag)?editingTags.filter(value=>value!==tag):[...editingTags,tag];renderTags();};return button;}));
+    }
+    function addTag(){const tag=tagInput.value.trim();if(tag&&!editingTags.includes(tag))editingTags.push(tag);tagInput.value='';renderTags();}
+    async function showForward(task) {
+        forwardTask=task;forwardTarget.replaceChildren();forwardStatus.textContent='正在读取隧道列表…';$('forwardConfirm').disabled=true;forwardDialog.showModal();
+        try { const data=await api('/api/sessions');const previous=localStorage.getItem('snsDownloadLastForwardSession')||'';(data.sessions||[]).forEach(tunnel=>{const option=document.createElement('option');option.value=tunnel.id;option.textContent=[tunnel.shortCode||tunnel.id,tunnel.remark].filter(Boolean).join(' · ');option.selected=tunnel.id===previous;forwardTarget.append(option);});forwardStatus.textContent=forwardTarget.options.length?'':'没有可转发的隧道。';$('forwardConfirm').disabled=!forwardTarget.options.length;
+        } catch(error){forwardStatus.textContent=error.message;}
+    }
+    async function forwardCurrent() {
+        if(!forwardTask)return;const sessionId=forwardTarget.value;const blob=await browserCache?.getBlob(forwardTask);if(!blob)throw new Error('请先缓存成品到浏览器，再执行转发');
+        forwardStatus.textContent='正在从浏览器缓存上传到隧道…';$('forwardConfirm').disabled=true;
+        const response=await fetch(`${API_ROOT}/tasks/${encodeURIComponent(forwardTask.id)}/forward?sessionId=${encodeURIComponent(sessionId)}`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-Drop2Tunnel-File-Size':String(blob.size),'X-Drop2Tunnel-Cache-Version':`${forwardTask.completedAt}-${forwardTask.outputFileSize}`},body:blob});
+        const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);localStorage.setItem('snsDownloadLastForwardSession',sessionId);forwardStatus.textContent=`已转发到隧道 ${data.shortCode||sessionId}`;setTimeout(()=>forwardDialog.close(),700);
+    }
+    async function downloadThumbnail(task) { const response=await fetch(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/thumbnail`,{method:'POST',credentials:'same-origin'});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||`HTTP ${response.status}`);}const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`${task.title||task.platform||'sns'}-thumbnail`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
+
+    document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',()=>{customPanel.hidden=mode()!=='custom';if(mode()==='custom')scheduleAnalyze();}));
+    urlInput.addEventListener('input',scheduleAnalyze); analyzeBtn.addEventListener('click',()=>analyzeFormats(true)); startBtn.addEventListener('click',startDownload);
+    cacheFilesInput.addEventListener('change',()=>localStorage.setItem('snsDownloadCacheFiles',cacheFilesInput.checked?'1':'0'));
+    $('refreshBtn').addEventListener('click',loadTasks); $('prevBtn').addEventListener('click',()=>{if(page>1){page--;loadTasks();}}); $('nextBtn').addEventListener('click',()=>{if(page<pages){page++;loadTasks();}});
+    $('cleanupCacheBtn').addEventListener('click',async()=>{const data=await api(`${API_ROOT}/tasks?page=1&pageSize=1`);const removed=await browserCache?.cleanupOrphans(data.ids||[]);showNotice(`已清理 ${removed||0} 条无任务对应的浏览器缓存。`);});
+    $('addTagBtn').addEventListener('click',addTag); tagInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addTag();}});
+    $('saveTagsBtn').addEventListener('click',async()=>{if(!editingTask)return;await api(`${API_ROOT}/tasks/${encodeURIComponent(editingTask.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:editingTags})});tagDialog.close();await loadTasks();});
+    $('forwardConfirm').addEventListener('click',()=>forwardCurrent().catch(error=>{forwardStatus.textContent=error.message;$('forwardConfirm').disabled=false;}));
+    document.querySelectorAll('[data-close-dialog]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
+    document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
+    setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]'))loadTasks();},2500);
+    loadTasks();
+})();
+</script>
+</body>
+</html>
