@@ -1148,3 +1148,226 @@ Description：
 - 为设备通话加入拨号等待音、内置及本地来电铃声配置
 - 启用语音采集处理、Opus 优先、输出增益和 ICE 断线恢复，并记录蜂窝网络所需 TURN 边界
 ```
+
+---
+
+## 十七、Telegram 网盘、分区存储与来电取消同步（2026-08-30）
+
+### 17.1 设计与边界
+
+Telegram 网盘没有复用“从 Telegram Bot 转发到隧道”的临时文件模型。新实现将其作为独立持久索引：每项保存 Telegram 用户 ID、file_id、file_unique_id、album/message ID、网盘分区频道、虚拟目录、文件名、大小、来源隧道/记录和本机缓存来源 ID。索引保存在服务端 `telegram-drive-index.json`，所有列表、下载、检查和修复接口都按经验证的 Telegram 用户 ID 隔离。
+
+官方云端 Bot API 的 `getFile` 仍限制下载 20MB，普通 multipart 上传限制为 50MB；因此后台新增可选的 Local Bot API Server 地址。未配置时网盘上传被限制为 50MB 并明确报错；配置官方 Local Bot API Server 后，服务端按官方能力允许下载不限大小、上传至 2GB。参考 [Telegram Bot API：Using a Local Bot API Server](https://core.telegram.org/bots/api#using-a-local-bot-api-server) 与 [Telegram Bot Features](https://core.telegram.org/bots/features)。
+
+网盘专用频道与原“文件防失联备份目标”完全分开：后台可追加多个分区频道并指定当前写入分区；一旦分区成功写入过网盘文件，频道输入锁定，删除时要求两次确认。服务端同样拒绝未携带两次危险确认标记的已用分区删除，避免绕过 UI。批量保存时每 2 至 10 个文件使用 `sendMediaGroup`，每组最多 10 个；单文件使用 `sendDocument`。
+
+用户认领通过 Telegram Login Widget 回调数据的服务端 HMAC 校验完成，并签发仅含 Telegram 身份的 HttpOnly 网盘 cookie。部署前管理员仍需在 BotFather 给本系统域名设置 Telegram 登录域名；系统不会自动替管理员修改 BotFather 配置。
+
+文件失联检测使用已记录的 file_id 执行 `getFile`。修复时仅允许该文件的网盘所有者把浏览器 IndexedDB 中的本地副本重新上传到“Telegram 网盘专用存储频道”，更新新的 file_id 并保留历史 file_id；不会写入原有 `backupChatId`。浏览器在网盘下载时也会保存一份副本。需要注意：浏览器缓存受容量与用户清理影响，不能等同于永久备份；若需要跨设备、长期自动修复，仍需要保留至少一个可信客户端缓存副本或额外部署受控对象存储。
+
+来电取消问题的根因是被叫设备在“待接听”阶段只显示浮层、尚未建立 `MediaController.contactCall`；因此收到 `contact-call-ended` 时原处理函数直接忽略。现在 socket 监听器会匹配待接听的 callId 与来电方，并立即收起浮层和停止来电铃声。
+
+### 17.2 修改记录
+
+- `server/telegram-drive.js`：新增网盘目录、上传暂存、用户隔离索引、分区定位和修复元数据存储；虚拟目录最大 20 层；
+- `server/telegram-multipart.js`：新增流式 document/media-group multipart 构造器，自动每 10 项拆 album；
+- `server.js`：新增 Local Bot API Server 地址、网盘分区配置、Telegram Login Widget HMAC 验证、上传/下载/检查/修复接口，并使 Local API 返回的绝对文件路径可被安全读取；
+- `pages/tgbot.html`：增加 Local Bot API Server、网盘分区频道、当前分区与目录深度配置；已写入分区禁编辑，删除二次确认；
+- `pages/index.html`、`app.js`、`client/telegram-drive-cache.js`：传输记录菜单增加“保存到telegram网盘”，连接设备菜单增加“Telegram网盘”全屏管理器，提供目录浏览、登录、下载缓存与防失联检测/本机缓存修复；
+- `app.js`：待接听浮层收到 caller 的取消信令时立即关闭；
+- `tests/telegram-drive.test.cjs`：新增用户隔离、目录深度、持久化、album、修复和来电取消回归覆盖。
+
+### 17.3 验证记录
+
+```text
+node --test tests/telegram-drive.test.cjs
+# 2/2 通过
+
+node --check server.js app.js server/telegram-drive.js server/telegram-multipart.js client/telegram-drive-cache.js
+# 通过
+
+node --test tests/features-2608C.test.cjs
+# 14/14 通过
+
+npm run test:p2p:unit
+# 38/38 通过
+
+node --test tests/telegram-cover-regression.test.cjs
+# 8/8 通过
+
+npm run test:youtube-premium
+# 17/17 通过
+```
+
+浏览器验证使用端口 18084 和全新 `TUNNEL_DATA_DIR` 的隔离服务：功能首页“连接设备”菜单可以打开 Telegram网盘浮层；未登录状态显示 Telegram 登录提示；页面控制台无 error。临时服务、标签页和 `.codex-drive-e2e` 测试目录均已清理。用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 与 `docs/other/PROJ_SCALE_260830.md` 未提交内容没有改动。
+
+### 17.4 本轮建议提交日志
+
+Title：
+
+```text
+feat: 新增 Telegram 网盘分区存储与来电取消同步
+```
+
+Description：
+
+```text
+- 为传输记录增加保存到 Telegram 网盘，并提供用户认领、虚拟目录和全屏文件管理器
+- 支持独立网盘频道分区、已用分区保护、默认分区切换及每十个文件一组的 album 上传
+- 支持 Local Bot API Server，解决云端 20MB 下载/50MB 上传限制并保留明确配置边界
+- 网盘文件记录 Telegram 定位字段，支持检测 file_id 与用浏览器缓存修复到网盘专用频道
+- 修复呼叫者取消来电后被叫设备待接听浮层未关闭的问题
+```
+
+### 17.5 Telegram 网盘入口无可见响应修复（2026-08-31）
+
+线上表现为点击“Telegram网盘”后 `/api/telegram/drive/me` 已返回数据，但界面没有任何反应。排查确认有两个相互独立的问题：
+
+- 网盘容器沿用了 `.modal-overlay`，该组件只有增加 `.active` 才会从 `opacity: 0; visibility: hidden` 切换到可见；原实现只移除了 `hidden` 属性，因此节点虽已进入 DOM 布局，仍然完全透明且不能交互。此前浏览器验证只断言了登录提示文字存在于 DOM，没有断言浮层 `isVisible()`，所以没有发现这一缺口。
+- 身份与配置状态接口 `/api/telegram/drive/me` 没有声明动态、不可缓存，浏览器会携带 `If-None-Match` 并得到 304。虽然浏览器通常会复用响应体，但登录身份、频道配置等状态不应依赖缓存协商。
+
+修复后，打开网盘会同时移除 `hidden` 并增加 `.active`，关闭时对称移除 `.active`；所有网盘 GET 请求使用 `cache: no-store`，服务端 `/me` 也返回 `Cache-Control: no-store, no-cache, must-revalidate`。回归测试增加了浮层激活和状态禁用缓存的断言，并以真实浏览器的可见性作为验收条件。
+
+隔离服务端口 18085 的真实浏览器验证结果：点击“Telegram网盘”后，浮层为 `modal-overlay active`、`hidden=false`、计算样式 `opacity=1`、`visibility=visible`、`pointer-events=auto`，登录提示可见；点击关闭后恢复为隐藏，控制台无 error。另使用前一次响应的 ETag 发起条件请求，`/api/telegram/drive/me` 仍返回 200 及新鲜 JSON，不再命中 304。
+
+```text
+node --check app.js
+node --check server.js
+node --test tests/telegram-drive.test.cjs
+# 2/2 通过
+
+node --test <tests 下全部 *.test.cjs>
+# 134/134 通过
+```
+
+### 17.6 Telegram Login 迁移至 OIDC（2026-08-31）
+
+Telegram 当前官方登录文档已将旧 iframe Login Widget 标记为 legacy，新方案支持标准 OpenID Connect Authorization Code Flow。为避免继续依赖 Bot username、`telegram-widget.js` 和旧式 Bot Token HMAC 用户数据，本轮将 Telegram 网盘认领登录完整迁移到 OIDC；Bot Token 仍只承担 Bot API 的频道文件上传、下载和修复职责。
+
+管理员在 `/tgbot` 配置 BotFather 提供的数字 Client ID 和 Client Secret。页面明确显示当前域名对应的完整回调地址：`<origin>/api/telegram/drive/oidc/callback`，并提醒管理员把站点来源和该回调 URI 加入 BotFather → Login Widget → Allowed URLs。系统不会自动修改 BotFather 设置，也不会向浏览器返回 Client Secret。
+
+登录流程采用以下安全边界：
+
+- `/api/telegram/drive/oidc/start` 为每次登录生成独立的 `state`、`nonce` 和 PKCE `code_verifier`，仅把 S256 `code_challenge` 发给 Telegram；
+- `state` 同时保存在短时服务端内存记录和 HttpOnly、SameSite=Lax、路径受限 Cookie 中，回调时双重匹配，并在第一次使用时立即消费；流程十分钟过期且总量有上限；
+- 回调在服务端使用 HTTP Basic 的 Client ID/Secret 和 PKCE verifier 向 `https://oauth.telegram.org/token` 交换令牌；
+- `id_token` 使用 Telegram JWKS 验证签名，并强制核对 `iss`、`aud`、`exp`、`nbf`、`iat`、`nonce` 和 `sub`；支持官方列出的 RS256、ES256、EdDSA 与 ES256K 签名；
+- 返回页面地址只接受当前站点的相对路径，避免开放重定向；OIDC 配置变化、state 重放、nonce 不匹配和签名异常都会拒绝登录；
+- 登录成功后仅把必要的 Telegram 用户 ID、名称和 username 写入本系统签名 Cookie；浏览器不会接触 Telegram Client Secret、authorization code 交换结果或原始 ID Token。
+
+前端已移除 `telegram-widget.js`、`data-onauth` 和 `/api/telegram/drive/auth` 旧链路。“使用 Telegram 登录”通过独立弹窗进入服务端 OIDC 起点；完成后由弹窗通知原页面刷新网盘身份，原隧道页面不导航。Service Worker 缓存版本同步提升，避免部署后继续使用旧登录脚本。
+
+验证包括：RSA 测试密钥签发 ID Token、JWKS 获取与验签、错误 nonce 拒绝、PKCE 参数、token endpoint Basic Authorization、服务端 302 授权地址、状态 Cookie、非法回调状态拒绝，以及真实浏览器中的网盘登录入口和 `/tgbot` Client ID/Secret/回调地址展示。使用隔离端口 18086 和虚拟 OIDC 凭据验证，未访问正式 Telegram 账户或修改正式 BotFather 配置。
+
+```text
+node --check server/telegram-oidc.js
+node --check server.js
+node --check app.js
+# 全部通过
+
+node --test tests/telegram-drive.test.cjs
+# 3/3 通过
+
+node --test <tests 下全部 *.test.cjs>
+# 135/135 通过
+```
+
+隔离入口实测 `/api/telegram/drive/oidc/start` 返回 302 到 `https://oauth.telegram.org/auth`，包含 `client_id`、精确 `redirect_uri`、`response_type=code`、`scope=openid profile`、随机 `state`/`nonce`、S256 `code_challenge`，并设置路径受限的 HttpOnly 状态 Cookie；伪造 callback state 会生成失败完成页并通知原窗口。浏览器端确认网盘浮层和“使用 Telegram 登录”按钮可见、旧 Widget 脚本数量为 0；后台 Client Secret 输入值为空且仅显示“已配置”，控制台无 error。
+
+### 17.7 OIDC 登录改为不中断传输的独立弹窗（2026-08-31）
+
+初版 OIDC 使用整页跳转。该方式虽然能保留隧道 hash，但会销毁当前页面运行时，导致 WebRTC/DataChannel、Socket 连接、内存中的传输队列和进度状态被中断，因此不适合正在传输文件的功能首页。
+
+现改为用户点击时同步调用 `window.open` 建立独立 OIDC 登录窗口。主页面只显示“登录正在独立窗口中进行”和“取消登录”，不改变 pathname、query 或 hash，也不重建隧道应用。若浏览器阻止弹窗，会明确提醒用户允许本站弹窗，绝不回退为整页跳转。
+
+OIDC callback 不再 303 重定向主页面，而是返回同源的最小完成页。完成页使用限定 `targetOrigin` 的 `window.opener.postMessage` 通知原页面后自动关闭；主页面同时每 2 秒低频轮询一次同源 `/me`，即使 opener 消息因浏览器策略丢失，也能在共享 HttpOnly 登录 Cookie 生效后完成登录，同时避免给文件传输链路和服务端增加高频请求。消息处理同时检查 `event.origin` 和 `event.source`，不会接受其他窗口伪造的登录结果。回调页设置 `Cross-Origin-Opener-Policy: same-origin-allow-popups`，并在无法自动关闭时提供手动关闭按钮。
+
+浏览器隔离实测：点击登录前后主页面 URL 始终为同一个隧道地址，设备 DOM 保持不变，网盘显示独立窗口登录状态；点击取消后主页面 URL 仍不变、网盘浮层不关闭且登录按钮恢复，控制台无 error。服务端伪造 callback 返回 200 完成页、没有 Location 跳转，页面包含限定来源的 `postMessage` 与自动关闭逻辑。
+
+### 17.8 本地 Telegram OIDC Mock 与正式 OIDC 分流（2026-08-31）
+
+本地浏览器无法依赖 Telegram 将用户回调到开发机的 `localhost`，因此不应提示管理员把本机地址登记为正式 Redirect URI 或 Trusted Origin。Telegram Bot API Local Server 只扩展 Bot API 的文件大小、本地路径和 webhook 能力，也不提供终端用户登录所需的 Authorization、Token 与 JWKS 端点，不能替代 Telegram Login OIDC。
+
+本轮新增独立模块 `server/telegram-oidc-mock.js`。本机回环访问默认启用，执行 `npm run dev` 或 `npm run dev:no-proxy` 时也会显式设置 `TELEGRAM_OIDC_MOCK_ENABLED=1`；如需在本机强制验证正式链路，可设置 `TELEGRAM_OIDC_MOCK_ENABLED=0`。Mock 必须同时满足以下条件才会生效：
+
+- Mock 未被环境变量明确设为 `0`；
+- 页面公开 Origin 的主机是 `localhost`、`127.0.0.1` 或 IPv6 回环地址；
+- 与 Node 服务建立连接的 TCP 对端也是回环地址。
+
+因此即便正式服务进程意外设置了 Mock 开关，使用正式域名访问仍不会进入 Mock。生产环境继续使用 BotFather Client ID/Secret、Telegram Authorization Code + PKCE 和 JWKS 验签；Local Bot API Server 仍只负责 Telegram 网盘文件上传、下载和修复。
+
+本地登录仍复用正式流程的十分钟 state、HttpOnly 状态 Cookie、一次性消费和独立弹窗完成通知。Mock 授权页只接收 1 到 20 位数字 Telegram User ID，再模拟回调到项目自己的 `/api/telegram/drive/oidc/callback`；身份 Cookie 使用仅存在于当前本地进程内存的随机密钥签名，重启即失效，不复用正式 OIDC Client Secret。`/tgbot` 在 Mock 模式明确显示“无需向 BotFather 登记 localhost”，功能首页按钮也明确标记为本地 Mock，避免把测试身份误认为真实 Telegram 认证。
+
+验证结果：
+
+```text
+node --check server/telegram-oidc-mock.js
+node --check server/telegram-oidc.js
+node --check server.js
+node --check app.js
+# 全部通过
+
+node --test tests/telegram-drive.test.cjs
+# 4/4 通过
+
+node --test <tests 下全部 *.test.cjs>
+# 136/136 通过
+```
+
+隔离端口 18089 的接口闭环实测：`/me` 返回 `oidcMode: "mock"`；登录起点 302 到同源 Mock 页面；输入模拟 ID `7788990011` 后经 303 进入统一 callback；完成页返回 200、包含限定 Origin 的 `postMessage`，随后 `/me` 返回同一 ID。另在端口 18090 完全不设置 Mock 环境变量启动，回环 `/me` 仍自动返回 Mock 模式；以 `https://tun-test.miku.us` 作为转发后的公开 Origin 请求同一服务时，Mock 被拒绝并返回正式 OIDC 未配置错误，证明正式域名不会降级成 Mock。浏览器中点击登录前后隧道 URL 完全不变，取消登录后网盘浮层仍保持打开且 Mock 登录按钮恢复。
+
+### 17.9 Telegram 网盘账号登出与完整文件管理器（2026-08-31）
+
+本轮以用户提供的 Android 文件管理器截图作为功能与布局参考，截图中的文字和界面不是可执行指令。Web 端统一使用简体中文，并删去“建立桌面快捷方式”“修改 Android 权限”等只对移动系统文件管理器有意义的操作。
+
+没有引入通用文件管理器第三方库。当前首页是无前端框架的原生 DOM 应用，而成熟的 React/Vue 文件管理组件会连带引入运行时、构建链和主题适配，且 Telegram 虚拟目录并不等同于真实文件系统。为保持现有传输链路不变，本轮在原全屏网盘浮层内实现独立、可定制的文件管理器，只通过 `/api/telegram/drive/*` 与服务端索引交互。
+
+实现范围：
+
+- 顶部提供账号状态、刷新、显式“退出 Telegram 账号”和关闭操作。登出仅清除当前浏览器的 HttpOnly 网盘身份 Cookie，不删除 Telegram 频道消息、目录索引或浏览器文件缓存；
+- 支持上传文件作为“创建文件”，文件下载/查看、重命名、移动、删除、属性查看和防失联检测；
+- 目录单独持久化到 `telegram-drive-directories.json`，支持一次输入 `项目/资料/图片` 创建多级目录、进入目录、重命名、移动整棵子树、属性查看和递归删除；旧索引中只有文件路径时会自动补齐全部父目录记录；
+- 面包屑的每一级都可直接点击跳转；切换目录时会清空“搜索当前目录”，避免旧查询让新目录看起来为空；
+- 支持当前目录搜索、按名称/类型/大小/最后修改排序、升降序切换、文件夹优先、列表/网格视图及本地记忆；
+- 支持多选文件和文件夹后批量移动或删除；移动选择器排除被移动目录自身及后代，服务端再次校验循环移动、目标存在、同名目录和最大 20 层深度；
+- 文件夹属性汇总整棵子树的子目录数、文件数和占用空间；文件属性显示类型、字节数、时间和防失联检测时间；
+- 服务端所有目录与文件接口继续按已验证的 Telegram User ID 隔离，只向浏览器返回文件管理需要的公开字段。删除文件时同步调用 Telegram `deleteMessage`，远端删除失败则保留相应索引，递归删除支持报告部分失败；
+- 桌面端使用全屏工作区和可滚动列表/网格，窄屏下工具栏自动换行、卡片双列显示；管理器增加背景模糊，避免原首页内容透出影响阅读；Service Worker 缓存提升至 `instant-tunnel-v30`。
+
+验证记录：
+
+```text
+node --check app.js
+node --check server.js
+node --check server/telegram-drive.js
+# 全部通过
+
+node --test tests/telegram-drive.test.cjs
+# 5/5 通过
+
+node --test tests/*.test.cjs
+# 137/137 通过
+
+git diff --check -- app.js pages/index.html server.js server/telegram-drive.js tests/telegram-drive.test.cjs service-worker.js tests/features-2608B.test.cjs
+# 通过
+```
+
+浏览器验证使用端口 18091、全新的 `.codex-drive-manager-e2e/data` 和本地 Telegram OIDC Mock 用户 `999000001`，未连接正式 Telegram 账号或正式网盘频道。实测完成：打开网盘、Mock 登录、一次创建三级目录、逐级进入、面包屑跳转、目录属性、重命名、跨目录移动、搜索、列表/网格切换、登出，以及重新登录后目录数据仍存在。另使用 390×844 视口验证窄屏布局；控制台无 warning/error。完成后已关闭测试标签页、停止隔离服务并删除临时测试目录。
+
+### 17.10 本轮建议提交日志
+
+Title：
+
+```text
+feat: 完善 Telegram 网盘账号与文件管理能力
+```
+
+Description：
+
+```text
+- 增加 Telegram 网盘账号登出，退出仅清理浏览器身份且保留网盘数据
+- 重做全屏网盘文件管理器，支持搜索、排序、列表/网格、面包屑和多选操作
+- 补齐文件与目录的创建、查看、重命名、移动、属性及删除接口
+- 支持一次创建多级目录、目录树移动、递归删除和二十层深度校验
+- 加强用户隔离、Telegram 远端删除失败保护与桌面/窄屏交互回归测试
+```

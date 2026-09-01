@@ -217,6 +217,29 @@
                 </label>
 
                 <div class="field">
+                    <label for="oidcClientId">Telegram Login OIDC Client ID</label>
+                    <input id="oidcClientId" type="text" inputmode="numeric" autocomplete="off" placeholder="BotFather 提供的数字 Client ID">
+                    <div class="hint">在 BotFather → Login Widget 中取得。该项不同于 Bot username；前台网盘登录使用标准 Authorization Code Flow + PKCE。建议保留默认 RS256（也支持 ES256）；profile scope 不适用于 BotFather 中受限的 EdDSA/ES256K 模式。</div>
+                </div>
+
+                <div class="field">
+                    <label for="oidcClientSecret">Telegram Login OIDC Client Secret</label>
+                    <input id="oidcClientSecret" type="password" autocomplete="new-password" placeholder="留空则保留当前 Client Secret">
+                    <div class="hint" id="oidcClientSecretHint">正在读取当前状态...</div>
+                </div>
+
+                <label class="inline-check">
+                    <input id="clearOidcClientSecret" type="checkbox">
+                    <span>清空已保存的 OIDC Client Secret</span>
+                </label>
+
+                <div class="field">
+                    <label>Telegram Login OIDC 回调地址</label>
+                    <code id="oidcRedirectUri">正在计算...</code>
+                    <div class="hint" id="oidcRedirectUriHint">请把正式站点来源和上面的完整回调地址加入 BotFather → Login Widget → Allowed URLs。系统不会自动修改 BotFather 配置。配置说明见 <a href="https://core.telegram.org/bots/telegram-login" target="_blank" rel="noopener noreferrer">Telegram 官方文档</a>。</div>
+                </div>
+
+                <div class="field">
                     <label for="maxFileSizeMb">服务端媒体处理上限 MB</label>
                     <input id="maxFileSizeMb" name="maxFileSizeMb" type="number" min="1" step="1">
                     <div class="hint">用于 SNS 获取、文件防失联修复等服务端处理。Telegram 官方云 Bot API 的入站下载硬上限为 20MB，不能通过此配置提高。</div>
@@ -226,6 +249,23 @@
                     <label for="backupChatId">文件防失联备份目标</label>
                     <input id="backupChatId" name="backupChatId" type="text" autocomplete="off" placeholder="频道 @username、群组或用户 chat ID">
                     <div class="hint">当前 bot 必须有权向该目标发送文件。仅在修复失效 file_id 时使用。</div>
+                </div>
+
+                <div class="field">
+                    <label for="botApiBaseUrl">自建 Telegram Bot API Server（可选）</label>
+                    <input id="botApiBaseUrl" type="url" autocomplete="off" placeholder="例如 http://127.0.0.1:8081">
+                    <div class="hint">未配置时使用官方云 API（下载 20MB、上传 50MB）；配置官方 Local Bot API Server 后可下载不限大小、上传至 2GB。请先在 BotFather/官方文档完成切换和部署。</div>
+                </div>
+
+                <div class="field">
+                    <label>Telegram 网盘专用存储频道</label>
+                    <div class="hint">默认写入当前指定分区。已有文件写入过的分区会锁定；修改或删除须进行两次确认，避免旧文件索引失联。</div>
+                    <div id="driveChannels" class="channel-list"></div>
+                    <button class="btn" type="button" id="addDriveChannelBtn">＋追加网盘分区频道</button>
+                </div>
+                <div class="field">
+                    <label for="driveMaxFolderDepth">网盘最大虚拟目录层数</label>
+                    <input id="driveMaxFolderDepth" type="number" min="1" max="20" value="20">
                 </div>
 
                 <div class="field">
@@ -275,8 +315,18 @@
         const tokenInput = document.getElementById('botToken');
         const clearTokenInput = document.getElementById('clearToken');
         const tokenHint = document.getElementById('tokenHint');
+        const oidcClientIdInput = document.getElementById('oidcClientId');
+        const oidcClientSecretInput = document.getElementById('oidcClientSecret');
+        const clearOidcClientSecretInput = document.getElementById('clearOidcClientSecret');
+        const oidcClientSecretHint = document.getElementById('oidcClientSecretHint');
+        const oidcRedirectUriEl = document.getElementById('oidcRedirectUri');
+        const oidcRedirectUriHintEl = document.getElementById('oidcRedirectUriHint');
         const maxFileSizeInput = document.getElementById('maxFileSizeMb');
         const backupChatIdInput = document.getElementById('backupChatId');
+        const botApiBaseUrlInput = document.getElementById('botApiBaseUrl');
+        const driveChannelsEl = document.getElementById('driveChannels');
+        const addDriveChannelBtn = document.getElementById('addDriveChannelBtn');
+        const driveMaxFolderDepthInput = document.getElementById('driveMaxFolderDepth');
         const songBaseChannelInput = document.getElementById('songBaseChannel');
         const songProChannelInput = document.getElementById('songProChannel');
         const songUltimateChannelInput = document.getElementById('songUltimateChannel');
@@ -288,6 +338,21 @@
         const reloadWebhookBtn = document.getElementById('reloadWebhookBtn');
         const setWebhookBtn = document.getElementById('setWebhookBtn');
         let tokenConfigured = false;
+        let driveChannels = [];
+        let activeDriveChannelId = '';
+        let driveChannelDangerConfirmed = false;
+        let driveChannelDangerConfirmedTwice = false;
+
+        function renderDriveChannels() {
+            driveChannelsEl.replaceChildren(...driveChannels.map((channel, index) => {
+                const row = document.createElement('div'); row.className = 'row';
+                const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'driveChannel'; radio.checked = channel.id === activeDriveChannelId; radio.onchange = () => { activeDriveChannelId = channel.id; };
+                const input = document.createElement('input'); input.type = 'text'; input.value = channel.id || ''; input.placeholder = '频道 @username 或 chat ID'; input.disabled = Boolean(channel.usedAt); input.oninput = () => { channel.id = input.value.trim(); };
+                const label = document.createElement('span'); label.textContent = channel.usedAt ? '已写入数据，已锁定' : `分区 ${index + 1}`;
+                const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn'; remove.textContent = '删除'; remove.onclick = () => { if (channel.usedAt) { if (!confirm('此分区已有网盘文件，删除会导致旧文件无法定位。确定继续？') || !confirm('再次确认：你已确认旧文件的 Telegram 分区索引会被破坏？')) return; driveChannelDangerConfirmed = true; driveChannelDangerConfirmedTwice = true; } driveChannels = driveChannels.filter(item => item !== channel); if (activeDriveChannelId === channel.id) activeDriveChannelId = driveChannels[0]?.id || ''; renderDriveChannels(); };
+                row.append(radio, input, label, remove); return row;
+            }));
+        }
 
         currentWebhookOriginEl.textContent = location.origin;
 
@@ -336,8 +401,25 @@
             tokenHint.textContent = tokenConfigured
                 ? `当前已配置 token：${config.tokenPreview || '已保存'}。留空保存会继续保留。`
                 : '当前未配置 token。';
+            oidcClientIdInput.value = config.oidcClientId || '';
+            oidcClientSecretInput.value = '';
+            clearOidcClientSecretInput.checked = false;
+            oidcClientSecretHint.textContent = config.oidcClientSecretConfigured
+                ? '当前已配置 Client Secret。出于安全考虑不回显；留空保存会继续保留。'
+                : '当前未配置 OIDC Client Secret。';
+            oidcRedirectUriEl.textContent = config.oidcMockEnabled
+                ? '本地 Mock 模式：无需向 BotFather 登记 localhost'
+                : (config.oidcRedirectUri || `${location.origin}/api/telegram/drive/oidc/callback`);
+            oidcRedirectUriHintEl.innerHTML = config.oidcMockEnabled
+                ? '当前请求来自本机回环地址，系统自动启用本地 Mock；可设置 <code>TELEGRAM_OIDC_MOCK_ENABLED=0</code> 禁用。正式部署仍须在 BotFather 登记正式 HTTPS Origin 与完整回调 URI。'
+                : '请把正式站点来源和上面的完整回调地址加入 BotFather → Login Widget → Allowed URLs。系统不会自动修改 BotFather 配置。配置说明见 <a href="https://core.telegram.org/bots/telegram-login" target="_blank" rel="noopener noreferrer">Telegram 官方文档</a>。';
             maxFileSizeInput.value = Math.max(1, Math.round((Number(config.maxFileSize) || 524288000) / 1024 / 1024));
             backupChatIdInput.value = config.backupChatId || '';
+            botApiBaseUrlInput.value = config.botApiBaseUrl || '';
+            driveChannels = Array.isArray(config.driveChannels) ? config.driveChannels : [];
+            activeDriveChannelId = config.activeDriveChannelId || driveChannels[0]?.id || '';
+            driveMaxFolderDepthInput.value = config.driveMaxFolderDepth || 20;
+            renderDriveChannels();
             const channels = config.songShareChannels || {};
             songBaseChannelInput.value = channels.base || '';
             songProChannelInput.value = channels.pro || '';
@@ -359,8 +441,17 @@
                     body: JSON.stringify({
                         token: clearToken ? '' : token,
                         keepExistingToken: !clearToken && !token && tokenConfigured,
+                        oidcClientId: oidcClientIdInput.value.trim(),
+                        oidcClientSecret: clearOidcClientSecretInput.checked ? '' : oidcClientSecretInput.value.trim(),
+                        clearOidcClientSecret: clearOidcClientSecretInput.checked,
                         maxFileSize: Math.round(maxFileSizeMb * 1024 * 1024),
                         backupChatId: backupChatIdInput.value.trim(),
+                        botApiBaseUrl: botApiBaseUrlInput.value.trim(),
+                        driveChannels,
+                        activeDriveChannelId,
+                        driveChannelDangerConfirmed,
+                        driveChannelDangerConfirmedTwice,
+                        driveMaxFolderDepth: Math.max(1, Math.min(20, Number(driveMaxFolderDepthInput.value || 20))),
                         songShareChannels: {
                             base: songBaseChannelInput.value.trim(),
                             pro: songProChannelInput.value.trim(),
@@ -373,6 +464,8 @@
                     throw new Error(error.error || '保存配置失败');
                 }
                 await loadConfig();
+                driveChannelDangerConfirmed = false;
+                driveChannelDangerConfirmedTwice = false;
                 loadWebhookStatus().catch((err) => {
                     webhookInfoEl.textContent = tokenConfigured ? '暂时无法读取 Telegram Webhook。' : '请先保存 Bot Token。';
                     setWebhookStatus(err.message, 'error');
@@ -386,6 +479,8 @@
         reloadBtn.addEventListener('click', () => {
             loadConfig().catch((err) => setStatus(err.message, 'error'));
         });
+
+        addDriveChannelBtn.addEventListener('click', () => { const channel = { id: '', label: '', createdAt: Date.now(), usedAt: 0 }; driveChannels.push(channel); if (!activeDriveChannelId) activeDriveChannelId = channel.id; renderDriveChannels(); });
 
         reloadWebhookBtn.addEventListener('click', () => {
             loadWebhookStatus().catch((err) => setWebhookStatus(err.message, 'error'));

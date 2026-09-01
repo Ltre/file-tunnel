@@ -59,6 +59,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { spawn, spawnSync } = require('child_process');
 const rateLimit = require('express-rate-limit');
@@ -67,7 +68,10 @@ const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-se
 const { createInfraStore } = require('./server/infra-store');
 const { createVClientControl } = require('./server/vclient-control');
 const { createAdminAuth } = require('./server/admin-auth');
-const { buildTelegramAudioMultipart } = require('./server/telegram-multipart');
+const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart } = require('./server/telegram-multipart');
+const { createTelegramDriveStore } = require('./server/telegram-drive');
+const { createTelegramOidcClient } = require('./server/telegram-oidc');
+const { createTelegramOidcMock } = require('./server/telegram-oidc-mock');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
 const {
     createYoutubePremiumService,
@@ -93,7 +97,7 @@ const {
 const app = express();
 const PROJECT_CONFIG_PATH = path.join(__dirname, 'tunnel.config.json');
 const MANIFEST_HOSTS_PATH = path.join(__dirname, 'manifest.hosts.json');
-const SERVER_DATA_DIR = path.join(__dirname, '.tunnel-data');
+const SERVER_DATA_DIR = path.resolve(process.env.TUNNEL_DATA_DIR || path.join(__dirname, '.tunnel-data'));
 const TELEGRAM_ASSET_DIR = path.join(SERVER_DATA_DIR, 'telegram-assets');
 const SNS_MEDIA_WORK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-work');
 const SNS_MEDIA_TASK_DIR = path.join(SERVER_DATA_DIR, 'sns-media-tasks');
@@ -101,6 +105,8 @@ const YT_DLP_CACHE_DIR = path.join(SERVER_DATA_DIR, 'yt-dlp-cache');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
+const TELEGRAM_DRIVE_COOKIE = 'drop2tunnel_telegram_drive';
+const TELEGRAM_DRIVE_OIDC_STATE_COOKIE = 'drop2tunnel_telegram_oidc_state';
 const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
 const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
 const YOUTUBE_PREMIUM_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'youtube-premium-metadata-cache.json');
@@ -189,7 +195,7 @@ const snsDownloadCoverJobs = new Map();
 
 // ==================== 安全配置 ====================
 
-const WEB_PORT = Number(projectConfig.serverPort || 80);
+const WEB_PORT = Number(process.env.PORT || projectConfig.serverPort || 80);
 const webServer = http.createServer(app);
 
 function splitEnvList(value) {
@@ -279,6 +285,16 @@ const TELEGRAM_REMARK_MAX_LENGTH = 2000;
 const TELEGRAM_CLOUD_GET_FILE_MAX_SIZE = 20 * 1024 * 1024;
 const TELEGRAM_GET_FILE_DOC_URL = 'https://core.telegram.org/bots/api#getfile';
 let telegramConfig = loadTelegramBotConfig();
+const telegramOidcClient = createTelegramOidcClient();
+const telegramOidcMock = createTelegramOidcMock({
+    enabled: process.env.TELEGRAM_OIDC_MOCK_ENABLED !== '0',
+    defaultUserId: process.env.TELEGRAM_OIDC_MOCK_USER_ID
+});
+const telegramOidcFlows = new Map();
+const telegramDriveStore = createTelegramDriveStore({
+    dataDir: SERVER_DATA_DIR,
+    maxFileSize: () => getTelegramDriveUploadLimit()
+});
 
 function normalizeTelegramBotConfig(config = {}) {
     const token = sanitizeString(config.token || '', 260);
@@ -290,13 +306,26 @@ function normalizeTelegramBotConfig(config = {}) {
         pro: sanitizeString(config.songShareChannels?.pro || '', 120),
         ultimate: sanitizeString(config.songShareChannels?.ultimate || '', 120)
     };
+    const driveChannels = (Array.isArray(config.driveChannels) ? config.driveChannels : []).slice(0, 30)
+        .map((item, index) => ({ id: sanitizeString(typeof item === 'string' ? item : item?.id || '', 120), label: sanitizeString(item?.label || '', 100), createdAt: Number(item?.createdAt) || Date.now(), usedAt: Number(item?.usedAt) || 0, index }))
+        .filter(item => item.id).map(({ index, ...item }) => item);
+    const activeDriveChannelId = sanitizeString(config.activeDriveChannelId || driveChannels[0]?.id || '', 120);
+    const botApiBaseUrl = sanitizeString(config.botApiBaseUrl || '', 300).replace(/\/+$/, '');
+    const oidcClientId = sanitizeString(config.oidcClientId || '', 80);
+    const oidcClientSecret = sanitizeString(config.oidcClientSecret || '', 500);
     return {
         enabled: Boolean(token),
         token,
         webhookSecret,
         maxFileSize,
         backupChatId,
-        songShareChannels
+        songShareChannels,
+        driveChannels,
+        activeDriveChannelId: driveChannels.some(item => item.id === activeDriveChannelId) ? activeDriveChannelId : (driveChannels[0]?.id || ''),
+        driveMaxFolderDepth: Math.max(1, Math.min(20, Number(config.driveMaxFolderDepth || 20))),
+        botApiBaseUrl: /^https?:\/\//i.test(botApiBaseUrl) ? botApiBaseUrl : '',
+        oidcClientId: /^\d+$/.test(oidcClientId) ? oidcClientId : '',
+        oidcClientSecret
     };
 }
 
@@ -552,6 +581,33 @@ function getTelegramWebhookSecret() {
 function getTelegramMaxFileSize() {
     return Math.max(1, Number(telegramConfig.maxFileSize || 500 * 1024 * 1024));
 }
+
+function isLocalTelegramBotApi() { return Boolean(telegramConfig.botApiBaseUrl); }
+function getTelegramBotApiBaseUrl() { return telegramConfig.botApiBaseUrl || 'https://api.telegram.org'; }
+function getTelegramDriveUploadLimit() { return isLocalTelegramBotApi() ? 2000 * 1024 * 1024 : 50 * 1024 * 1024; }
+function getTelegramDriveActiveChannel() { return (telegramConfig.driveChannels || []).find(item => item.id === telegramConfig.activeDriveChannelId) || null; }
+function isTelegramOidcConfigured(config = telegramConfig) { return Boolean(config.oidcClientId && config.oidcClientSecret); }
+function getTelegramDriveSessionKey(req) {
+    if (req && isTelegramOidcMockRequest(req)) return telegramOidcMock.getSessionSecret();
+    const primarySecret = telegramConfig.oidcClientSecret || getTelegramBotToken();
+    if (!primarySecret) return null;
+    return crypto.createHash('sha256').update(`${primarySecret}:${getTelegramWebhookSecret() || telegramConfig.oidcClientId || 'telegram-drive'}`).digest();
+}
+function signTelegramDriveIdentity(req, identity) {
+    const body = Buffer.from(JSON.stringify({ id: String(identity.id), name: String(identity.name || ''), username: String(identity.username || ''), exp: Date.now() + 7 * 24 * 60 * 60 * 1000 })).toString('base64url');
+    const key = getTelegramDriveSessionKey(req);
+    if (!key) throw new Error('telegram-drive-session-key-missing');
+    return `${body}.${crypto.createHmac('sha256', key).update(body).digest('base64url')}`;
+}
+function getTelegramDriveIdentity(req) {
+    const raw = String(req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith(`${TELEGRAM_DRIVE_COOKIE}=`))?.slice(TELEGRAM_DRIVE_COOKIE.length + 1) || '';
+    const key = getTelegramDriveSessionKey(req);
+    const [body, signature] = raw.split('.'); if (!body || !signature || !key) return null;
+    const expected = crypto.createHmac('sha256', key).update(body).digest('base64url');
+    if (expected.length !== signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) return null;
+    try { const value = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); return value?.id && Number(value.exp) > Date.now() ? value : null; } catch (_) { return null; }
+}
+function requireTelegramDriveIdentity(req, res, next) { const identity = getTelegramDriveIdentity(req); if (!identity) return res.status(401).json({ error: 'telegram-drive-login-required' }); req.telegramDriveIdentity = identity; next(); }
 
 function loadTelegramChatTunnels() {
     try {
@@ -1659,6 +1715,7 @@ app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, async
 
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
     const config = loadTelegramBotConfig();
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
         enabled: config.enabled,
         tokenConfigured: Boolean(config.token),
@@ -1667,9 +1724,42 @@ app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
         webhookSecretPreview: config.webhookSecret ? `${config.webhookSecret.slice(0, 6)}...${config.webhookSecret.slice(-4)}` : '',
         maxFileSize: config.maxFileSize,
         backupChatId: config.backupChatId || '',
-        songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' }
+        songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' },
+        driveChannels: config.driveChannels || [],
+        activeDriveChannelId: config.activeDriveChannelId || '',
+        driveMaxFolderDepth: config.driveMaxFolderDepth || 20,
+        botApiBaseUrl: config.botApiBaseUrl || '',
+        oidcClientId: config.oidcClientId || '',
+        oidcClientSecretConfigured: Boolean(config.oidcClientSecret),
+        oidcRedirectUri: getTelegramOidcRedirectUri(req),
+        oidcMockEnabled: isTelegramOidcMockRequest(req)
     });
 });
+
+function getTelegramPublicOrigin(req) {
+    const protocol = String(req.get('x-forwarded-proto') || req.protocol || '').split(',')[0].trim().toLowerCase();
+    const host = String(req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+    if (!['http', 'https'].includes(protocol) || !host) throw new Error('telegram-public-origin-invalid');
+    const parsed = new URL(`${protocol}://${host}`);
+    if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('telegram-public-origin-invalid');
+    return parsed.origin;
+}
+
+function getTelegramOidcRedirectUri(req) {
+    return `${getTelegramPublicOrigin(req)}/api/telegram/drive/oidc/callback`;
+}
+
+function isTelegramOidcMockRequest(req) {
+    return telegramOidcMock.isAllowed({
+        publicOrigin: getTelegramPublicOrigin(req),
+        remoteAddress: req.socket?.remoteAddress
+    });
+}
+
+function getTelegramOidcLoginMode(req, config = telegramConfig) {
+    if (isTelegramOidcMockRequest(req)) return 'mock';
+    return isTelegramOidcConfigured(config) ? 'telegram' : '';
+}
 
 function getTelegramWebhookTarget(req, webhookSecret) {
     const protocol = String(req.get('x-forwarded-proto') || '').split(',')[0].trim() || req.protocol;
@@ -1724,6 +1814,20 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
         const keepExistingToken = req.body?.keepExistingToken === true;
         const token = sanitizeString(req.body?.token || '', 260);
         const currentConfig = loadTelegramBotConfig();
+        const requestedOidcClientId = sanitizeString(req.body?.oidcClientId ?? currentConfig.oidcClientId ?? '', 80);
+        if (requestedOidcClientId && !/^\d+$/.test(requestedOidcClientId)) return res.status(422).json({ ok: false, error: 'telegram-oidc-client-id-invalid' });
+        const requestedOidcClientSecret = sanitizeString(req.body?.oidcClientSecret || '', 500);
+        const oidcClientSecret = req.body?.clearOidcClientSecret === true
+            ? ''
+            : (requestedOidcClientSecret || currentConfig.oidcClientSecret || '');
+        const requestedDriveChannels = Array.isArray(req.body?.driveChannels) ? req.body.driveChannels : currentConfig.driveChannels || [];
+        const requestedDriveIds = new Set(requestedDriveChannels.map(item => sanitizeString(typeof item === 'string' ? item : item?.id || '', 120)).filter(Boolean));
+        const changedLockedDriveChannel = (currentConfig.driveChannels || []).some(channel =>
+            (Number(channel.usedAt) > 0 || telegramDriveStore.hasChannel(channel.id)) && !requestedDriveIds.has(channel.id)
+        );
+        if (changedLockedDriveChannel && !(req.body?.driveChannelDangerConfirmed === true && req.body?.driveChannelDangerConfirmedTwice === true)) {
+            return res.status(409).json({ ok: false, error: 'telegram-drive-used-channel-double-confirm-required' });
+        }
         const finalToken = token || (keepExistingToken ? currentConfig.token : '');
         // Saving local configuration must never rotate, register or delete a webhook.
         // Preserve the route secret even when the token is edited or cleared so another
@@ -1739,7 +1843,13 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
                 base: req.body?.songShareChannels?.base ?? currentConfig.songShareChannels?.base ?? '',
                 pro: req.body?.songShareChannels?.pro ?? currentConfig.songShareChannels?.pro ?? '',
                 ultimate: req.body?.songShareChannels?.ultimate ?? currentConfig.songShareChannels?.ultimate ?? ''
-            }
+            },
+            driveChannels: req.body?.driveChannels ?? currentConfig.driveChannels ?? [],
+            activeDriveChannelId: req.body?.activeDriveChannelId ?? currentConfig.activeDriveChannelId ?? '',
+            driveMaxFolderDepth: req.body?.driveMaxFolderDepth ?? currentConfig.driveMaxFolderDepth ?? 20,
+            botApiBaseUrl: req.body?.botApiBaseUrl ?? currentConfig.botApiBaseUrl ?? '',
+            oidcClientId: requestedOidcClientId,
+            oidcClientSecret
         });
         if (nextConfig.enabled) await telegramApi('getMe', {}, nextConfig.token);
         saveTelegramBotConfig(nextConfig);
@@ -1752,13 +1862,312 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             webhookSecretConfigured: Boolean(config.webhookSecret),
             maxFileSize: config.maxFileSize,
             webhookUnchanged: true,
-            songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' }
+            songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' },
+            driveChannels: config.driveChannels || [], activeDriveChannelId: config.activeDriveChannelId || '',
+            driveMaxFolderDepth: config.driveMaxFolderDepth || 20, botApiBaseUrl: config.botApiBaseUrl || '',
+            oidcClientId: config.oidcClientId || '', oidcClientSecretConfigured: Boolean(config.oidcClientSecret),
+            oidcConfigured: isTelegramOidcConfigured(config), oidcRedirectUri: getTelegramOidcRedirectUri(req),
+            oidcMockEnabled: isTelegramOidcMockRequest(req)
         });
     } catch (err) {
         console.error('save telegram config error:', err);
         res.status(500).json({ ok: false, error: 'save-telegram-config-failed' });
     }
 });
+
+async function sendTelegramDriveFiles(channelId, files, caption = '') {
+    const result = [];
+    for (let offset = 0; offset < files.length; offset += 10) {
+        const batch = files.slice(offset, offset + 10);
+        const request = buildTelegramDocumentsMultipart({ chatId: channelId, caption: offset === 0 ? caption : '', files: batch });
+        const payload = await telegramFetchJson(request.method, { method: 'POST', headers: { 'Content-Type': request.contentType, 'Content-Length': String(request.contentLength) }, body: request.body, duplex: 'half' }, { operation: `telegram-drive-${request.method}` });
+        const messages = Array.isArray(payload.result) ? payload.result : [payload.result];
+        messages.forEach((message, index) => {
+            const document = message?.document || message?.audio || message?.video || {};
+            result.push({ messageId: message?.message_id || 0, mediaGroupId: message?.media_group_id || '', fileId: document.file_id || '', fileUniqueId: document.file_unique_id || '' });
+        });
+    }
+    return result;
+}
+
+const TELEGRAM_OIDC_FLOW_TTL_MS = 10 * 60 * 1000;
+const TELEGRAM_OIDC_MAX_PENDING_FLOWS = 2000;
+
+function setTelegramOidcNoStore(res) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+}
+
+function getRequestCookie(req, name) {
+    const raw = String(req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith(`${name}=`));
+    if (!raw) return '';
+    try { return decodeURIComponent(raw.slice(name.length + 1)); } catch (_) { return ''; }
+}
+
+function isSecurePublicRequest(req) {
+    return getTelegramPublicOrigin(req).startsWith('https://');
+}
+
+function cleanTelegramOidcFlows() {
+    const now = Date.now();
+    for (const [state, flow] of telegramOidcFlows) {
+        if (flow.expiresAt <= now) telegramOidcFlows.delete(state);
+    }
+    while (telegramOidcFlows.size >= TELEGRAM_OIDC_MAX_PENDING_FLOWS) {
+        telegramOidcFlows.delete(telegramOidcFlows.keys().next().value);
+    }
+}
+
+function constantTimeStringEqual(left, right) {
+    const leftBuffer = Buffer.from(String(left || ''));
+    const rightBuffer = Buffer.from(String(right || ''));
+    return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function setTelegramDriveIdentityCookie(req, res, identity) {
+    const secure = isSecurePublicRequest(req);
+    res.append('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=${signTelegramDriveIdentity(req, identity)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secure ? '; Secure' : ''}`);
+}
+
+function clearTelegramOidcStateCookie(req, res) {
+    const secure = isSecurePublicRequest(req);
+    res.append('Set-Cookie', `${TELEGRAM_DRIVE_OIDC_STATE_COOKIE}=; Path=/api/telegram/drive/oidc; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`);
+}
+
+function serializeTelegramOidcInlineValue(value) {
+    return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '') {
+    const payload = { type: 'telegram-drive-oidc-result', result, error: sanitizeString(error, 120) };
+    const success = result === 'success';
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    res.status(200).type('html').send(`<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title></head>
+<body style="font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#26324d">
+<main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">正在通知原页面，本窗口将自动关闭…</p><button type="button" onclick="window.close()">关闭窗口</button></main>
+<script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};try{if(window.opener&&!window.opener.closed)window.opener.postMessage(payload,targetOrigin);}finally{setTimeout(()=>window.close(),60);setTimeout(()=>{document.getElementById('telegramOidcPopupStatus').textContent='已通知原页面；如果窗口没有自动关闭，请手动关闭。';},500);}})();</script>
+</body></html>`);
+}
+
+app.get('/api/telegram/drive/oidc/start', (req, res) => {
+    setTelegramOidcNoStore(res);
+    const config = loadTelegramBotConfig();
+    try {
+        const mockEnabled = isTelegramOidcMockRequest(req);
+        if (!mockEnabled && !isTelegramOidcConfigured(config)) return res.status(503).json({ error: 'telegram-oidc-not-configured' });
+        const redirectUri = getTelegramOidcRedirectUri(req);
+        const authorization = mockEnabled
+            ? telegramOidcMock.createAuthorizationRequest({ publicOrigin: getTelegramPublicOrigin(req) })
+            : telegramOidcClient.createAuthorizationRequest({ clientId: config.oidcClientId, redirectUri });
+        cleanTelegramOidcFlows();
+        telegramOidcFlows.set(authorization.state, {
+            mode: mockEnabled ? 'mock' : 'telegram',
+            clientId: mockEnabled ? '' : config.oidcClientId,
+            codeVerifier: authorization.codeVerifier,
+            nonce: authorization.nonce,
+            redirectUri,
+            openerOrigin: getTelegramPublicOrigin(req),
+            expiresAt: Date.now() + TELEGRAM_OIDC_FLOW_TTL_MS
+        });
+        const secure = isSecurePublicRequest(req);
+        res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_OIDC_STATE_COOKIE}=${authorization.state}; Path=/api/telegram/drive/oidc; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`);
+        res.redirect(302, authorization.url);
+    } catch (error) {
+        console.warn('start Telegram OIDC login failed:', error.message);
+        res.status(422).json({ error: 'telegram-oidc-start-failed' });
+    }
+});
+
+app.get('/api/telegram/drive/oidc/mock', (req, res) => {
+    setTelegramOidcNoStore(res);
+    if (!isTelegramOidcMockRequest(req)) return res.status(404).end();
+    cleanTelegramOidcFlows();
+    const state = String(req.query?.state || '');
+    const flow = telegramOidcFlows.get(state);
+    const stateCookie = getRequestCookie(req, TELEGRAM_DRIVE_OIDC_STATE_COOKIE);
+    if (!flow || flow.mode !== 'mock' || flow.expiresAt <= Date.now() || !constantTimeStringEqual(state, stateCookie)) {
+        return res.status(400).type('html').send(telegramOidcMock.renderAuthorizationPage({ state: '', error: 'Mock 登录状态无效或已过期，请关闭窗口后重试。' }));
+    }
+    res.type('html').send(telegramOidcMock.renderAuthorizationPage({ state }));
+});
+
+app.post('/api/telegram/drive/oidc/mock/authorize', express.urlencoded({ extended: false, limit: '4kb' }), (req, res) => {
+    setTelegramOidcNoStore(res);
+    if (!isTelegramOidcMockRequest(req)) return res.status(404).end();
+    cleanTelegramOidcFlows();
+    const state = String(req.body?.state || '');
+    const flow = telegramOidcFlows.get(state);
+    const stateCookie = getRequestCookie(req, TELEGRAM_DRIVE_OIDC_STATE_COOKIE);
+    if (!flow || flow.mode !== 'mock' || flow.expiresAt <= Date.now() || !constantTimeStringEqual(state, stateCookie)) {
+        return res.status(400).type('html').send(telegramOidcMock.renderAuthorizationPage({ state: '', error: 'Mock 登录状态无效或已过期，请关闭窗口后重试。' }));
+    }
+    try {
+        const identity = telegramOidcMock.parseIdentity(req.body?.telegramUserId);
+        const callback = new URL('/api/telegram/drive/oidc/callback', flow.openerOrigin);
+        callback.searchParams.set('state', state);
+        callback.searchParams.set('mock_user_id', identity.id);
+        res.redirect(303, `${callback.pathname}${callback.search}`);
+    } catch (_) {
+        res.status(422).type('html').send(telegramOidcMock.renderAuthorizationPage({ state, error: 'Telegram User ID 必须是 1 到 20 位数字。' }));
+    }
+});
+
+app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
+    setTelegramOidcNoStore(res);
+    cleanTelegramOidcFlows();
+    const state = String(req.query?.state || '');
+    const stateCookie = getRequestCookie(req, TELEGRAM_DRIVE_OIDC_STATE_COOKIE);
+    const flow = telegramOidcFlows.get(state);
+    if (flow) telegramOidcFlows.delete(state);
+    clearTelegramOidcStateCookie(req, res);
+    if (!flow || flow.expiresAt <= Date.now() || !constantTimeStringEqual(state, stateCookie)) {
+        return sendTelegramOidcPopupCompletion(res, getTelegramPublicOrigin(req), 'error', '登录状态无效或已过期');
+    }
+    if (req.query?.error) return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'error', String(req.query.error));
+    try {
+        if (flow.mode === 'mock') {
+            if (!isTelegramOidcMockRequest(req)) throw new Error('telegram-oidc-mock-not-allowed');
+            const identity = telegramOidcMock.parseIdentity(req.query?.mock_user_id);
+            setTelegramDriveIdentityCookie(req, res, identity);
+            return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
+        }
+        const config = loadTelegramBotConfig();
+        if (!isTelegramOidcConfigured(config) || config.oidcClientId !== flow.clientId) throw new Error('telegram-oidc-configuration-changed');
+        const tokens = await telegramOidcClient.exchangeCode({
+            clientId: config.oidcClientId,
+            clientSecret: config.oidcClientSecret,
+            code: String(req.query?.code || ''),
+            codeVerifier: flow.codeVerifier,
+            redirectUri: flow.redirectUri
+        });
+        const claims = await telegramOidcClient.verifyIdToken(tokens.id_token, { clientId: config.oidcClientId, nonce: flow.nonce });
+        const telegramUserId = String(claims.id || claims.sub || '');
+        if (!/^\d+$/.test(telegramUserId)) throw new Error('telegram-oidc-user-id-invalid');
+        const identity = {
+            id: telegramUserId,
+            name: sanitizeString(claims.name || [claims.given_name, claims.family_name].filter(Boolean).join(' '), 160),
+            username: sanitizeString(claims.preferred_username || '', 80)
+        };
+        setTelegramDriveIdentityCookie(req, res, identity);
+        sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
+    } catch (error) {
+        console.warn('complete Telegram OIDC login failed:', error.message);
+        sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'error', error.message);
+    }
+});
+
+app.post('/api/telegram/drive/logout', (req, res) => { res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`); res.json({ ok: true }); });
+app.get('/api/telegram/drive/me', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    const identity = getTelegramDriveIdentity(req);
+    const oidcMode = getTelegramOidcLoginMode(req);
+    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: isLocalTelegramBotApi(), uploadLimit: getTelegramDriveUploadLimit() });
+});
+
+function getPublicTelegramDriveFile(item) {
+    return item ? {
+        id: item.id, kind: 'file', name: item.name, type: item.type, size: item.size,
+        folderPath: item.folderPath || '', createdAt: item.createdAt, updatedAt: item.updatedAt,
+        lastCheckedAt: item.lastCheckedAt || 0, repairedAt: item.repairedAt || 0
+    } : null;
+}
+
+async function deleteTelegramDriveRemoteFile(item) {
+    if (!item?.channelId || !item?.messageId) return;
+    await telegramApi('deleteMessage', { chat_id: item.channelId, message_id: item.messageId });
+}
+
+app.get('/api/telegram/drive/list', requireTelegramDriveIdentity, (req, res) => {
+    try {
+        const result = telegramDriveStore.list(req.telegramDriveIdentity.id, req.query.path || '');
+        res.json({ ...result, files: result.files.map(getPublicTelegramDriveFile) });
+    } catch (error) { res.status(422).json({ error: error.message }); }
+});
+app.post('/api/telegram/drive/directories', requireTelegramDriveIdentity, (req, res) => { try { res.status(201).json(telegramDriveStore.createDirectory(req.telegramDriveIdentity.id, req.body?.path || '', telegramConfig.driveMaxFolderDepth)); } catch (error) { res.status(422).json({ error: error.message }); } });
+app.get('/api/telegram/drive/directories', requireTelegramDriveIdentity, (req, res) => res.json({ directories: telegramDriveStore.listDirectories(req.telegramDriveIdentity.id) }));
+app.get('/api/telegram/drive/directories/properties', requireTelegramDriveIdentity, (req, res) => {
+    const directory = telegramDriveStore.getDirectory(req.telegramDriveIdentity.id, req.query.path || '');
+    if (!directory) return res.status(404).json({ error: 'telegram-drive-folder-not-found' });
+    res.json(directory);
+});
+app.patch('/api/telegram/drive/directories', requireTelegramDriveIdentity, (req, res) => {
+    try {
+        const ownerId = req.telegramDriveIdentity.id;
+        const folderPath = req.body?.path || '';
+        const result = Object.prototype.hasOwnProperty.call(req.body || {}, 'destinationPath')
+            ? telegramDriveStore.moveDirectory(ownerId, folderPath, req.body.destinationPath || '', telegramConfig.driveMaxFolderDepth, req.body?.name || '')
+            : telegramDriveStore.renameDirectory(ownerId, folderPath, req.body?.name || '', telegramConfig.driveMaxFolderDepth);
+        res.json(result);
+    } catch (error) { res.status(422).json({ error: error.message }); }
+});
+app.delete('/api/telegram/drive/directories', requireTelegramDriveIdentity, async (req, res) => {
+    try {
+        const ownerId = req.telegramDriveIdentity.id;
+        const folderPath = req.query?.path || '';
+        const recursive = String(req.query?.recursive || '') === 'true';
+        const tree = telegramDriveStore.getDirectoryTree(ownerId, folderPath);
+        if (!tree) return res.status(404).json({ error: 'telegram-drive-folder-not-found' });
+        if (!recursive && (tree.files.length || tree.directories.length > 1)) return res.status(409).json({ error: 'telegram-drive-folder-not-empty' });
+        const deletedIds = [];
+        const failures = [];
+        for (const item of tree.files) {
+            try { await deleteTelegramDriveRemoteFile(item); deletedIds.push(item.id); }
+            catch (error) { failures.push({ id: item.id, name: item.name, error: String(error.message || 'telegram-delete-failed') }); }
+        }
+        telegramDriveStore.removeMany(ownerId, deletedIds);
+        if (failures.length) return res.status(502).json({ error: 'telegram-drive-delete-partial', deletedFiles: deletedIds.length, failures });
+        res.json({ ok: true, ...telegramDriveStore.removeDirectory(ownerId, folderPath, recursive) });
+    } catch (error) { res.status(422).json({ error: error.message }); }
+});
+app.get('/api/telegram/drive/files/:id', requireTelegramDriveIdentity, (req, res) => {
+    const item = telegramDriveStore.getFileProperties(req.telegramDriveIdentity.id, req.params.id);
+    if (!item) return res.status(404).json({ error: 'telegram-drive-file-not-found' });
+    res.json(getPublicTelegramDriveFile(item));
+});
+app.patch('/api/telegram/drive/files/:id', requireTelegramDriveIdentity, (req, res) => {
+    try {
+        const ownerId = req.telegramDriveIdentity.id;
+        let item = telegramDriveStore.get(ownerId, req.params.id);
+        if (!item) return res.status(404).json({ error: 'telegram-drive-file-not-found' });
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'folderPath')) item = telegramDriveStore.moveFile(ownerId, item.id, req.body.folderPath || '', telegramConfig.driveMaxFolderDepth);
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'name')) item = telegramDriveStore.renameFile(ownerId, item.id, req.body.name || '');
+        res.json(getPublicTelegramDriveFile(item));
+    } catch (error) { res.status(422).json({ error: error.message }); }
+});
+app.delete('/api/telegram/drive/files/:id', requireTelegramDriveIdentity, async (req, res) => {
+    const ownerId = req.telegramDriveIdentity.id;
+    const item = telegramDriveStore.get(ownerId, req.params.id);
+    if (!item) return res.status(404).json({ error: 'telegram-drive-file-not-found' });
+    try {
+        await deleteTelegramDriveRemoteFile(item);
+        telegramDriveStore.remove(ownerId, item.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(502).json({ error: String(error.message || 'telegram-drive-delete-failed') }); }
+});
+app.post('/api/telegram/drive/uploads', requireTelegramDriveIdentity, (req, res) => {
+    const channel = getTelegramDriveActiveChannel(); if (!channel) return res.status(409).json({ error: 'telegram-drive-channel-not-configured' });
+    try { const job = telegramDriveStore.begin({ owner: req.telegramDriveIdentity, sessionId: req.body?.sessionId, sourceMessageId: req.body?.sourceMessageId, folderPath: req.body?.folderPath, files: req.body?.files, maxDepth: telegramConfig.driveMaxFolderDepth }); res.status(201).json({ uploadId: job.id, uploadLimit: getTelegramDriveUploadLimit() }); } catch (error) { res.status(422).json({ error: error.message }); }
+});
+app.put('/api/telegram/drive/uploads/:uploadId/files/:index', requireTelegramDriveIdentity, async (req, res) => { try { if (!telegramDriveStore.ownsUpload(req.telegramDriveIdentity.id, req.params.uploadId)) return res.status(404).json({ error: 'telegram-drive-upload-not-found' }); res.json(await telegramDriveStore.receive(req.params.uploadId, req.params.index, req)); } catch (error) { res.status(422).json({ error: error.message }); } });
+app.post('/api/telegram/drive/uploads/:uploadId/finish', requireTelegramDriveIdentity, async (req, res) => {
+    const channel = getTelegramDriveActiveChannel(); if (!channel) return res.status(409).json({ error: 'telegram-drive-channel-not-configured' });
+    try { const job = telegramDriveStore.finish(req.params.uploadId); if (job.owner.id !== req.telegramDriveIdentity.id) throw new Error('telegram-drive-upload-not-found'); const sent = await sendTelegramDriveFiles(channel.id, job.files, `Drop2Tunnel 网盘 · ${job.owner.name || job.owner.id} · ${job.folderPath || '根目录'}`); const items = telegramDriveStore.commit(job.id, channel.id, sent); const current = loadTelegramBotConfig(); current.driveChannels = (current.driveChannels || []).map(item => item.id === channel.id ? { ...item, usedAt: Date.now() } : item); saveTelegramBotConfig(current); res.json({ ok: true, items }); } catch (error) { res.status(422).json({ error: String(error.message || 'telegram-drive-upload-failed') }); }
+});
+app.get('/api/telegram/drive/files/:id/check', requireTelegramDriveIdentity, async (req, res) => { const item = telegramDriveStore.get(req.telegramDriveIdentity.id, req.params.id); if (!item) return res.status(404).json({ error: 'telegram-drive-file-not-found' }); try { await telegramApi('getFile', { file_id: item.fileId }); telegramDriveStore.update(item.ownerId, item.id, { lastCheckedAt: Date.now() }); res.json({ ok: true, valid: true }); } catch (error) { res.json({ ok: true, valid: false, error: String(error.message || 'telegram-file-invalid') }); } });
+app.get('/api/telegram/drive/files/:id/download', requireTelegramDriveIdentity, async (req, res) => {
+    const item = telegramDriveStore.get(req.telegramDriveIdentity.id, req.params.id); if (!item) return res.status(404).json({ error: 'telegram-drive-file-not-found' });
+    try {
+        const file = await telegramApi('getFile', { file_id: item.fileId }); if (!file?.file_path) throw new Error('telegram-file-path-missing');
+        res.type(item.type || 'application/octet-stream'); res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.name)}`); res.setHeader('Cache-Control', 'private, no-store');
+        if (isLocalTelegramBotApi() && path.isAbsolute(file.file_path) && fs.existsSync(file.file_path)) return res.sendFile(file.file_path);
+        const response = await fetch(`${getTelegramBotApiBaseUrl()}/file/bot${getTelegramBotToken()}/${file.file_path}`); if (!response.ok || !response.body) throw new Error(`telegram-file-download-${response.status}`); Readable.fromWeb(response.body).pipe(res);
+    } catch (error) { if (!res.headersSent) res.status(502).json({ error: String(error.message || 'telegram-drive-download-failed') }); else res.destroy(error); }
+});
+app.post('/api/telegram/drive/files/:id/repair', requireTelegramDriveIdentity, async (req, res) => { const item = telegramDriveStore.get(req.telegramDriveIdentity.id, req.params.id); const channel = getTelegramDriveActiveChannel(); if (!item || !channel) return res.status(404).json({ error: 'telegram-drive-file-not-found' }); const expected = Number(req.get('X-Drop2Tunnel-File-Size')) || 0; if (expected !== Number(item.size) || expected > getTelegramDriveUploadLimit()) return res.status(422).json({ error: 'telegram-drive-repair-size-invalid' }); try { const job = telegramDriveStore.begin({ owner: req.telegramDriveIdentity, sessionId: item.sourceSessionId, sourceMessageId: item.sourceMessageId, folderPath: item.folderPath, files: [{ name: item.name, type: item.type, size: item.size, sourceAssetId: item.sourceAssetId }], maxDepth: telegramConfig.driveMaxFolderDepth }); await telegramDriveStore.receive(job.id, 0, req); const sent = await sendTelegramDriveFiles(channel.id, job.files, `Drop2Tunnel 网盘修复 · ${item.folderPath || '根目录'}`); telegramDriveStore.abort(job.id); const remote = sent[0] || {}; telegramDriveStore.update(item.ownerId, item.id, { channelId: channel.id, messageId: remote.messageId, mediaGroupId: remote.mediaGroupId, fileUniqueId: remote.fileUniqueId, fileIdHistory: [...(item.fileIdHistory || []), item.fileId].filter(Boolean).slice(-20), fileId: remote.fileId, repairedAt: Date.now() }); res.json({ ok: true }); } catch (error) { res.status(422).json({ error: String(error.message || 'telegram-drive-repair-failed') }); } });
 
 app.get('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -4851,10 +5260,11 @@ function describeTelegramNetworkError(error) {
 async function telegramFetchJson(method, init = {}, options = {}) {
     const token = options.token || getTelegramBotToken();
     if (!token) throw new Error('telegram-bot-disabled');
-    const endpoint = `https://api.telegram.org/bot[redacted]/${method}`;
+    const apiBase = options.apiBaseUrl || getTelegramBotApiBaseUrl();
+    const endpoint = `${apiBase}/bot[redacted]/${method}`;
     let response;
     try {
-        response = await fetch(`https://api.telegram.org/bot${token}/${method}`, init);
+        response = await fetch(`${apiBase}/bot${token}/${method}`, init);
     } catch (cause) {
         const error = new Error(describeTelegramNetworkError(cause));
         error.cause = cause;
@@ -5058,10 +5468,14 @@ async function downloadTelegramFile(fileId, maxSize = TELEGRAM_CLOUD_GET_FILE_MA
         err.fileSize = expectedSize;
         throw err;
     }
-    const endpoint = 'https://api.telegram.org/file/bot[redacted]/<file_path>';
+    if (isLocalTelegramBotApi() && path.isAbsolute(file.file_path) && fs.existsSync(file.file_path)) {
+        if (expectedSize > maxSize) { const err = new Error('telegram-file-too-large-before-download'); err.fileSize = expectedSize; throw err; }
+        return fs.readFileSync(file.file_path);
+    }
+    const endpoint = `${getTelegramBotApiBaseUrl()}/file/bot[redacted]/<file_path>`;
     let response;
     try {
-        response = await fetch(`https://api.telegram.org/file/bot${getTelegramBotToken()}/${file.file_path}`);
+        response = await fetch(`${getTelegramBotApiBaseUrl()}/file/bot${getTelegramBotToken()}/${file.file_path}`);
     } catch (cause) {
         const error = new Error(describeTelegramNetworkError(cause));
         error.cause = cause;

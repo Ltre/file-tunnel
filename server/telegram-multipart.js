@@ -19,6 +19,32 @@ function getAudioContentType(fileName = '') {
     return 'application/octet-stream';
 }
 
+function getDocumentContentType(fileName = '', fallback = '') {
+    return String(fallback || getAudioContentType(fileName) || 'application/octet-stream');
+}
+
+function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onProgress }) {
+    if (!chatId || !files.length) throw new Error('telegram-drive-multipart-invalid');
+    const normalized = files.map((file, index) => ({
+        fieldName: files.length === 1 ? 'document' : `file${index}`,
+        fileName: file.name || `file-${index + 1}`,
+        path: file.path,
+        type: getDocumentContentType(file.name, file.type),
+        size: fs.statSync(file.path).size
+    }));
+    const fields = files.length === 1
+        ? { chat_id: chatId, caption }
+        : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, ...(index === 0 && caption ? { caption } : {}) }))) };
+    const boundary = `----Drop2Tunnel${crypto.randomBytes(18).toString('hex')}`;
+    const parts = []; let contentLength = 0;
+    const addBuffer = value => { const buffer = Buffer.from(value, 'utf8'); parts.push({ buffer }); contentLength += buffer.length; };
+    for (const [name, value] of Object.entries(fields)) addBuffer(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(name)}"\r\n\r\n${String(value || '')}\r\n`);
+    normalized.forEach(file => { const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.fieldName}"; filename="${sanitizeMultipartHeaderValue(file.fileName)}"\r\nContent-Type: ${file.type}\r\n\r\n`); parts.push({ header, file }); contentLength += header.length + file.size + 2; });
+    const closing = Buffer.from(`--${boundary}--\r\n`); contentLength += closing.length;
+    async function* generate() { let sent = 0; const total = normalized.reduce((sum, file) => sum + file.size, 0); for (const part of parts) { if (part.buffer) { yield part.buffer; continue; } yield part.header; for await (const chunk of fs.createReadStream(part.file.path)) { sent += chunk.length; onProgress?.(sent, total, part.file.fileName); yield chunk; } yield Buffer.from('\r\n'); } yield closing; }
+    return { method: files.length === 1 ? 'sendDocument' : 'sendMediaGroup', body: Readable.from(generate()), contentLength, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 function buildTelegramAudioMultipart({ fields, audioPath, audioFileName, thumbnailPath, onAudioProgress }) {
     const boundary = `----Drop2Tunnel${crypto.randomBytes(18).toString('hex')}`;
     const chunks = [];
@@ -89,4 +115,4 @@ function buildTelegramAudioMultipart({ fields, audioPath, audioFileName, thumbna
     };
 }
 
-module.exports = { buildTelegramAudioMultipart };
+module.exports = { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart };

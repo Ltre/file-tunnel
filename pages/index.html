@@ -2177,6 +2177,430 @@
             justify-content: center;
         }
 
+        #telegramDriveOverlay {
+            z-index: 4200;
+            padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+        }
+
+        .telegram-drive-manager {
+            position: relative;
+            display: grid;
+            grid-template-rows: auto auto minmax(0, 1fr);
+            width: min(1280px, 100%);
+            height: min(920px, 100%);
+            overflow: hidden;
+            border: 1px solid var(--panel-border);
+            border-radius: 18px;
+            background: var(--panel-bg);
+            color: var(--text-main);
+            box-shadow: 0 26px 80px rgba(15, 23, 42, 0.32);
+            -webkit-backdrop-filter: blur(24px) saturate(125%);
+            backdrop-filter: blur(24px) saturate(125%);
+            text-align: left;
+        }
+
+        .telegram-drive-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--panel-border);
+            background: color-mix(in srgb, var(--panel-bg) 90%, var(--surface-soft));
+        }
+
+        .telegram-drive-heading {
+            display: flex;
+            min-width: 0;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .telegram-drive-logo {
+            display: grid;
+            flex: 0 0 42px;
+            height: 42px;
+            place-items: center;
+            border-radius: 13px;
+            background: color-mix(in srgb, var(--accent) 14%, var(--surface-soft));
+            color: var(--accent);
+            font-size: 1.45rem;
+        }
+
+        .telegram-drive-title {
+            overflow: hidden;
+            font-size: 1.1rem;
+            font-weight: 750;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .telegram-drive-summary {
+            margin-top: 3px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .telegram-drive-header-actions,
+        .telegram-drive-controls,
+        .telegram-drive-selection-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .telegram-drive-icon-btn {
+            display: inline-grid;
+            width: 38px;
+            height: 38px;
+            place-items: center;
+            border: 1px solid var(--panel-border);
+            border-radius: 11px;
+            background: var(--surface-soft);
+            color: var(--text-main);
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .telegram-drive-icon-btn:hover,
+        .telegram-drive-icon-btn:focus-visible {
+            border-color: color-mix(in srgb, var(--accent) 50%, var(--panel-border));
+            color: var(--accent);
+            outline: none;
+        }
+
+        .telegram-drive-auth {
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--panel-border);
+            color: var(--text-muted);
+        }
+
+        .telegram-drive-auth:empty {
+            display: none;
+        }
+
+        .telegram-drive-workspace {
+            display: grid;
+            min-height: 0;
+            grid-template-rows: auto auto minmax(0, 1fr);
+        }
+
+        .telegram-drive-toolbar {
+            display: grid;
+            gap: 10px;
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .telegram-drive-toolbar-main {
+            display: flex;
+            min-width: 0;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .telegram-drive-breadcrumbs {
+            display: flex;
+            min-width: 0;
+            align-items: center;
+            gap: 4px;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+
+        .telegram-drive-breadcrumbs button {
+            flex: 0 0 auto;
+            padding: 6px 8px;
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-main);
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .telegram-drive-breadcrumbs button:hover {
+            background: var(--surface-soft);
+            color: var(--accent);
+        }
+
+        .telegram-drive-search,
+        .telegram-drive-sort {
+            height: 38px;
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            background: var(--panel-bg);
+            color: var(--text-main);
+            font: inherit;
+        }
+
+        .telegram-drive-search {
+            width: min(250px, 28vw);
+            padding: 0 12px;
+        }
+
+        .telegram-drive-sort {
+            padding: 0 8px;
+        }
+
+        .telegram-drive-create-wrap {
+            position: relative;
+        }
+
+        .telegram-drive-create-menu,
+        .telegram-drive-item-menu {
+            position: absolute;
+            z-index: 4;
+            display: grid;
+            min-width: 190px;
+            padding: 6px;
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            background: var(--panel-bg);
+            box-shadow: 0 16px 45px rgba(15, 23, 42, 0.22);
+        }
+
+        .telegram-drive-create-menu[hidden],
+        .telegram-drive-item-menu[hidden],
+        .telegram-drive-subdialog[hidden],
+        .telegram-drive-selection[hidden],
+        .telegram-drive-workspace[hidden] {
+            display: none;
+        }
+
+        .telegram-drive-create-menu {
+            top: calc(100% + 7px);
+            right: 0;
+        }
+
+        .telegram-drive-create-menu button,
+        .telegram-drive-item-menu button {
+            padding: 10px 12px;
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-main);
+            text-align: left;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .telegram-drive-create-menu button:hover,
+        .telegram-drive-item-menu button:hover {
+            background: var(--surface-soft);
+        }
+
+        .telegram-drive-item-menu button.danger {
+            color: #c73535;
+        }
+
+        .telegram-drive-selection {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 9px 18px;
+            border-bottom: 1px solid var(--panel-border);
+            background: color-mix(in srgb, var(--accent) 9%, var(--surface-soft));
+        }
+
+        .telegram-drive-items {
+            min-height: 0;
+            overflow: auto;
+            padding: 10px 14px 20px;
+        }
+
+        .telegram-drive-items[data-view="grid"] {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            align-content: start;
+            gap: 12px;
+        }
+
+        .telegram-drive-item {
+            position: relative;
+            display: grid;
+            grid-template-columns: auto 44px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 10px;
+            min-height: 66px;
+            padding: 9px 10px;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            background: transparent;
+        }
+
+        .telegram-drive-items[data-view="list"] .telegram-drive-item + .telegram-drive-item {
+            border-top-color: var(--panel-border);
+            border-top-left-radius: 0;
+            border-top-right-radius: 0;
+        }
+
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item {
+            grid-template-columns: auto minmax(0, 1fr) auto;
+            grid-template-rows: 54px auto;
+            border-color: var(--panel-border);
+            background: var(--surface-soft);
+        }
+
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item-check {
+            align-self: start;
+        }
+
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item-icon {
+            grid-column: 2;
+            justify-self: center;
+            font-size: 2rem;
+        }
+
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item-info {
+            grid-column: 1 / -1;
+            min-width: 0;
+            text-align: center;
+        }
+
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item-more {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+        }
+
+        .telegram-drive-item:hover,
+        .telegram-drive-item.selected {
+            border-color: color-mix(in srgb, var(--accent) 42%, var(--panel-border));
+            background: color-mix(in srgb, var(--accent) 8%, var(--surface-soft));
+        }
+
+        .telegram-drive-item-check {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent);
+        }
+
+        .telegram-drive-item-icon {
+            display: grid;
+            height: 42px;
+            place-items: center;
+            color: var(--accent);
+            font-size: 1.55rem;
+        }
+
+        .telegram-drive-item-name {
+            overflow: hidden;
+            font-weight: 650;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .telegram-drive-item-meta {
+            overflow: hidden;
+            margin-top: 4px;
+            color: var(--text-muted);
+            font-size: 0.78rem;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .telegram-drive-empty {
+            display: grid;
+            min-height: 260px;
+            place-items: center;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        .telegram-drive-item-menu {
+            position: fixed;
+            z-index: 4250;
+        }
+
+        .telegram-drive-subdialog {
+            position: absolute;
+            inset: 0;
+            z-index: 6;
+            display: grid;
+            place-items: center;
+            padding: 16px;
+            background: rgba(15, 23, 42, 0.45);
+        }
+
+        .telegram-drive-dialog-card {
+            width: min(520px, 100%);
+            max-height: min(78dvh, 680px);
+            overflow: auto;
+            border-radius: 16px;
+            background: var(--panel-bg);
+            color: var(--text-main);
+            box-shadow: 0 24px 70px rgba(15, 23, 42, 0.34);
+        }
+
+        .telegram-drive-dialog-header,
+        .telegram-drive-dialog-actions {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .telegram-drive-dialog-actions {
+            justify-content: flex-end;
+            border-top: 1px solid var(--panel-border);
+            border-bottom: 0;
+        }
+
+        .telegram-drive-dialog-body {
+            display: grid;
+            gap: 12px;
+            padding: 16px;
+        }
+
+        .telegram-drive-dialog-body input,
+        .telegram-drive-dialog-body select {
+            width: 100%;
+            padding: 11px 12px;
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            background: var(--panel-bg);
+            color: var(--text-main);
+            font: inherit;
+        }
+
+        .telegram-drive-property-grid {
+            display: grid;
+            grid-template-columns: 110px minmax(0, 1fr);
+            gap: 10px 14px;
+        }
+
+        .telegram-drive-property-grid dt {
+            color: var(--text-muted);
+        }
+
+        .telegram-drive-property-grid dd {
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 720px) {
+            #telegramDriveOverlay { padding: 0; }
+            .telegram-drive-manager { width: 100%; height: 100%; border: 0; border-radius: 0; }
+            .telegram-drive-header { padding: 11px 12px; }
+            .telegram-drive-logo { display: none; }
+            .telegram-drive-header-actions { gap: 5px; }
+            .telegram-drive-header-actions .telegram-drive-icon-btn { width: 34px; height: 34px; }
+            .telegram-drive-toolbar { padding: 10px 12px; }
+            .telegram-drive-toolbar-main { align-items: stretch; flex-direction: column; }
+            .telegram-drive-controls { width: 100%; flex-wrap: wrap; }
+            .telegram-drive-search { flex: 1 1 150px; width: auto; }
+            .telegram-drive-sort { flex: 1 1 110px; }
+            .telegram-drive-selection { align-items: flex-start; flex-direction: column; }
+            .telegram-drive-items { padding: 6px 8px 18px; }
+            .telegram-drive-items[data-view="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .telegram-drive-item { grid-template-columns: auto 36px minmax(0, 1fr) auto; }
+        }
+
         #fileDetailsViewer .modal,
         #fileDetailsViewer .modal * {
             -webkit-user-select: none;
@@ -4853,6 +5277,7 @@
                             <div class="connection-header-menu" id="connectionHeaderMenu" hidden>
                                 <button type="button" id="scanTunnelCodeBtn">扫描隧道码</button>
                                 <button type="button" id="receiveLightBtn">接收光媒</button>
+                                <button type="button" id="telegramDriveBtn">Telegram网盘</button>
                             </div>
                         </div>
                     </div>
@@ -5166,6 +5591,42 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="telegramDriveOverlay" hidden>
+        <section class="telegram-drive-manager" role="dialog" aria-modal="true" aria-label="Telegram网盘">
+            <header class="telegram-drive-header">
+                <div class="telegram-drive-heading">
+                    <span class="telegram-drive-logo" aria-hidden="true">☁</span>
+                    <div><div class="telegram-drive-title">Telegram网盘</div><div class="telegram-drive-summary" id="telegramDriveSummary">等待登录</div></div>
+                </div>
+                <div class="telegram-drive-header-actions">
+                    <button class="telegram-drive-icon-btn" id="telegramDriveRefreshBtn" type="button" title="刷新" aria-label="刷新网盘">↻</button>
+                    <button class="telegram-drive-icon-btn" id="telegramDriveLogoutBtn" type="button" title="退出 Telegram 账号" aria-label="退出 Telegram 账号" hidden>⇥</button>
+                    <button class="telegram-drive-icon-btn" id="closeTelegramDriveBtn" type="button" title="关闭" aria-label="关闭 Telegram网盘">×</button>
+                </div>
+            </header>
+            <div id="telegramDriveAuth" class="telegram-drive-auth"></div>
+            <div id="telegramDriveWorkspace" class="telegram-drive-workspace" hidden>
+                <div class="telegram-drive-toolbar">
+                    <div class="telegram-drive-toolbar-main">
+                        <nav class="telegram-drive-breadcrumbs" id="telegramDriveBreadcrumbs" aria-label="网盘目录路径"></nav>
+                        <div class="telegram-drive-controls">
+                            <input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录">
+                            <select class="telegram-drive-sort" id="telegramDriveSort" aria-label="排序方式"><option value="name">按名称</option><option value="type">按类型</option><option value="size">按大小</option><option value="updatedAt">按最后修改</option></select>
+                            <button class="telegram-drive-icon-btn" id="telegramDriveSortDirectionBtn" type="button" title="切换升降序" aria-label="当前升序">↑</button>
+                            <button class="telegram-drive-icon-btn" id="telegramDriveViewBtn" type="button" title="切换列表或网格" aria-label="切换为网格视图">▦</button>
+                            <div class="telegram-drive-create-wrap"><button class="btn btn-primary" id="telegramDriveCreateBtn" type="button">＋ 新建</button><div class="telegram-drive-create-menu" id="telegramDriveCreateMenu" hidden><button id="telegramDriveUploadBtn" type="button">上传文件</button><button id="telegramDriveNewFolderBtn" type="button">新建文件夹</button></div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
+                <div class="telegram-drive-items" id="telegramDriveList" data-view="list"></div>
+            </div>
+            <input id="telegramDriveFileInput" type="file" multiple hidden>
+            <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>
+            <div class="telegram-drive-subdialog" id="telegramDriveDialog" hidden><div class="telegram-drive-dialog-card"><div class="telegram-drive-dialog-header"><strong id="telegramDriveDialogTitle"></strong><button class="telegram-drive-icon-btn" id="telegramDriveDialogCloseBtn" type="button" aria-label="关闭对话框">×</button></div><div class="telegram-drive-dialog-body" id="telegramDriveDialogBody"></div><div class="telegram-drive-dialog-actions" id="telegramDriveDialogActions"></div></div></div>
+        </section>
+    </div>
+
     <script>
         (function loadVersionedClientScripts() {
             const version = new URLSearchParams(window.location.search).get('_reload');
@@ -5177,6 +5638,7 @@
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);
             document.write(`<script src="/client/device-camera.js${suffix}"><\/script>`);
             document.write(`<script src="/client/light-transfer.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/telegram-drive-cache.js${suffix}"><\/script>`);
             document.write(`<script src="/app.js${suffix}"><\/script>`);
         })();
     </script>
