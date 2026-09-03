@@ -12,7 +12,8 @@ let telegramDriveView = localStorage.getItem('telegram-drive-view') === 'grid' ?
 let telegramDriveSort = localStorage.getItem('telegram-drive-sort') || 'name';
 let telegramDriveSortAscending = localStorage.getItem('telegram-drive-sort-ascending') !== 'false';
 async function telegramDriveRequest(url, options = {}) { return window.DiskClient.request(url, options); }
-async function getTelegramDriveIdentity() { return telegramDriveRequest('/api/telegram/drive/me'); }
+// Background identity/OIDC polling must not repeatedly open the loading dialog.
+async function getTelegramDriveIdentity() { return window.DiskClient.raw('/me'); }
 function telegramDriveErrorText(error) {
     const code = String(error?.message || error || '');
     const messages = {
@@ -406,7 +407,7 @@ async function renderTelegramDrive() {
     const sort = document.getElementById('telegramDriveSort'); if (sort) sort.value = telegramDriveSort;
     const direction = document.getElementById('telegramDriveSortDirectionBtn'); if (direction) { direction.textContent = telegramDriveSortAscending ? '↑' : '↓'; direction.setAttribute('aria-label', telegramDriveSortAscending ? '当前升序' : '当前降序'); }
     const view = document.getElementById('telegramDriveViewBtn'); if (view) { view.textContent = telegramDriveView === 'list' ? '▦' : '☷'; view.setAttribute('aria-label', telegramDriveView === 'list' ? '切换为网格视图' : '切换为列表视图'); }
-    const status = await getTelegramDriveIdentity();
+    const status = await window.DiskClient.withActivity('正在加载网盘', getTelegramDriveIdentity);
     logout.hidden = !status.identity;
     if (!status.identity) {
         workspace.hidden = true;
@@ -607,7 +608,74 @@ function stepDiskPreview(delta) {
     if (next < 0 || next >= previewItems.length) return;
     previewIndex = next; renderDiskPreview();
 }
+function initDiskLoading() {
+    const overlay = document.createElement('section'); overlay.id = 'diskLoading'; overlay.hidden = true;
+    overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'diskLoadingTitle');
+    overlay.setAttribute('aria-describedby', 'diskLoadingDetail');
+    overlay.innerHTML = '<div class="disk-loading-card"><span class="disk-loading-spinner" aria-hidden="true"></span><strong id="diskLoadingTitle"></strong><div id="diskLoadingDetail" role="status" aria-live="polite"></div><progress id="diskLoadingProgress" max="100" aria-label="当前操作进度"></progress><button id="diskLoadingBackground" class="btn btn-secondary" type="button">后台继续</button><small>收起浮层不会取消操作，可在网盘任务中查看进度。</small></div>';
+    document.body.append(overlay);
+    const title = $disk('diskLoadingTitle'), detail = $disk('diskLoadingDetail');
+    const progress = $disk('diskLoadingProgress'), background = $disk('diskLoadingBackground');
+    let activities = [], jobs = [], previousFocus;
+    const dismissed = new Set();
+    function hide() {
+        if (overlay.hidden) return;
+        const restoreFocus = overlay.contains(document.activeElement);
+        overlay.hidden = true;
+        if (restoreFocus && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    }
+    function render() {
+        const activity = activities.find(item => !dismissed.has(item));
+        if (!activity) { hide(); return; }
+        const job = jobs.find(item => item.operation_id === activity.operationId && ['queued', 'running'].includes(item.status));
+        title.textContent = activity.message;
+        const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
+        detail.textContent = job ? [job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : ''].filter(Boolean).join(' · ') : '正在处理，请稍候…';
+        if (percent === null) progress.removeAttribute('value'); else progress.value = percent;
+        if (overlay.hidden) { previousFocus = document.activeElement; overlay.hidden = false; background.focus({ preventScroll: true }); }
+    }
+    background.onclick = () => { activities.forEach(item => dismissed.add(item)); hide(); };
+    // Do not let Enter/Escape/arrows reach the preview or the underlying edit dialog.
+    document.addEventListener('keydown', event => {
+        if (overlay.hidden) return;
+        event.stopImmediatePropagation();
+        if (event.key === 'Escape') { event.preventDefault(); background.click(); }
+        else if (event.key === 'Tab') { event.preventDefault(); background.focus(); }
+        else if (event.target !== background) event.preventDefault();
+    }, true);
+    document.addEventListener('focusin', event => { if (!overlay.hidden && !overlay.contains(event.target)) background.focus({ preventScroll: true }); });
+    window.DiskClient.subscribeActivity(value => {
+        activities = value;
+        for (const item of dismissed) if (!activities.includes(item)) dismissed.delete(item);
+        render();
+    });
+    window.DiskClient.subscribe(value => { jobs = value; render(); });
+}
+function renderDiskTaskBubble(bubble, jobs) {
+    const uploads = jobs.filter(job => job.type === 'upload' && ['queued', 'running', 'failed'].includes(job.status));
+    // A failed upload stays visible even if another upload is running or has completed.
+    const job = uploads.find(item => item.status === 'failed') || uploads[0];
+    bubble.hidden = !job;
+    if (!job) return;
+    const failed = job.status === 'failed';
+    bubble.title = failed ? '上传失败，点击查看详情：' + telegramDriveErrorText(job.errorCode) : job.message;
+    bubble.classList.toggle('failed', failed);
+    bubble.classList.toggle('indeterminate', !failed && job.percent === null);
+    bubble.style.setProperty('--progress', failed ? '360deg' : (Number(job.percent ?? job.lastMeasuredPercent) || 0) * 3.6 + 'deg');
+    bubble.querySelector('small').textContent = failed ? '!' : uploads.length;
+}
+function positionDiskTaskBubble(bubble, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const viewport = window.visualViewport;
+    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const width = viewport?.width || innerWidth, height = viewport?.height || innerHeight;
+    bubble.style.left = Math.max(left + 8, Math.min(left + width - 72, x)) + 'px';
+    bubble.style.top = Math.max(top + 8, Math.min(top + height - 72, y)) + 'px';
+    bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
+}
 function initDiskEnhancements() {
+    initDiskLoading();
     const tasks = document.createElement('details'); tasks.id = 'diskTasks'; tasks.className = 'disk-tasks';
     tasks.innerHTML = '<summary>网盘任务 <span id="diskTaskCount"></span></summary><div id="diskTaskList" aria-live="polite"></div>';
     $disk('telegramDriveAuth').after(tasks);
@@ -634,13 +702,25 @@ function initDiskEnhancements() {
     forward.onclick = () => exportDiskItems([...telegramDriveSelected.values()]).catch(error => alert(telegramDriveErrorText(error)));
     $disk('telegramDriveBatchMoveBtn').before(forward);
     let drag, moved = false;
-    const position = (x, y) => { bubble.style.left = Math.max(8, Math.min(innerWidth - 72, x)) + 'px'; bubble.style.top = Math.max(8, Math.min(innerHeight - 72, y)) + 'px'; bubble.style.right = 'auto'; bubble.style.bottom = 'auto'; };
+    const position = (x, y) => positionDiskTaskBubble(bubble, x, y);
+    const keepVisible = () => {
+        if (bubble.hidden) return;
+        const rect = bubble.getBoundingClientRect(); position(rect.left, rect.top);
+    };
+    window.addEventListener('resize', keepVisible);
+    window.visualViewport?.addEventListener('resize', keepVisible);
+    window.visualViewport?.addEventListener('scroll', keepVisible);
     try { const saved = JSON.parse(localStorage.getItem('disk-task-position')); if (saved) position(saved.x, saved.y); } catch (_) {}
     bubble.onpointerdown = event => { const rect = bubble.getBoundingClientRect(); drag = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top }; moved = false; bubble.setPointerCapture(event.pointerId); };
     bubble.onpointermove = event => { if (!drag) return; const dx = event.clientX - drag.x, dy = event.clientY - drag.y; if (Math.hypot(dx, dy) > 5) moved = true; if (moved) position(drag.left + dx, drag.top + dy); };
     bubble.onpointerup = () => { drag = null; const rect = bubble.getBoundingClientRect(); localStorage.setItem('disk-task-position', JSON.stringify({ x: rect.left, y: rect.top })); };
     bubble.onpointercancel = () => { drag = null; moved = true; };
-    bubble.onclick = async () => { if (moved) return; await openTelegramDrive(); tasks.open = true; tasks.scrollIntoView({ block: 'nearest' }); };
+    bubble.onclick = async () => {
+        if (moved) return;
+        closeDiskPreview();
+        try { await openTelegramDrive(); tasks.open = true; tasks.scrollIntoView({ block: 'nearest' }); }
+        catch (error) { alert(telegramDriveErrorText(error)); }
+    };
     window.DiskClient.subscribe(jobs => {
         const ongoing = jobs.filter(job => ['queued', 'running'].includes(job.status));
         $disk('diskTaskCount').textContent = ongoing.length ? '· ' + ongoing.length + ' 项进行中' : '';
@@ -651,11 +731,8 @@ function initDiskEnhancements() {
             row.append(title, detail); return row;
         }));
         tasks.hidden = !jobs.length;
-        const job = ongoing[0] || jobs[0];
-        bubble.hidden = !job; if (!job) return;
-        bubble.title = job.message; bubble.classList.toggle('indeterminate', job.percent === null && ongoing.length > 0);
-        bubble.style.setProperty('--progress', (Number(job.percent ?? job.lastMeasuredPercent) || 0) * 3.6 + 'deg');
-        bubble.querySelector('small').textContent = ongoing.length || (job.status === 'completed' ? '✓' : '!');
+        renderDiskTaskBubble(bubble, jobs);
+        keepVisible();
     });
     getTelegramDriveIdentity().then(status => { if (status.identity) window.DiskClient.start(); }).catch(() => {});
 }
