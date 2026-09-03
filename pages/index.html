@@ -5142,6 +5142,7 @@
         }
 
 </style>
+    <link rel="stylesheet" href="/client/disk.css">
 </head>
 <body>
     <div class="tunnel-landing" id="sessionLanding" hidden>
@@ -5600,7 +5601,7 @@
                 </div>
                 <div class="telegram-drive-header-actions">
                     <button class="telegram-drive-icon-btn" id="telegramDriveRefreshBtn" type="button" title="刷新" aria-label="刷新网盘">↻</button>
-                    <button class="telegram-drive-icon-btn" id="telegramDriveLogoutBtn" type="button" title="退出 Telegram 账号" aria-label="退出 Telegram 账号" hidden>⇥</button>
+                    <button class="telegram-drive-icon-btn" id="telegramDriveLogoutBtn" type="button" title="退出网盘账号" aria-label="退出网盘账号" hidden>⇥</button>
                     <button class="telegram-drive-icon-btn" id="closeTelegramDriveBtn" type="button" title="关闭" aria-label="关闭 Telegram网盘">×</button>
                 </div>
             </header>
@@ -5638,7 +5639,11 @@
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);
             document.write(`<script src="/client/device-camera.js${suffix}"><\/script>`);
             document.write(`<script src="/client/light-transfer.js${suffix}"><\/script>`);
-            document.write(`<script src="/client/telegram-drive-cache.js${suffix}"><\/script>`);
+document.write(`<script src="/client/telegram-drive-cache.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/simplewebauthn.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/disk-client.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/disk-ui.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/disk-tunnel-adapter.js${suffix}"><\/script>`);
             document.write(`<script src="/app.js${suffix}"><\/script>`);
         })();
     </script>

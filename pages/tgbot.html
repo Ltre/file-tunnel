@@ -308,7 +308,15 @@
             </div>
             <div class="status" id="webhookStatus"></div>
         </section>
+        <section class="panel" aria-labelledby="diskAppsTitle">
+            <h2 id="diskAppsTitle">第三方系统接入 Telegram 网盘</h2>
+            <p class="subtle">仅登记可信任的服务端应用。应用令牌可指定 user_id 与 disk_space；disk_space 不是权限边界。修改、禁用或删除配置会撤销该应用现有令牌，既存文件不删除。</p>
+            <div id="diskApps"></div>
+            <button class="btn" id="diskAddApp" type="button">＋ 追加第三方应用</button>
+            <div class="status" id="diskAppsStatus" role="status"></div>
+        </section>
     </main>
+    <script src="/client/disk-admin.js"></script>
 
     <script>
         const form = document.getElementById('telegramBotForm');

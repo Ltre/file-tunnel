@@ -17,6 +17,13 @@ const SCRIPT_SOURCES = [
   'client/media.js',
   'client/device-camera.js',
   'client/light-transfer.js',
+  'client/telegram-drive-cache.js',
+  'client/disk-client.js',
+  'client/disk-ui.js',
+  'client/disk-tunnel-adapter.js',
+  'client/disk-admin.js',
+  'client/simplewebauthn.js',
+  'client/sns-download-cache.js',
   'client/i18n-catalog.js',
   'client/i18n.js',
   'client/localization-runtime.js',
@@ -277,7 +284,9 @@ async function buildScripts(outRoot, minifierState) {
   const assets = {};
   const stats = [];
   for (const source of SCRIPT_SOURCES) {
-    const sourcePath = path.join(ROOT, source);
+    const sourcePath = path.join(ROOT, source === 'client/simplewebauthn.js'
+      ? 'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js'
+      : source);
     const raw = await fs.readFile(sourcePath, 'utf8');
     const built = await minifyJs(raw, source, minifierState);
     const assetPath = assetNameForScript(source, built);
@@ -336,6 +345,10 @@ async function buildPages(outRoot, scriptAssets, buildId, minifierState) {
     const sourcePath = path.join(pagesDir, pageFile);
     const rawHtml = await fs.readFile(sourcePath, 'utf8');
     let html = replaceScriptReferences(rawHtml, scriptAssets);
+    if (html.includes('href="/client/disk.css"')) {
+      const diskCss = await fs.readFile(path.join(ROOT, 'client/disk.css'), 'utf8');
+      html = html.replace(/<link\b[^>]*href="\/client\/disk\.css"[^>]*>/, '<style>' + diskCss + '</style>');
+    }
     html = html.replace(/href="\/manifest\.webmanifest(?:\?[^"]*)?"/g, `href="/manifest.webmanifest?v=${buildId}"`);
     const pageName = path.parse(pageFile).name;
     const extracted = extractPageStyles(html, pageName, outRoot, styles);

@@ -1,0 +1,36 @@
+.disk-passkey-controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.disk-passkey-controls input{flex:1;min-width:240px;padding:10px;border:1px solid #abc;border-radius:8px}
+.disk-tasks{border-bottom:1px solid #d4dde7;padding:10px 20px;background:#f0f6fa;color:#233849}
+.disk-tasks summary{cursor:pointer;font-weight:650}
+#diskTaskList{max-height:180px;overflow:auto}
+.disk-task-row{display:flex;flex-direction:column;gap:4px;padding:8px 0;border-bottom:1px solid #dae4ec;overflow-wrap:anywhere}
+.disk-task-row span{font-size:12px}
+#diskTaskBubble{position:fixed;right:22px;bottom:100px;z-index:2147483000;width:62px;height:62px;border:2px solid #fff;border-radius:50%;background:conic-gradient(#30c779 var(--progress,0deg),#e3ebf1 0);color:#143b35;box-shadow:0 3px 18px #142b4650;cursor:grab;touch-action:none}
+#diskTaskBubble span{font-size:27px}
+#diskTaskBubble small{position:absolute;right:-3px;top:-3px;padding:2px 5px;min-width:17px;border-radius:12px;color:#fff;background:#236777}
+#diskTaskBubble.indeterminate{border-color:#53ba86;animation:disk-pulse 1.2s ease-in-out infinite alternate}
+body:has(#telegramDriveOverlay.active) #diskTaskBubble{display:none!important}
+@keyframes disk-pulse{to{box-shadow:0 0 0 5px #30c77933}}
+@media(prefers-reduced-motion:reduce){#diskTaskBubble.indeterminate{animation:none}}
+.disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}
+.disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
+.disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
+.disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
+.telegram-drive-item{touch-action:pan-y}
+#telegramDriveItemMenu{max-height:calc(100dvh - 20px);overflow:auto}
+#diskPreview{position:fixed;inset:0;z-index:2147483100;background:#101820;color:#fff;display:flex;flex-direction:column}
+#diskPreview[hidden],#diskTaskBubble[hidden],.disk-tasks[hidden]{display:none!important}
+#diskPreview header,#diskPreview footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 20px;background:#18232f}
+#diskPreview header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#diskPreview footer{justify-content:center;padding-bottom:max(12px,env(safe-area-inset-bottom))}
+#diskPreview button{border:0;border-radius:9px;background:#314459;color:white;min-width:44px;height:40px;font-size:24px;cursor:pointer}
+#diskPreview button:disabled{opacity:.3;cursor:default}
+#diskPreviewBody{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:auto;padding:12px}
+#diskPreviewBody img,#diskPreviewBody video{max-width:100%;max-height:100%;object-fit:contain}
+#diskPreviewBody audio{width:min(700px,90%)}
+#diskPreviewBody iframe{width:100%;height:100%;border:0;background:#fff}
+#diskPreviewBody pre{white-space:pre-wrap;word-break:break-word;align-self:flex-start;width:100%;font:14px/1.6 monospace}
+@media(max-width:600px){.disk-tasks{padding:8px 12px}.disk-passkey-controls input{min-width:0;width:100%;flex-basis:100%}}
+#telegramDriveOverlay .telegram-drive-manager{display:flex;flex-direction:column}
+#telegramDriveOverlay .telegram-drive-header,#telegramDriveOverlay .telegram-drive-auth,#telegramDriveOverlay .disk-tasks{flex-shrink:0}
+#telegramDriveOverlay .telegram-drive-workspace{flex:1;min-height:0}

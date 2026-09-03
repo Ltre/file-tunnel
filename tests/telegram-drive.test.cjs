@@ -68,13 +68,14 @@ test('Telegram 网盘目录和文件支持多级创建、重命名、移动、�
 test('Telegram 网盘保持独立存储、分区、album、修复与来电取消链路', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
     const page = fs.readFileSync(path.join(__dirname, '..', 'pages', 'index.html'), 'utf8');
-    const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+    const app = ['app.js', 'client/disk-ui.js', 'client/disk-client.js'].map(file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')).join('\n');
+    const api = fs.readFileSync(path.join(__dirname, '..', 'server/disk-api.js'), 'utf8');
     const tg = fs.readFileSync(path.join(__dirname, '..', 'pages', 'tgbot.html'), 'utf8');
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-drive.js'), 'utf8'), /telegram-drive-index\.json/);
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-multipart.js'), 'utf8'), /sendMediaGroup/);
     assert.match(server, /getTelegramDriveUploadLimit/);
-    assert.match(server, /app\.patch\('\/api\/telegram\/drive\/directories'/);
-    assert.match(server, /app\.delete\('\/api\/telegram\/drive\/files\/:id'/);
+    assert.match(api, /router\.patch\('\/directories'/);
+    assert.match(api, /router\.delete\('\/files\/:id'/);
     assert.match(server, /app\.post\('\/api\/telegram\/drive\/logout'/);
     assert.match(server, /TELEGRAM_DRIVE_COOKIE/);
     assert.match(server, /telegram-drive-used-channel-double-confirm-required/);
@@ -129,7 +130,10 @@ test('Telegram OIDC Mock 只允许已启用的回环请求并仅接收数字用�
     const mock = createTelegramOidcMock({ enabled: true, defaultUserId: '12345678' });
     assert.equal(mock.isAllowed({ publicOrigin: 'http://localhost:8080', remoteAddress: '::1' }), true);
     assert.equal(mock.isAllowed({ publicOrigin: 'https://tun-test.miku.us', remoteAddress: '::1' }), false);
-    assert.equal(mock.isAllowed({ publicOrigin: 'http://localhost', remoteAddress: '10.0.0.2' }), false);
+    assert.equal(mock.isAllowed({ publicOrigin: 'http://localhost', remoteAddress: '10.0.0.2' }), true);
+    assert.equal(mock.isAllowed({ publicOrigin: 'http://192.168.1.8:8080', remoteAddress: '192.168.1.10' }), true);
+    assert.equal(mock.isAllowed({ publicOrigin: 'http://192.168.1.8:8080', remoteAddress: '8.8.8.8' }), false);
+    assert.equal(mock.isAllowed({ publicOrigin: 'http://8.8.8.8', remoteAddress: '192.168.1.10' }), false);
     const authorization = mock.createAuthorizationRequest({ publicOrigin: 'http://localhost:8080' });
     assert.equal(new URL(authorization.url).pathname, '/api/telegram/drive/oidc/mock');
     assert.equal(new URL(authorization.url).searchParams.get('state'), authorization.state);

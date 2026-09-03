@@ -20,6 +20,24 @@ function isLoopbackOrigin(value) {
     }
 }
 
+function isLocalTestAddress(value) {
+    const address = String(value || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
+    if (isLoopbackAddress(address)) return true;
+    const parts = address.split('.');
+    if (parts.length === 4 && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)) {
+        const [a, b] = parts.map(Number);
+        return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+    }
+    return /^f[cd][0-9a-f]{2}:/.test(address) || /^fe[89ab][0-9a-f]:/.test(address);
+}
+
+function isLocalTestOrigin(value) {
+    try {
+        const url = new URL(value);
+        return ['http:', 'https:'].includes(url.protocol) && isLocalTestAddress(url.hostname);
+    } catch (_) { return false; }
+}
+
 function escapeHtml(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -37,11 +55,11 @@ function createTelegramOidcMock(options = {}) {
     const sessionSecret = crypto.randomBytes(32);
 
     function isAllowed({ publicOrigin, remoteAddress } = {}) {
-        return enabled && isLoopbackOrigin(publicOrigin) && isLoopbackAddress(remoteAddress);
+        return enabled && isLocalTestOrigin(publicOrigin) && isLocalTestAddress(remoteAddress);
     }
 
     function createAuthorizationRequest({ publicOrigin }) {
-        if (!isLoopbackOrigin(publicOrigin)) throw new Error('telegram-oidc-mock-origin-invalid');
+        if (!isLocalTestOrigin(publicOrigin)) throw new Error('telegram-oidc-mock-origin-invalid');
         const state = crypto.randomBytes(32).toString('base64url');
         const url = new URL('/api/telegram/drive/oidc/mock', publicOrigin);
         url.searchParams.set('state', state);
@@ -72,4 +90,4 @@ function createTelegramOidcMock(options = {}) {
     };
 }
 
-module.exports = { createTelegramOidcMock, isLoopbackAddress, isLoopbackOrigin };
+module.exports = { createTelegramOidcMock, isLoopbackAddress, isLoopbackOrigin, isLocalTestAddress, isLocalTestOrigin };
