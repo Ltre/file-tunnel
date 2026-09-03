@@ -23,6 +23,7 @@ const SCRIPT_SOURCES = [
   'client/disk-share.js',
   'client/disk-tunnel-adapter.js',
   'client/disk-admin.js',
+  'client/disk-management.js',
   'client/simplewebauthn.js',
   'client/sns-download-cache.js',
   'client/i18n-catalog.js',
@@ -34,6 +35,7 @@ const SCRIPT_SOURCES = [
 const PAGE_ROUTES = {
   'index.html': ['/', '/index.html'],
   'admin.html': ['/admin'],
+  'disk-management.html': ['/disk-management'],
   'admin-auth.html': ['/admin-auth', '/admin-auth.html', '/admin.html'],
   'downloader.html': ['/downloader', '/downloader.html'],
   'downloadList.html': ['/downloadList', '/downloadList.html'],

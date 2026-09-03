@@ -113,10 +113,11 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
 
     const store = {
         assertDirectoryWritable(ownerId, folderPath) { assertNoPendingTree(ownerId, folderPath); },
-        createDirectory(ownerId, folderPath, maxDepth) {
+        createDirectory(ownerId, folderPath, maxDepth, sourceAppId = '') {
             const safe = normalizePath(folderPath);
             if (!safe) throw new Error('telegram-drive-folder-name-required');
             const result = ensureDirectoryRecords(ownerId, safe, maxDepth);
+            if (sourceAppId && result.path) result.sourceAppId ||= String(sourceAppId);
             touchDirectory(ownerId, parentPath(safe));
             persist();
             return result;
@@ -250,7 +251,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             touchDirectory(ownerId, destination); persist(); return item;
         },
         hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },
-        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '' }) {
+        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '' }) {
             const safePath = normalizePath(folderPath); assertDepth(safePath, maxDepth);
             const incoming = Array.isArray(files) ? files : [];
             if (incoming.length > 100) throw new Error('DISK_BATCH_LIMIT');
@@ -274,7 +275,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
                 if ([...uploads.values()].some(job => job.owner.id === owner.id && job.files.some(entry => entry.folderPath === folder && entry.name === name))) throw new Error('DISK_NAME_CONFLICT');
             }
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
-            const job = { id, owner, metadata, backendId, uploadLimit, folderPath: safePath,
+            const job = { id, owner, metadata, backendId, sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
 files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, path: '', received: 0 })), dir, createdAt: Date.now(), maxDepth };
             uploads.set(id, job); return job;
         },
@@ -309,6 +310,7 @@ files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, '
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {}; const item = { id: crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
+                item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';
                 records.set(item.id, item); return item;
             });
@@ -318,6 +320,20 @@ files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, '
         },
         abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); },
         update(ownerId, id, patch) { const item = this.get(ownerId, id); if (!item) return null; Object.assign(item, patch, { updatedAt: Date.now() }); records.set(item.id, item); touchDirectory(ownerId, item.folderPath || ''); persist(); return item; },
+        setReviewStatus(ownerId, id, status) {
+            const item = this.get(ownerId, id);
+            if (!item || !['active', 'blocked'].includes(status)) throw new Error('FILE_NOT_FOUND');
+            Object.assign(item, { reviewStatus: status === 'active' ? '' : status, reviewUpdatedAt: Date.now(), updatedAt: Date.now() });
+            persist(); return { ...item };
+        },
+        tombstone(ownerId, id) {
+            const item = this.get(ownerId, id);
+            if (!item) throw new Error('FILE_NOT_FOUND');
+            Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: Date.now(), deletedAt: Date.now(), updatedAt: Date.now(), fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '' });
+            persist(); return { ...item };
+        },
+        adminFiles() { return [...records.values()].map(item => ({ ...item })); },
+        adminDirectories() { return [...directories.values()].map(item => ({ ...item })); },
         remove(ownerId, id) { const item = this.get(ownerId, id); if (!item) return false; records.delete(item.id); touchDirectory(ownerId, item.folderPath || ''); persist(); return true; },
         removeMany(ownerId, ids) {
             const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));

@@ -52,7 +52,7 @@ function shouldExistAsStaticFile(ref) {
   if (ref === '/' || ref.startsWith('/?')) return false;
   if (ref === '/manifest.webmanifest' || ref.startsWith('/manifest.webmanifest?')) return false;
   if (ref === '/runtime-config.js') return false;
-  if (/^\/(?:admin|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts)\b/.test(ref)) return false;
+  if (/^\/(?:admin|disk-management|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts)\b/.test(ref)) return false;
   return true;
 }
 

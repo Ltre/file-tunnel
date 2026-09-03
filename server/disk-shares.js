@@ -21,6 +21,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
                     if (!base) throw new Error('SHARE_ROOT_FORBIDDEN');
                     const tree = store.getDirectoryTree(scope.userId, base);
                     if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
+                    if (tree.files.some(file => file.reviewStatus === 'blocked' || file.reviewStatus === 'deleted')) throw new Error('SHARE_REVIEW_RESTRICTED');
                     names.push(tree.name);
                     // Preserve selected directory names and relative subdirectories.
                     const prefix = base.split('/').slice(0, -1).join('/');
@@ -30,6 +31,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
                 } else {
                     const file = store.get(scope.userId, selection.id);
                     if (!file) throw new Error('FILE_NOT_FOUND');
+                    if (file.reviewStatus === 'blocked' || file.reviewStatus === 'deleted') throw new Error('SHARE_REVIEW_RESTRICTED');
                     names.push(file.name); files.set(file.id, { id: file.id, name: file.name, folderPath: '' });
                 }
             }
@@ -56,14 +58,14 @@ function createDiskShares({ dataDir, now = Date.now }) {
             const folders = item.directories.filter(value => parent(value) === safe).map(value => ({ kind: 'directory', name: value.split('/').pop(), path: value }));
             const files = item.files.filter(file => file.folderPath === safe).flatMap(entry => {
                 const file = store.get(item.ownerId, entry.id);
-                return file ? [{ kind: 'file', id: entry.id, name: entry.name, type: file.type, size: file.size }] : [];
+                return file && !['blocked', 'deleted'].includes(file.reviewStatus) ? [{ kind: 'file', id: entry.id, name: entry.name, type: file.type, size: file.size }] : [];
             });
             return { title: item.title, createdAt: item.createdAt, path: safe, folders, files };
         },
         file(item, store, id) {
             if (!item.files.some(file => file.id === id)) throw new Error('FILE_NOT_FOUND');
             const file = store.get(item.ownerId, id);
-            if (!file) throw new Error('FILE_NOT_FOUND');
+            if (!file || ['blocked', 'deleted'].includes(file.reviewStatus)) throw new Error('FILE_NOT_FOUND');
             return file;
         }
     };

@@ -66,6 +66,29 @@ test('右键操作保留整个选中集合，全选和反选只操作当前视�
     context.chosen.delete('c'); context.select(true); assert.deepEqual([...context.chosen.keys()], ['c']);
     assert.equal(context.items({ id: 'unselected' })[0].id, 'unselected');
     assert.match(ui, /exportDiskItems\(chosen\)/); assert.match(ui, /row\.ondblclick/);
+    assert.match(ui, /clickTimer = setTimeout\([\s\S]*?, 350\)/, '桌面单击必须等待双击判定窗口结束');
+    assert.match(ui, /row\.ondblclick = event => \{[\s\S]*?clearTimeout\(clickTimer\)/, 'PC 双击必须取消延迟的单击多选');
+    assert.match(ui, /\['清理缓存', \(\) => clearTelegramDriveCache\(chosen\)\]/);
+    assert.match(ui, /TelegramDriveCache\?\.remove\(tree\.files\.map\(file => file\.id\)\)/, '删除目录前必须递归清理浏览器缓存');
+    assert.match(ui, /TelegramDriveCache\?\.remove\(\[item\.id\]\)/, '删除文件前必须清理对应浏览器缓存');
+});
+
+test('公开分享显示流式百分比、使用独立浏览器缓存并为瞬时失败重试', () => {
+    const page = source('pages/disk-share.html'), client = source('client/disk-share.js'), css = source('client/disk.css');
+    assert.match(page, /id="shareLoadingProgress"/); assert.match(page, /telegram-drive-cache\.js/);
+    assert.match(client, /share:' \+ token \+ ':' \+ file\.id/);
+    assert.match(client, /response\.body\.getReader/); assert.match(client, /for \(let attempt = 0; attempt < 2; attempt\+\+\)/);
+    assert.match(client, /TelegramDriveCache\?\.put\(cacheKey/);
+    assert.match(css, /#sharePreviewClose\{[^}]*background:rgba\(12,35,55/);
+});
+
+test('网盘提供最小化、目标隧道选择与上次目标记忆，管理页独立于 tgbot', () => {
+    const page = source('pages/index.html'), adapter = source('client/disk-tunnel-adapter.js'), admin = source('pages/disk-management.html'), server = source('server.js');
+    assert.match(page, /id="minimizeTelegramDriveBtn"/); assert.match(adapter, /telegram-drive-last-tunnel/);
+    assert.match(adapter, /选择转发目标隧道/); assert.match(adapter, /【当前隧道】/); assert.match(adapter, /host\.navigate\(target\.id\)/);
+    assert.match(adapter, /telegram-drive-pending-forward/); assert.match(admin, /网盘先发后审流水/); assert.match(admin, /用户与网盘分区/);
+    assert.match(server, /app\.get\('\/disk-management'/); assert.match(source('pages/admin.html'), /href="\/disk-management"/);
+    assert.doesNotMatch(source('pages/tgbot.html'), /disk-management\.js/);
 });
 
 test('居中 loading 的活动覆盖请求及服务端任务终态，后台轮询不产生新活动', async () => {

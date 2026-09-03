@@ -1095,7 +1095,8 @@ app.use([
     '/pages/sns-cookies.html',
     '/pages/sns-dl.html',
     '/pages/youtube-premium-dl.html',
-    '/pages/vclient.html'
+    '/pages/vclient.html',
+    '/pages/disk-management.html'
 ], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
@@ -1128,6 +1129,11 @@ app.get('/downloadList.html', (req, res) => {
 app.get('/admin', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'admin.html'));
+});
+
+app.get('/disk-management', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'disk-management.html'));
 });
 
 app.get('/vclient', (req, res) => {

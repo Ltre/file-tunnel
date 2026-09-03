@@ -30,7 +30,7 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
         try { return await webauthn(); }
         catch (error) { if (/MODULE_NOT_FOUND/.test(error.code || '')) throw new Error('PASSKEY_SERVER_UNAVAILABLE'); throw error; }
     }
-    const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', passkeyCount: (user.passkeys || []).length } : null;
+    const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', provider: user.provider || (user.telegramId ? 'telegram' : 'passkey'), passkeyCount: (user.passkeys || []).length, createdAt: user.createdAt || 0 } : null;
     const publicApp = app => ({ app_id: app.app_id, remark: app.remark, enabled: app.enabled, passkey_origin: app.passkeyOrigin || '', secretConfigured: true, createdAt: app.createdAt, lastUsedAt: app.lastUsedAt || 0, lastIssuedAt: app.lastIssuedAt || 0 });
     function seal(value) {
         const iv = crypto.randomBytes(12);
@@ -46,6 +46,7 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
     return {
         sessionKey: key,
         user(id) { return publicUser(data.users.find(user => user.id === String(id))); },
+        users() { return data.users.map(publicUser); },
         fromTelegram(identity, provider = 'telegram') {
             const telegramId = String(identity.id);
             if (!/^\d{1,20}$/.test(telegramId)) throw new Error('TELEGRAM_ID_INVALID');

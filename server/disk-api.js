@@ -13,14 +13,25 @@ const publicFile = item => item ? {
     id: item.id, kind: 'file', name: item.name, type: item.type, size: item.size,
     folderPath: item.folderPath || '', createdAt: item.createdAt, updatedAt: item.updatedAt,
     lastCheckedAt: item.lastCheckedAt || 0, repairedAt: item.repairedAt || 0,
-    metadata: item.metadata || {}
+    metadata: item.metadata || {}, reviewStatus: item.reviewStatus || 'active', reviewUpdatedAt: item.reviewUpdatedAt || 0
 } : null;
 function createDiskSpaces(dataDir, defaultStore) {
     const stores = new Map([['', defaultStore]]);
     const manifest = path.join(dataDir, 'disk-spaces.json');
     const spaces = readJson(manifest, []);
+    const usageFile = path.join(dataDir, 'disk-space-usage.json');
+    const usages = readJson(usageFile, []);
+    const track = (appId, userId, diskSpace) => {
+        const now = Date.now();
+        let item = usages.find(entry => entry.appId === appId && entry.userId === userId && entry.diskSpace === diskSpace);
+        if (!item) { item = { appId, userId, diskSpace, createdAt: now, lastUsedAt: now }; usages.push(item); writeJson(usageFile, usages); }
+        else if (now - item.lastUsedAt > 60 * 60 * 1000) { item.lastUsedAt = now; writeJson(usageFile, usages); }
+    };
     return {
         cleanup() { return [...stores.values()].flatMap(store => store.cleanup()); },
+        entries() { return ['', ...new Set(spaces)].map(diskSpace => ({ diskSpace, store: this.get(diskSpace) })); },
+        usages() { return usages.map(item => ({ ...item })); },
+        track(appId, userId, diskSpace = '') { track(String(appId || 'system'), String(userId), String(diskSpace || '')); },
         get(value = '') {
             if (typeof value !== 'string' || value.length > 100 || /[\u0000-\u001f]/.test(value)) throw new Error('DISK_SPACE_INVALID');
             if (!stores.has(value)) {
@@ -34,6 +45,7 @@ function createDiskSpaces(dataDir, defaultStore) {
 }
 function errorStatus(code) {
     if (code === 'PASSKEY_SERVER_UNAVAILABLE') return 503;
+    if (code === 'FILE_REMOVED_BY_REVIEW') return 410;
     if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
     if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS/.test(code)) return 409;
@@ -64,6 +76,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         finally { if (mutations.get(key) === pending) mutations.delete(key); }
     }
     const wrap = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next);
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    async function readRemote(backend, file) {
+        try { return await telegram.read(backend, file); }
+        catch (error) {
+            if (!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED)/.test(error.message)) throw error;
+            await wait(250); return telegram.read(backend, file);
+        }
+    }
     const limiter = () => rateLimit({ windowMs: 60000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'AUTH_RATE_LIMIT' } });
     const failure = (error, req, res, next) => {
         if (res.headersSent) return res.destroy();
@@ -83,10 +103,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const share = shares.resolve(req.params.token);
         const file = shares.file(share, spaces.get(share.diskSpace), req.params.id);
         const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
-        const source = await telegram.read(backend, file);
+        const source = await readRemote(backend, file);
         // Recheck revocation after an upstream wait, before releasing any bytes.
         try { shares.resolve(req.params.token); } catch (error) { source.destroy(); throw error; }
         res.set('Content-Type', 'application/octet-stream');
+        res.set('Content-Length', String(file.size));
         res.set('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(file.name));
         await pipeline(source, res);
     }));
@@ -102,6 +123,67 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     admin.get('/apps', (req, res) => res.json({ apps: auth.apps() }));
     admin.post('/apps', wrap(async (req, res) => res.json(await auth.saveApp(req.body || {}))));
     admin.delete('/apps/:id', (req, res) => { auth.deleteApp(req.params.id); res.json({ ok: true }); });
+    const appLabel = id => {
+        if (id === 'system') return '本系统';
+        if (id === 'legacy') return '历史数据（来源未知）';
+        if (id === 'unassigned') return '尚未使用网盘';
+        const app = auth.apps().find(item => item.app_id === id);
+        return app?.remark ? `${id}（${app.remark}）` : id;
+    };
+    const adminUserMap = () => new Map(auth.users().map(user => [user.id, user]));
+    const inferSourceAppId = (file, diskSpace, usages = spaces.usages()) => {
+        if (file.sourceAppId) return file.sourceAppId;
+        const candidates = [...new Set(usages.filter(item => item.userId === file.ownerId && item.diskSpace === diskSpace).map(item => item.appId))];
+        return candidates.length === 1 ? candidates[0] : 'legacy';
+    };
+    admin.get('/storage-overview', (req, res) => {
+        const users = adminUserMap(), groups = new Map();
+        const add = (appId, userId, diskSpace) => {
+            const key = JSON.stringify([appId, userId, diskSpace]);
+            if (!groups.has(key)) groups.set(key, { appId, appLabel: appLabel(appId), userId, user: users.get(userId) || { id: userId, name: '历史用户' }, diskSpace, fileCount: 0, size: 0, lastActivity: 0 });
+            return groups.get(key);
+        };
+        const usages = spaces.usages();
+        for (const usage of usages) add(usage.appId, usage.userId, usage.diskSpace).lastActivity = usage.lastUsedAt;
+        for (const { diskSpace, store } of spaces.entries()) for (const file of store.adminFiles()) {
+            const group = add(inferSourceAppId(file, diskSpace, usages), file.ownerId, diskSpace);
+            group.fileCount++; group.size += Number(file.size) || 0; group.lastActivity = Math.max(group.lastActivity, Number(file.updatedAt || file.createdAt) || 0);
+        }
+        const assignedUsers = new Set([...groups.values()].map(group => group.userId));
+        for (const user of users.values()) if (!assignedUsers.has(user.id)) add('unassigned', user.id, '');
+        const systems = new Map();
+        for (const group of groups.values()) {
+            if (!systems.has(group.appId)) systems.set(group.appId, { appId: group.appId, label: group.appLabel, users: new Map() });
+            const system = systems.get(group.appId);
+            if (!system.users.has(group.userId)) system.users.set(group.userId, { ...group.user, userId: group.userId, spaces: [] });
+            system.users.get(group.userId).spaces.push({ diskSpace: group.diskSpace, fileCount: group.fileCount, size: group.size, lastActivity: group.lastActivity });
+        }
+        res.json({ systems: [...systems.values()].map(system => ({ appId: system.appId, label: system.label, users: [...system.users.values()] })) });
+    });
+    admin.get('/storage-contents', wrap((req, res) => {
+        const diskSpace = String(req.query.disk_space || ''), userId = String(req.query.user_id || '');
+        if (!userId) throw new Error('USER_NOT_FOUND');
+        const result = spaces.get(diskSpace).list(userId, req.query.path || '');
+        res.json({ ...result, files: result.files.map(file => ({ ...publicFile(file), sourceAppId: inferSourceAppId(file, diskSpace) })) });
+    }));
+    admin.get('/reviews', (req, res) => {
+        const users = adminUserMap(), files = [];
+        for (const { diskSpace, store } of spaces.entries()) for (const file of store.adminFiles()) files.push({ ...publicFile(file), userId: file.ownerId, user: users.get(file.ownerId) || { id: file.ownerId, name: '历史用户' }, diskSpace, appId: inferSourceAppId(file, diskSpace) });
+        files.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+        res.json({ files: files.slice(0, 50) });
+    });
+    admin.patch('/reviews/:id', wrap(async (req, res) => {
+        const userId = String(req.body?.user_id || ''), diskSpace = String(req.body?.disk_space || ''), action = String(req.body?.action || '');
+        const store = spaces.get(diskSpace), file = store.get(userId, req.params.id);
+        if (!file) throw new Error('FILE_NOT_FOUND');
+        if (action === 'block') return res.json(publicFile(store.setReviewStatus(userId, file.id, 'blocked')));
+        if (action !== 'delete') throw new Error('REVIEW_ACTION_INVALID');
+        if (file.reviewStatus !== 'deleted') {
+            const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+            await telegram.remove(backend, file);
+        }
+        res.json(publicFile(store.tombstone(userId, file.id)));
+    }));
     admin.use(failure);
 
     external.post('/auth/token', limiter(), wrap(async (req, res) => {
@@ -138,6 +220,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const user = getIdentity(req);
         if (!user) throw new Error('LOGIN_REQUIRED');
         req.diskUser = user; req.diskScope = { userId: user.id, diskSpace: '' }; req.diskStore = defaultStore;
+        spaces.track('system', user.id, '');
         next();
     }));
     external.use(wrap((req, res, next) => {
@@ -148,6 +231,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (telegramId) defaultStore.migrateOwner(String(telegramId), user.id);
         const diskSpace = req.get('X-Disk-Space') ?? req.query.disk_space ?? req.body?.disk_space ?? '';
         req.diskUser = user; req.diskScope = { userId: user.id, diskSpace }; req.diskStore = spaces.get(diskSpace);
+        spaces.track(req.diskApp.appId, user.id, diskSpace);
         next();
     }));
     function contents(router) {
@@ -157,6 +241,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
         const fileBackend = (req, file) => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
+        const requireEntity = file => { if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW'); return file; };
         const jobResponse = (req, res, type, message, work) => {
             const job = operations.create(scope(req), type, message);
             operations.run(job.operation_id, update => mutate(req, () => work(update)));
@@ -190,7 +275,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.post('/directories', wrap((req, res) => {
             jobResponse(req, res, 'mkdir', '正在创建目录', async update => {
                 update({ phase: 'index-write', message: '正在逐级创建虚拟目录并保存索引' });
-                return store(req).createDirectory(owner(req), req.body?.path || '', maxDepth());
+                return store(req).createDirectory(owner(req), req.body?.path || '', maxDepth(), req.diskApp?.appId || 'system');
             });
         }));
         router.patch('/directories', wrap((req, res) => {
@@ -203,7 +288,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/files/:id', wrap((req, res) => res.json(publicFile(getFile(req)))));
         router.patch('/files/:id', wrap((req, res) => {
-            const file = getFile(req);
+            const file = requireEntity(getFile(req));
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
                 return publicFile(store(req).modifyFile(owner(req), file.id, req.body || {}, maxDepth()));
@@ -212,6 +297,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.delete('/files/:id', wrap((req, res) => {
             const file = getFile(req);
             jobResponse(req, res, 'delete-file', '正在删除 ' + file.name, async update => {
+                if (file.reviewStatus === 'deleted') { store(req).remove(owner(req), file.id); return { ok: true, removedPlaceholder: true }; }
                 update({ phase: 'telegram-delete', message: '正在请求 Telegram 删除：' + file.name });
                 await telegram.remove(fileBackend(req, file), file);
                 store(req).remove(owner(req), file.id); return { ok: true };
@@ -230,7 +316,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 let count = 0; const failures = [];
                 for (const file of currentTree.files) {
                     update({ phase: 'telegram-delete', percent: null, message: '正在删除 ' + (++count) + '/' + tree.files.length + '：' + file.name });
-                    try { await telegram.remove(fileBackend(req, file), file); store(req).remove(owner(req), file.id); }
+                    try { if (file.reviewStatus !== 'deleted') await telegram.remove(fileBackend(req, file), file); store(req).remove(owner(req), file.id); }
                     catch (_) { failures.push(file.id); }
                 }
                 if (failures.length) throw new Error('DISK_DELETE_PARTIAL');
@@ -250,7 +336,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 return { ...file, name, folderPath: normalizeTelegramDrivePath(parts.join('/')) };
             });
             const limit = storage.baseUrl === 'https://api.telegram.org' ? 50 * 1024 * 1024 : 2 * 1024 * 1024 * 1024;
-            const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', metadata: req.body?.metadata || {} });
+            const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             job.storage = storage;
             const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0) * 2);
             job.operationId = operation.operation_id;
@@ -320,7 +406,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             res.status(202).json({ operation_id: job.operationId });
         }));
         router.get('/files/:id/check', wrap((req, res) => {
-            const file = getFile(req);
+            const file = requireEntity(getFile(req));
             jobResponse(req, res, 'check', '正在检测文件', async update => {
                 update({ phase: 'telegram-check', message: '正在向 Telegram 检查文件有效性' });
                 try { await telegram.call(fileBackend(req, file), 'getFile', { file_id: file.fileId }); store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() }); return { valid: true }; }
@@ -328,12 +414,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             });
         }));
         router.get('/files/:id/download', wrap(async (req, res) => {
-            const file = getFile(req);
+            const file = requireEntity(getFile(req));
             const operation = operations.create(scope(req), 'read', '正在请求 Telegram：' + file.name, file.size);
             const id = operation.operation_id;
             operations.update(id, { status: 'running', phase: 'telegram-request' });
             try {
-                const source = await telegram.read(fileBackend(req, file), file);
+                const source = await readRemote(fileBackend(req, file), file);
                 res.set('Content-Type', file.type || 'application/octet-stream');
                 res.set('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(file.name));
                 res.set('X-Disk-Operation-Id', id);
@@ -344,7 +430,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             } catch (error) { operations.fail(id, error); throw error; }
         }));
         router.post('/files/:id/repair', wrap(async (req, res) => {
-            const file = getFile(req); const storage = backend(req);
+            const file = requireEntity(getFile(req)); const storage = backend(req);
             if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             if (Number(req.get('X-Disk-File-Size') || req.get('X-Drop2Tunnel-File-Size')) !== file.size) throw new Error('REPAIR_SIZE_INVALID');
             const operation = operations.create(scope(req), 'repair', '正在接收本机修复副本', file.size);

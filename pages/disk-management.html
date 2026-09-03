@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>网盘管理 - 管理后台</title>
+    <style>
+        *{box-sizing:border-box}body{margin:0;background:#eef3f7;color:#243746;font:14px/1.55 system-ui,"Microsoft YaHei",sans-serif}button{font:inherit;cursor:pointer}header{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:12px;padding:14px 22px;background:#173a51;color:white;box-shadow:0 2px 12px #132b3c33}header h1{margin:0;font-size:20px;flex:1}header a,header button{border:1px solid #ffffff66;border-radius:7px;background:transparent;color:white;padding:7px 12px;text-decoration:none}.layout{display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:16px;padding:16px}.card{min-width:0;border:1px solid #d4dfe7;border-radius:12px;background:white;box-shadow:0 2px 10px #173a5112}.card h2{margin:0;padding:14px 16px;border-bottom:1px solid #e0e7ed;font-size:17px}.tree{padding:10px;max-height:calc(100vh - 115px);overflow:auto}.tree details{margin:3px 0}.tree summary{cursor:pointer;padding:6px;border-radius:6px}.tree summary:hover{background:#eef5fa}.tree .user{margin-left:16px}.space{display:block;width:calc(100% - 30px);margin:3px 0 3px 30px;padding:7px 9px;border:0;border-radius:6px;background:#f3f7fa;text-align:left;color:inherit}.space:hover,.space.active{background:#cfe9f5;color:#104c68}.muted{color:#687b89;font-size:12px}.content{padding:14px}.breadcrumbs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}.breadcrumbs button{border:1px solid #ccd9e2;border-radius:6px;background:white;padding:5px 9px}.summary{margin-bottom:12px;color:#526978}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:720px}th,td{padding:9px;border-bottom:1px solid #e4eaef;text-align:left;vertical-align:top}th{position:sticky;top:0;background:#f5f8fa}.name-button{border:0;background:none;padding:0;color:#145f82;text-align:left}.status-active{color:#238455}.status-blocked{color:#b15c00}.status-deleted{color:#bd2632}.reviews{grid-column:1/-1}.reviews td{white-space:pre-line}.review-actions{display:flex;gap:6px}.review-actions button{border:1px solid #ccd9e2;border-radius:6px;background:white;padding:5px 9px}.review-actions .danger{color:#b4232e;border-color:#e8b8bd}.empty{padding:24px;text-align:center;color:#687b89}#pageStatus{padding:0 16px 12px;color:#9d3d33}
+        @media(max-width:800px){header{padding:11px 12px;flex-wrap:wrap}header h1{font-size:18px}.layout{display:block;padding:10px}.card{margin-bottom:12px}.tree{max-height:46vh}table{min-width:650px}}
+    </style>
+    <script defer src="/client/disk-management.js"></script>
+</head>
+<body>
+    <header><a href="/admin">← 管理后台</a><h1>网盘用户、分区与先发后审</h1><button id="refreshBtn" type="button">刷新</button></header>
+    <main class="layout">
+        <section class="card"><h2>用户与网盘分区</h2><div id="storageTree" class="tree"></div></section>
+        <section class="card"><h2 id="contentTitle">网盘内容</h2><div id="pageStatus" role="status"></div><div class="content"><nav id="contentBreadcrumbs" class="breadcrumbs"></nav><div id="contentSummary" class="summary">请从左侧选择一个用户分区。</div><div id="contentTable" class="table-wrap"></div></div></section>
+        <section class="card reviews"><h2>网盘先发后审流水（最新 50 个文件）</h2><div id="reviewTable" class="table-wrap"></div></section>
+    </main>
+</body>
+</html>

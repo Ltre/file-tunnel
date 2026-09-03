@@ -16,15 +16,62 @@
     }
     async function work(message, action) {
         abort?.abort(); const controller = new AbortController(); abort = controller; const current = ++generation;
-        $('shareLoadingText').textContent = message; $('shareLoading').hidden = false;
+        $('shareLoadingText').textContent = message; $('shareLoadingProgress').removeAttribute('value'); $('shareLoading').hidden = false;
         try { await action(controller.signal); }
         catch (error) { if (current === generation && error.name !== 'AbortError') $('shareStatus').textContent = errorText(error); }
         finally { if (current === generation) $('shareLoading').hidden = true; }
     }
+    async function readFile(file, signal) {
+        const cacheKey = 'share:' + token + ':' + file.id;
+        const cached = await window.TelegramDriveCache?.get(cacheKey).catch(() => null);
+        if (cached?.blob instanceof Blob && (!Number(file.size) || cached.blob.size === Number(file.size))) {
+            $('shareLoadingText').textContent = '已从浏览器缓存读取：' + file.name;
+            $('shareLoadingProgress').value = 100;
+            return cached.blob;
+        }
+        let finalError;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            try {
+                const response = await request('/files/' + encodeURIComponent(file.id) + '/download', signal);
+                const total = Number(response.headers.get('Content-Length')) || Number(file.size) || 0;
+                let blob;
+                if (!response.body?.getReader) {
+                    blob = await response.blob();
+                    $('shareLoadingProgress').value = 100;
+                } else {
+                    const reader = response.body.getReader(), chunks = []; let received = 0;
+                    while (true) {
+                        const { done, value } = await reader.read(); if (done) break;
+                        chunks.push(value); received += value.byteLength;
+                        if (total) {
+                            const percent = Math.min(100, Math.round(received * 100 / total));
+                            $('shareLoadingProgress').value = percent;
+                            $('shareLoadingText').textContent = `正在读取：${file.name}（${percent}%）`;
+                        } else $('shareLoadingText').textContent = `正在读取：${file.name}（${received.toLocaleString('zh-CN')} 字节）`;
+                    }
+                    blob = new Blob(chunks, { type: file.type || 'application/octet-stream' });
+                }
+                if (Number(file.size) && blob.size !== Number(file.size)) throw new Error('下载内容不完整');
+                await window.TelegramDriveCache?.put(cacheKey, { name: file.name, type: file.type, size: blob.size, blob, source: 'public-share' }).catch(() => undefined);
+                return blob;
+            } catch (error) {
+                if (error.name === 'AbortError') throw error;
+                finalError = error;
+                const transient = /TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED)|网络请求失败|Failed to fetch|下载内容不完整/i.test(error.message);
+                if (attempt === 0 && transient) await new Promise((resolve, reject) => {
+                    const onAbort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+                    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, 300);
+                    signal.addEventListener('abort', onAbort, { once: true });
+                });
+                else throw error;
+            }
+        }
+        throw finalError;
+    }
     async function openFile(file, preview) {
         return work('正在读取：' + file.name, async signal => {
-            const response = await request('/files/' + encodeURIComponent(file.id) + '/download', signal);
-            const blob = await response.blob(); if (signal.aborted) return;
+            const blob = await readFile(file, signal); if (signal.aborted) return;
             if (!preview) {
                 const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); return;
             }

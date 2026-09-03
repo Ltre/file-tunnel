@@ -32,6 +32,10 @@
 #diskPreviewBody iframe{width:100%;height:100%;border:0;background:#fff}
 #diskPreviewBody pre{white-space:pre-wrap;word-break:break-word;align-self:flex-start;width:100%;font:14px/1.6 monospace}
 @media(max-width:600px){.disk-tasks{padding:8px 12px}.disk-passkey-controls input{min-width:0;width:100%;flex-basis:100%}}
+@media(max-width:600px){.telegram-drive-create-menu{box-sizing:border-box;max-width:calc(100vw - 24px)}.telegram-drive-header-actions{gap:3px!important}.telegram-drive-header-actions .telegram-drive-icon-btn{width:34px;height:34px}}
+.disk-tunnel-picker{box-sizing:border-box;width:min(460px,calc(100vw - 24px));border:0;border-radius:16px;padding:22px;color:#233849;box-shadow:0 20px 70px #0005}
+.disk-tunnel-picker::backdrop{background:#10203099}
+.disk-tunnel-picker strong{display:block;font-size:18px}.disk-tunnel-picker p{color:#607184;line-height:1.6}.disk-tunnel-picker select{box-sizing:border-box;width:100%;padding:12px;border:1px solid #bac8d5;border-radius:9px;background:white;color:#233849;font:inherit}.disk-tunnel-picker>div{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.disk-tunnel-picker button{padding:9px 16px;border:1px solid #bdcad5;border-radius:8px;background:white}.disk-tunnel-picker button.primary{background:#236777;color:white;border-color:#236777}
 #telegramDriveOverlay .telegram-drive-manager{display:flex;flex-direction:column}
 #telegramDriveOverlay .telegram-drive-header,#telegramDriveOverlay .telegram-drive-auth,#telegramDriveOverlay .disk-tasks{flex-shrink:0}
 #telegramDriveOverlay .telegram-drive-workspace{flex:1;min-height:0}
@@ -80,11 +84,13 @@
 #sharePreview{position:fixed;inset:0;z-index:10;background:#15212e;color:#fff;display:flex;flex-direction:column}
 #sharePreview header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px}
 #sharePreview header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#sharePreviewClose{border:1px solid rgba(255,255,255,.78);border-radius:8px;background:rgba(12,35,55,.88);color:#fff;padding:7px 12px}
 #sharePreviewBody{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:auto;padding:15px}
 #sharePreviewBody img,#sharePreviewBody video{max-width:100%;max-height:100%;object-fit:contain}
 #sharePreviewBody audio{width:min(700px,95%)}
 #sharePreviewBody iframe{width:100%;height:100%;border:0;background:white}
 #sharePreviewBody pre{align-self:flex-start;white-space:pre-wrap;word-break:break-word}
 #shareLoading{position:fixed;inset:0;z-index:20;background:#10203080;display:flex;align-items:center;justify-content:center;padding:20px}
+#shareLoadingProgress{width:min(280px,70vw);height:9px;accent-color:#14a56b}
 #sharePreview[hidden],#shareLoading[hidden]{display:none}
 @media(max-width:600px){.disk-public-card{margin:0;border-radius:0;padding:16px;min-height:100dvh;box-sizing:border-box}.disk-public-item{gap:8px;flex-wrap:wrap}.disk-public-item small{font-size:11px}}

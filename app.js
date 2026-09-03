@@ -16993,7 +16993,14 @@ function initUI() {
     window.DiskUI.init({ formatFileSize, showAppToast, historyLog });
     window.DiskTunnelAdapter.configure({
         filesForRecord: telegramDriveFilesForMessage, readFile: getTelegramDriveBlob,
-        target: () => state.sessionId ? (state.sessionShortCode || state.sessionId) : '',
+        target: () => state.sessionId ? { id: state.sessionId, shortCode: state.shortCode || '', remark: state.sessionRemark || '' } : null,
+        tunnels: async () => {
+            const known = new Map(readSessionDirectoryCache().map(item => [item.sessionId, item]));
+            for (const item of await getAllFromStore('sessions').catch(() => [])) known.set(item.sessionId, { ...known.get(item.sessionId), ...item });
+            if (state.sessionId) known.set(state.sessionId, { ...known.get(state.sessionId), sessionId: state.sessionId, shortCode: state.shortCode, remark: state.sessionRemark });
+            return [...known.values()].filter(item => /^[a-zA-Z0-9_-]{8,64}$/.test(item?.sessionId || '')).map(item => ({ id: item.sessionId, shortCode: normalizeLocalShortCode(item.shortCode), remark: String(item.remark || '').trim().slice(0, 60), current: item.sessionId === state.sessionId }));
+        },
+        navigate: sessionId => openSession(sessionId),
         send: files => sendSelectedFiles(files)
     });
     document.getElementById('telegramDriveBtn')?.addEventListener('click', () => {
