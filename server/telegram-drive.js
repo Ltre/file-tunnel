@@ -309,6 +309,7 @@ files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, '
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {}; const item = { id: crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
+                item.captionWarning = remote.captionWarning || '';
                 records.set(item.id, item); return item;
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);

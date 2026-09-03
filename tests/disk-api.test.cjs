@@ -69,7 +69,21 @@ test('第三方令牌到期、撤销及 Bot 凭据加密持久化；非法配置
     await assert.rejects(auth.authenticateApp('app1', 'incorrect'), /APP_AUTH_INVALID/);
     const app = await auth.authenticateApp('app1', 'test-secret-long-enough');
     const backend = { token: '1234:super-private-token-test', channelId: '-1001', baseUrl: 'https://api.telegram.org' };
-    const token = auth.issueToken(app, backend);
+    const token = auth.issueToken(app, backend, { app_secret: 'test-secret-long-enough' });
+    assert.equal(auth.access(token.access_token).storage.token, backend.token);
+    assert.equal(auth.access(token.access_token).storage.channelId, backend.channelId);
+    const savedToken = JSON.parse(fs.readFileSync(path.join(dataDir, 'disk-auth.json'), 'utf8')).tokens[0];
+    assert.equal(savedToken.hash, crypto.createHash('sha256').update(token.access_token).digest('hex'));
+    const encrypted = Buffer.from(savedToken.encryptedCredentials, 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', fs.readFileSync(path.join(dataDir, 'disk-secret.key')), encrypted.subarray(0, 12));
+    decipher.setAuthTag(encrypted.subarray(-16));
+    const credentials = JSON.parse(Buffer.concat([decipher.update(encrypted.subarray(12, -16)), decipher.final()]).toString());
+    assert.deepEqual(credentials, { app_id: 'app1', app_secret: 'test-secret-long-enough', tg_bot_token: backend.token, tg_channel: backend.channelId });
+    const alternate = auth.issueToken(app, { ...backend, token: 'another-bot', channelId: '-1002' }, { app_secret: 'test-secret-long-enough' });
+    const restored = createDiskAuth({ dataDir, now: () => now });
+    assert.equal(restored.access(alternate.access_token).storage.token, 'another-bot');
+    assert.equal(restored.access(alternate.access_token).storage.channelId, '-1002');
+    assert.equal(restored.access(token.access_token).storage.token, backend.token, '同应用的两个令牌必须分别解析自己的凭据');
     assert.equal(auth.backend(auth.access(token.access_token).backendId).token, backend.token);
     assert.doesNotMatch(fs.readFileSync(path.join(dataDir, 'disk-auth.json'), 'utf8'), /super-private-token-test|test-secret-long-enough/);
     now = 2001; assert.throws(() => auth.access(token.access_token), /ACCESS_TOKEN_EXPIRED/);
@@ -115,6 +129,7 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     const telegram = {
         validate: async () => ({ token: 'fake-secret', channelId: '-1001', baseUrl: 'https://api.telegram.org' }),
         upload: async (_backend, files, update, completed = []) => {
+            assert.equal(_backend.token, 'fake-secret'); assert.equal(_backend.channelId, '-1001');
             uploads++; update({ phase: 'telegram-upload', percent: 50, message: 'uploading' });
             completed.push(...files.slice(0, failUpload ? 1 : files.length).map((file, i) => ({ fileId: 'remote-' + i, messageId: i + 1 })));
             if (failUpload) throw new Error('TELEGRAM_NETWORK_ERROR');
@@ -126,7 +141,8 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     };
     const app = express(); app.use(express.json());
     const api = createDiskAPI({ dataDir, defaultStore: drive, auth, operations, telegram, getDefaultBackend: () => ({ token: 'default', channelId: '-10', baseUrl: 'https://api.telegram.org' }), getIdentity: () => user, setIdentity: () => {}, getOrigin: () => 'http://localhost', isMockRequest: () => true, maxDepth: () => 20 });
-    app.use('/api', api.external); app.use('/browser', api.browser);
+    app.use('/api', api.external); app.use('/browser', api.browser); app.use('/shared', api.shared);
+    t.after(() => api.close());
     const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
     const base = 'http://127.0.0.1:' + server.address().port;
     const issued = await (await fetch(base + '/api/auth/token', { method: 'POST', ...json({ app_id: 'app1', app_secret: 'test-secret-long-enough', tg_bot_token: 'fake', tg_channel: '-1' }) })).json();
@@ -144,6 +160,20 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     const finished = await request('/uploads/' + job.uploadId + '/finish', { method: 'POST' });
     const done = await wait(finished.operation_id); assert.equal(done.status, 'completed');
     const file = done.result.items[0]; assert.equal(file.folderPath, 'storage/emulated/0/Music'); assert.equal(file.fileId, undefined);
+    const share = await request('/shares', { method: 'POST', ...json({ items: [{ kind: 'directory', path: 'storage' }] }) });
+    assert.equal(share.status, 201);
+    const shareToken = share.url.split('/').pop();
+    const publicRoot = await (await fetch(base + '/shared/' + shareToken)).json();
+    assert.equal(publicRoot.folders[0].name, 'storage'); assert.equal(publicRoot.ownerId, undefined);
+    const publicNested = await (await fetch(base + '/shared/' + shareToken + '?path=storage/emulated/0/Music')).json();
+    assert.equal(publicNested.files[0].id, file.id); assert.equal(publicNested.files[0].fileId, undefined);
+    assert.equal(await (await fetch(base + '/shared/' + shareToken + '/files/' + file.id + '/download')).text(), 'abc');
+    assert.equal((await fetch(base + '/shared/' + shareToken + '/files/unknown/download')).status, 404);
+    assert.equal((await request('/shares/' + share.id, { method: 'DELETE', headers: { 'X-Disk-User-Id': other.id } })).status, 404);
+    assert.equal((await request('/shares', { headers: { 'X-Disk-Space': 'other' } })).shares.length, 0);
+    assert.equal((await request('/shares/' + share.id, { method: 'DELETE' })).status, 200);
+    assert.equal((await fetch(base + '/shared/' + shareToken)).status, 404);
+    assert.equal((await fetch(base + '/shared/' + shareToken + '/files/' + file.id + '/download')).status, 404);
     assert.equal((await request('/uploads/' + job.uploadId + '/finish', { method: 'POST' })).operation_id, finished.operation_id); assert.equal(uploads, 1);
     assert.equal((await request('/list', { headers: { 'X-Disk-Space': 'other' } })).folders.length, 0);
     assert.equal((await request('/files/' + file.id, { headers: { 'X-Disk-User-Id': other.id } })).status, 404);
@@ -171,15 +201,19 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
 test('Telegram transport 按 10 个拆 album，字节进度不含 multipart 头，异常不泄露 token', async t => {
     const dataDir = temp(t), filePath = path.join(dataDir, 'test.txt'); fs.writeFileSync(filePath, 'abc');
     const files = Array.from({ length: 11 }, (_, i) => ({ path: filePath, name: i + '.txt', size: 3 }));
-    const calls = [], progress = [];
+    const calls = [], progress = [], captions = [];
     const telegram = createDiskTelegram({ fetchImpl: async (url, options) => {
-        calls.push(url.split('/').at(-1)); const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
+        const method = url.split('/').at(-1); calls.push(method);
+        if (method === 'editMessageCaption') { captions.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ ok: true, result: true }) }; }
+        const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
         const body = Buffer.concat(chunks).toString(); const count = (body.match(/filename="/g) || []).length;
         const messages = Array.from({ length: count }, (_, i) => ({ message_id: i + 1, document: { file_id: 'f' + i } }));
         return { ok: true, json: async () => ({ ok: true, result: count === 1 ? messages[0] : messages }) };
     } });
-    assert.equal((await telegram.upload({ token: 'secret', baseUrl: 'https://api.telegram.org', channelId: '-1' }, files, item => progress.push(item))).length, 11);
-    assert.deepEqual(calls, ['sendMediaGroup', 'sendDocument']);
+    assert.equal((await telegram.upload({ token: 'secret', baseUrl: 'https://api.telegram.org', channelId: '-1' }, files, item => progress.push(item), [], { userId: 'general-user', diskSpace: 'music' })).length, 11);
+    assert.deepEqual(calls.filter(method => method !== 'editMessageCaption'), ['sendMediaGroup', 'sendDocument']);
+    assert.equal(captions.length, 11);
+    assert.ok(captions.every(item => /user_id: general-user/.test(item.caption) && /file_id: f/.test(item.caption) && /message_id:/.test(item.caption) && /channel_id: -1/.test(item.caption)));
     assert.ok(progress.some(item => item.processedBytes === 33));
     assert.ok(progress.every(item => !item.processedBytes || item.processedBytes <= 33));
     const broken = createDiskTelegram({ fetchImpl: async () => { throw new Error('https://host/bot123:secret'); } });

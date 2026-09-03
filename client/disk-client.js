@@ -65,7 +65,8 @@
         const method = String(options.method || 'GET').toUpperCase();
         let body = {}; try { body = JSON.parse(options.body || '{}'); } catch (_) {}
         const target = url.includes('/directories') ? '目录' : '文件';
-        const message = method === 'DELETE' ? '正在删除' + target
+        const message = url.includes('/shares') ? (method === 'DELETE' ? '正在停止分享' : method === 'POST' ? '正在创建分享' : '正在加载分享列表')
+            : method === 'DELETE' ? '正在删除' + target
             : method === 'PATCH' ? ('folderPath' in body || 'destinationPath' in body ? '正在移动' : '正在重命名') + target
             : url.endsWith('/check') ? '正在检测文件可用性'
             : url.endsWith('/repair') ? '正在修复文件'

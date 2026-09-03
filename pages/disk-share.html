@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width,initial-scale=1">
+		<meta name="referrer" content="no-referrer">
+		<meta name="robots" content="noindex,nofollow">
+		<title>网盘分享</title>
+		<link rel="stylesheet" href="/client/disk.css">
+	</head>
+	<body class="disk-public-page">
+		<main class="disk-public-card">
+			<header>
+				<span>☁ 网盘分享</span>
+				<h1 id="shareTitle">正在打开分享…</h1>
+				<p>无需登录即可浏览和下载。请勿将私密分享链接转交他人。</p>
+			</header>
+			<nav id="shareBreadcrumbs" aria-label="分享目录"></nav>
+			<div id="shareStatus" role="status" aria-live="polite"></div>
+			<div id="shareItems"></div>
+		</main>
+		<section id="sharePreview" hidden role="dialog" aria-modal="true" aria-label="文件预览">
+			<header>
+				<strong id="sharePreviewName"></strong>
+				<button id="sharePreviewClose" type="button">关闭预览</button>
+			</header>
+			<div id="sharePreviewBody"></div>
+		</section>
+		<div id="shareLoading" hidden role="status" aria-live="polite">
+			<div class="disk-loading-card">
+				<span class="disk-loading-spinner" aria-hidden="true"></span>
+				<strong id="shareLoadingText">正在加载…</strong>
+				<button id="shareCancel" type="button">取消</button>
+			</div>
+		</div>
+		<script src="/client/disk-share.js"></script>
+	</body>
+</html>

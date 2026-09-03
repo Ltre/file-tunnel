@@ -7,6 +7,7 @@ const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./telegram-drive');
 const { readJson, writeJson } = require('./disk-data');
+const { createDiskShares } = require('./disk-shares');
 
 const publicFile = item => item ? {
     id: item.id, kind: 'file', name: item.name, type: item.type, size: item.size,
@@ -32,6 +33,7 @@ function createDiskSpaces(dataDir, defaultStore) {
     };
 }
 function errorStatus(code) {
+    if (code === 'PASSKEY_SERVER_UNAVAILABLE') return 503;
     if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
     if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS/.test(code)) return 409;
@@ -43,6 +45,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const external = express.Router();
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
+    const shares = createDiskShares({ dataDir });
+    const shared = express.Router();
     const cleanupTimer = setInterval(() => {
         try { for (const operationId of spaces.cleanup()) if (operationId) operations.fail(operationId, new Error('UPLOAD_EXPIRED')); }
         catch (_) { console.warn('[网盘] 暂存清理失败，请检查数据目录权限'); }
@@ -68,6 +72,25 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     const noStore = (req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); };
     browser.use(noStore); external.use(noStore); admin.use(noStore);
+    shared.use(noStore);
+    shared.use(rateLimit({ windowMs: 60000, max: 120, standardHeaders: true, legacyHeaders: false }));
+    shared.use((req, res, next) => { res.set({ 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex, nofollow' }); next(); });
+    shared.get('/:token', wrap((req, res) => {
+        const share = shares.resolve(req.params.token);
+        res.json(shares.contents(share, spaces.get(share.diskSpace), req.query.path || ''));
+    }));
+    shared.get('/:token/files/:id/download', wrap(async (req, res) => {
+        const share = shares.resolve(req.params.token);
+        const file = shares.file(share, spaces.get(share.diskSpace), req.params.id);
+        const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+        const source = await telegram.read(backend, file);
+        // Recheck revocation after an upstream wait, before releasing any bytes.
+        try { shares.resolve(req.params.token); } catch (error) { source.destroy(); throw error; }
+        res.set('Content-Type', 'application/octet-stream');
+        res.set('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(file.name));
+        await pipeline(source, res);
+    }));
+    shared.use(failure);
     const csrf = (req, res, next) => {
         const origin = req.get('Origin');
         if (origin && origin !== getOrigin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
@@ -84,7 +107,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     external.post('/auth/token', limiter(), wrap(async (req, res) => {
         const app = await auth.authenticateApp(req.body?.app_id, req.body?.app_secret);
         const backend = await telegram.validate(req.body?.tg_bot_token, req.body?.tg_channel);
-        res.json(auth.issueToken(app, backend));
+        res.json(auth.issueToken(app, backend, { app_secret: req.body.app_secret }));
     }));
     external.use(wrap((req, res, next) => {
         req.diskApp = auth.access(String(req.get('Authorization') || '').replace(/^Bearer\s+/i, ''));
@@ -131,7 +154,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const scope = req => req.diskScope;
         const owner = req => req.diskUser.id;
         const store = req => req.diskStore;
-        const backend = req => req.diskApp ? auth.backend(req.diskApp.backendId) : getDefaultBackend();
+        const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
         const fileBackend = (req, file) => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
         const jobResponse = (req, res, type, message, work) => {
@@ -140,6 +163,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             res.status(202).json({ operation_id: job.operation_id });
         };
         router.get('/users/me', (req, res) => res.json({ identity: req.diskUser, user_id: owner(req) }));
+        router.get('/shares', (req, res) => res.json({ shares: shares.list(scope(req)) }));
+        router.post('/shares', wrap((req, res) => res.status(201).json(shares.create(scope(req), store(req), req.body?.items))));
+        router.delete('/shares/:id', wrap((req, res) => res.json(shares.stop(scope(req), req.params.id))));
         router.get('/operations', (req, res) => res.json({ operations: operations.list(scope(req), String(req.query.ids || '').split(',').slice(0, 100)) }));
         router.get('/operations/:id', wrap((req, res) => {
             const job = operations.get(req.params.id, scope(req));
@@ -273,11 +299,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     try {
                         store(req).validateUpload(job.id);
                         const sourceBytes = job.files.reduce((sum, file) => sum + file.size, 0);
-                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, totalBytes: sourceBytes * 2, processedBytes: sourceBytes + (patch.processedBytes || 0), percent: Number.isFinite(patch.percent) ? 50 + patch.percent / 2 : null }), sent);
+                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, totalBytes: sourceBytes * 2, processedBytes: sourceBytes + (patch.processedBytes || 0), percent: Number.isFinite(patch.percent) ? 50 + patch.percent / 2 : null }), sent, scope(req));
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收，正在写入文件索引' });
                         const items = store(req).commit(job.id, job.storage.channelId, sent);
                         if (!job.backendId) onDefaultUpload(job.storage.channelId);
-                        return { ok: true, items: items.map(publicFile) };
+                        const warnings = sent.filter(file => file.captionWarning).map(file => file.captionWarning);
+                        if (warnings.length) update({ warnings });
+                        return { ok: true, items: items.map(publicFile), warnings };
                     } catch (error) {
                         // Keep confirmed remote objects discoverable, even if a later album failed.
                         if (sent.length) {
@@ -326,7 +354,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             operations.run(operation.operation_id, update => mutate(req, async () => {
                 try {
                     if (!store(req).get(owner(req), file.id)) throw new Error('FILE_NOT_FOUND');
-                    const [remote] = await telegram.upload(storage, [{ ...job.files[0], name: file.name }], update);
+                    const [remote] = await telegram.upload(storage, [{ ...job.files[0], name: file.name, folderPath: file.folderPath }], update, [], scope(req));
                     store(req).update(owner(req), file.id, { ...remote, channelId: storage.channelId, backendId: storage.id || '', repairedAt: Date.now() });
                     return { ok: true };
                 } finally { store(req).abort(job.id); }
@@ -336,6 +364,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     }
     contents(browser); contents(external);
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, spaces, close() { clearInterval(cleanupTimer); } };
+    return { browser, external, admin, shared, spaces, close() { clearInterval(cleanupTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

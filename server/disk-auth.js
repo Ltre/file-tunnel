@@ -26,6 +26,10 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
     const data = readJson(file, { users: [], apps: [], backends: [], tokens: [] });
     const save = () => writeJson(file, data);
     const pending = new Map();
+    async function passkeyMethods() {
+        try { return await webauthn(); }
+        catch (error) { if (/MODULE_NOT_FOUND/.test(error.code || '')) throw new Error('PASSKEY_SERVER_UNAVAILABLE'); throw error; }
+    }
     const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', passkeyCount: (user.passkeys || []).length } : null;
     const publicApp = app => ({ app_id: app.app_id, remark: app.remark, enabled: app.enabled, passkey_origin: app.passkeyOrigin || '', secretConfigured: true, createdAt: app.createdAt, lastUsedAt: app.lastUsedAt || 0, lastIssuedAt: app.lastIssuedAt || 0 });
     function seal(value) {
@@ -64,7 +68,7 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
             if (existingUserId && !user) throw new Error('USER_NOT_FOUND');
             if (kind === 'register' && user?.username && user.username !== name) throw new Error('USERNAME_EXISTS');
             const userId = user?.id || crypto.randomUUID();
-            const methods = await webauthn();
+            const methods = await passkeyMethods();
             const credentials = (user?.passkeys || []).filter(key => key.rpID === url.hostname).map(key => ({ id: key.id, transports: key.transports }));
             const options = kind === 'register'
                 ? await methods.generateRegistrationOptions({ rpName: 'Telegram 虚拟网盘', rpID: url.hostname, userID: new TextEncoder().encode(userId), userName: name, attestationType: 'none', excludeCredentials: credentials, authenticatorSelection: { residentKey: 'required', userVerification: 'required' } })
@@ -78,7 +82,7 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
         async passkeyVerify({ flowId, response, binding, existingUserId = '' }) {
             const flow = pending.get(flowId); pending.delete(flowId);
             if (!flow || flow.expiresAt <= now() || flow.binding !== binding || flow.existingUserId !== existingUserId) throw new Error('PASSKEY_FLOW_INVALID');
-            const methods = await webauthn();
+            const methods = await passkeyMethods();
             let user = data.users.find(item => item.id === flow.userId);
             if (flow.kind === 'register') {
                 const result = await methods.verifyRegistrationResponse({ response, expectedChallenge: flow.challenge, expectedOrigin: flow.origin, expectedRPID: flow.rpID, requireUserVerification: true });
@@ -131,7 +135,7 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
             if (typeof secret !== 'string' || secret.length > 256 || !await verifySecret(secret, app?.secretHash) || !app) throw new Error('APP_AUTH_INVALID');
             return { id: app.app_id, revision: app.revision };
         },
-        issueToken(verifiedApp, backend) {
+        issueToken(verifiedApp, backend, credentials = {}) {
             const app = data.apps.find(item => item.app_id === verifiedApp.id && item.enabled && item.revision === verifiedApp.revision);
             if (!app) throw new Error('APP_AUTH_INVALID');
             const fingerprint = digest(backend.token + '\0' + backend.channelId + '\0' + backend.baseUrl);
@@ -142,7 +146,8 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
             }
             const token = crypto.randomBytes(32).toString('base64url');
             data.tokens = data.tokens.filter(item => item.expiresAt > now());
-            data.tokens.push({ hash: digest(token), appId: app.app_id, revision: app.revision, backendId: saved.id, expiresAt: now() + tokenTTL });
+            const encryptedCredentials = seal(JSON.stringify({ app_id: app.app_id, app_secret: credentials.app_secret || '', tg_bot_token: backend.token, tg_channel: String(backend.channelId) }));
+            data.tokens.push({ hash: digest(token), appId: app.app_id, revision: app.revision, backendId: saved.id, encryptedCredentials, expiresAt: now() + tokenTTL });
             app.lastIssuedAt = now(); app.lastUsedAt = now(); save();
             return { access_token: token, token_type: 'Bearer', expires_in: Math.floor(tokenTTL / 1000), backend_id: saved.id };
         },
@@ -153,7 +158,14 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
             const app = data.apps.find(entry => entry.app_id === item.appId && entry.enabled && entry.revision === item.revision);
             if (!app) throw new Error('ACCESS_TOKEN_INVALID');
             if (now() - (app.lastUsedAt || 0) > 60000) { app.lastUsedAt = now(); save(); }
-            return { appId: app.app_id, backendId: item.backendId, passkeyOrigin: app.passkeyOrigin };
+            const saved = data.backends.find(backend => backend.id === item.backendId);
+            if (!saved) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+            // Older tokens remain compatible; new tokens resolve the encrypted bundle
+            // by SHA-256(access_token). Only Telegram credentials leave this auth layer.
+            const credentials = item.encryptedCredentials ? JSON.parse(unseal(item.encryptedCredentials)) : null;
+            if (credentials && credentials.app_id !== app.app_id) throw new Error('ACCESS_TOKEN_INVALID');
+            const storage = { id: saved.id, token: credentials?.tg_bot_token || unseal(saved.encryptedToken), channelId: credentials?.tg_channel || saved.channelId, baseUrl: saved.baseUrl };
+            return { appId: app.app_id, backendId: item.backendId, passkeyOrigin: app.passkeyOrigin, storage };
         },
         backend(id) {
             const backend = data.backends.find(item => item.id === id);

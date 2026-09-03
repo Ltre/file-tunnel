@@ -29,12 +29,13 @@ function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onP
         fieldName: files.length === 1 ? 'document' : `file${index}`,
         fileName: file.name || `file-${index + 1}`,
         path: file.path,
+        caption: file.caption,
         type: getDocumentContentType(file.name, file.type),
         size: fs.statSync(file.path).size
     }));
     const fields = files.length === 1
-        ? { chat_id: chatId, caption }
-        : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, ...(index === 0 && caption ? { caption } : {}) }))) };
+        ? { chat_id: chatId, caption: normalized[0].caption ?? caption }
+        : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, caption: file.caption ?? (index === 0 ? caption : '') }))) };
     const boundary = `----Drop2Tunnel${crypto.randomBytes(18).toString('hex')}`;
     const parts = []; let contentLength = 0;
     const addBuffer = value => { const buffer = Buffer.from(value, 'utf8'); parts.push({ buffer }); contentLength += buffer.length; };

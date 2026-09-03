@@ -42,18 +42,30 @@ test('触屏长按会打开菜单并吞掉后续单击，滑动或多点触摸�
     listeners.pointerdown({ pointerType: 'touch', isPrimary: false }); assert.equal(cancelled, true);
 });
 test('隧道适配器传递普通 File 与目录相对路径，核心没有隧道状态依赖', async () => {
-    let exporter, sent, closed = false, uploadArgs;
+    let exporter, sent, closed = false, uploadArgs, confirmation;
     const window = {
         DiskUI: { setExporter: fn => { exporter = fn; }, close: () => { closed = true; }, path: '' },
         DiskClient: { raw: async () => ({ identity: { id: 'user' } }), read: async () => new Blob(['abc']), upload: async (...args) => { uploadArgs = args; } }
     };
-    vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: () => true, prompt: () => '目标目录' });
+    vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: text => { confirmation = text; return true; }, prompt: () => '目标目录' });
     window.DiskTunnelAdapter.configure({ target: () => 'ABCDE', send: files => { sent = files; }, readFile: () => {}, filesForRecord: () => [{ name: 'a.txt', size: 3 }] });
     await exporter([{ name: 'a.txt', type: 'text/plain', relativePath: 'album/a.txt' }, { name: 'b.txt', type: 'text/plain' }]);
     assert.equal(closed, true); assert.equal(sent.length, 2); assert.equal(sent[0].relativePath, 'album/a.txt'); assert.equal(await sent[0].text(), 'abc');
+    assert.match(confirmation, /所选 2 个文件/);
+    await exporter([{ name: 'only.txt', type: 'text/plain' }]); assert.match(confirmation, /该文件将/); assert.doesNotMatch(confirmation, /多文件|合辑/);
     await window.DiskTunnelAdapter.save({ id: 'record' }); assert.equal(uploadArgs[1], '目标目录');
     for (const file of ['client/disk-client.js', 'client/disk-ui.js', 'server/disk-api.js', 'server/telegram-drive.js']) assert.doesNotMatch(source(file), /state\.sessionId|sendFileCollection|sourceMessageId|sourceSessionId/);
     assert.match(source('app.js'), /send: files => sendSelectedFiles\(files\)/);
+});
+
+test('右键操作保留整个选中集合，全选和反选只操作当前视图', () => {
+    const ui = source('client/disk-ui.js'), context = { Map, rendered: 0 };
+    const code = ui.slice(ui.indexOf('function selectTelegramDriveItems'), ui.indexOf('async function updateDiskCacheLabels'));
+    vm.runInNewContext(`const telegramDriveSelected = new Map(); const telegramDriveCurrentData = {}; const files = [{id:'a'},{id:'b'},{id:'c'}]; const telegramDriveItemKey = f=>f.id; const getSortedTelegramDriveItems = ()=>files; function renderTelegramDriveItems(){} function updateTelegramDriveSelectionBar(){}; ${code}; this.select = selectTelegramDriveItems; this.items = telegramDriveActionItems; this.chosen = telegramDriveSelected;`, context);
+    context.select(); assert.equal(context.chosen.size, 3); assert.equal(context.items({ id: 'b' }).length, 3);
+    context.chosen.delete('c'); context.select(true); assert.deepEqual([...context.chosen.keys()], ['c']);
+    assert.equal(context.items({ id: 'unselected' })[0].id, 'unselected');
+    assert.match(ui, /exportDiskItems\(chosen\)/); assert.match(ui, /row\.ondblclick/);
 });
 
 test('居中 loading 的活动覆盖请求及服务端任务终态，后台轮询不产生新活动', async () => {
@@ -129,4 +141,30 @@ test('上传悬浮球只显示未完成上传：失败保留全红，完成/取�
     context.position(bubble, 900, 900); assert.equal(bubble.style.left, '268px'); assert.equal(bubble.style.top, '368px');
     assert.doesNotMatch(source('client/disk.css'), /body:has\(#telegramDriveOverlay\.active\) #diskTaskBubble/);
     assert.match(source('client/disk.css'), /#diskTaskBubble\.failed\{background:#dc2626/);
+});
+
+test('后台上传可反复恢复同一 loading，轮询及旁路请求不会让它闪退', () => {
+    const ui = source('client/disk-ui.js'), elements = {}, listeners = {};
+    const create = () => ({ hidden: true, isConnected: true, setAttribute() {}, removeAttribute() {}, contains: () => false, focus() {} });
+    for (const id of ['diskLoadingTitle', 'diskLoadingDetail', 'diskLoadingProgress', 'diskLoadingBackground']) elements[id] = create();
+    let overlay, activityListener, jobListener;
+    const context = {
+        document: { createElement: () => (overlay = create()), body: { append() {} }, addEventListener: (type, fn) => { listeners[type] = fn; } },
+        window: { DiskClient: { subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; } } },
+        $disk: id => elements[id], formatFileSize: n => n + ' B'
+    };
+    vm.runInNewContext(ui.slice(ui.indexOf('function initDiskLoading'), ui.indexOf('function renderDiskTaskBubble')) + '; this.restore = initDiskLoading();', context);
+    const activity = { operationId: 'upload-1', message: '上传测试' };
+    const job = { operation_id: 'upload-1', type: 'upload', status: 'running', title: '上传测试', phase: 'telegram-upload', message: '等待 Telegram', percent: 50, totalBytes: 6, processedBytes: 3 };
+    activityListener([activity]); jobListener([job]); assert.equal(overlay.hidden, false);
+    for (let repeat = 0; repeat < 3; repeat++) {
+        elements.diskLoadingBackground.onclick(); assert.equal(overlay.hidden, true);
+        jobListener([{ ...job }]); assert.equal(overlay.hidden, true, '后台轮询不能自行抢回前台');
+        assert.equal(context.restore(), true); assert.equal(overlay.hidden, false);
+        activityListener([activity, { message: '读取旁路请求' }]); activityListener([activity]);
+        jobListener([{ ...job, percent: 60 }]); assert.equal(overlay.hidden, false);
+        assert.equal(elements.diskLoadingTitle.textContent, '上传测试');
+    }
+    activityListener([]); assert.equal(overlay.hidden, false, '从持久化任务恢复时不依赖本页活动');
+    jobListener([{ ...job, status: 'completed' }]); assert.equal(overlay.hidden, true); assert.equal(context.restore(), false);
 });

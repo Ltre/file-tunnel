@@ -81,6 +81,8 @@ async function main() {
   if (!buildManifest.scripts || !buildManifest.appShell) {
     errors.push('build-manifest.json is missing scripts or appShell');
   }
+  if (!buildManifest.scripts?.['client/simplewebauthn.js']) errors.push('missing Passkey browser bundle in release manifest');
+  if (!buildManifest.scripts?.['client/disk-share.js']) errors.push('missing public disk-share script');
 
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
     if (!/^\/assets\/.+\.[a-f0-9]{10}\.min\.js$/.test(assetPath)) {

@@ -1920,7 +1920,10 @@ function isSecurePublicRequest(req) {
 function cleanTelegramOidcFlows() {
     const now = Date.now();
     for (const [state, flow] of telegramOidcFlows) {
-        if (flow.expiresAt <= now) telegramOidcFlows.delete(state);
+        if (flow.expiresAt <= now) {
+            if (flow.mode === 'telegram') console.warn('[网盘 OIDC] 等待授权回调超时', { traceId: flow.traceId, origin: flow.openerOrigin });
+            telegramOidcFlows.delete(state);
+        }
     }
     while (telegramOidcFlows.size >= TELEGRAM_OIDC_MAX_PENDING_FLOWS) {
         telegramOidcFlows.delete(telegramOidcFlows.keys().next().value);
@@ -1970,7 +1973,9 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
             ? telegramOidcMock.createAuthorizationRequest({ publicOrigin: getTelegramPublicOrigin(req) })
             : telegramOidcClient.createAuthorizationRequest({ clientId: config.oidcClientId, redirectUri });
         cleanTelegramOidcFlows();
+        const traceId = crypto.randomBytes(4).toString('hex');
         telegramOidcFlows.set(authorization.state, {
+            traceId,
             mode: mockEnabled ? 'mock' : 'telegram',
             clientId: mockEnabled ? '' : config.oidcClientId,
             codeVerifier: authorization.codeVerifier,
@@ -1979,6 +1984,7 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
             openerOrigin: getTelegramPublicOrigin(req),
             expiresAt: Date.now() + TELEGRAM_OIDC_FLOW_TTL_MS
         });
+        if (!mockEnabled) console.info('[网盘 OIDC] 已跳转 Telegram，等待用户确认', { traceId, redirectUri });
         const secure = isSecurePublicRequest(req);
         res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_OIDC_STATE_COOKIE}=${authorization.state}; Path=/api/telegram/drive/oidc; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`);
         res.redirect(302, authorization.url);
@@ -2031,6 +2037,7 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
     if (flow) telegramOidcFlows.delete(state);
     clearTelegramOidcStateCookie(req, res);
     if (!flow || flow.expiresAt <= Date.now() || !constantTimeStringEqual(state, stateCookie)) {
+        console.warn('[网盘 OIDC] 回调状态校验失败（无效、过期或 Cookie 不匹配）');
         return sendTelegramOidcPopupCompletion(res, getTelegramPublicOrigin(req), 'error', '登录状态无效或已过期');
     }
     if (req.query?.error) return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'error', String(req.query.error));
@@ -2042,6 +2049,7 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
             return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
         }
         const config = loadTelegramBotConfig();
+        console.info('[网盘 OIDC] 已收到授权回调，开始交换令牌', { traceId: flow.traceId });
         if (!isTelegramOidcConfigured(config) || config.oidcClientId !== flow.clientId) throw new Error('telegram-oidc-configuration-changed');
         const tokens = await telegramOidcClient.exchangeCode({
             clientId: config.oidcClientId,
@@ -2059,6 +2067,7 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
             username: sanitizeString(claims.preferred_username || '', 80)
         };
         setTelegramDriveIdentityCookie(req, res, identity);
+        console.info('[网盘 OIDC] 签名校验完成，登录成功', { traceId: flow.traceId });
         sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
     } catch (error) {
         console.warn('complete Telegram OIDC login failed:', error.message);
@@ -2096,7 +2105,16 @@ const diskAPI = createDiskAPI({
 app.use('/api/telegram/drive', diskAPI.browser);
 app.use('/api/telegram/disk/v1', diskAPI.external);
 app.use('/api/telegram/disk-admin', adminAuth.requireAuth, diskAPI.admin);
-app.get('/client/simplewebauthn.js', (req, res) => res.sendFile(path.resolve(path.dirname(require.resolve('@simplewebauthn/browser')), '../dist/bundle/index.umd.min.js')));
+app.use('/api/telegram/disk-shares', diskAPI.shared);
+app.get('/disk-share/:token', (req, res) => {
+    res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow' });
+    res.sendFile(path.join(__dirname, 'pages', 'disk-share.html'));
+});
+app.get('/client/simplewebauthn.js', (req, res) => {
+    const filename = require('./server/browser-assets').resolvePasskeyBrowserAsset(__dirname);
+    if (filename) return res.type('application/javascript').sendFile(filename);
+    res.status(503).type('application/javascript').set('Cache-Control', 'no-store').send('console.error("Passkey 组件缺失：请管理员重新部署完整发布包，或在源码部署目录执行 npm ci。");');
+});
 
 app.get('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');

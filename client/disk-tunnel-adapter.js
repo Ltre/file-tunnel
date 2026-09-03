@@ -17,7 +17,8 @@
     async function exportFiles(items) {
         const target = host?.target();
         if (!target) throw new Error('请先连接目标隧道');
-        if (!confirm('转发到当前隧道 ' + target + '？多文件将进入现有合辑/逐个发送及备注流程。')) return;
+        const description = items.length === 1 ? '该文件将发送到当前隧道。' : `所选 ${items.length} 个文件将进入现有合辑/逐个发送及备注流程。`;
+        if (!confirm('转发到当前隧道 ' + target + '？' + description)) return;
         const files = [];
         for (const item of items) {
             const blob = await window.DiskClient.read(item);

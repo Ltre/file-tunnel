@@ -286,7 +286,7 @@ test('light transfer preflights deterministic ASCII QR frames before optical cyc
   assert.match(light, /`\$\{PROTOCOL\}:B\$\{b64url\(textEncoder\.encode\(JSON\.stringify\(body\)\)\)\}`/);
   assert.match(light, /_makeFrame: makeFrame/);
   assert.match(light, /_buildSafeModePlan: buildSafeModePlan/);
-  assert.match(worker, /instant-tunnel-v32/);
+  assert.match(worker, /instant-tunnel-v33/);
   assert.match(worker, /'\/client\/light-transfer\.js'/);
 });
 

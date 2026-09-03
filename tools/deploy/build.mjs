@@ -20,6 +20,7 @@ const SCRIPT_SOURCES = [
   'client/telegram-drive-cache.js',
   'client/disk-client.js',
   'client/disk-ui.js',
+  'client/disk-share.js',
   'client/disk-tunnel-adapter.js',
   'client/disk-admin.js',
   'client/simplewebauthn.js',
