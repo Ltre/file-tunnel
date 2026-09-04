@@ -472,7 +472,7 @@ function renderTelegramDriveItems() {
     list.dataset.view = telegramDriveView;
     const items = getSortedTelegramDriveItems(telegramDriveCurrentData);
     if (!items.length) {
-        const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋ 新建”上传文件或创建文件夹</div></div>';
+        const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋”上传文件或创建文件夹</div></div>';
         list.replaceChildren(empty); return;
     }
     list.replaceChildren(...items.map(item => {
