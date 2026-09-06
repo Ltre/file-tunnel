@@ -2282,7 +2282,7 @@
         .telegram-drive-workspace {
             display: grid;
             min-height: 0;
-            grid-template-rows: auto auto minmax(0, 1fr);
+            grid-template-rows: auto minmax(0, 1fr) auto;
         }
 
         .telegram-drive-toolbar {
@@ -5640,8 +5640,8 @@
             <div id="telegramDriveAuth" class="telegram-drive-auth"></div>
             <div id="telegramDriveWorkspace" class="telegram-drive-workspace" hidden>
                 <div class="telegram-drive-toolbar">
+                    <nav class="telegram-drive-breadcrumbs" id="telegramDriveBreadcrumbs" aria-label="网盘目录路径"></nav>
                     <div class="telegram-drive-toolbar-main">
-                        <nav class="telegram-drive-breadcrumbs" id="telegramDriveBreadcrumbs" aria-label="网盘目录路径"></nav>
                         <div class="telegram-drive-controls">
                             <div class="telegram-drive-search-wrap"><input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"><label class="telegram-drive-search-scope"><input id="telegramDriveSearchAll" type="checkbox">搜索所有文件</label></div>
                             <select class="telegram-drive-sort" id="telegramDriveSort" aria-label="排序方式"><option value="name">按名称</option><option value="type">按类型</option><option value="size">按大小</option><option value="updatedAt">按最后修改</option></select>
@@ -5651,8 +5651,8 @@
                         </div>
                     </div>
                 </div>
-                <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
                 <div class="telegram-drive-items" id="telegramDriveList" data-view="list"></div>
+                <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
             </div>
             <input id="telegramDriveFileInput" type="file" multiple hidden>
             <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>

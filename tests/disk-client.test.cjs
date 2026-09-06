@@ -2,6 +2,71 @@
 const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+
+test('110 MB 浏览器上传仅通过 slice 顺序发送六个请求，声明仍为逻辑文件总大小', async () => {
+    const size = 115384320, chunks = [], requests = [];
+    let finished = false, reads = 0;
+    const blob = { size, slice(start, end) { const part = { size: end - start }; chunks.push([start, end]); return part; }, arrayBuffer() { throw new Error('must not copy the full file'); } };
+    const window = {};
+    const fetch = async (url, options) => {
+        requests.push({ url, options }); let data = {};
+        if (url.endsWith('/uploads')) data = { uploadId: 'u', operation_id: 'op', partSize: 20000000 };
+        if (url.endsWith('/finish')) { finished = true; data = { operation_id: 'op' }; }
+        if (url.includes('/operations?')) data = { operations: [{ operation_id: 'op', status: finished ? 'completed' : 'running', result: { items: [{ id: 'file' }] } }] };
+        return { ok: true, json: async () => data };
+    };
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, setInterval() {}, Date, Map, Set, Promise, encodeURIComponent });
+    await window.DiskClient.upload([{ name: 'large.msi', size }], '', async () => { reads++; return blob; });
+    assert.equal(reads, 1); assert.equal(chunks.length, 6);
+    const puts = requests.filter(r => r.options.method === 'PUT'); assert.equal(puts.length, 6);
+    assert.equal(JSON.parse(requests[0].options.body).files[0].size, size);
+    puts.forEach((r, i) => {
+        assert.ok(r.options.body.size <= 20000000);
+        assert.equal(r.options.headers['Content-Range'], `bytes ${chunks[i][0]}-${chunks[i][1] - 1}/${size}`);
+    });
+});
+
+test('PC 顶栏只在真实拖动后捕获指针，不吞掉按钮的普通点击', () => {
+    const app = source('app.js'), handlers = {}, captures = [];
+    const scroller = { scrollLeft: 100, addEventListener: (name, fn) => { handlers[name] = fn; }, setPointerCapture: id => captures.push(id) };
+    const context = { document: { querySelector: () => scroller }, Date };
+    vm.runInNewContext(app.slice(app.indexOf('function initTopbarOverflowScroll()'), app.indexOf('\nfunction applyTheme(')) + '; initTopbarOverflowScroll();', context);
+    const down = { pointerType: 'mouse', button: 0, pointerId: 1, clientX: 100 };
+    handlers.pointerdown(down); assert.deepEqual(captures, []); handlers.pointerup(down);
+    let prevented = false;
+    handlers.click({ preventDefault: () => { prevented = true; }, stopImmediatePropagation() {} }); assert.equal(prevented, false);
+    handlers.pointerdown(down); handlers.pointermove({ ...down, clientX: 80, preventDefault() {} });
+    assert.deepEqual(captures, [1]); assert.equal(scroller.scrollLeft, 120);
+});
+
+test('面包屑边缘滚动按时间匀速，离开区域或隐藏网盘立即停止', () => {
+    const ui = source('client/disk-ui.js'), handlers = {}, frames = new Map(); let seq = 0, resized;
+    const target = { scrollLeft: 200, scrollWidth: 1000, clientWidth: 400, getBoundingClientRect: () => ({ left: 0, right: 400, width: 400 }), addEventListener: (name, fn) => { handlers[name] = fn; } };
+    const overlay = { hidden: false };
+    const context = { document: { getElementById: id => id === 'telegramDriveBreadcrumbs' ? target : overlay }, window: { addEventListener() {} },
+        requestAnimationFrame: fn => { frames.set(++seq, fn); return seq; }, cancelAnimationFrame: id => frames.delete(id),
+        ResizeObserver: class { constructor(fn) { resized = fn; } observe() {} } };
+    vm.runInNewContext(ui.slice(ui.indexOf('function initDiskBreadcrumbScroll()'), ui.indexOf('\nfunction getSortedTelegramDriveItems')) + '; initDiskBreadcrumbScroll();', context);
+    const tick = time => { const [id, fn] = frames.entries().next().value; frames.delete(id); fn(time); };
+    handlers.pointermove({ pointerType: 'mouse', clientX: 5 }); tick(100); tick(150); tick(200);
+    assert.equal(target.scrollLeft, 182);
+    handlers.pointermove({ pointerType: 'mouse', clientX: 395 }); tick(250); assert.equal(target.scrollLeft, 191);
+    handlers.pointerleave(); assert.equal(frames.size, 0);
+    handlers.pointermove({ pointerType: 'mouse', clientX: 395 }); overlay.hidden = true; tick(300); assert.equal(frames.size, 0);
+    resized(); assert.equal(target.scrollLeft, 1000);
+});
+
+test('刷新后本地上传失败使用新任务 ID，不被上次错误确认记录误屏蔽', async () => {
+    const ids = [];
+    for (let session = 0; session < 2; session++) {
+        const window = {}, jobs = [];
+        vm.runInNewContext(source('client/disk-client.js'), { window, fetch: async () => { throw new Error('offline'); }, setInterval() {}, Date, Map, Set, Promise, encodeURIComponent });
+        window.DiskClient.subscribe(value => jobs.push(...value));
+        await assert.rejects(window.DiskClient.upload([{ name: 'x', size: 1 }], ''), /offline/);
+        ids.push(jobs.find(job => job.status === 'failed').operation_id);
+    }
+    assert.notEqual(ids[0], ids[1]);
+});
 test('网盘客户端正确拼接路由、合并任务等待且仅从源读取一次上传文件', async () => {
     const calls = [], cached = [], blob = new Blob(['abc']);
     const result = { items: [{ id: 'file-1', name: 'test.txt', size: 3 }] };

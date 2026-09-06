@@ -16,6 +16,15 @@ const telegramDriveSelected = new Map();
 let telegramDriveView = localStorage.getItem('telegram-drive-view') === 'grid' ? 'grid' : 'list';
 let telegramDriveSort = localStorage.getItem('telegram-drive-sort') || 'name';
 let telegramDriveSortAscending = localStorage.getItem('telegram-drive-sort-ascending') !== 'false';
+const diskWindowKey = 'telegram-drive-window';
+let diskWindowState = {};
+try { diskWindowState = JSON.parse(localStorage.getItem(diskWindowKey)) || {}; } catch (_) {}
+if (diskWindowState.retained) telegramDrivePath = String(diskWindowState.path || '');
+function saveDiskWindow(retained) {
+    diskWindowState = { retained, path: telegramDrivePath };
+    localStorage.setItem(diskWindowKey, JSON.stringify(diskWindowState));
+    const button = document.getElementById('topbarDiskBtn'); if (button) button.hidden = !retained;
+}
 async function telegramDriveRequest(url, options = {}) { return window.DiskClient.request(url, options); }
 // Background identity/OIDC polling must not repeatedly open the loading dialog.
 async function getTelegramDriveIdentity() { return window.DiskClient.raw('/me'); }
@@ -38,7 +47,11 @@ function telegramDriveErrorText(error) {
         'LOGIN_REQUIRED': '请先登录网盘',
         'STORAGE_BACKEND_UNAVAILABLE': '管理员尚未配置可用的网盘存储频道',
         'TELEGRAM_NETWORK_ERROR': '连接 Telegram 失败，请检查服务器网络',
-        'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除存储消息，请检查 Bot 是否仍有该频道的删除消息权限',
+        'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除或替换消息，请检查频道权限及消息类型',
+        'TELEGRAM_CAPTION_SYNC_PENDING': '目录/名称已保存，部分 Telegram 备注同步失败，服务器将自动重试',
+        'TELEGRAM_UPLOAD_RESULT_INVALID': 'Telegram 返回的消息缺少有效文件定位信息，上传未完成',
+        'TELEGRAM_413': 'Telegram 拒绝当前上传请求的大小，请重试或检查 Bot API 代理限制',
+        'TELEGRAM_PARTS_INVALID': '文件分片索引不完整，无法还原文件',
         'TELEGRAM_MESSAGE_MISSING': '文件索引缺少 Telegram 消息定位信息，无法删除实体',
         'SERVER_RESTARTED': '服务已重启，此任务未完成，请重新执行',
         'telegram-drive-folder-depth-exceeded': '目录层级超过管理员设置的上限',
@@ -194,11 +207,39 @@ function renderTelegramDriveBreadcrumbs(data) {
     parts.forEach((part, index) => {
         if (index) { const separator = document.createElement('span'); separator.textContent = '›'; separator.setAttribute('aria-hidden', 'true'); nodes.push(separator); }
         const button = document.createElement('button'); button.type = 'button'; button.textContent = part.name;
+        if (index === parts.length - 1) button.setAttribute('aria-current', 'page');
         installDiskDrop(button, part.path);
         button.onclick = () => navigateTelegramDrive(part.path).catch(error => alert(telegramDriveErrorText(error)));
         nodes.push(button);
     });
     target.replaceChildren(...nodes);
+    requestAnimationFrame(() => { target.scrollLeft = target.scrollWidth; });
+}
+
+function initDiskBreadcrumbScroll() {
+    const target = document.getElementById('telegramDriveBreadcrumbs');
+    let frame = 0, direction = 0, previous = 0;
+    const stop = () => { cancelAnimationFrame(frame); frame = 0; direction = 0; previous = 0; };
+    const tick = time => {
+        if (!direction || document.getElementById('telegramDriveOverlay').hidden) return stop();
+        const before = target.scrollLeft;
+        target.scrollLeft += direction * 180 * Math.min(previous ? (time - previous) / 1000 : 0, .05);
+        previous = time;
+        if (before === target.scrollLeft && (direction < 0 ? before <= 0 : before >= target.scrollWidth - target.clientWidth - 1)) return stop();
+        frame = requestAnimationFrame(tick);
+    };
+    target.addEventListener('pointermove', event => {
+        if (event.pointerType !== 'mouse') return;
+        const rect = target.getBoundingClientRect(), edge = Math.min(48, rect.width / 4);
+        const next = event.clientX < rect.left + edge ? -1 : event.clientX > rect.right - edge ? 1 : 0;
+        if (!next) return stop();
+        direction = next;
+        if (!frame) frame = requestAnimationFrame(tick);
+    });
+    target.addEventListener('pointerleave', stop);
+    target.addEventListener('pointerdown', stop);
+    window.addEventListener('blur', stop);
+    new ResizeObserver(() => { if (!direction) target.scrollLeft = target.scrollWidth; }).observe(target);
 }
 
 function getSortedTelegramDriveItems(data) {
@@ -663,6 +704,7 @@ async function renderTelegramDrive() {
 
 async function navigateTelegramDrive(path, { fromHistory = false } = {}) {
     telegramDrivePath = String(path || '');
+    if (diskWindowState.retained) saveDiskWindow(true);
     clearTelegramDriveSearch();
     clearTelegramDriveSelection();
     if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession }, '', location.href);
@@ -670,6 +712,7 @@ async function navigateTelegramDrive(path, { fromHistory = false } = {}) {
 }
 async function openTelegramDrive() {
     const overlay = document.getElementById('telegramDriveOverlay');
+    if (overlay.hidden) { const tasks = document.getElementById('diskTasks'); if (tasks) tasks.open = false; }
     const starting = !telegramDriveHistorySession;
     if (starting) telegramDriveHistorySession = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const state = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession };
@@ -677,10 +720,11 @@ async function openTelegramDrive() {
     overlay.hidden = false; overlay.classList.add('active');
     await renderTelegramDrive();
 }
-function closeTelegramDrive() {
+function closeTelegramDrive({ forget = false } = {}) {
     closeTelegramDriveDialog(null); closeTelegramDriveItemMenu();
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
-    const topbar = document.getElementById('topbarDiskBtn'); if (topbar) topbar.hidden = true;
+    if (forget) saveDiskWindow(false);
+    const tasks = document.getElementById('diskTasks'); if (tasks) tasks.open = false;
     telegramDriveHistorySession = '';
     const next = { ...(history.state || {}) }; delete next.telegramDriveOpen; delete next.telegramDrivePath; delete next.telegramDriveHistorySession;
     history.replaceState(next, '', location.href);
@@ -688,7 +732,7 @@ function closeTelegramDrive() {
 function minimizeTelegramDrive() {
     closeTelegramDriveItemMenu();
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
-    const topbar = document.getElementById('topbarDiskBtn'); if (topbar) topbar.hidden = false;
+    saveDiskWindow(true);
 }
 function startTelegramDriveLogin() {
     const target = document.getElementById('telegramDriveAuth');
@@ -977,6 +1021,8 @@ function initDiskEnhancements() {
     $disk('telegramDriveRefreshBtn').before(shares);
     let drag, moved = false;
     const acknowledgedFailed = new Set();
+    let latestJobs = [];
+    try { for (const id of JSON.parse(localStorage.getItem('disk-acknowledged-failures') || '[]')) acknowledgedFailed.add(id); } catch (_) {}
     const position = (x, y) => positionDiskTaskBubble(bubble, x, y);
     const keepVisible = () => {
         if (bubble.hidden) return;
@@ -993,7 +1039,11 @@ function initDiskEnhancements() {
     bubble.onclick = async () => {
         if (moved) return;
         const failed = bubble.classList.contains('failed');
-        if (failed && bubble.dataset.jobId) { acknowledgedFailed.add(bubble.dataset.jobId); bubble.hidden = true; }
+        if (failed) {
+            for (const job of latestJobs) if (job.status === 'failed') acknowledgedFailed.add(job.operation_id);
+            localStorage.setItem('disk-acknowledged-failures', JSON.stringify([...acknowledgedFailed].slice(-2000)));
+            bubble.hidden = true;
+        }
         closeDiskPreview();
         if (!failed) restoreLoading();
         try {
@@ -1003,13 +1053,13 @@ function initDiskEnhancements() {
         catch (error) { alert(telegramDriveErrorText(error)); }
     };
     window.DiskClient.subscribe(jobs => {
-        for (const id of acknowledgedFailed) if (!jobs.some(job => job.operation_id === id && job.status === 'failed')) acknowledgedFailed.delete(id);
+        latestJobs = jobs;
         const ongoing = jobs.filter(job => ['queued', 'running'].includes(job.status));
         $disk('diskTaskCount').textContent = ongoing.length ? '· ' + ongoing.length + ' 项进行中' : '';
         $disk('diskTaskList').replaceChildren(...jobs.slice(0, 30).map(job => {
             const row = document.createElement('div'); row.className = 'disk-task-row';
             const title = document.createElement('strong'); title.textContent = (job.title ? job.title + ' · ' : '') + job.message;
-            const detail = document.createElement('span'); detail.textContent = job.phase + ' · ' + (job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText(job.errorCode) : '');
+            const detail = document.createElement('span'); detail.textContent = job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText(job.errorCode) : '');
             if (job.warnings?.length) detail.textContent += ' · 文件已保存，部分 Telegram 定位备注未能更新';
             row.append(title, detail); return row;
         }));
@@ -1024,7 +1074,7 @@ function init(options = {}) {
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
     window.addEventListener('disk-cache-changed', updateDiskCacheLabels);
     window.addEventListener('focus', updateDiskCacheLabels);
-    document.getElementById('closeTelegramDriveBtn')?.addEventListener('click', closeTelegramDrive);
+    document.getElementById('closeTelegramDriveBtn')?.addEventListener('click', () => closeTelegramDrive({ forget: true }));
     document.getElementById('minimizeTelegramDriveBtn')?.addEventListener('click', minimizeTelegramDrive);
     document.getElementById('telegramDriveDialogCloseBtn')?.addEventListener('click', () => closeTelegramDriveDialog(null));
     document.getElementById('telegramDriveRefreshBtn')?.addEventListener('click', () => renderTelegramDrive().catch(error => alert(telegramDriveErrorText(error))));
@@ -1032,6 +1082,8 @@ function init(options = {}) {
     document.getElementById('telegramDriveSearch')?.addEventListener('input', scheduleTelegramDriveSearch);
     document.getElementById('telegramDriveSearchAll')?.addEventListener('change', scheduleTelegramDriveSearch);
     document.getElementById('topbarDiskBtn')?.addEventListener('click', () => openTelegramDrive().catch(error => alert(telegramDriveErrorText(error))));
+    saveDiskWindow(Boolean(diskWindowState.retained));
+    initDiskBreadcrumbScroll();
     window.addEventListener('popstate', event => {
         const overlay = document.getElementById('telegramDriveOverlay');
         if (!telegramDriveHistorySession) return;

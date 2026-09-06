@@ -1,4 +1,9 @@
 .disk-passkey-controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+#telegramDriveBreadcrumbs{width:100%;box-sizing:border-box;overscroll-behavior-x:contain;scroll-behavior:auto;flex-wrap:nowrap}
+#telegramDriveBreadcrumbs button{white-space:nowrap}
+#telegramDriveBreadcrumbs button[aria-current="page"]{max-width:100%;white-space:normal;overflow-wrap:anywhere;flex-shrink:0}
+#telegramDriveBreadcrumbs>span{flex-shrink:0}
+#topbarDiskBtn[hidden]{display:none!important}
 .disk-passkey-controls input{flex:1;min-width:240px;padding:10px;border:1px solid #abc;border-radius:8px}
 .disk-tasks{border-bottom:1px solid #d4dde7;padding:10px 20px;background:#f0f6fa;color:#233849}
 .disk-tasks summary{cursor:pointer;font-weight:650}

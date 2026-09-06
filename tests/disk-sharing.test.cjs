@@ -61,7 +61,7 @@ test('Telegram 定位备注失败不丢失已上传结果，长路径符合 capt
     assert.equal(result[0].fileId, 'saved-file'); assert.equal(result[0].captionWarning, 'TELEGRAM_CAPTION_UPDATE_FAILED');
 });
 
-test('超过 20 MiB 的逻辑文件按分片 album 上传、统一索引、顺序合并读取并批量删除', async t => {
+test('超过 20 MB 的逻辑文件按分片 album 上传、统一索引、顺序合并读取并批量删除', async t => {
     const root = temp(t), filename = path.join(root, 'large.bin');
     const original = Buffer.alloc(MAX_TELEGRAM_PART_SIZE + 37, 0x5a); original.fill(0x2b, MAX_TELEGRAM_PART_SIZE);
     fs.writeFileSync(filename, original);
@@ -81,7 +81,7 @@ test('超过 20 MiB 的逻辑文件按分片 album 上传、统一索引、顺�
             const index = Number(JSON.parse(options.body).file_id.split('-').at(-1));
             return { ok: true, json: async () => ({ ok: true, result: { file_path: 'parts/' + index } }) };
         }
-        if (method === 'deleteMessages') { deleted = JSON.parse(options.body).message_ids; return { ok: true, json: async () => ({ ok: true, result: true }) }; }
+        if (method === 'deleteMessage') { deleted.push(JSON.parse(options.body).message_id); return { ok: true, json: async () => ({ ok: true, result: true }) }; }
         if (url.includes('/file/bot')) {
             const index = Number(url.split('/').at(-1)); return new Response(partBuffers[index]);
         }

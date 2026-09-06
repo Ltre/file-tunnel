@@ -16524,12 +16524,12 @@ function initTopbarOverflowScroll() {
     scroller.addEventListener('pointerdown', event => {
         if (event.pointerType !== 'mouse' || event.button !== 0) return;
         drag = { pointerId: event.pointerId, x: event.clientX, scrollLeft: scroller.scrollLeft, moved: false };
-        scroller.setPointerCapture?.(event.pointerId);
     });
     scroller.addEventListener('pointermove', event => {
         if (!drag || drag.pointerId !== event.pointerId) return;
         const dx = event.clientX - drag.x;
         if (!drag.moved && Math.abs(dx) < 4) return;
+        if (!drag.moved) scroller.setPointerCapture?.(event.pointerId);
         drag.moved = true;
         scroller.scrollLeft = drag.scrollLeft - dx;
         event.preventDefault();

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { pipeline } = require('stream/promises');
 const { readJson, writeJson } = require('./disk-data');
+const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 
 
 function normalizeSegment(value, limit = 100) {
@@ -192,7 +193,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
                 const nextPath = rewrite(directory.path);
                 directories.set(directoryKey(owner, nextPath), { ...directory, path: nextPath, updatedAt: now });
             }
-            for (const file of snapshot.files) Object.assign(file, { folderPath: rewrite(file.folderPath || ''), updatedAt: now });
+            for (const file of snapshot.files) Object.assign(file, { folderPath: rewrite(file.folderPath || ''), updatedAt: now, captionSyncPending: file.reviewStatus !== 'deleted' });
             touchDirectory(owner, parentPath(source), now);
             touchDirectory(owner, destination, now);
             persist();
@@ -223,7 +224,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             if (normalizePath(item.folderPath || '') === destination) return item;
             assertFreeName(ownerId, destination, item.name, item.id);
             const oldParent = normalizePath(item.folderPath || '');
-            Object.assign(item, { folderPath: destination, updatedAt: Date.now() });
+            Object.assign(item, { folderPath: destination, updatedAt: Date.now(), captionSyncPending: true });
             touchDirectory(ownerId, oldParent);
             touchDirectory(ownerId, destination);
             persist();
@@ -235,7 +236,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             if (!item) throw new Error('telegram-drive-file-not-found');
             if (!name) throw new Error('telegram-drive-file-name-required');
             assertFreeName(ownerId, item.folderPath || '', name, item.id);
-            Object.assign(item, { name, updatedAt: Date.now() });
+            Object.assign(item, { name, updatedAt: Date.now(), captionSyncPending: true });
             touchDirectory(ownerId, item.folderPath || '');
             persist();
             return item;
@@ -249,7 +250,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             assertDepth(destination, maxDepth);
             assertFreeName(ownerId, destination, name, item.id);
             touchDirectory(ownerId, item.folderPath || '');
-            Object.assign(item, { folderPath: destination, name, updatedAt: Date.now() });
+            Object.assign(item, { folderPath: destination, name, updatedAt: Date.now(), captionSyncPending: true });
             touchDirectory(ownerId, destination); persist(); return item;
         },
         hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },
@@ -283,13 +284,35 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         },
         async receive(uploadId, index, request, onProgress) {
             const job = uploads.get(String(uploadId)); const file = job?.files[Number(index)]; if (!job || !file) throw new Error('telegram-drive-upload-not-found');
-            if (file.path || file.receiving) throw new Error('telegram-drive-upload-already-received');
+            if (file.path || file.receiving || file.chunks?.length) throw new Error('telegram-drive-upload-already-received');
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-${file.name}`); let size = 0;
             request.on('data', chunk => { size += chunk.length; if (size > file.size || size > job.uploadLimit) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size, file.size); });
-            try { await pipeline(request, fs.createWriteStream(target, { flags: 'wx' })); } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
+            try { await pipeline(request, fs.createWriteStream(target, { flags: 'wx' })); } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; } finally { file.receiving = false; }
             if (size !== file.size) { try { fs.unlinkSync(target); } catch (_) {} throw new Error('telegram-drive-upload-size-mismatch'); }
             file.path = target; file.received = size; return { received: size };
+        },
+        async receivePart(uploadId, index, request, range, onProgress) {
+            const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
+            if (!file || !job) throw new Error('telegram-drive-upload-not-found');
+            if (file.receiving || file.path) throw new Error('telegram-drive-upload-already-received');
+            const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(String(range || ''));
+            if (!match) throw new Error('UPLOAD_RANGE_INVALID');
+            const [start, end, total] = match.slice(1).map(Number);
+            const length = end - start + 1;
+            if (![start, end, total].every(Number.isSafeInteger) || total !== file.size || start !== file.received || end < start || end >= total || length !== Math.min(MAX_TELEGRAM_PART_SIZE, total - start)) throw new Error('UPLOAD_RANGE_INVALID');
+            file.receiving = true;
+            const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
+            let size = 0;
+            request.on('data', chunk => { size += chunk.length; if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
+            try {
+                await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
+                if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
+                (file.chunks ||= []).push({ path: target, offset: start, size });
+                file.received += size;
+                return { received: file.received, complete: file.received === file.size };
+            } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
+            finally { file.receiving = false; }
         },
         upload(uploadId) { return uploads.get(String(uploadId)); },
         validateUpload(uploadId) {
@@ -303,7 +326,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 }
             }
         },
-        finish(uploadId) { const job = uploads.get(String(uploadId)); if (!job) throw new Error('telegram-drive-upload-not-found'); if (job.files.some(file => !file.path)) throw new Error('telegram-drive-upload-incomplete'); return job; },
+        finish(uploadId) { const job = uploads.get(String(uploadId)); if (!job) throw new Error('telegram-drive-upload-not-found'); if (job.files.some(file => file.receiving || (!file.path && (!file.chunks?.length || file.received !== file.size)))) throw new Error('telegram-drive-upload-incomplete'); return job; },
         ownsUpload(ownerId, uploadId) { const job = uploads.get(String(uploadId)); return Boolean(job && String(job.owner?.id) === String(ownerId)); },
         commit(uploadId, channelId, sent) {
             const job = this.finish(uploadId); const now = Date.now();
@@ -311,11 +334,12 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {};
-                const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, mediaGroupId: String(part.mediaGroupId || ''), partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0 }));
+                const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0 }));
                 const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';
+                item.captionSyncPending = Boolean(remote.captionWarning);
                 records.set(item.id, item); return item;
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);

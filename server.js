@@ -303,7 +303,7 @@ const diskAuth = createDiskAuth({ dataDir: SERVER_DATA_DIR });
 const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
-const diskTelegram = createDiskTelegram({ getBaseUrl: () => 'https://api.telegram.org' });
+const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org' });
 
 function normalizeTelegramBotConfig(config = {}) {
     const token = sanitizeString(config.token || '', 260);
@@ -614,14 +614,19 @@ function resolveDiskUser(req, identity) {
 function signTelegramDriveIdentity(req, identity) {
     const user = resolveDiskUser(req, identity);
     const body = Buffer.from(JSON.stringify({ id: user.id, version: 2, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 })).toString('base64url');
-    const key = isTelegramOidcMockRequest(req) ? telegramOidcMock.getSessionSecret() : diskAuth.sessionKey;
+    const key = getDiskIdentitySessionKey(req);
     return body + '.' + crypto.createHmac('sha256', key).update(body).digest('base64url');
+}
+function getDiskIdentitySessionKey(req) {
+    return isTelegramOidcMockRequest(req)
+        ? crypto.createHmac('sha256', diskAuth.sessionKey).update('telegram-drive-mock-session').digest()
+        : diskAuth.sessionKey;
 }
 function getTelegramDriveIdentity(req) {
     const raw = String(req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith(TELEGRAM_DRIVE_COOKIE + '='))?.slice(TELEGRAM_DRIVE_COOKIE.length + 1) || '';
     const [body, signature] = raw.split('.');
     if (!body || !signature) return null;
-    const keys = [isTelegramOidcMockRequest(req) ? telegramOidcMock.getSessionSecret() : diskAuth.sessionKey, getTelegramDriveSessionKey(req)].filter(Boolean);
+    const keys = [getDiskIdentitySessionKey(req), getTelegramDriveSessionKey(req)].filter(Boolean);
     if (!keys.some(key => {
         const expected = crypto.createHmac('sha256', key).update(body).digest('base64url');
         return expected.length === signature.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));

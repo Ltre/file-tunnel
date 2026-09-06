@@ -36,6 +36,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         },
         update(id, patch, immediate = false) {
             const job = jobs.get(id); if (!job || terminal(job)) return view(job);
+            if (patch.phase && patch.phase !== job.phase && patch.phase === 'telegram-upload') job.lastMeasuredPercent = 0;
             Object.assign(job, patch);
             job.updatedAt = now();
             if (Number.isFinite(patch.percent)) job.lastMeasuredPercent = Math.max(job.lastMeasuredPercent || 0, Math.min(100, patch.percent));
@@ -46,7 +47,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             return view(job);
         },
         complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result }, true); },
-        fail(id, error) { return api.update(id, { status: 'failed', phase: 'failed', errorCode: String(error?.code || error?.message || 'DISK_OPERATION_FAILED').replace(/https?:\/\/\S+|bot\d+:[\w-]+/g, '[redacted]'), errorMessage: '操作失败，请检查错误码后重试', message: '操作失败' }, true); },
+        fail(id, error) { return api.update(id, { status: 'failed', phase: 'failed', errorCode: String(error?.code || error?.message || 'DISK_OPERATION_FAILED').replace(/https?:\/\/\S+|bot\d+:[\w-]+/g, '[redacted]'), errorMessage: '操作失败，请检查错误码后重试', message: '操作失败', ...(error?.message === 'TELEGRAM_UPLOAD_RESULT_INVALID' && error.details ? { errorDetails: error.details } : {}) }, true); },
         run(id, work) {
             const job = jobs.get(id);
             if (!job || terminal(job) || executing.has(id)) return false;

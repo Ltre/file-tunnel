@@ -8,6 +8,7 @@ const { pipeline } = require('stream/promises');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./telegram-drive');
 const { readJson, writeJson } = require('./disk-data');
 const { createDiskShares } = require('./disk-shares');
+const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -61,9 +62,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const spaces = createDiskSpaces(dataDir, defaultStore);
     const shares = createDiskShares({ dataDir });
     const shared = express.Router();
+    let retryingCaptions = false, closed = false;
     const cleanupTimer = setInterval(() => {
         try { for (const operationId of spaces.cleanup()) if (operationId) operations.fail(operationId, new Error('UPLOAD_EXPIRED')); }
         catch (_) { console.warn('[网盘] 暂存清理失败，请检查数据目录权限'); }
+        retryCaptions().catch(() => {});
     }, 60000);
     cleanupTimer.unref();
     const mutations = new Map();
@@ -76,6 +79,34 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         mutations.set(key, pending);
         try { return await pending; }
         finally { if (mutations.get(key) === pending) mutations.delete(key); }
+    }
+    async function syncCaptions(store, scope, files, update) {
+        let failed = false;
+        for (const file of files) {
+            if (file.reviewStatus === 'deleted') continue;
+            try {
+                const storage = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+                await telegram.syncCaption(storage, file, scope, update);
+                store.update(scope.userId, file.id, { captionSyncPending: false, captionWarning: '' });
+            } catch (_) { failed = true; }
+        }
+        if (failed) throw new Error('TELEGRAM_CAPTION_SYNC_PENDING');
+    }
+    async function retryCaptions() {
+        if (retryingCaptions || closed) return;
+        retryingCaptions = true;
+        try {
+            for (const { diskSpace, store } of spaces.entries()) {
+                for (const saved of store.adminFiles().filter(file => file.captionSyncPending && file.reviewStatus !== 'deleted')) {
+                    if (closed) return;
+                    const scope = { userId: saved.ownerId, diskSpace };
+                    await mutate({ diskScope: scope }, async () => {
+                        const current = store.get(scope.userId, saved.id);
+                        if (current?.captionSyncPending && current.reviewStatus !== 'deleted') await syncCaptions(store, scope, [current]);
+                    }).catch(() => {});
+                }
+            }
+        } finally { retryingCaptions = false; }
     }
     const wrap = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next);
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -317,9 +348,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.patch('/directories', wrap((req, res) => {
             jobResponse(req, res, 'move-directory', '正在修改目录', async update => {
                 update({ phase: 'index-write', message: '正在校验目录树并更新索引' });
-                return Object.hasOwn(req.body || {}, 'destinationPath')
+                const result = Object.hasOwn(req.body || {}, 'destinationPath')
                     ? store(req).moveDirectory(owner(req), req.body.path, req.body.destinationPath, maxDepth(), req.body.name)
                     : store(req).renameDirectory(owner(req), req.body.path, req.body.name, maxDepth());
+                await syncCaptions(store(req), scope(req), store(req).getDirectoryTree(owner(req), result.path).files, update);
+                return result;
             });
         }));
         router.get('/files/:id', wrap((req, res) => res.json(publicFile(getFile(req)))));
@@ -327,7 +360,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const file = requireEntity(getFile(req));
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
-                return publicFile(store(req).modifyFile(owner(req), file.id, req.body || {}, maxDepth()));
+                const modified = store(req).modifyFile(owner(req), file.id, req.body || {}, maxDepth());
+                await syncCaptions(store(req), scope(req), [modified], update);
+                return publicFile(modified);
             });
         }));
         router.delete('/files/:id', wrap((req, res) => {
@@ -374,10 +409,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const limit = LOGICAL_FILE_UPLOAD_LIMIT;
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             job.storage = storage;
-            const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0) * 2);
+            const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
             job.operationId = operation.operation_id;
             operations.update(job.operationId, { uploadId: job.id }, true);
-            res.status(201).json({ uploadId: job.id, operation_id: operation.operation_id, uploadLimit: limit });
+            res.status(201).json({ uploadId: job.id, operation_id: operation.operation_id, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE });
         }));
         router.put('/uploads/:uploadId/files/:index', wrap(async (req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
@@ -388,8 +423,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             operations.update(job.operationId, { status: 'running', phase: 'client-upload', percent: null, message: '正在接收客户端文件：' + file.name });
             try {
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
-                const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0) * 2;
-                res.json(await store(req).receive(job.id, req.params.index, req, bytes => operations.update(job.operationId, { phase: 'client-upload', message: '正在接收客户端文件：' + file.name, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null })));
+                const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
+                const progress = bytes => operations.update(job.operationId, { phase: 'client-upload', message: '阶段 1/2 · 浏览器 → 服务器：' + file.name, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
+                res.json(req.get('Content-Range')
+                    ? await store(req).receivePart(job.id, req.params.index, req, req.get('Content-Range'), progress)
+                    : await store(req).receive(job.id, req.params.index, req, progress));
             } catch (error) { store(req).abort(job.id); operations.fail(job.operationId, error); throw error; }
         }));
         router.post('/uploads/:uploadId/phase', wrap((req, res) => {
@@ -420,8 +458,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const sent = [];
                     try {
                         store(req).validateUpload(job.id);
-                        const sourceBytes = job.files.reduce((sum, file) => sum + file.size, 0);
-                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, totalBytes: sourceBytes * 2, processedBytes: sourceBytes + (patch.processedBytes || 0), percent: Number.isFinite(patch.percent) ? 50 + patch.percent / 2 : null }), sent, scope(req));
+                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message }), sent, scope(req));
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收，正在写入文件索引' });
                         const items = store(req).commit(job.id, job.storage.channelId, sent);
                         if (!job.backendId) onDefaultUpload(job.storage.channelId);
@@ -492,6 +529,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     }
     contents(browser); contents(external);
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, spaces, close() { clearInterval(cleanupTimer); } };
+    return { browser, external, admin, shared, spaces, retryCaptions, close() { closed = true; clearInterval(cleanupTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

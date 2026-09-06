@@ -125,7 +125,8 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     const dataDir = temp(t), auth = createDiskAuth({ dataDir }), drive = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     await auth.saveApp({ app_id: 'app1', app_secret: 'test-secret-long-enough' });
     const user = auth.fromTelegram({ id: '111' }), other = auth.fromTelegram({ id: '222' });
-    let uploads = 0, failDelete = false, failUpload = false;
+    let uploads = 0, failDelete = false, failUpload = false, failCaption = false;
+    const syncedCaptions = [];
     const telegram = {
         validate: async () => ({ token: 'fake-secret', channelId: '-1001', baseUrl: 'https://api.telegram.org' }),
         upload: async (_backend, files, update, completed = []) => {
@@ -137,6 +138,7 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
         },
         read: async () => Readable.from(['abc']),
         remove: async () => { if (failDelete) throw new Error('TELEGRAM_400'); },
+        syncCaption: async (backend, file) => { if (failCaption) throw new Error('TELEGRAM_400'); syncedCaptions.push({ id: file.id, name: file.name, path: file.folderPath, channel: backend.channelId }); },
         call: async () => ({ file_path: 'remote' })
     };
     const app = express(); app.use(express.json());
@@ -155,10 +157,14 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     assert.equal((await request('/list', { headers: { Authorization: 'Bearer invalid' } })).status, 401);
     const job = await request('/uploads', { method: 'POST', ...json({ files: [{ source_path: '/storage/emulated/0/Music/a.txt', size: 3, type: 'text/plain' }] }) });
     assert.equal(job.status, 201);
+    assert.equal(job.partSize, 20_000_000);
     assert.equal((await request('/uploads/' + job.uploadId + '/files/0', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Disk-User-Id': other.id }, body: 'abc' })).status, 404);
-    await request('/uploads/' + job.uploadId + '/files/0', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: 'abc' });
+    await request('/uploads/' + job.uploadId + '/files/0', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-2/3' }, body: 'abc' });
+    const received = await request('/operations/' + job.operation_id);
+    assert.equal(received.totalBytes, 3); assert.equal(received.processedBytes, 3);
     const finished = await request('/uploads/' + job.uploadId + '/finish', { method: 'POST' });
     const done = await wait(finished.operation_id); assert.equal(done.status, 'completed');
+    assert.equal(done.totalBytes, 3); assert.equal(done.processedBytes, 3);
     const file = done.result.items[0]; assert.equal(file.folderPath, 'storage/emulated/0/Music'); assert.equal(file.fileId, undefined);
     const share = await request('/shares', { method: 'POST', ...json({ items: [{ kind: 'directory', path: 'storage' }] }) });
     assert.equal(share.status, 201);
@@ -179,6 +185,14 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     assert.equal((await request('/files/' + file.id, { headers: { 'X-Disk-User-Id': other.id } })).status, 404);
     const mkdir = await request('/directories', { method: 'POST', ...json({ path: 'new/deep' }) }); assert.equal((await wait(mkdir.operation_id)).status, 'completed');
     const moved = await request('/files/' + file.id, { method: 'PATCH', ...json({ folderPath: 'new/deep', name: 'renamed.txt' }) }); assert.equal((await wait(moved.operation_id)).status, 'completed');
+    assert.deepEqual(syncedCaptions.at(-1), { id: file.id, name: 'renamed.txt', path: 'new/deep', channel: '-1001' });
+    failCaption = true;
+    const renamedFolder = await request('/directories', { method: 'PATCH', ...json({ path: 'new/deep', name: 'nested' }) });
+    assert.equal((await wait(renamedFolder.operation_id)).errorCode, 'TELEGRAM_CAPTION_SYNC_PENDING');
+    assert.equal(api.spaces.get('music').get(user.id, file.id).captionSyncPending, true);
+    failCaption = false; await api.retryCaptions();
+    assert.equal(syncedCaptions.at(-1).path, 'new/nested');
+    assert.equal(api.spaces.get('music').get(user.id, file.id).captionSyncPending, false);
     assert.equal(await (await fetch(base + '/api/files/' + file.id + '/download', { headers })).text(), 'abc');
     failDelete = true;
     const failed = await request('/directories?path=new&recursive=true', { method: 'DELETE' }); assert.equal((await wait(failed.operation_id)).errorCode, 'DISK_DELETE_PARTIAL');

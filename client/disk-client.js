@@ -4,6 +4,7 @@
     const base = '/api/telegram/drive';
     const listeners = new Set();
     const localUploads = new Map();
+    const uploadSession = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
     const waiting = new Map();
@@ -89,7 +90,7 @@
     function upload(files, folderPath, read = file => file, metadata = {}) {
         return withActivity('正在上传 ' + files.length + ' 个文件', async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
-            const pending = { operation_id: 'local-upload-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', percent: null };
+            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', percent: null };
             const current = generation;
             localUploads.set(pending.operation_id, pending); emit(); update({ operationId: pending.operation_id });
             try {
@@ -122,7 +123,13 @@
                 await refresh();
                 const blob = await read(files[index]);
                 blobs.push(blob);
-                await raw('/uploads/' + job.uploadId + '/files/' + index, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+                const url = '/uploads/' + job.uploadId + '/files/' + index;
+                const partSize = Number.isSafeInteger(job.partSize) && job.partSize > 0 ? job.partSize : 20_000_000;
+                if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
+                for (let offset = 0; offset < blob.size; offset += partSize) {
+                    const end = Math.min(offset + partSize, blob.size);
+                    await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end) });
+                }
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST' }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
