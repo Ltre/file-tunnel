@@ -6,6 +6,11 @@ let telegramDrivePath = '';
 let telegramDriveOidcPopup = null;
 let telegramDriveOidcPollGeneration = 0;
 let telegramDriveCurrentData = null;
+let telegramDriveSearchData = null;
+let telegramDriveSearchTimer = 0;
+let telegramDriveSearchGeneration = 0;
+let telegramDriveRenderGeneration = 0;
+let telegramDriveHistorySession = '';
 let telegramDriveMenuItem = null;
 const telegramDriveSelected = new Map();
 let telegramDriveView = localStorage.getItem('telegram-drive-view') === 'grid' ? 'grid' : 'list';
@@ -33,6 +38,8 @@ function telegramDriveErrorText(error) {
         'LOGIN_REQUIRED': '请先登录网盘',
         'STORAGE_BACKEND_UNAVAILABLE': '管理员尚未配置可用的网盘存储频道',
         'TELEGRAM_NETWORK_ERROR': '连接 Telegram 失败，请检查服务器网络',
+        'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除存储消息，请检查 Bot 是否仍有该频道的删除消息权限',
+        'TELEGRAM_MESSAGE_MISSING': '文件索引缺少 Telegram 消息定位信息，无法删除实体',
         'SERVER_RESTARTED': '服务已重启，此任务未完成，请重新执行',
         'telegram-drive-folder-depth-exceeded': '目录层级超过管理员设置的上限',
         'telegram-drive-folder-name-required': '请输入有效的文件夹名称',
@@ -56,6 +63,9 @@ function telegramDriveFormatDate(value) { return Number(value) ? new Date(Number
 function clearTelegramDriveSearch() {
     const input = document.getElementById('telegramDriveSearch');
     if (input) input.value = '';
+    telegramDriveSearchData = null;
+    telegramDriveSearchGeneration++;
+    clearTimeout(telegramDriveSearchTimer);
 }
 function telegramDriveFileType(item) {
     if (item.kind === 'directory') return '文件夹';
@@ -155,7 +165,7 @@ function toggleTelegramDriveSelection(item, checked) {
     updateTelegramDriveSelectionBar();
 }
 function selectTelegramDriveItems(invert = false) {
-    for (const item of getSortedTelegramDriveItems(telegramDriveCurrentData || {})) {
+    for (const item of getSortedTelegramDriveItems(getTelegramDriveDisplayData())) {
         const key = telegramDriveItemKey(item);
         if (invert && telegramDriveSelected.has(key)) telegramDriveSelected.delete(key);
         else telegramDriveSelected.set(key, item);
@@ -166,9 +176,10 @@ function telegramDriveActionItems(item) {
     return telegramDriveSelected.has(telegramDriveItemKey(item)) ? [...telegramDriveSelected.values()] : [item];
 }
 async function updateDiskCacheLabels() {
-    const files = telegramDriveCurrentData?.files || [];
+    const data = getTelegramDriveDisplayData();
+    const files = data?.files || [];
     const status = await window.TelegramDriveCache?.status(files).catch(() => ({})) || {};
-    if (files !== telegramDriveCurrentData?.files) return;
+    if (files !== getTelegramDriveDisplayData()?.files) return;
     document.querySelectorAll('#telegramDriveList [data-cache-id]').forEach(link => {
         const cached = Boolean(status[link.dataset.cacheId]);
         link.textContent = cached ? '已缓存到浏览器' : '缓存到浏览器';
@@ -184,7 +195,7 @@ function renderTelegramDriveBreadcrumbs(data) {
         if (index) { const separator = document.createElement('span'); separator.textContent = '›'; separator.setAttribute('aria-hidden', 'true'); nodes.push(separator); }
         const button = document.createElement('button'); button.type = 'button'; button.textContent = part.name;
         installDiskDrop(button, part.path);
-        button.onclick = () => { telegramDrivePath = part.path; clearTelegramDriveSearch(); clearTelegramDriveSelection(); renderTelegramDrive().catch(error => alert(telegramDriveErrorText(error))); };
+        button.onclick = () => navigateTelegramDrive(part.path).catch(error => alert(telegramDriveErrorText(error)));
         nodes.push(button);
     });
     target.replaceChildren(...nodes);
@@ -192,7 +203,8 @@ function renderTelegramDriveBreadcrumbs(data) {
 
 function getSortedTelegramDriveItems(data) {
     const query = String(document.getElementById('telegramDriveSearch')?.value || '').trim().toLocaleLowerCase('zh-CN');
-    const items = [...(data.folders || []), ...(data.files || [])].filter(item => !query || item.name.toLocaleLowerCase('zh-CN').includes(query));
+    const global = Boolean(document.getElementById('telegramDriveSearchAll')?.checked);
+    const items = [...(data?.folders || []), ...(data?.files || [])].filter(item => global || !query || item.name.toLocaleLowerCase('zh-CN').includes(query));
     const direction = telegramDriveSortAscending ? 1 : -1;
     const value = item => {
         if (telegramDriveSort === 'type') return telegramDriveFileType(item);
@@ -208,11 +220,46 @@ function getSortedTelegramDriveItems(data) {
     });
 }
 
+function getTelegramDriveDisplayData() {
+    const query = String(document.getElementById('telegramDriveSearch')?.value || '').trim();
+    return document.getElementById('telegramDriveSearchAll')?.checked && query ? (telegramDriveSearchData || { folders: [], files: [] }) : (telegramDriveCurrentData || { folders: [], files: [] });
+}
+
+function scheduleTelegramDriveSearch() {
+    clearTimeout(telegramDriveSearchTimer);
+    const input = document.getElementById('telegramDriveSearch');
+    const global = document.getElementById('telegramDriveSearchAll');
+    const query = String(input?.value || '').trim();
+    if (input) {
+        input.placeholder = global?.checked ? '搜索所有目录与文件' : '搜索当前目录';
+        input.setAttribute('aria-label', input.placeholder);
+    }
+    if (!global?.checked || !query) {
+        telegramDriveSearchData = null;
+        telegramDriveSearchGeneration++;
+        renderTelegramDriveItems();
+        return;
+    }
+    const generation = ++telegramDriveSearchGeneration;
+    telegramDriveSearchTimer = setTimeout(async () => {
+        try {
+            const result = await telegramDriveRequest('/api/telegram/drive/search?q=' + encodeURIComponent(query));
+            if (generation !== telegramDriveSearchGeneration || query !== String(input?.value || '').trim() || !global.checked) return;
+            telegramDriveSearchData = result;
+            renderTelegramDriveItems();
+        } catch (error) { if (generation === telegramDriveSearchGeneration) showAppToast('搜索失败：' + telegramDriveErrorText(error)); }
+    }, 180);
+}
+
 function getTelegramDriveItemMeta(item) {
-    if (item.kind === 'directory') return `${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件 · ${formatFileSize(item.size || 0)}`;
-    if (item.reviewStatus === 'deleted') return `已被管理员删除文件实体 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
-    if (item.reviewStatus === 'blocked') return `已被管理员屏蔽 · 仅自己可见且不可分享 · ${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)}`;
-    return `${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)} · ${telegramDriveFormatDate(item.updatedAt || item.createdAt)}`;
+    const global = document.getElementById('telegramDriveSearchAll')?.checked && String(document.getElementById('telegramDriveSearch')?.value || '').trim();
+    const location = global ? `位置：${telegramDriveDisplayPath(item.kind === 'directory' ? item.parentPath : item.folderPath)} · ` : '';
+    if (item.kind === 'directory' && item.reviewStatus === 'deleted') return `${location}已被管理员删除目录内容 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
+    if (item.kind === 'directory' && item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件`;
+    if (item.kind === 'directory') return `${location}${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件 · ${formatFileSize(item.size || 0)}`;
+    if (item.reviewStatus === 'deleted') return `${location}已被管理员删除文件实体 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
+    if (item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)}`;
+    return `${location}${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)} · ${telegramDriveFormatDate(item.updatedAt || item.createdAt)}`;
 }
 
 async function downloadTelegramDriveItem(item) {
@@ -237,7 +284,7 @@ async function showTelegramDriveProperties(item) {
         ? await telegramDriveRequest(`/api/telegram/drive/directories/properties?path=${encodeURIComponent(item.path)}`)
         : await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`);
     const entries = item.kind === 'directory'
-        ? [['名称', data.name], ['位置', telegramDriveDisplayPath(data.parentPath)], ['类型', '文件夹'], ['内容', `${data.folderCount} 个子目录，${data.fileCount} 个文件`], ['占用空间', formatFileSize(data.size || 0)], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)]]
+        ? [['名称', data.name], ['位置', telegramDriveDisplayPath(data.parentPath)], ['类型', '文件夹'], ['审核状态', data.reviewStatus === 'deleted' ? '目录内容已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['内容', `${data.folderCount} 个子目录，${data.fileCount} 个文件`], ['占用空间', formatFileSize(data.size || 0)], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)]]
         : [['名称', data.name], ['位置', telegramDriveDisplayPath(data.folderPath)], ['类型', telegramDriveFileType(data)], ['审核状态', data.reviewStatus === 'deleted' ? '文件实体已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['大小', `${formatFileSize(data.size || 0)}（${Number(data.size || 0).toLocaleString('zh-CN')} 字节）`], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)], ['防失联检测', data.lastCheckedAt ? telegramDriveFormatDate(data.lastCheckedAt) : '尚未检测']];
     const dl = document.createElement('dl'); dl.className = 'telegram-drive-property-grid';
     entries.forEach(([name, value]) => { const dt = document.createElement('dt'); dt.textContent = name; const dd = document.createElement('dd'); dd.textContent = value; dl.append(dt, dd); });
@@ -357,11 +404,11 @@ async function deleteTelegramDriveItems(items) {
     for (const item of items) {
         if (item.kind === 'directory') {
             const tree = await telegramDriveRequest('/api/telegram/drive/tree?path=' + encodeURIComponent(item.path));
-            await window.TelegramDriveCache?.remove(tree.files.map(file => file.id));
             await telegramDriveRequest(`/api/telegram/drive/directories?path=${encodeURIComponent(item.path)}&recursive=true`, { method: 'DELETE' });
+            await window.TelegramDriveCache?.remove(tree.files.map(file => file.id));
         } else {
-            await window.TelegramDriveCache?.remove([item.id]);
             await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+            await window.TelegramDriveCache?.remove([item.id]);
         }
     }
     clearTelegramDriveSelection();
@@ -415,10 +462,8 @@ async function showDiskShares() {
 
 function openTelegramDriveItem(item) {
     if (item.kind === 'directory') {
-        telegramDrivePath = item.path;
-        clearTelegramDriveSearch();
-        clearTelegramDriveSelection();
-        return renderTelegramDrive();
+        if (item.reviewStatus === 'deleted') return showTelegramDriveProperties(item);
+        return navigateTelegramDrive(item.path);
     }
     if (item.reviewStatus === 'deleted') return showTelegramDriveProperties(item);
     return isDiskPreviewable(item) ? openDiskPreview(item) : showTelegramDriveProperties(item);
@@ -446,7 +491,7 @@ function showTelegramDriveItemMenu(item, anchor) {
         ? [['打开', () => openTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['移动', () => moveTelegramDriveItems([item])], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]]
         : [['下载并缓存', () => downloadTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['移动', () => moveTelegramDriveItems([item])], ['防失联检测', () => checkTelegramDriveItem(item)], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]];
     if (item.reviewStatus === 'deleted') actions = [['属性', () => showTelegramDriveProperties(item)], ['删除节点', () => deleteTelegramDriveItems(chosen), true]];
-    if (item.kind === 'directory') actions.splice(1, 0, ['新建子目录', () => createTelegramDriveFolder(item.path)]);
+    if (item.kind === 'directory' && item.reviewStatus !== 'deleted') actions.splice(1, 0, ['新建子目录', () => createTelegramDriveFolder(item.path)]);
     else if (item.reviewStatus !== 'deleted' && isDiskPreviewable(item)) actions.unshift(['预览', () => openDiskPreview(item)]);
     if (chosen.length > 1) {
         actions.splice(0, actions.length, ['移动所选 ' + chosen.length + ' 项', () => moveTelegramDriveItems(chosen)], ['删除所选 ' + chosen.length + ' 项', () => deleteTelegramDriveItems(chosen), true]);
@@ -470,7 +515,7 @@ function renderTelegramDriveItems() {
     const list = document.getElementById('telegramDriveList');
     if (!list || !telegramDriveCurrentData) return;
     list.dataset.view = telegramDriveView;
-    const items = getSortedTelegramDriveItems(telegramDriveCurrentData);
+    const items = getSortedTelegramDriveItems(getTelegramDriveDisplayData());
     if (!items.length) {
         const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋”上传文件或创建文件夹</div></div>';
         list.replaceChildren(empty); return;
@@ -499,21 +544,29 @@ function renderTelegramDriveItems() {
             meta.append(' · ', cache);
         }
         const more = document.createElement('button'); more.type = 'button'; more.className = 'telegram-drive-icon-btn telegram-drive-item-more'; more.textContent = '⋮'; more.setAttribute('aria-label', `${item.name} 更多操作`); more.onclick = event => { event.stopPropagation(); showTelegramDriveItemMenu(item, more); };
-        let pointerType = '', clickTimer = 0;
+        let pointerType = '', firstClickSelection = null;
         row.addEventListener('pointerdown', event => { pointerType = event.pointerType; });
         row.onclick = event => {
             if (event.target.closest('input,button,a') || event.detail > 1) return;
             const mouse = pointerType === 'mouse' || (!pointerType && window.matchMedia('(pointer:fine)').matches);
             if (mouse) {
-                clearTimeout(clickTimer);
-                clickTimer = setTimeout(() => { checkbox.checked = !checkbox.checked; checkbox.onchange(); }, 350);
+                // Selection is immediate. If this click becomes a double click, the
+                // double-click handler atomically rolls it back before opening.
+                firstClickSelection = checkbox.checked;
+                checkbox.checked = !checkbox.checked;
+                checkbox.onchange();
             }
             else if (telegramDriveSelected.size) { checkbox.checked = !checkbox.checked; checkbox.onchange(); }
             else Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
         };
         row.ondblclick = event => {
             if (event.target.closest('input,button,a') || pointerType === 'touch') return;
-            clearTimeout(clickTimer); event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
+            if (firstClickSelection !== null) {
+                checkbox.checked = firstClickSelection;
+                checkbox.onchange();
+                firstClickSelection = null;
+            }
+            event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
         };
         row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error))); } };
         row.append(checkbox, icon, info, more);
@@ -532,9 +585,12 @@ function renderTelegramDriveItems() {
 
 async function uploadFilesToTelegramDrive(fileList) {
     const files = [...(fileList || [])]; if (!files.length) return;
-    const result = await window.DiskClient.upload(files, telegramDrivePath);
+    const destination = telegramDrivePath;
+    const result = await window.DiskClient.upload(files, destination);
     showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分 Telegram 定位备注未能更新，文件索引已保存' : ''));
-    await renderTelegramDrive();
+    // Only refresh the directory where the upload was initiated. A render
+    // generation prevents an older in-flight list request from overwriting it.
+    if (telegramDrivePath === destination) await renderTelegramDrive();
 }
 
 async function createTelegramDriveFolder(parent = telegramDrivePath) {
@@ -559,6 +615,8 @@ async function logoutTelegramDrive() {
 }
 
 async function renderTelegramDrive() {
+    const generation = ++telegramDriveRenderGeneration;
+    const requestedPath = telegramDrivePath;
     closeTelegramDriveItemMenu();
     const list = document.getElementById('telegramDriveList');
     const workspace = document.getElementById('telegramDriveWorkspace');
@@ -569,6 +627,7 @@ async function renderTelegramDrive() {
     const direction = document.getElementById('telegramDriveSortDirectionBtn'); if (direction) { direction.textContent = telegramDriveSortAscending ? '↑' : '↓'; direction.setAttribute('aria-label', telegramDriveSortAscending ? '当前升序' : '当前降序'); }
     const view = document.getElementById('telegramDriveViewBtn'); if (view) { view.textContent = telegramDriveView === 'list' ? '▦' : '☷'; view.setAttribute('aria-label', telegramDriveView === 'list' ? '切换为网格视图' : '切换为列表视图'); }
     const status = await window.DiskClient.withActivity('正在加载网盘', getTelegramDriveIdentity);
+    if (generation !== telegramDriveRenderGeneration) return;
     logout.hidden = !status.identity;
     if (!status.identity) {
         workspace.hidden = true;
@@ -589,8 +648,11 @@ async function renderTelegramDrive() {
     workspace.hidden = false;
     window.DiskClient.start();
     if (status.oidcMode !== 'mock') appendPasskeyControls(auth, status.identity);
-    telegramDriveCurrentData = await telegramDriveRequest(`/api/telegram/drive/list?path=${encodeURIComponent(telegramDrivePath)}`);
-    telegramDrivePath = telegramDriveCurrentData.path || '';
+    const data = await telegramDriveRequest(`/api/telegram/drive/list?path=${encodeURIComponent(requestedPath)}`);
+    if (generation !== telegramDriveRenderGeneration) return;
+    telegramDriveCurrentData = data;
+    telegramDriveSearchData = null;
+    telegramDrivePath = data.path || '';
     const folderCount = telegramDriveCurrentData.summary?.folderCount || 0;
     const fileCount = telegramDriveCurrentData.summary?.fileCount || 0;
     summary.textContent = `${folderCount} 个文件夹 · ${fileCount} 个文件`;
@@ -599,9 +661,35 @@ async function renderTelegramDrive() {
     updateTelegramDriveSelectionBar();
 }
 
-async function openTelegramDrive() { const overlay = document.getElementById('telegramDriveOverlay'); overlay.hidden = false; overlay.classList.add('active'); await renderTelegramDrive(); }
-function closeTelegramDrive() { closeTelegramDriveDialog(null); closeTelegramDriveItemMenu(); const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true; }
-function minimizeTelegramDrive() { closeTelegramDriveItemMenu(); const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true; }
+async function navigateTelegramDrive(path, { fromHistory = false } = {}) {
+    telegramDrivePath = String(path || '');
+    clearTelegramDriveSearch();
+    clearTelegramDriveSelection();
+    if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession }, '', location.href);
+    await renderTelegramDrive();
+}
+async function openTelegramDrive() {
+    const overlay = document.getElementById('telegramDriveOverlay');
+    const starting = !telegramDriveHistorySession;
+    if (starting) telegramDriveHistorySession = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const state = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession };
+    if (starting) history.pushState(state, '', location.href); else history.replaceState(state, '', location.href);
+    overlay.hidden = false; overlay.classList.add('active');
+    await renderTelegramDrive();
+}
+function closeTelegramDrive() {
+    closeTelegramDriveDialog(null); closeTelegramDriveItemMenu();
+    const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
+    const topbar = document.getElementById('topbarDiskBtn'); if (topbar) topbar.hidden = true;
+    telegramDriveHistorySession = '';
+    const next = { ...(history.state || {}) }; delete next.telegramDriveOpen; delete next.telegramDrivePath; delete next.telegramDriveHistorySession;
+    history.replaceState(next, '', location.href);
+}
+function minimizeTelegramDrive() {
+    closeTelegramDriveItemMenu();
+    const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
+    const topbar = document.getElementById('topbarDiskBtn'); if (topbar) topbar.hidden = false;
+}
 function startTelegramDriveLogin() {
     const target = document.getElementById('telegramDriveAuth');
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) {
@@ -693,16 +781,17 @@ function appendPasskeyControls(target, user) {
 }
 function installContextGesture(element, open) {
     let timer, start, suppressUntil = 0;
-    const cancel = () => { clearTimeout(timer); timer = null; };
+    const cancel = () => { clearTimeout(timer); timer = null; start = null; };
     element.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); cancel(); suppressUntil = Date.now() + 700; open(event); });
     element.addEventListener('pointerdown', event => {
         cancel();
         if (event.pointerType !== 'touch' || !event.isPrimary) return;
         start = { x: event.clientX, y: event.clientY };
-        timer = setTimeout(() => { suppressUntil = Date.now() + 1000; open(event); }, 550);
+        timer = setTimeout(() => { timer = null; suppressUntil = Date.now() + 1000; open(event); }, 550);
     });
     element.addEventListener('pointermove', event => { if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancel(); });
     element.addEventListener('pointerup', cancel); element.addEventListener('pointercancel', cancel);
+    element.addEventListener('selectstart', event => { if (timer || Date.now() < suppressUntil) event.preventDefault(); });
     element.addEventListener('click', event => { if (Date.now() < suppressUntil) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
 }
 function installDiskDrop(element, path) {
@@ -738,7 +827,7 @@ function closeDiskPreview() {
     if (previewURL) URL.revokeObjectURL(previewURL); previewURL = '';
 }
 async function openDiskPreview(item) {
-    previewItems = getSortedTelegramDriveItems(telegramDriveCurrentData).filter(isDiskPreviewable);
+    previewItems = getSortedTelegramDriveItems(getTelegramDriveDisplayData()).filter(isDiskPreviewable);
     previewIndex = Math.max(0, previewItems.findIndex(file => file.id === item.id));
     $disk('diskPreview').hidden = false;
     return renderDiskPreview();
@@ -829,12 +918,13 @@ function initDiskLoading() {
         pinnedJob = job.operation_id; render(); return true;
     };
 }
-function renderDiskTaskBubble(bubble, jobs) {
-    const uploads = jobs.filter(job => job.type === 'upload' && ['queued', 'running', 'failed'].includes(job.status));
+function renderDiskTaskBubble(bubble, jobs, acknowledgedFailed = new Set()) {
+    const uploads = jobs.filter(job => job.type === 'upload' && ['queued', 'running', 'failed'].includes(job.status) && !(job.status === 'failed' && acknowledgedFailed.has(job.operation_id)));
     // A failed upload stays visible even if another upload is running or has completed.
     const job = uploads.find(item => item.status === 'failed') || uploads[0];
     bubble.hidden = !job;
     if (!job) return;
+    if (bubble.dataset) bubble.dataset.jobId = job.operation_id || '';
     const failed = job.status === 'failed';
     bubble.title = failed ? '上传失败，点击查看详情：' + telegramDriveErrorText(job.errorCode) : job.message;
     bubble.classList.toggle('failed', failed);
@@ -886,6 +976,7 @@ function initDiskEnhancements() {
     const shares = document.createElement('button'); shares.className = 'btn btn-secondary'; shares.textContent = '已分享'; shares.onclick = () => showDiskShares().catch(error => alert(telegramDriveErrorText(error)));
     $disk('telegramDriveRefreshBtn').before(shares);
     let drag, moved = false;
+    const acknowledgedFailed = new Set();
     const position = (x, y) => positionDiskTaskBubble(bubble, x, y);
     const keepVisible = () => {
         if (bubble.hidden) return;
@@ -901,8 +992,10 @@ function initDiskEnhancements() {
     bubble.onpointercancel = () => { drag = null; moved = true; };
     bubble.onclick = async () => {
         if (moved) return;
+        const failed = bubble.classList.contains('failed');
+        if (failed && bubble.dataset.jobId) { acknowledgedFailed.add(bubble.dataset.jobId); bubble.hidden = true; }
         closeDiskPreview();
-        if (!bubble.classList.contains('failed')) restoreLoading();
+        if (!failed) restoreLoading();
         try {
             if ($disk('telegramDriveOverlay').hidden) await openTelegramDrive();
             tasks.open = true; tasks.scrollIntoView({ block: 'nearest' });
@@ -910,6 +1003,7 @@ function initDiskEnhancements() {
         catch (error) { alert(telegramDriveErrorText(error)); }
     };
     window.DiskClient.subscribe(jobs => {
+        for (const id of acknowledgedFailed) if (!jobs.some(job => job.operation_id === id && job.status === 'failed')) acknowledgedFailed.delete(id);
         const ongoing = jobs.filter(job => ['queued', 'running'].includes(job.status));
         $disk('diskTaskCount').textContent = ongoing.length ? '· ' + ongoing.length + ' 项进行中' : '';
         $disk('diskTaskList').replaceChildren(...jobs.slice(0, 30).map(job => {
@@ -920,7 +1014,7 @@ function initDiskEnhancements() {
             row.append(title, detail); return row;
         }));
         tasks.hidden = !jobs.length;
-        renderDiskTaskBubble(bubble, jobs);
+        renderDiskTaskBubble(bubble, jobs, acknowledgedFailed);
         keepVisible();
     });
     getTelegramDriveIdentity().then(status => { if (status.identity) window.DiskClient.start(); }).catch(() => {});
@@ -935,7 +1029,17 @@ function init(options = {}) {
     document.getElementById('telegramDriveDialogCloseBtn')?.addEventListener('click', () => closeTelegramDriveDialog(null));
     document.getElementById('telegramDriveRefreshBtn')?.addEventListener('click', () => renderTelegramDrive().catch(error => alert(telegramDriveErrorText(error))));
     document.getElementById('telegramDriveLogoutBtn')?.addEventListener('click', () => logoutTelegramDrive().catch(error => alert(telegramDriveErrorText(error))));
-    document.getElementById('telegramDriveSearch')?.addEventListener('input', renderTelegramDriveItems);
+    document.getElementById('telegramDriveSearch')?.addEventListener('input', scheduleTelegramDriveSearch);
+    document.getElementById('telegramDriveSearchAll')?.addEventListener('change', scheduleTelegramDriveSearch);
+    document.getElementById('topbarDiskBtn')?.addEventListener('click', () => openTelegramDrive().catch(error => alert(telegramDriveErrorText(error))));
+    window.addEventListener('popstate', event => {
+        const overlay = document.getElementById('telegramDriveOverlay');
+        if (!telegramDriveHistorySession) return;
+        if (event.state?.telegramDriveHistorySession !== telegramDriveHistorySession) return closeTelegramDrive();
+        if (!event.state.telegramDriveOpen) return closeTelegramDrive();
+        if (overlay) { overlay.hidden = false; overlay.classList.add('active'); }
+        navigateTelegramDrive(event.state.telegramDrivePath || '', { fromHistory: true }).catch(error => alert(telegramDriveErrorText(error)));
+    });
     document.getElementById('telegramDriveSort')?.addEventListener('change', event => {
         telegramDriveSort = event.target.value;
         localStorage.setItem('telegram-drive-sort', telegramDriveSort);

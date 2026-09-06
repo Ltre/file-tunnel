@@ -96,6 +96,8 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             name: safe ? baseName(safe) : '根目录',
             path: safe,
             parentPath: parentPath(safe),
+            reviewStatus: directory?.reviewStatus || 'active',
+            reviewUpdatedAt: Number(directory?.reviewUpdatedAt) || 0,
             createdAt: Number(directory?.createdAt) || 0,
             updatedAt: Math.max(Number(directory?.updatedAt) || 0, ...nestedFiles.map(item => Number(item.updatedAt || item.createdAt) || 0), 0),
             folderCount: nestedDirectories.filter(item => item.path !== safe).length,
@@ -135,7 +137,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             const folders = [...childPaths].map(childPath => {
                 const item = directories.get(directoryKey(owner, childPath));
                 const snapshot = directorySnapshot(owner, childPath);
-                return { kind: 'directory', name: baseName(childPath), path: childPath, createdAt: Number(item?.createdAt) || 0, updatedAt: snapshot.updatedAt, folderCount: snapshot.folderCount, fileCount: snapshot.fileCount, size: snapshot.size };
+                return { kind: 'directory', name: baseName(childPath), path: childPath, createdAt: Number(item?.createdAt) || 0, updatedAt: snapshot.updatedAt, reviewStatus: item?.reviewStatus || 'active', reviewUpdatedAt: Number(item?.reviewUpdatedAt) || 0, folderCount: snapshot.folderCount, fileCount: snapshot.fileCount, size: snapshot.size };
             });
             const files = ownerRecords(owner).filter(item => normalizePath(item.folderPath || '') === safe).map(item => ({ ...item, kind: 'file' }));
             return {
@@ -276,7 +278,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             }
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
             const job = { id, owner, metadata, backendId, sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
-files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, path: '', received: 0 })), dir, createdAt: Date.now(), maxDepth };
+files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, path: '', received: 0 })), dir, createdAt: Date.now(), maxDepth };
             uploads.set(id, job); return job;
         },
         async receive(uploadId, index, request, onProgress) {
@@ -308,7 +310,9 @@ files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, '
             this.validateUpload(uploadId);
             for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
             const created = job.files.map((file, index) => {
-                const remote = sent[index] || {}; const item = { id: crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                const remote = sent[index] || {};
+                const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, mediaGroupId: String(part.mediaGroupId || ''), partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0 }));
+                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';
@@ -326,11 +330,35 @@ files: incoming.map((file, index) => ({ index, folderPath: Object.hasOwn(file, '
             Object.assign(item, { reviewStatus: status === 'active' ? '' : status, reviewUpdatedAt: Date.now(), updatedAt: Date.now() });
             persist(); return { ...item };
         },
+        setDirectoryReviewStatus(ownerId, folderPath, status) {
+            if (!['active', 'blocked'].includes(status)) throw new Error('REVIEW_ACTION_INVALID');
+            const snapshot = directorySnapshot(ownerId, folderPath);
+            if (!snapshot.path || !snapshot.directories.length) throw new Error('DIRECTORY_NOT_FOUND');
+            const now = Date.now();
+            for (const directory of snapshot.directories) Object.assign(directory, { reviewStatus: status, reviewUpdatedAt: now, updatedAt: now });
+            for (const file of snapshot.files) Object.assign(file, { reviewStatus: status === 'active' ? '' : status, reviewUpdatedAt: now, updatedAt: now });
+            persist(); return this.getDirectory(ownerId, folderPath);
+        },
         tombstone(ownerId, id) {
             const item = this.get(ownerId, id);
             if (!item) throw new Error('FILE_NOT_FOUND');
-            Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: Date.now(), deletedAt: Date.now(), updatedAt: Date.now(), fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '' });
+            Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: Date.now(), deletedAt: Date.now(), updatedAt: Date.now(), fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0 });
             persist(); return { ...item };
+        },
+        tombstoneDirectory(ownerId, folderPath) {
+            const snapshot = directorySnapshot(ownerId, folderPath);
+            if (!snapshot.path || !snapshot.directories.length) throw new Error('DIRECTORY_NOT_FOUND');
+            const now = Date.now();
+            for (const directory of snapshot.directories) Object.assign(directory, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now });
+            for (const item of snapshot.files) Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now, fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0 });
+            persist(); return this.getDirectory(ownerId, folderPath);
+        },
+        search(ownerId, query, limit = 500) {
+            const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
+            if (!needle) return { folders: [], files: [] };
+            const folders = ownerDirectories(ownerId).filter(item => baseName(item.path).toLocaleLowerCase('zh-CN').includes(needle)).slice(0, limit).map(item => ({ ...directorySnapshot(ownerId, item.path), files: undefined, directories: undefined }));
+            const files = ownerRecords(ownerId).filter(item => item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
+            return { folders, files };
         },
         adminFiles() { return [...records.values()].map(item => ({ ...item })); },
         adminDirectories() { return [...directories.values()].map(item => ({ ...item })); },

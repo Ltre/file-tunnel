@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v33';
+const CACHE_NAME = 'instant-tunnel-v34';
 const APP_SHELL = [
     '/',
     '/index.html',

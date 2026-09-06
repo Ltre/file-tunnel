@@ -228,12 +228,12 @@ test('后台按来源/用户/分区审计文件，屏蔽立即阻断分享，审
         read: async () => { if (reads++ === 0) throw new Error('TELEGRAM_DOWNLOAD_NETWORK'); return Readable.from(['abc']); },
         remove: async () => { removals++; }, validate: async () => ({}), upload: async () => [], call: async () => ({})
     };
-    const add = async (name, sourceAppId) => {
-        const upload = drive.begin({ owner: user, files: [{ name, size: 3, type: 'text/plain' }], maxDepth: 20, sourceAppId });
+    const add = async (name, sourceAppId, folderPath = '') => {
+        const upload = drive.begin({ owner: user, folderPath, files: [{ name, size: 3, type: 'text/plain' }], maxDepth: 20, sourceAppId });
         await drive.receive(upload.id, 0, Readable.from(['abc']));
         return drive.commit(upload.id, '-1001', [{ fileId: 'remote-' + name, messageId: Date.now() }])[0];
     };
-    const first = await add('待审核-a.txt', 'music-app'), second = await add('待审核-b.txt', 'music-app');
+    const first = await add('待审核-a.txt', 'music-app'), second = await add('待审核-b.txt', 'music-app'), directoryFile = await add('目录内文件.txt', 'music-app', '待审核目录');
     const api = createDiskAPI({ dataDir, defaultStore: drive, auth, operations, telegram, getDefaultBackend: () => ({ token: 'default', channelId: '-1001', baseUrl: 'https://api.telegram.org' }), getIdentity: () => user, setIdentity: () => {}, getOrigin: () => 'http://localhost', isMockRequest: () => true, maxDepth: () => 20 });
     const app = express(); app.use(express.json()); app.use('/browser', api.browser); app.use('/admin', api.admin); app.use('/shared', api.shared);
     t.after(() => api.close()); const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
@@ -245,19 +245,27 @@ test('后台按来源/用户/分区审计文件，屏蔽立即阻断分享，审
     assert.equal(reads, 2, 'Telegram 短暂网络失败必须在服务端自动重试一次');
     const overview = await (await fetch(base + '/admin/storage-overview')).json();
     const system = overview.systems.find(item => item.appId === 'music-app');
-    assert.equal(system.users[0].userId, user.id); assert.equal(system.users[0].spaces[0].fileCount, 2);
+    assert.equal(system.users[0].userId, user.id); assert.equal(system.users[0].spaces[0].fileCount, 3);
     const contents = await (await fetch(base + `/admin/storage-contents?user_id=${user.id}`)).json();
     assert.ok(contents.files.every(file => file.sourceAppId === 'music-app'));
     const reviews = await (await fetch(base + '/admin/reviews')).json();
-    assert.deepEqual(new Set(reviews.files.map(file => file.id)), new Set([first.id, second.id]));
+    assert.deepEqual(new Set(reviews.files.map(file => file.id)), new Set([first.id, second.id, directoryFile.id]));
+    assert.equal(await (await fetch(base + `/admin/files/${directoryFile.id}/download?user_id=${user.id}`)).text(), 'abc');
     assert.equal((await fetch(base + '/admin/reviews/' + first.id, { method: 'PATCH', ...json({ user_id: user.id, action: 'block' }) })).status, 200);
     assert.equal((await (await fetch(base + '/shared/' + token)).json()).files.length, 0);
     assert.equal((await fetch(`${base}/shared/${token}/files/${first.id}/download`)).status, 404);
     assert.equal((await fetch(base + '/browser/shares', post({ items: [{ kind: 'file', id: first.id }] }))).status, 422);
+    assert.equal((await fetch(base + '/admin/reviews/' + first.id, { method: 'PATCH', ...json({ user_id: user.id, action: 'unblock' }) })).status, 200);
+    assert.equal(drive.get(user.id, first.id).reviewStatus, '');
+    assert.equal((await fetch(base + '/admin/directories/review', { method: 'PATCH', ...json({ user_id: user.id, path: '待审核目录', action: 'block' }) })).status, 200);
+    assert.equal(drive.get(user.id, directoryFile.id).reviewStatus, 'blocked');
+    assert.equal((await fetch(base + '/admin/directories/review', { method: 'PATCH', ...json({ user_id: user.id, path: '待审核目录', action: 'unblock' }) })).status, 200);
+    assert.equal((await fetch(base + '/admin/directories/review', { method: 'PATCH', ...json({ user_id: user.id, path: '待审核目录', action: 'delete' }) })).status, 200);
+    assert.equal(drive.get(user.id, directoryFile.id).reviewStatus, 'deleted');
     assert.equal((await fetch(base + '/admin/reviews/' + second.id, { method: 'PATCH', ...json({ user_id: user.id, action: 'delete' }) })).status, 200);
-    assert.equal(removals, 1); assert.equal(drive.get(user.id, second.id).reviewStatus, 'deleted'); assert.equal(drive.get(user.id, second.id).fileId, '');
+    assert.equal(removals, 2); assert.equal(drive.get(user.id, second.id).reviewStatus, 'deleted'); assert.equal(drive.get(user.id, second.id).fileId, '');
     const deletion = await (await fetch(base + '/browser/files/' + second.id, { method: 'DELETE' })).json();
     for (let tries = 0; tries < 50 && drive.get(user.id, second.id); tries++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(drive.get(user.id, second.id), null, '用户删除审核占位时不应再次请求 Telegram');
-    assert.equal(removals, 1); assert.ok(deletion.operation_id);
+    assert.equal(removals, 2); assert.ok(deletion.operation_id);
 });

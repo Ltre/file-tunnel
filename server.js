@@ -301,7 +301,9 @@ const telegramDriveStore = createTelegramDriveStore({
 });
 const diskAuth = createDiskAuth({ dataDir: SERVER_DATA_DIR });
 const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
-const diskTelegram = createDiskTelegram({ getBaseUrl: getTelegramBotApiBaseUrl });
+// The drive always targets the official Bot API and implements large logical
+// files itself. Other Telegram features may keep their existing endpoint.
+const diskTelegram = createDiskTelegram({ getBaseUrl: () => 'https://api.telegram.org' });
 
 function normalizeTelegramBotConfig(config = {}) {
     const token = sanitizeString(config.token || '', 260);
@@ -591,7 +593,9 @@ function getTelegramMaxFileSize() {
 
 function isLocalTelegramBotApi() { return Boolean(telegramConfig.botApiBaseUrl); }
 function getTelegramBotApiBaseUrl() { return telegramConfig.botApiBaseUrl || 'https://api.telegram.org'; }
-function getTelegramDriveUploadLimit() { return isLocalTelegramBotApi() ? 2000 * 1024 * 1024 : 50 * 1024 * 1024; }
+// Telegram messages remain <= 20 MiB physical parts; the public limit applies to
+// one logical file, which the drive transport splits and later reassembles.
+function getTelegramDriveUploadLimit() { return 2000 * 1024 * 1024; }
 function getTelegramDriveActiveChannel() { return (telegramConfig.driveChannels || []).find(item => item.id === telegramConfig.activeDriveChannelId) || null; }
 function isTelegramOidcConfigured(config = telegramConfig) { return Boolean(config.oidcClientId && config.oidcClientSecret); }
 function getTelegramDriveSessionKey(req) {
@@ -2088,7 +2092,7 @@ app.get('/api/telegram/drive/me', (req, res) => {
     res.setHeader('Expires', '0');
     const identity = getTelegramDriveIdentity(req);
     const oidcMode = getTelegramOidcLoginMode(req);
-    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: isLocalTelegramBotApi(), uploadLimit: getTelegramDriveUploadLimit() });
+    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
 });
 
 const diskAPI = createDiskAPI({

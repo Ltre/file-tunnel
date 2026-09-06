@@ -21,6 +21,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
                     if (!base) throw new Error('SHARE_ROOT_FORBIDDEN');
                     const tree = store.getDirectoryTree(scope.userId, base);
                     if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
+                    if (tree.reviewStatus === 'blocked' || tree.reviewStatus === 'deleted' || tree.directories.some(folder => folder.reviewStatus === 'blocked' || folder.reviewStatus === 'deleted')) throw new Error('SHARE_REVIEW_RESTRICTED');
                     if (tree.files.some(file => file.reviewStatus === 'blocked' || file.reviewStatus === 'deleted')) throw new Error('SHARE_REVIEW_RESTRICTED');
                     names.push(tree.name);
                     // Preserve selected directory names and relative subdirectories.

@@ -25,9 +25,15 @@ test('Telegram 网盘索引按 Telegram 用户隔离、持久化目录并限制 
         await drive.receive(job.id, 0, Readable.from([Buffer.from('abc')]));
         const [item] = drive.commit(job.id, '-100', [{ messageId: 11, fileId: 'file-a', fileUniqueId: 'unique-a' }]);
         assert.equal(drive.list('1001', '音乐/现场').files[0].id, item.id);
+        const splitJob = drive.begin({ owner: { id: '1001', name: 'A' }, folderPath: '', files: [{ name: 'split.bin', type: 'application/octet-stream', size: 3 }], maxDepth: 20 });
+        await drive.receive(splitJob.id, 0, Readable.from([Buffer.from('xyz')]));
+        const [split] = drive.commit(splitJob.id, '-100', [{ fileId: 'part-a', messageId: 21, parts: [{ fileId: 'part-a', messageId: 21, partIndex: 1, partCount: 2, size: 2, offset: 0 }, { fileId: 'part-b', messageId: 22, partIndex: 2, partCount: 2, size: 1, offset: 2 }] }]);
+        assert.equal(drive.list('1001', '').files.filter(file => file.id === split.id).length, 1, '物理分片不得暴露成多个网盘文件');
+        assert.deepEqual(drive.get('1001', split.id).parts.map(part => part.fileId), ['part-a', 'part-b']);
         assert.equal(drive.list('2002', '音乐/现场').files.length, 0);
         const loaded = createTelegramDriveStore({ dataDir: dir, maxFileSize: () => 1024 });
         assert.equal(loaded.get('1001', item.id).fileId, 'file-a');
+        assert.equal(loaded.get('1001', split.id).partCount, 2);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

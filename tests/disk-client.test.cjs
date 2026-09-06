@@ -61,16 +61,16 @@ test('隧道适配器传递普通 File 与目录相对路径，核心没有隧�
 test('右键操作保留整个选中集合，全选和反选只操作当前视图', () => {
     const ui = source('client/disk-ui.js'), context = { Map, rendered: 0 };
     const code = ui.slice(ui.indexOf('function selectTelegramDriveItems'), ui.indexOf('async function updateDiskCacheLabels'));
-    vm.runInNewContext(`const telegramDriveSelected = new Map(); const telegramDriveCurrentData = {}; const files = [{id:'a'},{id:'b'},{id:'c'}]; const telegramDriveItemKey = f=>f.id; const getSortedTelegramDriveItems = ()=>files; function renderTelegramDriveItems(){} function updateTelegramDriveSelectionBar(){}; ${code}; this.select = selectTelegramDriveItems; this.items = telegramDriveActionItems; this.chosen = telegramDriveSelected;`, context);
+    vm.runInNewContext(`const telegramDriveSelected = new Map(); const telegramDriveCurrentData = {}; const files = [{id:'a'},{id:'b'},{id:'c'}]; const telegramDriveItemKey = f=>f.id; const getSortedTelegramDriveItems = ()=>files; const getTelegramDriveDisplayData = () => telegramDriveCurrentData; function renderTelegramDriveItems(){} function updateTelegramDriveSelectionBar(){}; ${code}; this.select = selectTelegramDriveItems; this.items = telegramDriveActionItems; this.chosen = telegramDriveSelected;`, context);
     context.select(); assert.equal(context.chosen.size, 3); assert.equal(context.items({ id: 'b' }).length, 3);
     context.chosen.delete('c'); context.select(true); assert.deepEqual([...context.chosen.keys()], ['c']);
     assert.equal(context.items({ id: 'unselected' })[0].id, 'unselected');
     assert.match(ui, /exportDiskItems\(chosen\)/); assert.match(ui, /row\.ondblclick/);
-    assert.match(ui, /clickTimer = setTimeout\([\s\S]*?, 350\)/, '桌面单击必须等待双击判定窗口结束');
-    assert.match(ui, /row\.ondblclick = event => \{[\s\S]*?clearTimeout\(clickTimer\)/, 'PC 双击必须取消延迟的单击多选');
+    assert.doesNotMatch(ui, /clickTimer = setTimeout\([\s\S]*?, 350\)/, '桌面单击不应人为延迟');
+    assert.match(ui, /firstClickSelection = checkbox\.checked[\s\S]*?row\.ondblclick = event => \{[\s\S]*?checkbox\.checked = firstClickSelection/, 'PC 双击应回滚第一次 click 的即时选择再打开');
     assert.match(ui, /\['清理缓存', \(\) => clearTelegramDriveCache\(chosen\)\]/);
-    assert.match(ui, /TelegramDriveCache\?\.remove\(tree\.files\.map\(file => file\.id\)\)/, '删除目录前必须递归清理浏览器缓存');
-    assert.match(ui, /TelegramDriveCache\?\.remove\(\[item\.id\]\)/, '删除文件前必须清理对应浏览器缓存');
+    assert.match(ui, /TelegramDriveCache\?\.remove\(tree\.files\.map\(file => file\.id\)\)/, '目录删除成功后必须递归清理浏览器缓存');
+    assert.match(ui, /TelegramDriveCache\?\.remove\(\[item\.id\]\)/, '文件删除成功后必须清理对应浏览器缓存');
 });
 
 test('公开分享显示流式百分比、使用独立浏览器缓存并为瞬时失败重试', () => {
@@ -83,12 +83,23 @@ test('公开分享显示流式百分比、使用独立浏览器缓存并为瞬�
 });
 
 test('网盘提供最小化、目标隧道选择与上次目标记忆，管理页独立于 tgbot', () => {
-    const page = source('pages/index.html'), adapter = source('client/disk-tunnel-adapter.js'), admin = source('pages/disk-management.html'), server = source('server.js');
+    const page = source('pages/index.html'), ui = source('client/disk-ui.js'), css = source('client/disk.css'), adapter = source('client/disk-tunnel-adapter.js'), admin = source('pages/disk-management.html'), server = source('server.js');
     assert.match(page, /id="minimizeTelegramDriveBtn"/); assert.match(adapter, /telegram-drive-last-tunnel/);
+    assert.match(page, /id="mobileForceRefreshBtn"[\s\S]*?id="tunnelTopbarButtonGroup"[\s\S]*?id="tunnelSettingsBtn"[\s\S]*?id="topbarDiskBtn"[\s\S]*?id="topbarMusicBtn"[\s\S]*?id="leaveTunnelBtn"/);
+    assert.match(page, /topbar-now-playing-slot/); assert.match(page, /id="telegramDriveSearchAll"/);
+    assert.match(page, /tunnel-topbar-scroll[\s\S]*?overflow-x: auto/);
+    assert.match(source('app.js'), /function initTopbarOverflowScroll[\s\S]*?scroller\.scrollLeft = drag\.scrollLeft - dx/);
+    assert.match(ui, /minimizeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = false/);
+    assert.match(ui, /closeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = true/);
+    assert.match(ui, /history\.pushState[\s\S]*?telegramDriveHistorySession/); assert.match(ui, /addEventListener\('popstate'/);
+    assert.match(ui, /\/api\/telegram\/drive\/search\?q=/); assert.match(ui, /telegramDriveRenderGeneration/);
+    assert.match(css, /-webkit-user-select:none;user-select:none/);
     assert.match(adapter, /选择转发目标隧道/); assert.match(adapter, /【当前隧道】/); assert.match(adapter, /host\.navigate\(target\.id\)/);
     assert.match(adapter, /telegram-drive-pending-forward/); assert.match(admin, /网盘先发后审流水/); assert.match(admin, /用户与网盘分区/);
     assert.match(server, /app\.get\('\/disk-management'/); assert.match(source('pages/admin.html'), /href="\/disk-management"/);
     assert.doesNotMatch(source('pages/tgbot.html'), /disk-management\.js/);
+    assert.match(source('client/disk-management.js'), /取消屏蔽/); assert.match(source('client/disk-management.js'), /diskAdminPreview/);
+    assert.match(admin, /缩略图|diskAdminPreview/);
 });
 
 test('居中 loading 的活动覆盖请求及服务端任务终态，后台轮询不产生新活动', async () => {
@@ -146,7 +157,7 @@ test('上传悬浮球只显示未完成上传：失败保留全红，完成/取�
     const ui = source('client/disk-ui.js');
     const code = ui.slice(ui.indexOf('function renderDiskTaskBubble'), ui.indexOf('function initDiskEnhancements'));
     const classes = new Set(), badge = {}, styles = {};
-    const bubble = { classList: { toggle: (name, value) => value ? classes.add(name) : classes.delete(name) }, style: { setProperty: (key, value) => { styles[key] = value; } }, querySelector: () => badge };
+    const bubble = { dataset: {}, classList: { toggle: (name, value) => value ? classes.add(name) : classes.delete(name) }, style: { setProperty: (key, value) => { styles[key] = value; } }, querySelector: () => badge };
     const context = { telegramDriveErrorText: value => value, window: {}, innerWidth: 390, innerHeight: 700 };
     vm.runInNewContext(code + '\nthis.render = renderDiskTaskBubble; this.position = positionDiskTaskBubble;', context);
     for (const jobs of [[], [{ type: 'upload', status: 'completed' }], [{ type: 'upload', status: 'cancelled' }], [{ type: 'read', status: 'running' }], [{ type: 'delete', status: 'failed' }]]) {

@@ -209,10 +209,10 @@ Content-Type: application/json
 
 有 source_path 时按最后一段提取 name，其余段自动创建虚拟目录。否则使用 name 和公共 folderPath，也可为单个文件指定 folderPath。禁止空 basename 或包含双点。
 
-每批 1–100 个文件；单文件限制以响应 uploadLimit 为准。默认官方 Bot API 上传上限 50 MiB；管理员配置 Local Bot API Server 后可使用 2 GiB，第三方指定的 Bot 也使用这一可信服务地址。不接受调用方指定任意 API 地址，避免 SSRF。
+每批 1–100 个逻辑文件；单个逻辑文件限制以响应 uploadLimit 为准，当前为 2000 MiB。网盘固定调用 Telegram 官方 Bot API，不接收调用方指定 API 地址，也不依赖 Local Bot API Server。每个逻辑文件在服务端暂存完整字节后，按**每片不超过 20 MiB**切成 Telegram 物理分片；虚拟目录、列表、移动、重命名、分享、审核和第三方 API 始终只暴露一个逻辑文件。
 
 ~~~json
-{ "uploadId": "<uuid>", "operation_id": "<uuid>", "uploadLimit": 52428800 }
+{ "uploadId": "<uuid>", "operation_id": "<uuid>", "uploadLimit": 2097152000 }
 ~~~
 
 可选通知源文件读取阶段：POST /uploads/{uploadId}/phase，JSON {"index":0}。
@@ -228,9 +228,11 @@ Content-Type: application/octet-stream
 
 大小必须与声明一致。完成所有字节后 POST /uploads/{uploadId}/finish，返回 202 operation_id。该 uploadId 的 finish 可重试，在任务保留期内返回同一任务，不重复发往 Telegram。
 
-服务器按最多 10 个文件一组调用 sendMediaGroup；单文件调用 sendDocument。后续组失败时，先前已被 Telegram 确认的文件会保留索引，记录在失败任务 result.partialItems。若请求在 Telegram 已接收但响应丢失时断网，Telegram 不提供发送幂等键；此类未知结果不能保证自动去重，不会无限自动重发。
+服务器将待上传的物理分片按最多 10 条消息一组调用 sendMediaGroup，只有一条时调用 sendDocument。一个大文件超过 10 片时可跨多个 Album，但每片均记录相同 `logical_file_id`，以及 `partIndex`、`partCount`、`offset`、分片大小和原始文件总大小。只有某个逻辑文件的所有分片均被 Telegram 确认，才写入一个逻辑文件索引；不完整逻辑文件的已确认分片会尽力清理，不作为可见文件提交。后续组失败时，先前已经完整确认的逻辑文件会保留索引，记录在失败任务 result.partialItems。若请求在 Telegram 已接收但响应丢失时断网，Telegram 不提供发送幂等键；此类未知结果不能保证自动去重，不会无限自动重发。
 
-每个文件（含 album 内每条消息）都写入 caption，记录 `user_id`、`disk_space`、虚拟目录 `path`、文件名 `name`、`channel_id`。发送成功后才知道 Telegram 分配的 ID，因此随后逐条 `editMessageCaption` 补齐 `file_id`、`message_id`、`album_id`（单文件为空）。任务显示 `telegram-caption` 阶段；这一步会额外产生每文件一次 Telegram 请求，期间等待的是上游确认，不伪装成文件字节上传。
+每个物理分片（含 album 内每条消息）都写入 caption，记录 `user_id`、`disk_space`、虚拟目录 `path`、文件名 `name`、`channel_id`、`logical_file_id`、分片序号/总片数和原始总大小。发送成功后才知道 Telegram 分配的 ID，因此随后逐条 `editMessageCaption` 补齐 `file_id`、`message_id`、`album_id`。任务显示 `telegram-caption` 阶段；这一步会额外产生每个分片一次 Telegram 请求，期间等待的是上游确认，不伪装成文件字节上传。
+
+下载、预览和转发时，服务端从逻辑文件索引取出全部分片，按 `partIndex` 顺序逐片调用官方 `getFile` 并流式拼接，响应长度和文件名仍是原始逻辑文件。检测会验证全部分片；删除会按逻辑文件批量删除所有 Telegram 消息，已经不存在的消息按幂等成功处理。移动和重命名只修改逻辑索引，Telegram 分片不会作为独立文件进入上层业务。
 
 caption 是**上传时的位置快照**，受 Telegram 1024 字符限制，超长路径会截短；之后重命名、移动以本系统完整索引为准，不依赖 caption 反查数据。补备注失败不会重发或丢失已经上传的文件，任务及结果的 `warnings` 含 `TELEGRAM_CAPTION_UPDATE_FAILED`，前台也会提示文件已保存但备注不完整。
 
@@ -261,7 +263,7 @@ DELETE /uploads/{uploadId} 可取消未开始远端提交的暂存；远端提�
 
 分享保存创建时选中文件 ID、目录结构和名称的快照：源目录后来新增的内容**不会自动公开**；原文件移动/重命名不扩大分享范围，源文件删除后不可再下载。停止后新请求返回 404 `SHARE_NOT_FOUND`；等待上游读取时也会在输出首字节前再检查一次。已下载的副本、已经开始输出的响应无法远程收回。
 
-链接本身就是访问凭据，持有者可以继续转发，公开页面不是登录保护页。确认分享前应提示用户这一点。返回内容标记 no-store、no-referrer、noindex，并对匿名 API 按 IP 限流。分享不会复制文件到另一个频道，也不会突破原 Telegram getFile 下载限制。
+链接本身就是访问凭据，持有者可以继续转发，公开页面不是登录保护页。确认分享前应提示用户这一点。返回内容标记 no-store、no-referrer、noindex，并对匿名 API 按 IP 限流。分享不会复制文件到另一个频道；大逻辑文件同样由服务端逐片读取并合并。
 
 ## 8. 错误和部署约束
 
@@ -286,6 +288,6 @@ DELETE /uploads/{uploadId} 可取消未开始远端提交的暂存；远端提�
 - 服务端增加 `[网盘 OIDC]` 阶段日志，以 `traceId` 短跟踪号关联：开始授权、收到回调并交换令牌、身份验证完成，以及后续清理发现的授权等待过期。日志不记录手机号、授权 code、state、Token 或 Secret；前台等待超过一分钟给出通知检查与 Passkey 备用提示。先区分没有回调，还是已有回调但验签/换令牌失败。
 - 管理员检查 BotFather 中的精确正式 Redirect URI `/api/telegram/drive/oidc/callback` 以及 HTTPS Trusted Origin，保留截图和上述无敏感信息日志。若 Telegram 客户端持续收不到通知，需要向 Telegram 排查该授权阶段；不能据此直接判定为本站回调地址故障。参见 [Telegram 官方登录文档](https://core.telegram.org/bots/telegram-login)。
 
-官方 getFile 仍有 20 MB 下载限制。浏览器已缓存副本可用于读取/修复；超过限制的在线下载需管理员配置 Local Bot API Server。使用官方 API 时不要把上传成功误认为能随时从 getFile 下载大文件。
+官方 getFile 的单个 Telegram 文件下载限制仍为 20 MiB；网盘的每个底层分片不超过该限制，因此无需 Local Bot API Server 即可逐片读取并还原大逻辑文件。浏览器缓存仍可减少重复读取，并继续作为防失联修复来源。
 
 参考：[Telegram Bot API](https://core.telegram.org/bots/api)、[SimpleWebAuthn Server](https://simplewebauthn.dev/docs/packages/server)、[Passkey](https://simplewebauthn.dev/docs/advanced/passkeys)。

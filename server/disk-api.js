@@ -8,12 +8,14 @@ const { pipeline } = require('stream/promises');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./telegram-drive');
 const { readJson, writeJson } = require('./disk-data');
 const { createDiskShares } = require('./disk-shares');
+const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
     id: item.id, kind: 'file', name: item.name, type: item.type, size: item.size,
     folderPath: item.folderPath || '', createdAt: item.createdAt, updatedAt: item.updatedAt,
     lastCheckedAt: item.lastCheckedAt || 0, repairedAt: item.repairedAt || 0,
-    metadata: item.metadata || {}, reviewStatus: item.reviewStatus || 'active', reviewUpdatedAt: item.reviewUpdatedAt || 0
+    metadata: item.metadata || {}, reviewStatus: item.reviewStatus || 'active', reviewUpdatedAt: item.reviewUpdatedAt || 0,
+    partCount: Number(item.partCount) || (Array.isArray(item.parts) && item.parts.length) || 1
 } : null;
 function createDiskSpaces(dataDir, defaultStore) {
     const stores = new Map([['', defaultStore]]);
@@ -166,6 +168,22 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const result = spaces.get(diskSpace).list(userId, req.query.path || '');
         res.json({ ...result, files: result.files.map(file => ({ ...publicFile(file), sourceAppId: inferSourceAppId(file, diskSpace) })) });
     }));
+    const adminFile = req => {
+        const userId = String(req.query.user_id || req.body?.user_id || ''), diskSpace = String(req.query.disk_space || req.body?.disk_space || '');
+        const store = spaces.get(diskSpace), file = store.get(userId, req.params.id);
+        if (!file) throw new Error('FILE_NOT_FOUND');
+        return { userId, diskSpace, store, file };
+    };
+    const adminFileBackend = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+    admin.get('/files/:id/download', wrap(async (req, res) => {
+        const { file } = adminFile(req);
+        if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW');
+        const source = await readRemote(adminFileBackend(file), file);
+        res.set('Content-Type', file.type || 'application/octet-stream');
+        res.set('Content-Length', String(file.size));
+        res.set('Content-Disposition', "inline; filename*=UTF-8''" + encodeURIComponent(file.name));
+        await pipeline(source, res);
+    }));
     admin.get('/reviews', (req, res) => {
         const users = adminUserMap(), files = [];
         for (const { diskSpace, store } of spaces.entries()) for (const file of store.adminFiles()) files.push({ ...publicFile(file), userId: file.ownerId, user: users.get(file.ownerId) || { id: file.ownerId, name: '历史用户' }, diskSpace, appId: inferSourceAppId(file, diskSpace) });
@@ -177,12 +195,26 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const store = spaces.get(diskSpace), file = store.get(userId, req.params.id);
         if (!file) throw new Error('FILE_NOT_FOUND');
         if (action === 'block') return res.json(publicFile(store.setReviewStatus(userId, file.id, 'blocked')));
+        if (action === 'unblock') return res.json(publicFile(store.setReviewStatus(userId, file.id, 'active')));
         if (action !== 'delete') throw new Error('REVIEW_ACTION_INVALID');
         if (file.reviewStatus !== 'deleted') {
             const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
             await telegram.remove(backend, file);
         }
         res.json(publicFile(store.tombstone(userId, file.id)));
+    }));
+    admin.patch('/directories/review', wrap(async (req, res) => {
+        const userId = String(req.body?.user_id || ''), diskSpace = String(req.body?.disk_space || '');
+        const folderPath = normalizeTelegramDrivePath(req.body?.path || ''), action = String(req.body?.action || '');
+        const store = spaces.get(diskSpace), tree = store.getDirectoryTree(userId, folderPath);
+        if (!folderPath || !tree) throw new Error('DIRECTORY_NOT_FOUND');
+        if (action === 'block' || action === 'unblock') return res.json(store.setDirectoryReviewStatus(userId, folderPath, action === 'block' ? 'blocked' : 'active'));
+        if (action !== 'delete') throw new Error('REVIEW_ACTION_INVALID');
+        for (const file of tree.files) {
+            if (file.reviewStatus === 'deleted') continue;
+            await telegram.remove(adminFileBackend(file), file);
+        }
+        res.json(store.tombstoneDirectory(userId, folderPath));
     }));
     admin.use(failure);
 
@@ -261,6 +293,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const result = store(req).list(owner(req), req.query.path || '');
             res.json({ ...result, files: result.files.map(publicFile) });
         }));
+        router.get('/search', wrap((req, res) => {
+            const result = store(req).search(owner(req), req.query.q || '', 500);
+            res.json({ query: String(req.query.q || ''), folders: result.folders, files: result.files.map(publicFile), summary: { folderCount: result.folders.length, fileCount: result.files.length } });
+        }));
         router.get('/directories', (req, res) => res.json({ directories: store(req).listDirectories(owner(req)) }));
         router.get('/directories/properties', wrap((req, res) => {
             const folder = store(req).getDirectory(owner(req), req.query.path || '');
@@ -335,7 +371,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 if (!name) throw new Error('SOURCE_PATH_INVALID');
                 return { ...file, name, folderPath: normalizeTelegramDrivePath(parts.join('/')) };
             });
-            const limit = storage.baseUrl === 'https://api.telegram.org' ? 50 * 1024 * 1024 : 2 * 1024 * 1024 * 1024;
+            const limit = LOGICAL_FILE_UPLOAD_LIMIT;
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             job.storage = storage;
             const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0) * 2);
@@ -409,7 +445,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const file = requireEntity(getFile(req));
             jobResponse(req, res, 'check', '正在检测文件', async update => {
                 update({ phase: 'telegram-check', message: '正在向 Telegram 检查文件有效性' });
-                try { await telegram.call(fileBackend(req, file), 'getFile', { file_id: file.fileId }); store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() }); return { valid: true }; }
+                try {
+                    if (typeof telegram.check === 'function') await telegram.check(fileBackend(req, file), file);
+                    else await telegram.call(fileBackend(req, file), 'getFile', { file_id: file.fileId });
+                    store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() }); return { valid: true };
+                }
                 catch (_) { return { valid: false }; }
             });
         }));
@@ -421,6 +461,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             try {
                 const source = await readRemote(fileBackend(req, file), file);
                 res.set('Content-Type', file.type || 'application/octet-stream');
+                res.set('Content-Length', String(file.size));
                 res.set('Content-Disposition', "attachment; filename*=UTF-8''" + encodeURIComponent(file.name));
                 res.set('X-Disk-Operation-Id', id);
                 let bytes = 0;
@@ -434,14 +475,15 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             if (Number(req.get('X-Disk-File-Size') || req.get('X-Drop2Tunnel-File-Size')) !== file.size) throw new Error('REPAIR_SIZE_INVALID');
             const operation = operations.create(scope(req), 'repair', '正在接收本机修复副本', file.size);
-            const job = store(req).begin({ owner: req.diskUser, folderPath: '', files: [{ name: crypto.randomUUID(), type: file.type, size: file.size }], maxDepth: maxDepth(), uploadLimit: storage.baseUrl === 'https://api.telegram.org' ? 50 * 1024 * 1024 : 2 * 1024 * 1024 * 1024 });
+            const job = store(req).begin({ owner: req.diskUser, folderPath: '', files: [{ name: crypto.randomUUID(), type: file.type, size: file.size }], maxDepth: maxDepth(), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT });
             try { await store(req).receive(job.id, 0, req); }
             catch (error) { store(req).abort(job.id); operations.fail(operation.operation_id, error); throw error; }
             operations.run(operation.operation_id, update => mutate(req, async () => {
                 try {
                     if (!store(req).get(owner(req), file.id)) throw new Error('FILE_NOT_FOUND');
-                    const [remote] = await telegram.upload(storage, [{ ...job.files[0], name: file.name, folderPath: file.folderPath }], update, [], scope(req));
-                    store(req).update(owner(req), file.id, { ...remote, channelId: storage.channelId, backendId: storage.id || '', repairedAt: Date.now() });
+                    const [remote] = await telegram.upload(storage, [{ ...job.files[0], logicalId: file.id, name: file.name, folderPath: file.folderPath }], update, [], scope(req));
+                    const previous = { fileId: file.fileId, fileUniqueId: file.fileUniqueId, messageId: file.messageId, mediaGroupId: file.mediaGroupId, parts: file.parts || [] };
+                    store(req).update(owner(req), file.id, { ...remote, channelId: storage.channelId, backendId: storage.id || '', repairedAt: Date.now(), fileIdHistory: [...(file.fileIdHistory || []), previous] });
                     return { ok: true };
                 } finally { store(req).abort(job.id); }
             }));

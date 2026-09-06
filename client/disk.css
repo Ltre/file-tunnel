@@ -13,11 +13,17 @@
 #diskTaskBubble.failed small{background:#991b1b}
 @keyframes disk-pulse{to{box-shadow:0 0 0 5px #30c77933}}
 @media(prefers-reduced-motion:reduce){#diskTaskBubble.indeterminate{animation:none}}
+.telegram-drive-search-wrap{display:flex;align-items:center;gap:8px;min-width:min(360px,100%)}
+.telegram-drive-search-wrap .telegram-drive-search{min-width:120px;flex:1}
+.telegram-drive-search-scope{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.82rem;color:#52617e}
+.telegram-drive-search-scope input{margin:0}
 .disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}
 .disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
 .disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
 .disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
-.telegram-drive-item{touch-action:pan-y}
+.telegram-drive-item{touch-action:pan-y;-webkit-user-select:none;user-select:none}
+.telegram-drive-item *{-webkit-user-select:none;user-select:none}
+.telegram-drive-item-name,.telegram-drive-item-meta{-webkit-user-drag:none}
 #telegramDriveItemMenu{max-height:calc(100dvh - 20px);overflow:auto}
 #diskPreview{position:fixed;inset:0;z-index:2147483100;background:#101820;color:#fff;display:flex;flex-direction:column}
 #diskPreview[hidden],#diskTaskBubble[hidden],.disk-tasks[hidden]{display:none!important}
@@ -32,6 +38,7 @@
 #diskPreviewBody iframe{width:100%;height:100%;border:0;background:#fff}
 #diskPreviewBody pre{white-space:pre-wrap;word-break:break-word;align-self:flex-start;width:100%;font:14px/1.6 monospace}
 @media(max-width:600px){.disk-tasks{padding:8px 12px}.disk-passkey-controls input{min-width:0;width:100%;flex-basis:100%}}
+@media(max-width:600px){.telegram-drive-search-wrap{width:100%;min-width:0}.telegram-drive-search-scope{font-size:.76rem}}
 @media(max-width:600px){.telegram-drive-create-menu{box-sizing:border-box;max-width:calc(100vw - 24px)}.telegram-drive-header-actions{gap:3px!important}.telegram-drive-header-actions .telegram-drive-icon-btn{width:34px;height:34px}}
 .disk-tunnel-picker{box-sizing:border-box;width:min(460px,calc(100vw - 24px));border:0;border-radius:16px;padding:22px;color:#233849;box-shadow:0 20px 70px #0005}
 .disk-tunnel-picker::backdrop{background:#10203099}

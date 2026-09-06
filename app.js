@@ -16516,6 +16516,37 @@ function handleTopbarAdminTap(event) {
     }
 }
 
+function initTopbarOverflowScroll() {
+    const scroller = document.querySelector('.tunnel-topbar-scroll');
+    if (!scroller) return;
+    let drag = null;
+    let suppressClickUntil = 0;
+    scroller.addEventListener('pointerdown', event => {
+        if (event.pointerType !== 'mouse' || event.button !== 0) return;
+        drag = { pointerId: event.pointerId, x: event.clientX, scrollLeft: scroller.scrollLeft, moved: false };
+        scroller.setPointerCapture?.(event.pointerId);
+    });
+    scroller.addEventListener('pointermove', event => {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const dx = event.clientX - drag.x;
+        if (!drag.moved && Math.abs(dx) < 4) return;
+        drag.moved = true;
+        scroller.scrollLeft = drag.scrollLeft - dx;
+        event.preventDefault();
+    });
+    const finish = event => {
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        if (drag.moved) suppressClickUntil = Date.now() + 80;
+        drag = null;
+    };
+    scroller.addEventListener('pointerup', finish);
+    scroller.addEventListener('pointercancel', finish);
+    scroller.addEventListener('click', event => {
+        if (Date.now() >= suppressClickUntil) return;
+        event.preventDefault(); event.stopImmediatePropagation();
+    }, true);
+}
+
 function applyTheme(theme) {
     const selected = ['classic', 'graphite', 'atelier', 'social'].includes(theme) ? theme : 'classic';
     document.body.dataset.theme = selected;
@@ -16933,6 +16964,7 @@ function initUI() {
     initTunnelSettings();
     initLanP2pGuide();
     initThemeSwitcher();
+    initTopbarOverflowScroll();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
     window.addEventListener('pagehide', persistMusicPlayerStateNow);
     document.addEventListener('visibilitychange', () => {

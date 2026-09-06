@@ -4,7 +4,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const { Readable } = require('node:stream');
 const { createTelegramDriveStore } = require('../server/telegram-drive');
 const { createDiskShares } = require('../server/disk-shares');
-const { createDiskTelegram, diskCaption } = require('../server/disk-telegram');
+const { createDiskTelegram, diskCaption, MAX_TELEGRAM_PART_SIZE } = require('../server/disk-telegram');
 const { resolvePasskeyBrowserAsset } = require('../server/browser-assets');
 const temp = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-sharing-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
 test('公开分享仅包含选中内容快照，隔离用户/分区，撤销和重启后保持失效', async t => {
@@ -59,4 +59,56 @@ test('Telegram 定位备注失败不丢失已上传结果，长路径符合 capt
     } });
     const result = await telegram.upload(backend, [file], () => {}, [], { userId: 'user-uuid' });
     assert.equal(result[0].fileId, 'saved-file'); assert.equal(result[0].captionWarning, 'TELEGRAM_CAPTION_UPDATE_FAILED');
+});
+
+test('超过 20 MiB 的逻辑文件按分片 album 上传、统一索引、顺序合并读取并批量删除', async t => {
+    const root = temp(t), filename = path.join(root, 'large.bin');
+    const original = Buffer.alloc(MAX_TELEGRAM_PART_SIZE + 37, 0x5a); original.fill(0x2b, MAX_TELEGRAM_PART_SIZE);
+    fs.writeFileSync(filename, original);
+    const backend = { token: 'secret', channelId: '-1001', baseUrl: 'https://api.telegram.org' };
+    const partBuffers = [original.subarray(0, MAX_TELEGRAM_PART_SIZE), original.subarray(MAX_TELEGRAM_PART_SIZE)];
+    let uploadMethods = [], deleted = [];
+    const telegram = createDiskTelegram({ fetchImpl: async (url, options = {}) => {
+        const method = url.split('/').at(-1);
+        if (method === 'sendMediaGroup' || method === 'sendDocument') {
+            uploadMethods.push(method); const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
+            const count = (Buffer.concat(chunks).toString('latin1').match(/filename="/g) || []).length;
+            const messages = Array.from({ length: count }, (_, index) => ({ message_id: 100 + index, media_group_id: 'album-large', document: { file_id: 'part-' + index, file_unique_id: 'unique-' + index } }));
+            return { ok: true, json: async () => ({ ok: true, result: count === 1 ? messages[0] : messages }) };
+        }
+        if (method === 'editMessageCaption') return { ok: true, json: async () => ({ ok: true, result: true }) };
+        if (method === 'getFile') {
+            const index = Number(JSON.parse(options.body).file_id.split('-').at(-1));
+            return { ok: true, json: async () => ({ ok: true, result: { file_path: 'parts/' + index } }) };
+        }
+        if (method === 'deleteMessages') { deleted = JSON.parse(options.body).message_ids; return { ok: true, json: async () => ({ ok: true, result: true }) }; }
+        if (url.includes('/file/bot')) {
+            const index = Number(url.split('/').at(-1)); return new Response(partBuffers[index]);
+        }
+        throw new Error('unexpected telegram request: ' + url);
+    } });
+    const completed = await telegram.upload(backend, [{ logicalId: 'logical-large', path: filename, name: 'large.bin', folderPath: '备份', type: 'application/octet-stream', size: original.length }], () => {}, [], { userId: 'user-1' });
+    assert.equal(completed.length, 1); assert.equal(completed[0].parts.length, 2); assert.equal(completed[0].partCount, 2);
+    assert.deepEqual(uploadMethods, ['sendMediaGroup']); assert.deepEqual(completed[0].parts.map(item => item.partIndex), [1, 2]);
+    const output = []; for await (const chunk of await telegram.read(backend, completed[0])) output.push(chunk);
+    assert.deepEqual(Buffer.concat(output), original);
+    await telegram.check(backend, completed[0]);
+    await telegram.remove(backend, { ...completed[0], channelId: backend.channelId });
+    assert.deepEqual(deleted, [100, 101]);
+});
+
+test('逻辑文件删除对已经丢失的 Telegram 分片幂等，并继续清理其余分片', async () => {
+    const singles = [];
+    const telegram = createDiskTelegram({ fetchImpl: async (url, options = {}) => {
+        const method = url.split('/').at(-1), payload = JSON.parse(options.body);
+        if (method === 'deleteMessages') return { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: message to delete not found' }) };
+        if (method === 'deleteMessage') {
+            singles.push(payload.message_id);
+            if (payload.message_id === 10) return { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: message to delete not found' }) };
+            return { ok: true, json: async () => ({ ok: true, result: true }) };
+        }
+        throw new Error('unexpected telegram request');
+    } });
+    await telegram.remove({ token: 'secret', baseUrl: 'https://api.telegram.org' }, { channelId: '-1001', parts: [{ messageId: 10, partIndex: 1 }, { messageId: 11, partIndex: 2 }] });
+    assert.deepEqual(singles, [10, 11]);
 });

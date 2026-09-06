@@ -3786,11 +3786,14 @@
             opacity: .78;
         }
 
-        .topbar-now-playing {
-            flex: 1 1 auto;
+        .topbar-now-playing-slot {
+            flex: 0 0 84px;
             min-width: 0;
-            max-width: min(42vw, 460px);
-            margin-left: 10px;
+            overflow: hidden;
+        }
+
+        .topbar-now-playing {
+            width: 100%;
             overflow: hidden;
             color: #52617e;
             font-size: .86rem;
@@ -4433,6 +4436,28 @@
             backdrop-filter: blur(10px);
         }
 
+        .tunnel-topbar-scroll {
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scrollbar-width: none;
+            overscroll-behavior-x: contain;
+            touch-action: pan-x;
+            cursor: grab;
+        }
+
+        .tunnel-topbar-scroll:active { cursor: grabbing; }
+
+        .tunnel-topbar-scroll::-webkit-scrollbar { display: none; }
+
+        .tunnel-topbar-group {
+            display: flex;
+            width: max-content;
+            align-items: center;
+            gap: 8px;
+        }
+
         #appShell {
             padding-top: calc(20px + var(--tunnel-topbar-height));
         }
@@ -4450,6 +4475,7 @@
             color: #52617e;
             cursor: pointer;
             box-shadow: 0 4px 12px rgba(33, 44, 72, 0.14);
+            flex: 0 0 38px;
         }
 
         .tunnel-settings-layer {
@@ -5172,11 +5198,16 @@
 
     <header class="tunnel-topbar" id="tunnelTopbar" hidden>
         <button class="tunnel-topbar-action mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源">↻</button>
-        <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
-        <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
-        <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
-        <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
-        <div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div>
+        <div class="tunnel-topbar-scroll" aria-label="功能按钮（可横向滚动）">
+            <div class="tunnel-topbar-group" id="tunnelTopbarButtonGroup">
+                <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
+                <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
+                <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
+                <button class="tunnel-topbar-action" id="topbarDiskBtn" type="button" title="恢复 Telegram 网盘" aria-label="恢复 Telegram 网盘" hidden>▤</button>
+                <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
+            </div>
+        </div>
+        <div class="topbar-now-playing-slot" aria-label="当前播放歌曲"><div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div></div>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
 
@@ -5612,7 +5643,7 @@
                     <div class="telegram-drive-toolbar-main">
                         <nav class="telegram-drive-breadcrumbs" id="telegramDriveBreadcrumbs" aria-label="网盘目录路径"></nav>
                         <div class="telegram-drive-controls">
-                            <input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录">
+                            <div class="telegram-drive-search-wrap"><input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"><label class="telegram-drive-search-scope"><input id="telegramDriveSearchAll" type="checkbox">搜索所有文件</label></div>
                             <select class="telegram-drive-sort" id="telegramDriveSort" aria-label="排序方式"><option value="name">按名称</option><option value="type">按类型</option><option value="size">按大小</option><option value="updatedAt">按最后修改</option></select>
                             <button class="telegram-drive-icon-btn" id="telegramDriveSortDirectionBtn" type="button" title="切换升降序" aria-label="当前升序">↑</button>
                             <button class="telegram-drive-icon-btn" id="telegramDriveViewBtn" type="button" title="切换列表或网格" aria-label="切换为网格视图">▦</button>
