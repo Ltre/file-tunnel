@@ -157,7 +157,7 @@ test('网盘提供最小化、目标隧道选择与上次目标记忆，管理�
     assert.match(ui, /minimizeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = false/);
     assert.match(ui, /closeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = true/);
     assert.match(ui, /history\.pushState[\s\S]*?telegramDriveHistorySession/); assert.match(ui, /addEventListener\('popstate'/);
-    assert.match(ui, /\/api\/telegram\/drive\/search\?q=/); assert.match(ui, /telegramDriveRenderGeneration/);
+    assert.match(ui, /DiskClient\.raw\('\/search\?q=/); assert.match(ui, /telegramDriveRenderGeneration/);
     assert.match(css, /-webkit-user-select:none;user-select:none/);
     assert.match(adapter, /选择转发目标隧道/); assert.match(adapter, /【当前隧道】/); assert.match(adapter, /host\.navigate\(target\.id\)/);
     assert.match(adapter, /telegram-drive-pending-forward/); assert.match(admin, /网盘先发后审流水/); assert.match(admin, /用户与网盘分区/);

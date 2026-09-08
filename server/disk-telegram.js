@@ -6,7 +6,8 @@ const { Readable } = require('stream');
 const { buildTelegramDocumentsMultipart } = require('./telegram-multipart');
 const { readJson, writeJson } = require('./disk-data');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('./disk-limits');
-const DELETE_WINDOW_MS = 48 * 60 * 60 * 1000;
+const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
+const DELETE_WINDOW_MS = (47 * 60 + 57) * 60 * 1000;
 const messageMedia = message => message?.document || message?.video || message?.audio || message?.animation || message?.voice || message?.video_note;
 function diskCaption(file, backend, context = {}, remote = {}) {
     const fields = ['网盘文件', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId];
@@ -22,13 +23,28 @@ function diskCaption(file, backend, context = {}, remote = {}) {
 function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now }) {
     const placeholderPath = path.join(dataDir, 'tg-1byte-file.id');
     const placeholdersInFlight = new Map();
-    async function call(backend, method, payload, init, retry = 0) {
+    const log = createDiskUploadLog(dataDir);
+    async function call(backend, method, payload, init, retry = 0, trace = {}) {
         if (!backend?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
-        let response;
+        let response, data;
+        const started = Date.now(), requestId = crypto.randomUUID();
+        const fields = { ...trace, requestId, method, retry, channelId: backend.channelId, messageId: payload?.message_id, requestBytes: Number(init?.headers?.['Content-Length']) || undefined };
+        log('telegram.request', fields);
         try {
             response = await fetchImpl(backend.baseUrl + '/bot' + backend.token + '/' + method, init || { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(45000) });
-        } catch (_) { throw new Error('TELEGRAM_NETWORK_ERROR'); }
-        const data = await response.json().catch(() => null);
+            log('telegram.headers', { ...fields, status: response.status, elapsedMs: Date.now() - started });
+            try { data = await response.json(); }
+            catch (error) { if (error instanceof SyntaxError) { data = null; log('telegram.invalid-json', fields); } else throw error; }
+        } catch (cause) {
+            const error = new Error('TELEGRAM_NETWORK_ERROR');
+            error.details = { ...networkDetails(cause), stage: response ? 'response-body' : 'request', requestId, method, elapsedMs: Date.now() - started };
+            log('telegram.network-error', { ...fields, ...error.details });
+            throw error;
+        }
+        log('telegram.response', { ...fields, status: response.status, ok: Boolean(data?.ok), errorCode: data?.error_code, description: networkDetails({ message: data?.description }).message, elapsedMs: Date.now() - started });
+        if (response.ok && !data) {
+            const error = new Error('TELEGRAM_UPLOAD_RESULT_INVALID'); error.details = { requestId, method, reason: 'invalid-json' }; throw error;
+        }
         if (!response.ok || !data?.ok) {
             const error = new Error('TELEGRAM_' + (data?.error_code || response.status || 'ERROR'));
             // Never pass URLs or bot credentials to an operation or client.
@@ -36,7 +52,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             error.retryAfter = Math.min(60, Math.max(1, Number(data?.parameters?.retry_after) || 1));
             if (!init && error.message === 'TELEGRAM_429' && retry < 3) {
                 await new Promise(resolve => setTimeout(resolve, error.retryAfter * 1000));
-                return call(backend, method, payload, undefined, retry + 1);
+                return call(backend, method, payload, undefined, retry + 1, trace);
             }
             throw error;
         }
@@ -44,17 +60,17 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
     }
     const missingMessage = error => /message (?:to (?:delete|edit) )?not found/i.test(error.telegramDescription || '');
     const notModified = error => /message is not modified/i.test(error.telegramDescription || '');
-    async function deleteMessageIds(backend, channelId, values) {
+    async function deleteMessageIds(backend, channelId, values, trace = {}) {
         const ids = [...new Set(values.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))];
         if (!ids.length) throw new Error('TELEGRAM_MESSAGE_MISSING');
         for (let offset = 0; offset < ids.length; offset += 100) {
             const batch = ids.slice(offset, offset + 100);
-            try { await call(backend, 'deleteMessages', { chat_id: channelId, message_ids: batch }); }
+            try { await call(backend, 'deleteMessages', { chat_id: channelId, message_ids: batch }, undefined, 0, trace); }
             catch (error) {
                 const fallback = /method not found|METHOD_INVALID/i.test(error.telegramDescription || '') || missingMessage(error) || /message (?:can'?t|cannot) be deleted/i.test(error.telegramDescription || '');
                 if (!fallback) throw error;
                 for (const messageId of batch) {
-                    try { await call(backend, 'deleteMessage', { chat_id: channelId, message_id: messageId }); }
+                    try { await call(backend, 'deleteMessage', { chat_id: channelId, message_id: messageId }, undefined, 0, trace); }
                     catch (singleError) {
                         if (missingMessage(singleError)) continue;
                         if (/message (?:can'?t|cannot) be deleted/i.test(singleError.telegramDescription || '')) throw new Error('TELEGRAM_DELETE_NOT_PERMITTED');
@@ -170,10 +186,19 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     const batch = batches[batchIndex].map(part => ({ ...part, caption: diskCaption(files[part.logicalIndex], backend, context, part) }));
                     const label = `第 ${batchIndex + 1}/${batches.length} 批（${batch.length} 个分片）`;
                     update({ phase: 'telegram-upload', percent: total ? done / total * 100 : null, processedBytes: done, totalBytes: total, message: '正在上传到 Telegram：' + label });
-                    const multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: batch, disableContentTypeDetection: true, onProgress: (bytes, _total, name) => update({ phase: 'telegram-upload', message: '正在上传到 Telegram：' + name, processedBytes: done + bytes, totalBytes: total, percent: total ? (done + bytes) / total * 100 : null }) });
+                    const trace = { uploadId: context.uploadId, operationId: context.operationId, batch: batchIndex + 1, parts: batch.map(part => ({ fileId: part.logicalFileId, part: part.partIndex, count: part.partCount, bytes: part.size })) };
+                    let produced = 0, lastProgressAt = Date.now();
+                    const multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: batch, disableContentTypeDetection: true, onProgress: (bytes, _total, name, index, fileBytes) => {
+                        produced = bytes; lastProgressAt = Date.now();
+                        if (fileBytes === batch[index].size) log('telegram.part-body-produced', { ...trace, fileId: batch[index].logicalFileId, part: batch[index].partIndex, fileBytes, producedBytes: produced });
+                        update({ phase: 'telegram-upload', message: '正在上传到 Telegram：' + name, processedBytes: done + bytes, totalBytes: total, percent: total ? (done + bytes) / total * 100 : null });
+                    } });
+                    const heartbeat = setInterval(() => log('telegram.progress', { ...trace, producedBytes: produced, confirmedBytes: done, idleMs: Date.now() - lastProgressAt }), 10000);
+                    heartbeat.unref?.();
                     let sent;
-                    try { sent = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half', signal: AbortSignal.timeout(30 * 60 * 1000) }); }
+                    try { sent = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half', signal: AbortSignal.timeout(30 * 60 * 1000) }, 0, trace); }
                     catch (error) {
+                        log('telegram.batch-failed', { ...trace, producedBytes: produced, confirmedBytes: done, error: error.message, details: error.details });
                         multipart.body.destroy();
                         if (error.message === 'TELEGRAM_429' && (rateRetries.get(batchIndex) || 0) < 3) {
                             rateRetries.set(batchIndex, (rateRetries.get(batchIndex) || 0) + 1);
@@ -188,6 +213,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                         }
                         throw error;
                     }
+                    finally { clearInterval(heartbeat); }
                     const messages = Array.isArray(sent) ? sent : [sent];
                     messages.forEach(message => { if (message?.message_id) unindexedMessages.add(message.message_id); });
                     if (messages.length !== batch.length || messages.some(message => !messageMedia(message)?.file_id || !Number.isSafeInteger(message?.message_id) || message.message_id <= 0)) {
@@ -197,12 +223,13 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     }
                     const accepted = messages.map((message, index) => ({ fileId: messageMedia(message).file_id, fileUniqueId: messageMedia(message).file_unique_id, messageId: message.message_id, messageDate: message.date ? message.date * 1000 : now(), mediaType: ['document', 'video', 'audio', 'animation', 'voice', 'video_note'].find(type => message[type]), mediaGroupId: message.media_group_id || '', logicalFileId: batch[index].logicalFileId, partIndex: batch[index].partIndex, partCount: batch[index].partCount, originalSize: batch[index].originalSize, size: batch[index].size, offset: batch[index].offset }));
                     accepted.forEach((remote, index) => remotes[batch[index].logicalIndex].push(remote));
+                    accepted.forEach(remote => log('telegram.part-confirmed', { ...trace, fileId: remote.logicalFileId, part: remote.partIndex, messageId: remote.messageId, albumId: remote.mediaGroupId, bytes: remote.size }));
                     accepted.forEach(remote => unindexedMessages.delete(remote.messageId));
                     const batchBytes = batch.reduce((sum, file) => sum + file.size, 0);
                     for (let index = 0; index < batch.length; index++) {
                         const remote = accepted[index];
                         update({ phase: 'telegram-caption', percent: null, processedBytes: done + batchBytes, totalBytes: total, message: `正在补充文件定位备注：${files[batch[index].logicalIndex].name}（${remote.partIndex}/${remote.partCount}）` });
-                        try { await call(backend, 'editMessageCaption', { chat_id: backend.channelId, message_id: remote.messageId, caption: diskCaption(files[batch[index].logicalIndex], backend, context, remote) }); }
+                        try { await call(backend, 'editMessageCaption', { chat_id: backend.channelId, message_id: remote.messageId, caption: diskCaption(files[batch[index].logicalIndex], backend, context, remote) }, undefined, 0, { ...trace, fileId: remote.logicalFileId }); }
                         catch (_) { remote.captionWarning = 'TELEGRAM_CAPTION_UPDATE_FAILED'; }
                     }
                     done += batchBytes;
@@ -215,7 +242,12 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                 }
             } catch (error) {
                 const incomplete = [...unindexedMessages, ...remotes.slice(completed.length).flatMap(parts => parts.map(part => part.messageId))];
-                if (incomplete.length) await deleteMessageIds(backend, backend.channelId, incomplete).catch(() => {});
+                const trace = { uploadId: context.uploadId, operationId: context.operationId, messageIds: incomplete };
+                if (incomplete.length) {
+                    log('telegram.cleanup-start', trace);
+                    try { await deleteMessageIds(backend, backend.channelId, incomplete, trace); log('telegram.cleanup-complete', trace); }
+                    catch (cleanupError) { log('telegram.cleanup-failed', { ...trace, error: cleanupError.message, details: cleanupError.details }); }
+                }
                 throw error;
             }
             return completed;

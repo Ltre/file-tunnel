@@ -33,7 +33,7 @@ const SCRIPT_SOURCES = [
   'client/qrcode-1.0.0.min.js'
 ];
 const PAGE_ROUTES = {
-  'index.html': ['/', '/index.html'],
+  'index.html': ['/', '/index.html', '/disk'],
   'admin.html': ['/admin'],
   'disk-management.html': ['/disk-management'],
   'admin-auth.html': ['/admin-auth', '/admin-auth.html', '/admin.html'],

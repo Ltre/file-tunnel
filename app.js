@@ -9554,7 +9554,7 @@ function buildMusicPlayerPayload() {
         currentTrackId: getCurrentMusicTrack()?.id || musicPlayer.currentTrackId || '',
         currentTime: Number(audio?.currentTime || 0),
         paused: !isBackgroundMusicPlaying(),
-        miniEnabled: Boolean(musicPlayer.miniEnabled || musicPlayer.queue.length),
+        miniEnabled: Boolean(musicPlayer.miniEnabled),
         updatedAt: Date.now()
     };
 }
@@ -9695,7 +9695,7 @@ function chooseSavedMusicPlayerState(localSaved, durableSaved) {
         ...queueState,
         currentTime: newerState.currentTrackId === currentTrackId ? newerState.currentTime : queueState.currentTime,
         paused: newerState.paused,
-        miniEnabled: newerState.miniEnabled || queueState.miniEnabled,
+        miniEnabled: Boolean(newerState.miniEnabled),
         updatedAt: Math.max(Number(local.updatedAt || 0), Number(durable.updatedAt || 0)),
         currentTrackId,
         currentIndex: currentIndex >= 0 ? currentIndex : Math.min(Math.max(Number(queueState.currentIndex) || 0, 0), queueState.queue.length - 1)
@@ -10127,12 +10127,13 @@ function updateTopbarMusicState() {
     const track = getCurrentMusicTrack();
     const hasQueue = musicPlayer.queue.length > 0;
     const playing = isBackgroundMusicPlaying();
+    const visible = hasQueue && musicPlayer.miniEnabled;
     if (button) {
-        button.hidden = !hasQueue;
-        button.classList.toggle('is-playing', hasQueue && playing);
+        button.hidden = !visible;
+        button.classList.toggle('is-playing', visible && playing);
     }
     if (marquee) {
-        marquee.hidden = !(hasQueue && playing && track?.name);
+        marquee.hidden = !(visible && playing && track?.name);
         if (marqueeText) marqueeText.textContent = track?.name || '';
     }
 }
@@ -10857,7 +10858,6 @@ async function activateMusicTrack(track, options = {}) {
     }
     renderMusicPlayer();
     if (options.play !== false) await audio.play().catch(err => historyLog('music-player-play-failed', { fileId: track.id, error: err.message }));
-    musicPlayer.miniEnabled = true;
     updateTopbarMusicState();
     scheduleMusicPlayerPersist();
     scheduleMusicQueueTailFill();
@@ -10943,6 +10943,7 @@ function minimizeMusicPlayer(options = {}) {
     musicPlayer.miniEnabled = true;
     if (!options.keepHistory) musicPlayer.historyOpen = false;
     updateTopbarMusicState();
+    scheduleMusicPlayerPersist();
 }
 
 function closeMusicPlayer(options = {}) {

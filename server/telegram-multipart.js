@@ -26,6 +26,7 @@ function getDocumentContentType(fileName = '', fallback = '') {
 function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onProgress, disableContentTypeDetection = false }) {
     if (!chatId || !files.length) throw new Error('telegram-drive-multipart-invalid');
     const normalized = files.map((file, index) => ({
+        index,
         fieldName: files.length === 1 ? 'document' : `file${index}`,
         fileName: file.name || `file-${index + 1}`,
         path: file.path,
@@ -45,7 +46,7 @@ function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onP
     for (const [name, value] of Object.entries(fields)) addBuffer(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(name)}"\r\n\r\n${String(value || '')}\r\n`);
     normalized.forEach(file => { const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.fieldName}"; filename="${sanitizeMultipartHeaderValue(file.fileName)}"\r\nContent-Type: ${file.type}\r\n\r\n`); parts.push({ header, file }); contentLength += header.length + file.size + 2; });
     const closing = Buffer.from(`--${boundary}--\r\n`); contentLength += closing.length;
-    async function* generate() { let sent = 0; const total = normalized.reduce((sum, file) => sum + file.size, 0); for (const part of parts) { if (part.buffer) { yield part.buffer; continue; } yield part.header; if (part.file.size) { for await (const chunk of fs.createReadStream(part.file.path, { start: part.file.start, end: part.file.end })) { sent += chunk.length; onProgress?.(sent, total, part.file.fileName); yield chunk; } } yield Buffer.from('\r\n'); } yield closing; }
+    async function* generate() { let sent = 0; const total = normalized.reduce((sum, file) => sum + file.size, 0); for (const part of parts) { if (part.buffer) { yield part.buffer; continue; } yield part.header; let fileBytes = 0; if (part.file.size) { for await (const chunk of fs.createReadStream(part.file.path, { start: part.file.start, end: part.file.end })) { sent += chunk.length; fileBytes += chunk.length; onProgress?.(sent, total, part.file.fileName, part.file.index, fileBytes); yield chunk; } } yield Buffer.from('\r\n'); } yield closing; }
     return { method: files.length === 1 ? 'sendDocument' : 'sendMediaGroup', body: Readable.from(generate()), contentLength, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 

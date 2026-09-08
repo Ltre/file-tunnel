@@ -95,8 +95,8 @@ test('413 将被拒绝的 Album 拆小重试；无效结果清理消息并记录
     assert.deepEqual(deleted, [3]);
 });
 
-test('48 小时内直接删除；过期分片逐条替换 1 Byte 占位并跨重启复用各 Bot 的 file_id', async t => {
-    const dataDir = temp(t), now = 2_000_000_000_000, windowMs = 48 * 3600000;
+test('47 小时 57 分钟边界前直接删除；边界起逐条替换 1 Byte 占位并跨重启复用各 Bot 的 file_id', async t => {
+    const dataDir = temp(t), now = 2_000_000_000_000, windowMs = (47 * 60 + 57) * 60000;
     const calls = []; let seeds = 0;
     const fetchImpl = async (url, init) => {
         const method = url.split('/').at(-1);

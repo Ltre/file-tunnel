@@ -3,7 +3,7 @@
     const token = location.pathname.split('/').pop();
     const base = '/api/telegram/disk-shares/' + encodeURIComponent(token);
     const $ = id => document.getElementById(id);
-    let abort, url = '', generation = 0;
+    let abort, url = '', generation = 0, listedPath = '';
     const errorText = error => /NOT_FOUND/.test(error.message) ? '分享不存在、已停止，或所选文件已删除。' : '操作失败：' + error.message;
     async function request(path, signal) {
         const response = await fetch(base + path, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal });
@@ -14,12 +14,24 @@
         $('sharePreview').hidden = true; $('sharePreviewBody').replaceChildren();
         if (url) URL.revokeObjectURL(url); url = '';
     }
-    async function work(message, action) {
+    async function work(message, action, blocking = true) {
         abort?.abort(); const controller = new AbortController(); abort = controller; const current = ++generation;
-        $('shareLoadingText').textContent = message; $('shareLoadingProgress').removeAttribute('value'); $('shareLoading').hidden = false;
+        $('shareLoadingText').textContent = message; $('shareLoadingProgress').removeAttribute('value'); $('shareLoading').hidden = !blocking;
+        if (!blocking) $('shareStatus').textContent = '正在读取分享目录…';
+        const started = performance.now();
+        const timer = blocking ? null : setTimeout(() => controller.abort(new DOMException('读取分享目录超时，请重试', 'TimeoutError')), 15000);
         try { await action(controller.signal); }
-        catch (error) { if (current === generation && error.name !== 'AbortError') $('shareStatus').textContent = errorText(error); }
-        finally { if (current === generation) $('shareLoading').hidden = true; }
+        catch (error) {
+            if (current === generation && (error.name !== 'AbortError' || controller.signal.reason?.name === 'TimeoutError')) {
+                $('shareStatus').textContent = errorText(controller.signal.reason?.name === 'TimeoutError' ? controller.signal.reason : error);
+                if (!blocking) { const retry = document.createElement('button'); retry.textContent = '重试'; retry.onclick = () => list(listedPath); $('shareStatus').append(' ', retry); }
+            }
+        }
+        finally {
+            clearTimeout(timer);
+            if (!blocking) console.info('[disk-share] list', { elapsedMs: Math.round(performance.now() - started), aborted: controller.signal.aborted });
+            if (current === generation) $('shareLoading').hidden = true;
+        }
     }
     async function readFile(file, signal) {
         const cacheKey = 'share:' + token + ':' + file.id;
@@ -90,10 +102,12 @@
         });
     }
     async function list(path = '') {
+        listedPath = path;
         closePreview(); $('shareStatus').textContent = ''; $('shareItems').replaceChildren();
         return work('正在加载分享内容…', async signal => {
             const data = await (await request('?path=' + encodeURIComponent(path), signal)).json();
             if (signal.aborted) return;
+            $('shareStatus').textContent = '';
             $('shareTitle').textContent = data.title; $('shareBreadcrumbs').replaceChildren();
             const parts = path.split('/').filter(Boolean);
             for (let index = 0; index <= parts.length; index++) {
@@ -112,11 +126,12 @@
                 $('shareItems').append(row);
             }
             if (!data.files.length && !data.folders.length) $('shareStatus').textContent = '此目录没有文件。';
-        });
+        }, false);
     }
     $('sharePreviewClose').onclick = closePreview;
     $('shareCancel').onclick = () => { abort?.abort(); $('shareLoading').hidden = true; };
     document.addEventListener('keydown', event => { if (event.key === 'Escape') { abort?.abort(); closePreview(); } });
     window.addEventListener('pagehide', () => { abort?.abort(); closePreview(); });
+    window.TelegramDriveCache?.pruneExpiredShares().catch(() => {});
     list();
 })();

@@ -5,6 +5,10 @@
     const listeners = new Set();
     const localUploads = new Map();
     const uploadSession = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    let deviceId = uploadSession;
+    try { deviceId = localStorage.getItem('disk-device-id') || uploadSession; localStorage.setItem('disk-device-id', deviceId); } catch (_) {}
+    const pendingReads = new Map();
+    const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
     const waiting = new Map();
@@ -23,7 +27,7 @@
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const response = await fetch(url.startsWith('/api/') ? url : base + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options });
+        const response = await fetch(url.startsWith('/api/') ? url : base + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || 'DISK_REQUEST_FAILED');
         return data;
@@ -145,14 +149,16 @@
             throw error;
         } finally { refresh(); }
     }
-    function read(item, options = {}) {
-        return withActivity('正在打开文件：' + item.name, update => readFile(item, options, update));
+    async function read(item, options = {}) {
+        pendingReads.set(item.id, (pendingReads.get(item.id) || 0) + 1); cacheChanged();
+        try { return await withActivity('正在打开文件：' + item.name, update => readFile(item, options, update)); }
+        finally { const count = pendingReads.get(item.id) - 1; if (count) pendingReads.set(item.id, count); else pendingReads.delete(item.id); cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
-        const response = await fetch(base + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', signal });
+        const response = await fetch(base + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
         const blob = await response.blob();
@@ -160,6 +166,7 @@
         refresh(); return blob;
     }
     window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity,
+        isCaching(id) { return pendingReads.has(id); },
         subscribeActivity(listener) { activityListeners.add(listener); listener([...activities]); return () => activityListeners.delete(listener); },
         subscribe(listener) { listeners.add(listener); listener(visibleJobs()); return () => listeners.delete(listener); } };
 })();

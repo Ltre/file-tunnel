@@ -9,6 +9,7 @@ const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./tele
 const { readJson, writeJson } = require('./disk-data');
 const { createDiskShares } = require('./disk-shares');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
+const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -56,6 +57,7 @@ function errorStatus(code) {
     return 422;
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {} }) {
+    const log = createDiskUploadLog(dataDir);
     const browser = express.Router();
     const external = express.Router();
     const admin = express.Router();
@@ -129,8 +131,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     shared.use(rateLimit({ windowMs: 60000, max: 120, standardHeaders: true, legacyHeaders: false }));
     shared.use((req, res, next) => { res.set({ 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex, nofollow' }); next(); });
     shared.get('/:token', wrap((req, res) => {
+        const started = performance.now();
         const share = shares.resolve(req.params.token);
-        res.json(shares.contents(share, spaces.get(share.diskSpace), req.query.path || ''));
+        const data = shares.contents(share, spaces.get(share.diskSpace), req.query.path || '');
+        const elapsedMs = Math.round(performance.now() - started);
+        res.set('Server-Timing', `share-metadata;dur=${elapsedMs}`);
+        log('share.metadata', { elapsedMs, files: data.files.length, folders: data.folders.length });
+        res.json(data);
     }));
     shared.get('/:token/files/:id/download', wrap(async (req, res) => {
         const share = shares.resolve(req.params.token);
@@ -298,7 +305,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         next();
     }));
     function contents(router) {
-        const scope = req => req.diskScope;
+        const scope = req => ({ ...req.diskScope, deviceId: /^[a-zA-Z0-9_-]{8,120}$/.test(req.get('X-Disk-Device-Id') || '') ? req.get('X-Disk-Device-Id') : '' });
         const owner = req => req.diskUser.id;
         const store = req => req.diskStore;
         const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
@@ -412,6 +419,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
             job.operationId = operation.operation_id;
             operations.update(job.operationId, { uploadId: job.id }, true);
+            for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
             res.status(201).json({ uploadId: job.id, operation_id: operation.operation_id, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE });
         }));
         router.put('/uploads/:uploadId/files/:index', wrap(async (req, res) => {
@@ -420,15 +428,22 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
             const file = job.files[Number(req.params.index)];
             if (!file) throw new Error('FILE_NOT_FOUND');
+            const trace = { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, range: req.get('Content-Range'), contentLength: req.get('Content-Length') };
+            const started = Date.now(); let receivedBytes = 0, lastProgressAt = started;
+            log('browser.receive-start', trace);
+            const heartbeat = setInterval(() => log('browser.receive-progress', { ...trace, receivedBytes, elapsedMs: Date.now() - started, idleMs: Date.now() - lastProgressAt }), 10000);
+            heartbeat.unref?.();
             operations.update(job.operationId, { status: 'running', phase: 'client-upload', percent: null, message: '正在接收客户端文件：' + file.name });
             try {
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
                 const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
-                const progress = bytes => operations.update(job.operationId, { phase: 'client-upload', message: '阶段 1/2 · 浏览器 → 服务器：' + file.name, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
+                const progress = bytes => { receivedBytes = bytes; lastProgressAt = Date.now(); operations.update(job.operationId, { phase: 'client-upload', message: '阶段 1/2 · 浏览器 → 服务器：' + file.name, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null }); };
                 res.json(req.get('Content-Range')
                     ? await store(req).receivePart(job.id, req.params.index, req, req.get('Content-Range'), progress)
                     : await store(req).receive(job.id, req.params.index, req, progress));
-            } catch (error) { store(req).abort(job.id); operations.fail(job.operationId, error); throw error; }
+                log('browser.receive-complete', { ...trace, receivedBytes, elapsedMs: Date.now() - started });
+            } catch (error) { log('browser.receive-failed', { ...trace, receivedBytes, elapsedMs: Date.now() - started, error: networkDetails(error) }); store(req).abort(job.id); operations.fail(job.operationId, error); throw error; }
+            finally { clearInterval(heartbeat); }
         }));
         router.post('/uploads/:uploadId/phase', wrap((req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
@@ -442,6 +457,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const job = store(req).upload(req.params.uploadId);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
             store(req).abort(job.id);
+            log('upload.cancelled', { uploadId: job.id, operationId: job.operationId });
             operations.update(job.operationId, { status: 'cancelled', phase: 'cancelled', message: '客户端已取消暂存上传' }, true);
             res.json({ ok: true });
         }));
@@ -454,22 +470,26 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const job = store(req).finish(req.params.uploadId);
             if (!job.finishing) {
                 job.finishing = true;
+                log('upload.handoff', { uploadId: job.id, operationId: job.operationId, files: job.files.length, bytes: job.files.reduce((sum, file) => sum + file.size, 0) });
                 operations.run(job.operationId, update => mutate(req, async () => {
                     const sent = [];
                     try {
                         store(req).validateUpload(job.id);
-                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message }), sent, scope(req));
+                        await telegram.upload(job.storage, job.files, patch => update({ ...patch, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message }), sent, { ...scope(req), uploadId: job.id, operationId: job.operationId });
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收，正在写入文件索引' });
                         const items = store(req).commit(job.id, job.storage.channelId, sent);
+                        for (const item of items) log('upload.file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
                         if (!job.backendId) onDefaultUpload(job.storage.channelId);
                         const warnings = sent.filter(file => file.captionWarning).map(file => file.captionWarning);
                         if (warnings.length) update({ warnings });
                         return { ok: true, items: items.map(publicFile), warnings };
                     } catch (error) {
+                        log('upload.failed', { uploadId: job.id, operationId: job.operationId, confirmedFiles: sent.length, error: error.message, details: error.details });
                         // Keep confirmed remote objects discoverable, even if a later album failed.
                         if (sent.length) {
                             job.files = job.files.slice(0, sent.length);
                             const items = store(req).commit(job.id, job.storage.channelId, sent);
+                            for (const item of items) log('upload.partial-file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
                             operations.update(job.operationId, { result: { partialItems: items.map(publicFile) } });
                         } else store(req).abort(job.id);
                         throw error;

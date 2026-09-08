@@ -238,7 +238,7 @@ Content-Type: application/octet-stream
 
 caption 受 Telegram 1024 字符限制，超长路径会截短，完整路径仍保存于逻辑索引。上传补备注失败不会丢失已保存文件，warnings 包含 TELEGRAM_CAPTION_UPDATE_FAILED。移动或重命名先持久化索引和 captionSyncPending，然后逐片更新备注；失败返回 TELEGRAM_CAPTION_SYNC_PENDING，服务器每分钟重试，重启后保留待同步标记。
 
-删除逐片执行：发送不足 48 小时使用 deleteMessage；达到 48 小时使用 editMessageMedia 替换为 1 Byte document，caption 改为“文件名 已删除”。旧索引消息年龄不准导致 Telegram 拒绝删除时也尝试替换。占位文件首次使用时上传，file_id 按 Bot/API 地址隔离保存在数据目录的 tg-1byte-file.id（JSON 映射），以后及重启后复用。已不存在的消息和已替换内容按幂等成功处理；某片失败仍尝试其余片，并保留逻辑索引供重试。媒体替换仍受 Telegram 的消息类型和编辑权限限制；修改频道消息不等同于擦除 Telegram 已保存的历史文件引用。
+删除逐片执行：发送不足 **47 小时 57 分钟**使用 deleteMessage；达到该边界使用 editMessageMedia 替换为 1 Byte document，caption 改为“文件名 已删除”。此阈值在官方 48 小时限制前预留 3 分钟，逐片以调用时的时间判断；旧索引消息年龄不准导致 Telegram 拒绝删除时也尝试替换。占位文件首次使用时上传，file_id 按 Bot/API 地址隔离保存在数据目录的 tg-1byte-file.id（JSON 映射），以后及重启后复用。已不存在的消息和已替换内容按幂等成功处理；某片失败仍尝试其余片，并保留逻辑索引供重试。媒体替换仍受 Telegram 的消息类型和编辑权限限制；修改频道消息不等同于擦除 Telegram 已保存的历史文件引用。
 
 新上传文档设置 disable_content_type_detection=true，同时兼容旧服务返回 video/audio/animation 等媒体字段，避免有效文件被误判为 TELEGRAM_UPLOAD_RESULT_INVALID。真正无效的响应仅记录安全的返回数量和媒体字段类型到 errorDetails，不记录 Bot token、URL 或原始 Telegram 消息。
 
@@ -297,3 +297,13 @@ DELETE /uploads/{uploadId} 可取消未开始远端提交的暂存；远端提�
 官方 getFile 标注单个 Telegram 文件下载上限为 20 MB，因此网盘采用保守的 20,000,000 字节分片。sendDocument 上传上限为 50 MB，Album 支持 2–10 项，deleteMessage 仅允许发送不足 48 小时的消息。参见 [Telegram Bot API](https://core.telegram.org/bots/api#getfile)、[删除规则](https://core.telegram.org/bots/api#deletemessage)、[媒体替换](https://core.telegram.org/bots/api#editmessagemedia)。40,000,000 字节批次是本系统的保守请求大小策略，不宣称是官方 Album 总量上限。浏览器缓存仍可减少重复读取，并继续作为防失联修复来源。
 
 参考：[Telegram Bot API](https://core.telegram.org/bots/api)、[SimpleWebAuthn Server](https://simplewebauthn.dev/docs/packages/server)、[Passkey](https://simplewebauthn.dev/docs/advanced/passkeys)。
+
+## 2026-09-06 补充：设备任务、直达入口与上传诊断
+
+- `/disk` 直接打开网盘，`/?disk=1` 也可使用；页面直达不改变原有登录和 API 鉴权。发布构建同步包含 `/disk` 页面映射。
+- 浏览器在请求和下载中携带 `X-Disk-Device-Id`（本机 localStorage 随机标识，8–120 位字母数字、下划线或连字符）。`read` 任务只有相同用户、分区和设备可以查询；无设备标识的历史读取任务不再全局展示。上传等逻辑文件操作仍按原有用户和分区范围共享。设备标识不是身份凭据。
+- 公共分享页初始请求只返回目录元信息，不自动缓存文件。列表加载采用页内提示，15 秒超时后可重试；响应 `Server-Timing: share-metadata;dur=...` 表示服务端目录解析耗时。文件内容在用户点击预览或下载时读取。
+- 公共分享的浏览器缓存自写入起 7 天到期；访问过期项时删除并重新读取，打开分享页时顺带清理过期分享缓存。普通网盘文件缓存不受该期限影响。
+- 服务端上传日志同时写 console 和 `.tunnel-data/disk-upload.log`，单文件达到约 10 MiB 时轮换为 `.1`。按 `uploadId`、`operationId`、逻辑 `fileId` 检索；批次附带每个分片的文件 ID、序号、总数和大小。不记录 Bot Token、Cookie、完整 Bot URL、文件正文或分享令牌。
+- `browser.receive-*` 记录 Content-Range、Content-Length、收到字节、耗时及 10 秒心跳；`upload.handoff` 表示暂存完成进入 Telegram 阶段。`telegram.request/headers/response` 记录方法、请求大小、响应状态、重试次数和耗时；`telegram.progress` 区分请求体生成字节与此前 Telegram 确认字节。`telegram.part-confirmed` 才表示收到合法的分片消息响应。`telegram.network-error` 记录失败阶段、底层 code/causeCode/syscall；`telegram.cleanup-*` 记录失败后半成品清理结果。
+- 请求体进度不是 Telegram 持久化确认。网络失败时不盲目重发非幂等上传；明确 413 时拆小批次、明确 429 时有限重试的既有策略保持不变。

@@ -1,8 +1,24 @@
 (function () {
     const DB = 'Drop2TunnelTelegramDrive';
+    const SHARE_TTL = 7 * 24 * 60 * 60 * 1000;
+    const expired = row => Boolean(row && (row.source === 'public-share' || String(row.id).startsWith('share:')) && (!row.cachedAt || Date.now() - row.cachedAt >= SHARE_TTL));
     function open() { return new Promise((resolve, reject) => { const req = indexedDB.open(DB, 1); req.onupgradeneeded = () => req.result.createObjectStore('files', { keyPath: 'id' }); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); }); }
     async function put(id, file) { const db = await open(); try { return await new Promise((resolve, reject) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put({ id, ...file, cachedAt: Date.now() }); tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error); }); } finally { db.close(); } }
-    async function get(id) { const db = await open(); try { return await new Promise((resolve, reject) => { const req = db.transaction('files').objectStore('files').get(id); req.onsuccess = () => resolve(req.result || null); req.onerror = () => reject(req.error); }); } finally { db.close(); } }
+    async function get(id) {
+        const db = await open(); let row;
+        try { row = await new Promise((resolve, reject) => { const req = db.transaction('files').objectStore('files').get(id); req.onsuccess = () => resolve(req.result || null); req.onerror = () => reject(req.error); }); }
+        finally { db.close(); }
+        if (expired(row)) { await remove(id); return null; }
+        return row;
+    }
+    async function pruneExpiredShares() {
+        const db = await open();
+        try { await new Promise((resolve, reject) => {
+            const tx = db.transaction('files', 'readwrite'), request = tx.objectStore('files').openCursor();
+            request.onsuccess = () => { const cursor = request.result; if (!cursor) return; if (expired(cursor.value)) cursor.delete(); cursor.continue(); };
+            tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error);
+        }); } finally { db.close(); }
+    }
     async function remove(ids) {
         const keys = [...new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean).map(String))];
         if (!keys.length) return;
@@ -25,7 +41,7 @@
             tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(tx.error);
         }); } finally { db.close(); }
     }
-    window.TelegramDriveCache = { get, status, remove, async put(id, file) {
+    window.TelegramDriveCache = { get, status, remove, pruneExpiredShares, async put(id, file) {
         await put(id, file);
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { id } }));
     } };

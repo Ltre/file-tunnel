@@ -20,6 +20,14 @@
 @media(prefers-reduced-motion:reduce){#diskTaskBubble.indeterminate{animation:none}}
 .telegram-drive-search-wrap{display:flex;align-items:center;gap:8px;min-width:min(360px,100%)}
 .telegram-drive-search-wrap .telegram-drive-search{min-width:120px;flex:1}
+.disk-search-input{position:relative;display:flex;flex:1;min-width:0}
+.disk-search-input .telegram-drive-search{width:100%;padding-right:32px}
+.disk-search-spinner{position:absolute;right:10px;top:calc(50% - 7px);width:14px;height:14px;border:2px solid #aaa;border-top-color:transparent;border-radius:50%;animation:disk-cache-spin .8s linear infinite;pointer-events:none}
+.telegram-drive-item-icon{position:relative;overflow:visible}
+.disk-cache-indicator{position:absolute;right:-2px;top:-2px;display:grid;place-items:center;width:15px;height:15px;border-radius:50%;background:#fff;color:#16813b;font:bold 13px/1 sans-serif;box-shadow:0 0 0 1px #16813b}
+.disk-cache-indicator.pending{box-shadow:none;background:transparent;border:2px solid #e99b28;border-top-color:transparent;animation:disk-cache-spin .8s linear infinite}
+.disk-cache-indicator[hidden],.disk-search-spinner[hidden]{display:none}
+@keyframes disk-cache-spin{to{transform:rotate(360deg)}}
 .telegram-drive-search-scope{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.82rem;color:#52617e}
 .telegram-drive-search-scope input{margin:0}
 .disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}

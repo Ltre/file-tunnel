@@ -1093,7 +1093,7 @@ app.get('/record/:sessionId/:messageId', (req, res) => {
 });
 
 // 根路径 - 提供 pages/index.html
-app.get('/', (req, res) => {
+app.get(['/', '/disk'], (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 

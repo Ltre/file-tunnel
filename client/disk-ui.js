@@ -9,6 +9,7 @@ let telegramDriveCurrentData = null;
 let telegramDriveSearchData = null;
 let telegramDriveSearchTimer = 0;
 let telegramDriveSearchGeneration = 0;
+let telegramDriveSearchAbort;
 let telegramDriveRenderGeneration = 0;
 let telegramDriveHistorySession = '';
 let telegramDriveMenuItem = null;
@@ -79,6 +80,8 @@ function clearTelegramDriveSearch() {
     telegramDriveSearchData = null;
     telegramDriveSearchGeneration++;
     clearTimeout(telegramDriveSearchTimer);
+    telegramDriveSearchAbort?.abort();
+    document.getElementById('telegramDriveSearchSpinner')?.setAttribute('hidden', '');
 }
 function telegramDriveFileType(item) {
     if (item.kind === 'directory') return '文件夹';
@@ -198,6 +201,15 @@ async function updateDiskCacheLabels() {
         link.textContent = cached ? '已缓存到浏览器' : '缓存到浏览器';
         link.classList.toggle('cached', cached); link.setAttribute('aria-disabled', String(cached));
     });
+    document.querySelectorAll('#telegramDriveList [data-cache-indicator]').forEach(badge => {
+        const cached = Boolean(status[badge.dataset.cacheIndicator]);
+        const pending = window.DiskClient.isCaching(badge.dataset.cacheIndicator);
+        badge.hidden = !cached && !pending;
+        badge.classList.toggle('pending', pending);
+        badge.textContent = pending ? '' : '✓';
+        badge.title = pending ? '正在缓存到浏览器' : '已缓存到浏览器';
+        badge.setAttribute('aria-label', badge.title);
+    });
 }
 
 function renderTelegramDriveBreadcrumbs(data) {
@@ -268,6 +280,9 @@ function getTelegramDriveDisplayData() {
 
 function scheduleTelegramDriveSearch() {
     clearTimeout(telegramDriveSearchTimer);
+    telegramDriveSearchAbort?.abort();
+    const spinner = document.getElementById('telegramDriveSearchSpinner');
+    if (spinner) spinner.hidden = true;
     const input = document.getElementById('telegramDriveSearch');
     const global = document.getElementById('telegramDriveSearchAll');
     const query = String(input?.value || '').trim();
@@ -282,13 +297,16 @@ function scheduleTelegramDriveSearch() {
         return;
     }
     const generation = ++telegramDriveSearchGeneration;
+    const controller = new AbortController(); telegramDriveSearchAbort = controller;
+    if (spinner) spinner.hidden = false;
     telegramDriveSearchTimer = setTimeout(async () => {
         try {
-            const result = await telegramDriveRequest('/api/telegram/drive/search?q=' + encodeURIComponent(query));
+            const result = await window.DiskClient.raw('/search?q=' + encodeURIComponent(query), { signal: controller.signal });
             if (generation !== telegramDriveSearchGeneration || query !== String(input?.value || '').trim() || !global.checked) return;
             telegramDriveSearchData = result;
             renderTelegramDriveItems();
-        } catch (error) { if (generation === telegramDriveSearchGeneration) showAppToast('搜索失败：' + telegramDriveErrorText(error)); }
+        } catch (error) { if (generation === telegramDriveSearchGeneration && error.name !== 'AbortError') showAppToast('搜索失败：' + telegramDriveErrorText(error)); }
+        finally { if (generation === telegramDriveSearchGeneration && spinner) spinner.hidden = true; }
     }, 180);
 }
 
@@ -571,6 +589,7 @@ function renderTelegramDriveItems() {
         const name = document.createElement('div'); name.className = 'telegram-drive-item-name'; name.textContent = item.name;
         const meta = document.createElement('div'); meta.className = 'telegram-drive-item-meta'; meta.textContent = getTelegramDriveItemMeta(item); info.append(name, meta);
         if (item.kind !== 'directory' && item.reviewStatus !== 'deleted') {
+            const badge = document.createElement('span'); badge.className = 'disk-cache-indicator'; badge.dataset.cacheIndicator = item.id; badge.hidden = true; icon.append(badge);
             const cache = document.createElement('a'); cache.href = '#'; cache.className = 'disk-cache-link'; cache.dataset.cacheId = item.id; cache.textContent = '缓存到浏览器';
             cache.onclick = async event => {
                 event.preventDefault(); event.stopPropagation();
@@ -631,7 +650,7 @@ async function uploadFilesToTelegramDrive(fileList) {
     showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分 Telegram 定位备注未能更新，文件索引已保存' : ''));
     // Only refresh the directory where the upload was initiated. A render
     // generation prevents an older in-flight list request from overwriting it.
-    if (telegramDrivePath === destination) await renderTelegramDrive();
+    if (telegramDrivePath === destination) await refreshTelegramDriveContents();
 }
 
 async function createTelegramDriveFolder(parent = telegramDrivePath) {
@@ -685,10 +704,20 @@ async function renderTelegramDrive() {
     const notices = [];
     if (!status.enabled) notices.push('管理员尚未启用 Telegram Bot');
     if (!status.configured) notices.push('管理员尚未配置网盘存储频道');
-    auth.textContent = `当前账号：${status.identity.name || status.identity.username || status.identity.id}（ID：${status.identity.id}）${notices.length ? `；${notices.join('；')}` : ''}`;
+    const account = document.createElement('a'); account.href = '#';
+    account.textContent = `当前账号：${status.identity.name || status.identity.username || status.identity.id}（ID：${status.identity.id}）`;
+    account.onclick = event => {
+        event.preventDefault();
+        const body = document.createElement('div');
+        const identity = document.createElement('p'); identity.textContent = account.textContent; body.append(identity);
+        if (status.oidcMode !== 'mock') appendPasskeyControls(body, status.identity);
+        else body.append('本地 Mock 账号不使用 Passkey。');
+        openTelegramDriveDialog({ title: '网盘账号设置', body, confirmText: '关闭', cancelText: '' });
+    };
+    auth.replaceChildren(account);
+    if (notices.length) auth.append('；' + notices.join('；'));
     workspace.hidden = false;
     window.DiskClient.start();
-    if (status.oidcMode !== 'mock') appendPasskeyControls(auth, status.identity);
     const data = await telegramDriveRequest(`/api/telegram/drive/list?path=${encodeURIComponent(requestedPath)}`);
     if (generation !== telegramDriveRenderGeneration) return;
     telegramDriveCurrentData = data;
@@ -700,6 +729,17 @@ async function renderTelegramDrive() {
     renderTelegramDriveBreadcrumbs(telegramDriveCurrentData);
     renderTelegramDriveItems();
     updateTelegramDriveSelectionBar();
+}
+
+async function refreshTelegramDriveContents() {
+    if (!telegramDriveCurrentData || document.getElementById('telegramDriveOverlay').hidden) return;
+    const generation = ++telegramDriveRenderGeneration, requestedPath = telegramDrivePath;
+    const data = await window.DiskClient.raw('/list?path=' + encodeURIComponent(requestedPath));
+    if (generation !== telegramDriveRenderGeneration || requestedPath !== telegramDrivePath) return;
+    telegramDriveCurrentData = data;
+    document.getElementById('telegramDriveSummary').textContent = `${data.summary?.folderCount || 0} 个文件夹 · ${data.summary?.fileCount || 0} 个文件`;
+    renderTelegramDriveItems();
+    scheduleTelegramDriveSearch();
 }
 
 async function navigateTelegramDrive(path, { fromHistory = false } = {}) {
@@ -816,6 +856,7 @@ function appendPasskeyControls(target, user) {
                     ? await window.SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: flow.options })
                     : await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: flow.options });
                 await window.DiskClient.raw('/passkeys/verify', window.DiskClient.json('POST', { flow_id: flow.flow_id, response }));
+                if (user) closeTelegramDriveDialog(null);
                 await renderTelegramDrive();
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { button.disabled = false; }
         };
@@ -1052,7 +1093,11 @@ function initDiskEnhancements() {
         }
         catch (error) { alert(telegramDriveErrorText(error)); }
     };
+    const previousStatuses = new Map();
     window.DiskClient.subscribe(jobs => {
+        const changed = jobs.some(job => ['upload', 'repair'].includes(job.type) && ['queued', 'running'].includes(previousStatuses.get(job.operation_id)) && ['done', 'succeeded', 'completed', 'failed'].includes(job.status));
+        for (const job of jobs) previousStatuses.set(job.operation_id, job.status);
+        if (changed) refreshTelegramDriveContents().catch(error => showAppToast('列表刷新失败：' + telegramDriveErrorText(error)));
         latestJobs = jobs;
         const ongoing = jobs.filter(job => ['queued', 'running'].includes(job.status));
         $disk('diskTaskCount').textContent = ongoing.length ? '· ' + ongoing.length + ' 项进行中' : '';
@@ -1145,6 +1190,7 @@ function init(options = {}) {
         if (!event.target.closest?.('#telegramDriveItemMenu,.telegram-drive-item-more')) closeTelegramDriveItemMenu();
     });
     initDiskEnhancements();
+    if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') openTelegramDrive().catch(error => alert(telegramDriveErrorText(error)));
 }
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText, setExporter(fn) { diskExporter = fn; }, get path() { return telegramDrivePath; } };
 })();

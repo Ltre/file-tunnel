@@ -19,11 +19,12 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     for (const job of jobs.values()) if (!terminal(job)) Object.assign(job, { status: 'failed', phase: 'interrupted', errorCode: 'SERVER_RESTARTED', message: '服务已重启，请重新执行此操作', finishedAt: now() });
     if (jobs.size) save();
     const view = job => job ? structuredClone(job) : null;
-    const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '');
+    const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '') && (job.type !== 'read' || (Boolean(job.deviceId) && job.deviceId === scope.deviceId));
     const api = {
         create(scope, type, message, totalBytes = 0) {
             const job = { operation_id: crypto.randomUUID(), userId: scope.userId, diskSpace: scope.diskSpace || '', type, status: 'queued', phase: 'queued', percent: null, processedBytes: 0, totalBytes, message, errorCode: '', errorMessage: '', createdAt: now(), startedAt: 0, finishedAt: 0 };
             job.title = message; job.updatedAt = now();
+            if (type === 'read') job.deviceId = scope.deviceId || '';
             jobs.set(job.operation_id, job); save(); return view(job);
         },
         get(id, scope) { const job = jobs.get(id); return owns(job, scope) ? view(job) : null; },
