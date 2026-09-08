@@ -8,6 +8,10 @@
     let deviceId = uploadSession;
     try { deviceId = localStorage.getItem('disk-device-id') || uploadSession; localStorage.setItem('disk-device-id', deviceId); } catch (_) {}
     const pendingReads = new Map();
+    const uploadControllers = new Map();
+    const readControllers = new Map();
+    const newAbortController = () => typeof AbortController === 'function' ? new AbortController() : { signal: { aborted: false, addEventListener() {} }, abort() { this.signal.aborted = true; } };
+    const abortError = () => { const error = new Error('OPERATION_CANCELLED'); error.name = 'AbortError'; return error; };
     const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
@@ -29,7 +33,7 @@
         const method = String(options.method || 'GET').toUpperCase();
         const response = await fetch(url.startsWith('/api/') ? url : base + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || 'DISK_REQUEST_FAILED');
+        if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
         return data;
     }
     async function refresh(force = false) {
@@ -46,7 +50,7 @@
                 if (!job || active(job)) continue;
                 waiting.delete(id);
                 if (job.status === 'completed') handlers.resolve(job.result);
-                else { const error = new Error(job.errorCode || 'DISK_OPERATION_FAILED'); error.partialItems = job.result?.partialItems; handlers.reject(error); }
+                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; handlers.reject(error); }
             }
             emit();
         }).catch(error => {
@@ -95,47 +99,76 @@
         return withActivity('正在上传 ' + files.length + ' 个文件', async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
             const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', percent: null };
+            const controller = newAbortController();
             const current = generation;
-            localUploads.set(pending.operation_id, pending); emit(); update({ operationId: pending.operation_id });
+            localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
             try {
                 return await uploadFiles(files, folderPath, read, metadata, values => {
                     if (current !== generation) throw new Error('LOGIN_REQUIRED');
-                    if (values.operationId) { localUploads.delete(pending.operation_id); pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); }
+                    if (values.operationId && values.operationId !== pending.operation_id) {
+                        localUploads.delete(pending.operation_id); uploadControllers.delete(pending.operation_id);
+                        pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
+                    }
                     update(values); emit();
-                });
+                }, controller.signal);
             } catch (error) {
                 if (current === generation && !jobs.some(job => job.operation_id === pending.operation_id && !active(job))) {
-                    Object.assign(pending, { status: 'failed', phase: 'failed', message: '上传请求失败', errorCode: error.message });
+                    const cancelled = error.name === 'AbortError' || error.message === 'OPERATION_CANCELLED';
+                    Object.assign(pending, { status: cancelled ? 'cancelled' : 'failed', phase: cancelled ? 'cancelled' : 'failed', message: cancelled ? '用户已取消任务' : '上传请求失败', errorCode: cancelled ? '' : error.message });
                     localUploads.set(pending.operation_id, pending);
                 }
                 throw error;
             } finally {
+                uploadControllers.delete(pending.operation_id);
                 if (pending.status !== 'failed') localUploads.delete(pending.operation_id);
                 emit();
             }
         });
     }
-    async function uploadFiles(files, folderPath, read, metadata, update) {
+    const withSignal = (options, signal) => ({ ...options, signal });
+    const delay = (ms, signal) => new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(abortError());
+        const timer = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()); }, { once: true });
+    });
+    async function uploadFiles(files, folderPath, read, metadata, update, signal) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
-        const job = await raw('/uploads', json('POST', { folderPath, metadata, files: files.map(file => ({ name: file.name, type: file.type, size: file.size })) }));
+        const plannedPartSize = 20_000_000;
+        const plannedFiles = files.map(file => ({
+            name: file.name, type: file.type, size: file.size,
+            parts: Array.from({ length: Math.max(1, Math.ceil(file.size / plannedPartSize)) }, (_, index) => {
+                const byteStart = index * plannedPartSize, size = Math.min(plannedPartSize, file.size - byteStart);
+                return { index: index + 1, byteStart, byteEnd: byteStart + size - 1, size };
+            }),
+            mediaIndex: String(file.type || '').startsWith('video/') ? { mode: 'unavailable', reason: 'container-parser-unavailable' } : undefined
+        }));
+        const job = await raw('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles }), signal));
         update({ operationId: job.operation_id });
         start();
         const blobs = [];
         try {
             for (let index = 0; index < files.length; index++) {
-                await raw('/uploads/' + job.uploadId + '/phase', json('POST', { index }));
+                await raw('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
                 const blob = await read(files[index]);
+                if (signal.aborted) throw abortError();
                 blobs.push(blob);
                 const url = '/uploads/' + job.uploadId + '/files/' + index;
-                const partSize = Number.isSafeInteger(job.partSize) && job.partSize > 0 ? job.partSize : 20_000_000;
-                if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob });
-                for (let offset = 0; offset < blob.size; offset += partSize) {
-                    const end = Math.min(offset + partSize, blob.size);
-                    await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end) });
+                if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal });
+                for (const part of plannedFiles[index].parts) {
+                    const offset = part.byteStart, end = part.byteEnd + 1;
+                    while (true) {
+                        try { await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal }); break; }
+                        catch (error) {
+                            if (error.message !== 'UPLOAD_BACKPRESSURE') throw error;
+                            update({ message: '服务器上传队列已满，等待 Telegram 消费后继续', queueParts: error.queue?.pendingParts, queueBytes: error.queue?.pendingBytes });
+                            await delay(Math.max(250, Number(error.retryAfterMs) || 500), signal);
+                            await refresh(true);
+                        }
+                    }
                 }
             }
-            const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST' }, update);
+            const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
             for (let index = 0; index < result.items.length; index++) {
                 await window.TelegramDriveCache?.put(result.items[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type }).catch(() => {});
@@ -150,9 +183,16 @@
         } finally { refresh(); }
     }
     async function read(item, options = {}) {
-        pendingReads.set(item.id, (pendingReads.get(item.id) || 0) + 1); cacheChanged();
-        try { return await withActivity('正在打开文件：' + item.name, update => readFile(item, options, update)); }
-        finally { const count = pendingReads.get(item.id) - 1; if (count) pendingReads.set(item.id, count); else pendingReads.delete(item.id); cacheChanged(); }
+        const controller = newAbortController();
+        const signal = options.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' ? AbortSignal.any([options.signal, controller.signal]) : (options.signal || controller.signal);
+        let operationId = '';
+        if (!pendingReads.has(item.id)) pendingReads.set(item.id, new Set());
+        pendingReads.get(item.id).add(controller); cacheChanged();
+        try { return await withActivity('正在打开文件：' + item.name, update => readFile(item, { ...options, signal }, values => {
+            if (values.operationId && values.operationId !== operationId) { if (operationId) readControllers.delete(operationId); operationId = values.operationId; readControllers.set(operationId, controller); }
+            update(values);
+        })); }
+        finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) pendingReads.delete(item.id); cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
@@ -165,7 +205,19 @@
         await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type }).catch(() => {});
         refresh(); return blob;
     }
-    window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity,
+    async function cancelOperation(id) {
+        uploadControllers.get(id)?.abort();
+        readControllers.get(id)?.abort();
+        if (!String(id).startsWith('local-upload-')) await raw('/operations/' + encodeURIComponent(id), { method: 'DELETE' });
+        refresh(true); return true;
+    }
+    function cancelRead(id) {
+        const readers = pendingReads.get(id); if (!readers?.size) return false;
+        for (const controller of readers) controller.abort();
+        return true;
+    }
+    const streamUrl = item => base + '/files/' + encodeURIComponent(item.id) + '/stream';
+    window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
         isCaching(id) { return pendingReads.has(id); },
         subscribeActivity(listener) { activityListeners.add(listener); listener([...activities]); return () => activityListeners.delete(listener); },
         subscribe(listener) { listeners.add(listener); listener(visibleJobs()); return () => listeners.delete(listener); } };

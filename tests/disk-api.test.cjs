@@ -162,6 +162,8 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     await request('/uploads/' + job.uploadId + '/files/0', { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-2/3' }, body: 'abc' });
     const received = await request('/operations/' + job.operation_id);
     assert.equal(received.totalBytes, 3); assert.equal(received.processedBytes, 3);
+    for (let index = 0; index < 80 && uploads === 0; index++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(uploads, 1, '客户端尚未调用 finish 时，已到达服务端的分片应开始上传 Telegram');
     const finished = await request('/uploads/' + job.uploadId + '/finish', { method: 'POST' });
     const done = await wait(finished.operation_id); assert.equal(done.status, 'completed');
     assert.equal(done.totalBytes, 3); assert.equal(done.processedBytes, 3);
@@ -206,8 +208,8 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     const partialFinish = await request('/uploads/' + partial.uploadId + '/finish', { method: 'POST' });
     const partialResult = await wait(partialFinish.operation_id);
     assert.equal(partialResult.status, 'failed');
-    assert.equal(partialResult.result.partialItems.length, 1);
-    assert.equal((await request('/list')).files[0].name, 'partial-1.txt');
+    assert.equal(partialResult.result, undefined, '流水线上传失败后应清理所有已发 Telegram 分片，不提交半个逻辑批次');
+    assert.equal((await request('/list')).files.length, 0);
     const mock = await fetch(base + '/browser/passkeys/register/options', { method: 'POST', ...json({ username: 'local' }) });
     assert.equal((await mock.json()).error, 'LOCAL_USE_OIDC_MOCK');
     operations.flush();

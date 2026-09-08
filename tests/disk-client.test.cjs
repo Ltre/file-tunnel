@@ -131,8 +131,9 @@ test('右键操作保留整个选中集合，全选和反选只操作当前视�
     context.chosen.delete('c'); context.select(true); assert.deepEqual([...context.chosen.keys()], ['c']);
     assert.equal(context.items({ id: 'unselected' })[0].id, 'unselected');
     assert.match(ui, /exportDiskItems\(chosen\)/); assert.match(ui, /row\.ondblclick/);
-    assert.doesNotMatch(ui, /clickTimer = setTimeout\([\s\S]*?, 350\)/, '桌面单击不应人为延迟');
-    assert.match(ui, /firstClickSelection = checkbox\.checked[\s\S]*?row\.ondblclick = event => \{[\s\S]*?checkbox\.checked = firstClickSelection/, 'PC 双击应回滚第一次 click 的即时选择再打开');
+    assert.match(ui, /selectionTimer = setTimeout\([\s\S]*?\}, 500\)/, '桌面单击应延迟 500ms 再显示选择栏');
+    assert.match(ui, /row\.ondblclick = event => \{[\s\S]*?clearTimeout\(selectionTimer\)/, 'PC 双击应取消尚未执行的单击选择');
+    assert.match(ui, /\['缓存到浏览器', \(\) => cacheTelegramDriveItems\(chosen\)\]/);
     assert.match(ui, /\['清理缓存', \(\) => clearTelegramDriveCache\(chosen\)\]/);
     assert.match(ui, /TelegramDriveCache\?\.remove\(tree\.files\.map\(file => file\.id\)\)/, '目录删除成功后必须递归清理浏览器缓存');
     assert.match(ui, /TelegramDriveCache\?\.remove\(\[item\.id\]\)/, '文件删除成功后必须清理对应浏览器缓存');

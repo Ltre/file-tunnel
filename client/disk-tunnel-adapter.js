@@ -13,7 +13,9 @@
             if (!files.length) throw new Error('此记录没有文件');
             const folderPath = prompt('保存到网盘目录（留空为根目录，可输入多级路径）', window.DiskUI.path);
             if (folderPath === null) return;
-            await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId: record.id });
+            const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId: record.id });
+            await host.linkBackup?.(record.id, files, result?.items || []);
+            return result;
         }
     };
     async function chooseTarget() {

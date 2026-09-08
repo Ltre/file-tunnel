@@ -8,8 +8,9 @@
 .disk-tasks{border-bottom:1px solid #d4dde7;padding:10px 20px;background:#f0f6fa;color:#233849}
 .disk-tasks summary{cursor:pointer;font-weight:650}
 #diskTaskList{max-height:180px;overflow:auto}
-.disk-task-row{display:flex;flex-direction:column;gap:4px;padding:8px 0;border-bottom:1px solid #dae4ec;overflow-wrap:anywhere}
+.disk-task-row{position:relative;display:flex;flex-direction:column;gap:4px;padding:8px 82px 8px 0;border-bottom:1px solid #dae4ec;overflow-wrap:anywhere}
 .disk-task-row span{font-size:12px}
+.disk-task-cancel{position:absolute;right:0;top:8px;border:1px solid #d4a1a1;border-radius:6px;padding:4px 8px;background:#fff5f5;color:#a32626;cursor:pointer}
 #diskTaskBubble{position:fixed;right:max(22px,env(safe-area-inset-right));bottom:calc(100px + env(safe-area-inset-bottom));z-index:2147483150;box-sizing:border-box;width:62px;height:62px;padding:0;border:2px solid #fff;border-radius:50%;background:conic-gradient(#30c779 var(--progress,0deg),#e3ebf1 0);color:#143b35;box-shadow:0 3px 18px #142b4650;cursor:grab;touch-action:none}
 #diskTaskBubble span{font-size:27px}
 #diskTaskBubble small{position:absolute;right:-3px;top:-3px;padding:2px 5px;min-width:17px;border-radius:12px;color:#fff;background:#236777}
@@ -26,6 +27,9 @@
 .telegram-drive-item-icon{position:relative;overflow:visible}
 .disk-cache-indicator{position:absolute;right:-2px;top:-2px;display:grid;place-items:center;width:15px;height:15px;border-radius:50%;background:#fff;color:#16813b;font:bold 13px/1 sans-serif;box-shadow:0 0 0 1px #16813b}
 .disk-cache-indicator.pending{box-shadow:none;background:transparent;border:2px solid #e99b28;border-top-color:transparent;animation:disk-cache-spin .8s linear infinite}
+.disk-cache-indicator.pending{cursor:pointer;pointer-events:auto}
+.disk-cache-indicator.pending:hover{border-color:#d22;border-top-color:#d22;color:#d22;animation:none;background:#fff}
+.disk-cache-indicator.pending:hover:after{content:'×'}
 .disk-cache-indicator[hidden],.disk-search-spinner[hidden]{display:none}
 @keyframes disk-cache-spin{to{transform:rotate(360deg)}}
 .telegram-drive-search-scope{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.82rem;color:#52617e}
@@ -62,6 +66,10 @@
 #diskLoading{position:fixed;inset:0;z-index:2147483200;display:flex;align-items:center;justify-content:center;padding:20px;background:#10203080;overscroll-behavior:contain;touch-action:none}
 #diskLoading[hidden]{display:none!important}
 .disk-loading-card{box-sizing:border-box;width:min(420px,100%);max-height:calc(100dvh - 40px);overflow:auto;display:flex;flex-direction:column;align-items:center;gap:16px;padding:28px;border:1px solid #d4dde7;border-radius:18px;background:#fff;color:#233849;box-shadow:0 16px 60px #0004;text-align:center;overflow-wrap:anywhere;touch-action:pan-y}
+.disk-loading-nav{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.disk-loading-nav button{width:38px;height:32px;border:1px solid #bccbd7;border-radius:8px;background:#f4f8fb;color:#264457;font-size:24px;line-height:1;cursor:pointer}
+.disk-loading-nav button:disabled{opacity:.3;cursor:default}
+.disk-loading-nav span{font-size:13px;color:#607184}
 .disk-loading-card strong{font-size:18px}
 .disk-loading-card small{color:#617386;font-size:12px}
 #diskLoadingDetail{font-size:14px;line-height:1.6}

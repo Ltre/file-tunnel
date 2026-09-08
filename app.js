@@ -7495,6 +7495,33 @@ async function getTelegramDriveBlob(file) {
 async function saveMessageToTelegramDrive(message) {
     return window.DiskTunnelAdapter.save(message);
 }
+async function associateTelegramDriveBackup(messageId, sourceFiles, uploadedItems) {
+    const uploadedBySource = new Map(sourceFiles.map((file, index) => [file.id, uploadedItems[index]]).filter(([, item]) => item?.id));
+    if (!uploadedBySource.size) return;
+    const backupFields = (fileInfo, item) => ({
+        ...fileInfo,
+        telegramDriveFileId: item.id,
+        telegramFileId: item.telegramFileId || '',
+        telegramFileUniqueId: item.telegramFileUniqueId || '',
+        telegramPartFileIds: item.telegramPartFileIds || [],
+        serverAssetUrl: item.serverAssetUrl || '',
+        isServerAsset: Boolean(item.serverAssetUrl),
+        telegramFileIdUpdatedAt: Date.now()
+    });
+    for (const file of sourceFiles) {
+        const item = uploadedBySource.get(file.id); if (!item) continue;
+        const stored = await getFromStore('files', file.id).catch(() => null);
+        await saveToStore('files', backupFields(stored || file, item));
+    }
+    const message = await getFromStore('messages', messageId).catch(() => null);
+    if (!message) return;
+    const next = { ...message };
+    if (next.type === 'collection') {
+        next.collection = { ...next.collection, files: getCollectionFiles(next).map(file => uploadedBySource.has(file.id) ? backupFields(file, uploadedBySource.get(file.id)) : file) };
+    } else if (next.fileInfo && uploadedBySource.has(next.fileInfo.id)) next.fileInfo = backupFields(next.fileInfo, uploadedBySource.get(next.fileInfo.id));
+    await updateHistoryMessage(next);
+    historyLog('telegram-drive-backup-linked', { messageId, fileIds: [...uploadedBySource.keys()] });
+}
 
 function renderMessageRecordActions(messageEl, message) {
     messageEl.querySelector('.message-record-actions')?.remove();
@@ -17026,6 +17053,7 @@ function initUI() {
     window.DiskUI.init({ formatFileSize, showAppToast, historyLog });
     window.DiskTunnelAdapter.configure({
         filesForRecord: telegramDriveFilesForMessage, readFile: getTelegramDriveBlob,
+        linkBackup: associateTelegramDriveBackup,
         target: () => state.sessionId ? { id: state.sessionId, shortCode: state.shortCode || '', remark: state.sessionRemark || '' } : null,
         tunnels: async () => {
             const known = new Map(readSessionDirectoryCache().map(item => [item.sessionId, item]));

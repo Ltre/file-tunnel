@@ -82,6 +82,21 @@
         throw finalError;
     }
     async function openFile(file, preview) {
+        const streamable = preview && (/^(image|audio|video)\//.test(file.type || '') || file.type === 'application/pdf');
+        if (streamable) {
+            const cacheKey = 'share:' + token + ':' + file.id;
+            const cached = await window.TelegramDriveCache?.get(cacheKey).catch(() => null);
+            closePreview(); $('sharePreviewName').textContent = file.name;
+            let source = base + '/files/' + encodeURIComponent(file.id) + '/download?inline=1';
+            if (cached?.blob instanceof Blob && (!Number(file.size) || cached.blob.size === Number(file.size))) { url = URL.createObjectURL(cached.blob); source = url; }
+            const element = document.createElement(file.type.startsWith('image/') ? 'img' : file.type.startsWith('audio/') ? 'audio' : file.type.startsWith('video/') ? 'video' : 'iframe');
+            if (element.tagName === 'IFRAME') element.setAttribute('sandbox', '');
+            if (element.tagName === 'IMG') element.alt = file.name;
+            if (element.tagName === 'AUDIO' || element.tagName === 'VIDEO') { element.controls = true; element.preload = 'metadata'; }
+            element.title = file.name; element.src = source;
+            $('sharePreviewBody').replaceChildren(element); $('sharePreview').hidden = false;
+            return;
+        }
         return work('正在读取：' + file.name, async signal => {
             const blob = await readFile(file, signal); if (signal.aborted) return;
             if (!preview) {

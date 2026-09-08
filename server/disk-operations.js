@@ -6,6 +6,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     const file = path.join(dataDir, 'disk-operations.json');
     const jobs = new Map(readJson(file, []).map(item => [item.operation_id, item]));
     const executing = new Set();
+    const cancelHandlers = new Map();
     let timer;
     const terminal = job => ['completed', 'failed', 'cancelled'].includes(job.status);
     function save() {
@@ -54,8 +55,18 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             if (!job || terminal(job) || executing.has(id)) return false;
             executing.add(id);
             api.update(id, { status: 'running', phase: 'starting' }, true);
-            Promise.resolve().then(() => work((patch) => api.update(id, patch))).then(result => api.complete(id, result), error => api.fail(id, error)).finally(() => executing.delete(id));
+            const control = { get cancelled() { return Boolean(jobs.get(id)?.cancelRequested); }, throwIfCancelled() { if (jobs.get(id)?.cancelRequested) throw new Error('OPERATION_CANCELLED'); } };
+            Promise.resolve().then(() => work((patch) => api.update(id, patch), control)).then(result => api.complete(id, result), error => error?.message === 'OPERATION_CANCELLED' ? api.update(id, { status: 'cancelled', phase: 'cancelled', message: '用户已取消任务' }, true) : api.fail(id, error)).finally(() => { executing.delete(id); cancelHandlers.delete(id); });
             return true;
+        },
+        onCancel(id, handler) { if (jobs.has(id) && typeof handler === 'function') cancelHandlers.set(id, handler); },
+        async cancel(id, scope) {
+            const job = jobs.get(id);
+            if (!owns(job, scope)) return null;
+            if (terminal(job)) return view(job);
+            job.cancelRequested = true; job.message = '正在取消任务'; job.updatedAt = now(); save();
+            await cancelHandlers.get(id)?.();
+            return api.update(id, { status: 'cancelled', phase: 'cancelled', message: '用户已取消任务' }, true);
         },
         flush: save
     };

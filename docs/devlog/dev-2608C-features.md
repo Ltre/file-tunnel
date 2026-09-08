@@ -1772,3 +1772,65 @@ Description：
 - 增加网盘直达入口和账号设置，改进搜索与分享目录加载体验
 - 设置分享预览缓存七天期限，更新发布缓存及路由映射
 - 补齐上一轮开发日志，完成 69 项回归与 txsl 发布构建验证
+
+## 25. 2026-09-08：浏览器与 Telegram 并行上传、Range 读取层及网盘任务交互
+
+### 25.1 范围与设计依据
+
+- 工作分支继续为 `dev/2608C-step2`；本轮未暂存、未提交。用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改以及 260907 的问答、方案、文章文本和 PDF 均原样保留，不纳入本轮代码修改。用户已明确忽略未写完的“网盘数据纵览”。
+- 第 23、24 节已经补记上一轮遗漏日志并记录本轮开始时的功能基线；本节继续记录 260907 方案落地。上传、媒体加载和并发读取以 `dev-telegram-multipart-upload-and-load-layer-260907.md` 及两份 QA 文档为准：Telegram Message/Part 只作为存储层，Virtual File/Range Gateway 作为统一读取层，HLS 作为有实测需要时的播放适配层。
+- 复核 `juejin-blog-webassembly-ffmpeg.md` 后没有把文章中的整套 ffmpeg.wasm 方案接入上传主路径。该方案需要下载和初始化较大的 FFmpeg WebAssembly、把媒体数据复制进 WASM 文件系统并承担明显的内存峰值；文章的主要目标是抽帧，也没有直接产出本系统需要的 MP4 时间—字节索引和无损连续分片计划。当前保持方案文档的渐进路线：普通文件、图片和音频直接字节分片；视频先保存 `mediaIndex: unavailable` 并使用 Direct Range。后续关键帧索引优先采用 MP4 容器解析器一类轻量方案；只有实测原生 Range 播放仍不足时再实现按需 HLS 和衍生缓存，避免用任意 20MB 字节块伪装成不可播放的 HLS segment。
+
+### 25.2 浏览器生产、服务器队列与 Telegram 消费流水线
+
+- 浏览器在创建任务时提交完整、连续且单片不超过 20,000,000 字节的分片计划；服务器重新校验起止偏移、长度、连续覆盖、总大小和片数，不信任客户端声明。浏览器随后用 `Blob.slice()` 逐片 PUT，不把 110MB、1GB 等完整文件一次放进请求，也不在前端复制出所有分片。
+- 创建上传任务后 Telegram worker 立即启动。每个到达服务器的分片以 `queued → uploading → uploaded` 状态进入有限队列，worker 按文件和分片顺序消费；浏览器同时继续生产后续分片。相邻连续分片等待至多 350ms，最多两片、40,000,000 字节组成一个 Album；尾片可单独发送。客户端全部发送完只负责标记 `clientDone`，不再到此时才启动 Telegram 上传。
+- 队列达到 5 个待消费分片或 100MB 时，PUT 返回带队列状态的 `UPLOAD_BACKPRESSURE`，浏览器退避后重试，因此服务器暂存空间受限，也不会阻塞页面主线程。任务进度分别保存 `clientBytesReceived/clientTotalBytes` 与 `telegramBytesUploaded/telegramTotalBytes`，loading 同时显示两个阶段，不再把同一文件算成双倍总大小。
+- Telegram 成功确认后立刻删除对应服务端临时分片；全部分片成功才原子写入一个逻辑文件及完整 parts 关系。取消、任一分片失败或结果结构无效时清理已知 Telegram 消息及暂存目录，不提交半个逻辑批次。Album 413 会拆成单消息；若拆单的后续消息失败，已经确认的前片也会回滚。429 仅在 Telegram 明确拒绝时重建 multipart 流重试；网络错误只有请求体尚未被消费时才安全重试，避免不确定成功后的重复消息。
+- 浏览器接收和 Telegram 调用日志继续同时输出到服务器 console 与 `.tunnel-data/disk-upload.log`，包含 uploadId、operationId、logical fileId、batch、请求方法、请求体生产、响应状态、耗时、confirmed bytes、messageId、回滚以及网络 cause，不记录 Bot Token、文件内容或分享口令。历史 `disk-operations.json` 只能证明旧 182.9MB 任务在 112.88MB 附近以 `TELEGRAM_NETWORK_ERROR` 失败；旧日志没有对应请求细节，所以不能反推是代理、连接重置、超时还是 Telegram 响应中断。新日志与缩短的两片批次用于下一次真实复现后给出确定根因。
+
+### 25.3 Virtual File / Range Gateway 与共享缓存
+
+- 登录网盘下载、管理员预览、公开分享和新的 `/api/telegram/drive/files/:id/stream` 都经同一逻辑文件 Range 层读取。它把浏览器的单个逻辑 `bytes=A-B` 映射到一个或多个 Telegram part，按顺序组合并返回标准 200/206、`Accept-Ranges`、`Content-Range`、准确 `Content-Length` 和原始 MIME；图片、音频、视频和 PDF 可以直接把此 URL 作为 `src`，无需先完整物化 Blob。
+- Telegram 文件地址收到 Range 时优先使用 206 快路径；如果代理或 Telegram 返回 200 并忽略 Range，服务器会流式丢弃前缀、截取准确窗口，保持响应正确。当前环境没有使用真实 Bot 对不同文件、时间和代理完成 Telegram Range 矩阵实测，因此代码保留两条路径，没有假定上游必然支持 Range。
+- 新增服务器 Telegram chunk cache：相同后端、file_id 和对齐字节窗口只建立一个 inflight 上游读取。首个请求收到数据后同时写 `.tmp` 并向所有等待者输出，大小校验成功后原子改名为 `.part`；失败删除临时文件。缓存默认 10GB、7 天 TTL，并按访问时间裁剪，可用 `TELEGRAM_PART_CACHE_BYTES` 调整容量。这样同一文件的并发读取共享正在增长的缓存文件，而不是重复拉取 Telegram。
+- 网盘和分享页的图片、音频、视频、PDF 预览优先直接流式加载；`audio/video` 使用 `preload=metadata`，浏览器 seek 会发 Range。已有完整 IndexedDB 缓存仍优先复用；文本、显式“缓存到浏览器”和普通下载继续完整读取。分享页首次列目录不会拉取文件。
+
+### 25.4 任务、缓存菜单、窗口与交互修复
+
+- 居中 loading 汇总所有正在执行的任务，PC 顶部提供左右按钮和键盘方向键，触屏支持水平滑动，并显示当前序号。点击“后台继续”只收起当前活动集合；绿色悬浮球仍可恢复进行中的上传。
+- 网盘任务列表为 queued/running 任务增加“取消任务”按钮及确认框。上传取消会中止浏览器请求、Telegram fetch、worker 等待和暂存队列并清理已确认分片；浏览器缓存读取可从文件图标的橙色菊花直接确认取消。菊花在可悬停设备上变成红色叉号并停止旋转。
+- 单文件上下文菜单先查询本机缓存，只显示“缓存到浏览器”或“清理缓存”之一；目录和多选同时保留两项。递归缓存会跳过已有缓存，屏蔽/删除文件不进入缓存任务。上下文菜单按 `visualViewport` 计算上下左右边界，下方空间不足时改在按钮上方显示，修复 PC 全屏下菜单越界。
+- 鼠标单击文件行延迟 500ms 后再改变选择并显示选择栏，`dblclick` 在此之前取消定时器并打开文件或目录，解决最下行第二下落到选择栏的问题。触屏维持单击打开和长按菜单。
+- 最小化会保留当前 DOM、目录和列表；恢复且内容未标记变化时不再请求身份和列表，也不显示“正在加载网盘”。关闭按钮清空保留数据，下次打开正常重新加载；后台任务完成时，隐藏状态标为 stale，恢复才刷新。最小化时移除网盘专属 history state，隧道图片全屏预览退出不会因为 `popstate` 意外恢复网盘及短暂 loading。
+
+### 25.5 隧道备用来源与分享缓存生命周期
+
+- 隧道记录执行“保存到 Telegram 网盘”成功后，把逻辑网盘 ID、`telegramFileId`、`telegramFileUniqueId`、全部 `telegramPartFileIds` 和 `serverAssetUrl` 回写到原文件、消息或合辑记录。现有本地 Blob、外部文件句柄、owner/source 字段均保留。
+- 既有隧道恢复链路未改顺序：先检查本机缓存和在线缓存节点/P2P，再在没有可用源时使用 `serverAssetUrl`。Telegram 网盘只成为备用来源，不抢占已经调通的设备同步传输。
+- 分享缓存仍以 `share:<token>:<fileId>` 隔离并在 7 天到期。主站或分享页每次载入、页面每 6 小时以及重新可见时都会清理过期分享缓存，所以管理员停止分享后，即使分享页已经无法打开，用户下一次访问同源主站仍会清理旧副本。浏览器长期完全不再访问该站时网页脚本无法主动运行，这是 Web 存储生命周期的客观边界；记录在下次同源代码运行或读取时一定按 TTL 删除。
+- Service Worker 缓存版本升至 v36，使上述前端行为在部署后换新。
+
+### 25.6 验证记录与边界
+
+- 修改的服务端、客户端和首页 JavaScript 均通过 `node --check`。
+- 上传/API/客户端/共享缓存定向回归 31/31 通过；另有 Range 忽略兼容、Album 413 拆单回滚等 9 项后续用例通过。覆盖浏览器分片到达后、调用 finish 之前 Telegram 已开始消费，相同字节窗口只建立一个上游流并可边写边读，以及失败批次不产生逻辑文件。
+- 完整 `node --test --test-concurrency=1`：182/182 通过。直接并行跑完整套件时曾使 VClient 一个 20ms idle timeout 用例在主机负载下抖动；该用例和其所在测试文件单独运行均通过，因此采用串行全量结果作为稳定回归依据。
+- `node tools/deploy/build.mjs --profile txsl --out .disk-multipart-build` 与对应 verify 通过，新增 `server/disk-part-cache.js` 随整个 server 目录进入产物；临时构建目录在校验绝对路径属于工作区后删除。
+- 测试全部使用合成文件和模拟 Telegram 响应，没有向真实频道上传、编辑或删除消息。真实 180MB+ 网络故障原因、Telegram Range 支持矩阵、真实视频 seek 延迟、媒体关键帧索引和按需 HLS 尚不能由本地模拟证明；这些边界没有写成已完成线上实测。
+- `git diff --check` 只报告用户原有 `prompts/dev-prompt-logs/dev-2608B.md` 尾随空白，本轮代码和日志没有新增此类问题。暂存区保持为空。
+
+### 25.7 建议 Git 提交日志（不执行提交）
+
+Title：feat: 建立网盘并行分片上传与 Range 媒体读取层
+
+Description：
+
+- 浏览器按 20,000,000 字节逐片上传，服务器以有限队列并行消费并提交 Telegram
+- 分离浏览器到服务器和服务器到 Telegram 的任务进度，补全分片级日志、背压、取消和原子回滚
+- 增加逻辑文件 Range Gateway 与 Telegram chunk cache，支持并发读取共享、边缓存边输出和上游忽略 Range 的兼容路径
+- 图片、音频、视频与 PDF 改用流式预览，保留完整浏览器缓存和七天分享缓存生命周期
+- 支持多任务 loading 左右切换、任务取消、缓存菊花取消、上下文菜单越界修正和 500ms 双击判定
+- 修复网盘最小化恢复重复加载及退出隧道图片预览误开网盘，后台变更时按需刷新
+- 将 Telegram 网盘定位写回隧道记录作为备用来源，继续优先使用本机缓存和 P2P
+- 补充 182 项完整回归、Range 与 413 回滚测试及 txsl 发布构建校验

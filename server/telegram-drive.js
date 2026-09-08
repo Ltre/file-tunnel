@@ -277,9 +277,30 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
                 }
                 if ([...uploads.values()].some(job => job.owner.id === owner.id && job.files.some(entry => entry.folderPath === folder && entry.name === name))) throw new Error('DISK_NAME_CONFLICT');
             }
+            const normalizeUploadParts = file => {
+                const submitted = Array.isArray(file.parts) ? file.parts : [];
+                const parts = submitted.length ? submitted.map((part, index) => ({
+                    index: index + 1,
+                    byteStart: Number(part.byteStart),
+                    byteEnd: Number(part.byteEnd),
+                    size: Number(part.size)
+                })) : Array.from({ length: Math.max(1, Math.ceil(file.size / MAX_TELEGRAM_PART_SIZE)) }, (_, index) => {
+                    const byteStart = index * MAX_TELEGRAM_PART_SIZE;
+                    const size = Math.min(MAX_TELEGRAM_PART_SIZE, file.size - byteStart);
+                    return { index: index + 1, byteStart, byteEnd: byteStart + size - 1, size };
+                });
+                let next = 0;
+                for (const part of parts) {
+                    if (!Number.isSafeInteger(part.byteStart) || !Number.isSafeInteger(part.byteEnd) || !Number.isSafeInteger(part.size) ||
+                        part.byteStart !== next || part.byteEnd !== part.byteStart + part.size - 1 || part.size < 0 || part.size > MAX_TELEGRAM_PART_SIZE) throw new Error('UPLOAD_PART_PLAN_INVALID');
+                    next = part.byteEnd + 1;
+                }
+                if (next !== file.size || parts.length > 10000) throw new Error('UPLOAD_PART_PLAN_INVALID');
+                return parts;
+            };
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
             const job = { id, owner, metadata, backendId, sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
-files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, path: '', received: 0 })), dir, createdAt: Date.now(), maxDepth };
+files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, mediaIndex: file.mediaIndex && typeof file.mediaIndex === 'object' ? file.mediaIndex : { mode: 'unavailable' }, parts: normalizeUploadParts(file), path: '', received: 0, chunks: [] })), dir, createdAt: Date.now(), maxDepth };
             uploads.set(id, job); return job;
         },
         async receive(uploadId, index, request, onProgress) {
@@ -290,7 +311,9 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             request.on('data', chunk => { size += chunk.length; if (size > file.size || size > job.uploadLimit) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size, file.size); });
             try { await pipeline(request, fs.createWriteStream(target, { flags: 'wx' })); } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; } finally { file.receiving = false; }
             if (size !== file.size) { try { fs.unlinkSync(target); } catch (_) {} throw new Error('telegram-drive-upload-size-mismatch'); }
-            file.path = target; file.received = size; return { received: size };
+            file.path = target; file.received = size;
+            if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, partIndex: 1, status: 'queued', remote: null });
+            return { received: size };
         },
         async receivePart(uploadId, index, request, range, onProgress) {
             const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
@@ -300,7 +323,8 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (!match) throw new Error('UPLOAD_RANGE_INVALID');
             const [start, end, total] = match.slice(1).map(Number);
             const length = end - start + 1;
-            if (![start, end, total].every(Number.isSafeInteger) || total !== file.size || start !== file.received || end < start || end >= total || length !== Math.min(MAX_TELEGRAM_PART_SIZE, total - start)) throw new Error('UPLOAD_RANGE_INVALID');
+            const plan = file.parts[file.chunks.length];
+            if (![start, end, total].every(Number.isSafeInteger) || total !== file.size || start !== file.received || end < start || end >= total || !plan || plan.byteStart !== start || plan.byteEnd !== end || plan.size !== length) throw new Error('UPLOAD_RANGE_INVALID');
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
             let size = 0;
@@ -308,13 +332,47 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             try {
                 await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
-                (file.chunks ||= []).push({ path: target, offset: start, size });
+                file.chunks.push({ path: target, offset: start, size, partIndex: plan.index, status: 'queued', remote: null });
                 file.received += size;
                 return { received: file.received, complete: file.received === file.size };
             } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
             finally { file.receiving = false; }
         },
         upload(uploadId) { return uploads.get(String(uploadId)); },
+        uploadQueue(uploadId) {
+            const job = uploads.get(String(uploadId));
+            if (!job) return null;
+            const chunks = job.files.flatMap(file => file.chunks || []);
+            const queued = chunks.filter(part => part.status === 'queued');
+            const pending = chunks.filter(part => part.status !== 'uploaded');
+            return { queuedParts: queued.length, queuedBytes: queued.reduce((sum, part) => sum + part.size, 0), pendingParts: pending.length, pendingBytes: pending.reduce((sum, part) => sum + part.size, 0), uploadedParts: chunks.filter(part => part.status === 'uploaded').length, receivedParts: chunks.length, totalParts: job.files.reduce((sum, file) => sum + file.parts.length, 0) };
+        },
+        markPartUploading(uploadId, fileIndex, partIndex) {
+            const chunk = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.chunks?.find(item => item.partIndex === Number(partIndex));
+            if (!chunk || chunk.status !== 'queued') throw new Error('UPLOAD_PART_STATE_INVALID');
+            chunk.status = 'uploading'; return chunk;
+        },
+        markPartUploaded(uploadId, fileIndex, partIndex, remote) {
+            const chunk = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.chunks?.find(item => item.partIndex === Number(partIndex));
+            if (!chunk) throw new Error('UPLOAD_PART_STATE_INVALID');
+            chunk.status = 'uploaded'; chunk.remote = remote;
+            try { if (chunk.path) fs.unlinkSync(chunk.path); } catch (_) {}
+            return chunk;
+        },
+        resetUploadingParts(uploadId) {
+            const job = uploads.get(String(uploadId));
+            for (const chunk of job?.files.flatMap(file => file.chunks || []) || []) if (chunk.status === 'uploading') chunk.status = 'queued';
+        },
+        uploadResults(uploadId) {
+            const job = uploads.get(String(uploadId));
+            if (!job) return [];
+            return job.files.map(file => {
+                const parts = file.chunks.map(chunk => chunk.remote).filter(Boolean).sort((a, b) => a.partIndex - b.partIndex);
+                if (parts.length !== file.parts.length) return null;
+                const first = parts[0] || {};
+                return { ...first, parts, partCount: parts.length, size: file.size, originalSize: file.size, captionWarning: parts.some(part => part.captionWarning) ? 'TELEGRAM_CAPTION_UPDATE_FAILED' : '' };
+            });
+        },
         validateUpload(uploadId) {
             const job = this.finish(uploadId);
             for (const file of job.files) {
@@ -335,7 +393,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {};
                 const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0 }));
-                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';

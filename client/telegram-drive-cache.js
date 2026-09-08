@@ -45,4 +45,10 @@
         await put(id, file);
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { id } }));
     } };
+    // Cleanup runs on every main/share page load, so a revoked share does not
+    // need to remain reachable for its old seven-day cache entry to expire.
+    pruneExpiredShares().catch(() => {});
+    const pruneTimer = setInterval(() => pruneExpiredShares().catch(() => {}), 6 * 60 * 60 * 1000);
+    window.addEventListener('pagehide', () => clearInterval(pruneTimer), { once: true });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pruneExpiredShares().catch(() => {}); });
 })();

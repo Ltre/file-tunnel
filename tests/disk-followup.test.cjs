@@ -44,6 +44,45 @@ test('非 JSON 的 413 代理响应保留 HTTP 错误码', async t => {
     await assert.rejects(telegram.call({ token: 'test', baseUrl: 'https://example.test' }, 'sendDocument', {}), /TELEGRAM_413/);
 });
 
+test('Telegram 下载端忽略 Range 时丢弃前缀并只输出请求窗口', async t => {
+    const requests = [];
+    const telegram = createDiskTelegram({ dataDir: temp(t), fetchImpl: async (url, init) => {
+        if (url.endsWith('/getFile')) return new Response(JSON.stringify({ ok: true, result: { file_path: 'documents/file.bin' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        requests.push(init?.headers?.Range || '');
+        return new Response(Buffer.from('abcdefghij'), { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+    } });
+    const stream = await telegram.readPart({ token: 'test', baseUrl: 'https://example.test', channelId: '-1' }, { fileId: 'file-id', size: 10 }, { start: 2, end: 5 });
+    const chunks = []; for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    assert.equal(Buffer.concat(chunks).toString(), 'cdef');
+    assert.deepEqual(requests, ['bytes=2-5']);
+});
+
+test('Album 413 拆单后续失败会回滚此前已经确认的分片消息', async t => {
+    const dataDir = temp(t), first = path.join(dataDir, 'first'), second = path.join(dataDir, 'second');
+    fs.writeFileSync(first, 'abc'); fs.writeFileSync(second, 'def');
+    let singles = 0; const deleted = [];
+    const reply = result => new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (url, init) => {
+        const method = url.split('/').pop();
+        if (method === 'sendMediaGroup') { for await (const chunk of init.body) void chunk; return new Response(JSON.stringify({ ok: false, error_code: 413 }), { status: 413, headers: { 'Content-Type': 'application/json' } }); }
+        if (method === 'sendDocument') {
+            for await (const chunk of init.body) void chunk;
+            if (++singles === 1) return reply({ message_id: 11, date: 1, document: { file_id: 'part-1', file_unique_id: 'unique-1' } });
+            throw new TypeError('connection reset');
+        }
+        if (method === 'editMessageCaption') return reply(true);
+        if (method === 'deleteMessages') { deleted.push(...JSON.parse(init.body).message_ids); return reply(true); }
+        throw new Error('unexpected method ' + method);
+    } });
+    const files = [{ logicalId: 'logical', name: 'large.bin', type: 'application/octet-stream', size: 6, folderPath: '' }];
+    const parts = [
+        { fileIndex: 0, logicalFileId: 'logical', partIndex: 1, partCount: 2, originalSize: 6, offset: 0, size: 3, path: first, name: 'large.part01', type: 'application/octet-stream', start: 0, end: 2 },
+        { fileIndex: 0, logicalFileId: 'logical', partIndex: 2, partCount: 2, originalSize: 6, offset: 3, size: 3, path: second, name: 'large.part02', type: 'application/octet-stream', start: 0, end: 2 }
+    ];
+    await assert.rejects(telegram.uploadPhysical({ token: 'test', baseUrl: 'https://example.test', channelId: '-1' }, files, parts, () => {}, { uploadId: 'upload', operationId: 'operation', totalBytes: 6 }), /TELEGRAM_NETWORK_ERROR/);
+    assert.deepEqual(deleted, [11]);
+});
+
 test('音乐图标只随最小化显示，关闭后播放状态更新也不能恢复图标', () => {
     const code = source('app.js');
     const button = { classList: { toggle() {} } }, marquee = { querySelector: () => ({}) };
