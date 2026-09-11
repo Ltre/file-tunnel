@@ -74,6 +74,7 @@ const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
+const { listDataUsage } = require('./server/data-usage');
 const { createTelegramOidcClient } = require('./server/telegram-oidc');
 const { createTelegramOidcMock } = require('./server/telegram-oidc-mock');
 const { normalizeLanguageCode, translateTelegramText, matchesTranslatedText } = require('./server/i18n');
@@ -1115,7 +1116,8 @@ app.use([
     '/pages/sns-dl.html',
     '/pages/youtube-premium-dl.html',
     '/pages/vclient.html',
-    '/pages/disk-management.html'
+    '/pages/disk-management.html',
+    '/pages/data-usage.html'
 ], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
@@ -1153,6 +1155,21 @@ app.get('/admin', (req, res) => {
 app.get('/disk-management', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'disk-management.html'));
+});
+
+app.get('/data-usage', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'data-usage.html'));
+});
+
+app.get('/api/admin/data-usage', adminAuth.requireAuth, async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(await listDataUsage(SERVER_DATA_DIR, req.query.path));
+    } catch (error) {
+        console.error('[data-usage] 统计失败', error);
+        res.status(Number(error.status) || 500).json({ error: error.message || 'DATA_USAGE_FAILED' });
+    }
 });
 
 app.get('/vclient', (req, res) => {

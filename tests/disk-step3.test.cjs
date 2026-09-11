@@ -1,0 +1,45 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const { listDataUsage, resolveDataUsageDirectory } = require('../server/data-usage');
+const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+
+test('数据占用页只遍历 .tunnel-data 内目录并按占用大小倒序返回', async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'data-usage-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(root, 'small')); fs.mkdirSync(path.join(root, 'large'));
+    fs.writeFileSync(path.join(root, 'small', 'a'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(root, 'large', 'b'), Buffer.alloc(30000));
+    const listing = await listDataUsage(root);
+    assert.deepEqual(listing.entries.map(entry => entry.name), ['large', 'small']);
+    assert.equal((await listDataUsage(root, 'large')).entries[0].name, 'b');
+    assert.throws(() => resolveDataUsageDirectory(root, '../outside'), /INVALID_DATA_USAGE_PATH/);
+});
+
+test('Step3 网盘交互包含 ESC、属性历史、原生媒体右键、控件手势隔离及选择器顶层模式', () => {
+    const ui = source('client/disk-ui.js'), css = source('client/disk.css');
+    assert.match(ui, /event\.key === 'Escape'.*closeDiskPreview\(\)/);
+    assert.match(ui, /historyEntry: true, dismissOnBackdrop: true/);
+    assert.match(ui, /telegramDriveDialogHistoryOpen.*closeTelegramDriveDialog\(null, \{ fromHistory: true \}\)/s);
+    assert.doesNotMatch(ui, /wrapper\.oncontextmenu/);
+    assert.match(ui, /\.disk-media-controls,\.disk-media-action-row,input,button/);
+    assert.match(css, /telegram-drive-picker-mode\{z-index:/);
+    assert.match(css, /disk-media-seek-loader:before/);
+    assert.match(css, /telegram-drive-manager:not\(\.telegram-drive-has-selection\).*telegram-drive-item-check/);
+});
+
+test('媒体进度持久化、缩略图和播放结束补全浏览器缓存均已接入', () => {
+    const ui = source('client/disk-ui.js');
+    assert.match(ui, /telegram-drive-media-progress-v1/);
+    assert.match(ui, /localStorage\.setItem\(diskMediaProgressKey/);
+    assert.match(ui, /putThumbnail\(item\.id, blob\)/);
+    assert.match(ui, /media\.addEventListener\('ended'.*DiskClient\.read\(item, \{ silentLoading: true \}\)/s);
+});
+
+test('管理后台暴露受鉴权保护的数据占用页面和 API', () => {
+    const server = source('server.js'), admin = source('pages/admin.html');
+    assert.match(server, /app\.get\('\/data-usage'/);
+    assert.match(server, /app\.get\('\/api\/admin\/data-usage', adminAuth\.requireAuth/);
+    assert.match(admin, /href="\/data-usage"/);
+});

@@ -24,7 +24,7 @@
         if (!keys.length) return;
         const db = await open(); try { await new Promise((resolve, reject) => {
             const tx = db.transaction('files', 'readwrite');
-            for (const id of keys) tx.objectStore('files').delete(id);
+            for (const id of keys) { tx.objectStore('files').delete(id); tx.objectStore('files').delete('thumbnail:' + id); }
             tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error);
         }); } finally { db.close(); }
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { ids: keys } }));
@@ -41,7 +41,10 @@
             tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(tx.error);
         }); } finally { db.close(); }
     }
-    window.TelegramDriveCache = { get, status, remove, pruneExpiredShares, async put(id, file) {
+    window.TelegramDriveCache = { get, status, remove, pruneExpiredShares,
+    async getThumbnail(id) { return (await get('thumbnail:' + id))?.blob || null; },
+    async putThumbnail(id, blob) { if (blob instanceof Blob && blob.size) await put('thumbnail:' + id, { blob, source: 'thumbnail' }); },
+    async put(id, file) {
         await put(id, file);
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { id } }));
     } };

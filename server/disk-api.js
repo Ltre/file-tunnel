@@ -213,11 +213,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const block = 1024 * 1024;
                 const cacheStart = Math.floor(localStart / block) * block;
                 const cacheEnd = Math.min(part.size - 1, Math.ceil((localEnd + 1) / block) * block - 1);
-                const key = [backendKey, part.fileId, cacheStart, cacheEnd].join(':');
+                const key = ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', cacheStart, cacheEnd].join(':');
                 const source = await partCache.open({
                     key, size: cacheEnd - cacheStart + 1,
                     start: localStart - cacheStart, end: localEnd - cacheStart, signal,
-                    source: () => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd, signal })
+                    expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1 ? String(part.sha256 || '') : '',
+                    // A browser normally cancels its old HTTP Range while seeking.
+                    // The shared cache fill must survive that one consumer leaving.
+                    source: () => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd })
                 });
                 for await (const chunk of source) yield chunk;
             }
@@ -227,7 +230,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     async function readRemote(backend, file, start, end, signal) {
         try { return await openRemoteRange(backend, file, start, end, signal); }
         catch (error) {
-            if (!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED)/.test(error.message)) throw error;
+            if (!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message)) throw error;
             await wait(250); return openRemoteRange(backend, file, start, end, signal);
         }
     }
@@ -451,6 +454,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const requireEntity = file => { if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW'); return file; };
         const jobResponse = (req, res, type, message, work) => {
             const job = operations.create(scope(req), type, message);
+            const relatedFile = req.params?.id ? store(req).get(owner(req), req.params.id) : null;
+            const relatedPath = relatedFile?.folderPath ?? req.body?.path ?? req.query?.path ?? '';
+            operations.update(job.operation_id, { folderPath: normalizeTelegramDrivePath(relatedPath) }, true);
             operations.run(job.operation_id, (update, control) => mutate(req, async () => {
                 control.throwIfCancelled();
                 const result = await work(update, control);
@@ -784,7 +790,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const file = requireEntity(getFile(req));
             const operation = operations.create(scope(req), 'read', '正在请求 Telegram：' + file.name, file.size);
             const id = operation.operation_id;
-            operations.update(id, { status: 'running', phase: 'telegram-request' });
+            operations.update(id, { status: 'running', phase: 'telegram-request', folderPath: file.folderPath || '' }, true);
             try {
                 const remote = await prepareRemoteResponse(req, res, fileBackend(req, file), file, { operationId: id });
                 if (!remote) return operations.fail(id, new Error('RANGE_NOT_SATISFIABLE'));
@@ -804,6 +810,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             if (Number(req.get('X-Disk-File-Size') || req.get('X-Drop2Tunnel-File-Size')) !== file.size) throw new Error('REPAIR_SIZE_INVALID');
             const operation = operations.create(scope(req), 'repair', '正在接收本机修复副本', file.size);
+            operations.update(operation.operation_id, { folderPath: file.folderPath || '' }, true);
             const job = store(req).begin({ owner: req.diskUser, folderPath: '', files: [{ name: crypto.randomUUID(), type: file.type, size: file.size }], maxDepth: maxDepth(), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT });
             try { await store(req).receive(job.id, 0, req); }
             catch (error) { store(req).abort(job.id); operations.fail(operation.operation_id, error); throw error; }

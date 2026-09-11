@@ -6,11 +6,24 @@ const crypto = require('crypto');
 const { once } = require('events');
 const { Readable } = require('stream');
 
-function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_PART_CACHE_BYTES) || 10 * 1024 * 1024 * 1024, ttlMs = 7 * 24 * 60 * 60 * 1000 } = {}) {
+const CACHE_SCHEMA = '2';
+
+function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_PART_CACHE_BYTES) || 10 * 1024 * 1024 * 1024, ttlMs = 2 * 24 * 60 * 60 * 1000 } = {}) {
     const root = path.join(dataDir, 'telegram-part-cache');
     const inflight = new Map();
     const preparing = new Map();
     fs.mkdirSync(root, { recursive: true });
+    const schemaPath = path.join(root, '.schema');
+    let schema = '';
+    try { schema = fs.readFileSync(schemaPath, 'utf8').trim(); } catch (_) {}
+    if (schema !== CACHE_SCHEMA) {
+        for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+            if (entry.isFile() && /\.(?:part|tmp)$/.test(entry.name)) fs.rmSync(path.join(root, entry.name), { force: true });
+        }
+        fs.writeFileSync(schemaPath, CACHE_SCHEMA + '\n');
+    } else {
+        for (const entry of fs.readdirSync(root, { withFileTypes: true })) if (entry.isFile() && entry.name.endsWith('.tmp')) fs.rmSync(path.join(root, entry.name), { force: true });
+    }
     const digest = key => crypto.createHash('sha256').update(String(key)).digest('hex');
     const notify = entry => { for (const resolve of entry.waiters.splice(0)) resolve(); };
     const wait = entry => new Promise(resolve => entry.waiters.push(resolve));
@@ -24,16 +37,16 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
             if (now - row.stat.mtimeMs > ttlMs || total > maxBytes) await fsp.unlink(row.path).catch(() => {});
         }
     }
-    async function ensure(key, size, source) {
+    async function ensure(key, size, source, expectedSha256 = '') {
         const id = digest(key);
         if (inflight.has(id)) return inflight.get(id);
         if (preparing.has(id)) return preparing.get(id);
-        const pending = prepare(id, size, source);
+        const pending = prepare(id, size, source, expectedSha256);
         preparing.set(id, pending);
         try { return await pending; }
         finally { preparing.delete(id); }
     }
-    async function prepare(id, size, source) {
+    async function prepare(id, size, source, expectedSha256) {
         const target = path.join(root, id + '.part');
         const existing = await fsp.stat(target).catch(() => null);
         if (existing?.size === size && Date.now() - existing.mtimeMs < ttlMs) { fsp.utimes(target, new Date(), new Date()).catch(() => {}); return { target, written: size, done: true, waiters: [] }; }
@@ -51,13 +64,16 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
                 await once(output, 'open');
                 opened();
                 const upstream = await source();
+                const hash = expectedSha256 ? crypto.createHash('sha256') : null;
                 for await (const chunk of upstream) {
                     if (!output.write(chunk)) await once(output, 'drain');
+                    hash?.update(chunk);
                     entry.written += chunk.length; notify(entry);
                     if (entry.written > size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
                 }
                 output.end(); await once(output, 'close');
                 if (entry.written !== size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
+                if (hash && hash.digest('hex') !== expectedSha256) throw new Error('TELEGRAM_PART_HASH_MISMATCH');
                 await fsp.rename(temporary, target); entry.done = true; notify(entry);
                 prune().catch(() => {});
             } catch (error) {
@@ -69,8 +85,8 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         entry.ready.catch(() => {});
         inflight.set(id, entry); return entry;
     }
-    async function open({ key, size, source, start = 0, end = size - 1, signal }) {
-        const entry = await ensure(key, size, source);
+    async function open({ key, size, source, start = 0, end = size - 1, signal, expectedSha256 = '' }) {
+        const entry = await ensure(key, size, source, expectedSha256);
         const filename = entry.done && !entry.error ? entry.target : entry.temporary;
         if (entry.done && !entry.error) return fs.createReadStream(filename, { start, end });
         await entry.opened;
@@ -88,6 +104,11 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
                     position += bytesRead; yield buffer.subarray(0, bytesRead);
                 }
                 if (position !== end + 1) throw entry.error || new Error('TELEGRAM_PART_SIZE_MISMATCH');
+                // Bytes can become readable just before the producer closes and
+                // validates the file. Do not report a successful stream until
+                // the full-window size/hash checks have also succeeded.
+                await entry.ready;
+                if (entry.error) throw entry.error;
             } finally { await handle.close(); }
         }
         return Readable.from(growingFile());

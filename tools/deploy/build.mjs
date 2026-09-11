@@ -36,6 +36,7 @@ const PAGE_ROUTES = {
   'index.html': ['/', '/index.html', '/disk'],
   'admin.html': ['/admin'],
   'disk-management.html': ['/disk-management'],
+  'data-usage.html': ['/data-usage'],
   'admin-auth.html': ['/admin-auth', '/admin-auth.html', '/admin.html'],
   'downloader.html': ['/downloader', '/downloader.html'],
   'downloadList.html': ['/downloadList', '/downloadList.html'],

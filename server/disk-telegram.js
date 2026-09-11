@@ -145,7 +145,15 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         catch (_) { throw new Error('TELEGRAM_DOWNLOAD_NETWORK'); }
         if (!response.ok || !response.body) throw new Error('TELEGRAM_DOWNLOAD_FAILED');
         const stream = Readable.fromWeb(response.body);
-        if (!headers || response.status === 206) return stream;
+        if (!headers) return stream;
+        if (response.status === 206) {
+            const contentRange = /^bytes\s+(\d+)-(\d+)\/(?:\d+|\*)$/i.exec(String(response.headers.get('content-range') || ''));
+            if (!contentRange || Number(contentRange[1]) !== start || Number(contentRange[2]) !== end) {
+                stream.destroy();
+                throw new Error('TELEGRAM_RANGE_INVALID');
+            }
+            return stream;
+        }
         // Some Bot API proxies ignore Range. Keep correctness by discarding the
         // prefix while the cache records this exact aligned window.
         async function* sliceFallback() {

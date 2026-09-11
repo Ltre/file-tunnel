@@ -12,6 +12,7 @@
     const readControllers = new Map();
     const hiddenLoadingOperations = new Set();
     const cacheProgressByFile = new Map();
+    let streamSequence = 0;
     const newAbortController = () => typeof AbortController === 'function' ? new AbortController() : { signal: { aborted: false, addEventListener() {} }, abort() { this.signal.aborted = true; } };
     const abortError = () => { const error = new Error('OPERATION_CANCELLED'); error.name = 'AbortError'; return error; };
     const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
@@ -26,7 +27,7 @@
     const activities = new Set(), activityListeners = new Set();
     const emitActivities = () => activityListeners.forEach(listener => listener([...activities]));
     async function withActivity(message, run) {
-        const activity = { message, operationId: '' };
+        const activity = typeof message === 'object' ? { ...message, operationId: message.operationId || '' } : { message, operationId: '' };
         activities.add(activity); emitActivities();
         const update = values => { Object.assign(activity, values); emitActivities(); };
         try { return await run(update); }
@@ -209,7 +210,7 @@
             if (options.silentLoading && values.operationId) hiddenLoadingOperations.add(values.operationId);
             update(values);
         });
-        try { return options.silentLoading ? await run(() => {}) : await withActivity('正在打开文件：' + item.name, run); }
+        try { return options.silentLoading ? await run(() => {}) : await withActivity({ message: '正在打开文件：' + item.name, folderPath: item.folderPath || '' }, run); }
         finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
@@ -238,6 +239,27 @@
         setCacheProgress(item.id, { phase: 'done', percent: 100 });
         refresh(); return blob;
     }
+    function streamUrl(item, { purpose = '', fresh = false } = {}) {
+        const query = new URLSearchParams();
+        query.set('v', String(item.updatedAt || item.size || 0));
+        if (purpose) query.set('purpose', String(purpose));
+        if (fresh) query.set('request', String(++streamSequence));
+        return base + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
+    }
+    async function readRange(item, start = 0, end = Number(item.size) - 1, { signal, purpose = 'metadata' } = {}) {
+        const safeStart = Math.max(0, Number(start) || 0);
+        const safeEnd = Math.min(Number(item.size) - 1, Math.max(safeStart, Number(end) || 0));
+        const response = await fetch(streamUrl(item, { purpose, fresh: true }), {
+            credentials: 'same-origin', cache: 'no-store', signal,
+            headers: { Range: `bytes=${safeStart}-${safeEnd}`, 'X-Disk-Device-Id': deviceId }
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
+        let blob = await response.blob();
+        const expected = safeEnd - safeStart + 1;
+        if (response.status === 200 && blob.size === Number(item.size)) blob = blob.slice(safeStart, safeEnd + 1, item.type || blob.type);
+        if (blob.size !== expected) throw new Error('DISK_READ_SIZE_MISMATCH');
+        return blob;
+    }
     async function cancelOperation(id) {
         uploadControllers.get(id)?.abort();
         readControllers.get(id)?.abort();
@@ -249,8 +271,7 @@
         for (const controller of readers) controller.abort();
         return true;
     }
-    const streamUrl = item => base + '/files/' + encodeURIComponent(item.id) + '/stream';
-    window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+    window.DiskClient = { raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
         isCaching(id) { return pendingReads.has(id); },
         cacheProgress(id) { return cacheProgressByFile.get(id) || null; },
         isLoadingHidden(id) { return hiddenLoadingOperations.has(id); },

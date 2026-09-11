@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>数据占用 - 管理后台</title>
+    <style>
+        *{box-sizing:border-box}body{margin:0;background:#eef3f7;color:#243746;font:14px/1.55 system-ui,"Microsoft YaHei",sans-serif}button{font:inherit;cursor:pointer}header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;padding:14px 22px;background:#173a51;color:#fff;box-shadow:0 2px 12px #132b3c33}header h1{margin:0;font-size:20px;flex:1}header a,header button{border:1px solid #ffffff66;border-radius:7px;background:transparent;color:#fff;padding:7px 12px;text-decoration:none}main{max-width:1000px;margin:18px auto;padding:0 16px}.card{overflow:hidden;border:1px solid #d4dfe7;border-radius:12px;background:#fff;box-shadow:0 2px 10px #173a5112}.breadcrumbs{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:14px 16px;border-bottom:1px solid #e0e7ed;white-space:nowrap}.breadcrumbs button{border:0;background:none;color:#145f82;padding:4px}.summary{padding:10px 16px;color:#607184}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:11px 16px;border-top:1px solid #e4eaef;text-align:left}th{background:#f5f8fa}.size{text-align:right;font-variant-numeric:tabular-nums}.name{border:0;background:none;color:#145f82;padding:0;text-align:left}.name.file{color:inherit;cursor:default}.empty,.status{padding:28px;text-align:center;color:#687b89}.error{color:#ad2831}@media(max-width:600px){header{padding:11px 12px;flex-wrap:wrap}header h1{font-size:18px}main{margin:10px auto;padding:0 10px}th,td{padding:10px}}
+    </style>
+</head>
+<body>
+    <header><a href="/admin">← 管理后台</a><h1>.tunnel-data 空间占用</h1><button id="refreshBtn" type="button">刷新</button></header>
+    <main><section class="card"><nav id="breadcrumbs" class="breadcrumbs" aria-label="当前目录"></nav><div id="summary" class="summary"></div><div id="content" class="table-wrap"><div class="status">正在统计占用空间…</div></div></section></main>
+    <script>
+        const state = { path: '' };
+        const formatSize = value => { const units=['B','KB','MB','GB','TB']; let size=Number(value)||0,index=0; while(size>=1024&&index<units.length-1){size/=1024;index++;} return `${size.toFixed(index&&size<10?2:index&&size<100?1:0)} ${units[index]}`; };
+        function renderBreadcrumbs(path) {
+            const nav=document.getElementById('breadcrumbs'); nav.replaceChildren();
+            const parts=String(path||'').split('/').filter(Boolean); let current='';
+            [['.tunnel-data',''],...parts.map(name=>[name,current=current?current+'/'+name:name])].forEach(([name,value],index)=>{ if(index){const sep=document.createElement('span');sep.textContent='›';nav.append(sep);} const button=document.createElement('button');button.type='button';button.textContent=name;button.onclick=()=>load(value);nav.append(button); });
+            nav.scrollLeft=nav.scrollWidth;
+        }
+        async function load(path=state.path) {
+            state.path=path; renderBreadcrumbs(path); document.getElementById('content').innerHTML='<div class="status">正在执行空间统计…</div>';
+            try {
+                const response=await fetch('/api/admin/data-usage?path='+encodeURIComponent(path),{credentials:'same-origin',cache:'no-store'}); const data=await response.json();
+                if(!response.ok) throw new Error(data.error||'统计失败');
+                state.path=data.path||''; renderBreadcrumbs(state.path); document.getElementById('summary').textContent=`${data.entries.length} 项 · 合计 ${formatSize(data.totalSize)} · ${new Date(data.generatedAt).toLocaleString('zh-CN',{hour12:false})}`;
+                if(!data.entries.length){document.getElementById('content').innerHTML='<div class="empty">此目录为空</div>';return;}
+                const table=document.createElement('table');table.innerHTML='<thead><tr><th>名称</th><th>类型</th><th class="size">占用空间</th></tr></thead>';const body=document.createElement('tbody');
+                for(const entry of data.entries){const row=document.createElement('tr'),nameCell=document.createElement('td'),name=document.createElement('button');name.type='button';name.className='name '+entry.kind;name.textContent=(entry.kind==='directory'?'📁 ':'📄 ')+entry.name;if(entry.kind==='directory')name.onclick=()=>load(entry.path);else name.disabled=true;nameCell.append(name);const kind=document.createElement('td');kind.textContent=entry.kind==='directory'?'目录':'文件';const size=document.createElement('td');size.className='size';size.textContent=formatSize(entry.size);row.append(nameCell,kind,size);body.append(row);}table.append(body);document.getElementById('content').replaceChildren(table);
+            } catch(error) { const status=document.createElement('div');status.className='status error';status.textContent=String(error.message||error);document.getElementById('content').replaceChildren(status); }
+        }
+        document.getElementById('refreshBtn').onclick=()=>load(); load();
+    </script>
+</body>
+</html>

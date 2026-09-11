@@ -36,3 +36,38 @@ test('相同 Telegram 字节窗口只建立一个上游读取，下载者可共�
     assert.equal((await collect(await cache.open({ key: 'same-file:0-9', size: 10, source }))).toString(), 'abcdefghij');
     assert.equal(sources, 1, '完整缓存命中不应再次请求 Telegram');
 });
+
+test('一个播放器取消 Range 读取不会中断共享缓存填充，后续读取仍命中完整缓存', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-part-cache-abort-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const cache = createDiskPartCache({ dataDir, maxBytes: 1024 * 1024 });
+    let sources = 0;
+    const source = async function* () {
+        sources++;
+        yield Buffer.from('abc');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        yield Buffer.from('defghij');
+    };
+    const controller = new AbortController();
+    const first = await cache.open({ key: 'seek-window', size: 10, source, signal: controller.signal });
+    const iterator = first[Symbol.asyncIterator]();
+    assert.equal(Buffer.from((await iterator.next()).value).toString(), 'abc');
+    controller.abort();
+    await assert.rejects(iterator.next(), /OPERATION_CANCELLED/);
+    for (let index = 0; index < 40 && cache.inflightCount(); index++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal((await collect(await cache.open({ key: 'seek-window', size: 10, source }))).toString(), 'abcdefghij');
+    assert.equal(sources, 1);
+});
+
+test('完整分片写入时校验哈希，缓存结构升级会清除旧缓存和中断临时文件', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-part-cache-schema-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const root = path.join(dataDir, 'telegram-part-cache'); fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, '.schema'), '1\n'); fs.writeFileSync(path.join(root, 'old.part'), 'old'); fs.writeFileSync(path.join(root, 'old.tmp'), 'old');
+    const cache = createDiskPartCache({ dataDir });
+    assert.equal(fs.readFileSync(path.join(root, '.schema'), 'utf8').trim(), '2');
+    assert.equal(fs.existsSync(path.join(root, 'old.part')), false);
+    assert.equal(fs.existsSync(path.join(root, 'old.tmp')), false);
+    const wrong = await cache.open({ key: 'hash', size: 3, expectedSha256: '0'.repeat(64), source: async function* () { yield Buffer.from('abc'); } });
+    await assert.rejects(collect(wrong), /TELEGRAM_PART_HASH_MISMATCH/);
+});

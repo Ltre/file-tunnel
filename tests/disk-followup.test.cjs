@@ -58,6 +58,14 @@ test('Telegram 下载端忽略 Range 时丢弃前缀并只输出请求窗口', a
     assert.deepEqual(requests, ['bytes=2-5']);
 });
 
+test('Telegram 返回错误 Content-Range 时拒绝把错位字节写入分片缓存', async t => {
+    const telegram = createDiskTelegram({ dataDir: temp(t), fetchImpl: async url => {
+        if (url.endsWith('/getFile')) return new Response(JSON.stringify({ ok: true, result: { file_path: 'documents/file.bin' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(Buffer.from('cdef'), { status: 206, headers: { 'Content-Range': 'bytes 3-6/10' } });
+    } });
+    await assert.rejects(telegram.readPart({ token: 'test', baseUrl: 'https://example.test' }, { fileId: 'file-id', size: 10 }, { start: 2, end: 5 }), /TELEGRAM_RANGE_INVALID/);
+});
+
 test('分片哈希 file_id 索引按 Bot 隔离，复用时只发送 file_id 且不重复上传字节', async t => {
     const dataDir = temp(t), cache = createDiskChunkFileCache({ dataDir });
     const part = { sha256: 'a'.repeat(64), size: 3 };
