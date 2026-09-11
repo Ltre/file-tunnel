@@ -52,7 +52,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
         version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
         files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, chunks: (file.chunks || []).map(chunk => ({
-            partIndex: chunk.partIndex, size: chunk.size, remote: chunk.remote || null
+            partIndex: chunk.partIndex, size: chunk.size, sha256: chunk.sha256 || '', remote: chunk.remote || null
         })) }))
     });
     fs.mkdirSync(stagingRoot, { recursive: true });
@@ -333,12 +333,12 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const job = uploads.get(String(uploadId)); const file = job?.files[Number(index)]; if (!job || !file) throw new Error('telegram-drive-upload-not-found');
             if (file.path || file.receiving || file.chunks?.length) throw new Error('telegram-drive-upload-already-received');
             file.receiving = true;
-            const target = path.join(job.dir, `${file.index}-${file.name}`); let size = 0;
-            request.on('data', chunk => { size += chunk.length; if (size > file.size || size > job.uploadLimit) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size, file.size); });
+            const target = path.join(job.dir, `${file.index}-${file.name}`); let size = 0; const digest = crypto.createHash('sha256');
+            request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > file.size || size > job.uploadLimit) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size, file.size); });
             try { await pipeline(request, fs.createWriteStream(target, { flags: 'wx' })); } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; } finally { file.receiving = false; }
             if (size !== file.size) { try { fs.unlinkSync(target); } catch (_) {} throw new Error('telegram-drive-upload-size-mismatch'); }
             file.path = target; file.received = size;
-            if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, partIndex: 1, status: 'queued', remote: null });
+            if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, sha256: digest.digest('hex'), partIndex: 1, status: 'queued', remote: null });
             persistUpload(job);
             return { received: size };
         },
@@ -354,12 +354,12 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (![start, end, total].every(Number.isSafeInteger) || total !== file.size || start !== file.received || end < start || end >= total || !plan || plan.byteStart !== start || plan.byteEnd !== end || plan.size !== length) throw new Error('UPLOAD_RANGE_INVALID');
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
-            let size = 0;
-            request.on('data', chunk => { size += chunk.length; if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
+            let size = 0; const digest = crypto.createHash('sha256');
+            request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
             try {
                 await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
-                file.chunks.push({ path: target, offset: start, size, partIndex: plan.index, status: 'queued', remote: null });
+                file.chunks.push({ path: target, offset: start, size, sha256: digest.digest('hex'), partIndex: plan.index, status: 'queued', remote: null });
                 file.received += size;
                 persistUpload(job);
                 return { received: file.received, complete: file.received === file.size };
@@ -421,7 +421,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {};
-                const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0 }));
+                const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0, sha256: String(part.sha256 || '') }));
                 const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';

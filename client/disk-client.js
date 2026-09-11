@@ -11,9 +11,15 @@
     const uploadControllers = new Map();
     const readControllers = new Map();
     const hiddenLoadingOperations = new Set();
+    const cacheProgressByFile = new Map();
     const newAbortController = () => typeof AbortController === 'function' ? new AbortController() : { signal: { aborted: false, addEventListener() {} }, abort() { this.signal.aborted = true; } };
     const abortError = () => { const error = new Error('OPERATION_CANCELLED'); error.name = 'AbortError'; return error; };
     const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
+    const setCacheProgress = (id, value) => {
+        const previous = cacheProgressByFile.get(id);
+        if (value) cacheProgressByFile.set(id, value); else cacheProgressByFile.delete(id);
+        if (!previous || !value || previous.phase !== value.phase || Math.floor(previous.percent ?? -1) !== Math.floor(value.percent ?? -1)) cacheChanged();
+    };
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
     const waiting = new Map();
@@ -89,6 +95,7 @@
     function start() { enabled = true; refresh(); }
     function stop() {
         enabled = false; generation++; jobs = []; localUploads.clear();
+        hiddenLoadingOperations.clear(); cacheProgressByFile.clear();
         for (const handlers of waiting.values()) handlers.reject(new Error('LOGIN_REQUIRED'));
         waiting.clear(); emit();
     }
@@ -100,7 +107,7 @@
     function upload(files, folderPath, read = file => file, metadata = {}) {
         return withActivity('正在上传 ' + files.length + ' 个文件', async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
-            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', percent: null };
+            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null };
             const controller = newAbortController();
             const current = generation;
             localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
@@ -108,8 +115,10 @@
                 return await uploadFiles(files, folderPath, read, metadata, values => {
                     if (current !== generation) throw new Error('LOGIN_REQUIRED');
                     if (values.operationId && values.operationId !== pending.operation_id) {
-                        localUploads.delete(pending.operation_id); uploadControllers.delete(pending.operation_id);
+                        const previousId = pending.operation_id;
+                        localUploads.delete(previousId); uploadControllers.delete(previousId);
                         pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
+                        if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
                     update(values); emit();
                 }, controller.signal);
@@ -201,17 +210,32 @@
             update(values);
         });
         try { return options.silentLoading ? await run(() => {}) : await withActivity('正在打开文件：' + item.name, run); }
-        finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) pendingReads.delete(item.id); cacheChanged(); }
+        finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
+        setCacheProgress(item.id, { phase: 'telegram', percent: null });
         const response = await fetch(base + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
-        const blob = await response.blob();
+        const total = Math.max(0, Number(response.headers?.get('Content-Length')) || Number(item.size) || 0);
+        let blob;
+        if (response.body?.getReader) {
+            const reader = response.body.getReader(), chunks = []; let received = 0;
+            setCacheProgress(item.id, { phase: 'browser', percent: 50 });
+            while (true) {
+                const { done, value } = await reader.read(); if (done) break;
+                chunks.push(value); received += value.byteLength;
+                const percent = total ? 50 + Math.min(50, received / total * 50) : null;
+                setCacheProgress(item.id, { phase: 'browser', percent, receivedBytes: received, totalBytes: total });
+            }
+            blob = new Blob(chunks, { type: item.type || response.headers?.get('Content-Type') || 'application/octet-stream' });
+        } else blob = await response.blob();
+        if (Number(item.size) > 0 && blob.size !== Number(item.size)) throw new Error('DISK_READ_SIZE_MISMATCH');
         await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type }).catch(() => {});
+        setCacheProgress(item.id, { phase: 'done', percent: 100 });
         refresh(); return blob;
     }
     async function cancelOperation(id) {
@@ -228,7 +252,11 @@
     const streamUrl = item => base + '/files/' + encodeURIComponent(item.id) + '/stream';
     window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
         isCaching(id) { return pendingReads.has(id); },
+        cacheProgress(id) { return cacheProgressByFile.get(id) || null; },
         isLoadingHidden(id) { return hiddenLoadingOperations.has(id); },
+        hideLoading(id) { if (id) hiddenLoadingOperations.add(id); },
+        showLoading(id) { if (id) hiddenLoadingOperations.delete(id); },
+        hasHiddenLoading() { return hiddenLoadingOperations.size > 0; },
         subscribeActivity(listener) { activityListeners.add(listener); listener([...activities]); return () => activityListeners.delete(listener); },
         subscribe(listener) { listeners.add(listener); listener(visibleJobs()); return () => listeners.delete(listener); } };
 })();

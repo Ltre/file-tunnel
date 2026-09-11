@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
 const { createDiskOperations } = require('../server/disk-operations');
 const { createDiskTelegram } = require('../server/disk-telegram');
+const { createDiskChunkFileCache } = require('../server/disk-chunk-file-cache');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const temp = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-followup-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
 
@@ -55,6 +56,36 @@ test('Telegram 下载端忽略 Range 时丢弃前缀并只输出请求窗口', a
     const chunks = []; for await (const chunk of stream) chunks.push(Buffer.from(chunk));
     assert.equal(Buffer.concat(chunks).toString(), 'cdef');
     assert.deepEqual(requests, ['bytes=2-5']);
+});
+
+test('分片哈希 file_id 索引按 Bot 隔离，复用时只发送 file_id 且不重复上传字节', async t => {
+    const dataDir = temp(t), cache = createDiskChunkFileCache({ dataDir });
+    const part = { sha256: 'a'.repeat(64), size: 3 };
+    const firstBackend = { token: 'bot-a', baseUrl: 'https://example.test', channelId: '-1' };
+    const secondBackend = { token: 'bot-b', baseUrl: 'https://example.test', channelId: '-1' };
+    cache.put(firstBackend, part, { fileId: 'cached-file', fileUniqueId: 'cached-unique' });
+    assert.equal(cache.get(firstBackend, part).fileId, 'cached-file');
+    assert.equal(cache.get(secondBackend, part), null);
+    assert.equal(createDiskChunkFileCache({ dataDir }).get(firstBackend, part).fileId, 'cached-file', '索引必须跨重启持久化');
+
+    const methods = [], reply = result => new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (url, init) => {
+        const method = url.split('/').pop(); methods.push(method);
+        if (method === 'sendMediaGroup') {
+            const payload = JSON.parse(init.body); assert.deepEqual(payload.media.map(item => item.media), ['cached-a', 'cached-b']);
+            return reply(payload.media.map((item, index) => ({ message_id: index + 1, date: 1, document: { file_id: item.media, file_unique_id: 'u' + index } })));
+        }
+        throw new Error('unexpected method ' + method);
+    } });
+    const files = [{ logicalId: 'logical', name: 'large.bin', type: 'application/octet-stream', size: 6, folderPath: '' }];
+    const parts = [
+        { fileIndex: 0, logicalFileId: 'logical', partIndex: 1, partCount: 2, originalSize: 6, offset: 0, size: 3, sha256: 'b'.repeat(64), reuseFileId: 'cached-a', name: 'large.part01' },
+        { fileIndex: 0, logicalFileId: 'logical', partIndex: 2, partCount: 2, originalSize: 6, offset: 3, size: 3, sha256: 'c'.repeat(64), reuseFileId: 'cached-b', name: 'large.part02' }
+    ];
+    const result = await telegram.uploadPhysical(firstBackend, files, parts, () => {}, { totalBytes: 6 });
+    assert.deepEqual(methods, ['sendMediaGroup']);
+    assert.deepEqual(result.map(item => item.fileId), ['cached-a', 'cached-b']);
+    assert.equal(result.some(item => item.captionWarning), false);
 });
 
 test('Album 413 拆单后续失败会回滚此前已经确认的分片消息', async t => {

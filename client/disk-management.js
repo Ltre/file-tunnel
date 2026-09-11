@@ -31,21 +31,23 @@
     async function preview(item) {
         if (!previewable(item)) return;
         closePreview(); $('diskAdminPreview').hidden = false; $('diskAdminPreviewName').textContent = item.name;
-        $('diskAdminPreviewStatus').textContent = '正在从 Telegram 读取并合并逻辑文件…';
+        $('diskAdminPreviewStatus').textContent = '正在打开按需分片预览…';
         try {
-            const response = await fetch(fileUrl(item), { cache: 'no-store' });
-            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP_${response.status}`);
-            const blob = await response.blob(), type = item.type || blob.type; let media;
-            if (type.startsWith('text/')) { media = el('pre'); media.textContent = await blob.slice(0, 2 * 1024 * 1024).text(); }
+            const type = item.type || 'application/octet-stream'; let media;
+            if (type.startsWith('text/')) {
+                const response = await fetch(fileUrl(item), { cache: 'no-store' });
+                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP_${response.status}`);
+                const blob = await response.blob(); media = el('pre'); media.textContent = await blob.slice(0, 2 * 1024 * 1024).text();
+                previewUrl = URL.createObjectURL(blob);
+            }
             else {
-                previewUrl = URL.createObjectURL(new Blob([blob], { type }));
                 if (type.startsWith('image/')) media = el('img');
                 else if (type.startsWith('audio/')) { media = el('audio'); media.controls = true; media.autoplay = true; }
                 else if (type.startsWith('video/')) { media = el('video'); media.controls = true; media.autoplay = true; }
                 else { media = el('iframe'); media.setAttribute('sandbox', ''); media.title = item.name; }
-                media.src = previewUrl;
+                media.src = fileUrl(item);
             }
-            $('diskAdminPreviewBody').replaceChildren(media); $('diskAdminPreviewStatus').textContent = `预览已加载 · ${bytes(item.size)}`;
+            $('diskAdminPreviewBody').replaceChildren(media); $('diskAdminPreviewStatus').textContent = /^(audio|video)\//.test(type) ? `按播放位置请求 Telegram 分片 · ${bytes(item.size)}` : `预览已加载 · ${bytes(item.size)}`;
         } catch (error) { $('diskAdminPreviewStatus').textContent = '预览失败：' + error.message; }
     }
     function thumbnail(item) {

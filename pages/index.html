@@ -3250,11 +3250,17 @@
             flex: 0 0 auto;
             display: flex;
             flex-wrap: nowrap;
-            justify-content: flex-end;
+            justify-content: flex-start;
             gap: 8px;
+            width: 100%;
+            min-width: 0;
+            max-width: 100%;
+            box-sizing: border-box;
             margin-top: 14px;
             overflow-x: auto;
             overscroll-behavior-x: contain;
+            touch-action: pan-x;
+            -webkit-overflow-scrolling: touch;
             scrollbar-width: thin;
         }
 
@@ -3420,6 +3426,8 @@
         .media-fullscreen-zoom-controls img { width: 25px; height: 25px; background: transparent; filter: invert(1); pointer-events: none; }
         .media-fullscreen-zoom-controls[hidden] { display: none; }
         .media-fullscreen-content img.media-fullscreen-zoomed { max-width: none!important; max-height: none!important; will-change: transform; }
+        .media-fullscreen-content img.media-fullscreen-zoomed { cursor: grab; }
+        .media-fullscreen-content.mouse-panning img.media-fullscreen-zoomed { cursor: grabbing; }
 
         .media-fullscreen-active-item {
             max-width: 100% !important;
@@ -4303,9 +4311,11 @@
 
             .file-preview-actions {
                 flex-wrap: nowrap;
-                justify-content: flex-end;
+                justify-content: flex-start;
                 overflow-x: auto;
                 overscroll-behavior-x: contain;
+                touch-action: pan-x;
+                -webkit-overflow-scrolling: touch;
                 scrollbar-width: thin;
             }
 
@@ -5693,7 +5703,7 @@
             <header class="telegram-drive-header">
                 <div class="telegram-drive-heading">
                     <span class="telegram-drive-logo" aria-hidden="true">☁</span>
-                    <div><div class="telegram-drive-title">Telegram网盘</div><div class="telegram-drive-summary" id="telegramDriveSummary">等待登录</div></div>
+                    <div class="telegram-drive-title">Telegram网盘</div>
                 </div>
                 <div class="telegram-drive-header-actions">
                     <button class="telegram-drive-icon-btn" id="telegramDriveRefreshBtn" type="button" title="刷新" aria-label="刷新网盘">↻</button>
@@ -5723,6 +5733,7 @@
                 </div>
             </div>
             <input id="telegramDriveFileInput" type="file" multiple hidden>
+            <div class="telegram-drive-menu-backdrop" id="telegramDriveItemMenuBackdrop" hidden></div>
             <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>
             <div class="telegram-drive-subdialog" id="telegramDriveDialog" hidden><div class="telegram-drive-dialog-card"><div class="telegram-drive-dialog-header"><strong id="telegramDriveDialogTitle"></strong><button class="telegram-drive-icon-btn" id="telegramDriveDialogCloseBtn" type="button" aria-label="关闭对话框">×</button></div><div class="telegram-drive-dialog-body" id="telegramDriveDialogBody"></div><div class="telegram-drive-dialog-actions" id="telegramDriveDialogActions"></div></div></div>
         </section>

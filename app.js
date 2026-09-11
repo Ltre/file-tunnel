@@ -165,6 +165,7 @@ let mediaFullscreenIndex = 0;
 let mediaFullscreenPointerStart = null;
 let mediaFullscreenZoom = { scale:1, x:0, y:0 };
 let mediaFullscreenGesture = { pointers:new Map(), pinch:false };
+let mediaFullscreenMousePan = null;
 let filePreviewPointerStart = null;
 let mediaFullscreenMovedMedia = null;
 let mediaFullscreenMovedParent = null;
@@ -11529,6 +11530,8 @@ function resetMediaFullscreenZoom() {
     mediaFullscreenZoom = { scale:1, x:0, y:0 };
     mediaFullscreenPointerStart = null;
     mediaFullscreenGesture = { pointers:new Map(), pinch:false };
+    mediaFullscreenMousePan = null;
+    document.getElementById('mediaFullscreenContent')?.classList.remove('mouse-panning');
 }
 
 function changeMediaFullscreenZoom(delta) {
@@ -17357,6 +17360,14 @@ function initUI() {
         }
     });
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'mouse') {
+            const image = event.target.closest?.('#mediaFullscreenContent img');
+            if (!image || event.button !== 0 || mediaFullscreenZoom.scale <= 1) return;
+            mediaFullscreenMousePan = { id:event.pointerId, x:event.clientX, y:event.clientY, startX:mediaFullscreenZoom.x, startY:mediaFullscreenZoom.y };
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            document.getElementById('mediaFullscreenContent')?.classList.add('mouse-panning');
+            event.preventDefault(); return;
+        }
         if (event.pointerType !== 'touch') return;
         if (event.target.closest?.('button')) return;
         try {
@@ -17375,6 +17386,11 @@ function initUI() {
         }
     }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointermove', event => {
+        if (event.pointerType === 'mouse' && mediaFullscreenMousePan?.id === event.pointerId) {
+            mediaFullscreenZoom.x = mediaFullscreenMousePan.startX + event.clientX - mediaFullscreenMousePan.x;
+            mediaFullscreenZoom.y = mediaFullscreenMousePan.startY + event.clientY - mediaFullscreenMousePan.y;
+            applyMediaFullscreenZoom(); event.preventDefault(); return;
+        }
         if (event.pointerType !== 'touch' || !mediaFullscreenGesture.pointers.has(event.pointerId)) return;
         mediaFullscreenGesture.pointers.set(event.pointerId, { x:event.clientX, y:event.clientY });
         if (!mediaFullscreenGesture.pinch || mediaFullscreenGesture.pointers.size < 2) return;
@@ -17391,6 +17407,10 @@ function initUI() {
         applyMediaFullscreenZoom();
     }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerup', event => {
+        if (mediaFullscreenMousePan?.id === event.pointerId) {
+            mediaFullscreenMousePan = null; document.getElementById('mediaFullscreenContent')?.classList.remove('mouse-panning');
+            event.preventDefault(); return;
+        }
         const wasPinch = mediaFullscreenGesture.pinch;
         mediaFullscreenGesture.pointers.delete(event.pointerId);
         if (wasPinch) {
@@ -17414,6 +17434,7 @@ function initUI() {
         }
     }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointercancel', event => {
+        if (mediaFullscreenMousePan?.id === event.pointerId) { mediaFullscreenMousePan = null; document.getElementById('mediaFullscreenContent')?.classList.remove('mouse-panning'); }
         mediaFullscreenGesture.pointers.delete(event.pointerId);
         mediaFullscreenGesture.pinch = false;
         mediaFullscreenPointerStart = null;

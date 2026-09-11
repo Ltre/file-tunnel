@@ -11,6 +11,7 @@ const { createDiskShares } = require('./disk-shares');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskPartCache } = require('./disk-part-cache');
+const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -69,6 +70,7 @@ function errorStatus(code) {
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {} }) {
     const log = createDiskUploadLog(dataDir);
     const partCache = createDiskPartCache({ dataDir });
+    const chunkFileCache = createDiskChunkFileCache({ dataDir });
     const browser = express.Router();
     const external = express.Router();
     const admin = express.Router();
@@ -562,7 +564,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const physicalPart = (file, fileIndex, chunk) => {
             const count = file.parts.length, width = Math.max(2, String(count).length);
             const suffix = `.part${String(chunk.partIndex).padStart(width, '0')}-of-${String(count).padStart(width, '0')}`;
-            return { fileIndex, logicalFileId: file.logicalId, partIndex: chunk.partIndex, partCount: count, originalSize: file.size, offset: chunk.offset, start: 0, end: chunk.size ? chunk.size - 1 : undefined, size: chunk.size, path: chunk.path, type: count === 1 ? file.type : 'application/octet-stream', name: count === 1 ? file.name : file.name.slice(0, Math.max(1, 180 - suffix.length)) + suffix };
+            return { fileIndex, logicalFileId: file.logicalId, partIndex: chunk.partIndex, partCount: count, originalSize: file.size, offset: chunk.offset, start: 0, end: chunk.size ? chunk.size - 1 : undefined, size: chunk.size, sha256: chunk.sha256 || '', path: chunk.path, type: count === 1 ? file.type : 'application/octet-stream', name: count === 1 ? file.name : file.name.slice(0, Math.max(1, 180 - suffix.length)) + suffix };
         };
         const nextPipelineBatch = job => {
             const batch = []; let bytes = 0;
@@ -631,9 +633,29 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     try {
                         const progress = patch => update({ ...patch, telegramBytesUploaded: patch.processedBytes, telegramTotalBytes: patch.totalBytes, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message });
                         const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes: job.files.reduce((sum, file) => sum + file.size, 0), confirmedBytes: job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0), signal: job.pipelineAbort.signal };
-                        const remotes = await enqueueTelegramUpload(job, () => typeof telegram.uploadPhysical === 'function'
-                            ? telegram.uploadPhysical(job.storage, job.files, batch, progress, context)
-                            : telegram.upload(job.storage, batch.map(part => ({ ...job.files[part.fileIndex], name: part.name, size: part.size, path: part.path, chunks: [{ path: part.path, offset: 0, size: part.size }] })), progress, [], context).then(results => results.map((remote, index) => ({ ...remote, fileIndex: batch[index].fileIndex, logicalFileId: batch[index].logicalFileId, partIndex: batch[index].partIndex, partCount: batch[index].partCount, originalSize: batch[index].originalSize, size: batch[index].size, offset: batch[index].offset }))));
+                        const remotes = await enqueueTelegramUpload(job, async () => {
+                            const prepared = [];
+                            for (const part of batch) {
+                                const cached = chunkFileCache.get(job.storage, part);
+                                if (!cached) { prepared.push(part); continue; }
+                                try {
+                                    await telegram.call(job.storage, 'getFile', { file_id: cached.fileId }, undefined, 0, { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, dedupe: true });
+                                    prepared.push({ ...part, reuseFileId: cached.fileId, reuseFileUniqueId: cached.fileUniqueId });
+                                    log('telegram.chunk-reuse-valid', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, part: part.partIndex, sha256: part.sha256 });
+                                } catch (error) {
+                                    chunkFileCache.remove(job.storage, part); prepared.push(part);
+                                    log('telegram.chunk-reuse-invalid', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, part: part.partIndex, sha256: part.sha256, error: networkDetails(error) });
+                                }
+                            }
+                            const uploaded = typeof telegram.uploadPhysical === 'function'
+                                ? await telegram.uploadPhysical(job.storage, job.files, prepared, progress, context)
+                                : await telegram.upload(job.storage, prepared.map(part => ({ ...job.files[part.fileIndex], name: part.name, size: part.size, path: part.path, chunks: [{ path: part.path, offset: 0, size: part.size }] })), progress, [], context).then(results => results.map((remote, index) => ({ ...remote, fileIndex: prepared[index].fileIndex, logicalFileId: prepared[index].logicalFileId, partIndex: prepared[index].partIndex, partCount: prepared[index].partCount, originalSize: prepared[index].originalSize, size: prepared[index].size, offset: prepared[index].offset })));
+                            for (const remote of uploaded) {
+                                const part = prepared.find(entry => entry.fileIndex === remote.fileIndex && entry.partIndex === remote.partIndex);
+                                if (part) { remote.sha256 = part.sha256 || ''; chunkFileCache.put(job.storage, part, remote); }
+                            }
+                            return uploaded;
+                        });
                         for (const remote of remotes) store(req).markPartUploaded(job.id, remote.fileIndex, remote.partIndex, remote);
                     } catch (error) {
                         store(req).resetUploadingParts(job.id); job.pipelineError = error.message; throw error;
@@ -654,7 +676,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         };
         router.post('/uploads', wrap((req, res) => {
-            if (mutations.has(JSON.stringify([scope(req).userId, scope(req).diskSpace]))) throw new Error('DISK_BUSY');
             const storage = backend(req);
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const files = (req.body?.files || []).map(file => {
@@ -670,7 +691,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
             job.operationId = operation.operation_id;
             store(req).setUploadContext(job.id, { operationId: job.operationId, channelId: storage.channelId });
-            operations.update(job.operationId, { uploadId: job.id }, true);
+            operations.update(job.operationId, { uploadId: job.id, folderPath: job.folderPath || '' }, true);
             job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
             operations.run(job.operationId, (update, control) => runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });

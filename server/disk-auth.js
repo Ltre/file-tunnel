@@ -26,10 +26,15 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
     const data = readJson(file, { users: [], apps: [], backends: [], tokens: [] });
     const save = () => writeJson(file, data);
     const pending = new Map();
+    let webauthnPromise = null;
     async function passkeyMethods() {
-        try { return await webauthn(); }
-        catch (error) { if (/MODULE_NOT_FOUND/.test(error.code || '')) throw new Error('PASSKEY_SERVER_UNAVAILABLE'); throw error; }
+        try {
+            webauthnPromise ||= Promise.resolve().then(() => webauthn());
+            return await webauthnPromise;
+        }
+        catch (error) { webauthnPromise = null; if (/MODULE_NOT_FOUND/.test(error.code || '')) throw new Error('PASSKEY_SERVER_UNAVAILABLE'); throw error; }
     }
+    queueMicrotask(() => passkeyMethods().catch(() => {}));
     const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', provider: user.provider || (user.telegramId ? 'telegram' : 'passkey'), passkeyCount: (user.passkeys || []).length, createdAt: user.createdAt || 0 } : null;
     const publicApp = app => ({ app_id: app.app_id, remark: app.remark, enabled: app.enabled, passkey_origin: app.passkeyOrigin || '', secretConfigured: true, createdAt: app.createdAt, lastUsedAt: app.lastUsedAt || 0, lastIssuedAt: app.lastIssuedAt || 0 });
     function seal(value) {
