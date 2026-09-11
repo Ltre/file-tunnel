@@ -2282,7 +2282,7 @@
         .telegram-drive-workspace {
             display: grid;
             min-height: 0;
-            grid-template-rows: auto minmax(0, 1fr) auto;
+            grid-template-rows: auto minmax(0, 1fr) 54px;
         }
 
         .telegram-drive-toolbar {
@@ -2396,13 +2396,42 @@
         }
 
         .telegram-drive-selection {
+            position: absolute;
+            inset: 0;
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            flex-wrap: nowrap;
             gap: 12px;
-            padding: 9px 18px;
-            border-bottom: 1px solid var(--panel-border);
+            box-sizing: border-box;
+            min-width: 0;
+            padding: 7px 18px;
             background: color-mix(in srgb, var(--accent) 9%, var(--surface-soft));
+        }
+
+        .telegram-drive-selection > strong { flex: 0 0 auto; white-space: nowrap; }
+        .telegram-drive-selection-actions { flex: 1 1 auto; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+        .telegram-drive-selection-actions .btn { flex: 0 0 auto; white-space: nowrap; }
+
+        .telegram-drive-bottom {
+            position: relative;
+            min-width: 0;
+            height: 54px;
+            overflow: hidden;
+            border-top: 1px solid var(--panel-border);
+            background: var(--surface-soft);
+        }
+
+        .telegram-drive-bottom-summary {
+            box-sizing: border-box;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            padding: 0 18px;
+            color: var(--text-muted);
+            font-size: .82rem;
+            white-space: nowrap;
+            overflow-x: auto;
+            scrollbar-width: thin;
         }
 
         .telegram-drive-items {
@@ -2595,7 +2624,7 @@
             .telegram-drive-controls { width: 100%; flex-wrap: wrap; }
             .telegram-drive-search { flex: 1 1 150px; width: auto; }
             .telegram-drive-sort { flex: 1 1 110px; }
-            .telegram-drive-selection { align-items: flex-start; flex-direction: column; }
+            .telegram-drive-selection { padding-inline: 10px; }
             .telegram-drive-items { padding: 6px 8px 18px; }
             .telegram-drive-items[data-view="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .telegram-drive-item { grid-template-columns: auto 36px minmax(0, 1fr) auto; }
@@ -3220,11 +3249,16 @@
         .file-preview-actions {
             flex: 0 0 auto;
             display: flex;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             justify-content: flex-end;
             gap: 8px;
             margin-top: 14px;
+            overflow-x: auto;
+            overscroll-behavior-x: contain;
+            scrollbar-width: thin;
         }
+
+        .file-preview-actions > * { flex: 0 0 auto; white-space: nowrap; }
 
         .file-preview-actions:empty {
             display: none;
@@ -3360,6 +3394,32 @@
             border-radius: 2px;
             background: #000;
         }
+
+        .media-fullscreen-zoom-controls {
+            position: absolute;
+            right: max(18px, env(safe-area-inset-right));
+            bottom: max(22px, env(safe-area-inset-bottom));
+            z-index: 5;
+            display: grid;
+            gap: 8px;
+        }
+
+        .media-fullscreen-zoom-controls button {
+            display: grid;
+            width: 42px;
+            height: 42px;
+            place-items: center;
+            border: 1px solid rgba(255,255,255,.32);
+            border-radius: 12px;
+            background: rgba(0,0,0,.48);
+            color: #fff;
+            cursor: pointer;
+        }
+
+        .media-fullscreen-zoom-controls button:disabled { opacity: .35; cursor: default; }
+        .media-fullscreen-zoom-controls img { width: 25px; height: 25px; background: transparent; filter: invert(1); pointer-events: none; }
+        .media-fullscreen-zoom-controls[hidden] { display: none; }
+        .media-fullscreen-content img.media-fullscreen-zoomed { max-width: none!important; max-height: none!important; will-change: transform; }
 
         .media-fullscreen-active-item {
             max-width: 100% !important;
@@ -5309,6 +5369,7 @@
                             <div class="connection-header-menu" id="connectionHeaderMenu" hidden>
                                 <button type="button" id="scanTunnelCodeBtn">扫描隧道码</button>
                                 <button type="button" id="receiveLightBtn">接收光媒</button>
+                                <button type="button" id="connectionResourceBrowserBtn">资源浏览器</button>
                                 <button type="button" id="telegramDriveBtn">Telegram网盘</button>
                             </div>
                         </div>
@@ -5563,6 +5624,10 @@
         <button class="media-fullscreen-arrow media-fullscreen-arrow-left" id="mediaFullscreenPrevBtn" type="button" aria-label="上一个">‹</button>
         <div class="media-fullscreen-content" id="mediaFullscreenContent"></div>
         <button class="media-fullscreen-arrow media-fullscreen-arrow-right" id="mediaFullscreenNextBtn" type="button" aria-label="下一个">›</button>
+        <div class="media-fullscreen-zoom-controls" id="mediaFullscreenZoomControls" hidden>
+            <button id="mediaFullscreenZoomInBtn" type="button" aria-label="放大图片"><img src="/prompts/resources/magnifier-plus.svg" alt=""></button>
+            <button id="mediaFullscreenZoomOutBtn" type="button" aria-label="缩小图片"><img src="/prompts/resources/magnifier-minus.svg" alt=""></button>
+        </div>
     </div>
     
     <!-- 富文本查看器 -->
@@ -5652,7 +5717,10 @@
                     </div>
                 </div>
                 <div class="telegram-drive-items" id="telegramDriveList" data-view="list"></div>
-                <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
+                <div class="telegram-drive-bottom" id="telegramDriveBottom">
+                    <div class="telegram-drive-bottom-summary" id="telegramDriveBottomSummary">0 个文件夹 · 0 个文件 · 合计 0 B</div>
+                    <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
+                </div>
             </div>
             <input id="telegramDriveFileInput" type="file" multiple hidden>
             <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>

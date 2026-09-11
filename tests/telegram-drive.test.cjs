@@ -71,6 +71,30 @@ test('Telegram 网盘目录和文件支持多级创建、重命名、移动、�
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('未完成上传持久化已确认的 Telegram 分片，进程重启后可执行回滚', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-drive-recovery-'));
+    try {
+        const drive = createTelegramDriveStore({ dataDir: dir, maxFileSize: () => 1024 });
+        const job = drive.begin({ owner: { id: '1001', name: 'A' }, folderPath: '', files: [{ name: 'large.bin', type: 'application/octet-stream', size: 3 }], maxDepth: 20, channelId: '-100123' });
+        drive.setUploadContext(job.id, { operationId: 'operation-1', channelId: '-100123' });
+        await drive.receivePart(job.id, 0, Readable.from([Buffer.from('abc')]), 'bytes 0-2/3');
+        drive.markPartUploading(job.id, 0, 1);
+        drive.markPartUploaded(job.id, 0, 1, { fileId: 'telegram-file', messageId: 88, partIndex: 1, size: 3 });
+        drive.preserveForRecovery(job.id);
+        const retry = drive.begin({ owner: { id: '1001', name: 'A' }, folderPath: '', files: [{ name: 'large.bin', type: 'application/octet-stream', size: 3 }], maxDepth: 20, channelId: '-100123' });
+        drive.abort(retry.id);
+
+        const restarted = createTelegramDriveStore({ dataDir: dir, maxFileSize: () => 1024 });
+        const [recovery] = restarted.recoveredUploads();
+        assert.equal(recovery.id, job.id);
+        assert.equal(recovery.operationId, 'operation-1');
+        assert.equal(recovery.channelId, '-100123');
+        assert.equal(recovery.files[0].chunks[0].remote.messageId, 88);
+        restarted.discardRecovered(recovery);
+        assert.equal(fs.existsSync(recovery.dir), false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('Telegram 网盘保持独立存储、分区、album、修复与来电取消链路', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
     const page = fs.readFileSync(path.join(__dirname, '..', 'pages', 'index.html'), 'utf8');

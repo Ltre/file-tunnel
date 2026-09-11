@@ -163,6 +163,8 @@ let suppressNextFilePreviewPopstate = false;
 let mediaFullscreenItems = [];
 let mediaFullscreenIndex = 0;
 let mediaFullscreenPointerStart = null;
+let mediaFullscreenZoom = { scale:1, x:0, y:0 };
+let mediaFullscreenGesture = { pointers:new Map(), pinch:false };
 let filePreviewPointerStart = null;
 let mediaFullscreenMovedMedia = null;
 let mediaFullscreenMovedParent = null;
@@ -8245,6 +8247,18 @@ function setFilePreviewActions(actions = []) {
     if (!container) return;
     container.replaceChildren();
     actions.forEach(action => container.appendChild(action));
+    const guideToken = String((Number(container.dataset.guideToken) || 0) + 1);
+    container.dataset.guideToken = guideToken;
+    container.scrollLeft = 0;
+    requestAnimationFrame(() => {
+        if (container.dataset.guideToken !== guideToken || container.scrollWidth <= container.clientWidth + 2) return;
+        const distance = Math.min(96, Math.max(44, container.scrollWidth - container.clientWidth));
+        const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+        container.scrollTo({ left: distance, behavior: smooth ? 'smooth' : 'auto' });
+        setTimeout(() => {
+            if (container.dataset.guideToken === guideToken) container.scrollTo({ left: 0, behavior: smooth ? 'smooth' : 'auto' });
+        }, smooth ? 620 : 80);
+    });
 }
 
 function openFilePreviewHistory(viewer, options = {}) {
@@ -9394,6 +9408,11 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
             shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId).catch(err => {
                 alert(`磁链生成失败: ${err.message}`);
                 historyLog('file-magnet-share-failed', { messageId, fileId: fileInfo.id, error: err.message });
+            });
+        }),
+        createFileActionButton('存到网盘', '选择 Telegram 网盘目录保存此文件', () => {
+            window.DiskTunnelAdapter.saveFiles(collectionMessageId || messageId, [fileInfo]).catch(error => {
+                if (error?.message !== 'OPERATION_CANCELLED') alert(`保存到 Telegram 网盘失败：${error.message}`);
             });
         }),
         cacheAction,
@@ -11481,6 +11500,42 @@ function getMediaFullscreenGroupCounter() {
     return `${groupIndex >= 0 ? groupIndex + 1 : 1} / ${group.length}`;
 }
 
+function applyMediaFullscreenZoom() {
+    const image = document.getElementById('mediaFullscreenContent')?.querySelector('img');
+    const controls = document.getElementById('mediaFullscreenZoomControls');
+    if (!image) {
+        if (controls) controls.hidden = true;
+        return;
+    }
+    if (controls) controls.hidden = false;
+    const scale = Math.max(1, Math.min(6, Number(mediaFullscreenZoom.scale) || 1));
+    const rect = document.getElementById('mediaFullscreenContent')?.getBoundingClientRect();
+    const maxX = Math.max(0, ((rect?.width || innerWidth) * (scale - 1)) / 2);
+    const maxY = Math.max(0, ((rect?.height || innerHeight) * (scale - 1)) / 2);
+    mediaFullscreenZoom.scale = scale;
+    mediaFullscreenZoom.x = scale === 1 ? 0 : Math.max(-maxX, Math.min(maxX, mediaFullscreenZoom.x || 0));
+    mediaFullscreenZoom.y = scale === 1 ? 0 : Math.max(-maxY, Math.min(maxY, mediaFullscreenZoom.y || 0));
+    image.classList.toggle('media-fullscreen-zoomed', scale > 1);
+    image.style.transform = `translate3d(${mediaFullscreenZoom.x}px,${mediaFullscreenZoom.y}px,0) scale(${scale})`;
+    const zoomIn = document.getElementById('mediaFullscreenZoomInBtn');
+    const zoomOut = document.getElementById('mediaFullscreenZoomOutBtn');
+    if (zoomIn) zoomIn.disabled = scale >= 6;
+    if (zoomOut) zoomOut.disabled = scale <= 1;
+}
+
+function resetMediaFullscreenZoom() {
+    const previous = document.getElementById('mediaFullscreenContent')?.querySelector('img');
+    if (previous) { previous.style.transform = ''; previous.classList.remove('media-fullscreen-zoomed'); }
+    mediaFullscreenZoom = { scale:1, x:0, y:0 };
+    mediaFullscreenPointerStart = null;
+    mediaFullscreenGesture = { pointers:new Map(), pinch:false };
+}
+
+function changeMediaFullscreenZoom(delta) {
+    mediaFullscreenZoom.scale = Math.max(1, Math.min(6, mediaFullscreenZoom.scale + delta));
+    applyMediaFullscreenZoom();
+}
+
 function renderMediaFullscreenItem() {
     const overlay = document.getElementById('mediaFullscreenViewer');
     const content = document.getElementById('mediaFullscreenContent');
@@ -11489,6 +11544,7 @@ function renderMediaFullscreenItem() {
     const prevButton = document.getElementById('mediaFullscreenPrevBtn');
     const nextButton = document.getElementById('mediaFullscreenNextBtn');
     if (!overlay || !content) return;
+    resetMediaFullscreenZoom();
     const item = mediaFullscreenItems[mediaFullscreenIndex];
     if (!item) {
         restoreMovedFullscreenMedia({ pause: true });
@@ -11547,6 +11603,7 @@ function renderMediaFullscreenItem() {
         count: mediaFullscreenItems.length,
         reusedActivePreviewMedia: Boolean(reusableMedia)
     });
+    applyMediaFullscreenZoom();
 }
 
 function getRemotePreviewFullscreenState(options = {}) {
@@ -11683,6 +11740,7 @@ function navigateMediaFullscreen(delta) {
     if (!document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) return;
     if (mediaFullscreenItems.length <= 1) return;
     mediaFullscreenIndex = (mediaFullscreenIndex + delta + mediaFullscreenItems.length) % mediaFullscreenItems.length;
+    resetMediaFullscreenZoom();
     renderMediaFullscreenItem();
 }
 
@@ -11736,6 +11794,7 @@ function closeMediaFullscreen(options = {}) {
     const shouldGoBack = mediaFullscreenHistoryOpen && !options.fromHistory && !options.forceClose &&
         history.state?.[MEDIA_FULLSCREEN_HISTORY_KEY] === true;
     mediaFullscreenHistoryOpen = false;
+    resetMediaFullscreenZoom();
     overlay?.classList.remove('active');
     restoreMovedFullscreenMedia({ pause: false });
     const content = document.getElementById('mediaFullscreenContent');
@@ -16786,7 +16845,7 @@ function applyTunnelPermissionUi() {
     const canRead = hasTunnelPermission('read');
     chatMessages?.classList.toggle('permission-read-blocked', !canRead);
     if (chatMessages) chatMessages.inert = !canRead;
-    ['resourceBrowserBtn', 'historyBackupBtn'].forEach(id => {
+    ['resourceBrowserBtn', 'connectionResourceBrowserBtn', 'historyBackupBtn'].forEach(id => {
         const element = document.getElementById(id);
         if (element) element.disabled = !canRead;
     });
@@ -17050,7 +17109,10 @@ function initUI() {
         if (menu) menu.hidden = true;
         getLightTransferApi()?.openReceiver().catch(err => alert(`无法开始光媒接收：${err.message}`));
     });
-    window.DiskUI.init({ formatFileSize, showAppToast, historyLog });
+    window.DiskUI.init({
+        formatFileSize, showAppToast, historyLog,
+        audioCover: (blob, item) => extractAudioPosterFromStoredFile({ data:blob, name:item.name, type:item.type })
+    });
     window.DiskTunnelAdapter.configure({
         filesForRecord: telegramDriveFilesForMessage, readFile: getTelegramDriveBlob,
         linkBackup: associateTelegramDriveBackup,
@@ -17079,12 +17141,16 @@ function initUI() {
     document.getElementById('clipboardShareBtn').addEventListener('click', toggleClipboardShare);
     document.getElementById('copySharedClipboardBtn').addEventListener('click', copySharedClipboard);
     document.getElementById('garbageCleanupBtn').addEventListener('click', showGarbageCleanupDialog);
-    document.getElementById('resourceBrowserBtn').addEventListener('click', () => {
+    const openResourceBrowserFromButton = () => {
+        const menu = document.getElementById('connectionHeaderMenu');
+        if (menu) menu.hidden = true;
         showResourceBrowser({ restoreIfMinimized: true }).catch(err => {
             historyLog('resource-browser-open-failed', { error: err.message });
             alert(`无法打开资源浏览器: ${err.message}`);
         });
-    });
+    };
+    document.getElementById('resourceBrowserBtn').addEventListener('click', openResourceBrowserFromButton);
+    document.getElementById('connectionResourceBrowserBtn')?.addEventListener('click', openResourceBrowserFromButton);
     document.getElementById('historyBackupBtn')?.addEventListener('click', showHistoryBackupDialog);
     document.getElementById('historyBackupInput')?.addEventListener('change', event => {
         const file = event.target.files?.[0];
@@ -17282,6 +17348,8 @@ function initUI() {
     });
     document.getElementById('mediaFullscreenPrevBtn')?.addEventListener('click', () => navigateMediaFullscreen(-1));
     document.getElementById('mediaFullscreenNextBtn')?.addEventListener('click', () => navigateMediaFullscreen(1));
+    document.getElementById('mediaFullscreenZoomInBtn')?.addEventListener('click', () => changeMediaFullscreenZoom(.5));
+    document.getElementById('mediaFullscreenZoomOutBtn')?.addEventListener('click', () => changeMediaFullscreenZoom(-.5));
     document.getElementById('mediaFullscreenViewer')?.addEventListener('click', event => {
         if (event.target?.closest?.('img, video, button, .media-fullscreen-arrow, .media-fullscreen-topbar')) return;
         if (event.target?.id === 'mediaFullscreenViewer' || event.target?.id === 'mediaFullscreenContent') {
@@ -17294,9 +17362,42 @@ function initUI() {
         try {
             event.currentTarget.setPointerCapture?.(event.pointerId);
         } catch (_) {}
-        mediaFullscreenPointerStart = { x: event.clientX, y: event.clientY, pointerType: event.pointerType };
+        mediaFullscreenGesture.pointers.set(event.pointerId, { x:event.clientX, y:event.clientY });
+        if (mediaFullscreenGesture.pointers.size === 1 && mediaFullscreenZoom.scale === 1) {
+            mediaFullscreenPointerStart = { id:event.pointerId, x:event.clientX, y:event.clientY, pointerType:event.pointerType };
+        } else if (mediaFullscreenGesture.pointers.size === 2 && document.getElementById('mediaFullscreenContent')?.querySelector('img')) {
+            const [a, b] = [...mediaFullscreenGesture.pointers.values()];
+            mediaFullscreenGesture.pinch = true;
+            mediaFullscreenGesture.startDistance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+            mediaFullscreenGesture.startCenter = { x:(a.x + b.x) / 2, y:(a.y + b.y) / 2 };
+            mediaFullscreenGesture.startZoom = { ...mediaFullscreenZoom };
+            mediaFullscreenPointerStart = null;
+        }
+    }, true);
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointermove', event => {
+        if (event.pointerType !== 'touch' || !mediaFullscreenGesture.pointers.has(event.pointerId)) return;
+        mediaFullscreenGesture.pointers.set(event.pointerId, { x:event.clientX, y:event.clientY });
+        if (!mediaFullscreenGesture.pinch || mediaFullscreenGesture.pointers.size < 2) return;
+        event.preventDefault();
+        const [a, b] = [...mediaFullscreenGesture.pointers.values()];
+        const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const center = { x:(a.x + b.x) / 2, y:(a.y + b.y) / 2 };
+        const start = mediaFullscreenGesture.startZoom;
+        mediaFullscreenZoom = {
+            scale:Math.max(1, Math.min(6, start.scale * distance / mediaFullscreenGesture.startDistance)),
+            x:start.x + center.x - mediaFullscreenGesture.startCenter.x,
+            y:start.y + center.y - mediaFullscreenGesture.startCenter.y
+        };
+        applyMediaFullscreenZoom();
     }, true);
     document.getElementById('mediaFullscreenViewer')?.addEventListener('pointerup', event => {
+        const wasPinch = mediaFullscreenGesture.pinch;
+        mediaFullscreenGesture.pointers.delete(event.pointerId);
+        if (wasPinch) {
+            mediaFullscreenPointerStart = null;
+            if (mediaFullscreenGesture.pointers.size < 2) mediaFullscreenGesture.pinch = false;
+            return;
+        }
         if (!mediaFullscreenPointerStart) return;
         const dx = event.clientX - mediaFullscreenPointerStart.x;
         const dy = event.clientY - mediaFullscreenPointerStart.y;
@@ -17311,6 +17412,11 @@ function initUI() {
             event.preventDefault();
             closeMediaFullscreen();
         }
+    }, true);
+    document.getElementById('mediaFullscreenViewer')?.addEventListener('pointercancel', event => {
+        mediaFullscreenGesture.pointers.delete(event.pointerId);
+        mediaFullscreenGesture.pinch = false;
+        mediaFullscreenPointerStart = null;
     }, true);
     document.addEventListener('keydown', event => {
         if (!document.getElementById('musicPlayerOverlay')?.classList.contains('active')) return;

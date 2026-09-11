@@ -10,6 +10,7 @@
     const pendingReads = new Map();
     const uploadControllers = new Map();
     const readControllers = new Map();
+    const hiddenLoadingOperations = new Set();
     const newAbortController = () => typeof AbortController === 'function' ? new AbortController() : { signal: { aborted: false, addEventListener() {} }, abort() { this.signal.aborted = true; } };
     const abortError = () => { const error = new Error('OPERATION_CANCELLED'); error.name = 'AbortError'; return error; };
     const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
@@ -44,6 +45,7 @@
         polling = raw('/operations?ids=' + encodeURIComponent([...waiting.keys()].join(','))).then(data => {
             if (current !== generation) return;
             jobs = data.operations;
+            for (const job of jobs) if (!active(job)) hiddenLoadingOperations.delete(job.operation_id);
             for (const id of localUploads.keys()) if (jobs.some(job => job.operation_id === id && !active(job))) localUploads.delete(id);
             for (const [id, handlers] of waiting) {
                 const job = jobs.find(item => item.operation_id === id);
@@ -131,11 +133,16 @@
         const timer = setTimeout(resolve, ms);
         signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()); }, { once: true });
     });
+    const inferredType = file => {
+        if (file.type) return file.type;
+        const ext = String(file.name || '').toLowerCase().split('.').pop();
+        return ({ mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', m4v:'video/mp4', mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', opus:'audio/ogg', wav:'audio/wav', flac:'audio/flac', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', avif:'image/avif', svg:'image/svg+xml', pdf:'application/pdf', txt:'text/plain' })[ext] || 'application/octet-stream';
+    };
     async function uploadFiles(files, folderPath, read, metadata, update, signal) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
         const plannedPartSize = 20_000_000;
         const plannedFiles = files.map(file => ({
-            name: file.name, type: file.type, size: file.size,
+            name: file.name, type: inferredType(file), size: file.size,
             parts: Array.from({ length: Math.max(1, Math.ceil(file.size / plannedPartSize)) }, (_, index) => {
                 const byteStart = index * plannedPartSize, size = Math.min(plannedPartSize, file.size - byteStart);
                 return { index: index + 1, byteStart, byteEnd: byteStart + size - 1, size };
@@ -188,10 +195,12 @@
         let operationId = '';
         if (!pendingReads.has(item.id)) pendingReads.set(item.id, new Set());
         pendingReads.get(item.id).add(controller); cacheChanged();
-        try { return await withActivity('正在打开文件：' + item.name, update => readFile(item, { ...options, signal }, values => {
+        const run = update => readFile(item, { ...options, signal }, values => {
             if (values.operationId && values.operationId !== operationId) { if (operationId) readControllers.delete(operationId); operationId = values.operationId; readControllers.set(operationId, controller); }
+            if (options.silentLoading && values.operationId) hiddenLoadingOperations.add(values.operationId);
             update(values);
-        })); }
+        });
+        try { return options.silentLoading ? await run(() => {}) : await withActivity('正在打开文件：' + item.name, run); }
         finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) pendingReads.delete(item.id); cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
@@ -219,6 +228,7 @@
     const streamUrl = item => base + '/files/' + encodeURIComponent(item.id) + '/stream';
     window.DiskClient = { raw, request, json, upload, read, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
         isCaching(id) { return pendingReads.has(id); },
+        isLoadingHidden(id) { return hiddenLoadingOperations.has(id); },
         subscribeActivity(listener) { activityListeners.add(listener); listener([...activities]); return () => activityListeners.delete(listener); },
         subscribe(listener) { listeners.add(listener); listener(visibleJobs()); return () => listeners.delete(listener); } };
 })();

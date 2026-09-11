@@ -228,6 +228,16 @@ const RATE_LIMIT = {
     },
     validate: {
         xForwardedForHeader: false
+    },
+    // The drive has long-running chunk uploads and its own targeted auth/share
+    // limiters. Counting upload chunks, operation polling and Range requests in
+    // this generic page limiter makes one legitimate large upload lock every
+    // drive route for the rest of the 15-minute window.
+    skip(req) {
+        return ['/api/telegram/drive/uploads', '/api/telegram/drive/operations', '/api/telegram/drive/list', '/api/telegram/drive/tree', '/api/telegram/drive/directories', '/api/telegram/drive/files'].some(prefix => req.path.startsWith(prefix)) ||
+            req.path.startsWith('/api/telegram/disk/v1') ||
+            req.path.startsWith('/api/telegram/disk-admin') ||
+            req.path.startsWith('/api/telegram/disk-shares');
     }
 };
 const adminAuthRateLimit = rateLimit({

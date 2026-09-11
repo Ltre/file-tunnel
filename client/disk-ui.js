@@ -1,7 +1,7 @@
 'use strict';
 // Standalone drive UI: no tunnel/session/collection dependencies.
 (function () {
-let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {};
+let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {}, loadAudioCover = null;
 let telegramDrivePath = '';
 let telegramDriveOidcPopup = null;
 let telegramDriveOidcPollGeneration = 0;
@@ -175,11 +175,19 @@ function updateTelegramDriveSelectionBar() {
     count.textContent = `已选择 ${telegramDriveSelected.size} 项`;
 }
 
-function toggleTelegramDriveSelection(item, checked) {
+function toggleTelegramDriveSelection(item, checked, { renderBar = true } = {}) {
     const key = telegramDriveItemKey(item);
     if (checked) telegramDriveSelected.set(key, item);
     else telegramDriveSelected.delete(key);
-    updateTelegramDriveSelectionBar();
+    if (renderBar) updateTelegramDriveSelectionBar();
+}
+function updateTelegramDriveBottomSummary(data = telegramDriveCurrentData) {
+    const target = document.getElementById('telegramDriveBottomSummary');
+    if (!target) return;
+    const folders = Number(data?.summary?.folderCount ?? data?.directories?.length) || 0;
+    const files = Number(data?.summary?.fileCount ?? data?.files?.length) || 0;
+    const bytes = (data?.files || []).reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    target.textContent = `${folders} 个文件夹 · ${files} 个文件 · 合计 ${formatFileSize(bytes)}`;
 }
 function selectTelegramDriveItems(invert = false) {
     for (const item of getSortedTelegramDriveItems(getTelegramDriveDisplayData())) {
@@ -360,7 +368,7 @@ async function renameTelegramDriveItem(item) {
     await renderTelegramDrive();
 }
 
-async function chooseTelegramDriveDestination(items) {
+async function chooseTelegramDriveDestination(items = [], { title = '移动到', confirmText = '移动' } = {}) {
     const root = document.createElement('div'); root.className = 'disk-destination-tree';
     root.setAttribute('role', 'tree');
     const pathInput = document.createElement('input'); pathInput.placeholder = '/音乐/日本/专辑（全路径）'; pathInput.setAttribute('aria-label', '目标目录全路径');
@@ -435,7 +443,7 @@ async function chooseTelegramDriveDestination(items) {
         } catch (error) { alert(telegramDriveErrorText(error)); } finally { create.disabled = false; }
     };
     await reload();
-    return openTelegramDriveDialog({ title: '移动到', body: [hint, root, pathInput, create], confirmText: '移动', validate: async () => {
+    return openTelegramDriveDialog({ title, body: [hint, root, pathInput, create], confirmText, validate: async () => {
         const safe = pathInput.value.replace(/\\/g, '/').split('/').filter(Boolean).join('/');
         if (blocked(safe)) throw new Error('不能移动到自己或子目录');
         const current = await telegramDriveRequest('/api/telegram/drive/directories');
@@ -556,7 +564,8 @@ async function cacheTelegramDriveItems(items) {
     for (const file of list) {
         if (cached[file.id]) continue;
         requested++;
-        await window.DiskClient.read(file);
+        try { await window.DiskClient.read(file, { silentLoading: true }); }
+        catch (error) { if (error?.name !== 'AbortError' && error?.message !== 'OPERATION_CANCELLED' && error?.message !== 'The user aborted a request.') throw error; }
     }
     showAppToast(requested ? `已缓存 ${requested} 个文件到浏览器` : '所选文件已存在浏览器缓存');
     updateDiskCacheLabels();
@@ -612,6 +621,7 @@ function renderTelegramDriveItems() {
     if (!list || !telegramDriveCurrentData) return;
     list.dataset.view = telegramDriveView;
     const items = getSortedTelegramDriveItems(getTelegramDriveDisplayData());
+    updateTelegramDriveBottomSummary();
     if (!items.length) {
         const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋”上传文件或创建文件夹</div></div>';
         list.replaceChildren(empty); return;
@@ -640,30 +650,40 @@ function renderTelegramDriveItems() {
                 try {
                     await window.DiskClient.read(item);
                     if (!(await window.TelegramDriveCache?.status([item]))?.[item.id]) throw new Error('浏览器未能保存缓存，请检查存储权限与剩余空间');
-                } catch (error) { alert(telegramDriveErrorText(error)); }
+                } catch (error) {
+                    if (error?.name !== 'AbortError' && error?.message !== 'OPERATION_CANCELLED' && error?.message !== 'The user aborted a request.') alert(telegramDriveErrorText(error));
+                }
                 finally { delete cache.dataset.busy; updateDiskCacheLabels(); }
             };
             meta.append(' · ', cache);
         }
         const more = document.createElement('button'); more.type = 'button'; more.className = 'telegram-drive-icon-btn telegram-drive-item-more'; more.textContent = '⋮'; more.setAttribute('aria-label', `${item.name} 更多操作`); more.onclick = event => { event.stopPropagation(); showTelegramDriveItemMenu(item, more).catch(error => alert(telegramDriveErrorText(error))); };
-        let pointerType = '', selectionTimer = 0;
+        let pointerType = '', selectionTimer = 0, selectionBeforeClick = false;
         row.addEventListener('pointerdown', event => { pointerType = event.pointerType; });
         row.onclick = event => {
             if (event.target.closest('input,button,a') || event.detail > 1) return;
             const mouse = pointerType === 'mouse' || (!pointerType && window.matchMedia('(pointer:fine)').matches);
             if (mouse) {
                 clearTimeout(selectionTimer);
-                selectionTimer = setTimeout(() => {
-                    checkbox.checked = !checkbox.checked;
-                    checkbox.onchange();
-                }, 500);
+                selectionBeforeClick = checkbox.checked;
+                checkbox.checked = !checkbox.checked;
+                toggleTelegramDriveSelection(item, checkbox.checked, { renderBar: false });
+                row.classList.toggle('selected', checkbox.checked);
+                if (!document.getElementById('telegramDriveSelection')?.hidden) updateTelegramDriveSelectionBar();
+                selectionTimer = setTimeout(() => { selectionTimer = 0; updateTelegramDriveSelectionBar(); }, 500);
             }
             else if (telegramDriveSelected.size) { checkbox.checked = !checkbox.checked; checkbox.onchange(); }
             else Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
         };
         row.ondblclick = event => {
             if (event.target.closest('input,button,a') || pointerType === 'touch') return;
-            clearTimeout(selectionTimer); selectionTimer = 0;
+            if (selectionTimer) {
+                clearTimeout(selectionTimer); selectionTimer = 0;
+                checkbox.checked = selectionBeforeClick;
+                toggleTelegramDriveSelection(item, checkbox.checked, { renderBar: false });
+                row.classList.toggle('selected', checkbox.checked);
+                updateTelegramDriveSelectionBar();
+            }
             event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
         };
         row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error))); } };
@@ -798,12 +818,14 @@ async function openTelegramDrive() {
     const state = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession };
     if (starting) history.pushState(state, '', location.href); else history.replaceState(state, '', location.href);
     overlay.hidden = false; overlay.classList.add('active');
+    document.body.classList.add('telegram-drive-open');
     if (reuse) { renderTelegramDriveBreadcrumbs(telegramDriveCurrentData); renderTelegramDriveItems(); updateDiskCacheLabels(); }
     else await renderTelegramDrive();
 }
 function closeTelegramDrive({ forget = false } = {}) {
     closeTelegramDriveDialog(null); closeTelegramDriveItemMenu();
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
+    document.body.classList.remove('telegram-drive-open');
     if (forget) { saveDiskWindow(false); telegramDriveCurrentData = null; telegramDriveSearchData = null; telegramDriveContentStale = true; }
     const tasks = document.getElementById('diskTasks'); if (tasks) tasks.open = false;
     telegramDriveHistorySession = '';
@@ -813,6 +835,7 @@ function closeTelegramDrive({ forget = false } = {}) {
 function minimizeTelegramDrive() {
     closeTelegramDriveItemMenu();
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
+    document.body.classList.remove('telegram-drive-open');
     saveDiskWindow(true);
     telegramDriveHistorySession = '';
     const next = { ...(history.state || {}) }; delete next.telegramDriveOpen; delete next.telegramDrivePath; delete next.telegramDriveHistorySession;
@@ -946,8 +969,14 @@ async function exportDiskItems(items) {
     if ([...files.values()].some(file => ['blocked', 'deleted'].includes(file.reviewStatus))) throw new Error('管理员屏蔽或删除的文件不可转发');
     await diskExporter([...files.values()]);
 }
+function getDiskPreviewType(file) {
+    if (file.type && file.type !== 'application/octet-stream') return file.type;
+    const ext = String(file.name || '').toLowerCase().split('.').pop();
+    return ({ mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', m4v:'video/mp4', mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', opus:'audio/ogg', wav:'audio/wav', flac:'audio/flac', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', avif:'image/avif', svg:'image/svg+xml', pdf:'application/pdf', txt:'text/plain' })[ext] || file.type || 'application/octet-stream';
+}
 function isDiskPreviewable(file) {
-    return file.kind !== 'directory' && (/^(image|audio|video|text)\//.test(file.type || '') || file.type === 'application/pdf');
+    const type = getDiskPreviewType(file);
+    return file.kind !== 'directory' && (/^(image|audio|video|text)\//.test(type) || type === 'application/pdf');
 }
 function closeDiskPreview() {
     previewGeneration++; previewAbort?.abort();
@@ -961,6 +990,82 @@ async function openDiskPreview(item) {
     $disk('diskPreview').hidden = false;
     return renderDiskPreview();
 }
+function formatDiskMediaTime(value) {
+    if (!Number.isFinite(value) || value < 0) return '0:00';
+    const seconds = Math.floor(value), minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
+    const video = type.startsWith('video/');
+    const wrapper = document.createElement('section'); wrapper.className = `disk-media-player ${video ? 'is-video' : 'is-audio'}`;
+    const stage = document.createElement('div'); stage.className = 'disk-media-stage';
+    const media = document.createElement(video ? 'video' : 'audio'); media.src = source; media.preload = 'metadata'; media.playsInline = true; media.title = item.name;
+    let audioCover = null;
+    if (video) stage.append(media);
+    else {
+        const cover = document.createElement('div'); cover.className = 'disk-audio-cover'; cover.textContent = '♫'; audioCover = cover;
+        const coverUrl = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl || '';
+        if (coverUrl) {
+            const image = document.createElement('img'); image.alt = `${item.name} 封面`; image.src = coverUrl;
+            image.onload = () => { cover.replaceChildren(image); };
+        }
+        if (cachedBlob && loadAudioCover) Promise.resolve(loadAudioCover(cachedBlob, item)).then(url => {
+            if (!url || !cover.isConnected) return;
+            const image = document.createElement('img'); image.alt = `${item.name} 封面`; image.src = url; cover.replaceChildren(image);
+        }).catch(() => {});
+        stage.append(cover, media);
+    }
+    const center = document.createElement('button'); center.type = 'button'; center.className = 'disk-media-center-play'; center.textContent = '▶'; center.setAttribute('aria-label', '播放'); stage.append(center);
+    const controls = document.createElement('div'); controls.className = 'disk-media-controls';
+    const back = document.createElement('button'); back.type = 'button'; back.textContent = '−10'; back.title = '后退 10 秒';
+    const play = document.createElement('button'); play.type = 'button'; play.textContent = '播放';
+    const forward = document.createElement('button'); forward.type = 'button'; forward.textContent = '+10'; forward.title = '快进 10 秒';
+    const seek = document.createElement('input'); seek.type = 'range'; seek.min = '0'; seek.max = '1000'; seek.value = '0'; seek.className = 'disk-media-seek'; seek.setAttribute('aria-label', '播放进度');
+    const time = document.createElement('span'); time.className = 'disk-media-time'; time.textContent = '0:00 / 0:00';
+    const volume = document.createElement('input'); volume.type = 'range'; volume.min = '0'; volume.max = '1'; volume.step = '.05'; volume.value = '1'; volume.className = 'disk-media-volume'; volume.setAttribute('aria-label', '音量');
+    const download = document.createElement('button'); download.type = 'button'; download.textContent = '下载并缓存';
+    const share = document.createElement('button'); share.type = 'button'; share.textContent = '分享';
+    controls.append(back, play, forward, seek, time, volume, download, share);
+    wrapper.append(stage, controls);
+    const syncPlay = () => {
+        const paused = media.paused;
+        play.textContent = paused ? '播放' : '暂停'; center.textContent = paused ? '▶' : 'Ⅱ'; center.setAttribute('aria-label', paused ? '播放' : '暂停');
+        center.classList.toggle('playing', !paused);
+    };
+    const toggle = () => media.paused ? media.play().catch(() => {}) : media.pause();
+    center.onclick = toggle; play.onclick = toggle;
+    back.onclick = () => { media.currentTime = Math.max(0, media.currentTime - 10); };
+    forward.onclick = () => { media.currentTime = Math.min(media.duration || Infinity, media.currentTime + 10); };
+    seek.oninput = () => { if (Number.isFinite(media.duration)) media.currentTime = Number(seek.value) / 1000 * media.duration; };
+    volume.oninput = () => { media.volume = Number(volume.value); };
+    media.addEventListener('play', syncPlay); media.addEventListener('pause', syncPlay); media.addEventListener('ended', syncPlay);
+    media.addEventListener('timeupdate', () => {
+        if (Number.isFinite(media.duration) && media.duration > 0) seek.value = String(Math.round(media.currentTime / media.duration * 1000));
+        time.textContent = `${formatDiskMediaTime(media.currentTime)} / ${formatDiskMediaTime(media.duration)}`;
+    });
+    download.onclick = async () => {
+        download.disabled = true; download.textContent = '正在缓存…';
+        try {
+            const blob = await window.DiskClient.read(item, { silentLoading: true });
+            const url = URL.createObjectURL(blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = item.name; anchor.click();
+            if (audioCover && loadAudioCover) Promise.resolve(loadAudioCover(blob, item)).then(coverUrl => {
+                if (!coverUrl || !audioCover?.isConnected) return;
+                const image = document.createElement('img'); image.alt = `${item.name} 封面`; image.src = coverUrl; audioCover.replaceChildren(image);
+            }).catch(() => {});
+            setTimeout(() => URL.revokeObjectURL(url), 30000); download.textContent = '已缓存并下载'; updateDiskCacheLabels();
+        } catch (error) {
+            if (error?.name !== 'AbortError' && error?.message !== 'OPERATION_CANCELLED' && error?.message !== 'The user aborted a request.') alert(telegramDriveErrorText(error));
+            download.disabled = false; download.textContent = '下载并缓存';
+        }
+    };
+    const openShare = event => {
+        event.preventDefault();
+        showTelegramDriveItemMenu(item, { getBoundingClientRect: () => ({ left: event.clientX || innerWidth / 2, right: event.clientX || innerWidth / 2, top: event.clientY || innerHeight / 2, bottom: event.clientY || innerHeight / 2 }) }).catch(error => alert(telegramDriveErrorText(error)));
+    };
+    share.onclick = openShare; wrapper.oncontextmenu = openShare;
+    media.play().catch(() => syncPlay());
+    return wrapper;
+}
 async function renderDiskPreview() {
     const generation = ++previewGeneration;
     previewAbort?.abort(); previewAbort = new AbortController();
@@ -972,16 +1077,15 @@ async function renderDiskPreview() {
     $disk('diskPreviewNext').disabled = previewIndex === previewItems.length - 1;
     const body = $disk('diskPreviewBody'); body.replaceChildren(); body.textContent = '正在读取文件，可在网盘任务中查看具体阶段…';
     try {
-        const type = item.type || 'application/octet-stream';
+        const type = getDiskPreviewType(item);
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         const blob = cached?.blob?.size === Number(item.size) ? cached.blob : null;
         let element;
         if (!blob && (/^(image|audio|video)\//.test(type) || type === 'application/pdf')) {
-            element = document.createElement(type.startsWith('image/') ? 'img' : type.startsWith('audio/') ? 'audio' : type.startsWith('video/') ? 'video' : 'iframe');
+            element = /^(audio|video)\//.test(type) ? createDiskMediaPlayer(item, window.DiskClient.streamUrl(item), type) : document.createElement(type.startsWith('image/') ? 'img' : 'iframe');
             if (element.tagName === 'IFRAME') element.setAttribute('sandbox', '');
             if (element.tagName === 'IMG') element.alt = item.name;
-            if (element.tagName === 'AUDIO' || element.tagName === 'VIDEO') { element.controls = true; element.autoplay = true; element.preload = 'metadata'; }
-            element.title = item.name; element.src = window.DiskClient.streamUrl(item);
+            if (!/^(audio|video)\//.test(type)) { element.title = item.name; element.src = window.DiskClient.streamUrl(item); }
         } else {
             const materialized = blob || await window.DiskClient.read(item, { signal: previewAbort.signal });
             if (type.startsWith('text/')) {
@@ -989,11 +1093,10 @@ async function renderDiskPreview() {
                 if (materialized.size > 2 * 1024 * 1024) element.textContent += '\n（仅预览前 2 MB）';
             } else {
                 previewURL = URL.createObjectURL(new Blob([materialized], { type }));
-                element = document.createElement(type.startsWith('image/') ? 'img' : type.startsWith('audio/') ? 'audio' : type.startsWith('video/') ? 'video' : 'iframe');
+                element = /^(audio|video)\//.test(type) ? createDiskMediaPlayer(item, previewURL, type, materialized) : document.createElement(type.startsWith('image/') ? 'img' : 'iframe');
                 if (element.tagName === 'IFRAME') element.setAttribute('sandbox', '');
                 if (element.tagName === 'IMG') element.alt = item.name;
-                if (element.tagName === 'AUDIO' || element.tagName === 'VIDEO') { element.controls = true; element.autoplay = true; }
-                element.title = item.name; element.src = previewURL;
+                if (!/^(audio|video)\//.test(type)) { element.title = item.name; element.src = previewURL; }
             }
         }
         if (generation === previewGeneration) body.replaceChildren(element);
@@ -1029,11 +1132,15 @@ function initDiskLoading() {
         return activityIds.get(activity);
     };
     function collectCandidates() {
-        const activeJobs = jobs.filter(job => ['queued', 'running'].includes(job.status));
+        const activeJobs = jobs.filter(job => ['queued', 'running'].includes(job.status) && !window.DiskClient.isLoadingHidden?.(job.operation_id));
         const result = activeJobs.map(job => ({ key: 'job:' + job.operation_id, job, activity: activities.find(activity => activity.operationId === job.operation_id) }));
         for (const activity of activities) {
             const key = activityKey(activity);
             if (!result.some(item => item.key === key)) result.push({ key, activity });
+        }
+        const hasNewVisibleTask = result.some(item => !dismissed.has(item.key));
+        if (hasNewVisibleTask && dismissed.size) {
+            for (const item of result) dismissed.delete(item.key);
         }
         candidates = result.filter(item => !dismissed.has(item.key));
         for (const key of dismissed) if (!result.some(item => item.key === key)) dismissed.delete(key);
@@ -1092,9 +1199,10 @@ function initDiskLoading() {
     });
     window.DiskClient.subscribe(value => { jobs = value; render(); });
     return () => {
-        const job = jobs.find(item => item.type === 'upload' && ['queued', 'running'].includes(item.status));
+        const activeUploads = jobs.filter(item => item.type === 'upload' && ['queued', 'running'].includes(item.status));
+        const job = activeUploads[0];
         if (!job) return false;
-        dismissed.delete('job:' + job.operation_id);
+        for (const activeJob of activeUploads) dismissed.delete('job:' + activeJob.operation_id);
         pinnedJob = job.operation_id; render(); return true;
     };
 }
@@ -1224,7 +1332,7 @@ function initDiskEnhancements() {
     getTelegramDriveIdentity().then(status => { if (status.identity) window.DiskClient.start(); }).catch(() => {});
 }
 function init(options = {}) {
-    ({ formatFileSize = formatFileSize, showAppToast = showAppToast, historyLog = historyLog } = options);
+    ({ formatFileSize = formatFileSize, showAppToast = showAppToast, historyLog = historyLog, audioCover: loadAudioCover = loadAudioCover } = options);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
     window.addEventListener('disk-cache-changed', updateDiskCacheLabels);
     window.addEventListener('focus', updateDiskCacheLabels);
@@ -1243,7 +1351,7 @@ function init(options = {}) {
         if (!telegramDriveHistorySession) return;
         if (event.state?.telegramDriveHistorySession !== telegramDriveHistorySession) return closeTelegramDrive();
         if (!event.state.telegramDriveOpen) return closeTelegramDrive();
-        if (overlay) { overlay.hidden = false; overlay.classList.add('active'); }
+        if (overlay) { overlay.hidden = false; overlay.classList.add('active'); document.body.classList.add('telegram-drive-open'); }
         navigateTelegramDrive(event.state.telegramDrivePath || '', { fromHistory: true }).catch(error => alert(telegramDriveErrorText(error)));
     });
     document.getElementById('telegramDriveSort')?.addEventListener('change', event => {
@@ -1301,5 +1409,7 @@ function init(options = {}) {
     initDiskEnhancements();
     if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') openTelegramDrive().catch(error => alert(telegramDriveErrorText(error)));
 }
-window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText, setExporter(fn) { diskExporter = fn; }, get path() { return telegramDrivePath; } };
+window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,
+    chooseDirectory(options = {}) { return chooseTelegramDriveDestination([], { title: options.title || '选择网盘目录', confirmText: options.confirmText || '选择此目录' }); },
+    setExporter(fn) { diskExporter = fn; }, get path() { return telegramDrivePath; } };
 })();

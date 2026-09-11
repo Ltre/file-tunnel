@@ -37,6 +37,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
     const records = new Map();
     const directories = new Map();
     const uploads = new Map();
+    const recoveredUploads = [];
     for (const item of readJson(indexPath, [])) if (item?.id && item?.ownerId) records.set(item.id, item);
     {
         for (const item of readJson(directoriesPath, [])) {
@@ -46,6 +47,25 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
         }
     }
     const persist = () => { writeJson(indexPath, [...records.values()]); writeJson(directoriesPath, [...directories.values()]); };
+    const uploadManifestPath = job => path.join(job.dir, 'upload-manifest.json');
+    const persistUpload = job => writeJson(uploadManifestPath(job), {
+        version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
+        backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
+        files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, chunks: (file.chunks || []).map(chunk => ({
+            partIndex: chunk.partIndex, size: chunk.size, remote: chunk.remote || null
+        })) }))
+    });
+    fs.mkdirSync(stagingRoot, { recursive: true });
+    for (const entry of fs.readdirSync(stagingRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
+        const dir = path.join(stagingRoot, entry.name), manifestPath = path.join(dir, 'upload-manifest.json');
+        try {
+            const manifest = readJson(manifestPath, null);
+            if (manifest?.id === entry.name && Array.isArray(manifest.files)) recoveredUploads.push({ ...manifest, dir });
+        } catch (error) {
+            console.warn('[disk-upload] recovery.manifest-invalid', { uploadId: entry.name, error: error?.message || String(error) });
+        }
+    }
     const ownerRecords = ownerId => [...records.values()].filter(item => item.ownerId === String(ownerId));
     const ownerDirectories = ownerId => [...directories.values()].filter(item => item.ownerId === String(ownerId));
     const directoryKey = (ownerId, folderPath) => `${ownerId}:${normalizePath(folderPath)}`;
@@ -254,7 +274,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             touchDirectory(ownerId, destination); persist(); return item;
         },
         hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },
-        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '' }) {
+        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '', channelId = '' }) {
             const safePath = normalizePath(folderPath); assertDepth(safePath, maxDepth);
             const incoming = Array.isArray(files) ? files : [];
             if (incoming.length > 100) throw new Error('DISK_BATCH_LIMIT');
@@ -299,9 +319,15 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
                 return parts;
             };
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
-            const job = { id, owner, metadata, backendId, sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
+            const job = { id, owner, metadata, backendId, channelId: String(channelId || ''), sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
 files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, mediaIndex: file.mediaIndex && typeof file.mediaIndex === 'object' ? file.mediaIndex : { mode: 'unavailable' }, parts: normalizeUploadParts(file), path: '', received: 0, chunks: [] })), dir, createdAt: Date.now(), maxDepth };
-            uploads.set(id, job); return job;
+            uploads.set(id, job); persistUpload(job); return job;
+        },
+        setUploadContext(uploadId, patch = {}) {
+            const job = uploads.get(String(uploadId)); if (!job) return null;
+            if (patch.operationId) job.operationId = String(patch.operationId);
+            if (patch.channelId) job.channelId = String(patch.channelId);
+            persistUpload(job); return job;
         },
         async receive(uploadId, index, request, onProgress) {
             const job = uploads.get(String(uploadId)); const file = job?.files[Number(index)]; if (!job || !file) throw new Error('telegram-drive-upload-not-found');
@@ -313,6 +339,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (size !== file.size) { try { fs.unlinkSync(target); } catch (_) {} throw new Error('telegram-drive-upload-size-mismatch'); }
             file.path = target; file.received = size;
             if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, partIndex: 1, status: 'queued', remote: null });
+            persistUpload(job);
             return { received: size };
         },
         async receivePart(uploadId, index, request, range, onProgress) {
@@ -334,6 +361,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
                 file.chunks.push({ path: target, offset: start, size, partIndex: plan.index, status: 'queued', remote: null });
                 file.received += size;
+                persistUpload(job);
                 return { received: file.received, complete: file.received === file.size };
             } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
             finally { file.receiving = false; }
@@ -356,6 +384,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const chunk = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.chunks?.find(item => item.partIndex === Number(partIndex));
             if (!chunk) throw new Error('UPLOAD_PART_STATE_INVALID');
             chunk.status = 'uploaded'; chunk.remote = remote;
+            persistUpload(uploads.get(String(uploadId)));
             try { if (chunk.path) fs.unlinkSync(chunk.path); } catch (_) {}
             return chunk;
         },
@@ -405,6 +434,14 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); return created;
         },
         abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); },
+        preserveForRecovery(uploadId) {
+            const job = uploads.get(String(uploadId));
+            if (!job) return null;
+            persistUpload(job); uploads.delete(job.id); return job;
+        },
+        finalizeExpired(uploadId) { this.abort(uploadId); },
+        recoveredUploads() { return recoveredUploads.splice(0); },
+        discardRecovered(job) { if (!job?.dir) return; uploads.delete(String(job.id)); try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} },
         update(ownerId, id, patch) { const item = this.get(ownerId, id); if (!item) return null; Object.assign(item, patch, { updatedAt: Date.now() }); records.set(item.id, item); touchDirectory(ownerId, item.folderPath || ''); persist(); return item; },
         setReviewStatus(ownerId, id, status) {
             const item = this.get(ownerId, id);
@@ -470,11 +507,13 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         },
         cleanup() {
             const cutoff = Date.now() - 2 * 60 * 60 * 1000, expired = [];
-            for (const [id, job] of uploads) if (!job.finishing && job.createdAt < cutoff) { expired.push(job.operationId); this.abort(id); }
-            // Staging from an interrupted previous process has no in-memory job.
+            for (const job of uploads.values()) if (!job.finishing && !job.expiring && job.createdAt < cutoff) { job.expiring = true; expired.push(job); }
+            // Legacy staging from an interrupted previous process has no manifest
+            // and therefore no recoverable Telegram message identifiers.
             if (fs.existsSync(stagingRoot)) for (const entry of fs.readdirSync(stagingRoot, { withFileTypes: true })) {
                 if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name) || uploads.has(entry.name)) continue;
                 const orphan = path.join(stagingRoot, entry.name);
+                if (fs.existsSync(path.join(orphan, 'upload-manifest.json'))) continue;
                 if (fs.statSync(orphan).mtimeMs < cutoff) fs.rmSync(orphan, { recursive: true, force: true });
             }
             return expired;

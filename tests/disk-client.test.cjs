@@ -109,10 +109,10 @@ test('触屏长按会打开菜单并吞掉后续单击，滑动或多点触摸�
 test('隧道适配器传递普通 File 与目录相对路径，核心没有隧道状态依赖', async () => {
     let exporter, sent, closed = false, uploadArgs, confirmation;
     const window = {
-        DiskUI: { setExporter: fn => { exporter = fn; }, close: () => { closed = true; }, path: '' },
+        DiskUI: { setExporter: fn => { exporter = fn; }, close: () => { closed = true; }, open: async () => {}, chooseDirectory: async () => '目标目录', path: '' },
         DiskClient: { raw: async () => ({ identity: { id: 'user' } }), read: async () => new Blob(['abc']), upload: async (...args) => { uploadArgs = args; } }
     };
-    vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: text => { confirmation = text; return true; }, prompt: () => '目标目录' });
+    vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: text => { confirmation = text; return true; } });
     window.DiskTunnelAdapter.configure({ target: () => 'ABCDE', send: files => { sent = files; }, readFile: () => {}, filesForRecord: () => [{ name: 'a.txt', size: 3 }] });
     await exporter([{ name: 'a.txt', type: 'text/plain', relativePath: 'album/a.txt' }, { name: 'b.txt', type: 'text/plain' }]);
     assert.equal(closed, true); assert.equal(sent.length, 2); assert.equal(sent[0].relativePath, 'album/a.txt'); assert.equal(await sent[0].text(), 'abc');
@@ -131,7 +131,7 @@ test('右键操作保留整个选中集合，全选和反选只操作当前视�
     context.chosen.delete('c'); context.select(true); assert.deepEqual([...context.chosen.keys()], ['c']);
     assert.equal(context.items({ id: 'unselected' })[0].id, 'unselected');
     assert.match(ui, /exportDiskItems\(chosen\)/); assert.match(ui, /row\.ondblclick/);
-    assert.match(ui, /selectionTimer = setTimeout\([\s\S]*?\}, 500\)/, '桌面单击应延迟 500ms 再显示选择栏');
+    assert.match(ui, /checkbox\.checked = !checkbox\.checked;[\s\S]*?toggleTelegramDriveSelection\(item, checkbox\.checked, \{ renderBar: false \}\);[\s\S]*?selectionTimer = setTimeout\([\s\S]*?updateTelegramDriveSelectionBar\(\)[\s\S]*?500\)/, '桌面单击应立即勾选，只延迟 500ms 显示选择栏');
     assert.match(ui, /row\.ondblclick = event => \{[\s\S]*?clearTimeout\(selectionTimer\)/, 'PC 双击应取消尚未执行的单击选择');
     assert.match(ui, /\['缓存到浏览器', \(\) => cacheTelegramDriveItems\(chosen\)\]/);
     assert.match(ui, /\['清理缓存', \(\) => clearTelegramDriveCache\(chosen\)\]/);
@@ -267,4 +267,28 @@ test('后台上传可反复恢复同一 loading，轮询及旁路请求不会让
     }
     activityListener([]); assert.equal(overlay.hidden, false, '从持久化任务恢复时不依赖本页活动');
     jobListener([{ ...job, status: 'completed' }]); assert.equal(overlay.hidden, true); assert.equal(context.restore(), false);
+});
+
+test('居中 loading 同时列出所有运行任务并可左右切换', () => {
+    const ui = source('client/disk-ui.js'), elements = {}, listeners = {};
+    const create = () => ({ hidden: true, disabled: false, isConnected: true, setAttribute() {}, removeAttribute() {}, contains: () => false, focus() {} });
+    for (const id of ['diskLoadingTitle', 'diskLoadingDetail', 'diskLoadingProgress', 'diskLoadingBackground', 'diskLoadingPrev', 'diskLoadingNext', 'diskLoadingPosition']) elements[id] = create();
+    let activityListener, jobListener;
+    const card = { addEventListener() {} };
+    const overlay = { ...create(), firstElementChild: card };
+    const context = {
+        document: { createElement: () => overlay, body: { append() {} }, addEventListener: (type, fn) => { listeners[type] = fn; } },
+        window: { DiskClient: { isLoadingHidden: () => false, subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; } } },
+        $disk: id => elements[id], formatFileSize: n => n + ' B'
+    };
+    vm.runInNewContext(ui.slice(ui.indexOf('function initDiskLoading'), ui.indexOf('function renderDiskTaskBubble')) + '; initDiskLoading();', context);
+    activityListener([]);
+    jobListener([
+        { operation_id: 'upload-1', type: 'upload', status: 'running', title: '第一个任务', message: '上传中' },
+        { operation_id: 'upload-2', type: 'upload', status: 'queued', title: '第二个任务', message: '等待中' }
+    ]);
+    assert.equal(elements.diskLoadingPosition.textContent, '1 / 2');
+    assert.equal(elements.diskLoadingPrev.disabled, false); assert.equal(elements.diskLoadingNext.disabled, false);
+    elements.diskLoadingNext.onclick();
+    assert.equal(elements.diskLoadingPosition.textContent, '2 / 2'); assert.equal(elements.diskLoadingTitle.textContent, '第二个任务');
 });

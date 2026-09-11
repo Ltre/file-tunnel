@@ -52,6 +52,19 @@
 #diskPreviewBody{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:auto;padding:12px}
 #diskPreviewBody img,#diskPreviewBody video{max-width:100%;max-height:100%;object-fit:contain}
 #diskPreviewBody audio{width:min(700px,90%)}
+.disk-media-player{display:flex;flex-direction:column;width:min(980px,100%);max-height:100%;overflow:hidden;border-radius:16px;background:#0b1118;box-shadow:0 14px 50px #0008}
+.disk-media-stage{position:relative;display:grid;place-items:center;flex:1;min-height:220px;overflow:hidden;background:#05080c}
+.disk-media-player.is-video .disk-media-stage{aspect-ratio:16/9}
+.disk-media-stage video{width:100%;height:100%;max-width:none!important;max-height:none!important;object-fit:contain}
+.disk-media-stage audio{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.disk-audio-cover{display:grid;place-items:center;width:min(410px,75vw);aspect-ratio:1;border-radius:22px;overflow:hidden;background:radial-gradient(circle at 35% 30%,#436785,#172532 62%,#0c1218);color:#dceaf5;font-size:clamp(72px,18vw,150px);box-shadow:0 18px 55px #0008}
+.disk-audio-cover img{width:100%;height:100%;max-width:none!important;max-height:none!important;object-fit:cover}
+.disk-media-center-play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:grid;place-items:center;width:68px!important;height:68px!important;border-radius:50%!important;background:#101820c9!important;backdrop-filter:blur(8px);font-size:26px!important;transition:opacity .2s}
+.disk-media-center-play.playing{opacity:.18}.disk-media-center-play.playing:hover{opacity:1}
+.disk-media-controls{display:flex;align-items:center;gap:8px;padding:10px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;background:#172330}
+.disk-media-controls button{flex:0 0 auto;width:auto!important;min-width:44px!important;height:36px!important;padding:0 10px;font-size:13px!important;white-space:nowrap}
+.disk-media-seek{flex:1 0 180px;accent-color:#2fc985}.disk-media-volume{flex:0 0 90px;accent-color:#2fc985}.disk-media-time{flex:0 0 auto;white-space:nowrap;font-variant-numeric:tabular-nums;font-size:12px;color:#d7e2ea}
+@media(max-width:600px){.disk-media-player{height:100%;border-radius:0}.disk-media-stage{min-height:0}.disk-media-controls{padding-bottom:max(10px,env(safe-area-inset-bottom))}.disk-media-volume{flex-basis:72px}}
 #diskPreviewBody iframe{width:100%;height:100%;border:0;background:#fff}
 #diskPreviewBody pre{white-space:pre-wrap;word-break:break-word;align-self:flex-start;width:100%;font:14px/1.6 monospace}
 @media(max-width:600px){.disk-tasks{padding:8px 12px}.disk-passkey-controls input{min-width:0;width:100%;flex-basis:100%}}
@@ -63,6 +76,8 @@
 #telegramDriveOverlay .telegram-drive-manager{display:flex;flex-direction:column}
 #telegramDriveOverlay .telegram-drive-header,#telegramDriveOverlay .telegram-drive-auth,#telegramDriveOverlay .disk-tasks{flex-shrink:0}
 #telegramDriveOverlay .telegram-drive-workspace{flex:1;min-height:0}
+body.telegram-drive-open{overflow:hidden!important;overscroll-behavior:none}
+#telegramDriveOverlay{overscroll-behavior:contain}
 #diskLoading{position:fixed;inset:0;z-index:2147483200;display:flex;align-items:center;justify-content:center;padding:20px;background:#10203080;overscroll-behavior:contain;touch-action:none}
 #diskLoading[hidden]{display:none!important}
 .disk-loading-card{box-sizing:border-box;width:min(420px,100%);max-height:calc(100dvh - 40px);overflow:auto;display:flex;flex-direction:column;align-items:center;gap:16px;padding:28px;border:1px solid #d4dde7;border-radius:18px;background:#fff;color:#233849;box-shadow:0 16px 60px #0004;text-align:center;overflow-wrap:anywhere;touch-action:pan-y}
@@ -79,7 +94,7 @@
 @media(prefers-reduced-motion:reduce){.disk-loading-spinner{animation:none}}
 .disk-cache-link{color:#16803d;text-decoration:underline;cursor:pointer;white-space:nowrap}
 .disk-cache-link.cached{color:#64748b;text-decoration:none;cursor:default}
-.telegram-drive-selection,.telegram-drive-selection-actions{flex-wrap:wrap}
+.telegram-drive-selection,.telegram-drive-selection-actions{flex-wrap:nowrap}
 .telegram-drive-selection-actions .btn{flex-shrink:0;white-space:nowrap}
 .telegram-drive-dialog-card:has(.disk-destination-tree){display:flex;flex-direction:column;overflow:hidden}
 .telegram-drive-dialog-card:has(.disk-destination-tree) .telegram-drive-dialog-body{min-height:0;overflow:auto}

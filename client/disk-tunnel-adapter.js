@@ -7,17 +7,22 @@
     window.DiskTunnelAdapter = {
         configure(value) { host = value; window.DiskUI.setExporter(exportFiles); resumePendingForward(); },
         async save(record) {
-            const status = await window.DiskClient.raw('/me');
-            if (!status.identity) { await window.DiskUI.open(); throw new Error('请先登录网盘，再选择保存'); }
             const files = host.filesForRecord(record);
             if (!files.length) throw new Error('此记录没有文件');
-            const folderPath = prompt('保存到网盘目录（留空为根目录，可输入多级路径）', window.DiskUI.path);
-            if (folderPath === null) return;
-            const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId: record.id });
-            await host.linkBackup?.(record.id, files, result?.items || []);
-            return result;
-        }
+            return saveFiles(record.id, files);
+        },
+        saveFiles(recordId, files) { return saveFiles(recordId, files); }
     };
+    async function saveFiles(recordId, files) {
+        const status = await window.DiskClient.raw('/me');
+        await window.DiskUI.open();
+        if (!status.identity) throw new Error('请先登录网盘，再选择保存');
+        const folderPath = await window.DiskUI.chooseDirectory({ title: '选择保存到网盘的目录', confirmText: '保存到这里' });
+        if (folderPath === null) return;
+        const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId });
+        await host.linkBackup?.(recordId, files, result?.items || []);
+        return result;
+    }
     async function chooseTarget() {
         const current = host?.target?.();
         if (!host?.tunnels || typeof document === 'undefined') return current ? { id: String(current?.id || current), label: String(current?.shortCode || current?.id || current), current: true } : null;

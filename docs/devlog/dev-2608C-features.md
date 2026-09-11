@@ -1834,3 +1834,63 @@ Description：
 - 修复网盘最小化恢复重复加载及退出隧道图片预览误开网盘，后台变更时按需刷新
 - 将 Telegram 网盘定位写回隧道记录作为备用来源，继续优先使用本机缓存和 P2P
 - 补充 182 项完整回归、Range 与 413 回滚测试及 txsl 发布构建校验
+
+## 26. 2026-09-09：上传限流、回滚恢复、网盘底栏与媒体交互修复
+
+### 26.1 执行约束与定位结论
+
+- 继续在 `dev/2608C-step2` 修改；本轮没有暂存或提交。保留用户原有 `prompts/dev-prompt-logs/dev-2608B.md` 修改及 `prompts/resources` 中的放大、缩小 SVG。第 23 至 25 节已补齐此前开发过程，本节追加本轮结论。
+- 浏览器分片 PUT 的 429 并非 Telegram 返回。旧 `/uploads/:uploadId/files/:index` 在待处理分片达到 5 个或 100MB 时主动返回 `429 + UPLOAD_BACKPRESSURE`；浏览器重发分片和轮询任务又计入 `server.js` 的全局 15 分钟 IP 限流，累计达到 1000 次后，所有列表、面包屑和重新打开请求都会收到“请求过于频繁，请稍后再试”，直至窗口重置或 Node 重启。`express.json({ limit: '2mb' })` 只限制 JSON 请求体，不处理 `application/octet-stream` 的 20MB PUT，与这两类 429 无关。
+- 旧队列只保证单个上传任务内部顺序执行。两个上传任务可各自启动 worker，同时向 Telegram 发批次请求。现在所有网盘上传批次进入进程级 FIFO，同一时刻只执行一个 Telegram 上传调用；不同任务仍可继续接收浏览器分片并排队，避免集中并发请求 Telegram。日志新增 `telegram.queue-wait/start/release`，Telegram 自身的 429 仍只在 `telegram.response` 明确记录后按 `retry_after` 重建 multipart 重试。
+
+### 26.2 上传背压、失败回滚与同名重试
+
+- 分片 PUT 不再返回本地 429。队列满时请求在读取正文前等待 worker 腾位，由 HTTP/TCP 自然背压限制浏览器继续发送；每个任务的等待者改为集合，worker、finish、取消和多个 PUT 不会相互覆盖唤醒回调。网盘分片、任务轮询、目录列表和 Range 等高频且已经鉴权的路径不再计入通用页面限流，OIDC、登录等入口仍保留原限流。
+- 每个上传在暂存目录写 `upload-manifest.json`，保存 uploadId、operationId、存储后端、数值 channelId、逻辑文件 ID以及每个已经确认的 Telegram message/file 定位；不保存 Bot Token 或文件内容。每确认一片立即原子更新清单。
+- 上传失败或取消时先回滚所有已确认消息。若 Telegram 网络仍不可用导致回滚失败，任务会从活动上传表移除以释放同名占用，但保留恢复清单；服务器每分钟重试，Node 重启后也会扫描清单继续回滚，成功后才删除暂存目录。这样既允许立即重试同名文件，也不会因一次清理失败永久遗留已知分片。损坏的恢复清单只记录警告，不阻止服务器启动。
+
+### 26.3 网盘选择、底栏、loading 与缓存任务
+
+- 更正第 25.4 节旧描述：鼠标单击现在立即切换 checkbox、选中样式和选择 Map，只有 `#telegramDriveSelection` 的渲染延迟 500ms；双击在延迟期恢复单击前状态并打开文件或目录。用户无需等待 500ms 才看到勾选。
+- 工作区固定预留 54px BTM 区，常态显示当前目录的文件夹数、文件数和文件总大小。选择栏绝对覆盖 BTM 区，不再挤压或遮挡列表末项；选择按钮保持一行，超出宽度横向滚动。
+- 居中 loading 合并全部客户端活动和服务端 queued/running 任务，同一 operationId 去重；新任务出现会解除旧的后台隐藏集合。PC 可用左右按钮和方向键，移动端可横滑，位置显示真实 `n / total`。目录或多选“缓存到浏览器”使用静默读取，任务列表仍记录进度，但不逐文件弹出居中浮层。
+- 网盘打开时给 body 加锁并阻止底层滚动，最小化或关闭时解除。点击橙色缓存角标取消后，`AbortError`、`OPERATION_CANCELLED` 和浏览器原始 `The user aborted a request.` 均作为用户取消处理，不弹异常 alert。
+
+### 26.4 目录选择、资源入口与媒体体验
+
+- 隧道记录和首页文件预览的“存到网盘”统一复用网盘树形目录选择器，可在选择器中新建目录，不再调用 `prompt()`。“存到网盘”位于“释放空间”左侧；连接设备菜单在“接收光媒”后增加“资源浏览器”，直接复用现有资源引用界面。
+- `#filePreviewActions` 固定单行横向滚动；每次渲染预览操作栏时，如果内容溢出，会先平滑露出右侧按钮再回到起点，并遵守减少动态效果偏好。
+- 网盘视频和音频在 PC、移动端都直接把统一 Range Gateway 设为媒体 `src`，不先完整拉取文件，也不打开居中 loading。自定义播放器包含画面或封面中央播放键、底部播放/暂停、前后 10 秒、进度、时间、音量、分享和“下载并缓存”。显式下载与“缓存到浏览器”走同一分片 Range/共享缓存读取链，完成后立即刷新“已缓存”状态。音频先显示预置封面，已有 metadata 封面立即加载，完整缓存可用时再解析内嵌封面。
+- 图片全屏右下角增加指定 SVG 放大、缩小按钮，缩放范围 1–6 倍；触屏双指距离控制缩放，双指中心位移控制放大图平移。只有缩放为 1 倍时才建立单指导航起点，因此原左/右切换和下滑退出不会与双指手势串联。
+- Service Worker 升至 v37；txsl 构建复制 `prompts/resources`，部署产物包含两个缩放图标。
+
+### 26.5 私有频道与 Telegram OIDC 调研方案
+
+- 当前逻辑文件索引、分片和 caption 已有 `channelId/channel_id` 字段，但默认网盘频道配置允许直接保存 `@username`，只有第三方凭据的 `validate()` 路径会通过 `getChat` 转成数值 chat_id。私有化方案：保存配置时统一调用 `getChat` 并持久化 `-100…` 数值 ID；增加幂等修复脚本，先备份配置及所有网盘索引，再把旧 `@username` 映射为数值 ID，更新 `driveChannels`、`activeDriveChannelId`、默认及各 disk-space 索引，最后按现有 caption 同步队列重写消息备注。脚本支持 dry-run 和重复执行；已有数值记录直接跳过。本轮按要求只给方案，未执行迁移。
+- Telegram 官方登录文档要求在 @BotFather 的 Login Widget / Allowed URLs 中同时登记站点 Origin 和精确 Redirect URI。当前实现已经是 Authorization Code + PKCE，并校验 state Cookie、nonce、ID Token 签名与 JWKS；服务器 console 分别记录“已跳转 Telegram”“收到授权回调”“令牌交换/签名完成”。用户看到的“已发送 Telegram 通知”位于 `oauth.telegram.org` 托管页，且发生在本站 callback 之前，本站 Bot API 不能代 Telegram 发送或批准该通知。应先核对 @BotFather 中 `https://tun-test.miku.us` 与 `https://tun-test.miku.us/api/telegram/drive/oidc/callback`、Client ID/Secret 是否来自同一个 Bot，并确认 Telegram 客户端的服务通知及网络；若服务器只有“已跳转”而没有“已收到回调”，故障仍在 Telegram 授权页/客户端阶段。官方建议 OIDC 问题携带 `#oidc` 联系 @BotSupport。线上站点在本轮自动访问时超时，未取得真实回调日志，因此不把具体账号的失败武断归因于本站或 Telegram。
+
+参考：[Telegram Login / OIDC 官方文档](https://core.telegram.org/bots/telegram-login)
+
+### 26.6 验证与边界
+
+- 修改的 `server.js`、上传 API/Store、客户端、适配器和 `app.js` 全部通过 `node --check`；本轮差异通过 `git diff --check`，检查时排除用户原有提示文档修改。
+- 定向网盘/API/客户端/首页回归 42/42 通过；新增未完成上传清单恢复、释放同名占用和双任务 loading `1/2` 切换验证。
+- 完整 `node --test --test-concurrency=1`：184/184 通过。
+- `node tools/deploy/build.mjs --profile txsl --out .disk-260909-build` 和 `node tools/deploy/verify.mjs --profile txsl --dist .disk-260909-build` 通过，临时构建目录在验证绝对路径属于工作区后清理。
+- 测试使用模拟 Telegram 和合成文件，没有向真实频道写入或删除。实际公网 OIDC 通知、真实 750MB 上传及私有频道迁移仍需部署后按服务器日志验收；实现已经将本地背压、全局限流和 Telegram 响应区分记录。
+
+### 26.7 建议 Git 提交日志（不执行提交）
+
+Title：fix: 修复网盘大文件限流与媒体交互
+
+Description：
+
+- 将浏览器分片背压改为连接内等待，并串行调度所有 Telegram 上传批次
+- 为已确认分片持久化恢复清单，支持失败、取消和服务器重启后的可靠回滚
+- 修正即时勾选和延迟选择栏，增加固定目录统计区及单行滚动操作栏
+- 修复多任务 loading、批量静默缓存、取消提示和网盘底层页面滚动
+- 复用树形目录选择器，增加资源浏览器与文件预览存网盘入口
+- 统一移动端和 PC 端音视频 Range 播放、下载缓存、封面和控制界面
+- 增加预览操作栏滚动引导与全屏图片按钮、捏合缩放及双指平移
+- 补充 Telegram OIDC 排查结论和私有频道 chat_id 迁移方案
+- 完成 184 项回归及 txsl 发布构建校验
