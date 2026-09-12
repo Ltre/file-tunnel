@@ -2007,3 +2007,35 @@ Description：
 - 修复首页文件预览存网盘选择器层级和 Loading 闪烁
 - 新增只读数据空间占用管理页，将 Telegram 分片缓存期限设为两天
 - 完成 192 项回归及 txsl 发布构建校验
+
+## 29. 2026-09-12：修复竖屏与超宽视频被播放器裁切
+
+### 29.1 真实文件复现与根因
+
+- 使用用户指定的逻辑文件 `1926e1f8-091a-4fe9-8303-48fef7cb2dd2` 在本地 `/disk` 实际打开播放器。该文件为 `二逼欢乐双人组踢垃圾20250119_153834.mp4`，浏览器读取到的原始画面为 720×1280。
+- 复现时播放器 stage 的真实可用尺寸为 980×491，但 `<video>` 的布局盒子被算成 980×1742.22，stage 的 `scrollHeight` 同样达到 1742。父层 `overflow:hidden` 因此把竖屏视频下方约 1251px 裁掉。
+- 第 28.2 节只增加 `width/height:100%` 与 `object-fit:contain` 的处理并不充分。视频仍是 Grid 的普通子项，替换元素的原始宽高比参与 Grid/Flex 固有尺寸计算；百分比高度在该计算过程中没有以最终 491px stage 高度为基准，导致 `object-fit` 所在的视频盒子本身已经溢出。
+
+### 29.2 修复方式
+
+- 将 `.disk-media-stage video` 改为 `position:absolute; inset:0`，使视频不再参与 Grid track 的固有尺寸计算；视频盒子严格等于扣除播放控制区后的 stage 宽高。
+- 视频盒子继续使用 `object-fit:contain` 和 `object-position:center center`。浏览器按 `min(stageWidth / videoWidth, stageHeight / videoHeight)` 缩放实际画面：竖屏视频由高度约束并水平居中，超宽视频由宽度约束并垂直居中，两类比例都不会越过 stage 的上下或左右边界。
+- 同时移除该规则原先的百分比 `max-width/max-height` 约束，改为明确的绝对定位边界，避免替换元素的固有比例再次把 Grid 内容尺寸撑大。
+
+### 29.3 验证结果
+
+- 修复后重新打开指定 720×1280 视频：stage 为 980×491，video 盒子为 980×491，stage `scrollHeight` 为 491；实际画面按 contain 计算为约 276.19×491，整幅竖屏画面完整显示并水平居中。
+- 切换到 1280×720 横屏文件复核：stage、video 盒子和 `scrollHeight` 仍分别为 980×491、980×491、491，实际画面约 872.89×491，未出现横向或纵向裁切。对于宽高比大于 stage 的超宽视频，同一公式会先命中宽度上限，因此不会横向溢出。
+- 新增 CSS 回归断言，固定要求 stage 内视频脱离 Grid 尺寸计算并保持居中 contain；`node --test tests/disk-step3.test.cjs` 通过，4/4；完整 `node --test --test-concurrency=1 --test-reporter=dot` 通过，192/192。
+- `node tools/deploy/build.mjs --profile txsl --out .disk-video-fit-build-260912` 与对应 verify 通过，Build id 为 `txsl-20260911-232516-d47c5158`；临时发布目录在校验绝对路径属于工作区后清理。
+- `git diff --check -- client/disk.css tests/disk-step3.test.cjs docs/devlog/dev-2608C-features.md` 通过。本轮未暂存、未提交，用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改未触碰。
+
+### 29.4 建议 Git 提交日志（不执行提交）
+
+Title：fix: 修复网盘播放器裁切竖屏和超宽视频
+
+Description：
+
+- 将视频元素移出播放器 Grid 固有尺寸计算，严格限制在扣除控制栏后的画面区域内
+- 使用双轴 contain 和居中定位按视频真实宽高比适配竖屏、横屏与超宽画面
+- 增加播放器布局回归断言，并用指定竖屏视频及横屏视频完成浏览器验收

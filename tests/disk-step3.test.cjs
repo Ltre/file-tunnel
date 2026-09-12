@@ -26,6 +26,7 @@ test('Step3 网盘交互包含 ESC、属性历史、原生媒体右键、控件�
     assert.match(ui, /\.disk-media-controls,\.disk-media-action-row,input,button/);
     assert.match(css, /telegram-drive-picker-mode\{z-index:/);
     assert.match(css, /disk-media-seek-loader:before/);
+    assert.match(css, /\.disk-media-stage video\{[^}]*position:absolute;[^}]*inset:0;[^}]*object-fit:contain;[^}]*object-position:center center/);
     assert.match(css, /telegram-drive-manager:not\(\.telegram-drive-has-selection\).*telegram-drive-item-check/);
 });
 
