@@ -71,6 +71,16 @@ test('/sns-dl uses ordinary SNS cookies, its own parse cache, and an empty tag p
     assert.doesNotMatch(service, /youtube-premium|require\('\.\/youtube-premium'\)/i);
 });
 
+test('SNS 与 YouTube Premium 任务备注编辑期间不会被轮询结果覆盖', () => {
+    const sns = read('pages/sns-dl.html');
+    const premium = read('pages/youtube-premium-dl.html');
+    assert.match(sns, /function isTaskRemarkEditing\(\)/);
+    assert.match(sns, /if \(!force && isTaskRemarkEditing\(\)\) return;/);
+    assert.match(sns, /媒体编号.*selectedFormatIds/);
+    assert.match(premium, /function isPremiumRemarkEditing\(\)/);
+    assert.match(premium, /await hydrateBrowserCacheStates\(currentTasks\);\s*if \(!force && isPremiumRemarkEditing\(\)\) return;/);
+});
+
 test('contact voice has ring tones, speech capture processing and ICE recovery', () => {
     const app = read('app.js');
     const media = read('client/media.js');

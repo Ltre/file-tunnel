@@ -38,6 +38,20 @@ test('媒体进度持久化、缩略图和播放结束补全浏览器缓存均�
     assert.match(ui, /media\.addEventListener\('ended'.*DiskClient\.read\(item, \{ silentLoading: true \}\)/s);
 });
 
+test('网盘菜单、播放器释放、缩略图调度和预览层级的回归保护', () => {
+    const ui = source('client/disk-ui.js'), css = source('client/disk.css');
+    assert.match(ui, /telegramDriveMenuHistoryClosing/);
+    assert.match(ui, /button\.onclick = event => \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/);
+    assert.match(ui, /if \(driveMenu && !driveMenu\.hidden/);
+    assert.match(ui, /media\._disposeDiskMedia = \(\) => \{[\s\S]*media\.pause\(\)[\s\S]*media\.removeAttribute\('src'\)[\s\S]*media\.load\(\)/);
+    assert.match(ui, /queueMicrotask\(\(\) => scheduleTelegramDriveThumbnail\(item, icon\)\)/);
+    assert.match(ui, /driveDialog\.parentElement !== document\.body/);
+    assert.match(css, /body>\.telegram-drive-subdialog\{position:fixed;z-index:2147483170\}/);
+    assert.match(css, /disk-media-seek-loader\{[^}]*left:var\(--seek-thumb-position\)/);
+    assert.match(ui, /7 - ratio \* 14/);
+    assert.match(css, /disk-preview-image-spinner/);
+});
+
 test('管理后台暴露受鉴权保护的数据占用页面和 API', () => {
     const server = source('server.js'), admin = source('pages/admin.html');
     assert.match(server, /app\.get\('\/data-usage'/);

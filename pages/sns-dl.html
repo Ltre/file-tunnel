@@ -347,11 +347,11 @@
             card.append(element('div','subtle',[`${Math.round(Number(task.progress?.percent)||0)}%`,task.progress?.speedText,task.progress?.etaText ? `ETA ${task.progress.etaText}` : ''].filter(Boolean).join(' · ')));
         }
         const details=element('div','details');
-        [['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
+        [['媒体编号',task.selectedFormatIds?.length ? task.selectedFormatIds.join(' + ') : ''],['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
         card.append(details,taskReferenceDetails(task));
         if (task.tags?.length) { const tags=element('div','tags'); task.tags.forEach(tag=>tags.append(element('span','tag',tag))); card.append(tags); }
         const remark=element('div','remark-editor'); const textarea=document.createElement('textarea'); textarea.value=task.remark||''; textarea.placeholder='任务备注（转发时优先作为文件备注）';
-        remark.append(textarea,makeAction('保存备注',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({remark:textarea.value})});await loadTasks();})); card.append(remark);
+        remark.append(textarea,makeAction('保存备注',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({remark:textarea.value})});await loadTasks({force:true});})); card.append(remark);
         if (task.error) card.append(element('div','task-error',task.error));
         const cacheLabel=element('div','subtle',cacheStateText(task)); cacheLabel.dataset.cacheState=''; card.append(cacheLabel);
         const actions=element('div','actions');
@@ -369,9 +369,12 @@
         if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
         card.append(actions); return card;
     }
-    async function loadTasks() {
+    function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }
+    async function loadTasks({force=false}={}) {
+        if (!force && isTaskRemarkEditing()) return;
         try {
             const data=await api(`${API_ROOT}/tasks?page=${page}&pageSize=10`); page=data.page; pages=data.pages; currentTasks=data.tasks||[];
+            if (!force && isTaskRemarkEditing()) return;
             taskList.replaceChildren(...currentTasks.map(renderTask)); taskCount.textContent=`共 ${data.total} 个任务`; pager.hidden=pages<=1; pageLabel.textContent=`${page} / ${pages}`; $('prevBtn').disabled=page<=1; $('nextBtn').disabled=page>=pages;
             currentTasks.filter(task=>task.status==='completed').forEach(task=>ensureBrowserCache(task));
         } catch(error) { taskCount.textContent=`读取失败：${error.message}`; }
@@ -415,7 +418,7 @@
     $('forwardConfirm').addEventListener('click',()=>forwardCurrent().catch(error=>{forwardStatus.textContent=error.message;$('forwardConfirm').disabled=false;}));
     document.querySelectorAll('[data-close-dialog]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
     document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
-    setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]'))loadTasks();},2500);
+    setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]')&&!isTaskRemarkEditing())loadTasks();},2500);
     loadTasks();
 })();
 </script>

@@ -159,8 +159,20 @@ function normalizeYtDlpFormats(formats = []) {
         if (!id) return [];
         const videoCodec = String(format.vcodec || 'none');
         const audioCodec = String(format.acodec || 'none');
-        const hasVideo = videoCodec !== 'none';
-        const hasAudio = audioCodec !== 'none';
+        const videoExtension = String(format.video_ext || '').trim().toLowerCase();
+        const audioExtension = String(format.audio_ext || '').trim().toLowerCase();
+        const description = `${format.format_note || ''} ${format.format || ''}`;
+        const codecExists = value => !/^(?:|none|null|unknown|n\/a)$/i.test(String(value || '').trim());
+        const extensionExists = value => Boolean(value) && !/^(?:none|null|unknown|n\/a)$/i.test(value);
+        const describedVideoOnly = /\bvideo[ -]?only\b/i.test(description);
+        const describedAudioOnly = /\baudio[ -]?only\b/i.test(description);
+        // Some extractors (notably X/Twitter manifests) inherit an acodec on a
+        // video-only rendition. yt-dlp's explicit *_ext=none and "video only"
+        // description are authoritative over that inherited codec label.
+        const hasVideo = !describedAudioOnly && videoExtension !== 'none' &&
+            (codecExists(videoCodec) || extensionExists(videoExtension) || Number(format.width) > 0 || Number(format.height) > 0);
+        const hasAudio = !describedVideoOnly && audioExtension !== 'none' &&
+            (codecExists(audioCodec) || extensionExists(audioExtension));
         return [{
             id,
             kind: hasVideo && hasAudio ? 'video_audio' : (hasVideo ? 'video' : (hasAudio ? 'audio' : 'other')),

@@ -88,6 +88,16 @@ test('yt-dlp formats are normalized and default requested IDs are recovered', ()
     ])).id, '140');
 });
 
+test('X/Twitter 清单中的显式纯视频标记覆盖继承的音频编码标签', () => {
+    const formats = normalizeYtDlpFormats([
+        { format_id: 'hls-video', ext: 'mp4', video_ext: 'mp4', audio_ext: 'none', width: 1280, height: 720, vcodec: 'avc1.64001f', acodec: 'mp4a.40.2' },
+        { format_id: 'dash-video', ext: 'mp4', width: 1920, height: 1080, vcodec: 'avc1.640028', acodec: 'aac', format_note: 'video only' },
+        { format_id: 'dash-audio', ext: 'm4a', video_ext: 'none', audio_ext: 'm4a', vcodec: 'none', acodec: 'mp4a.40.2', format_note: 'audio only' }
+    ]);
+    assert.deepEqual(formats.map(format => format.kind), ['video', 'video', 'audio']);
+    assert.deepEqual(validateFormatSelection(formats, ['hls-video', 'dash-audio'], 'video').ids, ['hls-video', 'dash-audio']);
+});
+
 test('Premium video default descends by short-edge tier with AV1, VP9, AVC codec priority', () => {
     const formats = normalizeYtDlpFormats([
         { format_id: '401', ext: 'mp4', width: 3840, height: 2160, vcodec: 'av01.0.12M.08', acodec: 'none', vbr: 18000 },

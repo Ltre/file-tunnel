@@ -1,6 +1,7 @@
 (function () {
     const DB = 'Drop2TunnelTelegramDrive';
     const SHARE_TTL = 7 * 24 * 60 * 60 * 1000;
+    const THUMBNAIL_PREFIX = 'thumbnail:v2:';
     const expired = row => Boolean(row && (row.source === 'public-share' || String(row.id).startsWith('share:')) && (!row.cachedAt || Date.now() - row.cachedAt >= SHARE_TTL));
     function open() { return new Promise((resolve, reject) => { const req = indexedDB.open(DB, 1); req.onupgradeneeded = () => req.result.createObjectStore('files', { keyPath: 'id' }); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); }); }
     async function put(id, file) { const db = await open(); try { return await new Promise((resolve, reject) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put({ id, ...file, cachedAt: Date.now() }); tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error); }); } finally { db.close(); } }
@@ -24,7 +25,11 @@
         if (!keys.length) return;
         const db = await open(); try { await new Promise((resolve, reject) => {
             const tx = db.transaction('files', 'readwrite');
-            for (const id of keys) { tx.objectStore('files').delete(id); tx.objectStore('files').delete('thumbnail:' + id); }
+            for (const id of keys) {
+                tx.objectStore('files').delete(id);
+                tx.objectStore('files').delete('thumbnail:' + id);
+                tx.objectStore('files').delete(THUMBNAIL_PREFIX + id);
+            }
             tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error);
         }); } finally { db.close(); }
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { ids: keys } }));
@@ -42,8 +47,8 @@
         }); } finally { db.close(); }
     }
     window.TelegramDriveCache = { get, status, remove, pruneExpiredShares,
-    async getThumbnail(id) { return (await get('thumbnail:' + id))?.blob || null; },
-    async putThumbnail(id, blob) { if (blob instanceof Blob && blob.size) await put('thumbnail:' + id, { blob, source: 'thumbnail' }); },
+    async getThumbnail(id) { return (await get(THUMBNAIL_PREFIX + id))?.blob || null; },
+    async putThumbnail(id, blob) { if (blob instanceof Blob && blob.size) await put(THUMBNAIL_PREFIX + id, { blob, source: 'thumbnail' }); },
     async put(id, file) {
         await put(id, file);
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { id } }));

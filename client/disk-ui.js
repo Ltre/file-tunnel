@@ -14,12 +14,14 @@ let telegramDriveRenderGeneration = 0;
 let telegramDriveHistorySession = '';
 let telegramDriveMenuItem = null;
 let telegramDriveMenuHistoryOpen = false;
+let telegramDriveMenuHistoryClosing = false;
 let telegramDriveMenuPendingAction = null;
 let telegramDriveDialogHistoryOpen = false;
 let telegramDriveDialogHistoryClosing = false;
 let telegramDriveContentStale = false;
 let telegramDriveSelectionAnchor = '';
 const telegramDriveSelected = new Map();
+const telegramDriveCacheCancelConfirming = new Set();
 let telegramDriveView = localStorage.getItem('telegram-drive-view') === 'grid' ? 'grid' : 'list';
 let telegramDriveSort = localStorage.getItem('telegram-drive-sort') || 'name';
 let telegramDriveSortAscending = localStorage.getItem('telegram-drive-sort-ascending') !== 'false';
@@ -104,6 +106,7 @@ function closeTelegramDriveItemMenu({ fromHistory = false, replaceHistory = fals
     if (!telegramDriveMenuHistoryOpen) return;
     if (fromHistory) {
         telegramDriveMenuHistoryOpen = false;
+        telegramDriveMenuHistoryClosing = false;
         const action = telegramDriveMenuPendingAction; telegramDriveMenuPendingAction = null;
         if (action) Promise.resolve().then(action);
         return;
@@ -111,9 +114,13 @@ function closeTelegramDriveItemMenu({ fromHistory = false, replaceHistory = fals
     if (replaceHistory) {
         const next = { ...(history.state || {}) }; delete next.telegramDriveMenu;
         history.replaceState(next, '', location.href);
-        telegramDriveMenuHistoryOpen = false; telegramDriveMenuPendingAction = null;
-    } else if (history.state?.telegramDriveMenu) history.back();
-    else telegramDriveMenuHistoryOpen = false;
+        telegramDriveMenuHistoryOpen = false; telegramDriveMenuHistoryClosing = false; telegramDriveMenuPendingAction = null;
+    } else if (history.state?.telegramDriveMenu && !telegramDriveMenuHistoryClosing) {
+        telegramDriveMenuHistoryClosing = true;
+        history.back();
+    } else if (!history.state?.telegramDriveMenu) {
+        telegramDriveMenuHistoryOpen = false; telegramDriveMenuHistoryClosing = false;
+    }
 }
 
 function closeTelegramDriveDialog(result = null, { fromHistory = false, replaceHistory = false } = {}) {
@@ -256,7 +263,7 @@ async function updateDiskCacheLabels() {
         const progress = window.DiskClient.cacheProgress?.(badge.dataset.cacheIndicator);
         badge.hidden = !cached && !pending;
         badge.classList.toggle('pending', pending);
-        badge.textContent = pending && Number.isFinite(progress?.percent) ? Math.round(progress.percent) + '%' : (pending ? '' : '✓');
+        badge.textContent = pending && Number.isFinite(progress?.percent) ? Math.round(progress.percent) + '%' : (pending ? '' : '↓');
         badge.title = pending ? (Number.isFinite(progress?.percent) ? `正在缓存到浏览器 · ${Math.round(progress.percent)}%` : '正在缓存到浏览器') : '已缓存到浏览器';
         badge.setAttribute('aria-label', badge.title);
     });
@@ -642,7 +649,9 @@ async function showTelegramDriveItemMenu(item, anchor) {
     if (!chosen.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus))) actions.splice(-1, 0, ['分享', () => shareDiskItems(chosen)]);
     menu.replaceChildren(...actions.map(([label, action, danger]) => {
         const button = document.createElement('button'); button.type = 'button'; button.textContent = label; if (danger) button.className = 'danger';
-        button.onclick = () => {
+        button.onclick = event => {
+            event.preventDefault();
+            event.stopPropagation();
             const invoke = () => Promise.resolve(action()).catch(error => alert(telegramDriveErrorText(error)));
             if (telegramDriveMenuHistoryOpen && history.state?.telegramDriveMenu) {
                 telegramDriveMenuPendingAction = invoke;
@@ -658,6 +667,7 @@ async function showTelegramDriveItemMenu(item, anchor) {
         history.pushState({ ...(history.state || {}), telegramDriveMenu: true }, '', location.href);
         telegramDriveMenuHistoryOpen = true;
     }
+    telegramDriveMenuHistoryClosing = false;
     requestAnimationFrame(() => {
         if (menu.hidden || telegramDriveMenuItem !== item) return;
         const rect = anchor.getBoundingClientRect(), viewport = window.visualViewport;
@@ -692,10 +702,17 @@ function renderTelegramDriveItems() {
         const meta = document.createElement('div'); meta.className = 'telegram-drive-item-meta'; meta.textContent = getTelegramDriveItemMeta(item); info.append(name, meta);
         if (item.kind !== 'directory' && item.reviewStatus !== 'deleted') {
             const badge = document.createElement('span'); badge.className = 'disk-cache-indicator'; badge.dataset.cacheIndicator = item.id; badge.hidden = true; icon.append(badge);
+            badge.addEventListener('pointerdown', event => event.stopPropagation());
+            badge.addEventListener('pointerup', event => event.stopPropagation());
+            badge.addEventListener('pointercancel', event => event.stopPropagation());
+            badge.addEventListener('contextmenu', event => { event.preventDefault(); event.stopPropagation(); });
             badge.onclick = async event => {
                 event.preventDefault(); event.stopPropagation();
-                if (!window.DiskClient.isCaching(item.id)) return;
-                if (await confirmTelegramDriveAction('取消缓存任务', `确定停止“${item.name}”的缓存拉取吗？`, '取消任务')) window.DiskClient.cancelRead(item.id);
+                if (!window.DiskClient.isCaching(item.id) || telegramDriveCacheCancelConfirming.has(item.id)) return;
+                telegramDriveCacheCancelConfirming.add(item.id);
+                try {
+                    if (await confirmTelegramDriveAction('取消缓存任务', `确定停止“${item.name}”的缓存拉取吗？`, '取消任务')) window.DiskClient.cancelRead(item.id);
+                } finally { telegramDriveCacheCancelConfirming.delete(item.id); }
             };
             const cache = document.createElement('a'); cache.href = '#'; cache.className = 'disk-cache-link'; cache.dataset.cacheId = item.id; cache.textContent = '缓存到浏览器';
             cache.onclick = async event => {
@@ -756,7 +773,9 @@ function renderTelegramDriveItems() {
         };
         row.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error))); } };
         row.append(checkbox, icon, info, more);
-        scheduleTelegramDriveThumbnail(item, icon);
+        // The thumbnail worker discards detached icons. Queue after this render
+        // has inserted the rows into the document instead of racing replaceChildren().
+        queueMicrotask(() => scheduleTelegramDriveThumbnail(item, icon));
         installContextGesture(row, event => showTelegramDriveItemMenu(item, { getBoundingClientRect: () => ({ left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY }) }).catch(error => alert(telegramDriveErrorText(error))));
         row.draggable = true;
         row.ondragstart = event => {
@@ -1109,8 +1128,11 @@ async function generateTelegramDriveThumbnail(item) {
         const video = document.createElement('video'); video.muted = true; video.playsInline = true; video.preload = 'metadata'; video.src = sourceUrl;
         await waitForMediaEvent(video, ['loadedmetadata']);
         if (Number.isFinite(video.duration) && video.duration > .2) {
+            if (video.readyState < 2) await waitForMediaEvent(video, ['loadeddata']);
+            const seeked = waitForMediaEvent(video, ['seeked']);
             video.currentTime = Math.min(Math.max(.1, video.duration * .08), 2);
-            await waitForMediaEvent(video, ['seeked', 'loadeddata']);
+            await seeked;
+            if (video.readyState < 2) await waitForMediaEvent(video, ['loadeddata']);
         } else if (video.readyState < 2) await waitForMediaEvent(video, ['loadeddata']);
         return canvasThumbnail(video);
     } finally { if (release && sourceUrl) URL.revokeObjectURL(sourceUrl); }
@@ -1161,12 +1183,17 @@ function saveDiskMediaProgress(item, media, ended = false) {
     diskMediaProgress = Object.fromEntries(entries);
     try { localStorage.setItem(diskMediaProgressKey, JSON.stringify(diskMediaProgress)); } catch (_) {}
 }
-function saveActiveDiskMediaProgress() {
+function disposeActiveDiskMedia() {
     const media = $disk('diskPreviewBody')?.querySelector('audio,video');
-    media?._saveDiskProgress?.();
+    if (!media) return;
+    if (typeof media._disposeDiskMedia === 'function') return media._disposeDiskMedia();
+    media._saveDiskProgress?.();
+    try { media.pause(); } catch (_) {}
+    media.removeAttribute('src');
+    try { media.load(); } catch (_) {}
 }
 function closeDiskPreview({ fromHistory = false, replaceHistory = false } = {}) {
-    saveActiveDiskMediaProgress();
+    disposeActiveDiskMedia();
     previewGeneration++; previewAbort?.abort();
     const overlay = $disk('diskPreview'); if (!overlay) return;
     overlay.hidden = true; $disk('diskPreviewBody').replaceChildren();
@@ -1247,6 +1274,13 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     controls.append(seekRow, actionRow);
     wrapper.append(stage, controls);
     let centerTimer = 0, requestedTime = null, recoveryTimer = 0, recoveryAttempts = 0, lastProgressSavedAt = 0;
+    let disposed = false;
+    const syncSeekThumb = () => {
+        const ratio = Math.max(0, Math.min(1, Number(seek.value) / 1000));
+        seekTrack.style.setProperty('--seek-percent', `${ratio * 100}%`);
+        // A native range thumb moves only between its two radius insets.
+        seekTrack.style.setProperty('--seek-thumb-position', `calc(${ratio * 100}% + ${7 - ratio * 14}px)`);
+    };
     const showCenter = () => {
         wrapper.classList.remove('disk-media-idle'); clearTimeout(centerTimer);
         if (!media.paused) centerTimer = setTimeout(() => wrapper.classList.add('disk-media-idle'), 2000);
@@ -1265,7 +1299,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         if (!Number.isFinite(media.duration) || media.duration <= 0) return;
         requestedTime = Math.max(0, Math.min(media.duration, value));
         seek.value = String(Math.round(requestedTime / media.duration * 1000));
-        seekTrack.style.setProperty('--seek-percent', `${Number(seek.value) / 10}%`);
+        syncSeekThumb();
         time.textContent = `${formatDiskMediaTime(requestedTime)} / ${formatDiskMediaTime(media.duration)}`;
         wrapper.classList.add('is-buffering'); bufferStatus.hidden = false; bufferStatus.textContent = '正在加载当前片段…';
         media.currentTime = requestedTime; showCenter();
@@ -1298,6 +1332,15 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         if (Number.isFinite(saved) && saved > .25 && saved < media.duration - .5) optimisticSeek(saved);
     });
     media._saveDiskProgress = () => saveDiskMediaProgress(item, media);
+    media._disposeDiskMedia = () => {
+        if (disposed) return;
+        disposed = true;
+        media._saveDiskProgress();
+        clearTimeout(centerTimer); clearRecovery();
+        try { media.pause(); } catch (_) {}
+        media.removeAttribute('src');
+        try { media.load(); } catch (_) {}
+    };
     media.addEventListener('play', syncPlay);
     media.addEventListener('pause', () => { syncPlay(); saveDiskMediaProgress(item, media); });
     media.addEventListener('ended', () => {
@@ -1322,7 +1365,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     for (const eventName of ['seeked', 'canplay', 'playing']) media.addEventListener(eventName, () => { clearRecovery(); clearBuffering(); });
     media.addEventListener('timeupdate', () => {
         if (requestedTime === null && Number.isFinite(media.duration) && media.duration > 0) seek.value = String(Math.round(media.currentTime / media.duration * 1000));
-        seekTrack.style.setProperty('--seek-percent', `${Number(seek.value) / 10}%`);
+        syncSeekThumb();
         time.textContent = `${formatDiskMediaTime(requestedTime ?? media.currentTime)} / ${formatDiskMediaTime(media.duration)}`;
         if (Date.now() - lastProgressSavedAt >= 1000) { lastProgressSavedAt = Date.now(); saveDiskMediaProgress(item, media); }
     });
@@ -1347,11 +1390,27 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         await shareDiskItems([item]);
     };
     share.onclick = event => openShare(event).catch(error => alert(telegramDriveErrorText(error)));
+    syncSeekThumb();
     media.play().catch(() => syncPlay());
     return wrapper;
 }
+function createDiskPreviewImageLoading(item) {
+    const loading = document.createElement('div'); loading.className = 'disk-preview-image-loading'; loading.setAttribute('role', 'status'); loading.setAttribute('aria-label', `正在加载图片 ${item.name}`);
+    const spinner = document.createElement('span'); spinner.className = 'disk-preview-image-spinner'; spinner.setAttribute('aria-hidden', 'true'); loading.append(spinner);
+    return loading;
+}
+function wrapDiskPreviewImage(image, item) {
+    const frame = document.createElement('div'); frame.className = 'disk-preview-image-frame';
+    const loading = createDiskPreviewImageLoading(item);
+    const finish = () => loading.remove();
+    image.addEventListener('load', finish, { once: true });
+    image.addEventListener('error', finish, { once: true });
+    frame.append(image, loading);
+    if (image.complete) queueMicrotask(finish);
+    return frame;
+}
 async function renderDiskPreview() {
-    saveActiveDiskMediaProgress();
+    disposeActiveDiskMedia();
     const generation = ++previewGeneration;
     previewAbort?.abort(); previewAbort = new AbortController();
     if (previewURL) URL.revokeObjectURL(previewURL); previewURL = '';
@@ -1363,6 +1422,7 @@ async function renderDiskPreview() {
     const body = $disk('diskPreviewBody'); body.replaceChildren(); body.textContent = '正在读取文件，可在网盘任务中查看具体阶段…';
     try {
         const type = getDiskPreviewType(item);
+        if (type.startsWith('image/')) body.replaceChildren(createDiskPreviewImageLoading(item));
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         const blob = cached?.blob?.size === Number(item.size) ? cached.blob : null;
         let element;
@@ -1387,6 +1447,7 @@ async function renderDiskPreview() {
                 if (!/^(audio|video)\//.test(type)) { element.title = item.name; element.src = previewURL; }
             }
         }
+        if (element?.tagName === 'IMG') element = wrapDiskPreviewImage(element, item);
         if (generation === previewGeneration) body.replaceChildren(element);
     } catch (error) { if (generation === previewGeneration) body.textContent = '预览失败：' + telegramDriveErrorText(error); }
 }
@@ -1525,7 +1586,8 @@ function initDiskEnhancements() {
     const preview = document.createElement('section'); preview.id = 'diskPreview'; preview.hidden = true; preview.setAttribute('role', 'dialog'); preview.setAttribute('aria-modal', 'true');
     preview.innerHTML = '<header><strong id="diskPreviewName"></strong><button id="diskPreviewClose" aria-label="关闭预览">×</button></header><div id="diskPreviewBody"></div><footer><button id="diskPreviewPrev" aria-label="上一个文件">←</button><span id="diskPreviewCount"></span><button id="diskPreviewNext" aria-label="下一个文件">→</button></footer>';
     document.body.append(preview);
-    $disk('diskPreviewClose').onclick = closeDiskPreview; $disk('diskPreviewPrev').onclick = () => stepDiskPreview(-1); $disk('diskPreviewNext').onclick = () => stepDiskPreview(1);
+    $disk('diskPreviewClose').onclick = event => { event.preventDefault(); event.stopPropagation(); closeDiskPreview(); };
+    $disk('diskPreviewPrev').onclick = () => stepDiskPreview(-1); $disk('diskPreviewNext').onclick = () => stepDiskPreview(1);
     document.addEventListener('keydown', event => {
         if (preview.hidden || event.target.matches?.('input,textarea,select') || event.isComposing) return;
         if (event.key === 'Escape') { event.preventDefault(); closeDiskPreview(); }
@@ -1622,6 +1684,8 @@ function initDiskEnhancements() {
 }
 function init(options = {}) {
     ({ formatFileSize = formatFileSize, showAppToast = showAppToast, historyLog = historyLog, audioCover: loadAudioCover = loadAudioCover } = options);
+    const driveDialog = document.getElementById('telegramDriveDialog');
+    if (driveDialog && driveDialog.parentElement !== document.body) document.body.append(driveDialog);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
     window.addEventListener('disk-cache-changed', updateDiskCacheLabels);
     window.addEventListener('focus', updateDiskCacheLabels);
@@ -1700,7 +1764,8 @@ function init(options = {}) {
             const menu = document.getElementById('telegramDriveCreateMenu');
             if (menu) menu.hidden = true;
         }
-        if (!event.target.closest?.('#telegramDriveItemMenu,.telegram-drive-item-more')) closeTelegramDriveItemMenu();
+        const driveMenu = document.getElementById('telegramDriveItemMenu');
+        if (driveMenu && !driveMenu.hidden && !event.target.closest?.('#telegramDriveItemMenu,.telegram-drive-item-more')) closeTelegramDriveItemMenu();
     });
     const menuBackdrop = document.getElementById('telegramDriveItemMenuBackdrop');
     for (const eventName of ['pointerdown', 'click', 'contextmenu']) menuBackdrop?.addEventListener(eventName, event => {

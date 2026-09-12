@@ -1896,7 +1896,7 @@
             try {
                 await saveTaskDetails(task, { remark: remarkInput.value });
                 notice.textContent = '备注已保存。';
-                await loadTasks();
+                await loadTasks({ force: true });
             } catch (error) {
                 notice.textContent = `保存备注失败：${error.message}`;
                 saveRemark.disabled = false;
@@ -2009,12 +2009,16 @@
         return card;
     }
 
-    async function loadTasks() {
+    function isPremiumRemarkEditing() { return Boolean(document.activeElement?.closest?.('.task-remark')); }
+
+    async function loadTasks({ force = false } = {}) {
+        if (!force && isPremiumRemarkEditing()) return;
         const data = await api(`/api/youtube-premium/tasks?page=${page}&pageSize=10`);
         page = data.page;
         pages = data.pages;
         currentTasks = data.tasks;
         await hydrateBrowserCacheStates(currentTasks);
+        if (!force && isPremiumRemarkEditing()) return;
         taskCount.textContent = `共 ${data.total} 条任务`;
         taskList.replaceChildren();
         if (!data.tasks.length) {
@@ -2230,7 +2234,7 @@
         .catch(() => {});
     loadTasks().catch(error => { taskCount.textContent = error.message; });
     setInterval(() => {
-        if (!document.hidden && !document.querySelector('dialog[open]') && !document.activeElement?.closest('.task-remark')) {
+        if (!document.hidden && !document.querySelector('dialog[open]') && !isPremiumRemarkEditing()) {
             loadTasks().catch(() => {});
         }
     }, 2000);
