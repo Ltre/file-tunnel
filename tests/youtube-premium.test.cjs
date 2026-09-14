@@ -19,6 +19,7 @@ const {
     getPreferredMusicAudioFormat,
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
+    normalizeSnsYtDlpFormats,
     normalizeYtDlpFormats,
     resolveYoutubePremiumMediaType,
     validateFormatSelection
@@ -96,6 +97,15 @@ test('X/Twitter 清单中的显式纯视频标记覆盖继承的音频编码标�
     ]);
     assert.deepEqual(formats.map(format => format.kind), ['video', 'video', 'audio']);
     assert.deepEqual(validateFormatSelection(formats, ['hls-video', 'dash-audio'], 'video').ids, ['hls-video', 'dash-audio']);
+});
+
+test('X/Twitter 的 http 渐进文件与 hls 纯视频按提取器编号区分，且不影响其它平台', () => {
+    const raw = [
+        { format_id: 'http-2176', ext: 'mp4', width: 720, height: 1280, vcodec: 'avc1.64001F', acodec: 'none' },
+        { format_id: 'hls-1267', ext: 'mp4', protocol: 'm3u8_native', width: 720, height: 1280, vcodec: 'avc1.64001F', acodec: 'mp4a.40.2' }
+    ];
+    assert.deepEqual(normalizeSnsYtDlpFormats(raw, 'x').map(format => format.kind), ['video_audio', 'video']);
+    assert.deepEqual(normalizeSnsYtDlpFormats(raw, 'instagram').map(format => format.kind), ['video', 'video_audio']);
 });
 
 test('Premium video default descends by short-edge tier with AV1, VP9, AVC codec priority', () => {
@@ -302,11 +312,12 @@ test('private task service persists history, paginates and hides server paths', 
         return { outputPath, outputFileName: 'private-test.mp4', outputFileSize: fs.statSync(outputPath).size };
     };
     const service = createYoutubePremiumService({ dataDir, analyze, download, onLog: event => logEvents.push(event) });
-    const created = service.create({ url: 'https://www.youtube.com/watch?v=test', mode: 'default', asMusic: true });
+    const created = service.create({ url: 'https://www.youtube.com/watch?v=test', mode: 'default', asMusic: true, remark: '下载前备注' });
     const completed = await waitFor(() => service.get(created.id).status === 'completed' && service.get(created.id));
 
     assert.equal(completed.hasFile, true);
     assert.equal(completed.asMusic, true);
+    assert.equal(completed.remark, '下载前备注');
     assert.equal(analyzeOptions.forceMusic, true);
     assert.equal(typeof analyzeOptions.onDetail, 'function');
     assert.ok(logEvents.some(event => event.message === '任务已创建并进入队列'));

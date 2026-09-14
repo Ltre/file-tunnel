@@ -2501,6 +2501,35 @@
             background: color-mix(in srgb, var(--accent) 8%, var(--surface-soft));
         }
 
+        .disk-drop-target {
+            border-color: var(--accent) !important;
+            background: color-mix(in srgb, var(--accent) 18%, var(--surface-soft)) !important;
+            outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+        }
+
+        .telegram-drive-item.disk-drag-source { opacity: .55; }
+
+        .telegram-drive-touch-drag {
+            position: fixed;
+            z-index: 4700;
+            top: 0;
+            left: 0;
+            max-width: min(72vw, 320px);
+            overflow: hidden;
+            padding: 9px 13px;
+            border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--panel-border));
+            border-radius: 11px;
+            background: color-mix(in srgb, var(--panel-bg) 92%, var(--accent));
+            box-shadow: 0 12px 35px rgba(15, 23, 42, .28);
+            color: var(--text-main);
+            font-size: .84rem;
+            font-weight: 700;
+            pointer-events: none;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            will-change: transform;
+        }
+
         .telegram-drive-item-check {
             width: 18px;
             height: 18px;

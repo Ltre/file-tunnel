@@ -148,6 +148,32 @@
         const ext = String(file.name || '').toLowerCase().split('.').pop();
         return ({ mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', m4v:'video/mp4', mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', opus:'audio/ogg', wav:'audio/wav', flac:'audio/flac', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', avif:'image/avif', svg:'image/svg+xml', pdf:'application/pdf', txt:'text/plain' })[ext] || 'application/octet-stream';
     };
+    async function createVideoUploadThumbnail(blob, type) {
+        if (!(blob instanceof Blob) || !String(type || blob.type).startsWith('video/')) return null;
+        const video = document.createElement('video'), source = URL.createObjectURL(blob);
+        video.muted = true; video.playsInline = true; video.preload = 'metadata'; video.src = source;
+        const wait = (names, timeout = 12000) => new Promise((resolve, reject) => {
+            const finish = event => { cleanup(); event.type === 'error' ? reject(new Error('VIDEO_THUMBNAIL_DECODE_FAILED')) : resolve(); };
+            const cleanup = () => { clearTimeout(timer); for (const name of [...names, 'error']) video.removeEventListener(name, finish); };
+            const timer = setTimeout(() => { cleanup(); reject(new Error('VIDEO_THUMBNAIL_TIMEOUT')); }, timeout);
+            for (const name of [...names, 'error']) video.addEventListener(name, finish, { once: true });
+        });
+        try {
+            await wait(['loadedmetadata']);
+            if (Number.isFinite(video.duration) && video.duration > .2) {
+                const seeked = wait(['seeked']); video.currentTime = Math.min(2, Math.max(.1, video.duration * .08)); await seeked;
+            }
+            if (video.readyState < 2) await wait(['loadeddata']);
+            const width = Number(video.videoWidth), height = Number(video.videoHeight);
+            if (!width || !height) return null;
+            const scale = Math.min(1, 480 / width, 360 / height);
+            const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(width * scale)); canvas.height = Math.max(1, Math.round(height * scale));
+            canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+            return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .82));
+        } finally {
+            video.removeAttribute('src'); try { video.load(); } catch (_) {} URL.revokeObjectURL(source);
+        }
+    }
     async function uploadFiles(files, folderPath, read, metadata, update, signal) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
         const plannedPartSize = 20_000_000;
@@ -171,6 +197,13 @@
                 if (signal.aborted) throw abortError();
                 blobs.push(blob);
                 const url = '/uploads/' + job.uploadId + '/files/' + index;
+                // Decode the representative frame locally while regular chunks
+                // continue entering the server queue. A codec the browser cannot
+                // decode only skips the optional cover; it never fails the file.
+                const thumbnailUpload = createVideoUploadThumbnail(blob, plannedFiles[index].type).then(thumbnail => {
+                    if (!thumbnail?.size || signal.aborted) return;
+                    return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
+                }).catch(error => { if (error?.name !== 'AbortError') console.warn('[telegram-drive] 视频封面提取失败', error.message); });
                 if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal });
                 for (const part of plannedFiles[index].parts) {
                     const offset = part.byteStart, end = part.byteEnd + 1;
@@ -184,6 +217,7 @@
                         }
                     }
                 }
+                await thumbnailUpload;
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
@@ -217,7 +251,11 @@
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
-        setCacheProgress(item.id, { phase: 'telegram', percent: null });
+        // Keep the file badge informative while fetch is waiting for the first
+        // response byte.  The server cannot expose Telegram's byte progress on
+        // this HTTP response, so 0% is the only truthful value until headers
+        // arrive and the browser-download half begins at 50%.
+        setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
         const response = await fetch(base + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });

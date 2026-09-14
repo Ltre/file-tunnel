@@ -18252,6 +18252,7 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', event => {
+    if (window.DiskUI?.ownsHistory()) return;
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
         if (event.state?.[MUSIC_QUEUE_HISTORY_KEY]) {
             setMusicQueueOpen(true, { fromHistory: true, pushHistory: false });

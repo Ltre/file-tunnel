@@ -155,8 +155,9 @@ test('网盘提供最小化、目标隧道选择与上次目标记忆，管理�
     assert.match(page, /topbar-now-playing-slot/); assert.match(page, /id="telegramDriveSearchAll"/);
     assert.match(page, /tunnel-topbar-scroll[\s\S]*?overflow-x: auto/);
     assert.match(source('app.js'), /function initTopbarOverflowScroll[\s\S]*?scroller\.scrollLeft = drag\.scrollLeft - dx/);
-    assert.match(ui, /minimizeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = false/);
-    assert.match(ui, /closeTelegramDrive[\s\S]*?topbarDiskBtn[\s\S]*?hidden = true/);
+    assert.match(ui, /function minimizeTelegramDrive\([^]*?saveDiskWindow\(true\)/);
+    assert.match(ui, /function closeTelegramDrive\([^]*?if \(forget\) \{ saveDiskWindow\(false\)/);
+    assert.match(ui, /function saveDiskWindow\([^]*?topbarDiskBtn[^]*?button\.hidden = !retained/);
     assert.match(ui, /history\.pushState[\s\S]*?telegramDriveHistorySession/); assert.match(ui, /addEventListener\('popstate'/);
     assert.match(ui, /DiskClient\.raw\('\/search\?q=/); assert.match(ui, /telegramDriveRenderGeneration/);
     assert.match(css, /-webkit-user-select:none;user-select:none/);

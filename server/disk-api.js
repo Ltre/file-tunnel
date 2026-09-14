@@ -20,7 +20,8 @@ const publicFile = item => item ? {
     lastCheckedAt: item.lastCheckedAt || 0, repairedAt: item.repairedAt || 0,
     metadata: item.metadata || {}, reviewStatus: item.reviewStatus || 'active', reviewUpdatedAt: item.reviewUpdatedAt || 0,
     partCount: Number(item.partCount) || (Array.isArray(item.parts) && item.parts.length) || 1,
-    mediaIndex: item.mediaIndex || { mode: 'unavailable' }
+    mediaIndex: item.mediaIndex || { mode: 'unavailable' },
+    thumbnailAvailable: Boolean(item.thumbnail?.fileId)
 } : null;
 const uploadResultFile = item => item ? {
     ...publicFile(item),
@@ -96,7 +97,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     async function cleanupExpiredUploads() {
         for (const { store, job } of spaces.cleanup()) {
             if (job.operationId) operations.fail(job.operationId, new Error('UPLOAD_EXPIRED'));
-            const parts = job.files.flatMap(file => file.chunks.map(chunk => chunk.remote).filter(Boolean));
+            const parts = job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
             if (!parts.length) { store.finalizeExpired(job.id); continue; }
             const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
             try {
@@ -115,7 +116,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         recoveringUploads = true;
         const pending = recoveryBacklog.splice(0);
         try { for (const { store, job } of pending) {
-            const parts = (job.files || []).flatMap(file => (file.chunks || []).map(chunk => chunk.remote).filter(Boolean));
+            const parts = (job.files || []).flatMap(file => [...(file.chunks || []).map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
             try {
                 if (parts.length) {
                     const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
@@ -516,6 +517,15 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             });
         }));
         router.get('/files/:id', wrap((req, res) => res.json(publicFile(getFile(req)))));
+        router.get('/files/:id/thumbnail', wrap(async (req, res) => {
+            const file = requireEntity(getFile(req)), thumbnail = file.thumbnail;
+            if (!thumbnail?.fileId || !Number(thumbnail.size)) throw new Error('FILE_THUMBNAIL_NOT_FOUND');
+            const abort = new AbortController();
+            res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+            res.status(200).set({ 'Content-Type': thumbnail.type || 'image/jpeg', 'Content-Length': String(thumbnail.size), 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.name + '.cover.jpg')}` });
+            const source = await telegram.readPart(fileBackend(req, file), thumbnail, { start: 0, end: thumbnail.size - 1, signal: abort.signal });
+            await pipeline(source, res);
+        }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
@@ -588,7 +598,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             return batch;
         };
         const cleanupPipelineRemote = async job => {
-            const parts = job.files.flatMap(file => file.chunks.map(chunk => chunk.remote).filter(Boolean));
+            const parts = job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
             if (!parts.length) return;
             await telegram.remove(job.storage, { name: job.files[0]?.name || '已取消文件', channelId: job.storage.channelId, createdAt: job.createdAt, parts });
         };
@@ -618,6 +628,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const state = store(req).uploadQueue(job.id);
                     if (!state) throw new Error('UPLOAD_NOT_FOUND');
                     update({ clientPartsReceived: state.receivedParts, clientPartsTotal: state.totalParts, telegramPartsUploaded: state.uploadedParts, queueParts: state.pendingParts, queueBytes: state.pendingBytes });
+                    const thumbnailIndex = job.files.findIndex(file => file.thumbnail?.status === 'queued' && file.chunks.length === file.parts.length && file.chunks.every(chunk => chunk.status === 'uploaded'));
+                    if (thumbnailIndex >= 0) {
+                        const file = job.files[thumbnailIndex], thumbnail = store(req).markThumbnailUploading(job.id, thumbnailIndex);
+                        update({ phase: 'telegram-thumbnail', percent: null, message: `正在上传视频封面到 Telegram：${file.name}` });
+                        try {
+                            const remote = await enqueueTelegramUpload(job, () => telegram.uploadThumbnail(job.storage, file, thumbnail, { ...scope(req), uploadId: job.id, operationId: job.operationId, signal: job.pipelineAbort.signal }));
+                            store(req).markThumbnailUploaded(job.id, thumbnailIndex, remote);
+                        } catch (error) { store(req).resetUploadingThumbnail(job.id, thumbnailIndex); throw error; }
+                        continue;
+                    }
                     if (job.clientDone && state.uploadedParts === state.totalParts) {
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收全部分片，正在写入逻辑文件索引' });
                         return mutate(req, async () => {
@@ -745,6 +765,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 store(req).abort(job.id); operations.fail(job.operationId, error); throw error;
             }
             finally { clearInterval(heartbeat); }
+        }));
+        router.put('/uploads/:uploadId/files/:index/thumbnail', wrap(async (req, res) => {
+            if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
+            const job = store(req).upload(req.params.uploadId);
+            if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
+            const file = job.files[Number(req.params.index)];
+            if (!file) throw new Error('FILE_NOT_FOUND');
+            const declaredSize = Number(req.get('X-Disk-Thumbnail-Size') || req.get('Content-Length'));
+            const declaredType = String(req.get('Content-Type') || 'image/jpeg');
+            log('browser.thumbnail-receive-start', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: declaredSize, type: declaredType });
+            const result = await store(req).receiveThumbnail(job.id, req.params.index, req, declaredSize, declaredType);
+            pipelineWake(job);
+            log('browser.thumbnail-receive-complete', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: result.received });
+            res.json(result);
         }));
         router.post('/uploads/:uploadId/phase', wrap((req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');

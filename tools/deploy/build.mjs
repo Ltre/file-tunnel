@@ -26,6 +26,7 @@ const SCRIPT_SOURCES = [
   'client/disk-management.js',
   'client/simplewebauthn.js',
   'client/sns-download-cache.js',
+  'client/audio-track-repair.js',
   'client/i18n-catalog.js',
   'client/i18n.js',
   'client/localization-runtime.js',

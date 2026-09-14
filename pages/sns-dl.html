@@ -8,6 +8,9 @@
         :root { color-scheme:light dark; --bg:#eef2f7; --panel:#fff; --text:#162033; --muted:#69758a; --line:#d9e0ea; --accent:#3567d6; --danger:#c83c4a; --ok:#15805f; --warn:#a76a08; --shadow:0 14px 42px rgba(34,48,80,.09); }
         @media (prefers-color-scheme:dark) { :root { --bg:#111722; --panel:#1b2433; --text:#edf2fb; --muted:#9ca9bb; --line:#344054; --accent:#75a2ff; --danger:#ff8490; --ok:#55d2a6; --warn:#e4ad4e; --shadow:0 18px 48px rgba(0,0,0,.22); } }
         * { box-sizing:border-box; }
+        .audio-repair-panel { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
+        .audio-repair-panel label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+        .audio-repair-status { color:var(--muted); flex-basis:100%; }
         body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
         button,input,select,textarea { font:inherit; color:inherit; }
         button,.button { border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:8px 13px; cursor:pointer; text-decoration:none; }
@@ -127,6 +130,7 @@
 
 <script src="/client/cache-store.js"></script>
 <script src="/client/sns-download-cache.js"></script>
+<script src="/client/audio-track-repair.js"></script>
 <script>
 (() => {
     const API_ROOT = '/api/sns-dl';
@@ -324,13 +328,22 @@
         return button;
     }
     function taskReferenceDetails(task) {
-        const details = element('details'); const summary = element('summary','','已抓取的页面信息'); details.append(summary);
+        const details = element('details'); details.dataset.referenceDetails = ''; const summary = element('summary','','已抓取的页面信息'); details.append(summary);
         const list = document.createElement('dl'); const info = task.referenceInfo || {};
         Object.entries(info).forEach(([key,value]) => {
             if (value === '' || value == null || key === 'sourceUrl') return;
             const dt = element('dt','',fieldLabels[key] || key); const dd = element('dd','',Array.isArray(value) ? value.join('、') : String(value)); list.append(dt,dd);
         });
-        details.append(list); return details;
+        details.append(list);
+        const interacting = active => {
+            if (active) details.dataset.referenceInteracting = '1';
+            else delete details.dataset.referenceInteracting;
+        };
+        details.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') interacting(true); });
+        details.addEventListener('pointerleave', event => { if (event.pointerType !== 'touch') interacting(false); });
+        details.addEventListener('pointerdown', event => { if (event.pointerType === 'touch' && details.open) interacting(true); });
+        for (const name of ['pointerup','pointercancel']) details.addEventListener(name, event => { if (event.pointerType === 'touch') setTimeout(() => interacting(false), 600); });
+        return details;
     }
     function renderTask(task) {
         const card = element('article','task'); card.dataset.taskId = task.id;
@@ -367,21 +380,35 @@
         if (['failed','cancelled','cleared'].includes(task.status)) actions.append(makeAction('重新抓取',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/retry`,{method:'POST'});await loadTasks();}));
         if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
         if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
-        card.append(actions); return card;
+        card.append(actions);
+        if (task.status === 'completed' && task.hasFile) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
+        return card;
     }
     function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }
+    function isTaskRefreshPaused() { return window.AudioTrackRepair.busy() || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
     async function loadTasks({force=false}={}) {
-        if (!force && isTaskRemarkEditing()) return;
+        if (!force && isTaskRefreshPaused()) return;
+        const expandedReferences = new Set([...taskList.querySelectorAll('[data-reference-details][open]')].map(details => details.closest('[data-task-id]')?.dataset.taskId).filter(Boolean));
         try {
             const data=await api(`${API_ROOT}/tasks?page=${page}&pageSize=10`); page=data.page; pages=data.pages; currentTasks=data.tasks||[];
-            if (!force && isTaskRemarkEditing()) return;
+            if (!force && isTaskRefreshPaused()) return;
             taskList.replaceChildren(...currentTasks.map(renderTask)); taskCount.textContent=`共 ${data.total} 个任务`; pager.hidden=pages<=1; pageLabel.textContent=`${page} / ${pages}`; $('prevBtn').disabled=page<=1; $('nextBtn').disabled=page>=pages;
+            for (const taskId of expandedReferences) taskList.querySelector(`[data-task-id="${CSS.escape(taskId)}"] [data-reference-details]`)?.setAttribute('open', '');
             currentTasks.filter(task=>task.status==='completed').forEach(task=>ensureBrowserCache(task));
         } catch(error) { taskCount.textContent=`读取失败：${error.message}`; }
     }
     async function showPreview(task) {
+        disposePreview();
         $('previewTitle').textContent=task.outputFileName||'文件预览'; previewBody.replaceChildren(element('div','subtle','正在载入…')); previewDialog.showModal();
         const media=document.createElement(task.mediaType==='audio'?'audio':'video'); media.className='preview'; media.controls=true; media.playsInline=true; media.src=task.previewUrl; previewBody.replaceChildren(media);
+    }
+    function disposePreview() {
+        for (const media of previewBody.querySelectorAll('audio,video')) {
+            try { media.pause(); } catch (_) {}
+            media.removeAttribute('src');
+            try { media.load(); } catch (_) {}
+        }
+        previewBody.replaceChildren();
     }
     async function showInfo(task) {
         $('infoTitle').textContent=task.outputFileName||'文件信息'; infoBody.textContent='正在读取…'; infoDialog.showModal();
@@ -418,7 +445,8 @@
     $('forwardConfirm').addEventListener('click',()=>forwardCurrent().catch(error=>{forwardStatus.textContent=error.message;$('forwardConfirm').disabled=false;}));
     document.querySelectorAll('[data-close-dialog]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
     document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
-    setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]')&&!isTaskRemarkEditing())loadTasks();},2500);
+    previewDialog.addEventListener('close', disposePreview);
+    setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]')&&!isTaskRefreshPaused())loadTasks();},2500);
     loadTasks();
 })();
 </script>

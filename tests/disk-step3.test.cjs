@@ -38,6 +38,34 @@ test('媒体进度持久化、缩略图和播放结束补全浏览器缓存均�
     assert.match(ui, /media\.addEventListener\('ended'.*DiskClient\.read\(item, \{ silentLoading: true \}\)/s);
 });
 
+test('播放器不再用重载 URL 冒充 Range 恢复，预览返回只消费网盘自己的历史项', () => {
+    const ui = source('client/disk-ui.js');
+    assert.doesNotMatch(ui, /purpose:\s*'media-retry'/);
+    assert.doesNotMatch(ui, /recoverMediaRequest/);
+    assert.match(ui, /history\.replaceState\(base[\s\S]*history\.pushState\(\{ \.\.\.base, telegramDrivePreview: true \}/);
+    assert.match(ui, /diskPreviewHistoryOpen[\s\S]*event\.stopImmediatePropagation\(\)[\s\S]*closeDiskPreview\(\{ fromHistory: true \}\)/);
+    assert.match(ui, /Math\.min\(99,/);
+});
+
+test('移动端长按进入拖动模式并以双指单击打开上下文菜单', () => {
+    const ui = source('client/disk-ui.js'), page = source('pages/index.html');
+    assert.match(ui, /function installContextGesture\(element, open, beginTouchDrag = null\)/);
+    assert.match(ui, /touches\.size === 2/);
+    assert.match(ui, /function beginTouchDiskDrag/);
+    assert.match(ui, /dataset\.diskDropPath/);
+    assert.match(page, /telegram-drive-touch-drag/);
+});
+
+test('SNS 预览关闭会释放媒体，参考信息交互会暂停刷新；Premium 支持创建前备注', () => {
+    const sns = source('pages/sns-dl.html'), premium = source('pages/youtube-premium-dl.html');
+    assert.match(sns, /previewDialog\.addEventListener\('close', disposePreview\)/);
+    assert.match(sns, /media\.pause\(\)[\s\S]*media\.removeAttribute\('src'\)/);
+    assert.match(sns, /data-reference-interacting|referenceInteracting/);
+    assert.match(sns, /isTaskRefreshPaused/);
+    assert.match(premium, /id="preDownloadRemarkInput"/);
+    assert.match(premium, /remark: preDownloadRemarkInput\.value\.trim\(\)/);
+});
+
 test('网盘菜单、播放器释放、缩略图调度和预览层级的回归保护', () => {
     const ui = source('client/disk-ui.js'), css = source('client/disk.css');
     assert.match(ui, /telegramDriveMenuHistoryClosing/);

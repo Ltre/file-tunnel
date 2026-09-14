@@ -20,6 +20,9 @@ function diskCaption(file, backend, context = {}, remote = {}) {
     const shortened = folder.length > room ? Array.from(folder.slice(0, Math.max(0, room - 1))).join('') + '…' : folder;
     return heading + '\npath: ' + shortened;
 }
+function diskThumbnailCaption(file, backend, context = {}) {
+    return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);
+}
 function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now }) {
     const placeholderPath = path.join(dataDir, 'tg-1byte-file.id');
     const placeholdersInFlight = new Map();
@@ -253,6 +256,19 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
     return {
         call,
         uploadPhysical,
+        async uploadThumbnail(backend, file, thumbnail, context = {}) {
+            const upload = { path: thumbnail.path, name: `${file.name}.cover.jpg`.slice(0, 180), size: thumbnail.size, type: thumbnail.type || 'image/jpeg', caption: diskThumbnailCaption(file, backend, context) };
+            const multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: [upload], disableContentTypeDetection: true });
+            let message;
+            try {
+                message = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0, { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, thumbnail: true, signal: context.signal });
+            } catch (error) { multipart.body.destroy(); throw error; }
+            const media = messageMedia(message);
+            if (!media?.file_id || !Number.isSafeInteger(message?.message_id)) throw new Error('TELEGRAM_UPLOAD_RESULT_INVALID');
+            const remote = { fileId: media.file_id, fileUniqueId: media.file_unique_id || '', messageId: message.message_id, messageDate: message.date ? message.date * 1000 : now(), mediaType: ['document', 'video', 'audio', 'animation'].find(type => message[type]) || 'document', size: thumbnail.size, type: thumbnail.type || 'image/jpeg' };
+            log('telegram.thumbnail-confirmed', { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, messageId: remote.messageId, bytes: remote.size });
+            return remote;
+        },
         parts: validatedParts,
         readPart,
         async validate(token, channelId) {
@@ -384,11 +400,13 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         },
         async check(backend, item) {
             for (const part of validatedParts(item)) await call(backend, 'getFile', { file_id: part.fileId });
+            if (item.thumbnail?.fileId) await call(backend, 'getFile', { file_id: item.thumbnail.fileId });
             return true;
         },
         async remove(backend, item) {
             let failure;
-            for (const part of storedParts(item)) {
+            const stored = [...storedParts(item), ...(item.thumbnail?.messageId ? [item.thumbnail] : [])];
+            for (const part of stored) {
                 try {
                     if (!Number.isSafeInteger(part.messageId) || part.messageId <= 0) throw new Error('TELEGRAM_MESSAGE_MISSING');
                     if (now() - Number(part.messageDate || item.createdAt || now()) >= DELETE_WINDOW_MS) await replaceDeleted(backend, item, part);

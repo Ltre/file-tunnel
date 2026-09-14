@@ -51,7 +51,9 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
     const persistUpload = job => writeJson(uploadManifestPath(job), {
         version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
-        files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, chunks: (file.chunks || []).map(chunk => ({
+        files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, thumbnail: file.thumbnail ? {
+            size: file.thumbnail.size, type: file.thumbnail.type, remote: file.thumbnail.remote || null
+        } : null, chunks: (file.chunks || []).map(chunk => ({
             partIndex: chunk.partIndex, size: chunk.size, sha256: chunk.sha256 || '', remote: chunk.remote || null
         })) }))
     });
@@ -366,6 +368,26 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
             finally { file.receiving = false; }
         },
+        async receiveThumbnail(uploadId, index, request, declaredSize, declaredType = 'image/jpeg') {
+            const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
+            const sizeLimit = 2 * 1024 * 1024;
+            if (!job || !file) throw new Error('telegram-drive-upload-not-found');
+            const expected = Number(declaredSize);
+            if (!Number.isSafeInteger(expected) || expected <= 0 || expected > sizeLimit || !String(declaredType).startsWith('image/')) throw new Error('UPLOAD_THUMBNAIL_INVALID');
+            if (file.thumbnail?.path || file.thumbnail?.receiving || file.thumbnail?.remote) throw new Error('telegram-drive-upload-already-received');
+            const target = path.join(job.dir, `${file.index}-video-cover.jpg`);
+            const thumbnail = file.thumbnail = { size: expected, type: String(declaredType).slice(0, 120), path: target, receiving: true, status: 'receiving', remote: null };
+            let received = 0;
+            request.on('data', chunk => { received += chunk.length; if (received > expected || received > sizeLimit) request.destroy(new Error('UPLOAD_THUMBNAIL_INVALID')); });
+            try {
+                await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
+                if (received !== expected) throw new Error('UPLOAD_THUMBNAIL_INVALID');
+                Object.assign(thumbnail, { receiving: false, status: 'queued' });
+                persistUpload(job); return { received };
+            } catch (error) {
+                file.thumbnail = null; try { fs.unlinkSync(target); } catch (_) {} throw error;
+            }
+        },
         upload(uploadId) { return uploads.get(String(uploadId)); },
         uploadQueue(uploadId) {
             const job = uploads.get(String(uploadId));
@@ -388,6 +410,22 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             try { if (chunk.path) fs.unlinkSync(chunk.path); } catch (_) {}
             return chunk;
         },
+        markThumbnailUploading(uploadId, fileIndex) {
+            const thumbnail = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.thumbnail;
+            if (!thumbnail || thumbnail.status !== 'queued') throw new Error('UPLOAD_THUMBNAIL_STATE_INVALID');
+            thumbnail.status = 'uploading'; return thumbnail;
+        },
+        markThumbnailUploaded(uploadId, fileIndex, remote) {
+            const job = uploads.get(String(uploadId)), thumbnail = job?.files[Number(fileIndex)]?.thumbnail;
+            if (!thumbnail) throw new Error('UPLOAD_THUMBNAIL_STATE_INVALID');
+            thumbnail.status = 'uploaded'; thumbnail.remote = remote; persistUpload(job);
+            try { if (thumbnail.path) fs.unlinkSync(thumbnail.path); } catch (_) {}
+            return thumbnail;
+        },
+        resetUploadingThumbnail(uploadId, fileIndex) {
+            const thumbnail = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.thumbnail;
+            if (thumbnail?.status === 'uploading') thumbnail.status = 'queued';
+        },
         resetUploadingParts(uploadId) {
             const job = uploads.get(String(uploadId));
             for (const chunk of job?.files.flatMap(file => file.chunks || []) || []) if (chunk.status === 'uploading') chunk.status = 'queued';
@@ -399,7 +437,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 const parts = file.chunks.map(chunk => chunk.remote).filter(Boolean).sort((a, b) => a.partIndex - b.partIndex);
                 if (parts.length !== file.parts.length) return null;
                 const first = parts[0] || {};
-                return { ...first, parts, partCount: parts.length, size: file.size, originalSize: file.size, captionWarning: parts.some(part => part.captionWarning) ? 'TELEGRAM_CAPTION_UPDATE_FAILED' : '' };
+                return { ...first, parts, partCount: parts.length, size: file.size, originalSize: file.size, thumbnail: file.thumbnail?.remote || null, captionWarning: parts.some(part => part.captionWarning) ? 'TELEGRAM_CAPTION_UPDATE_FAILED' : '' };
             });
         },
         validateUpload(uploadId) {
@@ -422,7 +460,8 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {};
                 const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0, sha256: String(part.sha256 || '') }));
-                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                const thumbnail = remote.thumbnail ? { fileId: String(remote.thumbnail.fileId || ''), fileUniqueId: String(remote.thumbnail.fileUniqueId || ''), messageId: Number(remote.thumbnail.messageId) || 0, messageDate: Number(remote.thumbnail.messageDate) || now, mediaType: remote.thumbnail.mediaType || 'document', size: Number(remote.thumbnail.size) || 0, type: String(remote.thumbnail.type || 'image/jpeg') } : null;
+                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, thumbnail, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';
@@ -461,7 +500,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         tombstone(ownerId, id) {
             const item = this.get(ownerId, id);
             if (!item) throw new Error('FILE_NOT_FOUND');
-            Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: Date.now(), deletedAt: Date.now(), updatedAt: Date.now(), fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0 });
+            Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: Date.now(), deletedAt: Date.now(), updatedAt: Date.now(), fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0, thumbnail: null });
             persist(); return { ...item };
         },
         tombstoneDirectory(ownerId, folderPath) {
@@ -469,7 +508,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (!snapshot.path || !snapshot.directories.length) throw new Error('DIRECTORY_NOT_FOUND');
             const now = Date.now();
             for (const directory of snapshot.directories) Object.assign(directory, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now });
-            for (const item of snapshot.files) Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now, fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0 });
+            for (const item of snapshot.files) Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now, fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0, thumbnail: null });
             persist(); return this.getDirectory(ownerId, folderPath);
         },
         search(ownerId, query, limit = 500) {

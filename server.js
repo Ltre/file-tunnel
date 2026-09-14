@@ -59,6 +59,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const { createAudioTrackRepair, registerAudioTrackRepairRoutes } = require('./server/audio-track-repair');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { spawn, spawnSync } = require('child_process');
@@ -91,6 +92,7 @@ const {
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
     normalizeYtDlpFormats,
+    normalizeSnsYtDlpFormats,
     resolveYoutubePremiumMediaType,
     validateFormatSelection
 } = require('./server/youtube-premium');
@@ -116,6 +118,7 @@ const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync
 const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
 const YOUTUBE_PREMIUM_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'youtube-premium-metadata-cache.json');
 const SNS_DOWNLOAD_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'sns-download-metadata-cache.json');
+const SNS_DOWNLOAD_METADATA_SCHEMA = 2;
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
     tiktok: 'tiktok-cookies.txt',
@@ -197,6 +200,10 @@ const snsDownloadService = createSnsDownloadService({
     onLog: logSnsDownloadTaskEvent
 });
 const snsDownloadCoverJobs = new Map();
+const audioTrackRepair = createAudioTrackRepair({
+    probe: file => probeMediaFile(file),
+    run: args => spawnCapture(FFMPEG_COMMAND, args, { timeoutMs: 30 * 60 * 1000, timeoutError: 'audio-repair-timeout' })
+});
 
 // ==================== 安全配置 ====================
 
@@ -410,7 +417,7 @@ function setYoutubePremiumMetadataCache(url, patch) {
 function loadSnsDownloadMetadataCache() {
     try {
         const stored = JSON.parse(fs.readFileSync(SNS_DOWNLOAD_METADATA_CACHE_PATH, 'utf8'));
-        return new Map(Object.entries(stored && typeof stored === 'object' ? stored : {}));
+        return new Map(Object.entries(stored && typeof stored === 'object' ? stored : {}).filter(([, entry]) => entry?.schema === SNS_DOWNLOAD_METADATA_SCHEMA));
     } catch (_) {
         return new Map();
     }
@@ -419,7 +426,7 @@ function loadSnsDownloadMetadataCache() {
 function setSnsDownloadMetadataCache(url, analysis) {
     let key;
     try { key = normalizeSnsDownloadUrl(url).url; } catch (_) { return; }
-    snsDownloadMetadataCache.set(key, { analysis, updatedAt: Date.now() });
+    snsDownloadMetadataCache.set(key, { schema: SNS_DOWNLOAD_METADATA_SCHEMA, analysis, updatedAt: Date.now() });
     // Keep the durable parse cache bounded without changing the existing YouTube cache.
     const oldest = [...snsDownloadMetadataCache.entries()]
         .sort((left, right) => Number(right[1]?.updatedAt) - Number(left[1]?.updatedAt))
@@ -1404,6 +1411,8 @@ app.delete('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
     }
 });
 
+registerAudioTrackRepairRoutes(app, { root: '/api/sns-dl', service: snsDownloadService, requireAuth: adminAuth.requireAuth,
+    repair: audioTrackRepair, sanitizeError: sanitizeSnsDownloadError });
 app.get('/api/sns-dl/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
     const file = snsDownloadService.getFile(req.params.taskId);
     if (!file) return res.status(404).json({ error: 'sns-download-file-not-found' });
@@ -1676,6 +1685,8 @@ app.delete('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, re
     }
 });
 
+registerAudioTrackRepairRoutes(app, { root: '/api/youtube-premium', service: youtubePremiumService, requireAuth: adminAuth.requireAuth,
+    repair: audioTrackRepair, sanitizeError: sanitizeYoutubePremiumError });
 app.get('/api/youtube-premium/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
     const file = youtubePremiumService.getFile(req.params.taskId);
     if (!file) return res.status(404).json({ error: 'youtube-premium-file-not-found' });
@@ -6496,7 +6507,7 @@ async function analyzeSnsDownloadUrl(rawUrl, options = {}) {
             signal: options.signal,
             operation: `sns-download-${normalized.platform}-metadata`
         });
-        const formats = normalizeYtDlpFormats(meta.formats);
+        const formats = normalizeSnsYtDlpFormats(meta.formats, normalized.platform);
         const hasVideo = formats.some(format => ['video', 'video_audio'].includes(format.kind));
         const hasAudio = formats.some(format => ['audio', 'video_audio'].includes(format.kind));
         const mediaType = hasVideo ? 'video' : (hasAudio ? 'audio' : 'unsupported');
@@ -6878,7 +6889,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
             rawFormatCount: Array.isArray(selectedMeta.formats) ? selectedMeta.formats.length : 0
         });
     }
-    let formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
+    let formats = normalizeSnsYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats, task.platform);
     let preferredMusicFormat = getPreferredMusicAudioFormat(formats);
     report('格式库存已标准化', {
         normalizedFormatCount: formats.length,
@@ -6906,7 +6917,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
                 operation: 'youtube-premium-audio-format-probe',
                 signal: options.signal
             });
-            const alternateFormats = normalizeYtDlpFormats(alternateMeta.formats);
+            const alternateFormats = normalizeSnsYtDlpFormats(alternateMeta.formats, task.platform);
             const alternatePreferred = getPreferredMusicAudioFormat(alternateFormats);
             if (alternatePreferred) {
                 formats = alternateFormats;

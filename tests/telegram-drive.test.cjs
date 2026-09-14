@@ -95,6 +95,23 @@ test('未完成上传持久化已确认的 Telegram 分片，进程重启后可�
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('视频上传封面与逻辑文件一并持久化，但保持独立 Telegram 消息关联', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-drive-thumbnail-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const drive = createTelegramDriveStore({ dataDir: dir, maxFileSize: () => 1024 });
+    const job = drive.begin({ owner: { id: '1001', name: 'A' }, folderPath: '', files: [{ name: 'clip.mp4', type: 'video/mp4', size: 3 }], maxDepth: 20 });
+    await drive.receivePart(job.id, 0, Readable.from([Buffer.from('abc')]), 'bytes 0-2/3');
+    await drive.receiveThumbnail(job.id, 0, Readable.from([Buffer.from('jpg')]), 3, 'image/jpeg');
+    drive.markPartUploading(job.id, 0, 1);
+    drive.markPartUploaded(job.id, 0, 1, { fileId: 'video-file', fileUniqueId: 'video-unique', messageId: 31, partIndex: 1, partCount: 1, size: 3, offset: 0 });
+    drive.markThumbnailUploading(job.id, 0);
+    drive.markThumbnailUploaded(job.id, 0, { fileId: 'cover-file', fileUniqueId: 'cover-unique', messageId: 32, messageDate: Date.now(), size: 3, type: 'image/jpeg' });
+    const [item] = drive.commit(job.id, '-100', drive.uploadResults(job.id));
+    assert.equal(item.thumbnail.fileId, 'cover-file');
+    assert.equal(item.thumbnail.messageId, 32);
+    assert.equal(createTelegramDriveStore({ dataDir: dir }).get('1001', item.id).thumbnail.fileUniqueId, 'cover-unique');
+});
+
 test('Telegram 网盘保持独立存储、分区、album、修复与来电取消链路', () => {
     const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
     const page = fs.readFileSync(path.join(__dirname, '..', 'pages', 'index.html'), 'utf8');

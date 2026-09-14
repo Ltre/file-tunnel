@@ -196,6 +196,24 @@ function normalizeYtDlpFormats(formats = []) {
     });
 }
 
+function normalizeSnsYtDlpFormats(formats = [], platform = '') {
+    const normalized = normalizeYtDlpFormats(formats);
+    if (!['x', 'twitter'].includes(String(platform || '').toLowerCase())) return normalized;
+    const originals = new Map((Array.isArray(formats) ? formats : []).map(format => [String(format?.format_id || '').trim(), format]));
+    return normalized.map(format => {
+        const original = originals.get(format.id) || {};
+        const id = format.id.toLowerCase();
+        const hasVideo = format.width > 0 || format.height > 0 || !/^(?:|none|null|unknown|n\/a)$/i.test(format.videoCodec);
+        if (!hasVideo) return format;
+        // X's extractor uses http-* for progressive files containing both
+        // tracks. Its hls-* video renditions may inherit a container-level
+        // acodec even though the downloaded rendition contains no audio.
+        if (/^http-\d+$/.test(id)) return { ...format, kind: 'video_audio' };
+        if (/^hls-\d+$/.test(id) && !Number(original.abr) && !Number(original.asr) && !Number(original.audio_channels)) return { ...format, kind: 'video' };
+        return format;
+    });
+}
+
 function getSelectedFormatIds(meta = {}) {
     const ids = [];
     const visit = value => {
@@ -582,7 +600,7 @@ function createYoutubePremiumService({
                 id: crypto.randomUUID(), url, title: '', cover: '', mode, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
-                updatedAt: now, completedAt: 0, remark: '', tags: [], songMetadata: null,
+                updatedAt: now, completedAt: 0, remark: String(input.remark || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 4000), tags: [], songMetadata: null,
                 songMetadataOverride: null, songMetadataEditedAt: 0, referenceInfo: null,
                 telegramShare: null
             };
@@ -732,6 +750,7 @@ module.exports = {
     getPreferredPremiumVideoFormat,
     getSelectedFormatIds,
     normalizeYtDlpFormats,
+    normalizeSnsYtDlpFormats,
     resolveYoutubePremiumMediaType,
     validateFormatSelection
 };

@@ -75,7 +75,8 @@ test('SNS 与 YouTube Premium 任务备注编辑期间不会被轮询结果覆�
     const sns = read('pages/sns-dl.html');
     const premium = read('pages/youtube-premium-dl.html');
     assert.match(sns, /function isTaskRemarkEditing\(\)/);
-    assert.match(sns, /if \(!force && isTaskRemarkEditing\(\)\) return;/);
+    assert.match(sns, /function isTaskRefreshPaused\(\)/);
+    assert.match(sns, /if \(!force && isTaskRefreshPaused\(\)\) return;/);
     assert.match(sns, /媒体编号.*selectedFormatIds/);
     assert.match(premium, /function isPremiumRemarkEditing\(\)/);
     assert.match(premium, /await hydrateBrowserCacheStates\(currentTasks\);\s*if \(!force && isPremiumRemarkEditing\(\)\) return;/);
