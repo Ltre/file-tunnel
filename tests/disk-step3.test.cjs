@@ -49,7 +49,7 @@ test('播放器不再用重载 URL 冒充 Range 恢复，预览返回只消费�
 
 test('移动端长按进入拖动模式并以双指单击打开上下文菜单', () => {
     const ui = source('client/disk-ui.js'), page = source('pages/index.html');
-    assert.match(ui, /function installContextGesture\(element, open, beginTouchDrag = null\)/);
+    assert.match(ui, /function installContextGesture\(element, open, beginTouchDrag = null, options = \{\}\)/);
     assert.match(ui, /touches\.size === 2/);
     assert.match(ui, /function beginTouchDiskDrag/);
     assert.match(ui, /dataset\.diskDropPath/);

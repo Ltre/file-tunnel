@@ -3,6 +3,7 @@
 (function () {
 let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {}, loadAudioCover = null;
 let telegramDrivePath = '';
+let telegramDriveNavigationVersion = 0;
 let telegramDriveOidcPopup = null;
 let telegramDriveOidcPollGeneration = 0;
 let telegramDriveCurrentData = null;
@@ -417,7 +418,7 @@ async function renameTelegramDriveItem(item) {
     await renderTelegramDrive();
 }
 
-async function chooseTelegramDriveDestination(items = [], { title = '移动到', confirmText = '移动' } = {}) {
+async function chooseTelegramDriveDestination(items = [], { title = '移动到', confirmText = '移动', onCreateDirectory } = {}) {
     const root = document.createElement('div'); root.className = 'disk-destination-tree';
     root.setAttribute('role', 'tree');
     const pathInput = document.createElement('input'); pathInput.placeholder = '/音乐/日本/专辑（全路径）'; pathInput.setAttribute('aria-label', '目标目录全路径');
@@ -435,6 +436,7 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
     async function createDestination(path) {
         const response = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path }));
         const result = response.operation_id ? await window.DiskClient.wait(response.operation_id) : response;
+        onCreateDirectory?.(result.path);
         pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
     }
     function editChild(folder, container) {
@@ -627,7 +629,6 @@ async function showTelegramDriveItemMenu(item, anchor) {
     if (telegramDriveSelected.size && !telegramDriveSelected.has(telegramDriveItemKey(item))) return;
     closeTelegramDriveItemMenu({ replaceHistory: true });
     telegramDriveMenuItem = item;
-    const menu = document.getElementById('telegramDriveItemMenu');
     const chosen = telegramDriveActionItems(item);
     let actions = item.kind === 'directory'
         ? [['打开', () => openTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['移动', () => moveTelegramDriveItems([item])], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]]
@@ -651,6 +652,27 @@ async function showTelegramDriveItemMenu(item, anchor) {
     }
     if (!chosen.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus)) && diskExporter) actions.splice(-1, 0, ['转发到隧道', () => exportDiskItems(chosen)]);
     if (!chosen.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus))) actions.splice(-1, 0, ['分享', () => shareDiskItems(chosen)]);
+    renderTelegramDriveContextMenu(item, anchor, actions);
+}
+
+function showTelegramDriveBackgroundMenu(anchor) {
+    const path = telegramDrivePath;
+    const item = { kind: 'directory', path, name: path.split('/').pop() || '根目录' };
+    closeTelegramDriveItemMenu({ replaceHistory: true });
+    telegramDriveMenuItem = item;
+    renderTelegramDriveContextMenu(item, anchor, [
+        ['上传文件', () => document.getElementById('telegramDriveFileInput').click()],
+        ['新建目录', () => createTelegramDriveFolder(path)],
+        ['当前目录属性', () => showTelegramDriveProperties(item)],
+        ['清理本级目录缓存', async () => {
+            const data = await window.DiskClient.raw('/list?path=' + encodeURIComponent(path));
+            await clearTelegramDriveCache(data.files);
+        }]
+    ]);
+}
+
+function renderTelegramDriveContextMenu(item, anchor, actions) {
+    const menu = document.getElementById('telegramDriveItemMenu');
     menu.replaceChildren(...actions.map(([label, action, danger]) => {
         const button = document.createElement('button'); button.type = 'button'; button.textContent = label; if (danger) button.className = 'danger';
         button.onclick = event => {
@@ -896,14 +918,23 @@ async function refreshTelegramDriveContents() {
     scheduleTelegramDriveSearch();
 }
 
-async function navigateTelegramDrive(path, { fromHistory = false } = {}) {
+async function navigateTelegramDrive(path, { fromHistory = false, deferRender = false, fromUpload = false } = {}) {
+    if (!fromUpload) telegramDriveNavigationVersion++;
     telegramDrivePath = String(path || '');
     if (diskWindowState.retained) saveDiskWindow(true);
     clearTelegramDriveSearch();
     clearTelegramDriveSelection();
     if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession }, '', location.href);
-    await renderTelegramDrive();
+    if (deferRender) { telegramDriveCurrentData = null; telegramDriveContentStale = true; }
+    else await renderTelegramDrive();
 }
+
+async function revealTelegramDriveUploadedDirectory(path, navigationVersion) {
+    if (navigationVersion !== telegramDriveNavigationVersion) return false;
+    await navigateTelegramDrive(path, { deferRender: document.getElementById('telegramDriveOverlay').hidden, fromUpload: true });
+    return true;
+}
+
 async function openTelegramDrive() {
     const overlay = document.getElementById('telegramDriveOverlay');
     const reuse = overlay.hidden && Boolean(diskWindowState.retained && telegramDriveCurrentData && !telegramDriveContentStale);
@@ -1042,14 +1073,17 @@ function appendPasskeyControls(target, user) {
     }
     target.append(group);
 }
-function installContextGesture(element, open, beginTouchDrag = null) {
-    let timer, start, primaryTouchEvent = null, suppressUntil = 0, twoFinger = null;
+function installContextGesture(element, open, beginTouchDrag = null, options = {}) {
+    const { twoFingerTap = Boolean(beginTouchDrag), longPress = true, accept = () => true } = options;
+    let timer, start, primaryTouchEvent = null, suppressUntil = 0, twoFinger = null, touchContextSuppressedUntil = 0;
     const touches = new Map();
     const cancel = () => { clearTimeout(timer); timer = null; start = null; };
     element.addEventListener('contextmenu', event => {
+        if (!accept(event)) return;
         event.preventDefault(); event.stopPropagation();
         const pendingTouchLongPress = Boolean(start && primaryTouchEvent && !twoFinger);
         cancel();
+        if (!longPress && (event.pointerType === 'touch' || pendingTouchLongPress || touches.size || Date.now() < touchContextSuppressedUntil)) return;
         if (beginTouchDrag && (event.pointerType === 'touch' || pendingTouchLongPress)) {
             if (pendingTouchLongPress && Date.now() >= suppressUntil) { suppressUntil = Date.now() + 1400; beginTouchDrag(primaryTouchEvent); }
             return;
@@ -1058,9 +1092,11 @@ function installContextGesture(element, open, beginTouchDrag = null) {
         suppressUntil = Date.now() + 700; open(event);
     });
     element.addEventListener('pointerdown', event => {
+        if (!accept(event)) return;
         if (event.pointerType !== 'touch') { cancel(); return; }
         touches.set(event.pointerId, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY });
-        if (beginTouchDrag && touches.size === 2) {
+        if (twoFingerTap && touches.size > 2) { cancel(); twoFinger = null; return; }
+        if (twoFingerTap && touches.size === 2) {
             cancel(); suppressUntil = Date.now() + 1200;
             const points = [...touches.values()];
             twoFinger = { startedAt: Date.now(), moved: false, x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
@@ -1068,7 +1104,7 @@ function installContextGesture(element, open, beginTouchDrag = null) {
         }
         if (!event.isPrimary || touches.size !== 1) return;
         cancel(); primaryTouchEvent = event; start = { x: event.clientX, y: event.clientY };
-        timer = setTimeout(() => {
+        if (longPress) timer = setTimeout(() => {
             timer = null; start = null; suppressUntil = Date.now() + 1400;
             if (beginTouchDrag) beginTouchDrag(event); else open(event);
         }, 550);
@@ -1082,6 +1118,7 @@ function installContextGesture(element, open, beginTouchDrag = null) {
         if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancel();
     });
     const finishTouch = event => {
+        if (!longPress && touches.has(event.pointerId)) touchContextSuppressedUntil = suppressUntil = Date.now() + 700;
         touches.delete(event.pointerId); cancel(); if (!touches.size) primaryTouchEvent = null;
         if (!twoFinger || touches.size) return;
         const gesture = twoFinger; twoFinger = null;
@@ -1092,8 +1129,8 @@ function installContextGesture(element, open, beginTouchDrag = null) {
     };
     element.addEventListener('pointerup', finishTouch);
     element.addEventListener('pointercancel', event => { touches.delete(event.pointerId); twoFinger = null; primaryTouchEvent = null; cancel(); });
-    element.addEventListener('selectstart', event => { if (timer || Date.now() < suppressUntil) event.preventDefault(); });
-    element.addEventListener('click', event => { if (Date.now() < suppressUntil) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+    element.addEventListener('selectstart', event => { if (accept(event) && (timer || Date.now() < suppressUntil)) event.preventDefault(); });
+    element.addEventListener('click', event => { if (accept(event) && Date.now() < suppressUntil) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
 }
 function installDiskDrop(element, path) {
     element.dataset.diskDropPath = String(path || '');
@@ -1975,6 +2012,10 @@ function init(options = {}) {
         event.preventDefault(); event.stopPropagation();
         if (eventName === 'click') closeTelegramDriveItemMenu();
     });
+    const list = document.getElementById('telegramDriveList');
+    if (list) installContextGesture(list, event => {
+        showTelegramDriveBackgroundMenu({ getBoundingClientRect: () => ({ left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY }) });
+    }, null, { twoFingerTap: true, longPress: false, accept: event => !event.target.closest?.('.telegram-drive-item') });
     initDiskEnhancements();
     if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') openTelegramDrive().catch(error => alert(telegramDriveErrorText(error)));
 }
@@ -1982,8 +2023,9 @@ window.addEventListener('popstate', handleTelegramDrivePopstate, { capture: true
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, ownsHistory: ownsTelegramDriveHistory, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,
     async chooseDirectory(options = {}) {
         prepareTelegramDrivePicker();
-        try { return await chooseTelegramDriveDestination([], { title: options.title || '选择网盘目录', confirmText: options.confirmText || '选择此目录' }); }
+        try { return await chooseTelegramDriveDestination([], { title: options.title || '选择网盘目录', confirmText: options.confirmText || '选择此目录', onCreateDirectory: options.onCreateDirectory }); }
         finally { document.getElementById('telegramDriveOverlay')?.classList.remove('telegram-drive-picker-mode'); }
     },
-    setExporter(fn) { diskExporter = fn; }, get path() { return telegramDrivePath; } };
+    revealUploadedDirectory: revealTelegramDriveUploadedDirectory,
+    setExporter(fn) { diskExporter = fn; }, get path() { return telegramDrivePath; }, get navigationVersion() { return telegramDriveNavigationVersion; } };
 })();

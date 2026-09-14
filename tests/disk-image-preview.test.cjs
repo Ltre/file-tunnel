@@ -51,17 +51,19 @@ function picker() {
     return { choose, alerts, writes, waited, dialog: () => dialog, release: value => release(value), fail: error => fail(error) };
 }
 test('目录选择器等待创建任务完成后展开并选中，不把 operation_id 响应当作目录', async () => {
-    const f = picker(); await f.choose();
+    const f = picker(), created = []; await f.choose([], { onCreateDirectory: path => created.push(path) });
     const input = f.dialog().body[2], button = f.dialog().body[3]; input.value = '/新目录/子目录';
     const pending = button.onclick(); await new Promise(resolve => setImmediate(resolve));
     assert.equal(button.disabled, true); assert.deepEqual(f.waited, ['mkdir-operation']); assert.equal(f.alerts.length, 0);
     f.release({ path: '新目录/子目录' }); await pending;
+    assert.deepEqual(created, ['新目录/子目录']);
     assert.equal(button.disabled, false); assert.equal(input.value, '/新目录/子目录'); assert.equal(f.alerts.length, 0);
     assert.equal(await f.dialog().validate(), '新目录/子目录'); assert.deepEqual(f.writes, ['/新目录/子目录']);
 });
 test('创建目录真实失败时只显示任务错误，并恢复创建按钮', async () => {
-    const f = picker(); await f.choose();
+    const f = picker(), created = []; await f.choose([], { onCreateDirectory: path => created.push(path) });
     const button = f.dialog().body[3], pending = button.onclick(); await new Promise(resolve => setImmediate(resolve));
     f.fail(new Error('MKDIR_FAILED')); await pending;
     assert.deepEqual(f.alerts, ['MKDIR_FAILED']); assert.equal(button.disabled, false);
+    assert.deepEqual(created, []);
 });

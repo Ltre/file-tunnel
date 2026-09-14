@@ -32,7 +32,7 @@ function fixture() {
     const previewLifecycle = source.slice(source.indexOf('function closeDiskPreview('), source.indexOf('function formatDiskMediaTime('));
     const handler = source.slice(source.indexOf('function ownsTelegramDriveHistory('), source.indexOf('function init(options'));
     vm.runInContext(`
-        let telegramDrivePath='', telegramDriveHistorySession='', telegramDriveCurrentData={}, telegramDriveSearchData, telegramDriveContentStale=false;
+        let telegramDrivePath='', telegramDriveNavigationVersion=0, telegramDriveHistorySession='', telegramDriveCurrentData={}, telegramDriveSearchData, telegramDriveContentStale=false;
         let diskWindowState={}, previewItems=[], previewIndex=0, previewGeneration=0, previewURL='', previewAbort;
         let diskPreviewHistoryOpen=false, diskPreviewHistoryClosing=false, diskPreviewBaseState=null;
         let telegramDriveMenuHistoryOpen=false, telegramDriveDialogHistoryOpen=false;
