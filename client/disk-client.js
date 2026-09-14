@@ -148,10 +148,31 @@
         const ext = String(file.name || '').toLowerCase().split('.').pop();
         return ({ mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', m4v:'video/mp4', mp3:'audio/mpeg', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', opus:'audio/ogg', wav:'audio/wav', flac:'audio/flac', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp', avif:'image/avif', svg:'image/svg+xml', pdf:'application/pdf', txt:'text/plain' })[ext] || 'application/octet-stream';
     };
-    async function createVideoUploadThumbnail(blob, type) {
-        if (!(blob instanceof Blob) || !String(type || blob.type).startsWith('video/')) return null;
+    let audioCoverExtractor = null;
+    async function createAudioUploadThumbnail(blob, file) {
+        if (!audioCoverExtractor) return null;
+        const source = await audioCoverExtractor(blob, file);
+        if (!source) return null;
+        const image = new Image();
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { image.onload = image.onerror = null; reject(new Error('AUDIO_THUMBNAIL_TIMEOUT')); }, 12000);
+            image.onload = () => { clearTimeout(timer); image.onload = image.onerror = null; resolve(); };
+            image.onerror = () => { clearTimeout(timer); image.onload = image.onerror = null; reject(new Error('AUDIO_THUMBNAIL_DECODE_FAILED')); };
+            image.src = source;
+        });
+        if (!image.naturalWidth || !image.naturalHeight) return null;
+        const scale = Math.min(1, 480 / image.naturalWidth, 480 / image.naturalHeight);
+        const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d'); if (!context) return null;
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .82));
+    }
+    async function createUploadThumbnail(blob, file) {
+        const type = inferredType(file);
+        if (!/^(video|audio)\//.test(type) || typeof Blob === 'undefined' || !(blob instanceof Blob)) return null;
+        if (type.startsWith('audio/')) return createAudioUploadThumbnail(blob, { ...file, type });
         const video = document.createElement('video'), source = URL.createObjectURL(blob);
-        video.muted = true; video.playsInline = true; video.preload = 'metadata'; video.src = source;
+        video.muted = true; video.playsInline = true; video.preload = 'metadata';
         const wait = (names, timeout = 12000) => new Promise((resolve, reject) => {
             const finish = event => { cleanup(); event.type === 'error' ? reject(new Error('VIDEO_THUMBNAIL_DECODE_FAILED')) : resolve(); };
             const cleanup = () => { clearTimeout(timer); for (const name of [...names, 'error']) video.removeEventListener(name, finish); };
@@ -159,7 +180,7 @@
             for (const name of [...names, 'error']) video.addEventListener(name, finish, { once: true });
         });
         try {
-            await wait(['loadedmetadata']);
+            const ready = wait(['loadedmetadata']); video.src = source; await ready;
             if (Number.isFinite(video.duration) && video.duration > .2) {
                 const seeked = wait(['seeked']); video.currentTime = Math.min(2, Math.max(.1, video.duration * .08)); await seeked;
             }
@@ -197,13 +218,14 @@
                 if (signal.aborted) throw abortError();
                 blobs.push(blob);
                 const url = '/uploads/' + job.uploadId + '/files/' + index;
-                // Decode the representative frame locally while regular chunks
+                // Extract the embedded audio cover / representative video frame
+                // locally while regular chunks
                 // continue entering the server queue. A codec the browser cannot
                 // decode only skips the optional cover; it never fails the file.
-                const thumbnailUpload = createVideoUploadThumbnail(blob, plannedFiles[index].type).then(thumbnail => {
+                const thumbnailUpload = createUploadThumbnail(blob, plannedFiles[index]).then(thumbnail => {
                     if (!thumbnail?.size || signal.aborted) return;
                     return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
-                }).catch(error => { if (error?.name !== 'AbortError') console.warn('[telegram-drive] 视频封面提取失败', error.message); });
+                }).catch(error => { if (error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
                 if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal });
                 for (const part of plannedFiles[index].parts) {
                     const offset = part.byteStart, end = part.byteEnd + 1;
@@ -310,6 +332,7 @@
         return true;
     }
     window.DiskClient = { raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+        setAudioCoverExtractor(extractor) { audioCoverExtractor = typeof extractor === 'function' ? extractor : null; },
         isCaching(id) { return pendingReads.has(id); },
         cacheProgress(id) { return cacheProgressByFile.get(id) || null; },
         isLoadingHidden(id) { return hiddenLoadingOperations.has(id); },

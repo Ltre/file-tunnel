@@ -375,7 +375,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const expected = Number(declaredSize);
             if (!Number.isSafeInteger(expected) || expected <= 0 || expected > sizeLimit || !String(declaredType).startsWith('image/')) throw new Error('UPLOAD_THUMBNAIL_INVALID');
             if (file.thumbnail?.path || file.thumbnail?.receiving || file.thumbnail?.remote) throw new Error('telegram-drive-upload-already-received');
-            const target = path.join(job.dir, `${file.index}-video-cover.jpg`);
+            const target = path.join(job.dir, `${file.index}-media-cover.jpg`);
             const thumbnail = file.thumbnail = { size: expected, type: String(declaredType).slice(0, 120), path: target, receiving: true, status: 'receiving', remote: null };
             let received = 0;
             request.on('data', chunk => { received += chunk.length; if (received > expected || received > sizeLimit) request.destroy(new Error('UPLOAD_THUMBNAIL_INVALID')); });

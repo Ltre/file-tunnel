@@ -1194,7 +1194,7 @@ async function imageFromSource(source, alt = '') {
 async function generateTelegramDriveThumbnail(item) {
     const type = getDiskPreviewType(item);
     if (!/^(image|audio|video)\//.test(type)) return null;
-    if (type.startsWith('video/') && item.thumbnailAvailable) {
+    if (item.thumbnailAvailable) {
         const source = `/api/telegram/drive/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}`;
         return canvasThumbnail(await imageFromSource(source, item.name));
     }
@@ -1331,6 +1331,31 @@ function diskMediaButton(icon, label, className = '') {
     const button = document.createElement('button'); button.type = 'button'; button.className = `disk-media-icon-button ${className}`.trim();
     button.innerHTML = diskMediaIcons[icon]; button.title = label; button.setAttribute('aria-label', label); return button;
 }
+async function loadDiskAudioPlayerCover(item, cover, cachedBlob) {
+    const showImage = async source => {
+        const image = await imageFromSource(source, `${item.name} 封面`);
+        if (cover.isConnected) cover.replaceChildren(image);
+    };
+    // The separately stored image is available without reading any song parts.
+    if (item.thumbnailAvailable) {
+        try { await showImage(`/api/telegram/drive/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}`); return; }
+        catch (_) { /* Legacy/missing thumbnail: try the existing local sources. */ }
+    }
+    const metadataCover = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl;
+    if (metadataCover) { try { await showImage(metadataCover); return; } catch (_) {} }
+    let thumbnail = await window.TelegramDriveCache?.getThumbnail(item.id).catch(() => null);
+    if (!thumbnail && cachedBlob && loadAudioCover) {
+        const source = await loadAudioCover(cachedBlob, item);
+        if (source) { await showImage(source); return; }
+    }
+    if (!thumbnail) {
+        thumbnail = await generateTelegramDriveThumbnail(item);
+        if (thumbnail) await window.TelegramDriveCache?.putThumbnail(item.id, thumbnail).catch(() => {});
+    }
+    if (!thumbnail || !cover.isConnected) return;
+    const source = URL.createObjectURL(thumbnail);
+    try { await showImage(source); } finally { URL.revokeObjectURL(source); }
+}
 function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     const video = type.startsWith('video/');
     const wrapper = document.createElement('section'); wrapper.className = `disk-media-player ${video ? 'is-video' : 'is-audio'}`;
@@ -1340,15 +1365,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     if (video) stage.append(media);
     else {
         const cover = document.createElement('div'); cover.className = 'disk-audio-cover'; cover.textContent = '♫'; audioCover = cover;
-        const coverUrl = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl || '';
-        if (coverUrl) {
-            const image = document.createElement('img'); image.alt = `${item.name} 封面`; image.src = coverUrl;
-            image.onload = () => { cover.replaceChildren(image); };
-        }
-        if (cachedBlob && loadAudioCover) Promise.resolve(loadAudioCover(cachedBlob, item)).then(url => {
-            if (!url || !cover.isConnected) return;
-            const image = document.createElement('img'); image.alt = `${item.name} 封面`; image.src = url; cover.replaceChildren(image);
-        }).catch(() => {});
+        loadDiskAudioPlayerCover(item, cover, cachedBlob).catch(() => {});
         stage.append(cover, media);
     }
     const center = diskMediaButton('play', '播放', 'disk-media-center-play'); stage.append(center);
@@ -1791,6 +1808,7 @@ function handleTelegramDrivePopstate(event) {
 }
 function init(options = {}) {
     ({ formatFileSize = formatFileSize, showAppToast = showAppToast, historyLog = historyLog, audioCover: loadAudioCover = loadAudioCover } = options);
+    window.DiskClient?.setAudioCoverExtractor?.(loadAudioCover);
     if (telegramDriveInitialized) return;
     telegramDriveInitialized = true;
     const driveDialog = document.getElementById('telegramDriveDialog');

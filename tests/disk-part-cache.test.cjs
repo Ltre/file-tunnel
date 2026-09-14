@@ -37,25 +37,33 @@ test('相同 Telegram 字节窗口只建立一个上游读取，下载者可共�
     assert.equal(sources, 1, '完整缓存命中不应再次请求 Telegram');
 });
 
-test('一个播放器取消 Range 读取不会中断共享缓存填充，后续读取仍命中完整缓存', async t => {
+test('一个播放器取消 Range 读取不会中断共享缓存填充，后续读取仍命中完整缓存', { timeout: 5000 }, async t => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-part-cache-abort-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const cache = createDiskPartCache({ dataDir, maxBytes: 1024 * 1024 });
     let sources = 0;
+    let releaseSource;
+    const remaining = new Promise(resolve => { releaseSource = resolve; });
+    t.after(() => releaseSource());
+    // Trigger writer backpressure so the first block is on disk before pausing
+    // the source, rather than relying on a timer or a tiny buffered write.
+    const prefix = Buffer.alloc(64 * 1024, 'a'); prefix.write('abc');
+    const expected = Buffer.concat([prefix, Buffer.from('defghij')]);
     const source = async function* () {
         sources++;
-        yield Buffer.from('abc');
-        await new Promise(resolve => setTimeout(resolve, 20));
+        yield prefix;
+        await remaining;
         yield Buffer.from('defghij');
     };
     const controller = new AbortController();
-    const first = await cache.open({ key: 'seek-window', size: 10, source, signal: controller.signal });
+    const first = await cache.open({ key: 'seek-window', size: expected.length, source, signal: controller.signal });
     const iterator = first[Symbol.asyncIterator]();
-    assert.equal(Buffer.from((await iterator.next()).value).toString(), 'abc');
+    assert.deepEqual(Buffer.from((await iterator.next()).value), prefix);
     controller.abort();
+    releaseSource();
     await assert.rejects(iterator.next(), /OPERATION_CANCELLED/);
     for (let index = 0; index < 40 && cache.inflightCount(); index++) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal((await collect(await cache.open({ key: 'seek-window', size: 10, source }))).toString(), 'abcdefghij');
+    assert.deepEqual(await collect(await cache.open({ key: 'seek-window', size: expected.length, source })), expected);
     assert.equal(sources, 1);
 });
 

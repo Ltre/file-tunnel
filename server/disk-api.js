@@ -631,7 +631,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const thumbnailIndex = job.files.findIndex(file => file.thumbnail?.status === 'queued' && file.chunks.length === file.parts.length && file.chunks.every(chunk => chunk.status === 'uploaded'));
                     if (thumbnailIndex >= 0) {
                         const file = job.files[thumbnailIndex], thumbnail = store(req).markThumbnailUploading(job.id, thumbnailIndex);
-                        update({ phase: 'telegram-thumbnail', percent: null, message: `正在上传视频封面到 Telegram：${file.name}` });
+                        update({ phase: 'telegram-thumbnail', percent: null, message: `正在上传媒体封面到 Telegram：${file.name}` });
                         try {
                             const remote = await enqueueTelegramUpload(job, () => telegram.uploadThumbnail(job.storage, file, thumbnail, { ...scope(req), uploadId: job.id, operationId: job.operationId, signal: job.pipelineAbort.signal }));
                             store(req).markThumbnailUploaded(job.id, thumbnailIndex, remote);

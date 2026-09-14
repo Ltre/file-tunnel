@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const VERSION = 1;
+const VERSION = 2;
 const labels = {
     'audio-repair-no-audio': '原文件没有音轨，无法生成音轨修正版',
     'audio-repair-source-changed': '原文件已变更或被清理，请重新操作',
@@ -21,14 +21,11 @@ function repairPlan(probe, input, output) {
     const audio = streams.filter(stream => stream.codec_type === 'audio');
     if (!audio.length) throw new Error('audio-repair-no-audio');
     const video = streams.filter(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
-    const extension = video.length ? (video.every(stream => ['h264', 'hevc', 'av1', 'mpeg4'].includes(stream.codec_name)) ? '.mp4' : '.mkv') : '.m4a';
-    const args = ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-fflags', '+genpts', '-i', input];
-    for (const stream of [...video, ...audio]) args.push('-map', `0:${stream.index}`);
-    args.push('-map_metadata', '0', '-map_chapters', '0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-        '-af', 'aresample=async=1000:first_pts=0');
-    if (extension !== '.mkv') args.push('-movflags', '+faststart');
-    args.push(output + extension);
-    return { args, extension, audioCount: audio.length, videoCount: video.length };
+    const extension = video.length ? '.mp4' : '.m4a';
+    // Use FFmpeg's normal decode/encode and stream selection, exactly as
+    // `ffmpeg -i INPUT.mp4 OUTPUT.mp4` for yt-dlp --download-sections results.
+    const args = ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', input, output + extension];
+    return { args, extension, audioCount: 1, videoCount: video.length ? 1 : 0 };
 }
 function createAudioTrackRepair({ probe, run }) {
     const jobs = new Map();

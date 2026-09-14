@@ -39,12 +39,24 @@ test('同一任务并发请求共享修正过程，失败重修保留原版及�
     assert.equal(fs.readFileSync(fixture.file.path, 'utf8'), 'original');
     assert.equal(fs.readdirSync(path.dirname(results[0].path)).length, 2);
 });
-test('只修正音轨且复制视频；无音轨拒绝；不支持 MP4 的视频使用 MKV', () => {
+test('旧版复制视频的修正版缓存失效，重新编码成功后替换旧修正版并保留原版', async t => {
+    const { directory, file, repair, count } = setup(t);
+    const previous = await repair.prepare(file, directory);
+    const manifestPath = path.join(directory, 'audio-track-repair', 'current.json');
+    const record = JSON.parse(fs.readFileSync(manifestPath)), stat = fs.statSync(file.path);
+    record.fingerprint = require('node:crypto').createHash('sha256').update(JSON.stringify([1, file.path, stat.size, stat.mtimeMs])).digest('hex');
+    fs.writeFileSync(manifestPath, JSON.stringify(record));
+    assert.equal(repair.cached(file, directory), null);
+    const next = await repair.prepare(file, directory);
+    assert.equal(next.reused, false); assert.notEqual(next.path, previous.path); assert.equal(count(), 2);
+    assert.equal(fs.existsSync(previous.path), false); assert.equal(fs.readFileSync(file.path, 'utf8'), 'original');
+});
+test('offset 修正版使用普通 ffmpeg 重新编码完整音视频，输出 MP4，无音轨拒绝', () => {
     const plan = repairPlan(mediaProbe, 'input.mp4', 'output');
-    assert.equal(plan.extension, '.mp4'); assert.ok(plan.args.includes('aresample=async=1000:first_pts=0'));
-    assert.equal(plan.args[plan.args.indexOf('-c:v') + 1], 'copy');
+    assert.equal(plan.extension, '.mp4');
+    assert.deepEqual(plan.args, ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', 'input.mp4', 'output.mp4']);
     assert.throws(() => repairPlan({ streams: [mediaProbe.streams[0]] }, 'i', 'o'), /no-audio/);
-    assert.equal(repairPlan({ streams: [{ ...mediaProbe.streams[0], codec_name: 'vp9' }, mediaProbe.streams[1]] }, 'i', 'o').extension, '.mkv');
+    assert.equal(repairPlan({ streams: [{ ...mediaProbe.streams[0], codec_name: 'vp9' }, mediaProbe.streams[1]] }, 'i', 'o').extension, '.mp4');
     assert.equal(repairPlan({ streams: [mediaProbe.streams[1]] }, 'i', 'o').extension, '.m4a');
 });
 test('两个后台的准备和下载接口均需管理身份，拒绝未完成及无有效缓存任务', async t => {
@@ -69,7 +81,7 @@ test('两个后台的准备和下载接口均需管理身份，拒绝未完成�
         assert.equal(await download.text(), 'corrected');
     }
 });
-test('实际 ffmpeg 校正起始时间戳，视频内容及原版保持不变', async t => {
+test('实际修正版与 ffmpeg -i INPUT.mp4 OUTPUT.mp4 输出一致，保留视频音频和原版', async t => {
     const ffmpeg = process.env.FFMPEG_BIN || 'ffmpeg', ffprobe = process.env.FFPROBE_BIN || 'ffprobe';
     if (spawnSync(ffmpeg, ['-version']).status !== 0 || spawnSync(ffprobe, ['-version']).status !== 0) return t.skip('ffmpeg/ffprobe 未安装');
     const fixture = setup(t);
@@ -78,14 +90,10 @@ test('实际 ffmpeg 校正起始时间戳，视频内容及原版保持不变', 
     const original = fs.readFileSync(fixture.file.path);
     const probe = async file => JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file], { timeout: 30000, windowsHide: true }));
     const repair = createAudioTrackRepair({ probe, run: async args => invoke(args) });
-    const source = await probe(fixture.file.path); assert.ok(Number(source.streams.find(stream => stream.codec_type === 'audio').start_time) > 0.2);
+    const baseline = path.join(fixture.directory, 'baseline.mp4');
+    invoke(['-y', '-i', fixture.file.path, baseline]);
     const result = await repair.prepare(fixture.file, fixture.directory), corrected = await probe(result.path);
-    assert.ok(Math.abs(Number(corrected.streams.find(stream => stream.codec_type === 'audio').start_time)) < 0.03);
-    const videoHash = file => invoke(['-v', 'error', '-i', file, '-map', '0:v', '-c:v', 'copy', '-f', 'hash', '-hash', 'md5', '-']).toString();
-    assert.equal(videoHash(result.path), videoHash(fixture.file.path));
+    assert.deepEqual(corrected.streams.map(stream => stream.codec_type), ['video', 'audio']);
+    assert.deepEqual(fs.readFileSync(result.path), fs.readFileSync(baseline));
     assert.deepEqual(fs.readFileSync(fixture.file.path), original);
-    // The delay is represented as silence, instead of moving the sound early.
-    const pcm = invoke(['-v', 'error', '-i', result.path, '-map', '0:a:0', '-t', '0.15', '-f', 's16le', '-']);
-    let peak = 0; for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
-    assert.ok(peak < 100, `leading silence peak=${peak}`);
 });

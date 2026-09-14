@@ -6889,7 +6889,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
             rawFormatCount: Array.isArray(selectedMeta.formats) ? selectedMeta.formats.length : 0
         });
     }
-    let formats = normalizeSnsYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats, task.platform);
+    let formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
     let preferredMusicFormat = getPreferredMusicAudioFormat(formats);
     report('格式库存已标准化', {
         normalizedFormatCount: formats.length,
@@ -6917,7 +6917,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
                 operation: 'youtube-premium-audio-format-probe',
                 signal: options.signal
             });
-            const alternateFormats = normalizeSnsYtDlpFormats(alternateMeta.formats, task.platform);
+            const alternateFormats = normalizeYtDlpFormats(alternateMeta.formats);
             const alternatePreferred = getPreferredMusicAudioFormat(alternateFormats);
             if (alternatePreferred) {
                 formats = alternateFormats;

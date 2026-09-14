@@ -16,7 +16,7 @@
         button.onclick = async () => {
             if (state.busy) return;
             const action = checkbox.checked ? '将重新生成修正版。' : '已有有效修正版时直接复用。';
-            if (!confirm('服务器将使用 ffmpeg 校正音轨时间戳和漂移，保留视频画面，将音轨转为 AAC，另存修正版后下载，原文件保留。' + action + '\n是否继续？')) return;
+            if (!confirm('服务器将按 ffmpeg -i INPUT.mp4 OUTPUT.mp4 的方式重新编码完整音视频，修正截取片段后的音轨 offset 错位，另存并下载完整修正版，原文件保留。' + action + '\n是否继续？')) return;
             state.busy = true; button.disabled = checkbox.disabled = true;
             state.message = status.textContent = '正在生成或读取音轨修正版，请稍候…';
             try {
