@@ -432,6 +432,11 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
         pathInput.value = telegramDriveDisplayPath(path);
         root.querySelectorAll('[data-folder-path]').forEach(button => button.classList.toggle('selected', button.dataset.folderPath === path));
     }
+    async function createDestination(path) {
+        const response = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path }));
+        const result = response.operation_id ? await window.DiskClient.wait(response.operation_id) : response;
+        pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
+    }
     function editChild(folder, container) {
         root.querySelector('.disk-folder-editor')?.remove();
         const row = document.createElement('div'); row.className = 'disk-folder-editor';
@@ -442,8 +447,7 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
             if (!input.value.trim()) { input.focus(); return; }
             if (save.disabled) return; save.disabled = true;
             try {
-                const result = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path: [folder.path, input.value.trim()].filter(Boolean).join('/') }));
-                pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
+                await createDestination([folder.path, input.value.trim()].filter(Boolean).join('/'));
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { save.disabled = false; }
         };
         row.onkeydown = event => { if (event.isComposing) return; if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (event.key === 'Enter') save.click(); else row.remove(); } };
@@ -487,8 +491,7 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
     create.onclick = async () => {
         create.disabled = true;
         try {
-            const result = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path: pathInput.value }));
-            pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
+            await createDestination(pathInput.value);
         } catch (error) { alert(telegramDriveErrorText(error)); } finally { create.disabled = false; }
     };
     await reload();
@@ -1271,7 +1274,9 @@ function saveDiskMediaProgress(item, media, ended = false) {
     try { localStorage.setItem(diskMediaProgressKey, JSON.stringify(diskMediaProgress)); } catch (_) {}
 }
 function disposeActiveDiskMedia() {
-    const media = $disk('diskPreviewBody')?.querySelector('audio,video');
+    const body = $disk('diskPreviewBody');
+    body?.querySelector('.disk-preview-image-frame')?._disposeDiskImage?.();
+    const media = body?.querySelector('audio,video');
     if (!media) return;
     if (typeof media._disposeDiskMedia === 'function') return media._disposeDiskMedia();
     media._saveDiskProgress?.();
@@ -1499,13 +1504,93 @@ function createDiskPreviewImageLoading(item) {
     const spinner = document.createElement('span'); spinner.className = 'disk-preview-image-spinner'; spinner.setAttribute('aria-hidden', 'true'); loading.append(spinner);
     return loading;
 }
+function fitDiskPreviewImage(imageWidth, imageHeight, viewportWidth, viewportHeight, scale = 1, x = 0, y = 0) {
+    if (!(imageWidth > 0 && imageHeight > 0 && viewportWidth > 0 && viewportHeight > 0)) return null;
+    const fit = Math.min(viewportWidth / imageWidth, viewportHeight / imageHeight);
+    const width = imageWidth * fit, height = imageHeight * fit;
+    scale = Math.max(1, Math.min(6, scale));
+    const maxX = Math.max(0, (width * scale - viewportWidth) / 2), maxY = Math.max(0, (height * scale - viewportHeight) / 2);
+    return { width, height, scale, x: maxX ? Math.max(-maxX, Math.min(maxX, x)) : 0, y: maxY ? Math.max(-maxY, Math.min(maxY, y)) : 0 };
+}
 function wrapDiskPreviewImage(image, item) {
     const frame = document.createElement('div'); frame.className = 'disk-preview-image-frame';
+    image.classList.add('disk-preview-image'); image.draggable = false;
+    const controls = document.createElement('div'); controls.className = 'disk-preview-image-controls';
+    const zoomButton = (icon, label) => {
+        const button = document.createElement('button'); button.type = 'button'; button.setAttribute('aria-label', label); button.title = label;
+        const iconImage = document.createElement('img'); iconImage.src = `/prompts/resources/magnifier-${icon}.svg`; iconImage.alt = ''; button.append(iconImage); controls.append(button); return button;
+    };
+    const zoomIn = zoomButton('plus', '放大图片'), zoomOut = zoomButton('minus', '缩小图片');
+    let state = { scale: 1, x: 0, y: 0 }, gesture = null, disposed = false, moved = false;
+    const pointers = new Map();
+    function apply() {
+        if (disposed) return;
+        const fit = fitDiskPreviewImage(image.naturalWidth, image.naturalHeight, frame.clientWidth, frame.clientHeight, state.scale, state.x, state.y);
+        zoomIn.disabled = !fit || fit.scale >= 6; zoomOut.disabled = !fit || fit.scale <= 1;
+        if (!fit) return;
+        state = fit;
+        image.style.width = fit.width + 'px'; image.style.height = fit.height + 'px';
+        image.style.transform = `translate(-50%,-50%) translate3d(${fit.x}px,${fit.y}px,0) scale(${fit.scale})`;
+        frame.classList.toggle('is-zoomed', fit.scale > 1);
+    }
+    function startGesture() {
+        const points = [...pointers.values()], rect = frame.getBoundingClientRect();
+        const first = points[0], second = points[1];
+        gesture = !first ? null : { scale: state.scale, x: state.x, y: state.y,
+            centerX: (second ? (first.x + second.x) / 2 : first.x) - rect.left - rect.width / 2,
+            centerY: (second ? (first.y + second.y) / 2 : first.y) - rect.top - rect.height / 2,
+            distance: second ? Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)) : 0 };
+    }
+    zoomIn.onclick = () => { state.scale = Math.min(6, state.scale + .5); apply(); };
+    zoomOut.onclick = () => { state.scale = Math.max(1, state.scale - .5); apply(); };
+    frame.addEventListener('pointerdown', event => {
+        if (event.target.closest('.disk-preview-image-controls') || (event.pointerType === 'mouse' && event.button !== 0)) return;
+        if (event.pointerType === 'mouse' && state.scale <= 1) return;
+        if (!pointers.size) { frame.dataset.gestureActive = String(state.scale > 1); moved = false; }
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (pointers.size > 1 || state.scale > 1) {
+            frame.dataset.gestureActive = 'true'; event.preventDefault(); event.stopPropagation();
+        }
+        if (event.pointerType !== 'mouse' || state.scale > 1) frame.setPointerCapture(event.pointerId);
+        startGesture();
+    });
+    frame.addEventListener('pointermove', event => {
+        if (!pointers.has(event.pointerId) || !gesture) return;
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        const points = [...pointers.values()], first = points[0], second = points[1];
+        if (!second && state.scale <= 1) return;
+        event.preventDefault(); event.stopPropagation();
+        const rect = frame.getBoundingClientRect();
+        const centerX = (second ? (first.x + second.x) / 2 : first.x) - rect.left - rect.width / 2;
+        const centerY = (second ? (first.y + second.y) / 2 : first.y) - rect.top - rect.height / 2;
+        const scale = second && gesture.distance ? Math.max(1, Math.min(6, gesture.scale * Math.hypot(first.x - second.x, first.y - second.y) / gesture.distance)) : gesture.scale;
+        const ratio = scale / gesture.scale;
+        state = { scale, x: centerX - (gesture.centerX - gesture.x) * ratio, y: centerY - (gesture.centerY - gesture.y) * ratio };
+        moved = moved || Math.hypot(centerX - gesture.centerX, centerY - gesture.centerY) > 3 || Math.abs(scale - gesture.scale) > .01;
+        apply();
+    });
+    const endPointer = event => {
+        if (!pointers.delete(event.pointerId)) return;
+        if (frame.hasPointerCapture(event.pointerId)) frame.releasePointerCapture(event.pointerId);
+        startGesture();
+    };
+    frame.addEventListener('pointerup', endPointer); frame.addEventListener('pointercancel', endPointer);
+    frame.addEventListener('lostpointercapture', endPointer);
+    frame.addEventListener('click', event => { if (moved) { event.preventDefault(); event.stopPropagation(); moved = false; } });
     const loading = createDiskPreviewImageLoading(item);
-    const finish = () => loading.remove();
+    const finish = () => { loading.remove(); apply(); };
     image.addEventListener('load', finish, { once: true });
     image.addEventListener('error', finish, { once: true });
-    frame.append(image, loading);
+    frame.append(image, loading, controls);
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
+    observer?.observe(frame); window.addEventListener('resize', apply);
+    frame._disposeDiskImage = () => {
+        disposed = true; observer?.disconnect(); window.removeEventListener('resize', apply);
+        image.removeEventListener('load', finish); image.removeEventListener('error', finish);
+        for (const id of pointers.keys()) if (frame.hasPointerCapture(id)) frame.releasePointerCapture(id);
+        pointers.clear(); gesture = null;
+    };
+    apply();
     if (image.complete) queueMicrotask(finish);
     return frame;
 }
@@ -1694,12 +1779,14 @@ function initDiskEnhancements() {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); stepDiskPreview(event.key === 'ArrowLeft' ? -1 : 1); }
     });
     let touch;
+    const imageGestureActive = event => event.target.closest?.('.disk-preview-image-frame')?.dataset.gestureActive === 'true';
     preview.addEventListener('touchstart', event => {
-        if (event.target.closest?.('.disk-media-controls,.disk-media-action-row,input,button')) { touch = null; return; }
+        if (imageGestureActive(event) || event.target.closest?.('.disk-media-controls,.disk-media-action-row,.disk-preview-image-controls,input,button')) { touch = null; return; }
         touch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null;
     }, { passive: true });
-    preview.addEventListener('touchmove', event => { if (event.touches.length !== 1) touch = null; }, { passive: true });
+    preview.addEventListener('touchmove', event => { if (imageGestureActive(event) || event.touches.length !== 1) touch = null; }, { passive: true });
     preview.addEventListener('touchend', event => {
+        if (imageGestureActive(event)) { touch = null; return; }
         if (!touch || !event.changedTouches.length) return;
         const dx = event.changedTouches[0].clientX - touch.x, dy = event.changedTouches[0].clientY - touch.y; touch = null;
         if (Math.abs(dx) > 65 && Math.abs(dx) > Math.abs(dy) * 1.5) stepDiskPreview(dx < 0 ? 1 : -1);
