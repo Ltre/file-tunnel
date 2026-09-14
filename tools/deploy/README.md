@@ -112,4 +112,24 @@ The script uses `rsync -a` and intentionally does not pass `--delete`, so files
 that already exist under `~/mydir/nodeapp/file-tunnel/` but are absent from
 `dist/` are preserved. Use `--dry-run` to preview changes.
 
+**文件同步后必须安装依赖并重启实际运行的 Node.js 服务。** `deploy-remote.sh`
+只同步文件，不会安装依赖或重启进程。在实际部署目录执行：
+
+```bash
+cd ~/mydir/nodeapp/file-tunnel # 使用本站实际部署目录
+npm ci --omit=dev
+```
+
+然后按该站实际采用的 systemd、PM2 或手动启动方式重启服务。
+Express 会立即读取更新后的 HTML，但正在运行的 `server.js` 和
+已加载的模块仍是旧代码，可能出现 `/tgbot` 展示 OIDC、网盘分区输入框而旧接口
+忽略这些字段的情况。新增依赖未安装也会让新版服务启动失败。
+有多个实例时须全部更新，并确认使用同一个预期的 `TUNNEL_DATA_DIR`。
+
+重启后访问 `/api/telegram/drive/me`，当前版本应返回 JSON 而非 404；在已登录的
+`/tgbot` 中检查 `/api/telegram/config` 返回 `oidcClientId`、
+`oidcClientSecretConfigured` 和 `driveChannels`，然后重新填写并保存。
+Client Secret 不回显，只通过“已配置”提示确认保留。不要把 Secret 或 Bot Token
+放进排查日志。
+
 `rollback.sh` is still a placeholder until a verified rollback flow is added.

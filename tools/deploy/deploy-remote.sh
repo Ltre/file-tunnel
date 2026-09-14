@@ -74,3 +74,9 @@ echo "  to:   ${TARGET_DIR%/}/"
 echo "  mode: rsync archive, no --delete"
 
 rsync "${RSYNC_ARGS[@]}" "${SOURCE_DIR%/}/" "${TARGET_DIR%/}/"
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  echo "文件同步完成；请先在 ${TARGET_DIR%/}/ 执行 npm ci --omit=dev。"
+  echo "然后重启实际处理本站请求的 Node.js 服务（按本站的 systemd、PM2 或手动启动方式）。"
+  echo "重启后检查 /api/telegram/drive/me 返回 JSON，再打开 /tgbot 保存 OIDC 和网盘分区配置。"
+fi
