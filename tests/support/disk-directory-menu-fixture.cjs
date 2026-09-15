@@ -4,14 +4,21 @@
 const express = require('express'), fs = require('node:fs'), path = require('node:path');
 const root = path.join(__dirname, '../..'), app = express(); app.use(express.json());
 const directories = [{ path: '已有目录', name: '已有目录' }], files = [], jobs = [], uploads = new Map();
-let report = { status: 'pending' };
+let report = { status: 'pending' }, identityEnabled = true;
+app.post('/fixture/identity', (req, res) => { identityEnabled = req.body.enabled; res.json({ ok: true }); });
+app.post('/fixture/seed', (_req, res) => {
+    if (!directories.some(folder => folder.path === '已有目录/子目录')) directories.push({ path: '已有目录/子目录', name: '子目录' });
+    files.push({ id: 'drag-source', kind: 'file', name: '拖动测试.txt', size: 3, type: 'text/plain', folderPath: '' }); res.json({ ok: true });
+});
+app.patch('/api/telegram/drive/files/:id', (req, res) => { const file = files.find(item => item.id === req.params.id); Object.assign(file, req.body); res.json(file); });
+require('./disk-control-center-fixture.cjs')(app, root);
 app.post('/fixture/reset', (_req, res) => { directories.splice(1); files.splice(0); jobs.splice(0); uploads.clear(); report = { status: 'pending' }; res.json({ ok: true }); });
 app.get('/', (_req, res) => {
     let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
     html = html.replace('</body>', '<script src="/client/disk-client.js"></script><script src="/client/disk-ui.js"></script><script src="/client/disk-tunnel-adapter.js"></script><script src="/fixture.js"></script></body>');
     res.type('html').send(html);
 });
-app.get('/api/telegram/drive/me', (_req, res) => res.json({ identity: { id: 'directory-fixture', name: '本地目录回归' }, enabled: true, configured: true }));
+app.get('/api/telegram/drive/me', (_req, res) => res.json({ identity: identityEnabled ? { id: 'directory-fixture', name: '本地目录回归' } : null, enabled: true, configured: true }));
 app.get('/api/telegram/drive/list', (req, res) => {
     const current = String(req.query.path || ''), parts = current.split('/').filter(Boolean), localFiles = files.filter(file => file.folderPath === current);
     const folders = directories.filter(folder => folder.path.split('/').slice(0, -1).join('/') === current).map(folder => ({ ...folder, kind: 'directory' }));

@@ -17,7 +17,7 @@
         const status = await window.DiskClient.raw('/me');
         if (!status.identity) { await window.DiskUI.open(); throw new Error('请先登录网盘，再选择保存'); }
         const createdDirectories = new Set();
-        const folderPath = await window.DiskUI.chooseDirectory({ title: '选择保存到网盘的目录', confirmText: '保存到这里', onCreateDirectory: path => createdDirectories.add(path) });
+        const folderPath = await window.DiskUI.chooseDirectory({ title: '选择保存到网盘的目录', confirmText: '保存到这里', userId: status.identity.id, onCreateDirectory: path => createdDirectories.add(path) });
         if (folderPath === null) return;
         const navigationVersion = window.DiskUI.navigationVersion;
         const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId });

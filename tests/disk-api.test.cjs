@@ -236,6 +236,32 @@ test('Telegram transport 按 10 个拆 album，字节进度不含 multipart 头�
     await assert.rejects(broken.call({ token: 'secret', baseUrl: 'https://api.telegram.org' }, 'getFile', {}), /^Error: TELEGRAM_NETWORK_ERROR$/);
 });
 
+test('管理接口按用户清理旧分片缓存，拒绝错误范围和跨站请求，保留其它目录与用户缓存', async t => {
+    const dataDir = temp(t), auth = createDiskAuth({ dataDir }), drive = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
+    const users = [auth.fromTelegram({ id: '91001' }), auth.fromTelegram({ id: '91002' })];
+    const telegram = { parts: file => file.parts, call: async () => ({}) }, backend = { token: 'fake', baseUrl: 'https://api.telegram.org', channelId: '-1001' };
+    const api = createDiskAPI({ dataDir, defaultStore: drive, auth, operations, telegram, getDefaultBackend: () => backend, getIdentity: () => users[0], setIdentity() {}, getOrigin: () => 'http://localhost', maxDepth: () => 20 });
+    t.after(() => api.close());
+    const app = express(); app.use(express.json()); app.use('/admin', api.admin);
+    const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const backendKey = crypto.createHash('sha256').update(backend.baseUrl + '\0' + backend.token).digest('hex');
+    for (const [index, user] of users.entries()) {
+        const upload = drive.begin({ owner: user, files: [{ name: index + '.txt', size: 3, type: 'text/plain' }], maxDepth: 20 });
+        await drive.receive(upload.id, 0, Readable.from(['abc'])); const file = drive.commit(upload.id, backend.channelId, [{ fileId: 'remote-' + index, messageId: index + 1 }])[0];
+        const part = file.parts[0], key = ['v2', backendKey, part.fileId, part.size, part.sha256 || '', 0, 2].join(':');
+        const id = crypto.createHash('sha256').update(key).digest('hex'); fs.writeFileSync(path.join(dataDir, 'telegram-part-cache', id + '.part'), 'abc');
+    }
+    fs.writeFileSync(path.join(dataDir, 'keep.mp4'), 'original');
+    const clear = body => fetch(base + '/admin/part-cache', { method: 'DELETE', ...json(body) });
+    assert.equal((await clear({ scope: 'unknown' })).status, 422);
+    assert.equal((await fetch(base + '/admin/part-cache', { method: 'DELETE', headers: { ...json({}).headers, Origin: 'http://other-site' }, body: JSON.stringify({ scope: 'all' }) })).status, 403);
+    assert.equal((await (await clear({ scope: 'user', user_id: users[0].id })).json()).removedFiles, 1);
+    assert.equal((await (await fetch(base + '/admin/part-cache')).json()).files, 1);
+    assert.equal((await (await clear({ scope: 'all' })).json()).removedFiles, 1);
+    assert.equal(fs.readFileSync(path.join(dataDir, 'keep.mp4'), 'utf8'), 'original');
+});
+
 test('后台按来源/用户/分区审计文件，屏蔽立即阻断分享，审核删除保留可由用户清理的占位', async t => {
     const dataDir = temp(t), auth = createDiskAuth({ dataDir }), drive = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     const user = auth.fromTelegram({ id: '8899', username: 'audited' });

@@ -12,6 +12,7 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
     const root = path.join(dataDir, 'telegram-part-cache');
     const inflight = new Map();
     const preparing = new Map();
+    const readers = new Map();
     fs.mkdirSync(root, { recursive: true });
     const schemaPath = path.join(root, '.schema');
     let schema = '';
@@ -25,6 +26,44 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         for (const entry of fs.readdirSync(root, { withFileTypes: true })) if (entry.isFile() && entry.name.endsWith('.tmp')) fs.rmSync(path.join(root, entry.name), { force: true });
     }
     const digest = key => crypto.createHash('sha256').update(String(key)).digest('hex');
+    const ownerIndexPath = path.join(root, '.owners.json');
+    let owners = {};
+    try { owners = JSON.parse(fs.readFileSync(ownerIndexPath, 'utf8')); } catch (_) {}
+    const saveOwners = () => { fs.writeFileSync(ownerIndexPath + '.tmp', JSON.stringify(owners)); fs.renameSync(ownerIndexPath + '.tmp', ownerIndexPath); };
+    function registerOwner(key, owner) {
+        if (!owner?.userId) return;
+        const id = digest(key), scope = { userId: String(owner.userId), diskSpace: String(owner.diskSpace || '') };
+        const scopes = owners[id] || [];
+        if (!scopes.some(item => item.userId === scope.userId && item.diskSpace === scope.diskSpace)) { owners[id] = [...scopes, scope]; saveOwners(); }
+    }
+    async function clear({ scope = 'all', userId = '', diskSpace = '', legacyKeys = [] } = {}) {
+        const entries = await fsp.readdir(root, { withFileTypes: true });
+        const selected = scope === 'all' ? null : new Set([...Object.entries(owners).filter(([, scopes]) => scopes.some(owner =>
+            (scope === 'partition' || owner.userId === userId) && (scope === 'user' || owner.diskSpace === diskSpace))).map(([id]) => id)]);
+        const available = new Set(entries.filter(item => item.isFile() && /^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)).map(item => item.name.slice(0, 64)));
+        if (selected && available.size) for (const key of legacyKeys) { const id = digest(key); if (available.has(id)) selected.add(id); }
+        let removedFiles = 0, removedBytes = 0, busyFiles = 0, failedFiles = 0;
+        for (const item of entries) {
+            if (!item.isFile() || !/^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)) continue;
+            const id = item.name.slice(0, 64);
+            if (selected && !selected.has(id)) continue;
+            if (inflight.has(id) || preparing.has(id) || readers.has(id)) { busyFiles++; continue; }
+            const target = path.join(root, item.name);
+            try { const stat = await fsp.stat(target); await fsp.unlink(target); removedFiles++; removedBytes += stat.size; delete owners[id]; }
+            catch (error) { if (error.code !== 'ENOENT') failedFiles++; }
+        }
+        saveOwners();
+        return { removedFiles, removedBytes, busyFiles, failedFiles };
+    }
+    async function overview() {
+        let files = 0, bytes = 0;
+        for (const item of await fsp.readdir(root, { withFileTypes: true })) {
+            if (!item.isFile() || !/^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)) continue;
+            const stat = await fsp.stat(path.join(root, item.name)).catch(() => null);
+            if (stat) { files++; bytes += stat.size; }
+        }
+        return { directory: '.tunnel-data/telegram-part-cache', files, bytes, inflight: inflight.size };
+    }
     const notify = entry => { for (const resolve of entry.waiters.splice(0)) resolve(); };
     const wait = entry => new Promise(resolve => entry.waiters.push(resolve));
     async function prune() {
@@ -34,8 +73,12 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         let total = 0, now = Date.now();
         for (const row of rows) {
             total += row.stat.size;
-            if (now - row.stat.mtimeMs > ttlMs || total > maxBytes) await fsp.unlink(row.path).catch(() => {});
+            const id = path.basename(row.path).slice(0, 64);
+            if (!inflight.has(id) && !readers.has(id) && (now - row.stat.mtimeMs > ttlMs || total > maxBytes)) {
+                await fsp.unlink(row.path).catch(() => {}); delete owners[id];
+            }
         }
+        saveOwners();
     }
     async function ensure(key, size, source, expectedSha256 = '') {
         const id = digest(key);
@@ -85,10 +128,15 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         entry.ready.catch(() => {});
         inflight.set(id, entry); return entry;
     }
-    async function open({ key, size, source, start = 0, end = size - 1, signal, expectedSha256 = '' }) {
+    async function open({ key, size, source, start = 0, end = size - 1, signal, expectedSha256 = '', owner }) {
+        registerOwner(key, owner);
+        const id = digest(key); readers.set(id, (readers.get(id) || 0) + 1);
+        const release = () => { const count = readers.get(id) - 1; if (count > 0) readers.set(id, count); else readers.delete(id); };
+        const attach = stream => { stream.once('close', release); return stream; };
+        try {
         const entry = await ensure(key, size, source, expectedSha256);
         const filename = entry.done && !entry.error ? entry.target : entry.temporary;
-        if (entry.done && !entry.error) return fs.createReadStream(filename, { start, end });
+        if (entry.done && !entry.error) return attach(fs.createReadStream(filename, { start, end }));
         await entry.opened;
         async function* growingFile() {
             const handle = await fsp.open(filename, 'r'); let position = start;
@@ -111,9 +159,10 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
                 if (entry.error) throw entry.error;
             } finally { await handle.close(); }
         }
-        return Readable.from(growingFile());
+        return attach(Readable.from(growingFile()));
+        } catch (error) { release(); throw error; }
     }
     prune().catch(() => {});
-    return { open, prune, inflightCount() { return inflight.size; } };
+    return { open, prune, clear, overview, inflightCount() { return inflight.size; } };
 }
 module.exports = { createDiskPartCache };

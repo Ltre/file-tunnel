@@ -188,7 +188,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     }
     const wrap = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next);
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-    async function openRemoteRange(backend, file, start = 0, end = Number(file.size) - 1, signal) {
+    async function openRemoteRange(backend, file, start = 0, end = Number(file.size) - 1, signal, diskSpace = '') {
         if (typeof telegram.parts !== 'function' || typeof telegram.readPart !== 'function') {
             const source = await telegram.read(backend, file);
             if (start === 0 && end === Number(file.size) - 1) return source;
@@ -217,6 +217,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const key = ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', cacheStart, cacheEnd].join(':');
                 const source = await partCache.open({
                     key, size: cacheEnd - cacheStart + 1,
+                    owner: { userId: file.ownerId, diskSpace },
                     start: localStart - cacheStart, end: localEnd - cacheStart, signal,
                     expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1 ? String(part.sha256 || '') : '',
                     // A browser normally cancels its old HTTP Range while seeking.
@@ -228,11 +229,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
         return Readable.from(combine());
     }
-    async function readRemote(backend, file, start, end, signal) {
-        try { return await openRemoteRange(backend, file, start, end, signal); }
+    async function readRemote(backend, file, start, end, signal, diskSpace) {
+        try { return await openRemoteRange(backend, file, start, end, signal, diskSpace); }
         catch (error) {
             if (!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message)) throw error;
-            await wait(250); return openRemoteRange(backend, file, start, end, signal);
+            await wait(250); return openRemoteRange(backend, file, start, end, signal, diskSpace);
         }
     }
     const parseRange = (header, size) => {
@@ -245,7 +246,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) return null;
         return { start, end: Math.min(end, size - 1), partial: true };
     };
-    async function prepareRemoteResponse(req, res, backend, file, { inline = false, operationId = '' } = {}) {
+    async function prepareRemoteResponse(req, res, backend, file, { inline = false, operationId = '', diskSpace = req.diskScope?.diskSpace ?? req.query.disk_space ?? '' } = {}) {
         if (!Number(file.size)) {
             res.status(200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': file.type || 'application/octet-stream', 'Content-Length': '0', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}` });
             return { source: Readable.from([]), range: { start: 0, end: -1, partial: false }, abort: new AbortController() };
@@ -254,7 +255,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!range) { res.status(416).set('Content-Range', `bytes */${file.size}`).end(); return null; }
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-        const source = await readRemote(backend, file, range.start, range.end, abort.signal);
+        const source = await readRemote(backend, file, range.start, range.end, abort.signal, diskSpace);
         const length = range.end - range.start + 1;
         res.status(range.partial ? 206 : 200);
         res.set('Accept-Ranges', 'bytes');
@@ -289,7 +290,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const share = shares.resolve(req.params.token);
         const file = shares.file(share, spaces.get(share.diskSpace), req.params.id);
         const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
-        const remote = await prepareRemoteResponse(req, res, backend, file, { inline: req.query.inline === '1' });
+        const remote = await prepareRemoteResponse(req, res, backend, file, { inline: req.query.inline === '1', diskSpace: share.diskSpace });
         if (!remote) return;
         // Recheck revocation after an upstream wait, before releasing any bytes.
         try { shares.resolve(req.params.token); } catch (error) { remote.source.destroy(); throw error; }
@@ -307,6 +308,33 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     admin.get('/apps', (req, res) => res.json({ apps: auth.apps() }));
     admin.post('/apps', wrap(async (req, res) => res.json(await auth.saveApp(req.body || {}))));
     admin.delete('/apps/:id', (req, res) => { auth.deleteApp(req.params.id); res.json({ ok: true }); });
+    admin.get('/part-cache', wrap(async (_req, res) => res.json(await partCache.overview())));
+    admin.delete('/part-cache', wrap(async (req, res) => {
+        const scope = String(req.body?.scope || ''), userId = String(req.body?.user_id || ''), selectedSpace = String(req.body?.disk_space || '');
+        if (!['all', 'user', 'partition', 'user-partition'].includes(scope) || (['user', 'user-partition'].includes(scope) && !userId)) throw new Error('INVALID_CACHE_SCOPE');
+        // Old cache names contain only a SHA-256 digest. Reconstruct possible
+        // MiB-aligned byte windows from logical file records for scoped cleanup.
+        function* legacyKeys() {
+            if (scope === 'all' || typeof telegram.parts !== 'function') return;
+            for (const { diskSpace, store } of spaces.entries()) {
+                if (scope !== 'user' && diskSpace !== selectedSpace) continue;
+                for (const file of store.adminFiles()) {
+                    if (scope !== 'partition' && file.ownerId !== userId) continue;
+                    let backend; try { backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId); } catch (_) { continue; }
+                    if (!backend) continue;
+                    const backendKey = crypto.createHash('sha256').update(String(backend.baseUrl || '') + '\0' + String(backend.token || '')).digest('hex');
+                    for (const part of telegram.parts(file)) for (let start = 0; start < part.size; start += 1024 * 1024) {
+                        for (let next = start + 1024 * 1024; ; next += 1024 * 1024) {
+                            const end = Math.min(part.size - 1, next - 1);
+                            yield ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':');
+                            if (end === part.size - 1) break;
+                        }
+                    }
+                }
+            }
+        }
+        res.json(await partCache.clear({ scope, userId, diskSpace: selectedSpace, legacyKeys: legacyKeys() }));
+    }));
     const appLabel = id => {
         if (id === 'system') return '本系统';
         if (id === 'legacy') return '历史数据（来源未知）';

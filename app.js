@@ -8247,8 +8247,10 @@ function restoreCollectionPreviewReturnState(collectionMessageId) {
 function setFilePreviewActions(actions = []) {
     const container = document.getElementById('filePreviewActions');
     if (!container) return;
-    container.replaceChildren();
-    actions.forEach(action => container.appendChild(action));
+    const previousScrollLeft = container.scrollLeft;
+    container.replaceChildren(...actions);
+    if (!actions.length || container.dataset.guidePending !== 'true') { container.scrollLeft = previousScrollLeft; return; }
+    container.dataset.guidePending = 'false';
     const guideToken = String((Number(container.dataset.guideToken) || 0) + 1);
     container.dataset.guideToken = guideToken;
     container.scrollLeft = 0;
@@ -8274,6 +8276,8 @@ function openFilePreviewHistory(viewer, options = {}) {
         return;
     }
     if (!viewer.classList.contains('active')) {
+        const actions = document.getElementById('filePreviewActions');
+        if (actions) actions.dataset.guidePending = 'true';
         const baseState = history.state && typeof history.state === 'object' ? history.state : {};
         history.pushState({ ...baseState, [FILE_PREVIEW_HISTORY_KEY]: true, filePreviewStage: options.stage || 'preview' }, '', window.location.href);
         filePreviewHistoryOpen = true;
@@ -16240,12 +16244,114 @@ function initWorkspaceSwipeNavigation() {
     window.addEventListener('orientationchange', normalizeSoon);
 }
 
+function normalizeControlCenterOrder(saved) {
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'disk', 'tunnels'];
+    return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
+}
+function initTunnelControlCenter(dialog) {
+    const actions = [
+        ['refresh', '↻', '强制刷新页面', 'mobileForceRefreshBtn'],
+        ['magnet', '🧲⇩', '磁链缓存列表', 'magnetCacheBtn'],
+        ['theme', '◐', '切换主题', 'cycleThemeBtn'],
+        ['settings', '⚙', '隧道设置', 'tunnelSettingsBtn'],
+        ['leave', '', '暂时离开隧道', 'leaveTunnelPanelBtn'],
+        ['scan', '▩', '扫描隧道二维码', 'scanTunnelCodeBtn'],
+        ['light', '✴↗', '接收光媒', 'receiveLightBtn'],
+        ['resources', 'ꕡ', '资源管理器', 'resourceBrowserBtn'],
+        ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn']
+    ];
+    let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
+    let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
+    const tiles = new Map(), panel = dialog.querySelector('[data-control-panel]');
+    const before = dialog.querySelector('[data-control-side="before"]'), after = dialog.querySelector('[data-control-side="after"]');
+    const label = document.createElement('div'); label.className = 'control-center-drag-label'; label.hidden = true; dialog.append(label);
+    for (const [id, icon, title, target] of actions) {
+        const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
+        tile.dataset.controlTile = id; tile.title = title; tile.setAttribute('aria-label', title);
+        if (id === 'leave') tile.innerHTML = '<span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>';
+        else tile.textContent = icon;
+        tile.onclick = event => {
+            if (Date.now() < suppressUntil) { event.preventDefault(); return; }
+            if (id !== 'theme') dialog.remove();
+            document.getElementById(target)?.click();
+        };
+        tiles.set(id, tile);
+    }
+    const render = () => {
+        const divider = order.indexOf('tunnels');
+        before.replaceChildren(...order.slice(0, divider).map(id => tiles.get(id)));
+        after.replaceChildren(...order.slice(divider + 1).map(id => tiles.get(id)));
+    };
+    const reset = () => {
+        if (!drag) return;
+        clearTimeout(drag.timer); drag.tile.classList.remove('is-dragging');
+        if (drag.tile.hasPointerCapture?.(drag.id)) drag.tile.releasePointerCapture(drag.id);
+        if (drag.moved || (drag.touch && (drag.active || drag.scrolling))) suppressUntil = Date.now() + 700;
+        if (drag.moved) { try { localStorage.setItem('tunnelControlCenterOrder', JSON.stringify(order)); } catch (_) {} }
+        drag = null; label.hidden = true;
+    };
+    const activate = () => {
+        if (!drag) return;
+        drag.active = true; drag.tile.classList.add('is-dragging');
+        label.textContent = '当前选中：' + drag.tile.title; label.hidden = false;
+    };
+    for (const tile of tiles.values()) {
+        tile.addEventListener('contextmenu', event => event.preventDefault());
+        tile.addEventListener('pointerdown', event => {
+            if (event.button > 0 || !event.isPrimary) { reset(); return; }
+            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
+            try { tile.setPointerCapture(event.pointerId); } catch (_) {}
+            if (drag.touch) drag.timer = setTimeout(activate, 500); else activate();
+        });
+        const move = event => {
+            if (!drag || event.pointerId !== drag.id) return;
+            if (drag.tile !== tile) return;
+            const distance = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
+            if (!drag.active) {
+                if (distance > 10) { clearTimeout(drag.timer); drag.scrolling = true; suppressUntil = Date.now() + 700; dialog.querySelector('.control-center').scrollTop = drag.scroll + drag.y - event.clientY; }
+                return;
+            }
+            event.preventDefault();
+            if (distance < 8) return;
+            drag.moved = true;
+            const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-control-tile]');
+            let targetId, insertAfter = false;
+            if (hovered && hovered !== drag.tile) {
+                targetId = hovered.dataset.controlTile; const rect = hovered.getBoundingClientRect();
+                insertAfter = event.clientX > rect.left + rect.width / 2;
+            } else {
+                const rect = panel.getBoundingClientRect();
+                if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
+                else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
+                else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+            }
+            if (targetId) {
+                const next = order.filter(id => id !== drag.tile.dataset.controlTile), index = next.indexOf(targetId);
+                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next; render();
+            }
+            const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
+            if (event.clientY < rect.top + 40) scroller.scrollTop -= 12;
+            else if (event.clientY > rect.bottom - 40) scroller.scrollTop += 12;
+        };
+        const finish = event => { if (drag?.tile === tile && drag.id === event.pointerId) reset(); };
+        window.addEventListener('pointermove', move, { capture: true, passive: false });
+        window.addEventListener('pointerup', finish, true); window.addEventListener('pointercancel', finish, true);
+        const observer = new MutationObserver(() => {
+            if (dialog.isConnected) return;
+            reset(); window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', finish, true); window.removeEventListener('pointercancel', finish, true); observer.disconnect();
+        });
+        observer.observe(document.body, { childList: true });
+    }
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.remove(); } });
+    render();
+}
+
 async function showJoinedSessionSwitcher() {
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
         .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true }));
     const dialog = document.createElement('div');
-    dialog.className = 'modal-overlay active';
+    dialog.className = 'modal-overlay active control-center-overlay';
     const list = sessions.length
         ? sessions.map(session => {
             const id = escapeHtml(session.sessionId);
@@ -16257,15 +16363,20 @@ async function showJoinedSessionSwitcher() {
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
-        <div class="modal session-switcher-modal">
+        <div class="control-center">
+            <div class="control-center-tiles" data-control-side="before"></div>
+            <div class="modal session-switcher-modal" data-control-panel>
             <button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button>
             <h3>切换隧道</h3>
             <button class="session-switch-scroll" type="button" data-scroll="-1" aria-label="向上滚动">⌃</button>
             <div class="session-switcher-list" id="sessionSwitcherList">${list}</div>
             <button class="session-switch-scroll" type="button" data-scroll="1" aria-label="向下滚动">⌄</button>
+            </div>
+            <div class="control-center-tiles" data-control-side="after"></div>
         </div>
     `;
     document.body.appendChild(dialog);
+    initTunnelControlCenter(dialog);
     dialog.addEventListener('click', event => {
         if (event.target === dialog) dialog.remove();
     });
@@ -16288,7 +16399,7 @@ async function showJoinedSessionSwitcher() {
         updateScrollButtons();
         const current = scroller?.querySelector('.session-switch-item.is-current');
         if (!current || !scroller) return;
-        current.scrollIntoView({ block: 'center', inline: 'nearest' });
+        scroller.scrollTop += current.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (scroller.clientHeight - current.offsetHeight) / 2;
         requestAnimationFrame(updateScrollButtons);
     });
     window.addEventListener('resize', updateScrollButtons, { once: true });

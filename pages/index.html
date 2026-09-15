@@ -3962,6 +3962,17 @@
             padding: 20px;
         }
 
+        .control-center{width:min(400px,92vw);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain;padding:6px 0;scrollbar-width:thin}
+        .control-center .session-switcher-modal{width:100%;max-height:60vh;max-height:60dvh;min-height:0;margin:10px auto;flex-shrink:0}
+        .control-center .session-switcher-list{flex:1;min-height:0;max-height:calc(60vh - 160px)}
+        .control-center-tiles{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:10px;padding:10px 14px}
+        .control-center-tiles:empty{display:none}
+        .control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+        .control-center-tile.is-dragging{background:#d9e7fc;outline:2px solid #658bc1;cursor:grabbing}
+        .control-center-drag-label{position:fixed;top:max(14px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:2;max-width:calc(100vw - 24px);padding:10px 18px;border-radius:999px;background:#233f64;color:#fff;font-weight:600;box-shadow:0 3px 16px #0005;pointer-events:none;text-align:center}
+        .control-center-drag-label[hidden]{display:none}
+        body[data-theme="graphite"] .control-center-tile{background:#283445;border-color:#526274;color:#e1eafa}
+
         .session-switcher-close {
             position: absolute;
             top: 10px;
@@ -5759,6 +5770,7 @@
                 <div class="telegram-drive-bottom" id="telegramDriveBottom">
                     <div class="telegram-drive-bottom-summary" id="telegramDriveBottomSummary">0 个文件夹 · 0 个文件 · 合计 0 B</div>
                     <div class="telegram-drive-selection" id="telegramDriveSelection" hidden><strong id="telegramDriveSelectionCount">已选择 0 项</strong><div class="telegram-drive-selection-actions"><button class="btn btn-secondary" id="telegramDriveBatchMoveBtn" type="button">移动</button><button class="btn btn-secondary" id="telegramDriveBatchDeleteBtn" type="button">删除</button><button class="btn btn-secondary" id="telegramDriveClearSelectionBtn" type="button">取消选择</button></div></div>
+                    <button class="telegram-drive-icon-btn" id="telegramDriveBottomMenuBtn" type="button" title="目录与选择操作" aria-label="目录与选择操作">▤</button>
                 </div>
             </div>
             <input id="telegramDriveFileInput" type="file" multiple hidden>

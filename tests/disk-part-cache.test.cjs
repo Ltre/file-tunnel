@@ -12,6 +12,40 @@ async function collect(stream) {
     return Buffer.concat(chunks);
 }
 
+test('服务端临时缓存按用户、分区及全部范围清理，重启后关联仍保留且不触及其它目录', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-cache-scope-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const outside = path.join(dataDir, 'original.mp4'); fs.writeFileSync(outside, 'original');
+    const cache = createDiskPartCache({ dataDir });
+    for (const [key, userId, diskSpace] of [['a', 'u1', ''], ['b', 'u1', 'other'], ['c', 'u2', 'other']]) {
+        await collect(await cache.open({ key, size: 3, source: async () => require('node:stream').Readable.from(['abc']), owner: { userId, diskSpace } }));
+    }
+    assert.equal((await cache.overview()).files, 3);
+    const restarted = createDiskPartCache({ dataDir });
+    assert.equal((await restarted.clear({ scope: 'user-partition', userId: 'u1', diskSpace: '' })).removedFiles, 1);
+    assert.equal((await restarted.overview()).files, 2);
+    assert.equal((await restarted.clear({ scope: 'user', userId: 'u1' })).removedFiles, 1);
+    assert.equal((await restarted.clear({ scope: 'partition', diskSpace: 'other' })).removedFiles, 1);
+    await collect(await restarted.open({ key: 'last', size: 3, source: async () => require('node:stream').Readable.from(['abc']) }));
+    assert.equal((await restarted.clear()).removedFiles, 1); assert.equal((await restarted.overview()).bytes, 0);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'original'); assert.ok(fs.existsSync(path.join(dataDir, 'telegram-part-cache', '.schema')));
+});
+
+test('清理会跳过正在共享读取的临时分片，完成后可清理；旧无索引缓存按关联键匹配', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-cache-busy-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const cache = createDiskPartCache({ dataDir }); let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const stream = await cache.open({ key: 'busy', size: 3, owner: { userId: 'u1', diskSpace: '' }, source: async function* () { await pending; yield Buffer.from('abc'); } });
+    const result = await cache.clear({ scope: 'user', userId: 'u1' }); assert.equal(result.removedFiles, 0); assert.equal(result.busyFiles, 1);
+    release(); assert.equal((await collect(stream)).toString(), 'abc');
+    await new Promise(resolve => setImmediate(resolve)); assert.equal((await cache.clear()).removedFiles, 1);
+    const key = 'old-window', id = require('node:crypto').createHash('sha256').update(key).digest('hex');
+    fs.writeFileSync(path.join(dataDir, 'telegram-part-cache', id + '.part'), 'old');
+    assert.equal((await cache.clear({ scope: 'user', userId: 'u1', legacyKeys: ['different-window'] })).removedFiles, 0);
+    assert.equal((await cache.clear({ scope: 'user', userId: 'u1', legacyKeys: [key] })).removedFiles, 1);
+});
+
 test('相同 Telegram 字节窗口只建立一个上游读取，下载者可共享增长中的缓存文件', async t => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-part-cache-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));

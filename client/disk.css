@@ -42,7 +42,7 @@
 .disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
 .disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
 .disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
-.telegram-drive-item{touch-action:pan-y;-webkit-user-select:none;user-select:none}
+.telegram-drive-item{touch-action:none;-webkit-user-select:none;user-select:none}
 .telegram-drive-item *{-webkit-user-select:none;user-select:none}
 .telegram-drive-item-name,.telegram-drive-item-meta{-webkit-user-drag:none}
 #telegramDriveItemMenu{max-height:calc(100dvh - 20px);overflow:auto}
@@ -108,6 +108,10 @@
 body.telegram-drive-open{overflow:hidden!important;overscroll-behavior:none}
 #telegramDriveOverlay{overscroll-behavior:contain}
 #telegramDriveOverlay.telegram-drive-picker-mode{z-index:2147483140}
+body.telegram-drive-dialog-open{overflow:hidden!important}
+.telegram-drive-bottom{padding-right:48px!important}
+#telegramDriveBottomMenuBtn{position:absolute;right:5px;top:50%;transform:translateY(-50%);z-index:2;flex-shrink:0}
+.telegram-drive-selection{right:48px!important}
 body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 @media (hover:hover) and (pointer:fine){
   .telegram-drive-manager:not(.telegram-drive-has-selection) .telegram-drive-item-check{visibility:hidden;opacity:0;pointer-events:none}
