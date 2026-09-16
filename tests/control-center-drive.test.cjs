@@ -26,7 +26,7 @@ test('预览按钮滚动引导只在浮层重新打开时执行，收藏重绘�
 
 function dragFixture() {
     const callbacks = new Map(), timers = new Map(), moves = [], ghosts = [];
-    let timerId = 0, target = null, now = 1000;
+    let timerId = 0, target = null, breadcrumb = null, now = 1000;
     class Element {
         constructor() { this.dataset = {}; this.style = {}; this.handlers = {}; this.classList = { add() {}, remove() {} }; this.captured = false; }
         addEventListener(name, fn) { (this.handlers[name] ||= []).push(fn); }
@@ -35,7 +35,7 @@ function dragFixture() {
     }
     const list = new Element(); list.scrollTop = 50; list.getBoundingClientRect = () => ({ left: 0, right: 400, top: 0, bottom: 700 });
     const context = vm.createContext({ HTMLElement: Element, Date: { now: () => now }, Math,
-        document: { createElement: () => { const ghost = new Element(); ghosts.push(ghost); return ghost; }, body: { append() {} }, getElementById: () => list, elementsFromPoint: () => target ? [target] : [] },
+        document: { createElement: () => { const ghost = new Element(); ghosts.push(ghost); return ghost; }, body: { append() {} }, getElementById: () => list, elementsFromPoint: () => target ? [target] : [], querySelectorAll: () => breadcrumb ? [breadcrumb] : [] },
         window: { addEventListener: (name, fn) => { (callbacks.get(name) || callbacks.set(name, []).get(name)).push(fn); }, removeEventListener: (name, fn) => callbacks.set(name, (callbacks.get(name) || []).filter(value => value !== fn)) },
         setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id), requestAnimationFrame: () => 1, cancelAnimationFrame() {},
         diskDragItems: [], telegramDriveSelected: new Map(), telegramDriveItemKey: item => item.id || item.path,
@@ -45,7 +45,10 @@ function dragFixture() {
     context.install(row, file); context.gesture(row, () => {}, event => context.begin([file], row, event));
     const event = extra => ({ target: row, pointerId: 1, pointerType: 'mouse', button: 0, isPrimary: true, clientX: 30, clientY: 80, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() { this.stopped = true; }, ...extra });
     const dispatch = (name, extra) => { const e = event(extra); for (const fn of [...(callbacks.get(name) || [])]) fn(e); for (const fn of row.handlers[name] || []) fn(e); return e; };
-    return { context, row, file, list, ghosts, moves, timers, dispatch, target: value => { target = new Element(); target.dataset.diskDropPath = value; }, advance: value => { now += value; } };
+    return { context, row, file, list, ghosts, moves, timers, dispatch,
+        target: value => { target = new Element(); target.dataset.diskDropPath = value; },
+        breadcrumb: value => { breadcrumb = new Element(); breadcrumb.dataset.diskDropPath = value; breadcrumb.getBoundingClientRect = () => ({ left: 0, right: 200, top: 0, bottom: 120 }); },
+        advance: value => { now += value; } };
 }
 test('PC 左键越过拖动阈值后移动到命中目录，松开后不触发单击；多选一起移动', () => {
     const f = dragFixture(), second = { ...f.file, id: 'second' };
@@ -69,4 +72,45 @@ test('目录不能拖入自己或子目录，Escape 取消并释放拖动监听'
     f.target('父目录/子目录'); f.dispatch('pointermove', { clientX: 140 }); f.dispatch('pointerup'); assert.equal(f.moves.length, 0);
     f.advance(1000); f.dispatch('pointerdown'); f.dispatch('pointermove', { clientX: 140 }); f.dispatch('keydown', { key: 'Escape' });
     assert.equal(f.ghosts.at(-1).removed, true); assert.equal(f.moves.length, 0);
+});
+
+test('指针捕获导致命中栈缺失时仍能把文件拖到面包屑目录', () => {
+    const f = dragFixture(); f.breadcrumb('上一级');
+    f.context.begin([f.file], f.row, { pointerId: 1, clientX: 30, clientY: 80, preventDefault() {} });
+    f.dispatch('pointermove', { clientX: 100, clientY: 60 }); f.dispatch('pointerup', { clientX: 100, clientY: 60 });
+    assert.equal(f.moves.length, 1); assert.equal(f.moves[0].destination, '上一级');
+});
+
+test('拖放移动先显示目标确认，服务端接受首个任务后立即清除多选', async () => {
+    const calls = [], selection = new Map([['first', {}], ['second', {}]]); let cleared = false, waitStartedAfterClear = false;
+    const context = vm.createContext({
+        telegramDrivePath: '当前', telegramDriveSelected: selection,
+        chooseTelegramDriveDestination: async () => '选择器目标', telegramDriveDisplayPath: value => '/' + value,
+        confirmTelegramDriveAction: async (...args) => { calls.push(['confirm', ...args]); return true; },
+        clearTelegramDriveSelection: () => { cleared = true; selection.clear(); }, showAppToast: message => calls.push(['toast', message]), renderTelegramDrive: async () => calls.push(['render']),
+        window: { DiskClient: {
+            raw: async (url, options) => { calls.push(['raw', url, JSON.parse(options.body)]); return { operation_id: 'move-1' }; },
+            wait: async id => { waitStartedAfterClear = cleared; calls.push(['wait', id]); }
+        } }, encodeURIComponent
+    });
+    vm.runInContext(ui.slice(ui.indexOf('async function moveTelegramDriveItems('), ui.indexOf('async function deleteTelegramDriveItems(')) + ';this.move=moveTelegramDriveItems;', context);
+    await context.move([{ kind: 'file', id: 'first', name: '甲.txt' }, { kind: 'file', id: 'second', name: '乙.txt' }], '面包屑/父目录');
+    assert.match(calls[0][2], /2 个选中项目.*\/面包屑\/父目录/);
+    assert.equal(waitStartedAfterClear, true); assert.equal(selection.size, 0);
+    assert.equal(calls.filter(call => call[0] === 'raw').length, 2);
+});
+
+test('主题选择器默认隐藏，顶栏按钮只临时显示五秒并允许选择主题', () => {
+    const handlers = {}, timers = [], applied = [];
+    const switcher = { hidden: true, addEventListener: (name, fn) => { handlers.switcher = fn; } };
+    const cycle = { addEventListener: (name, fn) => { handlers.cycle = fn; } };
+    const context = vm.createContext({
+        localStorage: { getItem: () => 'classic' }, document: { getElementById: id => id === 'themeSwitcher' ? switcher : id === 'cycleThemeBtn' ? cycle : null },
+        applyTheme: value => applied.push(value), historyLog() {}, clearTimeout() {}, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }
+    });
+    vm.runInContext(app.slice(app.indexOf('function initThemeSwitcher('), app.indexOf('function isTunnelOwner(')) + ';this.init=initThemeSwitcher;', context);
+    context.init(); assert.equal(switcher.hidden, true); assert.deepEqual(applied, ['classic']);
+    handlers.cycle(); assert.equal(switcher.hidden, false); assert.equal(timers.at(-1).ms, 5000); assert.deepEqual(applied, ['classic']);
+    handlers.switcher({ target: { closest: () => ({ dataset: { theme: 'atelier' } }) } }); assert.equal(applied.at(-1), 'atelier');
+    timers.at(-1).fn(); assert.equal(switcher.hidden, true);
 });

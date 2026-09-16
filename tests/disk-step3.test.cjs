@@ -81,8 +81,13 @@ test('网盘菜单、播放器释放、缩略图调度和预览层级的回归�
 });
 
 test('管理后台暴露受鉴权保护的数据占用页面和 API', () => {
-    const server = source('server.js'), admin = source('pages/admin.html');
+    const server = source('server.js'), admin = source('pages/admin.html'), usage = source('pages/data-usage.html'), management = source('pages/disk-management.html');
     assert.match(server, /app\.get\('\/data-usage'/);
     assert.match(server, /app\.get\('\/api\/admin\/data-usage', adminAuth\.requireAuth/);
     assert.match(admin, /href="\/data-usage"/);
+    assert.match(usage, /网盘分片缓存清理专区/);
+    assert.match(usage, /id="partCacheUser"[\s\S]*全部用户/);
+    assert.match(usage, /id="partCacheSpace"[\s\S]*默认分区/);
+    assert.match(usage, /\/api\/telegram\/disk-admin\/part-cache/);
+    assert.doesNotMatch(management, /clearAllPartCache|服务端分片临时缓存/);
 });

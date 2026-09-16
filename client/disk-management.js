@@ -87,7 +87,6 @@
     }
     async function selectSpace(selected, path = '') {
         state.selected = selected; state.path = path; renderTree();
-        ['clearUserPartCache', 'clearSpacePartCache', 'clearSelectedPartCache'].forEach(id => { $(id).disabled = false; });
         $('contentTitle').textContent = `${selected.appLabel} / ${selected.user.username || selected.user.name || selected.userId} / ${selected.diskSpace || '默认分区'}`;
         $('pageStatus').textContent = '正在加载目录…';
         try {
@@ -159,27 +158,10 @@
             await refresh(); $('pageStatus').textContent = '审核操作已完成。';
         } catch (error) { $('pageStatus').textContent = '审核失败：' + error.message; }
     }
-    async function refreshPartCache() {
-        const data = await request('/part-cache');
-        $('partCacheSummary').textContent = `${data.files} 个临时分片 · ${bytes(data.bytes)} · ${data.inflight} 项正在读取`;
-    }
-    async function clearPartCache(scope, button) {
-        const selected = state.selected;
-        if (scope !== 'all' && !selected) return;
-        const target = scope === 'all' ? '全部用户及分区' : scope === 'user' ? `用户 ${selected.user.name || selected.userId} 的全部分区` : scope === 'partition' ? `分区 ${selected.diskSpace || '默认分区'} 的全部用户` : `用户 ${selected.user.name || selected.userId} / ${selected.diskSpace || '默认分区'}`;
-        if (!confirm(`清理 ${target} 在 telegram-part-cache 中的服务端分片临时缓存？\n不会删除 Telegram 文件或其它目录。正在读取的分片会跳过。`)) return;
-        button.disabled = true; $('partCacheStatus').textContent = '正在清理临时分片…';
-        try {
-            const result = await request('/part-cache', { method: 'DELETE', body: JSON.stringify({ scope, user_id: selected?.userId, disk_space: selected?.diskSpace || '' }) });
-            $('partCacheStatus').textContent = `已清理 ${result.removedFiles} 个分片，释放 ${bytes(result.removedBytes)}；跳过 ${result.busyFiles} 个正在读取的分片` + (result.failedFiles ? `；${result.failedFiles} 个文件清理失败，请稍后重试` : '。');
-            await refreshPartCache();
-        } catch (error) { $('partCacheStatus').textContent = '清理失败：' + error.message; }
-        finally { button.disabled = false; }
-    }
     async function refresh() {
         $('refreshBtn').disabled = true;
         try {
-            state.overview = await request('/storage-overview'); renderTree(); await renderReviews(); await refreshPartCache();
+            state.overview = await request('/storage-overview'); renderTree(); await renderReviews();
             if (state.selected) await selectSpace(state.selected, state.path);
         } catch (error) { $('pageStatus').textContent = '刷新失败：' + error.message; }
         finally { $('refreshBtn').disabled = false; }
@@ -187,5 +169,4 @@
     $('diskAdminPreviewClose').onclick = closePreview;
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('diskAdminPreview').hidden) closePreview(); });
     $('refreshBtn').onclick = refresh; refresh();
-    for (const [id, scope] of [['clearAllPartCache', 'all'], ['clearUserPartCache', 'user'], ['clearSpacePartCache', 'partition'], ['clearSelectedPartCache', 'user-partition']]) $(id).onclick = event => clearPartCache(scope, event.currentTarget);
 })();

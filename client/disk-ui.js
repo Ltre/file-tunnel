@@ -281,6 +281,7 @@ function renderTelegramDriveBreadcrumbs(data) {
         if (index) { const separator = document.createElement('span'); separator.textContent = '›'; separator.setAttribute('aria-hidden', 'true'); nodes.push(separator); }
         const button = document.createElement('button'); button.type = 'button'; button.textContent = part.name;
         if (index === parts.length - 1) button.setAttribute('aria-current', 'page');
+        button.dataset.diskBreadcrumbDrop = 'true';
         installDiskDrop(button, part.path);
         button.onclick = () => navigateTelegramDrive(part.path).catch(error => alert(telegramDriveErrorText(error)));
         nodes.push(button);
@@ -513,11 +514,21 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
 async function moveTelegramDriveItems(items, targetPath) {
     const destinationPath = targetPath === undefined ? await chooseTelegramDriveDestination(items) : targetPath;
     if (destinationPath === null) return;
-    for (const item of items) {
-        if (item.kind === 'directory') await telegramDriveRequest('/api/telegram/drive/directories', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: item.path, destinationPath }) });
-        else await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderPath: destinationPath }) });
+    if (targetPath !== undefined) {
+        const subject = items.length === 1 ? `“${items[0].name}”` : `${items.length} 个选中项目`;
+        if (!await confirmTelegramDriveAction('确认移动', `确定要把 ${subject} 移动到 ${telegramDriveDisplayPath(destinationPath)} 吗？`, '移动')) return;
     }
-    clearTelegramDriveSelection();
+    let selectionCleared = false;
+    for (const item of items) {
+        const url = item.kind === 'directory' ? '/api/telegram/drive/directories' : `/api/telegram/drive/files/${encodeURIComponent(item.id)}`;
+        const body = item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath };
+        const response = await window.DiskClient.raw(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        // The server has accepted the first move job. Clear selection now while
+        // caption synchronization continues in the background.
+        if (!selectionCleared) { clearTelegramDriveSelection(); selectionCleared = true; }
+        if (response.operation_id) await window.DiskClient.wait(response.operation_id);
+    }
+    if (!selectionCleared) clearTelegramDriveSelection();
     showAppToast(`已移动 ${items.length} 项`);
     await renderTelegramDrive();
 }
@@ -1154,8 +1165,13 @@ function beginTouchDiskDrag(items, sourceRow, event) {
         lastPoint = pointerEvent;
         pointerEvent.preventDefault();
         ghost.style.transform = `translate3d(${pointerEvent.clientX + 14}px,${pointerEvent.clientY + 14}px,0)`;
-        const candidate = document.elementsFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+        let candidate = document.elementsFromPoint(pointerEvent.clientX, pointerEvent.clientY)
             .find(node => node instanceof HTMLElement && Object.prototype.hasOwnProperty.call(node.dataset, 'diskDropPath'));
+        // Some Chromium versions keep the captured source row at the top of
+        // elementsFromPoint while dragging outside the list. Resolve a visible
+        // breadcrumb by its rectangle as a deterministic fallback.
+        if (!candidate) candidate = [...document.querySelectorAll('#telegramDriveBreadcrumbs [data-disk-drop-path]')]
+            .find(node => { const rect = node.getBoundingClientRect(); return pointerEvent.clientX >= rect.left && pointerEvent.clientX <= rect.right && pointerEvent.clientY >= rect.top && pointerEvent.clientY <= rect.bottom; });
         const next = candidate && !invalidTarget(candidate.dataset.diskDropPath || '') ? candidate : null;
         if (next !== target) { target?.classList.remove('disk-drop-target'); target = next; target?.classList.add('disk-drop-target'); }
     };

@@ -17,7 +17,6 @@
         <section class="card"><h2>用户与网盘分区</h2><div id="storageTree" class="tree"></div></section>
         <section class="card"><h2 id="contentTitle">网盘内容</h2><div id="pageStatus" role="status"></div><div class="content"><nav id="contentBreadcrumbs" class="breadcrumbs"></nav><div id="contentSummary" class="summary">请从左侧选择一个用户分区。</div><div id="contentTable" class="table-wrap"></div></div></section>
         <section class="card reviews"><h2>网盘先发后审流水（最新 50 个文件）</h2><div id="reviewTable" class="table-wrap"></div></section>
-        <section class="card reviews"><h2>服务端分片临时缓存</h2><div class="content"><p class="muted">仅清理 .tunnel-data/telegram-part-cache 中的临时分片，不删除 Telegram 原文件、浏览器缓存或其它数据目录。正在读取的分片会跳过。</p><p id="partCacheSummary" role="status">正在读取缓存占用…</p><div class="review-actions"><button id="clearAllPartCache" type="button">清理全部临时缓存</button><button id="clearUserPartCache" type="button" disabled>清理当前用户全部分区</button><button id="clearSpacePartCache" type="button" disabled>清理当前分区全部用户</button><button id="clearSelectedPartCache" type="button" disabled>清理当前用户分区</button></div><p id="partCacheStatus" role="status"></p></div></section>
     </main>
     <section class="disk-admin-preview" id="diskAdminPreview" role="dialog" aria-modal="true" hidden><header><strong id="diskAdminPreviewName"></strong><button id="diskAdminPreviewClose" type="button">关闭预览</button></header><div class="disk-admin-preview-status" id="diskAdminPreviewStatus" role="status"></div><div class="disk-admin-preview-body" id="diskAdminPreviewBody"></div></section>
 </body>

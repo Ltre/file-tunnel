@@ -308,32 +308,39 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     admin.get('/apps', (req, res) => res.json({ apps: auth.apps() }));
     admin.post('/apps', wrap(async (req, res) => res.json(await auth.saveApp(req.body || {}))));
     admin.delete('/apps/:id', (req, res) => { auth.deleteApp(req.params.id); res.json({ ok: true }); });
-    admin.get('/part-cache', wrap(async (_req, res) => res.json(await partCache.overview())));
-    admin.delete('/part-cache', wrap(async (req, res) => {
-        const scope = String(req.body?.scope || ''), userId = String(req.body?.user_id || ''), selectedSpace = String(req.body?.disk_space || '');
+    function partCacheSelection(input = {}) {
+        const scope = String(input.scope || 'all'), userId = String(input.user_id || ''), diskSpace = String(input.disk_space || '');
         if (!['all', 'user', 'partition', 'user-partition'].includes(scope) || (['user', 'user-partition'].includes(scope) && !userId)) throw new Error('INVALID_CACHE_SCOPE');
+        return { scope, userId, diskSpace };
+    }
+    function* legacyPartCacheKeys({ scope, userId, diskSpace: selectedSpace }) {
         // Old cache names contain only a SHA-256 digest. Reconstruct possible
         // MiB-aligned byte windows from logical file records for scoped cleanup.
-        function* legacyKeys() {
-            if (scope === 'all' || typeof telegram.parts !== 'function') return;
-            for (const { diskSpace, store } of spaces.entries()) {
-                if (scope !== 'user' && diskSpace !== selectedSpace) continue;
-                for (const file of store.adminFiles()) {
-                    if (scope !== 'partition' && file.ownerId !== userId) continue;
-                    let backend; try { backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId); } catch (_) { continue; }
-                    if (!backend) continue;
-                    const backendKey = crypto.createHash('sha256').update(String(backend.baseUrl || '') + '\0' + String(backend.token || '')).digest('hex');
-                    for (const part of telegram.parts(file)) for (let start = 0; start < part.size; start += 1024 * 1024) {
-                        for (let next = start + 1024 * 1024; ; next += 1024 * 1024) {
-                            const end = Math.min(part.size - 1, next - 1);
-                            yield ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':');
-                            if (end === part.size - 1) break;
-                        }
+        if (scope === 'all' || typeof telegram.parts !== 'function') return;
+        for (const { diskSpace, store } of spaces.entries()) {
+            if (scope !== 'user' && diskSpace !== selectedSpace) continue;
+            for (const file of store.adminFiles()) {
+                if (scope !== 'partition' && file.ownerId !== userId) continue;
+                let backend; try { backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId); } catch (_) { continue; }
+                if (!backend) continue;
+                const backendKey = crypto.createHash('sha256').update(String(backend.baseUrl || '') + '\0' + String(backend.token || '')).digest('hex');
+                for (const part of telegram.parts(file)) for (let start = 0; start < part.size; start += 1024 * 1024) {
+                    for (let next = start + 1024 * 1024; ; next += 1024 * 1024) {
+                        const end = Math.min(part.size - 1, next - 1);
+                        yield ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':');
+                        if (end === part.size - 1) break;
                     }
                 }
             }
         }
-        res.json(await partCache.clear({ scope, userId, diskSpace: selectedSpace, legacyKeys: legacyKeys() }));
+    }
+    admin.get('/part-cache', wrap(async (req, res) => {
+        const selection = partCacheSelection(req.query);
+        res.json(await partCache.overview({ ...selection, legacyKeys: legacyPartCacheKeys(selection) }));
+    }));
+    admin.delete('/part-cache', wrap(async (req, res) => {
+        const selection = partCacheSelection(req.body);
+        res.json(await partCache.clear({ ...selection, legacyKeys: legacyPartCacheKeys(selection) }));
     }));
     const appLabel = id => {
         if (id === 'system') return '本系统';

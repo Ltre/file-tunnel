@@ -16272,7 +16272,7 @@ function initTunnelControlCenter(dialog) {
         else tile.textContent = icon;
         tile.onclick = event => {
             if (Date.now() < suppressUntil) { event.preventDefault(); return; }
-            if (id !== 'theme') dialog.remove();
+            dialog.remove();
             document.getElementById(target)?.click();
         };
         tiles.set(id, tile);
@@ -16761,18 +16761,24 @@ function applyTheme(theme) {
 
 function initThemeSwitcher() {
     applyTheme(localStorage.getItem('uiTheme') || 'classic');
-    document.getElementById('themeSwitcher')?.addEventListener('click', event => {
+    const switcher = document.getElementById('themeSwitcher');
+    let hideTimer = 0;
+    const showTemporarily = () => {
+        if (!switcher) return;
+        switcher.hidden = false;
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => { switcher.hidden = true; }, 5000);
+    };
+    switcher?.addEventListener('click', event => {
         const button = event.target.closest?.('.theme-option[data-theme]');
         if (!button) return;
         applyTheme(button.dataset.theme);
         historyLog('theme-changed', { theme: button.dataset.theme });
+        showTemporarily();
     });
     document.getElementById('cycleThemeBtn')?.addEventListener('click', () => {
-        const themes = ['classic', 'graphite', 'atelier', 'social'];
-        const current = document.body.dataset.theme || 'classic';
-        const next = themes[(themes.indexOf(current) + 1) % themes.length];
-        applyTheme(next);
-        historyLog('theme-changed', { theme: next, source: 'topbar-cycle' });
+        showTemporarily();
+        historyLog('theme-switcher-shown', { source: 'topbar' });
     });
     document.getElementById('topbarMusicBtn')?.addEventListener('click', () => {
         openMusicPlayerOverlay({ resetQueue: true });

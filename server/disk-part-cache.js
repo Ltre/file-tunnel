@@ -36,12 +36,17 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         const scopes = owners[id] || [];
         if (!scopes.some(item => item.userId === scope.userId && item.diskSpace === scope.diskSpace)) { owners[id] = [...scopes, scope]; saveOwners(); }
     }
+    function selectedIds(scope, userId, diskSpace, entries, legacyKeys) {
+        if (scope === 'all') return null;
+        const selected = new Set(Object.entries(owners).filter(([, scopes]) => scopes.some(owner =>
+            (scope === 'partition' || owner.userId === userId) && (scope === 'user' || owner.diskSpace === diskSpace))).map(([id]) => id));
+        const available = new Set(entries.filter(item => item.isFile() && /^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)).map(item => item.name.slice(0, 64)));
+        if (available.size) for (const key of legacyKeys || []) { const id = digest(key); if (available.has(id)) selected.add(id); }
+        return selected;
+    }
     async function clear({ scope = 'all', userId = '', diskSpace = '', legacyKeys = [] } = {}) {
         const entries = await fsp.readdir(root, { withFileTypes: true });
-        const selected = scope === 'all' ? null : new Set([...Object.entries(owners).filter(([, scopes]) => scopes.some(owner =>
-            (scope === 'partition' || owner.userId === userId) && (scope === 'user' || owner.diskSpace === diskSpace))).map(([id]) => id)]);
-        const available = new Set(entries.filter(item => item.isFile() && /^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)).map(item => item.name.slice(0, 64)));
-        if (selected && available.size) for (const key of legacyKeys) { const id = digest(key); if (available.has(id)) selected.add(id); }
+        const selected = selectedIds(scope, userId, diskSpace, entries, legacyKeys);
         let removedFiles = 0, removedBytes = 0, busyFiles = 0, failedFiles = 0;
         for (const item of entries) {
             if (!item.isFile() || !/^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)) continue;
@@ -55,14 +60,18 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         saveOwners();
         return { removedFiles, removedBytes, busyFiles, failedFiles };
     }
-    async function overview() {
+    async function overview({ scope = 'all', userId = '', diskSpace = '', legacyKeys = [] } = {}) {
+        const entries = await fsp.readdir(root, { withFileTypes: true });
+        const selected = selectedIds(scope, userId, diskSpace, entries, legacyKeys);
         let files = 0, bytes = 0;
-        for (const item of await fsp.readdir(root, { withFileTypes: true })) {
+        for (const item of entries) {
             if (!item.isFile() || !/^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)) continue;
+            if (selected && !selected.has(item.name.slice(0, 64))) continue;
             const stat = await fsp.stat(path.join(root, item.name)).catch(() => null);
             if (stat) { files++; bytes += stat.size; }
         }
-        return { directory: '.tunnel-data/telegram-part-cache', files, bytes, inflight: inflight.size };
+        const active = selected ? [...inflight.keys()].filter(id => selected.has(id)).length : inflight.size;
+        return { directory: '.tunnel-data/telegram-part-cache', files, bytes, inflight: active };
     }
     const notify = entry => { for (const resolve of entry.waiters.splice(0)) resolve(); };
     const wait = entry => new Promise(resolve => entry.waiters.push(resolve));

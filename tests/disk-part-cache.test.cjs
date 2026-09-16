@@ -21,6 +21,8 @@ test('服务端临时缓存按用户、分区及全部范围清理，重启后�
         await collect(await cache.open({ key, size: 3, source: async () => require('node:stream').Readable.from(['abc']), owner: { userId, diskSpace } }));
     }
     assert.equal((await cache.overview()).files, 3);
+    assert.deepEqual(await cache.overview({ scope: 'user-partition', userId: 'u1', diskSpace: '' }).then(data => [data.files, data.bytes]), [1, 3]);
+    assert.deepEqual(await cache.overview({ scope: 'partition', diskSpace: 'other' }).then(data => [data.files, data.bytes]), [2, 6]);
     const restarted = createDiskPartCache({ dataDir });
     assert.equal((await restarted.clear({ scope: 'user-partition', userId: 'u1', diskSpace: '' })).removedFiles, 1);
     assert.equal((await restarted.overview()).files, 2);

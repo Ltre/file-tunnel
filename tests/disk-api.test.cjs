@@ -256,6 +256,8 @@ test('管理接口按用户清理旧分片缓存，拒绝错误范围和跨站�
     const clear = body => fetch(base + '/admin/part-cache', { method: 'DELETE', ...json(body) });
     assert.equal((await clear({ scope: 'unknown' })).status, 422);
     assert.equal((await fetch(base + '/admin/part-cache', { method: 'DELETE', headers: { ...json({}).headers, Origin: 'http://other-site' }, body: JSON.stringify({ scope: 'all' }) })).status, 403);
+    const selected = await (await fetch(base + `/admin/part-cache?scope=user-partition&user_id=${encodeURIComponent(users[0].id)}&disk_space=`)).json();
+    assert.equal(selected.files, 1); assert.equal(selected.bytes, 3);
     assert.equal((await (await clear({ scope: 'user', user_id: users[0].id })).json()).removedFiles, 1);
     assert.equal((await (await fetch(base + '/admin/part-cache')).json()).files, 1);
     assert.equal((await (await clear({ scope: 'all' })).json()).removedFiles, 1);

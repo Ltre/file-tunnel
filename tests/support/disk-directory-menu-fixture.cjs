@@ -12,6 +12,18 @@ app.post('/fixture/seed', (_req, res) => {
 });
 app.patch('/api/telegram/drive/files/:id', (req, res) => { const file = files.find(item => item.id === req.params.id); Object.assign(file, req.body); res.json(file); });
 require('./disk-control-center-fixture.cjs')(app, root);
+app.get('/data-usage', (_req, res) => res.sendFile(path.join(root, 'pages', 'data-usage.html')));
+app.get('/api/admin/data-usage', (_req, res) => res.json({ path: '', entries: [{ name: 'telegram-part-cache', path: 'telegram-part-cache', kind: 'directory', size: 3072 }], totalSize: 3072, generatedAt: Date.now() }));
+app.get('/api/telegram/disk-admin/storage-overview', (_req, res) => res.json({ systems: [{ appId: 'system', label: '本系统', users: [
+    { userId: 'u1', name: '甲用户', spaces: [{ diskSpace: '', fileCount: 1, size: 3 }, { diskSpace: '图片', fileCount: 2, size: 20 }] },
+    { userId: 'u2', name: '乙用户', spaces: [{ diskSpace: '', fileCount: 1, size: 4 }, { diskSpace: '视频', fileCount: 1, size: 30 }] }
+] }] }));
+app.get('/api/telegram/disk-admin/part-cache', (req, res) => {
+    const user = String(req.query.user_id || ''), space = String(req.query.disk_space || '');
+    const bytes = space === '图片' ? 2048 : space === '视频' ? 1024 : user ? 512 : 768;
+    res.json({ files: bytes / 512, bytes, inflight: 0 });
+});
+app.delete('/api/telegram/disk-admin/part-cache', (req, res) => res.json({ removedFiles: 1, removedBytes: 512, busyFiles: 0, failedFiles: 0 }));
 app.post('/fixture/reset', (_req, res) => { directories.splice(1); files.splice(0); jobs.splice(0); uploads.clear(); report = { status: 'pending' }; res.json({ ok: true }); });
 app.get('/', (_req, res) => {
     let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');

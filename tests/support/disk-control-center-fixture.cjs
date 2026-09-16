@@ -11,7 +11,8 @@ module.exports = function install(app, root) {
     app.post('/control-report', (req, res) => { report = req.body; console.log(JSON.stringify(report)); res.json({ ok: true }); });
     app.get('/control-check.js', (_req, res) => {
         const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-        const functions = source.slice(source.indexOf('function normalizeControlCenterOrder('), source.indexOf('function showTunnelRemarkDialog('));
+        const functions = source.slice(source.indexOf('function normalizeControlCenterOrder('), source.indexOf('function showTunnelRemarkDialog(')) + '\n' +
+            source.slice(source.indexOf('function applyTheme('), source.indexOf('function isTunnelOwner('));
         const helperSource = fs.readFileSync(__filename, 'utf8');
         const runSource = helperSource.slice(helperSource.lastIndexOf(['async', 'function run()'].join(' ')));
         res.type('js').send(`const state={sessionId:'fixture'},getAllFromStore=async()=>Array.from({length:80},(_,i)=>({sessionId:i?'session-'+i:'fixture',shortCode:String(i).padStart(5,'0')})),escapeHtml=String,normalizeLocalShortCode=String,historyLog=()=>{},hasActiveTransferTasks=()=>false;\n${functions}\n(${runSource})();`);
@@ -26,7 +27,8 @@ async function run() {
     window.TelegramDriveCache = { status: async () => ({}) };
     try {
         await post('/fixture/reset'); await post('/fixture/seed'); await post('/fixture/identity', { enabled: false });
-        window.DiskUI.init({ showAppToast() {} }); let loadingCalls = 0;
+        document.getElementById('appShell').hidden = false; document.getElementById('tunnelTopbar').hidden = false;
+        window.DiskUI.init({ showAppToast() {} }); initThemeSwitcher(); let loadingCalls = 0;
         const activity = window.DiskClient.withActivity; window.DiskClient.withActivity = (...args) => { loadingCalls++; return activity(...args); };
         await window.DiskUI.open(); assert(!document.getElementById('telegramDriveAuth').hidden && document.getElementById('telegramDriveWorkspace').hidden, '未登录没有显示登录界面');
         assert(loadingCalls === 0 && document.getElementById('diskLoading').hidden, '未登录打开出现居中 Loading'); results.push('未登录打开网盘不产生居中 Loading');
@@ -57,8 +59,11 @@ async function run() {
         await showJoinedSessionSwitcher(); let center = document.querySelector('.control-center-overlay');
         assert(center.querySelectorAll('[data-control-tile]').length === 9, '控制中心磁贴不完整');
         const panel = center.querySelector('[data-control-panel]'), panelRect = panel.getBoundingClientRect(); assert(panelRect.height <= innerHeight * .6 + 1, '隧道面板超过可视高度60%');
-        center.querySelector('[data-control-tile="theme"]').click(); assert(center.isConnected && calls.cycleThemeBtn === 1, '切换主题关闭控制中心');
-        center.querySelector('[data-control-tile="magnet"]').click(); assert(!center.isConnected && calls.magnetCacheBtn === 1, '磁链入口未调用或没有关闭控制中心'); results.push('九项磁贴、主题保留、磁链关闭及面板高度');
+        const themeBefore = document.body.dataset.theme;
+        center.querySelector('[data-control-tile="theme"]').click();
+        assert(!center.isConnected && calls.cycleThemeBtn === 1 && !document.getElementById('themeSwitcher').hidden && document.body.dataset.theme === themeBefore, '主题磁贴没有关闭控制中心并原样显示主题选择器');
+        await showJoinedSessionSwitcher(); center = document.querySelector('.control-center-overlay');
+        center.querySelector('[data-control-tile="magnet"]').click(); assert(!center.isConnected && calls.magnetCacheBtn === 1, '磁链入口未调用或没有关闭控制中心'); results.push('九项磁贴、主题关闭后显示选择器、磁链关闭及面板高度');
         await showJoinedSessionSwitcher(); center = document.querySelector('.control-center-overlay');
         const tile = center.querySelector('[data-control-tile="disk"]'), start = tile.getBoundingClientRect(), destination = center.querySelector('[data-control-panel]').getBoundingClientRect();
         tile.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 88, pointerType: 'mouse', isPrimary: true, button: 0, clientX: start.left + 10, clientY: start.top + 10 }));
