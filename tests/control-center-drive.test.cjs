@@ -8,7 +8,7 @@ test('控制中心排序兼容新增磁贴、重复和失效项目，保留切�
     const normalize = vm.runInNewContext(app.slice(app.indexOf('function normalizeControlCenterOrder('), app.indexOf('function initTunnelControlCenter(')) + ';normalizeControlCenterOrder');
     const result = [...normalize(['theme', 'tunnels', 'disk', 'disk', 'unknown'])];
     assert.equal(result[0], 'theme'); assert.equal(result[1], 'tunnels'); assert.equal(result[2], 'disk');
-    assert.equal(result.length, 10); assert.equal(new Set(result).size, 10);
+    assert.equal(result.length, 11); assert.equal(new Set(result).size, 11);
 });
 
 test('预览按钮滚动引导只在浮层重新打开时执行，收藏重绘保留滚动位置', () => {
@@ -133,4 +133,11 @@ test('触屏来源优先于混合设备的 fine pointer 判定', () => {
     assert.equal(context.touch({}, 'touch'), true);
     assert.equal(context.touch({}, 'mouse'), false);
     context.window.matchMedia = () => ({ matches: true }); assert.equal(context.touch({}, 'mouse'), true);
+});
+
+test('窄屏移动布局不因合成 mouse click 落入 PC 勾选分支', () => {
+    const snippet = ui.slice(ui.indexOf('let diskLastTouchAt = 0;'), ui.indexOf('function renderTelegramDriveItems('));
+    const context = vm.createContext({ Date, window: { matchMedia: query => ({ matches: query.includes('max-width:600px') }) } });
+    vm.runInContext(snippet + ';this.touch=isTouchDiskActivation;', context);
+    assert.equal(context.touch({}, 'mouse'), true);
 });

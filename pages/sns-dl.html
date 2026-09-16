@@ -381,7 +381,7 @@
         if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
         if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
         card.append(actions);
-        if (task.status === 'completed' && task.hasFile) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
+        if (task.status === 'completed' && task.hasFile && task.downloadSections) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
         return card;
     }
     function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }

@@ -26,7 +26,8 @@
 
     function normalizePath(file) {
         const path = (file.path || file.webkitRelativePath || file.name || 'file').replace(/\\/g, '/');
-        return path.split('/').filter(part => part && part !== '.' && part !== '..').join('/');
+        const normalized = path.split('/').filter(part => part && part !== '.' && part !== '..').join('/');
+        return path.endsWith('/') && normalized ? `${normalized}/` : normalized;
     }
 
     async function createZip(files) {
@@ -100,22 +101,40 @@
     async function extractZip(blob) {
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const entries = [];
-        let offset = 0;
-        while (offset + 30 <= bytes.length) {
-            const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
-            if (view.getUint32(0, true) !== 0x04034b50) break;
-            const compression = view.getUint16(8, true);
-            const compressedSize = view.getUint32(18, true);
-            const nameLength = view.getUint16(26, true);
-            const extraLength = view.getUint16(28, true);
-            if (compression !== 0) throw new Error('仅支持本应用创建的未压缩 ZIP');
-            const nameStart = offset + 30;
-            const dataStart = nameStart + nameLength + extraLength;
-            const dataEnd = dataStart + compressedSize;
-            if (dataEnd > bytes.length) throw new Error('ZIP 文件损坏');
-            const path = new TextDecoder().decode(bytes.slice(nameStart, nameStart + nameLength));
-            entries.push({ path, data: bytes.slice(dataStart, dataEnd) });
-            offset = dataEnd;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let endOffset = -1;
+        for (let cursor = Math.max(0, bytes.length - 65557); cursor <= bytes.length - 22; cursor++) {
+            if (view.getUint32(cursor, true) === 0x06054b50) endOffset = cursor;
+        }
+        if (endOffset < 0) throw new Error('ZIP 文件缺少中央目录');
+        const entryCount = view.getUint16(endOffset + 10, true);
+        let offset = view.getUint32(endOffset + 16, true);
+        const decoder = new TextDecoder();
+        for (let index = 0; index < entryCount; index++) {
+            if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) throw new Error('ZIP 中央目录损坏');
+            const compression = view.getUint16(offset + 10, true);
+            const compressedSize = view.getUint32(offset + 20, true);
+            const nameLength = view.getUint16(offset + 28, true);
+            const extraLength = view.getUint16(offset + 30, true);
+            const commentLength = view.getUint16(offset + 32, true);
+            const localOffset = view.getUint32(offset + 42, true);
+            const path = decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)).replace(/\\/g, '/');
+            if (!path.endsWith('/')) {
+                if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('ZIP 文件项损坏');
+                const localNameLength = view.getUint16(localOffset + 26, true);
+                const localExtraLength = view.getUint16(localOffset + 28, true);
+                const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+                const compressed = bytes.slice(dataStart, dataStart + compressedSize);
+                let data;
+                if (compression === 0) data = compressed;
+                else if (compression === 8 && typeof DecompressionStream === 'function') {
+                    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+                    data = new Uint8Array(await new Response(stream).arrayBuffer());
+                } else if (compression === 8) throw new Error('当前浏览器不支持解压 Deflate ZIP');
+                else throw new Error(`不支持 ZIP 压缩方式 ${compression}`);
+                entries.push({ path: normalizePath({ path }), data });
+            } else entries.push({ path:normalizePath({ path }), data:new Uint8Array() });
+            offset += 46 + nameLength + extraLength + commentLength;
         }
         return entries;
     }

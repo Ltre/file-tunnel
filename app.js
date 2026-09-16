@@ -2035,6 +2035,22 @@ function initSocket() {
     state.socket.on('intercom-stop', (data) => mediaController?.handleIntercomStop(data));
     state.socket.on('device-tunnel-invite', handleDeviceTunnelInvite);
     state.socket.on('device-tunnel-invite-ack', handleDeviceTunnelInviteAck);
+    state.socket.on('web-zip-edit-request', data => {
+        window.NotificationCenter?.add({ id:data.requestId, type:'web-zip-edit-request', title:'网页 ZIP 编辑权限申请', body:`设备 ${data.requesterName || data.requesterDeviceId || '未知设备'} 申请编辑“${data.fileName || '网页 ZIP'}”`, data });
+    });
+    state.socket.on('web-zip-edit-response', data => {
+        window.NotificationCenter?.add({ id:`${data.requestId}:response`, type:'web-zip-edit-response', title:data.approved ? '网页编辑权限已获批准' : '网页编辑权限被拒绝', body:`“${data.fileName || '网页 ZIP'}”的编辑申请${data.approved ? '已通过，可重新打开并转入草稿编辑。' : '未通过。'}`, data });
+        if (data.approved) requestSessionHistory('web-zip-edit-approved');
+    });
+    state.socket.on('device-notification', notification => {
+        const data=notification?.data||{};
+        if(notification?.type==='web-zip-edit-request')window.NotificationCenter?.add({id:data.requestId,type:'web-zip-edit-request',title:'网页 ZIP 编辑权限申请',body:`设备 ${data.requesterName||data.requesterDeviceId||'未知设备'} 申请编辑“${data.fileName||'网页 ZIP'}”`,data});
+        if(notification?.type==='web-zip-edit-response'){
+            window.NotificationCenter?.add({id:`${data.requestId}:response`,type:'web-zip-edit-response',title:data.approved?'网页编辑权限已获批准':'网页编辑权限被拒绝',body:`“${data.fileName||'网页 ZIP'}”的编辑申请${data.approved?'已通过，可重新打开并转入草稿编辑。':'未通过。'}`,data});
+            if(data.approved)requestSessionHistory('web-zip-edit-approved');
+        }
+        if(notification?.type!=='web-zip-edit-request'&&notification?.id)state.socket.emit('device-notification-ack',{id:notification.id});
+    });
     state.socket.on('device-remark-backup', handleDeviceRemarkBackup);
     state.socket.on('device-remark-restore-request', handleDeviceRemarkRestoreRequest);
     state.socket.on('device-remark-restore-response', handleDeviceRemarkRestoreResponse);
@@ -4626,6 +4642,7 @@ function createFileInfoFromFile(file, options = {}) {
         ...metadataOptions
     } = options;
     const fileId = optionFileId || generateId();
+    const isWebZip = /\.html\.zip$/i.test(String(file.name || ''));
     const fileInfo = {
         id: fileId,
         name: file.name,
@@ -4635,6 +4652,7 @@ function createFileInfoFromFile(file, options = {}) {
         sender: state.deviceId,
         senderName: state.deviceName,
         ...(file.relativePath ? { relativePath: file.relativePath } : {}),
+        ...(isWebZip ? { webZip: true, creatorDeviceId: state.deviceId } : {}),
         ...metadataOptions
     };
     return {
@@ -4642,6 +4660,42 @@ function createFileInfoFromFile(file, options = {}) {
         ownerDeviceId: state.deviceId,
         isAsset: true
     };
+}
+
+function canEditWebZip(fileInfo) {
+    if (!fileInfo?.webZip && !/\.html\.zip$/i.test(String(fileInfo?.name || ''))) return false;
+    return fileInfo.creatorDeviceId === state.deviceId || (Array.isArray(fileInfo.webZipEditors) && fileInfo.webZipEditors.includes(state.deviceId));
+}
+
+async function publishWebZipUpdate(file, draft) {
+    const message = await findCurrentSessionMessageByFileId(draft.sourceFileId);
+    if (!message) throw new Error('找不到需要更新的网页 ZIP 记录');
+    const current = message.type === 'file' ? message.fileInfo : getCollectionFiles(message).find(item => item.id === draft.sourceFileId);
+    if (!canEditWebZip(current)) throw new Error('当前设备没有该网页 ZIP 的编辑权限');
+    const fileInfo = createFileInfoFromFile(file, {
+        ...current,
+        fileId: current.id,
+        webZip: true,
+        creatorDeviceId: current.creatorDeviceId || state.deviceId,
+        webZipEditors: Array.isArray(current.webZipEditors) ? current.webZipEditors : [],
+        webZipUpdatedAt: Date.now()
+    });
+    await storeAndAnnounceFileAsset(file, fileInfo);
+    const next = JSON.parse(JSON.stringify(message));
+    if (next.type === 'file') next.fileInfo = fileInfo;
+    else next.collection.files = next.collection.files.map(item => item.id === fileInfo.id ? fileInfo : item);
+    await updateHistoryMessage(next);
+    return fileInfo.id;
+}
+
+function focusPublishedWebZip(fileId) {
+    setTimeout(() => {
+        const target = document.querySelector(`.message[data-file-id="${CSS.escape(fileId)}"], [data-file-id="${CSS.escape(fileId)}"]`);
+        target?.scrollIntoView({ behavior:'smooth', block:'center' });
+        target?.focus?.({ preventScroll:true });
+        target?.classList.add('is-publish-target');
+        setTimeout(() => target?.classList.remove('is-publish-target'), 1800);
+    }, 120);
 }
 
 async function createFileAsset(file, options = {}) {
@@ -6839,7 +6893,7 @@ function getCollectionFiles(message) {
 
 async function createCollectionTileHtml(fileInfo, index, total) {
     const type = String(fileInfo.type || '').toLowerCase();
-    let body = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
+    let body = `<span>${getFileIcon(fileInfo.type || '', fileInfo.name)}</span>`;
     const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     let storedFile = persistedFile;
     if (persistedFile?.externalFileHandle) storedFile = await materializeExternalFileRecord(persistedFile);
@@ -7034,7 +7088,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
             contentHtml = `
                 <div class="message-bubble file-message" style="${opacity}">
                     <div class="file-message-main">
-                        <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
+                        <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}</div>
                         <div class="file-info">
                             <div class="file-name">${escapeHtml(fileInfo.name)}</div>
                             <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
@@ -8354,7 +8408,7 @@ function renderFilePreviewLoading(content, fileInfo) {
     const loading = document.createElement('div');
     loading.className = 'file-preview-loading';
     loading.innerHTML = `
-        <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+        <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
         <div>
             <div class="file-name">${escapeHtml(fileInfo.name || '文件预览')}</div>
             <div class="file-size">正在准备预览...</div>
@@ -8941,7 +8995,7 @@ function renderFileMetadataPreview(content, fileInfo, stateLabel = '') {
     const panel = document.createElement('div');
     panel.className = 'file-preview-metadata';
     panel.innerHTML = `
-        <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+        <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
         <div class="file-info">
             <div class="file-name">${escapeHtml(fileInfo.name || '未知文件')}</div>
             <div class="file-size">${formatFileSize(Number(fileInfo.size) || 0)}${stateLabel ? ` (${escapeHtml(stateLabel)})` : ''}</div>
@@ -9039,7 +9093,7 @@ async function updateCollectionMessageElement(message) {
         tile.removeAttribute('data-collection-more');
         tile.querySelector('.collection-more')?.remove();
         if (!tile.childNodes.length) {
-            tile.innerHTML = `<span>${getFileIcon(fileInfo.type || '')}</span>`;
+            tile.innerHTML = `<span>${getFileIcon(fileInfo.type || '', fileInfo.name)}</span>`;
         }
         if (isMoreTile) {
             tile.dataset.collectionMore = 'true';
@@ -11189,6 +11243,14 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
 
 async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (!fileInfo?.id) return false;
+    if (/\.html\.zip$/i.test(String(fileInfo.name || '')) && window.WebWorkshop) {
+        let packageFile = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
+        if (packageFile?.externalFileHandle) packageFile = await materializeExternalFileRecord(packageFile, { requestPermission:true });
+        if (hasCompleteFileCache(packageFile, fileInfo)) {
+            await window.WebWorkshop.openPackage(fileInfo, new Blob([packageFile.data], { type:'application/zip' }), options);
+            return true;
+        }
+    }
     const title = document.getElementById('filePreviewTitle');
     const content = setFilePreviewContentStage('preview-loading-stage');
     if (!content || !title) return false;
@@ -12002,7 +12064,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             ? (type.startsWith('video/') ? '视频' : type.startsWith('audio/') ? '音频' : '不可预览')
             : (recoveryStage?.label || (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存'));
         thumb.innerHTML = `
-            <div class="file-icon">${getFileIcon(fileInfo.type || '')}</div>
+            <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
             <div class="collection-file-state">${escapeHtml(stateLabel)}</div>
         `;
         if (type.startsWith('video/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
@@ -12457,7 +12519,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
         bubble.removeAttribute('onclick');
         bubble.style.opacity = '0.6';
         bubble.innerHTML = `
-            <div class="file-icon">${getFileIcon(fileInfo.type)}</div>
+            <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}</div>
             <div class="file-info">
                 <div class="file-name">${escapeHtml(fileInfo.name)}</div>
                 <div class="file-size">${formatFileSize(fileInfo.size)} (${escapeHtml(label)})</div>
@@ -14305,7 +14367,7 @@ function getFilePreviewObjectUrl(file) {
 function createEditorFilePickerIcon(file) {
     const icon = document.createElement('span');
     icon.className = 'editor-file-picker-icon';
-    icon.textContent = getFileIcon(file?.type || '');
+    icon.textContent = getFileIcon(file?.type || '', file?.name);
     return icon;
 }
 
@@ -14345,7 +14407,7 @@ function createEditorFileTile(file, selectedId, onSelect) {
         video.preload = 'metadata';
         preview.appendChild(video);
     } else {
-        preview.textContent = getFileIcon(file.type || '');
+        preview.textContent = getFileIcon(file.type || '', file.name);
     }
 
     const name = document.createElement('div');
@@ -14394,7 +14456,7 @@ async function insertEditorReferencedFile(file, savedRange, insertEditorHtml, ed
         const asset = await createEditorAssetFromStoredFile(file);
         refHtml = createEditorAssetHtml(asset);
     } else {
-        refHtml = `<span data-tunnel-file-ref-id="${escapeHtml(file.id)}" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${file.id}')">${getFileIcon(file.type)} ${escapeHtml(file.name)}</span>`;
+        refHtml = `<span data-tunnel-file-ref-id="${escapeHtml(file.id)}" style="background: #667eea; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer;" onclick="downloadFile('${file.id}')">${getFileIcon(file.type, file.name)} ${escapeHtml(file.name)}</span>`;
     }
 
     if (getEditorContentSize(editor.innerHTML + refHtml) > MAX_EDITOR_CONTENT_SIZE) {
@@ -15767,6 +15829,14 @@ async function showDeviceTunnelInviteNotification(invite) {
 async function handleDeviceTunnelInvite(invite) {
     if (!invite?.link || !invite?.from || !invite?.invitationId) return;
     if (!(await claimDeviceTunnelInvite(invite))) return;
+    window.NotificationCenter?.add({
+        id:`tunnel-invite:${invite.invitationId}`,
+        type:'tunnel-invite',
+        title:'传输隧道邀请',
+        body:`${getDeviceTunnelInviteSenderName(invite)} 邀请你进入传输隧道`,
+        data:invite,
+        createdAt:Date.now()
+    });
     if (!isDeviceTunnelInviteInteractive()) {
         pendingDeviceTunnelInvites.set(invite.invitationId, invite);
         const notified = await showDeviceTunnelInviteNotification(invite);
@@ -16245,7 +16315,7 @@ function initWorkspaceSwipeNavigation() {
 }
 
 function normalizeControlCenterOrder(saved) {
-    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'disk', 'tunnels'];
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'notifications', 'disk', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
 function initTunnelControlCenter(dialog) {
@@ -16258,6 +16328,7 @@ function initTunnelControlCenter(dialog) {
         ['scan', '▩', '扫描隧道二维码', 'scanTunnelCodeBtn'],
         ['light', '✴↗', '接收光媒', 'receiveLightBtn'],
         ['resources', 'ꕡ', '资源管理器', 'resourceBrowserBtn'],
+        ['notifications', '🔔', '通知中心', 'notificationCenterBtn'],
         ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn']
     ];
     let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
@@ -17208,6 +17279,27 @@ function initUI() {
     initTunnelSettings();
     initLanP2pGuide();
     initThemeSwitcher();
+    window.NotificationCenter?.init({
+        deviceId: () => state.deviceId,
+        onAction: (item, action) => new Promise((resolve, reject) => {
+            if (item.type !== 'web-zip-edit-request') return resolve();
+            state.socket.timeout(8000).emit('web-zip-edit-response', { requestId:item.data?.requestId, approved:action === 'approve' }, (error, response) => error || !response?.ok ? reject(new Error(response?.error || '处理申请失败')) : resolve(response));
+        })
+    });
+    window.WebWorkshop?.init({
+        deviceId: () => state.deviceId,
+        canUpdate: canEditWebZip,
+        publishNew: (file, metadata) => sendFile(file, null, metadata),
+        publishUpdate: publishWebZipUpdate,
+        focusFile: focusPublishedWebZip,
+        toast: showAppToast,
+        requestEdit: fileInfo => new Promise((resolve, reject) => {
+            state.socket.timeout(8000).emit('web-zip-edit-request', { sessionId:state.sessionId, fileId:fileInfo.id }, (error, response) => {
+                if (error || !response?.ok) return reject(new Error(response?.error || '编辑权限申请发送失败'));
+                showAppToast(response.delivered ? '编辑权限申请已发送' : '创建设备当前不在线，暂未送达'); resolve(response);
+            });
+        }).catch(error => alert(error.message))
+    });
     initTopbarOverflowScroll();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
     window.addEventListener('pagehide', persistMusicPlayerStateNow);
@@ -17265,6 +17357,14 @@ function initUI() {
         const menu = document.getElementById('connectionHeaderMenu');
         if (menu) menu.hidden = true;
         getLightTransferApi()?.openReceiver().catch(err => alert(`无法开始光媒接收：${err.message}`));
+    });
+    document.getElementById('notificationCenterBtn')?.addEventListener('click', () => {
+        document.getElementById('connectionHeaderMenu').hidden = true;
+        window.NotificationCenter?.open();
+    });
+    document.getElementById('webWorkshopBtn')?.addEventListener('click', () => {
+        document.getElementById('connectionHeaderMenu').hidden = true;
+        window.WebWorkshop?.open();
     });
     window.DiskUI.init({
         formatFileSize, showAppToast, historyLog,
@@ -18910,7 +19010,8 @@ function renderRemarkHtml(text) {
     });
 }
 
-function getFileIcon(mimeType) {
+function getFileIcon(mimeType, fileName = '') {
+    if (/\.html\.zip$/i.test(String(fileName || ''))) return '🌐';
     if (mimeType.startsWith('image/')) return '🖼️';
     if (mimeType.startsWith('video/')) return '🎬';
     if (mimeType.startsWith('audio/')) return '🎵';

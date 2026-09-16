@@ -60,6 +60,7 @@ const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
 const { createAudioTrackRepair, registerAudioTrackRepairRoutes } = require('./server/audio-track-repair');
+const { createVideoTranscodeService, registerVideoTranscodeRoutes } = require('./server/video-transcode');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { spawn, spawnSync } = require('child_process');
@@ -118,6 +119,7 @@ const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync
 const YOUTUBE_PREMIUM_COOKIE_PATH = path.join(SERVER_DATA_DIR, 'yt-premium-cookies.txt');
 const YOUTUBE_PREMIUM_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'youtube-premium-metadata-cache.json');
 const SNS_DOWNLOAD_METADATA_CACHE_PATH = path.join(SERVER_DATA_DIR, 'sns-download-metadata-cache.json');
+const DEVICE_NOTIFICATIONS_PATH = path.join(SERVER_DATA_DIR, 'device-notifications.json');
 const SNS_DOWNLOAD_METADATA_SCHEMA = 2;
 const SNS_COOKIE_FILES = Object.freeze({
     youtube: 'yt-cookies.txt',
@@ -207,6 +209,7 @@ const audioTrackRepair = createAudioTrackRepair({
     probe: file => probeMediaFile(file),
     run: args => spawnCapture(FFMPEG_COMMAND, args, { timeoutMs: 30 * 60 * 1000, timeoutError: 'audio-repair-timeout' })
 });
+const videoTranscodeService = createVideoTranscodeService({ dataDir: SERVER_DATA_DIR, ffmpegCommand: FFMPEG_COMMAND });
 
 // ==================== 安全配置 ====================
 
@@ -1116,7 +1119,7 @@ app.get('/record/:sessionId/:messageId', (req, res) => {
 });
 
 // 根路径 - 提供 pages/index.html
-app.get(['/', '/disk'], (req, res) => {
+app.get(['/', '/disk', '/notification'], (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
@@ -1129,7 +1132,8 @@ app.use([
     '/pages/youtube-premium-dl.html',
     '/pages/vclient.html',
     '/pages/disk-management.html',
-    '/pages/data-usage.html'
+    '/pages/data-usage.html',
+    '/pages/video-transcode.html'
 ], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
@@ -1173,6 +1177,13 @@ app.get('/data-usage', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'data-usage.html'));
 });
+
+app.get('/video-transcode', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'video-transcode.html'));
+});
+
+registerVideoTranscodeRoutes(app, { service:videoTranscodeService, requireAuth:adminAuth.requireAuth });
 
 app.get('/api/admin/data-usage', adminAuth.requireAuth, async (req, res) => {
     try {
@@ -3235,6 +3246,8 @@ const io = new Server(webServer, {
 
 const sessions = new Map();
 const deviceSockets = new Map();
+const webZipEditRequests = new Map();
+let pendingDeviceNotifications = (() => { try { const value=JSON.parse(fs.readFileSync(DEVICE_NOTIFICATIONS_PATH,'utf8'));return Array.isArray(value)?value:[]; } catch (_) { return []; } })();
 const ipConnections = new Map(); // IP -> Set<socketId>
 const debugLogs = [];
 const EXTERNAL_DEPENDENCY_REGISTRY = Object.freeze([
@@ -3481,6 +3494,7 @@ function emitNearbyCandidates(deviceId) {
 function bindSocketToDevice(socket, deviceId) {
     socket.data.deviceId = deviceId;
     deviceSockets.set(deviceId, socket);
+    setImmediate(() => deliverPendingDeviceNotifications(deviceId));
 }
 
 function getDeviceSockets(deviceId) {
@@ -3499,6 +3513,23 @@ function emitToDevice(deviceId, eventName, payload) {
     const targets = getDeviceSockets(deviceId);
     targets.forEach(target => target.emit(eventName, payload));
     return targets;
+}
+
+function persistDeviceNotifications() {
+    pendingDeviceNotifications = pendingDeviceNotifications.filter(item => Date.now() - Number(item.createdAt || 0) < 7 * 24 * 60 * 60 * 1000).slice(-1000);
+    const temp=`${DEVICE_NOTIFICATIONS_PATH}.${process.pid}.tmp`;fs.mkdirSync(path.dirname(DEVICE_NOTIFICATIONS_PATH),{recursive:true});fs.writeFileSync(temp,JSON.stringify(pendingDeviceNotifications,null,2));fs.renameSync(temp,DEVICE_NOTIFICATIONS_PATH);
+}
+
+function queueDeviceNotification(targetDeviceId, type, data) {
+    const notification={id:`device-notification:${crypto.randomUUID()}`,targetDeviceId,type,data,createdAt:Date.now()};
+    pendingDeviceNotifications.push(notification);persistDeviceNotifications();
+    const delivered=emitToDevice(targetDeviceId,'device-notification',notification).length>0;
+    return {...notification,delivered};
+}
+
+function deliverPendingDeviceNotifications(deviceId) {
+    const target=deviceSockets.get(deviceId);if(!target?.connected)return;
+    pendingDeviceNotifications.filter(item=>item.targetDeviceId===deviceId).forEach(item=>target.emit('device-notification',item));
 }
 
 const lightNetworkPendingRequests = new Map();
@@ -8519,6 +8550,74 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('web-zip-edit-request', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const sessionId = sanitizeString(data?.sessionId || '', 80);
+            const fileId = sanitizeString(data?.fileId || '', 100);
+            const session = sessions.get(sessionId);
+            if (sessionId !== currentSession || !session?.devices?.has(currentDevice) || !fileId) return respond({ ok:false, error:'invalid-request' });
+            let fileInfo = null, messageId = '';
+            for (const entry of session.history) {
+                const message = entry.message;
+                const candidate = message?.type === 'file' && message.fileInfo?.id === fileId
+                    ? message.fileInfo
+                    : message?.type === 'collection' ? (message.collection?.files || []).find(file => file?.id === fileId) : null;
+                if (candidate) { fileInfo = candidate; messageId = message.id; break; }
+            }
+            const creatorDeviceId = sanitizeString(fileInfo?.creatorDeviceId || '', 80);
+            if (!fileInfo || !creatorDeviceId || creatorDeviceId === currentDevice) return respond({ ok:false, error:'permission-request-not-required' });
+            if (Array.isArray(fileInfo.webZipEditors) && fileInfo.webZipEditors.includes(currentDevice)) return respond({ ok:true, alreadyApproved:true, delivered:true });
+            const requestId = crypto.randomUUID();
+            const request = { requestId, sessionId, messageId, fileId, fileName:sanitizeString(fileInfo.name || '网页 ZIP', 240), creatorDeviceId, requesterDeviceId:currentDevice, requesterName:sanitizeString(session.devices.get(currentDevice)?.deviceName || '', 80), createdAt:Date.now() };
+            webZipEditRequests.set(requestId, request);
+            setTimeout(() => webZipEditRequests.delete(requestId), 7 * 24 * 60 * 60 * 1000).unref?.();
+            const queuedNotification=queueDeviceNotification(creatorDeviceId,'web-zip-edit-request',request);
+            respond({ ok:true, requestId, delivered:queuedNotification.delivered });
+        } catch (error) { respond({ ok:false, error:'permission-request-failed' }); }
+    });
+
+    socket.on('web-zip-edit-response', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const requestId=String(data?.requestId||'');
+            const request = webZipEditRequests.get(requestId) || pendingDeviceNotifications.find(item=>item.type==='web-zip-edit-request'&&item.data?.requestId===requestId)?.data;
+            if (!request || request.creatorDeviceId !== currentDevice) return respond({ ok:false, error:'invalid-or-expired-request' });
+            const session = sessions.get(request.sessionId);
+            const historyIndex = session?.history?.findIndex(entry => entry.message?.id === request.messageId) ?? -1;
+            if (historyIndex < 0) return respond({ ok:false, error:'web-zip-record-not-found' });
+            const approved = data?.approved === true;
+            let updatedMessage = session.history[historyIndex].message;
+            if (approved) {
+                updatedMessage = createHistoryMessage(updatedMessage);
+                const fileInfo = updatedMessage.type === 'file' ? updatedMessage.fileInfo : (updatedMessage.collection?.files || []).find(file => file?.id === request.fileId);
+                if (!fileInfo || fileInfo.creatorDeviceId !== currentDevice) return respond({ ok:false, error:'not-web-zip-creator' });
+                fileInfo.webZip = true;
+                fileInfo.webZipEditors = Array.from(new Set([...(Array.isArray(fileInfo.webZipEditors) ? fileInfo.webZipEditors : []), request.requesterDeviceId]));
+                fileInfo.webZipPermissionUpdatedAt = Date.now();
+                const size = Buffer.byteLength(JSON.stringify(updatedMessage), 'utf8');
+                const previous = session.history[historyIndex];
+                session.history[historyIndex] = { message:updatedMessage, size };
+                session.historySize = Math.max(0, session.historySize - previous.size + size);
+                persistHistoryAudit(request.sessionId, session, updatedMessage, 'web-zip-editor-approved');
+                socket.emit('message-updated', { message:updatedMessage });
+                emitToReadableSessionDevices(session, 'message-updated', { message:updatedMessage }, currentDevice);
+                scheduleSessionHistoryBroadcast(request.sessionId, 'web-zip-editor-approved');
+            }
+            queueDeviceNotification(request.requesterDeviceId,'web-zip-edit-response',{ requestId:request.requestId, approved, fileId:request.fileId, fileName:request.fileName, message:approved ? updatedMessage : undefined });
+            webZipEditRequests.delete(request.requestId);
+            pendingDeviceNotifications=pendingDeviceNotifications.filter(item=>!(item.type==='web-zip-edit-request'&&item.data?.requestId===request.requestId));persistDeviceNotifications();
+            respond({ ok:true, approved });
+        } catch (error) { respond({ ok:false, error:'permission-response-failed' }); }
+    });
+
+    socket.on('device-notification-ack', data => {
+        const id=String(data?.id||'');if(!id)return;
+        const before=pendingDeviceNotifications.length;
+        pendingDeviceNotifications=pendingDeviceNotifications.filter(item=>item.id!==id||item.targetDeviceId!==currentDevice||item.type==='web-zip-edit-request');
+        if(before!==pendingDeviceNotifications.length)persistDeviceNotifications();
+    });
+
     socket.on('device-camera-request', data => {
         const from = data?.from;
         const to = data?.to;
@@ -9358,6 +9457,20 @@ io.on('connection', (socket) => {
                 (message.collection?.files?.length || 0) < (existingMessage.collection?.files?.length || 0) &&
                 !canUseTunnelCapability(session, currentDevice, 'delete')) {
                 return socket.emit('permission-denied', { capability: 'delete' });
+            }
+            const existingFiles = existingMessage.type === 'file' ? [existingMessage.fileInfo] : (existingMessage.collection?.files || []);
+            const incomingFiles = message.type === 'file' ? [message.fileInfo] : (message.collection?.files || []);
+            for (const previousFile of existingFiles.filter(file => file?.webZip || /\.html\.zip$/i.test(String(file?.name || '')))) {
+                const incomingFile = incomingFiles.find(file => file?.id === previousFile.id);
+                if (!incomingFile) continue;
+                const editors = Array.isArray(previousFile.webZipEditors) ? previousFile.webZipEditors : [];
+                const contentChanged = ['name','size','type','timestamp','webZipUpdatedAt'].some(key => incomingFile[key] !== previousFile[key]);
+                if (contentChanged && previousFile.creatorDeviceId !== currentDevice && !editors.includes(currentDevice)) {
+                    return socket.emit('permission-denied', { capability:'webZipEdit' });
+                }
+                incomingFile.webZip = true;
+                incomingFile.creatorDeviceId = previousFile.creatorDeviceId;
+                incomingFile.webZipEditors = editors;
             }
             const historyMessage = preserveNewestTelegramFileIds(
                 session.history[historyIndex].message,

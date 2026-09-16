@@ -723,7 +723,11 @@ function renderTelegramDriveContextMenu(item, anchor, actions) {
 
 let diskLastTouchAt = 0;
 function isTouchDiskActivation(event, pointerType = '') {
-    return pointerType === 'touch' || Date.now() - diskLastTouchAt < 900 || event?.sourceCapabilities?.firesTouchEvents === true || window.matchMedia?.('(hover:none), (pointer:coarse)').matches === true;
+    // Some Android/Chrome builds report a synthesized tap as a mouse click only
+    // when the text portion of a late list row is hit.  The drive switches to its
+    // compact mobile interaction at this width, so use the layout itself as the
+    // final authority instead of letting that browser quirk enter PC selection.
+    return pointerType === 'touch' || Date.now() - diskLastTouchAt < 900 || event?.sourceCapabilities?.firesTouchEvents === true || window.matchMedia?.('(hover:none), (pointer:coarse), (any-pointer:coarse)').matches === true || window.matchMedia?.('(max-width:600px)').matches === true;
 }
 function renderTelegramDriveItems() {
     const list = document.getElementById('telegramDriveList');

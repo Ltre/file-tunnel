@@ -7,6 +7,8 @@
     <meta name="theme-color" content="#4f5ec2">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/tunnel-icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/client/notification-center.css">
+    <link rel="stylesheet" href="/client/web-workshop.css">
     <title>Drop2Tunnel - 即时传输隧道</title>
     <script defer src="/socket.io/socket.io.js"></script>
     <script src="/client/qrcode-1.0.0.min.js"></script>
@@ -4000,6 +4002,7 @@
         .control-center-tiles:empty{display:none}
         .control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
         .control-center-tile.is-dragging{background:#d9e7fc;outline:2px solid #658bc1;cursor:grabbing}
+        .message.is-publish-target{outline:3px solid #4d9ae8;outline-offset:4px;transition:outline-color .25s}
         .control-center-drag-label{position:fixed;top:max(14px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:2;max-width:calc(100vw - 24px);padding:10px 18px;border-radius:999px;background:#233f64;color:#fff;font-weight:600;box-shadow:0 3px 16px #0005;pointer-events:none;text-align:center}
         .control-center-drag-label[hidden]{display:none}
         body[data-theme="graphite"] .control-center-tile{background:#283445;border-color:#526274;color:#e1eafa}
@@ -5460,6 +5463,8 @@
                                 <button type="button" id="scanTunnelCodeBtn">扫描隧道码</button>
                                 <button type="button" id="receiveLightBtn">接收光媒</button>
                                 <button type="button" id="connectionResourceBrowserBtn">资源浏览器</button>
+                                <button type="button" id="webWorkshopBtn">网页工坊</button>
+                                <button type="button" id="notificationCenterBtn">通知中心 <span data-notification-count hidden></span></button>
                                 <button type="button" id="telegramDriveBtn">Telegram网盘</button>
                             </div>
                         </div>
@@ -5828,6 +5833,8 @@
             document.write(`<script src="/client/cache-store.js${suffix}"><\/script>`);
             document.write(`<script src="/client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script src="/client/folder-archive.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/notification-center.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/web-workshop.js${suffix}"><\/script>`);
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);
             document.write(`<script src="/client/device-camera.js${suffix}"><\/script>`);
             document.write(`<script src="/client/light-transfer.js${suffix}"><\/script>`);
