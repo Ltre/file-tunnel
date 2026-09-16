@@ -61,9 +61,10 @@ async function run() {
         const panel = center.querySelector('[data-control-panel]'), panelRect = panel.getBoundingClientRect(); assert(panelRect.height <= innerHeight * .6 + 1, '隧道面板超过可视高度60%');
         const themeBefore = document.body.dataset.theme;
         center.querySelector('[data-control-tile="theme"]').click();
-        assert(!center.isConnected && calls.cycleThemeBtn === 1 && !document.getElementById('themeSwitcher').hidden && document.body.dataset.theme === themeBefore, '主题磁贴没有关闭控制中心并原样显示主题选择器');
+        assert(center.isConnected && !calls.cycleThemeBtn && document.getElementById('themeQuickMenu').hidden && document.body.dataset.theme !== themeBefore, '主题磁贴没有在控制中心内轮换主题或错误打开竖条');
+        center.remove();
         await showJoinedSessionSwitcher(); center = document.querySelector('.control-center-overlay');
-        center.querySelector('[data-control-tile="magnet"]').click(); assert(!center.isConnected && calls.magnetCacheBtn === 1, '磁链入口未调用或没有关闭控制中心'); results.push('九项磁贴、主题关闭后显示选择器、磁链关闭及面板高度');
+        center.querySelector('[data-control-tile="magnet"]').click(); assert(!center.isConnected && calls.magnetCacheBtn === 1, '磁链入口未调用或没有关闭控制中心'); results.push('九项磁贴、主题原地轮换、磁链关闭及面板高度');
         await showJoinedSessionSwitcher(); center = document.querySelector('.control-center-overlay');
         const tile = center.querySelector('[data-control-tile="disk"]'), start = tile.getBoundingClientRect(), destination = center.querySelector('[data-control-panel]').getBoundingClientRect();
         tile.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 88, pointerType: 'mouse', isPrimary: true, button: 0, clientX: start.left + 10, clientY: start.top + 10 }));

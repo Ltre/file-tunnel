@@ -127,7 +127,8 @@ const SNS_COOKIE_FILES = Object.freeze({
     thread: 'thread-cookies.txt',
     line: 'line-cookies.txt',
     twitter: 'twitter-cookies.txt',
-    x: 'x-cookies.txt'
+    x: 'x-cookies.txt',
+    bilibili: 'bilibili-cookies.txt'
 });
 const SNS_COOKIE_DOMAINS = Object.freeze({
     youtube: ['youtube.com'],
@@ -137,7 +138,8 @@ const SNS_COOKIE_DOMAINS = Object.freeze({
     thread: ['threads.com', 'threads.net', 'instagram.com'],
     line: ['line.me'],
     twitter: ['twitter.com', 'x.com'],
-    x: ['x.com', 'twitter.com']
+    x: ['x.com', 'twitter.com'],
+    bilibili: ['bilibili.com']
 });
 const SNS_COOKIE_LOGIN_NAMES = Object.freeze({
     youtube: /^(?:LOGIN_INFO|SID|HSID|SSID|APISID|SAPISID|__Secure-[13]P(?:SID|APISID)(?:TS|CC)?)$/,
@@ -146,7 +148,8 @@ const SNS_COOKIE_LOGIN_NAMES = Object.freeze({
     instagram: /^(?:sessionid|ds_user_id)$/i,
     thread: /^(?:sessionid|ds_user_id)$/i,
     twitter: /^auth_token$/i,
-    x: /^auth_token$/i
+    x: /^auth_token$/i,
+    bilibili: /^(?:SESSDATA|bili_jct|DedeUserID|DedeUserID__ckMd5)$/i
 });
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
@@ -441,6 +444,7 @@ function normalizeSnsCookiePlatform(platform) {
         return 'youtube';
     }
     if (key === 'threads') return 'thread';
+    if (key === 'bili') return 'bilibili';
     if (Object.prototype.hasOwnProperty.call(SNS_COOKIE_FILES, key)) return key;
     return '';
 }
@@ -460,6 +464,7 @@ function getSnsCookieFileForUrl(url) {
     if (/instagram\.com/i.test(raw)) return getSnsCookiePath('instagram');
     if (/threads\.(?:com|net)/i.test(raw)) return getSnsCookiePath('thread');
     if (/line\.me/i.test(raw)) return getSnsCookiePath('line');
+    if (/(?:bilibili\.com|b23\.tv)/i.test(raw)) return getSnsCookiePath('bilibili');
     if (/twitter\.com/i.test(raw)) return getSnsCookiePath('twitter');
     if (/x\.com/i.test(raw)) return getSnsCookiePath('x');
     return '';
@@ -3250,7 +3255,7 @@ const EXTERNAL_DEPENDENCY_REGISTRY = Object.freeze([
     {
         id: 'sns-yt-dlp',
         kind: 'remote-crawler',
-        systems: ['TikTok', 'Facebook', 'Instagram', 'Threads', 'LINE', 'Twitter/X', 'yt-dlp extractors'],
+        systems: ['TikTok', 'Facebook', 'Instagram', 'Threads', 'LINE', 'Twitter/X', 'Bilibili', 'yt-dlp extractors'],
         integrationPoints: ['SNS URL parse/metadata scan', 'runYtDlpJson', 'runYtDlpDownload'],
         impact: 'Third-party page/API/login/extractor changes can break SNS parsing or media recovery.'
     },
@@ -6667,7 +6672,7 @@ function sanitizeSnsDownloadError(error) {
     }
     message = message.replaceAll(SERVER_DATA_DIR, '[server-data]').replace(/--cookies\s+\S+/gi, '--cookies [sns-cookie]').trim();
     const labels = {
-        'sns-download-url-required': '请输入有效的 TikTok、Facebook、Instagram、Threads、LINE、Twitter 或 X 链接',
+        'sns-download-url-required': '请输入有效的 TikTok、Facebook、Instagram、Threads、LINE、Twitter、X 或 B 站链接',
         'sns-download-media-unavailable': '页面信息可以读取，但没有发现可下载的音频或视频格式',
         'sns-download-task-not-found': 'SNS 下载任务不存在',
         'sns-download-file-not-found': 'SNS 下载成品不存在或已清理',

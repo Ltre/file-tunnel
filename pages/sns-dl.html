@@ -92,13 +92,13 @@
 <body>
 <main class="shell">
     <header class="topbar">
-        <div><h1>其它 SNS 媒体下载</h1><div class="subtle">TikTok · Facebook · Instagram · Twitter / X · Threads · LINE</div></div>
+        <div><h1>其它 SNS 媒体下载</h1><div class="subtle">TikTok · Facebook · Instagram · Twitter / X · Threads · LINE · Bilibili</div></div>
         <nav class="links"><a class="button" href="/sns-cookies">配置普通 SNS Cookie</a><a class="button" href="/admin">返回后台</a></nav>
     </header>
 
     <section class="panel">
         <div class="url-row">
-            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 TikTok / Facebook / Instagram / Twitter / Threads / LINE 链接">
+            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 TikTok / Facebook / Instagram / Twitter / Threads / LINE / B站链接">
             <button class="primary" id="startBtn" type="button">开始下载</button>
         </div>
         <div class="options">
@@ -183,7 +183,7 @@
     cacheFilesInput.checked = localStorage.getItem('snsDownloadCacheFiles') !== '0';
 
     const statusLabels = { queued:'等待中', parsing:'解析中', downloading:'下载中', merging:'合并中', completed:'已完成', failed:'失败', cancelled:'已取消', cleared:'缓存已清除' };
-    const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE' };
+    const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE', bilibili:'Bilibili / B站' };
     const kindLabels = { video:'视频', audio:'音频', video_audio:'视频+音频', other:'其它' };
     const fieldLabels = {
         extractor:'提取器', id:'媒体 ID', webpageUrl:'页面地址', title:'标题', description:'描述', uploader:'发布者', uploaderId:'发布者 ID',

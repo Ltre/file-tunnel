@@ -23,10 +23,12 @@ function waitFor(check, timeoutMs = 3000) {
     });
 }
 
-test('SNS URL normalization accepts only the dedicated non-YouTube platforms', () => {
+test('SNS URL normalization accepts dedicated platforms including Bilibili but excludes YouTube', () => {
     assert.equal(normalizeSnsDownloadUrl('https://www.tiktok.com/@demo/video/123?utm_source=x').platform, 'tiktok');
     assert.equal(normalizeSnsDownloadUrl('https://mobile.x.com/demo/status/123?s=20').platform, 'x');
     assert.equal(normalizeSnsDownloadUrl('https://www.threads.net/@demo/post/abc').platform, 'threads');
+    assert.equal(normalizeSnsDownloadUrl('https://www.bilibili.com/video/BV1demo').platform, 'bilibili');
+    assert.equal(normalizeSnsDownloadUrl('https://b23.tv/demo').platform, 'bilibili');
     assert.throws(() => normalizeSnsDownloadUrl('https://youtube.com/watch?v=abc'), /sns-download-url-required/);
 });
 
@@ -69,6 +71,17 @@ test('/sns-dl uses ordinary SNS cookies, its own parse cache, and an empty tag p
     assert.match(page, /抓取标签/);
     assert.match(page, /\/client\/sns-download-cache\.js/);
     assert.doesNotMatch(service, /youtube-premium|require\('\.\/youtube-premium'\)/i);
+    assert.match(server, /bilibili:\s*'bilibili-cookies\.txt'/);
+    assert.match(page, /Bilibili \/ B站/);
+    assert.match(read('pages/sns-cookies.html'), /最好使用闲置 B 站小号的 Cookie，避免大号被封/);
+});
+
+test('后台显示隧道备注，音轨修正版只对截取任务开放', () => {
+    const admin = read('pages/admin.html');
+    const premium = read('pages/youtube-premium-dl.html');
+    assert.match(admin, /const safeRemark = escapeHtml\(String\(session\.remark \|\| ''\)\.trim\(\)\)/);
+    assert.match(admin, /隧道备注：\$\{safeRemark \|\| '未设置'\}/);
+    assert.match(premium, /task\.status === 'completed' && task\.hasFile && task\.downloadSections/);
 });
 
 test('SNS 与 YouTube Premium 任务备注编辑期间不会被轮询结果覆盖', () => {

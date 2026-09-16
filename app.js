@@ -16272,6 +16272,10 @@ function initTunnelControlCenter(dialog) {
         else tile.textContent = icon;
         tile.onclick = event => {
             if (Date.now() < suppressUntil) { event.preventDefault(); return; }
+            if (id === 'theme') {
+                cycleTheme('control-center');
+                return;
+            }
             dialog.remove();
             document.getElementById(target)?.click();
         };
@@ -16751,35 +16755,66 @@ function initTopbarOverflowScroll() {
 }
 
 function applyTheme(theme) {
-    const selected = ['classic', 'graphite', 'atelier', 'social'].includes(theme) ? theme : 'classic';
+    const themes = ['classic', 'graphite', 'atelier', 'social'];
+    const selected = themes.includes(theme) ? theme : 'classic';
     document.body.dataset.theme = selected;
     localStorage.setItem('uiTheme', selected);
-    document.querySelectorAll('.theme-option[data-theme]').forEach(button => {
+    document.querySelectorAll('.theme-option[data-theme],.theme-quick-option[data-theme]').forEach(button => {
         button.classList.toggle('active', button.dataset.theme === selected);
     });
+    return selected;
+}
+
+function cycleTheme(source = 'topbar') {
+    const themes = ['classic', 'graphite', 'atelier', 'social'];
+    const current = themes.includes(document.body.dataset.theme) ? document.body.dataset.theme : 'classic';
+    const selected = applyTheme(themes[(themes.indexOf(current) + 1) % themes.length]);
+    historyLog('theme-changed', { theme: selected, source });
+    return selected;
 }
 
 function initThemeSwitcher() {
     applyTheme(localStorage.getItem('uiTheme') || 'classic');
     const switcher = document.getElementById('themeSwitcher');
-    let hideTimer = 0;
-    const showTemporarily = () => {
-        if (!switcher) return;
-        switcher.hidden = false;
-        clearTimeout(hideTimer);
-        hideTimer = setTimeout(() => { switcher.hidden = true; }, 5000);
+    const quickMenu = document.getElementById('themeQuickMenu');
+    const cycleButton = document.getElementById('cycleThemeBtn');
+    const closeQuickMenu = () => { if (quickMenu) quickMenu.hidden = true; };
+    const positionQuickMenu = () => {
+        if (!quickMenu || quickMenu.hidden || !cycleButton) return;
+        const rect = cycleButton.getBoundingClientRect();
+        const width = quickMenu.offsetWidth || 132;
+        const maxLeft = Math.max(8, document.documentElement.clientWidth - width - 8);
+        quickMenu.style.left = `${Math.max(8, Math.min(maxLeft, rect.left))}px`;
+        quickMenu.style.top = `${Math.max(0, rect.bottom)}px`;
+    };
+    const openQuickMenu = () => {
+        if (!quickMenu) return;
+        quickMenu.hidden = false;
+        positionQuickMenu();
     };
     switcher?.addEventListener('click', event => {
         const button = event.target.closest?.('.theme-option[data-theme]');
         if (!button) return;
         applyTheme(button.dataset.theme);
-        historyLog('theme-changed', { theme: button.dataset.theme });
-        showTemporarily();
+        historyLog('theme-changed', { theme: button.dataset.theme, source: 'settings' });
     });
-    document.getElementById('cycleThemeBtn')?.addEventListener('click', () => {
-        showTemporarily();
-        historyLog('theme-switcher-shown', { source: 'topbar' });
+    quickMenu?.addEventListener('click', event => {
+        const button = event.target.closest?.('.theme-quick-option[data-theme]');
+        if (!button) return;
+        applyTheme(button.dataset.theme);
+        historyLog('theme-changed', { theme: button.dataset.theme, source: 'quick-menu' });
+        closeQuickMenu();
     });
+    cycleButton?.addEventListener('click', event => {
+        event.stopPropagation();
+        cycleTheme('topbar');
+        openQuickMenu();
+    });
+    document.addEventListener('click', event => {
+        if (!quickMenu?.hidden && !quickMenu.contains(event.target) && event.target !== cycleButton) closeQuickMenu();
+    });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') closeQuickMenu(); });
+    window.addEventListener('resize', positionQuickMenu);
     document.getElementById('topbarMusicBtn')?.addEventListener('click', () => {
         openMusicPlayerOverlay({ resetQueue: true });
     });

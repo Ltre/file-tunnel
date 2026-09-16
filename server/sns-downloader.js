@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ACTIVE_STATUSES = new Set(['queued', 'parsing', 'downloading', 'merging']);
-const ALLOWED_PLATFORMS = new Set(['tiktok', 'facebook', 'instagram', 'threads', 'line', 'twitter', 'x']);
+const ALLOWED_PLATFORMS = new Set(['tiktok', 'facebook', 'instagram', 'threads', 'line', 'twitter', 'x', 'bilibili']);
 const HOST_PLATFORMS = Object.freeze({
     'tiktok.com': 'tiktok',
     'www.tiktok.com': 'tiktok',
@@ -29,7 +29,11 @@ const HOST_PLATFORMS = Object.freeze({
     'mobile.twitter.com': 'twitter',
     'x.com': 'x',
     'www.x.com': 'x',
-    'mobile.x.com': 'x'
+    'mobile.x.com': 'x',
+    'bilibili.com': 'bilibili',
+    'www.bilibili.com': 'bilibili',
+    'm.bilibili.com': 'bilibili',
+    'b23.tv': 'bilibili'
 });
 
 function writeJsonAtomic(filePath, value) {

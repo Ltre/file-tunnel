@@ -121,6 +121,7 @@
             color: #a33a00;
             line-height: 1.55;
         }
+        .cookie-note { margin: 0 0 12px; color: #8a5700; line-height: 1.55; }
 
         textarea {
             width: 100%;
@@ -263,7 +264,8 @@
             thread: 'Threads',
             line: 'LINE',
             twitter: 'Twitter',
-            x: 'X'
+            x: 'X',
+            bilibili: 'Bilibili / B站'
         };
         const listEl = document.getElementById('platformList');
         const statusEl = document.getElementById('status');
@@ -301,11 +303,16 @@
             return '';
         }
 
+        function getCookieNote(entry) {
+            return entry.platform === 'bilibili' ? '最好使用闲置 B 站小号的 Cookie，避免大号被封' : '';
+        }
+
         function renderPlatforms(platforms) {
             listEl.innerHTML = '';
             let warningCount = 0;
             platforms.forEach(entry => {
                 const warning = getCookieWarning(entry);
+                const note = getCookieNote(entry);
                 if (warning) warningCount += 1;
                 const card = document.createElement('article');
                 card.className = 'card';
@@ -319,6 +326,7 @@
                         <span class="badge ${warning ? 'warning' : (entry.exists ? 'ok' : 'empty')}">${warning ? `需检查 · ${formatSize(entry.size)}` : (entry.exists ? `已配置 · ${formatSize(entry.size)}` : '未配置')}</span>
                     </div>
                     ${warning ? `<p class="cookie-warning">${warning}</p>` : ''}
+                    ${note ? `<p class="cookie-note">${note}</p>` : ''}
                     <textarea spellcheck="false" placeholder="# Netscape HTTP Cookie File">${entry.content || ''}</textarea>
                     <div class="actions">
                         <button class="btn danger" type="button" data-action="clear">清空</button>

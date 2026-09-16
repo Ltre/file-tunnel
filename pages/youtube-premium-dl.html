@@ -2014,7 +2014,7 @@
             actions.appendChild(taskButton(task, '完全删除', '', 'DELETE', '任务记录和服务端成品都会被删除，且无法恢复，确定继续吗？', true));
         }
         main.appendChild(actions);
-        if (task.status === 'completed' && task.hasFile) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
+        if (task.status === 'completed' && task.hasFile && task.downloadSections) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
         card.append(cover, main);
         return card;
     }

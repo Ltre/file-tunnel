@@ -721,6 +721,10 @@ function renderTelegramDriveContextMenu(item, anchor, actions) {
     });
 }
 
+let diskLastTouchAt = 0;
+function isTouchDiskActivation(event, pointerType = '') {
+    return pointerType === 'touch' || Date.now() - diskLastTouchAt < 900 || event?.sourceCapabilities?.firesTouchEvents === true || window.matchMedia?.('(hover:none), (pointer:coarse)').matches === true;
+}
 function renderTelegramDriveItems() {
     const list = document.getElementById('telegramDriveList');
     if (!list || !telegramDriveCurrentData) return;
@@ -772,10 +776,14 @@ function renderTelegramDriveItems() {
         }
         const more = document.createElement('button'); more.type = 'button'; more.className = 'telegram-drive-icon-btn telegram-drive-item-more'; more.textContent = '⋮'; more.setAttribute('aria-label', `${item.name} 更多操作`); more.onclick = event => { event.stopPropagation(); showTelegramDriveItemMenu(item, more).catch(error => alert(telegramDriveErrorText(error))); };
         let pointerType = '', selectionTimer = 0, selectionBeforeClick = false;
-        row.addEventListener('pointerdown', event => { pointerType = event.pointerType; });
+        row.addEventListener('pointerdown', event => {
+            pointerType = event.pointerType;
+            if (event.pointerType === 'touch') diskLastTouchAt = Date.now();
+        });
         row.onclick = event => {
             if (event.target.closest('input,button,a') || event.detail > 1) return;
-            const mouse = pointerType === 'mouse' || (!pointerType && window.matchMedia('(pointer:fine)').matches);
+            const touchActivation = isTouchDiskActivation(event, pointerType);
+            const mouse = !touchActivation && (pointerType === 'mouse' || (!pointerType && window.matchMedia('(pointer:fine)').matches));
             if (mouse) {
                 clearTimeout(selectionTimer);
                 selectionBeforeClick = checkbox.checked;
@@ -1208,14 +1216,36 @@ function beginTouchDiskDrag(items, sourceRow, event) {
     position(event);
     scrollFrame = requestAnimationFrame(autoScroll);
 }
-let diskPointerDragActive = false, diskPointerClickSuppressedUntil = 0;
+let diskPointerDragActive = false, diskPointerClickSuppressedUntil = 0, diskScrollMomentumFrame = 0;
+function stopDiskScrollMomentum() {
+    if (diskScrollMomentumFrame) cancelAnimationFrame(diskScrollMomentumFrame);
+    diskScrollMomentumFrame = 0;
+}
+function startDiskScrollMomentum(list, initialVelocity) {
+    stopDiskScrollMomentum();
+    let velocity = Math.max(-3, Math.min(3, Number(initialVelocity) || 0)), previousTime = 0;
+    if (!list || Math.abs(velocity) < .05) return;
+    const step = timestamp => {
+        if (!previousTime) { previousTime = timestamp; diskScrollMomentumFrame = requestAnimationFrame(step); return; }
+        const elapsed = Math.max(1, Math.min(32, timestamp - previousTime)); previousTime = timestamp;
+        const before = list.scrollTop;
+        list.scrollTop += velocity * elapsed;
+        const deceleration = .0028 * elapsed;
+        velocity = Math.sign(velocity) * Math.max(0, Math.abs(velocity) - deceleration);
+        if (Math.abs(velocity) < .05 || list.scrollTop === before) { diskScrollMomentumFrame = 0; return; }
+        diskScrollMomentumFrame = requestAnimationFrame(step);
+    };
+    diskScrollMomentumFrame = requestAnimationFrame(step);
+}
 function installDiskPointerDrag(row, item) {
     let start = null, scrolling = false;
     row.draggable = false;
     row.addEventListener('dragstart', event => event.preventDefault());
     row.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'touch' && event.isPrimary) { diskLastTouchAt = Date.now(); stopDiskScrollMomentum(); }
         if (event.target.closest('input,button,a,.disk-cache-indicator') || !event.isPrimary || event.button > 0) { start = null; return; }
-        start = { id: event.pointerId, x: event.clientX, y: event.clientY, type: event.pointerType, scroll: document.getElementById('telegramDriveList').scrollTop };
+        const list = document.getElementById('telegramDriveList');
+        start = { id: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY, lastTime: Number(event.timeStamp) || Date.now(), velocity: 0, type: event.pointerType, scroll: list.scrollTop };
         scrolling = false; try { row.setPointerCapture?.(event.pointerId); } catch (_) {}
     });
     row.addEventListener('pointermove', event => {
@@ -1223,7 +1253,11 @@ function installDiskPointerDrag(row, item) {
         if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 8) return;
         if (start.type === 'touch') {
             scrolling = true; event.preventDefault();
-            document.getElementById('telegramDriveList').scrollTop = start.scroll + start.y - event.clientY;
+            const list = document.getElementById('telegramDriveList'), now = Number(event.timeStamp) || Date.now();
+            const delta = start.lastY - event.clientY, elapsed = Math.max(1, now - start.lastTime);
+            list.scrollTop += delta;
+            start.velocity = start.velocity * .35 + (delta / elapsed) * .65;
+            start.lastY = event.clientY; start.lastTime = now;
         } else {
             const items = telegramDriveSelected.has(telegramDriveItemKey(item)) ? [...telegramDriveSelected.values()] : [item];
             if (telegramDriveSelected.size && !telegramDriveSelected.has(telegramDriveItemKey(item))) return;
@@ -1232,7 +1266,10 @@ function installDiskPointerDrag(row, item) {
     });
     const finish = event => {
         if (start?.id !== event.pointerId) return;
-        if (scrolling) diskPointerClickSuppressedUntil = Date.now() + 700;
+        if (scrolling) {
+            diskPointerClickSuppressedUntil = Date.now() + 700;
+            startDiskScrollMomentum(document.getElementById('telegramDriveList'), start.velocity);
+        }
         start = null; scrolling = false;
         if (row.hasPointerCapture?.(event.pointerId)) row.releasePointerCapture(event.pointerId);
     };
@@ -1827,11 +1864,11 @@ function initDiskLoading() {
         render();
     });
     window.DiskClient.subscribe(value => { jobs = value; render(); });
-    return () => {
-        const activeUploads = jobs.filter(item => item.type === 'upload' && ['queued', 'running'].includes(item.status));
-        const job = activeUploads[0];
+    return operationId => {
+        const activeJobs = jobs.filter(item => ['queued', 'running'].includes(item.status));
+        const job = activeJobs.find(item => item.operation_id === operationId) || activeJobs[0];
         if (!job) return false;
-        for (const activeJob of activeUploads) { dismissed.delete('job:' + activeJob.operation_id); window.DiskClient.showLoading?.(activeJob.operation_id); }
+        for (const activeJob of activeJobs) { dismissed.delete('job:' + activeJob.operation_id); window.DiskClient.showLoading?.(activeJob.operation_id); }
         pinnedJob = job.operation_id; render(); return true;
     };
 }
@@ -1949,8 +1986,18 @@ function initDiskEnhancements() {
             if (job.warnings?.length) detail.textContent += ' · 文件已保存，部分 Telegram 定位备注未能更新';
             row.append(title, detail);
             if (['queued', 'running'].includes(job.status)) {
+                row.classList.add('disk-task-row-active'); row.tabIndex = 0; row.setAttribute('role', 'button');
+                row.setAttribute('aria-label', `查看任务进度：${job.title || job.message}`);
+                const showProgress = event => {
+                    if (event?.target?.closest?.('button')) return;
+                    if (event?.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+                    event?.preventDefault?.();
+                    restoreLoading(job.operation_id);
+                };
+                row.addEventListener('click', showProgress); row.addEventListener('keydown', showProgress);
                 const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'disk-task-cancel'; cancel.textContent = '取消任务';
-                cancel.onclick = async () => {
+                cancel.onclick = async event => {
+                    event.stopPropagation();
                     if (!await confirmTelegramDriveAction('取消网盘任务', `确定取消“${job.title || job.message}”吗？`, '取消任务')) return;
                     cancel.disabled = true;
                     try { await window.DiskClient.cancelOperation(job.operation_id); }

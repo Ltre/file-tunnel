@@ -10,6 +10,8 @@
 #diskTaskList{max-height:180px;overflow:auto}
 .disk-task-row{position:relative;display:flex;flex-direction:column;gap:4px;padding:8px 82px 8px 0;border-bottom:1px solid #dae4ec;overflow-wrap:anywhere}
 .disk-task-row span{font-size:12px}
+.disk-task-row-active{cursor:pointer;border-radius:7px}
+.disk-task-row-active:hover,.disk-task-row-active:focus-visible{background:#dfeef5;outline:2px solid #68a9bd;outline-offset:-2px}
 .disk-task-cancel{position:absolute;right:0;top:8px;border:1px solid #d4a1a1;border-radius:6px;padding:4px 8px;background:#fff5f5;color:#a32626;cursor:pointer}
 #diskTaskBubble{position:fixed;right:max(22px,env(safe-area-inset-right));bottom:calc(100px + env(safe-area-inset-bottom));z-index:2147483150;box-sizing:border-box;width:62px;height:62px;padding:0;border:2px solid #fff;border-radius:50%;background:conic-gradient(#30c779 var(--progress,0deg),#e3ebf1 0);color:#143b35;box-shadow:0 3px 18px #142b4650;cursor:grab;touch-action:none}
 #diskTaskBubble span{font-size:27px}
@@ -43,6 +45,7 @@
 .disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
 .disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
 .telegram-drive-item{touch-action:none;-webkit-user-select:none;user-select:none}
+.telegram-drive-items{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .telegram-drive-item *{-webkit-user-select:none;user-select:none}
 .telegram-drive-item-name,.telegram-drive-item-meta{-webkit-user-drag:none}
 #telegramDriveItemMenu{max-height:calc(100dvh - 20px);overflow:auto}

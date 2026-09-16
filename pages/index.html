@@ -159,28 +159,14 @@
         }
 
         .theme-switcher {
-            position: fixed;
-            z-index: 1850;
-            top: clamp(92px, 18vh, 180px);
-            left: 50%;
-            display: inline-flex;
+            display: flex;
+            flex-wrap: wrap;
             align-items: center;
             gap: 6px;
-            padding: 4px;
+            padding: 8px;
             border: 1px solid var(--panel-border);
-            border-radius: 999px;
-            background: color-mix(in srgb, var(--panel-bg) 78%, transparent);
-            box-shadow: 0 8px 24px rgba(20, 30, 50, 0.12);
-            opacity: .65;
-            transform: translateX(-50%);
-            transition: opacity .18s ease;
-        }
-
-        .theme-switcher[hidden] { display: none; }
-
-        .theme-switcher:hover,
-        .theme-switcher:focus-within {
-            opacity: .92;
+            border-radius: 12px;
+            background: var(--panel-bg);
         }
 
         .theme-option {
@@ -199,6 +185,38 @@
             background: var(--accent);
             color: #fff;
         }
+
+        .theme-quick-menu {
+            position: fixed;
+            z-index: 2147483000;
+            display: grid;
+            gap: 4px;
+            min-width: 132px;
+            padding: 7px;
+            border: 1px solid var(--panel-border);
+            border-radius: 0 0 12px 12px;
+            background: color-mix(in srgb, var(--panel-bg) 94%, transparent);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, .24);
+            backdrop-filter: blur(14px);
+        }
+
+        .theme-quick-menu[hidden] { display: none; }
+
+        .theme-quick-option {
+            border: 0;
+            border-radius: 8px;
+            padding: 9px 12px;
+            background: transparent;
+            color: var(--text-main);
+            text-align: left;
+            cursor: pointer;
+            font: inherit;
+            font-weight: 700;
+        }
+
+        .theme-quick-option:hover,
+        .theme-quick-option:focus-visible { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+        .theme-quick-option.active { background: var(--accent); color: #fff; }
         
         /* 二维码区域 */
         .qr-section {
@@ -5333,6 +5351,12 @@
         <div class="topbar-now-playing-slot" aria-label="当前播放歌曲"><div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div></div>
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
+    <div class="theme-quick-menu" id="themeQuickMenu" role="menu" aria-label="快速选择主题" hidden>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="classic">Classic</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="graphite">Graphite</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="atelier">Atelier</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="social">Social</button>
+    </div>
 
     <aside class="lan-p2p-guide" id="lanP2pGuide" role="dialog" aria-labelledby="lanP2pGuideTitle" hidden>
         <div class="lan-p2p-guide-header">
@@ -5398,6 +5422,15 @@
                     <div class="tunnel-admin-list" id="tunnelAdminDeviceList"></div>
                     <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelAdminsBtn" type="button">保存管理员权限</button></div>
                 </section>
+                <section class="tunnel-settings-section theme-settings">
+                    <h3>界面主题</h3>
+                    <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
+                        <button class="theme-option" type="button" data-theme="classic">Classic</button>
+                        <button class="theme-option" type="button" data-theme="graphite">Graphite</button>
+                        <button class="theme-option" type="button" data-theme="atelier">Atelier</button>
+                        <button class="theme-option" type="button" data-theme="social">Social</button>
+                    </div>
+                </section>
                 <section class="tunnel-settings-section language-settings">
                     <div class="language-settings-row">
                         <label for="appLanguageSelect">界面语言</label>
@@ -5412,12 +5445,6 @@
         <div class="header">
             <h1>🚀 Drop2Tunnel - 即时传输隧道</h1>
             <!--<p>安全、快速、去中心化的设备间文件传输</p>-->
-            <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题" hidden>
-                <button class="theme-option" type="button" data-theme="classic">Classic</button>
-                <button class="theme-option" type="button" data-theme="graphite">Graphite</button>
-                <button class="theme-option" type="button" data-theme="atelier">Atelier</button>
-                <button class="theme-option" type="button" data-theme="social">Social</button>
-            </div>
         </div>
         
         <div class="main-layout">

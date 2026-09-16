@@ -25,8 +25,8 @@ test('预览按钮滚动引导只在浮层重新打开时执行，收藏重绘�
 });
 
 function dragFixture() {
-    const callbacks = new Map(), timers = new Map(), moves = [], ghosts = [];
-    let timerId = 0, target = null, breadcrumb = null, now = 1000;
+    const callbacks = new Map(), timers = new Map(), frames = new Map(), moves = [], ghosts = [];
+    let timerId = 0, frameId = 0, target = null, breadcrumb = null, now = 1000;
     class Element {
         constructor() { this.dataset = {}; this.style = {}; this.handlers = {}; this.classList = { add() {}, remove() {} }; this.captured = false; }
         addEventListener(name, fn) { (this.handlers[name] ||= []).push(fn); }
@@ -37,7 +37,7 @@ function dragFixture() {
     const context = vm.createContext({ HTMLElement: Element, Date: { now: () => now }, Math,
         document: { createElement: () => { const ghost = new Element(); ghosts.push(ghost); return ghost; }, body: { append() {} }, getElementById: () => list, elementsFromPoint: () => target ? [target] : [], querySelectorAll: () => breadcrumb ? [breadcrumb] : [] },
         window: { addEventListener: (name, fn) => { (callbacks.get(name) || callbacks.set(name, []).get(name)).push(fn); }, removeEventListener: (name, fn) => callbacks.set(name, (callbacks.get(name) || []).filter(value => value !== fn)) },
-        setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id), requestAnimationFrame: () => 1, cancelAnimationFrame() {},
+        setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id), requestAnimationFrame: fn => { frames.set(++frameId, fn); return frameId; }, cancelAnimationFrame: id => frames.delete(id),
         diskDragItems: [], telegramDriveSelected: new Map(), telegramDriveItemKey: item => item.id || item.path,
         moveTelegramDriveItems: async (items, destination) => moves.push({ items, destination }), alert: error => { throw Error(error); }, telegramDriveErrorText: error => error.message });
     vm.runInContext(ui.slice(ui.indexOf('function installContextGesture('), ui.indexOf('async function exportDiskItems(')) + ';this.install=installDiskPointerDrag;this.gesture=installContextGesture;this.begin=beginTouchDiskDrag;', context);
@@ -45,10 +45,11 @@ function dragFixture() {
     context.install(row, file); context.gesture(row, () => {}, event => context.begin([file], row, event));
     const event = extra => ({ target: row, pointerId: 1, pointerType: 'mouse', button: 0, isPrimary: true, clientX: 30, clientY: 80, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() { this.stopped = true; }, ...extra });
     const dispatch = (name, extra) => { const e = event(extra); for (const fn of [...(callbacks.get(name) || [])]) fn(e); for (const fn of row.handlers[name] || []) fn(e); return e; };
-    return { context, row, file, list, ghosts, moves, timers, dispatch,
+    return { context, row, file, list, ghosts, moves, timers, frames, dispatch,
         target: value => { target = new Element(); target.dataset.diskDropPath = value; },
         breadcrumb: value => { breadcrumb = new Element(); breadcrumb.dataset.diskDropPath = value; breadcrumb.getBoundingClientRect = () => ({ left: 0, right: 200, top: 0, bottom: 120 }); },
-        advance: value => { now += value; } };
+        advance: value => { now += value; },
+        runFrame: timestamp => { const entry = frames.entries().next().value; if (!entry) return false; frames.delete(entry[0]); entry[1](timestamp); return true; } };
 }
 test('PC 左键越过拖动阈值后移动到命中目录，松开后不触发单击；多选一起移动', () => {
     const f = dragFixture(), second = { ...f.file, id: 'second' };
@@ -61,6 +62,7 @@ test('PC 左键越过拖动阈值后移动到命中目录，松开后不触发�
 test('触屏短滑保留列表滚动并取消长按，长按后指针取消不执行移动', () => {
     const f = dragFixture(); f.dispatch('pointerdown', { pointerType: 'touch' }); f.dispatch('pointermove', { pointerType: 'touch', clientY: 30 });
     assert.equal(f.list.scrollTop, 100); assert.equal(f.timers.size, 0); assert.equal(f.ghosts.length, 0); f.dispatch('pointerup');
+    f.runFrame(16); f.runFrame(32); assert.ok(f.list.scrollTop > 100, '松手后应继续惯性滚动');
     assert.equal(f.dispatch('click').stopped, true);
     f.advance(1000); f.dispatch('pointerdown', { pointerType: 'touch' }); [...f.timers.values()][0]();
     assert.equal(f.ghosts.length, 1); f.target('目标目录'); f.dispatch('pointermove', { pointerType: 'touch', clientX: 140 }); f.dispatch('pointercancel');
@@ -100,17 +102,35 @@ test('拖放移动先显示目标确认，服务端接受首个任务后立即�
     assert.equal(calls.filter(call => call[0] === 'raw').length, 2);
 });
 
-test('主题选择器默认隐藏，顶栏按钮只临时显示五秒并允许选择主题', () => {
-    const handlers = {}, timers = [], applied = [];
-    const switcher = { hidden: true, addEventListener: (name, fn) => { handlers.switcher = fn; } };
-    const cycle = { addEventListener: (name, fn) => { handlers.cycle = fn; } };
+test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白关闭互不挤占首页', () => {
+    const handlers = {}, logged = [], classes = () => ({ toggle() {} });
+    const switcher = { addEventListener: (name, fn) => { handlers.switcher = fn; } };
+    const quick = { hidden: true, style: {}, offsetWidth: 132, contains: () => false, addEventListener: (name, fn) => { handlers.quick = fn; } };
+    const cycle = { getBoundingClientRect: () => ({ left: 40, bottom: 50 }), addEventListener: (name, fn) => { handlers.cycle = fn; } };
+    const buttons = ['classic','graphite','atelier','social'].flatMap(theme => [{ dataset:{ theme }, classList:classes() }, { dataset:{ theme }, classList:classes() }]);
     const context = vm.createContext({
-        localStorage: { getItem: () => 'classic' }, document: { getElementById: id => id === 'themeSwitcher' ? switcher : id === 'cycleThemeBtn' ? cycle : null },
-        applyTheme: value => applied.push(value), historyLog() {}, clearTimeout() {}, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }
+        localStorage: { getItem: () => 'classic', setItem() {} }, historyLog: (...args) => logged.push(args),
+        document: { body:{ dataset:{} }, documentElement:{ clientWidth:390 }, querySelectorAll: () => buttons,
+            getElementById: id => ({ themeSwitcher:switcher, themeQuickMenu:quick, cycleThemeBtn:cycle }[id] || null),
+            addEventListener: (name, fn) => { handlers['document-' + name] = fn; } },
+        window: { addEventListener: (name, fn) => { handlers['window-' + name] = fn; } }
     });
-    vm.runInContext(app.slice(app.indexOf('function initThemeSwitcher('), app.indexOf('function isTunnelOwner(')) + ';this.init=initThemeSwitcher;', context);
-    context.init(); assert.equal(switcher.hidden, true); assert.deepEqual(applied, ['classic']);
-    handlers.cycle(); assert.equal(switcher.hidden, false); assert.equal(timers.at(-1).ms, 5000); assert.deepEqual(applied, ['classic']);
-    handlers.switcher({ target: { closest: () => ({ dataset: { theme: 'atelier' } }) } }); assert.equal(applied.at(-1), 'atelier');
-    timers.at(-1).fn(); assert.equal(switcher.hidden, true);
+    vm.runInContext(app.slice(app.indexOf('function applyTheme('), app.indexOf('function isTunnelOwner(')) + ';this.init=initThemeSwitcher;', context);
+    context.init(); assert.equal(context.document.body.dataset.theme, 'classic');
+    handlers.cycle({ stopPropagation() {} });
+    assert.equal(context.document.body.dataset.theme, 'graphite'); assert.equal(quick.hidden, false); assert.equal(quick.style.top, '50px');
+    handlers.switcher({ target: { closest: () => ({ dataset: { theme: 'atelier' } }) } }); assert.equal(context.document.body.dataset.theme, 'atelier');
+    handlers['document-click']({ target: {} }); assert.equal(quick.hidden, true);
+    assert.match(source('pages/index.html'), /tunnel-settings-section theme-settings[\s\S]*id="themeSwitcher"/);
+    assert.doesNotMatch(source('pages/index.html'), /<div class="header">[\s\S]{0,400}id="themeSwitcher"/);
+});
+
+test('触屏来源优先于混合设备的 fine pointer 判定', () => {
+    const snippet = ui.slice(ui.indexOf('let diskLastTouchAt = 0;'), ui.indexOf('function renderTelegramDriveItems('));
+    const context = vm.createContext({ Date, window: { matchMedia: () => ({ matches: false }) } });
+    vm.runInContext(snippet + ';this.touch=isTouchDiskActivation;', context);
+    assert.equal(context.touch({ sourceCapabilities: { firesTouchEvents: true } }, 'mouse'), true);
+    assert.equal(context.touch({}, 'touch'), true);
+    assert.equal(context.touch({}, 'mouse'), false);
+    context.window.matchMedia = () => ({ matches: true }); assert.equal(context.touch({}, 'mouse'), true);
 });

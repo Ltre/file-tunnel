@@ -244,30 +244,33 @@ test('上传悬浮球只显示未完成上传：失败保留全红，完成/取�
     assert.match(source('client/disk.css'), /#diskTaskBubble\.failed\{background:#dc2626/);
 });
 
-test('后台上传可反复恢复同一 loading，轮询及旁路请求不会让它闪退', () => {
+test('任务列表可按 operation_id 恢复任意后台任务，并保留多任务切换', () => {
     const ui = source('client/disk-ui.js'), elements = {}, listeners = {};
     const create = () => ({ hidden: true, isConnected: true, setAttribute() {}, removeAttribute() {}, contains: () => false, focus() {} });
-    for (const id of ['diskLoadingTitle', 'diskLoadingDetail', 'diskLoadingProgress', 'diskLoadingBackground']) elements[id] = create();
+    for (const id of ['diskLoadingTitle', 'diskLoadingDetail', 'diskLoadingProgress', 'diskLoadingBackground', 'diskLoadingPrev', 'diskLoadingNext', 'diskLoadingPosition']) elements[id] = create();
     let overlay, activityListener, jobListener;
     const context = {
         document: { createElement: () => (overlay = create()), body: { append() {} }, addEventListener: (type, fn) => { listeners[type] = fn; } },
-        window: { DiskClient: { subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; } } },
+        window: { DiskClient: { subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; }, hideLoading() {}, showLoading() {} } },
         $disk: id => elements[id], formatFileSize: n => n + ' B'
     };
     vm.runInNewContext(ui.slice(ui.indexOf('function initDiskLoading'), ui.indexOf('function renderDiskTaskBubble')) + '; this.restore = initDiskLoading();', context);
     const activity = { operationId: 'upload-1', message: '上传测试' };
     const job = { operation_id: 'upload-1', type: 'upload', status: 'running', title: '上传测试', phase: 'telegram-upload', message: '等待 Telegram', percent: 50, totalBytes: 6, processedBytes: 3 };
-    activityListener([activity]); jobListener([job]); assert.equal(overlay.hidden, false);
+    const move = { operation_id: 'move-1', type: 'move', status: 'running', title: '移动目录', phase: 'moving', message: '移动中', percent: 20 };
+    activityListener([activity]); jobListener([job, move]); assert.equal(overlay.hidden, false);
     for (let repeat = 0; repeat < 3; repeat++) {
         elements.diskLoadingBackground.onclick(); assert.equal(overlay.hidden, true);
-        jobListener([{ ...job }]); assert.equal(overlay.hidden, true, '后台轮询不能自行抢回前台');
-        assert.equal(context.restore(), true); assert.equal(overlay.hidden, false);
+        jobListener([{ ...job }, { ...move }]); assert.equal(overlay.hidden, true, '后台轮询不能自行抢回前台');
+        assert.equal(context.restore('move-1'), true); assert.equal(overlay.hidden, false);
+        assert.equal(elements.diskLoadingTitle.textContent, '移动目录'); assert.equal(elements.diskLoadingPosition.textContent, '2 / 2');
+        elements.diskLoadingPrev.onclick(); assert.equal(elements.diskLoadingTitle.textContent, '上传测试');
         activityListener([activity, { message: '读取旁路请求' }]); activityListener([activity]);
-        jobListener([{ ...job, percent: 60 }]); assert.equal(overlay.hidden, false);
+        jobListener([{ ...job, percent: 60 }, { ...move }]); assert.equal(overlay.hidden, false);
         assert.equal(elements.diskLoadingTitle.textContent, '上传测试');
     }
     activityListener([]); assert.equal(overlay.hidden, false, '从持久化任务恢复时不依赖本页活动');
-    jobListener([{ ...job, status: 'completed' }]); assert.equal(overlay.hidden, true); assert.equal(context.restore(), false);
+    jobListener([{ ...job, status: 'completed' }, { ...move, status: 'completed' }]); assert.equal(overlay.hidden, true); assert.equal(context.restore(), false);
 });
 
 test('居中 loading 同时列出所有运行任务并可左右切换', () => {
