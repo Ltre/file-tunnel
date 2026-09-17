@@ -4733,10 +4733,13 @@ async function publishWebZipUpdate(file, draft) {
         webZipUpdatedAt: Date.now()
     });
     await storeAndAnnounceFileAsset(file, fileInfo);
+    const locallyStoredVersion = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
+    if (!hasCompleteFileCache(locallyStoredVersion, fileInfo)) throw new Error('网页 ZIP 新版本未能完整写入本机缓存');
     const next = JSON.parse(JSON.stringify(message));
     if (next.type === 'file') next.fileInfo = fileInfo;
     else next.collection.files = next.collection.files.map(item => item.id === current.id ? fileInfo : item);
     await updateHistoryMessage(next);
+    await refreshFileMessage(fileInfo.id);
     recentlyPublishedWebZipMessages.set(fileInfo.id, message.id);
     enqueueFileCacheCleanup([current.id], 'web-zip-version-replaced');
     return fileInfo.id;
@@ -12840,7 +12843,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
         existingElement?.remove();
         await addMessageToChat(message, wasOwn, {
             scroll: shouldScroll,
-            autoRequestAsset: !options.remote
+            autoRequestAsset: !options.remote || Boolean(message.fileInfo?.replacesFileId || getCollectionFiles(message).some(file => file.replacesFileId))
         });
         if (activeCollectionPreviewMessageId === message.id) {
             if (activeFilePreviewMode === 'collection' ||
@@ -17352,6 +17355,7 @@ function initUI() {
         },
         publishUpdate: publishWebZipUpdate,
         focusFile: focusPublishedWebZip,
+        focusMessage: messageId => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth' }),
         toast: showAppToast,
         requestEdit: fileInfo => requestWebZipEditPermission(fileInfo).catch(error => alert(error.message))
     });

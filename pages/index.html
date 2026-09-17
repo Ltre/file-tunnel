@@ -4549,9 +4549,33 @@
             min-height: 100vh;
             display: grid;
             place-items: center;
-            padding: 24px;
+            padding: 82px 24px 24px;
             background: #f4f6fb;
             color: #26324d;
+        }
+
+        .tunnel-landing-topbar {
+            position: fixed;
+            top: 0;
+            right: 0;
+            left: 0;
+            z-index: 2;
+            display: flex;
+            height: 58px;
+            align-items: center;
+            justify-content: center;
+            padding: max(8px, env(safe-area-inset-top)) 16px 8px;
+            border-bottom: 1px solid rgba(201, 208, 223, .82);
+            background: rgba(244, 246, 251, .88);
+            box-shadow: 0 4px 18px rgba(38, 50, 77, .08);
+            backdrop-filter: blur(14px);
+        }
+
+        .tunnel-landing-topbar strong {
+            overflow: hidden;
+            font-size: clamp(1rem, 3.8vw, 1.35rem);
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         [hidden] {
@@ -5316,10 +5340,8 @@
 </head>
 <body>
     <div class="tunnel-landing" id="sessionLanding" hidden>
+        <header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel-即时传输隧道</strong></header>
         <main class="tunnel-landing-main">
-            <div class="header">
-                <h1>🚀 Drop2Tunnel - 即时传输隧道</h1>
-            </div>
             <h1>请输入朋友给你的数据隧道暗号</h1>
             <br>
             <p id="sharedFilesNotice" hidden></p>
@@ -5817,10 +5839,10 @@
                 </div>
             </div>
             <input id="telegramDriveFileInput" type="file" multiple hidden>
-            <div class="telegram-drive-menu-backdrop" id="telegramDriveItemMenuBackdrop" hidden></div>
-            <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>
             <div class="telegram-drive-subdialog" id="telegramDriveDialog" hidden><div class="telegram-drive-dialog-card"><div class="telegram-drive-dialog-header"><strong id="telegramDriveDialogTitle"></strong><button class="telegram-drive-icon-btn" id="telegramDriveDialogCloseBtn" type="button" aria-label="关闭对话框">×</button></div><div class="telegram-drive-dialog-body" id="telegramDriveDialogBody"></div><div class="telegram-drive-dialog-actions" id="telegramDriveDialogActions"></div></div></div>
         </section>
+        <div class="telegram-drive-menu-backdrop" id="telegramDriveItemMenuBackdrop" hidden></div>
+        <div class="telegram-drive-create-menu telegram-drive-item-menu" id="telegramDriveItemMenu" hidden></div>
     </div>
 
     <script>
@@ -5831,6 +5853,7 @@
             document.write(`<script src="/client/cache-store.js${suffix}"><\/script>`);
             document.write(`<script src="/client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script src="/client/folder-archive.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/web-zip-runtime.js${suffix}"><\/script>`);
             document.write(`<script src="/client/notification-center.js${suffix}"><\/script>`);
             document.write(`<script src="/client/web-workshop.js${suffix}"><\/script>`);
             document.write(`<script src="/client/media.js${suffix}"><\/script>`);

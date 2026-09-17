@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v51';
+const CACHE_NAME = 'instant-tunnel-v52';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -20,6 +20,7 @@ const APP_SHELL = [
     '/client/cache-store-worker.js',
     '/client/file-assets.js',
     '/client/folder-archive.js',
+    '/client/web-zip-runtime.js',
     '/client/notification-center.js',
     '/client/notification-center.css',
     '/client/web-workshop.js',
@@ -48,6 +49,10 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('message', event => {
+    if (event.data?.type === 'web-zip-runtime-ping') {
+        event.ports?.[0]?.postMessage({ webZipRuntime:1 });
+        return;
+    }
     if (event.data?.type !== 'tunnel-force-refresh') return;
     event.waitUntil(
         self.registration.update()
@@ -82,8 +87,31 @@ function isShareTargetPath(pathname) {
     return pathname === '/share' || pathname === '/share/';
 }
 
+function getWebZipRuntimeReferrer(request) {
+    if (!request.referrer) return null;
+    try {
+        const referrer = new URL(request.referrer);
+        if (referrer.origin !== self.location.origin || !referrer.pathname.startsWith('/web-zip-runtime/')) return null;
+        const runtimeId = referrer.pathname.slice('/web-zip-runtime/'.length).split('/')[0];
+        return runtimeId ? decodeURIComponent(runtimeId) : null;
+    } catch (_) {
+        return null;
+    }
+}
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
+    if (event.request.method === 'GET' && url.origin === self.location.origin && url.pathname.startsWith('/web-zip-runtime/')) {
+        event.respondWith(handleWebZipRuntime(event.request, url));
+        return;
+    }
+    const runtimeReferrerId = event.request.method === 'GET' && url.origin === self.location.origin
+        ? getWebZipRuntimeReferrer(event.request)
+        : null;
+    if (runtimeReferrerId) {
+        event.respondWith(redirectWebZipRuntimeRoot(url, runtimeReferrerId));
+        return;
+    }
     if (url.origin === self.location.origin && isShareTargetPath(url.pathname)) {
         if (event.request.method === 'POST') {
             event.respondWith(handleSharedFiles(event.request));
@@ -112,6 +140,79 @@ self.addEventListener('fetch', event => {
             .catch(() => caches.match(event.request).then(response => response || caches.match('/index.html')))
     );
 });
+
+function openWebZipRuntimeDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('TunnelWebZipRuntime', 1);
+        request.onupgradeneeded = () => {
+            if (!request.result.objectStoreNames.contains('runtimes')) request.result.createObjectStore('runtimes', { keyPath:'id' });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function readWebZipRuntime(runtimeId) {
+    const db = await openWebZipRuntimeDb();
+    try {
+        return await new Promise((resolve, reject) => {
+            const tx = db.transaction('runtimes', 'readonly');
+            const request = tx.objectStore('runtimes').get(runtimeId);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    } finally { db.close(); }
+}
+
+async function redirectWebZipRuntimeRoot(sourceUrl, runtimeId) {
+    const runtime = await readWebZipRuntime(runtimeId);
+    if (!runtime || Number(runtime.expiresAt) <= Date.now()) return new Response('网页 ZIP 运行目录已过期', { status:410 });
+    const requestedPath = sourceUrl.pathname.split('/').filter(Boolean).map(part => decodeURIComponent(part)).join('/');
+    const filePath = requestedPath ? [runtime.rootPath, requestedPath].filter(Boolean).join('/') : runtime.entryPath || '';
+    if (!filePath) return new Response('网页 ZIP 路径无效', { status:400 });
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const target = new URL(`/web-zip-runtime/${encodeURIComponent(runtimeId)}/${encodedPath}`, self.location.origin);
+    target.search = sourceUrl.search;
+    return Response.redirect(target.href, 307);
+}
+
+async function handleWebZipRuntime(request, url) {
+    const parts = url.pathname.slice('/web-zip-runtime/'.length).split('/');
+    const runtimeId = decodeURIComponent(parts.shift() || '');
+    let filePath = parts.map(part => decodeURIComponent(part)).join('/');
+    if (!runtimeId) return new Response('网页 ZIP 路径无效', { status:400 });
+    const runtime = await readWebZipRuntime(runtimeId);
+    if (!runtime || Number(runtime.expiresAt) <= Date.now()) return new Response('网页 ZIP 运行目录已过期', { status:410 });
+    if (!filePath) filePath = runtime.entryPath || '';
+    const file = (runtime.files || []).find(item => item.path === filePath);
+    if (!file) return new Response('网页 ZIP 资源不存在', { status:404 });
+    const data = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
+    const headers = {
+        'Content-Type': file.type || 'application/octet-stream',
+        'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*',
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Accept-Ranges': 'bytes'
+    };
+    const range = String(request.headers.get('Range') || '');
+    const match = range.match(/^bytes=(\d*)-(\d*)$/i);
+    if (match && data.byteLength) {
+        const suffixLength = !match[1] ? Number(match[2] || 0) : 0;
+        let start = match[1] ? Number(match[1]) : data.byteLength - Math.min(data.byteLength, suffixLength);
+        let end = match[2] && match[1] ? Number(match[2]) : data.byteLength - 1;
+        if ((!match[1] && suffixLength <= 0) || start >= data.byteLength || start > end) {
+            headers['Content-Range'] = `bytes */${data.byteLength}`;
+            return new Response(null, { status:416, headers });
+        }
+        start = Math.max(0, start);
+        end = Math.min(end, data.byteLength - 1);
+        headers['Content-Range'] = `bytes ${start}-${end}/${data.byteLength}`;
+        headers['Content-Length'] = String(end - start + 1);
+        return new Response(data.slice(start, end + 1), { status:206, headers });
+    }
+    headers['Content-Length'] = String(data.byteLength);
+    return new Response(data, { headers });
+}
 
 async function handleSharedFiles(request) {
     const redirectUrl = new URL('/?share=1', self.location.origin);
