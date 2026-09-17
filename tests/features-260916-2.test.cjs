@@ -28,7 +28,7 @@ test('网页 ZIP 工坊、通知入口和移动控制中心磁贴均已接入', 
     assert.match(app, /\.html\\\.zip\$\/i/);
     assert.match(server, /web-zip-edit-request/);
     assert.match(server, /'\/notification'/);
-    assert.match(source('client/web-workshop.js'), /SANDBOX_TTL = 7 \* 24 \* 60 \* 60 \* 1000/);
+    assert.match(source('client/web-workshop.js'), /SANDBOX_TTL\s*=\s*7\s*\*\s*24\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
 });
 
 test('网页 ZIP 打包解包保留文件与空目录', async () => {

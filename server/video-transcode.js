@@ -11,25 +11,26 @@ const OUTPUT_EXTENSIONS = new Set(['mp4', 'mkv', 'webm', 'mov', 'm4v', 'mp3', 'm
 
 function defaultProfiles() {
     return [{
-        id:'h265-balanced', name:'H.265 均衡转码', description:'使用 libx265 转码视频，可调整 CRF 与 preset。', builtin:true,
+        id:'h265-balanced', name:'H.265 均衡转码', description:'使用 libx265 转码视频，保留原音轨；编码速度留空时使用 FFmpeg 默认值。', builtin:true,
         fields:[
-            { name:'CRF', type:'number', label:'CRF', default:'24', min:0, max:51, required:true },
-            { name:'PRESET', type:'select', label:'编码速度', default:'medium', options:['ultrafast','veryfast','fast','medium','slow','veryslow'] }
+            { name:'CRF', type:'number', label:'CRF', default:'28', min:0, max:51 },
+            { name:'PRESET', type:'select', label:'编码速度', default:'', options:['','ultrafast','veryfast','fast','medium','slow','veryslow'] }
         ], rules:[],
-        steps:[{ name:'H.265 转码', args:['-i','${INPUT_FILE}','-c:v','libx265','-crf','${CRF}','-preset','${PRESET}','-c:a','aac','-b:a','192k','-movflags','+faststart','${OUTPUT_FILE}'] }],
+        steps:[{ name:'H.265 转码', args:['-i','${INPUT_FILE}','-c:v','libx265',{when:'CRF',values:['-crf','${CRF}']},{when:'PRESET',values:['-preset','${PRESET}']},'-movflags','+faststart','-c:a','copy','${OUTPUT_FILE}'] }],
         output:{ extension:'mp4', nameTemplate:'${BASENAME}-h265.mp4' }
     },{
-        id:'h265-clip-scale', name:'H.265 截取并缩放', description:'至少填写开始或结束时间；输出尺寸可留空。', builtin:true,
+        id:'h265-clip-scale', name:'H.265 均衡转码并缩放', description:'在均衡转码基础上按需截取片段和缩放；时间、尺寸与编码速度均可留空。', builtin:true,
         fields:[
             { name:'START_TIME', type:'duration', label:'开始时间', placeholder:'00:01:30' },
             { name:'END_TIME', type:'duration', label:'结束时间', placeholder:'00:03:15' },
             { name:'SCALE', type:'scale', label:'输出尺寸', placeholder:'1920:-2' },
-            { name:'CRF', type:'number', label:'CRF', default:'24', min:0, max:51 }
-        ], rules:[{ type:'requireAny', fields:['START_TIME','END_TIME'], message:'开始时间和结束时间至少填写一项' }],
+            { name:'CRF', type:'number', label:'CRF', default:'28', min:0, max:51 },
+            { name:'PRESET', type:'select', label:'编码速度', default:'', options:['','ultrafast','veryfast','fast','medium','slow','veryslow'] }
+        ], rules:[],
         steps:[{ name:'截取并缩放', args:[
             {when:'START_TIME',values:['-ss','${START_TIME}']}, '-i','${INPUT_FILE}', {when:'END_TIME',values:['-to','${END_TIME}']},
-            '-c:v','libx265',{when:'CRF',values:['-crf','${CRF}']},{when:'SCALE',values:['-vf','scale=${SCALE}']},'-c:a','aac','-b:a','192k','-movflags','+faststart','${OUTPUT_FILE}'
-        ] }], output:{ extension:'mp4', nameTemplate:'${BASENAME}-clip.mp4' }
+            '-c:v','libx265',{when:'CRF',values:['-crf','${CRF}']},{when:'PRESET',values:['-preset','${PRESET}']},{when:'SCALE',values:['-vf','scale=${SCALE}']},'-movflags','+faststart','-c:a','copy','${OUTPUT_FILE}'
+        ] }], output:{ extension:'mp4', nameTemplate:'${BASENAME}-scaled.mp4' }
     }];
 }
 
@@ -85,7 +86,10 @@ function createVideoTranscodeService({ dataDir, ffmpegCommand='ffmpeg', spawnPro
     async function consume(){if(consuming)return;consuming=true;while(queue.length){const task=getTask(queue.shift());if(!task||task.status!=='queued')continue;try{await runTask(task);}catch(error){task.status=task.cancelRequested?'cancelled':'failed';task.phase=task.cancelRequested?'已取消':'转码失败';task.error=error.message;task.finishedAt=Date.now();task.updatedAt=Date.now();persistTasks();}}consuming=false;}
     function cancel(id){const task=getTask(id);if(!task||!['uploading','queued','running'].includes(task.status))throw new Error('TASK_NOT_CANCELLABLE');task.cancelRequested=true;running.get(id)?.kill('SIGTERM');if(task.status!=='running'){task.status='cancelled';task.phase='已取消';task.finishedAt=Date.now();}task.updatedAt=Date.now();persistTasks();return publicTask(task);}
     function removeTask(id){const index=tasks.findIndex(task=>task.id===id);if(index<0)throw new Error('TASK_NOT_FOUND');if(['queued','running'].includes(tasks[index].status))throw new Error('TASK_IS_ACTIVE');const [task]=tasks.splice(index,1);fs.rmSync(path.join(root,id),{recursive:true,force:true});persistTasks();return publicTask(task);}
-    return { profiles,saveProfile,deleteProfile,createTask,receiveInput,startTask,cancel,removeTask,getTask,listTasks:()=>tasks.slice().reverse().map(publicTask),publicTask };
+    const directorySize=directory=>{let total=0;if(!fs.existsSync(directory))return 0;for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const target=path.join(directory,entry.name);try{if(entry.isDirectory())total+=directorySize(target);else total+=fs.statSync(target).size;}catch(_){}}return total;};
+    function cacheStats(){const activeIds=new Set(tasks.filter(task=>['uploading','queued','running'].includes(task.status)).map(task=>task.id)),knownIds=new Set(tasks.map(task=>task.id));let activeBytes=0,finishedBytes=0,orphanBytes=0;for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(!entry.isDirectory())continue;const size=directorySize(path.join(root,entry.name));if(activeIds.has(entry.name))activeBytes+=size;else if(knownIds.has(entry.name))finishedBytes+=size;else orphanBytes+=size;}return{root,totalBytes:activeBytes+finishedBytes+orphanBytes,activeBytes,finishedBytes,orphanBytes};}
+    function cleanupCache(scope='residual') {if(!['residual','finished'].includes(scope))throw new Error('INVALID_CACHE_CLEANUP_SCOPE');const activeIds=new Set(tasks.filter(task=>['uploading','queued','running'].includes(task.status)).map(task=>task.id)),known=new Map(tasks.map(task=>[task.id,task]));let removedBytes=0,removedEntries=0;for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(!entry.isDirectory()||activeIds.has(entry.name))continue;const task=known.get(entry.name),removeEntry=!task||(scope==='finished'&&['completed','failed','cancelled'].includes(task.status))||(scope==='residual'&&['failed','cancelled'].includes(task?.status));if(!removeEntry)continue;const target=path.join(root,entry.name);removedBytes+=directorySize(target);fs.rmSync(target,{recursive:true,force:true});removedEntries++;if(task){task.cacheCleared=true;task.cacheClearedAt=Date.now();task.outputPath='';task.inputPath='';if(task.status==='completed')task.phase='已完成（结果缓存已清理）';}}if(removedEntries)persistTasks();return{scope,removedBytes,removedEntries,stats:cacheStats()};}
+    return { profiles,saveProfile,deleteProfile,createTask,receiveInput,startTask,cancel,removeTask,cacheStats,cleanupCache,getTask,listTasks:()=>tasks.slice().reverse().map(publicTask),publicTask };
 }
 
 function registerVideoTranscodeRoutes(app,{service,requireAuth}){
@@ -94,6 +98,8 @@ function registerVideoTranscodeRoutes(app,{service,requireAuth}){
     app.post('/api/video-transcode/profiles',requireAuth,(req,res)=>{try{res.json({profile:service.saveProfile(req.body)});}catch(error){fail(res,error);}});
     app.delete('/api/video-transcode/profiles/:id',requireAuth,(req,res)=>{try{service.deleteProfile(req.params.id);res.json({ok:true});}catch(error){fail(res,error);}});
     app.get('/api/video-transcode/tasks',requireAuth,(req,res)=>res.json({tasks:service.listTasks()}));
+    app.get('/api/video-transcode/cache',requireAuth,(req,res)=>res.json(service.cacheStats()));
+    app.post('/api/video-transcode/cache/cleanup',requireAuth,(req,res)=>{try{res.json(service.cleanupCache(req.body?.scope||'residual'));}catch(error){fail(res,error);}});
     app.post('/api/video-transcode/tasks',requireAuth,(req,res)=>{try{res.status(201).json({task:service.createTask(req.body)});}catch(error){fail(res,error);}});
     app.put('/api/video-transcode/tasks/:id/input',requireAuth,async(req,res)=>{try{res.json({task:await service.receiveInput(req.params.id,req)});}catch(error){fail(res,error);}});
     app.post('/api/video-transcode/tasks/:id/start',requireAuth,(req,res)=>{try{res.json({task:service.startTask(req.params.id)});}catch(error){fail(res,error);}});

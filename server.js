@@ -1123,6 +1123,11 @@ app.get(['/', '/disk', '/notification'], (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
+app.get('/web-zip-preview/:fileId', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    res.sendFile(path.join(__dirname, 'pages', 'web-zip-preview.html'));
+});
+
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
     '/pages/admin.html',
@@ -1133,7 +1138,8 @@ app.use([
     '/pages/vclient.html',
     '/pages/disk-management.html',
     '/pages/data-usage.html',
-    '/pages/video-transcode.html'
+    '/pages/video-transcode.html',
+    '/pages/video-transcode-guide.html'
 ], adminAuth.requireAuth);
 
 app.use(express.static(path.join(__dirname), {
@@ -1181,6 +1187,11 @@ app.get('/data-usage', (req, res) => {
 app.get('/video-transcode', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'video-transcode.html'));
+});
+
+app.get('/video-transcode-guide.html', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'video-transcode-guide.html'));
 });
 
 registerVideoTranscodeRoutes(app, { service:videoTranscodeService, requireAuth:adminAuth.requireAuth });
@@ -9461,16 +9472,26 @@ io.on('connection', (socket) => {
             const existingFiles = existingMessage.type === 'file' ? [existingMessage.fileInfo] : (existingMessage.collection?.files || []);
             const incomingFiles = message.type === 'file' ? [message.fileInfo] : (message.collection?.files || []);
             for (const previousFile of existingFiles.filter(file => file?.webZip || /\.html\.zip$/i.test(String(file?.name || '')))) {
-                const incomingFile = incomingFiles.find(file => file?.id === previousFile.id);
-                if (!incomingFile) continue;
+                const incomingFile = incomingFiles.find(file => file?.id === previousFile.id || file?.replacesFileId === previousFile.id);
+                if (!incomingFile) {
+                    const removedFromCollection = existingMessage.type === 'collection'
+                        && message.type === 'collection'
+                        && incomingFiles.length < existingFiles.length
+                        && canUseTunnelCapability(sessionId, currentDevice, 'delete');
+                    if (removedFromCollection) continue;
+                    return socket.emit('permission-denied', { capability:'webZipEdit' });
+                }
                 const editors = Array.isArray(previousFile.webZipEditors) ? previousFile.webZipEditors : [];
-                const contentChanged = ['name','size','type','timestamp','webZipUpdatedAt'].some(key => incomingFile[key] !== previousFile[key]);
+                const contentChanged = incomingFile.id !== previousFile.id || ['name','size','type','timestamp','webZipUpdatedAt'].some(key => incomingFile[key] !== previousFile[key]);
                 if (contentChanged && previousFile.creatorDeviceId !== currentDevice && !editors.includes(currentDevice)) {
                     return socket.emit('permission-denied', { capability:'webZipEdit' });
                 }
                 incomingFile.webZip = true;
                 incomingFile.creatorDeviceId = previousFile.creatorDeviceId;
+                incomingFile.creatorDeviceName = previousFile.creatorDeviceName || incomingFile.creatorDeviceName || '';
                 incomingFile.webZipEditors = editors;
+                incomingFile.webZipRootId = previousFile.webZipRootId || previousFile.id;
+                if (incomingFile.id !== previousFile.id) incomingFile.replacesFileId = previousFile.id;
             }
             const historyMessage = preserveNewestTelegramFileIds(
                 session.history[historyIndex].message,
@@ -9490,6 +9511,9 @@ io.on('connection', (socket) => {
                 removedFileIds.forEach(fileId => {
                     if (!isFileAssetStillReferenced(session, fileId)) session.fileAssets?.delete(fileId);
                 });
+            }
+            if (previous.message?.type === 'file' && historyMessage.type === 'file' && previous.message.fileInfo?.id && previous.message.fileInfo.id !== historyMessage.fileInfo?.id && !isFileAssetStillReferenced(session, previous.message.fileInfo.id)) {
+                session.fileAssets?.delete(previous.message.fileInfo.id);
             }
             session.lastActivity = Date.now();
             persistHistoryAudit(sessionId, session, historyMessage, 'message-updated');

@@ -701,6 +701,8 @@ function renderTelegramDriveContextMenu(item, anchor, actions) {
         };
         return button;
     }));
+    menu.style.removeProperty('width');
+    menu.style.visibility = 'hidden';
     menu.hidden = false;
     const backdrop = document.getElementById('telegramDriveItemMenuBackdrop');
     if (backdrop) backdrop.hidden = false;
@@ -714,10 +716,18 @@ function renderTelegramDriveContextMenu(item, anchor, actions) {
         const rect = anchor.getBoundingClientRect(), viewport = window.visualViewport;
         const leftEdge = viewport?.offsetLeft || 0, topEdge = viewport?.offsetTop || 0;
         const rightEdge = leftEdge + (viewport?.width || window.innerWidth), bottomEdge = topEdge + (viewport?.height || window.innerHeight);
-        const width = menu.offsetWidth || 200, height = menu.offsetHeight;
+        const width = Math.min(menu.offsetWidth || 200, Math.max(200, rightEdge - leftEdge - 16));
+        const height = Math.min(menu.offsetHeight || 0, Math.max(0, bottomEdge - topEdge - 16));
         const below = rect.bottom + 4, above = rect.top - height - 4;
-        menu.style.left = `${Math.max(leftEdge + 8, Math.min(rightEdge - width - 8, rect.right - width))}px`;
-        menu.style.top = `${Math.max(topEdge + 8, Math.min(bottomEdge - height - 8, below + height <= bottomEdge - 8 ? below : above))}px`;
+        const anchorRight = Number.isFinite(rect.right) ? rect.right : rightEdge - 8;
+        const anchorBottom = Number.isFinite(rect.bottom) ? rect.bottom : bottomEdge - 8;
+        const anchorTop = Number.isFinite(rect.top) ? rect.top : anchorBottom;
+        const targetBelow = anchorBottom + 4;
+        const targetAbove = anchorTop - height - 4;
+        menu.style.width = width + 'px';
+        menu.style.left = `${Math.max(leftEdge + 8, Math.min(rightEdge - width - 8, anchorRight - width))}px`;
+        menu.style.top = `${Math.max(topEdge + 8, Math.min(bottomEdge - height - 8, targetBelow + height <= bottomEdge - 8 ? targetBelow : targetAbove))}px`;
+        menu.style.visibility = 'visible';
     });
 }
 

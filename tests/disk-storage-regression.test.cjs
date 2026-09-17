@@ -135,7 +135,7 @@ test('某片删除失败仍尝试其余片；修改备注覆盖全部片且忽�
     } });
     await assert.rejects(telegram.remove(backend, file), /TELEGRAM_403/); assert.deepEqual(calls.map(c => c.message_id), [1, 2, 3]);
     calls.length = 0; await telegram.syncCaption(backend, file, { userId: 'u' });
-    assert.equal(calls.length, 3); assert.ok(calls.every(c => c.chat_id === '-9' && c.caption.includes('path: /new/folder') && c.caption.includes('logical_file_id: logical')));
+    assert.equal(calls.length, 3); assert.ok(calls.every(c => c.chat_id === '-9' && !/(?:^|\n)path:/.test(c.caption) && c.caption.includes('logical_file_id: logical')));
 });
 
 test('网盘会话签名密钥重启持久、Mock 与正式环境隔离', t => {

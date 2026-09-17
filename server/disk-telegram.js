@@ -14,11 +14,7 @@ function diskCaption(file, backend, context = {}, remote = {}) {
     if (file.logicalId || remote.logicalFileId) fields.push('logical_file_id: ' + (file.logicalId || remote.logicalFileId));
     if (remote.partCount) fields.push('part: ' + remote.partIndex + '/' + remote.partCount, 'original_size: ' + (remote.originalSize || file.size || 0));
     if (remote.fileId) fields.push('file_id: ' + remote.fileId, 'message_id: ' + remote.messageId, 'album_id: ' + (remote.mediaGroupId || ''));
-    const heading = fields.join('\n');
-    const folder = '/' + (file.folderPath || '');
-    const room = Math.max(0, 1024 - heading.length - 8);
-    const shortened = folder.length > room ? Array.from(folder.slice(0, Math.max(0, room - 1))).join('') + '…' : folder;
-    return heading + '\npath: ' + shortened;
+    return fields.join('\n').slice(0, 1024);
 }
 function diskThumbnailCaption(file, backend, context = {}) {
     return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);

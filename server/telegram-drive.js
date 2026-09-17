@@ -215,7 +215,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
                 const nextPath = rewrite(directory.path);
                 directories.set(directoryKey(owner, nextPath), { ...directory, path: nextPath, updatedAt: now });
             }
-            for (const file of snapshot.files) Object.assign(file, { folderPath: rewrite(file.folderPath || ''), updatedAt: now, captionSyncPending: file.reviewStatus !== 'deleted' });
+            for (const file of snapshot.files) Object.assign(file, { folderPath: rewrite(file.folderPath || ''), updatedAt: now });
             touchDirectory(owner, parentPath(source), now);
             touchDirectory(owner, destination, now);
             persist();
@@ -246,7 +246,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             if (normalizePath(item.folderPath || '') === destination) return item;
             assertFreeName(ownerId, destination, item.name, item.id);
             const oldParent = normalizePath(item.folderPath || '');
-            Object.assign(item, { folderPath: destination, updatedAt: Date.now(), captionSyncPending: true });
+            Object.assign(item, { folderPath: destination, updatedAt: Date.now() });
             touchDirectory(ownerId, oldParent);
             touchDirectory(ownerId, destination);
             persist();
@@ -272,7 +272,8 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
             assertDepth(destination, maxDepth);
             assertFreeName(ownerId, destination, name, item.id);
             touchDirectory(ownerId, item.folderPath || '');
-            Object.assign(item, { folderPath: destination, name, updatedAt: Date.now(), captionSyncPending: true });
+            const renamed = name !== item.name;
+            Object.assign(item, { folderPath: destination, name, updatedAt: Date.now(), ...(renamed ? { captionSyncPending: true } : {}) });
             touchDirectory(ownerId, destination); persist(); return item;
         },
         hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },

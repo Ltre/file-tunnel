@@ -48,7 +48,7 @@
 .telegram-drive-items{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .telegram-drive-item *{-webkit-user-select:none;user-select:none}
 .telegram-drive-item-name,.telegram-drive-item-meta{-webkit-user-drag:none}
-#telegramDriveItemMenu{max-height:calc(100dvh - 20px);overflow:auto}
+#telegramDriveItemMenu{position:fixed!important;right:auto!important;bottom:auto!important;box-sizing:border-box;width:max-content;max-width:calc(100vw - 16px);max-height:calc(100dvh - 20px);overflow:auto;z-index:4250}
 .telegram-drive-menu-backdrop{position:fixed;inset:0;z-index:4240;background:rgba(15,23,42,.2);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);touch-action:none}
 .telegram-drive-menu-backdrop[hidden]{display:none!important}
 #diskPreview{position:fixed;inset:0;z-index:2147483100;background:#101820;color:#fff;display:flex;flex-direction:column}

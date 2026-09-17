@@ -547,7 +547,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const result = Object.hasOwn(req.body || {}, 'destinationPath')
                     ? store(req).moveDirectory(owner(req), req.body.path, req.body.destinationPath, maxDepth(), req.body.name)
                     : store(req).renameDirectory(owner(req), req.body.path, req.body.name, maxDepth());
-                await syncCaptions(store(req), scope(req), store(req).getDirectoryTree(owner(req), result.path).files, update);
                 return result;
             });
         }));
@@ -563,10 +562,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
+            const originalName = file.name;
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
                 const modified = store(req).modifyFile(owner(req), file.id, req.body || {}, maxDepth());
-                await syncCaptions(store(req), scope(req), [modified], update);
+                if (Object.hasOwn(req.body || {}, 'name') && modified.name !== originalName) await syncCaptions(store(req), scope(req), [modified], update);
                 return publicFile(modified);
             });
         }));

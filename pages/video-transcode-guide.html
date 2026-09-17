@@ -1,0 +1,50 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频转码方案帮助</title><style>*{box-sizing:border-box}body{margin:0;background:#eef2f7;color:#223047;font:15px/1.75 system-ui,-apple-system,"Segoe UI",sans-serif}header{position:sticky;top:0;z-index:2;padding:13px max(18px,calc((100% - 980px)/2));background:#24364f;color:#fff}header a{color:#fff}main{width:min(980px,calc(100% - 24px));margin:18px auto;padding:24px;background:#fff;border:1px solid #cad3df;border-radius:15px}h1{margin:0;font-size:20px}h2{margin-top:30px;border-bottom:1px solid #d9e0e8;padding-bottom:6px}h3{margin-top:22px}code,pre{font-family:ui-monospace,Consolas,monospace}code{padding:2px 5px;border-radius:5px;background:#edf2f7}pre{overflow:auto;padding:13px;border-radius:9px;background:#172231;color:#dbe8f4;white-space:pre-wrap}table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #ccd5e1;text-align:left;vertical-align:top}.note{padding:12px;border-left:4px solid #397dc2;background:#edf5fd}</style></head><body><header><a href="/video-transcode">← 返回视频转码</a><h1>自定义视频转码方案帮助</h1></header><main>
+<p>转码方案是一份 JSON 配置。它定义前端要生成哪些输入项、如何校验这些值、如何把值放进 FFmpeg 参数，以及最终结果的扩展名和下载文件名。服务器始终以独立参数数组启动 FFmpeg，不经过 Shell 拼接命令。</p>
+<h2>从提交到执行的完整流程</h2><ol><li>前端读取所选方案的 <code>fields</code>，动态生成文本、数字、时间、尺寸、下拉框或开关。</li><li>点击“上传并开始转码”后，前端先提交方案 ID、参数和源文件元数据，服务器创建独立任务目录。</li><li>浏览器以二进制流上传源文件；服务器核对声明大小并写入任务目录，不把整个文件读进内存。</li><li>上传完成后任务进入队列。服务器逐步骤替换变量并生成 FFmpeg argv，然后用 <code>shell:false</code> 启动进程。</li><li>多个步骤以前一步输出作为下一步的 <code>INPUT_FILE</code>。中间文件在成功进入下一步后清理。</li><li>最后一步成功后，结果以 <code>output.extension</code> 保存，并按 <code>nameTemplate</code> 生成下载名。任务页可持续查看状态和 FFmpeg 输出。</li></ol>
+<h2>方案顶层结构</h2><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>id</code></td><td>方案唯一 ID，只能使用字母、数字、下划线和短横线，长度 2～64。</td></tr><tr><td><code>name</code></td><td>界面显示名称。</td></tr><tr><td><code>description</code></td><td>选中方案后显示的说明。</td></tr><tr><td><code>fields</code></td><td>动态表单字段数组。</td></tr><tr><td><code>rules</code></td><td>跨字段校验。目前支持 <code>requireAny</code>。</td></tr><tr><td><code>steps</code></td><td>一到十个顺序执行的 FFmpeg 步骤。</td></tr><tr><td><code>output</code></td><td>最终文件扩展名与下载名称模板。</td></tr></tbody></table>
+<h2>fields：动态表单参数</h2><p>字段名必须为大写字母开头的 <code>A-Z0-9_</code> 标识。支持类型：</p><table><thead><tr><th>类型</th><th>表单与校验</th></tr></thead><tbody><tr><td><code>text</code></td><td>普通文本。</td></tr><tr><td><code>number</code></td><td>数字，可配 <code>min</code>/<code>max</code>。</td></tr><tr><td><code>duration</code></td><td>秒数或 <code>HH:MM:SS.mmm</code>。</td></tr><tr><td><code>scale</code></td><td>FFmpeg 尺寸格式，例如 <code>1920:-2</code>。</td></tr><tr><td><code>select</code></td><td>从 <code>options</code> 中选择。空字符串选项在界面显示为“默认”。</td></tr><tr><td><code>boolean</code></td><td>复选框；选中值为 <code>1</code>，未选中为空。</td></tr></tbody></table><p><code>label</code> 是显示名称，<code>default</code> 是默认值，<code>placeholder</code> 是输入提示，<code>required:true</code> 表示不能为空。</p>
+<h2>rules：跨字段校验</h2><pre>{ "type": "requireAny", "fields": ["START_TIME", "END_TIME"], "message": "至少填写一个时间" }</pre><p>这表示列出的字段至少有一个非空。单字段必填直接使用字段的 <code>required</code>。</p>
+<h2>steps 与参数组装</h2><p>每一步必须含有输入变量和 <code>${OUTPUT_FILE}</code>。字符串是一个完整 argv；请勿把多个参数写进同一字符串。</p><pre>{
+  "name": "H.265 转码",
+  "args": [
+    "-i", "${INPUT_FILE}",
+    "-c:v", "libx265",
+    { "when": "CRF", "values": ["-crf", "${CRF}"] },
+    { "when": "PRESET", "values": ["-preset", "${PRESET}"] },
+    "-movflags", "+faststart", "-c:a", "copy",
+    "${OUTPUT_FILE}"
+  ]
+}</pre><p>带 <code>when</code> 的对象是可选参数组：对应字段非空时才把 <code>values</code> 加入命令。因此“编码速度”选择“默认”时不会生成 <code>-preset</code>。</p>
+<h3>系统变量</h3><table><thead><tr><th>变量</th><th>值</th></tr></thead><tbody><tr><td><code>${INPUT_FILE}</code></td><td>当前步骤输入；第一步是上传源文件，后续步骤是上一步输出。</td></tr><tr><td><code>${ORIGINAL_INPUT_FILE}</code></td><td>始终指向最初上传的源文件。</td></tr><tr><td><code>${OUTPUT_FILE}</code></td><td>当前步骤由服务器分配的输出路径。</td></tr><tr><td><code>${BASENAME}</code></td><td>源文件名去除扩展名后的部分。</td></tr><tr><td><code>${EXT}</code></td><td>当前输出扩展名。</td></tr></tbody></table>
+<h2>多步骤方案</h2><p>在 <code>steps</code> 中按顺序放入多个对象即可。非最后步骤使用 MKV 中间容器，最后步骤使用 <code>output.extension</code>。每一步都必须明确读入和写出文件；任一步退出码非 0 或没有生成输出文件，整个任务失败，后续步骤不会执行。</p>
+<h2>output：结果文件</h2><pre>"output": { "extension": "mp4", "nameTemplate": "${BASENAME}-h265.${EXT}" }</pre><p>扩展名只允许系统白名单中的媒体格式。文件名模板可使用 <code>BASENAME</code> 和 <code>EXT</code>，非法文件名字符会由服务器替换。</p>
+<h2>完整自定义示例</h2><pre>{
+  "id": "h265-web",
+  "name": "网页播放 H.265",
+  "description": "可选截取、缩放和 preset，复制原音轨",
+  "fields": [
+    {"name":"START_TIME","type":"duration","label":"开始时间"},
+    {"name":"END_TIME","type":"duration","label":"结束时间"},
+    {"name":"SCALE","type":"scale","label":"输出尺寸","placeholder":"1920:-2"},
+    {"name":"CRF","type":"number","label":"CRF","default":"28","min":0,"max":51},
+    {"name":"PRESET","type":"select","label":"编码速度","default":"","options":["","fast","medium","slow"]}
+  ],
+  "rules": [],
+  "steps": [{
+    "name": "转码",
+    "args": [
+      {"when":"START_TIME","values":["-ss","${START_TIME}"]},
+      "-i","${INPUT_FILE}",
+      {"when":"END_TIME","values":["-to","${END_TIME}"]},
+      "-c:v","libx265",
+      {"when":"CRF","values":["-crf","${CRF}"]},
+      {"when":"PRESET","values":["-preset","${PRESET}"]},
+      {"when":"SCALE","values":["-vf","scale=${SCALE}"]},
+      "-movflags","+faststart","-c:a","copy","${OUTPUT_FILE}"
+    ]
+  }],
+  "output":{"extension":"mp4","nameTemplate":"${BASENAME}-web.${EXT}"}
+}</pre>
+<h2>输入、输出与缓存</h2><p>每个任务在服务器转码缓存根目录中使用独立随机目录。源文件、中间文件和结果不会与其它任务混用。取消任务会终止 FFmpeg；任务删除会连同目录一起删除。缓存清理区可分别清理浏览器中与转码接口有关的失效缓存、服务器孤立/失败缓存，或全部已结束任务缓存。</p><div class="note">清理“全部已结束缓存”会删除已完成任务的结果文件，任务记录仍会保留并标记结果缓存已清理，但不能再下载。</div>
+<h2>安全边界与排错</h2><ul><li>方案只能使用声明过的字段变量；未知变量会被拒绝。</li><li>参数逐项传给 FFmpeg，不能使用管道、重定向或 Shell 命令。</li><li>查看任务的“FFmpeg 输出”可判断编码器、参数或媒体流错误；自动刷新会保留手动展开状态。</li><li>如果任务停在“等待上传源文件”，说明浏览器上传未完成；停在队列说明前序任务仍在执行；退出码错误则查看最后几行 FFmpeg 输出。</li></ul>
+</main></body></html>
