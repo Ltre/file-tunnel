@@ -2728,3 +2728,47 @@ Description：
 - 在 SNS 与 YouTube Premium 任务中增加独立的 Telegram 原文件转发菜单
 - 持久化并共享最近 Telegram 目标，支持选择和删除历史以及自定义 caption
 - 升级 Service Worker 至 v53，完成 266 项全量回归
+
+## 44. 2026-09-18：260918-1 搜索结果、网页 ZIP Runtime 与 Telegram 指定目标转发完善
+
+### 44.1 全盘搜索删除同名文件
+
+- 问题并非服务端把所有同名文件一并删除，而是删除完成后调用 `renderTelegramDrive()` 刷新当前目录时，无条件把 `telegramDriveSearchData` 设为 `null`；此时“搜索所有目录”与关键字仍处于启用状态，显示层只能得到空搜索结果。顶部刷新走同一条路径，因此也会暂时显示为所有同名文件都消失，重新触发搜索后才恢复。
+- 全盘搜索刷新期间现在保留已有结果，并在目录数据更新后重新请求当前关键字。删除成功后先在当前搜索快照中按稳定文件 ID 精确移除文件；删除目录则按完整目录路径移除该目录及子树，完全不按文件名匹配。因此删除一个目录中的 `A.mp4` 不会再影响其它目录中同名的 `A.mp4`。
+
+### 44.2 网页 ZIP iframe 无法读取实际存在的 Runtime
+
+- `WebZipRuntime` 的文件树和 Service Worker 路由本身可用，直接打开 `/web-zip-runtime/<id>/index.html` 能成功正是这一点的证据。失败来自两个预览入口的 iframe：它们使用不含 `allow-same-origin` 的 sandbox，导航上下文会成为不透明来源，Chrome 不会把该 iframe 的首次 Runtime 导航交给当前同源 Service Worker，于是请求落到 Express 并得到 `Cannot GET`。有时随后直开又显示“运行目录已过期”，则是失败预览被关闭或重建时旧 runtime 已主动卸载。
+- 独立预览页与网页工坊内嵌预览统一为 Runtime iframe 保留同源导航身份，使 `/web-zip-runtime/...` 的入口 HTML、JS、CSS 和相对资源都经过同一个 Service Worker 虚拟目录。仍保留 sandbox 对顶层导航等能力的限制。Service Worker 缓存版本升至 `v54`，避免旧工坊脚本继续生成无法被接管的 iframe。
+
+### 44.3 Telegram 转发菜单交互和媒体预览
+
+- SNS 与 YouTube Premium 共用的转发面板现在支持点击面板外空白处或按 `Escape` 收起；打开一个任务的面板时也会关闭其它任务的面板。任务轮询暂停规则继续识别打开状态和发送状态。
+- 新增“支持视频预览”和“支持图片预览”选项。视频使用 Bot API `sendVideo`、`supports_streaming=true` 并直接流式发送服务器成品字节，服务端不调用 FFmpeg、不重新压缩；图片使用 `sendPhoto`，界面明确提示 Telegram 会按照片处理且不会发送原图。未启用预览时继续使用 `sendDocument` 发送原文件。
+- 抽出单文件 Telegram multipart 构造器，为 `sendVideo`、`sendPhoto` 精确计算 `Content-Length` 并流式读取文件，不把完整媒体读入 Node 内存。
+
+### 44.4 私有邀请链接与目标备注
+
+- 目标解析接受 `https://t.me/+...`、`t.me/+...`、直接 `+...` 以及旧式 `t.me/joinchat/...`，统一规范为现代私有邀请链接格式。
+- Telegram Bot API 的发送接口只接受 chat ID 或公开用户名，不能直接把私有邀请 hash 当成 `chat_id`。服务端因此会在 Bot 已知的备份频道、歌曲频道、网盘分区、已交互会话和历史目标中逐个读取 `getChat`，对比其 `invite_link` 后解析出真实数字 chat ID；成功解析过的映射会持久化复用。若 Bot 尚未加入或系统从未获知该私有会话，会返回明确说明并提示先配置 chat ID，而不是继续给出笼统的“目标无效”。
+- `.tunnel-data/telegram-forward-targets.json` 从字符串数组兼容迁移为 `{ target, chatId, inviteLink, remark }` 记录；旧数据读取时自动转换。历史目标每行在目标按钮和红色删除按钮之间增加备注输入框，通过独立 PATCH 接口原子保存，两个后台页面继续共享历史。
+
+### 44.5 验证与执行边界
+
+- `client/disk-ui.js`、`client/telegram-target-forward.js`、`client/web-workshop.js`、`server/telegram-multipart.js`、`server.js` 和 `service-worker.js` 均通过 `node --check`。
+- 新增 `tests/features-260918-1.test.cjs`，覆盖同名搜索结果按 ID 删除、目录子树移除、两个 Runtime iframe 的 Service Worker 导航条件、视频 multipart 原字节与长度、点外关闭、媒体预览选项、私有链接及历史备注。
+- 以 `--test-concurrency=1` 在沙箱外完成全量回归，最终 **270/270 通过**。沙箱内的 Node 测试子进程被 Windows 统一以 `spawn EPERM` 拒绝，因此使用已授权的 `node --test` 前缀运行同一测试集；这不是代码测试失败。
+- 未启动或重启服务器，未调用真实 Telegram 发送，未暂存、未提交。当前分支保持 `dev/2608C-step2`；用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改保持原样。
+
+### 44.6 建议 Git 提交日志（不执行提交）
+
+Title：fix: 修复网盘搜索与网页 ZIP 预览并完善 Telegram 转发
+
+Description：
+
+- 全盘搜索删除后按文件 ID 和完整目录路径更新结果，保留并重新检索当前关键字
+- 修复 sandbox iframe 绕过 Service Worker 导致网页 ZIP Runtime 返回 Cannot GET
+- 为 Telegram 转发菜单增加点外关闭、视频原字节预览发送与图片预览发送
+- 支持解析 Bot 已知会话的 Telegram 私有邀请链接，并持久化邀请链接与 chat ID 映射
+- 为 Telegram 历史目标增加可编辑备注并兼容迁移旧字符串记录
+- 升级 Service Worker 至 v54，新增专项回归并完成 270 项全量测试

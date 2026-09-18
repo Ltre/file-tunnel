@@ -340,6 +340,25 @@ function getTelegramDriveDisplayData() {
     return document.getElementById('telegramDriveSearchAll')?.checked && query ? (telegramDriveSearchData || { folders: [], files: [] }) : (telegramDriveCurrentData || { folders: [], files: [] });
 }
 
+function isTelegramDriveGlobalSearchActive() {
+    return Boolean(document.getElementById('telegramDriveSearchAll')?.checked && String(document.getElementById('telegramDriveSearch')?.value || '').trim());
+}
+
+function pruneTelegramDriveSearchResults(items) {
+    if (!telegramDriveSearchData || !items?.length) return;
+    const fileIds = new Set(items.filter(item => item.kind !== 'directory').map(item => String(item.id || '')).filter(Boolean));
+    const directoryPaths = items.filter(item => item.kind === 'directory').map(item => String(item.path || '').replace(/^\/+|\/+$/g, '')).filter(Boolean);
+    const isInsideDeletedDirectory = value => {
+        const candidate = String(value || '').replace(/^\/+|\/+$/g, '');
+        return directoryPaths.some(directory => candidate === directory || candidate.startsWith(directory + '/'));
+    };
+    telegramDriveSearchData = {
+        ...telegramDriveSearchData,
+        folders: (telegramDriveSearchData.folders || []).filter(item => !isInsideDeletedDirectory(item.path)),
+        files: (telegramDriveSearchData.files || []).filter(item => !fileIds.has(String(item.id || '')) && !isInsideDeletedDirectory(item.folderPath))
+    };
+}
+
 function scheduleTelegramDriveSearch() {
     clearTimeout(telegramDriveSearchTimer);
     telegramDriveSearchAbort?.abort();
@@ -542,9 +561,11 @@ async function deleteTelegramDriveItems(items) {
         if (item.kind === 'directory') {
             const tree = await telegramDriveRequest('/api/telegram/drive/tree?path=' + encodeURIComponent(item.path));
             await telegramDriveRequest(`/api/telegram/drive/directories?path=${encodeURIComponent(item.path)}&recursive=true`, { method: 'DELETE' });
+            pruneTelegramDriveSearchResults([item]);
             await window.TelegramDriveCache?.remove(tree.files.map(file => file.id));
         } else {
             await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+            pruneTelegramDriveSearchResults([item]);
             await window.TelegramDriveCache?.remove([item.id]);
         }
     }
@@ -895,6 +916,7 @@ async function logoutTelegramDrive() {
 async function renderTelegramDrive({ silentIdentity = false } = {}) {
     const generation = ++telegramDriveRenderGeneration;
     const requestedPath = telegramDrivePath;
+    const retainedSearchData = isTelegramDriveGlobalSearchActive() ? telegramDriveSearchData : null;
     closeTelegramDriveItemMenu({ replaceHistory: true });
     const list = document.getElementById('telegramDriveList');
     const workspace = document.getElementById('telegramDriveWorkspace');
@@ -940,11 +962,12 @@ async function renderTelegramDrive({ silentIdentity = false } = {}) {
     if (generation !== telegramDriveRenderGeneration) return;
     telegramDriveCurrentData = data;
     telegramDriveContentStale = false;
-    telegramDriveSearchData = null;
+    telegramDriveSearchData = retainedSearchData;
     telegramDrivePath = data.path || '';
     renderTelegramDriveBreadcrumbs(telegramDriveCurrentData);
     renderTelegramDriveItems();
     updateTelegramDriveSelectionBar();
+    if (isTelegramDriveGlobalSearchActive()) scheduleTelegramDriveSearch();
 }
 
 async function refreshTelegramDriveContents() {

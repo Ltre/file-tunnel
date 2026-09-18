@@ -23,6 +23,45 @@ function getDocumentContentType(fileName = '', fallback = '') {
     return String(fallback || getAudioContentType(fileName) || 'application/octet-stream');
 }
 
+function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName = 'document', chatId, caption = '', file, fields = {}, onProgress }) {
+    if (!chatId || !file?.path) throw new Error('telegram-file-multipart-invalid');
+    const fileName = file.name || path.basename(file.path) || 'file';
+    const size = Number.isSafeInteger(file.size) ? file.size : fs.statSync(file.path).size;
+    const start = Number.isSafeInteger(file.start) ? file.start : 0;
+    const end = Number.isSafeInteger(file.end) ? file.end : undefined;
+    const boundary = `----Drop2Tunnel${crypto.randomBytes(18).toString('hex')}`;
+    const buffers = [];
+    let contentLength = 0;
+    const add = value => {
+        const buffer = Buffer.from(value, 'utf8');
+        buffers.push(buffer);
+        contentLength += buffer.length;
+    };
+    const formFields = { chat_id:chatId, ...(caption ? { caption } : {}), ...fields };
+    for (const [name, value] of Object.entries(formFields)) {
+        if (value === undefined || value === null || value === '') continue;
+        add(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(name)}"\r\n\r\n${String(value)}\r\n`);
+    }
+    const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(fieldName)}"; filename="${sanitizeMultipartHeaderValue(fileName)}"\r\nContent-Type: ${getDocumentContentType(fileName, file.type)}\r\n\r\n`, 'utf8');
+    const closing = Buffer.from(`--${boundary}--\r\n`, 'utf8');
+    contentLength += header.length + size + 2 + closing.length;
+    async function* generate() {
+        for (const buffer of buffers) yield buffer;
+        yield header;
+        let sent = 0;
+        if (size) {
+            for await (const chunk of fs.createReadStream(file.path, { start, end })) {
+                sent += chunk.length;
+                onProgress?.(Math.min(sent, size), size);
+                yield chunk;
+            }
+        }
+        yield Buffer.from('\r\n');
+        yield closing;
+    }
+    return { method, body:Readable.from(generate()), contentLength, contentType:`multipart/form-data; boundary=${boundary}` };
+}
+
 function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onProgress, disableContentTypeDetection = false }) {
     if (!chatId || !files.length) throw new Error('telegram-drive-multipart-invalid');
     const normalized = files.map((file, index) => ({
@@ -120,4 +159,4 @@ function buildTelegramAudioMultipart({ fields, audioPath, audioFileName, thumbna
     };
 }
 
-module.exports = { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart };
+module.exports = { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart, buildTelegramSingleFileMultipart };

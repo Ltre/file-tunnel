@@ -70,7 +70,7 @@ const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-se
 const { createInfraStore } = require('./server/infra-store');
 const { createVClientControl } = require('./server/vclient-control');
 const { createAdminAuth } = require('./server/admin-auth');
-const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart } = require('./server/telegram-multipart');
+const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart, buildTelegramSingleFileMultipart } = require('./server/telegram-multipart');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
@@ -406,42 +406,115 @@ function normalizeTelegramForwardTarget(input) {
     if (/^@[A-Za-z0-9_]{3,64}$/.test(value)) return value;
     const link = value.match(/^(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{3,64})\/?$/i);
     if (link) return `@${link[1]}`;
+    const privateLink = value.match(/^(?:(?:https?:\/\/)?t\.me\/(?:joinchat\/|\+)|\+)([A-Za-z0-9_-]{6,128})\/?$/i);
+    if (privateLink) return `https://t.me/+${privateLink[1]}`;
     if (/^-?\d{5,20}$/.test(value)) return value;
-    throw new Error('Telegram 目标无效，请填写 @用户名、t.me/用户名或数字 ID');
+    throw new Error('Telegram 目标无效，请填写 @用户名、t.me 链接、+私有邀请链接或数字 ID');
+}
+
+function normalizeTelegramForwardTargetRecord(item) {
+    try {
+        const source = item && typeof item === 'object' ? item : { target:item };
+        const target = normalizeTelegramForwardTarget(source.target);
+        const chatId = /^-?\d{5,20}$|^@[A-Za-z0-9_]{3,64}$/.test(String(source.chatId || '').trim()) ? String(source.chatId).trim() : '';
+        const inviteLink = /^https:\/\/t\.me\/\+[A-Za-z0-9_-]{6,128}$/i.test(String(source.inviteLink || '').trim()) ? String(source.inviteLink).trim() : '';
+        return { target, chatId, inviteLink, remark:String(source.remark || '').trim().slice(0, 100) };
+    } catch (_) {
+        return null;
+    }
 }
 
 function loadTelegramForwardTargets() {
     try {
         const value = JSON.parse(fs.readFileSync(TELEGRAM_FORWARD_TARGETS_PATH, 'utf8'));
-        return Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(Boolean).slice(0, 50) : [];
+        return Array.isArray(value) ? value.map(normalizeTelegramForwardTargetRecord).filter(Boolean).slice(0, 50) : [];
     } catch (_) {
         return [];
     }
 }
 
 function saveTelegramForwardTargets(targets) {
-    const unique = [...new Set((targets || []).map(item => String(item || '').trim()).filter(Boolean))].slice(0, 50);
+    const unique = [];
+    const seen = new Set();
+    for (const item of targets || []) {
+        const record = normalizeTelegramForwardTargetRecord(item);
+        if (!record || seen.has(record.target)) continue;
+        seen.add(record.target);
+        unique.push(record);
+        if (unique.length >= 50) break;
+    }
     writeDataFileAtomic(TELEGRAM_FORWARD_TARGETS_PATH, JSON.stringify(unique, null, 2));
     return unique;
 }
 
-function rememberTelegramForwardTarget(target) {
-    return saveTelegramForwardTargets([target, ...loadTelegramForwardTargets().filter(item => item !== target)]);
+function rememberTelegramForwardTarget(target, patch = {}) {
+    const current = loadTelegramForwardTargets();
+    const previous = current.find(item => item.target === target) || {};
+    return saveTelegramForwardTargets([{ ...previous, ...patch, target }, ...current.filter(item => item.target !== target)]);
+}
+
+function telegramPrivateInviteCandidates() {
+    const config = telegramConfig || {};
+    return [...new Set([
+        config.backupChatId,
+        ...Object.values(config.songShareChannels || {}),
+        ...(config.driveChannels || []).map(item => item.id),
+        ...Array.from(telegramChatTunnels?.keys?.() || []),
+        ...Array.from(telegramPendingFiles?.keys?.() || []),
+        ...Array.from(telegramChatLanguages?.keys?.() || []),
+        ...loadTelegramForwardTargets().flatMap(item => [item.chatId, item.target])
+    ].map(value => String(value || '').trim()).filter(value => /^-?\d{5,20}$|^@[A-Za-z0-9_]{3,64}$/.test(value)))];
+}
+
+async function getTelegramForwardChat(chatId, operation) {
+    try {
+        const payload = await telegramFetchJson('getChat', {
+            method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ chat_id:chatId })
+        }, { operation });
+        return payload.result || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function resolveTelegramForwardTarget(input, operation) {
+    const target = normalizeTelegramForwardTarget(input);
+    if (!target.startsWith('https://t.me/+')) return { target, chatId:target };
+    const remembered = loadTelegramForwardTargets().find(item => item.target === target && item.chatId);
+    if (remembered) return { target, chatId:remembered.chatId };
+    for (const candidate of telegramPrivateInviteCandidates()) {
+        const chat = await getTelegramForwardChat(candidate, `${operation}-resolve-private-link`);
+        const inviteLink = String(chat?.invite_link || '').replace(/\/$/, '');
+        if (inviteLink === target) return { target, chatId:String(chat.id) };
+    }
+    throw new Error('无法从该私有邀请链接确定 Telegram 目标。Bot API 不能凭邀请链接加入会话；请先让 Bot 成为该群组或频道成员，并在系统中配置该目标，或先使用数字 chat_id 发送一次');
 }
 
 async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
     const file = service.getFile(taskId);
     if (!file || !fs.existsSync(file.path)) throw new Error('Telegram 转发所需的服务端成品不存在');
-    const target = normalizeTelegramForwardTarget(input?.target);
+    const resolvedTarget = await resolveTelegramForwardTarget(input?.target, operation);
+    const target = resolvedTarget.target;
     const caption = String(input?.caption || '').trim().slice(0, 1024);
     const stat = fs.statSync(file.path);
-    const multipart = buildTelegramDocumentsMultipart({
-        chatId: target,
-        caption,
-        files: [{ path:file.path, name:file.name, size:stat.size }],
-        disableContentTypeDetection: true
-    });
+    const mimeType = getMimeTypeFromFileName(file.name);
+    const supportVideoPreview = input?.supportVideoPreview === true;
+    const supportImagePreview = input?.supportImagePreview === true;
+    let multipart;
+    if (supportImagePreview && mimeType.startsWith('image/')) {
+        multipart = buildTelegramSingleFileMultipart({ method:'sendPhoto', fieldName:'photo', chatId:resolvedTarget.chatId, caption, file:{ path:file.path, name:file.name, type:mimeType, size:stat.size } });
+    } else if (supportVideoPreview && mimeType.startsWith('video/')) {
+        multipart = buildTelegramSingleFileMultipart({ method:'sendVideo', fieldName:'video', chatId:resolvedTarget.chatId, caption, fields:{ supports_streaming:'true' }, file:{ path:file.path, name:file.name, type:mimeType, size:stat.size } });
+    } else {
+        if (supportImagePreview || supportVideoPreview) throw new Error('当前成品类型与所选 Telegram 预览方式不匹配');
+        multipart = buildTelegramDocumentsMultipart({
+            chatId: resolvedTarget.chatId,
+            caption,
+            files: [{ path:file.path, name:file.name, type:mimeType, size:stat.size }],
+            disableContentTypeDetection: true
+        });
+    }
     const payload = await telegramFetchJson(multipart.method, {
         method: 'POST',
         headers: {
@@ -451,8 +524,10 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
         body: multipart.body,
         duplex: 'half'
     }, { operation });
-    rememberTelegramForwardTarget(target);
-    return { ok:true, target, messageId:Number(payload.result?.message_id) || 0 };
+    const chatId = String(payload.result?.chat?.id || resolvedTarget.chatId || '');
+    const chat = await getTelegramForwardChat(chatId, `${operation}-remember-target`);
+    const targets = rememberTelegramForwardTarget(target, { chatId, inviteLink:String(chat?.invite_link || '') });
+    return { ok:true, target, targets, mode:multipart.method, messageId:Number(payload.result?.message_id) || 0 };
 }
 
 function loadYoutubePremiumMetadataCache() {
@@ -1421,7 +1496,20 @@ app.post('/api/telegram-forward-targets/delete', adminAuth.requireAuth, (req, re
     res.setHeader('Cache-Control', 'no-store');
     try {
         const target = normalizeTelegramForwardTarget(req.body?.target);
-        res.json({ ok:true, targets:saveTelegramForwardTargets(loadTelegramForwardTargets().filter(item => item !== target)) });
+        res.json({ ok:true, targets:saveTelegramForwardTargets(loadTelegramForwardTargets().filter(item => item.target !== target)) });
+    } catch (error) {
+        res.status(422).json({ error:error.message });
+    }
+});
+
+app.patch('/api/telegram-forward-targets', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const target = normalizeTelegramForwardTarget(req.body?.target);
+        const remark = String(req.body?.remark || '').trim().slice(0, 100);
+        const current = loadTelegramForwardTargets();
+        if (!current.some(item => item.target === target)) throw new Error('Telegram 历史目标不存在');
+        res.json({ ok:true, targets:saveTelegramForwardTargets(current.map(item => item.target === target ? { ...item, remark } : item)) });
     } catch (error) {
         res.status(422).json({ error:error.message });
     }
