@@ -88,6 +88,7 @@
             .cover { width:100%; max-height:240px; aspect-ratio:16/9; }
         }
     </style>
+    <link rel="stylesheet" href="/client/telegram-target-forward.css">
 </head>
 <body>
 <main class="shell">
@@ -131,6 +132,7 @@
 <script src="/client/cache-store.js"></script>
 <script src="/client/sns-download-cache.js"></script>
 <script src="/client/audio-track-repair.js"></script>
+<script src="/client/telegram-target-forward.js"></script>
 <script>
 (() => {
     const API_ROOT = '/api/sns-dl';
@@ -381,11 +383,12 @@
         if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
         if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
         card.append(actions);
+        if (task.hasFile) card.append(window.TelegramTargetForward.create(task, API_ROOT, api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
         return card;
     }
     function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }
-    function isTaskRefreshPaused() { return window.AudioTrackRepair.busy() || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
+    function isTaskRefreshPaused() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
     async function loadTasks({force=false}={}) {
         if (!force && isTaskRefreshPaused()) return;
         const expandedReferences = new Set([...taskList.querySelectorAll('[data-reference-details][open]')].map(details => details.closest('[data-task-id]')?.dataset.taskId).filter(Boolean));

@@ -2686,3 +2686,45 @@ Description：
 - 将网盘上下文菜单移出滤镜定位容器，统一按可视视口约束底部菜单和项目三点菜单
 - 在 PC 与移动端使用路由页专属固定顶栏显示品牌标题
 - 升级 Service Worker 至 v52，完成 262 项全量回归
+
+## 43. 2026-09-17：260917-3 网页 ZIP 卡死、编辑发布与 Telegram 指定目标转发
+
+### 43.1 网页 ZIP 独立页和工坊预览卡死根因
+
+- 逐项请求 `service-worker.js` 的 `APP_SHELL` 后确认 `/index.html`、`/admin.html` 返回 404，`/admin` 返回重定向。原安装逻辑使用 `cache.addAll(APP_SHELL)`，任一资源非成功响应就会拒绝整批预缓存，导致新版 Service Worker 无法完成安装。
+- `WebZipRuntime.ensureController()` 随后无限等待 `navigator.serviceWorker.ready`。独立预览页因此一直停在“正在等待网页 ZIP 缓存…”，工坊则在渲染任何预览状态之前就被同一个 Promise 挂住，表现为点击“预览”没有反应，并伴随虚拟目录请求失败。
+- Service Worker 升至 `v53`，改为逐项请求并用 `Promise.allSettled` 缓存成功且未重定向的资源。可选页面不存在时只跳过该项，不再阻止运行服务安装；新加入的 Telegram 转发脚本和样式也纳入预缓存清单。
+- 运行层等待 `serviceWorker.ready` 增加 12 秒上限，并通过 `onStatus` 报告启动服务、建立虚拟目录和打开页面三个阶段。独立页增加读取缓存、解压和明确失败提示；工坊会先立即显示旋转进度状态，再挂载 iframe，错误也保留在预览区域中。
+
+### 43.2 编辑传输记录来源草稿后无法发布
+
+- 草稿自动保存使用串行异步 ZIP 打包；编辑发生在某次打包期间时，该次 `saveDraft` 不会把旧快照写回 `draft.archive`，而发布流程只等待一次保存后就读取这个副作用字段，可能取得旧归档或空归档。这解释了未改内容可发布、产生新 revision 后按钮却无结果的差异。
+- `saveDraft` 现在返回本次明确的 `{ revision, archive }`。`flushEditorDraft` 会清理延迟计时器并循环保存，直到归档 revision 与当前编辑 revision 一致；发布直接使用该返回归档创建文件，不再依赖可能落后的 `draft.archive`。
+- 发布期间编辑框设为只读、按钮禁用并显示“正在保存并发布…”。失败时在保存状态和既有错误提示中明确显示原因，完成或失败后恢复控件，避免重复提交和无反馈点击。
+
+### 43.3 SNS 与 YouTube Premium 指定 Telegram 目标转发
+
+- 两个后台任务卡片在原操作按钮区之外新增独立的“转发到指定的Telegram目标”折叠菜单。菜单首行固定为目标输入框，接受 `@username`、`t.me/username` 和数字 chat ID；下方纵向显示历史目标，每项可选择并带红色 `×` 删除按钮。
+- 菜单支持填写最多 1024 字符的 caption。发送期间禁用输入和按钮、显示状态，并暂停任务列表轮询，避免菜单、目标或备注在发送过程中被自动刷新覆盖。
+- 新增共享管理接口读取和删除历史目标，以及 SNS/YouTube Premium 各自的任务转发接口。服务端从任务成品目录读取原文件，使用 Telegram Bot API `sendDocument` 的流式 multipart 请求发送，不做媒体转码或内容替换。
+- 发送成功的目标按最近使用顺序原子写入 `.tunnel-data/telegram-forward-targets.json`，两类下载页共享同一历史，最多保留 50 项。服务端严格校验目标格式、Bot Token 和成品文件状态，失败不会写入历史。
+
+### 43.4 验证与执行边界
+
+- `server.js`、`service-worker.js`、`client/web-zip-runtime.js`、`client/web-workshop.js`、`client/telegram-target-forward.js` 均通过 `node --check`；三个相关 HTML 页内联脚本均通过 JavaScript 语法编译检查。
+- 新增回归覆盖 Service Worker 单项预缓存容错、运行服务等待超时和阶段状态、发布使用最终 revision 归档、两个下载页的目标历史与 Telegram 原文件发送接入。
+- 定向回归 **30/30 通过**；以 `--test-concurrency=1` 执行全量测试最终 **266/266 通过**。
+- 本机正在运行的 HTTP 服务已确认能返回新版 Service Worker、运行层、Telegram 转发脚本及样式；未重启 Node 服务、未调用真实 Telegram 发送、未暂存或提交。用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改保持原样。
+
+### 43.5 建议 Git 提交日志（不执行提交）
+
+Title：fix: 修复网页 ZIP 运行发布并支持 Telegram 指定目标转发
+
+Description：
+
+- 容错预缓存可用应用资源，修复 Service Worker 安装失败导致的网页 ZIP 无限等待
+- 为独立预览页和网页工坊增加运行阶段、超时及可见错误状态
+- 等待最终编辑 revision 完成打包后再发布，避免修改来源草稿后发布无响应
+- 在 SNS 与 YouTube Premium 任务中增加独立的 Telegram 原文件转发菜单
+- 持久化并共享最近 Telegram 目标，支持选择和删除历史以及自定义 caption
+- 升级 Service Worker 至 v53，完成 266 项全量回归

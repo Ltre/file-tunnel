@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v52';
+const CACHE_NAME = 'instant-tunnel-v53';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -25,6 +25,8 @@ const APP_SHELL = [
     '/client/notification-center.css',
     '/client/web-workshop.js',
     '/client/web-workshop.css',
+    '/client/telegram-target-forward.js',
+    '/client/telegram-target-forward.css',
     '/client/media.js',
     '/client/i18n-catalog.js',
     '/client/i18n.js',
@@ -35,8 +37,17 @@ const APP_SHELL = [
     '/tunnel-icon.svg'
 ];
 
+async function precacheAppShell() {
+    const cache = await caches.open(CACHE_NAME);
+    await Promise.allSettled(APP_SHELL.map(async resource => {
+        const response = await fetch(new Request(resource, { cache:'reload' }));
+        if (!response.ok || response.redirected) return;
+        await cache.put(resource, response);
+    }));
+}
+
 self.addEventListener('install', event => {
-    event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)));
+    event.waitUntil(precacheAppShell());
     self.skipWaiting();
 });
 

@@ -28,10 +28,10 @@ test('网页 ZIP 使用 Service Worker 虚拟目录运行完整文件树', () =>
     assert.match(worker, /Cross-Origin-Resource-Policy/);
     assert.match(worker, /status:206/);
     assert.match(worker, /web-zip-runtime-ping/);
-    assert.match(worker, /instant-tunnel-v52/);
+    assert.match(worker, /instant-tunnel-v53/);
 
     const standalone = source('pages/web-zip-preview.html');
-    assert.match(standalone, /WebZipRuntime\.mount\(entries\)/);
+    assert.match(standalone, /WebZipRuntime\.mount\(entries,/);
     assert.match(standalone, /viewer\.src=runtime\.url/);
     assert.doesNotMatch(standalone, /\.srcdoc\s*=/);
     assert.doesNotMatch(standalone, /createObjectURL/);
@@ -40,7 +40,7 @@ test('网页 ZIP 使用 Service Worker 虚拟目录运行完整文件树', () =>
 test('网页工坊预览读取当前草稿并强制解包传输记录的当前 ZIP', () => {
     const workshop = source('client/web-workshop.js');
     assert.match(workshop, /commitEditorBuffer\(activeDraft\);revokePreviewUrls\(\)/);
-    assert.match(workshop, /global\.WebZipRuntime\.mount\(files\)/);
+    assert.match(workshop, /global\.WebZipRuntime\.mount\(files,/);
     assert.match(workshop, /packageSandbox\(fileInfo,blob,true\)/);
     assert.match(workshop, /网页 ZIP 解压后没有可编辑文件/);
     assert.doesNotMatch(workshop, /\.srcdoc\s*=/);

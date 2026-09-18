@@ -70,7 +70,7 @@ const { registerMediaHandlers, cleanupMediaDevice } = require('./server/media-se
 const { createInfraStore } = require('./server/infra-store');
 const { createVClientControl } = require('./server/vclient-control');
 const { createAdminAuth } = require('./server/admin-auth');
-const { buildTelegramAudioMultipart } = require('./server/telegram-multipart');
+const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart } = require('./server/telegram-multipart');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
@@ -113,6 +113,7 @@ const YT_DLP_CACHE_DIR = path.join(SERVER_DATA_DIR, 'yt-dlp-cache');
 const TELEGRAM_BOT_CONFIG_PATH = path.join(SERVER_DATA_DIR, 'telegram-bot.json');
 const TELEGRAM_CHAT_TUNNELS_PATH = path.join(SERVER_DATA_DIR, 'telegram-chat-tunnels.json');
 const TELEGRAM_PENDING_FILES_PATH = path.join(SERVER_DATA_DIR, 'telegram-pending-files.json');
+const TELEGRAM_FORWARD_TARGETS_PATH = path.join(SERVER_DATA_DIR, 'telegram-forward-targets.json');
 const TELEGRAM_DRIVE_COOKIE = 'drop2tunnel_telegram_drive';
 const TELEGRAM_DRIVE_OIDC_STATE_COOKIE = 'drop2tunnel_telegram_oidc_state';
 const SNS_COOKIE_SYNC_CONFIG_PATH = path.join(SERVER_DATA_DIR, '.sns-cookie-sync.json');
@@ -398,6 +399,60 @@ function writeDataFileAtomic(targetPath, content) {
         fs.copyFileSync(tmpPath, targetPath);
         try { fs.unlinkSync(tmpPath); } catch (_) {}
     }
+}
+
+function normalizeTelegramForwardTarget(input) {
+    const value = String(input || '').trim();
+    if (/^@[A-Za-z0-9_]{3,64}$/.test(value)) return value;
+    const link = value.match(/^(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{3,64})\/?$/i);
+    if (link) return `@${link[1]}`;
+    if (/^-?\d{5,20}$/.test(value)) return value;
+    throw new Error('Telegram 目标无效，请填写 @用户名、t.me/用户名或数字 ID');
+}
+
+function loadTelegramForwardTargets() {
+    try {
+        const value = JSON.parse(fs.readFileSync(TELEGRAM_FORWARD_TARGETS_PATH, 'utf8'));
+        return Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(Boolean).slice(0, 50) : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveTelegramForwardTargets(targets) {
+    const unique = [...new Set((targets || []).map(item => String(item || '').trim()).filter(Boolean))].slice(0, 50);
+    writeDataFileAtomic(TELEGRAM_FORWARD_TARGETS_PATH, JSON.stringify(unique, null, 2));
+    return unique;
+}
+
+function rememberTelegramForwardTarget(target) {
+    return saveTelegramForwardTargets([target, ...loadTelegramForwardTargets().filter(item => item !== target)]);
+}
+
+async function forwardTaskFileToTelegram(service, taskId, input, operation) {
+    if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
+    const file = service.getFile(taskId);
+    if (!file || !fs.existsSync(file.path)) throw new Error('Telegram 转发所需的服务端成品不存在');
+    const target = normalizeTelegramForwardTarget(input?.target);
+    const caption = String(input?.caption || '').trim().slice(0, 1024);
+    const stat = fs.statSync(file.path);
+    const multipart = buildTelegramDocumentsMultipart({
+        chatId: target,
+        caption,
+        files: [{ path:file.path, name:file.name, size:stat.size }],
+        disableContentTypeDetection: true
+    });
+    const payload = await telegramFetchJson(multipart.method, {
+        method: 'POST',
+        headers: {
+            'Content-Type': multipart.contentType,
+            'Content-Length': String(multipart.contentLength)
+        },
+        body: multipart.body,
+        duplex: 'half'
+    }, { operation });
+    rememberTelegramForwardTarget(target);
+    return { ok:true, target, messageId:Number(payload.result?.message_id) || 0 };
 }
 
 function loadYoutubePremiumMetadataCache() {
@@ -1357,6 +1412,21 @@ app.post('/api/sns-cookies/:platform', adminAuth.requireAuth, (req, res) => {
     }
 });
 
+app.get('/api/telegram-forward-targets', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ targets:loadTelegramForwardTargets() });
+});
+
+app.post('/api/telegram-forward-targets/delete', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const target = normalizeTelegramForwardTarget(req.body?.target);
+        res.json({ ok:true, targets:saveTelegramForwardTargets(loadTelegramForwardTargets().filter(item => item !== target)) });
+    } catch (error) {
+        res.status(422).json({ error:error.message });
+    }
+});
+
 app.post('/api/sns-dl/formats', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
@@ -1515,6 +1585,16 @@ app.post('/api/sns-dl/tasks/:taskId/forward', adminAuth.requireAuth, snsDownload
     } catch (error) {
         if (upload?.path) fs.rmSync(upload.path, { force: true });
         res.status(422).json({ error: sanitizeSnsDownloadError(error) });
+    }
+});
+
+app.post('/api/sns-dl/tasks/:taskId/telegram-forward', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.status(201).json(await forwardTaskFileToTelegram(snsDownloadService, req.params.taskId, req.body, 'sns-download-telegram-forward'));
+    } catch (error) {
+        const status = error.message === 'Telegram 转发所需的服务端成品不存在' ? 404 : 422;
+        res.status(status).json({ error:sanitizeSnsDownloadError(error) });
     }
 });
 
@@ -1798,6 +1878,16 @@ app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, yo
     } catch (error) {
         if (upload?.path) fs.rmSync(upload.path, { force: true });
         res.status(422).json({ error: sanitizeYoutubePremiumError(error) });
+    }
+});
+
+app.post('/api/youtube-premium/tasks/:taskId/telegram-forward', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.status(201).json(await forwardTaskFileToTelegram(youtubePremiumService, req.params.taskId, req.body, 'youtube-premium-telegram-forward'));
+    } catch (error) {
+        const status = error.message === 'Telegram 转发所需的服务端成品不存在' ? 404 : 422;
+        res.status(status).json({ error:sanitizeYoutubePremiumError(error) });
     }
 });
 

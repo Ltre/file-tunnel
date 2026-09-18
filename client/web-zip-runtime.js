@@ -51,7 +51,10 @@
     async function ensureController() {
         if (!('serviceWorker' in navigator)) throw new Error('当前浏览器不支持网页 ZIP 虚拟目录');
         const registration = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache:'none' });
-        await navigator.serviceWorker.ready;
+        await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('网页 ZIP 运行服务启动超时，请刷新页面后重试')), 12000))
+        ]);
         if (await supportsRuntime(navigator.serviceWorker.controller)) return;
         await registration.update().catch(() => {});
         await new Promise((resolve, reject) => {
@@ -72,7 +75,9 @@
     }
 
     async function mount(entries, options = {}) {
+        options.onStatus?.('正在启动网页 ZIP 运行服务…');
         await ensureController();
+        options.onStatus?.('正在准备网页 ZIP 虚拟目录…');
         await cleanup().catch(() => {});
         const files = (entries || []).filter(entry => !String(entry?.path || '').endsWith('/')).map(entry => {
             const path = normalizePath(entry.path);
@@ -87,6 +92,7 @@
         const id = global.crypto?.randomUUID?.() || `runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const rootPath = entry.path.split('/').slice(0, -1).join('/');
         await transact('readwrite', store => store.put({ id, entryPath:entry.path, rootPath, files, createdAt:Date.now(), expiresAt:Date.now() + (Number(options.ttl) || DEFAULT_TTL) }));
+        options.onStatus?.('正在打开网页 ZIP…');
         const encodedPath = entry.path.split('/').map(encodeURIComponent).join('/');
         return { id, entryPath:entry.path, url:`/web-zip-runtime/${encodeURIComponent(id)}/${encodedPath}?v=${Date.now()}` };
     }

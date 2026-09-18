@@ -156,6 +156,7 @@
             .badge.failed,.badge.cancelled,.selection.error { background:#422226; }
         }
     </style>
+    <link rel="stylesheet" href="/client/telegram-target-forward.css">
 </head>
 <body>
 <main class="page">
@@ -396,6 +397,7 @@
 <script src="/client/cache-store.js"></script>
 <script src="/client/youtube-premium-cache.js"></script>
 <script src="/client/audio-track-repair.js"></script>
+<script src="/client/telegram-target-forward.js"></script>
 <script>
     const urlInput = document.getElementById('urlInput');
     const startBtn = document.getElementById('startBtn');
@@ -2014,12 +2016,13 @@
             actions.appendChild(taskButton(task, '完全删除', '', 'DELETE', '任务记录和服务端成品都会被删除，且无法恢复，确定继续吗？', true));
         }
         main.appendChild(actions);
+        if (task.hasFile) main.appendChild(window.TelegramTargetForward.create(task, '/api/youtube-premium', api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
         card.append(cover, main);
         return card;
     }
 
-    function isPremiumRemarkEditing() { return window.AudioTrackRepair.busy() || Boolean(document.activeElement?.closest?.('.task-remark')); }
+    function isPremiumRemarkEditing() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || Boolean(document.activeElement?.closest?.('.task-remark')); }
 
     async function loadTasks({ force = false } = {}) {
         if (!force && isPremiumRemarkEditing()) return;
