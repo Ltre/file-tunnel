@@ -73,10 +73,19 @@ test('两个后台的准备和下载接口均需管理身份，拒绝未完成�
         const url = base + root + '/tasks/test/audio-repair';
         assert.equal((await fetch(url, { method: 'POST' })).status, 401);
         assert.equal((await fetch(url + '/file')).status, 401);
-        const options = { method: 'POST', headers: { 'x-test-auth': '1', 'Content-Type': 'application/json' }, body: '{}' };
+        const options = { method: 'POST', headers: { 'x-test-auth': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ force:true }) };
         ready = false; assert.equal((await fetch(url, options)).status, 400); ready = true;
-        const response = await fetch(url, options); assert.equal(response.status, 200);
-        const data = await response.json(), download = await fetch(base + data.downloadUrl, { headers: { 'x-test-auth': '1' } });
+        const response = await fetch(url, options); assert.equal(response.status, 202);
+        const submitted = await response.json();
+        assert.equal(submitted.status, 'queued'); assert.match(submitted.jobId, /^[0-9a-f-]+$/);
+        let data = submitted;
+        for (let attempt = 0; attempt < 20 && data.status !== 'completed'; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 5));
+            const statusResponse = await fetch(base + submitted.statusUrl, { headers: { 'x-test-auth': '1' } });
+            assert.equal(statusResponse.status, 200); data = await statusResponse.json();
+        }
+        assert.equal(data.status, 'completed');
+        const download = await fetch(base + data.downloadUrl, { headers: { 'x-test-auth': '1' } });
         assert.equal(download.status, 200); assert.match(download.headers.get('content-disposition'), /attachment/);
         assert.equal(await download.text(), 'corrected');
     }

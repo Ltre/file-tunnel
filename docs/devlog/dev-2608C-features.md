@@ -2827,3 +2827,39 @@ Description：
 - 复查 Bot 内容管理实现：当前 webhook 收到普通私聊、群组或频道消息时，先过滤所有网盘托管频道，再将消息 JSON 归档到活动网盘托管频道；本地索引仅保留 Chat 分类、时间、媒体描述及远端归档 `file_id` 指针。页面读取消息时由 `diskTelegram.readPart` 回读 Telegram 归档，不在本机重复存储正文或 caption。页面和 API 已覆盖 Chat 分类、消息预览、文本发送、多附件、原文件/预览发送、视频 `sendVideo` 与 thumbnail、媒体 Range 读取及托管频道递归过滤。
 - Bot API 无法读取任意既有 Chat 历史，且 Telegram 更新只会从 webhook 接入开始可用。因此该页面会从部署后的新 webhook 更新逐步建立聊天记录；局域网环境不能收到 Telegram webhook 时无法进行端到端验收，但归档、指针回读和递归过滤已通过隔离回归测试。
 - 中断恢复后再次以项目自执行方式串行运行 `tests/*.test.cjs`，共 **34** 个测试文件通过；`node --test` 在当前受限会话中会被 Windows 统一拒绝创建子进程并报 `spawn EPERM`，该现象不涉及测试断言或应用代码。
+
+## 46. 2026-09-21：260921-1 音轨修复后台队列与网页 ZIP 外链脚本
+
+### 46.1 音轨修复请求改为后台队列
+
+- 原实现虽然在 `createAudioTrackRepair` 内部用 Promise 串行执行 FFmpeg，但 HTTP POST 会一直 `await repair.prepare(...)`，直到最长 30 分钟的转码结束才响应。浏览器 JavaScript 线程本身不会被异步 fetch 冻结，但该请求、按钮和任务列表刷新状态会一直被占用，实际交互仍表现为前端等待服务端长任务。
+- 修复服务新增独立任务状态：`queued`、`processing`、`completed`、`failed`。POST 只做源文件校验和入队，立即以 `202` 返回 `jobId`、状态接口和下载接口；已有有效修正版时直接返回完成态并复用缓存。
+- 后端继续使用全局单消费队列串行运行 `ffmpeg -i INPUT OUTPUT`，同一任务的并发提交共享正在运行的工作。完成后仍写入任务目录下既定的 `audio-track-repair` 缓存及原子 manifest，强制重修成功后才替换旧修正版，原文件始终保留。
+- SNS 与 YouTube Premium 共用前端改为短轮询状态。提交完成后立即恢复任务列表自动刷新，转码期间按钮显示排队或处理中状态；完成后自动下载，失败时显示后端返回的具体错误。页面因自动刷新重建任务卡片时继续复用同一轮询状态，不会重复提交或重复下载。
+
+### 46.2 网页 ZIP 外链 JavaScript 不执行
+
+- 根因是网页 ZIP 文件项可能从旧草稿或 ZIP 解包结果继承 `application/octet-stream`、`text/plain` 等声明类型。Runtime 原来优先相信该类型，即使请求路径明确以 `.js` 或 `.mjs` 结尾也不会纠正；在页面启用 `X-Content-Type-Options: nosniff` 时，浏览器能成功下载脚本响应，却会拒绝执行。内联脚本不经过资源 MIME 校验，因此仍可运行。
+- `WebZipRuntime.mount` 现在对 HTML、CSS、JavaScript、JSON、图片、音视频、字体和 WASM 等已知扩展名统一以路径推断的正确类型为准，只在未知扩展名时保留原声明类型。
+- Service Worker 响应层再次按请求路径纠正 Content-Type，兼容已经挂载在 IndexedDB 中的旧 Runtime 记录，并显式返回 `nosniff`。相对路径、子目录路径和根路径脚本继续由现有虚拟目录规则解析。
+- Service Worker 缓存版本升级至 `v56`，保证客户端能取得新的 Runtime 响应逻辑。
+
+### 46.3 验证与执行边界
+
+- `server/audio-track-repair.js`、`client/audio-track-repair.js`、`client/web-zip-runtime.js`、`service-worker.js` 均通过 `node --check`。
+- 音轨修复服务回归覆盖入队立即响应、管理身份、排队状态轮询、完成后下载、并发任务复用、强制重修、失败保留原版及旧修正版；前端回归覆盖提交期间防重复、转码期间不暂停任务列表刷新、轮询状态和完成后单次下载。
+- 新增 `features-260921-1.test.cjs`，验证旧 `application/octet-stream` / `text/plain` JavaScript 会被纠正为可执行 MIME，以及 Service Worker 的二次保护和队列接口结构。
+- 全部 **35** 个测试文件串行执行通过；可选 FFmpeg 实机用例在当前环境检测不到 FFmpeg 时按原设计跳过。未启动或重启服务器，未暂存、未提交；用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改保持原样。
+
+### 46.4 建议 Git 提交日志（不执行提交）
+
+Title：fix: 将音轨修复转入后台队列并恢复网页 ZIP 外链脚本执行
+
+Description：
+
+- 音轨修复提交后立即返回任务标识，由服务端单队列串行执行 FFmpeg
+- 增加修复任务状态查询、缓存复用、错误反馈及完成后下载流程
+- 转码期间恢复 SNS 与 YouTube Premium 任务列表刷新并防止重复提交
+- 根据网页 ZIP 资源路径纠正 JavaScript 等文件的 MIME 类型
+- 在 Service Worker 响应层兼容旧 Runtime 数据并升级缓存至 v56
+- 增加队列与外链脚本专项回归，完成 35 个测试文件验证

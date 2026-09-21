@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-function fixture(confirmValue = true, request = async () => ({ downloadUrl: '/corrected', name: '修正版.mp4', reused: false })) {
+function fixture(confirmValue = true, request = async () => ({ jobId:'done', status:'completed', statusUrl:'/status', downloadUrl: '/corrected', name: '修正版.mp4', reused: false })) {
     const requests = [], downloads = [], explanations = [];
     function element(tag) {
         return { tag, children: [], append(...children) { this.children.push(...children); }, setAttribute() {},
@@ -10,7 +10,8 @@ function fixture(confirmValue = true, request = async () => ({ downloadUrl: '/co
     const window = {};
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../client/audio-track-repair.js'), 'utf8'), {
         window, document: { createElement: element, body: element('body') },
-        confirm: text => { explanations.push(text); return confirmValue; }
+        confirm: text => { explanations.push(text); return confirmValue; },
+        setTimeout: callback => { Promise.resolve().then(callback); return 1; }
     });
     const panel = window.AudioTrackRepair.create({ id: 'task' }, '/api/sns-dl', async (...args) => { requests.push(args); return request(...args); });
     return { api: window.AudioTrackRepair, panel, button: panel.children[0], checkbox: panel.children[1].children[0], status: panel.children[2], requests, downloads, explanations };
@@ -21,13 +22,31 @@ test('独立修正版面板先说明并确认，取消时不调用服务端或�
     assert.equal(f.panel.children[1].children[1], '重新修正音轨');
     assert.match(f.explanations[0], /ffmpeg.*原文件保留/); assert.equal(f.requests.length, 0); assert.equal(f.downloads.length, 0);
 });
-test('勾选重修随 POST 传递，处理期间禁止重复执行且暂停任务列表刷新', async () => {
+test('勾选重修随 POST 传递，提交期间防重复且完成后自动下载', async () => {
     let finish; const f = fixture(true, () => new Promise(resolve => { finish = resolve; }));
     f.checkbox.checked = true; f.checkbox.onchange();
     const running = f.button.onclick(); assert.equal(f.api.busy(), true); assert.equal(f.button.disabled, true);
     await f.button.onclick(); assert.equal(f.requests.length, 1); assert.deepEqual(JSON.parse(f.requests[0][1].body), { force: true });
-    finish({ downloadUrl: '/corrected', name: '修正版.mp4', reused: false }); await running;
+    finish({ jobId:'done', status:'completed', statusUrl:'/status', downloadUrl: '/corrected', name: '修正版.mp4', reused: false }); await running;
     assert.deepEqual(f.downloads, ['/corrected']); assert.equal(f.api.busy(), false); assert.equal(f.checkbox.checked, false);
+});
+test('后端队列立即受理后轮询状态，不在转码期间阻塞任务列表刷新', async () => {
+    let statusCalls = 0;
+    const f = fixture(true, async url => {
+        if (url === '/status') {
+            statusCalls++;
+            return statusCalls === 1
+                ? { jobId:'queued', status:'processing', statusUrl:'/status', downloadUrl:'/corrected', name:'修正版.mp4' }
+                : { jobId:'queued', status:'completed', statusUrl:'/status', downloadUrl:'/corrected', name:'修正版.mp4', reused:false };
+        }
+        return { jobId:'queued', status:'queued', statusUrl:'/status', downloadUrl:'/corrected', name:'' };
+    });
+    await f.button.onclick();
+    assert.equal(f.api.busy(), false);
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(statusCalls, 2); assert.deepEqual(f.downloads, ['/corrected']);
+    assert.match(f.status.textContent, /开始下载/);
 });
 test('服务端修正失败只显示错误，不下载，按钮恢复可用', async () => {
     const f = fixture(true, async () => { throw Error('ffmpeg 失败'); }); await f.button.onclick();

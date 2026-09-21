@@ -15,6 +15,10 @@
         mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg', mp4:'video/mp4', webm:'video/webm',
         woff:'font/woff', woff2:'font/woff2', ttf:'font/ttf', otf:'font/otf', wasm:'application/wasm'
     })[String(filePath || '').split('.').pop()?.toLowerCase()] || 'application/octet-stream';
+    const runtimeType = (filePath, declaredType = '') => {
+        const inferred = guessType(filePath);
+        return inferred !== 'application/octet-stream' ? inferred : (declaredType || inferred);
+    };
 
     function openDb() {
         return new Promise((resolve, reject) => {
@@ -82,7 +86,7 @@
         const files = (entries || []).filter(entry => !String(entry?.path || '').endsWith('/')).map(entry => {
             const path = normalizePath(entry.path);
             if (!path) throw new Error('网页 ZIP 中存在无效文件路径');
-            return { path, type:entry.type || guessType(path), data:bytes(entry.data).slice() };
+            return { path, type:runtimeType(path, entry.type), data:bytes(entry.data).slice() };
         });
         if (!files.length) throw new Error('网页 ZIP 中没有可运行文件');
         const entry = options.entryPath
@@ -98,5 +102,5 @@
     }
 
     const unmount = id => id ? transact('readwrite', store => store.delete(id)) : Promise.resolve();
-    global.WebZipRuntime = { mount, unmount, cleanup, _test:{ normalizePath, guessType } };
+    global.WebZipRuntime = { mount, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType } };
 })(window);

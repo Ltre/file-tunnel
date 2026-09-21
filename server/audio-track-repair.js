@@ -29,7 +29,9 @@ function repairPlan(probe, input, output) {
 }
 function createAudioTrackRepair({ probe, run }) {
     const jobs = new Map();
+    const jobHistory = new Map();
     let queue = Promise.resolve();
+    const JOB_TTL = 6 * 60 * 60 * 1000;
     const manifestPath = directory => path.join(directory, 'audio-track-repair', 'current.json');
     function previousOutput(directory) {
         try {
@@ -73,16 +75,85 @@ function createAudioTrackRepair({ probe, run }) {
             throw error;
         }
     }
+    function pruneJobs() {
+        const cutoff = Date.now() - JOB_TTL;
+        for (const [id, job] of jobHistory) {
+            if (job.finishedAt && job.finishedAt < cutoff) jobHistory.delete(id);
+        }
+    }
+    function publicJob(job) {
+        return {
+            jobId:job.id,
+            status:job.status,
+            queuedAt:job.queuedAt,
+            startedAt:job.startedAt || 0,
+            finishedAt:job.finishedAt || 0,
+            reused:Boolean(job.result?.reused),
+            name:job.result?.name || '',
+            error:job.error || ''
+        };
+    }
+    function completedJob(result, directory) {
+        const job = {
+            id:crypto.randomUUID(), directory:path.resolve(directory), status:'completed',
+            queuedAt:Date.now(), startedAt:Date.now(), finishedAt:Date.now(), result
+        };
+        jobHistory.set(job.id, job);
+        return job;
+    }
+    function enqueue(file, directory, { force = false } = {}) {
+        pruneJobs();
+        const jobKey = path.resolve(directory);
+        if (jobs.has(jobKey)) return publicJob(jobs.get(jobKey));
+        if (!force) {
+            const existing = cached(file, directory);
+            if (existing) return publicJob(completedJob(existing, directory));
+        }
+        const job = {
+            id:crypto.randomUUID(), directory:jobKey, status:'queued', queuedAt:Date.now(),
+            startedAt:0, finishedAt:0, result:null, error:'', promise:null
+        };
+        jobHistory.set(job.id, job);
+        jobs.set(jobKey, job);
+        job.promise = queue.then(async () => {
+            job.status = 'processing';
+            job.startedAt = Date.now();
+            try {
+                job.result = await generate(file, directory);
+                job.status = 'completed';
+            } catch (error) {
+                job.status = 'failed';
+                job.error = error?.message || String(error);
+            } finally {
+                job.finishedAt = Date.now();
+                jobs.delete(jobKey);
+            }
+            return job;
+        });
+        queue = job.promise.then(() => undefined, () => undefined);
+        return publicJob(job);
+    }
+    function getStatus(file, directory, jobId) {
+        pruneJobs();
+        const resolvedDirectory = path.resolve(directory);
+        const job = jobHistory.get(String(jobId || ''));
+        if (job && job.directory === resolvedDirectory) return publicJob(job);
+        const existing = cached(file, directory);
+        return existing ? publicJob(completedJob(existing, directory)) : null;
+    }
     return {
         cached,
-        prepare(file, directory, { force = false } = {}) {
-            const jobKey = path.resolve(directory);
-            if (jobs.has(jobKey)) return jobs.get(jobKey);
-            if (!force) { const existing = cached(file, directory); if (existing) return Promise.resolve(existing); }
-            const job = queue.then(() => generate(file, directory)).finally(() => jobs.delete(jobKey));
-            jobs.set(jobKey, job);
-            queue = job.catch(() => {});
-            return job;
+        enqueue,
+        getStatus,
+        async prepare(file, directory, options = {}) {
+            const submitted = enqueue(file, directory, options);
+            const job = jobHistory.get(submitted.jobId);
+            if (job?.promise) await job.promise;
+            if (job?.status === 'failed') throw new Error(job.error);
+            if (job?.result) return job.result;
+            const existing = cached(file, directory);
+            if (existing) return existing;
+            throw new Error('audio-repair-cache-missing');
         }
     };
 }
@@ -92,12 +163,28 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
         if (task?.status !== 'completed' || !file || !directory) throw new Error('audio-repair-not-ready');
         return { file, directory };
     };
-    app.post(root + '/tasks/:taskId/audio-repair', requireAuth, async (req, res) => {
+    const responseFor = (taskId, job) => ({
+        ...job,
+        statusUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/status?jobId=' + encodeURIComponent(job.jobId),
+        downloadUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/file'
+    });
+    app.post(root + '/tasks/:taskId/audio-repair', requireAuth, (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
         try {
             const { file, directory } = getSource(req.params.taskId);
-            const result = await repair.prepare(file, directory, { force: req.body?.force === true });
-            res.json({ reused: result.reused, name: result.name, downloadUrl: root + '/tasks/' + encodeURIComponent(req.params.taskId) + '/audio-repair/file' });
+            const job = repair.enqueue(file, directory, { force: req.body?.force === true });
+            res.status(job.status === 'completed' ? 200 : 202).json(responseFor(req.params.taskId, job));
+        } catch (error) { res.status(400).json({ error: labels[error.message] || sanitizeError(error) }); }
+    });
+    app.get(root + '/tasks/:taskId/audio-repair/status', requireAuth, (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        try {
+            const { file, directory } = getSource(req.params.taskId);
+            const job = repair.getStatus(file, directory, req.query.jobId);
+            if (!job) return res.status(404).json({ error:'音轨修正任务不存在或服务器已重启，请重新提交' });
+            const payload = responseFor(req.params.taskId, job);
+            if (job.status === 'failed') payload.error = labels[job.error] || sanitizeError(new Error(job.error));
+            res.json(payload);
         } catch (error) { res.status(400).json({ error: labels[error.message] || sanitizeError(error) }); }
     });
     app.get(root + '/tasks/:taskId/audio-repair/file', requireAuth, (req, res) => {

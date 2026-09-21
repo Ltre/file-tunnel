@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v55';
+const CACHE_NAME = 'instant-tunnel-v56';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -177,6 +177,19 @@ async function readWebZipRuntime(runtimeId) {
     } finally { db.close(); }
 }
 
+function getWebZipRuntimeContentType(filePath, declaredType = '') {
+    const extension = String(filePath || '').split('.').pop()?.toLowerCase();
+    const inferred = ({
+        html:'text/html; charset=utf-8', htm:'text/html; charset=utf-8', css:'text/css; charset=utf-8',
+        js:'text/javascript; charset=utf-8', mjs:'text/javascript; charset=utf-8', json:'application/json; charset=utf-8',
+        txt:'text/plain; charset=utf-8', xml:'application/xml; charset=utf-8', svg:'image/svg+xml',
+        png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', avif:'image/avif', ico:'image/x-icon',
+        mp3:'audio/mpeg', wav:'audio/wav', ogg:'audio/ogg', mp4:'video/mp4', webm:'video/webm',
+        woff:'font/woff', woff2:'font/woff2', ttf:'font/ttf', otf:'font/otf', wasm:'application/wasm'
+    })[extension];
+    return inferred || declaredType || 'application/octet-stream';
+}
+
 async function redirectWebZipRuntimeRoot(sourceUrl, runtimeId) {
     const runtime = await readWebZipRuntime(runtimeId);
     if (!runtime || Number(runtime.expiresAt) <= Date.now()) return new Response('网页 ZIP 运行目录已过期', { status:410 });
@@ -201,7 +214,8 @@ async function handleWebZipRuntime(request, url) {
     if (!file) return new Response('网页 ZIP 资源不存在', { status:404 });
     const data = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
     const headers = {
-        'Content-Type': file.type || 'application/octet-stream',
+        'Content-Type': getWebZipRuntimeContentType(filePath, file.type),
+        'X-Content-Type-Options': 'nosniff',
         'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',
         'Cross-Origin-Resource-Policy': 'cross-origin',
