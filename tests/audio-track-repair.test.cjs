@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan } = require('../server/audio-track-repair');
+const { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan, createProgressReader } = require('../server/audio-track-repair');
 const mediaProbe = { streams: [{ index: 0, codec_type: 'video', codec_name: 'h264' }, { index: 1, codec_type: 'audio', codec_name: 'aac' }] };
 function setup(t, dependencies = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'audio-track-repair-'));
@@ -54,10 +54,20 @@ test('旧版复制视频的修正版缓存失效，重新编码成功后替换�
 test('offset 修正版使用普通 ffmpeg 重新编码完整音视频，输出 MP4，无音轨拒绝', () => {
     const plan = repairPlan(mediaProbe, 'input.mp4', 'output');
     assert.equal(plan.extension, '.mp4');
-    assert.deepEqual(plan.args, ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', 'input.mp4', 'output.mp4']);
+    assert.deepEqual(plan.args, ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', 'input.mp4', '-progress', 'pipe:2', '-nostats', 'output.mp4']);
     assert.throws(() => repairPlan({ streams: [mediaProbe.streams[0]] }, 'i', 'o'), /no-audio/);
     assert.equal(repairPlan({ streams: [{ ...mediaProbe.streams[0], codec_name: 'vp9' }, mediaProbe.streams[1]] }, 'i', 'o').extension, '.mp4');
     assert.equal(repairPlan({ streams: [mediaProbe.streams[1]] }, 'i', 'o').extension, '.m4a');
+});
+test('ffmpeg 进度输出转换为可轮询的百分比、时间、速度和帧数', () => {
+    const updates = [], read = createProgressReader(20, update => updates.push(update));
+    read('frame=12\nout_time_us=5000000\nspeed=1.5x\nprogress=continue\n');
+    assert.deepEqual(updates.at(-1), {
+        durationSeconds:20, outTimeSeconds:5, speed:'1.5x', frame:12, progress:25
+    });
+    read('out_time_ms=18000000\nprogress=continue\n');
+    assert.equal(updates.at(-1).progress, 90);
+    assert.equal(updates.at(-1).outTimeSeconds, 18);
 });
 test('两个后台的准备和下载接口均需管理身份，拒绝未完成及无有效缓存任务', async t => {
     const express = require('express'), fixture = setup(t), app = express(); app.use(express.json());

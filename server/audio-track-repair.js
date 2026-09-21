@@ -24,8 +24,35 @@ function repairPlan(probe, input, output) {
     const extension = video.length ? '.mp4' : '.m4a';
     // Use FFmpeg's normal decode/encode and stream selection, exactly as
     // `ffmpeg -i INPUT.mp4 OUTPUT.mp4` for yt-dlp --download-sections results.
-    const args = ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', input, output + extension];
+    const args = ['-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', input, '-progress', 'pipe:2', '-nostats', output + extension];
     return { args, extension, audioCount: 1, videoCount: video.length ? 1 : 0 };
+}
+function probeDuration(probe = {}) {
+    const formatDuration = Number(probe.format?.duration);
+    if (Number.isFinite(formatDuration) && formatDuration > 0) return formatDuration;
+    return Math.max(0, ...(probe.streams || []).map(stream => Number(stream.duration) || 0));
+}
+function createProgressReader(duration, onProgress) {
+    let pending = '';
+    const detail = { durationSeconds:duration || 0, outTimeSeconds:0, speed:'', frame:0, progress:duration ? 0 : null };
+    return chunk => {
+        pending += String(chunk || '');
+        const lines = pending.split(/\r?\n/); pending = lines.pop() || '';
+        let changed = false;
+        for (const line of lines) {
+            const separator = line.indexOf('=');
+            if (separator < 1) continue;
+            const key = line.slice(0, separator), value = line.slice(separator + 1).trim();
+            if (key === 'out_time_us' || key === 'out_time_ms') {
+                detail.outTimeSeconds = Math.max(0, Number(value) / 1000000 || 0); changed = true;
+            } else if (key === 'speed') { detail.speed = value; changed = true; }
+            else if (key === 'frame') { detail.frame = Math.max(0, Number(value) || 0); changed = true; }
+            else if (key === 'progress') changed = true;
+        }
+        if (!changed) return;
+        detail.progress = duration ? Math.min(99, Math.max(0, Math.round(detail.outTimeSeconds / duration * 100))) : null;
+        onProgress({ ...detail });
+    };
 }
 function createAudioTrackRepair({ probe, run }) {
     const jobs = new Map();
@@ -48,8 +75,9 @@ function createAudioTrackRepair({ probe, run }) {
             return { path: outputPath, name: record.name, reused: true };
         } catch (_) { return null; }
     }
-    async function generate(file, directory) {
+    async function generate(file, directory, onProgress = () => {}) {
         const key = fingerprint(file), sourceProbe = await probe(file.path);
+        const duration = probeDuration(sourceProbe);
         const cacheDir = path.join(directory, 'audio-track-repair');
         const stem = crypto.randomUUID();
         const plan = repairPlan(sourceProbe, file.path, path.join(cacheDir, stem));
@@ -58,7 +86,8 @@ function createAudioTrackRepair({ probe, run }) {
         const oldPath = previousOutput(directory);
         const temporaryManifest = path.join(cacheDir, stem + '.json');
         try {
-            await run(plan.args);
+            onProgress({ phase:'正在重新编码并校正音轨', progress:duration ? 0 : null, durationSeconds:duration, outTimeSeconds:0, speed:'', frame:0 });
+            await run(plan.args, { onOutput:createProgressReader(duration, onProgress) });
             const result = await probe(outputPath), streams = result.streams || [];
             const audioCount = streams.filter(stream => stream.codec_type === 'audio').length;
             const videoCount = streams.filter(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic).length;
@@ -90,13 +119,16 @@ function createAudioTrackRepair({ probe, run }) {
             finishedAt:job.finishedAt || 0,
             reused:Boolean(job.result?.reused),
             name:job.result?.name || '',
-            error:job.error || ''
+            error:job.error || '', phase:job.phase || '', progress:job.progress ?? null,
+            durationSeconds:job.durationSeconds || 0, outTimeSeconds:job.outTimeSeconds || 0,
+            speed:job.speed || '', frame:job.frame || 0
         };
     }
     function completedJob(result, directory) {
         const job = {
             id:crypto.randomUUID(), directory:path.resolve(directory), status:'completed',
-            queuedAt:Date.now(), startedAt:Date.now(), finishedAt:Date.now(), result
+            queuedAt:Date.now(), startedAt:Date.now(), finishedAt:Date.now(), result,
+            phase:'已完成', progress:100
         };
         jobHistory.set(job.id, job);
         return job;
@@ -111,7 +143,8 @@ function createAudioTrackRepair({ probe, run }) {
         }
         const job = {
             id:crypto.randomUUID(), directory:jobKey, status:'queued', queuedAt:Date.now(),
-            startedAt:0, finishedAt:0, result:null, error:'', promise:null
+            startedAt:0, finishedAt:0, result:null, error:'', promise:null,
+            phase:'等待后端转码队列', progress:null, durationSeconds:0, outTimeSeconds:0, speed:'', frame:0
         };
         jobHistory.set(job.id, job);
         jobs.set(jobKey, job);
@@ -119,10 +152,12 @@ function createAudioTrackRepair({ probe, run }) {
             job.status = 'processing';
             job.startedAt = Date.now();
             try {
-                job.result = await generate(file, directory);
+                job.result = await generate(file, directory, update => Object.assign(job, update));
                 job.status = 'completed';
+                job.phase = '已完成'; job.progress = 100;
             } catch (error) {
                 job.status = 'failed';
+                job.phase = '处理失败';
                 job.error = error?.message || String(error);
             } finally {
                 job.finishedAt = Date.now();
@@ -138,6 +173,8 @@ function createAudioTrackRepair({ probe, run }) {
         const resolvedDirectory = path.resolve(directory);
         const job = jobHistory.get(String(jobId || ''));
         if (job && job.directory === resolvedDirectory) return publicJob(job);
+        const active = jobs.get(resolvedDirectory);
+        if (active) return publicJob(active);
         const existing = cached(file, directory);
         return existing ? publicJob(completedJob(existing, directory)) : null;
     }
@@ -196,4 +233,4 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
         } catch (error) { res.status(404).json({ error: labels[error.message] || sanitizeError(error) }); }
     });
 }
-module.exports = { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan };
+module.exports = { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan, createProgressReader };

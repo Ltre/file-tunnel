@@ -18,7 +18,7 @@ test('网页 ZIP Runtime 按路径纠正外链 JavaScript MIME', () => {
     const worker = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
     assert.match(worker, /getWebZipRuntimeContentType\(filePath, file\.type\)/);
     assert.match(worker, /'X-Content-Type-Options': 'nosniff'/);
-    assert.match(worker, /instant-tunnel-v56/);
+    assert.match(worker, /instant-tunnel-v57/);
 });
 
 test('音轨修复接口提交后返回队列任务，并提供独立状态查询', () => {

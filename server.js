@@ -209,7 +209,9 @@ const snsDownloadService = createSnsDownloadService({
 const snsDownloadCoverJobs = new Map();
 const audioTrackRepair = createAudioTrackRepair({
     probe: file => probeMediaFile(file),
-    run: args => spawnCapture(FFMPEG_COMMAND, args, { timeoutMs: 30 * 60 * 1000, timeoutError: 'audio-repair-timeout' })
+    run: (args, options = {}) => spawnCapture(FFMPEG_COMMAND, args, {
+        timeoutMs: 30 * 60 * 1000, timeoutError: 'audio-repair-timeout', onOutput:options.onOutput
+    })
 });
 const videoTranscodeService = createVideoTranscodeService({ dataDir: SERVER_DATA_DIR, ffmpegCommand: FFMPEG_COMMAND });
 

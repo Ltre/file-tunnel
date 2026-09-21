@@ -2863,3 +2863,50 @@ Description：
 - 根据网页 ZIP 资源路径纠正 JavaScript 等文件的 MIME 类型
 - 在 Service Worker 响应层兼容旧 Runtime 数据并升级缓存至 v56
 - 增加队列与外链脚本专项回归，完成 35 个测试文件验证
+
+## 47. 2026-09-21：260921-2 Telegram 聊天分页缓存、音轨修复进度与前台加载回归
+
+### 47.1 Telegram 内容管理的三天缓存和锚点分页
+
+- 原聊天接口会选出最多 60 条索引后逐条串行调用 `diskTelegram.readPart`，每次打开 Chat 都重新从 Telegram 读取全部归档 JSON；页面又把全部返回记录直接塞进消息区，没有前后页锚点。这同时造成首屏等待时间随消息数增长、重复回源和无法从上次浏览位置继续的问题。
+- 服务端新增 `.tunnel-data/telegram-content-cache`。缓存按 Telegram 归档 `file_unique_id`／`file_id` 计算稳定键，每条归档 JSON 有效 3 天；到期后重新从 Telegram 读取并原子覆盖。相同归档的并发读取共享一个 Promise，单页最多并发读取 6 条，避免重复请求和无上限并发。新收到或新发出的消息在完成 Telegram 归档后立即写入同一缓存。
+- 消息接口改为基于稳定归档 ID 的 `latest`、`around`、`before`、`after` 分页，每页默认 40 条并返回首尾锚点及前后页状态。浏览器按 Chat 在 `localStorage` 保存最接近消息区中央的浏览锚点，再次进入时加载锚点附近；滚到顶部或底部时分别加载相邻页。
+- 浏览器消息 DOM 最多保留 160 条。向前翻页时清理远端尾部，向后翻页时清理远端头部，并同步修正滚动位置和可重新加载的锚点，长聊天不会无限堆积节点。
+
+### 47.2 聊天区布局和图文合并发送
+
+- 页面外壳固定在可视高度内，聊天正文使用 `minmax(0, 1fr)` 独立滚动区；输入框、附件选择器和发送按钮固定留在聊天区底部。消息再多也不会把输入区挤出屏幕，移动端同样使用 `100dvh`。
+- 同时填写文字并选择附件时，不再先调用 `sendMessage`。文字改为首个附件的 Telegram caption，因而“文字 + 一张图片”只生成一条带 caption 的图片消息；多附件时只给第一条附件消息附带该段文字，避免重复发送相同 caption。纯文字仍使用 `sendMessage`。
+
+### 47.3 音轨修正版实时进度和完成态下载
+
+- FFmpeg 命令保持普通 `ffmpeg -i INPUT OUTPUT` 的完整音视频重编码语义，只追加 `-progress pipe:2 -nostats` 机器可读进度输出，不改变编码方案。服务端解析输出时间、总时长、百分比、速度和帧数并写入队列任务状态，状态接口实时返回这些字段。
+- SNS 与 YouTube Premium 的任务详情持续显示排队阶段、处理阶段、百分比、处理时间／总时长、速度和帧数。页面被任务列表刷新重建后会通过无任务 ID 的状态查询重新发现该目录正在执行的任务或已有缓存，不会另开一条转码。
+- 完成后“下载音轨修正版”按钮变为绿色。转码完成不会自动下载；用户再次点击绿色按钮时直接下载既有修正版，不会重新转码。只有勾选“重新修正音轨”才重新进入队列。无缓存状态探测限制为每个任务至多每 10 秒一次，避免任务列表轮询制造额外请求。
+
+### 47.4 正式环境前台加载缓慢的提交定位和修复
+
+- 对比 `0838ee01525d2229b7fde1c88e71bbf2f9a7e886` 到 `efe056159ba94fee46123710cf7fa856f62639bc` 的逐提交差异后，首个引入严重回源放大的提交是 `437e89562fbb306c2265c52685f59fd5033ba2fa`。该提交为容忍单个预缓存资源 404，把安装期的 `cache.addAll(APP_SHELL)` 改成 `Promise.allSettled(APP_SHELL.map(...))`，同时对每个资源使用 `fetch(new Request(resource, { cache:'reload' }))`。
+- 旧版前台 Service Worker 的运行期静态资源处理本来就会以 `cache:'reload'` 请求应用外壳；新安装逻辑又并发强制回源整个外壳。部署新 Service Worker 时，页面框架自身的静态请求和安装期约 35 个强制回源请求会叠加，且绕过浏览器现有 HTTP 缓存。应用外壳在 `92d0448`、`e8bf8e2`、`437e895` 和 `efe0561` 又持续增加资源，最终在 Cloudflare 后方形成明显的瞬时源站压力。后台页面不运行 `app.js` 中的前台 Service Worker 注册和首页启动链路，因此没有同样症状；这与现场现象一致。
+- Service Worker 升级至 `v57`。安装期只顺序预缓存离线启动所需的 `index.html`、manifest 和图标，单项失败仍不会阻断安装；不再使用 `cache:'reload'`。普通页面导航、运行配置和 Service Worker 文件走网络优先，应用静态资源走 Cache Storage 优先并仅在未命中时请求一次网络，其它同源 GET 交给浏览器正常处理。
+- 该改动消除了部署时“整套应用外壳强制并发回源”和每次前台加载“无条件绕过缓存”两条放大路径，同时保留网页 ZIP Runtime、分享目标、API 和 Socket.IO 的原有专用分支。
+
+### 47.5 验证与执行边界
+
+- `server.js`、`server/telegram-content-manager.js`、`server/audio-track-repair.js`、`client/telegram-content.js`、`client/audio-track-repair.js`、`service-worker.js` 均通过 `node --check`。
+- 新增 `features-260921-2.test.cjs`，实测并发归档读取去重、三天缓存命中与过期回源、锚点前后分页、图文 caption、独立滚动布局、DOM 窗口及 Service Worker 不再强制并发回源。音轨修复回归新增 FFmpeg 进度解析、绿色完成态和完成后手动下载验证。
+- 36 个测试文件以项目自执行方式串行完成，共 **282** 项：**281** 项通过，**1** 项因当前执行轮次检测不到 FFmpeg／FFprobe 而按既有条件跳过，失败为 0。`node --test tests` 在当前 Windows 沙箱会因测试运行器创建子进程而报 `spawn EPERM`，逐文件直接执行相同测试代码可正常完成。
+- `git diff --check` 只报告用户原有 `prompts/dev-prompt-logs/dev-2608B.md` 的 3 处行尾空格；本轮没有修改或清理该文件。未启动或重启服务器，未调用真实 Telegram，未暂存、未提交。
+
+### 47.6 建议 Git 提交日志（不执行提交）
+
+Title：fix: 优化 Telegram 聊天加载并修复前台回源拥塞
+
+Description：
+
+- 为 Telegram 聊天归档增加三天本地缓存、并发去重和锚点双向分页
+- 固定消息区与输入区布局，限制长聊天 DOM 数量并恢复连续滚动加载
+- 将文字作为首个附件 caption 发送，避免图文被拆成两条消息
+- 实时展示音轨修正版的 FFmpeg 处理进度，完成后以绿色按钮直接下载
+- 定位 437e895 引入的应用外壳强制并发回源，改为核心资源顺序预缓存和静态资源缓存优先
+- 升级 Service Worker 至 v57，新增专项回归并完成 282 项测试验证

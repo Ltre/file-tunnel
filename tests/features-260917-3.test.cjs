@@ -6,11 +6,13 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 
-test('Service Worker 预缓存不会因单个 404 阻止网页 ZIP 运行服务安装', () => {
+test('Service Worker 只顺序预缓存核心资源且单个 404 不阻止网页 ZIP 运行服务安装', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v56/);
-    assert.match(worker, /Promise\.allSettled\(APP_SHELL\.map/);
-    assert.match(worker, /if \(!response\.ok \|\| response\.redirected\) return/);
+    assert.match(worker, /instant-tunnel-v57/);
+    assert.match(worker, /for \(const resource of PRECACHE_CORE\)/);
+    assert.match(worker, /if \(response\.ok && !response\.redirected\) await cache\.put/);
+    assert.doesNotMatch(worker, /Promise\.allSettled\(APP_SHELL\.map/);
+    assert.doesNotMatch(worker, /cache:\s*['"]reload['"]/);
     assert.doesNotMatch(worker, /cache\.addAll\(APP_SHELL\)/);
 });
 

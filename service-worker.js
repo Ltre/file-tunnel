@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v56';
+const CACHE_NAME = 'instant-tunnel-v57';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -38,14 +38,16 @@ const APP_SHELL = [
     '/manifest.webmanifest',
     '/tunnel-icon.svg'
 ];
+const PRECACHE_CORE = ['/index.html', '/manifest.webmanifest', '/tunnel-icon.svg'];
 
 async function precacheAppShell() {
     const cache = await caches.open(CACHE_NAME);
-    await Promise.allSettled(APP_SHELL.map(async resource => {
-        const response = await fetch(new Request(resource, { cache:'reload' }));
-        if (!response.ok || response.redirected) return;
-        await cache.put(resource, response);
-    }));
+    for (const resource of PRECACHE_CORE) {
+        try {
+            const response = await fetch(resource);
+            if (response.ok && !response.redirected) await cache.put(resource, response);
+        } catch (_) {}
+    }
 }
 
 self.addEventListener('install', event => {
@@ -141,17 +143,19 @@ self.addEventListener('fetch', event => {
         return;
     }
 
-    const shouldReload = APP_SHELL.includes(url.pathname) || url.pathname === '/service-worker.js';
-    const request = shouldReload ? new Request(event.request, { cache: 'reload' }) : event.request;
-    event.respondWith(
-        fetch(request)
-            .then(response => {
-                const copy = response.clone();
-                caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
-                return response;
-            })
-            .catch(() => caches.match(event.request).then(response => response || caches.match('/index.html')))
-    );
+    const navigation = event.request.mode === 'navigate';
+    if (navigation || url.pathname === '/runtime-config.js' || url.pathname === '/service-worker.js') {
+        event.respondWith(fetch(event.request).catch(() => caches.match(navigation ? '/index.html' : url.pathname)));
+        return;
+    }
+    if (!APP_SHELL.includes(url.pathname)) return;
+    event.respondWith(caches.open(CACHE_NAME).then(async cache => {
+        const cached = await cache.match(url.pathname);
+        if (cached) return cached;
+        const response = await fetch(event.request);
+        if (response.ok && !response.redirected) await cache.put(url.pathname, response.clone());
+        return response;
+    }));
 });
 
 function openWebZipRuntimeDb() {

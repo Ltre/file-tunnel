@@ -10,7 +10,11 @@
     const mode = document.getElementById('telegramAttachmentMode');
     const selected = document.getElementById('selectedAttachments');
     const status = document.getElementById('telegramContentStatus');
-    let chats = [], activeChat = null, busy = false;
+    let chats = [], activeChat = null, busy = false, loadingPage = 0, openSequence = 0, anchorTimer = 0;
+    let paging = { firstAnchor:'', lastAnchor:'', hasBefore:false, hasAfter:false };
+    const MAX_RENDERED_MESSAGES = 160;
+    const loadedMessageIds = new Set();
+    const anchorKey = chatId => `telegramContentBrowseAnchor:v1:${chatId}`;
 
     async function request(url, options) {
         const response = await fetch(url, options);
@@ -64,6 +68,7 @@
 
     function renderMessage(record) {
         const bubble = el('section', `message ${record.direction === 'outgoing' ? 'outgoing' : 'incoming'}`);
+        bubble.dataset.messageId = record.id;
         if (record.unavailable) bubble.append(el('div', 'message-text', `归档暂时无法读取：${record.error || '未知错误'}`));
         else {
             const media = mediaElement(record); if (media) bubble.append(media);
@@ -79,17 +84,99 @@
         bubble.append(time); return bubble;
     }
 
-    async function openChat(chat) {
+    function saveBrowseAnchor() {
+        if (!activeChat) return;
+        const bounds = messages.getBoundingClientRect();
+        const center = bounds.top + bounds.height / 2;
+        let closest = null, distance = Infinity;
+        for (const node of messages.querySelectorAll('.message[data-message-id]')) {
+            const rect = node.getBoundingClientRect();
+            const nextDistance = Math.abs(rect.top + rect.height / 2 - center);
+            if (nextDistance < distance) { closest = node; distance = nextDistance; }
+        }
+        if (closest?.dataset.messageId) localStorage.setItem(anchorKey(activeChat.id), closest.dataset.messageId);
+    }
+
+    function scheduleBrowseAnchor() {
+        clearTimeout(anchorTimer);
+        anchorTimer = setTimeout(saveBrowseAnchor, 180);
+    }
+
+    function trimRenderedMessages(direction) {
+        const nodes = [...messages.querySelectorAll('.message[data-message-id]')];
+        if (nodes.length <= MAX_RENDERED_MESSAGES) return;
+        const oldHeight = messages.scrollHeight, removeFromStart = direction === 'after';
+        for (const node of removeFromStart ? nodes.slice(0, nodes.length - MAX_RENDERED_MESSAGES) : nodes.slice(MAX_RENDERED_MESSAGES)) {
+            loadedMessageIds.delete(node.dataset.messageId);
+            node.remove();
+        }
+        const remaining = messages.querySelectorAll('.message[data-message-id]');
+        paging.firstAnchor = remaining[0]?.dataset.messageId || paging.firstAnchor;
+        paging.lastAnchor = remaining[remaining.length - 1]?.dataset.messageId || paging.lastAnchor;
+        if (removeFromStart) {
+            paging.hasBefore = true;
+            messages.scrollTop = Math.max(0, messages.scrollTop - (oldHeight - messages.scrollHeight));
+        } else paging.hasAfter = true;
+    }
+
+    async function loadMessagePage(direction, requestedAnchor = '') {
+        if (!activeChat || loadingPage === openSequence) return;
+        if (direction === 'before' && !paging.hasBefore) return;
+        if (direction === 'after' && !paging.hasAfter) return;
+        const chatId = activeChat.id, sequence = openSequence;
+        const anchor = requestedAnchor || (direction === 'before' ? paging.firstAnchor : direction === 'after' ? paging.lastAnchor : '');
+        loadingPage = sequence;
+        messages.classList.add('is-loading-page');
+        try {
+            const query = new URLSearchParams({ limit:'40', direction, ...(anchor ? { anchor } : {}) });
+            const result = await request(`/api/telegram-content/chats/${encodeURIComponent(chatId)}/messages?${query}`);
+            if (!activeChat || activeChat.id !== chatId || sequence !== openSequence) return;
+            const records = (result.messages || []).filter(record => !loadedMessageIds.has(record.id));
+            const nodes = records.map(record => { loadedMessageIds.add(record.id); return renderMessage(record); });
+            if (direction === 'before') {
+                const oldHeight = messages.scrollHeight, oldTop = messages.scrollTop;
+                messages.prepend(...nodes);
+                messages.scrollTop = oldTop + messages.scrollHeight - oldHeight;
+                paging.firstAnchor = result.paging?.firstAnchor || paging.firstAnchor;
+                paging.hasBefore = Boolean(result.paging?.hasBefore);
+                trimRenderedMessages('before');
+            } else if (direction === 'after') {
+                messages.append(...nodes);
+                paging.lastAnchor = result.paging?.lastAnchor || paging.lastAnchor;
+                paging.hasAfter = Boolean(result.paging?.hasAfter);
+                trimRenderedMessages('after');
+            } else {
+                messages.replaceChildren(...nodes);
+                paging = { ...paging, ...(result.paging || {}) };
+                if (!nodes.length) messages.append(el('p', 'empty', '暂无消息。'));
+                const target = requestedAnchor && messages.querySelector(`[data-message-id="${CSS.escape(requestedAnchor)}"]`);
+                if (target && result.paging?.requestedAnchor) target.scrollIntoView({ block:'center' });
+                else messages.scrollTop = messages.scrollHeight;
+            }
+        } finally {
+            if (loadingPage === sequence) {
+                loadingPage = 0;
+                messages.classList.remove('is-loading-page');
+            }
+        }
+    }
+
+    async function openChat(chat, { latest = false } = {}) {
         activeChat = chat; renderChats(); composer.hidden = false;
         title.textContent = chat.title; meta.textContent = `${chat.type} · ${chat.id}`;
         messages.replaceChildren(el('p', 'empty', '正在从 Telegram 读取消息归档…'));
+        loadedMessageIds.clear(); paging = { firstAnchor:'', lastAnchor:'', hasBefore:false, hasAfter:false }; openSequence++;
         try {
-            const result = await request(`/api/telegram-content/chats/${encodeURIComponent(chat.id)}/messages?limit=80`);
-            messages.replaceChildren(...result.messages.map(renderMessage));
-            if (!result.messages.length) messages.append(el('p', 'empty', '暂无消息。'));
-            messages.scrollTop = messages.scrollHeight;
+            const savedAnchor = latest ? '' : localStorage.getItem(anchorKey(chat.id)) || '';
+            await loadMessagePage(savedAnchor ? 'around' : 'latest', savedAnchor);
         } catch (error) { messages.replaceChildren(el('p', 'empty', `读取失败：${error.message}`)); }
     }
+
+    messages.addEventListener('scroll', () => {
+        scheduleBrowseAnchor();
+        if (messages.scrollTop < 120) loadMessagePage('before').catch(error => { status.textContent = `读取更早消息失败：${error.message}`; });
+        if (messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120) loadMessagePage('after').catch(error => { status.textContent = `读取更新消息失败：${error.message}`; });
+    }, { passive:true });
 
     async function loadChats() {
         try { chats = (await request('/api/telegram-content/chats')).chats || []; renderChats(); }
@@ -104,14 +191,15 @@
         if (!text && !files.length) { status.textContent = '请输入消息或选择附件。'; return; }
         busy = true; status.textContent = '正在发送…';
         try {
-            if (text) await request(`/api/telegram-content/chats/${encodeURIComponent(activeChat.id)}/messages`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ text }) });
+            if (text && !files.length) await request(`/api/telegram-content/chats/${encodeURIComponent(activeChat.id)}/messages`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ text }) });
+            const attachmentCaption = text.slice(0, 1024);
             for (let index = 0; index < files.length; index++) {
                 const file = files[index]; status.textContent = `正在发送附件 ${index + 1}/${files.length}：${file.name}`;
-                const query = new URLSearchParams({ name:file.name, type:file.type || 'application/octet-stream', mode:mode.value, caption:'' });
+                const query = new URLSearchParams({ name:file.name, type:file.type || 'application/octet-stream', mode:mode.value, caption:index === 0 ? attachmentCaption : '' });
                 await request(`/api/telegram-content/chats/${encodeURIComponent(activeChat.id)}/attachments?${query}`, { method:'PUT', headers:{ 'Content-Type':'application/octet-stream' }, body:file });
             }
             input.value = ''; attachments.value = ''; selected.textContent = ''; status.textContent = '发送完成。';
-            await openChat(activeChat); await loadChats();
+            await openChat(activeChat, { latest:true }); await loadChats();
         } catch (error) { status.textContent = `发送失败：${error.message}`; }
         finally { busy = false; }
     };

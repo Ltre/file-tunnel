@@ -8,6 +8,8 @@ const { buildTelegramDocumentsMultipart, buildTelegramSingleFileMultipart } = re
 
 const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024 * 1024;
+const ARCHIVE_CACHE_TTL = 3 * 24 * 60 * 60 * 1000;
+const ARCHIVE_READ_CONCURRENCY = 6;
 
 function atomicWrite(filePath, value) {
     fs.mkdirSync(path.dirname(filePath), { recursive:true });
@@ -52,10 +54,41 @@ function createTelegramContentManager(options = {}) {
     const dataDir = options.dataDir;
     const indexPath = path.join(dataDir, 'telegram-content-index.json');
     const tempDir = path.join(dataDir, 'telegram-content-tmp');
+    const cacheDir = path.join(dataDir, 'telegram-content-cache');
     const getBackend = options.getBackend;
     const telegram = options.telegram;
     const createVideoThumbnail = options.createVideoThumbnail;
+    const archiveReads = new Map();
     let writeQueue = Promise.resolve();
+
+    const archiveCacheKey = pointer => crypto.createHash('sha256')
+        .update(String(pointer?.fileUniqueId || pointer?.fileId || pointer?.archiveId || ''))
+        .digest('hex');
+    const archiveCachePath = pointer => path.join(cacheDir, `${archiveCacheKey(pointer)}.json`);
+
+    function readArchiveCache(pointer) {
+        try {
+            const filePath = archiveCachePath(pointer);
+            const stat = fs.statSync(filePath);
+            if (!stat.isFile() || Date.now() - stat.mtimeMs >= ARCHIVE_CACHE_TTL) return null;
+            const cached = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            return cached?.document?.message ? cached.document : null;
+        } catch (_) { return null; }
+    }
+
+    function writeArchiveCache(pointer, document) {
+        fs.mkdirSync(cacheDir, { recursive:true });
+        atomicWrite(archiveCachePath(pointer), { version:1, cachedAt:Date.now(), document });
+    }
+
+    fs.promises.mkdir(cacheDir, { recursive:true }).then(async () => {
+        const entries = await fs.promises.readdir(cacheDir, { withFileTypes:true });
+        await Promise.allSettled(entries.filter(entry => entry.isFile() && entry.name.endsWith('.json')).map(async entry => {
+            const filePath = path.join(cacheDir, entry.name);
+            const stat = await fs.promises.stat(filePath);
+            if (Date.now() - stat.mtimeMs >= ARCHIVE_CACHE_TTL) await fs.promises.rm(filePath, { force:true });
+        }));
+    }).catch(() => {});
 
     function load() {
         try {
@@ -121,6 +154,7 @@ function createTelegramContentManager(options = {}) {
     async function archive(message, direction = 'incoming') {
         if (!message?.chat?.id || isStorageChat(message.chat)) return null;
         const archivePointer = await uploadArchive(message, direction);
+        writeArchiveCache(archivePointer, { schema:1, direction, archivedAt:Date.now(), message });
         const chat = chatRecord(message.chat);
         const media = mediaFromMessage(message);
         const record = {
@@ -140,30 +174,82 @@ function createTelegramContentManager(options = {}) {
     }
 
     async function readArchive(pointer) {
-        const backend = backendFor(pointer.channelId);
-        const stream = await telegram.readPart(backend, { fileId:pointer.fileId, size:pointer.size }, { start:0, end:pointer.size - 1 });
-        const chunks = []; let bytes = 0;
-        for await (const chunk of stream) {
-            bytes += chunk.length;
-            if (bytes > MAX_ARCHIVE_BYTES) throw new Error('Telegram 消息归档异常过大');
-            chunks.push(chunk);
+        const cached = readArchiveCache(pointer);
+        if (cached) return cached;
+        const key = archiveCacheKey(pointer);
+        if (archiveReads.has(key)) return archiveReads.get(key);
+        const reading = (async () => {
+            const backend = backendFor(pointer.channelId);
+            const stream = await telegram.readPart(backend, { fileId:pointer.fileId, size:pointer.size }, { start:0, end:pointer.size - 1 });
+            const chunks = []; let bytes = 0;
+            for await (const chunk of stream) {
+                bytes += chunk.length;
+                if (bytes > MAX_ARCHIVE_BYTES) throw new Error('Telegram 消息归档异常过大');
+                chunks.push(chunk);
+            }
+            const document = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            writeArchiveCache(pointer, document);
+            return document;
+        })().finally(() => archiveReads.delete(key));
+        archiveReads.set(key, reading);
+        return reading;
+    }
+
+    const compareRecords = (a, b) => Number(a.date) - Number(b.date)
+        || Number(a.telegramMessageId) - Number(b.telegramMessageId)
+        || String(a.id).localeCompare(String(b.id));
+
+    async function hydrateRecords(records) {
+        const hydrated = new Array(records.length);
+        let cursor = 0;
+        const worker = async () => {
+            while (cursor < records.length) {
+                const index = cursor++;
+                const record = records[index];
+                try {
+                    const archived = await readArchive(record.archive);
+                    hydrated[index] = { ...record, message:archived.message };
+                } catch (error) {
+                    hydrated[index] = { ...record, unavailable:true, error:error.message };
+                }
+            }
+        };
+        await Promise.all(Array.from({ length:Math.min(ARCHIVE_READ_CONCURRENCY, records.length) }, worker));
+        return hydrated;
+    }
+
+    async function listMessagePage(chatId, { anchor = '', direction = 'latest', limit = 40 } = {}) {
+        const index = load();
+        const records = index.messages.filter(item => item.chatId === String(chatId)).sort(compareRecords);
+        const pageSize = Math.min(80, Math.max(1, Number(limit) || 40));
+        const anchorIndex = anchor ? records.findIndex(item => item.id === anchor) : -1;
+        let start = 0, end = records.length;
+        if (direction === 'before' && anchorIndex >= 0) {
+            end = anchorIndex; start = Math.max(0, end - pageSize);
+        } else if (direction === 'after' && anchorIndex >= 0) {
+            start = anchorIndex + 1; end = Math.min(records.length, start + pageSize);
+        } else if (direction === 'around' && anchorIndex >= 0) {
+            start = Math.max(0, anchorIndex - Math.floor(pageSize / 2));
+            end = Math.min(records.length, start + pageSize);
+            start = Math.max(0, end - pageSize);
+        } else {
+            start = Math.max(0, records.length - pageSize); end = records.length;
         }
-        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const selected = records.slice(start, end);
+        return {
+            messages:await hydrateRecords(selected),
+            paging:{
+                firstAnchor:selected[0]?.id || '', lastAnchor:selected.at(-1)?.id || '',
+                hasBefore:start > 0, hasAfter:end < records.length,
+                requestedAnchor:anchorIndex >= 0 ? anchor : ''
+            }
+        };
     }
 
     async function listMessages(chatId, before = Infinity, limit = 60) {
-        const index = load();
-        const records = index.messages.filter(item => item.chatId === String(chatId) && item.date < before).sort((a, b) => b.date - a.date).slice(0, Math.min(100, Math.max(1, limit))).reverse();
-        const hydrated = [];
-        for (const record of records) {
-            try {
-                const archived = await readArchive(record.archive);
-                hydrated.push({ ...record, message:archived.message });
-            } catch (error) {
-                hydrated.push({ ...record, unavailable:true, error:error.message });
-            }
-        }
-        return hydrated;
+        const records = load().messages.filter(item => item.chatId === String(chatId) && item.date < before)
+            .sort(compareRecords).slice(-Math.min(100, Math.max(1, limit)));
+        return hydrateRecords(records);
     }
 
     async function sendText(chatId, text) {
@@ -209,7 +295,12 @@ function createTelegramContentManager(options = {}) {
             res.json({ chats });
         });
         app.get('/api/telegram-content/chats/:chatId/messages', requireAuth, async (req, res) => {
-            try { res.json({ messages:await listMessages(req.params.chatId, Number(req.query.before) || Infinity, Number(req.query.limit) || 60) }); }
+            try {
+                res.setHeader('Cache-Control', 'no-store');
+                res.json(await listMessagePage(req.params.chatId, {
+                    anchor:String(req.query.anchor || ''), direction:String(req.query.direction || 'latest'), limit:Number(req.query.limit) || 40
+                }));
+            }
             catch (error) { res.status(502).json({ error:error.message }); }
         });
         app.post('/api/telegram-content/chats/:chatId/messages', requireAuth, async (req, res) => {
@@ -273,7 +364,7 @@ function createTelegramContentManager(options = {}) {
         });
     }
 
-    return { archiveIncoming:message => archive(message, 'incoming'), archiveOutgoing:message => archive(message, 'outgoing'), isStorageChat, registerRoutes, listMessages };
+    return { archiveIncoming:message => archive(message, 'incoming'), archiveOutgoing:message => archive(message, 'outgoing'), isStorageChat, registerRoutes, listMessages, listMessagePage };
 }
 
 module.exports = { createTelegramContentManager, mediaFromMessage, chatRecord };

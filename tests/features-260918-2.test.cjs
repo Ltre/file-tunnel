@@ -45,7 +45,7 @@ test('sendVideo multipart 可附带 Telegram thumbnail 且长度准确', async (
     } finally { fs.rmSync(directory, { recursive:true, force:true }); }
 });
 
-test('Telegram 内容管理只在本地保存 Telegram 归档指针并忽略托管频道', () => {
+test('Telegram 内容索引只保存归档指针并忽略托管频道', () => {
     const moduleSource = source('server/telegram-content-manager.js');
     const server = source('server.js');
     const page = source('pages/telegram-content.html');
