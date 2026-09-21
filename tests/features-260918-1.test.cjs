@@ -44,7 +44,7 @@ test('网页 ZIP iframe 保持同源身份以便 Service Worker 接管 Runtime U
     const worker = source('service-worker.js');
     assert.match(standalone, /sandbox="allow-same-origin allow-scripts/);
     assert.match(workshop, /sandbox','allow-same-origin allow-scripts/);
-    assert.match(worker, /instant-tunnel-v54/);
+    assert.match(worker, /instant-tunnel-v55/);
     assert.match(worker, /url\.pathname\.startsWith\('\/web-zip-runtime\/'\)/);
 });
 
@@ -72,18 +72,20 @@ test('Telegram 单文件媒体 multipart 保留原始字节并设置预览字段
     }
 });
 
-test('Telegram 转发面板支持点外关闭、媒体预览、私有链接和历史备注', () => {
+test('Telegram 转发面板支持点外关闭、视频预览、公开目标和历史备注', () => {
     const client = source('client/telegram-target-forward.js');
     const css = source('client/telegram-target-forward.css');
     const server = source('server.js');
     assert.match(client, /!details\.contains\(event\.target\)\) details\.open = false/);
     assert.match(client, /supportVideoPreview:videoPreview\.checked/);
-    assert.match(client, /supportImagePreview:imagePreview\.checked/);
+    assert.doesNotMatch(client, /supportImagePreview|telegram-target-image-preview/);
     assert.ok(client.indexOf("row.append(choose, remark, remove)") >= 0);
-    assert.match(css, /telegram-target-image-warning/);
-    assert.match(server, /privateLink = value\.match/);
+    assert.doesNotMatch(css, /telegram-target-image-warning/);
+    assert.match(client, /公开 t\.me\/用户名链接或数字 chat ID/);
+    assert.doesNotMatch(client, /私有邀请/);
     assert.match(server, /resolveTelegramForwardTarget/);
+    assert.doesNotMatch(server, /privateLink = value\.match|telegramPrivateInviteCandidates|getTelegramForwardChat/);
     assert.match(server, /method:'sendVideo', fieldName:'video'/);
-    assert.match(server, /method:'sendPhoto', fieldName:'photo'/);
+    assert.match(server, /thumbnail:'attach:\/\/thumbnail'/);
     assert.match(server, /app\.patch\('\/api\/telegram-forward-targets'/);
 });

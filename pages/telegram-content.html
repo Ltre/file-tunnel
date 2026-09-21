@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Telegram Bot 内容管理</title>
+    <link rel="stylesheet" href="/client/telegram-content.css?v=20260918-1">
+    <script defer src="/client/telegram-content.js?v=20260918-1"></script>
+</head>
+<body>
+<main class="telegram-content-shell">
+    <header><div><h1>Telegram Bot 内容管理</h1><p>消息正文与附件保存在 Telegram，本机仅保存 Chat 和归档文件指针。</p></div><nav><a href="/tgbot">Bot 配置</a><a href="/admin">返回后台</a></nav></header>
+    <section class="telegram-content-layout">
+        <aside>
+            <div class="chat-list-head"><strong>已建立联系的 Chat</strong><button id="refreshChats" type="button">刷新</button></div>
+            <div id="telegramChatList" class="chat-list"><p class="empty">正在读取…</p></div>
+        </aside>
+        <article class="conversation">
+            <div class="conversation-head"><strong id="activeChatTitle">请选择 Chat</strong><span id="activeChatMeta"></span></div>
+            <div id="telegramMessages" class="messages"><p class="empty">选择左侧 Chat 后查看消息。</p></div>
+            <form id="telegramComposer" hidden>
+                <textarea id="telegramMessageInput" rows="2" maxlength="4096" placeholder="输入文本消息"></textarea>
+                <div class="composer-actions">
+                    <label class="attach-button">＋ 添加附件<input id="telegramAttachments" type="file" multiple></label>
+                    <label>附件形式 <select id="telegramAttachmentMode"><option value="raw">原文件形式</option><option value="preview">压缩预览形式</option></select></label>
+                    <button class="primary" type="submit">发送</button>
+                </div>
+                <div id="selectedAttachments" class="selected-files"></div>
+                <div id="telegramContentStatus" class="status" role="status"></div>
+            </form>
+        </article>
+    </section>
+</main>
+</body>
+</html>

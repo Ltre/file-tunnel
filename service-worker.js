@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v54';
+const CACHE_NAME = 'instant-tunnel-v55';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -27,6 +27,8 @@ const APP_SHELL = [
     '/client/web-workshop.css',
     '/client/telegram-target-forward.js',
     '/client/telegram-target-forward.css',
+    '/client/telegram-content.js',
+    '/client/telegram-content.css',
     '/client/media.js',
     '/client/i18n-catalog.js',
     '/client/i18n.js',

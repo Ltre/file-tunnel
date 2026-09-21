@@ -4720,8 +4720,22 @@ async function publishWebZipUpdate(file, draft) {
     const current = message.type === 'file' ? message.fileInfo : getCollectionFiles(message).find(item => item.id === draft.sourceFileId);
     if (!canEditWebZip(current)) throw new Error('当前设备没有该网页 ZIP 的编辑权限');
     const nextFileId = generateId();
+    // The previous record describes the old physical ZIP. Carrying these
+    // fields forward overwrites the new Blob metadata and makes the cache
+    // integrity check fail whenever an edit changes the ZIP byte length.
+    const {
+        id: _oldId,
+        name: _oldName,
+        size: _oldSize,
+        type: _oldType,
+        timestamp: _oldTimestamp,
+        data: _oldData,
+        cacheStoreRef: _oldCacheStoreRef,
+        cacheStorage: _oldCacheStorage,
+        ...versionMetadata
+    } = current;
     const fileInfo = createFileInfoFromFile(file, {
-        ...current,
+        ...versionMetadata,
         fileId: nextFileId,
         webZip: true,
         creatorDeviceId: current.creatorDeviceId || state.deviceId,

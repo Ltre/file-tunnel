@@ -76,6 +76,7 @@ const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
+const { createTelegramContentManager } = require('./server/telegram-content-manager');
 const { listDataUsage } = require('./server/data-usage');
 const { createTelegramOidcClient } = require('./server/telegram-oidc');
 const { createTelegramOidcMock } = require('./server/telegram-oidc-mock');
@@ -329,6 +330,17 @@ const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
 const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org' });
+const telegramContentManager = createTelegramContentManager({
+    dataDir:SERVER_DATA_DIR,
+    telegram:diskTelegram,
+    getBackend:channelId => ({
+        token:getTelegramBotToken(),
+        channelId:channelId || getTelegramDriveActiveChannel()?.id || '',
+        baseUrl:getTelegramBotApiBaseUrl()
+    }),
+    getStorageChannelIds:() => (telegramConfig.driveChannels || []).map(item => item.id),
+    createVideoThumbnail:file => prepareTelegramForwardVideoThumbnail(null, '', file)
+});
 
 function normalizeTelegramBotConfig(config = {}) {
     const token = sanitizeString(config.token || '', 260);
@@ -406,19 +418,15 @@ function normalizeTelegramForwardTarget(input) {
     if (/^@[A-Za-z0-9_]{3,64}$/.test(value)) return value;
     const link = value.match(/^(?:https?:\/\/)?t\.me\/([A-Za-z0-9_]{3,64})\/?$/i);
     if (link) return `@${link[1]}`;
-    const privateLink = value.match(/^(?:(?:https?:\/\/)?t\.me\/(?:joinchat\/|\+)|\+)([A-Za-z0-9_-]{6,128})\/?$/i);
-    if (privateLink) return `https://t.me/+${privateLink[1]}`;
     if (/^-?\d{5,20}$/.test(value)) return value;
-    throw new Error('Telegram 目标无效，请填写 @用户名、t.me 链接、+私有邀请链接或数字 ID');
+    throw new Error('Telegram 目标无效，请填写 @用户名、公开 t.me/用户名链接或数字 chat ID');
 }
 
 function normalizeTelegramForwardTargetRecord(item) {
     try {
         const source = item && typeof item === 'object' ? item : { target:item };
         const target = normalizeTelegramForwardTarget(source.target);
-        const chatId = /^-?\d{5,20}$|^@[A-Za-z0-9_]{3,64}$/.test(String(source.chatId || '').trim()) ? String(source.chatId).trim() : '';
-        const inviteLink = /^https:\/\/t\.me\/\+[A-Za-z0-9_-]{6,128}$/i.test(String(source.inviteLink || '').trim()) ? String(source.inviteLink).trim() : '';
-        return { target, chatId, inviteLink, remark:String(source.remark || '').trim().slice(0, 100) };
+        return { target, remark:String(source.remark || '').trim().slice(0, 100) };
     } catch (_) {
         return null;
     }
@@ -453,61 +461,61 @@ function rememberTelegramForwardTarget(target, patch = {}) {
     return saveTelegramForwardTargets([{ ...previous, ...patch, target }, ...current.filter(item => item.target !== target)]);
 }
 
-function telegramPrivateInviteCandidates() {
-    const config = telegramConfig || {};
-    return [...new Set([
-        config.backupChatId,
-        ...Object.values(config.songShareChannels || {}),
-        ...(config.driveChannels || []).map(item => item.id),
-        ...Array.from(telegramChatTunnels?.keys?.() || []),
-        ...Array.from(telegramPendingFiles?.keys?.() || []),
-        ...Array.from(telegramChatLanguages?.keys?.() || []),
-        ...loadTelegramForwardTargets().flatMap(item => [item.chatId, item.target])
-    ].map(value => String(value || '').trim()).filter(value => /^-?\d{5,20}$|^@[A-Za-z0-9_]{3,64}$/.test(value)))];
+function resolveTelegramForwardTarget(input) {
+    const target = normalizeTelegramForwardTarget(input);
+    return { target, chatId:target };
 }
 
-async function getTelegramForwardChat(chatId, operation) {
+async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile) {
+    fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive:true });
+    const outputPath = path.join(SNS_MEDIA_WORK_DIR, `telegram-video-thumb-${crypto.randomBytes(10).toString('hex')}.jpg`);
     try {
-        const payload = await telegramFetchJson('getChat', {
-            method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ chat_id:chatId })
-        }, { operation });
-        return payload.result || null;
-    } catch (_) {
+        for (const quality of [5, 8, 12, 18, 24]) {
+            await spawnCapture(FFMPEG_COMMAND, [
+                '-y', '-hide_banner', '-loglevel', 'error', '-i', videoFile.path,
+                '-vf', "scale=w='if(gte(dar,1),320,-2)':h='if(gte(dar,1),-2,320)':flags=lanczos,setsar=1",
+                '-frames:v', '1', '-q:v', String(quality), outputPath
+            ], { timeoutMs:60000, timeoutError:'telegram-video-thumbnail-timeout' });
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0 && fs.statSync(outputPath).size < 200000) {
+                return {
+                    path:outputPath,
+                    name:'thumbnail.jpg',
+                    type:'image/jpeg',
+                    size:fs.statSync(outputPath).size,
+                    cleanup:() => { try { fs.rmSync(outputPath, { force:true }); } catch (_) {} }
+                };
+            }
+        }
+        throw new Error('telegram-video-thumbnail-too-large');
+    } catch (error) {
+        try { fs.rmSync(outputPath, { force:true }); } catch (_) {}
+        console.warn(`[telegram-forward] 生成视频封面失败，将继续发送无封面视频：${error.message}`);
         return null;
     }
-}
-
-async function resolveTelegramForwardTarget(input, operation) {
-    const target = normalizeTelegramForwardTarget(input);
-    if (!target.startsWith('https://t.me/+')) return { target, chatId:target };
-    const remembered = loadTelegramForwardTargets().find(item => item.target === target && item.chatId);
-    if (remembered) return { target, chatId:remembered.chatId };
-    for (const candidate of telegramPrivateInviteCandidates()) {
-        const chat = await getTelegramForwardChat(candidate, `${operation}-resolve-private-link`);
-        const inviteLink = String(chat?.invite_link || '').replace(/\/$/, '');
-        if (inviteLink === target) return { target, chatId:String(chat.id) };
-    }
-    throw new Error('无法从该私有邀请链接确定 Telegram 目标。Bot API 不能凭邀请链接加入会话；请先让 Bot 成为该群组或频道成员，并在系统中配置该目标，或先使用数字 chat_id 发送一次');
 }
 
 async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
     const file = service.getFile(taskId);
     if (!file || !fs.existsSync(file.path)) throw new Error('Telegram 转发所需的服务端成品不存在');
-    const resolvedTarget = await resolveTelegramForwardTarget(input?.target, operation);
+    const resolvedTarget = resolveTelegramForwardTarget(input?.target);
     const target = resolvedTarget.target;
     const caption = String(input?.caption || '').trim().slice(0, 1024);
     const stat = fs.statSync(file.path);
     const mimeType = getMimeTypeFromFileName(file.name);
     const supportVideoPreview = input?.supportVideoPreview === true;
-    const supportImagePreview = input?.supportImagePreview === true;
+    let thumbnail = null;
     let multipart;
-    if (supportImagePreview && mimeType.startsWith('image/')) {
-        multipart = buildTelegramSingleFileMultipart({ method:'sendPhoto', fieldName:'photo', chatId:resolvedTarget.chatId, caption, file:{ path:file.path, name:file.name, type:mimeType, size:stat.size } });
-    } else if (supportVideoPreview && mimeType.startsWith('video/')) {
-        multipart = buildTelegramSingleFileMultipart({ method:'sendVideo', fieldName:'video', chatId:resolvedTarget.chatId, caption, fields:{ supports_streaming:'true' }, file:{ path:file.path, name:file.name, type:mimeType, size:stat.size } });
+    if (supportVideoPreview && mimeType.startsWith('video/')) {
+        thumbnail = await prepareTelegramForwardVideoThumbnail(service, taskId, file);
+        multipart = buildTelegramSingleFileMultipart({
+            method:'sendVideo', fieldName:'video', chatId:resolvedTarget.chatId, caption,
+            fields:{ supports_streaming:'true', ...(thumbnail ? { thumbnail:'attach://thumbnail' } : {}) },
+            attachments:thumbnail ? [{ ...thumbnail, fieldName:'thumbnail' }] : [],
+            file:{ path:file.path, name:file.name, type:mimeType, size:stat.size }
+        });
     } else {
-        if (supportImagePreview || supportVideoPreview) throw new Error('当前成品类型与所选 Telegram 预览方式不匹配');
+        if (supportVideoPreview) throw new Error('当前成品类型与所选 Telegram 视频预览方式不匹配');
         multipart = buildTelegramDocumentsMultipart({
             chatId: resolvedTarget.chatId,
             caption,
@@ -515,18 +523,22 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
             disableContentTypeDetection: true
         });
     }
-    const payload = await telegramFetchJson(multipart.method, {
-        method: 'POST',
-        headers: {
-            'Content-Type': multipart.contentType,
-            'Content-Length': String(multipart.contentLength)
-        },
-        body: multipart.body,
-        duplex: 'half'
-    }, { operation });
+    let payload;
+    try {
+        payload = await telegramFetchJson(multipart.method, {
+            method: 'POST',
+            headers: {
+                'Content-Type': multipart.contentType,
+                'Content-Length': String(multipart.contentLength)
+            },
+            body: multipart.body,
+            duplex: 'half'
+        }, { operation });
+    } finally {
+        thumbnail?.cleanup?.();
+    }
     const chatId = String(payload.result?.chat?.id || resolvedTarget.chatId || '');
-    const chat = await getTelegramForwardChat(chatId, `${operation}-remember-target`);
-    const targets = rememberTelegramForwardTarget(target, { chatId, inviteLink:String(chat?.invite_link || '') });
+    const targets = rememberTelegramForwardTarget(target);
     return { ok:true, target, targets, mode:multipart.method, messageId:Number(payload.result?.message_id) || 0 };
 }
 
@@ -1268,6 +1280,7 @@ app.use([
     '/pages/vclient.html',
     '/pages/disk-management.html',
     '/pages/data-usage.html',
+    '/pages/telegram-content.html',
     '/pages/video-transcode.html',
     '/pages/video-transcode-guide.html'
 ], adminAuth.requireAuth);
@@ -1313,6 +1326,13 @@ app.get('/data-usage', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'data-usage.html'));
 });
+
+app.get('/telegram-content', (req, res) => {
+    if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
+    res.sendFile(path.join(__dirname, 'pages', 'telegram-content.html'));
+});
+
+telegramContentManager.registerRoutes(app, adminAuth.requireAuth);
 
 app.get('/video-transcode', (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
@@ -5373,6 +5393,12 @@ async function handleTelegramUpdate(update = {}) {
         const expiresBefore = Date.now() - 10 * 60 * 1000;
         for (const [id, seenAt] of telegramProcessedUpdates) if (seenAt < expiresBefore) telegramProcessedUpdates.delete(id);
     }
+    const contentMessage = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
+    if (contentMessage?.chat?.id && telegramContentManager.isStorageChat(contentMessage.chat)) return;
+    if (contentMessage?.chat?.id) {
+        try { await telegramContentManager.archiveIncoming(contentMessage); }
+        catch (error) { console.error('[telegram-content] 消息归档失败：', error.message); }
+    }
     const callback = update.callback_query;
     if (callback) {
         const chatKey = String(callback.message?.chat?.id || callback.from?.id || '');
@@ -5624,13 +5650,15 @@ async function telegramSendMessage(chatId, text, replyMarkup = undefined) {
             return [key, localizeMarkup(entry)];
         }));
     };
-    await telegramApi('sendMessage', {
+    const sent = await telegramApi('sendMessage', {
         chat_id: chatId,
         text: localizedText,
         reply_markup: localizeMarkup(replyMarkup)
     }).catch(err => {
         console.warn(`telegram sendMessage failed: ${err.message}`);
+        return null;
     });
+    if (sent) telegramContentManager.archiveOutgoing(sent).catch(error => console.warn(`[telegram-content] 发出消息归档失败：${error.message}`));
 }
 
 function getTelegramCloudOversizedFiles(files) {

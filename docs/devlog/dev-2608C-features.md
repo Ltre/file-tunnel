@@ -2772,3 +2772,58 @@ Description：
 - 支持解析 Bot 已知会话的 Telegram 私有邀请链接，并持久化邀请链接与 chat ID 映射
 - 为 Telegram 历史目标增加可编辑备注并兼容迁移旧字符串记录
 - 升级 Service Worker 至 v54，新增专项回归并完成 270 项全量测试
+
+## 45. 2026-09-18：260918-2 网页 ZIP 更新、Telegram 视频封面与 Bot 内容管理
+
+### 45.1 编辑现有网页 ZIP 后发布失败
+
+- 根因位于 `publishWebZipUpdate`：它把旧传输记录完整展开给 `createFileInfoFromFile`，而后者最后展开业务元数据，导致旧版本的 `size`、`name`、`type` 和时间戳反向覆盖新生成 ZIP 的物理属性。修改内容导致 ZIP 字节数变化后，本机实际落盘字节数与 `fileInfo.size` 不一致，于是完整性校验报“网页 ZIP 新版本未能完整写入本机缓存”；未修改内容时大小恰好相同，所以没有触发。
+- 更新流程现在先剥离旧记录的文件 ID、名称、大小、类型、时间戳和缓存实现字段，只继承所有权、编辑授权、根版本等业务元数据。新版本物理属性完全由本次生成的 `File` 提供，随后仍执行原有本机缓存完整性验证、传输记录替换和旧缓存清理。
+
+### 45.2 Telegram 视频消息封面与图片预览选项移除
+
+- SNS 与 YouTube Premium 的“支持视频预览”发送现在优先使用任务已生成的封面；封面不可用时通过 FFmpeg 从原视频首帧生成 JPEG。图片按最长边不超过 320 像素并逐级调整 JPEG 质量，保证 Telegram `thumbnail` 的 200KB 限制。
+- 单文件 multipart 构造器支持附加文件字段，视频原字节和 `thumbnail` 在同一 `sendVideo` 请求中流式发送，`supports_streaming=true` 保持可直接播放；视频本体不经过 FFmpeg，不发生重编码或压缩。临时封面无论成功或失败都会删除。
+- 删除共用转发面板的“支持图片预览”复选框、警告文案、请求字段以及 SNS/YouTube 服务端 `sendPhoto` 分支。内容管理页自己的“压缩预览形式”附件能力属于 Bot 聊天功能，不依赖或恢复该下载任务选项。
+
+### 45.3 私有邀请链接能力边界
+
+- Telegram Bot API 的发送方法只接受数字 `chat_id` 或公开频道用户名，没有把任意 `t.me/+...` 邀请 hash 转换为 chat ID 的 Bot 方法。MTProto 的 `messages.checkChatInvite` 和 `messages.importChatInvite` 官方文档均明确为用户账号方法，不能由 Bot 使用。
+- 保留上一轮的可靠实现：只在 Bot 已知、已加入且系统掌握候选 chat ID 的会话中调用 `getChat`，将返回的 `invite_link` 与用户输入精确比较。无法匹配时继续明确要求先让 Bot 加入并提供数字 chat ID；没有引入 MTProto 用户登录、自动入群或猜测 ID。
+
+### 45.4 Telegram Bot 内容管理
+
+- 新增受管理身份保护的 `/telegram-content` 页面，并在后台“扩展配置”加入入口。页面按频道、群组和私聊分类 Chat，聊天区以左右消息气泡呈现文本、caption、图片、视频、音频、语音和普通附件，支持发送文本。
+- 文件选择器允许一次添加多个附件，发送形式可选“原文件形式”或“压缩预览形式”。视频无论选择哪种形式都使用原视频字节的 `sendVideo`，保持 Telegram 内直接播放，并生成同样符合限制的封面；图片只在预览形式下使用 `sendPhoto`，其它附件使用 `sendDocument`。
+- Bot API 不提供任意 Chat 历史读取接口，且 webhook/getUpdates 更新最多由 Telegram 保留 24 小时。因此实现从当前 webhook 接收开始建立历史：每条消息 JSON 作为文档自动归档到当前网盘托管频道，本机 `.tunnel-data/telegram-content-index.json` 仅保存 Chat 分类、时间、媒体类型与 Telegram 归档 `file_id` 指针，不保存正文或 caption。打开 Chat 时通过现有 `diskTelegram.readPart` 从 Telegram 读取并解析归档。
+- webhook 在任何业务处理之前识别全部网盘托管频道，兼容数字 ID 和 `@username` 配置并直接忽略其消息，防止内容归档文档再次被采集造成递归发送。该功能直接复用当前 Bot Token、活动网盘频道和磁盘 Telegram 传输层，不要求在“第三方系统接入 Telegram 网盘”中登记应用。
+
+### 45.5 验证与执行边界
+
+- `app.js`、`server.js`、`server/telegram-content-manager.js`、`server/telegram-multipart.js`、`client/telegram-target-forward.js` 和 `client/telegram-content.js` 均通过 `node --check`。
+- 新增回归验证新 ZIP 不继承旧物理属性、带 thumbnail 的 `sendVideo` multipart 字节及 Content-Length、托管频道过滤、归档指针读取和本地索引不含消息正文；更新既有媒体转发和 Service Worker 缓存版本断言。
+- 全部测试文件逐个串行执行；代码相关用例通过。首次全量执行只有三个旧用例因仍固定断言 Service Worker `v54` 失败，已统一更新为本次 `v55` 后复验。
+- 未启动或重启正式服务器，未调用真实 Telegram 发送，未暂存、未提交。用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改保持原样。
+
+### 45.6 建议 Git 提交日志（不执行提交）
+
+Title：feat: 修复网页 ZIP 更新并新增 Telegram Bot 内容管理
+
+Description：
+
+- 修复编辑现有网页 ZIP 时旧文件大小覆盖新版本并导致缓存完整性校验失败
+- 为 SNS 与 YouTube Premium 的 Telegram 视频预览消息生成并发送封面缩略图
+- 删除无实际任务场景的图片预览选项及其下载任务转发逻辑
+- 删除无法可靠实现的 Telegram 私有邀请链接识别与历史映射，仅保留公开用户名和数字 chat ID
+- 新增 Telegram Bot 内容管理页，按 Chat 分类展示消息并支持文本和多附件发送
+- 将消息正文归档到网盘托管频道，本地仅保存远端指针并过滤托管频道递归更新
+- 升级 Service Worker 至 v55 并补充专项回归
+
+### 45.7 中场验收后的收敛
+
+- 现场验收确认编辑现有网页 ZIP 的发布链路通过。复查后保留了新旧版本物理元数据隔离、本机缓存完整性校验和旧版本延后清理三道保护，没有发现会重新把旧 `size` 覆盖到新 ZIP 的分支。
+- 视频 Telegram 静态预览此前错误地优先采用下载任务封面；下载任务封面可能是平台通用横图，而实际发送的视频是竖屏或不同显示比例，导致封面框比例与播放画面不一致。现在统一从最终待发送视频生成缩略图，按显示宽高比 `DAR` 缩放，最长边为 320 像素，并以 `setsar=1` 输出。实际 FFmpeg 验证生成的竖屏为 `180×320 / 9:16`、横屏为 `320×180 / 16:9`；测试目录已在验证结束后删除。
+- 经官方 Bot API 能力核对，私有邀请链接没有可靠的 Bot Token 到 `chat_id` 转换接口，之前的“在已知 Chat 中比对 invite_link”分支也不能满足直接输入任意私有链接的需求。按验收决定删除该功能的输入提示、格式识别、候选 Chat 探测、历史 `inviteLink`/`chatId` 字段和相关错误提示；转发目标现只接受 `@username`、公开 `t.me/username` 链接和数字 `chat_id`。
+- 复查 Bot 内容管理实现：当前 webhook 收到普通私聊、群组或频道消息时，先过滤所有网盘托管频道，再将消息 JSON 归档到活动网盘托管频道；本地索引仅保留 Chat 分类、时间、媒体描述及远端归档 `file_id` 指针。页面读取消息时由 `diskTelegram.readPart` 回读 Telegram 归档，不在本机重复存储正文或 caption。页面和 API 已覆盖 Chat 分类、消息预览、文本发送、多附件、原文件/预览发送、视频 `sendVideo` 与 thumbnail、媒体 Range 读取及托管频道递归过滤。
+- Bot API 无法读取任意既有 Chat 历史，且 Telegram 更新只会从 webhook 接入开始可用。因此该页面会从部署后的新 webhook 更新逐步建立聊天记录；局域网环境不能收到 Telegram webhook 时无法进行端到端验收，但归档、指针回读和递归过滤已通过隔离回归测试。
+- 中断恢复后再次以项目自执行方式串行运行 `tests/*.test.cjs`，共 **34** 个测试文件通过；`node --test` 在当前受限会话中会被 Windows 统一拒绝创建子进程并报 `spawn EPERM`，该现象不涉及测试断言或应用代码。

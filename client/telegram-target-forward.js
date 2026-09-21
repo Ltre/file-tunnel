@@ -43,7 +43,7 @@
         menu.className = 'telegram-target-forward-menu';
         const input = document.createElement('input');
         input.className = 'telegram-target-input';
-        input.placeholder = '@用户名、t.me 链接、+私有邀请链接或数字 ID';
+        input.placeholder = '@用户名、公开 t.me/用户名链接或数字 chat ID';
         input.autocomplete = 'off';
         const history = document.createElement('div');
         history.className = 'telegram-target-history';
@@ -58,15 +58,6 @@
         videoPreview.type = 'checkbox';
         videoPreview.className = 'telegram-target-video-preview';
         videoPreviewLabel.append(videoPreview, document.createTextNode('支持视频预览（发送可直接播放的视频，不重新压缩）'));
-        const imagePreviewLabel = document.createElement('label');
-        imagePreviewLabel.className = 'telegram-target-preview-option';
-        const imagePreview = document.createElement('input');
-        imagePreview.type = 'checkbox';
-        imagePreview.className = 'telegram-target-image-preview';
-        imagePreviewLabel.append(imagePreview, document.createTextNode('支持图片预览'));
-        const imageWarning = document.createElement('small');
-        imageWarning.className = 'telegram-target-image-warning';
-        imageWarning.textContent = '启用图片预览后，Telegram 会按照片处理图片，将不会发送原图。';
         const send = document.createElement('button');
         send.type = 'button';
         send.className = 'telegram-target-send';
@@ -158,31 +149,30 @@
             const target = input.value.trim();
             if (!target) { status.textContent = '请先填写或选择 Telegram 目标。'; input.focus(); return; }
             state.busy = true;
-            send.disabled = input.disabled = caption.disabled = videoPreview.disabled = imagePreview.disabled = true;
+            send.disabled = input.disabled = caption.disabled = videoPreview.disabled = true;
             state.message = status.textContent = '正在向 Telegram 发送原文件，请保持页面打开…';
             try {
                 const result = await request(`${root}/tasks/${encodeURIComponent(task.id)}/telegram-forward`, {
                     method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({
                         target, caption:caption.value,
-                        supportVideoPreview:videoPreview.checked,
-                        supportImagePreview:imagePreview.checked
+                        supportVideoPreview:videoPreview.checked
                     })
                 });
                 input.value = result.target || target;
                 state.targets = result.targets ? normalizeTargets(result.targets) : [{ target:input.value, remark:'' }, ...state.targets.filter(item => item.target !== input.value)];
                 state.loaded = true;
                 renderTargets();
-                const sentLabel = result.mode === 'sendPhoto' ? '预览图片' : result.mode === 'sendVideo' ? '可播放视频' : '原文件';
+                const sentLabel = result.mode === 'sendVideo' ? '可播放视频' : '原文件';
                 state.message = status.textContent = `已将${sentLabel}发送到 ${input.value}${result.messageId ? `（消息 ${result.messageId}）` : ''}。`;
             } catch (error) {
                 state.message = status.textContent = `发送失败：${error.message}`;
             } finally {
                 state.busy = false;
-                send.disabled = input.disabled = caption.disabled = videoPreview.disabled = imagePreview.disabled = false;
+                send.disabled = input.disabled = caption.disabled = videoPreview.disabled = false;
             }
         };
 
-        menu.append(input, history, caption, videoPreviewLabel, imagePreviewLabel, imageWarning, send, status);
+        menu.append(input, history, caption, videoPreviewLabel, send, status);
         details.append(summary, menu);
         renderTargets();
         return details;

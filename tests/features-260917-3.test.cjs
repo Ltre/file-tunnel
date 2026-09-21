@@ -8,7 +8,7 @@ const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 test('Service Worker 预缓存不会因单个 404 阻止网页 ZIP 运行服务安装', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v54/);
+    assert.match(worker, /instant-tunnel-v55/);
     assert.match(worker, /Promise\.allSettled\(APP_SHELL\.map/);
     assert.match(worker, /if \(!response\.ok \|\| response\.redirected\) return/);
     assert.doesNotMatch(worker, /cache\.addAll\(APP_SHELL\)/);

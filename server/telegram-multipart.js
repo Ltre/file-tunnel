@@ -23,7 +23,7 @@ function getDocumentContentType(fileName = '', fallback = '') {
     return String(fallback || getAudioContentType(fileName) || 'application/octet-stream');
 }
 
-function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName = 'document', chatId, caption = '', file, fields = {}, onProgress }) {
+function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName = 'document', chatId, caption = '', file, fields = {}, attachments = [], onProgress }) {
     if (!chatId || !file?.path) throw new Error('telegram-file-multipart-invalid');
     const fileName = file.name || path.basename(file.path) || 'file';
     const size = Number.isSafeInteger(file.size) ? file.size : fs.statSync(file.path).size;
@@ -42,21 +42,35 @@ function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName =
         if (value === undefined || value === null || value === '') continue;
         add(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(name)}"\r\n\r\n${String(value)}\r\n`);
     }
-    const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(fieldName)}"; filename="${sanitizeMultipartHeaderValue(fileName)}"\r\nContent-Type: ${getDocumentContentType(fileName, file.type)}\r\n\r\n`, 'utf8');
+    const normalizedFiles = [{ fieldName, fileName, path:file.path, type:getDocumentContentType(fileName, file.type), size, start, end, primary:true }, ...attachments.map((attachment, index) => ({
+        fieldName: attachment.fieldName || `attachment${index}`,
+        fileName: attachment.name || path.basename(attachment.path) || `attachment-${index}`,
+        path: attachment.path,
+        type: getDocumentContentType(attachment.name, attachment.type),
+        size: Number.isSafeInteger(attachment.size) ? attachment.size : fs.statSync(attachment.path).size,
+        start: Number.isSafeInteger(attachment.start) ? attachment.start : 0,
+        end: Number.isSafeInteger(attachment.end) ? attachment.end : undefined,
+        primary:false
+    }))];
+    const fileParts = normalizedFiles.map(item => ({ item, header:Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(item.fieldName)}"; filename="${sanitizeMultipartHeaderValue(item.fileName)}"\r\nContent-Type: ${item.type}\r\n\r\n`, 'utf8') }));
     const closing = Buffer.from(`--${boundary}--\r\n`, 'utf8');
-    contentLength += header.length + size + 2 + closing.length;
+    contentLength += fileParts.reduce((total, part) => total + part.header.length + part.item.size + 2, 0) + closing.length;
     async function* generate() {
         for (const buffer of buffers) yield buffer;
-        yield header;
         let sent = 0;
-        if (size) {
-            for await (const chunk of fs.createReadStream(file.path, { start, end })) {
-                sent += chunk.length;
-                onProgress?.(Math.min(sent, size), size);
-                yield chunk;
+        for (const part of fileParts) {
+            yield part.header;
+            if (part.item.size) {
+                for await (const chunk of fs.createReadStream(part.item.path, { start:part.item.start, end:part.item.end })) {
+                    if (part.item.primary) {
+                        sent += chunk.length;
+                        onProgress?.(Math.min(sent, size), size);
+                    }
+                    yield chunk;
+                }
             }
+            yield Buffer.from('\r\n');
         }
-        yield Buffer.from('\r\n');
         yield closing;
     }
     return { method, body:Readable.from(generate()), contentLength, contentType:`multipart/form-data; boundary=${boundary}` };
