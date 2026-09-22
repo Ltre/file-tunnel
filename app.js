@@ -16961,6 +16961,9 @@ function initThemeSwitcher() {
     document.getElementById('topbarMusicBtn')?.addEventListener('click', () => {
         openMusicPlayerOverlay({ resetQueue: true });
     });
+    document.getElementById('topbarWorkshopBtn')?.addEventListener('click', () => {
+        window.WebWorkshop?.restore();
+    });
 }
 
 function isTunnelOwner() {

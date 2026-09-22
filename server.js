@@ -1298,6 +1298,10 @@ app.use(express.static(path.join(__dirname), {
     setHeaders: (res, filePath) => {
         if (shouldUseImmutableStaticCache(filePath)) {
             res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (normalizeStaticPath(filePath).endsWith('/service-worker.js') || normalizeStaticPath(filePath).endsWith('/client/web-zip-runtime.js')) {
+            res.setHeader('Cache-Control', 'no-store, max-age=0');
+            res.setHeader('CDN-Cache-Control', 'no-store');
+            res.setHeader('Cloudflare-CDN-Cache-Control', 'no-store');
         } else if (shouldRevalidateStaticCache(filePath)) {
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
         }
