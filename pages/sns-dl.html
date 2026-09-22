@@ -386,7 +386,7 @@
         if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
         card.append(actions);
         if (task.hasFile) card.append(window.TelegramTargetForward.create(task, API_ROOT, api));
-        if (task.status === 'completed' && task.hasFile && task.downloadSections) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
+        if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio','song'].includes(task.mediaType)) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
         return card;
     }
     function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }

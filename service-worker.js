@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v57';
+const CACHE_NAME = 'instant-tunnel-v58';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -25,6 +25,7 @@ const APP_SHELL = [
     '/client/notification-center.css',
     '/client/web-workshop.js',
     '/client/web-workshop.css',
+    '/web-workshop-guide.html',
     '/client/telegram-target-forward.js',
     '/client/telegram-target-forward.css',
     '/client/telegram-content.js',
@@ -65,7 +66,7 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('message', event => {
     if (event.data?.type === 'web-zip-runtime-ping') {
-        event.ports?.[0]?.postMessage({ webZipRuntime:1 });
+        event.ports?.[0]?.postMessage({ webZipRuntime:2, externalScriptMime:true });
         return;
     }
     if (event.data?.type !== 'tunnel-force-refresh') return;

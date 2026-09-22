@@ -4,6 +4,7 @@
     const DB_VERSION = 1;
     const STORE_NAME = 'runtimes';
     const DEFAULT_TTL = 2 * 60 * 60 * 1000;
+    const RUNTIME_PROTOCOL = 2;
 
     const bytes = data => data instanceof Uint8Array ? data : new Uint8Array(data || 0);
     const normalizePath = value => String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.' && part !== '..').join('/');
@@ -47,7 +48,11 @@
         if (!worker) return Promise.resolve(false);
         return new Promise(resolve => {
             const channel = new MessageChannel(), timer = setTimeout(() => resolve(false), 600);
-            channel.port1.onmessage = event => { clearTimeout(timer); resolve(event.data?.webZipRuntime === 1); };
+            channel.port1.onmessage = event => {
+                clearTimeout(timer);
+                const capability = event.data || {};
+                resolve(Number(capability.webZipRuntime) >= RUNTIME_PROTOCOL && capability.externalScriptMime === true);
+            };
             worker.postMessage({ type:'web-zip-runtime-ping' }, [channel.port2]);
         });
     }
@@ -61,15 +66,12 @@
         ]);
         if (await supportsRuntime(navigator.serviceWorker.controller)) return;
         await registration.update().catch(() => {});
-        await new Promise((resolve, reject) => {
-            const finish = async () => {
-                if (!await supportsRuntime(navigator.serviceWorker.controller)) return;
-                clearTimeout(timer);navigator.serviceWorker.removeEventListener('controllerchange',finish);resolve();
-            };
-            const timer = setTimeout(() => { navigator.serviceWorker.removeEventListener('controllerchange',finish);reject(new Error('网页 ZIP 运行服务尚未更新，请刷新后重试')); }, 10000);
-            navigator.serviceWorker.addEventListener('controllerchange',finish);
-            finish();
-        });
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+            if (await supportsRuntime(navigator.serviceWorker.controller)) return;
+            await new Promise(resolve => setTimeout(resolve, 120));
+        }
+        throw new Error('网页 ZIP 运行服务尚未更新，请刷新后重试');
     }
 
     async function cleanup() {
@@ -102,5 +104,5 @@
     }
 
     const unmount = id => id ? transact('readwrite', store => store.delete(id)) : Promise.resolve();
-    global.WebZipRuntime = { mount, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType } };
+    global.WebZipRuntime = { mount, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType, supportsRuntime, RUNTIME_PROTOCOL } };
 })(window);

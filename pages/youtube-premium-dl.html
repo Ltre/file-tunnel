@@ -665,6 +665,14 @@
         return ids.map(id => analysis?.formats.find(format => format.id === id)).filter(Boolean);
     }
 
+    function selectedMusicCutNeedsOffsetWarning() {
+        if (!asMusicInput.checked || !downloadSectionsInput.value.trim() || mode() !== 'custom') return false;
+        const audio = selectedFormats().find(format => format.kind === 'audio');
+        if (!audio) return false;
+        const codec = `${audio.audioCodec || ''} ${audio.ext || ''}`.toLowerCase();
+        return !/(?:^|[^a-z0-9])(?:m4a|aac|mp4a)(?:[^a-z0-9]|$)/i.test(codec);
+    }
+
     function updateSelectionSummary() {
         const selected = selectedFormats();
         selectionSummary.hidden = false;
@@ -791,6 +799,7 @@
         if (mode() === 'custom' && (!analysis || analysisInputUrl !== url || !updateSelectionSummary())) {
             return void (notice.textContent = '请先完成格式解析并确认有效组合。');
         }
+        if (selectedMusicCutNeedsOffsetWarning() && !confirm('在剪切模式下选取非 m4a/aac 音频编码，可能导致实际提取片段略有偏移，即更可能无法准确吻合期望的剪切首尾 offset。')) return;
         try {
             startBtn.disabled = true;
             notice.textContent = '正在创建私人下载任务...';
@@ -2019,7 +2028,7 @@
         }
         main.appendChild(actions);
         if (task.hasFile) main.appendChild(window.TelegramTargetForward.create(task, '/api/youtube-premium', api));
-        if (task.status === 'completed' && task.hasFile && task.downloadSections) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
+        if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio', 'song'].includes(task.mediaType)) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
         card.append(cover, main);
         return card;
     }

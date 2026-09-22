@@ -1272,6 +1272,11 @@ app.get('/web-zip-preview/:fileId', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'web-zip-preview.html'));
 });
 
+app.get('/web-workshop-guide.html', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    res.sendFile(path.join(__dirname, 'pages', 'web-workshop-guide.html'));
+});
+
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
     '/pages/admin.html',
@@ -2073,6 +2078,11 @@ function getTelegramWebhookTarget(req, webhookSecret) {
     };
 }
 
+const TELEGRAM_CONTENT_ALLOWED_UPDATES = [
+    'message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
+    'my_chat_member', 'chat_member', 'chat_join_request'
+];
+
 function getPublicTelegramWebhookInfo(info = {}) {
     const rawUrl = String(info.url || '').trim();
     let target = '';
@@ -2427,7 +2437,7 @@ app.post('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res)
         await telegramApi('setWebhook', {
             url: target.url,
             secret_token: config.webhookSecret,
-            allowed_updates: ['message', 'edited_message', 'callback_query'],
+            allowed_updates: TELEGRAM_CONTENT_ALLOWED_UPDATES,
             drop_pending_updates: false
         }, config.token);
         let commandsConfigured = true;
@@ -2463,6 +2473,31 @@ app.post('/api/telegram/webhook-config', adminAuth.requireAuth, async (req, res)
     } catch (error) {
         console.error('set telegram webhook error:', error);
         res.status(502).json({ ok: false, error: describeTelegramNetworkError(error) });
+    }
+});
+
+app.post('/api/telegram-content/webhook-subscriptions', adminAuth.requireAuth, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const config = loadTelegramBotConfig();
+        if (!config.token || !config.webhookSecret) return res.status(409).json({ error:'请先在 Bot 配置页为当前站点设置 Webhook' });
+        const target = getTelegramWebhookTarget(req, config.webhookSecret);
+        const info = await telegramApi('getWebhookInfo', {}, config.token);
+        const configuredUrl = String(info?.url || '');
+        if (!configuredUrl) return res.status(409).json({ error:'Bot 尚未设置 Webhook，请先在 Bot 配置页完成设置' });
+        if (configuredUrl !== target.url) {
+            return res.status(409).json({ error:'Bot Webhook 当前属于另一个部署地址，本页不会自动抢占' });
+        }
+        await telegramApi('setWebhook', {
+            url:target.url,
+            secret_token:config.webhookSecret,
+            allowed_updates:TELEGRAM_CONTENT_ALLOWED_UPDATES,
+            drop_pending_updates:false
+        }, config.token);
+        res.json({ ok:true, allowedUpdates:TELEGRAM_CONTENT_ALLOWED_UPDATES });
+    } catch (error) {
+        console.error('sync telegram content webhook subscriptions error:', error);
+        res.status(502).json({ error:describeTelegramNetworkError(error) });
     }
 });
 
@@ -5396,10 +5431,17 @@ async function handleTelegramUpdate(update = {}) {
         for (const [id, seenAt] of telegramProcessedUpdates) if (seenAt < expiresBefore) telegramProcessedUpdates.delete(id);
     }
     const contentMessage = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
-    if (contentMessage?.chat?.id && telegramContentManager.isStorageChat(contentMessage.chat)) return;
+    const updateChat = contentMessage?.chat || update.chat_member?.chat || update.my_chat_member?.chat || update.chat_join_request?.chat;
+    if (updateChat?.id && telegramContentManager.isStorageChat(updateChat)) return;
     if (contentMessage?.chat?.id) {
         try { await telegramContentManager.archiveIncoming(contentMessage); }
         catch (error) { console.error('[telegram-content] 消息归档失败：', error.message); }
+    }
+    try {
+        const contentPolicy = await telegramContentManager.processUpdate(update);
+        if (contentPolicy?.handled) return;
+    } catch (error) {
+        console.error('[telegram-content] Chat 策略执行失败：', error.message);
     }
     const callback = update.callback_query;
     if (callback) {

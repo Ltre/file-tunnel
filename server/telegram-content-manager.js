@@ -10,6 +10,21 @@ const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_CACHE_TTL = 3 * 24 * 60 * 60 * 1000;
 const ARCHIVE_READ_CONCURRENCY = 6;
+const STOPPED_SERVICE_NOTICE = '该 Bot 已停止服务';
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MEMBER_PERMISSION_KEYS = [
+    'can_send_messages', 'can_send_audios', 'can_send_documents', 'can_send_photos',
+    'can_send_videos', 'can_send_video_notes', 'can_send_voice_notes', 'can_send_polls',
+    'can_send_other_messages', 'can_add_web_page_previews', 'can_react_to_messages', 'can_edit_tag',
+    'can_change_info', 'can_invite_users', 'can_pin_messages', 'can_manage_topics'
+];
+const ADMIN_RIGHT_KEYS = [
+    'can_manage_chat', 'can_delete_messages', 'can_manage_video_chats', 'can_restrict_members',
+    'can_promote_members', 'can_change_info', 'can_invite_users', 'can_post_stories',
+    'can_edit_stories', 'can_delete_stories', 'can_post_messages', 'can_edit_messages',
+    'can_pin_messages', 'can_manage_topics', 'can_manage_direct_messages', 'can_manage_tags',
+    'can_send_welcome_messages'
+];
 
 function atomicWrite(filePath, value) {
     fs.mkdirSync(path.dirname(filePath), { recursive:true });
@@ -53,13 +68,17 @@ function chatRecord(chat = {}) {
 function createTelegramContentManager(options = {}) {
     const dataDir = options.dataDir;
     const indexPath = path.join(dataDir, 'telegram-content-index.json');
+    const policiesPath = path.join(dataDir, 'telegram-content-policies.json');
     const tempDir = path.join(dataDir, 'telegram-content-tmp');
     const cacheDir = path.join(dataDir, 'telegram-content-cache');
     const getBackend = options.getBackend;
     const telegram = options.telegram;
     const createVideoThumbnail = options.createVideoThumbnail;
     const archiveReads = new Map();
+    const stoppedNoticeWrites = new Map();
     let writeQueue = Promise.resolve();
+    let policyWriteQueue = Promise.resolve();
+    let botIdentityCache = null;
 
     const archiveCacheKey = pointer => crypto.createHash('sha256')
         .update(String(pointer?.fileUniqueId || pointer?.fileId || pointer?.archiveId || ''))
@@ -107,6 +126,23 @@ function createTelegramContentManager(options = {}) {
         return writeQueue;
     }
 
+    function loadPolicies() {
+        try {
+            const parsed = JSON.parse(fs.readFileSync(policiesPath, 'utf8'));
+            return { version:1, chats:parsed.chats && typeof parsed.chats === 'object' ? parsed.chats : {} };
+        } catch (_) { return { version:1, chats:{} }; }
+    }
+
+    function mutatePolicies(callback) {
+        let result;
+        policyWriteQueue = policyWriteQueue.then(() => {
+            const policies = loadPolicies();
+            result = callback(policies);
+            atomicWrite(policiesPath, policies);
+        });
+        return policyWriteQueue.then(() => result);
+    }
+
     function backendFor(channelId = '') {
         const backend = getBackend(channelId);
         if (!backend?.token || !backend?.channelId) throw new Error('Telegram 网盘托管频道尚未配置');
@@ -121,6 +157,194 @@ function createTelegramContentManager(options = {}) {
             const configured = String(value || '');
             return configured === key || (username && configured.replace(/^@/, '').toLowerCase() === username);
         });
+    }
+
+    async function observeChat(chat, eventDate = 0) {
+        if (!chat?.id || isStorageChat(chat)) return null;
+        const record = chatRecord(chat);
+        await mutate(index => {
+            const previous = index.chats[record.id] || {};
+            index.chats[record.id] = {
+                ...previous, ...record,
+                lastMessageAt:Math.max(Number(previous.lastMessageAt) || 0, Number(eventDate) || 0)
+            };
+        });
+        return record;
+    }
+
+    function knownChat(chatId) {
+        const chat = load().chats[String(chatId)] || null;
+        if (!chat) {
+            const error = new Error('该 Chat 尚未被 Telegram 内容管理功能记录');
+            error.status = 404;
+            throw error;
+        }
+        return chat;
+    }
+
+    const callBotApi = (method, payload) => telegram.call(backendFor(), method, payload);
+
+    async function botIdentity() {
+        if (botIdentityCache && Date.now() - botIdentityCache.cachedAt < 5 * 60 * 1000) return botIdentityCache.value;
+        const value = await callBotApi('getMe', {});
+        botIdentityCache = { cachedAt:Date.now(), value };
+        return value;
+    }
+
+    async function botAdminCapacity(chatId, type = '') {
+        const bot = await botIdentity();
+        const member = await callBotApi('getChatMember', { chat_id:chatId, user_id:bot.id });
+        const canPromote = member.status === 'creator' || (member.status === 'administrator' && member.can_promote_members === true);
+        const maxAdminRights = {};
+        for (const key of ADMIN_RIGHT_KEYS) {
+            const applicable = type === 'channel'
+                ? !['can_pin_messages', 'can_manage_topics', 'can_manage_tags'].includes(key)
+                : !['can_post_messages', 'can_edit_messages', 'can_manage_direct_messages'].includes(key);
+            maxAdminRights[key] = Boolean(applicable && canPromote && (member.status === 'creator' || member[key] === true));
+        }
+        return { id:String(bot.id), username:bot.username || '', status:member.status, canPromote, maxAdminRights };
+    }
+
+    function validUserId(value) {
+        const userId = Number(value);
+        if (!Number.isSafeInteger(userId) || userId <= 0) {
+            const error = new Error('Telegram User ID 必须是正整数');
+            error.status = 422;
+            throw error;
+        }
+        return userId;
+    }
+
+    async function managementState(chatId) {
+        const chat = knownChat(chatId);
+        const policies = loadPolicies();
+        const bot = await botAdminCapacity(chat.id, chat.type);
+        return { chat, policy:policies.chats[chat.id] || {}, bot };
+    }
+
+    async function inspectMember(chatId, rawUserId) {
+        const chat = knownChat(chatId);
+        if (chat.type === 'private') throw Object.assign(new Error('私聊不支持成员权限管理'), { status:422 });
+        const userId = validUserId(rawUserId);
+        const [member, bot] = await Promise.all([
+            callBotApi('getChatMember', { chat_id:chat.id, user_id:userId }),
+            botAdminCapacity(chat.id, chat.type)
+        ]);
+        const adminRights = Object.fromEntries(ADMIN_RIGHT_KEYS.map(key => [key, member.status === 'creator' || member[key] === true]));
+        return { member, adminRights, bot };
+    }
+
+    async function setPolicy(chatId, patch = {}) {
+        const chat = knownChat(chatId);
+        return mutatePolicies(policies => {
+            const current = policies.chats[chat.id] || {};
+            const next = { ...current, updatedAt:Date.now() };
+            if (chat.type === 'private' && Object.hasOwn(patch, 'serviceStopped')) {
+                next.serviceStopped = patch.serviceStopped === true;
+                if (!next.serviceStopped) next.lastStoppedNoticeAt = 0;
+            }
+            if (chat.type !== 'private' && Object.hasOwn(patch, 'rejectNewMembers')) next.rejectNewMembers = patch.rejectNewMembers === true;
+            policies.chats[chat.id] = next;
+            return next;
+        });
+    }
+
+    async function performManagementAction(chatId, input = {}) {
+        const chat = knownChat(chatId);
+        if (chat.type === 'private') throw Object.assign(new Error('私聊不支持该成员管理操作'), { status:422 });
+        const action = String(input.action || '');
+        const userId = validUserId(input.userId);
+        if (action === 'restrict') {
+            if (chat.type !== 'group') throw Object.assign(new Error('只有群组支持限制成员权限'), { status:422 });
+            const source = input.permissions && typeof input.permissions === 'object' ? input.permissions : {};
+            const permissions = Object.fromEntries(MEMBER_PERMISSION_KEYS.map(key => [key, source[key] === true]));
+            await callBotApi('restrictChatMember', { chat_id:chat.id, user_id:userId, permissions, use_independent_chat_permissions:true });
+            return { ok:true, action, permissions };
+        }
+        if (action === 'remove') {
+            await callBotApi('banChatMember', { chat_id:chat.id, user_id:userId, revoke_messages:true });
+            if (input.ban !== true) await callBotApi('unbanChatMember', { chat_id:chat.id, user_id:userId, only_if_banned:true });
+            return { ok:true, action, banned:input.ban === true };
+        }
+        if (action === 'promote') {
+            const [capacity, currentMember] = await Promise.all([
+                botAdminCapacity(chat.id, chat.type),
+                callBotApi('getChatMember', { chat_id:chat.id, user_id:userId })
+            ]);
+            if (!capacity.canPromote) throw Object.assign(new Error('Bot 当前没有任命或编辑管理员的权限'), { status:409 });
+            if (currentMember.status === 'creator' || (currentMember.status === 'administrator' && currentMember.can_be_edited !== true)) {
+                throw Object.assign(new Error('Bot 无法编辑该管理员：该用户不是由 Bot 可管理的管理员'), { status:409 });
+            }
+            const source = input.rights && typeof input.rights === 'object' ? input.rights : {};
+            const rights = {};
+            for (const key of ADMIN_RIGHT_KEYS) {
+                if (source[key] === true && !capacity.maxAdminRights[key]) {
+                    throw Object.assign(new Error(`Bot 无法授予权限：${key}`), { status:422 });
+                }
+                rights[key] = source[key] === true;
+            }
+            await callBotApi('promoteChatMember', { chat_id:chat.id, user_id:userId, ...rights });
+            return { ok:true, action, rights };
+        }
+        if (action === 'demote') {
+            const currentMember = await callBotApi('getChatMember', { chat_id:chat.id, user_id:userId });
+            if (currentMember.status === 'creator' || (currentMember.status === 'administrator' && currentMember.can_be_edited !== true)) {
+                throw Object.assign(new Error('Bot 无法移除该管理员身份'), { status:409 });
+            }
+            await callBotApi('promoteChatMember', {
+                chat_id:chat.id, user_id:userId,
+                ...Object.fromEntries(ADMIN_RIGHT_KEYS.map(key => [key, false]))
+            });
+            return { ok:true, action };
+        }
+        throw Object.assign(new Error('不支持的 Telegram 管理操作'), { status:422 });
+    }
+
+    async function processUpdate(update = {}) {
+        const contentMessage = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
+        const memberUpdate = update.chat_member || update.my_chat_member;
+        const joinRequest = update.chat_join_request;
+        const chat = contentMessage?.chat || memberUpdate?.chat || joinRequest?.chat;
+        if (!chat?.id || isStorageChat(chat)) return { handled:false };
+        await observeChat(chat, contentMessage?.date || memberUpdate?.date || joinRequest?.date || 0);
+        const policy = loadPolicies().chats[String(chat.id)] || {};
+        if (chat.type === 'private' && policy.serviceStopped && update.message && !update.message.from?.is_bot) {
+            const lastNoticeAt = Number(policy.lastStoppedNoticeAt) || 0;
+            if (Date.now() - lastNoticeAt >= DAY_MS) {
+                const key = String(chat.id);
+                if (!stoppedNoticeWrites.has(key)) {
+                    const sending = (async () => {
+                        const result = await callBotApi('sendMessage', { chat_id:chat.id, text:STOPPED_SERVICE_NOTICE });
+                        await mutatePolicies(policies => {
+                            const next = policies.chats[key] || {};
+                            policies.chats[key] = { ...next, serviceStopped:true, lastStoppedNoticeAt:Date.now(), updatedAt:Date.now() };
+                        });
+                        await archive(result, 'outgoing').catch(() => {});
+                    })().finally(() => stoppedNoticeWrites.delete(key));
+                    stoppedNoticeWrites.set(key, sending);
+                    await sending;
+                }
+            }
+            return { handled:true, reason:'service-stopped' };
+        }
+        if (chat.type !== 'private' && policy.rejectNewMembers) {
+            const ids = new Set();
+            for (const user of contentMessage?.new_chat_members || []) if (user?.id) ids.add(Number(user.id));
+            if (update.chat_member) {
+                const previous = String(update.chat_member.old_chat_member?.status || '');
+                const next = String(update.chat_member.new_chat_member?.status || '');
+                if (['left', 'kicked'].includes(previous) && ['member', 'restricted'].includes(next)) ids.add(Number(update.chat_member.new_chat_member?.user?.id));
+            }
+            if (joinRequest?.from?.id) ids.add(Number(joinRequest.from.id));
+            const bot = await botIdentity().catch(() => null);
+            ids.delete(Number(bot?.id));
+            const results = await Promise.allSettled([...ids].filter(Number.isSafeInteger).map(userId => callBotApi('banChatMember', {
+                chat_id:chat.id, user_id:userId, revoke_messages:true
+            })));
+            const rejected = [...ids].filter((_, index) => results[index]?.status === 'fulfilled');
+            return { handled:false, rejectedNewMembers:rejected };
+        }
+        return { handled:false };
     }
 
     async function uploadArchive(message, direction) {
@@ -294,6 +518,30 @@ function createTelegramContentManager(options = {}) {
             res.setHeader('Cache-Control', 'no-store');
             res.json({ chats });
         });
+        app.get('/api/telegram-content/chats/:chatId/management', requireAuth, async (req, res) => {
+            try {
+                res.setHeader('Cache-Control', 'no-store');
+                res.json(await managementState(req.params.chatId));
+            } catch (error) { res.status(Number(error.status) || 502).json({ error:error.message }); }
+        });
+        app.get('/api/telegram-content/chats/:chatId/members/:userId', requireAuth, async (req, res) => {
+            try {
+                res.setHeader('Cache-Control', 'no-store');
+                res.json(await inspectMember(req.params.chatId, req.params.userId));
+            } catch (error) { res.status(Number(error.status) || 502).json({ error:error.message }); }
+        });
+        app.patch('/api/telegram-content/chats/:chatId/policy', requireAuth, async (req, res) => {
+            try {
+                res.setHeader('Cache-Control', 'no-store');
+                res.json({ policy:await setPolicy(req.params.chatId, req.body || {}) });
+            } catch (error) { res.status(Number(error.status) || 502).json({ error:error.message }); }
+        });
+        app.post('/api/telegram-content/chats/:chatId/actions', requireAuth, async (req, res) => {
+            try {
+                res.setHeader('Cache-Control', 'no-store');
+                res.json(await performManagementAction(req.params.chatId, req.body || {}));
+            } catch (error) { res.status(Number(error.status) || 502).json({ error:error.message }); }
+        });
         app.get('/api/telegram-content/chats/:chatId/messages', requireAuth, async (req, res) => {
             try {
                 res.setHeader('Cache-Control', 'no-store');
@@ -364,7 +612,11 @@ function createTelegramContentManager(options = {}) {
         });
     }
 
-    return { archiveIncoming:message => archive(message, 'incoming'), archiveOutgoing:message => archive(message, 'outgoing'), isStorageChat, registerRoutes, listMessages, listMessagePage };
+    return {
+        archiveIncoming:message => archive(message, 'incoming'), archiveOutgoing:message => archive(message, 'outgoing'),
+        isStorageChat, registerRoutes, listMessages, listMessagePage, observeChat, processUpdate,
+        managementState, inspectMember, setPolicy, performManagementAction
+    };
 }
 
-module.exports = { createTelegramContentManager, mediaFromMessage, chatRecord };
+module.exports = { createTelegramContentManager, mediaFromMessage, chatRecord, MEMBER_PERMISSION_KEYS, ADMIN_RIGHT_KEYS };

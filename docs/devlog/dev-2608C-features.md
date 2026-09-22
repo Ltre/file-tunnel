@@ -2910,3 +2910,49 @@ Description：
 - 实时展示音轨修正版的 FFmpeg 处理进度，完成后以绿色按钮直接下载
 - 定位 437e895 引入的应用外壳强制并发回源，改为核心资源顺序预缓存和静态资源缓存优先
 - 升级 Service Worker 至 v57，新增专项回归并完成 282 项测试验证
+
+## 48. 2026-09-22：260922-1 网页 ZIP 外链脚本、下载条件与 Telegram Chat 管理
+
+### 48.1 网页 ZIP 外部 JavaScript 不执行
+
+- 上一轮已经按文件扩展名将 `.js` / `.mjs` 纠正为 `text/javascript`，但 Runtime 对 Service Worker 的兼容性握手仍只判断 `webZipRuntime === 1`。已打开页面中的旧 Worker 也会返回该标识，导致浏览器把旧 Worker 误判为支持当前 JS MIME 行为；外部脚本因 `nosniff` 被拒绝执行，而内联脚本不经过资源 MIME 检查，与现场现象一致。
+- Runtime 协议升级为 v2，新 Worker 同时声明 `externalScriptMime:true`。当前控制器只支持旧协议时，前端会主动执行 `registration.update()` 并等待具备新能力的 Worker 实际接管，不再在安装尚未生效时提前启动预览。Service Worker 缓存版本升级为 `v58`。
+- 新增 `/web-workshop-guide.html` 网页 ZIP 编辑手册，并在网页工坊顶栏提供醒目的新 Tab 链接。手册覆盖 `.html.zip` 文件、草稿箱、创建设备与编辑授权、7 天沙盒缓存、发布规则、目录结构、内外部 JS/CSS、相对/上级/以 `/` 开头的包内路径、离线资源和排查方法。
+
+### 48.2 音轨修正按钮与 YouTube 剪切提醒
+
+- SNS 与 YouTube Premium 任务仅在“已完成 + 有成品 + 设置了片段 + 非纯音频/非音乐模式”时显示“下载音轨修正版”。`asMusic` 任务以及 `mediaType` 为 `audio` / `song` 的任务均不再提供无意义的修正入口。
+- YouTube Premium 的自选媒体编号模式中，同时启用“以音乐形式下载”和“指定片段”时，提交前会检查选中纯音频轨的 `audioCodec` 与容器扩展名。`m4a` / `aac` / `mp4a` 之外的编码会显示需求中给定的 offset 偏移风险文案，由用户决定是否继续创建任务。
+
+### 48.3 Telegram 频道/群组新消息与自动刷新
+
+- 根因是 Webhook 注册的 `allowed_updates` 仅有 `message` / `edited_message` / `callback_query`，漏掉了频道新帖 `channel_post`、频道编辑、`chat_member`、`my_chat_member` 和入群申请。因此频道消息根本不会到达本地 webhook，成员策略也无法执行。
+- Bot 配置页设置 Webhook 时现在完整订阅上述事件。Telegram 内容页打开时还会安全同步一次订阅：只有 Telegram 当前登记的 Webhook URL 与本站完全相同时才重设 `allowed_updates`；如果 Bot 属于另一部署地址，页面会显示原因并且不抢占对方 Webhook。
+- `channel_post` 和成员状态更新都会更新本地 Chat 索引，仍在入口处过滤全部网盘托管频道，避免归档递归。页面每 6 秒轻量刷新 Chat；用户位于当前聊天底部时，同步追加新消息，不会打断向上查看历史的位置。
+
+### 48.4 Telegram Chat 管理
+
+- 新增 `.tunnel-data/telegram-content-policies.json` 保存 Chat 管理策略，与消息正文归档保持分离。群组/频道可切换“不再接受新用户”；新成员加入或发出入群申请时，策略处理会忽略 Bot 自身，并通过 `banChatMember` 移除与 Ban 其它新用户。
+- 群组界面支持按 Telegram User ID 使用 `restrictChatMember` 设置可用权限；群组和频道均支持移除成员，可选择保持 Ban，或在移除后立即 `unbanChatMember` 以允许重新加入。
+- 管理员操作强制先调用 `getChatMember` 读取目标用户当前身份和权限。界面同时读取 Bot 自身的管理员权限，明确显示 Bot 当前最大可授予范围，超出范围的选项禁用，服务端再次验证后才调用 `promoteChatMember`。对 Telegram 标记为 Bot 不可编辑的管理员，服务端会明确拒绝修改或移除。
+- 私聊 Chat 可停止或恢复服务。停止后的新消息不再进入原有 Bot 业务流程，并且每 24 小时最多回复一次“该 Bot 已停止服务”。同一用户的并发消息共享提醒 Promise，避免同时重复回复。
+
+### 48.5 验证与执行边界
+
+- `server.js`、`server/telegram-content-manager.js`、`client/telegram-content.js`、`client/web-zip-runtime.js`、`client/web-workshop.js` 与 `service-worker.js` 均通过 `node --check`。
+- 新增 `features-260922-1.test.cjs`，覆盖 Runtime v2 能力握手、JS MIME、手册入口与内容、纯音频任务条件、编码风险警告、Webhook 订阅、新成员 Ban、私聊停服提醒去重和管理入口。
+- 37 个测试文件以项目自执行方式串行完成，共 **288** 项：**287** 项通过，**1** 项因当前环境未检测到 FFmpeg／FFprobe 而按既有条件跳过，失败为 0。未调用真实 Telegram 执行管理操作，此类操作仍受 Bot 在目标 Chat 的实际管理权限约束。
+- `git diff --check` 仅报告用户原有 `prompts/dev-prompt-logs/dev-2608B.md` 的 3 处行尾空格；本轮没有修改或清理该文件。未启动或重启服务器，未暂存、未提交。
+
+### 48.6 建议 Git 提交日志（不执行提交）
+
+Title：fix: 恢复网页 ZIP 外部脚本并完善 Telegram Chat 管理
+
+Description：
+
+- 升级网页 ZIP Runtime 协议并等待新 Service Worker 接管，修复外部 JavaScript 请求成功但不执行
+- 新增网页 ZIP 编辑手册，说明草稿、授权、发布、沙盒和包内资源路径
+- 隐藏纯音频任务的音轨修正入口，对非 m4a/aac 音频片段增加 offset 风险提醒
+- 补全 Telegram 频道、群组与成员更新的 Webhook 订阅，并安全避免抢占其它部署的 Webhook
+- 新增禁止新成员、限制/移除用户、管理员权限编辑以及私聊停止/恢复服务
+- 增加 Chat 与底部新消息轻量轮询，升级 Service Worker 至 v58 并完成 288 项回归验证

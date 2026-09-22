@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>网页 ZIP 编辑手册</title>
+    <style>
+        :root{color-scheme:light dark;--bg:#eef3f9;--panel:#fff;--text:#1d2a3d;--muted:#64758b;--line:#d7e0ec;--accent:#276fbd;--code:#152033}@media(prefers-color-scheme:dark){:root{--bg:#101720;--panel:#192432;--text:#edf3fb;--muted:#a7b4c5;--line:#34465b;--accent:#7ab2ff;--code:#0b111a}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}main{width:min(980px,calc(100% - 28px));margin:28px auto 70px}header,section{padding:22px 26px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:0 8px 26px #13233c0b}section{margin-top:16px}h1{margin:0 0 6px;font-size:clamp(1.65rem,4vw,2.45rem)}h2{margin:0 0 9px;font-size:1.2rem}p,ul,ol{margin:7px 0}.lead{color:var(--muted)}code{padding:.1em .35em;border-radius:5px;background:color-mix(in srgb,var(--accent) 10%,transparent)}pre{overflow:auto;padding:15px;border-radius:11px;background:var(--code);color:#eaf2ff;line-height:1.55}pre code{padding:0;background:transparent}.good{border-left:4px solid #2b9b68}.warn{border-left:4px solid #d89125}a{color:var(--accent)}@media(max-width:620px){main{width:100%;margin:0}header,section{border-width:0 0 1px;border-radius:0;padding:18px}}
+    </style>
+</head>
+<body><main>
+    <header>
+        <h1>网页 ZIP 编辑手册</h1>
+        <p class="lead">创建、编辑、预览和发布 <code>.html.zip</code> 网页包，以及在 ZIP 内正确引用 HTML、JavaScript、CSS 和媒体资源。</p>
+    </header>
+    <section>
+        <h2>1. 核心规则</h2>
+        <ul>
+            <li>文件后缀统一使用 <code>.html.zip</code>，ZIP 内应至少有一个 <code>index.html</code> 或其它 HTML 入口。</li>
+            <li>新建网页、编辑原网页和创建副本都先进入草稿箱。草稿中的修改保存在本机浏览器，只有点击“发布草稿”才会新建或更新隧道文件。</li>
+            <li>已发布的网页包在专用沙盒中运行，解压结果默认缓存 7 天。沙盒用于运行，编辑时必须先转入草稿箱。</li>
+            <li>创建设备 ID 作为系统元数据保存，不写入 ZIP。创建设备可直接编辑；其它设备需先获得编辑授权，或创建属于自己的副本。授权申请在通知中心处理。</li>
+            <li>发布后系统会聚焦到对应的传输记录。网页 ZIP 仍是普通隧道文件，可同步到其它设备或保存到 Telegram 网盘。</li>
+        </ul>
+    </section>
+    <section>
+        <h2>2. 建议的目录结构</h2>
+<pre><code>my-page.html.zip
+├─ index.html
+├─ assets/
+│  ├─ app.js
+│  ├─ style.css
+│  └─ cover.webp
+└─ pages/
+   └─ detail.html</code></pre>
+        <p>ZIP 可以包含多层目录。网页工坊会选取 <code>index.html</code> 作为入口；没有该文件时，使用找到的第一个 HTML 文件。</p>
+    </section>
+    <section class="good">
+        <h2>3. 资源路径</h2>
+        <p>外部 JS、CSS、图片、字体、音视频和其它 ZIP 内资源都会从当前网页包的虚拟目录读取。支持下列写法：</p>
+<pre><code>&lt;link rel="stylesheet" href="assets/style.css"&gt;
+&lt;link rel="stylesheet" href="/assets/style.css"&gt;
+&lt;script src="assets/app.js" defer&gt;&lt;/script&gt;
+&lt;script src="/assets/app.js" defer&gt;&lt;/script&gt;
+&lt;img src="./assets/cover.webp" alt="封面"&gt;
+&lt;a href="pages/detail.html"&gt;详情&lt;/a&gt;</code></pre>
+        <ul>
+            <li><code>assets/app.js</code> 和 <code>./assets/app.js</code> 相对于当前 HTML 文件。</li>
+            <li><code>../shared/app.js</code> 可引用上一级的 ZIP 内目录。</li>
+            <li><code>/assets/app.js</code> 从该网页包的入口根目录起算，不会读取 Drop2Tunnel 站点根目录中的同名文件。</li>
+            <li>外部 <code>.js</code>/<code>.mjs</code> 会以可执行 JavaScript MIME 类型返回，支持普通外部脚本和 <code>type="module"</code> 脚本。</li>
+            <li>绝对网络 URL 需要网络可用且资源服务器允许跨域访问；需离线使用的资源应放入 ZIP。</li>
+        </ul>
+    </section>
+    <section>
+        <h2>4. JavaScript 与 CSS 示例</h2>
+<pre><code>&lt;!doctype html&gt;
+&lt;html lang="zh-CN"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+  &lt;link rel="stylesheet" href="/assets/style.css"&gt;
+  &lt;script src="/assets/app.js" defer&gt;&lt;/script&gt;
+&lt;/head&gt;
+&lt;body&gt;&lt;button id="hello"&gt;测试 JS&lt;/button&gt;&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+<pre><code>// assets/app.js
+document.querySelector('#hello').addEventListener('click', () =&gt; {
+  alert('外部 JavaScript 已执行');
+});</code></pre>
+        <p><code>defer</code> 可确保外部脚本在 HTML 解析完成后执行。如果不使用 <code>defer</code>，请把脚本放在 <code>&lt;/body&gt;</code> 之前，或等待 <code>DOMContentLoaded</code>。</p>
+    </section>
+    <section>
+        <h2>5. 草稿、预览和发布</h2>
+        <ol>
+            <li>在网页工坊新建草稿，或导入本机 <code>.html.zip</code>；也可从传输记录选择“编辑此网页”。</li>
+            <li>使用左侧目录树创建多层目录、上传资源、重命名、删除或拖动移动项目。文本修改会自动保存，也可使用 <kbd>Ctrl/Command + S</kbd>。</li>
+            <li>点击“预览”会按当前草稿快照启动独立虚拟目录。预览不会修改隧道文件。</li>
+            <li>点击“发布草稿”后才打包 ZIP。新建草稿和副本会创建新传输记录；具备权限的原文件编辑草稿会更新原记录。</li>
+        </ol>
+    </section>
+    <section class="warn">
+        <h2>6. 运行限制与排查</h2>
+        <ul>
+            <li>网页在受限沙盒中运行，不应假设可以读取 Drop2Tunnel 主页的 DOM、Cookie 或页内 JavaScript 对象。</li>
+            <li>如外部 JS 请求成功但没有效果，先检查控制台语法错误、DOM 是否已创建、引用路径的大小写，以及是否将 <code>type="module"</code> 所需的子模块一并放入 ZIP。</li>
+            <li>更新 Drop2Tunnel 后首次预览会等待新版运行服务接管。若浏览器拒绝更新 Service Worker，强制刷新页面后再打开预览。</li>
+            <li>草稿在当前浏览器中保存，清理站点数据可能删除未发布的草稿；重要内容请及时发布或保留 ZIP 副本。</li>
+        </ul>
+    </section>
+</main></body>
+</html>

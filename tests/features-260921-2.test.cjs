@@ -88,7 +88,7 @@ test('Telegram 内容页使用独立滚动消息区、浏览锚点和首附件 c
     assert.match(client, /if \(text && !files\.length\).*\/messages/);
     assert.match(client, /attachmentCaption = text\.slice\(0, 1024\)/);
     assert.match(client, /caption:index === 0 \? attachmentCaption : ''/);
-    assert.match(css, /grid-template-rows:auto minmax\(0,1fr\) auto/);
+    assert.match(css, /grid-template-rows:auto auto minmax\(0,1fr\) auto/);
     assert.match(css, /\.messages\{[^}]*overflow:auto/);
     assert.match(css, /#telegramComposer\{[^}]*max-height/);
     assert.match(page, /最长 3 天的读取缓存/);
@@ -96,7 +96,7 @@ test('Telegram 内容页使用独立滚动消息区、浏览锚点和首附件 c
 
 test('前台 Service Worker 不再并发强制回源整个应用外壳', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v57/);
+    assert.match(worker, /instant-tunnel-v58/);
     assert.match(worker, /const PRECACHE_CORE = \['\/index\.html', '\/manifest\.webmanifest', '\/tunnel-icon\.svg'\]/);
     assert.doesNotMatch(worker, /cache:\s*['"]reload['"]/);
     assert.doesNotMatch(worker, /Promise\.allSettled\(APP_SHELL\.map/);
