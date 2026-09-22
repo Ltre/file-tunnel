@@ -69,6 +69,7 @@ document.querySelector('#hello').addEventListener('click', () =&gt; {
   alert('外部 JavaScript 已执行');
 });</code></pre>
         <p><code>defer</code> 可确保外部脚本在 HTML 解析完成后执行。如果不使用 <code>defer</code>，请把脚本放在 <code>&lt;/body&gt;</code> 之前，或等待 <code>DOMContentLoaded</code>。</p>
+        <p>外链脚本标签仍应按 HTML 标准完整闭合，例如 <code>&lt;script src="assets/app.js"&gt;&lt;/script&gt;</code>。运行层会兼容常见的漏写 <code>&lt;/script&gt;</code> 情况，避免其后的页面内容被浏览器吞进脚本节点，但编辑时仍建议使用标准写法。</p>
     </section>
     <section>
         <h2>5. 草稿、预览和发布</h2>
@@ -84,7 +85,7 @@ document.querySelector('#hello').addEventListener('click', () =&gt; {
         <ul>
             <li>网页在受限沙盒中运行，不应假设可以读取 Drop2Tunnel 主页的 DOM、Cookie 或页内 JavaScript 对象。</li>
             <li>如外部 JS 请求成功但没有效果，先检查控制台语法错误、DOM 是否已创建、引用路径的大小写，以及是否将 <code>type="module"</code> 所需的子模块一并放入 ZIP。</li>
-            <li>更新 Drop2Tunnel 后首次预览会等待新版运行服务接管。若浏览器拒绝更新 Service Worker，强制刷新页面后再打开预览。</li>
+            <li>更新 Drop2Tunnel 后首次预览会自动等待新版运行服务完成安装并接管当前页面，无需关闭后再打开。若浏览器长期阻止 Service Worker 安装，页面会给出明确的启动超时提示。</li>
             <li>草稿在当前浏览器中保存，清理站点数据可能删除未发布的草稿；重要内容请及时发布或保留 ZIP 副本。</li>
         </ul>
     </section>

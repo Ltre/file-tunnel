@@ -19,6 +19,22 @@ test('网页 ZIP 外部脚本要求新版 Runtime 协议与 JavaScript MIME', ()
     assert.match(worker, /js:'text\/javascript; charset=utf-8'/);
     assert.match(worker, /mjs:'text\/javascript; charset=utf-8'/);
     assert.match(worker, /'X-Content-Type-Options': 'nosniff'/);
+    assert.match(worker, /'X-Web-Zip-Runtime': '1'/);
+});
+
+test('网页 ZIP 兼容漏写关闭标签的外链脚本且不吞掉后续 HTML', () => {
+    const runtimeSource = source('client/web-zip-runtime.js');
+    const window = {};
+    require('node:vm').runInNewContext(runtimeSource, { window });
+    const repair = window.WebZipRuntime._test.repairExternalScriptTags;
+    const malformed = '<p>前</p><script src="a.js">\n<script src="b.js">\n<p>后</p>';
+    const result = repair(malformed);
+    assert.equal(result.repaired, 2);
+    assert.equal(result.html, '<p>前</p><script src="a.js"></script>\n<script src="b.js"></script>\n<p>后</p>');
+    const valid = '<script src="a.js" defer></script><p>正常</p>';
+    const unchanged = repair(valid);
+    assert.equal(unchanged.html, valid);
+    assert.equal(unchanged.repaired, 0);
 });
 
 test('网页工坊在新 Tab 打开编辑手册，手册说明内外部资源路径', () => {

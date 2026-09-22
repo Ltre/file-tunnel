@@ -69,6 +69,14 @@ self.addEventListener('message', event => {
         event.ports?.[0]?.postMessage({ webZipRuntime:2, externalScriptMime:true });
         return;
     }
+    if (event.data?.type === 'web-zip-runtime-activate') {
+        event.waitUntil(self.skipWaiting());
+        return;
+    }
+    if (event.data?.type === 'web-zip-runtime-claim') {
+        event.waitUntil(self.clients.claim());
+        return;
+    }
     if (event.data?.type !== 'tunnel-force-refresh') return;
     event.waitUntil(
         self.registration.update()
@@ -145,7 +153,7 @@ self.addEventListener('fetch', event => {
     }
 
     const navigation = event.request.mode === 'navigate';
-    if (navigation || url.pathname === '/runtime-config.js' || url.pathname === '/service-worker.js') {
+    if (navigation || url.pathname === '/runtime-config.js' || url.pathname === '/service-worker.js' || url.pathname === '/client/web-zip-runtime.js') {
         event.respondWith(fetch(event.request).catch(() => caches.match(navigation ? '/index.html' : url.pathname)));
         return;
     }
@@ -220,6 +228,7 @@ async function handleWebZipRuntime(request, url) {
     const data = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
     const headers = {
         'Content-Type': getWebZipRuntimeContentType(filePath, file.type),
+        'X-Web-Zip-Runtime': '1',
         'X-Content-Type-Options': 'nosniff',
         'Cache-Control': 'no-store',
         'Access-Control-Allow-Origin': '*',

@@ -22,11 +22,16 @@ test('网页 ZIP 两个入口显示启动阶段并对 Service Worker 等待设�
     const workshop = source('client/web-workshop.js');
     assert.match(runtime, /Promise\.race\(\[\s*navigator\.serviceWorker\.ready/);
     assert.match(runtime, /网页 ZIP 运行服务启动超时/);
+    assert.match(runtime, /web-zip-runtime-activate/);
+    assert.match(runtime, /controllerchange/);
+    assert.match(runtime, /X-Web-Zip-Runtime/);
     assert.match(runtime, /options\.onStatus\?\.\('正在启动网页 ZIP 运行服务/);
     assert.match(preview, /正在解压网页 ZIP/);
     assert.match(preview, /WebZipRuntime\.mount\(entries,\{onStatus/);
     assert.match(workshop, /web-workshop-preview-status/);
     assert.match(workshop, /global\.WebZipRuntime\.mount\(files,\{onStatus/);
+    assert.match(preview, /renderEpoch/);
+    assert.match(workshop, /previewEpoch/);
 });
 
 test('网页工坊发布等待最后编辑版本打包完成并使用该次归档', () => {

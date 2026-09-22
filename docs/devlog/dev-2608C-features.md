@@ -2956,3 +2956,44 @@ Description：
 - 补全 Telegram 频道、群组与成员更新的 Webhook 订阅，并安全避免抢占其它部署的 Webhook
 - 新增禁止新成员、限制/移除用户、管理员权限编辑以及私聊停止/恢复服务
 - 增加 Chat 与底部新消息轻量轮询，升级 Service Worker 至 v58 并完成 288 项回归验证
+
+## 49. 2026-09-22：260922-2 网页 ZIP 首开接管、预览竞态与漏闭合外链脚本
+
+### 49.1 首次打开失败、第二次正常的根因
+
+- `WebZipRuntime.ensureController` 原来只轮询 `navigator.serviceWorker.controller`，不处理新 Worker 已处于 `installing`／`waiting`／`active`、但尚未接管当前页面的阶段；固定等待 10 秒后就抛出“网页 ZIP 运行服务尚未更新”。关闭页面后再打开时，新 Worker 通常已经接管，所以相同地址第二次能够正常工作。
+- Runtime 现在主动通知 waiting Worker 执行 `skipWaiting`，通知 active Worker执行 `clients.claim`，并监听 `controllerchange` 和 `updatefound`，直到兼容 v2 协议的 Worker 真正成为当前页面 controller。多个同时发起的预览共用同一个启动 Promise，失败后会清空 Promise 以允许下一次自动重试。
+- `/client/web-zip-runtime.js` 改为网络优先并保留缓存回退，防止旧 Cache Storage 长期返回过期的 Runtime 客户端。挂载 IndexedDB 虚拟目录后还会先请求入口 HTML，并检查 Service Worker 专用的 `X-Web-Zip-Runtime: 1` 响应头；未被 Runtime 接管、目录未提交或返回普通服务端页面时，不会再误判为可用。
+
+### 49.2 新建网页偶发一直 Loading
+
+- 网页工坊原来没有区分多次预览操作：重复点击预览、预览尚未完成时返回、切换草稿或关闭工坊后，较早的异步挂载仍可能完成并覆盖当前界面，或留下无人释放的 Runtime。独立预览页连续点“重新加载”也存在同类竞态。
+- 两个入口分别增加 `previewEpoch`／`renderEpoch`。只有最新一轮操作可以更新 Loading 文案、挂载 iframe 和持有 Runtime；过期操作完成后立即卸载自己的虚拟目录。返回、关闭和重新加载都会使旧轮次失效，避免旧结果覆盖新草稿或让已离开的预览继续转圈。
+
+### 49.3 外链脚本以及其后 HTML 不显示
+
+- 实际解包 `prompts/resources/[260922-2]4.html.zip` 后确认，三个外链脚本均写成 `<script src="…">`，没有任何 `</script>`。HTML 标准中 `script` 不是 void 元素，浏览器会把第一个未闭合标签之后的其它脚本和 `<p>` 全部当成该脚本节点的文本内容；这解释了“脚本后普通 HTML 也消失”，并非资源路径或 CSS 链路造成。
+- 上述结论只解释该复现包自身的 HTML 结构问题，并不代表所有现场故障都由漏闭合造成。源文件已经正确闭合时，旧 Service Worker 未接管、旧协议误判和错误 JavaScript MIME 仍可能让外链脚本不执行；这些链路分别由 49.1 和上一轮 Runtime v2/MIME 修复处理。
+- Runtime 在创建只用于运行的文件副本时扫描 HTML：外链脚本缺少关闭标签，或在其关闭标签前又遇到下一个 `<script>` 时，自动补上 `</script>`。标准的已闭合脚本保持原字节，不修改网页工坊草稿和原始 ZIP。运行阶段会显示兼容修复数量，便于判断包内存在非标准标签。
+- 编辑手册补充外链脚本必须标准闭合的示例和兼容边界，并说明首次更新由运行服务自动接管，不再要求用户关闭页面后重开。
+
+### 49.4 验证与执行边界
+
+- `client/web-zip-runtime.js`、`client/web-workshop.js`、`service-worker.js` 均通过 `node --check`；相关 23 项 Runtime、网页工坊、Service Worker 与既有功能回归全部通过。
+- 使用独立端口 `3099` 启动当前代码，将用户提供的 `[260922-2]4.html.zip` 导入网页工坊并在真实 Chromium 中预览。内联脚本及 `a.js`、`a/b.js`、`/a/b/c.js` 三条外链脚本均依次执行；外链脚本写入的 DOM 标记为 `executed`，末尾原本不显示的 `<p>` 正常渲染，iframe 中共有 4 个独立 script 节点。验证后已关闭测试页和独立服务器，并删除测试数据目录。
+- 中场复核另行生成了一个所有 `<script src="…"></script>` 均已标准闭合、不会触发兼容修复的 ZIP。真实 Chromium 中相对路径 `a.js`、子目录路径 `a/b.js` 和根路径 `/a/b/c.js` 的执行顺序为 `ABC`，三个 DOM 执行标记均为 `yes`，脚本后的 `<p id="after">after-ok</p>` 存在且可见。该结果确认当前版本对标准闭合源码同样有效，并非依赖自动补标签才通过。
+- 37 个测试文件以项目逐文件方式执行，共 **289** 项：**288** 项通过，**1** 项因当前环境未安装 FFmpeg／FFprobe 按既有条件跳过，失败为 0。聚合式 `node --test` 仍会被 Windows 沙箱以 `spawn EPERM` 拒绝创建子进程，不属于断言失败。
+- 本轮相关文件 `git diff --check` 通过。未改动、暂存或提交用户已有的 `prompts/dev-prompt-logs/dev-2608B.md` 修改；当前分支保持 `dev/2608C-step4`。
+
+### 49.5 建议 Git 提交日志（不执行提交）
+
+Title：fix: 修复网页 ZIP 首次预览与外链脚本解析
+
+Description：
+
+- 等待新版 Service Worker 实际接管当前页面，并主动激活 waiting Worker
+- 为 Runtime 入口增加专用响应校验，避免虚拟目录尚未可用时提前打开
+- 隔离重复预览、返回和重新加载产生的异步竞态并释放过期 Runtime
+- 兼容修复未闭合的外链 script 标签，恢复后续脚本执行和 HTML 渲染
+- 更新网页 ZIP 编辑手册并用用户复现包完成真实浏览器验证
+- 新增专项回归，完成 289 项测试且无失败
