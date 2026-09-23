@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>YouTube 随机帧提取工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-8 text-gray-800">
+    <div class="max-w-6xl mx-auto space-y-6">
+        <h1 class="text-3xl font-bold border-b pb-4">YouTube 视频帧随机提取系统</h1>
+        
+        <!-- 1. 新建/载入会话 -->
+        <div class="bg-white p-6 rounded-lg shadow-sm space-y-4">
+            <h2 class="text-xl font-semibold">创建或载入视频会话</h2>
+            <div class="flex gap-4">
+                <input id="videoUrl" type="text" placeholder="输入 YouTube 视频 URL" class="flex-1 p-2 border rounded">
+                <button onclick="initSession()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded">载入/创建会话</button>
+            </div>
+            <div id="sessionInfo" class="hidden p-4 bg-gray-50 rounded">
+                <p class="font-medium">当前视频: <span id="videoTitle" class="text-blue-700"></span></p>
+                <p class="text-sm text-gray-500">ID: <span id="currentVideoId"></span> | 时长: <span id="videoDuration"></span> 秒</p>
+            </div>
+        </div>
+
+        <!-- 2. 控制面板 -->
+        <div id="controlPanel" class="hidden bg-white p-6 rounded-lg shadow-sm grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">提取数量</label>
+                <input id="extractCount" type="number" value="5" class="w-full p-2 border rounded">
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1">最小时间间隔 (秒)</label>
+                <input id="granularity" type="number" value="5" class="w-full p-2 border rounded">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-1">自定义时间范围 (可选，如: 12:34-56:01,01:10:00-01:12:00)</label>
+                <input id="timeRanges" type="text" placeholder="留空代表全视频范围" class="w-full p-2 border rounded">
+            </div>
+            <div class="md:col-span-4 flex justify-between items-center pt-2">
+                <button onclick="triggerExtraction()" class="bg-green-600 hover:bg-green-700 text-white px-8 py-2 rounded font-medium">开始提取随机帧</button>
+                <div class="flex gap-4 items-center">
+                    <label class="text-sm font-medium">排序方式:</label>
+                    <select id="sortBy" onchange="loadLogs()" class="p-2 border rounded">
+                        <option value="timestamp_ms">播放时刻</option>
+                        <option value="created_at">提取时间</option>
+                    </select>
+                    <select id="sortOrder" onchange="loadLogs()" class="p-2 border rounded">
+                        <option value="ASC">升序</option>
+                        <option value="DESC">降序</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. 日志与图片画廊 -->
+        <div id="galleryContainer" class="hidden space-y-4">
+            <h3 class="text-xl font-bold">提取日志画廊</h3>
+            <div id="gallery" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                <!-- 动态渲染 -->
+            </div>
+        </div>
+
+        <!-- 4. 临时上传比对 -->
+        <div id="comparePanel" class="hidden bg-white p-6 rounded-lg shadow-sm space-y-4">
+            <h3 class="text-xl font-bold">图片相似度比对 (本地临时上传)</h3>
+            <p class="text-sm text-gray-500">上传一张本地图片，比对当前视频提取日志中所有帧的相似度（按降序排列）</p>
+            <div class="flex gap-4 items-center">
+                <input id="uploadFile" type="file" class="border p-2 rounded">
+                <button onclick="compareImage()" class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded">执行比对</button>
+            </div>
+            <div id="compareResults" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentVideoId = "";
+
+        async function initSession() {
+            const url = document.getElementById("videoUrl").value;
+            if (!url) return alert("请输入URL");
+            
+            const res = await fetch("/api/session", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ url })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                currentVideoId = data.video_id;
+                document.getElementById("currentVideoId").innerText = data.video_id;
+                document.getElementById("videoTitle").innerText = data.title;
+                document.getElementById("videoDuration").innerText = data.duration;
+                document.getElementById("sessionInfo").classList.remove("hidden");
+                document.getElementById("controlPanel").classList.remove("hidden");
+                document.getElementById("galleryContainer").classList.remove("hidden");
+                document.getElementById("comparePanel").classList.remove("hidden");
+                loadLogs();
+            } else {
+                alert("载入会话失败，请检查URL或Cookie配置");
+            }
+        }
+
+        async function triggerExtraction() {
+            const count = document.getElementById("extractCount").value;
+            const granularity = document.getElementById("granularity").value;
+            const ranges = document.getElementById("timeRanges").value;
+            
+            const res = await fetch("/api/extract", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    video_id: currentVideoId,
+                    count,
+                    granularity,
+                    ranges
+                })
+            });
+            if (res.ok) {
+                loadLogs();
+            } else {
+                alert("截取失败，请检查后台日志。");
+            }
+        }
+
+        async function loadLogs() {
+            const sortBy = document.getElementById("sortBy").value;
+            const sortOrder = document.getElementById("sortOrder").value;
+            const res = await fetch(`/api/logs/${currentVideoId}?sort_by=${sortBy}&order=${sortOrder}`);
+            const logs = await res.json();
+            
+            const gallery = document.getElementById("gallery");
+            gallery.innerHTML = "";
+            logs.forEach(log => {
+                const timeStr = formatMs(log.timestamp_ms);
+                const card = document.createElement("div");
+                card.className = "bg-white rounded-lg shadow overflow-hidden border";
+                card.innerHTML = `
+                    <img src="${log.image_path}" class="w-full h-48 object-cover">
+                    <div class="p-4 space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm font-bold text-gray-600">${timeStr}</span>
+                            <span class="text-xs text-gray-400">pHash: ${log.phash}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" id="save-${log.id}" ${log.is_saved ? 'checked' : ''} onchange="toggleSave(${log.id}, this.checked)" class="h-4 w-4 text-blue-600">
+                            <label for="save-${log.id}" class="text-sm font-medium">标记保存（永久存储）</label>
+                        </div>
+                    </div>
+                `;
+                gallery.appendChild(card);
+            });
+        }
+
+        async function toggleSave(logId, checked) {
+            await fetch(`/api/log/${logId}/toggle-save?is_saved=${checked ? 1 : 0}`, { method: "POST" });
+        }
+
+        async function compareImage() {
+            const fileInput = document.getElementById("uploadFile");
+            if (fileInput.files.length === 0) return alert("请选择要上传比对的图片");
+            
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+            formData.append("video_id", currentVideoId);
+            
+            const res = await fetch("/api/compare-uploaded", {
+                method: "POST",
+                body: formData
+            });
+            const data = await res.json();
+            const resultsDiv = document.getElementById("compareResults");
+            resultsDiv.innerHTML = "";
+            
+            data.matches.slice(0, 6).forEach(match => {
+                const card = document.createElement("div");
+                card.className = "bg-white p-2 rounded border space-y-1";
+                card.innerHTML = `
+                    <img src="${match.image_path}" class="w-full h-32 object-cover rounded">
+                    <div class="text-xs flex justify-between">
+                        <span>时刻: ${formatMs(match.timestamp_ms)}</span>
+                        <span class="font-bold text-purple-600">相似度: ${match.similarity}%</span>
+                    </div>
+                `;
+                resultsDiv.appendChild(card);
+            });
+        }
+
+        function formatMs(ms) {
+            const totalSecs = ms / 1000;
+            const h = Math.floor(totalSecs / 3600);
+            const m = Math.floor((totalSecs % 3600) / 60);
+            const s = Math.floor(totalSecs % 60);
+            const mills = ms % 1000;
+            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${mills.toString().padStart(3, '0')}`;
+        }
+    </script>
+</body>
+</html>
