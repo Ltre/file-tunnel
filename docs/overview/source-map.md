@@ -17,7 +17,7 @@
 - `prompts/dev-prompt-logs/prompts-master.md`：早期核心需求和架构意图。
 - `docs/other/DEVELOPMENT_HISTORY.md`：旧开发历史。
 - `docs/other/PROJECT_OVERVIEW.md`：旧整体概览，可能滞后。
-- `README.md`：产品说明，但当前 README 基线早于 `dev/2609-s1`，只能作为历史/使用概览。
+- `README.md`：产品说明，但其内容早于本套 Overview 当前源码锚点，只能作为历史/使用概览。
 
 ## 2. 隧道、历史、设备与权限
 
