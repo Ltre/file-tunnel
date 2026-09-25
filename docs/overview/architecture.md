@@ -1,6 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线**：`dev/2609-s1@b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **文档更新时间**：`2026-09-26`
 > 本文描述当前实现事实，并补充可从历史 Prompt、Devlog 和 Git Log 追溯出的设计初衷。规划中的 SQLite WAL 网盘重构、S3 Compatible API 等必须与当前实现区分。
 
 ## 1. 整体定位
@@ -220,7 +221,7 @@ Socket 事件至少包括：
 - `telegram-part-cache/.owners.json`
 - 以及上传 staging / manifest、占位 file_id 等辅助状态。
 
-`prompts/dev-prompt-logs/dev-tgdisk-json2sqlite-WAL-transaction-260915.md` 与 `QA-of-tgdisk-json2sqliteWAL.md` 已规划未来迁移到原生 SQLite WAL / Repository / Adapter，但 **当前分支尚未实现**。后续 AI 不得把规划文档当成现状。
+`prompts/dev-prompt-logs/dev-tgdisk-json2sqlite-WAL-transaction-260915.md` 与 `QA-of-tgdisk-json2sqliteWAL.md` 已规划未来迁移到原生 SQLite WAL / Repository / Adapter，但 **截至本文源码基线尚未实现**。后续 AI 不得把规划文档当成现状。
 
 ### 4.4 Telegram
 

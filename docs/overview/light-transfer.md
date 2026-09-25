@@ -1,6 +1,7 @@
 # 光媒（Light Transfer / D2L1）离线二维码传输
 
-> **源码基线**：`dev/2609-s1@b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **文档更新时间**：`2026-09-26`
 > 主要实现：`client/light-transfer.js`、`pages/light-file-parts.html` 及 `server.js` 对应网络加速/回执接口。  
 > 原始设计与迭代详见 `prompts/ideas/LIGHT-TRANSFER-overview-260813.md` 与 `docs/devlog/dev-2608B-features.md`。
 

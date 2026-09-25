@@ -1,6 +1,7 @@
 # SNS / YouTube Premium、音轨修复与视频转码
 
-> **源码基线**：`dev/2609-s1@b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
+> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **文档更新时间**：`2026-09-26`
 
 ## 1. 模块边界
 

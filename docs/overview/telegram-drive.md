@@ -1,6 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线**：`dev/2609-s1@b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **文档更新时间**：`2026-09-26`
 > **重要现状**：当前网盘核心共享元数据仍是 JSON/文件系统持久化。SQLite WAL 与 S3 Compatible 均是已有设计方案，但不属于本基线已实现能力。
 
 ## 1. 产品初衷
@@ -638,7 +639,7 @@ API：
 - 保留 Saga / rollback / recovery；
 - 为未来 PostgreSQL/MySQL 留适配边界。
 
-**这仍是计划，不是当前分支现状。**
+**这仍是计划，不是本文源码基线所代表的当前实现。**
 
 ## 27. S3 Compatible 规划
 
