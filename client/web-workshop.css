@@ -10,4 +10,14 @@
 .web-workshop-package-name input{flex:1;min-width:120px;max-width:600px;padding:8px 10px;border:1px solid #8fa4bd88;border-radius:9px;background:var(--bg-color,#f4f6fa);color:inherit;font-weight:600}
 .web-workshop-package-name input:focus{outline:2px solid #347bc788;outline-offset:1px}
 .web-editor section>label{display:block;flex:0 0 auto;max-width:100%;margin:0 0 10px;padding:8px 11px;border:1px solid #8da0b744;border-radius:9px;background:#347bc714;color:#31658f;font:600 13px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.web-workshop-publish-option{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;padding:7px 9px;border:1px solid #8da0b744;border-radius:9px;background:#347bc710;font-size:12px;white-space:nowrap;cursor:pointer}
+.web-workshop-publish-option input{width:auto;accent-color:#347bc7}
+.web-zip-resource-picker{position:fixed;inset:0;z-index:18950;display:grid;place-items:center;padding:16px;background:#11233a99;backdrop-filter:blur(5px)}
+.web-zip-resource-picker>section{display:flex;flex-direction:column;gap:10px;width:min(680px,100%);max-height:85dvh;padding:16px;border:1px solid #8da0b766;border-radius:15px;background:var(--panel-bg,#fff);color:var(--text-color,#243047);box-shadow:0 20px 60px #0005}
+.web-zip-resource-picker header,.web-zip-resource-picker footer{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.web-zip-resource-picker input[type=search]{width:100%;padding:9px;border:1px solid #8fa4bd88;border-radius:8px;background:var(--bg-color,#f4f6fa);color:inherit}
+.web-zip-resource-list{min-height:0;overflow-y:auto;border:1px solid #8da0b744;border-radius:9px}
+.web-zip-resource-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #8da0b733;cursor:pointer;overflow-wrap:anywhere}
+.web-zip-resource-row:hover{background:#347bc714}.web-zip-resource-row[hidden]{display:none}.web-zip-resource-row input{flex:0 0 auto;width:auto}
+.web-zip-resource-picker p{margin:0;color:#62738a;font-size:12px}
 @media(max-width:650px){.web-workshop>header{gap:6px;padding-left:8px;padding-right:8px}.web-workshop>header>strong{font-size:14px;white-space:nowrap}.web-workshop>header button{padding:7px}.web-workshop-guide-link{padding:7px;font-size:12px}}

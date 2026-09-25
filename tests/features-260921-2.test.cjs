@@ -96,7 +96,7 @@ test('Telegram 内容页使用独立滚动消息区、浏览锚点和首附件 c
 
 test('前台 Service Worker 不再并发强制回源整个应用外壳', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v59/);
+    assert.match(worker, /instant-tunnel-v60/);
     assert.match(worker, /const PRECACHE_CORE = \['\/index\.html', '\/manifest\.webmanifest', '\/tunnel-icon\.svg'\]/);
     assert.doesNotMatch(worker, /cache:\s*['"]reload['"]/);
     assert.doesNotMatch(worker, /Promise\.allSettled\(APP_SHELL\.map/);

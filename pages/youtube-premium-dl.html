@@ -1974,6 +1974,13 @@
             info.disabled = !task.hasFile;
             info.addEventListener('click', () => showFileInfo(task));
             actions.appendChild(info);
+            if (task.status === 'completed' && task.hasFile && !task.asMusic && !['audio','song'].includes(task.mediaType)) {
+                const transcode = document.createElement('a');
+                transcode.className = 'command';
+                transcode.href = `/video-transcode?source=youtube&taskId=${encodeURIComponent(task.id)}`;
+                transcode.textContent = '前往转码处理';
+                actions.appendChild(transcode);
+            }
             const tagButton = document.createElement('button');
             tagButton.type = 'button';
             tagButton.textContent = '打标签';

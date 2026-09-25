@@ -4693,7 +4693,7 @@ async function getWebZipBlob(fileInfo, ownerDeviceId = '') {
 }
 
 function openWebZipStandalone(fileInfo, options = {}) {
-    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(fileInfo.name || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}`;
+    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(fileInfo.name || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}${fileInfo.webZipHideFrame ? '&bare=1' : ''}`;
     const opened = window.open(url, '_blank');
     if (!opened) throw new Error('浏览器阻止了新页面，请允许本站打开新窗口');
     getWebZipBlob(fileInfo, options.ownerDeviceId || options.sender || '').catch(error => historyLog('web-zip-background-cache-failed', { fileId:fileInfo.id, error:error.message }));
@@ -4741,6 +4741,7 @@ async function publishWebZipUpdate(file, draft) {
         creatorDeviceId: current.creatorDeviceId || state.deviceId,
         creatorDeviceName: current.creatorDeviceName || state.deviceName,
         webZipEditors: Array.isArray(current.webZipEditors) ? current.webZipEditors : [],
+        webZipHideFrame: draft.webZipHideFrame === true,
         webZipRootId: current.webZipRootId || current.id,
         webZipRevision: Math.max(0, Number(current.webZipRevision) || 0) + 1,
         replacesFileId: current.id,
@@ -7207,7 +7208,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     messageEl.innerHTML = `
         <div class="message-header">
             <span>${message.senderName}</span>
-            <span>${formatTime(message.timestamp)}</span>
+            <span>${formatTransferTimestamp(message.timestamp)}</span>
         </div>
         ${contentHtml}
     `;
@@ -13476,6 +13477,75 @@ async function getSessionResourceInventory() {
     });
 }
 
+async function readWebWorkshopResource(resource) {
+    const readStored = async () => {
+        let file = await materializeCachedFileRecord(await getFromStore('files', resource.id));
+        if (file?.externalFileHandle) file = await materializeExternalFileRecord(file, { requestPermission:true });
+        const emptyFile = Number(resource.size) === 0 && file?.data && getBinaryDataSize(file.data) === 0 && !file.cacheCleared;
+        return hasCompleteFileCache(file, resource) || emptyFile ? file : null;
+    };
+    let file = await readStored();
+    if (!file) {
+        await restoreResourceCache({ ...resource, isServerAsset:Boolean(resource.serverAssetUrl) });
+        const deadline = Date.now() + 90000;
+        while (!file && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 350));
+            file = await readStored();
+        }
+    }
+    if (!file) throw new Error(`资源“${resource.name}”未能完整缓存到本设备`);
+    const raw = file.data instanceof Blob ? await file.data.arrayBuffer() : file.data;
+    return { id:resource.id, name:resource.name, type:resource.type, data:new Uint8Array(raw) };
+}
+
+async function chooseWebWorkshopResources() {
+    const resources = await getSessionResourceInventory();
+    return new Promise(resolve => {
+        const layer = document.createElement('div');
+        layer.className = 'web-zip-resource-picker';
+        const card = document.createElement('section');
+        card.setAttribute('role', 'dialog'); card.setAttribute('aria-modal', 'true');
+        const header = document.createElement('header');
+        const title = document.createElement('strong'); title.textContent = '隧道资源浏览器 · 导入网页 ZIP';
+        const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.textContent = '×'; closeButton.setAttribute('aria-label', '取消导入');
+        header.append(title, closeButton);
+        const search = document.createElement('input'); search.type = 'search'; search.placeholder = '按名称筛选资源'; search.setAttribute('aria-label', '筛选隧道资源');
+        const list = document.createElement('div'); list.className = 'web-zip-resource-list';
+        const status = document.createElement('p'); status.textContent = '可多选；远端资源会先缓存到本设备，再写入网页 ZIP。';
+        const actions = document.createElement('footer');
+        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
+        const confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'primary'; confirm.textContent = '导入选中资源';
+        actions.append(cancel, confirm); card.append(header, search, list, status, actions); layer.append(card); document.body.append(layer);
+        let busy = false, settled = false;
+        const finish = result => { if (busy || settled) return; settled = true; window.removeEventListener('keydown', onKeydown, true); layer.remove(); resolve(result); };
+        const onKeydown = event => { if (event.key === 'Escape') { event.preventDefault(); finish([]); } };
+        window.addEventListener('keydown', onKeydown, true);
+        closeButton.onclick = cancel.onclick = () => finish([]);
+        layer.onclick = event => { if (event.target === layer) finish([]); };
+        const rows = resources.map(resource => {
+            const row = document.createElement('label'); row.className = 'web-zip-resource-row';
+            const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = resource.id;
+            const detail = document.createElement('span'); detail.textContent = `${resource.name} · ${formatFileSize(resource.size)} · ${resource.hasReadableLocalSource ? '本机可读' : '需向来源拉取'}`;
+            row.append(checkbox, detail); list.append(row); return { row, checkbox, resource };
+        });
+        if (!rows.length) status.textContent = '当前隧道没有可导入的资源。';
+        search.oninput = () => { const query = search.value.trim().toLocaleLowerCase(); rows.forEach(item => { item.row.hidden = !item.resource.name.toLocaleLowerCase().includes(query); }); };
+        confirm.onclick = async () => {
+            const chosen = rows.filter(item => item.checkbox.checked).map(item => item.resource);
+            if (!chosen.length) { status.textContent = '请先选择至少一个资源。'; return; }
+            busy = true; confirm.disabled = true; cancel.disabled = true; closeButton.disabled = true;
+            try {
+                const imported = [];
+                for (let index = 0; index < chosen.length; index++) {
+                    status.textContent = `正在读取 ${index + 1}/${chosen.length}：${chosen[index].name}`;
+                    imported.push(await readWebWorkshopResource(chosen[index]));
+                }
+                busy = false; finish(imported);
+            } catch (error) { status.textContent = error.message; busy = false; confirm.disabled = false; cancel.disabled = false; closeButton.disabled = false; }
+        };
+    });
+}
+
 function flashResourceTarget(target) {
     if (!target) return;
     target.classList.remove('resource-focus-flash');
@@ -17371,6 +17441,7 @@ function initUI() {
             return fileId;
         },
         publishUpdate: publishWebZipUpdate,
+        chooseResources: chooseWebWorkshopResources,
         focusFile: focusPublishedWebZip,
         focusMessage: messageId => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth' }),
         toast: showAppToast,
@@ -19069,6 +19140,13 @@ function formatFileSize(bytes) {
 function formatTime(timestamp) {
     const date = new Date(timestamp);
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatTransferTimestamp(timestamp) {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return '';
+    const two = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
 }
 
 function escapeHtml(text) {

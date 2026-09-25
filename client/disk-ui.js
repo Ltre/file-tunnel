@@ -882,9 +882,8 @@ function renderTelegramDriveItems() {
     updateDiskCacheLabels();
 }
 
-async function uploadFilesToTelegramDrive(fileList) {
+async function uploadFilesToTelegramDrive(fileList, destination = telegramDrivePath) {
     const files = [...(fileList || [])]; if (!files.length) return;
-    const destination = telegramDrivePath;
     const result = await window.DiskClient.upload(files, destination);
     showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分 Telegram 定位备注未能更新，文件索引已保存' : ''));
     // Only refresh the directory where the upload was initiated. A render
@@ -1192,15 +1191,33 @@ function installContextGesture(element, open, beginTouchDrag = null, options = {
 function installDiskDrop(element, path) {
     element.dataset.diskDropPath = String(path || '');
     element.addEventListener('dragover', event => {
+        if (isLocalDiskFileDrag(event)) {
+            event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; element.classList.add('disk-drop-target'); return;
+        }
         if (!diskDragItems.length) return;
         event.preventDefault(); event.dataTransfer.dropEffect = 'move'; element.classList.add('disk-drop-target');
     });
     element.addEventListener('dragleave', () => element.classList.remove('disk-drop-target'));
     element.addEventListener('drop', event => {
+        if (isLocalDiskFileDrag(event)) {
+            event.preventDefault(); event.stopPropagation(); element.classList.remove('disk-drop-target');
+            confirmLocalDiskUpload([...event.dataTransfer.files], path).catch(error => alert(telegramDriveErrorText(error)));
+            return;
+        }
+        if (!diskDragItems.length) return;
         event.preventDefault(); event.stopPropagation(); element.classList.remove('disk-drop-target');
         const items = diskDragItems; diskDragItems = [];
         if (items.length) moveTelegramDriveItems(items, path).catch(error => alert(telegramDriveErrorText(error)));
     });
+}
+function isLocalDiskFileDrag(event) {
+    return !diskDragItems.length && [...(event.dataTransfer?.types || [])].includes('Files');
+}
+async function confirmLocalDiskUpload(files, destination) {
+    if (!files.length) return;
+    const names = files.length <= 3 ? files.map(file => file.name).join('、') : `${files.slice(0, 3).map(file => file.name).join('、')} 等 ${files.length} 个文件`;
+    if (!await confirmTelegramDriveAction('上传本地文件', `将上传 ${names} 到 ${telegramDriveDisplayPath(destination)} 目录`, '确认上传')) return;
+    await uploadFilesToTelegramDrive(files, destination);
 }
 function beginTouchDiskDrag(items, sourceRow, event) {
     if (!items.length) return;
@@ -2164,6 +2181,16 @@ function init(options = {}) {
         if (eventName === 'click') closeTelegramDriveItemMenu();
     });
     const list = document.getElementById('telegramDriveList');
+    list?.addEventListener('dragover', event => {
+        if (!isLocalDiskFileDrag(event)) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; list.classList.add('disk-drop-target');
+    });
+    list?.addEventListener('dragleave', event => { if (!list.contains(event.relatedTarget)) list.classList.remove('disk-drop-target'); });
+    list?.addEventListener('drop', event => {
+        if (!isLocalDiskFileDrag(event)) return;
+        event.preventDefault(); event.stopPropagation(); list.classList.remove('disk-drop-target');
+        confirmLocalDiskUpload([...event.dataTransfer.files], telegramDrivePath).catch(error => alert(telegramDriveErrorText(error)));
+    });
     document.getElementById('telegramDriveBottomMenuBtn')?.addEventListener('click', event => {
         event.preventDefault(); event.stopPropagation();
         const anchor = event.currentTarget;

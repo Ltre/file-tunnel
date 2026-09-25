@@ -375,6 +375,9 @@
         if (task.hasFile) {
             actions.append(makeAction('预览',()=>showPreview(task)),makeAction('文件信息',()=>showInfo(task)));
             const download=document.createElement('a');download.className='button';download.href=task.downloadUrl;download.textContent='下载';actions.append(download);
+            if (task.status === 'completed' && !task.asMusic && !['audio','song'].includes(task.mediaType)) {
+                const transcode=document.createElement('a');transcode.className='button';transcode.href=`/video-transcode?source=sns&taskId=${encodeURIComponent(task.id)}`;transcode.textContent='前往转码处理';actions.append(transcode);
+            }
             actions.append(makeAction('缓存到浏览器',async()=>{cacheFilesInput.checked=true;localStorage.setItem('snsDownloadCacheFiles','1');await ensureBrowserCache(task);}));
             actions.append(makeAction('转发到隧道',()=>showForward(task)));
             actions.append(makeAction('原尺寸封面',()=>downloadThumbnail(task)));

@@ -88,6 +88,33 @@ test('视频转码服务流式接收源文件并以 argv 队列执行到成品',
     } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
 
+test('视频转码可直接复用下载任务的服务器缓存，清理转码输入不影响原文件', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'video-transcode-source-'));
+    const sourceFile = path.join(root, 'download-cache', 'source.mp4');
+    fs.mkdirSync(path.dirname(sourceFile));
+    fs.writeFileSync(sourceFile, 'cached-video');
+    const invocations = [];
+    const spawnProcess = (_command, args) => {
+        invocations.push(args);
+        const child = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => child.emit('exit', null, 'SIGTERM');
+        setImmediate(() => { fs.writeFileSync(args.at(-1), 'transcoded'); child.emit('exit', 0, null); });
+        return child;
+    };
+    try {
+        const service = createVideoTranscodeService({ dataDir:root, ffmpegCommand:'ffmpeg-test', spawnProcess });
+        const queued = await service.createSourceTask({ profileId:'h265-balanced', params:{} }, { path:sourceFile, name:'source.mp4', type:'video/mp4' });
+        assert.ok(['queued', 'running', 'completed'].includes(queued.status));
+        for (let index=0;index<100 && service.getTask(queued.id).status!=='completed';index++) await new Promise(resolve=>setTimeout(resolve,5));
+        const task = service.getTask(queued.id);
+        assert.equal(task.status, 'completed');
+        assert.equal(invocations.length, 1);
+        assert.notEqual(task.inputPath, sourceFile);
+        assert.equal(fs.readFileSync(sourceFile, 'utf8'), 'cached-video');
+        service.removeTask(queued.id);
+        assert.equal(fs.readFileSync(sourceFile, 'utf8'), 'cached-video');
+    } finally { fs.rmSync(root, { recursive:true, force:true }); }
+});
+
 test('后台已接入动态视频转码页和受认证 API', () => {
     const server = source('server.js'), page = source('pages/video-transcode.html');
     assert.match(source('pages/admin.html'), /href="\/video-transcode"/);

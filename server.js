@@ -1355,7 +1355,18 @@ app.get('/video-transcode-guide.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'video-transcode-guide.html'));
 });
 
-registerVideoTranscodeRoutes(app, { service:videoTranscodeService, requireAuth:adminAuth.requireAuth });
+registerVideoTranscodeRoutes(app, {
+    service:videoTranscodeService,
+    requireAuth:adminAuth.requireAuth,
+    resolveSource(kind, taskId) {
+        const downloadService = kind === 'sns' ? snsDownloadService : kind === 'youtube' ? youtubePremiumService : null;
+        const task = downloadService?.get(taskId);
+        if (task?.status !== 'completed' || task.asMusic || ['audio', 'song'].includes(task.mediaType)) return null;
+        const file = downloadService.getFile(taskId);
+        if (!file || !/\.(?:mp4|mkv|webm|mov|m4v|avi|ts)$/i.test(file.name || '')) return null;
+        return { ...file, type:'video/*' };
+    }
+});
 
 app.get('/api/admin/data-usage', adminAuth.requireAuth, async (req, res) => {
     try {

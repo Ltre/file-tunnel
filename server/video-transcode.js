@@ -78,6 +78,20 @@ function createVideoTranscodeService({ dataDir, ffmpegCommand='ffmpeg', spawnPro
     function deleteProfile(id){const before=customProfiles.length;customProfiles=customProfiles.filter(item=>item.id!==id);if(before===customProfiles.length)throw new Error('PROFILE_NOT_FOUND');atomicWrite(profileFile,customProfiles);}
     function createTask(input){const selected=profile(input.profileId);if(!selected)throw new Error('PROFILE_NOT_FOUND');const params=validateParams(selected,input.params);const id=crypto.randomUUID(),dir=path.join(root,id);fs.mkdirSync(dir,{recursive:true});const original=cleanName(input.fileName,'input.mp4');const inputPath=path.join(dir,`input-${original}`);const task={id,profileId:selected.id,profileName:selected.name,params,fileName:original,size:Math.max(0,Number(input.size)||0),type:String(input.type||''),status:'uploading',phase:'等待上传源文件',progress:null,createdAt:Date.now(),updatedAt:Date.now(),inputPath,outputPath:'',outputName:'',logs:[]};tasks.push(task);persistTasks();return publicTask(task);}
     async function receiveInput(id,req){const task=getTask(id);if(!task||task.status!=='uploading')throw Object.assign(new Error('TASK_NOT_UPLOADABLE'),{status:409});const declared=Number(req.headers['content-length']||0);if(task.size&&declared&&declared!==task.size)throw Object.assign(new Error('INPUT_SIZE_MISMATCH'),{status:400});const max=20*1024*1024*1024;if(declared>max)throw Object.assign(new Error('INPUT_TOO_LARGE'),{status:413});let received=0;await new Promise((resolve,reject)=>{const output=fs.createWriteStream(task.inputPath,{flags:'wx'});req.on('data',chunk=>{received+=chunk.length;if(received>max){req.destroy();output.destroy(new Error('INPUT_TOO_LARGE'));}});req.pipe(output);output.on('finish',resolve);output.on('error',reject);req.on('error',reject);});if(task.size&&received!==task.size){fs.rmSync(task.inputPath,{force:true});throw Object.assign(new Error('INPUT_SIZE_MISMATCH'),{status:400});}task.receivedBytes=received;task.phase='源文件已上传';task.updatedAt=Date.now();persistTasks();return publicTask(task);}
+    async function createSourceTask(input,source){
+        const stat=await fs.promises.stat(source.path);
+        if(!stat.isFile()||!stat.size)throw Object.assign(new Error('SOURCE_FILE_NOT_FOUND'),{status:404});
+        const created=createTask({...input,fileName:source.name,size:stat.size,type:source.type||'video/*'}),task=getTask(created.id);
+        try{
+            await fs.promises.link(source.path,task.inputPath).catch(error=>{
+                if(['EXDEV','EPERM','EACCES','EMLINK','ENOTSUP'].includes(error.code))return fs.promises.copyFile(source.path,task.inputPath);
+                throw error;
+            });
+            task.receivedBytes=stat.size;
+            task.phase='已接入下载任务的服务器缓存';
+            return startTask(task.id);
+        }catch(error){removeTask(task.id);throw error;}
+    }
     function startTask(id){const task=getTask(id);if(!task||task.status!=='uploading'||!fs.existsSync(task.inputPath))throw new Error('TASK_NOT_READY');task.status='queued';task.phase='等待转码';task.updatedAt=Date.now();queue.push(id);persistTasks();consume();return publicTask(task);}
     async function runTask(task){const selected=profile(task.profileId);if(!selected)throw new Error('PROFILE_NOT_FOUND');const base=path.parse(task.fileName).name,dir=path.dirname(task.inputPath);let currentInput=task.inputPath;
         task.status='running';task.startedAt=Date.now();
@@ -89,10 +103,10 @@ function createVideoTranscodeService({ dataDir, ffmpegCommand='ffmpeg', spawnPro
     const directorySize=directory=>{let total=0;if(!fs.existsSync(directory))return 0;for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const target=path.join(directory,entry.name);try{if(entry.isDirectory())total+=directorySize(target);else total+=fs.statSync(target).size;}catch(_){}}return total;};
     function cacheStats(){const activeIds=new Set(tasks.filter(task=>['uploading','queued','running'].includes(task.status)).map(task=>task.id)),knownIds=new Set(tasks.map(task=>task.id));let activeBytes=0,finishedBytes=0,orphanBytes=0;for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(!entry.isDirectory())continue;const size=directorySize(path.join(root,entry.name));if(activeIds.has(entry.name))activeBytes+=size;else if(knownIds.has(entry.name))finishedBytes+=size;else orphanBytes+=size;}return{root,totalBytes:activeBytes+finishedBytes+orphanBytes,activeBytes,finishedBytes,orphanBytes};}
     function cleanupCache(scope='residual') {if(!['residual','finished'].includes(scope))throw new Error('INVALID_CACHE_CLEANUP_SCOPE');const activeIds=new Set(tasks.filter(task=>['uploading','queued','running'].includes(task.status)).map(task=>task.id)),known=new Map(tasks.map(task=>[task.id,task]));let removedBytes=0,removedEntries=0;for(const entry of fs.readdirSync(root,{withFileTypes:true})){if(!entry.isDirectory()||activeIds.has(entry.name))continue;const task=known.get(entry.name),removeEntry=!task||(scope==='finished'&&['completed','failed','cancelled'].includes(task.status))||(scope==='residual'&&['failed','cancelled'].includes(task?.status));if(!removeEntry)continue;const target=path.join(root,entry.name);removedBytes+=directorySize(target);fs.rmSync(target,{recursive:true,force:true});removedEntries++;if(task){task.cacheCleared=true;task.cacheClearedAt=Date.now();task.outputPath='';task.inputPath='';if(task.status==='completed')task.phase='已完成（结果缓存已清理）';}}if(removedEntries)persistTasks();return{scope,removedBytes,removedEntries,stats:cacheStats()};}
-    return { profiles,saveProfile,deleteProfile,createTask,receiveInput,startTask,cancel,removeTask,cacheStats,cleanupCache,getTask,listTasks:()=>tasks.slice().reverse().map(publicTask),publicTask };
+    return { profiles,saveProfile,deleteProfile,createTask,createSourceTask,receiveInput,startTask,cancel,removeTask,cacheStats,cleanupCache,getTask,listTasks:()=>tasks.slice().reverse().map(publicTask),publicTask };
 }
 
-function registerVideoTranscodeRoutes(app,{service,requireAuth}){
+function registerVideoTranscodeRoutes(app,{service,requireAuth,resolveSource}){
     const fail=(res,error)=>res.status(Number(error.status)||(/NOT_FOUND/.test(error.message)?404:/NOT_|INVALID|REQUIRED|MISMATCH|RULE/.test(error.message)?400:500)).json({error:error.message});
     app.get('/api/video-transcode/profiles',requireAuth,(req,res)=>res.json({profiles:service.profiles()}));
     app.post('/api/video-transcode/profiles',requireAuth,(req,res)=>{try{res.json({profile:service.saveProfile(req.body)});}catch(error){fail(res,error);}});
@@ -101,6 +115,8 @@ function registerVideoTranscodeRoutes(app,{service,requireAuth}){
     app.get('/api/video-transcode/cache',requireAuth,(req,res)=>res.json(service.cacheStats()));
     app.post('/api/video-transcode/cache/cleanup',requireAuth,(req,res)=>{try{res.json(service.cleanupCache(req.body?.scope||'residual'));}catch(error){fail(res,error);}});
     app.post('/api/video-transcode/tasks',requireAuth,(req,res)=>{try{res.status(201).json({task:service.createTask(req.body)});}catch(error){fail(res,error);}});
+    app.get('/api/video-transcode/sources/:kind/:taskId',requireAuth,(req,res)=>{try{const source=resolveSource?.(req.params.kind,req.params.taskId);if(!source)throw Object.assign(new Error('SOURCE_FILE_NOT_FOUND'),{status:404});res.json({name:source.name,size:fs.statSync(source.path).size,type:source.type||'video/*'});}catch(error){fail(res,error);}});
+    app.post('/api/video-transcode/source-tasks',requireAuth,async(req,res)=>{try{const source=resolveSource?.(req.body?.sourceKind,req.body?.sourceTaskId);if(!source)throw Object.assign(new Error('SOURCE_FILE_NOT_FOUND'),{status:404});res.status(201).json({task:await service.createSourceTask(req.body,source)});}catch(error){fail(res,error);}});
     app.put('/api/video-transcode/tasks/:id/input',requireAuth,async(req,res)=>{try{res.json({task:await service.receiveInput(req.params.id,req)});}catch(error){fail(res,error);}});
     app.post('/api/video-transcode/tasks/:id/start',requireAuth,(req,res)=>{try{res.json({task:service.startTask(req.params.id)});}catch(error){fail(res,error);}});
     app.post('/api/video-transcode/tasks/:id/cancel',requireAuth,(req,res)=>{try{res.json({task:service.cancel(req.params.id)});}catch(error){fail(res,error);}});
