@@ -335,6 +335,8 @@
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
 - [x] 对本轮新补文档和主索引做最终交叉链接；
-- [ ] 创建“初始 Overview 内容冻结 Commit”并写入 `VERSION.md`。
+- [x] 创建“初始 Overview 内容冻结 Commit”并写入 `VERSION.md`（内容冻结 Commit：`97e37c61674efd7cb1f92a34b8ef845f04dd4e18`）。
 
-最后两项完成后，才正式关闭初始创建阶段。
+以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
+
+后续进入增量维护阶段，源码比较锚点为 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`，维护规则以 [VERSION.md](./VERSION.md) 为准。
