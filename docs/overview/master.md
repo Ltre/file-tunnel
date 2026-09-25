@@ -50,10 +50,13 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 - [architecture.md](./architecture.md) — 运行架构、数据边界、前后端职责、当前与未来设计边界。
 - [tunnel-core.md](./tunnel-core.md) — 隧道、短码、设备、历史同步、权限、路由、联系人、Nearby、通知。
+  - [tunnel-core/device-direct.md](./tunnel-core/device-direct.md) — 独立设备主页、定向隧道邀请、设备摄像头与直接交互。
 
 ### 文件传输、缓存与媒体
 
 - [transfer-cache.md](./transfer-cache.md) — 传输记录、文件资产、P2P、Relay、多源恢复、浏览器缓存、文件句柄、备份/导入、资源管理器。
+  - [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md) — Drop2Tunnel 自定义磁链、种子发现、独立下载器与磁链缓存。
+  - [transfer-cache/folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md) — 文件夹 ZIP、合辑打包与 File System Access 目录镜像。
 - [media-player-realtime.md](./media-player-realtime.md) — 图片/视频/音频预览、音乐播放器、摄像头、语音、对讲、联系人呼叫、远程预览。
 - [light-transfer.md](./light-transfer.md) — D2L1 光学二维码文件协议、残片、网络加速、完整性与完成写入。
 
@@ -66,10 +69,12 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 - [web-workshop.md](./web-workshop.md) — 网页工坊、`.html.zip`、草稿、编辑权限、Service Worker Runtime、发布与资源导入。
 - [download-transcode.md](./download-transcode.md) — SNS、YouTube Premium、metadata、Telegram 转发、音轨修复、视频转码。
+  - [download-transcode/sns-cookie-sync.md](./download-transcode/sns-cookie-sync.md) — SNS Cookie 管理、多服务器自动同步扩展与私人 Premium Cookie。
 
 ### 平台与运维
 
 - [pwa-ui.md](./pwa-ui.md) — PWA、Service Worker、主题、宽屏三栏、移动 workspace、Overlay、全局 UI 状态。
+  - [pwa-ui/localization.md](./pwa-ui/localization.md) — 16 语言、本地化运行时、服务端 Telegram 翻译与 i18n 审计。
 - [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台、TOTP、Secrets、数据占用、Nginx/CDN、构建部署。
 - [vclient.md](./vclient.md) — VClient 常驻缓存节点、控制面、资产供源、服务器 Shell 推送。
 - [tests-and-regressions.md](./tests-and-regressions.md) — 自动测试、人工验收、失败版本和故障注入原则。
@@ -77,6 +82,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 ### 调研导航
 
 - [source-map.md](./source-map.md) — 当前源码、Tests、Devlog、Prompt、Idea 的模块级对照索引。
+- [COVERAGE.md](./COVERAGE.md) — 初始创建阶段的历史范围、当前源码文件归属和完成判定。
 - [history/README.md](./history/README.md) — 历史时间线入口。
 
 ## 5. 信息来源优先级

@@ -3,6 +3,10 @@
 > **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
 > **文档更新时间**：`2026-09-26`
 
+## 子模块文档
+
+- [SNS Cookie 管理与浏览器自动同步扩展](./download-transcode/sns-cookie-sync.md)
+
 ## 1. 模块边界
 
 当前有三类容易被误写成一个“下载器”的功能：

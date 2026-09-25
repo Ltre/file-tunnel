@@ -3,6 +3,11 @@
 > **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
 > **文档更新时间**：`2026-09-26`
 
+## 子模块文档
+
+- [Drop2Tunnel 磁链分享、种子发现与独立下载器](./transfer-cache/magnet-download.md)
+- [文件夹 ZIP、合辑打包与本机目录镜像](./transfer-cache/folder-archive-directory-mirror.md)
+
 ## 1. 设计目标
 
 文件传输链路经历了项目中最多的回归之一。最终形成的核心目标不是“只用某一种协议”，而是：
@@ -270,15 +275,19 @@ Telegram `file_id` 与 Bot 强关联，不能当成全局永久地址。
 
 ### 12.1 发送文件夹
 
-浏览器读取目录后按文件集合发送，可按目录结构打包/展示。
+浏览器通过 `client/folder-archive.js` 将目录内容打成普通 ZIP，再复用普通文件资产发送，并标记 `isFolderArchive`、`folderName`、`entryCount`。详细格式与兼容边界见 [folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md)。
 
 ### 12.2 本机目录同步
 
 存在目录 mirror 功能：
 
+- Chromium File System Access `showDirectoryPicker({mode:'readwrite'})`；
 - 本机目录签名；
-- `directory-mirror-asset`；
-- 对比并同步。
+- 约 5 秒扫描变化；
+- snapshot ZIP；
+- `isDirectoryMirror` 资产标记；
+- 远端解包写回；
+- `skipSignature` 避免刚应用的快照立即回传。
 
 这不是 Telegram 网盘目录，也不是网页工坊 ZIP 目录，命名相似但数据模型不同。
 

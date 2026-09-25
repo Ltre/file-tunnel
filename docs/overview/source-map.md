@@ -9,7 +9,7 @@
 - `server.js`：服务端总编排、HTTP、Socket、Telegram/SNS 大量集成。
 - `app.js`：功能首页前端总编排，隧道、历史、传输、预览、播放器、协同、设备。
 - `pages/index.html`：路由页 + 功能首页 DOM。
-- `styles.css`：主 UI / responsive 基础。
+- `pages/index.html` 内联样式 + `client/*.css`：主 UI、模块 UI 与 responsive 样式。
 - `service-worker.js`：PWA app shell + Web ZIP Runtime。
 
 ### 历史入口
@@ -40,6 +40,12 @@
 - `device-remark`
 - `device-tunnel-invite`
 - `nearby-presence`
+
+### 独立设备页补充
+
+- `pages/device.html`
+- `client/device-camera.js`
+- [tunnel-core/device-direct.md](./tunnel-core/device-direct.md)
 
 ### 历史资料
 
@@ -73,6 +79,24 @@
 - `prompts/ideas/multi-server-relay-overview.md`
 
 这些文档中的失败尝试非常重要，尤其 LAN-only、ICE restart、候选改写、多源 completion race。
+
+## 3.1 Magnet / 独立下载器
+
+### 当前源码
+
+- `server.js` 中 `/api/magnets*` 与 registry
+- `pages/downloader.html`
+- `pages/downloadList.html`
+- `app.js` 中 `shareFileMagnet*`
+
+### 详细文档
+
+- [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md)
+
+### 历史资料
+
+- `docs/devlog/dev-260625-multi-relay*.md`
+- `docs/devlog/dev-260628-features.md`
 
 ## 4. 文件预览 / 音乐播放器
 
@@ -217,6 +241,12 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - `server/video-transcode.js`
 - 对应 pages/client cache。
 
+### Cookie 自动同步
+
+- `pages/sns-cookies.html`
+- `tools/auto-sync-sns-cookies/**`
+- [download-transcode/sns-cookie-sync.md](./download-transcode/sns-cookie-sync.md)
+
 ### 历史资料
 
 - `docs/devlog/dev-2608B-features.md`：Premium、format、metadata、Telegram；
@@ -259,6 +289,21 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - `docs/guide/Drop2Tunnel-Deployment-Guide.zh-CN.md`
 - `docs/devlog/dev-2608B-features.md` Build 章节。
 
+## 11.1 Localization / i18n
+
+### 当前源码
+
+- `client/i18n.js`
+- `client/i18n-catalog.js`
+- `client/localization-runtime.js`
+- `server/i18n.js`
+- `tools/i18n-audit.js`
+- `tools/server-i18n-audit.js`
+
+### 详细文档
+
+- [pwa-ui/localization.md](./pwa-ui/localization.md)
+
 ## 12. Security
 
 ### 当前源码
@@ -286,7 +331,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - `prompts/ideas/LIGHT-TRANSFER-overview-260813.md`
 - `docs/devlog/dev-2608B-features.md` 4-10。
 
-其协议、QR 容量、manifest/data frame、网络加速较独立，若以后继续大改，建议单独从本文拆出 `light-transfer.md`。
+详细实现已经独立整理到 [light-transfer.md](./light-transfer.md)。
 
 ## 14. 测试与验收来源
 

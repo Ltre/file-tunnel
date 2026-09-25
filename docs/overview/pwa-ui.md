@@ -3,6 +3,10 @@
 > **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
 > **文档更新时间**：`2026-09-26`
 
+## 子模块文档
+
+- [多语言、本地化运行时与 i18n 审计](./pwa-ui/localization.md)
+
 ## 1. 模块定位
 
 Drop2Tunnel 是 browser/PWA-first 产品。功能首页既要在 PC 宽屏作为三栏工作台，也要在手机/平板上通过横向 workspace、底栏和浮层保持相同功能。
@@ -11,7 +15,7 @@ Drop2Tunnel 是 browser/PWA-first 产品。功能首页既要在 PC 宽屏作为
 
 - `pages/index.html`
 - `app.js`
-- `styles.css`
+- `pages/index.html` 中主页面内联样式与各 `client/*.css` 模块样式
 - `service-worker.js`
 - `manifest.webmanifest`
 - 多个 `client/*.css`
