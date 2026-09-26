@@ -18,11 +18,19 @@
 - 时间：`2026-06-21T01:39:44Z`
 - Commit message：`最初版本`
 
-### 当前已完整覆盖的应用源码锚点
+### 初始创建阶段已完整覆盖的应用源码锚点
 
 - Commit：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
 - 时间：`2026-09-25T02:07:27Z`
 - Commit message：`feat: 接通下载任务转码、网页 ZIP 资源导入与网盘拖放上传`
+
+### 当前已完整覆盖的应用源码锚点
+
+- Commit：`059099607a7aa986d9a66ff386f5fd691c604b78`
+- 时间：`2026-09-26T11:30:34Z`
+- Commit message：`先固定代码：完善网页工坊多级路径与资源引用联动`
+
+这是初始冻结后的第一轮增量同步终点。比较 `b422e438...` → `05909960...` 时已排除 `docs/overview/**`，并核对了实际新增/修改的源码、页面、测试、Devlog 与 Prompt。
 
 ### 初始 Overview 内容冻结 Commit
 
@@ -43,6 +51,19 @@
 因此，初始阶段的当前产品事实终点仍然是 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`。
 
 后续用户开始向 `dev/doc-overview` 合并新的开发成果后，才需要从这个源码锚点继续增量扫描。
+
+## 2026-09-26 第一轮增量同步
+
+本轮从初始源码锚点 `b422e438...` 向前扫描到 `059099607a7aa986d9a66ff386f5fd691c604b78`，过滤 `docs/overview/**` 后确认并整理了：
+
+- Telegram Drive 文件/目录协同：独立持久化、一次性邀请、邀请预览/确认、成员管理、scope 隔离、删除保护与受邀页面；
+- Web Workshop / Web ZIP：`manifest.json`、全屏浮层、多级路径校验、媒体/JS/CSS/HTML 拖入、move/rename 后 HTML 引用联动；
+- Video Transcode：H.265 默认 MKV、任务级输出扩展覆盖、自定义 Profile 扩展推断、非 MP4 系容器移除 faststart；
+- PWA/UI：平板宽屏 `100dvh` 布局修复、滚动条/媒体按钮、宽屏 topbar 几何对齐；
+- Telegram Drive → Tunnel：选择目标后去除第二次确认；
+- 测试与开发记录：新增 `disk-collaboration.test.cjs`、`features-260925.test.cjs`、`features-260926-2.test.cjs`，开发日志迁入 `dev-2609-features.md`。
+
+对应模块文档、历史时间线、源码索引、测试回归和覆盖表均已同步。
 
 ## 文档时间
 
@@ -111,11 +132,13 @@
 
 ### 4. 后续从哪里开始扫描
 
-初始冻结后，下一轮更新默认从：
+当前这一轮增量同步完成后，下一轮默认从：
 
-`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
+`059099607a7aa986d9a66ff386f5fd691c604b78`
 
 开始。
+
+初始冻结锚点 `b422e438...` 继续保留作为历史记录，但不再是下一轮默认增量起点。
 
 但比较目标是当时 `dev/doc-overview` 的最新内容，并且**过滤掉 `docs/overview/**`**。
 
@@ -143,14 +166,14 @@
 
 则必须继续标为“计划 / 待实现 / 待核实”。
 
-例如当前源码锚点之后出现过：
+此前初始锚点之后出现的 Android 平板三栏、transcode output extension、Web ZIP manifest/fullscreen、网页工坊拖入与网盘协同等需求，现已因代码合入而转为当前实现。
 
-- Android 平板宽屏三栏高度/空白；
-- transcode output extension 新规则；
-- Web ZIP `manifest.json` 与全屏浮层；
-- 网页工坊媒体拖入编辑器；
-- 网盘目录/文件协同编辑与邀请链接；
-- `dev-2610.md` 中的 Markdown、标签索引、视频随机取帧、网易云、Linux CLI、NFC、中继网等未来方向。
+仍属于未合入/未来方向的内容，例如：
+
+- Telegram Drive JSON → native SQLite WAL；
+- S3 Compatible Gateway；
+- private Telegram storage channel 完整迁移；
+- `dev-2610.md` 中 Markdown、标签索引、视频随机取帧、网易云、Linux CLI、NFC、中继网等后续方向。
 
 只有相应成果真正合入 `dev/doc-overview` 的非 Overview 路径，才能在后续更新中转为当前实现。
 
