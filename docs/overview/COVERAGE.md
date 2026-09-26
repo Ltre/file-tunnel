@@ -1,6 +1,6 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **当前实现源码锚点 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
 > **文档更新时间**：`2026-09-26`
@@ -55,27 +55,33 @@
 
 ## 3. 当前项目事实锚点
 
-当前已经完整纳入初始 Overview 的**最后一个非 `docs/overview/**` 项目 Commit**是：
+初始 Overview 冻结时的源码锚点是：
 
 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
 
+第一轮增量维护已继续扫描并完整整理到：
+
+`059099607a7aa986d9a66ff386f5fd691c604b78`
+
 提交时间：
 
-`2026-09-25T02:07:27Z`
+`2026-09-26T11:30:34Z`
 
 提交：
 
-`feat: 接通下载任务转码、网页 ZIP 资源导入与网盘拖放上传`
+`先固定代码：完善网页工坊多级路径与资源引用联动`
 
-从该 Commit 到本轮 Overview 文档提交之间，Git compare 已核实只有：
+本轮比较明确排除 `docs/overview/**` 自身。过滤后实际项目变化包括：
 
-`docs/overview/**`
-
-发生变化，没有新的应用源码、Tests、Prompt、Devlog 或其它项目文件变化。
+- Telegram Drive 协同相关 page/client/server；
+- Web Workshop、Disk UI/Adapter、主页面与 Service Worker；
+- Video Transcode；
+- 新增/调整测试；
+- `docs/devlog/dev-2609-features.md`、Prompt 与分支信息。
 
 所以：
 
-> 初始 Overview 的“当前代码事实终点”是 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`；其后的 Overview-only Commit 只是文档整理本身，不改变产品事实。
+> 当前 Overview 的代码事实终点已推进到 `059099607a7aa986d9a66ff386f5fd691c604b78`；初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -88,6 +94,7 @@
 | `pages/device.html` | `tunnel-core/device-direct.md` |
 | `pages/disk-management.html` | `telegram-drive.md` |
 | `pages/disk-share.html` | `telegram-drive.md` |
+| `pages/disk-collaboration.html` | `telegram-drive.md` |
 | `pages/downloader.html` | `transfer-cache/magnet-download.md` |
 | `pages/downloadList.html` | `transfer-cache/magnet-download.md` |
 | `pages/light-file-parts.html` | `light-transfer.md` |
@@ -102,7 +109,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 20 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 21 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -123,6 +130,7 @@
 
 - `client/disk-admin.js`
 - `client/disk-client.js`
+- `client/disk-collaboration.js`
 - `client/disk-management.js`
 - `client/disk-share.js`
 - `client/disk-tunnel-adapter.js`
@@ -161,7 +169,7 @@
 - `client/light-transfer.js` → `light-transfer.md`
 - `client/qrcode-1.0.0.min.js` → 第三方 QR Runtime，归入 `pwa-ui.md` / `light-transfer.md` 的依赖边界。
 
-**验收结果：当前 31 个 `client/**` 文件全部有明确模块归属。**
+**验收结果：当前 32 个 `client/**` 文件全部有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -196,6 +204,7 @@
 - `server/disk-api.js`
 - `server/disk-auth.js`
 - `server/disk-chunk-file-cache.js`
+- `server/disk-collaboration.js`
 - `server/disk-data.js`
 - `server/disk-limits.js`
 - `server/disk-operations.js`
@@ -214,7 +223,7 @@
 
 - `server/vclient-control.js` → `vclient.md`
 
-**验收结果：当前 27 个 `server/**` 文件全部有明确模块归属。**
+**验收结果：当前 28 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -306,7 +315,8 @@
 - Transcode；
 - Audio Repair；
 - Telegram Content；
-- 260924 验收。
+- 260924 验收；
+- 260925—260926 平板三栏、H.265 输出后缀、Web ZIP manifest/fullscreen/路径引用联动、Telegram Drive 文件/目录协同及 299 项回归验证。
 
 ## 10. 计划/Idea 的处理
 
@@ -315,7 +325,6 @@
 - Telegram Drive JSON → native SQLite WAL；
 - S3 Compatible Gateway；
 - private Telegram storage channel 完整迁移；
-- 260925 后协同编辑网盘目录/文件；
 - `prompts/dev-prompt-logs/dev-2610.md` 中 Markdown、标签索引、视频随机取帧、网易云、Linux CLI、NFC、中继网等“下期/遥遥无期”项目。
 
 这些材料仍应保留为未来调研入口，但不能混进当前行为章节。
@@ -328,9 +337,9 @@
 - [x] 找到第一个代码版本；
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
-- [x] 当前 20 个 Pages 有归属；
-- [x] 当前 31 个 Client 文件有归属；
-- [x] 当前 27 个 Server 文件有归属；
+- [x] 当前 21 个 Pages 有归属；
+- [x] 当前 32 个 Client 文件有归属；
+- [x] 当前 28 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -339,4 +348,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-后续进入增量维护阶段，源码比较锚点为 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第一轮增量维护，下一轮源码比较锚点为 `059099607a7aa986d9a66ff386f5fd691c604b78`，维护规则以 [VERSION.md](./VERSION.md) 为准。
