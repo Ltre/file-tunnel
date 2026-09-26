@@ -6961,6 +6961,40 @@ function initChatScrollAnchorTracking() {
     });
 }
 
+function initChatJumpButtons() {
+    const container = document.getElementById('chatMessages');
+    const shell = document.getElementById('chatMessagesShell');
+    const topButton = document.getElementById('chatJumpTopBtn');
+    const bottomButton = document.getElementById('chatJumpBottomBtn');
+    if (!container || !shell || !topButton || !bottomButton) return;
+    let hideTimer = null;
+    const setVisible = visible => {
+        shell.classList.toggle('is-scrolling', visible);
+        for (const button of [topButton, bottomButton]) {
+            button.tabIndex = visible ? 0 : -1;
+            button.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        }
+    };
+    container.addEventListener('scroll', () => {
+        clearTimeout(hideTimer);
+        if (container.scrollHeight <= container.clientHeight + 2) {
+            setVisible(false);
+            return;
+        }
+        setVisible(true);
+        hideTimer = setTimeout(() => setVisible(false), 1500);
+    }, { passive: true });
+    for (const [button, target] of [[topButton, 0], [bottomButton, 'bottom']]) {
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            container.scrollTo({
+                top: target === 'bottom' ? container.scrollHeight : target,
+                behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+            });
+        });
+    }
+}
+
 function insertMessageElementByTimestamp(container, messageEl) {
     const messages = Array.from(container.querySelectorAll('.message'));
     const next = messages.find(element => compareHistoryMessages(element, messageEl) > 0);
@@ -17496,6 +17530,7 @@ function initUI() {
     initMobileWorkspace();
     initProgressDrawer();
     initChatScrollAnchorTracking();
+    initChatJumpButtons();
     initRemoteAudioUnlock();
     document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);

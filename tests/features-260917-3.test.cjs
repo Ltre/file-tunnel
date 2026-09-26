@@ -8,7 +8,7 @@ const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 test('Service Worker 只顺序预缓存核心资源且单个 404 不阻止网页 ZIP 运行服务安装', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v63/);
+    assert.match(worker, /instant-tunnel-v64/);
     assert.match(worker, /for \(const resource of PRECACHE_CORE\)/);
     assert.match(worker, /if \(response\.ok && !response\.redirected\) await cache\.put/);
     assert.doesNotMatch(worker, /Promise\.allSettled\(APP_SHELL\.map/);

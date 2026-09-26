@@ -30,4 +30,6 @@
 .web-tree-context-menu button:hover{background:#347bc71d}
 .web-tree-row,.web-tree-row *,.web-tree-context-menu,.web-tree-context-menu *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #webWorkshop.web-tree-holding *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.web-editor textarea.is-drop-target{outline:3px solid #2e9e69;outline-offset:-3px;background:#d8f5e733}
+.web-tree-touch-ghost{position:fixed;z-index:2147483000;max-width:min(220px,60vw);overflow:hidden;padding:7px 11px;border:1px solid #2e9e69;border-radius:9px;background:#e8fff3;color:#155f3e;box-shadow:0 8px 24px #0004;font:600 13px/1.3 system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
 @media(max-width:650px){.web-workshop>header{gap:6px;padding-left:8px;padding-right:8px}.web-workshop>header>strong{font-size:14px;white-space:nowrap}.web-workshop>header button{padding:7px}.web-workshop-guide-link{padding:7px;font-size:12px}}

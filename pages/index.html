@@ -127,7 +127,8 @@
             .main-layout .panel-content { min-height: 0; }
             .left-panel .panel-content { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
             .center-panel .panel-content { flex: 1; display: flex; min-height: 0; flex-direction: column; }
-            .center-panel .chat-messages { flex: 1; height: auto; min-height: 0; }
+            .center-panel .chat-messages-shell { flex: 1; height: auto; min-height: 0; }
+            .center-panel .chat-messages { min-height: 0; }
             .right-panel .collab-editor { flex: 1; height: auto; max-height: none; overflow-y: auto; }
         }
 
@@ -662,6 +663,52 @@
         }
         
         /* 聊天记录区域 */
+        .chat-messages-shell {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            height: clamp(430px, 52vh, 520px);
+        }
+
+        .chat-messages-shell .chat-messages { flex: 1; width: 100%; height: auto; min-height: 0; }
+
+        .chat-jump-btn {
+            position: absolute;
+            left: 50%;
+            z-index: 3;
+            display: grid;
+            place-items: center;
+            width: 66px;
+            height: 22px;
+            padding: 0;
+            transform: translateX(-50%);
+            border: 1px solid #8da5bb99;
+            border-radius: 8px;
+            background: #e8f2f4e8;
+            color: #3b6e89;
+            box-shadow: 0 2px 9px #213b4a28;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease;
+            cursor: pointer;
+        }
+
+        .chat-jump-btn::after {
+            width: 0;
+            height: 0;
+            border-right: 9px solid transparent;
+            border-left: 9px solid transparent;
+            content: '';
+        }
+
+        .chat-jump-top { top: 6px; }
+        .chat-jump-top::after { border-bottom: 8px solid currentColor; }
+        .chat-jump-bottom { bottom: 6px; }
+        .chat-jump-bottom::after { border-top: 8px solid currentColor; }
+        .chat-messages-shell.is-scrolling .chat-jump-btn,
+        .chat-jump-btn:focus-visible { opacity: .94; pointer-events: auto; }
+
         .chat-messages {
             height: clamp(430px, 52vh, 520px);
             overflow-x: hidden;
@@ -4670,7 +4717,10 @@
         }
 
         @media (min-width: 1201px) {
-            .tunnel-topbar { padding-left: max(20px, calc((100vw - 1400px) / 2 + 20px)); }
+            .tunnel-topbar {
+                padding-left: max(20px, calc((100vw - 1400px) / 2 + 20px));
+                padding-right: max(20px, calc((100vw - 1400px) / 2 + 20px));
+            }
             #appShell.container:not([hidden]) {
                 display: flex;
                 flex-direction: column;
@@ -5235,6 +5285,8 @@
                 scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
             }
 
+            .chat-messages-shell { flex: 1; height: auto; min-height: 0; }
+
             .transfer-progress {
                 right: 10px;
                 bottom: calc(var(--mobile-workspace-nav-height) + 10px);
@@ -5633,12 +5685,16 @@
                         <span class="online-indicator"></span>
                     </div>
                     <div class="panel-content">
-                        <div class="chat-messages" id="chatMessages">
-                            <div class="empty-state">
-                                <div style="font-size: 3rem; margin-bottom: 10px;">📭</div>
-                                <div>暂无消息</div>
-                                <div style="font-size: 0.85rem; margin-top: 10px;">发送文件或文本来开始对话</div>
+                        <div class="chat-messages-shell" id="chatMessagesShell">
+                            <div class="chat-messages" id="chatMessages">
+                                <div class="empty-state">
+                                    <div style="font-size: 3rem; margin-bottom: 10px;">📭</div>
+                                    <div>暂无消息</div>
+                                    <div style="font-size: 0.85rem; margin-top: 10px;">发送文件或文本来开始对话</div>
+                                </div>
                             </div>
+                            <button class="chat-jump-btn chat-jump-top" id="chatJumpTopBtn" type="button" title="一键到顶部" aria-label="一键到顶部" aria-hidden="true" tabindex="-1"></button>
+                            <button class="chat-jump-btn chat-jump-bottom" id="chatJumpBottomBtn" type="button" title="一键到底部" aria-label="一键到底部" aria-hidden="true" tabindex="-1"></button>
                         </div>
                         <div class="file-upload-composer" id="fileUploadComposer">
                             <div class="file-upload-area" id="dropZone">
