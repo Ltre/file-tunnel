@@ -170,6 +170,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - `server/disk-auth.js`
 - `server/disk-operations.js`
 - `server/disk-shares.js`
+- `server/disk-collaboration.js`
 - `server/disk-telegram.js`
 - `server/disk-part-cache.js`
 - `server/disk-chunk-file-cache.js`
@@ -178,10 +179,12 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 - `client/disk-ui.js`
 - `client/disk-client.js`
+- `client/disk-collaboration.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-share.js`
 - `client/disk-management.js`
 - `client/telegram-drive-cache.js`
+- `pages/disk-collaboration.html`
 
 ### 历史资料
 
@@ -191,6 +194,13 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - 18：Passkey / third-party API；
 - 19-22：tasks / multi-select / share / admin / multipart；
 - 23-39：pipeline / Range / cache / recovery / UI / JSON 并发。
+
+`docs/devlog/dev-2609-features.md`：
+
+- 52：下载转码复用、网页 ZIP 资源导入、网盘拖放；
+- 53：网盘文件/目录协同初版、平板三栏、转码输出后缀、Web ZIP manifest/fullscreen；
+- 54：协同邀请预览/确认、窄屏管理入口、网页工坊多级路径；
+- 55：网页工坊引用联动、路径边界、顶栏对齐、网盘转发去二次确认。
 
 ### 未来设计
 
@@ -226,6 +236,8 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - 46：external JS；
 - 48-49：外链 JS/SW takeover；
 - 50-52：文件名/最小化/资源导入。
+
+继续阅读 `docs/devlog/dev-2609-features.md` 53-55，覆盖 manifest/fullscreen、目录上下文菜单、多级路径、媒体/JS/CSS/HTML 拖入、move/rename 后 HTML 引用联动等当前行为。
 
 ### 原始 Idea
 
