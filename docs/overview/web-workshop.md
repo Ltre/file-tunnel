@@ -1,6 +1,6 @@
 # 网页工坊与 .html.zip Runtime
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **文档更新时间**：`2026-09-26`
 
 ## 1. 功能定位与产生背景
@@ -248,9 +248,9 @@ my-page.html.zip
 - 整个目录 row 点击即可 toggle，不要求精确点小三角；
 - 保留 `expandedPaths`。
 
-### 8.4 Move
+### 8.4 Move / Rename 与引用联动
 
-支持 drag/drop 文件/目录改变 ZIP 内路径。
+支持 drag/drop 文件/目录改变 ZIP 内路径，rename 仍保持同目录改名语义。
 
 要求：
 
@@ -259,27 +259,51 @@ my-page.html.zip
 - 目标存在；
 - 目标同名检查；
 - 目录移动需重写 descendants；
-- 当前编辑中的 textarea 先 commit，不能拖完后丢掉尚未保存字符。
+- 当前编辑中的 textarea 先 commit，不能拖完后丢掉尚未保存字符；
+- 文件或目录 move / rename 完成后，扫描包内 HTML/HTM 的**可确定内部引用**并同步改写。
 
-## 9. 新建、上传、rename、delete
+当前引用联动覆盖明确的资源属性，例如：
 
-这些操作都必须走统一 path consistency：
+- `src`；
+- `href`；
+- `poster`；
+- `data`。
 
-- 新建子目录；
-- 新建文件；
-- 上传；
-- rename；
-- delete；
-- move。
+改写前先按移动前 HTML 所在路径解析引用，并确认目标确实是 ZIP 内既有条目；改写后保留 query/hash。HTML 文件本身移动时，也会按新位置重新计算相对引用。
 
-历史需求要求系统性检查这些 CRUD，而不是每发现一个 duplicate bug 就补一个局部 if。
+为避免误改，当前实现会跳过：
 
-后续应尽量让所有操作通过同一组：
+- HTML 注释；
+- `script` / `style` 正文中的任意字符串；
+- http/https 等外部 URL；
+- 不能可靠解析的引用；
+- 带 `<base href>` 页面中无法确定语义的相对路径。
 
-- canonicalize；
-- collision；
-- normalize；
-- saveDraft。
+因此这是一套保守的“确定性引用重构”，不是对 HTML/JS/CSS 做全局字符串替换。
+
+## 9. 新建、上传、rename、delete 与路径约束
+
+新建文件和子目录共用多级相对路径校验，可直接输入例如：
+
+- `一层/二层/三层`；
+- `scripts/vendor/app.js`。
+
+当前规则：
+
+- 使用 `/` 分隔子目录，拒绝反斜杠；
+- 不允许绝对路径、首尾 `/`、连续 `//`、空路径段；
+- 拒绝 `.`、`..`、系统保留名和以句点结尾的路径段；
+- 拒绝控制字符以及 `: * ? " < > |`；
+- 单个路径段最多 255 UTF-8 字节；
+- 完整路径最多 1024 UTF-8 字节；
+- 目录层级最多 20 层；
+- 冲突、文件阻挡父目录等情况会给出明确错误。
+
+目录上下文菜单与工具栏“新建文件/目录”复用同一校验入口；创建多级路径后会自动展开对应父目录。路径校验错误在工坊打开时使用可见错误对话框提示，避免被浮层遮住的 toast 无法看到。
+
+“复制路径”复制的是从 ZIP 根开始的完整路径，例如 `/assets/%E5%9B%BE%E7%89%87.png`，非 ASCII 路径段逐段编码；它与“相对当前 HTML 生成资源引用”是两个不同语义。
+
+上传、rename、delete、move 仍需保持统一的 canonicalize / collision / normalize / saveDraft 一致性，不能按按钮各维护一套路径规则。
 
 ## 10. 隧道资源导入
 
@@ -297,6 +321,12 @@ my-page.html.zip
    `tunnel-resources/`
 6. 同名自动添加 `(2)`、`(3)`；
 7. 导入后仍可移动到用户自建目录。
+
+260925 后的补充行为：
+
+- 资源选择器可取消、关闭或 Escape，不把普通取消误报成连接失败；
+- 已明确知道来源设备离线且不存在 server/Telegram 备用来源时会尽早失败；
+- 只有完整字节读取成功后才把条目写入草稿，失败不会留下空数据节点。
 
 这里的“资源目录”是 ZIP 内目录，不是 Telegram 网盘路径。
 
@@ -408,6 +438,8 @@ Runtime 根据路径推断：
 - 等 controllerchange/updatefound；
 - 最多约 30s readiness。
 
+当前应用壳缓存版本为 `instant-tunnel-v63`，并已把 `client/disk-collaboration.js` 纳入 app shell。
+
 因此修改 SW 时：
 
 - 更新应用壳 cache version；
@@ -423,15 +455,16 @@ Runtime 根据路径推断：
 
 预览不会发布到隧道。
 
-### 15.2 已发布文件独立页
+### 15.2 已发布文件的打开方式
 
-传输记录直接点击 `.html.zip` 应进入独立 URL，例如：
+传输记录直接点击 `.html.zip` 时由发布配置决定：
 
-`/web-zip-preview/<fileId>?name=...&v=...`
+- 默认：进入独立 URL，例如 `/web-zip-preview/<fileId>?name=...&v=...`；
+- `webZipFullscreen=true`：在当前 Drop2Tunnel 页面创建全屏浮层运行，不打开新标签页。
 
-不是把整个网页工坊 UI 打开。
+未启用全屏浮层的记录会显示 `↗` 提示其将在新标签页打开。两种方式都不是把整个网页工坊 UI 当成运行容器。
 
-编辑入口在记录菜单“编辑此网页”。
+编辑入口仍在记录菜单“编辑此网页”。
 
 ## 16. 隐藏网页 ZIP 框架
 
@@ -448,6 +481,20 @@ Runtime 根据路径推断：
 - ZIP 页面占满窗口。
 
 重新导入编辑原 ZIP 时应保留该配置。
+
+### 16.1 包内 `manifest.json`
+
+发布或更新网页 ZIP 前会生成/更新包内 `manifest.json`，并保证只保留一个清单条目。当前记录：
+
+- `fileName`；
+- `webZipHideFrame`；
+- `webZipFullscreen`；
+- `createdAt`；
+- `updatedAt`。
+
+时间使用 ISO 字符串并带 `Z`。更新已有草稿时保留原创建时间，仅刷新编辑时间。
+
+重新导入已有网页 ZIP 时优先读取包内清单；只有调用方明确提供对应布尔元信息时才覆盖清单值。这样即使外部传输记录缺失旧元信息，隐藏框架/全屏打开等配置也不会被误重置为 false。
 
 ## 17. 用户手册
 
@@ -486,17 +533,21 @@ Runtime 根据路径推断：
 
 后续若增加 bridge API，应单独设计 capability，不要让 sandbox 直接同源无限制访问。
 
-## 19. 当前尚未纳入基线的后续需求
+## 19. 260925—260926 已合入增强
 
-截至 `b422e...` 源码，后续对话里出现但尚未属于本基线实现的需求，例如：
+此前列为“尚未纳入基线”的一组需求已经进入当前源码：
 
-- package `manifest.json`；
-- “是否全屏浮层打开，而非新 Tab”；
-- 从文件树拖媒体到编辑器光标自动生成标签；
-- 更完整目录 context menu；
-- 资源导入 cancel / source offline 状态修复。
+- 包内 `manifest.json` 与创建/编辑时间、运行选项持久化；
+- 可选择全屏浮层运行，否则保持独立页/新标签页；
+- 目录右键与移动端长按菜单可新建多级子目录和文件；
+- 图片、视频、音频（含 M4A/AAC）可拖入 HTML 编辑器生成引用；
+- JS/MJS、CSS、HTML/HTM 也可拖入，分别生成闭合 `script`、stylesheet `link` 或页面链接；
+- move / rename 后对可确定的 HTML 包内引用做安全重写；
+- 资源导入的取消、离线来源与“完整字节后再落草稿”边界已补齐；
+- 移动端目录长按期间暂时抑制文字选择，手势移动后恢复；
+- 编辑器当前文件完整路径改为单行横向滚动，便于移动端查看深层路径。
 
-更新本文时应在这些功能真正合入目标代码后再移到“当前行为”。
+这些能力都已进入当前 `05909960...` 源码，不再属于未来需求。
 
 ## 20. 回归检查
 
@@ -507,6 +558,10 @@ Runtime 根据路径推断：
 - `features-260918-*.test.cjs`
 - `features-260921-*.test.cjs`
 - `features-260922-1.test.cjs`
+- `features-260925.test.cjs`
+- `features-260926-2.test.cjs`
+
+其中 260925/260926-2 新增覆盖 manifest、全屏运行元信息、多语言路径、多级路径边界、JS/CSS/HTML 插入及 move/rename 引用重写。
 
 必须手测的组合：
 
