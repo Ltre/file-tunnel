@@ -28,6 +28,7 @@ function createDiskCollaborationStore(dataDir) {
         accessible(userId) { return entries.filter(item => item.active !== false && (item.ownerId === String(userId) || item.members.includes(String(userId)))).map(publicEntry); },
         authorized(id, userId) { const item = find(id); return item && (item.ownerId === String(userId) || item.members.includes(String(userId))) ? item : null; },
         ownedTarget(ownerId, diskSpace, kind, target) { return entries.find(item => item.active !== false && sameScope(item,ownerId,diskSpace) && item.kind === kind && (kind === 'file' ? item.fileId === target : item.path === target)) || null; },
+        byInvite(token) { return entries.find(item => item.active !== false && item.invites.some(invite => invite.token === String(token))) || null; },
         enable({ ownerId, diskSpace = '', kind, path:folderPath = '', fileId = '', name }) {
             const target = kind === 'file' ? fileId : folderPath;
             let item = this.ownedTarget(ownerId,diskSpace,kind,target);
@@ -41,9 +42,9 @@ function createDiskCollaborationStore(dataDir) {
             return { collaboration:publicEntry(item), invite };
         },
         join(token, userId) {
-            const item = entries.find(entry => entry.active !== false && entry.invites.some(invite => invite.token === token));
+            const item = this.byInvite(token);
             if (!item) throw new Error('INVITE_NOT_FOUND');
-            if (item.ownerId === String(userId)) throw new Error('INVITE_OWNER_CANNOT_JOIN');
+            if (item.ownerId === String(userId)) return publicEntry(item);
             item.invites = item.invites.filter(invite => invite.token !== token);
             if (!item.members.includes(String(userId))) item.members.push(String(userId));
             save(); return publicEntry(item);

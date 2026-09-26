@@ -12,7 +12,7 @@
     function parentPath(value){const parts=String(value||'').replace(/\/$/,'').split('/');parts.pop();return parts.length?parts.join('/')+'/':'';}
     const isDirectory=entry=>String(entry?.path||'').endsWith('/');
     function resolveRelativePath(base,reference){const result=String(base||'').split('/').filter(Boolean);for(const part of String(reference||'').replace(/\\/g,'/').split('/')){if(!part||part==='.')continue;if(part==='..')result.pop();else result.push(part);}return result.join('/');}
-    function guessType(filePath){if(String(filePath).endsWith('/'))return'application/x-directory';const ext=String(filePath).split('.').pop()?.toLowerCase();return({html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',mp3:'audio/mpeg',mp4:'video/mp4',txt:'text/plain',md:'text/markdown'})[ext]||'application/octet-stream';}
+    function guessType(filePath){if(String(filePath).endsWith('/'))return'application/x-directory';const ext=String(filePath).split('.').pop()?.toLowerCase();return({html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',mjs:'text/javascript',json:'application/json',svg:'image/svg+xml',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',mp3:'audio/mpeg',m4a:'audio/mp4',aac:'audio/aac',mp4:'video/mp4',txt:'text/plain',md:'text/markdown'})[ext]||'application/octet-stream';}
     const bytes=data=>data instanceof Uint8Array?data:new Uint8Array(data||0);
     function normalizeEntries(entries,{allowIdenticalDirectory=false}={}){
         const normalized=[],seen=new Map();
@@ -97,17 +97,29 @@
     function mediaHtmlTag(media,htmlPath){
         const reference=relativeZipPath(htmlPath,media.path).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
         const name=baseName(media.path).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
-        const type=String(media.type||guessType(media.path));
+        const type=/\.(?:m4a|aac)$/i.test(media.path)?guessType(media.path):String(media.type||guessType(media.path));
         if(type.startsWith('image/'))return `<img src="${reference}" alt="${name}" width="640" height="360" style="max-width:100%;height:auto">`;
         if(type.startsWith('video/'))return `<video src="${reference}" width="640" height="360" controls preload="metadata" style="max-width:100%;height:auto"></video>`;
         if(type.startsWith('audio/'))return `<audio src="${reference}" controls preload="metadata" style="width:min(100%,480px);height:54px"></audio>`;
         return '';
     }
+    const rootZipPath=filePath=>'/'+canonicalPath(filePath).split('/').map(encodeURIComponent).join('/');
     async function copyZipPath(filePath){
-        const value=relativeZipPath(referenceBase,filePath);
+        const value=rootZipPath(filePath);
         if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(value);
         else {const input=document.createElement('textarea');input.value=value;document.body.append(input);input.select();const copied=document.execCommand('copy');input.remove();if(!copied)throw new Error('复制失败，请检查剪贴板权限');}
         config.toast?.(`已复制路径：${value}`);
+    }
+    function newTreeEntryPath(directory,requested,kind){
+        const value=String(requested??'').trim();
+        if(!value)throw new Error('请输入名称；多级子目录可用 / 分隔');
+        if(value.includes('\\'))throw new Error('请使用 / 分隔子目录，不支持反斜杠');
+        if(value.startsWith('/')||value.endsWith('/'))throw new Error('请输入相对当前目录的路径，不要以 / 开头或结尾');
+        if(kind!=='directory'&&value.includes('/'))throw new Error('新建文件只能填写文件名，不能包含 /');
+        const parts=value.split('/');
+        if(parts.some(part=>!part.trim()||part!==part.trim()))throw new Error('目录名称不能为空，路径中不能出现连续 / 或名称两侧空格');
+        if(parts.some(part=>part==='.'||part==='..'||/[\x00-\x1f:*?"<>|]/.test(part)))throw new Error('名称不能为 . 或 ..，也不能包含控制字符及 : * ? " < > |');
+        return directory+canonicalPath(value,kind==='directory');
     }
     function showTreeDirectoryMenu(draft,directory,x,y){
         document.querySelector('.web-tree-context-layer')?.closeMenu?.();
@@ -124,14 +136,13 @@
         menu.onclick=async event=>{
             const kind=event.target.closest('[data-create]')?.dataset.create;if(!kind)return;
             close();
-            const requested=prompt(kind==='directory'?'新建子目录名称':'新建文件名称',kind==='directory'?'新目录':'index.html');
-            if(!requested)return;
+            const requested=prompt(kind==='directory'?'新建子目录（可输入 多级/子目录）':'新建文件名称',kind==='directory'?'新目录':'index.html');
+            if(requested===null)return;
             try{
-                if(/[\\/]/.test(requested))throw new Error('这里只能填写名称');
-                const filePath=directory+canonicalPath(requested,kind==='directory');
+                const filePath=newTreeEntryPath(directory,requested,kind);
                 if(draft.files.some(item=>pathKey(item.path)===pathKey(filePath)))throw new Error(`同一目录中已存在同名项目：${filePath}`);
                 draft.files=normalizeEntries([...draft.files,{path:filePath,type:kind==='directory'?'application/x-directory':guessType(filePath),data:new Uint8Array()}]);
-                expandedPaths.add(directory);if(kind==='directory')expandedPaths.add(filePath);
+                expandedPaths.add(directory);if(kind==='directory'){const segments=filePath.split('/').filter(Boolean);for(let n=1;n<=segments.length;n++)expandedPaths.add(segments.slice(0,n).join('/')+'/');}
                 await saveDraft(draft);renderEditor(draft,filePath);
             }catch(error){showError(error);}
         };
@@ -139,11 +150,11 @@
     function renderTree(entries,parent='',depth=0,selectedPath=''){return sortedChildren(entries,parent).map(item=>{const directory=isDirectory(item),opened=directory&&expandedPaths.has(item.path),children=directory&&opened?renderTree(entries,item.path,depth+1,selectedPath):'';return`<div class="web-tree-node" role="treeitem"${directory?` aria-expanded="${opened}"`:''}><div class="web-tree-row${selectedPath===item.path?' active':''}" draggable="true" data-web-path="${escapeHtml(item.path)}" data-web-directory="${directory}" style="--tree-depth:${depth}">${directory?`<button type="button" class="web-tree-toggle" data-tree-toggle="${escapeHtml(item.path)}" aria-label="${opened?'收缩':'展开'}目录">${opened?'▾':'▸'}</button>`:'<span class="web-tree-toggle-placeholder"></span>'}<span aria-hidden="true">${directory?'📁':'📄'}</span><span class="web-tree-name">${escapeHtml(baseName(item.path))}</span></div>${children}</div>`;}).join('');}
     async function moveDraftEntry(draft,sourcePath,destination){commitEditorBuffer(draft);const result=assertDestination(draft.files,sourcePath,destination);if(!result.changed)return result.nextPath;const target=destination?destination.replace(/\/$/,''):'草稿根目录';if(!confirm(`确定要把“${baseName(sourcePath)}”移动到“${target}”吗？`))return sourcePath;draft.files=result.entries;if(destination)expandedPaths.add(destination);await saveDraft(draft);return result.nextPath;}
     function installTreeDirectoryGestures(tree,draft){
-        tree.oncontextmenu=event=>{const row=event.target.closest('[data-web-directory="true"]');if(!row)return;event.preventDefault();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);};
+        tree.oncontextmenu=event=>{const row=event.target.closest('[data-web-directory="true"]');if(!row)return;event.preventDefault();window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);};
         let timer=0,startX=0,startY=0,ignoreClick=false;
         tree.addEventListener('click',event=>{if(ignoreClick){event.preventDefault();event.stopImmediatePropagation();ignoreClick=false;}},true);
         const clear=()=>{clearTimeout(timer);timer=0;};
-        tree.ontouchstart=event=>{clear();if(event.touches.length!==1)return;const row=event.target.closest('[data-web-directory="true"]');if(!row)return;startX=event.touches[0].clientX;startY=event.touches[0].clientY;timer=setTimeout(()=>{timer=0;ignoreClick=true;showTreeDirectoryMenu(draft,row.dataset.webPath,startX,startY);},550);};
+        tree.ontouchstart=event=>{clear();if(event.touches.length!==1)return;const row=event.target.closest('[data-web-directory="true"]');if(!row)return;startX=event.touches[0].clientX;startY=event.touches[0].clientY;timer=setTimeout(()=>{timer=0;ignoreClick=true;window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,startX,startY);},550);};
         tree.ontouchmove=event=>{if(!timer||event.touches.length!==1||Math.hypot(event.touches[0].clientX-startX,event.touches[0].clientY-startY)>10)clear();};
         tree.ontouchend=clear;tree.ontouchcancel=clear;
     }
@@ -172,5 +183,5 @@
     async function importPackage(fileInfo,blob,context={},mode='update'){ensureUi();if(minimized)restore();const sandbox=await packageSandbox(fileInfo,blob,true);overlay.hidden=false;overlay.classList.add('active');if(!historyOpen){history.pushState({...history.state,webWorkshop:true},'',location.href);historyOpen=true;}return createDraft({name:fileInfo.name,files:sandbox.files,sourceFileId:mode==='update'?fileInfo.id:'',sourceMessageId:mode==='update'?(context.messageId||''):'',sourceFileInfo:mode==='update'?fileInfo:null,publishMode:mode==='update'?'update':'new',webZipHideFrame:typeof fileInfo.webZipHideFrame==='boolean'?fileInfo.webZipHideFrame:undefined,webZipFullscreen:typeof fileInfo.webZipFullscreen==='boolean'?fileInfo.webZipFullscreen:undefined});}
     async function openPackage(fileInfo,blob,context={}){ensureUi();if(minimized)restore();const sandbox=await packageSandbox(fileInfo,blob,true);overlay.hidden=false;overlay.classList.add('active');if(!historyOpen){history.pushState({...history.state,webWorkshop:true},'',location.href);historyOpen=true;}const canUpdate=config.canUpdate?.(fileInfo),actions=`<button data-sandbox-copy>创建我的副本</button>${canUpdate?'<button class="primary" data-sandbox-edit>转入草稿编辑</button>':'<button data-sandbox-request>申请编辑权限</button>'}`;await renderPreview(sandbox.files,fileInfo.name,renderHome,actions);content.querySelector('[data-sandbox-copy]').onclick=()=>importPackage(fileInfo,blob,context,'copy').catch(showError);content.querySelector('[data-sandbox-edit]')?.addEventListener('click',()=>importPackage(fileInfo,blob,context,'update').catch(showError));content.querySelector('[data-sandbox-request]')?.addEventListener('click',()=>config.requestEdit?.(fileInfo,context));}
     function init(next={}){config=next;ensureUi();cleanupSandboxes().catch(()=>{});}
-    global.WebWorkshop={init,open,close,minimize,restore,openPackage,importPackage,createDraft,_test:{canonicalPath,normalizeEntries,renameEntry,assertDestination,sortedChildren,updateTextEntry,readPackageManifest,updatePackageManifest,relativeZipPath,mediaHtmlTag}};
+    global.WebWorkshop={init,open,close,minimize,restore,openPackage,importPackage,createDraft,_test:{canonicalPath,normalizeEntries,renameEntry,assertDestination,sortedChildren,updateTextEntry,readPackageManifest,updatePackageManifest,relativeZipPath,rootZipPath,mediaHtmlTag,newTreeEntryPath}};
 })(window);

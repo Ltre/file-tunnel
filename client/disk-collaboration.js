@@ -101,13 +101,38 @@
     $('uploadBtn').onclick = () => $('fileInput').click();
     $('fileInput').onchange = event => { const files = [...event.target.files]; event.target.value = ''; if (!files.length) return; run(async () => { await client.upload(files, currentPath); }); };
     client.subscribe(jobs => { const pending = jobs.find(job => job.status === 'running' || job.status === 'queued'); if (pending) status(`${pending.title || '网盘任务'} · ${pending.phase || ''} · ${Number.isFinite(pending.percent) ? Math.round(pending.percent) + '%' : '处理中'}`); });
+    function showInvitation(invitation, token) {
+        $('toolbar').hidden = true; $('breadcrumbs').replaceChildren();
+        const card = document.createElement('article'); card.className = 'invitation-card';
+        const heading = document.createElement('h2'); heading.textContent = '协同编辑邀请';
+        const description = document.createElement('p'); description.textContent = `${invitation.ownerName} 邀请你协同编辑${invitation.kind === 'directory' ? '目录' : '文件'}“${invitation.name}”。`;
+        const details = document.createElement('p'); details.textContent = invitation.kind === 'directory'
+            ? `包含 ${invitation.fileCount} 个文件、${invitation.folderCount} 个子目录 · 总大小 ${formatSize(invitation.size)}`
+            : `文件大小：${formatSize(invitation.size)}`;
+        const actions = document.createElement('div'); actions.className = 'invitation-actions';
+        const accept = button('确认加入协同编辑', async () => {
+            accept.disabled = true; cancel.disabled = true;
+            try {
+                grant = (await request(`${base}/collaborations/join`, json('POST', { token }))).collaboration;
+                history.replaceState(null, '', `/disk-collab/view/${encodeURIComponent(grant.id)}`);
+                card.remove(); currentPath = grant.path; client.setCollaboration(grant.id); $('toolbar').hidden = false; await load();
+            } catch (error) { accept.disabled = false; cancel.disabled = false; status(error.message || '加入协同失败', true); }
+        });
+        const cancel = button('取消', () => { card.remove(); status('已取消，本账号没有加入协同编辑。'); });
+        actions.append(accept, cancel); card.append(heading, description, details, actions); $('list').replaceChildren(card);
+        status('请确认邀请内容后再加入。');
+    }
+    const formatSize = value => { const size = Number(value) || 0; return size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1048576).toFixed(1)} MB`; };
     async function init() {
         const parts = location.pathname.split('/').filter(Boolean);
         try {
             if (parts[1] === 'view') {
                 grant = (await request(`${base}/collaborations/${encodeURIComponent(parts[2] || '')}`)).collaboration;
             } else {
-                grant = (await request(`${base}/collaborations/join`, json('POST', { token: parts[1] || '' }))).collaboration;
+                const token = parts[1] || '';
+                const invitation = (await request(`${base}/collaborations/invitations/${encodeURIComponent(token)}/preview`)).invitation;
+                if (!invitation.owned) { showInvitation(invitation, token); return; }
+                grant = (await request(`${base}/collaborations/${encodeURIComponent(invitation.id)}`)).collaboration;
                 history.replaceState(null, '', `/disk-collab/view/${encodeURIComponent(grant.id)}`);
             }
             currentPath = grant.path;

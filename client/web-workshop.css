@@ -28,4 +28,5 @@
 .web-tree-context-menu{position:fixed;display:grid;gap:3px;min-width:170px;padding:6px;border:1px solid #8da0b766;border-radius:10px;background:var(--panel-bg,#fff);box-shadow:0 12px 32px #0004}
 .web-tree-context-menu button{padding:9px 12px;border:0;border-radius:6px;background:transparent;color:var(--text-color,#243047);text-align:left;cursor:pointer}
 .web-tree-context-menu button:hover{background:#347bc71d}
+.web-tree-row,.web-tree-row *,.web-tree-context-menu,.web-tree-context-menu *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 @media(max-width:650px){.web-workshop>header{gap:6px;padding-left:8px;padding-right:8px}.web-workshop>header>strong{font-size:14px;white-space:nowrap}.web-workshop>header button{padding:7px}.web-workshop-guide-link{padding:7px;font-size:12px}}

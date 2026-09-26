@@ -35,4 +35,18 @@ test('拖入多语言媒体资源时生成相对引用并对非 ASCII 路径编�
     const tag = tools.mediaHtmlTag({ path:'资源/日本語 图片.png', type:'image/png' }, 'pages/index.html');
     assert.match(tag, /<img src="\.\.\//);
     assert.match(tag, /width="640" height="360"/);
+    assert.match(tools.mediaHtmlTag({ path:'音乐/曲目.m4a', type:'application/octet-stream' }, 'pages/index.html'), /<audio src="\.\.\//);
+    assert.match(tools.mediaHtmlTag({ path:'音乐/曲目.aac' }, 'pages/index.html'), /<audio src="\.\.\//);
+});
+
+test('树形目录支持合法多级子目录并拒绝歧义路径', () => {
+    const tools = workshopTools();
+    assert.equal(tools.rootZipPath('1/2/3/4/5/6/a/1.css'), '/1/2/3/4/5/6/a/1.css');
+    assert.equal(tools.rootZipPath('资源/日本語 图片.png'), '/%E8%B5%84%E6%BA%90/%E6%97%A5%E6%9C%AC%E8%AA%9E%20%E5%9B%BE%E7%89%87.png');
+    assert.equal(tools.newTreeEntryPath('root/', '一层/二层/三层', 'directory'), 'root/一层/二层/三层/');
+    assert.throws(() => tools.newTreeEntryPath('root/', '一层//二层', 'directory'), /连续/);
+    assert.throws(() => tools.newTreeEntryPath('root/', '../二层', 'directory'), /名称不能/);
+    assert.throws(() => tools.newTreeEntryPath('root/', '一层/文件.css', 'file'), /文件名/);
+    const entries = tools.normalizeEntries([{ path:'root/', type:'application/x-directory' }, { path:tools.newTreeEntryPath('root/', '一层/二层', 'directory'), type:'application/x-directory' }]);
+    assert.ok(entries.some(item => item.path === 'root/一层/'));
 });

@@ -28,7 +28,7 @@ test('网页 ZIP 使用 Service Worker 虚拟目录运行完整文件树', () =>
     assert.match(worker, /Cross-Origin-Resource-Policy/);
     assert.match(worker, /status:206/);
     assert.match(worker, /web-zip-runtime-ping/);
-    assert.match(worker, /instant-tunnel-v61/);
+    assert.match(worker, /instant-tunnel-v62/);
 
     const standalone = source('pages/web-zip-preview.html');
     assert.match(standalone, /WebZipRuntime\.mount\(entries,/);

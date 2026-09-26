@@ -454,9 +454,24 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const owned = entry.ownerId === String(viewerId);
         const view = collaborations.publicEntry(entry);
         if (!owned) { delete view.invites; delete view.members; }
+        else view.memberDetails = view.members.map(id => {
+            const user = auth.user(id);
+            return { id, name: user?.name || '', username: user?.username || '', telegramId: user?.telegramId || '', provider: user?.provider || '' };
+        });
         return { ...view, owned };
     };
     browser.get('/collaborations', (req, res) => res.json({ collaborations: collaborations.accessible(req.diskUser.id).map(entry => collaborationView(collaborations.find(entry.id), req.diskUser.id)) }));
+    browser.get('/collaborations/invitations/:token/preview', wrap((req, res) => {
+        const entry = collaborations.byInvite(req.params.token);
+        if (!entry) throw new Error('INVITE_NOT_FOUND');
+        const storage = spaces.get(entry.diskSpace);
+        const target = entry.kind === 'file' ? storage.get(entry.ownerId, entry.fileId) : storage.getDirectoryTree(entry.ownerId, entry.path);
+        if (!target || target.reviewStatus === 'deleted') throw new Error('COLLABORATION_TARGET_NOT_FOUND');
+        const owner = auth.user(entry.ownerId);
+        res.json({ invitation: { id: entry.id, kind: entry.kind, name: target.name, size: Number(target.size) || 0,
+            ...(entry.kind === 'directory' ? { fileCount: target.fileCount, folderCount: target.folderCount } : {}),
+            ownerName: owner?.name || owner?.username || '网盘用户', owned: entry.ownerId === req.diskUser.id } });
+    }));
     browser.post('/collaborations/invitations', wrap((req, res) => {
         const kind = req.body?.kind;
         if (kind !== 'directory' && kind !== 'file') throw new Error('COLLABORATION_TARGET_INVALID');
