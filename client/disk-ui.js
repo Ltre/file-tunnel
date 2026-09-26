@@ -21,6 +21,7 @@ let telegramDriveMenuPendingAction = null;
 let telegramDriveDialogHistoryOpen = false;
 let telegramDriveDialogHistoryClosing = false;
 let telegramDriveContentStale = false;
+let telegramDriveCollaborations = [];
 let telegramDriveSelectionAnchor = '';
 const telegramDriveSelected = new Map();
 const telegramDriveCacheCancelConfirming = new Set();
@@ -47,6 +48,10 @@ function telegramDriveErrorText(error) {
         'DISK_BUSY': '当前网盘正在完成另一项操作，请稍后再试',
         'DISK_UPLOAD_IN_PROGRESS': '此目录仍有文件正在上传，请等待上传结束',
         'DISK_DELETE_PARTIAL': '部分 Telegram 文件删除失败，未删除的记录已保留',
+        'COLLABORATION_DISABLE_BEFORE_DELETE': '请先取消此文件或目录的协同编辑，再执行删除',
+        'COLLABORATION_OUT_OF_SCOPE': '此操作超出受邀协同范围',
+        'COLLABORATION_NOT_FOUND': '协同授权已失效或被所有者移除',
+        'INVITE_NOT_FOUND': '邀请链接已使用或已失效',
         'DISK_BATCH_LIMIT': '每批请选择 1–100 个文件',
         'USERNAME_INVALID': '账号名须为 3–64 位字母、数字、下划线、点或短横线',
         'USERNAME_EXISTS': '账号名已被使用，请更换名称或选择登录',
@@ -618,6 +623,86 @@ async function showDiskShares() {
     await reload(); await openTelegramDriveDialog({ title: '已分享', body, confirmText: '关闭', cancelText: '' });
 }
 
+async function refreshDiskCollaborations() {
+    const data = await window.DiskClient.raw('/collaborations');
+    telegramDriveCollaborations = data.collaborations || [];
+    const button = document.getElementById('telegramDriveCollaborationManageBtn');
+    if (button) button.hidden = !telegramDriveCollaborations.some(item => item.owned && item.kind === 'directory' && (item.path === telegramDrivePath || telegramDrivePath.startsWith(item.path + '/') || !item.path));
+    document.getElementById('telegramDriveBottom')?.classList.toggle('disk-collaboration-active', Boolean(button && !button.hidden));
+}
+
+async function inviteDiskCollaboration(item) {
+    const data = await window.DiskClient.raw('/collaborations/invitations', window.DiskClient.json('POST', item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', fileId: item.id }));
+    await refreshDiskCollaborations();
+    const input = document.createElement('input'); input.value = data.url; input.readOnly = true; input.setAttribute('aria-label', '一次性邀请链接');
+    const note = document.createElement('p'); note.textContent = '此链接仅能被一个网盘账号使用一次。加入后可在此协同范围内编辑；所有者可随时撤销邀请或移除成员。';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn'; copy.textContent = '复制链接';
+    copy.onclick = () => navigator.clipboard.writeText(data.url).then(() => showAppToast('邀请链接已复制')).catch(() => { input.select(); showAppToast('请手动复制链接'); });
+    await openTelegramDriveDialog({ title: `邀请协同编辑：${item.name}`, body: [note, input, copy], confirmText: '完成', cancelText: '' });
+}
+
+async function manageDiskCollaboration(entry) {
+    const body = document.createElement('div'); body.className = 'disk-collaboration-list';
+    document.querySelector('.disk-collaboration-popover')?.remove();
+    const popover = document.createElement('section'); popover.className = 'disk-collaboration-popover';
+    const title = document.createElement('header'); title.textContent = '协同编辑中';
+    const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.textContent = '×'; closeButton.setAttribute('aria-label', '关闭协同管理'); title.append(closeButton);
+    const close = () => { document.removeEventListener('pointerdown', outside, true); popover.remove(); };
+    const outside = event => { if (!popover.contains(event.target) && event.target !== document.getElementById('telegramDriveCollaborationManageBtn')) close(); };
+    closeButton.onclick = close;
+    popover.append(title, body); document.body.append(popover);
+    const anchor = document.getElementById('telegramDriveCollaborationManageBtn')?.getBoundingClientRect();
+    popover.style.right = `${Math.max(8, innerWidth - (anchor?.right || innerWidth))}px`;
+    popover.style.bottom = `${Math.max(8, innerHeight - (anchor?.top || innerHeight)) + 8}px`;
+    setTimeout(() => document.addEventListener('pointerdown', outside, true), 0);
+    const render = async () => {
+        const data = await window.DiskClient.raw('/collaborations/' + encodeURIComponent(entry.id));
+        const current = data.collaboration;
+        body.replaceChildren();
+        const heading = document.createElement('h4'); heading.textContent = `管理邀请链接 · ${current.name}`; body.append(heading);
+        if (!current.invites?.length) body.append('暂无未使用的邀请链接');
+        for (const invite of current.invites || []) {
+            const row = document.createElement('div'); row.className = 'disk-collaboration-row';
+            const link = document.createElement('input'); link.readOnly = true; link.value = new URL('/disk-collab/' + encodeURIComponent(invite.token), location.origin).href;
+            const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = '复制'; copy.onclick = () => navigator.clipboard.writeText(link.value).catch(() => { link.select(); });
+            const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'danger'; revoke.textContent = '取消'; revoke.onclick = async () => { if (!confirm('取消此邀请链接？')) return; await window.DiskClient.raw(`/collaborations/${current.id}/invitations/${invite.id}`, { method: 'DELETE' }); await render(); };
+            row.append(link, copy, revoke); body.append(row);
+        }
+        const users = document.createElement('h4'); users.textContent = '已加入协同的用户'; body.append(users);
+        if (!current.members?.length) body.append('暂无用户加入');
+        for (const member of current.members || []) {
+            const row = document.createElement('div'); row.className = 'disk-collaboration-row';
+            const name = document.createElement('span'); name.textContent = member;
+            const kick = document.createElement('button'); kick.type = 'button'; kick.className = 'danger'; kick.textContent = '×'; kick.title = '移出协同'; kick.onclick = async () => { if (!confirm(`将用户 ${member} 移出协同？`)) return; await window.DiskClient.raw(`/collaborations/${current.id}/members/${encodeURIComponent(member)}`, { method: 'DELETE' }); await render(); };
+            row.append(name, kick); body.append(row);
+        }
+        const stop = document.createElement('button'); stop.type = 'button'; stop.className = 'btn btn-secondary danger'; stop.textContent = '取消此项目的协同编辑';
+        stop.onclick = async () => { if (!confirm('取消协同后，所有邀请和成员访问权限立即失效。确定继续？')) return; await window.DiskClient.raw('/collaborations/' + current.id, { method: 'DELETE' }); close(); await refreshDiskCollaborations(); await refreshTelegramDriveContents(); };
+        body.append(stop);
+    };
+    try { await render(); } catch (error) { close(); throw error; }
+}
+
+async function showDiskCollaborations() {
+    await refreshDiskCollaborations();
+    const body = document.createElement('div'); body.className = 'disk-collaboration-list';
+    if (!telegramDriveCollaborations.length) body.textContent = '尚无可访问的协同编辑项目';
+    for (const entry of telegramDriveCollaborations) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'disk-collaboration-entry';
+        button.textContent = `${entry.owned ? '我创建的' : '受邀加入'} · ${entry.name} · ${entry.kind === 'directory' ? '目录' : '文件'}`;
+        button.onclick = async () => {
+            closeTelegramDriveDialog();
+            if (!entry.owned) { window.open('/disk-collab/view/' + encodeURIComponent(entry.id), '_blank', 'noopener'); return; }
+            clearTelegramDriveSearch();
+            await navigateTelegramDrive(entry.kind === 'file' ? entry.path : (entry.path.split('/').slice(0, -1).join('/')));
+            const row = [...document.querySelectorAll('#telegramDriveList .telegram-drive-item')].find(node => entry.kind === 'file' ? node.dataset.fileId === entry.fileId : node.dataset.folderPath === entry.path);
+            if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('disk-collaboration-focus'); setTimeout(() => row.classList.remove('disk-collaboration-focus'), 3000); }
+        };
+        body.append(button);
+    }
+    await openTelegramDriveDialog({ title: '查看协同列表', body, confirmText: '关闭', cancelText: '' });
+}
+
 function openTelegramDriveItem(item) {
     if (item.kind === 'directory') {
         if (item.reviewStatus === 'deleted') return showTelegramDriveProperties(item);
@@ -686,6 +771,7 @@ async function showTelegramDriveItemMenu(item, anchor) {
         }
         actions.splice(-1, 0, ...cacheActions);
     }
+    if (chosen.length === 1 && item.reviewStatus !== 'deleted') actions.splice(-1, 0, ['邀请协同编辑', () => inviteDiskCollaboration(item)]);
     if (!chosen.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus)) && diskExporter) actions.splice(-1, 0, ['转发到隧道', () => exportDiskItems(chosen)]);
     if (!chosen.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus))) actions.splice(-1, 0, ['分享', () => shareDiskItems(chosen)]);
     renderTelegramDriveContextMenu(item, anchor, actions);
@@ -780,10 +866,12 @@ function renderTelegramDriveItems() {
     list.replaceChildren(...items.map(item => {
         const key = telegramDriveItemKey(item);
         const row = document.createElement('div'); row.className = `telegram-drive-item${telegramDriveSelected.has(key) ? ' selected' : ''}`; row.tabIndex = 0;
+        if (item.kind === 'directory') row.dataset.folderPath = item.path; else row.dataset.fileId = item.id;
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.className = 'telegram-drive-item-check'; checkbox.checked = telegramDriveSelected.has(key); checkbox.setAttribute('aria-label', `选择 ${item.name}`);
         checkbox.onclick = event => event.stopPropagation(); checkbox.onchange = () => { toggleTelegramDriveSelection(item, checkbox.checked); row.classList.toggle('selected', checkbox.checked); };
         const icon = document.createElement('div'); icon.className = 'telegram-drive-item-icon';
         const genericIcon = document.createElement('span'); genericIcon.className = 'telegram-drive-generic-icon'; genericIcon.textContent = telegramDriveMimeIcon(item); icon.append(genericIcon);
+        if (item.collaborationId) { const badge = document.createElement('span'); badge.className = 'disk-collaboration-badge'; badge.textContent = '⇔'; badge.title = '协同编辑中'; icon.append(badge); }
         const info = document.createElement('div'); info.className = 'telegram-drive-item-info';
         const name = document.createElement('div'); name.className = 'telegram-drive-item-name'; name.textContent = item.name;
         const meta = document.createElement('div'); meta.className = 'telegram-drive-item-meta'; meta.textContent = getTelegramDriveItemMeta(item); info.append(name, meta);
@@ -928,6 +1016,7 @@ async function renderTelegramDrive({ silentIdentity = false } = {}) {
     const status = await getTelegramDriveIdentity();
     if (generation !== telegramDriveRenderGeneration) return;
     logout.hidden = !status.identity;
+    const collaborationListButton = document.getElementById('telegramDriveCollaborationListBtn'); if (collaborationListButton) collaborationListButton.hidden = !status.identity;
     if (!status.identity) {
         workspace.hidden = true;
         list.replaceChildren();
@@ -966,6 +1055,7 @@ async function renderTelegramDrive({ silentIdentity = false } = {}) {
     renderTelegramDriveBreadcrumbs(telegramDriveCurrentData);
     renderTelegramDriveItems();
     updateTelegramDriveSelectionBar();
+    refreshDiskCollaborations().catch(() => {});
     if (isTelegramDriveGlobalSearchActive()) scheduleTelegramDriveSearch();
 }
 
@@ -976,6 +1066,7 @@ async function refreshTelegramDriveContents() {
     if (generation !== telegramDriveRenderGeneration || requestedPath !== telegramDrivePath) return;
     telegramDriveCurrentData = data;
     renderTelegramDriveItems();
+    refreshDiskCollaborations().catch(() => {});
     scheduleTelegramDriveSearch();
 }
 
@@ -1994,6 +2085,11 @@ function initDiskEnhancements() {
         button.onclick = () => Promise.resolve(action()).catch(error => alert(telegramDriveErrorText(error)));
         $disk('telegramDriveBatchMoveBtn').before(button);
     }
+    const collaborationList = document.createElement('button'); collaborationList.id = 'telegramDriveCollaborationListBtn'; collaborationList.className = 'btn btn-secondary'; collaborationList.textContent = '查看协同列表'; collaborationList.hidden = true; collaborationList.onclick = () => showDiskCollaborations().catch(error => alert(telegramDriveErrorText(error)));
+    $disk('telegramDriveRefreshBtn').before(collaborationList);
+    const collaborationManage = document.createElement('button'); collaborationManage.id = 'telegramDriveCollaborationManageBtn'; collaborationManage.className = 'btn btn-secondary'; collaborationManage.textContent = '协同编辑中'; collaborationManage.hidden = true;
+    collaborationManage.onclick = () => { const entry = telegramDriveCollaborations.find(item => item.owned && item.kind === 'directory' && (item.path === telegramDrivePath || telegramDrivePath.startsWith(item.path + '/') || !item.path)); if (entry) manageDiskCollaboration(entry).catch(error => alert(telegramDriveErrorText(error))); };
+    $disk('telegramDriveBottomMenuBtn').before(collaborationManage);
     const shares = document.createElement('button'); shares.className = 'btn btn-secondary'; shares.textContent = '已分享'; shares.onclick = () => showDiskShares().catch(error => alert(telegramDriveErrorText(error)));
     $disk('telegramDriveRefreshBtn').before(shares);
     let drag, moved = false;

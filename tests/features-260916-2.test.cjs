@@ -84,7 +84,15 @@ test('视频转码服务流式接收源文件并以 argv 队列执行到成品',
         await service.receiveInput(task.id,request); service.startTask(task.id);
         for (let index=0;index<100 && service.getTask(task.id).status!=='completed';index++) await new Promise(resolve=>setTimeout(resolve,5));
         const completed=service.getTask(task.id);assert.equal(completed.status,'completed');assert.ok(fs.existsSync(completed.outputPath));
+        assert.equal(completed.outputName, 'demo-h265.mkv');
+        assert.equal(invocations[0].args.includes('-movflags'), false, 'MKV 不应携带 MP4 专用的 faststart 参数');
         assert.equal(invocations[0].command,'ffmpeg-test');assert.equal(invocations[0].options.shell,false);assert.deepEqual(invocations[0].args.slice(0,2),['-y','-i']);
+        const alternate = service.createTask({profileId:'h265-balanced',params:{},outputExtension:'mp4',fileName:'other.mp4',size:4,type:'video/mp4'});
+        const alternateInput = Readable.from(Buffer.from('demo')); alternateInput.headers = {'content-length':'4'};
+        await service.receiveInput(alternate.id, alternateInput); service.startTask(alternate.id);
+        for (let index=0;index<100 && service.getTask(alternate.id).status!=='completed';index++) await new Promise(resolve=>setTimeout(resolve,5));
+        assert.equal(service.getTask(alternate.id).outputName, 'other-h265.mp4');
+        assert.equal(invocations[1].args.includes('-movflags'), true);
     } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
 

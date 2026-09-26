@@ -20,4 +20,12 @@
 .web-zip-resource-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid #8da0b733;cursor:pointer;overflow-wrap:anywhere}
 .web-zip-resource-row:hover{background:#347bc714}.web-zip-resource-row[hidden]{display:none}.web-zip-resource-row input{flex:0 0 auto;width:auto}
 .web-zip-resource-picker p{margin:0;color:#62738a;font-size:12px}
+.web-zip-fullscreen-layer{position:fixed;inset:0;z-index:2147483050;background:#0e1725}
+.web-zip-fullscreen-layer iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+.web-zip-fullscreen-layer>button{position:fixed;top:calc(10px + env(safe-area-inset-top));right:calc(10px + env(safe-area-inset-right));z-index:1;width:38px;height:38px;border:1px solid #ffffff99;border-radius:50%;background:#111b2bba;color:#fff;font-size:26px;line-height:1;cursor:pointer}
+.file-icon{position:relative}.web-zip-new-tab-badge{position:absolute;right:-5px;bottom:-5px;display:grid;place-items:center;width:20px;height:20px;border:2px solid #fff;border-radius:50%;background:#3575c6;color:#fff;font:700 13px/1 system-ui;box-shadow:0 2px 5px #0005}
+.web-tree-context-layer{position:fixed;inset:0;z-index:18980;background:#0e17253d;backdrop-filter:blur(2px)}
+.web-tree-context-menu{position:fixed;display:grid;gap:3px;min-width:170px;padding:6px;border:1px solid #8da0b766;border-radius:10px;background:var(--panel-bg,#fff);box-shadow:0 12px 32px #0004}
+.web-tree-context-menu button{padding:9px 12px;border:0;border-radius:6px;background:transparent;color:var(--text-color,#243047);text-align:left;cursor:pointer}
+.web-tree-context-menu button:hover{background:#347bc71d}
 @media(max-width:650px){.web-workshop>header{gap:6px;padding-left:8px;padding-right:8px}.web-workshop>header>strong{font-size:14px;white-space:nowrap}.web-workshop>header button{padding:7px}.web-workshop-guide-link{padding:7px;font-size:12px}}

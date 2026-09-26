@@ -44,7 +44,7 @@ test('网页 ZIP iframe 保持同源身份以便 Service Worker 接管 Runtime U
     const worker = source('service-worker.js');
     assert.match(standalone, /sandbox="allow-same-origin allow-scripts/);
     assert.match(workshop, /sandbox','allow-same-origin allow-scripts/);
-    assert.match(worker, /instant-tunnel-v60/);
+    assert.match(worker, /instant-tunnel-v61/);
     assert.match(worker, /url\.pathname\.startsWith\('\/web-zip-runtime\/'\)/);
 });
 
