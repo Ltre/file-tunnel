@@ -247,14 +247,99 @@
     function renderTree(entries,parent='',depth=0,selectedPath=''){return sortedChildren(entries,parent).map(item=>{const directory=isDirectory(item),opened=directory&&expandedPaths.has(item.path),children=directory&&opened?renderTree(entries,item.path,depth+1,selectedPath):'';return`<div class="web-tree-node" role="treeitem"${directory?` aria-expanded="${opened}"`:''}><div class="web-tree-row${selectedPath===item.path?' active':''}" draggable="true" data-web-path="${escapeHtml(item.path)}" data-web-directory="${directory}" style="--tree-depth:${depth}">${directory?`<button type="button" class="web-tree-toggle" data-tree-toggle="${escapeHtml(item.path)}" aria-label="${opened?'收缩':'展开'}目录">${opened?'▾':'▸'}</button>`:'<span class="web-tree-toggle-placeholder"></span>'}<span aria-hidden="true">${directory?'📁':'📄'}</span><span class="web-tree-name">${escapeHtml(baseName(item.path))}</span></div>${children}</div>`;}).join('');}
     async function moveDraftEntry(draft,sourcePath,destination){commitEditorBuffer(draft);const result=assertDestination(draft.files,sourcePath,destination);if(!result.changed)return result.nextPath;const target=destination?destination.replace(/\/$/,''):'草稿根目录';if(!confirm(`确定要把“${baseName(sourcePath)}”移动到“${target}”吗？`))return sourcePath;draft.files=result.entries;if(destination)expandedPaths.add(destination);await saveDraft(draft);return result.nextPath;}
     function installTreeDirectoryGestures(tree,draft){
-        tree.oncontextmenu=event=>{const row=event.target.closest('[data-web-directory="true"]');if(!row)return;event.preventDefault();window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);};
+        let gesture=null,suppressClickUntil=0,suppressContextUntil=0;
+        const dropClass='is-drop-target';
+        const clearHighlight=()=>{tree.querySelectorAll(`.${dropClass}`).forEach(node=>node.classList.remove(dropClass));content.querySelector('textarea')?.classList.remove(dropClass);};
+        const removeListeners=()=>{document.removeEventListener('touchmove',onMove);document.removeEventListener('touchend',onEnd);document.removeEventListener('touchcancel',onCancel);};
+        const finish=()=>{if(!gesture)return;clearTimeout(gesture.timer);gesture.ghost?.remove();gesture.row?.classList.remove('is-dragging');gesture.row.draggable=gesture.wasDraggable;clearHighlight();overlay.classList.remove('web-tree-holding');gesture=null;removeListeners();};
+        const hitTarget=(x,y,source)=>{
+            const element=document.elementFromPoint(x,y),textarea=content.querySelector('textarea');
+            if(textarea&&element===textarea&&editorSession?.draft===draft&&/\.html?$/i.test(editorSession.path)&&!isDirectory(source)&&mediaHtmlTag(source,editorSession.path))return {kind:'editor',element:textarea};
+            const directory=element?.closest?.('[data-web-directory="true"]');
+            if(directory&&tree.contains(directory)){
+                const path=directory.dataset.webPath;
+                if(isDirectory(source)&&(path===source.path||path.startsWith(source.path)))return null;
+                return {kind:'directory',element:directory,path};
+            }
+            if(element&&tree.contains(element)&&!element.closest?.('[data-web-path]'))return {kind:'directory',element:tree,path:''};
+            return null;
+        };
+        const updateTarget=(touch)=>{
+            if(!gesture?.active)return;
+            const source=draft.files.find(item=>item.path===gesture.path);
+            clearHighlight();
+            gesture.target=source?hitTarget(touch.clientX,touch.clientY,source):null;
+            gesture.target?.element.classList.add(dropClass);
+            gesture.ghost.style.left=`${touch.clientX+14}px`;
+            gesture.ghost.style.top=`${touch.clientY+14}px`;
+            const bounds=tree.getBoundingClientRect();
+            if(touch.clientX>=bounds.left&&touch.clientX<=bounds.right){
+                if(touch.clientY<bounds.top+28)tree.scrollTop-=18;
+                else if(touch.clientY>bounds.bottom-28)tree.scrollTop+=18;
+            }
+        };
+        function onMove(event){
+            if(!gesture)return;
+            const touch=Array.from(event.touches).find(item=>item.identifier===gesture.identifier);
+            if(!touch||event.touches.length!==1){finish();return;}
+            if(!gesture.active){
+                if(Math.hypot(touch.clientX-gesture.x,touch.clientY-gesture.y)>10)finish();
+                return;
+            }
+            event.preventDefault();
+            gesture.moved=gesture.moved||Math.hypot(touch.clientX-gesture.x,touch.clientY-gesture.y)>8;
+            updateTarget(touch);
+        }
+        async function onEnd(event){
+            if(!gesture)return;
+            const touch=Array.from(event.changedTouches).find(item=>item.identifier===gesture.identifier);
+            if(!touch)return;
+            const {active,moved,path,directory,x,y}=gesture;
+            if(active)updateTarget(touch);
+            const target=gesture.target;
+            finish();
+            if(!active)return;
+            suppressClickUntil=Date.now()+450;
+            if(!moved){if(directory)showTreeDirectoryMenu(draft,path,x,y);return;}
+            if(!target)return;
+            if(target.kind==='editor'){
+                const source=draft.files.find(item=>item.path===path&&!isDirectory(item));
+                const textarea=target.element,snippet=source&&mediaHtmlTag(source,editorSession?.path);
+                if(!snippet||!textarea.isConnected)return;
+                const position=textarea.selectionStart;
+                textarea.setRangeText(snippet,position,textarea.selectionEnd,'end');
+                textarea.dispatchEvent(new Event('input',{bubbles:true}));
+                textarea.focus();
+                return;
+            }
+            try{const next=await moveDraftEntry(draft,path,target.path);renderEditor(draft,next);}catch(error){showError(error);}
+        }
+        function onCancel(){finish();}
+        tree.oncontextmenu=event=>{const row=event.target.closest('[data-web-directory="true"]');if(!row)return;event.preventDefault();if(Date.now()<suppressContextUntil)return;window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);};
         tree.onselectstart=event=>event.preventDefault();
-        let timer=0,startX=0,startY=0,ignoreClick=false;
-        tree.addEventListener('click',event=>{if(ignoreClick){event.preventDefault();event.stopImmediatePropagation();ignoreClick=false;}},true);
-        const clear=()=>{clearTimeout(timer);timer=0;overlay.classList.remove('web-tree-holding');};
-        tree.ontouchstart=event=>{clear();ignoreClick=false;if(event.touches.length!==1)return;const row=event.target.closest('[data-web-directory="true"]');if(!row)return;const focused=document.activeElement;if(focused?.tagName==='TEXTAREA'&&overlay.contains(focused))focused.blur();window.getSelection()?.removeAllRanges();overlay.classList.add('web-tree-holding');startX=event.touches[0].clientX;startY=event.touches[0].clientY;timer=setTimeout(()=>{timer=0;ignoreClick=true;setTimeout(()=>{ignoreClick=false;},750);window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,startX,startY);},550);};
-        tree.ontouchmove=event=>{if(!timer||event.touches.length!==1||Math.hypot(event.touches[0].clientX-startX,event.touches[0].clientY-startY)>10)clear();};
-        tree.ontouchend=clear;tree.ontouchcancel=clear;
+        tree.addEventListener('click',event=>{if(Date.now()<suppressClickUntil){suppressClickUntil=0;event.preventDefault();event.stopImmediatePropagation();}},true);
+        tree.addEventListener('touchstart',event=>{
+            finish();
+            if(event.touches.length!==1)return;
+            const row=event.target.closest('[data-web-path]');if(!row)return;
+            const touch=event.touches[0],textarea=content.querySelector('textarea');
+            suppressContextUntil=Date.now()+1500;
+            if(document.activeElement===textarea)textarea.blur();
+            window.getSelection()?.removeAllRanges();overlay.classList.add('web-tree-holding');
+            gesture={identifier:touch.identifier,path:row.dataset.webPath,directory:row.dataset.webDirectory==='true',row,wasDraggable:row.draggable,x:touch.clientX,y:touch.clientY,active:false,moved:false,target:null,ghost:null,timer:0};
+            row.draggable=false;
+            gesture.timer=setTimeout(()=>{
+                if(!gesture)return;
+                gesture.active=true;suppressClickUntil=Date.now()+450;
+                gesture.row.classList.add('is-dragging');
+                const ghost=document.createElement('div');ghost.className='web-tree-touch-ghost';ghost.textContent=baseName(gesture.path);document.body.append(ghost);gesture.ghost=ghost;
+                ghost.style.left=`${gesture.x+14}px`;ghost.style.top=`${gesture.y+14}px`;
+                window.getSelection()?.removeAllRanges();
+            },550);
+            document.addEventListener('touchmove',onMove,{passive:false});
+            document.addEventListener('touchend',onEnd);
+            document.addEventListener('touchcancel',onCancel);
+        },{passive:true});
     }
     function installMediaInsertion(textarea,draft,htmlFile){
         if(!/\.html?$/i.test(htmlFile.path))return;
