@@ -252,6 +252,15 @@
         const clearHighlight=()=>{tree.querySelectorAll(`.${dropClass}`).forEach(node=>node.classList.remove(dropClass));content.querySelector('textarea')?.classList.remove(dropClass);};
         const removeListeners=()=>{document.removeEventListener('touchmove',onMove);document.removeEventListener('touchend',onEnd);document.removeEventListener('touchcancel',onCancel);};
         const finish=()=>{if(!gesture)return;clearTimeout(gesture.timer);gesture.ghost?.remove();gesture.row?.classList.remove('is-dragging');gesture.row.draggable=gesture.wasDraggable;clearHighlight();overlay.classList.remove('web-tree-holding');gesture=null;removeListeners();};
+        const activateGesture=()=>{
+            if(!gesture||gesture.active)return;
+            clearTimeout(gesture.timer);gesture.timer=0;
+            gesture.active=true;suppressClickUntil=Date.now()+450;
+            gesture.row.classList.add('is-dragging');
+            const ghost=document.createElement('div');ghost.className='web-tree-touch-ghost';ghost.textContent=baseName(gesture.path);document.body.append(ghost);gesture.ghost=ghost;
+            ghost.style.left=`${gesture.x+14}px`;ghost.style.top=`${gesture.y+14}px`;
+            window.getSelection()?.removeAllRanges();
+        };
         const hitTarget=(x,y,source)=>{
             const element=document.elementFromPoint(x,y),textarea=content.querySelector('textarea');
             if(textarea&&element===textarea&&editorSession?.draft===draft&&/\.html?$/i.test(editorSession.path)&&!isDirectory(source)&&mediaHtmlTag(source,editorSession.path))return {kind:'editor',element:textarea};
@@ -315,27 +324,31 @@
             try{const next=await moveDraftEntry(draft,path,target.path);renderEditor(draft,next);}catch(error){showError(error);}
         }
         function onCancel(){finish();}
-        tree.oncontextmenu=event=>{const row=event.target.closest('[data-web-directory="true"]');if(!row)return;event.preventDefault();if(Date.now()<suppressContextUntil)return;window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);};
+        tree.oncontextmenu=event=>{
+            const row=event.target.closest('[data-web-path]');if(!row)return;
+            if(gesture||event.pointerType==='touch'||event.sourceCapabilities?.firesTouchEvents||Date.now()<suppressContextUntil){
+                event.preventDefault();event.stopPropagation();activateGesture();return;
+            }
+            if(row.dataset.webDirectory!=='true')return;
+            event.preventDefault();window.getSelection()?.removeAllRanges();showTreeDirectoryMenu(draft,row.dataset.webPath,event.clientX,event.clientY);
+        };
         tree.onselectstart=event=>event.preventDefault();
         tree.addEventListener('click',event=>{if(Date.now()<suppressClickUntil){suppressClickUntil=0;event.preventDefault();event.stopImmediatePropagation();}},true);
+        tree.addEventListener('dragstart',event=>{
+            if(!gesture)return;
+            event.preventDefault();event.stopImmediatePropagation();
+        },true);
         tree.addEventListener('touchstart',event=>{
             finish();
             if(event.touches.length!==1)return;
             const row=event.target.closest('[data-web-path]');if(!row)return;
             const touch=event.touches[0],textarea=content.querySelector('textarea');
-            suppressContextUntil=Date.now()+1500;
+            suppressContextUntil=Date.now()+2000;
             if(document.activeElement===textarea)textarea.blur();
             window.getSelection()?.removeAllRanges();overlay.classList.add('web-tree-holding');
             gesture={identifier:touch.identifier,path:row.dataset.webPath,directory:row.dataset.webDirectory==='true',row,wasDraggable:row.draggable,x:touch.clientX,y:touch.clientY,active:false,moved:false,target:null,ghost:null,timer:0};
             row.draggable=false;
-            gesture.timer=setTimeout(()=>{
-                if(!gesture)return;
-                gesture.active=true;suppressClickUntil=Date.now()+450;
-                gesture.row.classList.add('is-dragging');
-                const ghost=document.createElement('div');ghost.className='web-tree-touch-ghost';ghost.textContent=baseName(gesture.path);document.body.append(ghost);gesture.ghost=ghost;
-                ghost.style.left=`${gesture.x+14}px`;ghost.style.top=`${gesture.y+14}px`;
-                window.getSelection()?.removeAllRanges();
-            },550);
+            gesture.timer=setTimeout(activateGesture,450);
             document.addEventListener('touchmove',onMove,{passive:false});
             document.addEventListener('touchend',onEnd);
             document.addEventListener('touchcancel',onCancel);

@@ -74,7 +74,21 @@ function touchFixture() {
             return prevented;
         },
         end: (x, y) => handlers.get('touchend')?.({ changedTouches: [point(x, y)] }),
-        hold: () => { const callback = timers.values().next().value; assert.ok(callback); callback(); }
+        hold: () => { const callback = timers.values().next().value; assert.ok(callback); callback(); },
+        contextMenu: (row, pointerType = '') => {
+            let prevented = false, stopped = false;
+            tree.oncontextmenu({
+                target: row, pointerType, clientX: 20, clientY: 40,
+                preventDefault() { prevented = true; },
+                stopPropagation() { stopped = true; }
+            });
+            return { prevented, stopped };
+        },
+        nativeDragStart: () => {
+            let prevented = false;
+            handlers.get('dragstart')({ preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
+            return prevented;
+        }
     };
 }
 
@@ -108,6 +122,32 @@ test('网页工坊触屏短滑保留滚动，长按文件后可插入 HTML 或�
     ui.hold();
     await ui.end(20, 40);
     assert.equal(ui.calls.menus.length, 1);
+});
+
+test('文件长按原生菜单被拦截后仍可拖放，目录仍使用工坊菜单', async () => {
+    const ui = touchFixture();
+    assert.equal(ui.contextMenu(ui.file).prevented, false);
+    assert.equal(ui.contextMenu(ui.directory).prevented, true);
+    assert.equal(ui.nativeDragStart(), false);
+    assert.equal(ui.calls.menus.length, 1);
+
+    ui.start(ui.file);
+    assert.equal(ui.nativeDragStart(), true);
+    const nativeMenu = ui.contextMenu(ui.file, 'touch');
+    assert.equal(nativeMenu.prevented, true);
+    assert.equal(nativeMenu.stopped, true);
+    assert.equal(ui.timers.size, 0);
+    ui.setHit(ui.textarea);
+    assert.equal(ui.move(230, 90), true);
+    await ui.end(230, 90);
+    assert.equal(ui.calls.inserts, 1);
+    assert.equal(ui.calls.menus.length, 1);
+
+    ui.start(ui.directory);
+    assert.equal(ui.contextMenu(ui.directory, 'touch').prevented, true);
+    assert.equal(ui.calls.menus.length, 1);
+    await ui.end(20, 40);
+    assert.equal(ui.calls.menus.length, 2);
 });
 
 test('传输记录跳转按钮仅在滚动期间显示，停下 1.5 秒后隐藏', () => {
