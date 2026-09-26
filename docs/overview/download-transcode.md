@@ -1,6 +1,6 @@
 # SNS / YouTube Premium、音轨修复与视频转码
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **文档更新时间**：`2026-09-26`
 
 ## 子模块文档
@@ -355,6 +355,13 @@ Profile 是 schema driven：
 
 自定义 profile 经过 validate，step 必须包含合法 input 和 output placeholder。
 
+如果自定义 Profile 没显式写 output extension，服务端会根据步骤 argv 推断默认容器：
+
+- 出现 `libx265`、`hevc_nvenc`、`hevc_qsv`、`libsvt_hevc` → 默认 `mkv`；
+- 其它情况 → 默认 `mp4`。
+
+这个推断只决定 Profile 默认值；任务级 `outputExtension` 仍可覆盖。
+
 ## 12. 内置 H.265 Profile 当前事实
 
 ### 12.1 H.265 均衡转码
@@ -363,20 +370,23 @@ Profile 是 schema driven：
 
 - codec：`libx265`
 - CRF default：28
-- PRESET default：空
-- preset 空时不发 `-preset`
-- `-movflags +faststart`
-- `-c:a copy`
+- PRESET default：空；
+- preset 空时不发 `-preset`；
+- audio：`-c:a copy`；
+- Profile 默认输出扩展：**mkv**；
+- nameTemplate：`${BASENAME}-h265.${EXT}`。
 
-概念命令：
+任务创建时页面还允许用户覆盖本次任务的输出后缀；所选值写入 task 的 `outputExtension`，最终文件名和输出路径都使用该值。
+
+`-movflags +faststart` 仍保留在内置 Profile 参数模板里，但执行时如果最终扩展不是 MP4/MOV/M4V，会从实际 argv 中移除，避免把 MP4 系容器参数误发给 MKV 等格式。
+
+因此默认概念命令更接近：
 
 ```text
-ffmpeg -i INPUT -c:v libx265 [-crf 28] [-preset ...] -movflags +faststart -c:a copy OUTPUT
+ffmpeg -i INPUT -c:v libx265 [-crf 28] [-preset ...] -c:a copy OUTPUT.mkv
 ```
 
-当前源码 output extension 仍为 **mp4**，nameTemplate 为 `${BASENAME}-h265.mp4`。
-
-如果未来需求将 HEVC 默认扩展改为 MKV，应等代码真正修改后更新本文，不能把未合入需求写成当前事实。
+若用户把该任务输出覆盖成 MP4，则会重新保留 `-movflags +faststart`。
 
 ### 12.2 H.265 均衡转码并缩放
 
@@ -387,7 +397,7 @@ ffmpeg -i INPUT -c:v libx265 [-crf 28] [-preset ...] -movflags +faststart -c:a c
 - 同样 CRF/preset；
 - audio copy。
 
-当前 output 也仍为 mp4。
+该内置 Profile 的默认 output 同样是 **mkv**，nameTemplate 为 `${BASENAME}-scaled.${EXT}`，并允许任务级覆盖输出后缀。
 
 ## 13. Task 执行
 
@@ -403,6 +413,8 @@ ffmpeg -i INPUT -c:v libx265 [-crf 28] [-preset ...] -movflags +faststart -c:a c
 6. 串行 consumer；
 7. FFmpeg；
 8. completed。
+
+任务元数据会持久化 `outputExtension`。最终 step 使用任务选择的扩展，中间 step 当前固定使用 MKV 临时文件。
 
 ### 13.2 复用 SNS/YouTube 服务器缓存
 
@@ -435,6 +447,8 @@ video-transcode 页面先通过 admin-protected source API 校验。
 - stderr 保存最近 log；
 - running child 用于 cancel；
 - 中间 step 使用工作目录临时文件；
+- 最终 step 使用 task 的 `outputExtension` 或 Profile 默认扩展；
+- 如果最终容器不属于 MP4/MOV/M4V，内置 Profile 会剔除 `-movflags +faststart`；
 - 最终生成 output；
 - task phase / progress / log 持久化。
 
@@ -507,6 +521,8 @@ completed task cache 被清理后：
 - `tests/youtube-premium.test.cjs`
 - `tests/audio-track-repair.test.cjs`
 - `tests/audio-track-repair-ui.test.cjs`
-- 260916/260917/260921/260922 feature tests。
+- `tests/features-260916-2.test.cjs`（H.265 默认 MKV、任务级 MP4 覆盖与 faststart 条件）；
+- `tests/features-260925.test.cjs`；
+- 260917/260921/260922 等 feature tests。
 
 真实 yt-dlp / ffmpeg / cookies / 网络平台会发生外部变化，因此自动 Mock 通过不等于生产一定可下载；外部依赖异常必须输出足够诊断，但不能泄露 cookies/token。
