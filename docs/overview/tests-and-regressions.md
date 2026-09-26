@@ -1,6 +1,6 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **文档更新时间**：`2026-09-26`
 
 ## 1. 为什么本项目尤其依赖回归资料
@@ -78,6 +78,7 @@ Git 历史里大量存在：
 - `disk-part-cache.test.cjs`
 - `disk-preview-history.test.cjs`
 - `disk-sharing.test.cjs`
+- `disk-collaboration.test.cjs`
 - `disk-step3.test.cjs`
 - `disk-storage-regression.test.cjs`
 - `control-center-drive.test.cjs`
@@ -107,6 +108,8 @@ Git 历史里大量存在：
 - `features-260918-1/2.test.cjs`
 - `features-260921-1/2.test.cjs`
 - `features-260922-1.test.cjs`
+- `features-260925.test.cjs`
+- `features-260926-2.test.cjs`
 - `bugs-260914.test.cjs`
 
 这些文件往往直接对应某一批用户验收 Bug，因此是“需求细节”的补充来源。
@@ -286,7 +289,17 @@ Prompt 里会出现：
 - three-column equal height：勉强验收；
 - workshop resource import：验收通过。
 
-这比“Codex 跑 291 test”更能说明 UI 是否达到用户预期。
+260925—260926 之后新增代码的自动验证记录为：
+
+- 260925-1：`node --test --test-concurrency=1` 294 项通过；
+- 260926-1：295 项通过；
+- 260926-2：299 项通过。
+
+新增覆盖包括：网盘一次性协同邀请与 scope 隔离、协同替换/上传取消、Web ZIP manifest、多语言与多级路径、H.265 默认 MKV/任务级 MP4 覆盖、JS/CSS/HTML 插入、move/rename 后 HTML 引用安全重写、网盘转发去二次确认。
+
+这些数字仍不能替代真实环境验收。该阶段开发日志明确保留了尚未实测的项目：Android 平板/移动端触摸、跨账号浏览器、Telegram 在线端到端，以及部分视觉对齐。
+
+这比单写“测试通过”更能说明功能当前可信边界。
 
 ## 10. 故障注入
 
