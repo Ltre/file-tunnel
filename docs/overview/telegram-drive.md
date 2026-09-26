@@ -1,6 +1,6 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **文档更新时间**：`2026-09-26`
 > **重要现状**：当前网盘核心共享元数据仍是 JSON/文件系统持久化。SQLite WAL 与 S3 Compatible 均是已有设计方案，但不属于本基线已实现能力。
 
@@ -20,7 +20,8 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 - 第三方应用 API；
 - `disk_space` 分区；
 - 多分片大文件；
-- Range 播放。
+- Range 播放；
+- 文件/目录级协同邀请与受限协作。
 
 ## 2. 主要文件
 
@@ -32,6 +33,7 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 - `server/disk-auth.js`
 - `server/disk-operations.js`
 - `server/disk-shares.js`
+- `server/disk-collaboration.js`
 - `server/disk-part-cache.js`
 - `server/disk-chunk-file-cache.js`
 - `server/disk-limits.js`
@@ -41,6 +43,7 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 
 - `client/disk-ui.js`
 - `client/disk-client.js`
+- `client/disk-collaboration.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-share.js`
 - `client/disk-management.js`
@@ -51,6 +54,7 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 
 - 主网盘 Overlay 在 `pages/index.html`；
 - `/disk-share/:token`；
+- `/disk-collab/:token` 与 `/disk-collab/view/:collaborationId`（`pages/disk-collaboration.html`）；
 - `/disk-management`。
 
 ## 3. 身份与授权
@@ -164,6 +168,7 @@ Passkey pending flow 是短期内存状态，不等于持久用户记录。
 - `disk-auth.json`
 - `disk-operations.json`
 - `disk-shares.json`
+- `disk-collaborations.json`
 - `telegram-chunk-file-ids.json`
 - `telegram-part-cache/.owners.json`
 
@@ -572,6 +577,55 @@ API：
 
 分享访问还会再次检查当前文件 review status，blocked/deleted 不应继续暴露。
 
+## 22.1 文件/目录协同编辑
+
+这套“协同”属于 Telegram Drive 文件系统能力，与隧道里的富文本 `collaborativeEdit` 不是同一个状态机。
+
+持久化：
+
+- `.tunnel-data/disk-collaborations.json`；
+- 协同目标可以是单文件或目录；
+- 记录 owner、disk space、目标路径/fileId、成员和一次性邀请；
+- 文件/目录移动后会同步调整协同目标路径。
+
+所有者可以：
+
+- 为文件或目录开启协同并创建一次性邀请；
+- 撤销尚未使用的邀请；
+- 查看成员；
+- 移除成员；
+- 停止整个协同。
+
+邀请流程刻意分成“预览”和“加入”：
+
+1. `GET /collaborations/invitations/:token/preview` 只返回受邀目标摘要，不建立成员关系；
+2. 访客明确确认后才 `POST /collaborations/join`；
+3. 一次性 token 在加入后失效；
+4. 所有者打开自己的邀请可以直接进入目标，但不会消耗 token。
+
+目录邀请摘要包含文件数/目录数/总体大小等；所有者管理视图可看到现有安全身份展示字段，普通成员不会拿到 invites/member 管理数据。
+
+受邀页面：
+
+- `/disk-collab/:token`
+- `/disk-collab/view/:collaborationId`
+
+使用独立的 `pages/disk-collaboration.html` + `client/disk-collaboration.js`。面包屑以受邀根目录为边界，不能向上跳出 owner 授权范围。
+
+服务端通过 `/collaboration-scope/:collaborationId` 对每次访问重新校验：
+
+- path；
+- file id；
+- upload id；
+- operation id；
+- file/directory move 目标。
+
+在授权范围内可以浏览、预览、下载、上传、新建、改名、移动、删除和替换文件内容；越界请求返回协同 scope 错误。协同单文件的内容替换复用服务器暂存与 Telegram 队列，普通新文件上传仍使用既有分片流水线。
+
+活动协同还承担删除保护：协同目标文件、目录及必要上级关系在停止协同前不能被 owner 直接破坏。移除成员或停用协同后，后续请求会立即重新鉴权，而不是依赖客户端已打开页面继续放行。
+
+主网盘 UI 通过角标、协同列表和单项“邀请/管理协同编辑”入口展示状态；窄屏把“已分享/查看协同列表”收进刷新按钮旁的更多菜单，管理浮层按实际渲染尺寸钳制在视口内。
+
 ## 23. 后台审核
 
 `/disk-management` 支持：
@@ -614,7 +668,8 @@ API：
 - 隧道的文件当前可能不在本机；
 - 保存网盘前可能先恢复缓存；
 - 上传成功后网盘有独立 Telegram 持久对象；
-- 从网盘导出到隧道后，隧道文件仍按普通资产模型传播。
+- 从网盘导出到隧道后，隧道文件仍按普通资产模型传播；
+- 选择目标隧道并点击“继续”后直接进入读取/发送流程，不再弹第二次 `confirm`。
 
 不要把两个系统的 fileId 当成同一 namespace。
 
@@ -685,9 +740,12 @@ API：
 - `tests/disk-part-cache.test.cjs`
 - `tests/disk-preview-history.test.cjs`
 - `tests/disk-sharing.test.cjs`
+- `tests/disk-collaboration.test.cjs`
 - `tests/disk-storage-regression.test.cjs`
 - `tests/control-center-drive.test.cjs`
 - `tests/bugs-260914.test.cjs`
-- 多个 2609 feature regression。
+- `tests/features-260925.test.cjs`
+- `tests/features-260926-2.test.cjs`
+- 其它 2609 feature regression。
 
 真实 Telegram 端到端仍应单独验收，因为 Mock 无法完整覆盖 Telegram 的 delete window、file_id、album、Range proxy、权限等真实行为。
