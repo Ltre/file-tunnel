@@ -6,8 +6,8 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
-- 源码提交时间：`2026-09-25T02:07:27Z`
+- 源码 Commit：`059099607a7aa986d9a66ff386f5fd691c604b78`
+- 源码提交时间：`2026-09-26T11:30:34Z`
 - 首轮整理日期：2026-09-26
 - 文档更新时间：2026-09-26
 
@@ -65,7 +65,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 ### Telegram
 
 - [telegram-bot-content.md](./telegram-bot-content.md) — Telegram Bot、中转、Webhook、指定目标转发、后台 Chat/成员管理。
-- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、上传恢复、Range、缓存、分享、审核、第三方 API、未来 SQLite/S3 边界。
+- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、上传恢复、Range、缓存、分享、文件/目录协同、审核、第三方 API、未来 SQLite/S3 边界。
 
 ### 内容生产与下载处理
 
@@ -131,12 +131,14 @@ Prompt 往往同时包含：原始需求、人工复现、Codex 处理说明、�
 
 例如：
 
-- 网盘当前仍是多 JSON 持久化；
-- `disk.sqlite` WAL/Adapter 是未来重构设计；
-- S3 Compatible API 是未来设计；
-- 260925 后协同网盘目录/文件邀请等需求未包含在 `b422e...` 源码基线。
+- 网盘当前仍是多 JSON 持久化，并新增 `disk-collaborations.json` 保存协同 capability；
+- 网盘文件/目录一次性邀请、成员管理和受限协作已是当前实现；
+- Web ZIP manifest、全屏浮层、多级路径与引用联动已是当前实现；
+- H.265 默认 MKV 与任务级输出后缀覆盖已是当前实现；
+- `disk.sqlite` WAL/Adapter 仍是未来重构设计；
+- S3 Compatible API 仍是未来设计。
 
-后续更新时，功能真正合入源码后再把它从“计划”移动到“当前实现”。
+后续更新时，仍应只在功能真正合入目标源码后把它从“计划”移动到“当前实现”。
 
 ## 7. 维护原则
 
