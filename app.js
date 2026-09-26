@@ -4692,10 +4692,32 @@ async function getWebZipBlob(fileInfo, ownerDeviceId = '') {
     return stored.data instanceof Blob ? stored.data : new Blob([stored.data], { type:'application/zip' });
 }
 
+function webZipNewTabBadge(fileInfo) {
+    return /\.html\.zip$/i.test(String(fileInfo?.name || '')) && fileInfo.webZipFullscreen !== true
+        ? '<span class="web-zip-new-tab-badge" aria-label="在新标签页打开" title="在新标签页打开">↗</span>' : '';
+}
+
 function openWebZipStandalone(fileInfo, options = {}) {
     const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(fileInfo.name || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}${fileInfo.webZipHideFrame ? '&bare=1' : ''}`;
-    const opened = window.open(url, '_blank');
-    if (!opened) throw new Error('浏览器阻止了新页面，请允许本站打开新窗口');
+    if (fileInfo.webZipFullscreen === true) {
+        document.getElementById('webZipFullscreenLayer')?.closeWebZip?.();
+        const layer = document.createElement('section');
+        layer.id = 'webZipFullscreenLayer';
+        layer.className = 'web-zip-fullscreen-layer';
+        const closeButton = document.createElement('button');
+        closeButton.type = 'button'; closeButton.textContent = '×'; closeButton.title = '关闭网页 ZIP';
+        closeButton.setAttribute('aria-label', '关闭网页 ZIP');
+        const frame = document.createElement('iframe');
+        frame.title = fileInfo.name || '网页 ZIP'; frame.src = url;
+        frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-modals allow-downloads allow-popups');
+        const close = () => { window.removeEventListener('keydown', onKeydown, true); frame.src = 'about:blank'; layer.remove(); };
+        const onKeydown = event => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
+        layer.closeWebZip = close; closeButton.onclick = close; window.addEventListener('keydown', onKeydown, true);
+        layer.append(frame, closeButton); document.body.append(layer);
+    } else {
+        const opened = window.open(url, '_blank');
+        if (!opened) throw new Error('浏览器阻止了新页面，请允许本站打开新窗口');
+    }
     getWebZipBlob(fileInfo, options.ownerDeviceId || options.sender || '').catch(error => historyLog('web-zip-background-cache-failed', { fileId:fileInfo.id, error:error.message }));
     return true;
 }
@@ -4742,6 +4764,7 @@ async function publishWebZipUpdate(file, draft) {
         creatorDeviceName: current.creatorDeviceName || state.deviceName,
         webZipEditors: Array.isArray(current.webZipEditors) ? current.webZipEditors : [],
         webZipHideFrame: draft.webZipHideFrame === true,
+        webZipFullscreen: draft.webZipFullscreen === true,
         webZipRootId: current.webZipRootId || current.id,
         webZipRevision: Math.max(0, Number(current.webZipRevision) || 0) + 1,
         replacesFileId: current.id,
@@ -7163,7 +7186,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
             contentHtml = `
                 <div class="message-bubble file-message" style="${opacity}">
                     <div class="file-message-main">
-                        <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}</div>
+                        <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}${webZipNewTabBadge(fileInfo)}</div>
                         <div class="file-info">
                             <div class="file-name">${escapeHtml(fileInfo.name)}</div>
                             <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
@@ -12134,7 +12157,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
             ? (type.startsWith('video/') ? '视频' : type.startsWith('audio/') ? '音频' : '不可预览')
             : (recoveryStage?.label || (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存'));
         thumb.innerHTML = `
-            <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
+            <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}${webZipNewTabBadge(fileInfo)}</div>
             <div class="collection-file-state">${escapeHtml(stateLabel)}</div>
         `;
         if (type.startsWith('video/')) thumb.insertAdjacentHTML('beforeend', renderMediaKindBadge('video'));
@@ -12589,7 +12612,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
         bubble.removeAttribute('onclick');
         bubble.style.opacity = '0.6';
         bubble.innerHTML = `
-            <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}</div>
+            <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}${webZipNewTabBadge(fileInfo)}</div>
             <div class="file-info">
                 <div class="file-name">${escapeHtml(fileInfo.name)}</div>
                 <div class="file-size">${formatFileSize(fileInfo.size)} (${escapeHtml(label)})</div>
@@ -13477,22 +13500,30 @@ async function getSessionResourceInventory() {
     });
 }
 
-async function readWebWorkshopResource(resource) {
+async function readWebWorkshopResource(resource, signal) {
     const readStored = async () => {
         let file = await materializeCachedFileRecord(await getFromStore('files', resource.id));
         if (file?.externalFileHandle) file = await materializeExternalFileRecord(file, { requestPermission:true });
-        const emptyFile = Number(resource.size) === 0 && file?.data && getBinaryDataSize(file.data) === 0 && !file.cacheCleared;
-        return hasCompleteFileCache(file, resource) || emptyFile ? file : null;
+        const actualSize = getBinaryDataSize(file?.data);
+        const expectedSize = Number(resource.size);
+        const completeBytes = file?.data && !file.cacheCleared && (expectedSize > 0 ? actualSize === expectedSize : actualSize > 0 || Number(file.size) === 0);
+        return completeBytes ? file : null;
     };
+    if (signal?.aborted) throw new DOMException('已取消导入', 'AbortError');
     let file = await readStored();
     if (!file) {
-        await restoreResourceCache({ ...resource, isServerAsset:Boolean(resource.serverAssetUrl) });
+        if (!resource.serverAssetUrl && !resource.telegramFileId && (resource.ownerDeviceId ? !state.devices.has(resource.ownerDeviceId) && resource.ownerDeviceId !== state.deviceId : !state.devices.size)) throw new Error(`来源设备不在线，无法导入“${resource.name}”`);
+        restoreResourceCache({ ...resource, isServerAsset:Boolean(resource.serverAssetUrl) }).catch(error => {
+            historyLog('web-workshop-resource-restore-failed', { resourceId:resource.id, error:error.message });
+        });
         const deadline = Date.now() + 90000;
         while (!file && Date.now() < deadline) {
+            if (signal?.aborted) throw new DOMException('已取消导入', 'AbortError');
             await new Promise(resolve => setTimeout(resolve, 350));
             file = await readStored();
         }
     }
+    if (signal?.aborted) throw new DOMException('已取消导入', 'AbortError');
     if (!file) throw new Error(`资源“${resource.name}”未能完整缓存到本设备`);
     const raw = file.data instanceof Blob ? await file.data.arrayBuffer() : file.data;
     return { id:resource.id, name:resource.name, type:resource.type, data:new Uint8Array(raw) };
@@ -13516,12 +13547,14 @@ async function chooseWebWorkshopResources() {
         const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
         const confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'primary'; confirm.textContent = '导入选中资源';
         actions.append(cancel, confirm); card.append(header, search, list, status, actions); layer.append(card); document.body.append(layer);
-        let busy = false, settled = false;
-        const finish = result => { if (busy || settled) return; settled = true; window.removeEventListener('keydown', onKeydown, true); layer.remove(); resolve(result); };
-        const onKeydown = event => { if (event.key === 'Escape') { event.preventDefault(); finish([]); } };
+        let settled = false;
+        const controller = new AbortController();
+        const finish = result => { if (settled) return; settled = true; window.removeEventListener('keydown', onKeydown, true); layer.remove(); resolve(result); };
+        const cancelImport = () => { controller.abort(); finish([]); };
+        const onKeydown = event => { if (event.key === 'Escape') { event.preventDefault(); cancelImport(); } };
         window.addEventListener('keydown', onKeydown, true);
-        closeButton.onclick = cancel.onclick = () => finish([]);
-        layer.onclick = event => { if (event.target === layer) finish([]); };
+        closeButton.onclick = cancel.onclick = cancelImport;
+        layer.onclick = event => { if (event.target === layer) cancelImport(); };
         const rows = resources.map(resource => {
             const row = document.createElement('label'); row.className = 'web-zip-resource-row';
             const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = resource.id;
@@ -13533,15 +13566,16 @@ async function chooseWebWorkshopResources() {
         confirm.onclick = async () => {
             const chosen = rows.filter(item => item.checkbox.checked).map(item => item.resource);
             if (!chosen.length) { status.textContent = '请先选择至少一个资源。'; return; }
-            busy = true; confirm.disabled = true; cancel.disabled = true; closeButton.disabled = true;
+            confirm.disabled = true;
             try {
                 const imported = [];
                 for (let index = 0; index < chosen.length; index++) {
+                    if (controller.signal.aborted) return;
                     status.textContent = `正在读取 ${index + 1}/${chosen.length}：${chosen[index].name}`;
-                    imported.push(await readWebWorkshopResource(chosen[index]));
+                    imported.push(await readWebWorkshopResource(chosen[index], controller.signal));
                 }
-                busy = false; finish(imported);
-            } catch (error) { status.textContent = error.message; busy = false; confirm.disabled = false; cancel.disabled = false; closeButton.disabled = false; }
+                finish(imported);
+            } catch (error) { if (!settled) { status.textContent = error.message; confirm.disabled = false; } }
         };
     });
 }

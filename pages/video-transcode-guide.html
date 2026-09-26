@@ -17,7 +17,7 @@
 }</pre><p>带 <code>when</code> 的对象是可选参数组：对应字段非空时才把 <code>values</code> 加入命令。因此“编码速度”选择“默认”时不会生成 <code>-preset</code>。</p>
 <h3>系统变量</h3><table><thead><tr><th>变量</th><th>值</th></tr></thead><tbody><tr><td><code>${INPUT_FILE}</code></td><td>当前步骤输入；第一步是上传源文件，后续步骤是上一步输出。</td></tr><tr><td><code>${ORIGINAL_INPUT_FILE}</code></td><td>始终指向最初上传的源文件。</td></tr><tr><td><code>${OUTPUT_FILE}</code></td><td>当前步骤由服务器分配的输出路径。</td></tr><tr><td><code>${BASENAME}</code></td><td>源文件名去除扩展名后的部分。</td></tr><tr><td><code>${EXT}</code></td><td>当前输出扩展名。</td></tr></tbody></table>
 <h2>多步骤方案</h2><p>在 <code>steps</code> 中按顺序放入多个对象即可。非最后步骤使用 MKV 中间容器，最后步骤使用 <code>output.extension</code>。每一步都必须明确读入和写出文件；任一步退出码非 0 或没有生成输出文件，整个任务失败，后续步骤不会执行。</p>
-<h2>output：结果文件</h2><pre>"output": { "extension": "mp4", "nameTemplate": "${BASENAME}-h265.${EXT}" }</pre><p>扩展名只允许系统白名单中的媒体格式。文件名模板可使用 <code>BASENAME</code> 和 <code>EXT</code>，非法文件名字符会由服务器替换。</p>
+<h2>output：结果文件</h2><pre>"output": { "extension": "mkv", "nameTemplate": "${BASENAME}-h265.${EXT}" }</pre><p>扩展名只允许系统白名单中的媒体格式。任务提交表单的“输出文件后缀”适用于内置与自定义方案，可覆盖方案的默认值，输出文件名也会同步使用所选后缀。HEVC/H.265 方案默认 MKV，AVC/H.264 方案默认 MP4；新建自定义方案时也可在 <code>output.extension</code> 指定默认值。文件名模板可使用 <code>BASENAME</code> 和 <code>EXT</code>，非法文件名字符会由服务器替换。</p>
 <h2>完整自定义示例</h2><pre>{
   "id": "h265-web",
   "name": "网页播放 H.265",

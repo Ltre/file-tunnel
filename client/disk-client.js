@@ -2,6 +2,8 @@
 // Browser transport for the standalone drive. The UI and integrations share jobs.
 (function () {
     const base = '/api/telegram/drive';
+    let collaborationId = '';
+    const baseUrl = () => collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
     const listeners = new Set();
     const localUploads = new Map();
     const uploadSession = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
@@ -39,7 +41,7 @@
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const response = await fetch(url.startsWith('/api/') ? url : base + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } });
+        const response = await fetch(url.startsWith('/api/') ? url : baseUrl() + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
         return data;
@@ -278,7 +280,7 @@
         // this HTTP response, so 0% is the only truthful value until headers
         // arrive and the browser-download half begins at 50%.
         setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
-        const response = await fetch(base + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
+        const response = await fetch(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
         const total = Math.max(0, Number(response.headers?.get('Content-Length')) || Number(item.size) || 0);
@@ -304,7 +306,7 @@
         query.set('v', String(item.updatedAt || item.size || 0));
         if (purpose) query.set('purpose', String(purpose));
         if (fresh) query.set('request', String(++streamSequence));
-        return base + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
+        return baseUrl() + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
     }
     async function readRange(item, start = 0, end = Number(item.size) - 1, { signal, purpose = 'metadata' } = {}) {
         const safeStart = Math.max(0, Number(start) || 0);
@@ -332,6 +334,7 @@
         return true;
     }
     window.DiskClient = { raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+        setCollaboration(id) { collaborationId = String(id || ''); stop(); start(); },
         setAudioCoverExtractor(extractor) { audioCoverExtractor = typeof extractor === 'function' ? extractor : null; },
         isCaching(id) { return pendingReads.has(id); },
         cacheProgress(id) { return cacheProgressByFile.get(id) || null; },

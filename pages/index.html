@@ -2464,6 +2464,9 @@
             border-top: 1px solid var(--panel-border);
             background: var(--surface-soft);
         }
+        #telegramDriveCollaborationManageBtn { position: absolute; right: 52px; top: 50%; z-index: 2; transform: translateY(-50%); max-width: 126px; padding: 7px 9px; font-size: .78rem; white-space: nowrap; }
+        .telegram-drive-bottom.disk-collaboration-active .telegram-drive-bottom-summary { padding-right: 190px; }
+        .telegram-drive-bottom.disk-collaboration-active .telegram-drive-selection { right: 182px !important; }
 
         .telegram-drive-bottom-summary {
             box-sizing: border-box;
@@ -2581,12 +2584,25 @@
         }
 
         .telegram-drive-item-icon {
+            position: relative;
             display: grid;
             height: 42px;
             place-items: center;
             color: var(--accent);
             font-size: 1.55rem;
         }
+        .disk-collaboration-badge { position: absolute; left: 0; bottom: -2px; display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; background: #239977; color: white; font-size: 12px; line-height: 1; box-shadow: 0 1px 3px #0005; }
+        .disk-collaboration-list { display: grid; gap: 10px; min-width: 0; }
+        .disk-collaboration-popover { position: fixed; z-index: 10020; width: min(460px, calc(100vw - 16px)); max-height: min(70dvh, 620px); overflow: auto; padding: 14px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel-bg); color: var(--text-main); box-shadow: 0 14px 40px #0004; backdrop-filter: blur(18px); }
+        .disk-collaboration-popover header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: 700; }
+        .disk-collaboration-popover header button { border: 0; background: transparent; color: inherit; font-size: 1.3rem; cursor: pointer; }
+        .disk-collaboration-list h4 { margin: 6px 0 0; }
+        .disk-collaboration-row { display: flex; align-items: center; gap: 7px; }
+        .disk-collaboration-row input { flex: 1; min-width: 0; }
+        .disk-collaboration-row .danger, .disk-collaboration-list .danger { color: #c53e49; }
+        .disk-collaboration-entry { padding: 10px; text-align: left; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel-bg); color: var(--text-main); cursor: pointer; }
+        .disk-collaboration-focus { outline: 3px solid #37c897; background: rgba(55, 200, 151, .25); animation: disk-collaboration-focus 3s ease-out; }
+        @keyframes disk-collaboration-focus { from { box-shadow: 0 0 0 8px #37c89788; } to { box-shadow: none; } }
 
         .telegram-drive-item-name {
             overflow: hidden;
@@ -4641,6 +4657,26 @@
             padding-top: calc(20px + var(--tunnel-topbar-height));
         }
 
+        @media (min-width: 1201px) {
+            #appShell.container:not([hidden]) {
+                display: flex;
+                flex-direction: column;
+                height: 100dvh;
+                max-height: 100dvh;
+                padding-top: calc(var(--tunnel-topbar-height) + 4px);
+                padding-bottom: 4px;
+                overflow: hidden;
+            }
+            #appShell > .main-layout { flex: 1; height: auto; min-height: 0; margin-top: 1px; }
+            #appShell .left-panel .panel-content.qr-section {
+                scrollbar-width: thin;
+                scrollbar-color: rgba(170, 181, 194, .4) transparent;
+            }
+            #appShell .left-panel .panel-content.qr-section::-webkit-scrollbar { width: 4px; }
+            #appShell .left-panel .panel-content.qr-section::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(170, 181, 194, .4); }
+            #appShell .media-control-btn { min-width: 0; padding: 10px 6px; justify-content: center; font-size: .82rem; white-space: nowrap; }
+        }
+
         .tunnel-topbar-action {
             position: relative;
             display: inline-flex;
@@ -5555,9 +5591,9 @@
                             <div class="contact-list" id="contactList"></div>
                         </div>
                         <div class="media-controls" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px;">
-                            <button class="btn btn-secondary" id="cameraBroadcastBtn" title="摄像头广播">摄像头</button>
-                            <button class="btn btn-secondary" id="voiceChatBtn" title="加入语音聊天">语音聊天</button>
-                            <button class="btn btn-secondary" id="globalIntercomBtn" title="向全部在线设备对讲">全局对讲</button>
+                            <button class="btn btn-secondary media-control-btn" id="cameraBroadcastBtn" title="摄像头广播">摄像头</button>
+                            <button class="btn btn-secondary media-control-btn" id="voiceChatBtn" title="加入语音聊天">语音聊天</button>
+                            <button class="btn btn-secondary media-control-btn" id="globalIntercomBtn" title="向全部在线设备对讲">全局对讲</button>
                         </div>
                         <div id="cameraStage" style="margin-top: 12px; display: none;">
                             <video id="cameraVideo" autoplay playsinline muted style="width: 100%; max-height: 240px; background: #111; object-fit: contain;"></video>
