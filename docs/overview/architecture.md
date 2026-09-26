@@ -1,6 +1,6 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
+> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
 > **文档更新时间**：`2026-09-26`
 > 本文描述当前实现事实，并补充可从历史 Prompt、Devlog 和 Git Log 追溯出的设计初衷。规划中的 SQLite WAL 网盘重构、S3 Compatible API 等必须与当前实现区分。
 
@@ -107,14 +107,18 @@ Socket 事件至少包括：
 - `server/disk-auth.js`
 - `server/disk-operations.js`
 - `server/disk-shares.js`
+- `server/disk-collaboration.js`
 - `server/disk-part-cache.js`
 - `client/disk-client.js`
+- `client/disk-collaboration.js`
 - `client/disk-ui.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-share.js`
 - `client/disk-management.js`
 
 这是独立于“隧道浏览器文件缓存”的服务器托管能力，底层实际文件实体主要在 Telegram，Node 维护逻辑索引、操作状态和临时缓存。
+
+当前还包含文件/目录级协同 capability：所有者可创建一次性邀请，把单文件或某个目录子树开放给指定成员；服务端在每次请求时重新校验 collaboration scope。它与隧道富文本的 `collaborativeEdit` 权限不是同一套机制。
 
 ### 3.4 网页工坊
 
@@ -215,6 +219,7 @@ Socket 事件至少包括：
 - `disk-auth.json`
 - `disk-operations.json`
 - `disk-shares.json`
+- `disk-collaborations.json`
 - `disk-spaces.json`
 - `disk-space-usage.json`
 - `telegram-chunk-file-ids.json`
