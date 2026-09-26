@@ -250,7 +250,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 ### 历史资料
 
 - `docs/devlog/dev-2608B-features.md`：Premium、format、metadata、Telegram；
-- `docs/devlog/dev-2608C-features.md` 16、24、30、32、33、39-41、46-48、52；
+- `docs/devlog/dev-2608C-features.md` 16、24、30、32、33、39-41、46-48；`docs/devlog/dev-2609-features.md` 52；
 - `prompts/ideas/ffmpeg-programs-design-260910.md`。
 
 ## 10. VClient

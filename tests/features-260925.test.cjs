@@ -46,7 +46,7 @@ test('树形目录支持合法多级子目录并拒绝歧义路径', () => {
     assert.equal(tools.newTreeEntryPath('root/', '一层/二层/三层', 'directory'), 'root/一层/二层/三层/');
     assert.throws(() => tools.newTreeEntryPath('root/', '一层//二层', 'directory'), /连续/);
     assert.throws(() => tools.newTreeEntryPath('root/', '../二层', 'directory'), /名称不能/);
-    assert.throws(() => tools.newTreeEntryPath('root/', '一层/文件.css', 'file'), /文件名/);
+    assert.equal(tools.newTreeEntryPath('root/', '一层/文件.css', 'file'), 'root/一层/文件.css');
     const entries = tools.normalizeEntries([{ path:'root/', type:'application/x-directory' }, { path:tools.newTreeEntryPath('root/', '一层/二层', 'directory'), type:'application/x-directory' }]);
     assert.ok(entries.some(item => item.path === 'root/一层/'));
 });
