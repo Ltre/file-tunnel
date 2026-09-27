@@ -9587,9 +9587,11 @@ io.on('connection', (socket) => {
                 broadcastRecipients: Math.max(session.devices.size - 1, 0)
             });
             
-            // 广播给会话中的其他设备
-            emitToReadableSessionDevices(session, 'message', { message }, currentDevice);
-            scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
+            // A late/replayed message must never revive a record already deleted.
+            if (historyResult.reason !== 'deleted-tombstone') {
+                emitToReadableSessionDevices(session, 'message', { message }, currentDevice);
+                scheduleSessionHistoryBroadcast(sessionId, 'message-broadcast');
+            }
             if (historyResult.stored && snsMetadata.sources.length) {
                 queueSnsMetadataScan(sessionId, message.id, snsText);
             }
@@ -9670,10 +9672,9 @@ io.on('connection', (socket) => {
             }
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
-            if (historyIndex < 0 && !infraStore?.get?.(
-                'SELECT 1 AS found FROM transfer_records WHERE session_id = ? AND message_id = ?',
-                [sessionId, messageId]
-            )) return;
+            // The sender may delete immediately while its record or audit write is still in flight.
+            // Keep a tombstone even when neither store has seen this id yet, so a late upload
+            // or history reconciliation cannot restore the deleted record.
             let fileId = null;
             let fileIds = [];
             let fileStillReferenced = false;
@@ -9711,7 +9712,7 @@ io.on('connection', (socket) => {
             });
             const auditDeletedAt = session.lastActivity;
             enqueueInfraAudit(
-                () => infraStore?.markHistoryDeleted?.(sessionId, messageId, auditDeletedAt),
+                () => infraStore?.markHistoryDeleted?.(sessionId, messageId, auditDeletedAt, { allowMissing: true }),
                 `history-delete:${sessionId}:${messageId}`
             );
         } catch (err) {

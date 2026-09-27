@@ -281,8 +281,10 @@ let pendingClipboardImageFiles = [];
 let clipboardImageAvailable = false;
 let clipboardImageSignature = '';
 let clipboardImageConsumedSignature = '';
+let clipboardImageConsumedSessionId = '';
 let clipboardImagePermissionStatus = null;
 let clipboardImageProbeRunning = false;
+let clipboardImageProbeQueuedSignature = '';
 let clipboardImageSendInProgress = false;
 let clipboardImageReadAllowed = false;
 let clipboardImagePermissionRequested = false;
@@ -4737,9 +4739,19 @@ function showWebZipEditDialog(fileInfo, context = {}) {
 }
 
 async function publishWebZipUpdate(file, draft) {
-    const message = await findCurrentSessionMessageByFileId(draft.sourceFileId);
-    if (!message) throw new Error('找不到需要更新的网页 ZIP 记录');
-    const current = message.type === 'file' ? message.fileInfo : getCollectionFiles(message).find(item => item.id === draft.sourceFileId);
+    const messages = await getCurrentSessionMessages();
+    const message = draft.sourceMessageId
+        ? messages.find(item => item.id === draft.sourceMessageId)
+        : messages.find(item => item.type === 'file' && item.fileInfo?.id === draft.sourceFileId) ||
+            messages.find(item => item.type === 'collection' && getCollectionFiles(item).some(fileInfo => fileInfo.id === draft.sourceFileId));
+    if (!message) throw new Error('原网页 ZIP 记录已不存在，请重新从传输记录导入草稿');
+    const sourceRootId = draft.sourceFileInfo?.webZipRootId || draft.sourceFileId;
+    const candidates = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? getCollectionFiles(message) : [];
+    const current = candidates.find(item => item && (
+        item.id === draft.sourceFileId ||
+        (sourceRootId && (item.webZipRootId === sourceRootId || item.id === sourceRootId))
+    ));
+    if (!current) throw new Error('原记录已换成其它文件，不能将此草稿覆盖到不相关的记录');
     if (!canEditWebZip(current)) throw new Error('当前设备没有该网页 ZIP 的编辑权限');
     const nextFileId = generateId();
     // The previous record describes the old physical ZIP. Carrying these
@@ -5147,7 +5159,7 @@ async function extractClipboardImageFiles(items, timestamp = Date.now()) {
         if (!type || typeof item.getType !== 'function') continue;
         try {
             const blob = await item.getType(type);
-            if (blob) files.push(createClipboardImageFile(blob, files.length, timestamp));
+            if (blob?.size > 0) files.push(createClipboardImageFile(blob, files.length, timestamp));
         } catch (_) {}
     }
     return files;
@@ -5157,7 +5169,7 @@ function extractPastedImageFiles(clipboardData, timestamp = Date.now()) {
     return Array.from(clipboardData?.items || [])
         .filter(item => item?.kind === 'file' && /^image\//i.test(item.type || ''))
         .map(item => item.getAsFile?.())
-        .filter(Boolean)
+        .filter(file => file?.size > 0)
         .map((file, index) => file.name
             ? file
             : createClipboardImageFile(file, index, timestamp));
@@ -5177,7 +5189,7 @@ function renderClipboardImagePasteArea() {
 }
 
 function setPendingClipboardImageFiles(files, options = {}) {
-    pendingClipboardImageFiles = Array.from(files || []).filter(file => /^image\//i.test(file?.type || ''));
+    pendingClipboardImageFiles = Array.from(files || []).filter(file => /^image\//i.test(file?.type || '') && file?.size > 0);
     clipboardImageAvailable = options.available === true || pendingClipboardImageFiles.length > 0;
     if (Object.prototype.hasOwnProperty.call(options, 'signature')) {
         clipboardImageSignature = String(options.signature || '');
@@ -5186,6 +5198,23 @@ function setPendingClipboardImageFiles(files, options = {}) {
     }
     renderClipboardImagePasteArea();
     return pendingClipboardImageFiles;
+}
+
+function getConsumedClipboardImageSignature() {
+    const sessionId = String(state.sessionId || '');
+    if (clipboardImageConsumedSessionId !== sessionId) {
+        clipboardImageConsumedSessionId = sessionId;
+        try { clipboardImageConsumedSignature = localStorage.getItem(`drop2tunnel.clipboard-image-consumed:${sessionId}`) || ''; }
+        catch (_) { clipboardImageConsumedSignature = ''; }
+    }
+    return clipboardImageConsumedSignature;
+}
+
+function rememberConsumedClipboardImageSignature(signature) {
+    clipboardImageConsumedSessionId = String(state.sessionId || '');
+    clipboardImageConsumedSignature = signature;
+    try { localStorage.setItem(`drop2tunnel.clipboard-image-consumed:${clipboardImageConsumedSessionId}`, signature); }
+    catch (_) {}
 }
 
 async function createClipboardImageFingerprint(files) {
@@ -5209,12 +5238,16 @@ function handleClipboardImageChange(event) {
     const hasImage = types.some(type => type.startsWith('image/'));
     const changeId = String(event?.changeId || ++clipboardImageChangeSequence);
     const signature = `change:${changeId}`;
-    setPendingClipboardImageFiles([], { available:hasImage, signature });
+    setPendingClipboardImageFiles([], { available:false, signature });
     historyLog('clipboard-images-detected', { count:hasImage ? 1 : 0, source:'clipboardchange' });
-    if (hasImage && clipboardImagePermissionStatus?.state === 'granted') {
-        refreshClipboardImageAvailability({ expectedSignature:signature, source:'clipboardchange' })
+    if (hasImage) {
+        if (clipboardImageProbeRunning) {
+            clipboardImageProbeQueuedSignature = signature;
+            return;
+        }
+        refreshClipboardImageAvailability({ allowPrompt:true, expectedSignature:signature, source:'clipboardchange' })
             .catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
-    }
+    } else clipboardImageProbeQueuedSignature = '';
 }
 
 async function getClipboardImagePermissionStatus() {
@@ -5224,6 +5257,7 @@ async function getClipboardImagePermissionStatus() {
         clipboardImagePermissionStatus = await navigator.permissions.query({ name:'clipboard-read' });
         const handlePermissionChange = () => {
             if (clipboardImagePermissionStatus?.state === 'granted') {
+                clipboardImagePermissionRetryAt = 0;
                 refreshClipboardImageAvailability().catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
             } else if (clipboardImagePermissionStatus?.state === 'denied') {
                 clipboardImageReadAllowed = false;
@@ -5241,23 +5275,25 @@ async function refreshClipboardImageAvailability(options = {}) {
     if (clipboardImageProbeRunning || !window.isSecureContext || typeof navigator.clipboard?.read !== 'function') {
         return pendingClipboardImageFiles;
     }
-    const permission = await getClipboardImagePermissionStatus();
+    if (!options.allowPrompt && Date.now() < clipboardImagePermissionRetryAt) return pendingClipboardImageFiles;
+    const permission = options.allowPrompt ? null : await getClipboardImagePermissionStatus();
     if (!options.allowPrompt && permission && permission.state !== 'granted' && !clipboardImageReadAllowed) return pendingClipboardImageFiles;
     if (!options.allowPrompt && !permission && !clipboardImageReadAllowed) return pendingClipboardImageFiles;
     clipboardImageProbeRunning = true;
+    const expectedSignature = options.expectedSignature || clipboardImageSignature;
     try {
         const items = await navigator.clipboard.read();
         const files = await extractClipboardImageFiles(items);
         const signature = await createClipboardImageFingerprint(files);
         clipboardImageReadAllowed = true;
-        if (options.expectedSignature && clipboardImageSignature !== options.expectedSignature) {
+        if (clipboardImageSignature !== expectedSignature) {
             return pendingClipboardImageFiles;
         }
-        const available = files.length > 0 && signature !== clipboardImageConsumedSignature;
+        const available = files.length > 0 && signature !== getConsumedClipboardImageSignature();
         return setPendingClipboardImageFiles(available ? files : [], { available, signature });
     } catch (err) {
         if (['NotAllowedError', 'SecurityError'].includes(err?.name)) {
-            clipboardImagePermissionRetryAt = Date.now() + 30_000;
+            clipboardImagePermissionRetryAt = Date.now() + 2_000;
         }
         if (!['NotAllowedError', 'SecurityError'].includes(err?.name)) {
             historyLog('clipboard-image-probe-failed', { name:err?.name || '', error:err?.message || String(err) });
@@ -5265,25 +5301,40 @@ async function refreshClipboardImageAvailability(options = {}) {
         return pendingClipboardImageFiles;
     } finally {
         clipboardImageProbeRunning = false;
+        const queuedSignature = clipboardImageProbeQueuedSignature;
+        clipboardImageProbeQueuedSignature = '';
+        if (queuedSignature && clipboardImageSignature === queuedSignature) {
+            refreshClipboardImageAvailability({ allowPrompt:true, expectedSignature:queuedSignature, source:'clipboardchange' })
+                .catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }));
+        }
     }
 }
 
 async function sendClipboardImagesToTunnel() {
     if (clipboardImageSendInProgress || !requireTunnelPermission('sendFile')) return;
-    let files = pendingClipboardImageFiles;
-    if (!files.length) files = await refreshClipboardImageAvailability({ allowPrompt:true });
-    if (!files.length) {
-        showAppToast('剪贴板中没有可发送的图片');
+    if (!state.sessionId || !state.socket?.connected) {
+        showAppToast('隧道尚未连接，无法发送粘贴图片');
         return;
     }
     clipboardImageSendInProgress = true;
     renderClipboardImagePasteArea();
     try {
+        let files = pendingClipboardImageFiles;
+        if (!files.length) files = await refreshClipboardImageAvailability({ allowPrompt:true });
+        files = Array.from(files || []).filter(file => /^image\//i.test(file?.type || '') && file?.size > 0);
+        if (!files.length) {
+            setPendingClipboardImageFiles([], { available:false, signature:'' });
+            showAppToast('剪贴板中没有有效图片');
+            return;
+        }
+        const sentSignature = await createClipboardImageFingerprint(files);
+        if (sentSignature === getConsumedClipboardImageSignature()) {
+            setPendingClipboardImageFiles([], { available:false, signature:sentSignature });
+            showAppToast('这张剪贴板图片已经发送过');
+            return;
+        }
         await sendSelectedFiles(files);
-        const sentSignature = clipboardImageSignature.startsWith('image:')
-            ? clipboardImageSignature
-            : await createClipboardImageFingerprint(files);
-        clipboardImageConsumedSignature = sentSignature;
+        rememberConsumedClipboardImageSignature(sentSignature);
         setPendingClipboardImageFiles([], { available:false, signature:sentSignature });
         historyLog('clipboard-images-sent', {
             count:files.length,
@@ -5324,14 +5375,14 @@ function initClipboardImagePaste() {
     }
     clipboardImageMonitorTimer = window.setInterval(refresh, CLIPBOARD_IMAGE_POLL_INTERVAL);
     const requestClipboardReadAfterActivation = event => {
-        if (event?.target?.closest?.('#pasteImageZone') || clipboardImagePermissionRequested || clipboardImageReadAllowed ||
+        if (event?.target?.closest?.('#pasteImageZone') || clipboardImagePermissionRequested || clipboardImageProbeRunning ||
             Date.now() < clipboardImagePermissionRetryAt) return;
         clipboardImagePermissionRequested = true;
         refreshClipboardImageAvailability({ allowPrompt:true, source:'user-activation' })
             .catch(err => historyLog('clipboard-image-probe-failed', { error:err.message }))
             .finally(() => { clipboardImagePermissionRequested = false; });
     };
-    document.addEventListener('pointerdown', requestClipboardReadAfterActivation, { passive:true });
+    document.addEventListener('click', requestClipboardReadAfterActivation, { passive:true });
     document.addEventListener('keydown', requestClipboardReadAfterActivation, { passive:true });
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
@@ -14397,6 +14448,7 @@ async function showResourceBrowser(options = {}) {
 }
 
 async function publishHistoryMessage(message, options = {}) {
+    if (!state.socket) throw new Error('隧道连接尚未建立，请稍后重试');
     if (!message.timestamp) message.timestamp = nextHistoryTimestamp();
     lastLocalHistoryTimestamp = Math.max(lastLocalHistoryTimestamp, Number(message.timestamp) || 0);
     await saveToStore('messages', {

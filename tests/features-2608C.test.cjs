@@ -65,7 +65,7 @@ test('audit ledger stays durable without putting synchronous persistence on the 
     assert.match(infra, /CREATE TABLE IF NOT EXISTS asset_transfer_events/);
     assert.match(infra, /INSERT OR IGNORE INTO tunnel_members/);
     assert.match(infra, /direct-file:/);
-    assert.match(infra, /if \(!existing\) return false/);
+    assert.match(infra, /if \(!existing && !allowMissing\) return false/);
     assert.doesNotMatch(infra, /'delete-tombstone'/);
     for (const field of [
         'active_device_count',
@@ -434,7 +434,7 @@ test('clipboard image paste area uses a two-thirds split and converts only image
     assert.match(files[0].name, /^粘贴图片-20260828-010203\.webp$/);
     assert.equal(context.extractPaste({ items:[
         { kind:'string', type:'text/plain', getAsFile:() => null },
-        { kind:'file', type:'image/png', getAsFile:() => ({ name:'截图.png', type:'image/png' }) }
+        { kind:'file', type:'image/png', getAsFile:() => ({ name:'截图.png', type:'image/png', size:4 }) }
     ] }).length, 1);
 
     const clipboardBlock = readBlock(app, 'function renderClipboardImagePasteArea()', 'function initClipboardImagePaste()');
@@ -446,15 +446,21 @@ test('clipboard image paste area uses a two-thirds split and converts only image
     };
     const composer = { classList:{ toggle(_name, active) { composer.ready = active; } }, ready:false };
     const sent = [];
+    const clipboardLogs = [];
+    const storedSignatures = new Map();
+    let clipboardBlob = new TestBlob(4, 'image/png');
     const clipboardContext = vm.createContext({
         crypto:require('node:crypto').webcrypto,
-        navigator:{},
+        navigator:{ clipboard:{ read:async () => [{ types:['image/png'], getType:async () => clipboardBlob }] } },
         window:{ isSecureContext:true },
         document:{ getElementById:id => id === 'pasteImageZone' ? zone : composer },
+        state:{ sessionId:'test-tunnel', socket:{ connected:true } },
+        localStorage:{ getItem:key => storedSignatures.get(key) || null, setItem:(key,value) => storedSignatures.set(key,value) },
+        extractClipboardImageFiles:context.extractItems,
         requireTunnelPermission:() => true,
         sendSelectedFiles:async filesToSend => { sent.push(...filesToSend); },
         showAppToast() {},
-        historyLog() {},
+        historyLog(...args) { clipboardLogs.push(args); },
         alert() {}
     });
     vm.runInContext(`
@@ -462,10 +468,13 @@ test('clipboard image paste area uses a two-thirds split and converts only image
         let clipboardImageAvailable = false;
         let clipboardImageSignature = '';
         let clipboardImageConsumedSignature = '';
+        let clipboardImageConsumedSessionId = '';
         let clipboardImagePermissionStatus = null;
         let clipboardImageProbeRunning = false;
+        let clipboardImageProbeQueuedSignature = '';
         let clipboardImageSendInProgress = false;
         let clipboardImageReadAllowed = false;
+        let clipboardImagePermissionRetryAt = 0;
         let clipboardImageChangeSequence = 0;
         ${clipboardBlock}
         this.handleChange = handleClipboardImageChange;
@@ -474,7 +483,8 @@ test('clipboard image paste area uses a two-thirds split and converts only image
         this.snapshot = () => ({ available:clipboardImageAvailable, pending:pendingClipboardImageFiles.length, consumed:clipboardImageConsumedSignature });
     `, clipboardContext);
     clipboardContext.handleChange({ types:['image/png'], changeId:'change-1' });
-    assert.equal(zone.hidden, false, 'clipboardchange must show the paste area without Ctrl+V');
+    await new Promise(setImmediate);
+    assert.equal(zone.hidden, false, `clipboardchange must show the paste area without Ctrl+V: ${JSON.stringify(clipboardLogs)}`);
     assert.equal(composer.ready, true);
     const imageBytes = Uint8Array.from([1, 2, 3, 4]);
     clipboardContext.setPending([{
@@ -486,7 +496,9 @@ test('clipboard image paste area uses a two-thirds split and converts only image
     assert.equal(zone.hidden, true, 'successful send must immediately hide the paste area');
     assert.deepEqual(clipboardContext.snapshot().pending, 0);
     assert.match(clipboardContext.snapshot().consumed, /^image:/);
+    clipboardBlob = new TestBlob(9, 'image/png');
     clipboardContext.handleChange({ types:['image/png'], changeId:'change-2' });
+    await new Promise(setImmediate);
     assert.equal(zone.hidden, false, 'a later clipboard image change must show the paste area again');
 });
 

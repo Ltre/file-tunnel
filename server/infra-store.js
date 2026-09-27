@@ -489,6 +489,9 @@ class InfraStore {
             'SELECT deleted_at FROM transfer_records WHERE session_id = ? AND message_id = ?',
             [sessionId, messageId]
         );
+        if (previous?.deleted_at) {
+            return { inserted: false, updated: false, fileCount: 0, totalFileSize: 0, reason: 'deleted-tombstone' };
+        }
         const files = extractTransferFiles(message, options.fileAssets).map(file => {
             if (file.name && file.type && file.size > 0) return file;
             const known = this.getFileAsset(sessionId, file.fileId);
@@ -579,19 +582,27 @@ class InfraStore {
         };
     }
 
-    markHistoryDeleted(sessionId, messageId, deletedAt = Date.now()) {
+    markHistoryDeleted(sessionId, messageId, deletedAt = Date.now(), { allowMissing = false } = {}) {
         if (!sessionId || !messageId) return false;
         const existing = this.get(
             'SELECT 1 AS found FROM transfer_records WHERE session_id = ? AND message_id = ?',
             [sessionId, messageId]
         );
-        // Do not let a forged delete create a record that never existed. Current
-        // messages are persisted before their delete event is accepted.
-        if (!existing) return false;
+        // Only the authenticated delete socket path may create a tombstone before
+        // the original message reaches the audit queue.
+        if (!existing && !allowMissing) return false;
         const when = normalizeTimestamp(deletedAt, Date.now());
         this.run('BEGIN');
         try {
             this.touchTunnelRow(sessionId, { createdAt: when, lastActivity: when });
+            if (!existing) {
+                this.run(`
+                    INSERT INTO transfer_records (
+                        session_id, message_id, message_type, sender_device_id, source,
+                        created_at, updated_at, payload_json, deleted_at
+                    ) VALUES (?, ?, 'unknown', '', 'delete-before-create', ?, ?, '{}', ?)
+                `, [sessionId, messageId, when, when, when]);
+            }
             this.run(`
                 UPDATE transfer_records
                 SET deleted_at = COALESCE(deleted_at, ?), updated_at = MAX(updated_at, ?)
