@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { pipeline } = require('stream/promises');
 const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 
 
@@ -30,23 +31,42 @@ function joinPath(...parts) {
     return normalizePath(parts.filter(Boolean).join('/'));
 }
 
-function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024 * 1024 }) {
-    const indexPath = path.join(dataDir, 'telegram-drive-index.json');
-    const directoriesPath = path.join(dataDir, 'telegram-drive-directories.json');
+function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace = '', maxFileSize = () => 2 * 1024 * 1024 * 1024 }) {
+    const repository = openDiskRepository(repositoryDir);
     const stagingRoot = path.join(dataDir, 'telegram-drive-staging');
     const records = new Map();
     const directories = new Map();
     const uploads = new Map();
     const recoveredUploads = [];
-    for (const item of readJson(indexPath, [])) if (item?.id && item?.ownerId) records.set(item.id, item);
-    {
-        for (const item of readJson(directoriesPath, [])) {
+    let fileState = repository.loadWithRevision('files', diskSpace);
+    let directoryState = repository.loadWithRevision('directories', diskSpace);
+    const restoreViews = () => {
+        records.clear();
+        directories.clear();
+        for (const item of fileState.items) if (item?.id && item?.ownerId) records.set(item.id, item);
+        for (const item of directoryState.items) {
             if (!item?.ownerId || !normalizePath(item.path)) continue;
             const safe = normalizePath(item.path);
             directories.set(`${item.ownerId}:${safe}`, { ...item, ownerId: String(item.ownerId), path: safe, updatedAt: Number(item.updatedAt) || Number(item.createdAt) || Date.now() });
         }
-    }
-    const persist = () => { writeJson(indexPath, [...records.values()]); writeJson(directoriesPath, [...directories.values()]); };
+    };
+    const reloadPersistence = () => {
+        fileState = repository.loadWithRevision('files', diskSpace);
+        directoryState = repository.loadWithRevision('directories', diskSpace);
+        restoreViews();
+    };
+    restoreViews();
+    const persist = () => {
+        try {
+            repository.replaceMany([
+                { table: 'files', scope: diskSpace, items: [...records.values()], keyOf: item => item.id, base: fileState.revisions },
+                { table: 'directories', scope: diskSpace, items: [...directories.values()], keyOf: item => `${item.ownerId}:${item.path}`, base: directoryState.revisions }
+            ]);
+        } catch (error) {
+            reloadPersistence();
+            throw error;
+        }
+    };
     const uploadManifestPath = job => path.join(job.dir, 'upload-manifest.json');
     const persistUpload = job => writeJson(uploadManifestPath(job), {
         version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
@@ -137,6 +157,7 @@ function createTelegramDriveStore({ dataDir, maxFileSize = () => 2 * 1024 * 1024
     for (const item of records.values()) if (item.folderPath) ensureDirectoryRecords(item.ownerId, item.folderPath, 20, Number(item.createdAt) || Date.now());
 
     const store = {
+        reloadPersistence,
         assertDirectoryWritable(ownerId, folderPath) { assertNoPendingTree(ownerId, folderPath); },
         createDirectory(ownerId, folderPath, maxDepth, sourceAppId = '') {
             const safe = normalizePath(folderPath);

@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { Transform, Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./telegram-drive');
-const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 const { createDiskShares } = require('./disk-shares');
 const { createDiskCollaborationStore } = require('./disk-collaboration');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
@@ -33,15 +33,24 @@ const uploadResultFile = item => item ? {
 } : null;
 function createDiskSpaces(dataDir, defaultStore) {
     const stores = new Map([['', defaultStore]]);
-    const manifest = path.join(dataDir, 'disk-spaces.json');
-    const spaces = readJson(manifest, []);
-    const usageFile = path.join(dataDir, 'disk-space-usage.json');
-    const usages = readJson(usageFile, []);
+    const repository = openDiskRepository(dataDir);
+    let spacesState = repository.loadWithRevision('spaces');
+    let usagesState = repository.loadWithRevision('space_usage');
+    const spaces = spacesState.items.map(item => item.name);
+    const usages = usagesState.items;
+    const saveUsages = () => {
+        try { repository.replaceMany([{ table:'space_usage', items:usages, keyOf:item => `${item.appId}:${item.userId}:${item.diskSpace}`, base:usagesState.revisions }]); }
+        catch (error) {
+            usagesState = repository.loadWithRevision('space_usage');
+            usages.splice(0, usages.length, ...usagesState.items);
+            throw error;
+        }
+    };
     const track = (appId, userId, diskSpace) => {
         const now = Date.now();
         let item = usages.find(entry => entry.appId === appId && entry.userId === userId && entry.diskSpace === diskSpace);
-        if (!item) { item = { appId, userId, diskSpace, createdAt: now, lastUsedAt: now }; usages.push(item); writeJson(usageFile, usages); }
-        else if (now - item.lastUsedAt > 60 * 60 * 1000) { item.lastUsedAt = now; writeJson(usageFile, usages); }
+        if (!item) { item = { appId, userId, diskSpace, createdAt: now, lastUsedAt: now }; usages.push(item); saveUsages(); }
+        else if (now - item.lastUsedAt > 60 * 60 * 1000) { item.lastUsedAt = now; saveUsages(); }
     };
     return {
         cleanup() { return [...stores.values()].flatMap(store => store.cleanup().map(job => ({ store, job }))); },
@@ -53,8 +62,17 @@ function createDiskSpaces(dataDir, defaultStore) {
             if (typeof value !== 'string' || value.length > 100 || /[\u0000-\u001f]/.test(value)) throw new Error('DISK_SPACE_INVALID');
             if (!stores.has(value)) {
                 const id = crypto.createHash('sha256').update(value).digest('hex');
-                stores.set(value, createTelegramDriveStore({ dataDir: path.join(dataDir, 'disk-spaces', id) }));
-                if (!spaces.includes(value)) { spaces.push(value); writeJson(manifest, spaces); }
+                stores.set(value, createTelegramDriveStore({ dataDir: path.join(dataDir, 'disk-spaces', id), repositoryDir: dataDir, diskSpace: value }));
+                if (!spaces.includes(value)) {
+                    spaces.push(value);
+                    try { repository.replaceMany([{ table:'spaces', items:spaces.map(name => ({ name })), keyOf:item => item.name, base:spacesState.revisions }]); }
+                    catch (error) {
+                        spacesState = repository.loadWithRevision('spaces');
+                        spaces.splice(0, spaces.length, ...spacesState.items.map(item => item.name));
+                        stores.delete(value);
+                        throw error;
+                    }
+                }
             }
             return stores.get(value);
         }
@@ -72,6 +90,7 @@ function errorStatus(code) {
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {} }) {
     const log = createDiskUploadLog(dataDir);
+    const persistence = openDiskRepository(dataDir);
     const partCache = createDiskPartCache({ dataDir });
     const chunkFileCache = createDiskChunkFileCache({ dataDir });
     const browser = express.Router();
@@ -656,12 +675,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.patch('/directories', wrap((req, res) => {
             jobResponse(req, res, 'move-directory', '正在修改目录', async update => {
                 update({ phase: 'index-write', message: '正在校验目录树并更新索引' });
-                const result = Object.hasOwn(req.body || {}, 'destinationPath')
-                    ? store(req).moveDirectory(owner(req), req.body.path, req.body.destinationPath, maxDepth(), req.body.name)
-                    : store(req).renameDirectory(owner(req), req.body.path, req.body.name, maxDepth());
-                const oldPath = normalizeTelegramDrivePath(req.body.path);
-                const newPath = normalizeTelegramDrivePath(result.path || result.directory?.path || '');
-                if (newPath && oldPath !== newPath) collaborations.relocateDirectory(owner(req), req.diskScope.diskSpace, oldPath, newPath);
+                const drive = store(req);
+                const result = persistence.atomic(() => {
+                    const moved = Object.hasOwn(req.body || {}, 'destinationPath')
+                        ? drive.moveDirectory(owner(req), req.body.path, req.body.destinationPath, maxDepth(), req.body.name)
+                        : drive.renameDirectory(owner(req), req.body.path, req.body.name, maxDepth());
+                    const oldPath = normalizeTelegramDrivePath(req.body.path);
+                    const newPath = normalizeTelegramDrivePath(moved.path || moved.directory?.path || '');
+                    if (newPath && oldPath !== newPath) collaborations.relocateDirectory(owner(req), req.diskScope.diskSpace, oldPath, newPath);
+                    return moved;
+                }, () => { drive.reloadPersistence(); collaborations.reloadPersistence(); });
                 return result;
             });
         }));
@@ -682,8 +705,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const originalPath = file.folderPath;
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
-                const modified = store(req).modifyFile(owner(req), file.id, req.body || {}, maxDepth());
-                if (modified.folderPath !== originalPath || modified.name !== originalName) collaborations.relocateFile(owner(req), req.diskScope.diskSpace, file.id, modified.folderPath, modified.name);
+                const drive = store(req);
+                const modified = persistence.atomic(() => {
+                    const changed = drive.modifyFile(owner(req), file.id, req.body || {}, maxDepth());
+                    if (changed.folderPath !== originalPath || changed.name !== originalName) collaborations.relocateFile(owner(req), req.diskScope.diskSpace, file.id, changed.folderPath, changed.name);
+                    return changed;
+                }, () => { drive.reloadPersistence(); collaborations.reloadPersistence(); });
                 if (Object.hasOwn(req.body || {}, 'name') && modified.name !== originalName) await syncCaptions(store(req), scope(req), [modified], update);
                 return publicFile(modified);
             });

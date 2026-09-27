@@ -118,7 +118,7 @@ test('Telegram 网盘保持独立存储、分区、album、修复与来电取消
     const app = ['app.js', 'client/disk-ui.js', 'client/disk-client.js'].map(file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')).join('\n');
     const api = fs.readFileSync(path.join(__dirname, '..', 'server/disk-api.js'), 'utf8');
     const tg = fs.readFileSync(path.join(__dirname, '..', 'pages', 'tgbot.html'), 'utf8');
-    assert.match(fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-drive.js'), 'utf8'), /telegram-drive-index\.json/);
+    assert.match(fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-drive.js'), 'utf8'), /repository\.replaceMany/);
     assert.match(fs.readFileSync(path.join(__dirname, '..', 'server', 'telegram-multipart.js'), 'utf8'), /sendMediaGroup/);
     assert.match(server, /getTelegramDriveUploadLimit/);
     assert.match(api, /router\.patch\('\/directories'/);

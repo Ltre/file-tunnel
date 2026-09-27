@@ -1,18 +1,22 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const { openDiskRepository } = require('./disk-repository');
 
 function createDiskCollaborationStore(dataDir) {
-    const file = path.join(dataDir, 'disk-collaborations.json');
-    let entries = [];
-    try { entries = JSON.parse(fs.readFileSync(file, 'utf8')); if (!Array.isArray(entries)) entries = []; } catch (_) {}
+    const repository = openDiskRepository(dataDir);
+    let state = repository.loadWithRevision('collaborations');
+    const entries = state.items;
+    const reloadPersistence = () => {
+        state = repository.loadWithRevision('collaborations');
+        entries.splice(0, entries.length, ...state.items);
+    };
     const save = () => {
-        fs.mkdirSync(path.dirname(file), { recursive:true });
-        const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-        fs.writeFileSync(temp, JSON.stringify(entries, null, 2));
-        fs.renameSync(temp, file);
+        try { repository.replaceMany([{ table:'collaborations', items:entries, keyOf:item => item.id, base:state.revisions }]); }
+        catch (error) {
+            reloadPersistence();
+            throw error;
+        }
     };
     const sameScope = (item, ownerId, diskSpace) => item.ownerId === String(ownerId) && item.diskSpace === String(diskSpace || '');
     const publicEntry = item => ({ id:item.id, ownerId:item.ownerId, diskSpace:item.diskSpace, kind:item.kind, path:item.path || '', fileId:item.fileId || '', name:item.name, members:item.members.slice(), invites:item.invites.map(invite => ({ id:invite.id, token:invite.token, createdAt:invite.createdAt })), createdAt:item.createdAt });
@@ -23,6 +27,7 @@ function createDiskCollaborationStore(dataDir) {
         return item;
     };
     return {
+        reloadPersistence,
         find,
         publicEntry,
         accessible(userId) { return entries.filter(item => item.active !== false && (item.ownerId === String(userId) || item.members.includes(String(userId)))).map(publicEntry); },

@@ -4796,9 +4796,10 @@ async function publishWebZipUpdate(file, draft) {
 }
 
 function focusPublishedWebZip(fileId) {
-    setTimeout(() => {
+    setTimeout(async () => {
         settleMobileWorkspaceView('chat');
         const messageId = recentlyPublishedWebZipMessages.get(fileId);
+        if (messageId) await focusTransferRecordById(messageId, { timeoutMs: 5000, behavior: 'smooth' });
         const target = (messageId && getMessageElement(messageId)) || document.querySelector(`.message[data-file-id="${CSS.escape(fileId)}"], [data-file-id="${CSS.escape(fileId)}"]`);
         if (target) scrollMessageInsideChat(target, 'smooth');
         target?.focus?.({ preventScroll:true });

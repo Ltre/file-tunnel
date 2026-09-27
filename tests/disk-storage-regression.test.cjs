@@ -6,6 +6,7 @@ const { Readable } = require('node:stream');
 const { createDiskTelegram } = require('../server/disk-telegram');
 const { createTelegramDriveStore } = require('../server/telegram-drive');
 const { createDiskAuth } = require('../server/disk-auth');
+const { openDiskRepository } = require('../server/disk-repository');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('../server/disk-limits');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const temp = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-storage-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
@@ -122,7 +123,8 @@ test('47 小时 57 分钟边界前直接删除；边界起逐条替换 1 Byte �
     assert.ok(calls.filter(c => c.method === 'editMessageMedia').every(c => c.body.media.media === 'placeholder-1' && c.body.media.caption === file.name + ' 已删除'));
     await make().remove(backend, { ...file, parts: file.parts.slice(1, 2) }); assert.equal(seeds, 1);
     await make().remove({ ...backend, token: 'another-bot' }, { ...file, parts: file.parts.slice(1, 2) }); assert.equal(seeds, 2);
-    assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(dataDir, 'tg-1byte-file.id')))).length, 2);
+    assert.equal(openDiskRepository(dataDir).load('placeholders').length, 2);
+    assert.equal(fs.existsSync(path.join(dataDir, 'tg-1byte-file.id')), false);
 });
 
 test('某片删除失败仍尝试其余片；修改备注覆盖全部片且忽略 not modified', async t => {

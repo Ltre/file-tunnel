@@ -13,6 +13,7 @@ const { createDiskAPI, createDiskSpaces } = require('../server/disk-api');
 const { createDiskOperations } = require('../server/disk-operations');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('../server/telegram-drive');
 const { createDiskTelegram } = require('../server/disk-telegram');
+const { openDiskRepository } = require('../server/disk-repository');
 const temp = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
 const json = body => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const hash = value => crypto.createHash('sha256').update(value).digest();
@@ -72,7 +73,7 @@ test('第三方令牌到期、撤销及 Bot 凭据加密持久化；非法配置
     const token = auth.issueToken(app, backend, { app_secret: 'test-secret-long-enough' });
     assert.equal(auth.access(token.access_token).storage.token, backend.token);
     assert.equal(auth.access(token.access_token).storage.channelId, backend.channelId);
-    const savedToken = JSON.parse(fs.readFileSync(path.join(dataDir, 'disk-auth.json'), 'utf8')).tokens[0];
+    const savedToken = openDiskRepository(dataDir).load('tokens')[0];
     assert.equal(savedToken.hash, crypto.createHash('sha256').update(token.access_token).digest('hex'));
     const encrypted = Buffer.from(savedToken.encryptedCredentials, 'base64');
     const decipher = crypto.createDecipheriv('aes-256-gcm', fs.readFileSync(path.join(dataDir, 'disk-secret.key')), encrypted.subarray(0, 12));
@@ -85,7 +86,8 @@ test('第三方令牌到期、撤销及 Bot 凭据加密持久化；非法配置
     assert.equal(restored.access(alternate.access_token).storage.channelId, '-1002');
     assert.equal(restored.access(token.access_token).storage.token, backend.token, '同应用的两个令牌必须分别解析自己的凭据');
     assert.equal(auth.backend(auth.access(token.access_token).backendId).token, backend.token);
-    assert.doesNotMatch(fs.readFileSync(path.join(dataDir, 'disk-auth.json'), 'utf8'), /super-private-token-test|test-secret-long-enough/);
+    assert.doesNotMatch(JSON.stringify(['users', 'apps', 'backends', 'tokens'].flatMap(table => openDiskRepository(dataDir).load(table))), /super-private-token-test|test-secret-long-enough/);
+    assert.equal(fs.existsSync(path.join(dataDir, 'disk-auth.json')), false);
     now = 2001; assert.throws(() => auth.access(token.access_token), /ACCESS_TOKEN_EXPIRED/);
     const fresh = auth.issueToken(app, backend);
     await auth.saveApp({ app_id: 'app1', enabled: false });

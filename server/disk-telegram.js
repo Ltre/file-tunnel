@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Readable } = require('stream');
 const { buildTelegramDocumentsMultipart } = require('./telegram-multipart');
-const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const DELETE_WINDOW_MS = (47 * 60 + 57) * 60 * 1000;
@@ -20,7 +20,7 @@ function diskThumbnailCaption(file, backend, context = {}) {
     return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);
 }
 function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now }) {
-    const placeholderPath = path.join(dataDir, 'tg-1byte-file.id');
+    const repository = openDiskRepository(dataDir);
     const placeholdersInFlight = new Map();
     const log = createDiskUploadLog(dataDir);
     async function call(backend, method, payload, init, retry = 0, trace = {}) {
@@ -102,19 +102,23 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         const key = crypto.createHash('sha256').update(backend.baseUrl + '\0' + backend.token).digest('hex');
         if (placeholdersInFlight.has(key)) return placeholdersInFlight.get(key);
         const pending = (async () => {
-            const saved = readJson(placeholderPath, {});
-            if (saved[key]?.file_id && !renew) return saved[key].file_id;
+            const saved = repository.load('placeholders').find(item => item.id === key);
+            if (saved?.fileId && !renew) return saved.fileId;
             fs.mkdirSync(dataDir, { recursive: true });
             const filePath = path.join(dataDir, 'tg-1byte-placeholder.bin');
             fs.writeFileSync(filePath, Buffer.from([0]));
             const multipart = buildTelegramDocumentsMultipart({ chatId: channelId, files: [{ path: filePath, name: 'deleted.bin', size: 1 }], disableContentTypeDetection: true });
             const result = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half', signal: AbortSignal.timeout(45000) });
             if (!result?.document?.file_id) throw new Error('TELEGRAM_UPLOAD_RESULT_INVALID');
-            const latest = readJson(placeholderPath, {});
-            latest[key] = { file_id: result.document.file_id };
-            writeJson(placeholderPath, latest);
-            await call(backend, 'deleteMessage', { chat_id: channelId, message_id: result.message_id }).catch(() => {});
-            return result.document.file_id;
+            try {
+                const state = repository.loadWithRevision('placeholders');
+                const entries = state.items.filter(item => item.id !== key);
+                entries.push({ id:key, fileId:result.document.file_id });
+                repository.replaceMany([{ table:'placeholders', items:entries, keyOf:item => item.id, base:state.revisions }]);
+                return result.document.file_id;
+            } finally {
+                await call(backend, 'deleteMessage', { chat_id: channelId, message_id: result.message_id }).catch(() => {});
+            }
         })();
         placeholdersInFlight.set(key, pending);
         try { return await pending; } finally { placeholdersInFlight.delete(key); }

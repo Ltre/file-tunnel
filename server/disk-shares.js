@@ -1,14 +1,21 @@
 'use strict';
 const crypto = require('crypto');
-const path = require('path');
-const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 const { normalizeTelegramDrivePath } = require('./telegram-drive');
 
 // Capability links expose a snapshot of selected IDs, never a user-supplied owner/path.
 function createDiskShares({ dataDir, now = Date.now }) {
-    const filename = path.join(dataDir, 'disk-shares.json');
-    const records = readJson(filename, []);
-    const save = () => writeJson(filename, records);
+    const repository = openDiskRepository(dataDir);
+    let state = repository.loadWithRevision('shares');
+    const records = state.items;
+    const reloadPersistence = () => {
+        state = repository.loadWithRevision('shares');
+        records.splice(0, records.length, ...state.items);
+    };
+    const save = () => {
+        try { repository.replaceMany([{ table:'shares', items:records, keyOf:item => item.id, base:state.revisions }]); }
+        catch (error) { reloadPersistence(); throw error; }
+    };
     const owns = (item, scope) => item.ownerId === scope.userId && item.diskSpace === scope.diskSpace;
     const view = item => ({ id: item.id, url: '/disk-share/' + item.token, title: item.title, createdAt: item.createdAt, stoppedAt: item.stoppedAt, fileCount: item.files.length, directoryCount: item.directories.length });
     return {

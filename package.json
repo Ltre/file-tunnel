@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "即时传输隧道 - 安全的设备间P2P文件传输和协同编辑",
   "main": "server.js",
+  "engines": {
+    "node": ">=24.15"
+  },
   "scripts": {
     "start": "node server.js",
     "vclient": "node vclient/index.js",

@@ -299,6 +299,7 @@ flowchart TD
 | 管理员 TOTP 和会话签名密钥 | `.tunnel-data` | 本机私有文件，需妥善备份和限制权限 |
 | Telegram Bot 配置与聊天绑定 | `.tunnel-data` | Token 不写入 `tunnel.config.json` |
 | Telegram 文件临时缓存和 `file_id` 元数据 | `.tunnel-data/telegram-assets` | 二进制按需下载并尽量在客户端取走后清理 |
+| Telegram 网盘账号、文件、分片与任务元数据 | `.tunnel-data/disk.sqlite` | SQLite WAL；上传暂存与分片缓存字节仍在文件系统 |
 | SNS Cookies | `.tunnel-data/*-cookies.txt` | 由 `/sns-cookies` 管理，用于 `yt-dlp` 访问 YouTube、TikTok、X 等平台 |
 | SNS 媒体临时下载 | `.tunnel-data/sns-media-work` | `yt-dlp` 下载过程中的临时输出，成功后登记为 server asset |
 | Socket.IO 中继数据 | 服务器进程 | 中继期间服务器会接触文件分块 |
@@ -315,7 +316,7 @@ flowchart TD
 
 ### 环境要求
 
-- Node.js 18 或更高版本；
+- Node.js 24.15 或更高版本（网盘使用内置 SQLite WAL 驱动）；
 - npm；
 - `yt-dlp`，用于解析和按需下载 SNS 媒体链接；
 - `yt-dlp-ejs`，用于解析和按需下载 SNS 媒体链接；
@@ -323,6 +324,21 @@ flowchart TD
 - `ffmpeg`，用于 `yt-dlp` 合并视频轨/音频轨、转封装和处理部分平台媒体；
 - 支持 WebSocket、WebRTC 和 IndexedDB 的现代浏览器；
 - PWA、文件句柄、摄像头和麦克风等完整能力需要 HTTPS，`localhost` 除外。
+
+旧网盘 JSON 可用离线脚本迁移到 SQLite。先停止 Node 服务，在项目根目录执行：
+
+```bash
+node tools/migrate-tgdisk-json-to-sqlite.cjs --data-dir .tunnel-data
+node tools/migrate-tgdisk-json-to-sqlite.cjs --data-dir .tunnel-data --apply
+```
+
+第一条命令在系统临时目录中复制目标库并完整试跑导入，不修改正式数据库；临时目录需有足够空间容纳一份网盘 SQLite。若系统临时盘空间不足，两条命令都可附加 `--scratch-dir /path/to/large/temp`，指定已有且空间充足的临时目录。先查看输出中的 `missing`、`warnings` 和每表 `added`、`updated`、`retainedExisting` 数量，确认符合旧环境实际情况，再执行带 `--apply` 的导入。
+
+脚本处理默认分区与 `disk-spaces.json` 列出的命名分区，以及账号、分片、目录、用量、分享、任务、协同、缓存归属和 Telegram 占位文件 ID。它会把旧 JSON、`disk-secret.key` 和导入前的 SQLite 在线快照备份到 `.tunnel-data/migration-backups/json-to-sqlite-*`，不会删除旧文件。目标库已有不同标识的记录会保留；对于登录提供方和 Telegram 身份完全相同、但新旧用户 ID 不同的账号，会保留 SQLite 中的账号，并将旧文件、分享、任务、协同成员等引用映射到该账号。分片内容哈希和大小相同但 Telegram `file_id` 不同的去重缓存会保留 SQLite 当前映射，同时导入旧库独有映射；复用前运行时仍会向 Telegram 验证 `file_id`。重叠的分区使用时间会合并为最早创建时间和最晚使用时间。其它同一标识内容冲突、SQL 约束冲突或导入核对失败会报错，整批导入回滚。若旧认证数据存在，必须保留与旧 `disk-auth.json` 配套的 `disk-secret.key`，否则旧登录数据无法恢复。
+
+成功后可再次运行第一条命令，预期 `changed: false`；核对网盘账号、文件分片和协同内容后再启动 Node 服务。仍应另行保留整份 `.tunnel-data` 的离线备份，尤其是上传暂存与分片缓存字节。停服是必须的，脚本无法保证运行中的其它进程不会持有过期内存视图。
+
+部署更新后需运行 `npm ci` 并重启 Node 服务。运行中的网盘数据库应使用 SQLite 在线备份，不能只复制 `disk.sqlite` 而遗漏尚未 checkpoint 的 WAL 数据；`disk-secret.key` 也需随网盘身份数据一并保管。
 
 ### 获取代码
 

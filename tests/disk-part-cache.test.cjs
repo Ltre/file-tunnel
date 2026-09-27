@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createDiskPartCache } = require('../server/disk-part-cache');
+const { openDiskRepository } = require('../server/disk-repository');
 
 async function collect(stream) {
     const chunks = [];
@@ -31,6 +32,27 @@ test('服务端临时缓存按用户、分区及全部范围清理，重启后�
     await collect(await restarted.open({ key: 'last', size: 3, source: async () => require('node:stream').Readable.from(['abc']) }));
     assert.equal((await restarted.clear()).removedFiles, 1); assert.equal((await restarted.overview()).bytes, 0);
     assert.equal(fs.readFileSync(outside, 'utf8'), 'original'); assert.ok(fs.existsSync(path.join(dataDir, 'telegram-part-cache', '.schema')));
+});
+
+test('清理单用户缓存不删除另一用户共享的物理分片，修剪时移除孤儿归属', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-cache-shared-'));
+    t.after(() => fs.rmSync(dataDir, { recursive:true, force:true }));
+    const cache = createDiskPartCache({ dataDir });
+    const source = () => require('node:stream').Readable.from(['abc']);
+    await collect(await cache.open({ key:'shared', size:3, source, owner:{ userId:'alice', diskSpace:'' } }));
+    await collect(await cache.open({ key:'shared', size:3, source, owner:{ userId:'bob', diskSpace:'' } }));
+    const cleared = await cache.clear({ scope:'user', userId:'alice' });
+    assert.equal(cleared.removedFiles, 0);
+    assert.equal((await cache.overview({ scope:'user', userId:'alice' })).files, 0);
+    assert.equal((await cache.overview({ scope:'user', userId:'bob' })).files, 1);
+    const repository = openDiskRepository(dataDir);
+    const orphan = { id:'f'.repeat(64), scopes:[{ userId:'orphan', diskSpace:'' }] };
+    const current = repository.loadWithRevision('cache_owners');
+    repository.replaceMany([{ table:'cache_owners', items:[...current.items, orphan], keyOf:item => item.id, base:current.revisions }]);
+    const restarted = createDiskPartCache({ dataDir });
+    await restarted.prune();
+    assert.equal(repository.load('cache_owners').some(item => item.id === orphan.id), false);
+    assert.equal((await restarted.clear({ scope:'user', userId:'bob' })).removedFiles, 1);
 });
 
 test('清理会跳过正在共享读取的临时分片，完成后可清理；旧无索引缓存按关联键匹配', async t => {

@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { once } = require('events');
 const { Readable } = require('stream');
+const { openDiskRepository } = require('./disk-repository');
 
 const CACHE_SCHEMA = '2';
 
@@ -26,20 +27,30 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         for (const entry of fs.readdirSync(root, { withFileTypes: true })) if (entry.isFile() && entry.name.endsWith('.tmp')) fs.rmSync(path.join(root, entry.name), { force: true });
     }
     const digest = key => crypto.createHash('sha256').update(String(key)).digest('hex');
-    const ownerIndexPath = path.join(root, '.owners.json');
-    let owners = {};
-    try { owners = JSON.parse(fs.readFileSync(ownerIndexPath, 'utf8')); } catch (_) {}
-    const saveOwners = () => { fs.writeFileSync(ownerIndexPath + '.tmp', JSON.stringify(owners)); fs.renameSync(ownerIndexPath + '.tmp', ownerIndexPath); };
+    const repository = openDiskRepository(dataDir);
+    let ownerState = repository.loadWithRevision('cache_owners');
+    const owners = Object.fromEntries(ownerState.items.map(item => [item.id, item.scopes]));
+    const saveOwners = () => {
+        try { repository.replaceMany([{ table:'cache_owners', items:Object.entries(owners).map(([id, scopes]) => ({ id, scopes })), keyOf:item => item.id, base:ownerState.revisions }]); }
+        catch (error) {
+            ownerState = repository.loadWithRevision('cache_owners');
+            for (const id of Object.keys(owners)) delete owners[id];
+            Object.assign(owners, Object.fromEntries(ownerState.items.map(item => [item.id, item.scopes])));
+            throw error;
+        }
+    };
     function registerOwner(key, owner) {
         if (!owner?.userId) return;
         const id = digest(key), scope = { userId: String(owner.userId), diskSpace: String(owner.diskSpace || '') };
         const scopes = owners[id] || [];
         if (!scopes.some(item => item.userId === scope.userId && item.diskSpace === scope.diskSpace)) { owners[id] = [...scopes, scope]; saveOwners(); }
     }
+    const matchesScope = (owner, scope, userId, diskSpace) =>
+        (scope === 'partition' || owner.userId === userId) && (scope === 'user' || owner.diskSpace === diskSpace);
     function selectedIds(scope, userId, diskSpace, entries, legacyKeys) {
         if (scope === 'all') return null;
         const selected = new Set(Object.entries(owners).filter(([, scopes]) => scopes.some(owner =>
-            (scope === 'partition' || owner.userId === userId) && (scope === 'user' || owner.diskSpace === diskSpace))).map(([id]) => id));
+            matchesScope(owner, scope, userId, diskSpace))).map(([id]) => id));
         const available = new Set(entries.filter(item => item.isFile() && /^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)).map(item => item.name.slice(0, 64)));
         if (available.size) for (const key of legacyKeys || []) { const id = digest(key); if (available.has(id)) selected.add(id); }
         return selected;
@@ -53,6 +64,10 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
             const id = item.name.slice(0, 64);
             if (selected && !selected.has(id)) continue;
             if (inflight.has(id) || preparing.has(id) || readers.has(id)) { busyFiles++; continue; }
+            if (scope !== 'all' && owners[id]?.length) {
+                const remaining = owners[id].filter(owner => !matchesScope(owner, scope, userId, diskSpace));
+                if (remaining.length) { owners[id] = remaining; continue; }
+            }
             const target = path.join(root, item.name);
             try { const stat = await fsp.stat(target); await fsp.unlink(target); removedFiles++; removedBytes += stat.size; delete owners[id]; }
             catch (error) { if (error.code !== 'ENOENT') failedFiles++; }
@@ -86,6 +101,12 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
             if (!inflight.has(id) && !readers.has(id) && (now - row.stat.mtimeMs > ttlMs || total > maxBytes)) {
                 await fsp.unlink(row.path).catch(() => {}); delete owners[id];
             }
+        }
+        const available = new Set((await fsp.readdir(root, { withFileTypes: true }))
+            .filter(item => item.isFile() && /^[a-f0-9]{64}\.(?:part|tmp)$/.test(item.name))
+            .map(item => item.name.slice(0, 64)));
+        for (const id of Object.keys(owners)) {
+            if (!available.has(id) && !inflight.has(id) && !preparing.has(id) && !readers.has(id)) delete owners[id];
         }
         saveOwners();
     }

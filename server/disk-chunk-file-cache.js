@@ -1,15 +1,21 @@
 'use strict';
 const crypto = require('crypto');
-const path = require('path');
-const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 
 function createDiskChunkFileCache({ dataDir }) {
-    const file = path.join(dataDir, 'telegram-chunk-file-ids.json');
-    let data = readJson(file, { version: 1, entries: {} });
-    if (!data || data.version !== 1 || typeof data.entries !== 'object') data = { version: 1, entries: {} };
+    const repository = openDiskRepository(dataDir);
+    let state = repository.loadWithRevision('chunk_ids');
+    const data = { entries: Object.fromEntries(state.items.map(item => [item.key, item.value])) };
     const backendKey = backend => crypto.createHash('sha256').update(String(backend?.baseUrl || 'https://api.telegram.org') + '\0' + String(backend?.token || '')).digest('hex');
     const key = (backend, part) => `${backendKey(backend)}:${String(part?.sha256 || '')}:${Number(part?.size) || 0}`;
-    const persist = () => writeJson(file, data);
+    const persist = () => {
+        try { repository.replaceMany([{ table:'chunk_ids', items:Object.entries(data.entries).map(([key, value]) => ({ key, value })), keyOf:item => item.key, base:state.revisions }]); }
+        catch (error) {
+            state = repository.loadWithRevision('chunk_ids');
+            data.entries = Object.fromEntries(state.items.map(item => [item.key, item.value]));
+            throw error;
+        }
+    };
     return {
         get(backend, part) {
             if (!/^[a-f0-9]{64}$/.test(String(part?.sha256 || ''))) return null;

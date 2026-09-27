@@ -32,7 +32,7 @@ test('最小化期间发布仍保持隐藏；旧草稿来源关联走更新路�
     const calls = [];
     const draft = { id:'draft-1', name:'我的网页', sourceMessageId:'message-1', sourceFileId:'old-file' };
     const context = vm.createContext({
-        clearTimeout() {}, saveTimer:null, editorSession:null, minimized:true,
+        clearTimeout() {}, saveTimer:null, editorSession:null, presentationMode:'minimized',
         commitEditorBuffer() {}, updatePackageManifest() {}, setEditorSaveStatus() {},
         flushEditorDraft:async () => ({ archive:new Uint8Array([1]) }),
         safeName:name => name,
@@ -51,7 +51,7 @@ test('最小化期间发布仍保持隐藏；旧草稿来源关联走更新路�
     assert.ok(calls.includes('update:message-1'));
     assert.ok(calls.includes('home'));
     assert.ok(!calls.includes('new') && !calls.includes('close'));
-    assert.equal(context.minimized, true);
+    assert.equal(context.presentationMode, 'minimized');
 });
 
 test('网页 ZIP 更新按消息与版本根标识定位当前文件，拒绝无关替换', async () => {

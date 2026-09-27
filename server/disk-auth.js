@@ -2,7 +2,8 @@
 const crypto = require('crypto');
 const path = require('path');
 const { promisify } = require('util');
-const { readJson, writeJson, loadKey } = require('./disk-data');
+const { loadKey } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 const scrypt = promisify(crypto.scrypt);
 const digest = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 async function hashSecret(value) {
@@ -21,10 +22,30 @@ function validUsername(value) {
     return name;
 }
 function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn = () => import('@simplewebauthn/server') }) {
-    const file = path.join(dataDir, 'disk-auth.json');
     const key = loadKey(path.join(dataDir, 'disk-secret.key'));
-    const data = readJson(file, { users: [], apps: [], backends: [], tokens: [] });
-    const save = () => writeJson(file, data);
+    const repository = openDiskRepository(dataDir);
+    const tables = ['users', 'apps', 'backends', 'tokens'];
+    const states = Object.fromEntries(tables.map(table => [table, repository.loadWithRevision(table)]));
+    const data = Object.fromEntries(tables.map(table => [table, states[table].items]));
+    const reloadPersistence = () => {
+        for (const table of tables) {
+            states[table] = repository.loadWithRevision(table);
+            data[table] = states[table].items;
+        }
+    };
+    const save = () => {
+        try {
+            repository.replaceMany([
+                { table: 'users', items: data.users, keyOf: item => item.id, base: states.users.revisions },
+                { table: 'apps', items: data.apps, keyOf: item => item.app_id, base: states.apps.revisions },
+                { table: 'backends', items: data.backends, keyOf: item => item.id, base: states.backends.revisions },
+                { table: 'tokens', items: data.tokens, keyOf: item => item.hash, base: states.tokens.revisions }
+            ]);
+        } catch (error) {
+            reloadPersistence();
+            throw error;
+        }
+    };
     const pending = new Map();
     let webauthnPromise = null;
     async function passkeyMethods() {

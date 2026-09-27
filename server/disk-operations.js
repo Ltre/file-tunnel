@@ -1,10 +1,15 @@
 'use strict';
 const crypto = require('crypto');
-const path = require('path');
-const { readJson, writeJson } = require('./disk-data');
+const { openDiskRepository } = require('./disk-repository');
 function createDiskOperations({ dataDir, now = Date.now }) {
-    const file = path.join(dataDir, 'disk-operations.json');
-    const jobs = new Map(readJson(file, []).map(item => [item.operation_id, item]));
+    const repository = openDiskRepository(dataDir);
+    let state = repository.loadWithRevision('operations');
+    const jobs = new Map(state.items.map(item => [item.operation_id, item]));
+    const reloadPersistence = () => {
+        state = repository.loadWithRevision('operations');
+        jobs.clear();
+        for (const item of state.items) jobs.set(item.operation_id, item);
+    };
     const executing = new Set();
     const cancelHandlers = new Map();
     let timer;
@@ -13,7 +18,8 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         clearTimeout(timer); timer = null;
         const sorted = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
         const retained = sorted.filter((job, index) => !terminal(job) || index < 1000);
-        writeJson(file, retained);
+        try { repository.replaceMany([{ table:'operations', items:retained, keyOf:item => item.operation_id, base:state.revisions }]); }
+        catch (error) { reloadPersistence(); throw error; }
         const ids = new Set(retained.map(job => job.operation_id));
         for (const id of jobs.keys()) if (!ids.has(id)) jobs.delete(id);
     }
@@ -45,7 +51,13 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             if (job.status === 'running' && !job.startedAt) job.startedAt = now();
             if (terminal(job)) job.finishedAt = now();
             if (immediate || terminal(job)) save();
-            else if (!timer) { timer = setTimeout(save, 500); timer.unref?.(); }
+            else if (!timer) {
+                timer = setTimeout(() => {
+                    try { save(); }
+                    catch (error) { console.warn('[disk-operations] 后台进度持久化失败', error?.message || String(error)); }
+                }, 500);
+                timer.unref?.();
+            }
             return view(job);
         },
         complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result }, true); },
