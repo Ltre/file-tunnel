@@ -467,7 +467,7 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
     }
     async function createDestination(path) {
         const response = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path }));
-        const result = response.operation_id ? await window.DiskClient.wait(response.operation_id) : response;
+        const result = response.status === 'completed' ? response.result : response.operation_id ? await window.DiskClient.wait(response.operation_id) : response;
         onCreateDirectory?.(result.path);
         pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
     }
@@ -1013,7 +1013,7 @@ async function createTelegramDriveFolder(parent = telegramDrivePath) {
     if (!name) return;
     await telegramDriveRequest('/api/telegram/drive/directories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: [parent, name].filter(Boolean).join('/') }) });
     showAppToast('文件夹已创建');
-    await renderTelegramDrive();
+    await refreshTelegramDriveContents();
 }
 
 async function logoutTelegramDrive() {
@@ -1029,7 +1029,18 @@ async function logoutTelegramDrive() {
     showAppToast('已退出网盘账号');
 }
 
-async function renderTelegramDrive({ silentIdentity = false } = {}) {
+async function renderTelegramDrive({ silentIdentity = false, contentsOnly = false } = {}) {
+    // A directory listing already authenticates the request on the server. Do
+    // not serialize every navigation behind another /me request and login UI.
+    if (contentsOnly && telegramDriveCurrentData) {
+        const expectedGeneration = telegramDriveRenderGeneration + 1;
+        try { return await refreshTelegramDriveContents(); }
+        catch (error) {
+            if (expectedGeneration !== telegramDriveRenderGeneration) return;
+            if (error.message !== 'LOGIN_REQUIRED') throw error;
+            telegramDriveCurrentData = null;
+        }
+    }
     const generation = ++telegramDriveRenderGeneration;
     const requestedPath = telegramDrivePath;
     const retainedSearchData = isTelegramDriveGlobalSearchActive() ? telegramDriveSearchData : null;
@@ -1094,8 +1105,18 @@ async function refreshTelegramDriveContents() {
     const generation = ++telegramDriveRenderGeneration, requestedPath = telegramDrivePath;
     const data = await window.DiskClient.raw('/list?path=' + encodeURIComponent(requestedPath));
     if (generation !== telegramDriveRenderGeneration || requestedPath !== telegramDrivePath) return;
+    // Another tab may have switched accounts. Refresh the account controls only
+    // on an actual identity change, rather than before every directory read.
+    if (data.user_id && telegramDriveCurrentData.user_id && data.user_id !== telegramDriveCurrentData.user_id) {
+        telegramDriveCurrentData = null;
+        return renderTelegramDrive();
+    }
     telegramDriveCurrentData = data;
+    telegramDrivePath = data.path || requestedPath;
+    telegramDriveContentStale = false;
+    renderTelegramDriveBreadcrumbs(data);
     renderTelegramDriveItems();
+    updateTelegramDriveSelectionBar();
     refreshDiskCollaborations().catch(() => {});
     scheduleTelegramDriveSearch();
 }
@@ -1108,7 +1129,7 @@ async function navigateTelegramDrive(path, { fromHistory = false, deferRender = 
     clearTelegramDriveSelection();
     if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession }, '', location.href);
     if (deferRender) { telegramDriveCurrentData = null; telegramDriveContentStale = true; }
-    else await renderTelegramDrive();
+    else await renderTelegramDrive({ contentsOnly: true });
 }
 
 async function revealTelegramDriveUploadedDirectory(path, navigationVersion) {

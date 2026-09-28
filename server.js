@@ -2383,15 +2383,6 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
 });
 
 app.post('/api/telegram/drive/logout', (req, res) => { res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`); res.json({ ok: true }); });
-app.get('/api/telegram/drive/me', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    const identity = getTelegramDriveIdentity(req);
-    const oidcMode = getTelegramOidcLoginMode(req);
-    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
-});
-
 const diskAPI = createDiskAPI({
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
     operations: diskOperations, telegram: diskTelegram,
@@ -2408,6 +2399,14 @@ const diskAPI = createDiskAPI({
         config.driveChannels = (config.driveChannels || []).map(item => item.id === channelId ? { ...item, usedAt: Date.now() } : item);
         saveTelegramBotConfig(config);
     }
+});
+app.get('/api/telegram/drive/me', diskAPI.metadataTiming, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    const identity = getTelegramDriveIdentity(req);
+    const oidcMode = getTelegramOidcLoginMode(req);
+    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
 });
 const { createS3Gateway } = require('./server/s3');
 const s3Gateway = createS3Gateway({ dataDir: SERVER_DATA_DIR, objectStorage: diskAPI.objectStorage });

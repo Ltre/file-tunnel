@@ -149,7 +149,7 @@ async function collect(options) {
     const logs = rawRows.filter(entry => { const key = JSON.stringify(entry); if (seen.has(key)) return false; seen.add(key); return true; })
         .sort((a, b) => Date.parse(a.time) - Date.parse(b.time)).map(redact);
     const referenced = new Set(logs.map(entry => entry.operationId).filter(Boolean));
-    const operations = stored.items.filter(job => job?.type === 'upload' && (targeted
+    const operations = stored.items.filter(job => job?.operation_id && (targeted
         ? uploadIds.has(job.uploadId) || operationIds.has(job.operation_id)
         : referenced.has(job.operation_id) || ['createdAt', 'startedAt', 'updatedAt', 'finishedAt'].some(key => job[key] && inWindow(job[key]))))
         .map(job => redact(Object.fromEntries(Object.entries(job).filter(([key]) => operationFields.has(key)))));

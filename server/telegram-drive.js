@@ -57,10 +57,10 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         restoreViews();
     };
     restoreViews();
-    const persist = () => {
+    const persist = (directoriesOnly = false) => {
         try {
             repository.replaceMany([
-                { table: 'files', scope: diskSpace, items: [...records.values()], keyOf: item => item.id, base: fileState.revisions },
+                ...(!directoriesOnly ? [{ table: 'files', scope: diskSpace, items: [...records.values()], keyOf: item => item.id, base: fileState.revisions }] : []),
                 { table: 'directories', scope: diskSpace, items: [...directories.values()], keyOf: item => `${item.ownerId}:${item.path}`, base: directoryState.revisions }
             ]);
         } catch (error) {
@@ -221,7 +221,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             const result = ensureDirectoryRecords(ownerId, safe, maxDepth);
             if (sourceAppId && result.path) result.sourceAppId ||= String(sourceAppId);
             touchDirectory(ownerId, parentPath(safe));
-            persist();
+            persist(true);
             return result;
         },
         setFolderMarker(ownerId, folderPath, metadata = {}, maxDepth = 20) {
@@ -255,18 +255,32 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             const owner = String(ownerId);
             const safe = normalizePath(folderPath);
             const prefix = safe ? `${safe}/` : '';
-            const childPaths = new Set();
+            const children = new Map();
             for (const item of ownerDirectories(owner)) {
                 if (!item.path.startsWith(prefix)) continue;
                 const child = item.path.slice(prefix.length).split('/')[0];
-                if (child) childPaths.add(joinPath(safe, child));
+                if (!child) continue;
+                const childPath = joinPath(safe, child);
+                if (!children.has(childPath)) {
+                    const directory = directories.get(directoryKey(owner, childPath));
+                    children.set(childPath, { kind: 'directory', name: child, path: childPath, createdAt: Number(directory?.createdAt) || 0, updatedAt: Number(directory?.updatedAt) || 0, reviewStatus: directory?.reviewStatus || 'active', reviewUpdatedAt: Number(directory?.reviewUpdatedAt) || 0, folderCount: 0, fileCount: 0, size: 0 });
+                }
+                if (item.path !== childPath) children.get(childPath).folderCount++;
             }
-            const folders = [...childPaths].map(childPath => {
-                const item = directories.get(directoryKey(owner, childPath));
-                const snapshot = directorySnapshot(owner, childPath);
-                return { kind: 'directory', name: baseName(childPath), path: childPath, createdAt: Number(item?.createdAt) || 0, updatedAt: snapshot.updatedAt, reviewStatus: item?.reviewStatus || 'active', reviewUpdatedAt: Number(item?.reviewUpdatedAt) || 0, folderCount: snapshot.folderCount, fileCount: snapshot.fileCount, size: snapshot.size };
-            });
-            const files = ownerRecords(owner).filter(item => normalizePath(item.folderPath || '') === safe).map(item => ({ ...item, kind: 'file' }));
+            // Aggregate each descendant once. Rebuilding an entire subtree
+            // snapshot per child made one user's wide listing block everyone.
+            const files = [];
+            for (const item of ownerRecords(owner)) {
+                const folderPath = normalizePath(item.folderPath || '');
+                if (folderPath === safe) { files.push({ ...item, kind: 'file' }); continue; }
+                if (!folderPath.startsWith(prefix)) continue;
+                const child = children.get(joinPath(safe, folderPath.slice(prefix.length).split('/')[0]));
+                if (!child) continue;
+                child.fileCount++;
+                child.size += Math.max(0, Number(item.size) || 0);
+                child.updatedAt = Math.max(child.updatedAt, Number(item.updatedAt || item.createdAt) || 0);
+            }
+            const folders = [...children.values()];
             return {
                 path: safe,
                 breadcrumbs: safe.split('/').filter(Boolean).map((name, index, all) => ({ name, path: all.slice(0, index + 1).join('/') })),

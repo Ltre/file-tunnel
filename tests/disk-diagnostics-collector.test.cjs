@@ -35,7 +35,7 @@ test('collector merges rotated logs chronologically, deduplicates and limits its
     const bundle = await collect(options);
     assert.deepEqual(bundle.logs.map(row => row.event), ['telegram.request', 'telegram.response']);
     assert.equal(bundle.logs[0].time, duplicated.time, 'timestamp colons must not be mistaken for Bot tokens');
-    assert.equal(bundle.operations.length, 1); assert.equal(bundle.operations[0].operation_id, 'op-1');
+    assert.equal(bundle.operations.length, 2); assert.equal(bundle.operations[0].operation_id, 'op-1');
     assert.equal(bundle.operations[0].result, undefined);
     assert.ok(bundle.warnings.some(message => /不完整/.test(message)));
     assert.deepEqual(fs.readFileSync(path.join(dataDir, 'disk-upload.log')), before);
@@ -53,6 +53,17 @@ test('task filters collect retained old requests and infer operation IDs from up
     assert.equal(byOperation.logs.length, 2);
     const recent = await collect(parseArgs(['--data-dir', dataDir, '--upload-id', 'u1', '--minutes', '5'], now));
     assert.deepEqual(recent.logs.map(row => row.event), ['telegram.network-error']);
+});
+
+test('目录任务与排队、执行耗时可用同一渠道导出，结果正文不导出', async t => {
+    const { dataDir, now, entry, write } = fixture(t);
+    write('disk-upload.log', [entry('metadata.mutation-queued', -3000, { operationId: 'mkdir-1', queuedBehindMutation: true }),
+        entry('metadata.mutation-end', -100, { operationId: 'mkdir-1', queuedMs: 2800, workMs: 12 })]);
+    fs.writeFileSync(path.join(dataDir, 'disk-operations.json'), JSON.stringify([{ type: 'mkdir', operation_id: 'mkdir-1',
+        folderPath: 'empty', status: 'completed', updatedAt: now - 100, result: { secret: 'private' } }]));
+    const bundle = await collect(parseArgs(['--data-dir', dataDir, '--operation-id', 'mkdir-1'], now));
+    assert.equal(bundle.operations.length, 1); assert.equal(bundle.operations[0].type, 'mkdir');
+    assert.equal(bundle.logs[1].queuedMs, 2800); assert.equal(bundle.operations[0].result, undefined);
 });
 
 test('SQLite collection sees committed WAL records using a read-only connection without rewriting data', async t => {

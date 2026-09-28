@@ -51,14 +51,17 @@
         if (polling) return polling;
         if (!force && Date.now() - lastRefresh < 1800) return;
         const current = generation; lastRefresh = Date.now();
-        polling = raw('/operations?ids=' + encodeURIComponent([...waiting.keys()].join(','))).then(data => {
+        const requested = new Set(waiting.keys());
+        polling = raw('/operations?ids=' + encodeURIComponent([...requested].join(','))).then(data => {
             if (current !== generation) return;
             jobs = data.operations;
             for (const job of jobs) if (!active(job)) hiddenLoadingOperations.delete(job.operation_id);
             for (const id of localUploads.keys()) if (jobs.some(job => job.operation_id === id && !active(job))) localUploads.delete(id);
             for (const [id, handlers] of waiting) {
                 const job = jobs.find(item => item.operation_id === id);
-                if (!job || active(job)) continue;
+                // A waiter registered after this request started was not in
+                // its ids query; the server deliberately omits that result.
+                if (!job || active(job) || !requested.has(id)) continue;
                 waiting.delete(id);
                 if (job.status === 'completed') handlers.resolve(job.result);
                 else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; error.errorDetails = job.errorDetails; handlers.reject(error); }
@@ -74,11 +77,18 @@
         if (waiting.has(id)) return waiting.get(id).promise;
         const pending = {};
         pending.promise = new Promise((resolve, reject) => { pending.resolve = resolve; pending.reject = reject; });
-        waiting.set(id, pending); refresh(true); return pending.promise;
+        waiting.set(id, pending);
+        if (polling) polling.finally(() => { if (waiting.has(id)) refresh(true); });
+        else refresh(true);
+        return pending.promise;
     }
     async function performRequest(url, options, update) {
         const data = await raw(url, options);
         if (data.operation_id) update?.({ operationId: data.operation_id });
+        if (data.operation_id && !data.uploadId && data.status === 'completed') {
+            refresh(true);
+            return data.result;
+        }
         return data.operation_id && !data.uploadId ? wait(data.operation_id) : data;
     }
     function request(url, options = {}) {

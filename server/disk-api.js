@@ -3,6 +3,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const crypto = require('crypto');
+const { performance } = require('node:perf_hooks');
 const { Transform, Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./telegram-drive');
@@ -11,6 +12,7 @@ const { createDiskShares } = require('./disk-shares');
 const { createDiskCollaborationStore } = require('./disk-collaboration');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
+const { createDiskMetadataTiming } = require('./disk-metadata-timing');
 const { createDiskPartCache } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
@@ -101,6 +103,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const chunkFileCache = createDiskChunkFileCache({ dataDir });
     const browser = express.Router();
     const external = express.Router();
+    const metadataTiming = createDiskMetadataTiming(log);
+    browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
     let objectStorage;
@@ -181,10 +185,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     }
     // Serialize index mutations for one logical disk while remote work is pending.
     // Reads and unrelated users/spaces remain independent.
-    async function mutate(req, work) {
+    async function mutate(req, work, diagnostic) {
         const key = JSON.stringify([req.diskScope.userId, req.diskScope.diskSpace]);
         const previous = mutations.get(key) || Promise.resolve();
-        const pending = previous.catch(() => {}).then(work);
+        const queuedAt = performance.now();
+        if (diagnostic) log('metadata.mutation-queued', { ...diagnostic, queuedBehindMutation: mutations.has(key) });
+        const pending = previous.catch(() => {}).then(async () => {
+            const startedAt = performance.now(), queuedMs = Math.round(startedAt - queuedAt);
+            if (diagnostic) log('metadata.mutation-start', { ...diagnostic, queuedMs });
+            try { return await work(); }
+            finally {
+                if (diagnostic) log('metadata.mutation-end', { ...diagnostic, queuedMs, workMs: Math.round(performance.now() - startedAt) });
+            }
+        });
         mutations.set(key, pending);
         try { return await pending; }
         finally { if (mutations.get(key) === pending) mutations.delete(key); }
@@ -212,7 +225,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     await mutate({ diskScope: scope }, async () => {
                         const current = store.get(scope.userId, saved.id);
                         if (current?.captionSyncPending && current.reviewStatus !== 'deleted') await syncCaptions(store, scope, [current]);
-                    }).catch(() => {});
+                    }, { type: 'caption-retry', fileId: saved.id, userId: scope.userId, diskSpace }).catch(() => {});
                 }
             }
         } finally { retryingCaptions = false; }
@@ -665,18 +678,32 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
         const assertCurrentCollaboration = req => { if (req.collaboration && !collaborations.authorized(req.collaboration.id, req.diskViewerId)) throw new Error('COLLABORATION_NOT_FOUND'); };
         const requireEntity = file => { if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW'); return file; };
-        const jobResponse = (req, res, type, message, work) => {
+        const jobResponse = (req, res, type, message, work, { immediateResult = false } = {}) => {
             const job = operations.create(scope(req), type, message);
             const relatedFile = req.params?.id ? store(req).get(owner(req), req.params.id) : null;
             const relatedPath = relatedFile?.folderPath ?? req.body?.path ?? req.query?.path ?? '';
+            if (req.diskMetadataTiming) req.diskMetadataTiming.operationId = job.operation_id;
             operations.update(job.operation_id, { folderPath: normalizeTelegramDrivePath(relatedPath), ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
-            operations.run(job.operation_id, (update, control) => mutate(req, async () => {
-                control.throwIfCancelled();
-                const result = await work(update, control);
-                control.throwIfCancelled();
-                return result;
-            }));
-            res.status(202).json({ operation_id: job.operation_id });
+            operations.run(job.operation_id, (update, control) => {
+                if (mutations.has(JSON.stringify([req.diskScope.userId, req.diskScope.diskSpace])))
+                    update({ phase: 'index-queue', message: '正在等待当前网盘中的修改操作完成' });
+                return mutate(req, async () => {
+                    control.throwIfCancelled();
+                    const result = await work(update, control);
+                    control.throwIfCancelled();
+                    return result;
+                }, { operationId: job.operation_id, requestId: req.diskMetadataTiming?.requestId || '', type,
+                    userId: owner(req), diskSpace: req.diskScope.diskSpace || '', folderPath: normalizeTelegramDrivePath(relatedPath) });
+            });
+            const respond = () => {
+                if (res.destroyed) return;
+                const completed = immediateResult && operations.get(job.operation_id, scope(req));
+                res.status(202).json({ operation_id: job.operation_id,
+                    ...(completed?.status === 'completed' ? { status: 'completed', result: completed.result } : {}) });
+            };
+            // Give local mkdir work one event-loop turn to finish. A queued
+            // mutation still returns 202 immediately and retains job polling.
+            if (immediateResult) setImmediate(respond); else respond();
         };
         router.get('/users/me', (req, res) => res.json({ identity: req.diskUser, user_id: owner(req) }));
         router.get('/shares', (req, res) => res.json({ shares: shares.list(scope(req)) }));
@@ -696,7 +723,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/list', wrap((req, res) => {
             const result = store(req).list(owner(req), req.query.path || '');
-            res.json({ ...result, folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })) });
+            res.json({ ...result, user_id: owner(req), folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })) });
         }));
         router.get('/search', wrap((req, res) => {
             const result = store(req).search(owner(req), req.query.q || '', 500);
@@ -717,7 +744,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             jobResponse(req, res, 'mkdir', '正在创建目录', async update => {
                 update({ phase: 'index-write', message: '正在逐级创建虚拟目录并保存索引' });
                 return store(req).createDirectory(owner(req), req.body?.path || '', maxDepth(), req.diskApp?.appId || 'system');
-            });
+            }, { immediateResult: true });
         }));
         router.patch('/directories', wrap((req, res) => {
             jobResponse(req, res, 'move-directory', '正在修改目录', async update => {
@@ -1231,6 +1258,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload,
         protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id), maxDepth });
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
+    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, metadataTiming, close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

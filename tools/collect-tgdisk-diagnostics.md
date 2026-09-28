@@ -1,4 +1,4 @@
-# 网盘上传现场诊断收集
+# 网盘上传与目录操作现场诊断收集
 
 在灰度服务器的项目目录运行，服务可以继续工作，不需要停服或重启。现有服务器已经自动记录 `.tunnel-data/disk-upload.log`，达到 10 MB 后轮转到 `disk-upload.log.1`；本工具只读取这些文件和任务状态，生成一个可提供给排查人员的诊断 JSON。
 
@@ -14,6 +14,18 @@
 3. 终端会输出生成文件的 `output` 路径，默认在 `.tunnel-data/diagnostics/tgdisk-*.json`。从服务器下载这个 JSON 文件，一次提供整份文件即可，毋须逐行复制日志。请同时说明哪个上传失败、客户端提示什么，以及测试大致开始/失败时间。
 
 在还未部署本轮修复的旧灰度版本上，也可单独复制本脚本到 `tools` 后执行；可以导出已有日志，但不会补回旧版本没有记录的细节。
+
+## 空目录进入 / 新建目录慢怎么收集
+
+部署目录性能修复后，发生慢操作时记下时间，随即执行同一个收集命令：
+
+```bash
+node tools/collect-tgdisk-diagnostics.cjs --data-dir .tunnel-data --minutes 15
+```
+
+日志中的 `metadata.request` 记录超过 500 ms 的身份、目录列表等请求，以及创建目录请求；`metadata.mutation-queued` 记录排队开始，`metadata.mutation-start` / `metadata.mutation-end` 记录修改任务的 `queuedMs`（同账号同分区排队时间）和 `workMs`（执行时间），可用 `operationId` 关联。后台 caption 重试也记录排队与执行时间。没有慢请求时不会为每次普通列表查询写日志。请求响应同时包含 `X-Disk-Request-Id` 和 `Server-Timing: disk-metadata;dur=...`，便于与浏览器 Network 中的等待时间比较。请求到达中间件之前的服务器阻塞和代理 / 浏览器排队不包含在这个服务端耗时中。
+
+提供导出的 JSON、操作时间、目录，以及是“进入”还是“新建”即可。旧线上版本不会产生这些新耗时字段；单独复制收集工具不能补回旧记录。
 
 ## 精确限定测试时间或任务
 
@@ -34,7 +46,7 @@ node tools/collect-tgdisk-diagnostics.cjs --data-dir .tunnel-data --upload-id "�
 ## 包含内容与边界
 
 - 当前和上一份轮转日志中的浏览器接收、队列等待、Telegram 请求/响应、重试、确认、索引提交和回滚事件，按时间排序并去掉重复行。
-- 对应上传任务的状态、字节/分片进度、错误码、脱敏错误细节与目录。优先只读查询 SQLite；仅在没有 SQLite 时读取旧 `disk-operations.json`。
+- 对应上传、目录修改等网盘任务的状态、字节/分片进度、错误码、脱敏错误细节与目录。优先只读查询 SQLite；仅在没有 SQLite 时读取旧 `disk-operations.json`。
 - 优先读取部署包 `release.json` 的来源提交、分支、构建编号；没有这份元信息时读取 Git 提交与分支。也包含收集脚本自身的 Node 版本和操作系统，此 Node 版本是收集进程的版本，不冒充服务进程；两种版本来源都不可用时，请另外注明部署版本。`deploy:build` 生成的部署包会附带本脚本和说明文档。
 - 不导出认证库、用户/分享密钥、文件正文、消息 caption、请求正文和请求头；对日志里的 URL、Bot token、Bearer 和敏感字段再次脱敏。仍保留任务 ID、文件 ID、文件名和目录等定位信息，分享前可自行检查。
 - 按读取时的文件大小取得快照；读取期间新产生的日志可能留待下次导出。未完成的末行会忽略并给出警告。SQLite 状态读取失败仍可以导出日志，并明确警告，不回退到可能过期的旧 JSON。
