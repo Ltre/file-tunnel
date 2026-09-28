@@ -541,25 +541,30 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
 }
 
 async function moveTelegramDriveItems(items, targetPath) {
+    if (!items.length) return;
     const destinationPath = targetPath === undefined ? await chooseTelegramDriveDestination(items) : targetPath;
     if (destinationPath === null) return;
     if (targetPath !== undefined) {
         const subject = items.length === 1 ? `“${items[0].name}”` : `${items.length} 个选中项目`;
         if (!await confirmTelegramDriveAction('确认移动', `确定要把 ${subject} 移动到 ${telegramDriveDisplayPath(destinationPath)} 吗？`, '移动')) return;
     }
-    let selectionCleared = false;
-    for (const item of items) {
-        const url = item.kind === 'directory' ? '/api/telegram/drive/directories' : `/api/telegram/drive/files/${encodeURIComponent(item.id)}`;
-        const body = item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath };
-        const response = await window.DiskClient.raw(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        // The server has accepted the first move job. Clear selection now while
-        // caption synchronization continues in the background.
-        if (!selectionCleared) { clearTelegramDriveSelection(); selectionCleared = true; }
-        if (response.operation_id) await window.DiskClient.wait(response.operation_id);
-    }
-    if (!selectionCleared) clearTelegramDriveSelection();
-    showAppToast(`已移动 ${items.length} 项`);
-    await renderTelegramDrive();
+    return window.DiskClient.withActivity({ message: `正在移动 ${items.length} 项`, folderPath: destinationPath }, async update => {
+        let selectionCleared = false;
+        for (const [index, item] of items.entries()) {
+            update({ operationId: '', message: `正在移动 ${index + 1}/${items.length} 项：${item.name}` });
+            const url = item.kind === 'directory' ? '/api/telegram/drive/directories' : `/api/telegram/drive/files/${encodeURIComponent(item.id)}`;
+            const body = item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath };
+            const response = await window.DiskClient.raw(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            // Keep the selection until the server accepts the first move.
+            if (!selectionCleared) { clearTelegramDriveSelection(); selectionCleared = true; }
+            update({ operationId: response.operation_id || '' });
+            if (response.operation_id) await window.DiskClient.wait(response.operation_id);
+            telegramDriveContentStale = true;
+        }
+        update({ operationId: '', message: `已移动 ${items.length} 项，正在刷新目录` });
+        await renderTelegramDrive({ contentsOnly: true });
+        showAppToast(`已移动 ${items.length} 项`);
+    });
 }
 
 async function deleteTelegramDriveItems(items) {
@@ -1991,6 +1996,7 @@ function initDiskLoading() {
     let activities = [], jobs = [], candidates = [], previousFocus, pinnedJob = '', selectedIndex = 0, swipeStart = null;
     const activityIds = new WeakMap(); let activitySequence = 0;
     const dismissed = new Set();
+    const dismissedActivities = new WeakSet();
     function hide() {
         if (overlay.hidden) return;
         const restoreFocus = overlay.contains(document.activeElement);
@@ -2003,13 +2009,16 @@ function initDiskLoading() {
         return activityIds.get(activity);
     };
     function collectCandidates() {
+        // An activity can acquire or switch server job IDs after dismissal.
+        // Keep its background state attached to the activity, not that ID.
+        for (const activity of activities) if (dismissedActivities.has(activity) && activity.operationId) window.DiskClient.hideLoading?.(activity.operationId);
         const activeJobs = jobs.filter(job => ['queued', 'running'].includes(job.status) && !window.DiskClient.isLoadingHidden?.(job.operation_id));
         const result = activeJobs.map(job => ({ key: 'job:' + job.operation_id, job, activity: activities.find(activity => activity.operationId === job.operation_id) }));
         for (const activity of activities) {
             const key = activityKey(activity);
             if (!result.some(item => item.key === key)) result.push({ key, activity });
         }
-        candidates = result.filter(item => !dismissed.has(item.key));
+        candidates = result.filter(item => !dismissed.has(item.key) && !dismissedActivities.has(item.activity));
         for (const key of dismissed) if (!result.some(item => item.key === key)) dismissed.delete(key);
         if (pinnedJob) {
             const pinnedIndex = candidates.findIndex(item => item.job?.operation_id === pinnedJob);
@@ -2051,7 +2060,7 @@ function initDiskLoading() {
         if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) move(dx < 0 ? 1 : -1);
     });
     card?.addEventListener('pointercancel', () => { swipeStart = null; });
-    background.onclick = () => { pinnedJob = ''; for (const item of candidates) { dismissed.add(item.key); if (item.job?.operation_id) window.DiskClient.hideLoading?.(item.job.operation_id); } hide(); };
+    background.onclick = () => { pinnedJob = ''; for (const item of candidates) { dismissed.add(item.key); if (item.activity) dismissedActivities.add(item.activity); if (item.job?.operation_id) window.DiskClient.hideLoading?.(item.job.operation_id); } hide(); };
     // Do not let Enter/Escape/arrows reach the preview or the underlying edit dialog.
     document.addEventListener('keydown', event => {
         if (overlay.hidden) return;
@@ -2072,6 +2081,9 @@ function initDiskLoading() {
         const job = activeJobs.find(item => item.operation_id === operationId) || activeJobs[0];
         if (!job) return false;
         for (const activeJob of activeJobs) { dismissed.delete('job:' + activeJob.operation_id); window.DiskClient.showLoading?.(activeJob.operation_id); }
+        for (const activity of activities) if (activeJobs.some(activeJob => activeJob.operation_id === activity.operationId)) {
+            dismissedActivities.delete(activity); dismissed.delete(activityKey(activity));
+        }
         pinnedJob = job.operation_id; render(); return true;
     };
 }

@@ -91,6 +91,7 @@ test('拖放移动先显示目标确认，服务端接受首个任务后立即�
         confirmTelegramDriveAction: async (...args) => { calls.push(['confirm', ...args]); return true; },
         clearTelegramDriveSelection: () => { cleared = true; selection.clear(); }, showAppToast: message => calls.push(['toast', message]), renderTelegramDrive: async () => calls.push(['render']),
         window: { DiskClient: {
+            withActivity: async (_message, run) => run(() => {}),
             raw: async (url, options) => { calls.push(['raw', url, JSON.parse(options.body)]); return { operation_id: 'move-1' }; },
             wait: async id => { waitStartedAfterClear = cleared; calls.push(['wait', id]); }
         } }, encodeURIComponent
