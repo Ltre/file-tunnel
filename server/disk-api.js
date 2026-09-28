@@ -32,6 +32,8 @@ const uploadResultFile = item => item ? {
     ...publicFile(item),
     telegramFileId: item.fileId || '',
     telegramFileUniqueId: item.fileUniqueId || '',
+    telegramChatId: item.channelId || '',
+    telegramMessageId: item.messageId || 0,
     telegramPartFileIds: (item.parts || []).map(part => part.fileId),
     serverAssetUrl: `/api/telegram/drive/files/${encodeURIComponent(item.id)}/stream`
 } : null;
@@ -92,7 +94,7 @@ function errorStatus(code) {
     if (/TELEGRAM_|STORAGE_/.test(code)) return 502;
     return 422;
 }
-function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {} }) {
+function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {}, resolveStorageBackend = async backend => backend }) {
     const log = createDiskUploadLog(dataDir);
     const recordUploadFailure = (job, error) => {
         try { operations.fail(job.operationId, error); }
@@ -317,6 +319,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
         const range = parseRange(req.get('Range'), file.size);
         if (!range) { res.status(416).set('Content-Range', `bytes */${file.size}`).end(); return null; }
+        backend = await resolveStorageBackend(backend, { strict: false });
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
         const source = await objectStorage.openFile(backend, file, range.start, range.end, abort.signal, diskSpace);
@@ -328,6 +331,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (range.partial) res.set('Content-Range', `bytes ${range.start}-${range.end}/${file.size}`);
         res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`);
         if (operationId) res.set('X-Disk-Operation-Id', operationId);
+        if (/^-?\d+$/.test(String(backend.channelId || ''))) res.set('X-Drop2Tunnel-Telegram-Chat-Id', String(backend.channelId));
         return { source, range, abort };
     }
     const limiter = () => rateLimit({ windowMs: 60000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'AUTH_RATE_LIMIT' } });
@@ -905,7 +909,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             if (sent.some(result => !result)) throw new Error('TELEGRAM_PARTS_INVALID');
                             const items = store(req).commit(job.id, job.storage.channelId, sent);
                             for (const item of items) log('upload.file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
-                            if (!job.backendId) onDefaultUpload(job.storage.channelId);
+                            if (!job.backendId) onDefaultUpload(job.storage.requestedChannelId || job.storage.channelId);
                             const warnings = sent.filter(file => file.captionWarning).map(file => file.captionWarning);
                             return { ok: true, items: items.map(uploadResultFile), warnings };
                         });
@@ -995,7 +999,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         };
         if (router === browser) coreUpload = { runUploadPipeline, pipelineWait, pipelineWake, rollbackPipelineRemote };
         router.post('/uploads', wrap(async (req, res) => {
-            const storage = backend(req);
+            const storage = await resolveStorageBackend(backend(req));
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const files = (req.body?.files || []).map(file => {
                 if (!file.source_path) return file;
@@ -1145,7 +1149,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (remote) { assertCurrentCollaboration(req); await pipeline(remote.source, res); }
         }));
         router.post('/files/:id/repair', wrap(async (req, res) => {
-            const file = requireEntity(getFile(req)); const storage = backend(req);
+            const file = requireEntity(getFile(req)); const storage = await resolveStorageBackend(backend(req));
             if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const replacement = Boolean(req.collaboration);
             const incomingSize = Number(req.get('X-Disk-File-Size') || req.get('X-Drop2Tunnel-File-Size'));
@@ -1176,7 +1180,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal }) {
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
-        const storage = mapping.backendId ? auth.backend(mapping.backendId) : getDefaultBackend();
+        const storage = await resolveStorageBackend(mapping.backendId ? auth.backend(mapping.backendId) : getDefaultBackend());
         if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
         const req = { diskScope: { userId: owner.id, diskSpace }, diskStore, diskUser: owner,
             diskApp: { appId: 's3', storage }, get: () => '' };

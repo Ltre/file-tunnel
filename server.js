@@ -76,6 +76,7 @@ const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
+const { createTelegramChatDictionary, createTelegramChatResolver, registerTelegramChatDictionaryRoutes, normalizeChatId } = require('./server/telegram-chat-dictionary');
 const { createTelegramContentManager } = require('./server/telegram-content-manager');
 const { listDataUsage } = require('./server/data-usage');
 const { createTelegramOidcClient } = require('./server/telegram-oidc');
@@ -332,7 +333,18 @@ const diskAuth = createDiskAuth({ dataDir: SERVER_DATA_DIR });
 const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
-const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org' });
+const telegramChatDictionary = createTelegramChatDictionary({ dataDir: SERVER_DATA_DIR });
+const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org',
+    resolveChatIdentifier: value => telegramChatDictionary.lookup(value)?.chatId || value });
+const telegramChatResolver = createTelegramChatResolver({
+    dictionary: telegramChatDictionary,
+    getChat: (chatId, { token, baseUrl, signal }) => diskTelegram.call({ token, baseUrl, channelId: chatId }, 'getChat', { chat_id: chatId }, undefined, 0, { signal })
+});
+async function resolveTelegramStorageBackend(backend, { strict = true } = {}) {
+    if (!backend?.channelId || !backend?.token) return backend;
+    const resolved = await telegramChatResolver.resolve(backend.channelId, { token: backend.token, baseUrl: backend.baseUrl, strict });
+    return resolved.chatId ? { ...backend, requestedChannelId: backend.requestedChannelId || backend.channelId, channelId: resolved.chatId } : backend;
+}
 const telegramContentManager = createTelegramContentManager({
     dataDir:SERVER_DATA_DIR,
     telegram:diskTelegram,
@@ -341,7 +353,7 @@ const telegramContentManager = createTelegramContentManager({
         channelId:channelId || getTelegramDriveActiveChannel()?.id || '',
         baseUrl:getTelegramBotApiBaseUrl()
     }),
-    getStorageChannelIds:() => (telegramConfig.driveChannels || []).map(item => item.id),
+    getStorageChannelIds:() => (telegramConfig.driveChannels || []).map(item => telegramChatDictionary.lookup(item.id)?.chatId || item.id),
     createVideoThumbnail:file => prepareTelegramForwardVideoThumbnail(null, '', file)
 });
 
@@ -1048,6 +1060,7 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
             ? 'server-cache'
             : isRecoverableSnsAsset(asset) ? 'sns-refetch' : 'telegram-refetch');
         res.setHeader('Content-Length', String(end - start + 1));
+        if (asset.chatId && /^-?\d+$/.test(asset.chatId)) res.setHeader('X-Drop2Tunnel-Telegram-Chat-Id', asset.chatId);
         res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(asset.name || 'file')}"`);
         res.status(statusCode);
         telegramAssetReaders.set(assetId, (telegramAssetReaders.get(assetId) || 0) + 1);
@@ -1071,7 +1084,9 @@ app.get('/api/server-assets/:assetId', async (req, res) => {
         console.warn(`Telegram/SNS asset ${assetId} fetch failed: ${err.message}`);
         if (!res.headersSent) {
             const message = String(err?.message || '');
-            const error = /YouTube 要求登录验证|sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(message)
+            const error = message === 'TELEGRAM_CHAT_MAPPING_MISMATCH'
+                ? 'Telegram Chat 字典映射与返回的 Chat ID 不一致，请管理员核对字典'
+                : /YouTube 要求登录验证|sign in to confirm you(?:'|’)?re not a bot|cookies?.*(?:no longer valid|rotated)/i.test(message)
                 ? 'SNS 原链接重新获取失败：YouTube Cookie 已失效或不完整，请管理员在 /sns-cookies 重新保存有效 Cookie'
                 : /YouTube 签名解析组件不可用/i.test(message)
                     ? message
@@ -2035,6 +2050,7 @@ app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, async
     }
 });
 
+registerTelegramChatDictionaryRoutes(app, adminAuth.requireAuth, telegramChatDictionary);
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
     const config = loadTelegramBotConfig();
     res.setHeader('Cache-Control', 'no-store');
@@ -2386,6 +2402,7 @@ app.post('/api/telegram/drive/logout', (req, res) => { res.setHeader('Set-Cookie
 const diskAPI = createDiskAPI({
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
     operations: diskOperations, telegram: diskTelegram,
+    resolveStorageBackend: resolveTelegramStorageBackend,
     getIdentity: getTelegramDriveIdentity, setIdentity: setTelegramDriveIdentityCookie,
     getOrigin: getTelegramPublicOrigin, isMockRequest: isTelegramOidcMockRequest,
     maxDepth: () => telegramConfig.driveMaxFolderDepth,
@@ -4073,6 +4090,8 @@ function persistTelegramServerAsset(asset) {
         youtubeVideoId: sanitizeString(asset.youtubeVideoId || '', 80),
         mediaKind: sanitizeString(asset.mediaKind || '', 40),
         fileId: asset.fileId || '',
+        chatId: asset.chatId || asset.channelId || asset.telegramChatId || '',
+        telegramMessageId: Number(asset.telegramMessageId) || 0,
         fileUniqueId: asset.fileUniqueId || '',
         fileIdUpdatedAt: Number(asset.fileIdUpdatedAt) || 0,
         lastFileIdCheckedAt: Number(asset.lastFileIdCheckedAt) || 0,
@@ -4114,6 +4133,8 @@ function resolveTelegramServerAsset(assetId) {
         youtubeVideoId: sanitizeString(metadata.youtubeVideoId || '', 80),
         mediaKind: sanitizeString(metadata.mediaKind || '', 40),
         fileId: typeof metadata.fileId === 'string' ? metadata.fileId : '',
+        chatId: String(metadata.chatId || metadata.channelId || metadata.telegramChatId || ''),
+        telegramMessageId: Number(metadata.telegramMessageId) || 0,
         fileUniqueId: typeof metadata.fileUniqueId === 'string' ? metadata.fileUniqueId : '',
         fileIdUpdatedAt: Number(metadata.fileIdUpdatedAt) || 0,
         lastFileIdCheckedAt: Number(metadata.lastFileIdCheckedAt) || 0,
@@ -4134,10 +4155,19 @@ async function ensureTelegramServerAssetFile(asset) {
     if (!download) {
         download = (async () => {
             if (asset.fileId) {
+                const resolved = asset.chatId || asset.channelId || asset.telegramChatId
+                    ? await telegramChatResolver.resolve(asset.chatId || asset.channelId || asset.telegramChatId, { token: getTelegramBotToken(), baseUrl: getTelegramBotApiBaseUrl() })
+                    : null;
                 const data = await downloadTelegramFile(asset.fileId, TELEGRAM_CLOUD_GET_FILE_MAX_SIZE);
+                if (Number(asset.size) > 0 && data.length !== Number(asset.size)) throw new Error('telegram-file-size-mismatch');
                 fs.mkdirSync(TELEGRAM_ASSET_DIR, { recursive: true });
                 fs.writeFileSync(asset.path, data);
                 asset.size = data.length;
+                if (resolved?.chatId) {
+                    asset.chatId = resolved.chatId;
+                    if (asset.channelId) asset.channelId = resolved.chatId;
+                    if (asset.telegramChatId) asset.telegramChatId = resolved.chatId;
+                }
                 resetRestoredServerAsset(asset);
             } else {
                 await restoreSnsServerAssetFile(asset);
@@ -5311,9 +5341,11 @@ async function buildTelegramRemarkWithSocialMetadata(rawRemark) {
 
 function getTelegramFileFromMessage(message = {}) {
     const remark = String(message.caption || '').trim().slice(0, TELEGRAM_REMARK_MAX_LENGTH);
+    const source = { chatId: message.chat?.id ? normalizeChatId(message.chat.id) : '', telegramMessageId: Number(message.message_id) || 0 };
     if (message.document) {
         return {
             fileId: message.document.file_id,
+            ...source,
             fileUniqueId: message.document.file_unique_id || '',
             name: message.document.file_name || 'telegram-file',
             type: message.document.mime_type || 'application/octet-stream',
@@ -5324,6 +5356,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.video) {
         return {
             fileId: message.video.file_id,
+            ...source,
             fileUniqueId: message.video.file_unique_id || '',
             name: message.video.file_name || `telegram-video-${Date.now()}.mp4`,
             type: message.video.mime_type || 'video/mp4',
@@ -5334,6 +5367,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.animation) {
         return {
             fileId: message.animation.file_id,
+            ...source,
             fileUniqueId: message.animation.file_unique_id || '',
             name: message.animation.file_name || `telegram-animation-${Date.now()}.mp4`,
             type: message.animation.mime_type || 'video/mp4',
@@ -5344,6 +5378,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.audio) {
         return {
             fileId: message.audio.file_id,
+            ...source,
             fileUniqueId: message.audio.file_unique_id || '',
             name: message.audio.file_name || `telegram-audio-${Date.now()}.mp3`,
             type: message.audio.mime_type || 'audio/mpeg',
@@ -5354,6 +5389,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.voice) {
         return {
             fileId: message.voice.file_id,
+            ...source,
             fileUniqueId: message.voice.file_unique_id || '',
             name: `telegram-voice-${Date.now()}.ogg`,
             type: message.voice.mime_type || 'audio/ogg',
@@ -5364,6 +5400,7 @@ function getTelegramFileFromMessage(message = {}) {
     if (message.video_note) {
         return {
             fileId: message.video_note.file_id,
+            ...source,
             fileUniqueId: message.video_note.file_unique_id || '',
             name: `telegram-video-note-${Date.now()}.mp4`,
             type: 'video/mp4',
@@ -5375,6 +5412,7 @@ function getTelegramFileFromMessage(message = {}) {
         const photo = message.photo[message.photo.length - 1];
         return {
             fileId: photo.file_id,
+            ...source,
             fileUniqueId: photo.file_unique_id || '',
             name: `telegram-photo-${Date.now()}.jpg`,
             type: 'image/jpeg',
@@ -5626,6 +5664,8 @@ async function telegramFetchJson(method, init = {}, options = {}) {
 }
 
 async function telegramApi(method, payload, token = getTelegramBotToken()) {
+    payload = { ...payload };
+    for (const key of ['chat_id', 'from_chat_id']) if (payload[key]) payload[key] = telegramChatDictionary.lookup(payload[key])?.chatId || payload[key];
     const result = await telegramFetchJson(method, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5637,7 +5677,8 @@ async function telegramApi(method, payload, token = getTelegramBotToken()) {
 async function uploadTelegramAssetBackup(asset, data) {
     if (!data?.length) throw new Error('repair-file-content-empty');
     const form = new FormData();
-    form.set('chat_id', telegramConfig.backupChatId);
+    const target = await resolveTelegramStorageBackend({ token: getTelegramBotToken(), baseUrl: getTelegramBotApiBaseUrl(), channelId: telegramConfig.backupChatId });
+    form.set('chat_id', target.channelId);
     form.set('caption', `Drop2Tunnel backup · ${asset.id}`);
     form.set('document', new Blob([data], { type: asset.type || 'application/octet-stream' }), asset.name || 'file');
     const payload = await telegramFetchJson('sendDocument', {
@@ -5654,6 +5695,8 @@ async function uploadTelegramAssetBackup(asset, data) {
     ].slice(-20);
     asset.fileId = document.file_id;
     asset.fileUniqueId = document.file_unique_id || '';
+    asset.chatId = normalizeChatId(payload.result?.chat?.id || target.channelId);
+    asset.telegramMessageId = Number(payload.result?.message_id) || 0;
     asset.fileIdUpdatedAt = updatedAt;
     asset.lastFileIdCheckedAt = updatedAt;
     persistTelegramServerAsset(asset);
@@ -5662,7 +5705,8 @@ async function uploadTelegramAssetBackup(asset, data) {
         assetId: asset.id,
         telegramFileId: asset.fileId,
         telegramFileUniqueId: asset.fileUniqueId,
-        telegramFileIdUpdatedAt: updatedAt
+        telegramFileIdUpdatedAt: updatedAt,
+        telegramChatId: asset.chatId, telegramMessageId: asset.telegramMessageId
     };
 }
 
@@ -5687,6 +5731,8 @@ function updateTelegramAssetMetadataInSession(asset) {
             fileInfo.telegramFileId = asset.fileId;
             fileInfo.telegramFileUniqueId = asset.fileUniqueId;
             fileInfo.telegramFileIdUpdatedAt = asset.fileIdUpdatedAt;
+            if (asset.chatId && /^-?\d+$/.test(asset.chatId)) fileInfo.telegramChatId = asset.chatId;
+            if (asset.telegramMessageId) fileInfo.telegramMessageId = asset.telegramMessageId;
             fileInfo.serverAssetUrl = `/api/server-assets/${asset.id}`;
             fileInfo.isServerAsset = true;
             changed = true;
@@ -5951,6 +5997,8 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
         createdAt: Date.now(),
         source: 'telegram-bot',
         fileId: telegramFile.fileId,
+        chatId: telegramFile.chatId || normalizeChatId(chatId),
+        telegramMessageId: telegramFile.telegramMessageId || 0,
         fileUniqueId: telegramFile.fileUniqueId || '',
         fileIdUpdatedAt: Date.now()
     };
@@ -5977,7 +6025,8 @@ async function publishTelegramFileToTunnel(chatId, shortCode, telegramFile) {
             remark: messageRemark,
             telegramFileId: asset.fileId,
             telegramFileUniqueId: asset.fileUniqueId,
-            telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
+            telegramFileIdUpdatedAt: asset.fileIdUpdatedAt,
+            telegramChatId: asset.chatId, telegramMessageId: asset.telegramMessageId
         },
         timestamp: Date.now(),
         sender: TELEGRAM_BOT_DEVICE_ID,
@@ -6019,6 +6068,8 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         createdAt: Date.now(),
         source: 'telegram-bot',
         fileId: telegramFile.fileId,
+        chatId: telegramFile.chatId || '',
+        telegramMessageId: telegramFile.telegramMessageId || 0,
         fileUniqueId: telegramFile.fileUniqueId || '',
         fileIdUpdatedAt: Date.now()
     };
@@ -6038,7 +6089,8 @@ async function prepareTelegramCollectionAsset(sessionId, telegramFile) {
         remark: String(telegramFile.remark || '').trim().slice(0, TELEGRAM_REMARK_MAX_LENGTH),
         telegramFileId: asset.fileId,
         telegramFileUniqueId: asset.fileUniqueId,
-        telegramFileIdUpdatedAt: asset.fileIdUpdatedAt
+        telegramFileIdUpdatedAt: asset.fileIdUpdatedAt,
+        telegramChatId: asset.chatId, telegramMessageId: asset.telegramMessageId
     };
 }
 
@@ -8275,6 +8327,10 @@ function preserveNewestTelegramFileIds(previousMessage, nextMessage) {
     collect(nextMessage, fileInfo => {
         const previous = previousById.get(fileInfo.id);
         if (!previous) return;
+        if (/^-?\d+$/.test(String(previous.telegramChatId || '')) &&
+            (!/^-?\d+$/.test(String(fileInfo.telegramChatId || '')) || Number(previous.telegramFileIdUpdatedAt || 0) >= Number(fileInfo.telegramFileIdUpdatedAt || 0))) {
+            fileInfo.telegramChatId = previous.telegramChatId;
+        }
         const previousUpdatedAt = Number(previous.telegramFileIdUpdatedAt) || 0;
         const nextUpdatedAt = Number(fileInfo.telegramFileIdUpdatedAt) || 0;
         if (previousUpdatedAt <= nextUpdatedAt) return;

@@ -31,12 +31,16 @@ function diskCaption(file, backend, context = {}, remote = {}) {
 function diskThumbnailCaption(file, backend, context = {}) {
     return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);
 }
-function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now }) {
+function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now, resolveChatIdentifier = value => value }) {
     const repository = openDiskRepository(dataDir);
     const placeholdersInFlight = new Map();
     const log = createDiskUploadLog(dataDir);
     async function call(backend, method, payload, init, retry = 0, trace = {}) {
         if (!backend?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+        if (payload && !init) {
+            payload = { ...payload };
+            for (const key of ['chat_id', 'from_chat_id']) if (payload[key]) payload[key] = resolveChatIdentifier(payload[key]);
+        }
         let response, data;
         const started = Date.now(), requestId = crypto.randomUUID();
         const { signal: cancelSignal, ...traceFields } = trace;

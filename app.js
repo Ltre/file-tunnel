@@ -6233,6 +6233,29 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
     return task;
 }
 
+async function applyConfirmedTelegramChatLocally(fileId, chatId) {
+    if (!/^-?[1-9]\d{0,15}$/.test(String(chatId || '')) || !Number.isSafeInteger(Number(chatId)) || Math.abs(Number(chatId)) > 4503599627370495) return false;
+    const upgrade = file => {
+        if (!file || file.id !== fileId || /^-?\d+$/.test(String(file.telegramChatId || ''))) return null;
+        // Only source annotations change: no version, ownership, bytes or provider flags.
+        return { ...file, telegramChatId: String(chatId) };
+    };
+    const stored = await getFromStore('files', fileId).catch(() => null);
+    if (!hasCompleteFileCache(stored, stored)) return false;
+    if (/^-?\d+$/.test(String(stored.telegramChatId || '')) && String(stored.telegramChatId) !== String(chatId)) return false;
+    const next = upgrade(stored);
+    if (next) await saveToStore('files', next);
+    for (const message of await getCurrentSessionMessages()) {
+        let changed = false;
+        const patch = file => { const value = upgrade(file); if (value) changed = true; return value || file; };
+        const updated = { ...message };
+        if (message.fileInfo) updated.fileInfo = patch(message.fileInfo);
+        if (message.collection?.files) updated.collection = { ...message.collection, files: message.collection.files.map(patch) };
+        if (changed) await saveToStore('messages', updated);
+    }
+    return true;
+}
+
 async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     if (hasCompleteFileCache(storedFile, fileInfo) && !storedFile?.cacheCleared) {
@@ -6257,6 +6280,7 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
             : `server-asset-fetch-${response.status}`);
     }
     const serverOrigin = response.headers.get('x-drop2tunnel-asset-origin');
+    const confirmedChatId = response.headers.get('x-drop2tunnel-telegram-chat-id');
     if (serverOrigin === 'sns-refetch') {
         setServerAssetRecoveryStage(fileInfo, '3/4 SNS 原链接重新获取完成，正在下载');
     } else if (serverOrigin === 'telegram-refetch') {
@@ -6266,11 +6290,15 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     }
     const buffer = await response.arrayBuffer();
     const expectedSize = Number(response.headers.get('content-length')) || Number(fileInfo.size) || 0;
+    if (response.status === 206) throw new Error('server-asset-incomplete-response');
     if (expectedSize > 0 && buffer.byteLength !== expectedSize) {
         throw new Error(`server-asset-size-mismatch-${buffer.byteLength}-${expectedSize}`);
     }
     const nextFile = {
         ...(storedFile || {}),
+        ...(fileInfo.telegramFileId && Number(fileInfo.telegramFileIdUpdatedAt || 0) >= Number(storedFile?.telegramFileIdUpdatedAt || 0) ? { telegramFileId: fileInfo.telegramFileId, telegramFileUniqueId: fileInfo.telegramFileUniqueId || '', telegramFileIdUpdatedAt: fileInfo.telegramFileIdUpdatedAt || 0, telegramMessageId: fileInfo.telegramMessageId || storedFile?.telegramMessageId || 0 } : {}),
+        ...(fileInfo.telegramChatId ? { telegramChatId: storedFile?.telegramChatId || fileInfo.telegramChatId } : {}),
+        ...(fileInfo.telegramDriveFileId ? { telegramDriveFileId: fileInfo.telegramDriveFileId, telegramPartFileIds: fileInfo.telegramPartFileIds || [] } : {}),
         id: fileInfo.id,
         name: fileInfo.name,
         type: fileInfo.type || 'application/octet-stream',
@@ -6292,6 +6320,14 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     const verifiedFile = await getFromStore('files', fileInfo.id);
     if (!hasCompleteFileCache(verifiedFile, { ...fileInfo, size: buffer.byteLength })) {
         throw new Error('server-asset-cache-verification-failed');
+    }
+    try {
+        if (confirmedChatId && await applyConfirmedTelegramChatLocally(fileInfo.id, confirmedChatId)) {
+            fileInfo.telegramChatId = verifiedFile.telegramChatId = (await getFromStore('files', fileInfo.id)).telegramChatId;
+        }
+    } catch (error) {
+        // A source-annotation write must not stop an already verified file's provider registration.
+        historyLog('telegram-chat-migration-failed', { fileId: fileInfo.id, error: error.message });
     }
     notifyMusicLibraryAssetAvailable(fileInfo, verifiedFile);
     await fileAssetTransfer?.announce?.(verifiedFile).catch(err => historyLog('server-asset-cache-announce-failed', {
@@ -7746,6 +7782,8 @@ async function associateTelegramDriveBackup(messageId, sourceFiles, uploadedItem
         telegramFileId: item.telegramFileId || '',
         telegramFileUniqueId: item.telegramFileUniqueId || '',
         telegramPartFileIds: item.telegramPartFileIds || [],
+        telegramChatId: item.telegramChatId || fileInfo.telegramChatId || '',
+        telegramMessageId: item.telegramMessageId || 0,
         serverAssetUrl: item.serverAssetUrl || '',
         isServerAsset: Boolean(item.serverAssetUrl),
         telegramFileIdUpdatedAt: Date.now()
@@ -12940,6 +12978,15 @@ async function deleteHistoryMessage(messageId) {
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
     const previous = await getFromStore('messages', message.id).catch(() => null);
+    if (previous) {
+        const files = entry => entry.type === 'collection' ? getCollectionFiles(entry) : entry.fileInfo ? [entry.fileInfo] : [];
+        const known = new Map(files(previous).map(file => [file.id, file]));
+        for (const file of files(message)) {
+            const old = known.get(file.id);
+            if (/^-?\d+$/.test(String(old?.telegramChatId || '')) &&
+                (!/^-?\d+$/.test(String(file.telegramChatId || '')) || Number(old.telegramFileIdUpdatedAt || 0) >= Number(file.telegramFileIdUpdatedAt || 0))) file.telegramChatId = old.telegramChatId;
+        }
+    }
     let removedCollectionFiles = [], replacedSingleFile = null;
     if (previous?.type === 'collection' && message.type === 'collection') {
         const nextIds = new Set(getCollectionFiles(message).map(file => file.id));
@@ -13451,6 +13498,7 @@ async function getSessionResourceInventory() {
                 isRecordFavorite: false,
                 serverAssetUrl: '',
                 telegramFileId: '',
+                telegramChatId: '',
                 telegramFileIdUpdatedAt: 0,
                 file: null,
                 references: [],
@@ -13474,6 +13522,7 @@ async function getSessionResourceInventory() {
         resource.isTelegramSource = resource.isTelegramSource || candidate.telegramBotOrigin === true ||
             Boolean(candidate.telegramFileId || candidate.telegramFileUniqueId);
         if (candidate.serverAssetUrl) resource.serverAssetUrl = candidate.serverAssetUrl;
+        if (candidate.telegramChatId && (!/^-?\d+$/.test(resource.telegramChatId) || /^-?\d+$/.test(String(candidate.telegramChatId)))) resource.telegramChatId = candidate.telegramChatId;
         if (candidate.telegramFileId && Number(candidate.telegramFileIdUpdatedAt || 0) >= resource.telegramFileIdUpdatedAt) {
             resource.telegramFileId = candidate.telegramFileId;
             resource.telegramFileIdUpdatedAt = Number(candidate.telegramFileIdUpdatedAt) || 0;
@@ -14108,6 +14157,7 @@ async function applyTelegramFileIdUpdateLocally(fileId, update) {
             telegramFileId: update.telegramFileId,
             telegramFileUniqueId: update.telegramFileUniqueId || '',
             telegramFileIdUpdatedAt: update.telegramFileIdUpdatedAt,
+            ...(update.telegramChatId ? { telegramChatId: update.telegramChatId, telegramMessageId: update.telegramMessageId || 0 } : {}),
             isServerAsset: true,
             serverAssetUrl: `/api/server-assets/${fileId}`
         });
@@ -14119,6 +14169,7 @@ async function applyTelegramFileIdUpdateLocally(fileId, update) {
             fileInfo.telegramFileId = update.telegramFileId;
             fileInfo.telegramFileUniqueId = update.telegramFileUniqueId || '';
             fileInfo.telegramFileIdUpdatedAt = update.telegramFileIdUpdatedAt;
+            if (update.telegramChatId) { fileInfo.telegramChatId = update.telegramChatId; fileInfo.telegramMessageId = update.telegramMessageId || 0; }
             fileInfo.isServerAsset = true;
             fileInfo.serverAssetUrl = `/api/server-assets/${fileId}`;
             changed = true;

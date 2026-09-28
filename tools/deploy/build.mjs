@@ -23,6 +23,7 @@ const SCRIPT_SOURCES = [
   'client/disk-share.js',
   'client/disk-tunnel-adapter.js',
   'client/disk-admin.js',
+  'client/telegram-chat-dictionary.js',
   'client/disk-management.js',
   'client/simplewebauthn.js',
   'client/sns-download-cache.js',
@@ -478,6 +479,7 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
+  await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.cjs', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.md', outRoot);
   if (await pathExists(path.join(ROOT, 'prompts', 'resources'))) await copyDirRelative('prompts/resources', outRoot);

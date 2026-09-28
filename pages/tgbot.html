@@ -295,6 +295,18 @@
             </form>
         </section>
 
+        <section class="panel" aria-labelledby="chatDictionaryTitle">
+            <h2 id="chatDictionaryTitle">Telegram Chat 字典库</h2>
+            <p class="subtle">维护数字 Chat ID 与 public 名称的对应关系。频道改名或改为私有后，请保留旧名称作为历史别名。字典独立保存，不修改 Token、Webhook 或网盘分区。</p>
+            <div id="telegramChatDictionaryRows"></div>
+            <div class="actions">
+                <button class="btn" type="button" id="telegramChatDictionaryAdd">＋ 新增映射</button>
+                <button class="btn" type="button" id="telegramChatDictionaryReload">重新加载</button>
+                <button class="btn primary" type="button" id="telegramChatDictionarySave">保存 Chat 字典</button>
+            </div>
+            <div class="hint">Chat ID → public 名称只用于显示和兼容；不会将数字 ID 数据改回 public 名称。映射在实际回源时验证，完整文件成功恢复后才迁移浏览器标注。<a href="/docs/setup/telegram-chat-dictionary.md" target="_blank" rel="noopener">使用说明</a></div>
+            <div class="status" id="telegramChatDictionaryStatus" role="status"></div>
+        </section>
         <section class="panel" aria-labelledby="webhookTitle">
             <h2 id="webhookTitle">Webhook 管理</h2>
             <p class="subtle">保存上方配置不会再设置、切换或删除 Webhook。Telegram 一个 Bot 同时只能使用一个 Webhook；只有点击下方按钮，才会把它明确切换到当前服务器域名。</p>
@@ -317,6 +329,7 @@
         </section>
     </main>
     <script src="/client/disk-admin.js"></script>
+    <script src="/client/telegram-chat-dictionary.js"></script>
 
     <script>
         const form = document.getElementById('telegramBotForm');
