@@ -13,6 +13,7 @@ const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskPartCache } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
+const { createObjectStorage } = require('./object-storage');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -97,6 +98,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const external = express.Router();
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
+    let objectStorage;
     const shares = createDiskShares({ dataDir });
     const collaborations = createDiskCollaborationStore(dataDir);
     const shared = express.Router();
@@ -114,6 +116,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const cleanupTimer = setInterval(() => {
         cleanupExpiredUploads().catch(() => console.warn('[网盘] 暂存清理失败，请检查数据目录权限'));
         retryCaptions().catch(() => {});
+        retryRemoteCleanup().catch(error => console.warn('[网盘] 旧对象清理重试失败：', error.message));
     }, 60000);
     cleanupTimer.unref();
     async function cleanupExpiredUploads() {
@@ -208,6 +211,26 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         } finally { retryingCaptions = false; }
     }
+    let cleaningRemote = false;
+    async function retryRemoteCleanup() {
+        if (cleaningRemote || closed) return;
+        cleaningRemote = true;
+        try {
+            for (const { diskSpace, store } of spaces.entries()) for (const saved of store.adminFiles().filter(file => file.pendingRemoteCleanup?.length)) {
+                const scope = { userId: saved.ownerId, diskSpace };
+                for (const stale of saved.pendingRemoteCleanup) {
+                    try {
+                        if (stale.parts?.length || stale.messageId || stale.thumbnail?.messageId)
+                            await enqueueTelegramUpload({ id: `cleanup-${saved.id}` }, () => telegram.remove(stale.backendId ? auth.backend(stale.backendId) : getDefaultBackend(stale.channelId), stale));
+                        await mutate({ diskScope: scope }, () => {
+                            const current = store.get(scope.userId, saved.id);
+                            if (current) store.clearPendingRemoteCleanup(scope.userId, current.id, stale.messageId, stale.channelId);
+                        });
+                    } catch (error) { log('s3.overwrite-cleanup-retry', { fileId: saved.id, messageId: stale.messageId, error: networkDetails(error) }); }
+                }
+            }
+        } finally { cleaningRemote = false; }
+    }
     const wrap = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next);
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     async function openRemoteRange(backend, file, start = 0, end = Number(file.size) - 1, signal, diskSpace = '') {
@@ -277,7 +300,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!range) { res.status(416).set('Content-Range', `bytes */${file.size}`).end(); return null; }
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-        const source = await readRemote(backend, file, range.start, range.end, abort.signal, diskSpace);
+        const source = await objectStorage.openFile(backend, file, range.start, range.end, abort.signal, diskSpace);
         const length = range.end - range.start + 1;
         res.status(range.partial ? 206 : 200);
         res.set('Accept-Ranges', 'bytes');
@@ -609,6 +632,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         spaces.track(req.diskApp.appId, user.id, diskSpace);
         next();
     }));
+    let coreUpload;
     function contents(router) {
         const scope = req => ({ ...req.diskScope, deviceId: /^[a-zA-Z0-9_-]{8,120}$/.test(req.get('X-Disk-Device-Id') || '') ? req.get('X-Disk-Device-Id') : '' });
         const owner = req => req.diskUser.id;
@@ -722,8 +746,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 if (collaborations.protectFile(owner(req), req.diskScope.diskSpace, file.id)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
                 if (file.reviewStatus === 'deleted') { store(req).remove(owner(req), file.id); return { ok: true, removedPlaceholder: true }; }
                 update({ phase: 'telegram-delete', message: '正在请求 Telegram 删除：' + file.name });
-                await telegram.remove(fileBackend(req, file), file);
-                store(req).remove(owner(req), file.id); return { ok: true };
+                await objectStorage.deleteFile(scope(req), file); return { ok: true };
             });
         }));
         router.delete('/directories', wrap((req, res) => {
@@ -741,7 +764,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 let count = 0; const failures = [];
                 for (const file of currentTree.files) {
                     update({ phase: 'telegram-delete', percent: null, message: '正在删除 ' + (++count) + '/' + tree.files.length + '：' + file.name });
-                    try { if (file.reviewStatus !== 'deleted') await telegram.remove(fileBackend(req, file), file); store(req).remove(owner(req), file.id); }
+                    try { if (file.reviewStatus !== 'deleted') await objectStorage.deleteFile(scope(req), file); else store(req).remove(owner(req), file.id); }
                     catch (_) { failures.push(file.id); }
                 }
                 if (failures.length) throw new Error('DISK_DELETE_PARTIAL');
@@ -825,7 +848,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     }
                     if (job.clientDone && state.uploadedParts === state.totalParts) {
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收全部分片，正在写入逻辑文件索引' });
-                        return mutate(req, async () => {
+                        const result = await mutate(req, async () => {
                             store(req).validateUpload(job.id);
                             const sent = store(req).uploadResults(job.id);
                             if (sent.some(result => !result)) throw new Error('TELEGRAM_PARTS_INVALID');
@@ -835,6 +858,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             const warnings = sent.filter(file => file.captionWarning).map(file => file.captionWarning);
                             return { ok: true, items: items.map(uploadResultFile), warnings };
                         });
+                        queueMicrotask(() => retryRemoteCleanup().catch(() => {}));
+                        return result;
                     }
                     let batch = nextPipelineBatch(job);
                     if (batch.length === 1 && !job.clientDone) { await pipelineWait(job, 350); batch = nextPipelineBatch(job); }
@@ -886,6 +911,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 job.pipelineDoneResolve?.();
             }
         };
+        if (router === browser) coreUpload = { runUploadPipeline, pipelineWait, pipelineWake, rollbackPipelineRemote };
         router.post('/uploads', wrap((req, res) => {
             const storage = backend(req);
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
@@ -1054,7 +1080,81 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     contents(collaborationContent);
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
+    async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal }) {
+        const diskSpace = String(mapping.diskSpace || '');
+        const diskStore = spaces.get(diskSpace);
+        const storage = mapping.backendId ? auth.backend(mapping.backendId) : getDefaultBackend();
+        if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+        const req = { diskScope: { userId: owner.id, diskSpace }, diskStore, diskUser: owner,
+            diskApp: { appId: 's3', storage }, get: () => '' };
+        const job = diskStore.begin({ owner, folderPath: info.folderPath, files: [{ name: info.name, type: contentType, size }], maxDepth: maxDepth(), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT,
+            backendId: storage.id || '', channelId: storage.channelId, sourceAppId: 's3', metadata, replaceId });
+        job.storage = storage;
+        try {
+            const operation = operations.create(req.diskScope, 'upload', `S3 上传：${info.key}`, size);
+            job.operationId = operation.operation_id;
+            diskStore.setUploadContext(job.id, { operationId: job.operationId, channelId: storage.channelId });
+        } catch (error) { diskStore.abort(job.id); throw error; }
+        job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
+        const control = { cancelled: false, throwIfCancelled() { if (signal?.aborted) throw new Error('OPERATION_CANCELLED'); } };
+        const running = Promise.resolve().then(() => coreUpload.runUploadPipeline(req, job, patch => operations.update(job.operationId, patch), control))
+            .then(result => { operations.complete(job.operationId, result); return result; }, error => { operations.fail(job.operationId, error); throw error; });
+        running.catch(() => {});
+        // A PUT request is one continuous stream, but the existing browser pipeline
+        // accepts exact 20 MB Content-Range parts. This adapter keeps at most one
+        // incoming network chunk plus one part on disk while Telegram consumes it.
+        const iterator = input[Symbol.asyncIterator]();
+        let carry = Buffer.alloc(0), received = 0;
+        const md5 = crypto.createHash('md5'), sha = crypto.createHash('sha256');
+        async function* bytesForPart(wanted) {
+            let left = wanted;
+            while (left) {
+                if (signal?.aborted) throw new Error('OPERATION_CANCELLED');
+                if (!carry.length) {
+                    const next = await iterator.next();
+                    if (next.done) throw new Error('IncompleteBody');
+                    carry = Buffer.from(next.value);
+                    if (!carry.length) continue;
+                }
+                const take = Math.min(left, carry.length), chunk = carry.subarray(0, take);
+                carry = carry.subarray(take); left -= take; received += take;
+                md5.update(chunk); sha.update(chunk); yield chunk;
+            }
+        }
+        try {
+            for (const part of job.files[0].parts) {
+                while (true) {
+                    if (job.pipelineError) throw new Error(job.pipelineError);
+                    const state = diskStore.uploadQueue(job.id);
+                    if (!state) throw new Error('UPLOAD_NOT_FOUND');
+                    if (state.pendingParts < 5 && state.pendingBytes < 100_000_000) break;
+                    await coreUpload.pipelineWait(job);
+                }
+                await diskStore.receivePart(job.id, 0, Readable.from(bytesForPart(part.size)), `bytes ${part.byteStart}-${part.byteEnd}/${size}`);
+                coreUpload.pipelineWake(job);
+            }
+            if (carry.length || !(await iterator.next()).done) throw new Error('EntityTooLarge');
+            if (received !== size) throw new Error('IncompleteBody');
+            const actualSha = sha.digest('hex');
+            if (expectedSha256 && expectedSha256 !== 'UNSIGNED-PAYLOAD' && actualSha !== expectedSha256.toLowerCase()) throw new Error('XAmzContentSHA256Mismatch');
+            const s3ETag = md5.digest('hex');
+            if (expectedMd5 && expectedMd5 !== Buffer.from(s3ETag, 'hex').toString('base64')) throw new Error('BadDigest');
+            job.metadata = { ...metadata, s3ETag };
+            job.clientDone = true; job.finishing = true; coreUpload.pipelineWake(job);
+            await running;
+            return diskStore.adminFiles().find(file => file.ownerId === owner.id && file.folderPath === info.folderPath && file.name === info.name);
+        } catch (error) {
+            job.pipelineAbort?.abort(); coreUpload.pipelineWake(job);
+            await running.catch(() => {});
+            diskStore.abort(job.id);
+            operations.fail(job.operationId, error);
+            throw error;
+        }
+    }
+    objectStorage = createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange: readRemote,
+        uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload,
+        protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id), maxDepth });
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, spaces, retryCaptions, close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
+    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

@@ -252,7 +252,8 @@ const RATE_LIMIT = {
     // this generic page limiter makes one legitimate large upload lock every
     // drive route for the rest of the 15-minute window.
     skip(req) {
-        return ['/api/telegram/drive/uploads', '/api/telegram/drive/operations', '/api/telegram/drive/list', '/api/telegram/drive/tree', '/api/telegram/drive/directories', '/api/telegram/drive/files'].some(prefix => req.path.startsWith(prefix)) ||
+        return req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ||
+            ['/api/telegram/drive/uploads', '/api/telegram/drive/operations', '/api/telegram/drive/list', '/api/telegram/drive/tree', '/api/telegram/drive/directories', '/api/telegram/drive/files'].some(prefix => req.path.startsWith(prefix)) ||
             req.path.startsWith('/api/telegram/disk/v1') ||
             req.path.startsWith('/api/telegram/disk-admin') ||
             req.path.startsWith('/api/telegram/disk-shares');
@@ -997,7 +998,8 @@ app.use((req, res, next) => {
 
 // 速率限制
 app.use(rateLimit(RATE_LIMIT));
-app.use(express.json({ limit: '2mb' }));
+const ordinaryJsonBody = express.json({ limit: '2mb' });
+app.use((req, res, next) => req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ? next() : ordinaryJsonBody(req, res, next));
 
 app.get('/runtime-config.js', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -2407,6 +2409,10 @@ const diskAPI = createDiskAPI({
         saveTelegramBotConfig(config);
     }
 });
+const { createS3Gateway } = require('./server/s3');
+const s3Gateway = createS3Gateway({ dataDir: SERVER_DATA_DIR, objectStorage: diskAPI.objectStorage });
+app.use('/S3API', s3Gateway.api);
+app.use('/s3', s3Gateway.content);
 app.use('/api/telegram/drive', diskAPI.browser);
 app.use('/api/telegram/disk/v1', diskAPI.external);
 app.use('/api/telegram/disk-admin', adminAuth.requireAuth, diskAPI.admin);

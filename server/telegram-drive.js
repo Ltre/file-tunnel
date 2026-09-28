@@ -168,6 +168,33 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             persist();
             return result;
         },
+        setFolderMarker(ownerId, folderPath, metadata = {}, maxDepth = 20) {
+            const safe = normalizePath(folderPath);
+            if (!safe) throw new Error('DISK_NAME_INVALID');
+            const existed = new Set(ownerDirectories(ownerId).map(item => item.path));
+            const item = ensureDirectoryRecords(ownerId, safe, maxDepth);
+            let current = '';
+            for (const part of safe.split('/')) {
+                current = joinPath(current, part);
+                if (!existed.has(current)) directories.get(directoryKey(ownerId, current)).s3CreatedDirectory = true;
+            }
+            Object.assign(item, { s3Marker: { metadata, updatedAt: Date.now() }, updatedAt: Date.now() });
+            persist(); return item;
+        },
+        clearFolderMarker(ownerId, folderPath) {
+            const item = directories.get(directoryKey(ownerId, folderPath));
+            if (!item?.s3Marker) return;
+            delete item.s3Marker; item.updatedAt = Date.now();
+            let current = normalizePath(folderPath);
+            while (current) {
+                const directory = directories.get(directoryKey(ownerId, current));
+                if (!directory?.s3CreatedDirectory || directory.s3Marker || ownerRecords(ownerId).some(file => (file.folderPath || '') === current || (file.folderPath || '').startsWith(current + '/'))
+                    || ownerDirectories(ownerId).some(child => child.path !== current && child.path.startsWith(current + '/'))) break;
+                directories.delete(directoryKey(ownerId, current));
+                current = parentPath(current);
+            }
+            persist();
+        },
         list(ownerId, folderPath = '') {
             const owner = String(ownerId);
             const safe = normalizePath(folderPath);
@@ -298,7 +325,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             touchDirectory(ownerId, destination); persist(); return item;
         },
         hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },
-        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '', channelId = '' }) {
+        begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '', channelId = '', replaceId = '' }) {
             const safePath = normalizePath(folderPath); assertDepth(safePath, maxDepth);
             const incoming = Array.isArray(files) ? files : [];
             if (incoming.length > 100) throw new Error('DISK_BATCH_LIMIT');
@@ -312,7 +339,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
                 assertDepth(folder, maxDepth);
                 const key = folder + '/' + name;
                 if (names.has(key)) throw new Error('DISK_NAME_CONFLICT');
-                names.add(key); assertFreeName(owner.id, folder, name);
+                names.add(key); assertFreeName(owner.id, folder, name, replaceId);
                 // A batch cannot reserve both a file and a descendant of that file.
                 const parts = folder.split('/').filter(Boolean);
                 for (let i = 0; i < parts.length; i++) {
@@ -343,7 +370,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
                 return parts;
             };
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
-            const job = { id, owner, metadata, backendId, channelId: String(channelId || ''), sourceAppId: String(sourceAppId || ''), uploadLimit, folderPath: safePath,
+            const job = { id, owner, metadata, backendId, channelId: String(channelId || ''), sourceAppId: String(sourceAppId || ''), replaceId: String(replaceId || ''), uploadLimit, folderPath: safePath,
 files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, mediaIndex: file.mediaIndex && typeof file.mediaIndex === 'object' ? file.mediaIndex : { mode: 'unavailable' }, parts: normalizeUploadParts(file), path: '', received: 0, chunks: [] })), dir, createdAt: Date.now(), maxDepth };
             uploads.set(id, job); persistUpload(job); return job;
         },
@@ -465,7 +492,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         validateUpload(uploadId) {
             const job = this.finish(uploadId);
             for (const file of job.files) {
-                assertFreeName(job.owner.id, file.folderPath, file.name, '', job.id);
+                assertFreeName(job.owner.id, file.folderPath, file.name, job.replaceId || '', job.id);
                 assertDepth(file.folderPath, job.maxDepth);
                 const parts = file.folderPath.split('/').filter(Boolean);
                 for (let index = 0; index < parts.length; index++) {
@@ -483,11 +510,18 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 const remote = sent[index] || {};
                 const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0, sha256: String(part.sha256 || '') }));
                 const thumbnail = remote.thumbnail ? { fileId: String(remote.thumbnail.fileId || ''), fileUniqueId: String(remote.thumbnail.fileUniqueId || ''), messageId: Number(remote.thumbnail.messageId) || 0, messageDate: Number(remote.thumbnail.messageDate) || now, mediaType: remote.thumbnail.mediaType || 'document', size: Number(remote.thumbnail.size) || 0, type: String(remote.thumbnail.type || 'image/jpeg') } : null;
-                const item = { id: file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, thumbnail, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                const previous = job.replaceId ? this.get(job.owner.id, job.replaceId) : null;
+                if (job.replaceId && (!previous || previous.folderPath !== file.folderPath || previous.name !== file.name)) throw new Error('DISK_NAME_CONFLICT');
+                const item = { id: previous?.id || file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, thumbnail, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                if (previous) for (const part of parts) part.logicalFileId = item.id;
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
                 item.captionWarning = remote.captionWarning || '';
                 item.captionSyncPending = Boolean(remote.captionWarning);
+                if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({
+                    name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt,
+                    parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null
+                }));
                 records.set(item.id, item); return item;
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);
@@ -495,6 +529,32 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); return created;
         },
         abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); },
+        putMetadataObject(owner, folderPath, name, type = 'application/octet-stream', metadata = {}, maxDepth = 20, replaceId = '') {
+            const safe = normalizePath(folderPath), fileName = normalizeSegment(name, 180), now = Date.now();
+            assertDepth(safe, maxDepth);
+            const previous = replaceId ? this.get(owner.id, replaceId) : null;
+            if (replaceId && (!previous || previous.folderPath !== safe || previous.name !== fileName)) throw new Error('DISK_NAME_CONFLICT');
+            assertFreeName(owner.id, safe, fileName, replaceId);
+            ensureDirectoryRecords(owner.id, safe, maxDepth, now);
+            const item = { id: previous?.id || crypto.randomUUID(), ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, type, size: 0, channelId: '', backendId: '', parts: [], partCount: 0, fileId: '', fileUniqueId: '', messageId: 0, thumbnail: null, metadata, createdAt: now, updatedAt: now };
+            if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
+            records.set(item.id, item); touchDirectory(owner.id, safe, now); persist(); return item;
+        },
+        putCopiedObject(owner, folderPath, name, source, remotes, backend, maxDepth = 20, replaceId = '', logicalId = '') {
+            const safe = normalizePath(folderPath), fileName = normalizeSegment(name, 180), now = Date.now();
+            assertDepth(safe, maxDepth);
+            const previous = replaceId ? this.get(owner.id, replaceId) : null;
+            if (replaceId && (!previous || previous.folderPath !== safe || previous.name !== fileName)) throw new Error('DISK_NAME_CONFLICT');
+            assertFreeName(owner.id, safe, fileName, replaceId);
+            ensureDirectoryRecords(owner.id, safe, maxDepth, now);
+            const id = previous?.id || logicalId || crypto.randomUUID();
+            const parts = remotes.map((remote, index) => ({ ...source.parts[index], ...remote, logicalFileId: id, partIndex: index + 1, partCount: remotes.length, originalSize: source.size }));
+            const first = parts[0] || {};
+            const item = { ...source, id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: null, createdAt: now, updatedAt: now };
+            delete item.pendingRemoteCleanup;
+            if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
+            records.set(item.id, item); touchDirectory(owner.id, safe, now); persist(); return item;
+        },
         preserveForRecovery(uploadId) {
             const job = uploads.get(String(uploadId));
             if (!job) return null;
@@ -504,6 +564,11 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         recoveredUploads() { return recoveredUploads.splice(0); },
         discardRecovered(job) { if (!job?.dir) return; uploads.delete(String(job.id)); try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} },
         update(ownerId, id, patch) { const item = this.get(ownerId, id); if (!item) return null; Object.assign(item, patch, { updatedAt: Date.now() }); records.set(item.id, item); touchDirectory(ownerId, item.folderPath || ''); persist(); return item; },
+        clearPendingRemoteCleanup(ownerId, id, messageId, channelId) {
+            const item = this.get(ownerId, id); if (!item) return null;
+            item.pendingRemoteCleanup = (item.pendingRemoteCleanup || []).filter(old => old.messageId !== messageId || old.channelId !== channelId);
+            persist(); return item;
+        },
         setReviewStatus(ownerId, id, status) {
             const item = this.get(ownerId, id);
             if (!item || !['active', 'blocked'].includes(status)) throw new Error('FILE_NOT_FOUND');
