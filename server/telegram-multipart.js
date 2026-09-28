@@ -91,7 +91,7 @@ function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onP
     }));
     const fields = files.length === 1
         ? { chat_id: chatId, caption: normalized[0].caption ?? caption }
-        : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, caption: file.caption ?? (index === 0 ? caption : '') }))) };
+        : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, caption: file.caption ?? (index === 0 ? caption : ''), ...(disableContentTypeDetection ? { disable_content_type_detection: true } : {}) }))) };
     if (files.length === 1 && disableContentTypeDetection) fields.disable_content_type_detection = 'true';
     const boundary = `----Drop2Tunnel${crypto.randomBytes(18).toString('hex')}`;
     const parts = []; let contentLength = 0;

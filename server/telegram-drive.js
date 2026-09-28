@@ -2,9 +2,10 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 const { pipeline } = require('stream/promises');
-const { readJson, writeJson } = require('./disk-data');
+const { readJson, writeJson, writeJsonAsync } = require('./disk-data');
 const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 
@@ -68,15 +69,70 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         }
     };
     const uploadManifestPath = job => path.join(job.dir, 'upload-manifest.json');
-    const persistUpload = job => writeJson(uploadManifestPath(job), {
+    const uploadManifest = job => ({
         version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
+        pendingRollbackParts: job.pendingRollbackParts || [],
         files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, thumbnail: file.thumbnail ? {
             size: file.thumbnail.size, type: file.thumbnail.type, remote: file.thumbnail.remote || null
         } : null, chunks: (file.chunks || []).map(chunk => ({
             partIndex: chunk.partIndex, size: chunk.size, sha256: chunk.sha256 || '', remote: chunk.remote || null
         })) }))
     });
+    const persistenceError = (error, stage) => {
+        error.details = { ...error.details, stage: error.details?.stage || stage, syscall: error.details?.syscall || error.syscall || '' };
+        return error;
+    };
+    const persistUpload = job => {
+        try { writeJson(uploadManifestPath(job), uploadManifest(job)); }
+        catch (error) { throw persistenceError(error, 'upload-manifest-write'); }
+    };
+    const persistUploadAsync = (job, allowClosed = false) => {
+        // Receive and Telegram confirmation can overlap. Serialize replacements
+        // and take the snapshot only after the preceding write has finished.
+        job.manifestPending = (job.manifestPending || 0) + 1;
+        const pending = (job.manifestWrite || Promise.resolve()).catch(() => {}).then(async () => {
+            try {
+                if (job.closed && !allowClosed) throw new Error('OPERATION_CANCELLED');
+                try { await writeJsonAsync(uploadManifestPath(job), uploadManifest(job)); }
+                catch (error) { throw persistenceError(error, 'upload-manifest-write'); }
+            } finally { job.manifestPending--; }
+        });
+        job.manifestWrite = pending;
+        pending.catch(() => {});
+        return pending;
+    };
+    const assertUploadActive = job => {
+        if (job.closed || uploads.get(job.id) !== job) throw new Error('OPERATION_CANCELLED');
+    };
+    const registerReceiver = (job, request) => {
+        assertUploadActive(job);
+        job.receivers ||= new Set();
+        let done;
+        const receiver = { request, done: new Promise(resolve => { done = resolve; }) };
+        job.receivers.add(receiver);
+        return () => { job.receivers.delete(receiver); done(); };
+    };
+    const stopUpload = job => {
+        job.closed = true;
+        for (const receiver of job.receivers || []) receiver.request.destroy(new Error('OPERATION_CANCELLED'));
+    };
+    const cleanupWarning = (job, error) => console.warn('[disk-upload] staging.cleanup-failed', { uploadId: job.id, code: error.code || 'UNKNOWN', syscall: error.syscall || '' });
+    const unlinkStaging = (job, filename) => {
+        try { if (filename) fs.unlinkSync(filename); }
+        catch (error) { if (error.code !== 'ENOENT') cleanupWarning(job, error); }
+    };
+    const removeStaging = job => {
+        try { fs.rmSync(job.dir, { recursive: true, force: true }); }
+        catch (error) { cleanupWarning(job, error); }
+    };
+    const receiveToStaging = (request, filename) => {
+        const output = fs.createWriteStream(filename, { flags: 'wx' });
+        // Request-side aborts also destroy this stream. Only filesystem errors
+        // emitted by its own open/write syscall identify a staging write error.
+        output.once('error', error => { if (error.syscall) persistenceError(error, 'browser-part-write'); });
+        return pipeline(request, output);
+    };
     fs.mkdirSync(stagingRoot, { recursive: true });
     for (const entry of fs.readdirSync(stagingRoot, { withFileTypes: true })) {
         if (!entry.isDirectory() || !/^[a-f0-9-]{36}$/.test(entry.name)) continue;
@@ -372,7 +428,9 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
             const job = { id, owner, metadata, backendId, channelId: String(channelId || ''), sourceAppId: String(sourceAppId || ''), replaceId: String(replaceId || ''), uploadLimit, folderPath: safePath,
 files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, mediaIndex: file.mediaIndex && typeof file.mediaIndex === 'object' ? file.mediaIndex : { mode: 'unavailable' }, parts: normalizeUploadParts(file), path: '', received: 0, chunks: [] })), dir, createdAt: Date.now(), maxDepth };
-            uploads.set(id, job); persistUpload(job); return job;
+            uploads.set(id, job);
+            try { persistUpload(job); return job; }
+            catch (error) { stopUpload(job); removeStaging(job); uploads.delete(id); throw error; }
         },
         setUploadContext(uploadId, patch = {}) {
             const job = uploads.get(String(uploadId)); if (!job) return null;
@@ -380,18 +438,30 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (patch.channelId) job.channelId = String(patch.channelId);
             persistUpload(job); return job;
         },
+        async setUploadContextAsync(uploadId, patch = {}) {
+            const job = uploads.get(String(uploadId)); if (!job) return null;
+            if (patch.operationId) job.operationId = String(patch.operationId);
+            if (patch.channelId) job.channelId = String(patch.channelId);
+            await persistUploadAsync(job); return job;
+        },
         async receive(uploadId, index, request, onProgress) {
             const job = uploads.get(String(uploadId)); const file = job?.files[Number(index)]; if (!job || !file) throw new Error('telegram-drive-upload-not-found');
             if (file.path || file.receiving || file.chunks?.length) throw new Error('telegram-drive-upload-already-received');
+            const receiverDone = registerReceiver(job, request);
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-${file.name}`); let size = 0; const digest = crypto.createHash('sha256');
             request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > file.size || size > job.uploadLimit) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size, file.size); });
-            try { await pipeline(request, fs.createWriteStream(target, { flags: 'wx' })); } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; } finally { file.receiving = false; }
-            if (size !== file.size) { try { fs.unlinkSync(target); } catch (_) {} throw new Error('telegram-drive-upload-size-mismatch'); }
-            file.path = target; file.received = size;
-            if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, sha256: digest.digest('hex'), partIndex: 1, status: 'queued', remote: null });
-            persistUpload(job);
-            return { received: size };
+            try {
+                await receiveToStaging(request, target);
+                assertUploadActive(job);
+                if (size !== file.size) throw new Error('telegram-drive-upload-size-mismatch');
+                file.path = target; file.received = size;
+                if (!file.chunks.length) file.chunks.push({ path: target, offset: 0, size, sha256: digest.digest('hex'), partIndex: 1, status: 'queued', remote: null });
+                await persistUploadAsync(job);
+                assertUploadActive(job);
+                return { received: size };
+            } catch (error) { unlinkStaging(job, target); throw error; }
+            finally { file.receiving = false; receiverDone(); }
         },
         async receivePart(uploadId, index, request, range, onProgress) {
             const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
@@ -403,19 +473,22 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const length = end - start + 1;
             const plan = file.parts[file.chunks.length];
             if (![start, end, total].every(Number.isSafeInteger) || total !== file.size || start !== file.received || end < start || end >= total || !plan || plan.byteStart !== start || plan.byteEnd !== end || plan.size !== length) throw new Error('UPLOAD_RANGE_INVALID');
+            const receiverDone = registerReceiver(job, request);
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
             let size = 0; const digest = crypto.createHash('sha256');
             request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
             try {
-                await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
+                await receiveToStaging(request, target);
+                assertUploadActive(job);
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
                 file.chunks.push({ path: target, offset: start, size, sha256: digest.digest('hex'), partIndex: plan.index, status: 'queued', remote: null });
                 file.received += size;
-                persistUpload(job);
+                await persistUploadAsync(job);
+                assertUploadActive(job);
                 return { received: file.received, complete: file.received === file.size };
-            } catch (error) { try { fs.unlinkSync(target); } catch (_) {} throw error; }
-            finally { file.receiving = false; }
+            } catch (error) { unlinkStaging(job, target); throw error; }
+            finally { file.receiving = false; receiverDone(); }
         },
         async receiveThumbnail(uploadId, index, request, declaredSize, declaredType = 'image/jpeg') {
             const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
@@ -424,18 +497,26 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const expected = Number(declaredSize);
             if (!Number.isSafeInteger(expected) || expected <= 0 || expected > sizeLimit || !String(declaredType).startsWith('image/')) throw new Error('UPLOAD_THUMBNAIL_INVALID');
             if (file.thumbnail?.path || file.thumbnail?.receiving || file.thumbnail?.remote) throw new Error('telegram-drive-upload-already-received');
+            const receiverDone = registerReceiver(job, request);
             const target = path.join(job.dir, `${file.index}-media-cover.jpg`);
             const thumbnail = file.thumbnail = { size: expected, type: String(declaredType).slice(0, 120), path: target, receiving: true, status: 'receiving', remote: null };
             let received = 0;
             request.on('data', chunk => { received += chunk.length; if (received > expected || received > sizeLimit) request.destroy(new Error('UPLOAD_THUMBNAIL_INVALID')); });
             try {
-                await pipeline(request, fs.createWriteStream(target, { flags: 'wx' }));
+                await receiveToStaging(request, target);
+                assertUploadActive(job);
                 if (received !== expected) throw new Error('UPLOAD_THUMBNAIL_INVALID');
+                // The Telegram pipeline must not consume a cover until its
+                // receiving manifest has been saved. Otherwise a failed save
+                // can clear the thumbnail while Telegram is accepting it.
+                await persistUploadAsync(job);
+                assertUploadActive(job);
                 Object.assign(thumbnail, { receiving: false, status: 'queued' });
-                persistUpload(job); return { received };
+                return { received };
             } catch (error) {
-                file.thumbnail = null; try { fs.unlinkSync(target); } catch (_) {} throw error;
+                file.thumbnail = null; unlinkStaging(job, target); throw error;
             }
+            finally { receiverDone(); }
         },
         upload(uploadId) { return uploads.get(String(uploadId)); },
         uploadQueue(uploadId) {
@@ -456,8 +537,41 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (!chunk) throw new Error('UPLOAD_PART_STATE_INVALID');
             chunk.status = 'uploaded'; chunk.remote = remote;
             persistUpload(uploads.get(String(uploadId)));
-            try { if (chunk.path) fs.unlinkSync(chunk.path); } catch (_) {}
+            unlinkStaging(uploads.get(String(uploadId)), chunk.path);
             return chunk;
+        },
+        async markPartsUploaded(uploadId, remotes) {
+            const job = uploads.get(String(uploadId));
+            if (!job) throw new Error('UPLOAD_PART_STATE_INVALID');
+            assertUploadActive(job);
+            const confirmed = remotes.map(remote => {
+                const chunk = job.files[Number(remote.fileIndex)]?.chunks?.find(item => item.partIndex === Number(remote.partIndex));
+                if (!chunk) throw new Error('UPLOAD_PART_STATE_INVALID');
+                return { chunk, remote };
+            });
+            // Bind every accepted message before persistence can fail. Rollback
+            // must retain the entire album even if its manifest cannot be saved.
+            for (const { chunk, remote } of confirmed) { chunk.status = 'uploaded'; chunk.remote = remote; }
+            await persistUploadAsync(job);
+            assertUploadActive(job);
+            for (const { chunk } of confirmed) unlinkStaging(job, chunk.path);
+            return confirmed.map(entry => entry.chunk);
+        },
+        async keepUploadRollbackParts(uploadId, remotes) {
+            const job = uploads.get(String(uploadId));
+            if (!job) throw new Error('UPLOAD_NOT_FOUND');
+            assertUploadActive(job);
+            const retained = new Map((job.pendingRollbackParts || []).map(remote => [Number(remote.messageId), remote]));
+            for (const remote of remotes || []) {
+                const messageId = Number(remote?.messageId);
+                if (!Number.isSafeInteger(messageId) || messageId <= 0) continue;
+                retained.set(messageId, { ...retained.get(messageId), ...remote, messageId });
+            }
+            // These messages need rollback only. They must never contribute to
+            // uploaded chunk counts or replace another message for the same part.
+            job.pendingRollbackParts = [...retained.values()];
+            await persistUploadAsync(job);
+            return job.pendingRollbackParts;
         },
         markThumbnailUploading(uploadId, fileIndex) {
             const thumbnail = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.thumbnail;
@@ -468,8 +582,17 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const job = uploads.get(String(uploadId)), thumbnail = job?.files[Number(fileIndex)]?.thumbnail;
             if (!thumbnail) throw new Error('UPLOAD_THUMBNAIL_STATE_INVALID');
             thumbnail.status = 'uploaded'; thumbnail.remote = remote; persistUpload(job);
-            try { if (thumbnail.path) fs.unlinkSync(thumbnail.path); } catch (_) {}
+            unlinkStaging(job, thumbnail.path);
             return thumbnail;
+        },
+        async markThumbnailUploadedAsync(uploadId, fileIndex, remote) {
+            const job = uploads.get(String(uploadId)), thumbnail = job?.files[Number(fileIndex)]?.thumbnail;
+            if (!thumbnail) throw new Error('UPLOAD_THUMBNAIL_STATE_INVALID');
+            assertUploadActive(job);
+            thumbnail.status = 'uploaded'; thumbnail.remote = remote;
+            await persistUploadAsync(job);
+            assertUploadActive(job);
+            unlinkStaging(job, thumbnail.path); return thumbnail;
         },
         resetUploadingThumbnail(uploadId, fileIndex) {
             const thumbnail = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.thumbnail;
@@ -504,6 +627,8 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         ownsUpload(ownerId, uploadId) { const job = uploads.get(String(uploadId)); return Boolean(job && String(job.owner?.id) === String(ownerId)); },
         commit(uploadId, channelId, sent) {
             const job = this.finish(uploadId); const now = Date.now();
+            if (job.receivers?.size || job.manifestPending) throw new Error('UPLOAD_IN_PROGRESS');
+            if (job.pendingRollbackParts?.length) throw new Error('UPLOAD_ROLLBACK_PENDING');
             this.validateUpload(uploadId);
             for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
             const created = job.files.map((file, index) => {
@@ -526,9 +651,24 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);
             persist();
-            try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); return created;
+            stopUpload(job); removeStaging(job); uploads.delete(job.id); return created;
         },
-        abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} uploads.delete(job.id); },
+        abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; stopUpload(job); removeStaging(job); uploads.delete(job.id); },
+        async abortAsync(uploadId) {
+            const job = uploads.get(String(uploadId)); if (!job) return;
+            if (job.abortPromise) return job.abortPromise;
+            if (job.preservePromise) { await job.preservePromise; return; }
+            const pending = (async () => {
+                stopUpload(job);
+                await Promise.all([...(job.receivers || [])].map(receiver => receiver.done));
+                await job.manifestWrite?.catch(() => {});
+                await fsp.rm(job.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+                uploads.delete(job.id);
+            })();
+            job.abortPromise = pending;
+            try { await pending; }
+            finally { if (job.abortPromise === pending) job.abortPromise = null; }
+        },
         putMetadataObject(owner, folderPath, name, type = 'application/octet-stream', metadata = {}, maxDepth = 20, replaceId = '') {
             const safe = normalizePath(folderPath), fileName = normalizeSegment(name, 180), now = Date.now();
             assertDepth(safe, maxDepth);
@@ -558,11 +698,29 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         preserveForRecovery(uploadId) {
             const job = uploads.get(String(uploadId));
             if (!job) return null;
-            persistUpload(job); uploads.delete(job.id); return job;
+            stopUpload(job); persistUpload(job); uploads.delete(job.id); return job;
+        },
+        async preserveForRecoveryAsync(uploadId) {
+            const job = uploads.get(String(uploadId)); if (!job) return null;
+            if (job.preservePromise) return job.preservePromise;
+            const cleanup = job.abortPromise;
+            const pending = (async () => {
+                if (cleanup) {
+                    await cleanup.catch(() => {});
+                    if (uploads.get(job.id) !== job) return null;
+                }
+                stopUpload(job);
+                await Promise.all([...(job.receivers || [])].map(receiver => receiver.done));
+                await persistUploadAsync(job, true);
+                uploads.delete(job.id); return job;
+            })();
+            job.preservePromise = pending;
+            try { return await pending; }
+            finally { if (job.preservePromise === pending) job.preservePromise = null; }
         },
         finalizeExpired(uploadId) { this.abort(uploadId); },
         recoveredUploads() { return recoveredUploads.splice(0); },
-        discardRecovered(job) { if (!job?.dir) return; uploads.delete(String(job.id)); try { fs.rmSync(job.dir, { recursive: true, force: true }); } catch (_) {} },
+        discardRecovered(job) { if (!job?.dir) return; uploads.delete(String(job.id)); removeStaging(job); },
         update(ownerId, id, patch) { const item = this.get(ownerId, id); if (!item) return null; Object.assign(item, patch, { updatedAt: Date.now() }); records.set(item.id, item); touchDirectory(ownerId, item.folderPath || ''); persist(); return item; },
         clearPendingRemoteCleanup(ownerId, id, messageId, channelId) {
             const item = this.get(ownerId, id); if (!item) return null;

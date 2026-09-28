@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { openDiskRepository } = require('./disk-repository');
+const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 function createDiskOperations({ dataDir, now = Date.now }) {
     const repository = openDiskRepository(dataDir);
     let state = repository.loadWithRevision('operations');
@@ -61,14 +62,19 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             return view(job);
         },
         complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result }, true); },
-        fail(id, error) { return api.update(id, { status: 'failed', phase: 'failed', errorCode: String(error?.code || error?.message || 'DISK_OPERATION_FAILED').replace(/https?:\/\/\S+|bot\d+:[\w-]+/g, '[redacted]'), errorMessage: '操作失败，请检查错误码后重试', message: '操作失败', ...(error?.message === 'TELEGRAM_UPLOAD_RESULT_INVALID' && error.details ? { errorDetails: error.details } : {}) }, true); },
+        fail(id, error) {
+            const errorDetails = diskErrorDetails(error);
+            return api.update(id, { status: 'failed', phase: 'failed', errorCode: diskErrorCode(error), errorMessage: errorDetails.telegramDescription || '操作失败，请检查错误码后重试', message: '操作失败', errorDetails }, true);
+        },
         run(id, work) {
             const job = jobs.get(id);
             if (!job || terminal(job) || executing.has(id)) return false;
             executing.add(id);
             api.update(id, { status: 'running', phase: 'starting' }, true);
             const control = { get cancelled() { return Boolean(jobs.get(id)?.cancelRequested); }, throwIfCancelled() { if (jobs.get(id)?.cancelRequested) throw new Error('OPERATION_CANCELLED'); } };
-            Promise.resolve().then(() => work((patch) => api.update(id, patch), control)).then(result => api.complete(id, result), error => error?.message === 'OPERATION_CANCELLED' ? api.update(id, { status: 'cancelled', phase: 'cancelled', message: '用户已取消任务' }, true) : api.fail(id, error)).finally(() => { executing.delete(id); cancelHandlers.delete(id); });
+            Promise.resolve().then(() => work((patch) => api.update(id, patch), control)).then(result => api.complete(id, result), error => error?.message === 'OPERATION_CANCELLED' ? api.update(id, { status: 'cancelled', phase: 'cancelled', message: '用户已取消任务' }, true) : api.fail(id, error))
+                .catch(error => { console.warn('[disk-operations] 任务结束状态持久化失败', { operationId: id, code: diskErrorCode(error) }); })
+                .finally(() => { executing.delete(id); cancelHandlers.delete(id); });
             return true;
         },
         onCancel(id, handler) { if (jobs.has(id) && typeof handler === 'function') cancelHandlers.set(id, handler); },

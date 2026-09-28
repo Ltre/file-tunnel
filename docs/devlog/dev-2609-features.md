@@ -183,3 +183,69 @@ Description：
 - S3 Gateway：新增独立凭据 AES-256-GCM 加密存储及 `tools/s3-credentials.cjs` 管理命令；Access Key 仅能访问映射给它的用户与 Bucket/网盘分区。`/S3API` 实现 SigV4（完整原始路径签名、SHA-256、UNSIGNED-PAYLOAD、签名分块 body）、标准 XML ListBuckets/HeadBucket/ListObjectsV2、Put/Get/Head/DeleteObject、Range、CopyObject、DeleteObjects、GetBucketLocation；`/s3` 使用相同对象读取核心且仍需签名。SSE、匿名/预签名 URL、S3 Multipart Upload 等明确不实现。`server.js` 仅负责挂载并绕过会误处理 PUT body 的通用 JSON parser/网页频率计数；S3 路由另有限速。
 - 元数据与协同：S3 Key 在现有网盘路径模型无法无损表示时返回 `InvalidObjectName`；PUT 同步计算 MD5 ETag，原有浏览器文件使用稳定的分片索引摘要。文件覆盖、删除、复制检查协同编辑删除保护；原有 Disk API 的读取和删除改经同一对象核心，避免外围功能另起实现。覆盖或复制后的分片 `logicalFileId` 改为最终索引 ID，避免后续真实 Telegram 读取校验失败。
 - 验证：新增频道迁移、SigV4、S3 列表/分页、S3 HTTP 集成测试，覆盖超过 20 MB 分片、跨分片 Range、同 Bot `file_id` 复用、覆盖、无效 payload hash 回滚、0 Byte、目录 marker、批量删除、`/s3` 鉴权。网盘已有回归测试通过；全量 `node --test --test-isolation=none --test-concurrency=1 --test-reporter=dot` 退出码 0。未使用真实 Telegram 频道或 Android FolderSync 真机，因此其代理环境、SDK 具体请求头及交互兼容性仍需部署测试；使用和验收步骤见 `docs/telegram-drive-s3-compatible.md`。未暂存、未提交。
+
+## 67. 2026-09-28：260928-2 批量上传的 Telegram 拒绝、暂存写入与错误传达
+
+### 调查结论与证据边界
+
+- 在用户指定的 `dev/2609-s3-disksqlite+s3api-BUG` 工作区修改。只读比对灰度 `c2997b3` 与本地 `b7158bf`：Telegram 发送、multipart 构造、分片复用缓存源码没有变化；灰度版本尚未加入 S3。没有证据支持将本轮失败直接归因于 S3 或 JSON → SQLite 迁移；未重新迁移或修改当前数据库。
+- 本地 `disk-upload.log` 在 04:03:46Z、04:08:44Z 两次返回真实 Telegram HTTP 400，均为原字节 multipart `sendMediaGroup`：两个分片分别为 18,572 / 5,120 Byte，请求正文完整生成，Telegram 描述为 `failed to send message #1 ... Wrong file identifier/HTTP URL specified`。这些请求没有 `reused: true`，因此不能认定为迁移后复用了错误 `file_id`。原实现只对 413 拆批，没有处理此类明确相册拒绝；混合类型的批次与单发走不同接口，解释了失败表象的差异，但日志不足以证明 Telegram 内部拒绝哪一种具体格式。
+- 只读查询本地任务 `c79ed45c-e656-46e2-8527-492811de8340`，确认失败码是 EPERM；对应日志最后一次 Telegram 已成功确认消息 821 / 822，随后发生失败，没有请求网络错误记录。失败位于确认之后的本地处理阶段；旧记录缺少 syscall / stage，不能确定当时是哪次文件操作、哪个进程持有文件锁。已通过真实 Windows 不允许删除的读取句柄复现 manifest 原子替换失败，并验证新实现的重试。
+- 另有确定的错误掩盖：HTTP 用 `error.message` 判断错误码，带文件路径的 EPERM 被改成 `DISK_REQUEST_FAILED`；后台回滚移除上传状态后，浏览器后续 PUT / phase 只得到 `UPLOAD_NOT_FOUND`，没有传达原 Telegram 400。逐条确认并写 manifest 还可能在第一条写入失败时漏掉同相册其它已确认消息。
+- 灰度大文件的底层网络失败日志尚未提供，无法判定 DNS、连接、代理、发送中断或响应中断中的哪一种；没有把自动回滚本身当作根因，也没有据此随意调整分片大小或超时。
+
+### 实际修复
+
+- Telegram 相册仅对明确文件标识 / 文档类型拒绝的 400 降级为串行 `sendDocument`，保留每片与逻辑文件的关联；普通权限或参数 400 仍终止。复用 `file_id` 的单发被明确拒绝且仍有本地原字节时，失效缓存后重新上传。`disable_content_type_detection` 在相册每项显式设置；[官方文档](https://core.telegram.org/bots/api#inputmediadocument)说明相册本来就关闭探测，因此这项显式设置不作为根因结论。
+- 网络安全重试不再依据本地 Readable 产生了多少字节；仅在底层错误能证明 DNS / connect 失败且尚无响应、未取消时，最多额外重试两次并重建请求体。socket 重置、响应中断、没有底层原因的普通超时均不盲目重发，避免已被 Telegram 接收却重复创建消息。保持全局队列串行消费及既有 20,000,000 Byte 分片大小。
+- 上传 manifest 改用异步原子替换；每个上传任务内部串行写入、在真正写入前取最新快照。EPERM / EBUSY / EACCES 有限退避重试，最终失败保留旧 manifest 并清理临时文件。批次的全部 remote ID 先绑定再持久化，成功后才清理本地分片。接收流和 manifest 写入完成前不能 commit；封面须完成接收清单后才进入发送队列。
+- 回滚等待接收流关闭及挂起写入结束，避免删除目录后又被接收流程重建。初始化失败释放同名占用；清理失败保留恢复清单并进入现有后台重试。相册拆单途中或异常结果中可识别、但未能删除的消息，通过 `unremovedParts` / manifest `pendingRollbackParts` 完整传递；按 message ID 去重，不能计入上传成功分片或提交为文件。正常、过期及重启清理都覆盖这些消息。
+- 把 `error.code`、Telegram 脱敏描述、request ID、method、stage、syscall、网络 cause code 作为受控诊断保存并返回。后续请求和浏览器任务查询优先显示第一处真实失败；清理或失败状态写入的次生错误只记日志，不覆盖原原因。主动取消先记录取消状态，再终止 transport，避免显示成 Telegram 网络失败。
+- 分片缓存核对合法哈希、大小和 Bot 隔离；`getFile` 返回大小时再次比较。多实例更新 / 失效即时从 SQLite 重载。可选去重索引写入异常只记诊断，不丢失已确认消息、不让本来有效的上传失败。未更改迁移脚本、协同权限或 SQLite 文件提交事务；仍然整批上传全部成功后一次提交并显示，失败整体回滚。
+- 前端任务列表及提示显示脱敏错误细节，Service Worker 应用壳缓存升至 v69，让刷新后的页面获取修复脚本。
+
+### 验证与剩余现场验证
+
+- 新增 45 项回归：相册 400 恢复、失效复用、受限网络重试、递归和异常结果回滚失败、Windows 文件锁、manifest 并发 / 永久失败、接收取消、封面队列竞态、初始化同名重试、缓存完整性、首因传达，以及 11 / 20 文件两任务并行上传。验证并行任务只同时执行一个 Telegram 上传，整批完成前索引中没有部分文件。
+- 修改脚本的 `node --check` 与 `git diff --check` 通过。第一次全量检查中的 Windows 文件锁辅助进程被沙箱阻止（spawn EPERM）；获准在沙箱外重跑后，`node --test --test-isolation=none --test-concurrency=1 --test-reporter=spec` 共 386 项通过，0 失败、0 跳过。包含既有 S3、迁移、SQLite 持久化和协同编辑回归。
+- 没有向真实频道发送测试文件，没有部署或重启线上服务。测试使用临时目录并执行清理；未留下调试脚本，未暂存、未提交。真实灰度大文件网络原因仍待其 `telegram.network-error` / `telegram.pipeline-batch-failed` 日志确认；部署后应重测用户原混合批次及约 690 MB 文件，失败时新日志可区分 Telegram 响应与文件系统 / 连接阶段。
+
+建议 Git 提交日志（仅供手动提交）：
+
+Title：修复网盘混合批量上传失败与暂存回滚
+
+Description：
+
+上传与缓存
+- 对明确相册 400 串行单发恢复，验证并失效错误分片映射
+- 仅对可确认未发送的连接故障有限重试，保持分片和整批提交语义
+
+暂存与回滚
+- 串行异步写上传清单，处理 Windows 短暂文件锁
+- 完整保留同批及部分成功消息，清理失败进入恢复重试
+
+诊断与验证
+- 传达原始错误，避免次生 UPLOAD_NOT_FOUND / DISK_REQUEST_FAILED 掩盖原因
+- 新增 45 项回归，全量 386 项通过，更新应用壳缓存
+
+## 68. 2026-09-28：灰度网盘现场日志集中收集渠道
+
+- 根据用户要求，新增 `tools/collect-tgdisk-diagnostics.cjs` 与使用说明，默认导出最近两小时的网盘链路；支持指定带时区的起止时间、多个 uploadId / operation_id，以及输出文件名。现有服务已持续写入 `disk-upload.log` / `.1`，因此收集时无需停服或重启；旧灰度代码也可单独复制脚本后读取既有日志。
+- 收集两份轮转日志的有界快照，按时间排序、去重；对损坏或仍未写完的行给出计数警告。关联对应上传任务，优先通过独立只读 SQLite 连接读取已提交 WAL；仅在没有 SQLite 时读取旧 JSON。SQLite 读取出错不会使用可能过期的旧 JSON 混淆现场，但仍导出日志。
+- 输出单个 `.tunnel-data/diagnostics/tgdisk-*.json` 文件，再次脱敏 URL、Bot token、Bearer 与敏感字段；任务只导出状态和诊断字段，不复制任务 result、文件正文、caption、请求正文/请求头、认证库和密钥。输出使用独占创建及 0600 权限，禁止覆盖现有文件。仍保留文件名、目录及定位 ID，文档提醒分享前检查。
+- 部署信息优先读取 `release.json`，其次读取 Git 提交/分支；另外记录收集进程的 Node / 操作系统，明确不冒充服务进程环境。部署构建现在附带脚本和说明，方便灰度服务器直接执行。
+- 验证：新增 7 项专项测试通过，覆盖时间与任务筛选、日志排序去重、脱敏且保持时间格式、SQLite WAL 在线只读、损坏数据库告警、部署版本和输出防覆盖；工具与构建脚本语法检查、`git diff --check` 通过。仅新增离线诊断工具与构建拷贝步骤，本轮没有执行线上收集。未暂存、未提交；用户对 `prompts/dev-prompt-logs/dev-2609.md` 的当前修改未触碰。
+
+建议 Git 提交日志（仅供手动提交）：
+
+Title：增加灰度网盘上传现场诊断收集工具
+
+Description：
+
+日志收集
+- 按时间和任务 ID 集中导出轮转日志、任务状态与部署版本
+- 脱敏诊断，在线只读 SQLite WAL，禁止覆盖现有输出
+
+部署与验证
+- 部署包附带工具和使用说明
+- 7 项专项回归通过

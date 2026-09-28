@@ -61,7 +61,7 @@
                 if (!job || active(job)) continue;
                 waiting.delete(id);
                 if (job.status === 'completed') handlers.resolve(job.result);
-                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; handlers.reject(error); }
+                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; error.errorDetails = job.errorDetails; handlers.reject(error); }
             }
             emit();
         }).catch(error => {
@@ -250,6 +250,17 @@
             }
             return result;
         } catch (error) {
+            // A pipeline failure may remove its upload reservation while the next
+            // browser request is in flight. Show the durable task's original cause.
+            if (error.name !== 'AbortError' && error.message !== 'OPERATION_CANCELLED') {
+                const failed = await raw('/operations/' + encodeURIComponent(job.operation_id)).catch(() => null);
+                if (failed?.errorCode) {
+                    const original = new Error(failed.errorCode);
+                    original.errorDetails = failed.errorDetails;
+                    original.partialItems = failed.result?.partialItems;
+                    error = original;
+                }
+            }
             for (let index = 0; index < (error.partialItems?.length || 0); index++) {
                 await window.TelegramDriveCache?.put(error.partialItems[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type }).catch(() => {});
             }

@@ -63,6 +63,8 @@ function telegramDriveErrorText(error) {
         'LOGIN_REQUIRED': '请先登录网盘',
         'STORAGE_BACKEND_UNAVAILABLE': '管理员尚未配置可用的网盘存储频道',
         'TELEGRAM_NETWORK_ERROR': '连接 Telegram 失败，请检查服务器网络',
+        'TELEGRAM_400': 'Telegram 拒绝了当前文件发送请求',
+        'EPERM': '服务器写入上传暂存记录失败，请检查文件锁或目录权限',
         'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除或替换消息，请检查频道权限及消息类型',
         'TELEGRAM_CAPTION_SYNC_PENDING': '目录/名称已保存，部分 Telegram 备注同步失败，服务器将自动重试',
         'TELEGRAM_UPLOAD_RESULT_INVALID': 'Telegram 返回的消息缺少有效文件定位信息，上传未完成',
@@ -83,7 +85,10 @@ function telegramDriveErrorText(error) {
         'telegram-drive-channel-not-configured': '管理员尚未配置网盘存储频道',
         'telegram-drive-upload-size-invalid': '文件总大小为空或超过当前上传限制'
     };
-    return messages[code] || code || 'Telegram 网盘操作失败';
+    const description = error?.errorDetails?.telegramDescription;
+    const networkCode = error?.errorDetails?.causeCode;
+    const detail = description || (code === 'TELEGRAM_NETWORK_ERROR' ? networkCode : '');
+    return (messages[code] || code || 'Telegram 网盘操作失败') + (detail ? ' · ' + detail : '');
 }
 
 function telegramDriveItemKey(item) { return item.kind === 'directory' ? `directory:${item.path}` : `file:${item.id}`; }
@@ -2179,7 +2184,7 @@ function initDiskEnhancements() {
         $disk('diskTaskList').replaceChildren(...jobs.slice(0, 30).map(job => {
             const row = document.createElement('div'); row.className = 'disk-task-row';
             const title = document.createElement('strong'); title.textContent = (job.title ? job.title + ' · ' : '') + job.message;
-            const detail = document.createElement('span'); detail.textContent = (job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)} · ` : '') + job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText(job.errorCode) : '');
+            const detail = document.createElement('span'); detail.textContent = (job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)} · ` : '') + job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText({ message: job.errorCode, errorDetails: job.errorDetails }) : '');
             if (job.warnings?.length) detail.textContent += ' · 文件已保存，部分 Telegram 定位备注未能更新';
             row.append(title, detail);
             if (['queued', 'running'].includes(job.status)) {

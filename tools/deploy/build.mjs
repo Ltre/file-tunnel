@@ -478,6 +478,8 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
+  await copyFileRelative('tools/collect-tgdisk-diagnostics.cjs', outRoot);
+  await copyFileRelative('tools/collect-tgdisk-diagnostics.md', outRoot);
   if (await pathExists(path.join(ROOT, 'prompts', 'resources'))) await copyDirRelative('prompts/resources', outRoot);
 
   const scriptResult = await buildScripts(outRoot, minifierState);

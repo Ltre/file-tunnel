@@ -14,6 +14,7 @@ const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskPartCache } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
+const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -91,6 +92,10 @@ function errorStatus(code) {
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {} }) {
     const log = createDiskUploadLog(dataDir);
+    const recordUploadFailure = (job, error) => {
+        try { operations.fail(job.operationId, error); }
+        catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
+    };
     const persistence = openDiskRepository(dataDir);
     const partCache = createDiskPartCache({ dataDir });
     const chunkFileCache = createDiskChunkFileCache({ dataDir });
@@ -122,16 +127,17 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     async function cleanupExpiredUploads() {
         for (const { store, job } of spaces.cleanup()) {
             if (job.operationId) operations.fail(job.operationId, new Error('UPLOAD_EXPIRED'));
-            const parts = job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
-            if (!parts.length) { store.finalizeExpired(job.id); continue; }
+            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
+            if (!parts.length) { await store.abortAsync(job.id); continue; }
             const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
             try {
                 await telegram.remove(storage, { name: job.files[0]?.name || '过期上传', channelId: job.channelId || storage.channelId, createdAt: job.createdAt, parts });
                 log('upload.expired-cleanup-complete', { uploadId: job.id, operationId: job.operationId, parts: parts.length });
-                store.finalizeExpired(job.id);
+                await store.abortAsync(job.id);
             } catch (error) {
                 log('upload.expired-cleanup-failed', { uploadId: job.id, operationId: job.operationId, parts: parts.length, error: networkDetails(error) });
-                store.preserveForRecovery(job.id);
+                try { await store.preserveForRecoveryAsync(job.id); }
+                catch (manifestError) { log('upload.recovery-manifest-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(manifestError), details: diskErrorDetails(manifestError) }); }
                 queueUploadRecovery({ store, job });
             }
         }
@@ -141,7 +147,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         recoveringUploads = true;
         const pending = recoveryBacklog.splice(0);
         try { for (const { store, job } of pending) {
-            const parts = (job.files || []).flatMap(file => [...(file.chunks || []).map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
+            const parts = [...(job.files || []).flatMap(file => [...(file.chunks || []).map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
             try {
                 if (parts.length) {
                     const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
@@ -314,8 +320,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const limiter = () => rateLimit({ windowMs: 60000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'AUTH_RATE_LIMIT' } });
     const failure = (error, req, res, next) => {
         if (res.headersSent) return res.destroy();
-        const code = /^[a-zA-Z0-9_-]+$/.test(error.message) ? error.message : 'DISK_REQUEST_FAILED';
-        res.status(errorStatus(code)).json({ error: code, code });
+        const code = diskErrorCode(error);
+        res.status(errorStatus(code)).json({ error: code, code, errorDetails: diskErrorDetails(error) });
     };
     const noStore = (req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); };
     browser.use(noStore); external.use(noStore); admin.use(noStore);
@@ -636,6 +642,23 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     function contents(router) {
         const scope = req => ({ ...req.diskScope, deviceId: /^[a-zA-Z0-9_-]{8,120}$/.test(req.get('X-Disk-Device-Id') || '') ? req.get('X-Disk-Device-Id') : '' });
         const owner = req => req.diskUser.id;
+        const uploadJob = req => {
+            const id = req.params.uploadId;
+            if (store(req).ownsUpload(owner(req), id)) {
+                const job = store(req).upload(id);
+                if (job.pipelineFailure) throw job.pipelineFailure;
+                if (job.pipelineError) throw new Error(job.pipelineError);
+                return job;
+            }
+            const previous = operations.findUpload(id, scope(req));
+            if (previous?.errorCode) {
+                const error = new Error(previous.errorCode);
+                error.errorDetails = previous.errorDetails;
+                throw error;
+            }
+            if (previous?.status === 'cancelled' || previous?.cancelRequested) throw new Error('OPERATION_CANCELLED');
+            throw new Error('UPLOAD_NOT_FOUND');
+        };
         const store = req => req.diskStore;
         const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
         const fileBackend = (req, file) => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
@@ -805,7 +828,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             return batch;
         };
         const cleanupPipelineRemote = async job => {
-            const parts = job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]);
+            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
             if (!parts.length) return;
             await telegram.remove(job.storage, { name: job.files[0]?.name || '已取消文件', channelId: job.storage.channelId, createdAt: job.createdAt, parts });
         };
@@ -815,10 +838,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             job.rollbackPromise = (async () => {
                 try {
                     await cleanupPipelineRemote(job);
-                    job.rollbackState = 'cleaned'; diskStore.abort(job.id); return true;
+                    job.rollbackState = 'cleaned'; await diskStore.abortAsync(job.id); return true;
                 } catch (error) {
                     job.rollbackState = 'pending';
-                    diskStore.preserveForRecovery(job.id);
+                    try { await diskStore.preserveForRecoveryAsync(job.id); }
+                    catch (manifestError) { log('upload.recovery-manifest-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(manifestError) }); }
                     queueUploadRecovery({ store: diskStore, job });
                     log(event, { uploadId: job.id, operationId: job.operationId, error: networkDetails(error), retryScheduled: true });
                     return false;
@@ -842,7 +866,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         update({ phase: 'telegram-thumbnail', percent: null, message: `正在上传媒体封面到 Telegram：${file.name}` });
                         try {
                             const remote = await enqueueTelegramUpload(job, () => telegram.uploadThumbnail(job.storage, file, thumbnail, { ...scope(req), uploadId: job.id, operationId: job.operationId, signal: job.pipelineAbort.signal }));
-                            store(req).markThumbnailUploaded(job.id, thumbnailIndex, remote);
+                            await store(req).markThumbnailUploadedAsync(job.id, thumbnailIndex, remote);
                         } catch (error) { store(req).resetUploadingThumbnail(job.id, thumbnailIndex); throw error; }
                         continue;
                     }
@@ -868,41 +892,72 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     update({ phase: 'telegram-queue', message: `服务器队列正在提交 ${batch.length} 个连续分片到 Telegram`, queueParts: Math.max(0, state.pendingParts - batch.length) });
                     try {
                         const progress = patch => update({ ...patch, telegramBytesUploaded: patch.processedBytes, telegramTotalBytes: patch.totalBytes, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message });
-                        const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes: job.files.reduce((sum, file) => sum + file.size, 0), confirmedBytes: job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0), signal: job.pipelineAbort.signal };
+                        const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes: job.files.reduce((sum, file) => sum + file.size, 0), confirmedBytes: job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0), signal: job.pipelineAbort.signal,
+                            onReuseRejected: part => {
+                                try { chunkFileCache.remove(job.storage, part); }
+                                catch (error) { log('telegram.chunk-cache-write-failed', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, action: 'remove', error: networkDetails(error) }); }
+                            }
+                        };
                         const remotes = await enqueueTelegramUpload(job, async () => {
                             const prepared = [];
                             for (const part of batch) {
                                 const cached = chunkFileCache.get(job.storage, part);
                                 if (!cached) { prepared.push(part); continue; }
                                 try {
-                                    await telegram.call(job.storage, 'getFile', { file_id: cached.fileId }, undefined, 0, { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, dedupe: true });
+                                    const checked = await telegram.call(job.storage, 'getFile', { file_id: cached.fileId }, undefined, 0, { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, dedupe: true });
+                                    if (checked?.file_size !== undefined && Number(checked.file_size) !== part.size) throw new Error('TELEGRAM_CHUNK_CACHE_MISMATCH');
                                     prepared.push({ ...part, reuseFileId: cached.fileId, reuseFileUniqueId: cached.fileUniqueId });
                                     log('telegram.chunk-reuse-valid', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, part: part.partIndex, sha256: part.sha256 });
                                 } catch (error) {
-                                    chunkFileCache.remove(job.storage, part); prepared.push(part);
+                                    try { chunkFileCache.remove(job.storage, part); }
+                                    catch (cacheError) { log('telegram.chunk-cache-write-failed', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, action: 'remove', error: networkDetails(cacheError) }); }
+                                    prepared.push(part);
                                     log('telegram.chunk-reuse-invalid', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, part: part.partIndex, sha256: part.sha256, error: networkDetails(error) });
                                 }
                             }
-                            const uploaded = typeof telegram.uploadPhysical === 'function'
-                                ? await telegram.uploadPhysical(job.storage, job.files, prepared, progress, context)
-                                : await telegram.upload(job.storage, prepared.map(part => ({ ...job.files[part.fileIndex], name: part.name, size: part.size, path: part.path, chunks: [{ path: part.path, offset: 0, size: part.size }] })), progress, [], context).then(results => results.map((remote, index) => ({ ...remote, fileIndex: prepared[index].fileIndex, logicalFileId: prepared[index].logicalFileId, partIndex: prepared[index].partIndex, partCount: prepared[index].partCount, originalSize: prepared[index].originalSize, size: prepared[index].size, offset: prepared[index].offset })));
+                            let uploaded;
+                            try {
+                                uploaded = typeof telegram.uploadPhysical === 'function'
+                                    ? await telegram.uploadPhysical(job.storage, job.files, prepared, progress, context)
+                                    : await telegram.upload(job.storage, prepared.map(part => ({ ...job.files[part.fileIndex], name: part.name, size: part.size, path: part.path, chunks: [{ path: part.path, offset: 0, size: part.size }] })), progress, [], context).then(results => results.map((remote, index) => ({ ...remote, fileIndex: prepared[index].fileIndex, logicalFileId: prepared[index].logicalFileId, partIndex: prepared[index].partIndex, partCount: prepared[index].partCount, originalSize: prepared[index].originalSize, size: prepared[index].size, offset: prepared[index].offset })));
+                            } catch (error) {
+                                // A split album may partially succeed and then fail
+                                // to roll itself back. Keep those known messages in
+                                // the manifest for the normal rollback/recovery path.
+                                if (error.unremovedParts?.length) {
+                                    try { await store(req).keepUploadRollbackParts(job.id, error.unremovedParts); }
+                                    catch (manifestError) { log('upload.recovery-manifest-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(manifestError), details: diskErrorDetails(manifestError) }); }
+                                }
+                                throw error;
+                            }
                             for (const remote of uploaded) {
                                 const part = prepared.find(entry => entry.fileIndex === remote.fileIndex && entry.partIndex === remote.partIndex);
-                                if (part) { remote.sha256 = part.sha256 || ''; chunkFileCache.put(job.storage, part, remote); }
+                                if (part) {
+                                    remote.sha256 = part.sha256 || '';
+                                    // The dedupe index is optional. Its failure must never lose
+                                    // accepted Telegram message IDs or roll back a valid upload.
+                                    try { chunkFileCache.put(job.storage, part, remote); }
+                                    catch (cacheError) { log('telegram.chunk-cache-write-failed', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, action: 'put', error: networkDetails(cacheError) }); }
+                                }
                             }
                             return uploaded;
                         });
-                        for (const remote of remotes) store(req).markPartUploaded(job.id, remote.fileIndex, remote.partIndex, remote);
+                        await store(req).markPartsUploaded(job.id, remotes);
                     } catch (error) {
-                        store(req).resetUploadingParts(job.id); job.pipelineError = error.message; throw error;
+                        store(req).resetUploadingParts(job.id); throw error;
                     }
                     pipelineWake(job);
                 }
             } catch (error) {
+                job.pipelineFailure ||= error;
+                job.pipelineError = diskErrorCode(job.pipelineFailure);
+                log('upload.pipeline-failed', { uploadId: job.id, operationId: job.operationId, stage: 'telegram-or-index', error: networkDetails(job.pipelineFailure), details: diskErrorDetails(job.pipelineFailure) });
+                try { operations.update(job.operationId, { phase: 'rollback', message: '上传失败，正在回滚已上传消息', errorCode: job.pipelineError, errorDetails: diskErrorDetails(job.pipelineFailure) }, true); }
+                catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
                 if (!control.cancelled) {
                     await rollbackPipelineRemote(job, store(req), 'upload.failure-cleanup-failed');
                 }
-                throw error;
+                throw job.pipelineFailure;
             } finally {
                 if (control.cancelled) {
                     await rollbackPipelineRemote(job, store(req), 'upload.cancel-cleanup-failed');
@@ -912,7 +967,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         };
         if (router === browser) coreUpload = { runUploadPipeline, pipelineWait, pipelineWake, rollbackPipelineRemote };
-        router.post('/uploads', wrap((req, res) => {
+        router.post('/uploads', wrap(async (req, res) => {
             const storage = backend(req);
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const files = (req.body?.files || []).map(file => {
@@ -925,28 +980,33 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const limit = LOGICAL_FILE_UPLOAD_LIMIT;
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             job.storage = storage;
-            const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
-            job.operationId = operation.operation_id;
-            store(req).setUploadContext(job.id, { operationId: job.operationId, channelId: storage.channelId });
-            operations.update(job.operationId, { uploadId: job.id, folderPath: job.folderPath || '', ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
+            try {
+                const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
+                job.operationId = operation.operation_id;
+                await store(req).setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId });
+                operations.update(job.operationId, { uploadId: job.id, folderPath: job.folderPath || '', ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
+            } catch (error) {
+                log('upload.create-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(error), details: diskErrorDetails(error) });
+                try { await store(req).abortAsync(job.id); }
+                catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
+                if (job.operationId) recordUploadFailure(job, error);
+                throw error;
+            }
             job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
             operations.run(job.operationId, (update, control) => runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
-            res.status(201).json({ uploadId: job.id, operation_id: operation.operation_id, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length })) });
+            res.status(201).json({ uploadId: job.id, operation_id: job.operationId, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length })) });
         }));
         router.put('/uploads/:uploadId/files/:index', wrap(async (req, res) => {
-            if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
-            const job = store(req).upload(req.params.uploadId);
+            const job = uploadJob(req);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
-            if (job.pipelineError) throw new Error(job.pipelineError);
             // Apply backpressure inside the open request. Returning HTTP 429 made
             // the browser resend the same 20 MB chunk and poll operations between
             // retries, which then exhausted the unrelated global IP limiter.
             // Waiting here also lets the request socket provide natural TCP
             // backpressure without buffering another chunk in memory.
             while (true) {
-                if (job.pipelineError) throw new Error(job.pipelineError);
-                if (!store(req).ownsUpload(owner(req), job.id)) throw new Error('UPLOAD_NOT_FOUND');
+                uploadJob(req);
                 const queue = store(req).uploadQueue(job.id);
                 if (queue.pendingParts < 5 && queue.pendingBytes < 100_000_000) break;
                 log('browser.backpressure-wait', { uploadId: job.id, operationId: job.operationId, pendingParts: queue.pendingParts, pendingBytes: queue.pendingBytes });
@@ -970,16 +1030,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 pipelineWake(job);
                 log('browser.receive-complete', { ...trace, receivedBytes, elapsedMs: Date.now() - started });
             } catch (error) {
-                log('browser.receive-failed', { ...trace, receivedBytes, elapsedMs: Date.now() - started, error: networkDetails(error) });
+                log('browser.receive-failed', { ...trace, receivedBytes, elapsedMs: Date.now() - started, error: networkDetails(error), details: diskErrorDetails(error) });
+                job.pipelineFailure ||= error;
                 job.pipelineAbort?.abort(); pipelineWake(job);
                 await job.pipelineDone?.catch(() => {});
-                store(req).abort(job.id); operations.fail(job.operationId, error); throw error;
+                if (job.rollbackState !== 'pending') {
+                    try { await store(req).abortAsync(job.id); }
+                    catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
+                }
+                recordUploadFailure(job, job.pipelineFailure); throw job.pipelineFailure;
             }
             finally { clearInterval(heartbeat); }
         }));
         router.put('/uploads/:uploadId/files/:index/thumbnail', wrap(async (req, res) => {
-            if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
-            const job = store(req).upload(req.params.uploadId);
+            const job = uploadJob(req);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
             const file = job.files[Number(req.params.index)];
             if (!file) throw new Error('FILE_NOT_FOUND');
@@ -992,8 +1056,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             res.json(result);
         }));
         router.post('/uploads/:uploadId/phase', wrap((req, res) => {
-            if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
-            const job = store(req).upload(req.params.uploadId);
+            const job = uploadJob(req);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
             operations.update(job.operationId, { status: 'running', phase: 'source-read', percent: null, message: '正在读取本机文件：' + (job.files[req.body?.index]?.name || '') });
             res.json({ ok: true });
@@ -1001,6 +1064,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.delete('/uploads/:uploadId', wrap(async (req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
             const job = store(req).upload(req.params.uploadId);
+            // Mark intentional cancellation before aborting transport: otherwise
+            // its AbortError could make the operation terminal as a network failure.
+            await operations.cancel(job.operationId, scope(req));
             job.pipelineAbort?.abort(); pipelineWake(job);
             await job.pipelineDone?.catch(() => {});
             await rollbackPipelineRemote(job, store(req), 'upload.cancel-cleanup-failed');
@@ -1093,8 +1159,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         try {
             const operation = operations.create(req.diskScope, 'upload', `S3 上传：${info.key}`, size);
             job.operationId = operation.operation_id;
-            diskStore.setUploadContext(job.id, { operationId: job.operationId, channelId: storage.channelId });
-        } catch (error) { diskStore.abort(job.id); throw error; }
+            await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId });
+        } catch (error) {
+            try { await diskStore.abortAsync(job.id); }
+            catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
+            if (job.operationId) recordUploadFailure(job, error);
+            throw error;
+        }
         job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
         const control = { cancelled: false, throwIfCancelled() { if (signal?.aborted) throw new Error('OPERATION_CANCELLED'); } };
         const running = Promise.resolve().then(() => coreUpload.runUploadPipeline(req, job, patch => operations.update(job.operationId, patch), control))
@@ -1124,7 +1195,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         try {
             for (const part of job.files[0].parts) {
                 while (true) {
-                    if (job.pipelineError) throw new Error(job.pipelineError);
+                    if (job.pipelineError) throw job.pipelineFailure || new Error(job.pipelineError);
                     const state = diskStore.uploadQueue(job.id);
                     if (!state) throw new Error('UPLOAD_NOT_FOUND');
                     if (state.pendingParts < 5 && state.pendingBytes < 100_000_000) break;
@@ -1144,11 +1215,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             await running;
             return diskStore.adminFiles().find(file => file.ownerId === owner.id && file.folderPath === info.folderPath && file.name === info.name);
         } catch (error) {
+            job.pipelineFailure ||= error;
             job.pipelineAbort?.abort(); coreUpload.pipelineWake(job);
             await running.catch(() => {});
-            diskStore.abort(job.id);
-            operations.fail(job.operationId, error);
-            throw error;
+            if (job.rollbackState !== 'pending') {
+                try { await diskStore.abortAsync(job.id); }
+                catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
+            }
+            const original = job.pipelineFailure || error;
+            recordUploadFailure(job, original);
+            throw original;
         }
     }
     objectStorage = createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange: readRemote,
