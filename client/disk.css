@@ -41,9 +41,6 @@
 .telegram-drive-search-scope{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.82rem;color:#52617e}
 .telegram-drive-search-scope input{margin:0}
 .disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}
-.disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
-.disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
-.disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
 .telegram-drive-item{touch-action:none;-webkit-user-select:none;user-select:none}
 .telegram-drive-items{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .telegram-drive-item *{-webkit-user-select:none;user-select:none}
@@ -141,19 +138,6 @@ body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 .telegram-drive-dialog-card:has(.disk-destination-tree){display:flex;flex-direction:column;overflow:hidden}
 .telegram-drive-dialog-card:has(.disk-destination-tree) .telegram-drive-dialog-body{min-height:0;overflow:auto}
 .telegram-drive-dialog-card:has(.disk-destination-tree) .telegram-drive-dialog-header,.telegram-drive-dialog-card:has(.disk-destination-tree) .telegram-drive-dialog-actions{flex-shrink:0}
-.disk-destination-tree{position:relative;display:block;padding:8px;min-height:180px;background:#fff}
-.disk-folder-branch>summary{display:flex;align-items:center;cursor:pointer;list-style:none;min-height:34px}
-.disk-folder-branch>summary::-webkit-details-marker{display:none}
-.disk-folder-branch>summary:before{content:'▸';width:22px;text-align:center;color:#64748b}
-.disk-folder-branch[open]>summary:before{content:'▾'}
-.disk-folder-children{padding-left:20px}
-.disk-folder-target{padding:6px 10px;border-radius:5px}
-.disk-tree-menu{position:absolute;z-index:2;padding:4px;width:140px;border:1px solid #ccd5df;border-radius:7px;background:white;box-shadow:0 4px 18px #0003}
-.disk-tree-menu button{border:0;background:none;padding:8px;width:100%;text-align:left;cursor:pointer}
-.disk-tree-menu button:hover{background:#e6f0fa}
-.disk-folder-editor{display:flex;align-items:center;gap:5px;padding:5px 0}
-.disk-folder-editor input{min-width:50px!important;flex:1;width:100px!important;padding:5px!important}
-.disk-folder-editor button{padding:5px 8px}
 .disk-share-row{padding:12px 0;border-bottom:1px solid #d7e0ea;display:flex;flex-direction:column;gap:6px;overflow-wrap:anywhere}
 .disk-share-row>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .disk-shares-list{max-height:55vh;overflow:auto}
@@ -178,4 +162,7 @@ body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 #shareLoading{position:fixed;inset:0;z-index:20;background:#10203080;display:flex;align-items:center;justify-content:center;padding:20px}
 #shareLoadingProgress{width:min(280px,70vw);height:9px;accent-color:#14a56b}
 #sharePreview[hidden],#shareLoading[hidden]{display:none}
+.disk-collaboration-frame{position:fixed;inset:0;width:100vw;width:100dvw;height:100vh;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;border-radius:0;background:#e9eef2;overflow:hidden}
+.disk-collaboration-frame[open]{display:flex}.disk-collaboration-frame iframe{display:block;width:100%;height:100%;border:0;flex:1;min-width:0;min-height:0}
+.disk-collaboration-frame-close{position:absolute;top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));z-index:2;width:40px;height:40px;border:1px solid #bb303b;border-radius:9px;background:#c73f49;color:#fff;font-size:26px;cursor:pointer;box-shadow:0 2px 8px #1233}.disk-collaboration-frame-close:hover{background:#af2633}.disk-collaboration-frame::backdrop{background:#10203090}.disk-collaboration-frame-open{overflow:hidden}
 @media(max-width:600px){.disk-public-card{margin:0;border-radius:0;padding:16px;min-height:100dvh;box-sizing:border-box}.disk-public-item{gap:8px;flex-wrap:wrap}.disk-public-item small{font-size:11px}}

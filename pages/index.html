@@ -5449,10 +5449,11 @@
 
 </style>
     <link rel="stylesheet" href="/client/disk.css">
+    <link rel="stylesheet" href="/client/disk-directory-picker.css">
 </head>
 <body>
     <div class="tunnel-landing" id="sessionLanding" hidden>
-        <header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel-即时传输隧道</strong></header>
+        <header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel Studio</strong></header>
         <main class="tunnel-landing-main">
             <h1>请输入朋友给你的数据隧道暗号</h1>
             <br>
@@ -5471,7 +5472,7 @@
             </div>
             <div class="tunnel-landing-actions">
                 <button class="btn btn-secondary" id="landingRecentBtn" hidden>继续最近使用的隧道</button>
-                <button class="btn btn-secondary" id="landingCreateBtn">我没有暗号，新建一个隧道</button>
+                <button class="btn btn-secondary" id="landingCreateBtn">我没有暗号，创建一个隧道</button>
             </div>
             <div class="tunnel-landing-note" id="landingNote" aria-live="polite"></div>
         </main>
@@ -5980,6 +5981,7 @@
 document.write(`<script src="/client/telegram-drive-cache.js${suffix}"><\/script>`);
             document.write(`<script src="/client/simplewebauthn.js${suffix}"><\/script>`);
             document.write(`<script src="/client/disk-client.js${suffix}"><\/script>`);
+            document.write(`<script src="/client/disk-directory-picker.js${suffix}"><\/script>`);
             document.write(`<script src="/client/disk-ui.js${suffix}"><\/script>`);
             document.write(`<script src="/client/disk-tunnel-adapter.js${suffix}"><\/script>`);
             document.write(`<script src="/app.js${suffix}"><\/script>`);

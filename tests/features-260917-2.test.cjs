@@ -28,7 +28,7 @@ test('网页 ZIP 使用 Service Worker 虚拟目录运行完整文件树', () =>
     assert.match(worker, /Cross-Origin-Resource-Policy/);
     assert.match(worker, /status:206/);
     assert.match(worker, /web-zip-runtime-ping/);
-    assert.match(worker, /instant-tunnel-v73/);
+    assert.match(worker, /instant-tunnel-v74/);
 
     const standalone = source('pages/web-zip-preview.html');
     assert.match(standalone, /WebZipRuntime\.mount\(entries,/);
@@ -79,6 +79,6 @@ test('网盘菜单脱离带 backdrop-filter 的卡片并统一按视口定位', 
 test('路由页在桌面与移动端使用独立固定顶栏显示品牌标题', () => {
     const page = source('pages/index.html');
     assert.match(page, /\.tunnel-landing-topbar\s*\{[\s\S]*?position:\s*fixed/);
-    assert.match(page, /id="sessionLanding"[\s\S]*?<header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel-即时传输隧道<\/strong><\/header>/);
+    assert.match(page, /id="sessionLanding"[\s\S]*?<header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel Studio<\/strong><\/header>/);
     assert.doesNotMatch(page, /tunnel-landing-main">\s*<div class="header">/);
 });

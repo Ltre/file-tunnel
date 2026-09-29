@@ -41,13 +41,15 @@ function picker() {
     const context = vm.createContext({ document: { createElement: tag => new Element(tag) }, telegramDrivePath: '',
         telegramDriveDisplayPath: path => path ? '/' + path : '/', installContextGesture() {},
         telegramDriveErrorText: error => error.message, alert: message => alerts.push(message),
-        openTelegramDriveDialog: options => { dialog = options; },
+        openTelegramDriveDialog: options => { dialog = options; return new Promise(() => {}); },
         window: { DiskClient: { json: (method, body) => ({ method, body }),
             raw: async (url, options) => options?.method === 'POST' ? (writes.push(options.body.path), { operation_id: 'mkdir-operation' }) : { directories },
             wait: id => { waited.push(id); return new Promise((resolve, reject) => { release = value => { directories = [{ path: '新目录', name: '新目录' }, { path: value.path, name: '子目录' }]; resolve(value); }; fail = reject; }); }
         } }
     });
-    const choose = vm.runInContext(source.slice(source.indexOf('async function chooseTelegramDriveDestination('), source.indexOf('async function moveTelegramDriveItems(')) + ';chooseTelegramDriveDestination', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../client/disk-directory-picker.js'), 'utf8'), context);
+    const start = vm.runInContext(source.slice(source.indexOf('async function chooseTelegramDriveDestination('), source.indexOf('async function moveTelegramDriveItems(')) + ';chooseTelegramDriveDestination', context);
+    const choose = async (...args) => { start(...args); await new Promise(resolve => setImmediate(resolve)); };
     return { choose, alerts, writes, waited, dialog: () => dialog, release: value => release(value), fail: error => fail(error) };
 }
 test('目录选择器等待创建任务完成后展开并选中，不把 operation_id 响应当作目录', async () => {
@@ -58,7 +60,7 @@ test('目录选择器等待创建任务完成后展开并选中，不把 operati
     f.release({ path: '新目录/子目录' }); await pending;
     assert.deepEqual(created, ['新目录/子目录']);
     assert.equal(button.disabled, false); assert.equal(input.value, '/新目录/子目录'); assert.equal(f.alerts.length, 0);
-    assert.equal(await f.dialog().validate(), '新目录/子目录'); assert.deepEqual(f.writes, ['/新目录/子目录']);
+    assert.equal(await f.dialog().validate(), '新目录/子目录'); assert.deepEqual(f.writes, ['新目录/子目录']);
 });
 test('创建目录真实失败时只显示任务错误，并恢复创建按钮', async () => {
     const f = picker(), created = []; await f.choose([], { onCreateDirectory: path => created.push(path) });

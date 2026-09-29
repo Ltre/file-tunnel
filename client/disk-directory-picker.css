@@ -1,0 +1,18 @@
+.disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
+.disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
+.disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
+.disk-destination-tree{position:relative;display:block;padding:8px;min-height:180px;background:#fff}
+.disk-folder-branch>summary{display:flex;align-items:center;cursor:pointer;list-style:none;min-height:34px}
+.disk-folder-branch>summary::-webkit-details-marker{display:none}
+.disk-folder-branch>summary:before{content:'▸';width:22px;text-align:center;color:#64748b}
+.disk-folder-branch[open]>summary:before{content:'▾'}
+.disk-folder-children{padding-left:20px}
+.disk-folder-target{padding:6px 10px;border-radius:5px}
+.disk-tree-menu{position:absolute;z-index:2;padding:4px;width:140px;border:1px solid #ccd5df;border-radius:7px;background:white;box-shadow:0 4px 18px #0003}
+.disk-tree-menu button{border:0;background:none;padding:8px;width:100%;text-align:left;cursor:pointer}
+.disk-tree-menu button:hover{background:#e6f0fa}
+.disk-folder-editor{display:flex;align-items:center;gap:5px;padding:5px 0}
+.disk-folder-editor input{min-width:50px!important;flex:1;width:100px!important;padding:5px!important}
+.disk-folder-editor button{padding:5px 8px}
+.disk-folder-target,.disk-tree-menu{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.disk-folder-error{color:#b4333c;margin:0;overflow-wrap:anywhere}

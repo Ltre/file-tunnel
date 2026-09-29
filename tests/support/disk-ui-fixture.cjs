@@ -17,7 +17,7 @@ open.onclick = () => window.DiskUI.open();
 app.get('/', (req, res) => {
     let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8');
     html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
-    html = html.replace('</body>', '<script src="/client/disk-client.js"></script><script src="/client/disk-ui.js"></script><script src="/fixture-setup.js"></script></body>');
+    html = html.replace('</body>', '<script src="/client/disk-client.js"></script><script src="/client/disk-directory-picker.js"></script><script src="/client/disk-ui.js"></script><script src="/fixture-setup.js"></script></body>');
     res.type('html').send(html);
 });
 app.get('/fixture-setup.js', (req, res) => res.type('js').send(setup));

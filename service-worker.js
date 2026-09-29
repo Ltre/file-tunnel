@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v73';
+const CACHE_NAME = 'instant-tunnel-v74';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -13,10 +13,12 @@ const APP_SHELL = [
     '/app.js',
     '/client/cache-store.js',
     '/client/disk-client.js',
+    '/client/disk-directory-picker.js',
     '/client/disk-ui.js',
     '/client/disk-collaboration.js',
     '/client/disk-tunnel-adapter.js',
     '/client/disk.css',
+    '/client/disk-directory-picker.css',
     '/client/telegram-drive-cache.js',
     '/client/cache-store-worker.js',
     '/client/file-assets.js',

@@ -19,6 +19,8 @@ const SCRIPT_SOURCES = [
   'client/light-transfer.js',
   'client/telegram-drive-cache.js',
   'client/disk-client.js',
+  'client/disk-directory-picker.js',
+  'client/disk-collaboration.js',
   'client/disk-ui.js',
   'client/disk-share.js',
   'client/disk-tunnel-adapter.js',
@@ -351,9 +353,11 @@ async function buildPages(outRoot, scriptAssets, buildId, minifierState) {
     const sourcePath = path.join(pagesDir, pageFile);
     const rawHtml = await fs.readFile(sourcePath, 'utf8');
     let html = replaceScriptReferences(rawHtml, scriptAssets);
-    if (html.includes('href="/client/disk.css"')) {
-      const diskCss = await fs.readFile(path.join(ROOT, 'client/disk.css'), 'utf8');
-      html = html.replace(/<link\b[^>]*href="\/client\/disk\.css"[^>]*>/, '<style>' + diskCss + '</style>');
+    for (const stylesheet of ['disk.css', 'disk-directory-picker.css']) {
+      const href = `/client/${stylesheet}`;
+      if (!html.includes(`href="${href}"`)) continue;
+      const css = await fs.readFile(path.join(ROOT, 'client', stylesheet), 'utf8');
+      html = html.replace(new RegExp('<link\\b[^>]*href="' + href.replace('.', '\\.') + '"[^>]*>'), '<style>' + css + '</style>');
     }
     html = html.replace(/href="\/manifest\.webmanifest(?:\?[^"]*)?"/g, `href="/manifest.webmanifest?v=${buildId}"`);
     const pageName = path.parse(pageFile).name;

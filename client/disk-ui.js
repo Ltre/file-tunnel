@@ -22,6 +22,7 @@ let telegramDriveDialogHistoryOpen = false;
 let telegramDriveDialogHistoryClosing = false;
 let telegramDriveContentStale = false;
 let telegramDriveCollaborations = [];
+let telegramDriveCollaborationFrame = null;
 let telegramDriveSelectionAnchor = '';
 const telegramDriveSelected = new Map();
 const telegramDriveCacheCancelConfirming = new Set();
@@ -453,93 +454,15 @@ async function renameTelegramDriveItem(item) {
 }
 
 async function chooseTelegramDriveDestination(items = [], { title = '移动到', confirmText = '移动', onCreateDirectory, initialPath = telegramDrivePath } = {}) {
-    const root = document.createElement('div'); root.className = 'disk-destination-tree';
-    root.setAttribute('role', 'tree');
-    const pathInput = document.createElement('input'); pathInput.placeholder = '/音乐/日本/专辑（全路径）'; pathInput.setAttribute('aria-label', '目标目录全路径');
-    pathInput.value = telegramDriveDisplayPath(initialPath); pathInput.maxLength = 2048;
-    const create = document.createElement('button'); create.className = 'btn'; create.textContent = '创建多级目录并选中';
-    const hint = document.createElement('p'); hint.textContent = '点击选择目标；右键或长按目录可新建子目录。';
-    const blocked = path => items.some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
-    const expanded = new Set(['']);
-    function expandParents(path) { const parts = path.split('/'); for (let n = 0; n < parts.length; n++) expanded.add(parts.slice(0, n).join('/')); }
-    expandParents(initialPath); expanded.add(initialPath);
-    function select(path) {
-        pathInput.value = telegramDriveDisplayPath(path);
-        root.querySelectorAll('[data-folder-path]').forEach(button => button.classList.toggle('selected', button.dataset.folderPath === path));
-    }
-    async function createDestination(path) {
-        const response = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path }));
-        const result = response.status === 'completed' ? response.result : response.operation_id ? await window.DiskClient.wait(response.operation_id) : response;
-        onCreateDirectory?.(result.path);
-        pathInput.value = telegramDriveDisplayPath(result.path); expandParents(result.path); await reload();
-    }
-    function editChild(folder, container) {
-        root.querySelector('.disk-folder-editor')?.remove();
-        const row = document.createElement('div'); row.className = 'disk-folder-editor';
-        const input = document.createElement('input'); input.value = '新建文件夹'; input.setAttribute('aria-label', '子目录名称'); input.maxLength = 100;
-        const save = document.createElement('button'); save.type = 'button'; save.textContent = '创建'; save.className = 'btn';
-        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.className = 'btn'; cancel.onclick = () => row.remove();
-        save.onclick = async () => {
-            if (!input.value.trim()) { input.focus(); return; }
-            if (save.disabled) return; save.disabled = true;
-            try {
-                await createDestination([folder.path, input.value.trim()].filter(Boolean).join('/'));
-            } catch (error) { alert(telegramDriveErrorText(error)); } finally { save.disabled = false; }
-        };
-        row.onkeydown = event => { if (event.isComposing) return; if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (event.key === 'Enter') save.click(); else row.remove(); } };
-        row.append('📁', input, save, cancel); container.prepend(row); input.focus(); input.select();
-    }
-    async function reload() {
-        const data = await window.DiskClient.raw('/directories');
-        root.replaceChildren();
-        const children = new Map();
-        for (const folder of data.directories) {
-            if (blocked(folder.path)) continue;
-            const parent = folder.path.split('/').slice(0, -1).join('/');
-            if (!children.has(parent)) children.set(parent, []); children.get(parent).push(folder);
-        }
-        function branch(folder) {
-            const details = document.createElement('details'); details.className = 'disk-folder-branch'; details.open = expanded.has(folder.path);
-            const summary = document.createElement('summary');
-            const button = document.createElement('button'); button.type = 'button'; button.className = 'disk-folder-target'; button.dataset.folderPath = folder.path;
-            button.textContent = '📁 ' + folder.name;
-            button.onclick = event => { event.preventDefault(); select(folder.path); details.open = true; expanded.add(folder.path); };
-            const nested = document.createElement('div'); nested.className = 'disk-folder-children'; nested.setAttribute('role', 'group');
-            summary.append(button); details.append(summary, nested);
-            details.ontoggle = () => { if (details.open) expanded.add(folder.path); else expanded.delete(folder.path); };
-            for (const child of children.get(folder.path) || []) nested.append(branch(child));
-            installContextGesture(button, event => {
-                root.querySelector('.disk-tree-menu')?.remove(); select(folder.path);
-                const menu = document.createElement('div'); menu.className = 'disk-tree-menu';
-                const child = document.createElement('button'); child.type = 'button'; child.textContent = '新建子目录';
-                const rect = root.getBoundingClientRect();
-                menu.style.left = Math.max(0, Math.min(rect.width - 150, event.clientX - rect.left)) + 'px';
-                menu.style.top = Math.max(0, Math.min(rect.height - 44, event.clientY - rect.top)) + root.scrollTop + 'px';
-                child.onclick = () => { menu.remove(); details.open = true; expanded.add(folder.path); editChild(folder, nested); };
-                menu.append(child); root.append(menu);
-            });
-            return details;
-        }
-        const selected = pathInput.value.replace(/^\/+/, '');
-        if (selected && !data.directories.some(folder => folder.path === selected)) pathInput.value = '/';
-        root.append(branch({ path: '', name: '根目录' })); select(pathInput.value.replace(/^\/+/, ''));
-    }
-    root.addEventListener('click', event => { if (!event.target.closest('.disk-tree-menu')) root.querySelector('.disk-tree-menu')?.remove(); });
-    create.type = 'button';
-    create.onclick = async () => {
-        create.disabled = true;
-        try {
-            await createDestination(pathInput.value);
-        } catch (error) { alert(telegramDriveErrorText(error)); } finally { create.disabled = false; }
-    };
-    await reload();
-    return openTelegramDriveDialog({ title, body: [hint, root, pathInput, create], confirmText, historyEntry: true, dismissOnBackdrop: true, validate: async () => {
-        const safe = pathInput.value.replace(/\\/g, '/').split('/').filter(Boolean).join('/');
-        if (blocked(safe)) throw new Error('不能移动到自己或子目录');
-        const current = await window.DiskClient.raw('/directories');
-        if (safe && !current.directories.some(folder => folder.path === safe)) throw new Error('目标目录不存在，请先点击“创建多级目录并选中”');
-        return safe;
-    } });
+    return window.DiskDirectoryPicker.choose({ items, title, confirmText, onCreateDirectory, initialPath,
+        loadDirectories: () => window.DiskClient.raw('/directories'),
+        createDirectory: async path => {
+            const response = await window.DiskClient.raw('/directories', window.DiskClient.json('POST', { path }));
+            return response.status === 'completed' ? response.result : response.operation_id ? window.DiskClient.wait(response.operation_id) : response;
+        },
+        openDialog: openTelegramDriveDialog, installContextGesture,
+        showError: error => alert(telegramDriveErrorText(error))
+    });
 }
 
 async function moveTelegramDriveItems(items, targetPath) {
@@ -716,6 +639,42 @@ async function manageDiskCollaboration(entry, trigger = document.getElementById(
     try { await render(); } catch (error) { close(); throw error; }
 }
 
+function closeDiskCollaborationFrame() {
+    const state = telegramDriveCollaborationFrame;
+    if (!state) return;
+    telegramDriveCollaborationFrame = null;
+    window.removeEventListener('message', state.onMessage);
+    state.frame.src = 'about:blank';
+    state.dialog.close(); state.dialog.remove();
+    document.body.classList.remove('disk-collaboration-frame-open');
+    document.getElementById('telegramDriveCollaborationListBtn')?.focus();
+}
+
+function openDiskCollaborationFrame(entry) {
+    closeDiskCollaborationFrame();
+    const dialog = document.createElement('dialog'); dialog.className = 'disk-collaboration-frame';
+    dialog.setAttribute('aria-label', `协同编辑：${entry.name}`);
+    const frame = document.createElement('iframe'); frame.title = `协同编辑：${entry.name}`;
+    frame.src = '/disk-collab/view/' + encodeURIComponent(entry.id) + '?embedded=1'; frame.allowFullscreen = true;
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'disk-collaboration-frame-close'; close.textContent = '×'; close.title = '关闭协同编辑'; close.setAttribute('aria-label', close.title);
+    close.onclick = closeDiskCollaborationFrame;
+    const onMessage = event => {
+        if (event.origin === location.origin && event.source === frame.contentWindow && event.data?.type === 'disk-collaboration:close') closeDiskCollaborationFrame();
+    };
+    telegramDriveCollaborationFrame = { dialog, frame, onMessage };
+    window.addEventListener('message', onMessage);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); closeDiskCollaborationFrame(); });
+    dialog.append(frame, close); document.body.append(dialog);
+    document.body.classList.add('disk-collaboration-frame-open'); dialog.showModal();
+}
+
+async function locateOwnedDiskCollaboration(entry) {
+    clearTelegramDriveSearch();
+    await navigateTelegramDrive(entry.kind === 'file' ? entry.path : entry.path.split('/').slice(0, -1).join('/'));
+    const row = [...document.querySelectorAll('#telegramDriveList .telegram-drive-item')].find(node => entry.kind === 'file' ? node.dataset.fileId === entry.fileId : node.dataset.folderPath === entry.path);
+    if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('disk-collaboration-focus'); setTimeout(() => row.classList.remove('disk-collaboration-focus'), 3000); }
+}
+
 async function showDiskCollaborations() {
     await refreshDiskCollaborations();
     const body = document.createElement('div'); body.className = 'disk-collaboration-list';
@@ -725,11 +684,8 @@ async function showDiskCollaborations() {
         button.textContent = `${entry.owned ? '我创建的' : '受邀加入'} · ${entry.name} · ${entry.kind === 'directory' ? '目录' : '文件'}`;
         button.onclick = async () => {
             closeTelegramDriveDialog();
-            if (!entry.owned) { window.open('/disk-collab/view/' + encodeURIComponent(entry.id), '_blank', 'noopener'); return; }
-            clearTelegramDriveSearch();
-            await navigateTelegramDrive(entry.kind === 'file' ? entry.path : (entry.path.split('/').slice(0, -1).join('/')));
-            const row = [...document.querySelectorAll('#telegramDriveList .telegram-drive-item')].find(node => entry.kind === 'file' ? node.dataset.fileId === entry.fileId : node.dataset.folderPath === entry.path);
-            if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('disk-collaboration-focus'); setTimeout(() => row.classList.remove('disk-collaboration-focus'), 3000); }
+            if (!entry.owned) { openDiskCollaborationFrame(entry); return; }
+            await locateOwnedDiskCollaboration(entry);
         };
         body.append(button);
     }
@@ -1159,6 +1115,7 @@ async function openTelegramDrive() {
     else await renderTelegramDrive();
 }
 function closeTelegramDrive({ forget = false } = {}) {
+    closeDiskCollaborationFrame();
     if (!$disk('diskPreview')?.hidden) closeDiskPreview({ replaceHistory: true });
     closeTelegramDriveDialog(null, { replaceHistory: true }); closeTelegramDriveItemMenu({ replaceHistory: true });
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
@@ -2377,7 +2334,15 @@ function init(options = {}) {
         showTelegramDriveBackgroundMenu({ getBoundingClientRect: () => ({ left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY }) });
     }, null, { twoFingerTap: true, longPress: false, accept: event => !event.target.closest?.('.telegram-drive-item') });
     initDiskEnhancements();
-    if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') openTelegramDrive().catch(error => alert(telegramDriveErrorText(error)));
+    if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') {
+        openTelegramDrive().then(async () => {
+            const id = new URLSearchParams(location.search).get('collaboration');
+            if (!id) return;
+            const entry = (await window.DiskClient.raw('/collaborations/' + encodeURIComponent(id))).collaboration;
+            if (entry.owned) await locateOwnedDiskCollaboration(entry);
+            else openDiskCollaborationFrame(entry);
+        }).catch(error => alert(telegramDriveErrorText(error)));
+    }
 }
 window.addEventListener('popstate', handleTelegramDrivePopstate, { capture: true });
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, ownsHistory: ownsTelegramDriveHistory, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,

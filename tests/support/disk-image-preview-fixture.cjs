@@ -10,7 +10,7 @@ const images = {
 let directories = [], jobs = [], report = { status: 'pending' };
 app.get('/', (req, res) => {
     let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
-    html = html.replace('</body>', '<script src="/client/disk-client.js"></script><script src="/client/disk-ui.js"></script><script src="/fixture.js"></script></body>');
+    html = html.replace('</body>', '<script src="/client/disk-client.js"></script><script src="/client/disk-directory-picker.js"></script><script src="/client/disk-ui.js"></script><script src="/fixture.js"></script></body>');
     res.type('html').send(html);
 });
 app.get('/api/telegram/drive/me', (req, res) => res.json({ identity: { id: 'image-fixture', name: '图片本地回归' }, enabled: true, configured: true }));

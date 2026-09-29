@@ -587,6 +587,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         };
         const path = req.path, method = req.method;
         if (method === 'GET' && path === '/list' && entry.kind === 'directory') req.query.path = within(req.query.path || root);
+        else if (method === 'GET' && path === '/directories' && entry.kind === 'directory') { /* route returns only directories in this grant */ }
         else if (method === 'GET' && (path === '/tree' || path === '/directories/properties') && entry.kind === 'directory') req.query.path = within(req.query.path || root);
         else if ((/^\/files\/[^/]+(?:\/(?:thumbnail|stream|download))?$/.test(path) && ['GET', 'PATCH', 'DELETE'].includes(method)) || (method === 'POST' && /^\/files\/[^/]+\/repair$/.test(path))) {
             const id = decodeURIComponent(path.split('/')[2]); file(id);
@@ -604,7 +605,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             req.body.folderPath ||= root;
             req.body.metadata = { ...(req.body.metadata || {}), collaborationId: entry.id };
         }
-        else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
+        else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish|\/queue|\/failure)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
             const uploadId = path.split('/')[2], job = storage.upload(uploadId);
             if (!job || job.metadata?.collaborationId !== entry.id || !storage.ownsUpload(entry.ownerId, uploadId)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
         }
@@ -733,7 +734,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const result = store(req).search(owner(req), req.query.q || '', 500);
             res.json({ query: String(req.query.q || ''), folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })), summary: { folderCount: result.folders.length, fileCount: result.files.length } });
         }));
-        router.get('/directories', (req, res) => res.json({ directories: store(req).listDirectories(owner(req)) }));
+        router.get('/directories', (req, res) => {
+            const root = req.collaboration?.path;
+            const directories = store(req).listDirectories(owner(req)).filter(folder => root === undefined || !root || folder.path === root || folder.path.startsWith(root + '/'));
+            res.json({ directories });
+        });
         router.get('/directories/properties', wrap((req, res) => {
             const folder = store(req).getDirectory(owner(req), req.query.path || '');
             if (!folder) throw new Error('DIRECTORY_NOT_FOUND');
