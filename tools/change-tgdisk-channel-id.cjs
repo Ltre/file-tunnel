@@ -3,14 +3,20 @@
 // Offline migration. Never start the application while this command runs.
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { DatabaseSync, backup } = require('node:sqlite');
 
-function args(argv) {
-    const result = { dataDir: path.resolve('.tunnel-data'), apply: false, stopped: false };
+function args(argv, env = process.env) {
+    // Keep the CLI's cwd-relative default; an explicit argument takes precedence.
+    const result = { dataDir: path.resolve(env.TUNNEL_DATA_DIR || '.tunnel-data'), apply: false, stopped: false };
+    const value = (index, flag) => {
+        if (!argv[index] || argv[index].startsWith('--')) throw new Error(`${flag} 缺少参数值`);
+        return argv[index];
+    };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
-        if (arg === '--data-dir') result.dataDir = path.resolve(argv[++i] || '');
-        else if (arg === '--chat-id') result.chatId = argv[++i];
+        if (arg === '--data-dir') result.dataDir = path.resolve(value(++i, arg));
+        else if (arg === '--chat-id') result.chatId = value(++i, arg);
         else if (arg === '--apply') result.apply = true;
         else if (arg === '--service-stopped') result.stopped = true;
         else throw new Error(`未知参数：${arg}`);
@@ -20,15 +26,65 @@ function args(argv) {
     return result;
 }
 
+// Only inspect legacy indexes when SQLite is empty. Old JSON may legitimately
+// remain after a successful import, so its presence alone must not block a run.
+function inspectLegacyIndexes(dataDir) {
+    const indexes = [], warnings = [], names = new Map();
+    const failed = Symbol('legacy-read-failed');
+    let unconfirmed = false;
+    const unsafe = (relative, reason) => {
+        unconfirmed = true;
+        warnings.push(`${relative}：${reason}；无法确认旧网盘数据`);
+    };
+    const read = relative => {
+        const filename = path.join(dataDir, relative);
+        try {
+            const stat = fs.lstatSync(filename, { throwIfNoEntry: false });
+            if (!stat) return undefined;
+            if (!stat.isFile()) { unsafe(relative, '不是普通文件'); return failed; }
+            return JSON.parse(fs.readFileSync(filename, 'utf8'));
+        } catch (_) { unsafe(relative, '无法读取或不是有效 JSON'); return failed; }
+    };
+    const index = (relative, scope) => {
+        const items = read(relative);
+        if (items === undefined) return;
+        if (!Array.isArray(items) || items.some(item => !item || typeof item !== 'object' || Array.isArray(item) || !item.id || !item.ownerId || !item.name)) {
+            if (items !== failed) unsafe(relative, '文件索引格式无效');
+            indexes.push({ path: relative, scope, records: null });
+            return;
+        }
+        indexes.push({ path: relative, scope, records: items.length });
+        if (items.length && scope === null) warnings.push(`${relative}：无法从 disk-spaces.json 确定旧分区名称，请先检查分区清单`);
+    };
+    index('telegram-drive-index.json', '');
+    const spaces = read('disk-spaces.json');
+    if (spaces !== undefined && spaces !== failed) {
+        if (!Array.isArray(spaces) || spaces.some(name => typeof name !== 'string' || !name || name.length > 100 || /[\u0000-\u001f]/.test(name))) unsafe('disk-spaces.json', '分区清单格式无效');
+        else for (const name of spaces) names.set(crypto.createHash('sha256').update(name).digest('hex'), name);
+    }
+    const partitionRoot = path.join(dataDir, 'disk-spaces');
+    try {
+        const stat = fs.lstatSync(partitionRoot, { throwIfNoEntry: false });
+        if (stat && !stat.isDirectory()) unsafe('disk-spaces', '不是普通目录');
+        else if (stat) for (const entry of fs.readdirSync(partitionRoot, { withFileTypes: true })) {
+            if (entry.isSymbolicLink()) { unsafe(`disk-spaces/${entry.name}`, '符号链接不参与检查'); continue; }
+            if (entry.isDirectory()) index(`disk-spaces/${entry.name}/telegram-drive-index.json`, names.get(entry.name) ?? null);
+        }
+    } catch (_) { unsafe('disk-spaces', '无法读取旧分区目录'); }
+    return { indexes, warnings, unconfirmed, totalFiles: indexes.reduce((total, item) => total + (item.records || 0), 0) };
+}
+
 async function main(argv = process.argv.slice(2)) {
     const options = args(argv);
     const filename = path.join(options.dataDir, 'disk.sqlite');
     if (!fs.existsSync(filename)) throw new Error(`找不到网盘 SQLite 数据库：${filename}`);
-    const db = new DatabaseSync(filename);
+    const db = new DatabaseSync(filename, { readOnly: !options.apply });
     try {
         db.exec('PRAGMA busy_timeout = 5000');
         const check = db.prepare('PRAGMA integrity_check').get();
         if (check.integrity_check !== 'ok') throw new Error('SQLite 完整性检查失败，已停止迁移');
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'disk_files'").get())
+            throw new Error('指定数据库缺少网盘 disk_files 表；请检查数据目录、disk.sqlite 路径及网盘 SQLite schema，本工具不会创建表');
         const rows = db.prepare('SELECT scope,id,payload FROM disk_files ORDER BY scope,id').all();
         const previous = new Map();
         for (const row of rows) {
@@ -41,6 +97,26 @@ async function main(argv = process.argv.slice(2)) {
         const changed = rows.filter(row => needsChange(JSON.parse(row.payload))).length;
         const report = { mode: options.apply ? 'applied' : 'dry-run', database: filename, totalFiles: rows.length,
             changed, oldChannelIds: Object.fromEntries(previous), targetChatId: options.chatId };
+        if (!rows.length) {
+            const legacy = inspectLegacyIndexes(options.dataDir);
+            report.legacyIndexes = legacy.indexes;
+            report.legacyTotalFiles = legacy.totalFiles;
+            report.migrationRequired = legacy.totalFiles > 0;
+            report.status = legacy.totalFiles ? 'legacy-json-not-imported' : legacy.unconfirmed ? 'legacy-inspection-incomplete' : 'empty';
+            report.warnings = legacy.warnings;
+            const migration = '确认 --data-dir 与运行服务的 TUNNEL_DATA_DIR 一致；停止所有 Node 服务后，先运行 tools/migrate-tgdisk-json-to-sqlite.cjs 预检，核对结果后再决定执行 --apply，最后重新运行本工具';
+            if (legacy.totalFiles || legacy.unconfirmed) {
+                report.warnings.unshift(legacy.totalFiles ? `SQLite 文件表为空，但发现 ${legacy.totalFiles} 条旧 JSON 文件记录；尚不能将该结果视为迁移完成` : 'SQLite 文件表为空，且旧索引检查未完成；尚不能认定网盘没有文件');
+                report.nextStep = migration;
+                if (options.apply) {
+                    report.mode = 'blocked';
+                    const error = new Error(`${report.warnings[0]}。${migration}`);
+                    error.code = legacy.totalFiles ? 'DISK_LEGACY_MIGRATION_REQUIRED' : 'DISK_LEGACY_INSPECTION_INCOMPLETE';
+                    error.report = report;
+                    throw error;
+                }
+            } else report.message = '指定 SQLite 文件表为空，未发现非空旧文件索引；无需修改。若预期有文件，请核对运行服务实际使用的数据目录';
+        }
         if (!options.apply || !changed) return report;
         const backupDir = path.join(options.dataDir, 'migration-backups');
         fs.mkdirSync(backupDir, { recursive: true });
@@ -73,6 +149,7 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) main().then(report => console.log(JSON.stringify(report, null, 2))).catch(error => {
+    if (error.report) console.log(JSON.stringify(error.report, null, 2));
     console.error(`频道 ID 迁移失败：${error.message}`); process.exitCode = 1;
 });
 module.exports = { main, args };

@@ -1675,7 +1675,8 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         stage.append(cover, media);
     }
     const center = diskMediaButton('play', '播放', 'disk-media-center-play'); stage.append(center);
-    const bufferStatus = document.createElement('span'); bufferStatus.className = 'disk-media-buffer-status'; bufferStatus.hidden = true; stage.append(bufferStatus);
+    const bufferStatus = document.createElement('span'); bufferStatus.className = 'disk-media-buffer-status'; bufferStatus.hidden = true;
+    bufferStatus.setAttribute('role', 'status'); bufferStatus.setAttribute('aria-live', 'polite'); stage.append(bufferStatus);
     const controls = document.createElement('div'); controls.className = 'disk-media-controls';
     const back = diskMediaButton('back', '后退 10 秒');
     const play = diskMediaButton('play', '播放');
@@ -1693,7 +1694,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     controls.append(seekRow, actionRow);
     wrapper.append(stage, controls);
     let centerTimer = 0, requestedTime = null, lastProgressSavedAt = 0;
-    let disposed = false;
+    let disposed = false, playbackFailed = false;
     const syncSeekThumb = () => {
         const ratio = Math.max(0, Math.min(1, Number(seek.value) / 1000));
         seekTrack.style.setProperty('--seek-percent', `${ratio * 100}%`);
@@ -1712,10 +1713,17 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         if (paused) { clearTimeout(centerTimer); wrapper.classList.remove('disk-media-idle'); }
         else showCenter();
     };
-    const toggle = () => media.paused ? media.play().catch(() => {}) : media.pause();
+    const requestPlay = () => {
+        if (playbackFailed) { playbackFailed = false; wrapper.classList.remove('is-media-error'); bufferStatus.hidden = true; }
+        media.play().catch(error => handlePlaybackFailure(error));
+    };
+    const toggle = () => {
+        if (media.paused) requestPlay();
+        else { media.pause(); if (!playbackFailed) clearBuffering(); }
+    };
     center.onclick = event => { event.stopPropagation(); toggle(); }; play.onclick = toggle;
     const optimisticSeek = value => {
-        if (!Number.isFinite(media.duration) || media.duration <= 0) return;
+        if (disposed || playbackFailed || !Number.isFinite(media.duration) || media.duration <= 0) return;
         requestedTime = Math.max(0, Math.min(media.duration, value));
         seek.value = String(Math.round(requestedTime / media.duration * 1000));
         syncSeekThumb();
@@ -1753,7 +1761,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         }).catch(() => {});
     });
     const updateBuffer = () => {
-        if (!wrapper.classList.contains('is-buffering') || !Number.isFinite(media.duration) || media.duration <= 0) return;
+        if (disposed || playbackFailed || !wrapper.classList.contains('is-buffering') || !Number.isFinite(media.duration) || media.duration <= 0) return;
         const target = requestedTime ?? media.currentTime, partCount = Math.max(1, Number(item.partCount) || 1), partDuration = media.duration / partCount;
         const partStart = Math.floor(Math.min(media.duration - .001, target) / partDuration) * partDuration;
         let end = partStart;
@@ -1764,9 +1772,39 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
         const percent = Math.max(0, Math.min(99, (end - partStart) / partDuration * 100));
         bufferStatus.textContent = percent > 0 ? `正在加载当前分片 · ${Math.round(percent)}%` : '正在加载当前分片…';
     };
-    const clearBuffering = () => { requestedTime = null; wrapper.classList.remove('is-buffering'); bufferStatus.hidden = true; };
-    media.addEventListener('seeking', () => { wrapper.classList.add('is-buffering'); bufferStatus.hidden = false; updateBuffer(); });
-    for (const eventName of ['waiting', 'stalled']) media.addEventListener(eventName, () => { wrapper.classList.add('is-buffering'); bufferStatus.hidden = false; updateBuffer(); });
+    const clearBuffering = () => { requestedTime = null; playbackFailed = false; wrapper.classList.remove('is-buffering', 'is-media-error'); bufferStatus.hidden = true; };
+    const handlePlaybackFailure = (error = media.error, nativeError = false) => {
+        if (disposed) return;
+        // A rejected play request can simply mean pause/source replacement or
+        // autoplay policy. Neither is evidence of broken data or decoding.
+        if (!nativeError && error?.name === 'AbortError') { if (media.paused && !playbackFailed) clearBuffering(); syncPlay(); return; }
+        if (!nativeError && error?.name === 'NotAllowedError') {
+            if (!playbackFailed) { clearBuffering(); bufferStatus.hidden = false; bufferStatus.textContent = '请点击播放按钮开始播放'; }
+            syncPlay(); return;
+        }
+        const code = Number(media.error?.code) || 0;
+        const category = ({ 1: 'aborted', 2: 'network', 3: 'decode', 4: 'unsupported' })[code] || (error?.name === 'NotSupportedError' ? 'unsupported' : 'playback');
+        const messages = {
+            aborted: '播放加载已中止，请点击播放重试',
+            network: '播放数据读取失败，请检查网络后重试',
+            decode: '浏览器无法解码此媒体。可下载原文件播放，并检查浏览器解码支持',
+            unsupported: '浏览器不支持此媒体的格式或编码。可下载原文件播放',
+            playback: '媒体播放失败，请下载原文件播放或查看浏览器媒体诊断'
+        };
+        playbackFailed = true; requestedTime = null;
+        wrapper.classList.remove('is-buffering'); wrapper.classList.add('is-media-error');
+        bufferStatus.hidden = false; bufferStatus.textContent = messages[category]; syncPlay();
+        const buffered = [];
+        for (let index = 0; index < Math.min(media.buffered.length, 8); index++) buffered.push([media.buffered.start(index), media.buffered.end(index)]);
+        const detail = String(media.error?.message || error?.message || '').slice(0, 500)
+            .replace(/(?:https?:\/\/|blob:|data:)[^\s"'<>]+|\/[^\s"'<>]*\?[^\s"'<>]+/gi, '[资源地址]')
+            .replace(/\b(token|cookie|authorization|secret|session)\s*[:=]\s*[^\s,;]+/gi, '$1=[已隐藏]');
+        console.warn('Telegram drive media playback failed', { fileId: item.id, category, code, name: error?.name || '', message: detail,
+            readyState: media.readyState, networkState: media.networkState, currentTime: media.currentTime, duration: media.duration, buffered });
+    };
+    media.addEventListener('error', () => handlePlaybackFailure(media.error, true));
+    media.addEventListener('seeking', () => { if (disposed || playbackFailed) return; wrapper.classList.add('is-buffering'); bufferStatus.hidden = false; updateBuffer(); });
+    for (const eventName of ['waiting', 'stalled']) media.addEventListener(eventName, () => { if (disposed || playbackFailed) return; wrapper.classList.add('is-buffering'); bufferStatus.hidden = false; updateBuffer(); });
     for (const eventName of ['progress', 'durationchange']) media.addEventListener(eventName, updateBuffer);
     for (const eventName of ['canplay', 'playing']) media.addEventListener(eventName, clearBuffering);
     media.addEventListener('timeupdate', () => {
@@ -1797,7 +1835,7 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     };
     share.onclick = event => openShare(event).catch(error => alert(telegramDriveErrorText(error)));
     syncSeekThumb();
-    media.play().catch(() => syncPlay());
+    requestPlay();
     return wrapper;
 }
 function createDiskPreviewImageLoading(item) {

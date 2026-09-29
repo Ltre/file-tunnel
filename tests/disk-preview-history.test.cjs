@@ -40,7 +40,7 @@ function fixture() {
         const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, updateDiskCacheLabels=()=>{};
         const renderTelegramDriveBreadcrumbs=()=>{}, renderTelegramDriveItems=()=>{};
         const renderTelegramDrive=async()=>{rendered.push(telegramDrivePath);telegramDriveCurrentData={}};
-        const closeTelegramDriveDialog=()=>{}, closeTelegramDriveItemMenu=()=>{}, telegramDriveErrorText=e=>e.message;
+        const closeTelegramDriveDialog=()=>{}, closeTelegramDriveItemMenu=()=>{}, closeDiskCollaborationFrame=()=>{}, telegramDriveErrorText=e=>e.message;
         const getTelegramDriveDisplayData=()=>({}), getSortedTelegramDriveItems=()=>[{id:'media'}], isDiskPreviewable=()=>true, renderDiskPreview=async()=>{};
         ${driveLifecycle}
         ${previewLifecycle}

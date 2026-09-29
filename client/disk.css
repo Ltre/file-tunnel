@@ -91,6 +91,7 @@
 .disk-media-seek-loader:before{content:'';position:absolute;inset:0;box-sizing:border-box;border:2px solid #ffffff80;border-top-color:#ffb344;border-radius:50%;animation:disk-cache-spin .7s linear infinite}
 .disk-media-player.is-buffering .disk-media-seek-loader{display:block}
 .disk-media-buffer-status{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:6px 10px;border-radius:999px;background:#07111dcc;color:#f5c271;font-size:12px;white-space:nowrap;pointer-events:none}
+.disk-media-player.is-media-error .disk-media-buffer-status{box-sizing:border-box;width:max-content;max-width:calc(100% - 24px);white-space:normal;overflow-wrap:anywhere;text-align:center;line-height:1.5;border-radius:10px;color:#ffc0b5}
 .disk-media-volume-wrap{display:flex;align-items:center;gap:5px;min-width:0;color:#cbdce7}.disk-media-volume{width:82px;min-width:46px;accent-color:#2fc985}
 .disk-media-icon-button.busy svg{animation:disk-cache-spin .8s linear infinite}
 @media(max-width:600px){.disk-media-player{width:100%;height:100%;border-radius:0}.disk-media-controls{padding:8px 8px max(8px,env(safe-area-inset-bottom));gap:5px}.disk-media-action-row{gap:5px}.disk-media-icon-button{width:34px!important;min-width:34px!important;height:32px!important;border-radius:8px!important}.disk-media-icon-button svg,.disk-media-volume-wrap svg{width:19px;height:19px}.disk-media-volume-wrap{gap:3px;flex:1 1 72px;max-width:112px}.disk-media-volume{width:100%;min-width:38px}.disk-media-time{font-size:11px}}
