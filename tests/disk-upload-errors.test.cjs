@@ -40,6 +40,62 @@ async function fixture(t, uploadPhysical) {
 }
 const remotes = parts => parts.map((part, index) => ({ ...part, fileId: 'remote-' + index, messageId: 101 + index, fileUniqueId: 'u-' + index, messageDate: Date.now() }));
 
+test('full queue status/PUT respond promptly without consuming bytes or failing the upload', async t => {
+    t.mock.method(console, 'info', () => {});
+    const f = await fixture(t, async (_backend, _files, parts) => remotes(parts));
+    const job = await f.create(); assert.equal(job.uploadQueueCheck, true);
+    const original = f.store.uploadQueue;
+    let full = true;
+    t.mock.method(f.store, 'uploadQueue', id => ({ ...original(id), ...(full ? { pendingParts: 5, pendingBytes: 100_000_000 } : {}) }));
+    const status = await f.request(`/uploads/${job.uploadId}/queue`);
+    assert.equal(status.status, 200); assert.equal(status.data.ready, false);
+    assert.equal((await f.request(`/uploads/${job.uploadId}/queue`, { headers: { 'X-Test-Other': '1' } })).status, 404);
+    const started = Date.now(), blocked = await f.send(job, 0);
+    assert.equal(blocked.status, 503); assert.equal(blocked.data.error, 'UPLOAD_BACKPRESSURE'); assert.ok(Date.now() - started < 1500);
+    assert.equal(f.store.upload(job.uploadId).files[0].received, 0);
+    assert.equal((await f.request('/operations/' + job.operation_id)).data.errorCode, '');
+    full = false;
+    assert.equal((await f.request(`/uploads/${job.uploadId}/queue`)).data.ready, true);
+    assert.equal((await f.send(job, 0)).status, 200); assert.equal((await f.send(job, 1)).status, 200);
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    assert.equal((await f.terminal(job)).status, 'completed');
+});
+
+test('browser network failure reports failed, asynchronously rolls back all accepted messages and releases names', async t => {
+    t.mock.method(console, 'info', () => {});
+    const f = await fixture(t, async (_backend, _files, parts) => remotes(parts));
+    const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
+    for (let i = 0; i < 150; i++) {
+        if ((await f.request(`/uploads/${job.uploadId}/queue`)).data.queue?.uploadedParts === 2) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(f.store.upload(job.uploadId).files.flatMap(file => file.chunks).filter(chunk => chunk.remote).length, 2);
+    const other = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', headers: { 'X-Test-Other': '1' } });
+    assert.equal(other.status, 404);
+    const response = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'UPLOAD_CLIENT_NETWORK_ERROR', reason: 'Failed to fetch' }) });
+    assert.equal(response.status, 202);
+    const result = await f.terminal(job); assert.equal(result.status, 'failed'); assert.equal(result.errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR'); assert.notEqual(result.cancelRequested, true);
+    for (let i = 0; i < 150 && f.store.upload(job.uploadId); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(f.removed.sort(), [101, 102]); assert.equal(f.store.list(f.user.id).files.length, 0);
+    const duplicateReport = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'DISK_REQUEST_FAILED' }) });
+    assert.equal(duplicateReport.status, 202); assert.equal((await f.terminal(job)).errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
+    const next = await f.create(); assert.ok(next.uploadId); await f.request(`/uploads/${next.uploadId}`, { method: 'DELETE' });
+});
+
+test('failure report aborts transport without changing its cause to user cancellation or Telegram failure', async t => {
+    t.mock.method(console, 'info', () => {});
+    let started;
+    const active = new Promise(resolve => { started = resolve; });
+    const f = await fixture(t, async (_backend, _files, _parts, _progress, context) => {
+        started(); await new Promise((_resolve, reject) => context.signal.addEventListener('abort', () => reject(new Error('TELEGRAM_NETWORK_ERROR')), { once: true }));
+    });
+    const job = await f.create(); await f.send(job, 0); await f.send(job, 1); await active;
+    assert.equal((await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'UPLOAD_CLIENT_NETWORK_ERROR' }) })).status, 202);
+    assert.equal((await f.terminal(job)).errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
+    for (let i = 0; i < 150 && f.store.upload(job.uploadId); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(f.store.upload(job.uploadId), undefined);
+});
+
 test('HTTP and durable operation preserve EPERM and sanitized Telegram/network diagnostics', t => {
     assert.equal(diskErrorCode(Object.assign(new Error("EPERM: rename 'private/path'"), { code: 'EPERM' })), 'EPERM');
     const error = Object.assign(new Error('TELEGRAM_400'), { telegramDescription: 'bad https://api.telegram.org/bot123:secret/file', details: { method: 'sendMediaGroup', requestId: 'r', elapsedMs: 15, privatePath: 'private/path' } });
@@ -58,6 +114,8 @@ test('after Telegram rollback phase/PUT/thumbnail preserve the original failure 
     const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
     const result = await f.terminal(job);
     assert.equal(result.errorCode, 'TELEGRAM_400'); assert.equal(result.errorDetails.method, 'sendMediaGroup');
+    const failureReport = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'UPLOAD_CLIENT_NETWORK_ERROR' }) });
+    assert.equal(failureReport.status, 202); assert.equal((await f.terminal(job)).errorCode, 'TELEGRAM_400', '后续网络错误不能覆盖最初的 Telegram 原因');
     assert.equal(f.store.upload(job.uploadId), undefined);
     for (const [url, options] of [
         [`/uploads/${job.uploadId}/phase`, { method: 'POST', ...json({ index: 1 }) }],

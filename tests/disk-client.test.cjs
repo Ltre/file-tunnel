@@ -3,6 +3,39 @@ const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 
+test('large uploads wait through small queue probes and never hold another PUT while Telegram queue is full', async () => {
+    const size = 120000000, window = {}, requests = []; let finished = false, putCount = 0, probes = 0, full = false;
+    const blob = { size, slice: (start, end) => ({ size: end - start }) };
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, method: options.method || 'GET' }); let data = {};
+        if (url.endsWith('/uploads')) data = { uploadId: 'u', operation_id: 'op', uploadQueueCheck: true, queue: { pendingParts: 0, pendingBytes: 0 } };
+        if (url.endsWith('/queue')) { probes++; full = probes < 2; data = { ready: !full, retryAfterMs: 250, queue: { pendingParts: full ? 5 : 0, pendingBytes: full ? 100000000 : 0 } }; }
+        if (options.method === 'PUT') { assert.equal(full, false, 'body must not be sent during queue wait'); putCount++; full = putCount === 5; data = { queue: { pendingParts: full ? 5 : 0, pendingBytes: full ? 100000000 : 0 } }; }
+        if (url.endsWith('/finish')) { finished = true; data = { operation_id: 'op' }; }
+        if (url.includes('/operations?')) data = { operations: [{ operation_id: 'op', status: finished ? 'completed' : 'running', result: { items: [{ id: 'file' }] } }] };
+        return { ok: true, json: async () => data };
+    };
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, setInterval() {}, setTimeout: fn => setTimeout(fn, 1), clearTimeout, Date, Map, Set, Promise, encodeURIComponent });
+    await window.DiskClient.upload([{ name: 'large.bin', size }], '', async () => blob);
+    assert.equal(putCount, 6); assert.equal(probes, 2);
+    assert.equal(requests.filter(request => request.url.endsWith('/queue')).every(request => request.method === 'GET'), true);
+});
+
+test('Failed to fetch reports a durable network failure without invoking the user-cancel DELETE path', async () => {
+    const window = {}, requests = [];
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url.endsWith('/uploads')) return { ok: true, json: async () => ({ uploadId: 'u', operation_id: 'op' }) };
+        if (options.method === 'PUT') throw new TypeError('Failed to fetch');
+        return { ok: true, json: async () => ({ operations: [] }) };
+    };
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, setInterval() {}, Date, Map, Set, Promise, encodeURIComponent });
+    await assert.rejects(window.DiskClient.upload([{ name: 'small.bin', size: 3 }], '', async () => ({ size: 3, slice: () => ({ size: 3 }) })), /UPLOAD_CLIENT_NETWORK_ERROR/);
+    assert.equal(requests.some(request => request.options.method === 'DELETE'), false);
+    const failure = requests.find(request => request.url.endsWith('/failure'));
+    assert.equal(failure.options.method, 'POST'); assert.equal(JSON.parse(failure.options.body).errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
+});
+
 test('110 MB 浏览器上传仅通过 slice 顺序发送六个请求，声明仍为逻辑文件总大小', async () => {
     const size = 115384320, chunks = [], requests = [];
     let finished = false, reads = 0;
@@ -62,7 +95,7 @@ test('刷新后本地上传失败使用新任务 ID，不被上次错误确认�
         const window = {}, jobs = [];
         vm.runInNewContext(source('client/disk-client.js'), { window, fetch: async () => { throw new Error('offline'); }, setInterval() {}, Date, Map, Set, Promise, encodeURIComponent });
         window.DiskClient.subscribe(value => jobs.push(...value));
-        await assert.rejects(window.DiskClient.upload([{ name: 'x', size: 1 }], ''), /offline/);
+        await assert.rejects(window.DiskClient.upload([{ name: 'x', size: 1 }], ''), error => error.message === 'UPLOAD_CLIENT_NETWORK_ERROR' && error.errorDetails.reason === 'offline');
         ids.push(jobs.find(job => job.status === 'failed').operation_id);
     }
     assert.notEqual(ids[0], ids[1]);
@@ -214,9 +247,9 @@ test('上传 loading 覆盖初始化失败且只创建一个完整活动', async
     vm.runInNewContext(source('client/disk-client.js'), { window, fetch: async () => { throw new Error('OFFLINE'); }, setInterval: () => {} });
     window.DiskClient.subscribeActivity(items => { active = items; count = Math.max(count, items.length); });
     window.DiskClient.subscribe(items => { jobs = items; });
-    await assert.rejects(window.DiskClient.upload([{ name: 'a', size: 1 }], ''), /OFFLINE/);
+    await assert.rejects(window.DiskClient.upload([{ name: 'a', size: 1 }], ''), error => error.message === 'UPLOAD_CLIENT_NETWORK_ERROR' && error.errorDetails.reason === 'OFFLINE');
     assert.equal(count, 1); assert.equal(active.length, 0);
-    assert.equal(jobs.length, 1); assert.equal(jobs[0].type, 'upload'); assert.equal(jobs[0].status, 'failed'); assert.equal(jobs[0].errorCode, 'OFFLINE');
+    assert.equal(jobs.length, 1); assert.equal(jobs[0].type, 'upload'); assert.equal(jobs[0].status, 'failed'); assert.equal(jobs[0].errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
     window.DiskClient.stop(); assert.equal(jobs.length, 0, '登出后清理此账号的本地失败提示');
 });
 

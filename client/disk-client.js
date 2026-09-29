@@ -41,7 +41,9 @@
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const response = await fetch(url.startsWith('/api/') ? url : baseUrl() + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } });
+        let response;
+        try { response = await fetch(url.startsWith('/api/') ? url : baseUrl() + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
+        catch (error) { error.transportFailure = true; throw error; }
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
         return data;
@@ -137,7 +139,7 @@
                 }, controller.signal);
             } catch (error) {
                 if (current === generation && !jobs.some(job => job.operation_id === pending.operation_id && !active(job))) {
-                    const cancelled = error.name === 'AbortError' || error.message === 'OPERATION_CANCELLED';
+                    const cancelled = controller.signal.aborted || error.message === 'OPERATION_CANCELLED';
                     Object.assign(pending, { status: cancelled ? 'cancelled' : 'failed', phase: cancelled ? 'cancelled' : 'failed', message: cancelled ? '用户已取消任务' : '上传请求失败', errorCode: cancelled ? '' : error.message });
                     localUploads.set(pending.operation_id, pending);
                 }
@@ -152,8 +154,9 @@
     const withSignal = (options, signal) => ({ ...options, signal });
     const delay = (ms, signal) => new Promise((resolve, reject) => {
         if (signal?.aborted) return reject(abortError());
-        const timer = setTimeout(resolve, ms);
-        signal?.addEventListener('abort', () => { clearTimeout(timer); reject(abortError()); }, { once: true });
+        const abort = () => { clearTimeout(timer); signal?.removeEventListener?.('abort', abort); reject(abortError()); };
+        const timer = setTimeout(() => { signal?.removeEventListener?.('abort', abort); resolve(); }, ms);
+        signal?.addEventListener('abort', abort, { once: true });
     });
     const inferredType = file => {
         if (file.type) return file.type;
@@ -209,6 +212,18 @@
     }
     async function uploadFiles(files, folderPath, read, metadata, update, signal) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
+        const uploadRequest = async (url, options) => {
+            try { return await raw(url, options); }
+            catch (error) {
+                if (!signal.aborted && error.transportFailure) {
+                    const network = new Error('UPLOAD_CLIENT_NETWORK_ERROR');
+                    const index = /\/files\/(\d+)$/.exec(url)?.[1], action = /\/(phase|queue|finish)$/.exec(url)?.[1];
+                    network.errorDetails = { stage: 'browser-upload' + (index ? '/file-' + index : action ? '/' + action : ''), method: options?.method || 'GET', reason: String(error.message || '').slice(0, 200) };
+                    throw network;
+                }
+                throw error;
+            }
+        };
         const plannedPartSize = 20_000_000;
         const plannedFiles = files.map(file => ({
             name: file.name, type: inferredType(file), size: file.size,
@@ -218,13 +233,25 @@
             }),
             mediaIndex: String(file.type || '').startsWith('video/') ? { mode: 'unavailable', reason: 'container-parser-unavailable' } : undefined
         }));
-        const job = await raw('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles }), signal));
+        const job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles }), signal));
         update({ operationId: job.operation_id });
         start();
         const blobs = [];
+        let queue = job.queue;
+        const waitForQueue = async () => {
+            if (!job.uploadQueueCheck) return;
+            while (!queue || queue.pendingParts >= 5 || queue.pendingBytes >= 100_000_000) {
+                const status = await uploadRequest('/uploads/' + job.uploadId + '/queue', { signal });
+                queue = status.queue;
+                if (status.ready) return;
+                update({ message: '服务器上传队列已满，等待 Telegram 消费后继续', queueParts: queue?.pendingParts, queueBytes: queue?.pendingBytes });
+                await delay(Math.max(250, Number(status.retryAfterMs) || 1000), signal);
+                await refresh();
+            }
+        };
         try {
             for (let index = 0; index < files.length; index++) {
-                await raw('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
+                await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
                 const blob = await read(files[index]);
                 if (signal.aborted) throw abortError();
@@ -238,16 +265,18 @@
                     if (!thumbnail?.size || signal.aborted) return;
                     return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
                 }).catch(error => { if (error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
-                if (!blob.size) await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal });
+                if (!blob.size) { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal })).queue; }
                 for (const part of plannedFiles[index].parts) {
+                    if (!blob.size) break;
                     const offset = part.byteStart, end = part.byteEnd + 1;
                     while (true) {
-                        try { await raw(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal }); break; }
+                        try { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal })).queue; break; }
                         catch (error) {
                             if (error.message !== 'UPLOAD_BACKPRESSURE') throw error;
+                            queue = error.queue;
                             update({ message: '服务器上传队列已满，等待 Telegram 消费后继续', queueParts: error.queue?.pendingParts, queueBytes: error.queue?.pendingBytes });
                             await delay(Math.max(250, Number(error.retryAfterMs) || 500), signal);
-                            await refresh(true);
+                            await refresh();
                         }
                     }
                 }
@@ -262,7 +291,13 @@
         } catch (error) {
             // A pipeline failure may remove its upload reservation while the next
             // browser request is in flight. Show the durable task's original cause.
-            if (error.name !== 'AbortError' && error.message !== 'OPERATION_CANCELLED') {
+            const cancelled = signal.aborted || error.message === 'OPERATION_CANCELLED';
+            if (!cancelled) {
+                if (error.transportFailure) {
+                    const network = new Error('UPLOAD_CLIENT_NETWORK_ERROR');
+                    network.errorDetails = { stage: 'browser-upload/finish', method: 'POST', reason: String(error.message || '').slice(0, 200) };
+                    error = network;
+                }
                 const failed = await raw('/operations/' + encodeURIComponent(job.operation_id)).catch(() => null);
                 if (failed?.errorCode) {
                     const original = new Error(failed.errorCode);
@@ -274,7 +309,11 @@
             for (let index = 0; index < (error.partialItems?.length || 0); index++) {
                 await window.TelegramDriveCache?.put(error.partialItems[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type }).catch(() => {});
             }
-            await raw('/uploads/' + job.uploadId, { method: 'DELETE' }).catch(() => {});
+            if (cancelled) await raw('/uploads/' + job.uploadId, { method: 'DELETE' }).catch(() => {});
+            else await raw('/uploads/' + job.uploadId + '/failure', json('POST', {
+                errorCode: error.message, reason: error.errorDetails?.reason || error.message,
+                stage: error.errorDetails?.stage, method: error.errorDetails?.method
+            })).catch(() => {});
             throw error;
         } finally { refresh(); }
     }

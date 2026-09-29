@@ -4735,7 +4735,17 @@ function showWebZipEditDialog(fileInfo, context = {}) {
     const close = () => dialog.remove(); dialog.querySelector('.web-zip-dialog-close').onclick = close;
     dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
     dialog.querySelector('[data-web-zip-action="request"]')?.addEventListener('click', async () => { try { await requestWebZipEditPermission(fileInfo); close(); } catch (error) { alert(error.message); } });
-    for (const action of ['edit','copy']) dialog.querySelector(`[data-web-zip-action="${action}"]`)?.addEventListener('click', async event => { const button=event.currentTarget;button.disabled=true;try{const blob=await getWebZipBlob(fileInfo,context.ownerDeviceId||context.sender||'');close();await window.WebWorkshop.importPackage(fileInfo,blob,context,action==='edit'?'update':'copy');}catch(error){alert(error.message);button.disabled=false;} });
+    for (const action of ['edit', 'copy']) dialog.querySelector(`[data-web-zip-action="${action}"]`)?.addEventListener('click', async event => {
+        const button = event.currentTarget, text = button.textContent;
+        button.disabled = true; button.textContent = '正在导入…';
+        try {
+            const blob = await getWebZipBlob(fileInfo, context.ownerDeviceId || context.sender || '');
+            if (!dialog.isConnected) return;
+            const draft = await window.WebWorkshop.importPackage(fileInfo, blob, { ...context, revealEditor: true }, action === 'edit' ? 'update' : 'copy');
+            if (draft) close();
+        } catch (error) { alert(`网页 ZIP 导入失败：${error.message}`); }
+        finally { button.disabled = false; button.textContent = text; }
+    });
 }
 
 async function publishWebZipUpdate(file, draft) {
@@ -6233,27 +6243,61 @@ async function fetchServerAssetCache(fileInfo, reason = '') {
     return task;
 }
 
-async function applyConfirmedTelegramChatLocally(fileId, chatId) {
+async function applyConfirmedTelegramChatLocally(fileId, chatId, { requireCompleteCache = true } = {}) {
     if (!/^-?[1-9]\d{0,15}$/.test(String(chatId || '')) || !Number.isSafeInteger(Number(chatId)) || Math.abs(Number(chatId)) > 4503599627370495) return false;
     const upgrade = file => {
         if (!file || file.id !== fileId || /^-?\d+$/.test(String(file.telegramChatId || ''))) return null;
         // Only source annotations change: no version, ownership, bytes or provider flags.
         return { ...file, telegramChatId: String(chatId) };
     };
+    // Read and patch annotations in one short transaction. A provider may
+    // have written fresh cache bytes since inventory scanning began.
+    if (state.db && !state.db._isMemory) {
+        return new Promise((resolve, reject) => {
+            const tx = state.db.transaction(['files', 'messages'], 'readwrite');
+            const fileStore = tx.objectStore('files'), messageStore = tx.objectStore('messages');
+            const fileRequest = fileStore.get(fileId);
+            const messageRequest = messageStore.index('sessionId').getAll(state.sessionId);
+            let pending = 2, changed = false;
+            const patch = () => {
+                if (--pending) return;
+                const file = fileRequest.result, messages = messageRequest.result;
+                if (requireCompleteCache && !hasCompleteFileCache(file, file)) return;
+                const references = [file, ...messages.flatMap(message => [message.fileInfo, ...(message.collection?.files || [])])].filter(item => item?.id === fileId);
+                if (!references.length || references.some(item => /^-?\d+$/.test(String(item.telegramChatId || '')) && String(item.telegramChatId) !== String(chatId))) return;
+                const next = upgrade(file);
+                if (next) { fileStore.put(next); changed = true; }
+                for (const message of messages) {
+                    let dirty = false;
+                    const update = item => { const next = upgrade(item); if (next) dirty = true; return next || item; };
+                    const next = { ...message };
+                    if (message.fileInfo) next.fileInfo = update(message.fileInfo);
+                    if (message.collection?.files) next.collection = { ...message.collection, files: message.collection.files.map(update) };
+                    if (dirty) { messageStore.put(next); changed = true; }
+                }
+            };
+            fileRequest.onsuccess = messageRequest.onsuccess = patch;
+            tx.oncomplete = () => resolve(changed);
+            tx.onerror = tx.onabort = () => reject(tx.error || new Error('Telegram 来源标注事务失败'));
+        });
+    }
     const stored = await getFromStore('files', fileId).catch(() => null);
-    if (!hasCompleteFileCache(stored, stored)) return false;
-    if (/^-?\d+$/.test(String(stored.telegramChatId || '')) && String(stored.telegramChatId) !== String(chatId)) return false;
+    if (requireCompleteCache && !hasCompleteFileCache(stored, stored)) return false;
+    const messages = await getCurrentSessionMessages();
+    const references = [stored, ...messages.flatMap(message => [message.fileInfo, ...(message.collection?.files || [])])].filter(file => file?.id === fileId);
+    if (!references.length || references.some(file => /^-?\d+$/.test(String(file.telegramChatId || '')) && String(file.telegramChatId) !== String(chatId))) return false;
     const next = upgrade(stored);
+    let migrated = Boolean(next);
     if (next) await saveToStore('files', next);
-    for (const message of await getCurrentSessionMessages()) {
+    for (const message of messages) {
         let changed = false;
         const patch = file => { const value = upgrade(file); if (value) changed = true; return value || file; };
         const updated = { ...message };
         if (message.fileInfo) updated.fileInfo = patch(message.fileInfo);
         if (message.collection?.files) updated.collection = { ...message.collection, files: message.collection.files.map(patch) };
-        if (changed) await saveToStore('messages', updated);
+        if (changed) { await saveToStore('messages', updated); migrated = true; }
     }
-    return true;
+    return migrated;
 }
 
 async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
@@ -13520,7 +13564,7 @@ async function getSessionResourceInventory() {
         resource.isSnsSource = resource.isSnsSource || Boolean(candidate.snsTaskId || candidate.snsMediaItemId || candidate.snsSourceUrl) ||
             /^sns(?:-|$)/.test(String(candidate.source || ''));
         resource.isTelegramSource = resource.isTelegramSource || candidate.telegramBotOrigin === true ||
-            Boolean(candidate.telegramFileId || candidate.telegramFileUniqueId);
+            Boolean(candidate.telegramFileId || candidate.telegramFileUniqueId || candidate.telegramChatId);
         if (candidate.serverAssetUrl) resource.serverAssetUrl = candidate.serverAssetUrl;
         if (candidate.telegramChatId && (!/^-?\d+$/.test(resource.telegramChatId) || /^-?\d+$/.test(String(candidate.telegramChatId)))) resource.telegramChatId = candidate.telegramChatId;
         if (candidate.telegramFileId && Number(candidate.telegramFileIdUpdatedAt || 0) >= resource.telegramFileIdUpdatedAt) {
@@ -14190,11 +14234,34 @@ async function runTelegramFileContinuityRepair() {
         return;
     }
     const progress = showBlockingProgressPanel('Telegram 文件防失联检测及修复', `准备扫描 ${resources.length} 个文件...`);
-    const stats = { valid: 0, repaired: 0, unavailable: 0, failed: 0 };
+    const stats = { valid: 0, repaired: 0, unavailable: 0, failed: 0, migrated: 0 };
+    const chatChecks = new Map();
     try {
         for (let index = 0; index < resources.length; index++) {
             const resource = resources[index];
-            progress.update(Math.floor(index * 100 / resources.length), `检测 ${index + 1}/${resources.length} · ${resource.name} · 有效 ${stats.valid} / 修复 ${stats.repaired} / 待来源 ${stats.unavailable} / 失败 ${stats.failed}`);
+            progress.update(Math.floor(index * 100 / resources.length), `检测 ${index + 1}/${resources.length} · ${resource.name} · 来源迁移 ${stats.migrated} / 有效 ${stats.valid} / 修复 ${stats.repaired} / 待来源 ${stats.unavailable} / 失败 ${stats.failed}`);
+            // Only this explicit repair action proactively resolves public sources.
+            // Numeric sources and unconfirmed mappings never get rewritten.
+            const publicSource = /^(?:@|(?:https?:\/\/)?t\.me\/)([a-zA-Z][a-zA-Z0-9_]{4,31})\/?$/i.exec(String(resource.telegramChatId || '').trim());
+            if (publicSource) {
+                const source = '@' + publicSource[1].toLowerCase();
+                try {
+                    if (!chatChecks.has(source)) {
+                        const response = await fetch('/api/telegram/assets/resolve-chat', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ sessionId: state.sessionId, source })
+                        });
+                        if (!response.ok) throw new Error(`来源验证接口返回 ${response.status}`);
+                        chatChecks.set(source, String((await response.json()).chatId || ''));
+                    }
+                    const chatId = chatChecks.get(source);
+                    if (chatId && await applyConfirmedTelegramChatLocally(resource.id, chatId, { requireCompleteCache: false })) stats.migrated++;
+                } catch (error) {
+                    chatChecks.set(source, '');
+                    historyLog('telegram-chat-manual-migration-failed', { fileId: resource.id, error: error.message });
+                }
+            }
+            await sleep(0);
             const response = await fetch('/api/telegram/assets/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -14207,6 +14274,7 @@ async function runTelegramFileContinuityRepair() {
                 stats.valid += 1;
                 continue;
             }
+            if (result?.repairable === false) { stats.unavailable++; continue; }
             const storedFile = await waitForTelegramRepairCache(resource);
             if (!storedFile) {
                 stats.unavailable += 1;
@@ -14234,13 +14302,13 @@ async function runTelegramFileContinuityRepair() {
             }
             await sleep(0);
         }
-        progress.update(100, `有效 ${stats.valid} · 已修复 ${stats.repaired} · 暂不可修复 ${stats.unavailable} · 失败 ${stats.failed}`);
+        progress.update(100, `来源已迁移 ${stats.migrated} · 有效 ${stats.valid} · 已修复 ${stats.repaired} · 暂不可修复 ${stats.unavailable} · 失败 ${stats.failed}`);
         await sleep(500);
     } finally {
         progress.close();
     }
     await showResourceBrowser();
-    showAppToast(`Telegram 检测完成：有效 ${stats.valid}，修复 ${stats.repaired}，待来源 ${stats.unavailable}，失败 ${stats.failed}`);
+    showAppToast(`Telegram 检测完成：来源迁移 ${stats.migrated}，有效 ${stats.valid}，修复 ${stats.repaired}，待来源 ${stats.unavailable}，失败 ${stats.failed}`);
 }
 
 async function showResourceBrowser(options = {}) {
@@ -14298,8 +14366,9 @@ async function showResourceBrowser(options = {}) {
     controls.className = 'resource-browser-controls';
     const mountDirectoryButton = createResourceBrowserButton('挂载本机目录', '只读映射用户授权的真实目录', () => mountLocalDirectory().catch(err => alert(err.message)));
     const mountFileButton = createResourceBrowserButton('关联本机文件', '不复制文件内容，远端请求时再读取', () => mountLocalFiles().catch(err => alert(err.message)));
-    const telegramRepairButton = createResourceBrowserButton('Telegram 文件防失联检测及修复', '检测当前 bot 是否仍可使用文件的 Telegram file_id，并在有缓存来源时换绑', () => {
-        runTelegramFileContinuityRepair().catch(err => alert(`Telegram 文件检测失败：${err.message}`));
+    const telegramRepairButton = createResourceBrowserButton('Telegram 文件防失联检测及修复', '主动验证并迁移旧 public 来源；检测 file_id，在有缓存来源时修复', () => {
+        telegramRepairButton.disabled = true;
+        runTelegramFileContinuityRepair().catch(err => alert(`Telegram 文件检测失败：${err.message}`)).finally(() => { telegramRepairButton.disabled = false; });
     });
     const searchInput = document.createElement('input');
     searchInput.type = 'search';

@@ -76,7 +76,7 @@ const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
-const { createTelegramChatDictionary, createTelegramChatResolver, registerTelegramChatDictionaryRoutes, normalizeChatId } = require('./server/telegram-chat-dictionary');
+const { createTelegramChatDictionary, createTelegramChatResolver, registerTelegramChatDictionaryRoutes, registerTelegramChatSourceRoute, normalizeChatId } = require('./server/telegram-chat-dictionary');
 const { createTelegramContentManager } = require('./server/telegram-content-manager');
 const { listDataUsage } = require('./server/data-usage');
 const { createTelegramOidcClient } = require('./server/telegram-oidc');
@@ -2051,6 +2051,11 @@ app.get('/api/youtube-premium/tasks/:taskId/cover', adminAuth.requireAuth, async
 });
 
 registerTelegramChatDictionaryRoutes(app, adminAuth.requireAuth, telegramChatDictionary);
+registerTelegramChatSourceRoute(app, {
+    resolver: telegramChatResolver,
+    isAllowedSession: id => isValidSessionId(id) && (sessions.has(id) || Boolean(infraStore?.getTunnel(id))),
+    credentials: () => isTelegramBotEnabled() ? { token: getTelegramBotToken(), baseUrl: getTelegramBotApiBaseUrl() } : null
+});
 app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
     const config = loadTelegramBotConfig();
     res.setHeader('Cache-Control', 'no-store');

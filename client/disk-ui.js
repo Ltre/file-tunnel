@@ -63,6 +63,8 @@ function telegramDriveErrorText(error) {
         'LOGIN_REQUIRED': '请先登录网盘',
         'STORAGE_BACKEND_UNAVAILABLE': '管理员尚未配置可用的网盘存储频道',
         'TELEGRAM_NETWORK_ERROR': '连接 Telegram 失败，请检查服务器网络',
+        'UPLOAD_CLIENT_NETWORK_ERROR': '浏览器与服务器之间的上传连接中断，请检查网络后重试',
+        'UPLOAD_CLIENT_REQUEST_FAILED': '客户端上传请求失败，服务器正在清理未完成的上传',
         'TELEGRAM_400': 'Telegram 拒绝了当前文件发送请求',
         'EPERM': '服务器写入上传暂存记录失败，请检查文件锁或目录权限',
         'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除或替换消息，请检查频道权限及消息类型',

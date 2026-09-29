@@ -904,6 +904,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     if (job.clientDone && state.uploadedParts === state.totalParts) {
                         update({ phase: 'index-write', percent: null, message: 'Telegram 已接收全部分片，正在写入逻辑文件索引' });
                         const result = await mutate(req, async () => {
+                            control.throwIfCancelled();
+                            if (job.pipelineFailure) throw job.pipelineFailure;
+                            if (job.pipelineAbort.signal.aborted) throw new Error('OPERATION_CANCELLED');
                             store(req).validateUpload(job.id);
                             const sent = store(req).uploadResults(job.id);
                             if (sent.some(result => !result)) throw new Error('TELEGRAM_PARTS_INVALID');
@@ -1026,22 +1029,21 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
             operations.run(job.operationId, (update, control) => runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
-            res.status(201).json({ uploadId: job.id, operation_id: job.operationId, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length })) });
+            res.status(201).json({ uploadId: job.id, operation_id: job.operationId, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, uploadQueueCheck: true, queue: store(req).uploadQueue(job.id), files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length })) });
+        }));
+        router.get('/uploads/:uploadId/queue', wrap((req, res) => {
+            const job = uploadJob(req), queue = store(req).uploadQueue(job.id);
+            res.set('Cache-Control', 'no-store').json({ ready: !job.finishing && queue.pendingParts < 5 && queue.pendingBytes < 100_000_000, queue, retryAfterMs: 1000 });
         }));
         router.put('/uploads/:uploadId/files/:index', wrap(async (req, res) => {
             const job = uploadJob(req);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
-            // Apply backpressure inside the open request. Returning HTTP 429 made
-            // the browser resend the same 20 MB chunk and poll operations between
-            // retries, which then exhausted the unrelated global IP limiter.
-            // Waiting here also lets the request socket provide natural TCP
-            // backpressure without buffering another chunk in memory.
-            while (true) {
-                uploadJob(req);
-                const queue = store(req).uploadQueue(job.id);
-                if (queue.pendingParts < 5 && queue.pendingBytes < 100_000_000) break;
-                log('browser.backpressure-wait', { uploadId: job.id, operationId: job.operationId, pendingParts: queue.pendingParts, pendingBytes: queue.pendingBytes });
-                await pipelineWait(job, 30000);
+            // Wait through small queue-status requests in the browser, rather
+            // than holding a large PUT open across an upstream proxy timeout.
+            const queue = store(req).uploadQueue(job.id);
+            if (queue.pendingParts >= 5 || queue.pendingBytes >= 100_000_000) {
+                log('browser.backpressure', { uploadId: job.id, operationId: job.operationId, pendingParts: queue.pendingParts, pendingBytes: queue.pendingBytes });
+                return res.status(503).set('Retry-After', '1').json({ error: 'UPLOAD_BACKPRESSURE', queue, retryAfterMs: 1000 });
             }
             const file = job.files[Number(req.params.index)];
             if (!file) throw new Error('FILE_NOT_FOUND');
@@ -1055,9 +1057,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
                 const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
                 const progress = bytes => { receivedBytes = bytes; lastProgressAt = Date.now(); operations.update(job.operationId, { phase: 'client-upload', message: '阶段 1/2 · 浏览器 → 服务器：' + file.name, clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null }); };
-                res.json(req.get('Content-Range')
+                const result = req.get('Content-Range')
                     ? await store(req).receivePart(job.id, req.params.index, req, req.get('Content-Range'), progress)
-                    : await store(req).receive(job.id, req.params.index, req, progress));
+                    : await store(req).receive(job.id, req.params.index, req, progress);
+                res.json({ ...result, queue: store(req).uploadQueue(job.id) });
                 pipelineWake(job);
                 log('browser.receive-complete', { ...trace, receivedBytes, elapsedMs: Date.now() - started });
             } catch (error) {
@@ -1091,6 +1094,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
             operations.update(job.operationId, { status: 'running', phase: 'source-read', percent: null, message: '正在读取本机文件：' + (job.files[req.body?.index]?.name || '') });
             res.json({ ok: true });
+        }));
+        router.post('/uploads/:uploadId/failure', wrap((req, res) => {
+            // Failure cleanup is distinct from a user choosing Cancel. Preserve
+            // the first pipeline cause and let its existing rollback run.
+            if (!store(req).ownsUpload(owner(req), req.params.uploadId)) {
+                const previous = operations.findUpload(req.params.uploadId, scope(req));
+                if (!previous) throw new Error('UPLOAD_NOT_FOUND');
+                return res.status(202).json({ operation_id: previous.operation_id, status: previous.status });
+            }
+            const job = store(req).upload(req.params.uploadId), operation = operations.get(job.operationId, scope(req));
+            if (['completed', 'cancelled'].includes(operation?.status)) return res.status(202).json({ operation_id: job.operationId, status: operation.status });
+            const error = new Error(req.body?.errorCode === 'UPLOAD_CLIENT_NETWORK_ERROR' ? 'UPLOAD_CLIENT_NETWORK_ERROR' : 'UPLOAD_CLIENT_REQUEST_FAILED');
+            error.details = { stage: /^browser-upload(?:\/(?:file-\d{1,3}|phase|queue|finish))?$/.test(req.body?.stage || '') ? req.body.stage : 'browser-upload',
+                method: ['GET', 'POST', 'PUT'].includes(req.body?.method) ? req.body.method : '', reason: String(req.body?.reason || '').slice(0, 200) };
+            job.pipelineFailure ||= error;
+            recordUploadFailure(job, job.pipelineFailure);
+            log('browser.upload-failure-reported', { uploadId: job.id, operationId: job.operationId, error: networkDetails(job.pipelineFailure), details: diskErrorDetails(job.pipelineFailure) });
+            job.pipelineAbort?.abort(); pipelineWake(job);
+            // Respond before Telegram cleanup; rollback/recovery remains owned
+            // by the pipeline and is not coupled to this browser connection.
+            res.status(202).json({ operation_id: job.operationId, status: 'failed' });
         }));
         router.delete('/uploads/:uploadId', wrap(async (req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');

@@ -86,6 +86,25 @@ function registerTelegramChatDictionaryRoutes(app, requireAuth, dictionary) {
         catch (error) { res.status(error.status || (error.code ? 500 : 422)).json({ error: error.code ? 'Chat 字典保存失败，请检查服务器日志' : error.message }); }
     });
 }
+// This route is invoked only by the user's continuity repair action. It does
+// not read file bytes, create providers, or change the server's asset records.
+function registerTelegramChatSourceRoute(app, { resolver, isAllowedSession, credentials }) {
+    app.post('/api/telegram/assets/resolve-chat', async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        try {
+            if (!isAllowedSession(req.body?.sessionId)) return res.status(403).json({ error: 'invalid-session' });
+            const backend = credentials();
+            if (!backend?.token) return res.status(503).json({ error: 'telegram-bot-disabled' });
+            const source = normalizeChatIdentifier(req.body?.source);
+            if (!source.startsWith('@')) return res.json({ chatId: '', reason: 'already-numeric' });
+            const resolved = await resolver.resolve(source, backend);
+            res.json({ chatId: resolved.chatId || '', reason: resolved.chatId ? 'confirmed' : 'not-confirmed' });
+        } catch (_) {
+            // Validation and dictionary mismatches never authorize replacement.
+            res.json({ chatId: '', reason: 'not-confirmed' });
+        }
+    });
+}
 function createTelegramChatResolver({ dictionary, getChat, now = Date.now, verificationTimeoutMs = 10000 }) {
     const pending = new Map(), verified = new Map();
     return {
@@ -138,4 +157,4 @@ function createTelegramChatResolver({ dictionary, getChat, now = Date.now, verif
     };
 }
 
-module.exports = { normalizeChatId, normalizeChatIdentifier, normalizeEntries, createTelegramChatDictionary, createTelegramChatResolver, registerTelegramChatDictionaryRoutes };
+module.exports = { normalizeChatId, normalizeChatIdentifier, normalizeEntries, createTelegramChatDictionary, createTelegramChatResolver, registerTelegramChatDictionaryRoutes, registerTelegramChatSourceRoute };
