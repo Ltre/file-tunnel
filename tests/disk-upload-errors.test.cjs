@@ -58,6 +58,42 @@ test('流水线上传只把同一个逻辑文件的分片组成 Telegram Album',
     assert.deepEqual(batches.map(parts => parts.map(part => part.fileIndex)), [[0], [1]]);
 });
 
+test('浏览器继续上传时不覆盖 Telegram 阶段，未获确认的请求体不计入进度', async t => {
+    t.mock.method(console, 'info', () => {});
+    let started, releaseFirst, startedSecond, releaseSecond;
+    const firstStarted = new Promise(resolve => { started = resolve; });
+    const firstAccepted = new Promise(resolve => { releaseFirst = resolve; });
+    const secondStarted = new Promise(resolve => { startedSecond = resolve; });
+    const secondAccepted = new Promise(resolve => { releaseSecond = resolve; });
+    let calls = 0;
+    const f = await fixture(t, async (_backend, _files, parts, progress) => {
+        calls++;
+        progress({ phase: 'telegram-upload', message: '请求体已生成', processedBytes: 6, totalBytes: 6, percent: 99 });
+        if (calls === 1) { started(); await firstAccepted; }
+        else { startedSecond(); await secondAccepted; }
+        return remotes(parts);
+    });
+    const job = await f.create();
+    assert.equal((await f.send(job, 0)).status, 200);
+    await firstStarted;
+    assert.equal((await f.send(job, 1)).status, 200);
+    const inFlight = (await f.request('/operations/' + job.operation_id)).data;
+    assert.equal(inFlight.phase, 'telegram-upload');
+    assert.equal(inFlight.clientBytesReceived, 6);
+    assert.equal(inFlight.telegramBytesConfirmed, 0);
+    assert.equal(inFlight.processedBytes, 0);
+    assert.equal(inFlight.percent, 0);
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    releaseFirst();
+    await secondStarted;
+    const halfway = (await f.request('/operations/' + job.operation_id)).data;
+    assert.equal(halfway.telegramBytesConfirmed, 3);
+    assert.equal(halfway.processedBytes, 3);
+    assert.equal(halfway.percent, 50);
+    releaseSecond();
+    assert.equal((await f.terminal(job)).status, 'completed');
+});
+
 test('full queue status/PUT respond promptly without consuming bytes or failing the upload', async t => {
     t.mock.method(console, 'info', () => {});
     const f = await fixture(t, async (_backend, _files, parts) => remotes(parts));

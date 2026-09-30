@@ -45,7 +45,15 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         },
         update(id, patch, immediate = false) {
             const job = jobs.get(id); if (!job || terminal(job)) return view(job);
-            if (patch.phase && patch.phase !== job.phase && patch.phase === 'telegram-upload') job.lastMeasuredPercent = 0;
+            // Browser PUT progress can arrive after the Telegram pipeline has
+            // already started. Keep its byte counter, but never let it replace
+            // the Telegram phase or the confirmed remote progress.
+            if (job.type === 'upload' && job.telegramStarted && ['client-upload', 'source-read'].includes(patch.phase)) {
+                patch = { ...patch };
+                for (const key of ['phase', 'message', 'percent', 'processedBytes', 'totalBytes']) delete patch[key];
+            }
+            if (job.type === 'upload' && patch.phase === 'telegram-queue') job.telegramStarted = true;
+            if (patch.phase && patch.phase !== job.phase && patch.phase === 'telegram-queue') job.lastMeasuredPercent = 0;
             Object.assign(job, patch);
             job.updatedAt = now();
             if (Number.isFinite(patch.percent)) job.lastMeasuredPercent = Math.max(job.lastMeasuredPercent || 0, Math.min(100, patch.percent));

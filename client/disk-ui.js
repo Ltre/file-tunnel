@@ -2093,7 +2093,7 @@ function initDiskLoading() {
         const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
         const stages = [];
         if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}`);
-        if (Number.isFinite(job?.telegramBytesUploaded) && job.telegramTotalBytes) stages.push(`服务器 → Telegram ${formatFileSize(job.telegramBytesUploaded)}/${formatFileSize(job.telegramTotalBytes)}`);
+        if (Number.isFinite(job?.telegramBytesConfirmed) && job.telegramTotalBytes) stages.push(`Telegram 已确认 ${formatFileSize(job.telegramBytesConfirmed)}/${formatFileSize(job.telegramTotalBytes)}`);
         detail.textContent = job
             ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', stages.join(' · ') || (job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : '')].filter(Boolean).join(' · ')
             : [activity?.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(activity.folderPath)}` : '', activity?.message || '正在处理，请稍候…'].filter(Boolean).join(' · ');

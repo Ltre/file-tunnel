@@ -335,10 +335,8 @@
         const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
-        // Keep the file badge informative while fetch is waiting for the first
-        // response byte.  The server cannot expose Telegram's byte progress on
-        // this HTTP response, so 0% is the only truthful value until headers
-        // arrive and the browser-download half begins at 50%.
+        // The server streams Telegram parts as they arrive. Only bytes received
+        // by this browser count toward the file badge's 0-100% progress.
         setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
         const response = await fetch(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
@@ -347,11 +345,11 @@
         let blob;
         if (response.body?.getReader) {
             const reader = response.body.getReader(), chunks = []; let received = 0;
-            setCacheProgress(item.id, { phase: 'browser', percent: 50 });
+            setCacheProgress(item.id, { phase: 'browser', percent: 0, receivedBytes: 0, totalBytes: total });
             while (true) {
                 const { done, value } = await reader.read(); if (done) break;
                 chunks.push(value); received += value.byteLength;
-                const percent = total ? 50 + Math.min(50, received / total * 50) : null;
+                const percent = total ? Math.min(100, received / total * 100) : null;
                 setCacheProgress(item.id, { phase: 'browser', percent, receivedBytes: received, totalBytes: total });
             }
             blob = new Blob(chunks, { type: item.type || response.headers?.get('Content-Type') || 'application/octet-stream' });

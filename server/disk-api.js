@@ -940,10 +940,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     if (batch.length === 1 && !job.clientDone) { await pipelineWait(job, 350); batch = nextPipelineBatch(job); }
                     if (!batch.length) { await pipelineWait(job); continue; }
                     for (const part of batch) store(req).markPartUploading(job.id, part.fileIndex, part.partIndex);
-                    update({ phase: 'telegram-queue', message: `服务器队列正在提交 ${batch.length} 个连续分片到 Telegram`, queueParts: Math.max(0, state.pendingParts - batch.length) });
+                    const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
+                    const confirmedBytes = job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0);
+                    const confirmedProgress = bytes => ({ telegramBytesConfirmed: bytes, telegramTotalBytes: totalBytes, processedBytes: bytes, totalBytes, percent: totalBytes ? Math.min(99, bytes / totalBytes * 100) : null });
+                    update({ phase: 'telegram-queue', message: `阶段 2/2 · 服务器 → Telegram · 正在提交 ${batch.length} 个分片，等待确认`, queueParts: Math.max(0, state.pendingParts - batch.length), ...confirmedProgress(confirmedBytes) });
                     try {
-                        const progress = patch => update({ ...patch, telegramBytesUploaded: patch.processedBytes, telegramTotalBytes: patch.totalBytes, message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message });
-                        const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes: job.files.reduce((sum, file) => sum + file.size, 0), confirmedBytes: job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0), signal: job.pipelineAbort.signal,
+                        const progress = patch => update({ ...patch, ...confirmedProgress(confirmedBytes), message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message });
+                        const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes, confirmedBytes, signal: job.pipelineAbort.signal,
                             onReuseRejected: part => {
                                 try { chunkFileCache.remove(job.storage, part); }
                                 catch (error) { log('telegram.chunk-cache-write-failed', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, action: 'remove', error: networkDetails(error) }); }
@@ -994,6 +997,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             return uploaded;
                         });
                         await store(req).markPartsUploaded(job.id, remotes);
+                        const acceptedBytes = remotes.reduce((sum, remote) => sum + Number(remote.size || 0), 0);
+                        update({ phase: 'telegram-upload', message: `阶段 2/2 · 服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`, telegramPartsUploaded: state.uploadedParts + remotes.length, ...confirmedProgress(confirmedBytes + acceptedBytes) });
                     } catch (error) {
                         store(req).resetUploadingParts(job.id); throw error;
                     }

@@ -3,6 +3,25 @@ const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 
+test('浏览器缓存进度按实际收到的流字节从零计算', async () => {
+    const snapshots = [], stored = [];
+    const window = {
+        TelegramDriveCache: { get: async () => null, put: async (_id, value) => stored.push(value) },
+        dispatchEvent() { snapshots.push({ ...window.DiskClient.cacheProgress('file-1') }); }
+    };
+    const parts = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
+    const fetch = async () => ({
+        ok: true,
+        headers: { get: name => name === 'Content-Length' ? '4' : '' },
+        body: { getReader: () => ({ read: async () => parts.length ? { done: false, value: parts.shift() } : { done: true } }) }
+    });
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, setInterval() {}, Blob, CustomEvent: class {}, Date, Map, Set, Promise, encodeURIComponent });
+    const result = await window.DiskClient.read({ id: 'file-1', name: 'file.bin', size: 4 });
+    assert.equal(result.size, 4);
+    assert.equal(stored.length, 1);
+    assert.deepEqual(snapshots.filter(item => item.phase === 'browser').map(item => item.percent), [0, 50, 100]);
+});
+
 test('large uploads wait through small queue probes and never hold another PUT while Telegram queue is full', async () => {
     const size = 120000000, window = {}, requests = []; let finished = false, putCount = 0, probes = 0, full = false;
     const blob = { size, slice: (start, end) => ({ size: end - start }) };
