@@ -273,9 +273,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const parts = telegram.parts(file);
         const backendKey = crypto.createHash('sha256').update(String(backend.baseUrl || '') + '\0' + String(backend.token || '')).digest('hex');
         async function* combine() {
-            for (const part of parts) {
-                const partStart = Number(part.offset) || 0, partEnd = partStart + part.size - 1;
-                if (partEnd < start || partStart > end) continue;
+            const needed = parts.filter(part => {
+                const partStart = Number(part.offset) || 0;
+                return partStart + part.size - 1 >= start && partStart <= end;
+            });
+            for (let index = 0; index < needed.length; index++) {
+                const part = needed[index];
+                const partStart = Number(part.offset) || 0;
                 const localStart = Math.max(0, start - partStart), localEnd = Math.min(part.size - 1, end - partStart);
                 const block = 1024 * 1024;
                 const cacheStart = Math.floor(localStart / block) * block;
@@ -290,6 +294,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     // The shared cache fill must survive that one consumer leaving.
                     source: () => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd })
                 });
+                // Overlap only the next part's small getFile lookup with the
+                // current byte stream. Do not start a second file download.
+                if (needed[index + 1] && typeof telegram.prefetchPartLocation === 'function')
+                    telegram.prefetchPartLocation(backend, needed[index + 1]).catch(() => {});
                 for await (const chunk of source) yield chunk;
             }
         }
@@ -851,6 +859,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const nextPipelineBatch = job => {
             const batch = []; let bytes = 0;
             outer: for (let fileIndex = 0; fileIndex < job.files.length; fileIndex++) {
+                // Albums are for parts of one logical file. Combining unrelated
+                // files makes a single slow/lost response fail several files at
+                // once, and prevents the first file from being confirmed early.
+                if (batch.length && fileIndex !== batch[0].fileIndex) break;
                 const file = job.files[fileIndex];
                 for (let partIndex = 1; partIndex <= file.parts.length; partIndex++) {
                     const chunk = file.chunks.find(item => item.partIndex === partIndex);

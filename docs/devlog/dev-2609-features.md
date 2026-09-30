@@ -712,3 +712,26 @@ PWA 启动
 S3 接入与部署
 - 独立管理凭据、用户分区、启停和轮换，渲染现有接入手册
 - 补齐部署资源及 Worker 路径，111 项回归与构建验证通过
+
+## 2026-09-30：网盘上传响应头超时、代理与浏览器缓存拉取
+
+### 现场证据与根因边界
+
+- 只读检查本地 `.tunnel-data/disk-upload.log`：一次与反馈吻合的上传在 06:49:32 向 Telegram 发送首批约 12 MB、跨两个逻辑文件的 `sendMediaGroup`；请求体已产生约 12,087,002 字节，直到 06:54:36 才以 `UND_ERR_HEADERS_TIMEOUT` 失败，耗时 304,187 ms。该码发生在**等待响应头**阶段，不能断言 Telegram 未收到消息，也不能安全盲目重发。Node/Undici 的默认响应头超时为 300 秒：https://github.com/nodejs/undici/blob/main/docs/docs/api/Client.md 。现有 30 分钟 `AbortSignal` 不会覆盖这个内部超时。
+- 上传发生前的 `getChat` 约 1.1 秒；本机 Telegram `getFile` 实测日志有 0.6–5.8 秒的请求。`npm run dev` 的 HTTP 代理端口可连接；隔离的只读 HEAD 探测经此代理访问 Telegram 为约 2–3 秒，直连超时。现有证据说明代理路径确有额外等待，但无法仅凭超时日志区分代理上游与 Telegram 服务端哪一端最终没有及时响应。没有将 S3 或 SQLite 判作已证实根因。
+- 原服务在配置代理后以 `NODE_USE_ENV_PROXY=1` 重启进程，但没有设置本机 `NO_PROXY`；本机 URL 也可能被全局 `fetch` 送进出站代理。代理引导代码不是本轮新加入，不能把全部变慢归因于最近一次提交。Node 内置代理的环境变量及 `NO_PROXY` 行为参考：https://nodejs.org/api/http.html 。
+- 浏览器“缓存到浏览器”走服务器分片下载。完整文件下载原本每个物理分片至少一次 `getFile`，且逐片串行等待；媒体预览的 1 MB 左右 Range 窗口则会对同一个分片重复调用 `getFile`。两者都承担代理往返时间，后一种重复成本尤其明显。Telegram 官方保证 `getFile` 返回的下载链接至少一小时有效：https://core.telegram.org/bots/api#getfile 。
+
+### 修改与安全约束
+
+- 上传流水线按**同一个逻辑文件**组 Telegram 相册，不再把几个独立文件的分片混成一个 `sendMediaGroup`。原始 12 MB 跨文件相册会拆成分别发送的请求；同文件的相邻分片仍可成组。批量上传仍在所有文件完成后统一提交网盘索引，已确认消息仍按原流程回滚。
+- 请求体生产完毕后，任务明确显示“等待 Telegram 确认”；`UND_ERR_HEADERS_TIMEOUT` 的任务和浏览器错误文案说明结果未确认、应先检查频道消息。保留原有“只有明确被 Telegram 拒绝或可证明尚未连接”的有界重试条件；响应头超时不自动重发，也不假定未知消息可以被回滚清除。
+- Telegram 云端 `getFile` 的 `file_path` 在单进程内缓存 45 分钟，并合并同一 `file_id` 的并发查询；缓存以 Bot、Base URL、file_id 隔离，容量上限 4096。旧链接返回 403/404 时仅重取一次。自建 Bot API 的本地路径不套用云端时限。增加脱敏的 `telegram.file-headers`/网络错误日志以区分 `getFile`、文件 Range 和上游响应时间。
+- 完整文件下载在读取当前分片时只提前查询**下一个**分片的 `getFile` 地址，使代理往返与当前字节流重叠；不并发拉取两个分片的文件内容，也不改变拼接顺序、校验或浏览器缓存结构。真正的 Telegram 文件传输吞吐仍受代理/上游链路限制，不能仅凭本地代码断言已解决所有慢速案例。
+- 网络代理控制策略**未修改**：仍由外部 `DR2T_PROXY`、`DR2T_ALL_PROXY` 或标准代理环境变量控制；`npm run dev` 只是提供本机默认变量。曾误将代理自动启用限定为 `npm run dev`，并额外加入本机 `NO_PROXY` 处理；用户指出这不是需求后，已完整撤回这些 `server.js` 及对应临时测试改动。对代理路径的诊断保留为分析结论，不改变其配置行为。
+
+### 验证与未覆盖范围
+
+- 网盘上传/回滚、分片读取、客户端、缓存、仓储、分享和协同相关 11 个测试文件共 **99 项通过，0 失败**；补充了跨文件分批、并发复用/过期刷新 `getFile`、准确模拟 `UND_ERR_HEADERS_TIMEOUT` 不重复发送测试。修改的服务端与客户端 JS 语法检查通过，diff 空白检查通过。
+- 未调用真实 Telegram，也未重启或修改线上代理。真实 23 文件上传是否仍会被特定代理/上游拖到五分钟，需要部署后以新的 `disk-upload.log` 中 `telegram.request-body-produced`、`telegram.headers`、`telegram.file-headers` 和请求 ID 核对。若 Telegram 已接受但响应丢失，Bot API 没有本次发送的幂等键，自动重发存在重复消息风险；此限制不隐瞒为“已彻底修复”。
+- 用户原有 `prompts/dev-prompt-logs/dev-2609.md` 修改保持原样；未暂存、未提交。

@@ -202,16 +202,17 @@ test('纯 DNS/connect 故障只做有界重试', async t => {
     assert.equal(requests, 3);
 });
 
-test('socket 重置、响应体故障、混合 AggregateError 均不能盲目重发', async t => {
+test('响应头超时、socket 重置、响应体故障、混合 AggregateError 均不能盲目重发', async t => {
     const { dataDir, files, parts } = fixture(t);
-    for (const scenario of ['socket-before-body', 'socket-after-body', 'response-body', 'mixed-aggregate', 'cached-json', 'unspecified-timeout', 'unspecified-network']) {
+    for (const scenario of ['headers-timeout', 'socket-before-body', 'socket-after-body', 'response-body', 'mixed-aggregate', 'cached-json', 'unspecified-timeout', 'unspecified-network']) {
         let requests = 0;
         const telegram = createDiskTelegram({ dataDir, fetchImpl: async (_url, init) => {
             requests++;
-            if (scenario === 'socket-after-body' || scenario === 'response-body') await consume(init.body);
+            if (scenario === 'headers-timeout' || scenario === 'socket-after-body' || scenario === 'response-body') await consume(init.body);
             const cause = Object.assign(new Error('socket reset'), { code: 'ECONNRESET' });
             if (scenario === 'response-body') return { ok: true, status: 200, json: async () => { throw Object.assign(new Error('dns during response'), { code: 'ENOTFOUND' }); } };
             if (scenario === 'mixed-aggregate') throw new TypeError('fetch failed', { cause: new AggregateError([Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }), cause]) });
+            if (scenario === 'headers-timeout') throw new TypeError('fetch failed', { cause: Object.assign(new Error('headers timeout'), { code: 'UND_ERR_HEADERS_TIMEOUT' }) });
             if (scenario === 'unspecified-timeout') throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
             if (scenario === 'unspecified-network') throw new TypeError('fetch failed');
             throw new TypeError('fetch failed', { cause });

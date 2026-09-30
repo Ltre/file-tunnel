@@ -64,7 +64,10 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result }, true); },
         fail(id, error) {
             const errorDetails = diskErrorDetails(error);
-            return api.update(id, { status: 'failed', phase: 'failed', errorCode: diskErrorCode(error), errorMessage: errorDetails.telegramDescription || '操作失败，请检查错误码后重试', message: '操作失败', errorDetails }, true);
+            const uncertainUpload = error?.message === 'TELEGRAM_NETWORK_ERROR' && errorDetails.causeCode === 'UND_ERR_HEADERS_TIMEOUT';
+            const errorMessage = uncertainUpload ? '等待 Telegram 或代理响应头超时；发送结果未确认，请先核对频道消息再重试'
+                : errorDetails.telegramDescription || '操作失败，请检查错误码后重试';
+            return api.update(id, { status: 'failed', phase: 'failed', errorCode: diskErrorCode(error), errorMessage, message: '操作失败', errorDetails }, true);
         },
         run(id, work) {
             const job = jobs.get(id);

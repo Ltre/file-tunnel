@@ -38,7 +38,25 @@ async function fixture(t, uploadPhysical) {
     };
     return { dataDir, store, user, removed, request, create, send, terminal, telegram };
 }
-const remotes = parts => parts.map((part, index) => ({ ...part, fileId: 'remote-' + index, messageId: 101 + index, fileUniqueId: 'u-' + index, messageDate: Date.now() }));
+const remotes = parts => parts.map(part => {
+    const number = 101 + part.fileIndex * 100 + part.partIndex - 1;
+    return { ...part, fileId: 'remote-' + number, messageId: number, fileUniqueId: 'u-' + number, messageDate: Date.now() };
+});
+
+test('流水线上传只把同一个逻辑文件的分片组成 Telegram Album', async t => {
+    t.mock.method(console, 'info', () => {});
+    const batches = []; let nextMessageId = 100;
+    const f = await fixture(t, async (_backend, _files, parts) => {
+        batches.push(parts.map(part => ({ fileIndex: part.fileIndex, logicalFileId: part.logicalFileId })));
+        return parts.map(part => ({ ...part, fileId: 'remote-' + ++nextMessageId, messageId: nextMessageId, messageDate: Date.now() }));
+    });
+    const job = await f.create();
+    assert.equal((await f.send(job, 0)).status, 200);
+    assert.equal((await f.send(job, 1)).status, 200);
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    assert.equal((await f.terminal(job)).status, 'completed');
+    assert.deepEqual(batches.map(parts => parts.map(part => part.fileIndex)), [[0], [1]]);
+});
 
 test('full queue status/PUT respond promptly without consuming bytes or failing the upload', async t => {
     t.mock.method(console, 'info', () => {});
@@ -76,7 +94,7 @@ test('browser network failure reports failed, asynchronously rolls back all acce
     assert.equal(response.status, 202);
     const result = await f.terminal(job); assert.equal(result.status, 'failed'); assert.equal(result.errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR'); assert.notEqual(result.cancelRequested, true);
     for (let i = 0; i < 150 && f.store.upload(job.uploadId); i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.deepEqual(f.removed.sort(), [101, 102]); assert.equal(f.store.list(f.user.id).files.length, 0);
+    assert.deepEqual(f.removed.sort(), [101, 201]); assert.equal(f.store.list(f.user.id).files.length, 0);
     const duplicateReport = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'DISK_REQUEST_FAILED' }) });
     assert.equal(duplicateReport.status, 202); assert.equal((await f.terminal(job)).errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
     const next = await f.create(); assert.ok(next.uploadId); await f.request(`/uploads/${next.uploadId}`, { method: 'DELETE' });
@@ -107,6 +125,9 @@ test('HTTP and durable operation preserve EPERM and sanitized Telegram/network d
     const operations = createDiskOperations({ dataDir }), scope = { userId: 'u' }, job = operations.create(scope, 'upload', 'test');
     operations.fail(job.operation_id, error);
     assert.equal(operations.get(job.operation_id, scope).errorDetails.method, 'sendMediaGroup');
+    const timedOut = operations.create(scope, 'upload', 'timeout');
+    operations.fail(timedOut.operation_id, { message: 'TELEGRAM_NETWORK_ERROR', details: { causeCode: 'UND_ERR_HEADERS_TIMEOUT', method: 'sendMediaGroup' } });
+    assert.match(operations.get(timedOut.operation_id, scope).errorMessage, /发送结果未确认/);
 });
 
 test('after Telegram rollback phase/PUT/thumbnail preserve the original failure instead of UPLOAD_NOT_FOUND', async t => {
@@ -156,7 +177,8 @@ test('permanent manifest EPERM rolls back every accepted message and reports a f
     const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
     await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
     const result = await f.terminal(job);
-    assert.equal(result.errorCode, 'EPERM'); assert.deepEqual(f.removed.sort(), [101, 102]);
+    assert.equal(result.errorCode, 'EPERM');
+    assert.deepEqual(f.removed.sort(), [101], '首文件持久化失败时第二个文件尚未送达 Telegram，只回滚已确认消息');
     assert.equal(f.store.list(f.user.id).files.length, 0);
     const next = await f.request(`/uploads/${job.uploadId}/phase`, { method: 'POST' });
     assert.equal(next.data.error, 'EPERM');

@@ -90,6 +90,8 @@ function telegramDriveErrorText(error) {
     };
     const description = error?.errorDetails?.telegramDescription;
     const networkCode = error?.errorDetails?.causeCode;
+    if (code === 'TELEGRAM_NETWORK_ERROR' && networkCode === 'UND_ERR_HEADERS_TIMEOUT')
+        return '等待 Telegram 或代理响应头超时；本次发送结果尚未确认，请先核对频道消息再重试 · ' + networkCode;
     const detail = description || (code === 'TELEGRAM_NETWORK_ERROR' ? networkCode : '');
     return (messages[code] || code || 'Telegram 网盘操作失败') + (detail ? ' · ' + detail : '');
 }

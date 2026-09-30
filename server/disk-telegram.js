@@ -8,6 +8,9 @@ const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const DELETE_WINDOW_MS = (47 * 60 + 57) * 60 * 1000;
+// Telegram guarantees file links for at least one hour. Keep a shorter,
+// process-local lease so each media Range does not first repeat getFile.
+const FILE_PATH_LEASE_MS = 45 * 60 * 1000;
 const messageMedia = message => message?.document || message?.video || message?.audio || message?.animation || message?.voice || message?.video_note;
 // A consumed Readable only proves local byte production. DNS/connect failures
 // prove that no HTTP request reached Telegram, even if fetch buffered that body.
@@ -34,6 +37,7 @@ function diskThumbnailCaption(file, backend, context = {}) {
 function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now, resolveChatIdentifier = value => value }) {
     const repository = openDiskRepository(dataDir);
     const placeholdersInFlight = new Map();
+    const filePaths = new Map(), filePathRequests = new Map();
     const log = createDiskUploadLog(dataDir);
     async function call(backend, method, payload, init, retry = 0, trace = {}) {
         if (!backend?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
@@ -114,6 +118,27 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         if ((item.partCount && item.partCount !== parts.length) || offset !== item.size) throw new Error('TELEGRAM_PARTS_INVALID');
         return parts;
     }
+    async function fileLocation(backend, part, refresh = false) {
+        const cacheable = backend.baseUrl === 'https://api.telegram.org';
+        const key = crypto.createHash('sha256').update(String(backend.baseUrl) + '\0' + String(backend.token) + '\0' + String(part.fileId)).digest('hex');
+        if (refresh) filePaths.delete(key);
+        const cached = cacheable && filePaths.get(key);
+        if (cached && cached.expiresAt > now()) return { ...cached.file, cacheHit: true, key };
+        if (filePathRequests.has(key)) return filePathRequests.get(key);
+        const pending = call(backend, 'getFile', { file_id: part.fileId }).then(file => {
+            if (!file?.file_path) throw new Error('TELEGRAM_FILE_PATH_MISSING');
+            if (cacheable) {
+                if (filePaths.size >= 4096) {
+                    for (const [id, entry] of filePaths) if (entry.expiresAt <= now()) filePaths.delete(id);
+                    if (filePaths.size >= 4096) filePaths.delete(filePaths.keys().next().value);
+                }
+                filePaths.set(key, { file, expiresAt: now() + FILE_PATH_LEASE_MS });
+            }
+            return { ...file, cacheHit: false, key };
+        }).finally(() => filePathRequests.delete(key));
+        filePathRequests.set(key, pending);
+        return pending;
+    }
     async function placeholder(backend, channelId, renew = false) {
         // file_id is bot-specific; never share it between unrelated configured bots.
         const key = crypto.createHash('sha256').update(backend.baseUrl + '\0' + backend.token).digest('hex');
@@ -154,15 +179,30 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
     }
     async function readPart(backend, part, options = {}) {
-        const file = await call(backend, 'getFile', { file_id: part.fileId });
-        if (!file?.file_path) throw new Error('TELEGRAM_FILE_PATH_MISSING');
+        let file = await fileLocation(backend, part);
         const start = Math.max(0, Number(options.start) || 0), end = Number.isSafeInteger(options.end) ? options.end : Number(part.size) - 1;
         if (backend.baseUrl !== 'https://api.telegram.org' && path.isAbsolute(file.file_path)) return fs.createReadStream(file.file_path, { start, end });
         let response;
         const headers = start > 0 || end < Number(part.size) - 1 ? { Range: `bytes=${start}-${end}` } : undefined;
         const timeout = AbortSignal.timeout(30 * 60 * 1000), signal = options.signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([timeout, options.signal]) : (options.signal || timeout);
-        try { response = await fetchImpl(backend.baseUrl + '/file/bot' + backend.token + '/' + file.file_path, { headers, signal }); }
-        catch (_) { throw new Error('TELEGRAM_DOWNLOAD_NETWORK'); }
+        const requestFile = async () => {
+            const started = Date.now();
+            try {
+                response = await fetchImpl(backend.baseUrl + '/file/bot' + backend.token + '/' + file.file_path, { headers, signal });
+                log('telegram.file-headers', { fileKey: file.key.slice(0, 12), status: response.status, range: Boolean(headers), cacheHit: file.cacheHit, elapsedMs: Date.now() - started });
+            } catch (cause) {
+                log('telegram.file-network-error', { fileKey: file.key.slice(0, 12), range: Boolean(headers), elapsedMs: Date.now() - started, error: networkDetails(cause) });
+                const error = new Error('TELEGRAM_DOWNLOAD_NETWORK');
+                error.details = { ...networkDetails(cause), stage: 'file-download', elapsedMs: Date.now() - started };
+                throw error;
+            }
+        };
+        await requestFile();
+        if (file.cacheHit && [403, 404].includes(response.status)) {
+            await response.body?.cancel?.().catch(() => {});
+            file = await fileLocation(backend, part, true);
+            await requestFile();
+        }
         if (!response.ok || !response.body) throw new Error('TELEGRAM_DOWNLOAD_FAILED');
         const stream = Readable.fromWeb(response.body);
         if (!headers) return stream;
@@ -216,6 +256,12 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     produced = sentBytes;
                     update({ phase: 'telegram-upload', message: `正在上传到 Telegram：${name}`, processedBytes: confirmedBefore + accepted.reduce((sum, item) => sum + item.size, 0) + sentBytes, totalBytes: total, percent: total ? Math.min(99, (confirmedBefore + accepted.reduce((sum, item) => sum + item.size, 0) + sentBytes) / total * 100) : null });
                 } });
+                multipart?.body.once('end', () => {
+                    // Produced bytes are not proof that Telegram accepted the
+                    // request; keep the task visibly waiting for confirmation.
+                    update({ phase: 'telegram-response', message: `请求体已交给 HTTP 客户端，正在等待 Telegram 确认 ${batch.length} 个分片` });
+                    log('telegram.request-body-produced', { uploadId: context.uploadId, operationId: context.operationId, batch: trace.batch, producedBytes: produced });
+                });
                 try {
                     if (reused) {
                         result = batch.length === 1
@@ -308,6 +354,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             return remote;
         },
         parts: validatedParts,
+        prefetchPartLocation: async (backend, part) => { await fileLocation(backend, part); },
         readPart,
         async validate(token, channelId) {
             if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(String(token || '')) || !String(channelId || '').trim()) throw new Error('STORAGE_CREDENTIALS_INVALID');

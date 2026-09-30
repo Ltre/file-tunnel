@@ -66,6 +66,33 @@ test('Telegram 返回错误 Content-Range 时拒绝把错位字节写入分片�
     await assert.rejects(telegram.readPart({ token: 'test', baseUrl: 'https://example.test' }, { fileId: 'file-id', size: 10 }, { start: 2, end: 5 }), /TELEGRAM_RANGE_INVALID/);
 });
 
+test('Telegram 云端相邻 Range 共用 getFile 链接，过期和拒绝旧链接时刷新', async t => {
+    t.mock.method(console, 'info', () => {});
+    let clock = 1000, lookups = 0, rejectOldLink = false;
+    const telegram = createDiskTelegram({ dataDir: temp(t), now: () => clock, fetchImpl: async (url, init) => {
+        if (url.endsWith('/getFile')) return new Response(JSON.stringify({ ok: true, result: { file_path: 'documents/path-' + ++lookups } }), { status: 200 });
+        if (rejectOldLink && url.endsWith('/path-2')) { rejectOldLink = false; return new Response('expired', { status: 404 }); }
+        const match = /^bytes=(\d+)-(\d+)$/.exec(init.headers.Range);
+        const start = Number(match[1]), end = Number(match[2]);
+        return new Response(Buffer.from('abcdefghij').subarray(start, end + 1), { status: 206, headers: { 'Content-Range': `bytes ${start}-${end}/10` } });
+    } });
+    const backend = { token: 'test', baseUrl: 'https://api.telegram.org', channelId: '-1' }, part = { fileId: 'file-id', size: 10 };
+    const read = async (start, end) => {
+        const chunks = [];
+        for await (const chunk of await telegram.readPart(backend, part, { start, end })) chunks.push(chunk);
+        return Buffer.concat(chunks).toString();
+    };
+    const [, left, right] = await Promise.all([telegram.prefetchPartLocation(backend, part), read(0, 3), read(4, 7)]);
+    assert.deepEqual([left, right], ['abcd', 'efgh']);
+    assert.equal(lookups, 1, '并发相邻窗口共用同一次 getFile');
+    clock += 46 * 60 * 1000;
+    assert.equal(await read(2, 5), 'cdef');
+    assert.equal(lookups, 2, '45 分钟后主动换链接');
+    rejectOldLink = true;
+    assert.equal(await read(6, 8), 'ghi');
+    assert.equal(lookups, 3, '旧链接 404 后仅重取一次');
+});
+
 test('分片哈希 file_id 索引按 Bot 隔离，复用时只发送 file_id 且不重复上传字节', async t => {
     const dataDir = temp(t), cache = createDiskChunkFileCache({ dataDir });
     const part = { sha256: 'a'.repeat(64), size: 3 };
