@@ -843,11 +843,30 @@ function isTouchDiskActivation(event, pointerType = '') {
     // when the text portion of a late list row is hit.  The drive switches to its
     // compact mobile interaction at this width, so use the layout itself as the
     // final authority instead of letting that browser quirk enter PC selection.
-    return pointerType === 'touch' || Date.now() - diskLastTouchAt < 900 || event?.sourceCapabilities?.firesTouchEvents === true || window.matchMedia?.('(hover:none), (pointer:coarse), (any-pointer:coarse)').matches === true || window.matchMedia?.('(max-width:600px)').matches === true;
+    if (event?.sourceCapabilities?.firesTouchEvents === true || event?.pointerType === 'touch') return true;
+    // A real mouse click on a touch-capable Windows PC still uses desktop
+    // selection/double-click. Layout and recent touch are compatibility
+    // fallbacks only when the click itself has no definite pointer source.
+    if (event?.pointerType === 'mouse') return false;
+    return pointerType === 'touch' || Date.now() - diskLastTouchAt < 900 || window.matchMedia?.('(hover:none), (pointer:coarse), (any-pointer:coarse)').matches === true || window.matchMedia?.('(max-width:600px)').matches === true;
+}
+function reconcileTelegramDriveSelection() {
+    // A filter hides valid selections; a refreshed directory can remove them.
+    // Reconcile against the unfiltered data so invisible, stale selections do
+    // not leave touch activation permanently in multi-select mode.
+    const available = new Map([...(telegramDriveCurrentData?.folders || []), ...(telegramDriveCurrentData?.files || []),
+        ...(telegramDriveSearchData?.folders || []), ...(telegramDriveSearchData?.files || [])].map(item => [telegramDriveItemKey(item), item]));
+    for (const key of telegramDriveSelected.keys()) {
+        if (available.has(key)) telegramDriveSelected.set(key, available.get(key));
+        else telegramDriveSelected.delete(key);
+    }
+    if (telegramDriveSelectionAnchor && !available.has(telegramDriveSelectionAnchor)) telegramDriveSelectionAnchor = '';
+    updateTelegramDriveSelectionBar();
 }
 function renderTelegramDriveItems() {
     const list = document.getElementById('telegramDriveList');
     if (!list || !telegramDriveCurrentData) return;
+    reconcileTelegramDriveSelection();
     list.dataset.view = telegramDriveView;
     const items = getSortedTelegramDriveItems(getTelegramDriveDisplayData());
     updateTelegramDriveBottomSummary();
@@ -855,11 +874,25 @@ function renderTelegramDriveItems() {
         const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋”上传文件或创建文件夹</div></div>';
         list.replaceChildren(empty); return;
     }
-    list.replaceChildren(...items.map(item => {
+    const existingRows = new Map([...list.children].filter(row => row._diskRenderKey).map(row => [row._diskRenderKey, row]));
+    const rows = items.map(item => {
         const key = telegramDriveItemKey(item);
+        // Native dblclick needs the same DOM target across both clicks. A
+        // background listing/search must not detach an unchanged row (or its
+        // name/icon descendants) merely because JSON created new objects.
+        // Include the full record: changed data must refresh action closures,
+        // preview sources, review state, thumbnails and displayed metadata.
+        const signature = JSON.stringify([telegramDriveCurrentData.user_id, item, getTelegramDriveItemMeta(item)]);
+        const existing = existingRows.get(key);
+        if (existing?._diskRenderSignature === signature) {
+            existing._diskCheckbox.checked = telegramDriveSelected.has(key);
+            existing.classList.toggle('selected', existing._diskCheckbox.checked);
+            return existing;
+        }
         const row = document.createElement('div'); row.className = `telegram-drive-item${telegramDriveSelected.has(key) ? ' selected' : ''}`; row.tabIndex = 0;
         if (item.kind === 'directory') row.dataset.folderPath = item.path; else row.dataset.fileId = item.id;
         const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.className = 'telegram-drive-item-check'; checkbox.checked = telegramDriveSelected.has(key); checkbox.setAttribute('aria-label', `选择 ${item.name}`);
+        row._diskRenderKey = key; row._diskRenderSignature = signature; row._diskCheckbox = checkbox;
         checkbox.onclick = event => event.stopPropagation(); checkbox.onchange = () => { toggleTelegramDriveSelection(item, checkbox.checked); row.classList.toggle('selected', checkbox.checked); };
         const icon = document.createElement('div'); icon.className = 'telegram-drive-item-icon';
         const genericIcon = document.createElement('span'); genericIcon.className = 'telegram-drive-generic-icon'; genericIcon.textContent = telegramDriveMimeIcon(item); icon.append(genericIcon);
@@ -897,16 +930,18 @@ function renderTelegramDriveItems() {
             meta.append(' · ', cache);
         }
         const more = document.createElement('button'); more.type = 'button'; more.className = 'telegram-drive-icon-btn telegram-drive-item-more'; more.textContent = '⋮'; more.setAttribute('aria-label', `${item.name} 更多操作`); more.onclick = event => { event.stopPropagation(); showTelegramDriveItemMenu(item, more).catch(error => alert(telegramDriveErrorText(error))); };
-        let pointerType = '', selectionTimer = 0, selectionBeforeClick = false;
+        let pointerType = '', selectionTimer = 0, selectionBeforeClick = false, lastClickWasTouch = false;
         row.addEventListener('pointerdown', event => {
             pointerType = event.pointerType;
             if (event.pointerType === 'touch') diskLastTouchAt = Date.now();
         });
         row.onclick = event => {
-            if (event.target.closest('input,button,a') || event.detail > 1) return;
+            if (event.target.closest('input,button,a')) return;
             const touchActivation = isTouchDiskActivation(event, pointerType);
+            lastClickWasTouch = touchActivation;
             const mouse = !touchActivation && (pointerType === 'mouse' || (!pointerType && window.matchMedia('(pointer:fine)').matches));
             if (mouse) {
+                if (event.detail > 1) return;
                 clearTimeout(selectionTimer);
                 selectionBeforeClick = checkbox.checked;
                 if (event.shiftKey && telegramDriveSelectionAnchor) {
@@ -932,7 +967,10 @@ function renderTelegramDriveItems() {
             else Promise.resolve(openTelegramDriveItem(item)).catch(error => alert(telegramDriveErrorText(error)));
         };
         row.ondblclick = event => {
-            if (event.target.closest('input,button,a') || pointerType === 'touch') return;
+            // dblclick is a MouseEvent in some browsers, without pointerType.
+            // Keep the source classified by the preceding click rather than
+            // letting coarse-pointer media queries override a real mouse.
+            if (event.target.closest('input,button,a') || pointerType === 'touch' || lastClickWasTouch) return;
             if (selectionTimer) {
                 clearTimeout(selectionTimer); selectionTimer = 0;
                 checkbox.checked = selectionBeforeClick;
@@ -953,12 +991,16 @@ function renderTelegramDriveItems() {
             event => {
                 if (telegramDriveSelected.size && !telegramDriveSelected.has(key)) return;
                 beginTouchDiskDrag(telegramDriveActionItems(item), row, event);
-            }
+            },
+            { accept: event => !event.target.closest('input,button,a,.disk-cache-indicator') }
         );
         installDiskPointerDrag(row, item);
         if (item.kind === 'directory') installDiskDrop(row, item.path);
         return row;
-    }));
+    });
+    const retained = new Set(rows);
+    for (const row of [...list.children]) if (!retained.has(row)) row.remove();
+    rows.forEach((row, index) => { if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null); });
     updateDiskCacheLabels();
 }
 
@@ -1255,6 +1297,7 @@ function installContextGesture(element, open, beginTouchDrag = null, options = {
     });
     element.addEventListener('pointerdown', event => {
         if (!accept(event)) return;
+        if (!touches.size && event.isPrimary && event.button <= 0) suppressUntil = 0;
         if (event.pointerType !== 'touch') { cancel(); return; }
         touches.set(event.pointerId, { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY });
         if (twoFingerTap && touches.size > 2) { cancel(); twoFinger = null; return; }
@@ -1409,16 +1452,23 @@ function installDiskPointerDrag(row, item) {
     row.draggable = false;
     row.addEventListener('dragstart', event => event.preventDefault());
     row.addEventListener('pointerdown', event => {
+        // Suppress only the click generated by the completed gesture. A fresh
+        // primary press is a separate activation, even within the 700ms guard.
+        if (event.isPrimary && event.button <= 0 && !diskPointerDragActive) diskPointerClickSuppressedUntil = 0;
         if (event.pointerType === 'touch' && event.isPrimary) { diskLastTouchAt = Date.now(); stopDiskScrollMomentum(); }
         if (event.target.closest('input,button,a,.disk-cache-indicator') || !event.isPrimary || event.button > 0) { start = null; return; }
         const list = document.getElementById('telegramDriveList');
         start = { id: event.pointerId, x: event.clientX, y: event.clientY, lastY: event.clientY, lastTime: Number(event.timeStamp) || Date.now(), velocity: 0, type: event.pointerType, scroll: list.scrollTop };
-        scrolling = false; try { row.setPointerCapture?.(event.pointerId); } catch (_) {}
+        scrolling = false;
     });
     row.addEventListener('pointermove', event => {
         if (!start || event.pointerId !== start.id || diskPointerDragActive) return;
+        // A mouse release outside an uncaptured row does not bubble here. Its
+        // later hover must not reuse that stale press to start a drag.
+        if (start.type !== 'touch' && event.buttons === 0) { start = null; return; }
         if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 8) return;
         if (start.type === 'touch') {
+            if (!scrolling) { try { row.setPointerCapture?.(event.pointerId); } catch (_) {} }
             scrolling = true; event.preventDefault();
             const list = document.getElementById('telegramDriveList'), now = Number(event.timeStamp) || Date.now();
             const delta = start.lastY - event.clientY, elapsed = Math.max(1, now - start.lastTime);
@@ -1441,7 +1491,9 @@ function installDiskPointerDrag(row, item) {
         if (row.hasPointerCapture?.(event.pointerId)) row.releasePointerCapture(event.pointerId);
     };
     row.addEventListener('pointerup', finish); row.addEventListener('pointercancel', finish);
-    row.addEventListener('click', event => { if (Date.now() < diskPointerClickSuppressedUntil) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+    const suppressGestureClick = event => { if (Date.now() < diskPointerClickSuppressedUntil) { event.preventDefault(); event.stopImmediatePropagation(); } };
+    row.addEventListener('click', suppressGestureClick, true);
+    row.addEventListener('dblclick', suppressGestureClick, true);
 }
 async function exportDiskItems(items) {
     const files = new Map();

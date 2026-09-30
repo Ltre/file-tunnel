@@ -1303,6 +1303,7 @@ app.use([
     '/pages/youtube-premium-dl.html',
     '/pages/vclient.html',
     '/pages/disk-management.html',
+    '/pages/s3-management.html',
     '/pages/data-usage.html',
     '/pages/telegram-content.html',
     '/pages/video-transcode.html',
@@ -2432,6 +2433,10 @@ app.get('/api/telegram/drive/me', diskAPI.metadataTiming, (req, res) => {
 });
 const { createS3Gateway } = require('./server/s3');
 const s3Gateway = createS3Gateway({ dataDir: SERVER_DATA_DIR, objectStorage: diskAPI.objectStorage });
+require('./server/s3/admin').registerS3Admin(app, {
+    dataDir: SERVER_DATA_DIR, credentials: s3Gateway.credentials, requireAuth: adminAuth.requireAuth,
+    root: __dirname, getOrigin: getTelegramPublicOrigin
+});
 app.use('/S3API', s3Gateway.api);
 app.use('/s3', s3Gateway.content);
 app.use('/api/telegram/drive', diskAPI.browser);

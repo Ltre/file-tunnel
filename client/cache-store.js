@@ -117,6 +117,7 @@
             this.log = typeof options.log === 'function' ? options.log : () => {};
             this.worker = null;
             this.workerReady = false;
+            this.ready = null;
             this.opfsReceiveWriteLogged = false;
             this.pending = new Map();
             this.writers = new Map();
@@ -131,6 +132,8 @@
             try {
                 this.worker = new Worker('/client/cache-store-worker.js');
                 this.worker.onmessage = event => this.handleWorkerMessage(event.data || {});
+                this.worker.onerror = () => this.handleWorkerFailure(new Error('cache-worker-load-failed'));
+                this.worker.onmessageerror = () => this.handleWorkerFailure(new Error('cache-worker-message-failed'));
                 await this.callWorker('probe', {}, []);
                 this.workerReady = true;
                 this.log('cache-store-opfs-ready', { minSize: OPFS_MIN_SIZE });
@@ -141,6 +144,16 @@
                 this.log('cache-store-opfs-unavailable', { error: err.message });
             }
             return this;
+        }
+
+        handleWorkerFailure(error) {
+            this.workerReady = false;
+            const worker = this.worker;
+            this.worker = null;
+            worker?.terminate();
+            const pending = Array.from(this.pending.values());
+            this.pending.clear();
+            pending.forEach(request => request.reject(error));
         }
 
         handleWorkerMessage(message) {
@@ -272,6 +285,7 @@
             const safeEnd = end == null ? sourceSize : Math.min(sourceSize, Math.max(safeStart, Number(end) || 0));
             if (dataSize(record?.data) > 0) return sliceArrayBuffer(record.data, safeStart, safeEnd);
             if (record?.cacheStoreRef?.driver !== 'opfs') throw new Error('cache-range-source-missing');
+            await this.ready;
             const result = await this.callWorker('readRange', {
                 path: record.cacheStoreRef.path,
                 start: safeStart,
@@ -283,6 +297,7 @@
         async materialize(record) {
             if (!record || dataSize(record.data) > 0 || !this.isCompleteReference(record, record)) return record;
             if (record.cacheStoreRef?.driver !== 'opfs') return record;
+            await this.ready;
             const result = await this.callWorker('read', { path: record.cacheStoreRef.path });
             return {
                 ...record,
@@ -293,13 +308,17 @@
 
         async deleteReference(record) {
             if (record?.cacheStoreRef?.driver !== 'opfs' || !record.cacheStoreRef.path) return false;
+            await this.ready;
             await this.callWorker('delete', { path: record.cacheStoreRef.path });
             return true;
         }
     }
 
-    global.createDrop2TunnelCacheStore = async function createDrop2TunnelCacheStore(options) {
+    global.createDrop2TunnelCacheStore = async function createDrop2TunnelCacheStore(options = {}) {
         const store = new Drop2TunnelCacheStore(options);
-        return store.init();
+        store.ready = store.init();
+        // The app can render its shell while OPFS is probed. Existing OPFS references
+        // still wait for readiness in their read/delete paths.
+        return options.initializeInBackground ? store : store.ready;
     };
 })(window);

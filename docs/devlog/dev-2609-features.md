@@ -638,3 +638,77 @@ Description：
 迁移边界
 - 复现同名不同身份账号的唯一约束冲突
 - 通过旧 JSON 独立预检，明确身份确认与 WAL 快照边界
+
+## 80. 2026-09-29：260929-3 网盘点击、PWA 启动与 S3 接入管理
+
+### HAR 证据与结论
+
+- 只读分析用户提供的三个 HAR，不输出其中的 Cookie、Authorization、请求体或会话信息。三个录制均为 Windows Chrome 154；HAR 不记录指针事件、选中状态或原生 PWA 启动画面，不能单凭请求时间断定某一次点击未打开的原因或完整的十秒启动根因。
+- `tun.miku.us.har` 共 133 条记录，29 个底层目录请求全部 200，耗时约 194–1192 ms，多数约 200 ms；服务端 `disk-metadata` 为 0.6–1.6 ms。最慢首个根目录请求等待约 1186 ms、服务端处理 1.6 ms。这不支持将等待归因于 SQLite 目录计算。该录制没有 document / script 启动请求；其页面 DCL 17.590 秒、load 18.273 秒只是元数据，不足以拆分启动过程。
+- `tun.miku.us-2.har` 共 175 条记录，是前一录制的延伸，同一批请求 ID / 时间重复出现，不能视作一次独立复现。33 个目录请求全部 200，约 189–1192 ms。两个约 10.6 秒的任务请求，其中约 10014 ms 属于浏览器 blocked，等待服务端仅约 242–295 ms，不能写成后端处理十秒。
+- `tun.miku.us-3.har` 共 92 条记录，包含启动：DCL 2.986 秒、load 3.590 秒；底层首页请求约 1.746 秒，其中 blocked 1.208 秒、等待约 275 ms。Socket 脚本约 1.068 秒，其中 blocked 785 ms；后续 runtime-config / web-zip-runtime 分别约 245 / 293 ms，其它已缓存脚本约 6–8 ms。10 个目录请求约 162–290 ms、服务端处理 0.7–1.3 ms。另一个任务轮询等待约 31.8 秒，但没有事件关联或服务端细分，不能把它直接归因于点击或启动。
+- HAR 中 Service Worker 外层请求和实际网络 fetch 可携带相同 `X-Disk-Request-Id`，统计按底层请求核对；没有把它们当成两次业务调用或 Telegram 并发。媒体流长时间 receive / seek 中止也没有直接视为目录故障。
+
+### 网盘点击修复
+
+- 代码事件重放确认：触屏连续轻触可能携带大于 1 的 click detail，被原有鼠标双击过滤吞掉；滚动 / 拖动结束后的抑制时间可能吞掉新的独立轻触；普通行 pointerdown 过早捕获指针；目录刷新后失效的选择项残留，可能让移动端一直走多选分支。这些是可复现的代码缺陷，不宣称已证明线上每次漏点均由同一原因触发。
+- 当前事件的 touch pointerType 参与识别；重复 detail 仅过滤鼠标，合成触屏 dblclick 不再二次打开。下一次独立 primary pointerdown 清除上次手势抑制，仍抑制手势结束后紧随的合成 click。指针捕获延后至真正达到滚动 / 拖动条件，行内勾选、菜单和缓存控件不触发行拖动。
+- 重绘时用当前目录及完整搜索结果核对选择 Map，清除不存在的项目并更新对象引用；过滤中仍存在的选择不会错误清掉。保留 Shift 连选、移动端明确勾选、多选、拖动与惯性滚动。
+- 保留既定 PC 单击选择 / 双击打开、触屏单击打开的规则。用户后续明确确认故障是“鼠标双击后仍未打开”，不是要求 PC 改为单击打开；据此继续核对鼠标事件完整链路，没有改动此前约定。
+- 针对这项确认，补查到明确 mouse PointerEvent 仍被 `any-pointer:coarse`、窄窗口或近期触摸判成触屏的缺陷：已有选择时鼠标 click 仅反复勾选，dblclick 又被触屏过滤拒绝。实际事件明确来自鼠标时优先按鼠标处理，真正带 firesTouchEvents 的合成触摸及旧 MouseEvent 的触屏兜底继续保留。
+- 原刷新无条件 replaceChildren 重建所有行，两次鼠标动作之间的后台刷新可能移除同一点击目标。W3C UI Events 明确规定鼠标序列中被移除的目标不能继续接收该序列的后续 click / dblclick：https://w3c.github.io/uievents/TR.html 。因此刷新需复用同 key 且数据未变化的行，变化的名称 / 路径 / 元数据仍更新，不用人工合成双击或追加延迟绕过。
+- 鼠标在行外松开后，下一次无按键悬停会结束残留按下状态，避免误入拖动；真正拖动后的合成 click / dblclick 仍被抑制，下一次独立双击可以正常打开。底部选择栏仍延迟显示，勾选保持即时。
+- 新增 13 项交互行为测试全部通过，其中补充 5 项 PC 用例覆盖混合指针设备、两次点击间刷新、元数据更新、行外松开及拖动后的双击。此前原 8 项与修改前 HEAD 做只读对照，除 PC 既定行为外另外 7 项失败；对照用于验证代码缺陷，不冒充线上事件证据。
+
+### PWA 启动改进与诊断
+
+- 首页 17 个 parser-inserted 客户端脚本及 QRCode 改为 defer，并行取资源、按原依赖顺序执行。没有调整 Web ZIP 的外部 JS 执行或 Runtime 协议。
+- 可选 OPFS Worker 原先最多等待约 12 秒后才能继续初始化；首页改为后台探测，暴露 store.ready。新写入继续使用原有 IndexedDB 策略，旧 OPFS 引用的 materialize / readRange / deleteReference 仍等待就绪，没有把“尚未探测完成”当作“缓存丢失”。Worker 加载 / 消息错误立即结束等待并清理 pending timer。
+- 主界面和交互绑定先完成，再恢复音乐、联系人、完整历史，最后建立 Socket；保持历史恢复先于 Socket 的原有安全顺序，没有省略历史或更改 provider / P2P 流程。IndexedDB 升级 blocked 现在给出明确提示，并关闭或中止迟到的连接 / 升级，避免无期限 Loading。
+- 增加 `window.TunnelStartup`、`tunnel-shell-ready` Performance mark / DOM event，记录 DCL、可用框架、完整启动以及 IndexedDB、缓存探测、Session、音乐、联系人、历史、SW 注册的阶段耗时；不记录 URL、Token 或会话 ID。上线后可据此区分网络、资源和本地恢复耗时。
+- Service Worker v75 → v76：仅首页壳路由 `/`、`/index.html`、`/disk`、`/notification` 在已有当前版外壳缓存时，将网络优先等待限制为 1 秒，随后显示缓存外壳，网络成功仍后台更新。无缓存的首次访问仍等待网络；`_reload` / `tunnel_reload` 强制刷新不走该回退。后台、API、鉴权、runtime-config 和 Web ZIP 特殊路由维持原策略，不缓存敏感管理响应。
+- 参考 Chrome 官方 network timeout 模式：https://developer.chrome.com/docs/workbox/forcing-a-network-timeout 。没有引入 Workbox 依赖，也没有把缓存回退说成所有冷启动都能一秒进入。
+
+### S3 第三方接入管理
+
+- `/admin` 扩展配置新增“ S3 API 第三方接入”，进入 `/s3-management`。为每个应用 / 设备单独维护 Access Key、Secret、备注、网盘用户 UUID、Bucket → 用户分区及可选上传后端；支持修改、启停、Secret 轮换与连接参数复制。默认分区和实际存在的用户分区可选，禁止绑定其它用户的分区。
+- `/api/admin/s3-credentials` 与页面 / 帮助均沿用后台登录鉴权；原始 `/pages/s3-management.html` 也纳入静态页鉴权保护。写入校验 Origin / Sec-Fetch-Site，列表不返回 Secret、加密 Secret、Passkey 或 Bot Token；新 Secret 仅创建 / 轮换时返回，不保存至浏览器持久缓存，退出页面清空显示。
+- 沿用现有 `s3-credentials.json` + AES-256-GCM 独立密钥，没有另建重复身份库或改变对象协议。后台和 CLI 共用短时独占文件锁及原子替换，修改重新读取最新配置；表单 updatedAt 冲突拒绝覆盖。停用历史或已退役范围的凭据不依赖范围仍存在；重新启用仍需范围有效。崩溃残留锁的安全清理条件写入手册，不自动猜测锁已失效。
+- 新建 / 修改 Bucket 增补 IPv4 和 AWS 保留前后缀校验，旧映射读取 / 停用保持兼容。轮换或停用影响新请求，不强行打断已经完成鉴权的上传。CLI 补充启用、轮换、备注及 `TUNNEL_DATA_DIR` 优先规则。
+- 帮助入口 `/s3-api-guide` 实时读取唯一的 `docs/telegram-drive-s3-compatible.md`，安全渲染标题、列表、表格、代码；转义原始 HTML、拒绝危险 URL，并设置 CSP / no-store。传统 `docs/adapter/telegram-disk-api.md` 未混入 S3 管理内容。
+- 文档明确 FolderSync 的 S3 Compatible、Endpoint `/S3API`、`us-east-1`、path-style、SigV4 和权限范围。现有普通 PUT、AWS 签名分块上传及 Telegram 内部分片能力保持；S3 Multipart Upload API 仍未提供，不能把它们混为一谈。本轮没有声称完成真实 FolderSync 或完整 AWS S3 兼容验收。
+- 官方参考：https://foldersync.io/docs/help/cloudservices/ 、https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html 。
+
+### 部署集成
+
+- 检查发布构建发现部分现有前后台脚本、OPFS Worker 和本地 CSS 没有进入部署包。补齐脚本，先构建 Worker / QRCode 并改写调用者的动态资源路径；同步改写 SW 的 Web ZIP 特殊网络优先脚本地址。外部 CSS 按源位置内联再提取，保持原级联顺序。
+- 部署包包含 S3 Markdown；新 S3 管理页面、脚本及样式不加入 SW APP_SHELL。verify 检查实际 HTML 标签和 document.write 脚本，不再把转义手册示例、注释或普通 JS 字符串误报成缺失资源。
+- 最终整合及 PC 双击补修后重新执行 txhk 构建与 verify，build ID 为 `txhk-20260929-121329-93d34cae`，均成功。没有部署生成包或重启真实服务器。
+
+### 验证与边界
+
+- 18 个相关测试文件最终并行回归合计 **111 个不同测试通过，0 失败、0 跳过**：点击 13、PWA 8、SW 5、构建 4，加上现有网盘 / 目录 / 协同 / 历史 / S3 协议及六组版本回归。初次测试命令误含两个不存在的文件名，Node 未执行它们；统计只计实际运行测试，没有将其当作已验证项。
+- 补修 PC 后首次并行回归有 1 个旧 S3 网关测试出现 `UND_ERR_SOCKET`，其余 110 个通过；该测试单独重跑及全套串行 111 项均通过。检查发现旧测试若干错误响应正文未消费，补齐正文读取以释放连接，未因该结果修改生产流式下载逻辑；随后最终全套并行 111 项通过。不能据此断言已证实第一次 socket 关闭的唯一根因。串行首次调用遇沙箱 spawn EPERM，使用已授权的 node --test 规则重跑成功。
+- S3 管理测试实际启动隔离 HTTP 服务与临时 SQLite，覆盖鉴权、跨站阻止、用户分区隔离、敏感字段、独立凭据、加密保存、锁冲突、过期表单、停用 / 轮换、旧签名失效和 Markdown 安全；没有操作真实网盘账号或 Telegram。修改对话框以完整外围 pointerdown / pointerup 关闭，VM 覆盖打开点击、内部留白、取消及遮罩拖入面板，保留 ESC。
+- 使用 computer-use 技能进行隔离浏览器核验。原始页面和实际客户端脚本在刻意让 Worker probe 等待约 12 秒、模拟网络 / Socket / SW 的夹具中，显示 shell 532 ms、完整启动 699 ms、两个 QRCode、依赖执行顺序正确且无启动错误；该值仅证明 optional probe 不再阻塞此受控案例，不代表真机 PWA 已从十秒降至半秒。
+- 浏览器中已看到 S3 接入表单、修改对话框及由 Markdown 渲染的帮助标题 / 表格 / 代码。当前 IAB 的鼠标点击和 viewport override 核验存在不一致，改用键盘验证对话框；没有把自动化坐标异常认定为线上代码根因，也没有宣称完成移动真机样式验收。已恢复视口并关闭临时标签页，未通过 UI 创建真实凭据。
+- JS 语法、本轮文件 diff 空白及发布产物检查通过。用户原有 `prompts/dev-prompt-logs/dev-2609.md` 修改保留，其既有行尾空白未擅自清理；不将该文件的 diff-check 报错归入本轮业务代码。
+- 本轮未暂存、未提交、未调用真实 Telegram、未修改 `.tunnel-data` 或浏览器系统设置。临时测试服务、HAR 摘要和构建产物在验证后清理；真实 Android PWA 启动、线上偶发点击及 FolderSync 公网对接仍需要部署后的现场验收。
+
+建议 Git 提交日志（仅供手动提交）：
+
+Title：修复网盘点击响应并优化 PWA 启动，新增 S3 接入管理
+
+Description：
+
+网盘交互
+- 修复鼠标双击误判、刷新重建目标及触屏漏点
+- 保留即时勾选、多选、拖动及既定打开规则
+
+PWA 启动
+- 并行加载脚本，后台探测可选缓存，限制温启动网络等待
+- 补充阶段计时，保持完整历史恢复与 Socket 顺序
+
+S3 接入与部署
+- 独立管理凭据、用户分区、启停和轮换，渲染现有接入手册
+- 补齐部署资源及 Worker 路径，111 项回归与构建验证通过

@@ -430,11 +430,15 @@ function hasCompleteFileCache(storedFile, fileInfo = null) {
 
 async function initFileCacheStore() {
     if (!window.createDrop2TunnelCacheStore) return;
-    fileCacheStore = await window.createDrop2TunnelCacheStore({ log: historyLog })
+    const probeStartedAt = startupTimestamp();
+    fileCacheStore = await window.createDrop2TunnelCacheStore({ log: historyLog, initializeInBackground: true })
         .catch(err => {
             historyLog('cache-store-init-failed', { error: err.message });
             return null;
         });
+    fileCacheStore?.ready?.then(() => {
+        recordStartupStage('cache-store-probe', probeStartedAt, { opfsReady: Boolean(fileCacheStore?.workerReady) });
+    });
 }
 
 async function materializeCachedFileRecord(storedFile) {
@@ -630,21 +634,60 @@ function flushClientDebugLogs() {
 }
 
 // ==================== 初始化 ====================
+// Times are relative to navigation; no session IDs, URLs or credentials are recorded.
+const startupTimings = window.TunnelStartup = { stages: [], shellReadyMs: null, completeMs: null };
+
+function startupTimestamp() {
+    return window.performance?.now?.() ?? Date.now();
+}
+
+function recordStartupStage(name, startedAt, details = {}) {
+    const endedAt = startupTimestamp();
+    const stage = { name, startedAt: Math.round(startedAt), elapsedMs: Math.round(endedAt - startedAt), ...details };
+    startupTimings.stages.push(stage);
+    historyLog('startup-stage', stage);
+}
+
+async function runStartupStage(name, task) {
+    const startedAt = startupTimestamp();
+    try {
+        const result = await task();
+        recordStartupStage(name, startedAt);
+        return result;
+    } catch (error) {
+        recordStartupStage(name, startedAt, { failed: true });
+        throw error;
+    }
+}
+
+function markStartupShellReady(view) {
+    if (startupTimings.shellReadyMs !== null) return;
+    startupTimings.shellReadyMs = Math.round(startupTimestamp());
+    startupTimings.view = view;
+    window.performance?.mark?.('tunnel-shell-ready');
+    historyLog('startup-shell-ready', { view, elapsedMs: startupTimings.shellReadyMs });
+    document.dispatchEvent(new CustomEvent('tunnel-shell-ready', { detail: { view, elapsedMs: startupTimings.shellReadyMs } }));
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     try {
+        startupTimings.domContentLoadedMs = Math.round(startupTimestamp());
         if (isWeChatEmbeddedBrowser()) {
             await blockWeChatEmbeddedBrowser();
             return;
         }
-        await initStorage();
-        await initFileCacheStore();
+        await runStartupStage('indexeddb-open', initStorage);
+        await runStartupStage('cache-store-create', initFileCacheStore);
         registerServiceWorker();
-        if (!await initSession()) {
+        if (!await runStartupStage('session-restore', initSession)) {
             initLandingNearbyPresence();
             initSessionLanding();
+            markStartupShellReady('landing');
+            startupTimings.completeMs = Math.round(startupTimestamp());
             return;
         }
         await startTunnelApplication();
+        startupTimings.completeMs = Math.round(startupTimestamp());
     } catch (err) {
         console.error('Application startup failed:', err);
         showStartupFailure(err);
@@ -686,12 +729,13 @@ async function startTunnelApplication() {
     initFileAssetTransfer();
     initMediaController();
     initUI();
-    await restoreMusicPlayerState();
     initEditor();
     initDragDrop();
     initClipboardImagePaste();
-    await loadContacts();
-    await loadSessionData();
+    markStartupShellReady('tunnel');
+    await runStartupStage('music-player-restore', restoreMusicPlayerState);
+    await runStartupStage('contacts-restore', loadContacts);
+    await runStartupStage('session-data-restore', loadSessionData);
     initSocket();
     initAssetPresenceRefresh();
     ensureHomeHistoryGuard();
@@ -701,9 +745,13 @@ async function startTunnelApplication() {
 
 function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).catch(err => {
-        console.warn('Service worker registration failed:', err);
-    });
+    const startedAt = startupTimestamp();
+    navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' })
+        .then(() => recordStartupStage('service-worker-registration', startedAt))
+        .catch(err => {
+            recordStartupStage('service-worker-registration', startedAt, { failed: true });
+            console.warn('Service worker registration failed:', err);
+        });
 }
 
 function showStartupFailure(err) {
@@ -768,6 +816,22 @@ function createMemoryDB() {
 
 async function initStorage() {
     return new Promise((resolve, reject) => {
+        let settled = false;
+        const failOpen = error => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+        };
+        const finishOpen = db => {
+            if (settled) {
+                db.close();
+                return;
+            }
+            settled = true;
+            state.db = db;
+            resolve();
+        };
+        const blockedError = () => new Error('本地数据库升级被其它页面阻塞，请关闭其它 Drop2Tunnel 页面后刷新重试');
         // 检查 IndexedDB 支持
         if (!window.indexedDB) {
             console.warn('IndexedDB not supported, falling back to memory storage');
@@ -783,10 +847,15 @@ async function initStorage() {
 
         request.onerror = (event) => {
             console.error('IndexedDB open error:', event.target.error);
-            reject(event.target.error);
+            failOpen(event.target.error);
         };
+        request.onblocked = () => failOpen(blockedError());
 
         request.onsuccess = (event) => {
+            if (settled) {
+                event.target.result.close();
+                return;
+            }
             state.db = event.target.result;
             console.log('IndexedDB opened successfully, version:', state.db.version);
             
@@ -805,27 +874,30 @@ async function initStorage() {
                 console.log('Found missing stores, recreating database...');
                 // 如果有任何必需的存储缺失，删除数据库并重新创建
                 state.db.close();
+                state.db = null;
                 indexedDB.deleteDatabase('TunnelDB');
                 
                 // 重新打开数据库
                 const recreateRequest = indexedDB.open('TunnelDB', 5);
                 
-                recreateRequest.onerror = (e) => reject(e.target.error);
+                recreateRequest.onerror = (e) => failOpen(e.target.error);
+                recreateRequest.onblocked = () => failOpen(blockedError());
                 recreateRequest.onsuccess = (e) => {
-                    state.db = e.target.result;
                     console.log('IndexedDB recreated with all stores');
-                    resolve();
+                    finishOpen(e.target.result);
                 };
                 recreateRequest.onupgradeneeded = (e) => {
+                    if (settled) { e.target.transaction?.abort(); return; }
                     const db = e.target.result;
                     createRequiredStores(db);
                 };
             } else {
-                resolve();
+                finishOpen(state.db);
             }
         };
 
         request.onupgradeneeded = (event) => {
+            if (settled) { event.target.transaction?.abort(); return; }
             const db = event.target.result;
             createRequiredStores(db);
         };

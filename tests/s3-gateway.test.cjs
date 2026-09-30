@@ -27,6 +27,13 @@ function signed(method, url, credential, body = Buffer.alloc(0), extra = {}) {
     headers.authorization = `AWS4-HMAC-SHA256 Credential=${credential.accessKeyId}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
     return { method, headers, ...(method === 'PUT' || method === 'POST' ? { body } : {}) };
 }
+
+async function statusAfterReading(responsePromise) {
+    const response = await responsePromise;
+    // Release error response bodies before reusing Undici's local connection pool.
+    await response.arrayBuffer();
+    return response.status;
+}
 test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除共用网盘索引', async t => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'd2t-s3-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -65,7 +72,7 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     const otherList = await (await fetch(otherListUrl, signed('GET', otherListUrl, otherCredential))).text();
     assert.match(otherList, /other-bucket/); assert.doesNotMatch(otherList, /my-bucket/);
     const forbiddenUrl = base + '/S3API/my-bucket?list-type=2';
-    assert.equal((await fetch(forbiddenUrl, signed('GET', forbiddenUrl, otherCredential))).status, 404);
+    assert.equal(await statusAfterReading(fetch(forbiddenUrl, signed('GET', forbiddenUrl, otherCredential))), 404);
     const name = '/S3API/my-bucket/日本語/hello%20%23%2B.txt';
     const original = Buffer.alloc(20_000_010, 65);
     const put = await send('PUT', name, original, { 'content-type': 'text/plain' });
@@ -78,12 +85,13 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal(range.status, 206); assert.equal((await range.arrayBuffer()).byteLength, 11);
     const invalidRange = await send('GET', name, '', { range: `bytes=${original.length}-` });
     assert.equal(invalidRange.status, 416); assert.equal(invalidRange.headers.get('content-range'), `bytes */${original.length}`);
+    await invalidRange.arrayBuffer();
     const forgedUrl = base + name;
     const forged = signed('PUT', forgedUrl, credential, Buffer.from('signed-payload'));
     forged.body = Buffer.from('different-body');
-    assert.equal((await fetch(forgedUrl, forged)).status, 400);
+    assert.equal(await statusAfterReading(fetch(forgedUrl, forged)), 400);
     assert.equal(Number((await send('HEAD', name)).headers.get('content-length')), original.length, '散列不符不能覆盖旧文件');
-    assert.equal((await send('PUT', name, 'same-size', { 'content-md5': Buffer.alloc(16).toString('base64') })).status, 400);
+    assert.equal(await statusAfterReading(send('PUT', name, 'same-size', { 'content-md5': Buffer.alloc(16).toString('base64') })), 400);
     assert.equal(Number((await send('HEAD', name)).headers.get('content-length')), original.length, 'MD5 不符同样不能覆盖旧文件');
     const bigCopy = await send('PUT', '/S3API/my-bucket/large-copy.bin', '', { 'x-amz-copy-source': '/my-bucket/%E6%97%A5%E6%9C%AC%E8%AA%9E/hello%20%23%2B.txt' });
     assert.equal(bigCopy.status, 200, await bigCopy.text());
@@ -94,7 +102,7 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal(overwrite.status, 200, await overwrite.text());
     assert.equal(await (await send('GET', name)).text(), 'replacement');
     assert.equal(await (await send('GET', name.replace('/S3API/', '/s3/'))).text(), 'replacement');
-    assert.equal((await fetch(base + name.replace('/S3API/', '/s3/'))).status, 403, '内容入口同样需要签名');
+    assert.equal(await statusAfterReading(fetch(base + name.replace('/S3API/', '/s3/'))), 403, '内容入口同样需要签名');
     const copy = await send('PUT', '/S3API/my-bucket/copied.txt', '', { 'x-amz-copy-source': '/my-bucket/%E6%97%A5%E6%9C%AC%E8%AA%9E/hello%20%23%2B.txt' });
     assert.equal(copy.status, 200, await copy.text());
     assert.equal(await (await send('GET', '/S3API/my-bucket/copied.txt')).text(), 'replacement');
@@ -115,5 +123,5 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal(saved.parts[0].logicalFileId, saved.id);
     const badUrl = base + '/S3API/my-bucket/unknown';
     const bad = signed('GET', badUrl, credential); bad.headers.authorization = bad.headers.authorization.replace(/.$/, char => char === '0' ? '1' : '0');
-    assert.equal((await fetch(badUrl, bad)).status, 403);
+    assert.equal(await statusAfterReading(fetch(badUrl, bad)), 403);
 });

@@ -19,17 +19,38 @@ S3 与传统 API 是两个协议入口，共用网盘存储核心；`server/s3/r
 
 Bucket 是 **Access Key 所绑定的网盘用户 UUID 与分区的映射**，不是 Telegram 频道，也不是第三方 `app_id`。`backup=` 表示该用户的默认分区；`photos=photos` 表示名为 photos 的分区。凭据仅能访问其列出的 Bucket，不能通过请求另一个 `user_id` 切换用户。S3 对象和原生网盘中同一用户、同一分区的文件互相可见。
 
-## 2. 建立、查看与停用凭据
+## 2. 管理第三方接入与凭据
+
+### 2.1 后台界面
+
+管理员从 `/admin` 的“扩展配置 → S3 API 第三方接入”进入 `/s3-management`。每个第三方应用、设备或用途单独建立一组 Access Key / Secret Access Key，便于独立停用和轮换。
+
+- **备注**：用于辨认第三方，例如“FolderSync · 手机 A”；最长 160 字符，可以修改。
+- **绑定网盘账号**：选择已经建立的网盘用户 UUID，不是 Telegram 数字 User ID。管理页同时显示账号名称和 UUID。
+- **Bucket → 网盘分区**：每个 Bucket 指向绑定用户的默认分区或已经存在的命名分区。默认分区显示“默认分区”；不同接入可以使用各自的 Bucket 名称。同一组凭据不能重复填写同名 Bucket。
+- **上传存储后端**：可以为映射选择已有后端，或保持默认网盘后端；不会向第三方客户端暴露 Bot Token。
+- **启用 / 停用**：对新 S3 请求立即生效，不删除网盘用户、对象或已建立的映射。
+- **修改**：可以修改备注、绑定用户、Bucket 映射和启用状态；不会搬迁已有文件或改变文件所有权。若其他管理操作已经更新该凭据，过期表单会被拒绝，需要刷新再编辑。
+- **轮换 Secret**：Access Key ID 保持不变，生成新 Secret，原 Secret 对新请求立即失效。需要同步更新第三方客户端；新 Secret 只在本次生成后的卡片中显示，不会在以后查看列表时恢复显示。
+
+创建结果和轮换结果中的 Secret 只在当前页面暂时显示，不写入浏览器持久缓存；请及时复制并保存。管理页列出 Endpoint、Region、path-style 和 SigV4 配置信息；关闭 Secret 卡片或离开页面后不再显示 Secret。停用、轮换和改动映射不会强制终止已经通过鉴权的请求，请在敏感权限切换前安排客户端停止正在进行的传输。
+
+管理页面及 `/api/admin/s3-credentials` 均使用现有后台登录鉴权。写入接口还检查请求来源，禁止其它网站跨站提交管理操作。这些后台 JSON 接口只用于管理配置，不属于 S3 对象协议，也不替代 SigV4 鉴权。
+
+页面中的“接入手册”打开 `/s3-api-guide`，由服务器直接读取本篇 `docs/telegram-drive-s3-compatible.md` 并渲染为可阅读的页面，不维护第二份手册内容。部署包必须包含这份 Markdown；手册链接及代码按安全规则渲染，不执行 Markdown 中的 HTML / JavaScript。
+
+### 2.2 命令行
 
 先在网盘中建立用户，取得网盘用户 UUID；不是 Telegram 数字 User ID。管理员在服务器项目目录执行：
 
 ~~~powershell
-node tools/s3-credentials.cjs --data-dir .tunnel-data --create --user-id "<网盘用户UUID>" --bucket "backup=" --bucket "photos=photos"
+node tools/s3-credentials.cjs --data-dir .tunnel-data --create --user-id "<网盘用户UUID>" --remark "FolderSync 手机" --bucket "backup=" --bucket "photos=photos"
 ~~~
 
-- 可重复 `--bucket bucket=diskSpace`；Bucket 名称为 3–63 位小写字母、数字、点或短横线，首尾为字母 / 数字，不能含连续两个点，同一凭据下不得重复。
+- 可重复 `--bucket bucket=diskSpace`；Bucket 名称为 3–63 位小写字母、数字、点或短横线，首尾为字母 / 数字，不能含连续两个点、IPv4 格式或 AWS 保留的前后缀，同一凭据下不得重复。新建及修改映射遵循这项约束，已有记录的读取和停用保持兼容。保留前缀为 `xn--`、`sthree-`、`amzn-s3-demo-`；保留后缀为 `-s3alias`、`--ol-s3`、`.mrap`、`--x-s3`、`--table-s3`、`-an`。参考 [AWS Bucket 命名规则](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html)。
 - 可选 `--backend-id "<后端UUID>"` 指定已存在的存储后端，应用于该凭据全部 Bucket；省略时使用默认网盘上传后端。旧对象的读取 / 删除仍使用文件自身关联的后端。
-- 创建结果含 `accessKeyId`、`secretAccessKey`、`userId`、`bucketMappings`。Secret Access Key **只在创建时输出一次**，立即安全保存。
+- 可选 `--remark` 设置第三方备注。命令行保留预先指定新命名分区的既有能力；后台界面限定为用户已存在的分区，避免误绑定。
+- 创建结果含 `accessKeyId`、`secretAccessKey`、`userId`、`bucketMappings`、备注和状态等。Secret Access Key **只在创建或轮换的当次结果中输出**，立即安全保存。
 - `.tunnel-data/s3-credentials.json` 保存映射及 AES-256-GCM 加密 Secret，独立密钥位于 `.tunnel-data/s3-secret.key`。两者一起备份，不得公开。S3 凭据配置目前仍使用该独立文件，不在 `disk.sqlite` 中。
 
 查看非敏感凭据 / 映射和停用：
@@ -37,9 +58,13 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --create --user-id "<网�
 ~~~powershell
 node tools/s3-credentials.cjs --data-dir .tunnel-data --list
 node tools/s3-credentials.cjs --data-dir .tunnel-data --disable "<AccessKeyID>"
+node tools/s3-credentials.cjs --data-dir .tunnel-data --enable "<AccessKeyID>"
+node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 ~~~
 
-凭据每次请求重新读取，停用后新请求立即失效；不会删除网盘用户或对象。S3 不使用 `/auth/token`，无需向客户端提供 Bot Token、应用密钥或网盘 Bearer Token。
+`--data-dir` 显式指定目录优先；省略时使用 `TUNNEL_DATA_DIR`，未设置该环境变量则使用当前执行目录的 `.tunnel-data`。请确保该目录与服务端实际使用的目录一致。
+
+凭据每次请求重新读取，停用后新请求立即失效；不会删除网盘用户或对象。CLI 与后台配置修改共用短时独占锁和原子替换，配置忙时拒绝修改并提示重试，避免两个进程互相覆盖。若进程异常退出留下 `s3-credentials.json.lock`，先停止所有使用该数据目录的进程并确认没有配置写入，再清理残留锁文件；不要删除凭据 JSON 或 `s3-secret.key`。S3 不使用 `/auth/token`，无需向客户端提供 Bot Token、应用密钥或网盘 Bearer Token。
 
 ## 3. FolderSync 配置
 
@@ -121,4 +146,4 @@ S3 入口放在 HTTPS 反向代理后；代理需保留原始路径、查询参�
 
 先在测试环境通过真实 FolderSync 设备确认：连接、列表与分页、多级目录、超过 20 MB 上传、跨分片 Range 下载、覆盖、复制 / 重命名、批量删除、0 Byte 文件、目录 marker、中文 / 日文 / 空格 Key，以及服务重启后读取。自动化测试不代替客户端真机和公网代理验收。
 
-实现位置：`server/s3/routes.js`、`server/s3/sigv4.js`、`server/s3/credentials.js`、`server/object-storage.js`；共用上传 / 读取适配位于 `server/disk-api.js`，凭据工具为 `tools/s3-credentials.cjs`。设计背景见 [Implementation Guide](<../prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md>)，实际支持范围以上述当前实现为准。
+实现位置：`server/s3/routes.js`、`server/s3/sigv4.js`、`server/s3/credentials.js`、`server/object-storage.js`；后台管理位于 `server/s3/admin.js` 和 `client/s3-management.js`，安全手册渲染位于 `server/s3/guide.js`。共用上传 / 读取适配位于 `server/disk-api.js`，凭据工具为 `tools/s3-credentials.cjs`。设计背景见 [Implementation Guide](<../prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md>)，实际支持范围以上述当前实现为准。

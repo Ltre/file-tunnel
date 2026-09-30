@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v75';
+const CACHE_NAME = 'instant-tunnel-v76';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -126,6 +126,28 @@ function getWebZipRuntimeReferrer(request) {
     }
 }
 
+// Bound a warm PWA's shell wait without caching API/auth responses or runtime config.
+async function loadAppNavigation(event) {
+    const cachePromise = caches.open(CACHE_NAME);
+    const network = fetch(event.request);
+    event.waitUntil(network.then(async response => {
+        if (response.ok && !response.redirected && response.headers.get('Content-Type')?.includes('text/html')) {
+            const cache = await cachePromise;
+            await cache.put('/index.html', response.clone());
+        }
+    }).catch(() => undefined));
+    const cache = await cachePromise;
+    const cached = await cache.match('/index.html');
+    if (!cached) return network;
+    let timer;
+    try {
+        return await Promise.race([
+            network.then(response => response.status >= 500 ? cached : response).catch(() => cached),
+            new Promise(resolve => { timer = setTimeout(() => resolve(cached), 1000); })
+        ]);
+    } finally { clearTimeout(timer); }
+}
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
     if (event.request.method === 'GET' && url.origin === self.location.origin && url.pathname.startsWith('/web-zip-runtime/')) {
@@ -156,6 +178,10 @@ self.addEventListener('fetch', event => {
     }
 
     const navigation = event.request.mode === 'navigate';
+    if (navigation && ['/', '/index.html', '/disk', '/notification'].includes(url.pathname) && !url.searchParams.has('_reload') && !url.searchParams.has('tunnel_reload')) {
+        event.respondWith(loadAppNavigation(event));
+        return;
+    }
     if (navigation || url.pathname === '/runtime-config.js' || url.pathname === '/service-worker.js' || url.pathname === '/client/web-zip-runtime.js') {
         event.respondWith(fetch(event.request).catch(() => caches.match(navigation ? '/index.html' : url.pathname)));
         return;

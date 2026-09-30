@@ -33,15 +33,29 @@ async function exists(root, publicPath) {
     await fs.access(path.join(root, clean));
     return true;
   } catch {
+    // HTML routes are served from pages rather than the distribution root.
+    if (!clean.includes('/') && clean.endsWith('.html')) {
+      try { await fs.access(path.join(root, 'pages', clean)); return true; } catch {}
+    }
     return false;
   }
 }
 
 function collectHtmlRefs(html) {
   const refs = [];
-  const pattern = /\b(?:src|href)=["']([^"']+)["']/gi;
-  let match;
-  while ((match = pattern.exec(html))) refs.push(match[1]);
+  // Read opening tags, skipping comments and raw script/style/text bodies.
+  // Escaped examples in the help manuals are text, not loaded resources.
+  const tags = /<!--[\s\S]*?-->|<(script|style|textarea|title)\b([^>]*)>[\s\S]*?<\/\1\s*>|<([a-z][\w:-]*)\b([^>]*)>/gi;
+  for (const match of html.matchAll(tags)) {
+    const attributes = match[2] ?? match[4];
+    if (!attributes) continue;
+    for (const attribute of attributes.matchAll(/\b(src|href)\s*=\s*["']([^"']+)["']/gi)) refs.push(attribute[2]);
+  }
+  // The entry page emits parser-loaded scripts with document.write. Validate
+  // those literal tags too, without treating arbitrary JS strings as assets.
+  for (const emitted of html.matchAll(/document\.write\(\s*(["'`])([\s\S]*?)\1\s*\)/g)) {
+    for (const script of emitted[2].matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)) refs.push(script[1].replace(/\$\{suffix\}/g, ''));
+  }
   return refs;
 }
 
@@ -52,7 +66,7 @@ function shouldExistAsStaticFile(ref) {
   if (ref === '/' || ref.startsWith('/?')) return false;
   if (ref === '/manifest.webmanifest' || ref.startsWith('/manifest.webmanifest?')) return false;
   if (ref === '/runtime-config.js') return false;
-  if (/^\/(?:admin|disk-management|data-usage|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts)\b/.test(ref)) return false;
+  if (/^\/(?:admin|disk-management|s3-management|s3-api-guide|data-usage|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts|telegram-content|video-transcode|vclient|web-zip-preview|disk)(?:[/?#]|$)/.test(ref)) return false;
   return true;
 }
 
@@ -83,6 +97,10 @@ async function main() {
   }
   if (!buildManifest.scripts?.['client/simplewebauthn.js']) errors.push('missing Passkey browser bundle in release manifest');
   if (!buildManifest.scripts?.['client/disk-share.js']) errors.push('missing public disk-share script');
+  if (!buildManifest.scripts?.['client/cache-store-worker.js']) errors.push('missing OPFS cache worker');
+  if (!buildManifest.scripts?.['client/s3-management.js']) errors.push('missing S3 management script');
+  if (!await exists(distRoot, '/docs/telegram-drive-s3-compatible.md')) errors.push('missing S3 API guide source');
+  if ((buildManifest.appShell || []).some(ref => ref === '/s3-management' || ref === '/s3-api-guide' || ref === buildManifest.scripts?.['client/s3-management.js'] || ref === buildManifest.styles?.['s3-management'])) errors.push('S3 administration must not be in APP_SHELL');
 
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
     if (!/^\/assets\/.+\.[a-f0-9]{10}\.min\.js$/.test(assetPath)) {
@@ -101,10 +119,8 @@ async function main() {
   const pages = (await fs.readdir(pagesDir)).filter(name => name.endsWith('.html'));
   for (const page of pages) {
     const html = await fs.readFile(path.join(pagesDir, page), 'utf8');
-    if (/\/client\/|\/app\.js(?:[?"']|$)/.test(html)) {
-      errors.push(`page still references source JS path: pages/${page}`);
-    }
     for (const ref of collectHtmlRefs(html)) {
+      if (ref.startsWith('/client/') || /^\/app\.js(?:[?]|$)/.test(ref)) errors.push(`page still references source asset: pages/${page}: ${ref}`);
       if (shouldExistAsStaticFile(ref) && !await exists(distRoot, ref)) {
         errors.push(`pages/${page} references missing file: ${ref}`);
       }
@@ -114,7 +130,8 @@ async function main() {
   const sw = await fs.readFile(path.join(distRoot, 'service-worker.js'), 'utf8');
   if (!sw.includes(`instant-tunnel-${release.buildId}`)) errors.push('service-worker cache name does not include buildId');
   if (/\/client\/|\/app\.js['"]/.test(sw)) errors.push('service-worker still caches source JS paths');
-  for (const assetPath of Object.values(buildManifest.scripts || {})) {
+  for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
+    if (source === 'client/s3-management.js') continue;
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing ${assetPath}`);
   }
 

@@ -10,10 +10,18 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULT_OUT_DIR = 'dist';
 const SCRIPT_SOURCES = [
+  // Build dependencies before rewriting their callers' dynamic asset URLs.
+  'client/cache-store-worker.js',
+  'client/qrcode-1.0.0.min.js',
   'app.js',
   'client/cache-store.js',
   'client/file-assets.js',
   'client/folder-archive.js',
+  'client/web-zip-runtime.js',
+  'client/notification-center.js',
+  'client/web-workshop.js',
+  'client/telegram-content.js',
+  'client/telegram-target-forward.js',
   'client/media.js',
   'client/device-camera.js',
   'client/light-transfer.js',
@@ -27,14 +35,14 @@ const SCRIPT_SOURCES = [
   'client/disk-admin.js',
   'client/telegram-chat-dictionary.js',
   'client/disk-management.js',
+  'client/s3-management.js',
   'client/simplewebauthn.js',
   'client/sns-download-cache.js',
   'client/audio-track-repair.js',
   'client/i18n-catalog.js',
   'client/i18n.js',
   'client/localization-runtime.js',
-  'client/youtube-premium-cache.js',
-  'client/qrcode-1.0.0.min.js'
+  'client/youtube-premium-cache.js'
 ];
 const PAGE_ROUTES = {
   'index.html': ['/', '/index.html', '/disk'],
@@ -296,7 +304,7 @@ async function buildScripts(outRoot, minifierState) {
       ? 'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js'
       : source);
     const raw = await fs.readFile(sourcePath, 'utf8');
-    const built = await minifyJs(raw, source, minifierState);
+    const built = await minifyJs(replaceScriptReferences(raw, assets), source, minifierState);
     const assetPath = assetNameForScript(source, built);
     await fs.mkdir(path.join(outRoot, 'assets'), { recursive: true });
     await fs.writeFile(path.join(outRoot, assetPath), built);
@@ -353,11 +361,13 @@ async function buildPages(outRoot, scriptAssets, buildId, minifierState) {
     const sourcePath = path.join(pagesDir, pageFile);
     const rawHtml = await fs.readFile(sourcePath, 'utf8');
     let html = replaceScriptReferences(rawHtml, scriptAssets);
-    for (const stylesheet of ['disk.css', 'disk-directory-picker.css']) {
-      const href = `/client/${stylesheet}`;
-      if (!html.includes(`href="${href}"`)) continue;
-      const css = await fs.readFile(path.join(ROOT, 'client', stylesheet), 'utf8');
-      html = html.replace(new RegExp('<link\\b[^>]*href="' + href.replace('.', '\\.') + '"[^>]*>'), '<style>' + css + '</style>');
+    // Preserve cascade order, including CSS added outside the original drive.
+    const localStyles = [...html.matchAll(/<link\b[^>]*\brel=["']stylesheet["'][^>]*>/gi)];
+    for (const match of localStyles) {
+      const href = match[0].match(/\bhref=["'](\/client\/[^"'?]+\.css)(?:\?[^"']*)?["']/i)?.[1];
+      if (!href) continue;
+      const css = await fs.readFile(path.join(ROOT, href.slice(1)), 'utf8');
+      html = html.replace(match[0], '<style>' + css + '</style>');
     }
     html = html.replace(/href="\/manifest\.webmanifest(?:\?[^"]*)?"/g, `href="/manifest.webmanifest?v=${buildId}"`);
     const pageName = path.parse(pageFile).name;
@@ -431,9 +441,10 @@ async function writeGeneratedConfig(outRoot, profile, release) {
   await fs.writeFile(path.join(outRoot, 'start.bat'), `@echo off\r\necho Starting Drop2Tunnel on port ${profile.serverPort}\r\nnode server.js\r\n`);
 }
 
-async function buildServiceWorker(outRoot, buildId, assets) {
+async function buildServiceWorker(outRoot, buildId, assets, styles) {
   const raw = await fs.readFile(path.join(ROOT, 'service-worker.js'), 'utf8');
-  const assetShell = Object.values(assets).sort();
+  const assetShell = [...Object.entries(assets).filter(([source]) => source !== 'client/s3-management.js').map(([, asset]) => asset),
+    ...Object.entries(styles).filter(([page]) => page !== 's3-management').map(([, asset]) => asset)].sort();
   const pageShell = Object.values(PAGE_ROUTES).flat();
   const appShell = Array.from(new Set([
     ...pageShell,
@@ -442,7 +453,7 @@ async function buildServiceWorker(outRoot, buildId, assets) {
     '/tunnel-icon.svg',
     ...assetShell
   ]));
-  let built = raw.replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'instant-tunnel-${buildId}';`);
+  let built = replaceScriptReferences(raw, assets).replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'instant-tunnel-${buildId}';`);
   built = built.replace(/const APP_SHELL = \[[\s\S]*?\];/, `const APP_SHELL = ${JSON.stringify(appShell, null, 4)};`);
   await fs.writeFile(path.join(outRoot, 'service-worker.js'), built);
   return { appShell, stat: sizeStat('service-worker.js', 'service-worker.js', raw, built) };
@@ -484,6 +495,7 @@ async function main() {
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
+  await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.cjs', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.md', outRoot);
   if (await pathExists(path.join(ROOT, 'prompts', 'resources'))) await copyDirRelative('prompts/resources', outRoot);
@@ -492,7 +504,7 @@ async function main() {
   stats.push(...scriptResult.stats);
   const pageResult = await buildPages(outRoot, scriptResult.assets, buildId, minifierState);
   stats.push(...pageResult.stats);
-  const swResult = await buildServiceWorker(outRoot, buildId, scriptResult.assets);
+  const swResult = await buildServiceWorker(outRoot, buildId, scriptResult.assets, pageResult.styles);
   stats.push(swResult.stat);
 
   const release = {
