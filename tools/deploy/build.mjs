@@ -498,6 +498,8 @@ async function main() {
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.cjs', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.md', outRoot);
+  await copyFileRelative('tools/repair-engineio-security.cjs', outRoot);
+  await copyFileRelative('tools/repair-engineio-security.md', outRoot);
   if (await pathExists(path.join(ROOT, 'prompts', 'resources'))) await copyDirRelative('prompts/resources', outRoot);
 
   const scriptResult = await buildScripts(outRoot, minifierState);

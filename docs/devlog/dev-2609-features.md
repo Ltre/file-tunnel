@@ -755,3 +755,76 @@ S3 接入与部署
 
 - 新增服务端交错进度测试：Telegram 请求未确认时，即使浏览器已把其余文件交付服务端，阶段及总进度仍不虚报；首批确认后、次批等待时显示真实的 50%。新增浏览器流测试覆盖 0%、收到一半 50%、全部接收 100%。`disk-upload-errors` 15 项、`disk-client` 19 项、Telegram 恢复与分片缓存 24 项通过；修改的服务端/客户端 JS 语法检查及 `git diff --check` 通过。
 - 未在真实 Telegram 或灰度环境复测吞吐。若继续慢，需针对同一任务的 `telegram.request` / `telegram.request-body-produced` / `telegram.headers` 时间及代理侧实际出站字节速率定位，不能把本机“请求体生成完”当作外网传输完成。
+
+## 2026-10-01：npm ci 的 Engine.IO 高危漏洞告警
+
+### 根因与影响
+
+- 用户的 `npm ci` 已成功安装依赖；`funding` 是资助信息，高危告警来自安装后的依赖审计，不是安装失败。当前锁文件及实际安装的 `socket.io@4.8.3` 使用 `engine.io@6.6.9`。
+- 官方公告 GHSA-2gc4-cqfq-p2gv / CVE-2026-102599：Engine.IO `>=6.6.0 <6.6.10` 在已有会话升级 WebSocket 时未核对协议版本。恶意客户端可通过缺失或不一致的 `EIO` 参数使解析器与心跳协议不匹配，在特定条件下触发未捕获异常并使 Node 进程退出。项目使用默认的轮询及 WebSocket 升级配置，属于需要修补的服务端依赖使用方式。来源：https://github.com/advisories/GHSA-2gc4-cqfq-p2gv 。
+- 本次审计将 Engine.IO 及受影响的上层 Socket.IO 都标为 high，但二者对应同一个底层漏洞。初始审计的 `fixAvailable: false` 未能自动给出修复方案；另行确认 npm 官方仓库已发布 `engine.io@6.6.11`，与 Socket.IO 的 `~6.6.0` 依赖范围兼容。
+
+### 实际修改
+
+- 定向执行 `npm update engine.io --ignore-scripts --no-fund`，只更新 `package-lock.json` 中 Engine.IO 的补丁版本、下载地址、完整性校验及该版本实际依赖元数据。没有增加直接依赖或 overrides，没有扩大其它依赖升级范围，`package.json` 不变。
+- 新增 `tests/socketio-security.test.cjs`：通过真实本机 HTTP/WebSocket 请求验证不同及缺失 `EIO` 的会话升级返回 400，原会话保持协议 4、轮询状态且服务还能接收新握手；覆盖纯轮询、纯 WebSocket、轮询升级 WebSocket 的文本及二进制确认消息。
+- 保留原有传输升级、P2P、Socket.IO 中继及代理策略。运行中的 Node 进程需重启后才会加载安装后的安全补丁，本次未重启用户服务。
+
+### 验证
+
+- `npm ci --no-fund` 成功：安装 147 个包，审计 148 个包，输出 `found 0 vulnerabilities`；再次 `npm audit --json` 确认所有严重级别均为 0。
+- `node --test tests/socketio-security.test.cjs tests/p2p-connection-regression.test.cjs tests/vclient-runtime.test.cjs`：54 项通过，0 失败、0 跳过。
+- `git diff --check` 通过。修改保留在工作区，未暂存、未提交；没有产生需要保留的临时测试服务或迁移数据。
+
+### 建议提交日志
+
+Title：修复 Engine.IO 高危漏洞并验证 Socket.IO 连接兼容性
+
+Description：
+
+依赖安全
+- 将 Engine.IO 锁定版本升级到 6.6.11，修复协议版本不匹配导致的拒绝服务漏洞。
+- 保留 Socket.IO 主版本及现有传输、代理配置。
+
+回归验证
+- 补充异常协议升级及正常文本、二进制连接测试，相关 54 项回归通过。
+- npm ci 安装成功，npm audit 确认 0 漏洞。
+
+## 2026-10-01：线上 Engine.IO 安全补丁维护工具
+
+### 需求与处理范围
+
+- 本地依赖升级不会自动更新正式/灰度服务器，也不会更新仍在运行的 Node 模块缓存。线上必须针对实际部署目录检查磁盘依赖、停服、应用补丁并重新启动所有对应实例。
+- 新增独立的 `tools/repair-engineio-security.cjs` 和 `tools/repair-engineio-security.md`，支持旧业务版本单独修补。本工具不加载 `server.js`，不修改代理策略、业务源代码、SQLite、Telegram 数据或 `.tunnel-data`。
+
+### 实际实现
+
+- 默认只读、离线检查 Socket.IO 实际解析到的 Engine.IO，以及锁文件中的各个 Engine.IO 安装位置。写入/回滚必须同时传入 `--service-stopped` 和实际 Node 监听端口；应用前两次检查 IPv4/IPv6 本机端口，独占维护锁防止本工具并发执行。
+- 在 `.dependency-maintenance` 的隔离目录中执行 npm 定向锁文件更新和生产依赖安装，显式指定 npm prefix、非全局/非 workspace 模式，禁用安装脚本。只有 Engine.IO 6.6.x 的安全补丁可被接受；其它包、清单、锁文件结构发生变化时拒绝应用，保留原部署状态。
+- 使用新 Node 子进程验证错误/缺失协议版本被拒绝、正常轮询、WebSocket 升级和二进制传输；生产目录只替换待修补 Engine.IO 及锁文件。原依赖完整备份并记录 SHA-256，替换后再次验证，失败自动回滚；支持显式手工回滚和未完成替换的恢复，拒绝覆盖修复后的另一次发布或被篡改的备份。
+- 备份保留，临时安装目录正常执行后清理；npm 审计不可用明确标记 unavailable，发现其它漏洞不撤回本次已验证的补丁。工具不会自动启动/终止用户进程；停服标志仍需要操作者确认所有实例及守护机制已停止，端口检查不能证明所有后台进程状态。
+- 中文说明包含正常发布及单独热修复两种方式、PM2/systemd/Windows 停服重启、实际端口选择、多实例处理、回滚、文件锁/网络/override 等异常和避免后续旧锁文件发布重新引入漏洞。部署构建同时携带脚本及说明，维护目录加入 gitignore。
+
+### 测试与清理
+
+- 工具、Socket.IO、P2P、vclient 和部署相关五个测试文件共 **74 项通过，0 失败、0 跳过**。覆盖无副作用预检、幂等执行、磁盘与锁文件版本不一致、范围外依赖变化、网络失败、准备期间服务重新监听、自动/手工回滚、后续发布保护、并发维护锁、v2 锁文件兼容及真实独立协议探测。
+- 在项目 `.npm-cache` 下创建隔离副本，使用原 HEAD 的旧锁文件真实执行 `npm ci --omit=dev --ignore-scripts`，得到 `engine.io@6.6.9`。真实 CLI 修复后实际安装及锁文件均为 `6.6.11`，隔离/实际目录协议探测通过、审计 0 漏洞；手工回滚准确恢复 `6.6.9`。最终 npm prefix 安全约束补充后，再次真实修复成功。
+- 隔离旧版本目录已按解析后的绝对路径和本次临时目录前缀校验后清理，没有在真实部署上执行修复、停服、重启或数据操作。当前本地 npm 审计仍为 0 漏洞，修改脚本语法检查和本轮涉及文件的 diff 空白检查通过。
+- 用户在执行期间修改的 `prompts/dev-prompt-logs/dev-2609.md` 保持原样；其已有/新增尾随空白不属于本轮修改。未暂存、未提交。
+
+### 建议提交日志
+
+Title：补齐线上 Engine.IO 漏洞修复、验证与回滚工具
+
+Description：
+
+线上修复
+- 只读检查实际依赖，停服后隔离解析并定向替换安全补丁。
+- 提供校验备份、失败自动回滚及手工恢复，保护后续发布。
+
+部署与说明
+- 中文文档说明 Windows、PM2、systemd 操作及多实例重启验证。
+- 部署包携带脚本和说明，忽略维护目录。
+
+验证
+- 74 项相关回归通过，真实旧版本升级与回滚验证成功。
