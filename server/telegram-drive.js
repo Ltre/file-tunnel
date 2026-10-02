@@ -612,6 +612,14 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const thumbnail = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.thumbnail;
             if (thumbnail?.status === 'uploading') thumbnail.status = 'queued';
         },
+        async failThumbnailAsync(uploadId, fileIndex) {
+            const job = uploads.get(String(uploadId)), thumbnail = job?.files[Number(fileIndex)]?.thumbnail;
+            if (!thumbnail || thumbnail.remote) throw new Error('UPLOAD_THUMBNAIL_STATE_INVALID');
+            assertUploadActive(job);
+            thumbnail.status = 'failed'; thumbnail.warning = 'TELEGRAM_THUMBNAIL_UPLOAD_FAILED';
+            await persistUploadAsync(job);
+            unlinkStaging(job, thumbnail.path);
+        },
         resetUploadingParts(uploadId) {
             const job = uploads.get(String(uploadId));
             for (const chunk of job?.files.flatMap(file => file.chunks || []) || []) if (chunk.status === 'uploading') chunk.status = 'queued';

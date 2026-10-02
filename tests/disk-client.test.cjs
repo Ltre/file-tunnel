@@ -55,6 +55,51 @@ test('Failed to fetch reports a durable network failure without invoking the use
     assert.equal(failure.options.method, 'POST'); assert.equal(JSON.parse(failure.options.body).errorCode, 'UPLOAD_CLIENT_NETWORK_ERROR');
 });
 
+test('轮询发现服务端失败时中止挂起 PUT，保留 ECONNRESET 而非误报用户取消', async () => {
+    const window = {}, requests = []; let failed = false, putStarted;
+    const active = new Promise(resolve => { putStarted = resolve; });
+    const operation = () => ({ operation_id: 'op', status: failed ? 'failed' : 'running', errorCode: failed ? 'TELEGRAM_NETWORK_ERROR' : '', errorDetails: { causeCode: 'ECONNRESET' } });
+    const fetch = async (url, options = {}) => {
+        requests.push({ url, options });
+        if (url.endsWith('/uploads')) return { ok: true, json: async () => ({ uploadId: 'u', operation_id: 'op' }) };
+        if (options.method === 'PUT') {
+            putStarted();
+            return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('The user aborted a request.'), { name: 'AbortError' })), { once: true }));
+        }
+        return { ok: true, json: async () => url.includes('/operations?') ? { operations: [operation()] } : url.endsWith('/operations/op') ? operation() : {} };
+    };
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, AbortController, setInterval() {}, Date, Map, Set, Promise, encodeURIComponent });
+    let activities; window.DiskClient.subscribeActivity(value => { activities = value; });
+    const upload = window.DiskClient.upload([{ name: 'file.bin', size: 3 }], '', async () => ({ size: 3, slice: () => ({ size: 3 }) }));
+    const rejected = assert.rejects(upload, error => error.message === 'TELEGRAM_NETWORK_ERROR' && error.errorDetails.causeCode === 'ECONNRESET');
+    await active; failed = true; await window.DiskClient.refresh(true); await rejected;
+    assert.equal(requests.some(request => request.options.method === 'DELETE'), false);
+    assert.equal(activities.length, 0);
+    const failure = requests.find(request => request.url.endsWith('/failure'));
+    assert.equal(JSON.parse(failure.options.body).errorCode, 'TELEGRAM_NETWORK_ERROR');
+});
+
+test('服务器队列等待期间发现失败，立即中断等待计时器和活动', async () => {
+    const window = {}; let timerStarted, failed = false, clears = 0;
+    const delayed = new Promise(resolve => { timerStarted = resolve; });
+    const fetch = async (url, options = {}) => {
+        let data = {};
+        if (url.endsWith('/uploads')) data = { uploadId: 'u', operation_id: 'op', uploadQueueCheck: true, queue: { pendingParts: 5, pendingBytes: 100000000 } };
+        else if (url.endsWith('/queue')) data = { ready: false, retryAfterMs: 60000, queue: { pendingParts: 5, pendingBytes: 100000000 } };
+        else if (url.includes('/operations')) {
+            const operation = { operation_id: 'op', status: failed ? 'failed' : 'running', errorCode: 'ECONNRESET' };
+            data = url.includes('?') ? { operations: [operation] } : operation;
+        }
+        assert.notEqual(options.method, 'PUT'); assert.notEqual(options.method, 'DELETE');
+        return { ok: true, json: async () => data };
+    };
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, AbortController, setInterval() {}, setTimeout() { timerStarted(); return 1; }, clearTimeout() { clears++; }, Date, Map, Set, Promise, encodeURIComponent });
+    const upload = window.DiskClient.upload([{ name: 'file.bin', size: 3 }], '', async () => ({ size: 3, slice: () => ({ size: 3 }) }));
+    const rejected = assert.rejects(upload, /ECONNRESET/);
+    await delayed; failed = true; await window.DiskClient.refresh(true); await rejected;
+    assert.equal(clears, 1);
+});
+
 test('110 MB 浏览器上传仅通过 slice 顺序发送六个请求，声明仍为逻辑文件总大小', async () => {
     const size = 115384320, chunks = [], requests = [];
     let finished = false, reads = 0;
@@ -321,7 +366,14 @@ test('任务列表可按 operation_id 恢复任意后台任务，并保留多任
         jobListener([{ ...job, percent: 60 }, { ...move }]); assert.equal(overlay.hidden, false);
         assert.equal(elements.diskLoadingTitle.textContent, '上传测试');
     }
-    activityListener([]); assert.equal(overlay.hidden, false, '从持久化任务恢复时不依赖本页活动');
+    const progressed = { ...job, telegramBytesSent: 4, telegramBytesConfirmed: 3, telegramTotalBytes: 6 };
+    jobListener([progressed, { ...move }]);
+    assert.match(elements.diskLoadingDetail.textContent, /服务器 → Telegram 已发送 4 B\/6 B/);
+    assert.match(elements.diskLoadingDetail.textContent, /Telegram 已确认 3 B\/6 B/);
+    jobListener([{ ...progressed, status: 'failed' }, { ...move, status: 'completed' }]);
+    assert.equal(overlay.hidden, true, '匹配服务端失败的残留活动不能继续显示队列等待浮层');
+    activityListener([]);
+    jobListener([job, move]); assert.equal(overlay.hidden, false, '从持久化任务恢复时不依赖本页活动');
     jobListener([{ ...job, status: 'completed' }, { ...move, status: 'completed' }]); assert.equal(overlay.hidden, true); assert.equal(context.restore(), false);
 });
 

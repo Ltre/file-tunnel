@@ -210,11 +210,14 @@
             video.removeAttribute('src'); try { video.load(); } catch (_) {} URL.revokeObjectURL(source);
         }
     }
-    async function uploadFiles(files, folderPath, read, metadata, update, signal) {
+    async function uploadFiles(files, folderPath, read, metadata, update, userSignal) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
+        let signal = userSignal, serverFailure = null;
         const uploadRequest = async (url, options) => {
+            if (serverFailure) throw serverFailure;
             try { return await raw(url, options); }
             catch (error) {
+                if (serverFailure) throw serverFailure;
                 if (!signal.aborted && error.transportFailure) {
                     const network = new Error('UPLOAD_CLIENT_NETWORK_ERROR');
                     const index = /\/files\/(\d+)$/.exec(url)?.[1], action = /\/(phase|queue|finish)$/.exec(url)?.[1];
@@ -234,8 +237,21 @@
             mediaIndex: String(file.type || '').startsWith('video/') ? { mode: 'unavailable', reason: 'container-parser-unavailable' } : undefined
         }));
         const job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles }), signal));
-        update({ operationId: job.operation_id });
-        start();
+        const transfer = newAbortController(); signal = transfer.signal;
+        const cancelTransfer = () => transfer.abort();
+        userSignal.addEventListener?.('abort', cancelTransfer, { once: true });
+        if (userSignal.aborted) cancelTransfer();
+        const checkTerminal = snapshot => {
+            const operation = snapshot.find(item => item.operation_id === job.operation_id);
+            if (!operation || !['failed', 'cancelled'].includes(operation.status)) return;
+            serverFailure ||= Object.assign(new Error(operation.status === 'cancelled' ? 'OPERATION_CANCELLED' : operation.errorCode || 'DISK_OPERATION_FAILED'), {
+                errorDetails: operation.errorDetails, partialItems: operation.result?.partialItems
+            });
+            // This abort stops in-flight PUT/queue requests. It is not a user
+            // cancellation and must never call the upload DELETE endpoint.
+            transfer.abort();
+        };
+        listeners.add(checkTerminal);
         const blobs = [];
         let queue = job.queue;
         const waitForQueue = async () => {
@@ -250,6 +266,8 @@
             }
         };
         try {
+            update({ operationId: job.operation_id });
+            start();
             for (let index = 0; index < files.length; index++) {
                 await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
@@ -264,7 +282,7 @@
                 const thumbnailUpload = createUploadThumbnail(blob, plannedFiles[index]).then(thumbnail => {
                     if (!thumbnail?.size || signal.aborted) return;
                     return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
-                }).catch(error => { if (error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
+                }).catch(error => { if (!signal.aborted && error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
                 if (!blob.size) { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal })).queue; }
                 for (const part of plannedFiles[index].parts) {
                     if (!blob.size) break;
@@ -291,7 +309,8 @@
         } catch (error) {
             // A pipeline failure may remove its upload reservation while the next
             // browser request is in flight. Show the durable task's original cause.
-            const cancelled = signal.aborted || error.message === 'OPERATION_CANCELLED';
+            error = serverFailure || error;
+            const cancelled = userSignal.aborted || error.message === 'OPERATION_CANCELLED';
             if (!cancelled) {
                 if (error.transportFailure) {
                     const network = new Error('UPLOAD_CLIENT_NETWORK_ERROR');
@@ -315,7 +334,7 @@
                 stage: error.errorDetails?.stage, method: error.errorDetails?.method
             })).catch(() => {});
             throw error;
-        } finally { refresh(); }
+        } finally { listeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
     }
     async function read(item, options = {}) {
         const controller = newAbortController();

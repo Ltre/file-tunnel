@@ -12,7 +12,7 @@ function diskErrorCode(error) {
 function diskErrorDetails(error) {
     const details = {};
     const source = error?.details || error?.errorDetails || {};
-    for (const name of ['requestId', 'method', 'stage', 'reason', 'elapsedMs', 'causeCode', 'syscall', 'requestNotAccepted']) {
+    for (const name of ['requestId', 'method', 'stage', 'reason', 'elapsedMs', 'causeCode', 'syscall', 'requestNotAccepted', 'sentBodyBytes', 'sentFileBytes', 'lastSentAt', 'bodySentAt']) {
         if (typeof source[name] === 'string') details[name] = networkDetails({ message: source[name] }).message;
         else if (['number', 'boolean'].includes(typeof source[name])) details[name] = source[name];
     }

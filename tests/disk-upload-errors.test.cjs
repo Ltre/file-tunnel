@@ -58,7 +58,7 @@ test('流水线上传只把同一个逻辑文件的分片组成 Telegram Album',
     assert.deepEqual(batches.map(parts => parts.map(part => part.fileIndex)), [[0], [1]]);
 });
 
-test('浏览器继续上传时不覆盖 Telegram 阶段，未获确认的请求体不计入进度', async t => {
+test('上传流水线区分连接已发送和 Telegram 已确认字节，不把本地生成字节计入发送进度', async t => {
     t.mock.method(console, 'info', () => {});
     let started, releaseFirst, startedSecond, releaseSecond;
     const firstStarted = new Promise(resolve => { started = resolve; });
@@ -69,6 +69,7 @@ test('浏览器继续上传时不覆盖 Telegram 阶段，未获确认的请求�
     const f = await fixture(t, async (_backend, _files, parts, progress) => {
         calls++;
         progress({ phase: 'telegram-upload', message: '请求体已生成', processedBytes: 6, totalBytes: 6, percent: 99 });
+        progress({ phase: 'telegram-upload', message: '连接已发送', telegramBytesSent: calls === 1 ? 2 : 4 });
         if (calls === 1) { started(); await firstAccepted; }
         else { startedSecond(); await secondAccepted; }
         return remotes(parts);
@@ -81,15 +82,17 @@ test('浏览器继续上传时不覆盖 Telegram 阶段，未获确认的请求�
     assert.equal(inFlight.phase, 'telegram-upload');
     assert.equal(inFlight.clientBytesReceived, 6);
     assert.equal(inFlight.telegramBytesConfirmed, 0);
-    assert.equal(inFlight.processedBytes, 0);
-    assert.equal(inFlight.percent, 0);
+    assert.equal(inFlight.telegramBytesSent, 2);
+    assert.equal(inFlight.processedBytes, 2);
+    assert.equal(inFlight.percent, 2 / 6 * 100);
     await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
     releaseFirst();
     await secondStarted;
     const halfway = (await f.request('/operations/' + job.operation_id)).data;
     assert.equal(halfway.telegramBytesConfirmed, 3);
-    assert.equal(halfway.processedBytes, 3);
-    assert.equal(halfway.percent, 50);
+    assert.equal(halfway.telegramBytesSent, 4);
+    assert.equal(halfway.processedBytes, 4);
+    assert.equal(halfway.percent, 4 / 6 * 100);
     releaseSecond();
     assert.equal((await f.terminal(job)).status, 'completed');
 });
@@ -113,6 +116,101 @@ test('full queue status/PUT respond promptly without consuming bytes or failing 
     assert.equal((await f.send(job, 0)).status, 200); assert.equal((await f.send(job, 1)).status, 200);
     await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
     assert.equal((await f.terminal(job)).status, 'completed');
+});
+
+test('主文件全部确认后才消费封面，封面 ECONNRESET 仅记录警告，不回滚文件', async t => {
+    t.mock.method(console, 'info', () => {});
+    const sent = [];
+    const f = await fixture(t, async (_backend, _files, parts) => { sent.push(parts[0].fileIndex); return remotes(parts); });
+    f.telegram.uploadThumbnail = async (_backend, file, _thumbnail, context) => {
+        sent.push('cover');
+        assert.equal(file.name, 'a.mp4');
+        context.onProgress({ bytes: 1, total: 3, complete: false });
+        throw Object.assign(new Error('TELEGRAM_NETWORK_ERROR'), { details: { method: 'sendDocument', causeCode: 'ECONNRESET' } });
+    };
+    const job = await f.create({ files: [{ name: 'a.mp4', type: 'video/mp4', size: 3 }, { name: 'b.md', size: 3 }] });
+    await f.request(`/uploads/${job.uploadId}/files/0/thumbnail`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg', 'X-Disk-Thumbnail-Size': '3' }, body: 'abc' });
+    await f.send(job, 0);
+    for (let i = 0; i < 150 && !sent.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(sent, [0], '等待浏览器提交其它主文件时不能先上传封面');
+    await f.send(job, 1);
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    const result = await f.terminal(job);
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(sent, [0, 1, 'cover']);
+    assert.deepEqual(result.result.warnings, ['TELEGRAM_THUMBNAIL_UPLOAD_FAILED']);
+    assert.equal(result.telegramThumbnailBytesSent, null);
+    assert.equal(f.store.adminFiles().length, 2);
+    assert.deepEqual(f.removed, []);
+});
+
+test('Telegram 失败立即结束任务与队列等待，远程回滚仍独立执行', async t => {
+    t.mock.method(console, 'info', () => {});
+    let releaseCleanup, cleanupStarted;
+    const cleanup = new Promise(resolve => { releaseCleanup = resolve; });
+    const started = new Promise(resolve => { cleanupStarted = resolve; });
+    t.after(() => releaseCleanup());
+    let calls = 0;
+    const f = await fixture(t, async (_backend, _files, parts) => {
+        if (++calls === 1) return remotes(parts);
+        throw Object.assign(new Error('TELEGRAM_NETWORK_ERROR'), { details: { causeCode: 'ECONNRESET', method: 'sendDocument', sentFileBytes: 2 } });
+    });
+    f.telegram.remove = async (_backend, file) => { cleanupStarted(); await cleanup; f.removed.push(...file.parts.map(part => part.messageId)); };
+    const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
+    await started;
+    const result = await f.terminal(job);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorDetails.causeCode, 'ECONNRESET');
+    assert.equal(result.errorDetails.sentFileBytes, 2);
+    assert.deepEqual(f.removed, [], '清理尚未结束也应展示原始失败');
+    const queue = await f.request(`/uploads/${job.uploadId}/queue`);
+    assert.equal(queue.data.error, 'TELEGRAM_NETWORK_ERROR');
+    assert.equal(queue.data.errorDetails.causeCode, 'ECONNRESET');
+    assert.equal((await f.request(`/uploads/${job.uploadId}`, { method: 'DELETE' })).data.error, 'UPLOAD_NOT_FOUND');
+    const pipeline = f.store.upload(job.uploadId).pipelineDone;
+    releaseCleanup(); await pipeline;
+    assert.deepEqual(f.removed, [101]);
+    assert.equal(f.store.upload(job.uploadId), undefined);
+    assert.equal(f.store.adminFiles().length, 0);
+});
+
+test('已确认封面的关联写入失败仍回滚主文件和封面，不当作可选警告吞掉', async t => {
+    t.mock.method(console, 'info', () => {});
+    const f = await fixture(t, async (_backend, _files, parts) => remotes(parts));
+    f.telegram.uploadThumbnail = async () => ({ fileId: 'cover', messageId: 501, size: 3 });
+    t.mock.method(f.store, 'markThumbnailUploadedAsync', async (id, index, remote) => {
+        f.store.upload(id).files[index].thumbnail.remote = remote;
+        throw Object.assign(new Error('EPERM: manifest'), { code: 'EPERM' });
+    });
+    const job = await f.create();
+    await f.request(`/uploads/${job.uploadId}/files/0/thumbnail`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg', 'X-Disk-Thumbnail-Size': '3' }, body: 'abc' });
+    await f.send(job, 0); await f.send(job, 1);
+    const pipeline = f.store.upload(job.uploadId).pipelineDone;
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    const result = await f.terminal(job); await pipeline;
+    assert.equal(result.errorCode, 'EPERM');
+    assert.equal(f.store.adminFiles().length, 0);
+    assert.deepEqual([...f.removed].sort((a, b) => a - b), [101, 201, 501]);
+});
+
+test('封面发送期间用户取消仍取消整批，不能转成成功警告', async t => {
+    t.mock.method(console, 'info', () => {});
+    const f = await fixture(t, async (_backend, _files, parts) => remotes(parts));
+    let coverStarted;
+    const started = new Promise(resolve => { coverStarted = resolve; });
+    f.telegram.uploadThumbnail = async (_backend, _file, _thumbnail, context) => {
+        coverStarted();
+        await new Promise((_resolve, reject) => context.signal.addEventListener('abort', () => reject(new Error('TELEGRAM_NETWORK_ERROR')), { once: true }));
+    };
+    const job = await f.create();
+    await f.request(`/uploads/${job.uploadId}/files/0/thumbnail`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg', 'X-Disk-Thumbnail-Size': '3' }, body: 'abc' });
+    await f.send(job, 0); await f.send(job, 1);
+    await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
+    await started;
+    assert.equal((await f.request(`/uploads/${job.uploadId}`, { method: 'DELETE' })).status, 200);
+    assert.equal((await f.terminal(job)).status, 'cancelled');
+    assert.deepEqual(f.removed, [101, 201]);
+    assert.equal(f.store.adminFiles().length, 0);
 });
 
 test('browser network failure reports failed, asynchronously rolls back all accepted messages and releases names', async t => {
@@ -173,6 +271,7 @@ test('after Telegram rollback phase/PUT/thumbnail preserve the original failure 
     assert.equal(result.errorCode, 'TELEGRAM_400'); assert.equal(result.errorDetails.method, 'sendMediaGroup');
     const failureReport = await f.request(`/uploads/${job.uploadId}/failure`, { method: 'POST', ...json({ errorCode: 'UPLOAD_CLIENT_NETWORK_ERROR' }) });
     assert.equal(failureReport.status, 202); assert.equal((await f.terminal(job)).errorCode, 'TELEGRAM_400', '后续网络错误不能覆盖最初的 Telegram 原因');
+    await f.store.upload(job.uploadId)?.pipelineDone;
     assert.equal(f.store.upload(job.uploadId), undefined);
     for (const [url, options] of [
         [`/uploads/${job.uploadId}/phase`, { method: 'POST', ...json({ index: 1 }) }],
@@ -214,6 +313,7 @@ test('permanent manifest EPERM rolls back every accepted message and reports a f
     await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
     const result = await f.terminal(job);
     assert.equal(result.errorCode, 'EPERM');
+    await f.store.upload(job.uploadId)?.pipelineDone;
     assert.deepEqual(f.removed.sort(), [101], '首文件持久化失败时第二个文件尚未送达 Telegram，只回滚已确认消息');
     assert.equal(f.store.list(f.user.id).files.length, 0);
     const next = await f.request(`/uploads/${job.uploadId}/phase`, { method: 'POST' });
@@ -294,6 +394,7 @@ test('failed partial transport cleanup keeps known messages in the recovery mani
     t.mock.method(f.telegram, 'remove', async () => { throw new Error('TELEGRAM_NETWORK_ERROR'); });
     const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
     const result = await f.terminal(job);
+    await f.store.upload(job.uploadId)?.pipelineDone;
     assert.equal(result.errorCode, 'TELEGRAM_400');
     assert.equal(f.store.adminFiles().length, 0);
     const filename = path.join(f.dataDir, 'telegram-drive-staging', job.uploadId, 'upload-manifest.json');

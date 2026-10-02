@@ -111,6 +111,23 @@ test('diagnostic export redacts credentials and bodies while retaining IDs, time
     for (const value of [token, 'private', 'abc.def.ghi', 'example.test', 'encrypted']) assert.ok(!text.includes(value));
 });
 
+test('导出连续发送、分片确认、封面进度和发送停滞快照', async t => {
+    const { dataDir, now, options, entry, write } = fixture(t);
+    write('disk-upload.log', [entry('telegram.request-progress', -500, { operationId: 'op', requestId: 'r', sentBodyBytes: 2048, sentFileBytes: 1024, idleMs: 10000, waitingForResponse: false }),
+        entry('telegram.network-error', -100, { operationId: 'op', requestId: 'r', sentFileBytes: 1024, causeCode: 'ECONNRESET' })]);
+    fs.writeFileSync(path.join(dataDir, 'disk-operations.json'), JSON.stringify([{ type: 'upload', operation_id: 'op', updatedAt: now - 100, status: 'failed',
+        clientBytesReceived: 5000, telegramBytesSent: 1024, telegramBytesConfirmed: 0, telegramTotalBytes: 10000,
+        telegramThumbnailBytesSent: 128, telegramThumbnailTotalBytes: 256, thumbnailWarnings: 1 }]));
+    const bundle = await collect(options);
+    assert.equal(bundle.logs[0].sentFileBytes, 1024);
+    assert.equal(bundle.logs[0].idleMs, 10000);
+    assert.equal(bundle.logs[1].causeCode, 'ECONNRESET');
+    assert.equal(bundle.operations[0].telegramBytesSent, 1024);
+    assert.equal(bundle.operations[0].telegramBytesConfirmed, 0);
+    assert.equal(bundle.operations[0].telegramThumbnailBytesSent, 128);
+    assert.equal(bundle.operations[0].thumbnailWarnings, 1);
+});
+
 test('CLI rejects ambiguous arguments and refuses to overwrite a live diagnostic source', async t => {
     const { dataDir, options, entry, write } = fixture(t);
     for (const argv of [['--minutes', '0'], ['--minutes', '--since'], ['--minutes', '3', '--since', '2026-09-28T12:00:00Z'],

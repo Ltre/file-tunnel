@@ -51,3 +51,14 @@ node tools/collect-tgdisk-diagnostics.cjs --data-dir .tunnel-data --upload-id "�
 - 不导出认证库、用户/分享密钥、文件正文、消息 caption、请求正文和请求头；对日志里的 URL、Bot token、Bearer 和敏感字段再次脱敏。仍保留任务 ID、文件 ID、文件名和目录等定位信息，分享前可自行检查。
 - 按读取时的文件大小取得快照；读取期间新产生的日志可能留待下次导出。未完成的末行会忽略并给出警告。SQLite 状态读取失败仍可以导出日志，并明确警告，不回退到可能过期的旧 JSON。
 - 日志轮转只保留两份，已经丢弃的日志无法恢复。大型测试应在失败后马上导出；诊断导出文件需要用户在排查结束后手动清理。
+
+## 上传发送停滞、封面阻塞与连接重置
+
+新版服务在流式 Telegram 请求期间每 10 秒记录 `telegram.request-progress`。通过相同 `requestId` 关联 `telegram.request`、`telegram.headers`、`telegram.response` / `telegram.network-error`：
+
+- `sentBodyBytes` 包含 multipart 头及正文，`sentFileBytes` 仅含文件正文；来自 HTTP 连接写入事件，不是 Telegram 持久化确认。没有可用事件时文件发送量为 null。
+- `idleMs` 持续增长且 `waitingForResponse: false`：请求体仍未发完，检查网络 / 代理背压；`waitingForResponse: true`：请求体已发完，正在等待响应头或响应体，结合是否出现 `telegram.headers` 判断。
+- `thumbnail: true` 标识封面请求。封面最多等待 60 秒，失败出现 `telegram.thumbnail-skipped`，主文件继续保留；封面字节不算进主文件总大小。
+- 网络错误同时携带发送快照、底层 `causeCode` 与 `stage`。`ECONNRESET` 本身只能说明连接被重置，不能据此认定是哪一侧或代理主动断开。结果未知的发送不能盲目重发。
+
+任务快照同时导出 `clientBytesReceived`、`telegramBytesSent`、`telegramBytesConfirmed` 和封面独立进度。失败状态先显示，已确认远端消息的回滚可稍后完成；请同时检查清理事件。服务器需要运行含这些字段的新代码，单独复制收集脚本不会补出旧日志。

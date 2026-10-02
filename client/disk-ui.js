@@ -1009,7 +1009,7 @@ function renderTelegramDriveItems() {
 async function uploadFilesToTelegramDrive(fileList, destination = telegramDrivePath) {
     const files = [...(fileList || [])]; if (!files.length) return;
     const result = await window.DiskClient.upload(files, destination);
-    showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分 Telegram 定位备注未能更新，文件索引已保存' : ''));
+    showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分封面或定位备注未能更新，文件索引已保存' : ''));
     // Only refresh the directory where the upload was initiated. A render
     // generation prevents an older in-flight list request from overwriting it.
     if (telegramDrivePath === destination) await refreshTelegramDriveContents();
@@ -2067,6 +2067,7 @@ function initDiskLoading() {
         const result = activeJobs.map(job => ({ key: 'job:' + job.operation_id, job, activity: activities.find(activity => activity.operationId === job.operation_id) }));
         for (const activity of activities) {
             const key = activityKey(activity);
+            if (activity.operationId && jobs.some(job => job.operation_id === activity.operationId && !['queued', 'running'].includes(job.status))) continue;
             if (!result.some(item => item.key === key)) result.push({ key, activity });
         }
         candidates = result.filter(item => !dismissed.has(item.key) && !dismissedActivities.has(item.activity));
@@ -2093,7 +2094,9 @@ function initDiskLoading() {
         const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
         const stages = [];
         if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}`);
+        if (Number.isFinite(job?.telegramBytesSent) && job.telegramTotalBytes) stages.push(`服务器 → Telegram 已发送 ${formatFileSize(job.telegramBytesSent)}/${formatFileSize(job.telegramTotalBytes)}`);
         if (Number.isFinite(job?.telegramBytesConfirmed) && job.telegramTotalBytes) stages.push(`Telegram 已确认 ${formatFileSize(job.telegramBytesConfirmed)}/${formatFileSize(job.telegramTotalBytes)}`);
+        if (Number.isFinite(job?.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes) stages.push(`封面已发送 ${formatFileSize(job.telegramThumbnailBytesSent)}/${formatFileSize(job.telegramThumbnailTotalBytes)}`);
         detail.textContent = job
             ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', stages.join(' · ') || (job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : '')].filter(Boolean).join(' · ')
             : [activity?.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(activity.folderPath)}` : '', activity?.message || '正在处理，请稍候…'].filter(Boolean).join(' · ');
@@ -2269,7 +2272,7 @@ function initDiskEnhancements() {
             const row = document.createElement('div'); row.className = 'disk-task-row';
             const title = document.createElement('strong'); title.textContent = (job.title ? job.title + ' · ' : '') + job.message;
             const detail = document.createElement('span'); detail.textContent = (job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)} · ` : '') + job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText({ message: job.errorCode, errorDetails: job.errorDetails }) : '');
-            if (job.warnings?.length) detail.textContent += ' · 文件已保存，部分 Telegram 定位备注未能更新';
+            if (job.warnings?.length || job.result?.warnings?.length) detail.textContent += ' · 文件已保存，部分封面或定位备注未能更新';
             row.append(title, detail);
             if (['queued', 'running'].includes(job.status)) {
                 row.classList.add('disk-task-row-active'); row.tabIndex = 0; row.setAttribute('role', 'button');

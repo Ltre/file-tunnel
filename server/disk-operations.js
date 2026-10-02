@@ -69,7 +69,8 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             }
             return view(job);
         },
-        complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result }, true); },
+        complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result,
+            ...(Array.isArray(result?.warnings) && result.warnings.length ? { warnings: result.warnings } : {}) }, true); },
         fail(id, error) {
             const errorDetails = diskErrorDetails(error);
             const uncertainUpload = error?.message === 'TELEGRAM_NETWORK_ERROR' && errorDetails.causeCode === 'UND_ERR_HEADERS_TIMEOUT';

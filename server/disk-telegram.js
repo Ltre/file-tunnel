@@ -7,6 +7,7 @@ const { buildTelegramDocumentsMultipart } = require('./telegram-multipart');
 const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
+const { observeTelegramUpload } = require('./telegram-upload-progress');
 const DELETE_WINDOW_MS = (47 * 60 + 57) * 60 * 1000;
 // Telegram guarantees file links for at least one hour. Keep a shorter,
 // process-local lease so each media Range does not first repeat getFile.
@@ -47,22 +48,31 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
         let response, data;
         const started = Date.now(), requestId = crypto.randomUUID();
-        const { signal: cancelSignal, ...traceFields } = trace;
+        const { signal: cancelSignal, timeoutMs, onUploadProgress, payloadRanges, ...traceFields } = trace;
         const fields = { ...traceFields, requestId, method, retry, channelId: backend.channelId, messageId: payload?.message_id, requestBytes: Number(init?.headers?.['Content-Length']) || undefined };
         log('telegram.request', fields);
+        const url = backend.baseUrl + '/bot' + backend.token + '/' + method;
+        const transfer = init?.body ? observeTelegramUpload(url, payloadRanges, onUploadProgress) : null;
+        const heartbeat = transfer ? setInterval(() => {
+            const snapshot = transfer.snapshot();
+            log('telegram.request-progress', { ...fields, ...snapshot, elapsedMs: Date.now() - started,
+                idleMs: Date.now() - (snapshot.lastSentAt || started), waitingForResponse: Boolean(snapshot.bodySentAt) });
+        }, 10000) : null;
+        heartbeat?.unref?.();
         try {
-            const timeoutSignal = AbortSignal.timeout(init ? 30 * 60 * 1000 : 45000);
+            const timeoutSignal = AbortSignal.timeout(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? Math.min(timeoutMs, 30 * 60 * 1000) : init ? 30 * 60 * 1000 : 45000);
             const signal = cancelSignal && typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, cancelSignal]) : (cancelSignal || timeoutSignal);
-            response = await fetchImpl(backend.baseUrl + '/bot' + backend.token + '/' + method, init ? { ...init, signal } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+            const request = () => fetchImpl(url, init ? { ...init, signal } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+            response = await (transfer ? transfer.run(request) : request());
             log('telegram.headers', { ...fields, status: response.status, elapsedMs: Date.now() - started });
             try { data = await response.json(); }
             catch (error) { if (error instanceof SyntaxError) { data = null; log('telegram.invalid-json', fields); } else throw error; }
         } catch (cause) {
             const error = new Error('TELEGRAM_NETWORK_ERROR');
-            error.details = { ...networkDetails(cause), stage: response ? 'response-body' : 'request', requestId, method, elapsedMs: Date.now() - started, requestNotAccepted: !response && !cancelSignal?.aborted && connectionFailedBeforeRequest(cause) };
+            error.details = { ...networkDetails(cause), stage: response ? 'response-body' : 'request', requestId, method, elapsedMs: Date.now() - started, ...(transfer?.snapshot() || {}), requestNotAccepted: !response && !cancelSignal?.aborted && connectionFailedBeforeRequest(cause) };
             log('telegram.network-error', { ...fields, ...error.details });
             throw error;
-        }
+        } finally { clearInterval(heartbeat); transfer?.close(); }
         log('telegram.response', { ...fields, status: response.status, ok: Boolean(data?.ok), errorCode: data?.error_code, description: networkDetails({ message: data?.description }).message, elapsedMs: Date.now() - started });
         if (response.ok && !data) {
             const error = new Error('TELEGRAM_UPLOAD_RESULT_INVALID'); error.details = { requestId, method, reason: 'invalid-json' }; throw error;
@@ -259,7 +269,8 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                 multipart?.body.once('end', () => {
                     // Produced bytes are not proof that Telegram accepted the
                     // request; keep the task visibly waiting for confirmation.
-                    update({ phase: 'telegram-response', message: `请求体已交给 HTTP 客户端，正在等待 Telegram 确认 ${batch.length} 个分片` });
+                    // Local stream completion is diagnostic only. The socket's
+                    // bodySent event is the actual transition to response wait.
                     log('telegram.request-body-produced', { uploadId: context.uploadId, operationId: context.operationId, batch: trace.batch, producedBytes: produced });
                 });
                 try {
@@ -267,7 +278,13 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                         result = batch.length === 1
                             ? await call(backend, 'sendDocument', { chat_id: backend.channelId, document: batch[0].reuseFileId, caption: batch[0].caption }, undefined, 0, { ...trace, attempt: attempt + 1, reused: true })
                             : await call(backend, 'sendMediaGroup', { chat_id: backend.channelId, media: batch.map(part => ({ type: 'document', media: part.reuseFileId, caption: part.caption, disable_content_type_detection: true })) }, undefined, 0, { ...trace, attempt: attempt + 1, reused: true });
-                    } else result = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0, { ...trace, attempt: attempt + 1 });
+                    } else result = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0, { ...trace, attempt: attempt + 1, payloadRanges: multipart.payloadRanges,
+                        onUploadProgress: ({ bytes, complete, name }) => {
+                            const sent = confirmedBefore + accepted.reduce((sum, item) => sum + item.size, 0) + bytes;
+                            update({ phase: complete ? 'telegram-response' : 'telegram-upload', telegramBytesSent: sent,
+                                message: complete ? `请求体已发送，正在等待 Telegram 确认 ${batch.length} 个分片` : `正在发送到 Telegram：${name || batch[0].name}` });
+                        }
+                    });
                     break;
                 } catch (error) {
                     multipart?.body.destroy();
@@ -323,6 +340,9 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             // until Telegram confirms deletion, without replacing the first error.
             const unresolved = [...accepted, ...invalidResultParts, ...(error.unremovedParts || [])];
             error.unremovedParts = [...new Map(unresolved.filter(part => Number.isSafeInteger(part?.messageId) && part.messageId > 0).map(part => [part.messageId, part])).values()];
+            // Cleanup may need more Telegram requests. Publish the fatal cause
+            // first so clients stop uploading / waiting while cleanup continues.
+            context.onFailure?.(error);
             const messageIds = error.unremovedParts.map(part => part.messageId);
             if (messageIds.length) {
                 try {
@@ -345,7 +365,8 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             const multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: [upload], disableContentTypeDetection: true });
             let message;
             try {
-                message = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0, { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, thumbnail: true, signal: context.signal });
+                message = await call(backend, multipart.method, null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0, { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, thumbnail: true, signal: context.signal,
+                    timeoutMs: context.timeoutMs || 60000, payloadRanges: multipart.payloadRanges, onUploadProgress: context.onProgress });
             } catch (error) { multipart.body.destroy(); throw error; }
             const media = messageMedia(message);
             if (!media?.file_id || !Number.isSafeInteger(message?.message_id)) throw new Error('TELEGRAM_UPLOAD_RESULT_INVALID');

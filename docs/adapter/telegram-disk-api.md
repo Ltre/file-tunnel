@@ -144,7 +144,11 @@ GET `/operations` 返回 `{ "operations": [...] }`；GET `/operations/{operation
 
 status：queued / running / completed / failed / cancelled。只有 completed 才表示完整成功；业务结果在 result。失败查看 errorCode / errorDetails，不能仅凭 percent=100 判断成功。上传采用整批提交 / 回滚，不返回已成功文件的 result.partialItems；递归删除则可能已经删除部分文件，失败后应重新读取目录再处理剩余项。
 
-上传进度区分“客户端→服务器”和“服务器→Telegram”，两段可交叠进行，不将流量相加。`phase`、`processedBytes`、`totalBytes`、`percent` 表示最近更新的阶段，不保证阶段只切换一次或总体百分比单调增长；客户端分别使用 `clientBytesReceived/clientTotalBytes` 和 `telegramBytesUploaded/telegramTotalBytes` 展示两段累计量。任务还可返回 `clientPartsReceived/clientPartsTotal`、`telegramPartsUploaded`、`queueParts/queueBytes` 及 `folderPath`。Telegram 请求体写入量不代表持久化确认，等待上游 / caption / 索引时百分比可能为 null；只有 status=completed 才表示整批文件已提交。
+上传进度区分“客户端→服务器”和“服务器→Telegram”，两段可交叠进行，不将流量相加，也不将流水线误标成先后执行的“阶段 1/2、2/2”。客户端分别展示 `clientBytesReceived/clientTotalBytes`（服务器已收到）、`telegramBytesSent/telegramTotalBytes`（HTTP 客户端已向连接写入的文件字节）及 `telegramBytesConfirmed/telegramTotalBytes`（Telegram 已返回成功分片消息）。发送字节扣除 multipart 头、caption 等附加内容，依据 Node fetch 的连接写入事件持续更新；既不使用本地文件读取量代替，也不宣称 Telegram 已经收到或保存这些字节。复用已有 file_id 时没有文件请求体，其对应大小在消息确认后计入。重试可能使发送量回退到本次尝试的进度，不能要求单调增长。
+
+`processedBytes/totalBytes/percent` 在 Telegram 上传开始前表示客户端接收进度，之后表示上述连接发送进度；未收到确认前最多 99%，等待封面、上游 / caption / 索引时可能为 null。任务还可返回 `clientPartsReceived/clientPartsTotal`、`telegramPartsUploaded`、`queueParts/queueBytes`、`folderPath`，以及单独的 `telegramThumbnailBytesSent/telegramThumbnailTotalBytes`。封面字节不加入主文件大小。只有 `status=completed` 才表示整批文件已提交。
+
+服务端确认上传失败后立即将任务置为 failed，并让队列请求返回最初错误；远程回滚和恢复清理可继续执行。浏览器轮询发现终态时停止当前分片请求或队列等待，不再显示残留等待浮层，不将这种内部中止标记为“用户已取消”。第三方客户端也应在队列等待期间查询任务终态，不能只看队列大小。
 
 创建目录仍返回 202；若短时间内已经完成，响应还可含 `status: "completed"` 和 result，调用方可直接应用结果，否则查询 operation_id。不要把带 completed 的响应当成另一种任务。
 
@@ -265,7 +269,7 @@ caption 受 Telegram 1024 字符限制，完整目录路径保存于逻辑索引
 
 DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝试回滚。浏览器网络 / 请求失败使用 POST `/uploads/{uploadId}/failure`，JSON `{ "errorCode": "UPLOAD_CLIENT_NETWORK_ERROR", "reason": "Failed to fetch" }`；服务端返回 202，保留最初错误并异步执行原有清理，不将失败标为用户取消。`UPLOAD_CLIENT_REQUEST_FAILED` 表示其它客户端失败。对已结束任务再次上报不覆盖其结果；网络错误后的分片不能盲目重发，因为可能已经被接受。
 
-需要提前保存音视频封面时，可在 finish 前 PUT `/uploads/{uploadId}/files/{index}/thumbnail`，请求体为图片字节，Content-Type 使用 image/*，`X-Disk-Thumbnail-Size`（或 Content-Length）声明 1–2,097,152 字节大小；同文件只接受一次。封面随任务上传并保存关联，后续通过 thumbnail 接口读取。服务端不保证替所有第三方上传自动提取封面，调用方可在初始化 files 项中携带已有 mediaIndex。
+需要提前保存音视频封面时，可在 finish 前 PUT `/uploads/{uploadId}/files/{index}/thumbnail`，请求体为图片字节，Content-Type 使用 image/*，`X-Disk-Thumbnail-Size`（或 Content-Length）声明 1–2,097,152 字节大小；同文件只接受一次。主文件全部确认后才发送封面，避免封面阻塞主文件队列。单次封面 Telegram 请求上限 60 秒；封面发送失败不回滚主文件，任务 / 结果的 warnings 返回 `TELEGRAM_THUMBNAIL_UPLOAD_FAILED`，后续仍可按现有预览流程提取封面。已经确认的封面若发生本地关联写入错误，仍按整批失败和回滚处理，以免遗漏远端消息。成功保存的封面通过 thumbnail 接口读取。服务端不保证替所有第三方上传自动提取封面，调用方可在初始化 files 项中携带已有 mediaIndex。
 
 最终 GET `/operations/{operation_id}` 的 result 包含 `{ "ok": true, "items": [...], "warnings": [...] }`。items 除公共文件字段外还返回 `telegramFileId`、`telegramFileUniqueId`、`telegramChatId`、`telegramMessageId`、`telegramPartFileIds`、`serverAssetUrl`，用于来源关联，不包含 Bot Token。**serverAssetUrl 当前指向 `/api/telegram/drive/files/{id}/stream`，要求浏览器网盘会话；传统 API 调用方应改用本基地址的 `/files/{id}/stream` 并携带 Bearer / 用户 / 分区。**
 
@@ -333,5 +337,5 @@ DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝
 - 公共分享页初始请求只返回目录元信息，不自动缓存文件。列表加载采用页内提示，15 秒超时后可重试；响应 `Server-Timing: share-metadata;dur=...` 表示服务端目录解析耗时。文件内容在用户点击预览或下载时读取。
 - 公共分享的浏览器缓存自写入起 7 天到期；访问过期项时删除并重新读取，打开分享页时顺带清理过期分享缓存。普通网盘文件缓存不受该期限影响。
 - 服务端上传日志同时写 console 和 `.tunnel-data/disk-upload.log`，单文件达到约 10 MiB 时轮换为 `.1`。按 `uploadId`、`operationId`、逻辑 `fileId` 检索；批次附带每个分片的文件 ID、序号、总数和大小。不记录 Bot Token、Cookie、完整 Bot URL、文件正文或分享令牌。
-- `browser.receive-*` 记录 Content-Range、Content-Length、收到字节、耗时及 10 秒心跳；`upload.handoff` 表示暂存完成进入 Telegram 阶段。`telegram.request/headers/response` 记录方法、请求大小、响应状态、重试次数和耗时；`telegram.progress` 区分请求体生成字节与此前 Telegram 确认字节。`telegram.part-confirmed` 才表示收到合法的分片消息响应。`telegram.network-error` 记录失败阶段、底层 code/causeCode/syscall；`telegram.cleanup-*` 记录失败后半成品清理结果。
+- `browser.receive-*` 记录 Content-Range、Content-Length、收到字节、耗时及 10 秒心跳；`upload.handoff` 表示浏览器全部字节已提交，Telegram 消费可在此前开始。`telegram.request/headers/response` 记录方法、请求大小、响应状态、重试次数和耗时；流式请求每 10 秒产生 `telegram.request-progress`，记录 `sentBodyBytes`（含 multipart 的连接发送量）、`sentFileBytes`（仅文件）、`idleMs`（距上次发送的毫秒数）、`waitingForResponse` 和 requestId / operationId。没有可用发送事件或文件字节范围时 sentFileBytes 为 null，不虚构进度。`telegram.request-body-produced` 只表示本地已生成请求体，`telegram.pipeline-part-confirmed` 才表示合法分片消息已经确认。`telegram.network-error` 同时保留失败阶段、底层 code/causeCode/syscall 及发送快照；`telegram.thumbnail-skipped` 表示可选封面失败。`telegram.cleanup-*` 记录失败后半成品清理结果。
 - 请求体进度不是 Telegram 持久化确认。网络失败时不盲目重发非幂等上传；明确 413 时拆小批次、明确 429 时有限重试的既有策略保持不变。

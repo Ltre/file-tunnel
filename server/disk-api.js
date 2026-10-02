@@ -908,14 +908,32 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const state = store(req).uploadQueue(job.id);
                     if (!state) throw new Error('UPLOAD_NOT_FOUND');
                     update({ clientPartsReceived: state.receivedParts, clientPartsTotal: state.totalParts, telegramPartsUploaded: state.uploadedParts, queueParts: state.pendingParts, queueBytes: state.pendingBytes });
+                    let batch = nextPipelineBatch(job);
                     const thumbnailIndex = job.files.findIndex(file => file.thumbnail?.status === 'queued' && file.chunks.length === file.parts.length && file.chunks.every(chunk => chunk.status === 'uploaded'));
-                    if (thumbnailIndex >= 0) {
+                    if (job.clientDone && state.uploadedParts === state.totalParts && thumbnailIndex >= 0) {
                         const file = job.files[thumbnailIndex], thumbnail = store(req).markThumbnailUploading(job.id, thumbnailIndex);
                         update({ phase: 'telegram-thumbnail', percent: null, message: `正在上传媒体封面到 Telegram：${file.name}` });
                         try {
-                            const remote = await enqueueTelegramUpload(job, () => telegram.uploadThumbnail(job.storage, file, thumbnail, { ...scope(req), uploadId: job.id, operationId: job.operationId, signal: job.pipelineAbort.signal }));
+                            let remote;
+                            try {
+                                remote = await enqueueTelegramUpload(job, () => telegram.uploadThumbnail(job.storage, file, thumbnail, { ...scope(req), uploadId: job.id, operationId: job.operationId, signal: job.pipelineAbort.signal,
+                                    onProgress: ({ bytes, total, complete }) => update({ telegramThumbnailBytesSent: bytes, telegramThumbnailTotalBytes: total,
+                                        message: `${complete ? '封面已发送，等待 Telegram 确认' : '正在上传媒体封面到 Telegram'}：${file.name}` }) }));
+                            } catch (error) {
+                                control.throwIfCancelled();
+                                if (job.pipelineFailure) throw job.pipelineFailure;
+                                if (job.pipelineAbort.signal.aborted) throw error;
+                                await store(req).failThumbnailAsync(job.id, thumbnailIndex);
+                                log('telegram.thumbnail-skipped', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, error: networkDetails(error), details: diskErrorDetails(error) });
+                                update({ telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null, thumbnailWarnings: job.files.filter(item => item.thumbnail?.warning).length,
+                                    message: `封面上传失败，继续完成任务：${file.name}` });
+                                continue;
+                            }
+                            // Once Telegram accepted a cover, a persistence failure
+                            // still requires normal rollback of its known message.
                             await store(req).markThumbnailUploadedAsync(job.id, thumbnailIndex, remote);
                         } catch (error) { store(req).resetUploadingThumbnail(job.id, thumbnailIndex); throw error; }
+                        update({ telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null });
                         continue;
                     }
                     if (job.clientDone && state.uploadedParts === state.totalParts) {
@@ -930,23 +948,35 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             const items = store(req).commit(job.id, job.storage.channelId, sent);
                             for (const item of items) log('upload.file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
                             if (!job.backendId) onDefaultUpload(job.storage.requestedChannelId || job.storage.channelId);
-                            const warnings = sent.filter(file => file.captionWarning).map(file => file.captionWarning);
+                            const warnings = [...sent.filter(file => file.captionWarning).map(file => file.captionWarning), ...job.files.map(file => file.thumbnail?.warning).filter(Boolean)];
                             return { ok: true, items: items.map(uploadResultFile), warnings };
                         });
                         queueMicrotask(() => retryRemoteCleanup().catch(() => {}));
                         return result;
                     }
-                    let batch = nextPipelineBatch(job);
                     if (batch.length === 1 && !job.clientDone) { await pipelineWait(job, 350); batch = nextPipelineBatch(job); }
                     if (!batch.length) { await pipelineWait(job); continue; }
                     for (const part of batch) store(req).markPartUploading(job.id, part.fileIndex, part.partIndex);
                     const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
                     const confirmedBytes = job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0);
-                    const confirmedProgress = bytes => ({ telegramBytesConfirmed: bytes, telegramTotalBytes: totalBytes, processedBytes: bytes, totalBytes, percent: totalBytes ? Math.min(99, bytes / totalBytes * 100) : null });
-                    update({ phase: 'telegram-queue', message: `阶段 2/2 · 服务器 → Telegram · 正在提交 ${batch.length} 个分片，等待确认`, queueParts: Math.max(0, state.pendingParts - batch.length), ...confirmedProgress(confirmedBytes) });
+                    const confirmedProgress = bytes => ({ telegramBytesConfirmed: bytes, telegramBytesSent: bytes, telegramTotalBytes: totalBytes, processedBytes: bytes, totalBytes, percent: totalBytes ? Math.min(99, bytes / totalBytes * 100) : null });
+                    update({ phase: 'telegram-queue', message: `服务器 → Telegram · 正在提交 ${batch.length} 个分片`, queueParts: Math.max(0, state.pendingParts - batch.length), telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null, ...confirmedProgress(confirmedBytes) });
                     try {
-                        const progress = patch => update({ ...patch, ...confirmedProgress(confirmedBytes), message: '阶段 2/2 · 服务器 → Telegram · ' + patch.message });
+                        let sentBytes = confirmedBytes;
+                        const progress = patch => {
+                            if (Number.isFinite(patch.telegramBytesSent)) sentBytes = Math.max(confirmedBytes, Math.min(totalBytes, patch.telegramBytesSent));
+                            update({ ...patch, telegramBytesConfirmed: confirmedBytes, telegramBytesSent: sentBytes, telegramTotalBytes: totalBytes,
+                                processedBytes: sentBytes, totalBytes, percent: totalBytes ? Math.min(99, sentBytes / totalBytes * 100) : null,
+                                message: '服务器 → Telegram · ' + patch.message });
+                        };
                         const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes, confirmedBytes, signal: job.pipelineAbort.signal,
+                            onFailure: error => {
+                                if (control.cancelled) return;
+                                job.pipelineFailure ||= error;
+                                job.pipelineError = diskErrorCode(job.pipelineFailure);
+                                recordUploadFailure(job, job.pipelineFailure);
+                                pipelineWake(job);
+                            },
                             onReuseRejected: part => {
                                 try { chunkFileCache.remove(job.storage, part); }
                                 catch (error) { log('telegram.chunk-cache-write-failed', { uploadId: job.id, operationId: job.operationId, fileId: part.logicalFileId, action: 'remove', error: networkDetails(error) }); }
@@ -998,7 +1028,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         });
                         await store(req).markPartsUploaded(job.id, remotes);
                         const acceptedBytes = remotes.reduce((sum, remote) => sum + Number(remote.size || 0), 0);
-                        update({ phase: 'telegram-upload', message: `阶段 2/2 · 服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`, telegramPartsUploaded: state.uploadedParts + remotes.length, ...confirmedProgress(confirmedBytes + acceptedBytes) });
+                        update({ phase: 'telegram-upload', message: `服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`, telegramPartsUploaded: state.uploadedParts + remotes.length, ...confirmedProgress(confirmedBytes + acceptedBytes) });
                     } catch (error) {
                         store(req).resetUploadingParts(job.id); throw error;
                     }
@@ -1011,6 +1041,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 try { operations.update(job.operationId, { phase: 'rollback', message: '上传失败，正在回滚已上传消息', errorCode: job.pipelineError, errorDetails: diskErrorDetails(job.pipelineFailure) }, true); }
                 catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
                 if (!control.cancelled) {
+                    // Report the original failure before remote cleanup, which
+                    // can itself be slow. Browser uploads must stop immediately.
+                    recordUploadFailure(job, job.pipelineFailure);
                     await rollbackPipelineRemote(job, store(req), 'upload.failure-cleanup-failed');
                 }
                 throw job.pipelineFailure;
@@ -1078,7 +1111,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             try {
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
                 const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
-                const progress = bytes => { receivedBytes = bytes; lastProgressAt = Date.now(); operations.update(job.operationId, { phase: 'client-upload', message: '阶段 1/2 · 浏览器 → 服务器：' + file.name, clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null }); };
+                const progress = bytes => { receivedBytes = bytes; lastProgressAt = Date.now(); operations.update(job.operationId, { phase: 'client-upload', message: '浏览器 → 服务器：' + file.name, clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null }); };
                 const result = req.get('Content-Range')
                     ? await store(req).receivePart(job.id, req.params.index, req, req.get('Content-Range'), progress)
                     : await store(req).receive(job.id, req.params.index, req, progress);
@@ -1141,6 +1174,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.delete('/uploads/:uploadId', wrap(async (req, res) => {
             if (!store(req).ownsUpload(owner(req), req.params.uploadId)) throw new Error('UPLOAD_NOT_FOUND');
             const job = store(req).upload(req.params.uploadId);
+            if (['failed', 'completed'].includes(operations.get(job.operationId, scope(req))?.status)) throw new Error('UPLOAD_NOT_FOUND');
             // Mark intentional cancellation before aborting transport: otherwise
             // its AbortError could make the operation terminal as a network failure.
             await operations.cancel(job.operationId, scope(req));

@@ -112,7 +112,8 @@ function readOperations(dataDir, warnings) {
 
 const operationFields = new Set(['operation_id', 'uploadId', 'type', 'status', 'phase', 'title', 'message', 'folderPath', 'diskSpace',
     'errorCode', 'errorMessage', 'errorDetails', 'createdAt', 'startedAt', 'updatedAt', 'finishedAt', 'percent', 'processedBytes', 'totalBytes',
-    'clientBytesReceived', 'clientTotalBytes', 'telegramBytesUploaded', 'telegramTotalBytes', 'clientPartsReceived', 'clientPartsTotal',
+    'clientBytesReceived', 'clientTotalBytes', 'telegramBytesUploaded', 'telegramBytesSent', 'telegramBytesConfirmed', 'telegramTotalBytes',
+    'telegramThumbnailBytesSent', 'telegramThumbnailTotalBytes', 'thumbnailWarnings', 'clientPartsReceived', 'clientPartsTotal',
     'telegramPartsUploaded', 'queueParts', 'queueBytes', 'cancelRequested']);
 function deploymentVersion(repoDir) {
     try {

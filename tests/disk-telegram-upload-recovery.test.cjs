@@ -250,3 +250,35 @@ test('Telegram 错误描述与 details 脱敏后保留请求定位信息', async
         assert.ok(!error.telegramDescription.includes('https://')); return true;
     });
 });
+
+test('封面等待响应采用独立有界超时，不盲目重发', async t => {
+    const { dataDir, files, parts } = fixture(t); let requests = 0;
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (_url, init) => {
+        requests++; await consume(init.body);
+        await new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+    } });
+    // AbortSignal.timeout is unref'd, so keep the test process alive explicitly.
+    const keepAlive = setInterval(() => {}, 1000); t.after(() => clearInterval(keepAlive));
+    const started = Date.now();
+    await assert.rejects(telegram.uploadThumbnail(backend, files[0], { path: parts[0].path, size: 3, type: 'image/jpeg' }, { timeoutMs: 30 }), error => {
+        assert.equal(error.message, 'TELEGRAM_NETWORK_ERROR');
+        assert.equal(error.details.name, 'TimeoutError');
+        assert.equal(error.details.method, 'sendDocument');
+        assert.equal(error.details.requestNotAccepted, false);
+        return true;
+    });
+    assert.equal(requests, 1); assert.ok(Date.now() - started < 2000);
+});
+
+test('致命错误先通知流水线，再等待内部远程清理', async t => {
+    const { dataDir, files, parts } = fixture(t), order = []; let sends = 0;
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (url, init) => {
+        if (url.endsWith('/sendMediaGroup')) { await consume(init.body); return reject(albumError); }
+        if (url.endsWith('/sendDocument')) { await consume(init.body); return ++sends === 1 ? reply(message(11)) : reject('Bad Request: invalid file'); }
+        if (url.endsWith('/editMessageCaption')) return reply(true);
+        if (url.endsWith('/deleteMessages')) { order.push('cleanup'); return reply(true); }
+        throw new Error('unexpected request');
+    } });
+    await assert.rejects(telegram.uploadPhysical(backend, files, parts, () => {}, { onFailure: error => { order.push('failure'); assert.equal(error.message, 'TELEGRAM_400'); } }), /TELEGRAM_400/);
+    assert.ok(order.indexOf('failure') < order.indexOf('cleanup'));
+});
