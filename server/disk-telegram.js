@@ -383,6 +383,12 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
     async function finalizePhysical(backend, files, tempParts, update = () => {}, context = {}) {
         const ordered = [...(tempParts || [])].sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex) || Number(a.partIndex) - Number(b.partIndex));
         const finalParts = [], cleanupParts = [], createdFinalParts = [];
+        const groupPlans = files.map((_file, fileIndex) => {
+            const count = ordered.filter(part => Number(part.fileIndex) === fileIndex).length;
+            return count > 1 ? partitionMediaGroups(count) : [];
+        });
+        const totalFinalGroups = groupPlans.reduce((sum, groups) => sum + groups.length, 0);
+        let finalGroupIndex = 0;
         try {
             for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
                 const source = ordered.filter(part => Number(part.fileIndex) === fileIndex);
@@ -392,12 +398,13 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     continue;
                 }
                 let offset = 0;
-                const sizes = partitionMediaGroups(source.length);
+                const sizes = groupPlans[fileIndex];
                 for (let groupIndex = 0; groupIndex < sizes.length; groupIndex++) {
                     const group = source.slice(offset, offset + sizes[groupIndex]);
                     offset += group.length;
-                    update({ phase:'telegram-finalize', telegramFinalGroupsDone: groupIndex, telegramFinalGroupsTotal: sizes.length,
-                        message:`正在提交最终媒体组：${files[fileIndex].name} · ${groupIndex + 1}/${sizes.length}` });
+                    finalGroupIndex++;
+                    update({ phase:'telegram-finalize', telegramFinalGroupIndex:finalGroupIndex, telegramFinalGroupsDone:finalGroupIndex - 1, telegramFinalGroupsTotal:totalFinalGroups,
+                        message:`正在提交最终媒体组：${files[fileIndex].name} · ${finalGroupIndex}/${totalFinalGroups}` });
                     const media = group.map(part => ({ type:'document', media:part.fileId,
                         caption:diskCaption(files[fileIndex], backend, context, part), disable_content_type_detection:true }));
                     const messages = await call(backend, 'sendMediaGroup', { chat_id:backend.channelId, media }, undefined, 0, {
@@ -416,6 +423,8 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                             mediaGroupId:message.media_group_id || '', mediaType:['document','video','audio','animation','voice','video_note'].find(type => message[type]) || 'document' };
                         finalParts.push(remote); createdFinalParts.push(remote);
                     }
+                    update({ phase:'telegram-finalize', telegramFinalGroupIndex:finalGroupIndex, telegramFinalGroupsDone:finalGroupIndex, telegramFinalGroupsTotal:totalFinalGroups,
+                        message:`最终媒体组已提交：${files[fileIndex].name} · ${finalGroupIndex}/${totalFinalGroups}` });
                 }
                 cleanupParts.push(...source);
             }

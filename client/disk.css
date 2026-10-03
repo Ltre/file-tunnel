@@ -125,9 +125,9 @@ body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 .disk-loading-nav button{width:38px;height:32px;border:1px solid #bccbd7;border-radius:8px;background:#f4f8fb;color:#264457;font-size:24px;line-height:1;cursor:pointer}
 .disk-loading-nav button:disabled{opacity:.3;cursor:default}
 .disk-loading-nav span{font-size:13px;color:#607184}
-.disk-loading-card strong{font-size:18px}
+.disk-loading-card strong{width:100%;font-size:18px;text-align:left}
 .disk-loading-card small{color:#617386;font-size:12px}
-#diskLoadingDetail{font-size:14px;line-height:1.6}
+#diskLoadingDetail{width:100%;font-size:14px;line-height:1.6;white-space:pre-wrap;text-align:left;overflow-wrap:anywhere}
 #diskLoadingProgress{width:100%;height:8px;accent-color:#249e75}
 .disk-loading-spinner{width:36px;height:36px;flex-shrink:0;border:4px solid #deeee7;border-top-color:#249e75;border-radius:50%;animation:disk-loading-spin .8s linear infinite}
 @keyframes disk-loading-spin{to{transform:rotate(360deg)}}

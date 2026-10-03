@@ -961,7 +961,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     if (job.pipelineAbort.signal.aborted) throw new Error('OPERATION_CANCELLED');
                     const state = store(req).uploadQueue(job.id);
                     if (!state) throw new Error('UPLOAD_NOT_FOUND');
-                    update({ clientPartsReceived: state.receivedParts, clientPartsTotal: state.totalParts, telegramPartsUploaded: state.uploadedParts, queueParts: state.pendingParts, queueBytes: state.pendingBytes });
+                    update({ clientPartsReceived: state.receivedParts, clientPartsTotal: state.totalParts, telegramPartsUploaded: state.uploadedParts, telegramPartsTotal: state.totalParts, telegramPartsFinalized: state.finalizedParts, queueParts: state.pendingParts, queueBytes: state.pendingBytes });
                     const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
                     if (state.uploadedParts === state.totalParts && state.finalizedParts < state.totalParts) {
                         const tempParts = job.files.flatMap(file => file.chunks.map(chunk => chunk.remote).filter(Boolean));
@@ -1044,7 +1044,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     for (const part of batch) store(req).markPartUploading(job.id, part.fileIndex, part.partIndex);
                     const confirmedBytes = job.files.flatMap(file => file.chunks).filter(chunk => chunk.status === 'uploaded').reduce((sum, chunk) => sum + chunk.size, 0);
                     const confirmedProgress = bytes => ({ telegramBytesConfirmed: bytes, telegramBytesSent: bytes, telegramTotalBytes: totalBytes, processedBytes: bytes, totalBytes, percent: totalBytes ? Math.min(99, bytes / totalBytes * 100) : null });
-                    update({ phase: 'telegram-queue', message: `服务器 → Telegram · 正在提交 ${batch.length} 个分片`, queueParts: Math.max(0, state.pendingParts - batch.length), telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null, ...confirmedProgress(confirmedBytes) });
+                    const currentTelegramPart = batch[0], currentTelegramFile = job.files[Number(currentTelegramPart.fileIndex)];
+                    update({ phase: 'telegram-queue', message: `服务器 → Telegram · 正在提交 ${batch.length} 个分片`,
+                        queueParts: Math.max(0, state.pendingParts - batch.length), telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null,
+                        telegramFileIndex:Number(currentTelegramPart.fileIndex) + 1, telegramFileCount:job.files.length, telegramFileSize:Number(currentTelegramFile?.size) || 0,
+                        telegramPartIndex:currentTelegramPart.partIndex, telegramPartCount:currentTelegramPart.partCount, telegramPartConfirmed:false,
+                        ...confirmedProgress(confirmedBytes) });
                     try {
                         let sentBytes = confirmedBytes, speedBytes = confirmedBytes, speedAt = performance.now(), telegramSpeedBps = 0;
                         const progressPart = batch[0];
@@ -1058,7 +1063,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             }
                             update({ ...patch, telegramBytesConfirmed: confirmedBytes, telegramBytesSent: sentBytes, telegramTotalBytes: totalBytes,
                                 telegramSpeedBps, telegramFileIndex: Number(progressPart?.fileIndex) + 1, telegramFileCount: job.files.length,
-                                telegramPartIndex: progressPart?.partIndex, telegramPartCount: progressPart?.partCount,
+                                telegramFileSize: Number(job.files[Number(progressPart?.fileIndex)]?.size) || 0,
+                                telegramPartIndex: progressPart?.partIndex, telegramPartCount: progressPart?.partCount, telegramPartConfirmed:false,
                                 processedBytes: sentBytes, totalBytes, percent: totalBytes ? Math.min(99, sentBytes / totalBytes * 100) : null,
                                 message: '服务器 → Telegram · ' + patch.message });
                         };
@@ -1134,7 +1140,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             ? part.waitForSourceComplete(job.pipelineAbort.signal) : Promise.resolve()));
                         await store(req).markPartsUploaded(job.id, remotes);
                         const acceptedBytes = remotes.reduce((sum, remote) => sum + Number(remote.size || 0), 0);
-                        update({ phase: 'telegram-upload', message: `服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`, telegramPartsUploaded: state.uploadedParts + remotes.length, ...confirmedProgress(confirmedBytes + acceptedBytes) });
+                        update({ phase: 'telegram-upload', message: `服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`,
+                            telegramPartsUploaded: state.uploadedParts + remotes.length, telegramPartsTotal:state.totalParts,
+                            telegramFileIndex:Number(batch[0]?.fileIndex) + 1, telegramFileCount:job.files.length,
+                            telegramFileSize:Number(job.files[Number(batch[0]?.fileIndex)]?.size) || 0,
+                            telegramPartIndex:batch[0]?.partIndex, telegramPartCount:batch[0]?.partCount, telegramPartConfirmed:true,
+                            ...confirmedProgress(confirmedBytes + acceptedBytes) });
                     } catch (error) {
                         store(req).resetUploadingParts(job.id); throw error;
                     }
@@ -1176,10 +1187,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, maxDepth: maxDepth(), uploadLimit: limit, backendId: storage.id || '', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             job.storage = storage;
             try {
-                const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
+                const totalUploadBytes = job.files.reduce((sum, file) => sum + file.size, 0);
+                const operation = operations.create(scope(req), 'upload', '上传' + job.files.length + '个文件：' + job.files[0].name, totalUploadBytes);
                 job.operationId = operation.operation_id;
                 await store(req).setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId });
-                operations.update(job.operationId, { uploadId: job.id, folderPath: job.folderPath || '', ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
+                operations.update(job.operationId, {
+                    uploadId: job.id, folderPath: job.folderPath || '', uploadFileCount: job.files.length,
+                    uploadFiles: job.files.map(file => ({ name:file.name, size:file.size, partCount:file.parts.length })),
+                    clientBytesReceived:0, clientTotalBytes:totalUploadBytes,
+                    ...(req.collaboration ? { collaborationId: req.collaboration.id } : {})
+                }, true);
             } catch (error) {
                 log('upload.create-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(error), details: diskErrorDetails(error) });
                 try { await store(req).abortAsync(job.id); }
@@ -1217,10 +1234,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             try {
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
                 const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
+                const activePlan = file.parts.find(part => part.byteStart === file.received) || file.parts[Math.min(file.parts.length - 1, file.chunks.length)] || file.parts[0];
                 const progress = bytes => {
                     receivedBytes = bytes; lastProgressAt = Date.now();
                     operations.update(job.operationId, { phase: 'client-upload', message: '浏览器 → 服务器：' + file.name,
                         clientBytesReceived: received + bytes, clientTotalBytes: totalBytes,
+                        clientFileIndex:Number(req.params.index) + 1, clientFileCount:job.files.length, clientFileSize:Number(file.size) || 0,
+                        clientPartIndex:Number(activePlan?.index) || 1, clientPartCount:file.parts.length,
                         processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
                     pipelineWake(job);
                 };

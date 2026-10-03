@@ -2034,6 +2034,109 @@ function stepDiskPreview(delta) {
     if (next < 0 || next >= previewItems.length) return;
     previewIndex = next; renderDiskPreview();
 }
+function diskLoadingUploadUnit(total) {
+    const value = Math.max(0, Number(total) || 0);
+    if (value >= 1_000_000_000_000) return { label:'TB', scale:1_000_000_000_000 };
+    if (value >= 1_000_000_000) return { label:'GB', scale:1_000_000_000 };
+    if (value >= 1_000_000) return { label:'MB', scale:1_000_000 };
+    if (value >= 1_000) return { label:'KB', scale:1_000 };
+    return { label:'B', scale:1 };
+}
+function diskLoadingTrimNumber(value, digits = 2) {
+    if (!Number.isFinite(value)) return '0';
+    return value.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1');
+}
+function diskLoadingBytePair(done, total) {
+    const unit = diskLoadingUploadUnit(total);
+    return `${diskLoadingTrimNumber(Math.max(0, Number(done) || 0) / unit.scale)}/${diskLoadingTrimNumber(Math.max(0, Number(total) || 0) / unit.scale)}${unit.label}`;
+}
+function diskLoadingSize(bytes) {
+    const unit = diskLoadingUploadUnit(bytes);
+    return `${diskLoadingTrimNumber(Math.max(0, Number(bytes) || 0) / unit.scale)}${unit.label}`;
+}
+function diskLoadingSpeed(bytesPerSecond) {
+    const speed = Math.max(0, Number(bytesPerSecond) || 0);
+    const unit = diskLoadingUploadUnit(speed);
+    return `${diskLoadingTrimNumber(speed / unit.scale, 1)}${unit.label}/s`;
+}
+function diskLoadingPercent(done, total) {
+    const denominator = Number(total) || 0;
+    if (!denominator) return '0.00%';
+    const value = Math.max(0, Math.min(100, (Number(done) || 0) / denominator * 100));
+    return value >= 100 ? '100%' : value.toFixed(2) + '%';
+}
+function diskLoadingUploadFile(job, index) {
+    const position = Math.max(1, Number(index) || 1) - 1;
+    return Array.isArray(job?.uploadFiles) ? job.uploadFiles[position] || null : null;
+}
+function formatDiskUploadLoading(job) {
+    if (!job || job.type !== 'upload') return null;
+    const files = Array.isArray(job.uploadFiles) ? job.uploadFiles : [];
+    const fileCount = Math.max(1, Number(job.uploadFileCount) || files.length || Number(job.clientFileCount) || Number(job.telegramFileCount) || 1);
+    const firstName = files[0]?.name || String(job.title || '').replace(/^上传\s*\d+\s*个文件[:：]?\s*/, '') || '文件';
+    const title = `上传${fileCount}个文件：${firstName}`;
+    const lines = [`目录：${telegramDriveDisplayPath(job.folderPath || '')}`, ''];
+    const finalizing = ['telegram-finalize','telegram-thumbnail','index-write'].includes(job.phase);
+    const clientTotal = Number(job.clientTotalBytes) || Number(job.totalBytes) || 0;
+    const clientBytes = Math.max(0, Math.min(clientTotal || Infinity, Number(job.clientBytesReceived) || 0));
+    const clientPartIndex = Number(job.clientPartIndex) || 0, clientPartCount = Number(job.clientPartCount) || 0;
+    if (!finalizing && clientTotal > 0 && Number.isFinite(clientBytes)) {
+        lines.push(`浏览器 → 服务器 · ${diskLoadingBytePair(clientBytes, clientTotal)} · ${diskLoadingPercent(clientBytes, clientTotal)} · ${diskLoadingSpeed(job.clientSpeedBps)}`);
+        if (clientBytes >= clientTotal) {
+            const totalParts = Number(job.clientPartsTotal) || clientPartCount;
+            if (totalParts) lines.push(`  - ${totalParts}个分片均已上传至服务器`);
+        } else if (fileCount > 1) {
+            const fileIndex = Math.max(1, Number(job.clientFileIndex) || 1);
+            const file = diskLoadingUploadFile(job, fileIndex);
+            lines.push(`  - 正在上传第${fileIndex}个文件 · ${diskLoadingSize(job.clientFileSize ?? file?.size ?? 0)}`);
+            if (clientPartIndex && clientPartCount) lines.push(`  - 正在上传该文件的第${clientPartIndex}个分片，共${clientPartCount}个`);
+        } else if (clientPartIndex && clientPartCount) {
+            lines.push(`  - 正在上传第${clientPartIndex}个分片，共${clientPartCount}个`);
+        }
+    }
+    const telegramTotal = Number(job.telegramTotalBytes) || 0;
+    const telegramBytes = Math.max(0, Math.min(telegramTotal || Infinity, Number(job.telegramBytesSent) || 0));
+    if (telegramTotal > 0 && Number.isFinite(telegramBytes)) {
+        if (lines.at(-1) !== '') lines.push('');
+        const telegramDone = telegramBytes >= telegramTotal;
+        lines.push(`服务器 → Telegram · ${diskLoadingBytePair(telegramBytes, telegramTotal)} · ${diskLoadingPercent(telegramBytes, telegramTotal)}${telegramDone ? '' : ' · ' + diskLoadingSpeed(job.telegramSpeedBps)}`);
+        const totalParts = Number(job.telegramPartsTotal) || Number(job.clientPartsTotal) || 0;
+        if (finalizing || telegramDone) {
+            if (totalParts) lines.push(`  - ${totalParts}个分片均已推送`);
+            if (job.phase === 'telegram-finalize') {
+                const groupTotal = Number(job.telegramFinalGroupsTotal) || 0;
+                const groupIndex = Number(job.telegramFinalGroupIndex) || (groupTotal ? Math.min(groupTotal, Number(job.telegramFinalGroupsDone) + 1 || 1) : 0);
+                lines.push(groupTotal
+                    ? `  - 正在提交最终媒体组 · ${Math.max(1, groupIndex)}/${groupTotal}`
+                    : '  - 正在确认最终分片状态');
+            } else if (job.phase === 'telegram-thumbnail') {
+                lines.push('  - 最终媒体组已提交');
+                lines.push('  - 正在上传媒体封面');
+            } else if (job.phase === 'index-write') {
+                lines.push('  - 最终媒体组已提交，正在写入文件索引');
+            }
+        } else {
+            const fileIndex = Math.max(1, Number(job.telegramFileIndex) || 1);
+            const partIndex = Number(job.telegramPartIndex) || 0, partCount = Number(job.telegramPartCount) || 0;
+            if (fileCount > 1) {
+                const file = diskLoadingUploadFile(job, fileIndex);
+                lines.push(`  - 正在推送第${fileIndex}个文件 · ${diskLoadingSize(job.telegramFileSize ?? file?.size ?? 0)}`);
+            }
+            if (partIndex && partCount) {
+                lines.push(`  - 正在推送第${partIndex}个分片，共${partCount}个`);
+                lines.push(job.telegramPartConfirmed
+                    ? `    - 第${partIndex}个分片推送已确认`
+                    : `    - 正在推送第${partIndex}个分片到TG`);
+            }
+        }
+    }
+    if (Number.isFinite(job?.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes && job.phase !== 'telegram-thumbnail') {
+        if (lines.at(-1) !== '') lines.push('');
+        lines.push(`封面 · ${diskLoadingBytePair(job.telegramThumbnailBytesSent, job.telegramThumbnailTotalBytes)} · ${diskLoadingPercent(job.telegramThumbnailBytesSent, job.telegramThumbnailTotalBytes)}`);
+    }
+    while (lines.at(-1) === '') lines.pop();
+    return { title, detail:lines.join('\n') };
+}
 function initDiskLoading() {
     const overlay = document.createElement('section'); overlay.id = 'diskLoading'; overlay.hidden = true;
     overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true');
@@ -2090,15 +2193,12 @@ function initDiskLoading() {
         const selected = candidates[selectedIndex];
         if (!selected) { hide(); return; }
         const { job, activity } = selected;
-        title.textContent = job?.title || activity?.message || '正在处理网盘任务';
+        const uploadLoading = formatDiskUploadLoading(job);
+        title.textContent = uploadLoading?.title || job?.title || activity?.message || '正在处理网盘任务';
         const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
-        const stages = [];
-        if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}${Number.isFinite(job.clientSpeedBps)&&job.clientSpeedBps>0?' · '+formatFileSize(job.clientSpeedBps)+'/s':''}${job.clientPartIndex?' · 分片 '+job.clientPartIndex+'/'+job.clientPartCount:''}`);
-        if (Number.isFinite(job?.telegramBytesSent) && job.telegramTotalBytes) stages.push(`服务器 → Telegram ${formatFileSize(job.telegramBytesSent)}/${formatFileSize(job.telegramTotalBytes)}${Number.isFinite(job.telegramSpeedBps)&&job.telegramSpeedBps>0?' · '+formatFileSize(job.telegramSpeedBps)+'/s':''}${job.telegramPartIndex?' · 分片 '+job.telegramPartIndex+'/'+job.telegramPartCount:''}`);
-        if (Number.isFinite(job?.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes) stages.push(`封面已发送 ${formatFileSize(job.telegramThumbnailBytesSent)}/${formatFileSize(job.telegramThumbnailTotalBytes)}`);
-        detail.textContent = job
-            ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', stages.join(' · ') || (job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : '')].filter(Boolean).join(' · ')
-            : [activity?.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(activity.folderPath)}` : '', activity?.message || '正在处理，请稍候…'].filter(Boolean).join(' · ');
+        detail.textContent = uploadLoading?.detail || (job
+            ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : ''].filter(Boolean).join(' · ')
+            : [activity?.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(activity.folderPath)}` : '', activity?.message || '正在处理，请稍候…'].filter(Boolean).join(' · '));
         if (percent === null) progress.removeAttribute('value'); else progress.value = percent;
         if (position) position.textContent = `${selectedIndex + 1} / ${candidates.length}`;
         if (previous) previous.disabled = candidates.length < 2;

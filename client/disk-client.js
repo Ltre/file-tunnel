@@ -163,7 +163,12 @@
     function upload(files, folderPath, read = file => file, metadata = {}) {
         return withActivity('正在上传 ' + files.length + ' 个文件', async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
-            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null };
+            const pending = {
+                operation_id:'local-upload-' + uploadSession + '-' + ++uploadSequence, type:'upload', status:'queued', phase:'preparing',
+                message:'正在准备上传', title:'上传' + files.length + '个文件：' + (files[0]?.name || '文件'), folderPath:String(folderPath || ''), percent:null,
+                uploadFileCount:files.length, uploadFiles:files.map(file => ({ name:file.name, size:file.size, partCount:Math.max(1, Math.ceil(Number(file.size || 0) / 20_000_000)) })),
+                clientBytesReceived:0, clientTotalBytes:files.reduce((sum, file) => sum + Number(file.size || 0), 0)
+            };
             const controller = newAbortController();
             const current = generation;
             localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
@@ -323,7 +328,7 @@
                 update({ phase:'client-upload', clientBytesReceived:next, clientTotalBytes, clientSpeedBps:clientSpeed, ...extra });
             };
             for (let index = 0; index < files.length; index++) {
-                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:0, clientPartCount:plannedFiles[index].parts.length });
+                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:0, clientPartCount:plannedFiles[index].parts.length });
                 await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
                 const blob = await read(files[index]);
@@ -347,10 +352,10 @@
                             await waitForQueue();
                             const partBlob = blob.slice(offset, end);
                             const result = await uploadBlobRequest(url, { method:'PUT', headers:{ 'Content-Type':'application/octet-stream', 'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}` }, body:partBlob, signal },
-                                loaded => reportClientProgress(clientCompletedBytes + loaded, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length }));
+                                loaded => reportClientProgress(clientCompletedBytes + loaded, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length }));
                             queue = result.queue;
                             clientCompletedBytes += part.size;
-                            reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
+                            reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
                             break;
                         }
                         catch (error) {
@@ -363,7 +368,7 @@
                     }
                 }
                 await thumbnailUpload;
-                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:plannedFiles[index].parts.length, clientPartCount:plannedFiles[index].parts.length });
+                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:plannedFiles[index].parts.length, clientPartCount:plannedFiles[index].parts.length });
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
