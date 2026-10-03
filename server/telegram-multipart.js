@@ -87,8 +87,11 @@ function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onP
         type: getDocumentContentType(file.name, file.type),
         size: Number.isSafeInteger(file.size) ? file.size : fs.statSync(file.path).size,
         start: Number.isSafeInteger(file.start) ? file.start : 0,
-        end: Number.isSafeInteger(file.end) ? file.end : undefined
+        end: Number.isSafeInteger(file.end) ? file.end : undefined,
+        streamFactory: file.streamFactory,
+        signal: file.signal
     }));
+    if (normalized.some(file => !Number.isSafeInteger(file.size) || file.size < 0 || (!file.path && typeof file.streamFactory !== 'function'))) throw new Error('telegram-drive-multipart-invalid');
     const fields = files.length === 1
         ? { chat_id: chatId, caption: normalized[0].caption ?? caption }
         : { chat_id: chatId, media: JSON.stringify(normalized.map((file, index) => ({ type: 'document', media: `attach://${file.fieldName}`, caption: file.caption ?? (index === 0 ? caption : ''), ...(disableContentTypeDetection ? { disable_content_type_detection: true } : {}) }))) };
@@ -100,7 +103,32 @@ function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onP
     const payloadRanges = [];
     normalized.forEach(file => { const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.fieldName}"; filename="${sanitizeMultipartHeaderValue(file.fileName)}"\r\nContent-Type: ${file.type}\r\n\r\n`); parts.push({ header, file }); payloadRanges.push({ start: contentLength + header.length, end: contentLength + header.length + file.size, name: file.fileName }); contentLength += header.length + file.size + 2; });
     const closing = Buffer.from(`--${boundary}--\r\n`); contentLength += closing.length;
-    async function* generate() { let sent = 0; const total = normalized.reduce((sum, file) => sum + file.size, 0); for (const part of parts) { if (part.buffer) { yield part.buffer; continue; } yield part.header; let fileBytes = 0; if (part.file.size) { for await (const chunk of fs.createReadStream(part.file.path, { start: part.file.start, end: part.file.end })) { sent += chunk.length; fileBytes += chunk.length; onProgress?.(sent, total, part.file.fileName, part.file.index, fileBytes); yield chunk; } } yield Buffer.from('\r\n'); } yield closing; }
+    async function* generate() {
+        let sent = 0;
+        const total = normalized.reduce((sum, file) => sum + file.size, 0);
+        for (const part of parts) {
+            if (part.buffer) { yield part.buffer; continue; }
+            yield part.header;
+            let fileBytes = 0;
+            const source = typeof part.file.streamFactory === 'function'
+                ? await part.file.streamFactory(part.file.signal)
+                : part.file.size ? fs.createReadStream(part.file.path, { start: part.file.start, end: part.file.end }) : null;
+            if (source) {
+                try {
+                    for await (const raw of source) {
+                        const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                        if (fileBytes + chunk.length > part.file.size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
+                        sent += chunk.length; fileBytes += chunk.length;
+                        onProgress?.(sent, total, part.file.fileName, part.file.index, fileBytes);
+                        yield chunk;
+                    }
+                    if (fileBytes !== part.file.size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
+                } finally { source.destroy?.(); }
+            } else if (part.file.size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
+            yield Buffer.from('\r\n');
+        }
+        yield closing;
+    }
     return { method: files.length === 1 ? 'sendDocument' : 'sendMediaGroup', body: Readable.from(generate()), contentLength, payloadRanges, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 

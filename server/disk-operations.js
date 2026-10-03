@@ -24,7 +24,11 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         const ids = new Set(retained.map(job => job.operation_id));
         for (const id of jobs.keys()) if (!ids.has(id)) jobs.delete(id);
     }
-    for (const job of jobs.values()) if (!terminal(job)) Object.assign(job, { status: 'failed', phase: 'interrupted', errorCode: 'SERVER_RESTARTED', message: '服务已重启，请重新执行此操作', finishedAt: now() });
+    for (const job of jobs.values()) if (!terminal(job)) {
+        if (job.type === 'upload' && job.progressive && !job.cancelRequested) Object.assign(job, {
+            status: 'queued', phase: 'recovering', message: '服务已重启，正在检查上传恢复状态', updatedAt: now() });
+        else Object.assign(job, { status: 'failed', phase: 'interrupted', errorCode: 'SERVER_RESTARTED', message: '服务已重启，请重新执行此操作', finishedAt: now() });
+    }
     if (jobs.size) save();
     const view = job => job ? structuredClone(job) : null;
     const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '') && (job.type !== 'read' || (Boolean(job.deviceId) && job.deviceId === scope.deviceId));
@@ -37,6 +41,19 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         },
         get(id, scope) { const job = jobs.get(id); return owns(job, scope) ? view(job) : null; },
         findUpload(uploadId, scope) { return view([...jobs.values()].find(job => job.uploadId === uploadId && owns(job, scope))); },
+        recoveringUploads() { return [...jobs.values()].filter(job => job.type === 'upload' && job.progressive && job.phase === 'recovering').map(view); },
+        resumeUpload(id, scope) {
+            const job = jobs.get(id);
+            if (!owns(job, scope) || !job.progressive || job.cancelRequested || ['completed', 'cancelled'].includes(job.status) || executing.has(id)) return false;
+            Object.assign(job, { status: 'queued', phase: 'recovering', errorCode: '', errorMessage: '', errorDetails: {}, finishedAt: 0,
+                message: '已恢复落盘分片，继续上传', updatedAt: now() });
+            save(); return true;
+        },
+        addWarning(id, warning) {
+            const job = jobs.get(id);
+            if (!job || job.warnings?.includes(warning)) return;
+            job.warnings = [...(job.warnings || []), warning]; job.updatedAt = now(); save();
+        },
         list(scope, requested = []) {
             const wanted = new Set(requested);
             return [...jobs.values()].filter(job => owns(job, scope)).sort((a,b) => b.createdAt-a.createdAt)
@@ -52,7 +69,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
                 patch = { ...patch };
                 for (const key of ['phase', 'message', 'percent', 'processedBytes', 'totalBytes']) delete patch[key];
             }
-            if (job.type === 'upload' && patch.phase === 'telegram-queue') job.telegramStarted = true;
+            if (job.type === 'upload' && ['telegram-queue', 'telegram-upload', 'telegram-finalizing'].includes(patch.phase)) job.telegramStarted = true;
             if (patch.phase && patch.phase !== job.phase && patch.phase === 'telegram-queue') job.lastMeasuredPercent = 0;
             Object.assign(job, patch);
             job.updatedAt = now();
@@ -69,12 +86,20 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             }
             return view(job);
         },
-        complete(id, result) { const job = jobs.get(id); return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result,
-            ...(Array.isArray(result?.warnings) && result.warnings.length ? { warnings: result.warnings } : {}) }, true); },
+        complete(id, result) {
+            const job = jobs.get(id);
+            // Background cleanup can warn before the runner's completion
+            // callback. Do not replace that warning with a cover warning.
+            const warnings = job?.progressive ? [...new Set([...(job.warnings || []), ...(result?.warnings || [])])] : result?.warnings;
+            return api.update(id, { status: 'completed', phase: 'completed', percent: 100, processedBytes: job?.totalBytes || 0, message: '操作完成', result,
+                ...(Array.isArray(warnings) && warnings.length ? { warnings } : {}) }, true);
+        },
         fail(id, error) {
             const errorDetails = diskErrorDetails(error);
-            const uncertainUpload = error?.message === 'TELEGRAM_NETWORK_ERROR' && errorDetails.causeCode === 'UND_ERR_HEADERS_TIMEOUT';
-            const errorMessage = uncertainUpload ? '等待 Telegram 或代理响应头超时；发送结果未确认，请先核对频道消息再重试'
+            const uncertainUpload = Boolean(errorDetails.requestOutcomeUnknown) || (error?.message === 'TELEGRAM_NETWORK_ERROR' && errorDetails.causeCode === 'UND_ERR_HEADERS_TIMEOUT');
+            const errorMessage = error?.message === 'TELEGRAM_UPLOAD_OUTCOME_UNKNOWN' ? 'Telegram 发送结果未确认，已保留分片及消息记录；请核对频道消息后重试'
+                : error?.message === 'UPLOAD_SOURCE_INTERRUPTED' ? '服务重启时浏览器上传尚未完成，已保留分片记录；请重新上传'
+                : uncertainUpload ? 'Telegram 发送结果未确认，已保留恢复资料；请先核对频道消息，勿直接重复上传'
                 : errorDetails.telegramDescription || '操作失败，请检查错误码后重试';
             return api.update(id, { status: 'failed', phase: 'failed', errorCode: diskErrorCode(error), errorMessage, message: '操作失败', errorDetails }, true);
         },

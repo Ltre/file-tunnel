@@ -30,7 +30,7 @@ function fixture(options = {}) {
         }
     });
     vm.runInContext(source('client/disk-client.js'), context);
-    vm.runInContext(ui.slice(ui.indexOf('function initDiskLoading('), ui.indexOf('function renderDiskTaskBubble(')) + ';this.restore = initDiskLoading();', context);
+    vm.runInContext(ui.slice(ui.indexOf('function diskUploadProgressLines('), ui.indexOf('function renderDiskTaskBubble(')) + ';this.restore = initDiskLoading();', context);
     vm.runInContext(ui.slice(ui.indexOf('async function moveTelegramDriveItems('), ui.indexOf('async function deleteTelegramDriveItems(')) + ';this.move = moveTelegramDriveItems;', context);
     const client = context.window.DiskClient;
     const accept = async (index, id) => {

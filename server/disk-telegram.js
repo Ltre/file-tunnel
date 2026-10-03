@@ -8,6 +8,7 @@ const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE, MAX_TELEGRAM_BATCH_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { observeTelegramUpload } = require('./telegram-upload-progress');
+const { telegramUploadScheduler } = require('./telegram-upload-scheduler');
 const DELETE_WINDOW_MS = (47 * 60 + 57) * 60 * 1000;
 // Telegram guarantees file links for at least one hour. Keep a shorter,
 // process-local lease so each media Range does not first repeat getFile.
@@ -25,6 +26,12 @@ function connectionFailedBeforeRequest(error, seen = new Set()) {
 }
 const rejectedFileIdentifier = error => error.message === 'TELEGRAM_400' && /wrong (?:remote )?file identifier|file[_ ]?id.*(?:invalid|wrong)|file reference.*(?:expired|invalid)/i.test(error.telegramDescription || '');
 const rejectedDocumentAlbum = error => rejectedFileIdentifier(error) || (error.message === 'TELEGRAM_400' && /type ["']?(?:animation|sticker|video|audio)["']? can't be used in sendMediaGroup|document.*(?:type.*(?:unsupported|invalid)|can't be grouped)/i.test(error.telegramDescription || ''));
+function partSizeFailure(error, seen = new Set()) {
+    if (!error || seen.has(error)) return false;
+    seen.add(error);
+    if (error.code === 'TELEGRAM_PART_SIZE_MISMATCH' || error.message === 'TELEGRAM_PART_SIZE_MISMATCH') return true;
+    return partSizeFailure(error.cause, seen);
+}
 function diskCaption(file, backend, context = {}, remote = {}) {
     const fields = ['网盘文件', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId];
     if (file.logicalId || remote.logicalFileId) fields.push('logical_file_id: ' + (file.logicalId || remote.logicalFileId));
@@ -35,7 +42,18 @@ function diskCaption(file, backend, context = {}, remote = {}) {
 function diskThumbnailCaption(file, backend, context = {}) {
     return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);
 }
-function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now, resolveChatIdentifier = value => value }) {
+function partitionMediaGroups(parts) {
+    if (!Array.isArray(parts) || !parts.length) throw new Error('TELEGRAM_PARTS_INVALID');
+    if (parts.length === 1) return [parts.slice()];
+    const groups = [];
+    for (let offset = 0; offset < parts.length;) {
+        const remaining = parts.length - offset;
+        const count = remaining === 11 ? 9 : Math.min(10, remaining);
+        groups.push(parts.slice(offset, offset + count)); offset += count;
+    }
+    return groups;
+}
+function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now, resolveChatIdentifier = value => value, uploadScheduler = telegramUploadScheduler }) {
     const repository = openDiskRepository(dataDir);
     const placeholdersInFlight = new Map();
     const filePaths = new Map(), filePathRequests = new Map();
@@ -48,7 +66,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
         let response, data;
         const started = Date.now(), requestId = crypto.randomUUID();
-        const { signal: cancelSignal, timeoutMs, onUploadProgress, payloadRanges, ...traceFields } = trace;
+        const { signal: cancelSignal, timeoutMs, onUploadProgress, payloadRanges, managedRetry, ...traceFields } = trace;
         const fields = { ...traceFields, requestId, method, retry, channelId: backend.channelId, messageId: payload?.message_id, requestBytes: Number(init?.headers?.['Content-Length']) || undefined };
         log('telegram.request', fields);
         const url = backend.baseUrl + '/bot' + backend.token + '/' + method;
@@ -68,8 +86,17 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             try { data = await response.json(); }
             catch (error) { if (error instanceof SyntaxError) { data = null; log('telegram.invalid-json', fields); } else throw error; }
         } catch (cause) {
+            if (managedRetry && partSizeFailure(cause)) {
+                const error = new Error('TELEGRAM_PART_SIZE_MISMATCH');
+                error.details = { stage: 'source-read', requestId, method, elapsedMs: Date.now() - started, ...(transfer?.snapshot() || {}) };
+                log('telegram.source-invalid', { ...fields, ...error.details }); throw error;
+            }
             const error = new Error('TELEGRAM_NETWORK_ERROR');
-            error.details = { ...networkDetails(cause), stage: response ? 'response-body' : 'request', requestId, method, elapsedMs: Date.now() - started, ...(transfer?.snapshot() || {}), requestNotAccepted: !response && !cancelSignal?.aborted && connectionFailedBeforeRequest(cause) };
+            const snapshot = transfer?.snapshot() || {};
+            error.details = { ...networkDetails(cause), stage: response ? 'response-body' : 'request', requestId, method, elapsedMs: Date.now() - started, ...snapshot, requestNotAccepted: !response && !cancelSignal?.aborted && connectionFailedBeforeRequest(cause) };
+            // Only diagnostics from this exact request can prove incomplete
+            // transmission. A produced/read byte counter is not evidence.
+            if (managedRetry && !response && !cancelSignal?.aborted && snapshot.sentFileBytes !== null && Number.isFinite(snapshot.sentFileBytes) && snapshot.sentBodyBytes < fields.requestBytes) error.details.requestIncomplete = true;
             log('telegram.network-error', { ...fields, ...error.details });
             throw error;
         } finally { clearInterval(heartbeat); transfer?.close(); }
@@ -82,8 +109,8 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             // Never pass URLs or bot credentials to an operation or client.
             error.telegramDescription = networkDetails({ message: data?.description }).message.slice(0, 200);
             error.details = { requestId, method, status: response.status, telegramDescription: error.telegramDescription };
-            error.retryAfter = Math.min(60, Math.max(1, Number(data?.parameters?.retry_after) || 1));
-            if (!init && error.message === 'TELEGRAM_429' && retry < 3) {
+            error.retryAfter = Math.min(managedRetry ? 86400 : 60, Math.max(1, Number(data?.parameters?.retry_after) || 1));
+            if (!managedRetry && !init && error.message === 'TELEGRAM_429' && retry < 3) {
                 await new Promise(resolve => setTimeout(resolve, error.retryAfter * 1000));
                 return call(backend, method, payload, undefined, retry + 1, trace);
             }
@@ -238,6 +265,191 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
         return Readable.from(sliceFallback());
     }
+    function progressiveRemote(part, message) {
+        const media = message?.document || {};
+        return { fileId: media.file_id || '', fileUniqueId: media.file_unique_id || '', messageId: message?.message_id,
+            messageDate: message?.date ? message.date * 1000 : now(), mediaType: 'document', mediaGroupId: message?.media_group_id || '',
+            logicalFileId: part.logicalFileId, fileIndex: part.fileIndex, partIndex: part.partIndex, partCount: part.partCount,
+            originalSize: part.originalSize, size: part.size, offset: part.offset, sha256: part.sha256 || '' };
+    }
+    function validProgressiveMessage(part, message) {
+        return Boolean(message?.document?.file_id && Number.isSafeInteger(message?.message_id) && message.message_id > 0
+            && (message.document.file_size === undefined || message.document.file_size === part.size));
+    }
+    const retryablePush = error => error.message === 'TELEGRAM_429'
+        || (error.message === 'TELEGRAM_NETWORK_ERROR' && (error.details?.requestNotAccepted || error.details?.requestIncomplete));
+    const unknownUploadResult = error => error.message === 'TELEGRAM_UPLOAD_RESULT_INVALID'
+        || (error.message === 'TELEGRAM_NETWORK_ERROR' && !retryablePush(error));
+    function retainRemote(error, parts) {
+        error.unremovedParts = [...new Map([...(error.unremovedParts || []), ...parts].filter(part => Number.isSafeInteger(part?.messageId) && part.messageId > 0).map(part => [part.messageId, part])).values()];
+        return error;
+    }
+    async function pushChunk(backend, file, part, update = () => {}, context = {}) {
+        if (!Number.isSafeInteger(part?.size) || part.size < 0 || part.size > MAX_TELEGRAM_PART_SIZE) throw new Error('TELEGRAM_PARTS_INVALID');
+        const trace = { uploadId: context.uploadId, operationId: context.operationId, fileId: part.logicalFileId || file.logicalId, part: part.partIndex, count: part.partCount, managedRetry: true };
+        let reuseFileId = part.reuseFileId || '';
+        if (reuseFileId && !context.reuseValidated) {
+            try {
+                let saved;
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        // Cache verification is part of the upload workload:
+                        // it must not create an unscheduled burst across jobs.
+                        saved = await uploadScheduler.enqueue(backend, () => call(backend, 'getFile', { file_id: reuseFileId }, undefined, 0,
+                            { ...trace, attempt, reuseValidation: true, signal: context.signal }),
+                        { signal: context.signal, taskKey: context.uploadId || context.operationId });
+                        break;
+                    } catch (error) {
+                        // getFile does not create messages, so even a lost
+                        // response can safely be retried outside the slot.
+                        const transient = error.message === 'TELEGRAM_429' || error.message === 'TELEGRAM_NETWORK_ERROR'
+                            || error.message === 'TELEGRAM_UPLOAD_RESULT_INVALID' || /^TELEGRAM_5\d\d$/.test(error.message);
+                        if (context.signal?.aborted || !transient || attempt >= 3) throw error;
+                        const delayMs = uploadScheduler.feedback(backend, error, attempt);
+                        await context.onRetry?.({ attempt, retryAt: now() + delayMs, delayMs, errorCode: error.message, stage: 'reuse-validation' });
+                    }
+                }
+                if (!saved?.file_path || (saved.file_size !== undefined && saved.file_size !== part.size)) throw new Error('TELEGRAM_REUSE_INVALID');
+            } catch (error) {
+                if (!rejectedFileIdentifier(error) && error.message !== 'TELEGRAM_REUSE_INVALID') throw error;
+                await context.onReuseRejected?.(part); reuseFileId = '';
+            }
+        }
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            let multipart, message, produced = 0, pushed = null, lastBytes = 0, lastAt = now(), speed = 0, stateWrite = Promise.resolve();
+            const attemptController = new AbortController();
+            const onAbort = () => attemptController.abort(context.signal.reason);
+            context.signal?.addEventListener('abort', onAbort, { once: true });
+            if (context.signal?.aborted) onAbort();
+            try {
+                message = await uploadScheduler.enqueue(backend, async () => {
+                    await context.onState?.('pushing', { attempt, attemptedAt: now(), reuse: Boolean(reuseFileId) });
+                    update({ phase: 'telegram-upload', telegramFileIndex: Number(part.fileIndex || 0) + 1, telegramFileName: file.name,
+                        telegramPartIndex: part.partIndex, telegramPartCount: part.partCount, telegramPartBytesSent: 0,
+                        telegramFileSize: file.size, telegramPartSize: part.size, telegramBytesPerSecond: 0,
+                        message: `正在推送第 ${part.partIndex}/${part.partCount} 个分片：${file.name}` });
+                    if (reuseFileId) return call(backend, 'sendDocument', { chat_id: backend.channelId, document: reuseFileId,
+                        caption: diskCaption(file, backend, context, part), disable_content_type_detection: true }, undefined, 0,
+                    { ...trace, attempt, reused: true, signal: context.signal });
+                    multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: [{ ...part, signal: attemptController.signal, caption: diskCaption(file, backend, context, part) }], disableContentTypeDetection: true,
+                        onProgress: bytes => { produced = bytes; } });
+                    return call(backend, 'sendDocument', null, { method: 'POST', headers: { 'Content-Type': multipart.contentType, 'Content-Length': String(multipart.contentLength) }, body: multipart.body, duplex: 'half' }, 0,
+                        { ...trace, attempt, signal: attemptController.signal, timeoutMs: context.timeoutMs, payloadRanges: multipart.payloadRanges,
+                            onUploadProgress: ({ bytes, complete }) => {
+                                pushed = bytes;
+                                const measuredAt = now(), elapsed = measuredAt - lastAt;
+                                if (elapsed > 0) { const measured = Math.max(0, bytes - lastBytes) * 1000 / elapsed; speed = speed ? speed * 0.7 + measured * 0.3 : measured; }
+                                lastBytes = bytes; lastAt = measuredAt;
+                                update({ phase: complete ? 'telegram-response' : 'telegram-upload', telegramPartBytesSent: bytes, telegramBytesPerSecond: speed,
+                                    telegramFileIndex: Number(part.fileIndex || 0) + 1, telegramFileName: file.name, telegramPartIndex: part.partIndex, telegramPartCount: part.partCount,
+                                    message: complete ? `第 ${part.partIndex}/${part.partCount} 个分片已推送，等待 Telegram 确认` : `正在推送第 ${part.partIndex}/${part.partCount} 个分片：${file.name}` });
+                                if (complete) { stateWrite = stateWrite.then(() => context.onState?.('awaiting_response', { attempt, telegramPushedBytes: bytes, bodyCompleteAt: measuredAt })); stateWrite.catch(() => {}); }
+                            } });
+                }, { signal: context.signal, taskKey: context.uploadId || context.operationId });
+                await stateWrite;
+                if (!validProgressiveMessage(part, message) || (!reuseFileId && (produced !== part.size || (pushed !== null && pushed !== part.size)))) {
+                    const messages = Array.isArray(message) ? message : message ? [message] : [];
+                    const error = new Error('TELEGRAM_UPLOAD_RESULT_INVALID'); error.details = { expectedMessages: 1, receivedMessages: messages.length, expectedBytes: part.size, producedBytes: produced };
+                    throw retainRemote(error, messages.map((item, index) => ({ ...progressiveRemote(part, item), ...(index ? { resultUnmapped: true } : {}) })));
+                }
+                // The reader must finish writer/SHA/manifest validation before a
+                // file_id can advance this logical part to confirmed.
+                await part.awaitSourceComplete?.(context.signal);
+                const remote = progressiveRemote(part, message);
+                try { await context.onConfirmed?.(remote); await context.onState?.('push_confirmed', { attempt, telegramPushedBytes: part.size }); }
+                catch (error) { throw retainRemote(error, [remote]); }
+                update({ phase: 'telegram-response', telegramPartBytesSent: part.size, telegramPartIndex: part.partIndex, telegramPartCount: part.partCount,
+                    telegramFileIndex: Number(part.fileIndex || 0) + 1, telegramFileName: file.name, message: `第 ${part.partIndex}/${part.partCount} 个分片推送已确认` });
+                log('telegram.chunk-confirmed', { ...trace, managedRetry: undefined, attempt, messageId: remote.messageId, bytes: remote.size });
+                return remote;
+            } catch (error) {
+                attemptController.abort(); multipart?.body.destroy();
+                await stateWrite.catch(() => {});
+                if (message) retainRemote(error, (Array.isArray(message) ? message : [message]).map(item => progressiveRemote(part, item)));
+                if (context.signal?.aborted) throw error;
+                if (reuseFileId && rejectedFileIdentifier(error) && attempt < 3 && (part.path || part.streamFactory)) {
+                    await context.onReuseRejected?.(part); reuseFileId = ''; continue;
+                }
+                if (retryablePush(error) && attempt < 3 && !error.unremovedParts?.length) {
+                    const delayMs = uploadScheduler.feedback(backend, error, attempt);
+                    await context.onState?.('retry_wait', { attempt, retryAt: now() + delayMs, errorCode: error.message, details: error.details });
+                    await context.onRetry?.({ attempt, retryAt: now() + delayMs, delayMs, errorCode: error.message });
+                    update({ phase: 'telegram-wait', telegramPartBytesSent: 0, message: `分片推送失败，正在重试（第 ${attempt}/2 次）` });
+                    // Retry only after the browser source is fully verified. No
+                    // second growing request races the failed first attempt.
+                    await part.awaitSourceComplete?.(context.signal);
+                    log('telegram.chunk-retry', { ...trace, managedRetry: undefined, attempt, delayMs, error: error.message, details: error.details });
+                    continue;
+                }
+                if (error.unremovedParts?.length) {
+                    // A successful remote response followed by a failed durable
+                    // save is not a failed/unconfirmed chunk. The store already
+                    // binds these IDs in memory; changing it to failed would
+                    // reject that transition and erase the original save error.
+                    log('telegram.chunk-confirmation-save-failed', { ...trace, managedRetry: undefined, attempt, error: error.message,
+                        messageIds: error.unremovedParts.map(part => part.messageId) });
+                    context.onFailure?.(error); throw error;
+                }
+                const unknown = unknownUploadResult(error);
+                await context.onState?.(unknown ? 'unknown' : 'failed', { attempt, errorCode: error.message, details: error.details });
+                log('telegram.chunk-failed', { ...trace, managedRetry: undefined, attempt, unknown, error: error.message, details: error.details });
+                context.onFailure?.(error); throw error;
+            } finally {
+                context.signal?.removeEventListener('abort', onAbort);
+                attemptController.abort(); multipart?.body.destroy();
+            }
+        }
+    }
+    async function finalizeGroups(backend, file, parts, context = {}) {
+        const ordered = parts.slice().sort((left, right) => left.partIndex - right.partIndex);
+        if (ordered.some((part, index) => !part.fileId || !Number.isSafeInteger(part.messageId) || part.partIndex !== index + 1 || part.partCount !== ordered.length)) throw new Error('TELEGRAM_PARTS_INVALID');
+        const planned = partitionMediaGroups(ordered), finals = [];
+        const saved = context.groups || context.finalGroups || [];
+        for (let groupIndex = 0; groupIndex < planned.length; groupIndex++) {
+            const group = planned[groupIndex], prior = saved.find(item => (item.groupIndex ?? item.index) === groupIndex);
+            const priorParts = prior?.parts || prior?.remotes;
+            if (prior?.status === 'unknown' || prior?.unknownResult || (['submitting', 'finalizing'].includes(prior?.status) && !priorParts?.length)) throw new Error('UPLOAD_FINAL_RESULT_UNKNOWN');
+            if (priorParts?.length) {
+                if (!Array.isArray(priorParts) || priorParts.length !== group.length || priorParts.some((part, index) => !part.fileId || !Number.isSafeInteger(part.messageId) || part.partIndex !== group[index].partIndex || part.size !== group[index].size)) throw new Error('TELEGRAM_PARTS_INVALID');
+                finals.push(...priorParts); continue;
+            }
+            if (group.length === 1) { await context.onGroupConfirmed?.(group, groupIndex); finals.push(...group); continue; }
+            let messages;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                const trace = { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, groupIndex, attempt, managedRetry: true, signal: context.signal };
+                try {
+                    messages = await uploadScheduler.enqueue(backend, async () => {
+                        await context.onGroupStarted?.(groupIndex, { attempt, partIndexes: group.map(part => part.partIndex) });
+                        context.update?.({ phase: 'telegram-finalizing', finalizationGroupIndex: groupIndex + 1, finalizationGroupCount: planned.length,
+                            message: `正在提交最终媒体组 · ${groupIndex + 1}/${planned.length}` });
+                        return call(backend, 'sendMediaGroup', { chat_id: backend.channelId, media: group.map(part => ({ type: 'document', media: part.fileId,
+                            // This is a new message: temporary IDs are about to
+                            // be cleaned up and must not leak into its caption.
+                            // The returned final IDs are authoritative in SQL.
+                            caption: diskCaption(file, backend, context, { logicalFileId: part.logicalFileId,
+                                partIndex: part.partIndex, partCount: part.partCount, originalSize: part.originalSize }), disable_content_type_detection: true })) }, undefined, 0, trace);
+                    }, { signal: context.signal, taskKey: context.uploadId || context.operationId, cost: group.length });
+                    break;
+                } catch (error) {
+                    if (context.signal?.aborted) throw error;
+                    if (retryablePush(error) && attempt < 3) { const delayMs = uploadScheduler.feedback(backend, error, attempt); await context.onGroupRetry?.(groupIndex, { attempt, retryAt: now() + delayMs, errorCode: error.message }); continue; }
+                    await context.onGroupFailure?.(groupIndex, { unknown: unknownUploadResult(error), errorCode: error.message, details: error.details });
+                    error.finalParts = finals; throw error;
+                }
+            }
+            const received = Array.isArray(messages) ? messages : [];
+            const remotes = received.map((message, index) => progressiveRemote(group[index] || group[0], message));
+            if (received.length !== group.length || new Set(received.map(message => message?.message_id)).size !== received.length || received.some((message, index) => !validProgressiveMessage(group[index] || group[0], message))) {
+                const error = new Error('TELEGRAM_UPLOAD_RESULT_INVALID'); error.finalParts = finals; error.details = { expectedMessages: group.length, receivedMessages: received.length };
+                throw retainRemote(error, remotes);
+            }
+            try { await context.onGroupConfirmed?.(remotes, groupIndex); }
+            catch (error) { error.finalParts = finals; throw retainRemote(error, remotes); }
+            finals.push(...remotes);
+            log('telegram.final-group-confirmed', { uploadId: context.uploadId, operationId: context.operationId, fileId: file.logicalId, groupIndex, parts: remotes.map(part => ({ part: part.partIndex, messageId: part.messageId, bytes: part.size })) });
+        }
+        return finals;
+    }
     async function uploadPhysical(backend, files, parts, update = () => {}, context = {}) {
         const queue = parts.map(part => ({ ...part }));
         const total = Number(context.totalBytes) || files.reduce((sum, file) => sum + Number(file.size || 0), 0);
@@ -360,6 +572,9 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
     return {
         call,
         uploadPhysical,
+        pushChunk,
+        finalizeGroups,
+        scheduler: uploadScheduler,
         async uploadThumbnail(backend, file, thumbnail, context = {}) {
             const upload = { path: thumbnail.path, name: `${file.name}.cover.jpg`.slice(0, 180), size: thumbnail.size, type: thumbnail.type || 'image/jpeg', caption: diskThumbnailCaption(file, backend, context) };
             const multipart = buildTelegramDocumentsMultipart({ chatId: backend.channelId, files: [upload], disableContentTypeDetection: true });
@@ -519,6 +734,46 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             if (item.thumbnail?.fileId) await call(backend, 'getFile', { file_id: item.thumbnail.fileId });
             return true;
         },
+        async cleanupTemporaryMessages(backend, item, context = {}) {
+            const channelId = resolveChatIdentifier(item.channelId || backend.channelId);
+            const scheduledBackend = { ...backend, channelId };
+            const parts = [...new Map(storedParts(item).filter(part => part?.messageId).map(part => [Number(part.messageId), part])).values()];
+            if (!parts.length || parts.some(part => !Number.isSafeInteger(part.messageId) || part.messageId <= 0)) throw new Error('TELEGRAM_MESSAGE_MISSING');
+            const protectedIds = new Set((context.finalMessageIds || []).map(Number));
+            if (parts.some(part => protectedIds.has(part.messageId))) throw new Error('TELEGRAM_TEMP_CLEANUP_INVALID');
+            const fresh = parts.filter(part => now() - Number(part.messageDate || item.createdAt || now()) < DELETE_WINDOW_MS);
+            const old = parts.filter(part => !fresh.includes(part));
+            const taskKey = context.taskKey || 'cleanup-' + (context.uploadId || context.operationId || item.operationId || item.messageId);
+            for (let offset = 0; offset < fresh.length; offset += 100) {
+                const batch = fresh.slice(offset, offset + 100), ids = batch.map(part => part.messageId);
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        await uploadScheduler.enqueue(scheduledBackend, () => deleteMessageIds(backend, channelId, ids,
+                            { uploadId: context.uploadId, operationId: context.operationId || item.operationId, cleanup: true, batch: Math.floor(offset / 100) + 1,
+                                attempt, managedRetry: true, signal: context.signal }), { signal: context.signal, taskKey, priority: 10 });
+                        await context.onCleanupBatchConfirmed?.(ids);
+                        break;
+                    } catch (error) {
+                        // Deletion is idempotent, unlike message creation. Even
+                        // an ambiguous lost delete response may safely retry;
+                        // missing messages are handled by deleteMessageIds.
+                        if (!context.signal?.aborted && (error.message === 'TELEGRAM_429' || error.message === 'TELEGRAM_NETWORK_ERROR') && attempt < 3) {
+                            const delayMs = uploadScheduler.feedback(scheduledBackend, error, attempt);
+                            await context.onCleanupRetry?.({ attempt, delayMs, retryAt: now() + delayMs, messageIds: ids });
+                            continue;
+                        }
+                        throw error;
+                    }
+                }
+            }
+            if (old.length) {
+                // Expired temporary messages retain the existing 47h57m
+                // placeholder replacement behavior. Do not change user delete.
+                await uploadScheduler.enqueue(scheduledBackend, () => this.remove(backend, { ...item, channelId, parts: old, thumbnail: null }),
+                    { signal: context.signal, taskKey, priority: 10 });
+                await context.onCleanupBatchConfirmed?.(old.map(part => part.messageId));
+            }
+        },
         async remove(backend, item) {
             let failure;
             const stored = [...storedParts(item), ...(item.thumbnail?.messageId ? [item.thumbnail] : [])];
@@ -549,4 +804,4 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
     };
 }
-module.exports = { createDiskTelegram, diskCaption, MAX_TELEGRAM_PART_SIZE };
+module.exports = { createDiskTelegram, diskCaption, partitionMediaGroups, MAX_TELEGRAM_PART_SIZE };

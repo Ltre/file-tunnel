@@ -1,6 +1,6 @@
 # Telegram 网盘 S3 Compatible API
 
-实现核对日期：2026-09-29。
+实现核对日期：2026-10-03。
 
 本文用于要求 S3 协议的第三方系统（如 FolderSync）。接受本系统 HTTP JSON / 文件流协议的应用使用独立的 [传统网盘 API 文档](adapter/telegram-disk-api.md)，两套接口的凭据和响应格式不能互换。
 
@@ -111,15 +111,25 @@ PutObject 的 `Content-Type` 和合规的 `x-amz-meta-*` 元数据会保留；GE
 
 - 对象大小上限为 **2000 MiB（2,097,152,000 字节）**；0 Byte 普通文件和以 `/` 结尾的目录 marker 均支持。
 - Key 使用 ZIP / 网盘式相对路径，支持中文、日文和文件名内部空格；UTF-8 总长度最多 1024 字节，目录最多 20 层，文件名最多 180 字符。路径段前后空白、连续 `/`、`.` / `..`、反斜杠及网盘非法名称会返回 `InvalidObjectName`，不会静默归一化改名；目录层级还受后台设置限制。
-- S3 连续 PUT 请求体通过现有对象核心切成最多 20,000,000 字节的 Telegram 分片，复用网盘串行上传队列、分片哈希 / file_id 复用校验、逻辑文件关联、失败回滚及恢复清理。
+- S3 连续 PUT 请求体通过现有对象核心切成最多 20,000,000 字节的 Telegram 分片，复用原有网盘串行上传队列、分片哈希 / file_id 复用校验、逻辑文件关联、失败回滚及恢复清理。仍在每片接收完整后再发送 Telegram，收到合法分片消息确认后释放该片正文；不切入下面说明的可选渐进式上传。
 - **S3 PUT 仍等待 Telegram 确认及索引提交后才返回成功**，不会返回原生网盘的 202 operation_id。原生 API 的 `/uploads/:id/queue` 是其客户端分片协议，不是 S3 API，也不会把一个 S3 PUT 改成异步操作。
 - 覆盖先完成新对象上传 / 校验，再切换索引并安排旧消息清理；上传失败保留旧对象。同 Bot 复制可复用已验证的 Telegram file_id，跨存储后端按现有读取 / 上传链路复制。
 - S3 没有独立 RenameObject；客户端重命名通常使用 CopyObject 后 DeleteObject。删除文件以及覆盖目标（含 CopyObject 的目标覆盖）受现有协同编辑保护，受保护对象会返回 AccessDenied。
 - 文件路径以网盘索引为准，移动不再修改 Telegram caption 中的 `path`；新上传不写该字段，文件重命名仍保留名称同步机制。
 
+### 与可选渐进式上传的边界
+
+原生 JSON API 的 `POST /uploads` 已增加可选 `progressive: true`。浏览器默认显式启用；传统第三方 API 省略时继续旧流水线；**S3 PutObject、CopyObject、SigV4、ETag 及同步成功响应语义保持原实现**，不接受该 JSON 参数，也不会自动改为渐进式任务或原生 SSE 事件协议。现有 S3 请求仍可与浏览器任务同时运行，但共享 Telegram 后端的带宽及上游限制，隔离协议不等于隔离物理资源。
+
+渐进式模式在 Node 持续落盘期间从首片已有字节启动 sendDocument，先取得临时 file_id/message_id，再按逻辑文件用 file_id 提交 2–10 项最终 Album（单片保留原消息）；最终索引保存新 message_id/media_group_id，不把临时 ID 当成最终关联。该模式使用 XHR 实际正文上传进度与约 250ms 的 `/uploads/{uploadId}/progress` SSE 快照，并保留任务轮询，两段网络进度交叠显示字节与速率。正文 100% 后仍需最终分组和短事务整批提交，不表示完成；这些字段和端点属于原生 API，不是 S3 扩展。
+
+该模式默认在当前 API 实例限制 20 个活跃任务，进程内上传调度上限全局 4 / 每 Bot 4 / 每 Bot+Chat 2，并采用基础 1000ms pacing、Album 数量成本和 429 退避；这些新准入及渐进式调度规则不替换 S3 原有流水线。两种模式的 pending 队列阈值仍为 5 片或 100,000,000 字节，**100MB 不表示磁盘总占用上限**：渐进式已确认正文保留到该逻辑文件 finalize，超大文件的暂存仍可接近文件大小。
+
+渐进式完整来源在 finish、SHA-256 和授权检查通过后，可在重启时继续未完成步骤并复用已确认分组；不完整浏览器来源会明确中断，结果未知不会盲重发，临时消息清理失败不回滚已经提交的有效文件。S3 的旧流水线重启中断及回滚行为继续原逻辑，不因此获得浏览器断线续传或未知结果自动恢复能力。详细字段、恢复条件及 `TELEGRAM_TEMP_CLEANUP_PENDING` 警告见 [传统网盘 API 的上传章节](adapter/telegram-disk-api.md#6-创建分片上传与原手机路径)。
+
 ## 6. 未提供的功能与错误处理
 
-当前不提供 Create / Delete Bucket、ListObjects v1、S3 Multipart Upload API、匿名访问、presigned URL、SSE、ACL、对象版本控制、Object Lock、对象标签和非 STANDARD 存储类别。兼容能力以本节操作表为准，不能把它当作完整 AWS S3 服务。
+当前不提供 Create / Delete Bucket、ListObjects v1、S3 Multipart Upload API、匿名访问、presigned URL、SSE（S3 服务端加密）、ACL、对象版本控制、Object Lock、对象标签和非 STANDARD 存储类别。兼容能力以本节操作表为准，不能把它当作完整 AWS S3 服务。
 
 错误响应为 S3 XML，包含 Code、Message、RequestId；响应头 `x-amz-request-id` 可用于关联问题。HEAD 错误不带正文。
 

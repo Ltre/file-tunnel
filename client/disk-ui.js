@@ -66,6 +66,11 @@ function telegramDriveErrorText(error) {
         'TELEGRAM_NETWORK_ERROR': '连接 Telegram 失败，请检查服务器网络',
         'UPLOAD_CLIENT_NETWORK_ERROR': '浏览器与服务器之间的上传连接中断，请检查网络后重试',
         'UPLOAD_CLIENT_REQUEST_FAILED': '客户端上传请求失败，服务器正在清理未完成的上传',
+        'UPLOAD_ACTIVE_LIMIT': '服务器已有 20 项渐进式上传正在执行，请等待部分任务完成后重试',
+        'TELEGRAM_UPLOAD_OUTCOME_UNKNOWN': 'Telegram 发送结果未确认，已保留分片及消息记录；请先核对频道消息再重试',
+        'UPLOAD_FINAL_RESULT_UNKNOWN': '最终媒体组的发送结果未确认，已保留已推送分片；请先核对频道消息再重试',
+        'UPLOAD_SOURCE_INTERRUPTED': '服务重启时浏览器上传尚未完成，已保留分片记录；请重新上传',
+        'UPLOAD_RECOVERY_MANIFEST_MISSING': '上传恢复记录缺失，此任务无法自动继续；请重新上传',
         'TELEGRAM_400': 'Telegram 拒绝了当前文件发送请求',
         'EPERM': '服务器写入上传暂存记录失败，请检查文件锁或目录权限',
         'TELEGRAM_DELETE_NOT_PERMITTED': 'Telegram 拒绝删除或替换消息，请检查频道权限及消息类型',
@@ -90,10 +95,20 @@ function telegramDriveErrorText(error) {
     };
     const description = error?.errorDetails?.telegramDescription;
     const networkCode = error?.errorDetails?.causeCode;
+    if (error?.errorDetails?.requestOutcomeUnknown === true)
+        return 'Telegram 发送结果未确认，已保留分片及消息记录；请先核对频道消息，勿直接重复上传' + (networkCode ? ' · ' + networkCode : '');
     if (code === 'TELEGRAM_NETWORK_ERROR' && networkCode === 'UND_ERR_HEADERS_TIMEOUT')
         return '等待 Telegram 或代理响应头超时；本次发送结果尚未确认，请先核对频道消息再重试 · ' + networkCode;
     const detail = description || (code === 'TELEGRAM_NETWORK_ERROR' ? networkCode : '');
     return (messages[code] || code || 'Telegram 网盘操作失败') + (detail ? ' · ' + detail : '');
+}
+function telegramDriveWarningText(warnings = []) {
+    const values = new Set(warnings), messages = [];
+    if (values.has('TELEGRAM_TEMP_CLEANUP_PENDING')) messages.push('文件已保存，部分分片消息待清理，服务器将自动重试');
+    if (values.has('TELEGRAM_THUMBNAIL_UPLOAD_FAILED')) messages.push('文件已保存，部分封面未能上传');
+    if (values.has('TELEGRAM_CAPTION_UPDATE_FAILED')) messages.push('文件已保存，部分定位备注未能更新');
+    if (values.size && !messages.length) messages.push('文件已保存，部分附加处理未完成');
+    return messages.join('；');
 }
 
 function telegramDriveItemKey(item) { return item.kind === 'directory' ? `directory:${item.path}` : `file:${item.id}`; }
@@ -1009,7 +1024,7 @@ function renderTelegramDriveItems() {
 async function uploadFilesToTelegramDrive(fileList, destination = telegramDrivePath) {
     const files = [...(fileList || [])]; if (!files.length) return;
     const result = await window.DiskClient.upload(files, destination);
-    showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；部分封面或定位备注未能更新，文件索引已保存' : ''));
+    showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；' + telegramDriveWarningText(result.warnings) : ''));
     // Only refresh the directory where the upload was initiated. A render
     // generation prevents an older in-flight list request from overwriting it.
     if (telegramDrivePath === destination) await refreshTelegramDriveContents();
@@ -2034,6 +2049,23 @@ function stepDiskPreview(delta) {
     if (next < 0 || next >= previewItems.length) return;
     previewIndex = next; renderDiskPreview();
 }
+function diskUploadProgressLines(job) {
+    const lines = [];
+    const progressLine = (label, bytes, total, speed) => {
+        if (!Number.isFinite(bytes) || !Number.isFinite(total) || total < 0) return;
+        const sent = Math.max(0, Math.min(total, bytes)), percent = total ? sent / total * 100 : 100;
+        lines.push(`${label} · ${formatFileSize(sent)}/${formatFileSize(total)} · ${percent.toFixed(2)}%` + (Number.isFinite(speed) && speed > 0 ? ` · ${formatFileSize(speed)}/s` : ''));
+    };
+    progressLine('浏览器 → 服务器', job.clientBytesReceived, job.clientTotalBytes, job.clientBytesPerSecond);
+    if (job.clientFileName) lines.push(`  ${job.clientBytesReceived >= job.clientTotalBytes ? '已上传' : '正在上传'}第 ${job.clientFileIndex || 1}/${job.clientFileCount || 1} 个文件：${job.clientFileName}`);
+    if (job.clientPartCount) lines.push(`  第 ${job.clientPartIndex || 1}/${job.clientPartCount} 个分片`);
+    progressLine('服务器 → Telegram', job.telegramBytesSent, job.telegramTotalBytes, job.telegramBytesPerSecond);
+    if (job.telegramFileName) lines.push(`  ${job.telegramBytesSent >= job.telegramTotalBytes ? '已推送' : '正在推送'}第 ${job.telegramFileIndex || 1}/${job.telegramFileCount || job.clientFileCount || 1} 个文件：${job.telegramFileName}`);
+    if (job.telegramPartCount) lines.push(`  第 ${job.telegramPartIndex || 1}/${job.telegramPartCount} 个分片`);
+    if (job.finalizationGroupCount) lines.push(`正在提交最终媒体组 · ${job.finalizationGroupIndex || 0}/${job.finalizationGroupCount}`);
+    if (Number.isFinite(job.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes) lines.push(`封面 · ${formatFileSize(job.telegramThumbnailBytesSent)}/${formatFileSize(job.telegramThumbnailTotalBytes)}`);
+    return lines;
+}
 function initDiskLoading() {
     const overlay = document.createElement('section'); overlay.id = 'diskLoading'; overlay.hidden = true;
     overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true');
@@ -2092,13 +2124,10 @@ function initDiskLoading() {
         const { job, activity } = selected;
         title.textContent = job?.title || activity?.message || '正在处理网盘任务';
         const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
-        const stages = [];
-        if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}`);
-        if (Number.isFinite(job?.telegramBytesSent) && job.telegramTotalBytes) stages.push(`服务器 → Telegram 已发送 ${formatFileSize(job.telegramBytesSent)}/${formatFileSize(job.telegramTotalBytes)}`);
-        if (Number.isFinite(job?.telegramBytesConfirmed) && job.telegramTotalBytes) stages.push(`Telegram 已确认 ${formatFileSize(job.telegramBytesConfirmed)}/${formatFileSize(job.telegramTotalBytes)}`);
-        if (Number.isFinite(job?.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes) stages.push(`封面已发送 ${formatFileSize(job.telegramThumbnailBytesSent)}/${formatFileSize(job.telegramThumbnailTotalBytes)}`);
+        const stages = job?.type === 'upload' ? diskUploadProgressLines(job) : [];
         detail.textContent = job
-            ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', stages.join(' · ') || (job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : '')].filter(Boolean).join(' · ')
+            ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message,
+                ...(job.type === 'upload' ? stages : [job.phase, percent === null ? '' : Math.round(percent) + '%', job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : ''])].filter(Boolean).join(job.type === 'upload' ? '\n' : ' · ')
             : [activity?.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(activity.folderPath)}` : '', activity?.message || '正在处理，请稍候…'].filter(Boolean).join(' · ');
         if (percent === null) progress.removeAttribute('value'); else progress.value = percent;
         if (position) position.textContent = `${selectedIndex + 1} / ${candidates.length}`;
@@ -2272,7 +2301,8 @@ function initDiskEnhancements() {
             const row = document.createElement('div'); row.className = 'disk-task-row';
             const title = document.createElement('strong'); title.textContent = (job.title ? job.title + ' · ' : '') + job.message;
             const detail = document.createElement('span'); detail.textContent = (job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)} · ` : '') + job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText({ message: job.errorCode, errorDetails: job.errorDetails }) : '');
-            if (job.warnings?.length || job.result?.warnings?.length) detail.textContent += ' · 文件已保存，部分封面或定位备注未能更新';
+            if (job.type === 'upload') { detail.className = 'disk-task-upload-progress'; detail.textContent = [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', ...diskUploadProgressLines(job), job.status === 'failed' ? '已失败 · ' + telegramDriveErrorText({ message: job.errorCode, errorDetails: job.errorDetails }) : job.status === 'completed' ? '已完成' : ''].filter(Boolean).join('\n'); }
+            if (job.warnings?.length || job.result?.warnings?.length) detail.textContent += ' · ' + telegramDriveWarningText([...(job.warnings || []), ...(job.result?.warnings || [])]);
             row.append(title, detail);
             if (['queued', 'running'].includes(job.status)) {
                 row.classList.add('disk-task-row-active'); row.tabIndex = 0; row.setAttribute('role', 'button');

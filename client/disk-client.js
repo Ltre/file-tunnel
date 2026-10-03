@@ -11,6 +11,7 @@
     try { deviceId = localStorage.getItem('disk-device-id') || uploadSession; localStorage.setItem('disk-device-id', deviceId); } catch (_) {}
     const pendingReads = new Map();
     const uploadControllers = new Map();
+    const uploadProgressStreams = new Map();
     const readControllers = new Map();
     const hiddenLoadingOperations = new Set();
     const cacheProgressByFile = new Map();
@@ -36,17 +37,95 @@
         finally { activities.delete(activity); emitActivities(); }
     }
     const active = job => ['queued', 'running'].includes(job.status);
+    const clientProgressFields = ['clientBytesReceived', 'clientTotalBytes', 'clientBytesPerSecond', 'clientFileIndex', 'clientFileCount', 'clientFileName', 'clientFileSize', 'clientPartIndex', 'clientPartCount'];
     const visibleJobs = () => [...localUploads.values()].filter(job => !jobs.some(remote => remote.operation_id === job.operation_id && (job.status !== 'failed' || !active(remote))))
-        .concat(jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job)));
+        .concat(jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job)).map(job => {
+            const local = localUploads.get(job.operation_id);
+            if (!local || !active(job)) return job;
+            const progress = Object.fromEntries(clientProgressFields.filter(key => local[key] !== undefined).map(key => [key, local[key]]));
+            if (Number.isFinite(progress.clientBytesReceived)) progress.clientBytesReceived = Math.max(progress.clientBytesReceived, Number(job.clientBytesReceived) || 0);
+            return { ...job, ...progress };
+        }));
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
+    function uploadBody(url, options) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest(), signal = options.signal;
+            let settled = false;
+            const finish = (error, value) => {
+                if (settled) return; settled = true;
+                signal?.removeEventListener?.('abort', abort);
+                error ? reject(error) : resolve(value);
+            };
+            const abort = () => { xhr.abort(); finish(abortError()); };
+            const progress = loaded => { try { options.onUploadProgress(loaded); } catch (error) { finish(error); xhr.abort(); } };
+            xhr.upload.addEventListener('progress', event => {
+                if (settled || signal?.aborted) return;
+                progress(Math.min(Number(options.body?.size) || 0, event.loaded));
+            });
+            xhr.addEventListener('load', () => {
+                let data = {}; try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    const error = Object.assign(new Error(data.error || 'DISK_REQUEST_FAILED'), data, { status: xhr.status }); finish(error); return;
+                }
+                progress(Number(options.body?.size) || 0); finish(null, data);
+            });
+            xhr.addEventListener('error', () => finish(Object.assign(new Error('Failed to fetch'), { transportFailure: true })));
+            xhr.addEventListener('timeout', () => finish(Object.assign(new Error('UPLOAD_CLIENT_TIMEOUT'), { transportFailure: true })));
+            xhr.addEventListener('abort', () => finish(abortError()));
+            xhr.open(options.method || 'PUT', url, true); xhr.withCredentials = true;
+            for (const [key, value] of Object.entries({ ...options.headers, 'X-Disk-Device-Id': deviceId })) xhr.setRequestHeader(key, value);
+            signal?.addEventListener?.('abort', abort, { once: true });
+            if (signal?.aborted) return abort();
+            try { xhr.send(options.body); } catch (error) { error.transportFailure = true; finish(error); }
+        });
+    }
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
+        const target = url.startsWith('/api/') ? url : baseUrl() + url;
+        if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
+        const { onUploadProgress, ...requestOptions } = options;
         let response;
-        try { response = await fetch(url.startsWith('/api/') ? url : baseUrl() + url, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...options, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
+        try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
         catch (error) { error.transportFailure = true; throw error; }
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
+        onUploadProgress?.(Number(options.body?.size) || 0);
         return data;
+    }
+    function mergeOperation(next) {
+        const previous = jobs.find(job => job.operation_id === next.operation_id);
+        if (previous && !active(previous) && active(next)) return previous;
+        if (Number.isFinite(previous?.updatedAt) && Number.isFinite(next.updatedAt) && next.updatedAt < previous.updatedAt) return previous;
+        const merged = { ...previous, ...next };
+        if (Number.isFinite(previous?.clientBytesReceived) && Number.isFinite(next.clientBytesReceived)) merged.clientBytesReceived = Math.max(previous.clientBytesReceived, next.clientBytesReceived);
+        if (merged.type === 'upload' && active(merged) && Number.isFinite(merged.telegramBytesSent) && merged.telegramTotalBytes > 0) merged.percent = Math.min(99, merged.telegramBytesSent / merged.telegramTotalBytes * 100);
+        return merged;
+    }
+    function subscribeUploadProgress(job) {
+        if (!job.progressive || typeof EventSource !== 'function') return () => {};
+        let stream; try { stream = new EventSource(baseUrl() + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress'); } catch (_) { return () => {}; }
+        uploadProgressStreams.set(job.operation_id, stream);
+        const close = () => { stream.close(); if (uploadProgressStreams.get(job.operation_id) === stream) uploadProgressStreams.delete(job.operation_id); };
+        stream.addEventListener('progress', event => {
+            if (uploadProgressStreams.get(job.operation_id) !== stream) return;
+            let operation; try { operation = JSON.parse(event.data); } catch (_) { return; }
+            if (operation?.operation_id !== job.operation_id) return;
+            operation = mergeOperation(operation);
+            jobs = jobs.filter(item => item.operation_id !== operation.operation_id).concat(operation);
+            if (!active(operation)) {
+                hiddenLoadingOperations.delete(operation.operation_id); localUploads.delete(operation.operation_id);
+                const pending = waiting.get(operation.operation_id);
+                if (pending) {
+                    waiting.delete(operation.operation_id);
+                    if (operation.status === 'completed') pending.resolve(operation.result);
+                    else pending.reject(Object.assign(new Error(operation.status === 'cancelled' ? 'OPERATION_CANCELLED' : operation.errorCode || 'DISK_OPERATION_FAILED'), { errorDetails: operation.errorDetails, partialItems: operation.result?.partialItems }));
+                }
+                close();
+            }
+            emit();
+        });
+        stream.addEventListener('error', () => { if (uploadProgressStreams.get(job.operation_id) === stream) refresh(true); });
+        return close;
     }
     async function refresh(force = false) {
         if (!enabled) return;
@@ -56,7 +135,7 @@
         const requested = new Set(waiting.keys());
         polling = raw('/operations?ids=' + encodeURIComponent([...requested].join(','))).then(data => {
             if (current !== generation) return;
-            jobs = data.operations;
+            jobs = data.operations.map(mergeOperation);
             for (const job of jobs) if (!active(job)) hiddenLoadingOperations.delete(job.operation_id);
             for (const id of localUploads.keys()) if (jobs.some(job => job.operation_id === id && !active(job))) localUploads.delete(id);
             for (const [id, handlers] of waiting) {
@@ -110,6 +189,7 @@
     function start() { enabled = true; refresh(); }
     function stop() {
         enabled = false; generation++; jobs = []; localUploads.clear();
+        for (const stream of uploadProgressStreams.values()) stream.close(); uploadProgressStreams.clear();
         hiddenLoadingOperations.clear(); cacheProgressByFile.clear();
         for (const handlers of waiting.values()) handlers.reject(new Error('LOGIN_REQUIRED'));
         waiting.clear(); emit();
@@ -135,6 +215,7 @@
                         pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
+                    for (const key of clientProgressFields) if (values[key] !== undefined) pending[key] = values[key];
                     update(values); emit();
                 }, controller.signal);
             } catch (error) {
@@ -236,7 +317,7 @@
             }),
             mediaIndex: String(file.type || '').startsWith('video/') ? { mode: 'unavailable', reason: 'container-parser-unavailable' } : undefined
         }));
-        const job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles }), signal));
+        const job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles, progressive: true }), signal));
         const transfer = newAbortController(); signal = transfer.signal;
         const cancelTransfer = () => transfer.abort();
         userSignal.addEventListener?.('abort', cancelTransfer, { once: true });
@@ -252,7 +333,25 @@
             transfer.abort();
         };
         listeners.add(checkTerminal);
+        const closeProgress = subscribeUploadProgress(job);
         const blobs = [];
+        const totalBytes = plannedFiles.reduce((sum, file) => sum + Number(file.size), 0);
+        let completedBytes = 0, lastProgressBytes = 0, lastProgressAt = Date.now(), lastPublishedAt = 0, uploadSpeed = 0;
+        const reportClientProgress = (index, part, loaded, force = false) => {
+            const count = plannedFiles[index].parts.length;
+            const received = Math.min(totalBytes, Math.max(lastProgressBytes, completedBytes + part.byteStart + Math.min(part.size, loaded)));
+            const now = Date.now(), elapsed = now - lastProgressAt;
+            if (!force && now - lastPublishedAt < 250) return;
+            if (elapsed > 0) {
+                const currentSpeed = Math.max(0, received - lastProgressBytes) * 1000 / elapsed;
+                uploadSpeed = uploadSpeed ? uploadSpeed * .65 + currentSpeed * .35 : currentSpeed;
+            }
+            lastProgressBytes = received; lastProgressAt = now; lastPublishedAt = now;
+            update({ clientBytesReceived: received, clientTotalBytes: totalBytes, clientBytesPerSecond: uploadSpeed,
+                clientFileIndex: index + 1, clientFileCount: files.length, clientFileName: files[index].name, clientFileSize: files[index].size,
+                clientPartIndex: part.index, clientPartCount: count,
+                message: `正在上传第 ${index + 1} 个文件的第 ${part.index}/${count} 个分片：${files[index].name}` });
+        };
         let queue = job.queue;
         const waitForQueue = async () => {
             if (!job.uploadQueueCheck) return;
@@ -283,12 +382,16 @@
                     if (!thumbnail?.size || signal.aborted) return;
                     return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
                 }).catch(error => { if (!signal.aborted && error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
-                if (!blob.size) { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal })).queue; }
+                if (!blob.size) { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal, onUploadProgress: loaded => reportClientProgress(index, plannedFiles[index].parts[0], loaded, true) })).queue; }
                 for (const part of plannedFiles[index].parts) {
                     if (!blob.size) break;
                     const offset = part.byteStart, end = part.byteEnd + 1;
                     while (true) {
-                        try { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal })).queue; break; }
+                        try {
+                            await waitForQueue(); reportClientProgress(index, part, 0, true);
+                            queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal, onUploadProgress: loaded => reportClientProgress(index, part, loaded, loaded >= part.size) })).queue;
+                            break;
+                        }
                         catch (error) {
                             if (error.message !== 'UPLOAD_BACKPRESSURE') throw error;
                             queue = error.queue;
@@ -298,6 +401,7 @@
                         }
                     }
                 }
+                completedBytes += blob.size;
                 await thumbnailUpload;
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
@@ -334,7 +438,7 @@
                 stage: error.errorDetails?.stage, method: error.errorDetails?.method
             })).catch(() => {});
             throw error;
-        } finally { listeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
+        } finally { closeProgress(); listeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
     }
     async function read(item, options = {}) {
         const controller = newAbortController();

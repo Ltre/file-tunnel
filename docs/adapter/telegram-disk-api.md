@@ -2,7 +2,7 @@
 
 面向 MusicoletWeb 等可信服务端应用。基地址：`/api/telegram/disk/v1`；使用应用 Bearer Token。
 
-实现核对日期：2026-09-29。除另行写出完整地址外，本文接口路径均相对于上述基地址。
+实现核对日期：2026-10-03。除另行写出完整地址外，本文接口路径均相对于上述基地址。
 
 本文接口是本系统的 HTTP JSON / 文件流协议，不属于 S3 协议。要求 S3 协议的客户端应使用独立的 [S3 对接文档](../telegram-drive-s3-compatible.md)。两套接口复用网盘存储核心、Telegram 上传流水线和按需分片读取能力；S3 网关直接调用这些内部能力，不通过 HTTP 调用本文接口，不能互换鉴权凭据或响应格式。
 
@@ -142,17 +142,21 @@ GET `/operations` 返回 `{ "operations": [...] }`；GET `/operations/{operation
 }
 ~~~
 
-status：queued / running / completed / failed / cancelled。只有 completed 才表示完整成功；业务结果在 result。失败查看 errorCode / errorDetails，不能仅凭 percent=100 判断成功。上传采用整批提交 / 回滚，不返回已成功文件的 result.partialItems；递归删除则可能已经删除部分文件，失败后应重新读取目录再处理剩余项。
+status：queued / running / completed / failed / cancelled。只有 completed 才表示完整成功；业务结果在 result。失败查看 errorCode / errorDetails，不能仅凭 percent=100 判断成功。上传采用整批索引提交，不按文件逐个展示成功结果，也不返回已成功文件的 result.partialItems。普通确定性失败会清理整批半成品；渐进式上传的未知远端结果、最终分组失败等会保留已知消息及恢复资料，不能把“任务失败”等同于“Telegram 中所有半成品已删除”，详见第 6 节。递归删除则可能已经删除部分文件，失败后应重新读取目录再处理剩余项。
 
-上传进度区分“客户端→服务器”和“服务器→Telegram”，两段可交叠进行，不将流量相加，也不将流水线误标成先后执行的“阶段 1/2、2/2”。客户端分别展示 `clientBytesReceived/clientTotalBytes`（服务器已收到）、`telegramBytesSent/telegramTotalBytes`（HTTP 客户端已向连接写入的文件字节）及 `telegramBytesConfirmed/telegramTotalBytes`（Telegram 已返回成功分片消息）。发送字节扣除 multipart 头、caption 等附加内容，依据 Node fetch 的连接写入事件持续更新；既不使用本地文件读取量代替，也不宣称 Telegram 已经收到或保存这些字节。复用已有 file_id 时没有文件请求体，其对应大小在消息确认后计入。重试可能使发送量回退到本次尝试的进度，不能要求单调增长。
+上传进度区分“客户端→服务器”和“服务器→Telegram”，两段可交叠进行，不将流量相加，也不将流水线误标成先后执行的“阶段 1/2、2/2”。接口返回 `clientBytesReceived/clientTotalBytes`（服务端接收字节）、`telegramBytesSent/telegramTotalBytes`（HTTP 客户端已向连接写入的文件字节），以及 `clientBytesPerSecond/telegramBytesPerSecond` 速率。浏览器自己的正在上传请求使用 XHR `upload.progress` 的实际正文发送量连续更新第一段，结合服务端快照展示，不能将其误称为 Telegram 已收到的字节。`telegramBytesConfirmed` 仍保留为内部确认与第三方诊断字段，浏览器进度面板不再额外显示独立的“Telegram 已确认”字节行。
 
-`processedBytes/totalBytes/percent` 在 Telegram 上传开始前表示客户端接收进度，之后表示上述连接发送进度；未收到确认前最多 99%，等待封面、上游 / caption / 索引时可能为 null。任务还可返回 `clientPartsReceived/clientPartsTotal`、`telegramPartsUploaded`、`queueParts/queueBytes`、`folderPath`，以及单独的 `telegramThumbnailBytesSent/telegramThumbnailTotalBytes`。封面字节不加入主文件大小。只有 `status=completed` 才表示整批文件已提交。
+Telegram 发送字节扣除 multipart 头、caption 等附加内容，依据 Node fetch 的连接写入事件持续更新；既不使用本地文件读取量代替，也不宣称 Telegram 已经收到或保存这些字节。复用已有 file_id 时没有文件请求体，其对应大小在消息确认后计入。安全重试会从当前尝试重新计数，Telegram 发送量可能回退，不能要求单调增长或通过插值虚构连续进度。还可返回 `clientFileIndex/clientFileCount/clientFileName/clientPartIndex/clientPartCount`、`telegramFileIndex/telegramFileCount/telegramFileName/telegramPartIndex/telegramPartCount`，序号从 1 开始；HTTP 文件路由的 index 仍从 0 开始。
+
+`processedBytes/totalBytes/percent` 是兼容字段，其含义随阶段变化；调用方应优先使用上述两组独立字节字段。尚未提交索引时整体进度最多 99%，等待封面、上游 / caption / 索引时可能为 null。正文发送达到 100% 仍可能处于 `telegram-response` 或 `telegram-finalizing`，不表示上传完成；`finalizationGroupIndex/finalizationGroupCount` 表示当前最终分组提交进度。任务还可返回 `clientPartsReceived/clientPartsTotal`、`telegramPartsUploaded`、`queueParts/queueBytes`、`folderPath`，以及单独的 `telegramThumbnailBytesSent/telegramThumbnailTotalBytes`。封面字节不加入主文件大小。只有 `status=completed` 才表示整批文件已提交。
+
+GET `/uploads/{uploadId}/progress` 提供可选的 Server-Sent Events（SSE），使用与上传相同的 Bearer / 用户 / 分区鉴权；浏览器地址为 `/api/telegram/drive/uploads/{uploadId}/progress`，协同地址还受当前协同授权范围限制。响应 `Content-Type: text/event-stream`，首个快照立即发送，此后每约 250ms 检查内存快照，仅变化时发送 `event: progress`，`data` 是单个任务 JSON；约 15 秒发送保活，任务终态后结束连接。关闭客户端连接会清理计时器。浏览器对渐进式任务订阅 SSE，并保留 `/operations` 轮询兜底；旧快照不能覆盖更新的 `updatedAt`。原生 EventSource 无法设置 Bearer Header，第三方需使用可带 Header 的 SSE 客户端或继续轮询，不应把令牌放入 URL。反向代理应关闭此响应缓冲并保留流式输出，否则 250ms 检查不能保证公网显示同样及时。
 
 服务端确认上传失败后立即将任务置为 failed，并让队列请求返回最初错误；远程回滚和恢复清理可继续执行。浏览器轮询发现终态时停止当前分片请求或队列等待，不再显示残留等待浮层，不将这种内部中止标记为“用户已取消”。第三方客户端也应在队列等待期间查询任务终态，不能只看队列大小。
 
 创建目录仍返回 202；若短时间内已经完成，响应还可含 `status: "completed"` 和 result，调用方可直接应用结果，否则查询 operation_id。不要把带 completed 的响应当成另一种任务。
 
-任务持久化；刷新页面可重新查询。服务重启时未完成任务标记 SERVER_RESTARTED，不伪装成成功。暂存上传两小时未完成会过期。列表保留最近任务，长期归档请由调用方保存业务结果。
+任务持久化；刷新页面可重新查询。服务重启时，旧流水线未完成任务及其它未完成操作标记 `SERVER_RESTARTED`；渐进式上传先进入 `recovering`，根据持久化清单检查能否恢复，不伪装成成功。来源不完整或结果未知的任务会明确失败并保留必要资料，恢复条件见第 6 节。暂存上传两小时未完成会过期。列表保留最近任务，长期归档请由调用方保存业务结果。
 
 ## 4. 目录操作
 
@@ -205,7 +209,11 @@ Content-Type: application/octet-stream
 
 Telegram 可能因消息时限/权限拒绝删除。此时保留失败节点并报告错误；递归删除遇到部分失败时，已成功删除部分生效，其余保留。
 
-## 6. 两阶段上传与原手机路径
+## 6. 创建、分片上传与原手机路径
+
+### 6.1 创建上传及协议选择
+
+创建任务与提交正文是两个 API 步骤，不代表两段网络传输必须先后执行。`POST /uploads` 可选 `progressive: true` 启用渐进式上传；省略或设为 false 时保持旧流水线。当前浏览器上传默认显式启用，传统 API 的已有调用方不因升级自动切换，S3 PUT 也保持旧流水线。响应的 `progressive` 表示实际选中的模式，不应只依据请求值判断。
 
 ~~~http
 POST /uploads
@@ -226,11 +234,13 @@ Content-Type: application/json
 
 有 source_path 时按最后一段提取 name，其余段自动创建虚拟目录。否则使用 name 和公共 folderPath，也可为单个文件指定 folderPath。禁止空 basename 或包含双点。
 
-每批 1–100 个逻辑文件；单个逻辑文件限制以响应 uploadLimit 为准，当前为 2000 MiB。网盘固定调用 Telegram 官方 Bot API，不接收调用方指定 API 地址，也不依赖 Local Bot API Server。**每片不超过 20,000,000 字节（20 MB，约 19.07 MiB）**。浏览器使用 Blob.slice() 顺序提交分片，不进行同步全文件复制或编码。服务器单独暂存各片并流式提交 Telegram，已确认分片会释放暂存文件，无需合成另一个完整临时文件。第三方也应使用下述 Content-Range 协议；当前无 Content-Range 的整文件 PUT 只入队为一个 chunk，不能自动生成大文件的全部计划分片，因此仅用于默认单片计划的小文件 / 空文件，大文件必须按计划分片。虚拟目录、列表、移动、重命名、分享、审核和第三方 API 始终只暴露一个逻辑文件。
+每批 1–100 个逻辑文件；单个逻辑文件限制以响应 uploadLimit 为准，当前为 2000 MiB。网盘固定调用 Telegram 官方 Bot API，不接收调用方指定 API 地址，也不依赖 Local Bot API Server。**每片不超过 20,000,000 字节（20 MB，约 19.07 MiB）**。浏览器使用 Blob.slice() 顺序提交分片，不进行同步全文件复制或编码。服务器单独暂存各片，无需合成另一个完整临时文件。旧流水线在每片接收完整后上传 Telegram，确认后释放其正文；渐进式流水线在接收时推送，但正文保留到该逻辑文件的最终分组持久化成功后才释放，以支持安全重试与恢复。大文件 finalize 前实际暂存磁盘占用仍可能接近文件大小，不能把队列阈值当成磁盘总容量上限。
+
+第三方也应使用下述 Content-Range 协议；当前无 Content-Range 的整文件 PUT 只入队为一个 chunk，不能自动生成大文件的全部计划分片，因此仅用于默认单片计划的小文件 / 空文件，大文件必须按计划分片。渐进式多片任务缺少 Content-Range 返回 `UPLOAD_RANGE_REQUIRED`。虚拟目录、列表、移动、重命名、分享、审核和第三方 API 始终只暴露一个逻辑文件。
 
 ~~~json
 {
-  "uploadId": "<uuid>", "operation_id": "<uuid>",
+  "uploadId": "<uuid>", "operation_id": "<uuid>", "progressive": false,
   "uploadLimit": 2097152000, "partSize": 20000000,
   "uploadQueueCheck": true,
   "queue": { "queuedParts": 0, "queuedBytes": 0, "pendingParts": 0, "pendingBytes": 0, "uploadedParts": 0, "receivedParts": 0, "totalParts": 1 },
@@ -238,7 +248,9 @@ Content-Type: application/json
 }
 ~~~
 
-可选通知源文件读取阶段：POST /uploads/{uploadId}/phase，JSON {"index":0}。
+若采用渐进式，将上面的创建请求增加 `"progressive": true`，响应对应为 true。可选通知源文件读取阶段：POST /uploads/{uploadId}/phase，JSON {"index":0}。
+
+### 6.2 提交正文、查询队列和完成任务
 
 上传每个文件，index 从零开始，Content-Type 必须用 application/octet-stream，避免 JSON 请求解析器消费文件内容：
 
@@ -253,9 +265,25 @@ Content-Type: application/octet-stream
 
 浏览器及第三方分片调用方在同一路由携带 `Content-Range: bytes START-END/TOTAL`，按 offset 从 0 顺序发送。默认计划中，除末片外长度必须为 partSize，末片为剩余字节；TOTAL 是逻辑文件总大小。可在初始化的每个 files 项中提供 `parts: [{ "byteStart": 0, "byteEnd": 999, "size": 1000 }, ...]` 自定义连续分片边界，各片不超过 partSize，合计必须等于 size，最多 10000 片。不接受缺片、重叠、乱序、重复或长度不符的分片；这类失败需要重新创建上传任务，队列满的 503 例外见下文。空文件使用不带 Content-Range 的空 PUT。初始化 JSON 中的 size 始终是原始逻辑文件大小，不能据此判断传输是否分片。
 
-当前上传流水线一次选择最多 2 个连续分片、合计最多 40,000,000 字节；底层 transport 另有每 Album 最多 10 项的上限。多条使用 sendMediaGroup，单条使用 sendDocument，实际是否组成 Album 取决于分片到达和复用情况。收到明确 413 时拆小重试；429 遵循 retry_after 有限重试，不重复发送结果未知的网络超时请求。115,384,320 字节文件默认拆成 6 片，但不保证固定产生 3 个 Album。跨 Album 的分片保存同一 `logicalFileId`、`partIndex`、`partCount`、`offset`、分片大小、原始文件总大小、messageDate 和媒体类型。**批量上传必须等本任务全部文件成功后才统一提交索引、展示文件；失败整批回滚**，已确认消息进入清理 / 恢复流程。若请求在 Telegram 已接收但响应丢失时断网，Telegram 不提供发送幂等键，此类未知结果不能保证自动去重。
+旧流水线一次选择最多 2 个连续分片、合计最多 40,000,000 字节；底层 transport 每 Album 最多 10 项。多条使用 sendMediaGroup，单条使用 sendDocument，实际是否组成 Album 取决于分片到达和复用情况。明确 413 时拆小批次重试，429 遵循 retry_after 有限重试。115,384,320 字节文件默认拆成 6 片，但旧流水线不保证固定产生 3 个 Album。
 
-每个物理分片（含 album 内每条消息）的 caption 记录 `user_id`、`disk_space`、文件名 `name`、`channel_id`、`logical_file_id`、分片序号/总片数和原始总大小。**新上传不写 `path` 字段**，目录位置以网盘索引为准。新传二进制的分片发送后再通过 editMessageCaption 补齐 `file_id`、`message_id`、`album_id`；已验证 file_id 的复用路径不会额外执行这一补注步骤。补注等待不计入文件字节进度，文件改名同步时可显示 `telegram-caption` 阶段。
+渐进式流水线使用独立落盘 writer 和增量 reader：当前分片收到可读字节后即可通过 sendDocument 推送，不需等整片收完；慢 Telegram reader 不直接接管浏览器请求。分片来源仍需完整字节 / SHA-256 验证及合法 Telegram document 响应，才能确认成功。每任务最多同时推动 2 个分片；当前 Node 进程共享上传调度器默认上限为全局 4、每 Bot 4、每 Bot+Chat 2，基础 pacing 为 1000ms，最终 Album 按消息数量增加调度成本，429 会按 retry_after 与退避延后并临时降低该 Chat 并发。它不是多进程共享的限流，也不保证实际网络带宽或 Telegram 固定接受速率。当前 API 实例最多 20 个活跃渐进式上传，达到时返回 `UPLOAD_ACTIVE_LIMIT`；旧流水线与 S3 不切入这套任务准入限制。
+
+收到各片的 file_id 后，渐进式按一个逻辑文件的分片顺序重新用 file_id 提交最终 sendMediaGroup，每组 2–10 项；只有单片文件直接保留原 sendDocument 消息。分组规划避免将多片文件的最后一片单独落组，不跨逻辑文件拼 Album。最终返回的新 message_id/media_group_id 取代临时消息 ID，索引以最终 ID 为准。临时和最终关联先写恢复清单，临时消息清理在整批索引提交后进行。跨 Album 的分片继续保存同一 `logicalFileId`、`partIndex`、`partCount`、`offset`、分片大小、原始文件总大小、messageDate 和媒体类型。
+
+两种模式均**必须等本任务全部文件成功后才统一提交索引并展示文件**。Telegram 网络上传和分组等待不置于 SQLite 长事务内，最后在短事务中提交整批逻辑文件。正文进度 100% 之后仍可能等待最终分组、封面或索引；不能提前展示完成。
+
+### 6.3 元信息与恢复边界
+
+每个物理分片（含 album 内每条消息）的 caption 记录 `user_id`、`disk_space`、文件名 `name`、`channel_id`、`logical_file_id`、分片序号/总片数和原始总大小。**新上传不写 `path` 字段**，目录位置以网盘索引为准。旧流水线新传二进制的分片发送后再通过 editMessageCaption 补齐 `file_id`、`message_id`、`album_id`；已验证 file_id 的复用路径不会额外执行这一补注步骤。渐进式最终分组不额外补注这些远端 ID，尤其不会把即将清理的临时 message_id 写入最终消息 caption；SQLite 中最终 message_id/media_group_id/file_id 关联才是定位依据。补注等待不计入文件字节进度，文件改名同步时仍可显示 `telegram-caption` 阶段。
+
+渐进式安全重试最多 3 次尝试，只对明确 429 或能够确认请求未被接受 / 正文未发送完整的网络失败重试；重试需等待当前源分片完整落盘并校验，不能同时创建第二条竞争的 growing reader。正文已发送但响应丢失、无效返回或最终组提交结果未知时，不盲目重发，也不声称自动去重。对应任务会保留已知消息 ID、分片正文及状态清单，并提示先核对频道。最终分组失败保留完整临时副本和已确认分组，避免删掉仅存的可恢复文件。
+
+若任务保留了原始网络错误码（例如 `TELEGRAM_NETWORK_ERROR` 和 `ECONNRESET`），同时返回 `errorDetails.requestOutcomeUnknown: true`，也表示发送结果未知；调用方必须先核对频道及恢复资料，不能仅按网络错误码立即重复上传。
+
+服务重启时，仅在客户端已成功完成 finish、来源完整且大小 / SHA-256 可验证、后端与协同授权仍有效、没有未知提交结果时，才能继续恢复渐进式上传。已确认的临时分片和最终分组不重复发送；未确认但明确安全的剩余步骤继续执行。若 SQLite 已提交整批而任务终态尚未写入，会核对最终消息关联并补记完成。缺失清单、浏览器未完成来源或损坏来源会明确报错，例如 `UPLOAD_RECOVERY_MANIFEST_MISSING`、`UPLOAD_SOURCE_INTERRUPTED`，不承诺浏览器断线后自动补齐缺失字节。结果未知任务保留资料待核查，不能靠重启把它当作安全重试。
+
+普通确定失败和用户主动取消尝试清理整批已知远端消息；清理失败记录待重试，不保证立即删完。渐进式最终索引提交后的临时消息删除失败通过 `TELEGRAM_TEMP_CLEANUP_PENDING` 提示并持久化重试，可能稍后出现在任务 warnings 中；已有效提交的文件保持 completed，不因此回滚。旧流水线重启仍按中断任务及半成品清理处理。
 
 下载、预览和转发时，服务端先校验分片序号、数量、offset、总大小，再按 `partIndex` 顺序逐片调用官方 getFile 并流式拼接，校验每片实际下载字节数；响应长度和文件名仍是原始逻辑文件。检测会验证全部分片。文件 / 目录移动及目录重命名只更新索引，不因路径变化编辑 Telegram caption；文件重命名仍同步该逻辑文件全部分片的 `name`。
 
@@ -265,9 +293,9 @@ caption 受 Telegram 1024 字符限制，完整目录路径保存于逻辑索引
 
 新上传文档设置 disable_content_type_detection=true，同时兼容旧服务返回 video/audio/animation 等媒体字段，避免有效文件被误判为 TELEGRAM_UPLOAD_RESULT_INVALID。真正无效的响应仅记录安全的返回数量和媒体字段类型到 errorDetails，不记录 Bot token、URL 或原始 Telegram 消息。
 
-创建响应含 `uploadQueueCheck: true` 和 `queue` 快照时，支持分片的客户端应在队列满（`pendingParts >= 5` 或 `pendingBytes >= 100000000`）时先 GET `/uploads/{uploadId}/queue`，按返回的 `ready`、`queue`、`retryAfterMs` 等待，再发送下一片。成功 PUT 返回新队列快照。满队列 PUT 会立即返回 HTTP 503 `UPLOAD_BACKPRESSURE`，此请求未接受文件分片，可以等待后重发；该信号不代表 Telegram 429。
+创建响应含 `uploadQueueCheck: true` 和 `queue` 快照时，支持分片的客户端应在队列满（`pendingParts >= 5` 或 `pendingBytes >= 100000000`）时先 GET `/uploads/{uploadId}/queue`，按返回的 `ready`、`queue`、`retryAfterMs` 等待，再发送下一片。成功 PUT 返回新队列快照。满队列 PUT 会立即返回 HTTP 503 `UPLOAD_BACKPRESSURE`，此请求未接受文件分片，可以等待后重发；该信号不代表 Telegram 429。100MB 是尚未确认分片的 pending 队列阈值，不是任务已收到总量或磁盘总量上限；渐进式已确认分片不占 pending 队列，但仍可能保留其正文直至该逻辑文件 finalize。
 
-DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝试回滚。浏览器网络 / 请求失败使用 POST `/uploads/{uploadId}/failure`，JSON `{ "errorCode": "UPLOAD_CLIENT_NETWORK_ERROR", "reason": "Failed to fetch" }`；服务端返回 202，保留最初错误并异步执行原有清理，不将失败标为用户取消。`UPLOAD_CLIENT_REQUEST_FAILED` 表示其它客户端失败。对已结束任务再次上报不覆盖其结果；网络错误后的分片不能盲目重发，因为可能已经被接受。
+DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝试回滚。浏览器网络 / 请求失败使用 POST `/uploads/{uploadId}/failure`，JSON `{ "errorCode": "UPLOAD_CLIENT_NETWORK_ERROR", "reason": "Failed to fetch" }`；服务端返回 202，保留最初错误并按相应模式清理或保留恢复资料，不将失败标为用户取消。`UPLOAD_CLIENT_REQUEST_FAILED` 表示其它客户端失败。对已结束任务再次上报不覆盖其结果；网络错误后的分片不能盲目重发，因为可能已经被接受。
 
 需要提前保存音视频封面时，可在 finish 前 PUT `/uploads/{uploadId}/files/{index}/thumbnail`，请求体为图片字节，Content-Type 使用 image/*，`X-Disk-Thumbnail-Size`（或 Content-Length）声明 1–2,097,152 字节大小；同文件只接受一次。主文件全部确认后才发送封面，避免封面阻塞主文件队列。单次封面 Telegram 请求上限 60 秒；封面发送失败不回滚主文件，任务 / 结果的 warnings 返回 `TELEGRAM_THUMBNAIL_UPLOAD_FAILED`，后续仍可按现有预览流程提取封面。已经确认的封面若发生本地关联写入错误，仍按整批失败和回滚处理，以免遗漏远端消息。成功保存的封面通过 thumbnail 接口读取。服务端不保证替所有第三方上传自动提取封面，调用方可在初始化 files 项中携带已有 mediaIndex。
 
@@ -312,6 +340,7 @@ DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝
 | 502 | TELEGRAM_NETWORK_ERROR / STORAGE_BACKEND_UNAVAILABLE | 检查服务器网络、Bot 和频道配置 |
 | 503 | PASSKEY_SERVER_UNAVAILABLE | 部署缺少服务端 Passkey 依赖，执行 npm ci 后重启 |
 | 503 | UPLOAD_BACKPRESSURE | 当前分片未接受；查询队列后重试，不重新创建整个任务 |
+| 422 | UPLOAD_ACTIVE_LIMIT | 当前 API 实例已有 20 个活跃渐进式上传，等待任务结束后重试创建 |
 | 429 | AUTH_RATE_LIMIT | 鉴权 / Passkey 接口按 IP 每分钟最多 20 次，稍后重试 |
 
 异步业务失败通过 GET `/operations/{operation_id}` 通常仍以 200 返回任务对象，status=failed；必须检查任务状态，而不只是 HTTP。同步 JSON 错误通常包含 error、code、errorDetails；AUTH_RATE_LIMIT 和 UPLOAD_BACKPRESSURE 等直接响应例外只含其特定字段。来源与底层错误诊断以 errorDetails 为准。

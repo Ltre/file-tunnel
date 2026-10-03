@@ -25,7 +25,7 @@ function observeTelegramUpload(url, ranges = [], onProgress = () => {}) {
     const total = ranges.reduce((sum, range) => sum + range.end - range.start, 0);
     const tracker = {
         active: true, url, requests: new Set(), wireBytes: 0, payloadBytes: 0,
-        lastSentAt: 0, bodySentAt: 0, lastNotifiedAt: 0, observed: false,
+        lastSentAt: 0, bodySentAt: 0, lastNotifiedAt: 0, lastNotifiedBytes: 0, observed: false,
         sent(length, complete = false) {
             const before = this.wireBytes;
             this.wireBytes += length; this.observed = true;
@@ -38,8 +38,9 @@ function observeTelegramUpload(url, ranges = [], onProgress = () => {}) {
                 if (before < range.end && this.wireBytes >= range.end) boundary = true;
             }
             if (complete) this.bodySentAt = this.lastSentAt;
-            if (!complete && !boundary && this.lastNotifiedAt && this.lastSentAt - this.lastNotifiedAt < 250) return;
+            if (!complete && !boundary && !(this.payloadBytes > 0 && this.lastNotifiedBytes === 0) && this.lastNotifiedAt && this.lastSentAt - this.lastNotifiedAt < 250) return;
             this.lastNotifiedAt = this.lastSentAt;
+            this.lastNotifiedBytes = this.payloadBytes;
             // Diagnostics subscribers execute inside the HTTP client. A UI or
             // persistence observer failure must not throw into its transport.
             try { onProgress({ bytes: this.payloadBytes, total, name: current?.name || '', complete }); }

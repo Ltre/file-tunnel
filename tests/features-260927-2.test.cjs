@@ -44,7 +44,7 @@ test('网页工坊可见性由独立状态控制：历史变化与内容加载�
         let overlay, content;
         ${block('function ensureUi()', 'function commitPackageName(')}
         ${block('function open()', 'async function cleanupSandboxes(')}
-        this.controls = { open, close, minimize, restore, showForContent };
+        this.controls = { open, close, minimize, restore, showForContent, focusSourceRecord };
         this.mode = () => presentationMode;
     `, context);
     const { controls } = context;
@@ -70,6 +70,22 @@ test('网页工坊可见性由独立状态控制：历史变化与内容加载�
     controls.close();
     assert.equal(context.mode(), 'closed');
     assert.equal(overlay.hidden, true);
+    assert.equal(topbar.hidden, true);
+
+    const focused = [];
+    context.config.focusMessage = id => focused.push(id);
+    controls.open();
+    const pushes = history.pushes, backs = history.backs;
+    controls.focusSourceRecord('message-1');
+    assert.equal(context.mode(), 'minimized', '原记录跳转收起工坊但保留其 UI 状态');
+    assert.equal(topbar.hidden, false, '顶栏必须保留恢复入口');
+    assert.equal(overlay.hidden, true);
+    assert.equal(history.pushes, pushes); assert.equal(history.backs, backs, '跳转不走关闭或 history.back');
+    controls.focusSourceRecord('message-2');
+    assert.equal(context.mode(), 'minimized');
+    assert.deepEqual(focused, ['message-1', 'message-2']);
+    controls.restore();
+    assert.equal(context.mode(), 'open');
     assert.equal(topbar.hidden, true);
 });
 

@@ -351,7 +351,7 @@ test('任务列表可按 operation_id 恢复任意后台任务，并保留多任
         window: { DiskClient: { subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; }, hideLoading() {}, showLoading() {} } },
         $disk: id => elements[id], formatFileSize: n => n + ' B'
     };
-    vm.runInNewContext(ui.slice(ui.indexOf('function initDiskLoading'), ui.indexOf('function renderDiskTaskBubble')) + '; this.restore = initDiskLoading();', context);
+    vm.runInNewContext(ui.slice(ui.indexOf('function diskUploadProgressLines'), ui.indexOf('function renderDiskTaskBubble')) + '; this.restore = initDiskLoading();', context);
     const activity = { operationId: 'upload-1', message: '上传测试' };
     const job = { operation_id: 'upload-1', type: 'upload', status: 'running', title: '上传测试', phase: 'telegram-upload', message: '等待 Telegram', percent: 50, totalBytes: 6, processedBytes: 3 };
     const move = { operation_id: 'move-1', type: 'move', status: 'running', title: '移动目录', phase: 'moving', message: '移动中', percent: 20 };
@@ -368,8 +368,8 @@ test('任务列表可按 operation_id 恢复任意后台任务，并保留多任
     }
     const progressed = { ...job, telegramBytesSent: 4, telegramBytesConfirmed: 3, telegramTotalBytes: 6 };
     jobListener([progressed, { ...move }]);
-    assert.match(elements.diskLoadingDetail.textContent, /服务器 → Telegram 已发送 4 B\/6 B/);
-    assert.match(elements.diskLoadingDetail.textContent, /Telegram 已确认 3 B\/6 B/);
+    assert.match(elements.diskLoadingDetail.textContent, /服务器 → Telegram · 4 B\/6 B · 66.67%/);
+    assert.doesNotMatch(elements.diskLoadingDetail.textContent, /Telegram 已确认/);
     jobListener([{ ...progressed, status: 'failed' }, { ...move, status: 'completed' }]);
     assert.equal(overlay.hidden, true, '匹配服务端失败的残留活动不能继续显示队列等待浮层');
     activityListener([]);
@@ -389,7 +389,7 @@ test('居中 loading 同时列出所有运行任务并可左右切换', () => {
         window: { DiskClient: { isLoadingHidden: () => false, subscribeActivity: fn => { activityListener = fn; }, subscribe: fn => { jobListener = fn; } } },
         $disk: id => elements[id], formatFileSize: n => n + ' B'
     };
-    vm.runInNewContext(ui.slice(ui.indexOf('function initDiskLoading'), ui.indexOf('function renderDiskTaskBubble')) + '; initDiskLoading();', context);
+    vm.runInNewContext(ui.slice(ui.indexOf('function diskUploadProgressLines'), ui.indexOf('function renderDiskTaskBubble')) + '; initDiskLoading();', context);
     activityListener([]);
     jobListener([
         { operation_id: 'upload-1', type: 'upload', status: 'running', title: '第一个任务', message: '上传中' },
