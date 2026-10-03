@@ -4,10 +4,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { pipeline } = require('stream/promises');
 const { readJson, writeJson, writeJsonAsync } = require('./disk-data');
 const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
+const { createGrowingFileReadable } = require('./growing-file-readable');
 
 
 function normalizeSegment(value, limit = 100) {
@@ -73,10 +73,13 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         version: 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
         pendingRollbackParts: job.pendingRollbackParts || [],
+        pendingCleanupParts: job.pendingCleanupParts || [],
         files: job.files.map(file => ({ name: file.name, logicalId: file.logicalId, thumbnail: file.thumbnail ? {
             size: file.thumbnail.size, type: file.thumbnail.type, remote: file.thumbnail.remote || null
         } : null, chunks: (file.chunks || []).map(chunk => ({
-            partIndex: chunk.partIndex, size: chunk.size, sha256: chunk.sha256 || '', remote: chunk.remote || null
+            partIndex: chunk.partIndex, size: chunk.size, writtenBytes: Number(chunk.writtenBytes) || 0,
+            sourceComplete: chunk.sourceComplete === true, finalized: chunk.finalized === true,
+            sha256: chunk.sha256 || '', remote: chunk.remote || null
         })) }))
     });
     const persistenceError = (error, stage) => {
@@ -126,12 +129,71 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         try { fs.rmSync(job.dir, { recursive: true, force: true }); }
         catch (error) { cleanupWarning(job, error); }
     };
-    const receiveToStaging = (request, filename) => {
+    const notifyChunk = chunk => {
+        for (const wake of chunk.growthWaiters || []) wake();
+        chunk.growthWaiters?.clear();
+    };
+    const prepareGrowingChunk = chunk => {
+        chunk.writtenBytes = Math.max(0, Number(chunk.writtenBytes) || 0);
+        chunk.sourceComplete = chunk.sourceComplete === true;
+        chunk.growthWaiters ||= new Set();
+        chunk.waitForGrowth = (offset, signal) => {
+            if (chunk.writtenBytes > offset || chunk.sourceComplete || chunk.sourceError) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+                let settled = false;
+                const finish = error => {
+                    if (settled) return; settled = true;
+                    signal?.removeEventListener?.('abort', onAbort);
+                    chunk.growthWaiters.delete(wake);
+                    error ? reject(error) : resolve();
+                };
+                const wake = () => finish();
+                const onAbort = () => finish(Object.assign(new Error('OPERATION_CANCELLED'), { name:'AbortError' }));
+                chunk.growthWaiters.add(wake);
+                signal?.addEventListener?.('abort', onAbort, { once:true });
+                if (signal?.aborted) onAbort();
+            });
+        };
+        chunk.waitForSourceComplete = signal => {
+            if (chunk.sourceComplete || chunk.sourceError) return chunk.sourceError ? Promise.reject(chunk.sourceError) : Promise.resolve();
+            return new Promise((resolve, reject) => {
+                const poll = () => {
+                    if (signal?.aborted) return reject(Object.assign(new Error('OPERATION_CANCELLED'), { name:'AbortError' }));
+                    if (chunk.sourceError) return reject(chunk.sourceError);
+                    if (chunk.sourceComplete) return resolve();
+                    chunk.waitForGrowth(chunk.writtenBytes, signal).then(poll, reject);
+                };
+                poll();
+            });
+        };
+        chunk.streamFactory = ({ signal } = {}) => createGrowingFileReadable({
+            path: chunk.path, size: chunk.size, signal,
+            getWrittenBytes: () => chunk.writtenBytes,
+            waitForGrowth: (offset, waitSignal) => chunk.waitForGrowth(offset, waitSignal),
+            getSourceError: () => chunk.sourceError || null
+        });
+        return chunk;
+    };
+    const receiveToStaging = async (request, filename, onWritten) => {
         const output = fs.createWriteStream(filename, { flags: 'wx' });
-        // Request-side aborts also destroy this stream. Only filesystem errors
-        // emitted by its own open/write syscall identify a staging write error.
-        output.once('error', error => { if (error.syscall) persistenceError(error, 'browser-part-write'); });
-        return pipeline(request, output);
+        // Count a byte as available to Telegram only after the filesystem
+        // writable callback fires. Browser ingress and Telegram egress are
+        // deliberately decoupled by this staging file.
+        const markFilesystemError = error => {
+            if (error?.syscall) persistenceError(error, 'browser-part-write');
+            return error;
+        };
+        try {
+            for await (const raw of request) {
+                const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                await new Promise((resolve, reject) => output.write(chunk, error => error ? reject(markFilesystemError(error)) : resolve()));
+                onWritten?.(chunk);
+            }
+            await new Promise((resolve, reject) => output.end(error => error ? reject(markFilesystemError(error)) : resolve()));
+        } catch (error) {
+            output.destroy();
+            throw markFilesystemError(error);
+        }
     };
     fs.mkdirSync(stagingRoot, { recursive: true });
     for (const entry of fs.readdirSync(stagingRoot, { withFileTypes: true })) {
@@ -491,18 +553,36 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
             let size = 0; const digest = crypto.createHash('sha256');
-            request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
+            // Create the chunk before the request finishes. The Telegram reader
+            // can then follow writtenBytes while the browser keeps appending.
+            const chunk = prepareGrowingChunk({ path: target, offset: start, size: length, writtenBytes: 0, sourceComplete: false, sha256: '', partIndex: plan.index, status: 'receiving', remote: null, finalized: false });
+            file.chunks.push(chunk);
             try {
-                await receiveToStaging(request, target);
+                await persistUploadAsync(job);
+                await receiveToStaging(request, target, bytes => {
+                    size += bytes.length;
+                    if (size > length) throw new Error('telegram-drive-upload-size-mismatch');
+                    digest.update(bytes);
+                    chunk.writtenBytes = size;
+                    notifyChunk(chunk);
+                    onProgress?.(size);
+                });
                 assertUploadActive(job);
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
-                file.chunks.push({ path: target, offset: start, size, sha256: digest.digest('hex'), partIndex: plan.index, status: 'queued', remote: null });
+                chunk.sha256 = digest.digest('hex');
+                chunk.sourceComplete = true;
+                if (chunk.status === 'receiving') chunk.status = 'queued';
                 file.received += size;
                 await persistUploadAsync(job);
+                notifyChunk(chunk);
                 assertUploadActive(job);
                 return { received: file.received, complete: file.received === file.size };
-            } catch (error) { unlinkStaging(job, target); throw error; }
-            finally { file.receiving = false; receiverDone(); }
+            } catch (error) {
+                chunk.sourceError = error;
+                chunk.sourceComplete = true;
+                notifyChunk(chunk);
+                throw error;
+            } finally { file.receiving = false; receiverDone(); }
         },
         async receiveThumbnail(uploadId, index, request, declaredSize, declaredType = 'image/jpeg') {
             const job = uploads.get(String(uploadId)), file = job?.files[Number(index)];
@@ -537,13 +617,23 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const job = uploads.get(String(uploadId));
             if (!job) return null;
             const chunks = job.files.flatMap(file => file.chunks || []);
-            const queued = chunks.filter(part => part.status === 'queued');
+            const queued = chunks.filter(part => part.status === 'queued' || (part.status === 'receiving' && Number(part.writtenBytes) > 0));
             const pending = chunks.filter(part => part.status !== 'uploaded');
-            return { queuedParts: queued.length, queuedBytes: queued.reduce((sum, part) => sum + part.size, 0), pendingParts: pending.length, pendingBytes: pending.reduce((sum, part) => sum + part.size, 0), uploadedParts: chunks.filter(part => part.status === 'uploaded').length, receivedParts: chunks.length, totalParts: job.files.reduce((sum, file) => sum + file.parts.length, 0) };
+            const completeSource = part => part.sourceComplete === true || (!Object.hasOwn(part, 'sourceComplete') && part.status !== 'receiving');
+            return {
+                queuedParts: queued.length,
+                queuedBytes: queued.reduce((sum, part) => sum + Math.max(0, Number(part.size) - (Number(part.writtenBytes) || 0)), 0),
+                pendingParts: pending.length,
+                pendingBytes: pending.reduce((sum, part) => sum + Math.max(0, Number(part.size) - (Number(part.writtenBytes) || 0)), 0),
+                uploadedParts: chunks.filter(part => part.status === 'uploaded').length,
+                finalizedParts: chunks.filter(part => part.finalized === true).length,
+                receivedParts: chunks.filter(completeSource).length,
+                totalParts: job.files.reduce((sum, file) => sum + file.parts.length, 0)
+            };
         },
         markPartUploading(uploadId, fileIndex, partIndex) {
             const chunk = uploads.get(String(uploadId))?.files[Number(fileIndex)]?.chunks?.find(item => item.partIndex === Number(partIndex));
-            if (!chunk || chunk.status !== 'queued') throw new Error('UPLOAD_PART_STATE_INVALID');
+            if (!chunk || !['queued', 'receiving'].includes(chunk.status) || (chunk.status === 'receiving' && !Number(chunk.writtenBytes))) throw new Error('UPLOAD_PART_STATE_INVALID');
             chunk.status = 'uploading'; return chunk;
         },
         markPartUploaded(uploadId, fileIndex, partIndex, remote) {
@@ -570,6 +660,33 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             assertUploadActive(job);
             for (const { chunk } of confirmed) unlinkStaging(job, chunk.path);
             return confirmed.map(entry => entry.chunk);
+        },
+        async markPartsFinalized(uploadId, remotes, cleanupParts = []) {
+            const job = uploads.get(String(uploadId));
+            if (!job) throw new Error('UPLOAD_PART_STATE_INVALID');
+            assertUploadActive(job);
+            for (const remote of remotes || []) {
+                const chunk = job.files[Number(remote.fileIndex)]?.chunks?.find(item => item.partIndex === Number(remote.partIndex));
+                if (!chunk?.remote) throw new Error('UPLOAD_PART_STATE_INVALID');
+                chunk.remote = remote;
+                chunk.finalized = true;
+            }
+            const cleanup = new Map((job.pendingCleanupParts || []).map(remote => [Number(remote.messageId), remote]));
+            for (const remote of cleanupParts || []) {
+                const messageId = Number(remote?.messageId);
+                if (Number.isSafeInteger(messageId) && messageId > 0) cleanup.set(messageId, remote);
+            }
+            job.pendingCleanupParts = [...cleanup.values()];
+            await persistUploadAsync(job);
+            return remotes;
+        },
+        async clearUploadCleanupParts(uploadId, messageIds = []) {
+            const job = uploads.get(String(uploadId));
+            if (!job) return [];
+            const removed = new Set((messageIds || []).map(Number));
+            job.pendingCleanupParts = (job.pendingCleanupParts || []).filter(remote => !removed.has(Number(remote.messageId)));
+            await persistUploadAsync(job);
+            return job.pendingCleanupParts;
         },
         async keepUploadRollbackParts(uploadId, remotes) {
             const job = uploads.get(String(uploadId));
@@ -622,14 +739,14 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         },
         resetUploadingParts(uploadId) {
             const job = uploads.get(String(uploadId));
-            for (const chunk of job?.files.flatMap(file => file.chunks || []) || []) if (chunk.status === 'uploading') chunk.status = 'queued';
+            for (const chunk of job?.files.flatMap(file => file.chunks || []) || []) if (chunk.status === 'uploading') chunk.status = chunk.sourceComplete === false ? 'receiving' : 'queued';
         },
         uploadResults(uploadId) {
             const job = uploads.get(String(uploadId));
             if (!job) return [];
             return job.files.map(file => {
                 const parts = file.chunks.map(chunk => chunk.remote).filter(Boolean).sort((a, b) => a.partIndex - b.partIndex);
-                if (parts.length !== file.parts.length) return null;
+                if (parts.length !== file.parts.length || file.chunks.some(chunk => chunk.finalized !== true)) return null;
                 const first = parts[0] || {};
                 return { ...first, parts, partCount: parts.length, size: file.size, originalSize: file.size, thumbnail: file.thumbnail?.remote || null, captionWarning: parts.some(part => part.captionWarning) ? 'TELEGRAM_CAPTION_UPDATE_FAILED' : '' };
             });
@@ -651,6 +768,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const job = this.finish(uploadId); const now = Date.now();
             if (job.receivers?.size || job.manifestPending) throw new Error('UPLOAD_IN_PROGRESS');
             if (job.pendingRollbackParts?.length) throw new Error('UPLOAD_ROLLBACK_PENDING');
+            if (job.files.some(file => file.chunks.some(chunk => chunk.finalized !== true))) throw new Error('TELEGRAM_FINALIZATION_INCOMPLETE');
             this.validateUpload(uploadId);
             for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
             const created = job.files.map((file, index) => {
