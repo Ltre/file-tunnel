@@ -161,6 +161,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     log('upload.restart-cleanup-complete', { uploadId: job.id, operationId: job.operationId, parts: parts.length });
                 }
                 store.discardRecovered(job);
+                if (job.operationId) {
+                    const interrupted = new Error('SERVER_RESTARTED');
+                    interrupted.details = { stage:'restart-recovery', recoveredCleanup:true };
+                    operations.fail(job.operationId, interrupted);
+                }
             } catch (error) {
                 log('upload.restart-cleanup-failed', { uploadId: job.id, operationId: job.operationId, parts: parts.length, error: networkDetails(error) });
                 queueUploadRecovery({ store, job });
@@ -168,7 +173,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         } } finally { recoveringUploads = false; }
     }
     queueMicrotask(() => {
-        for (const entry of spaces.recoveries()) queueUploadRecovery(entry);
+        const recovered = spaces.recoveries();
+        operations.finalizeRestartRecovery(recovered.map(entry => entry.job.operationId).filter(Boolean));
+        for (const entry of recovered) queueUploadRecovery(entry);
         cleanupRecoveredUploads().catch(error => console.warn('[网盘] 重启上传回滚失败：', error.message));
     });
     const mutations = new Map();

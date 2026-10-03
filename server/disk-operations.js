@@ -24,7 +24,13 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         const ids = new Set(retained.map(job => job.operation_id));
         for (const id of jobs.keys()) if (!ids.has(id)) jobs.delete(id);
     }
-    for (const job of jobs.values()) if (!terminal(job)) Object.assign(job, { status: 'failed', phase: 'interrupted', errorCode: 'SERVER_RESTARTED', message: '服务已重启，请重新执行此操作', finishedAt: now() });
+    for (const job of jobs.values()) if (!terminal(job)) {
+        if (job.type === 'upload' && job.uploadId) Object.assign(job, {
+            status:'queued', phase:'recovering', errorCode:'', errorMessage:'',
+            message:'服务已重启，正在检查上传暂存与 Telegram 状态', finishedAt:0, cancelRequested:false
+        });
+        else Object.assign(job, { status:'failed', phase:'interrupted', errorCode:'SERVER_RESTARTED', message:'服务已重启，请重新执行此操作', finishedAt:now() });
+    }
     if (jobs.size) save();
     const view = job => job ? structuredClone(job) : null;
     const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '') && (job.type !== 'read' || (Boolean(job.deviceId) && job.deviceId === scope.deviceId));
@@ -37,6 +43,15 @@ function createDiskOperations({ dataDir, now = Date.now }) {
         },
         get(id, scope) { const job = jobs.get(id); return owns(job, scope) ? view(job) : null; },
         findUpload(uploadId, scope) { return view([...jobs.values()].find(job => job.uploadId === uploadId && owns(job, scope))); },
+        finalizeRestartRecovery(recoverableOperationIds = []) {
+            const recoverable = new Set((recoverableOperationIds || []).map(String));
+            for (const job of jobs.values()) {
+                if (job.type !== 'upload' || job.phase !== 'recovering' || terminal(job) || recoverable.has(String(job.operation_id))) continue;
+                Object.assign(job, { status:'failed', phase:'interrupted', errorCode:'SERVER_RESTARTED',
+                    message:'服务已重启且未找到可恢复的上传暂存，请重新上传', finishedAt:now(), updatedAt:now() });
+            }
+            save();
+        },
         list(scope, requested = []) {
             const wanted = new Set(requested);
             return [...jobs.values()].filter(job => owns(job, scope)).sort((a,b) => b.createdAt-a.createdAt)
