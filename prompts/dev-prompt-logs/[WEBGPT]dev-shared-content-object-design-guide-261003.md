@@ -4,7 +4,7 @@
 >
 > 当前校准分支：`dev/2609-s5-disk-chunks-progressive-push-WEBGPT`
 >
-> 当前代码基线：`{{WEBGPT_BASELINE_SHA}}`（生成本文档前该分支最新 HEAD；本文档提交本身不计入该基线）
+> 当前代码基线：`bc01692deb560e8bd92457cc04ebdc56fa88b16f`（生成本文档前该分支最新 HEAD；本文档提交本身不计入该基线）
 >
 > 原始草稿：`prompts/dev-prompt-logs/[draft]dev-shared-content-object-design-guide-261003.md`
 >
@@ -1790,7 +1790,7 @@ physical cleanup
 
 1. 确认当前工作分支仍是：
    `dev/2609-s5-disk-chunks-progressive-push-WEBGPT`；
-2. 确认当前 HEAD 是否仍与本文档顶部的 `{{WEBGPT_BASELINE_SHA}}` 接近；
+2. 确认当前 HEAD 是否仍与本文档顶部的 `bc01692deb560e8bd92457cc04ebdc56fa88b16f` 接近；
 3. 如果此后又有较大提交，重点重新核对：
    - `server/disk-repository.js` schema；
    - `server/telegram-drive.js` commit/upload manifest；
