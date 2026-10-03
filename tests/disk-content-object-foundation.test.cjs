@@ -47,3 +47,35 @@ test('manifest identity只由 size 和分片 size/sha256 决定', () => {
         manifestSha256({ name:'b', type:'x/b', size:3, parts })
     );
 });
+
+
+test('schema v3 修复早期 v2 content_parts 外键结构', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drop2-content-v2-'));
+    try {
+        const { DatabaseSync } = require('node:sqlite');
+        fs.mkdirSync(dir, { recursive:true });
+        const filename = path.join(dir, 'disk.sqlite');
+        const db = new DatabaseSync(filename);
+        db.exec(`
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE disk_schema_migrations(version INTEGER PRIMARY KEY);
+            INSERT INTO disk_schema_migrations(version) VALUES (1),(2);
+            CREATE TABLE disk_contents(
+                scope TEXT NOT NULL DEFAULT '', id TEXT NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT '', folder_path TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL,
+                PRIMARY KEY(scope,id)
+            );
+            INSERT INTO disk_contents(scope,id,payload) VALUES ('','c1','{"id":"c1","size":1}');
+            CREATE TABLE disk_content_parts(
+                content_id TEXT NOT NULL, part_index INTEGER NOT NULL,
+                payload TEXT NOT NULL, PRIMARY KEY(content_id,part_index)
+            );
+            INSERT INTO disk_content_parts(content_id,part_index,payload) VALUES ('c1',0,'{"fileId":"F"}');
+        `);
+        db.close();
+        const repository = openDiskRepository(dir);
+        assert.equal(repository.load('contents')[0].parts[0].fileId, 'F');
+        repository.assertIntegrity();
+    } finally { fs.rmSync(dir, { recursive:true, force:true }); }
+});

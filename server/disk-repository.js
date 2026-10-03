@@ -43,7 +43,7 @@ function openDiskRepository(dataDir) {
         db.exec('PRAGMA synchronous = FULL');
         db.exec('CREATE TABLE IF NOT EXISTS disk_schema_migrations (version INTEGER PRIMARY KEY)');
         const schemaVersion = Number(db.prepare('SELECT MAX(version) AS version FROM disk_schema_migrations').get().version) || 0;
-        if (schemaVersion > 2) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion > 3) throw new Error('DISK_SCHEMA_TOO_NEW');
         for (const table of TABLES) {
             db.exec(`CREATE TABLE IF NOT EXISTS disk_${table} (
             scope TEXT NOT NULL DEFAULT '', id TEXT NOT NULL,
@@ -78,6 +78,22 @@ function openDiskRepository(dataDir) {
             WHERE json_extract(payload, '$.contentSha256') IS NOT NULL
               AND json_extract(payload, '$.contentSha256') != '';`);
             db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (2)');
+        }
+        if (schemaVersion < 3) {
+            const contentPartColumns = db.prepare('PRAGMA table_info(disk_content_parts)').all();
+            if (contentPartColumns.length && !contentPartColumns.some(column => column.name === 'scope')) {
+                db.exec(`ALTER TABLE disk_content_parts RENAME TO disk_content_parts_v2;
+                CREATE TABLE disk_content_parts (
+                    scope TEXT NOT NULL DEFAULT '', content_id TEXT NOT NULL, part_index INTEGER NOT NULL,
+                    payload TEXT NOT NULL, PRIMARY KEY (scope, content_id, part_index),
+                    FOREIGN KEY (scope, content_id) REFERENCES disk_contents(scope, id) ON DELETE CASCADE
+                );
+                INSERT INTO disk_content_parts(scope, content_id, part_index, payload)
+                SELECT '', content_id, part_index, payload FROM disk_content_parts_v2;
+                DROP TABLE disk_content_parts_v2;
+                CREATE INDEX IF NOT EXISTS disk_content_parts_content ON disk_content_parts(scope, content_id, part_index);`);
+            }
+            db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (3)');
         }
     } finally { db.close(); }
 

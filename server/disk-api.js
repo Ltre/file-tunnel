@@ -732,6 +732,25 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         };
         const store = req => req.diskStore;
         const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
+        const physicalFile = (req, file) => {
+            const content = store(req).resolveContent?.(owner(req), file.id);
+            if (!content || content.state === 'LEGACY' || content.durable === false) return file;
+            const parts = Array.isArray(content.parts) ? content.parts : [];
+            const first = parts[0] || {};
+            return {
+                ...file,
+                backendId:String(content.backendId || file.backendId || ''),
+                channelId:String(content.channelId || file.channelId || ''),
+                fileId:String(first.fileId || file.fileId || ''),
+                fileUniqueId:String(first.fileUniqueId || file.fileUniqueId || ''),
+                messageId:Number(first.messageId) || Number(file.messageId) || 0,
+                mediaGroupId:String(first.mediaGroupId || file.mediaGroupId || ''),
+                parts,
+                partCount:parts.length,
+                thumbnail:content.thumbnail ?? file.thumbnail ?? null,
+                mediaIndex:content.mediaIndex ?? file.mediaIndex
+            };
+        };
         const fileBackend = (req, file) => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
         const assertCurrentCollaboration = req => { if (req.collaboration && !collaborations.authorized(req.collaboration.id, req.diskViewerId)) throw new Error('COLLABORATION_NOT_FOUND'); };
@@ -1382,8 +1401,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             jobResponse(req, res, 'check', '正在检测文件', async update => {
                 update({ phase: 'telegram-check', message: '正在向 Telegram 检查文件有效性' });
                 try {
-                    if (typeof telegram.check === 'function') await telegram.check(fileBackend(req, file), file);
-                    else await telegram.call(fileBackend(req, file), 'getFile', { file_id: file.fileId });
+                    const physical = physicalFile(req, file);
+                    if (typeof telegram.check === 'function') await telegram.check(fileBackend(req, physical), physical);
+                    else await telegram.call(fileBackend(req, physical), 'getFile', { file_id: physical.fileId });
                     store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() }); return { valid: true };
                 }
                 catch (_) { return { valid: false }; }
@@ -1395,7 +1415,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const id = operation.operation_id;
             operations.update(id, { status: 'running', phase: 'telegram-request', folderPath: file.folderPath || '' }, true);
             try {
-                const remote = await prepareRemoteResponse(req, res, fileBackend(req, file), file, { operationId: id });
+                const physical = physicalFile(req, file);
+                const remote = await prepareRemoteResponse(req, res, fileBackend(req, physical), physical, { operationId: id });
                 if (!remote) return operations.fail(id, new Error('RANGE_NOT_SATISFIABLE'));
                 assertCurrentCollaboration(req);
                 let bytes = 0;
@@ -1406,7 +1427,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/files/:id/stream', wrap(async (req, res) => {
             const file = requireEntity(getFile(req));
-            const remote = await prepareRemoteResponse(req, res, fileBackend(req, file), file, { inline: true });
+            const physical = physicalFile(req, file);
+            const remote = await prepareRemoteResponse(req, res, fileBackend(req, physical), physical, { inline: true });
             if (remote) { assertCurrentCollaboration(req); await pipeline(remote.source, res); }
         }));
         router.post('/files/:id/repair', wrap(async (req, res) => {

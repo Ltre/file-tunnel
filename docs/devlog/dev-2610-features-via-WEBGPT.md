@@ -227,3 +227,13 @@ node --test tests/disk-api.test.cjs
 - 新增 `tests/disk-content-object-foundation.test.cjs`。
 
 下一阶段应先把下载/check 等读取路径接入 Content resolver，再切换 release-reference/delete 语义；PoP 和真正跨用户 HIT 复用应在所有权/删除模型稳定后启用。
+
+
+### Content Object 第一阶段继续：读取兼容层
+
+- 网盘 `check/download/stream` 开始通过 `resolveContent()` 获取 physical representation；
+- 带 `contentId` 的新文件优先使用 Content Object 的 `backendId/channelId/parts/thumbnail/mediaIndex`；
+- 历史文件或 Content Object 不可用时自动退回原 Logical physical；
+- 用户可见文件名、MIME、目录等仍来自 Logical File，因此共享 physical 不会改变 Logical metadata；
+- 删除、repair replacement、S3 Copy 尚未切换到共享引用语义；
+- schema 提升到 v3，用于修复早期 v2 `disk_content_parts` 若缺少 scope 复合外键的兼容迁移。
