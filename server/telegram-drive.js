@@ -8,6 +8,7 @@ const { readJson, writeJson, writeJsonAsync } = require('./disk-data');
 const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createGrowingFileReadable } = require('./growing-file-readable');
+const { createDiskContentStore } = require('./disk-content-store');
 
 
 function normalizeSegment(value, limit = 100) {
@@ -34,6 +35,7 @@ function joinPath(...parts) {
 
 function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace = '', maxFileSize = () => 2 * 1024 * 1024 * 1024 }) {
     const repository = openDiskRepository(repositoryDir);
+    const contentStore = createDiskContentStore({ dataDir: repositoryDir });
     const stagingRoot = path.join(dataDir, 'telegram-drive-staging');
     const records = new Map();
     const directories = new Map();
@@ -816,6 +818,28 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);
             persist();
+            // Phase 1 of the shared Content Object migration is deliberately a
+            // compatibility dual-write. The existing Logical File remains the
+            // physical source of truth for current APIs, while every newly
+            // completed upload also gets a durable Content Object + contentId.
+            // A crash between these writes only leaves a legacy-readable file or
+            // an unreferenced Content Object; it never makes an existing file
+            // unreadable or changes current delete semantics.
+            let linked = false;
+            for (const item of created) {
+                try {
+                    const content = contentStore.fromLogicalFile(item);
+                    contentStore.put(content);
+                    item.contentId = content.id;
+                    records.set(item.id, item);
+                    linked = true;
+                } catch (error) {
+                    console.warn('[disk-content] shadow Content Object 写入失败，保留旧 Logical physical 兼容路径', {
+                        fileId:item.id, code:error.code || error.message || 'CONTENT_OBJECT_WRITE_FAILED'
+                    });
+                }
+            }
+            if (linked) persist();
             stopUpload(job); removeStaging(job); uploads.delete(job.id); return created;
         },
         abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; stopUpload(job); removeStaging(job); uploads.delete(job.id); },
@@ -928,6 +952,9 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const files = ownerRecords(ownerId).filter(item => item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
             return { folders, files };
         },
+        content(id) { return contentStore.get(id); },
+        resolveContent(ownerId, id) { const item = this.get(ownerId, id); return item ? contentStore.resolve(item) : null; },
+        adminContents() { return contentStore.all(); },
         adminFiles() { return [...records.values()].map(item => ({ ...item })); },
         adminDirectories() { return [...directories.values()].map(item => ({ ...item })); },
         remove(ownerId, id) { const item = this.get(ownerId, id); if (!item) return false; records.delete(item.id); touchDirectory(ownerId, item.folderPath || ''); persist(); return true; },
