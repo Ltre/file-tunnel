@@ -787,6 +787,13 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                     name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt,
                     parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null
                 }));
+                const stagedCleanup = (job.pendingCleanupParts || []).filter(part => String(part.logicalFileId || '') === String(file.logicalId || '') || Number(part.fileIndex) === index);
+                if (stagedCleanup.length) {
+                    item.pendingRemoteCleanup = [...(item.pendingRemoteCleanup || []), {
+                        name: file.name, channelId: String(channelId), backendId: job.backendId || '', createdAt: job.createdAt,
+                        parts: stagedCleanup, fileId: '', messageId: 0, thumbnail: null
+                    }];
+                }
                 records.set(item.id, item); return item;
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);
