@@ -93,10 +93,13 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal(Number((await send('HEAD', name)).headers.get('content-length')), original.length, '散列不符不能覆盖旧文件');
     assert.equal(await statusAfterReading(send('PUT', name, 'same-size', { 'content-md5': Buffer.alloc(16).toString('base64') })), 400);
     assert.equal(Number((await send('HEAD', name)).headers.get('content-length')), original.length, 'MD5 不符同样不能覆盖旧文件');
+    const uploadedBeforeCopy=uploaded;
     const bigCopy = await send('PUT', '/S3API/my-bucket/large-copy.bin', '', { 'x-amz-copy-source': '/my-bucket/%E6%97%A5%E6%9C%AC%E8%AA%9E/hello%20%23%2B.txt' });
     assert.equal(bigCopy.status, 200, await bigCopy.text());
-    assert.equal(reused, 2, '同一 Bot 的复制应复用两个既有 Telegram file_id');
+    assert.equal(reused, 0, '同一 Bot 的复制只建立 Content 引用，不能重新发送 file_id');
+    assert.equal(uploaded,uploadedBeforeCopy,'Copy 不上传正文或创建新 Anchor');
     assert.equal((await (await send('GET', '/S3API/my-bucket/large-copy.bin', '', { range: 'bytes=19999995-20000005' })).arrayBuffer()).byteLength, 11);
+    const removedBeforeReplacement=removed;
     const second = Buffer.from('replacement');
     const overwrite = await send('PUT', name, second);
     assert.equal(overwrite.status, 200, await overwrite.text());
@@ -106,7 +109,7 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     const copy = await send('PUT', '/S3API/my-bucket/copied.txt', '', { 'x-amz-copy-source': '/my-bucket/%E6%97%A5%E6%9C%AC%E8%AA%9E/hello%20%23%2B.txt' });
     assert.equal(copy.status, 200, await copy.text());
     assert.equal(await (await send('GET', '/S3API/my-bucket/copied.txt')).text(), 'replacement');
-    assert.ok(removed >= 1, '覆盖后旧 Telegram 消息被清理');
+    assert.equal(removed,removedBeforeReplacement,'覆盖不能清理仍由 large-copy 引用的旧 Content');
     assert.equal((await send('PUT', '/S3API/my-bucket/empty.txt', '')).status, 200);
     assert.equal((await send('PUT', '/S3API/my-bucket/folder/', '')).status, 200);
     const listed = await send('GET', '/S3API/my-bucket?list-type=2&delimiter=%2F');

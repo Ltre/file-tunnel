@@ -6,10 +6,15 @@ const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 function createProgressiveUploadRunner({ telegram, operations, chunkFileCache, log, wake, wait, commit, rollback }) {
     return async function run(req, store, job, update, control) {
         const total = job.files.reduce((sum, file) => sum + file.size, 0);
+        const networkTotal=job.files.filter(file=>!file.reuseContentId && !Number.isInteger(file.reuseFromIndex)).reduce((sum,file)=>sum+file.size,0);
         const active = new Map(), sentByPart = new Map();
         let previousBytes = 0, previousTime = Date.now(), speed = 0;
         job.pipelineAbort = new AbortController();
         const signal = job.pipelineAbort.signal;
+        const leaseTimer=setInterval(()=>{
+            try { store.renewContentLeases?.(job.id); }
+            catch(error) { job.pipelineFailure ||= error; job.pipelineAbort.abort(error); wake(job); }
+        },60000); leaseTimer.unref?.();
         operations.onCancel(job.operationId, () => { job.pipelineAbort.abort(); wake(job); });
         const key = (fileIndex, chunk) => `${fileIndex}:${chunk.partIndex}`;
         const publish = (patch = {}) => {
@@ -25,9 +30,12 @@ function createProgressiveUploadRunner({ telegram, operations, chunkFileCache, l
                 previousBytes = sent; previousTime = now;
             }
             const queue = store.uploadQueue(job.id);
-            update({ telegramBytesSent: sent, telegramBytesConfirmed: confirmed, telegramTotalBytes: total,
-                telegramBytesPerSecond: Math.round(speed), processedBytes: sent, totalBytes: total,
-                percent: total ? Math.min(99, sent / total * 100) : null,
+            const reused=job.files.filter(file=>file.reuseContentId || Number.isInteger(file.reuseFromIndex) && file.finalized).reduce((sum,file)=>sum+file.size,0);
+            update({ telegramBytesSent: sent, telegramBytesConfirmed: confirmed, telegramTotalBytes: networkTotal,
+                telegramBytesPerSecond: Math.round(speed), processedBytes: sent+reused, totalBytes: total,
+                logicalBytesProcessed:sent+reused,reusedBytes:reused,filesReady:job.files.filter(file=>file.finalized).length,filesTotal:job.files.length,
+                clientBytesReceived:job.files.reduce((sum,file)=>sum+file.received,0),clientTotalBytes:networkTotal,
+                percent: total ? Math.min(99, (sent+reused) / total * 100) : null,
                 ...(queue ? { clientPartsReceived: queue.receivedParts, clientPartsTotal: queue.totalParts,
                     telegramPartsUploaded: queue.uploadedParts, queueParts: queue.pendingParts, queueBytes: queue.pendingBytes } : {}), ...patch });
         };
@@ -104,6 +112,7 @@ function createProgressiveUploadRunner({ telegram, operations, chunkFileCache, l
         try {
             while (true) {
                 assertRunning();
+                for(const file of job.files) if(Number.isInteger(file.reuseFromIndex) && job.files[file.reuseFromIndex]?.finalized) {file.finalized=true;file.contentSha256=job.files[file.reuseFromIndex].contentSha256;}
                 for (let fileIndex = 0; fileIndex < job.files.length && active.size < 2; fileIndex++) {
                     const file = job.files[fileIndex];
                     for (const chunk of file.chunks) {
@@ -145,7 +154,7 @@ function createProgressiveUploadRunner({ telegram, operations, chunkFileCache, l
                         // A failure must not destroy the only complete remote copy.
                         const unknown = error.message === 'UPLOAD_FINAL_RESULT_UNKNOWN' || file.finalGroups?.some(group => group.unknownResult || group.status === 'unknown'
                             || (group.intent && !group.remotes?.length));
-                        job.recoveryDisposition = unknown ? 'unknown' : 'finalization'; throw error;
+                        job.recoveryDisposition = unknown ? 'unknown' : /^CONTENT_(?:HASH|SIZE)_MISMATCH$/.test(error.message) ? 'rollback' : 'finalization'; throw error;
                     }
                     continue;
                 }
@@ -209,7 +218,7 @@ function createProgressiveUploadRunner({ telegram, operations, chunkFileCache, l
                 log('upload.failure-recovery-failed', { uploadId: job.id, operationId: job.operationId, error: diskErrorDetails(cleanupError), originalCode: job.pipelineError });
             }
             throw job.pipelineFailure;
-        } finally { wake(job); job.pipelineDoneResolve?.(); }
+        } finally { clearInterval(leaseTimer); wake(job); job.pipelineDoneResolve?.(); }
     };
 }
 module.exports = { createProgressiveUploadRunner };

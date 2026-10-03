@@ -53,8 +53,15 @@ test('110 MB 客户端分片直接暂存，Telegram 每批不超过 40 MB；重�
     } });
     const sent = await telegram.upload(backend, store.finish(job.id).files, patch => progress.push(patch), [], { userId: owner.id });
     assert.equal(sent.length, 1); assert.equal(sent[0].parts.length, 6);
-    assert.equal(captions.length, 6); assert.ok(progress.every(p => p.totalBytes === size && p.processedBytes <= size));
+    assert.equal(captions.length, 0,'Content 最终定位备注必须等 SQL 提交并由 outbox 补注'); assert.ok(progress.every(p => p.totalBytes === size && p.processedBytes <= size));
+    await store.verifyContentHash(job.id,0);
     const [file] = store.commit(job.id, backend.channelId, sent);
+    const content=openDiskRepository(dataDir).content;
+    for(let task;(task=content.claimCaption());) {
+        await telegram.call(backend,'editMessageCaption',{chat_id:task.physical.channelId,message_id:task.physical.messageId,caption:task.physical.caption});
+        content.finishCaption(task);
+    }
+    assert.equal(captions.length,6);assert.ok(captions.every(item=>item.caption.includes('content_id: '+file.contentId) && !/user_id:|logical_file_id:|disk_space:/.test(item.caption)));
     const reloaded = createTelegramDriveStore({ dataDir }).get(owner.id, file.id);
     assert.equal(reloaded.parts.length, 6);
     assert.ok(reloaded.parts.every((part, index) => part.logicalFileId === file.id && part.originalSize === size && part.partIndex === index + 1 && part.partCount === 6));

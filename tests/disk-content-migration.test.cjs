@@ -1,0 +1,66 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {DatabaseSync}=require('node:sqlite');
+const {main}=require('../tools/migrate-tgdisk-content-objects.cjs');
+const {openDiskRepository}=require('../server/disk-repository');
+test('v1 停服迁移保留 Logical 身份，备份、重跑幂等、部分重叠隔离且不猜完整 hash',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-migration-')),filename=path.join(dir,'disk.sqlite');
+    t.after(()=>{openDiskRepository(dir).close();fs.rmSync(dir,{recursive:true,force:true});});
+    const db=new DatabaseSync(filename);
+    db.exec(`CREATE TABLE disk_schema_migrations(version INTEGER PRIMARY KEY);INSERT INTO disk_schema_migrations VALUES(1);
+        CREATE TABLE disk_files(scope TEXT NOT NULL,id TEXT NOT NULL,owner_id TEXT NOT NULL,folder_path TEXT NOT NULL,name TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,id));
+        CREATE TABLE disk_file_parts(scope TEXT NOT NULL,file_id TEXT NOT NULL,part_index INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,file_id,part_index));`);
+    const records=[['a','alice',[1,2]],['b','bob',[1,2]],['c','carol',[1,3]]];
+    for(const [id,ownerId,messages] of records){
+        const file={id,ownerId,name:id,folderPath:'folder',size:6,channelId:'-100',createdAt:100};
+        db.prepare('INSERT INTO disk_files VALUES(?,?,?,?,?,?)').run('',id,ownerId,'folder',id,JSON.stringify(file));
+        messages.forEach((messageId,index)=>db.prepare('INSERT INTO disk_file_parts VALUES(?,?,?,?)').run('',id,index,JSON.stringify({partIndex:index+1,offset:index*3,size:3,fileId:'remote-'+messageId,messageId})));
+    }
+    db.close();const original=fs.readFileSync(filename);
+    const dry=await main(['--data-dir',dir]);assert.equal(dry.unbound,3);assert.deepEqual(fs.readFileSync(filename),original);
+    await assert.rejects(main(['--data-dir',dir,'--apply']),/service-stopped/);
+    const result=await main(['--data-dir',dir,'--apply','--service-stopped']);
+    assert.ok(fs.existsSync(result.backup));assert.equal(result.after.bindings,3);assert.equal(result.after.contents,2);
+    assert.equal(result.after.conflicts.length,2);assert.equal(result.after.canonicalKeys,0);
+    const repository=openDiskRepository(dir),files=repository.load('files');
+    assert.deepEqual(files.map(file=>file.id).sort(),['a','b','c']);assert.equal(files.find(file=>file.id==='a').contentId,files.find(file=>file.id==='b').contentId);
+    repository.replace('files',[],file=>file.id);
+    assert.equal(repository.content.claimCleanup(Date.now()+240_000),null,'重叠 Anchor 在所有引用移除后仍然不能自动删除');
+    assert.equal(repository.content.allowed({channelId:'-100',parts:[{messageId:1}]}),false);
+    assert.equal((await main(['--data-dir',dir])).migrationRequired,false);
+});
+test('相同二进制的显式历史合并保持 Logical 版本，旧消息等 reader lease 释放后清理', t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-merge-')),repository=openDiskRepository(dir);
+    t.after(()=>{repository.close();fs.rmSync(dir,{recursive:true,force:true});});
+    const files=[1,2].map(index=>({id:String(index),ownerId:String(index),name:String(index),folderPath:'',size:3,channelId:'-100',parts:[{offset:0,size:3,messageId:index,fileId:'f'+index}]}));
+    repository.replace('files',files,file=>file.id);
+    const content=repository.content,sha=require('node:crypto').createHash('sha256').update('abc').digest('hex');
+    for(const file of files)content.verifyLegacy(file.contentId,sha,3,1);
+    const lease=content.lease(files[1].contentId,'reader','','read');
+    assert.equal(content.mergeVerified(files[1].contentId,files[0].contentId,1).merged,1);
+    const loaded=repository.load('files');assert.equal(loaded[0].contentId,loaded[1].contentId);assert.equal(loaded[1].logicalContentVersion,1);
+    assert.equal(content.claimCleanup(Date.now()+120_000),null);content.releaseLease(lease);
+    const cleanup=content.claimCleanup(Date.now()+240_000);assert.equal(cleanup.physical.parts[0].messageId,2);
+    assert.equal(content.allowed({channelId:'-100',parts:[{messageId:1}]}),false);
+});
+test('已证明 reuse 重启可续建过期 lease，但不得恢复 DELETING；失败恢复不泄漏新 lease',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-recovery-')),repository=openDiskRepository(dir);
+    const {createTelegramDriveStore}=require('../server/telegram-drive'),sha=require('node:crypto').createHash('sha256').update('abc').digest('hex');
+    t.after(()=>{repository.close();fs.rmSync(dir,{recursive:true,force:true});});
+    const original={id:'original',ownerId:'alice',name:'old',folderPath:'',size:3,channelId:'-100',contentSha256:sha,parts:[{offset:0,size:3,fileId:'f1',messageId:1}]};
+    repository.replace('files',[original],file=>file.id);
+    const store=createTelegramDriveStore({dataDir:dir}),job=store.begin({owner:{id:'bob'},folderPath:'',progressive:true,files:[{name:'new',size:3,contentSha256:sha}],channelId:'-100'});
+    const lease=repository.content.lease(original.contentId,'bob',job.id);
+    await store.reuseContent(job.id,0,original.contentId,lease);await store.markClientDone(job.id);await store.preserveForRecoveryAsync(job.id);
+    const recovered=createTelegramDriveStore({dataDir:dir}),manifest=recovered.recoveredUploads()[0];
+    repository.content.write(db=>db.prepare('UPDATE disk_content_leases SET expires_at=0 WHERE id=?').run(lease));
+    const broken={...manifest,files:[...manifest.files,{...manifest.files[0],size:-1}]};
+    await assert.rejects(recovered.activateRecoveredUpload(broken),/UPLOAD_RECOVERY_MANIFEST_INVALID/);
+    assert.equal(repository.content.withDatabase(db=>db.prepare('SELECT count(*) AS n FROM disk_content_leases WHERE expires_at>?').get(Date.now()).n),0);
+    const active=await recovered.activateRecoveredUpload(manifest);assert.notEqual(active.files[0].contentLease,lease);assert.equal(active.files[0].chunks.length,0);
+    const newLease=active.files[0].contentLease;await recovered.preserveForRecoveryAsync(active.id);
+    repository.content.releaseLease(newLease);repository.replace('files',[],file=>file.id);
+    const cleanup=repository.content.claimCleanup(Date.now()+120_000);assert.ok(cleanup);
+    await assert.rejects(recovered.activateRecoveredUpload(manifest),/CONTENT_NOT_AVAILABLE/);
+});

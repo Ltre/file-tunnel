@@ -94,7 +94,18 @@ function readOperations(dataDir, warnings) {
                 try { items.push(JSON.parse(row.payload)); }
                 catch { warnings.push('SQLite 中有一条无法解析的任务记录，已忽略'); }
             }
-            return { source: 'disk.sqlite', items };
+            let contentObjects;
+            if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='disk_contents'").get()) {
+                // Aggregate lifecycle state only; never export proof samples,
+                // credentials, captions or physical source identifiers.
+                contentObjects = {
+                    contents: db.prepare('SELECT state,hash_status,count(*) AS count FROM disk_contents GROUP BY state,hash_status').all(),
+                    references: db.prepare('SELECT count(*) AS count FROM disk_content_refs').get().count,
+                    activeLeases: db.prepare('SELECT kind,count(*) AS count FROM disk_content_leases WHERE expires_at>? GROUP BY kind').all(Date.now()),
+                    cleanup: db.prepare('SELECT purpose,state,count(*) AS count FROM disk_content_cleanup GROUP BY purpose,state').all()
+                };
+            }
+            return { source: 'disk.sqlite', items, contentObjects };
         } catch (error) {
             warnings.push(`SQLite 任务状态读取失败（${error.code || 'READ_FAILED'}）；不会用可能过期的旧 JSON 替代`);
             return { source: 'disk.sqlite', items: [] };
@@ -114,7 +125,7 @@ const operationFields = new Set(['operation_id', 'uploadId', 'type', 'status', '
     'errorCode', 'errorMessage', 'errorDetails', 'createdAt', 'startedAt', 'updatedAt', 'finishedAt', 'percent', 'processedBytes', 'totalBytes',
     'clientBytesReceived', 'clientTotalBytes', 'telegramBytesUploaded', 'telegramBytesSent', 'telegramBytesConfirmed', 'telegramTotalBytes',
     'telegramThumbnailBytesSent', 'telegramThumbnailTotalBytes', 'thumbnailWarnings', 'clientPartsReceived', 'clientPartsTotal',
-    'telegramPartsUploaded', 'queueParts', 'queueBytes', 'cancelRequested']);
+    'telegramPartsUploaded', 'queueParts', 'queueBytes', 'cancelRequested', 'reusedBytes', 'logicalBytesProcessed', 'filesReady', 'filesTotal']);
 function deploymentVersion(repoDir) {
     try {
         const release = JSON.parse(fs.readFileSync(path.join(repoDir, 'release.json'), 'utf8'));
@@ -159,7 +170,7 @@ async function collect(options) {
         window: { since: options.since ? new Date(options.since).toISOString() : null, until: new Date(options.until).toISOString(), uploadIds: options.uploadIds, operationIds: options.operationIds },
         deployment: deploymentVersion(options.repoDir || path.join(__dirname, '..')), collector: { node: process.version, platform: process.platform, arch: process.arch },
         sources: sources.map(({ entries, ...source }) => ({ ...source, validEntries: entries.length })), operationsSource: stored.source,
-        warnings, operations, logs };
+        warnings, operations, logs, ...(stored.contentObjects ? { contentObjects: stored.contentObjects } : {}) };
 }
 
 async function main(argv = process.argv.slice(2)) {

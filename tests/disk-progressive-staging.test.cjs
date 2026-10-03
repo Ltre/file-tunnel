@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { PassThrough, Readable } = require('node:stream');
 const { createTelegramDriveStore } = require('../server/telegram-drive');
+const { openDiskRepository } = require('../server/disk-repository');
 
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -306,16 +307,18 @@ test('finalized remote records survive restart even after staging bodies were sa
     assert.deepEqual(replacement.uploadResults(restored.id)[0].parts.map(part => part.messageId), [201, 202]);
 });
 
-test('committing a progressive file persists temporary cleanup alongside final parts in the SQLite file record', async t => {
+test('committing a progressive file persists temporary cleanup in the Content outbox independently of Logical parts', async t => {
     const { drive, job, dataDir } = await twoChunks(t);
     await drive.markPartsUploaded(job.id, [remote(1, 101), remote(2, 102)]);
     await drive.markFinalGroupUploaded(job.id, 0, 0, [remote(1, 201), remote(2, 202)]);
     await drive.markProgressiveFinalized(job.id, 0); await drive.markClientDone(job.id);
     const [file] = drive.commit(job.id, '-10042', drive.uploadResults(job.id));
     assert.deepEqual(file.parts.map(part => part.messageId), [201, 202]);
-    assert.deepEqual(file.pendingRemoteCleanup[0].parts.map(part => part.messageId), [101, 102]);
+    assert.deepEqual(file.pendingRemoteCleanup,[]);
     const reloaded = createTelegramDriveStore({ dataDir }).get('owner-1', file.id);
-    assert.deepEqual(reloaded.pendingRemoteCleanup[0].parts.map(part => part.messageId), [101, 102]);
+    assert.deepEqual(reloaded.pendingRemoteCleanup,[]);
+    const task=openDiskRepository(dataDir).content.claimCleanup();
+    assert.equal(task.purpose,'temporary-upload');assert.deepEqual(task.physical.parts.map(part=>part.messageId),[101,102]);
 });
 
 test('legacy callers retain full-part staging and confirmation cleanup semantics', async t => {

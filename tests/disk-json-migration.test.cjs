@@ -64,8 +64,13 @@ test('旧网盘 JSON 预检不写库；导入保留分区、文件分片、身�
     assert.equal(fs.existsSync(path.join(applied.backupDir, 'disk-secret.key')), true);
     assert.equal(fs.existsSync(path.join(dir, 'disk-auth.json')), true);
     const repository = openDiskRepository(dir);
-    assert.deepEqual(repository.load('files'), [file]);
-    assert.deepEqual(repository.load('files', space), [second]);
+    for(const [scope,expected] of [['',file],[space,second]]){
+        const [actual]=repository.load('files',scope);
+        for(const key of ['id','ownerId','folderPath','name','size'])assert.equal(actual[key],expected[key]);
+        assert.ok(actual.contentId);assert.equal(actual.logicalContentVersion,1);
+        assert.equal(actual.parts[0].fileId,expected.parts[0].fileId);
+        assert.equal(actual.parts[0].messageId,expected.parts[0].messageId);
+    }
     assert.equal(repository.load('collaborations')[0].fileId, file.id);
     assert.equal(createDiskCollaborationStore(dir).ownedTarget('u-1', '', 'file', file.id).id, 'collab-1');
     assert.equal(repository.load('shares')[0].files[0].id, file.id);

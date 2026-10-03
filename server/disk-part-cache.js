@@ -52,7 +52,15 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         const selected = new Set(Object.entries(owners).filter(([, scopes]) => scopes.some(owner =>
             matchesScope(owner, scope, userId, diskSpace))).map(([id]) => id));
         const available = new Set(entries.filter(item => item.isFile() && /^[a-f0-9]{64}\.(part|tmp)$/.test(item.name)).map(item => item.name.slice(0, 64)));
-        if (available.size) for (const key of legacyKeys || []) { const id = digest(key); if (available.has(id)) selected.add(id); }
+        let changed=false;
+        if (available.size) for (const entry of legacyKeys || []) {
+            const id=digest(typeof entry==='string' ? entry : entry.key);if(!available.has(id))continue;
+            if(typeof entry==='string'){selected.add(id);continue;}
+            const owner=entry.owner,scopes=owners[id] || [];
+            if(!scopes.some(item=>item.userId===owner.userId && item.diskSpace===owner.diskSpace)){owners[id]=[...scopes,owner];changed=true;}
+            if(matchesScope(owner,scope,userId,diskSpace))selected.add(id);
+        }
+        if(changed)saveOwners();
         return selected;
     }
     async function clear({ scope = 'all', userId = '', diskSpace = '', legacyKeys = [] } = {}) {

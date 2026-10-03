@@ -90,6 +90,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
     async function deleteFile(mapping, file) {
         const store = storeOf(mapping), scope = scopeOf(mapping);
         if (protectFile(scope.userId, scope.diskSpace, file.id)) throw new Error('AccessDenied');
+        if(file.contentId) { store.remove(scope.userId,file.id); return; }
         for (const stale of file.pendingRemoteCleanup || []) {
             if (stale.parts?.length || stale.messageId || stale.thumbnail?.messageId) await queueTelegram({ id: `delete-${file.id}` }, () => telegram.remove(backendOf(stale), stale));
         }
@@ -123,6 +124,12 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         if (!owner) throw new Error('AccessDenied');
         if (current?.file && protectFile(owner.id, scopeOf(toMapping).diskSpace, current.file.id)) throw new Error('AccessDenied');
         const logicalId = current?.file?.id || crypto.randomUUID();
+        if(source.file.contentId) {
+            // S3 credentials already authorize the source object. This is a
+            // reference transaction, not a Telegram file_id resend.
+            if(scopeOf(fromMapping).userId !== scopeOf(toMapping).userId) throw new Error('AccessDenied');
+            return store.putCopiedObject(owner,target.folderPath,target.name,source.file,source.file.parts,fromBackend,maxDepth(),current?.file?.id || '',logicalId);
+        }
         const physical = (source.file.parts || []).map((part, index) => ({ fileIndex: 0, logicalFileId: logicalId, partIndex: index + 1, partCount: source.file.parts.length, originalSize: source.size, offset: part.offset, size: part.size, sha256: part.sha256, reuseFileId: part.fileId, reuseFileUniqueId: part.fileUniqueId, name: target.name, type: source.type }));
         const remotes = await queueTelegram({ id: crypto.randomUUID() }, async () => {
             for (const part of physical) await telegram.call(toBackend, 'getFile', { file_id: part.reuseFileId });

@@ -26,7 +26,9 @@ test('网盘文件、目录和分片在同一 WAL 事务中保存；失败时全
     assert.deepEqual(repository.load('directories', 'space-1'), [directory]);
     assert.deepEqual(repository.load('files', 'space-2'), []);
     const partsBefore = new DatabaseSync(repository.filename, { readOnly:true });
-    assert.equal(partsBefore.prepare('SELECT count(*) AS count FROM disk_file_parts').get().count, 1);
+    assert.equal(partsBefore.prepare('SELECT count(*) AS count FROM disk_file_parts').get().count, 0);
+    assert.equal(partsBefore.prepare('SELECT count(*) AS count FROM disk_content_parts').get().count, 1);
+    assert.equal(partsBefore.prepare('SELECT count(*) AS count FROM disk_content_refs').get().count, 1);
     partsBefore.close();
     assert.throws(() => repository.replaceMany([
         { table:'files', scope:'space-1', items:[{ ...file, name:'changed.bin' }], keyOf:item => item.id },
@@ -76,7 +78,7 @@ test('旧版本服务不会写入更高版本的网盘数据库', t => {
     t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
     const repository = openDiskRepository(dir);
     const db = new DatabaseSync(repository.filename);
-    db.exec('INSERT INTO disk_schema_migrations(version) VALUES (2)');
+    db.exec('INSERT INTO disk_schema_migrations(version) VALUES (3)');
     db.close();
     repository.close();
     assert.throws(() => openDiskRepository(dir), /DISK_SCHEMA_TOO_NEW/);

@@ -2404,7 +2404,11 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
     }
 });
 
-app.post('/api/telegram/drive/logout', (req, res) => { res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`); res.json({ ok: true }); });
+app.post('/api/telegram/drive/logout', (req, res) => {
+    try { diskAPI.revokeContentSession(req); }
+    catch { res.status(503).json({error:'DISK_LOGOUT_FAILED'}); return; }
+    res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`); res.json({ ok: true });
+});
 const diskAPI = createDiskAPI({
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
     operations: diskOperations, telegram: diskTelegram,

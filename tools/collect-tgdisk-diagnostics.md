@@ -2,6 +2,8 @@
 
 在灰度服务器的项目目录运行，服务可以继续工作，不需要停服或重启。现有服务器已经自动记录 `.tunnel-data/disk-upload.log`，达到 10 MB 后轮转到 `disk-upload.log.1`；本工具只读取这些文件和任务状态，生成一个可提供给排查人员的诊断 JSON。
 
+共享 Content schema v2 环境另外输出 `contentObjects` 聚合计数：Content 的 state/hash_status、总引用数、有效 lease 类型数和清理队列状态。不导出 proof nonce、expected digest、正文、物理来源或凭据。上传任务的 `reusedBytes/logicalBytesProcessed/filesReady/filesTotal` 也会保留，便于区别复用与真实网络发送。
+
 ## 这次灰度上传怎么收集
 
 1. 部署本轮上传修复后，重复测试混合文件上传和大文件上传，记下开始测试的时间。

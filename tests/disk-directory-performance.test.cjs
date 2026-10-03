@@ -89,20 +89,16 @@ test('本地目录任务的 202 响应直接返回已完成结果，仍保留任
     assert.equal(denied.response.status, 401); assert.equal(denied.data.error, 'LOGIN_REQUIRED');
 });
 
-test('Telegram 修改尚未结束时新建目录保留排队约束，空目录读取不等远程操作，耗时可关联', async t => {
+test('共享内容改名不等待 Telegram，后续新建和空目录读取及时完成，耗时可关联', async t => {
     t.mock.method(console, 'info', () => {});
     const f = await apiFixture(t);
     f.store.createDirectory(f.user.id, 'empty', 20);
     openDiskRepository(f.dataDir).replaceMany([{ table: 'files', items: [{ id: 'f', ownerId: f.user.id, name: 'a.txt', folderPath: '', size: 1, messageId: 1, fileId: 'remote', channelId: '-1001' }], keyOf: item => item.id }]);
     f.store.reloadPersistence();
     const rename = await f.request('/files/f', { ...json({ name: 'b.txt' }), method: 'PATCH' });
-    await f.captionStarted;
     const mkdir = await f.request('/directories', json({ path: 'new' }));
-    assert.equal(mkdir.data.status, undefined, '不能把排队中的任务冒充完成');
-    assert.equal(f.store.getDirectory(f.user.id, 'new'), null);
     const list = await f.request('/list?path=empty');
     assert.equal(list.response.status, 200); assert.deepEqual(list.data.files, []);
-    f.release();
     for (let i = 0; i < 30 && f.operations.get(mkdir.data.operation_id, { userId: f.user.id }).status !== 'completed'; i++) await turn();
     assert.equal(f.operations.get(rename.data.operation_id, { userId: f.user.id }).status, 'completed');
     assert.equal(f.store.getDirectory(f.user.id, 'new').path, 'new');

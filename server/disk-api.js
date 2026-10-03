@@ -2,6 +2,8 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 const crypto = require('crypto');
 const { performance } = require('node:perf_hooks');
 const { Transform, Readable } = require('stream');
@@ -18,6 +20,7 @@ const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
 const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 const { createProgressiveUploadRunner } = require('./disk-progressive-upload');
+const { createContentProof } = require('./disk-content-proof');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -27,7 +30,8 @@ const publicFile = item => item ? {
     metadata: item.metadata || {}, reviewStatus: item.reviewStatus || 'active', reviewUpdatedAt: item.reviewUpdatedAt || 0,
     partCount: Number(item.partCount) || (Array.isArray(item.parts) && item.parts.length) || 1,
     mediaIndex: item.mediaIndex || { mode: 'unavailable' },
-    thumbnailAvailable: Boolean(item.thumbnail?.fileId)
+    thumbnailAvailable: Boolean(item.thumbnail?.fileId),
+    logicalContentVersion: item.logicalContentVersion || 1
 } : null;
 const uploadResultFile = item => item ? {
     ...publicFile(item),
@@ -102,6 +106,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
     };
     const persistence = openDiskRepository(dataDir);
+    const content = persistence.content;
+    telegram.setAnchorGuard?.(physical => content.allowed(physical));
     const partCache = createDiskPartCache({ dataDir });
     const chunkFileCache = createDiskChunkFileCache({ dataDir });
     const browser = express.Router();
@@ -111,6 +117,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
     let objectStorage;
+    const contentProof=createContentProof({content,
+        validate:async (candidate,req)=>{
+            const physical=candidate.physical, target=req.diskApp ? req.diskApp.storage : getDefaultBackend(), source=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+            if(!source || String(source.token)!==String(target?.token) || String(source.baseUrl || '')!==String(target?.baseUrl || '')) return false;
+            try { if(telegram.check && Date.now()-candidate.last_checked_at>180_000) await telegram.check(source,{...physical,size:candidate.size}); }
+            catch(error) { content.setHealth(candidate.id,candidate.current_revision,false,diskErrorCode(error)); return false; }
+            content.setHealth(candidate.id,candidate.current_revision,true); return true;
+        },
+        open:async(candidate,start,end,req)=>{
+            const physical=candidate.physical, storage=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+            return readRemote(storage,{...physical,size:candidate.size,contentId:candidate.id,ownerId:req.diskUser.id,viewerId:req.diskViewerId || req.diskUser.id},start,end,undefined,req.diskScope.diskSpace || '');
+        }
+    });
     const shares = createDiskShares({ dataDir });
     const collaborations = createDiskCollaborationStore(dataDir);
     const shared = express.Router();
@@ -205,6 +224,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
         let reservation = false;
         try {
+            const batch=content.batch(manifest.id);
+            if(batch) {
+                const items=batch.map(id=>diskStore.get(manifest.ownerId || manifest.owner?.id,id));
+                operations.resumeUpload(manifest.operationId,operationScope);
+                operations.complete(manifest.operationId,{ok:true,items:items.filter(Boolean).map(uploadResultFile),warnings:[]});
+                diskStore.discardRecovered(manifest); return;
+            }
             const committed = (manifest.files || []).map(file => diskStore.get(manifest.ownerId || manifest.owner?.id, file.logicalId));
             if (committed.length && committed.every((file, index) => file && file.ownerId === operationScope.userId
                 && file.size === manifest.files[index].size && String(file.channelId) === String(manifest.channelId)
@@ -224,16 +250,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 || (manifest.files || []).some(file => (file.finalGroups || []).some(group => (group.intent || group.unknownResult || ['finalizing', 'unknown'].includes(group.status)) && !group.remotes?.length));
             if (unknown) throw new Error('TELEGRAM_UPLOAD_OUTCOME_UNKNOWN');
             if (!manifest.clientDone) throw new Error('UPLOAD_SOURCE_INTERRUPTED');
+            contentProof.assertAuthorization(manifest.contentAuthorization);
             if (activeProgressiveUploads.size >= 20) { queueUploadRecovery({ store: diskStore, job: manifest }); return; }
             if (!previous) throw new Error('OPERATION_NOT_FOUND');
-            if (manifest.collaborationId && !collaborations.authorized(manifest.collaborationId, manifest.viewerId || manifest.owner?.id)) throw new Error('COLLABORATION_NOT_FOUND');
+            if (manifest.collaborationId) {
+                const grant=collaborations.authorized(manifest.collaborationId,manifest.viewerId || manifest.owner?.id);
+                if(!grant || manifest.collaborationVersion && String(grant.grantVersion)!==String(manifest.collaborationVersion)) throw new Error('COLLABORATION_NOT_FOUND');
+            }
             activeProgressiveUploads.add(manifest.id); reservation = true;
             const storage = await resolveStorageBackend(manifest.backendId ? auth.backend(manifest.backendId) : getDefaultBackend(manifest.channelId));
             if (!storage?.token || String(storage.channelId) !== String(manifest.channelId)) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const job = await diskStore.activateRecoveredUpload(manifest);
             job.storage = storage;
             const req = { diskScope: operationScope, diskUser: job.owner, diskStore,
-                get: () => '', collaboration: manifest.collaborationId ? { id: manifest.collaborationId } : null,
+                get: () => '', collaboration: manifest.collaborationId ? { id: manifest.collaborationId, ...(manifest.collaborationVersion ? {grantVersion:manifest.collaborationVersion}: {}) } : null,
                 diskViewerId: manifest.viewerId || job.owner.id };
             if (!operations.resumeUpload(job.operationId, operationScope)) {
                 await diskStore.preserveForRecoveryAsync(job.id); throw new Error('OPERATION_NOT_FOUND');
@@ -293,6 +323,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         let failed = false;
         for (const file of files) {
             if (file.reviewStatus === 'deleted') continue;
+            if(file.contentId) continue;
             try {
                 const storage = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
                 await telegram.syncCaption(storage, file, scope, update);
@@ -305,6 +336,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (retryingCaptions || closed) return;
         retryingCaptions = true;
         try {
+            if(typeof telegram.call==='function')for(let count=0;count<20 && !closed;count++){
+                const task=content.claimCaption();if(!task)break;
+                let error;
+                try{const physical=task.physical,storage=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+                    await telegram.call(storage,'editMessageCaption',{chat_id:physical.channelId,message_id:physical.messageId,caption:physical.caption});
+                }catch(failure){if(!/message is not modified/i.test(failure.telegramDescription || failure.message || '')){error=failure;log('content.caption-retry',{contentId:task.content_id,error:networkDetails(failure)});}}
+                content.finishCaption(task,error);
+            }
             for (const { diskSpace, store } of spaces.entries()) {
                 for (const saved of store.adminFiles().filter(file => file.captionSyncPending && file.reviewStatus !== 'deleted')) {
                     if (closed) return;
@@ -322,6 +361,18 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (cleaningRemote || closed) return;
         cleaningRemote = true;
         try {
+            for(let i=0;i<30;i++) {
+                const task=content.claimCleanup(); if(!task) break;
+                let error;
+                try {
+                    const physical=task.physical;
+                    const storage=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+                    if(!content.allowed(physical)) throw new Error('CONTENT_ANCHOR_IN_USE');
+                    if(physical.parts.length || physical.thumbnail?.messageId) await enqueueTelegramUpload({id:task.id},()=>task.purpose==='temporary-upload' && telegram.cleanupTemporaryMessages
+                        ? telegram.cleanupTemporaryMessages(storage,physical,{finalMessageIds:physical.finalMessageIds || []}) : telegram.remove(storage,physical));
+                } catch(failure) { error=failure;if(task.purpose==='temporary-upload' && task.physical.operationId)operations.addWarning?.(task.physical.operationId,'TELEGRAM_TEMP_CLEANUP_PENDING'); log('content.cleanup-retry',{contentId:task.content_id,error:networkDetails(failure)}); }
+                content.finishCleanup(task,error);
+            }
             for (const { diskSpace, store } of spaces.entries()) for (const saved of store.adminFiles().filter(file => file.pendingRemoteCleanup?.length)) {
                 const scope = { userId: saved.ownerId, diskSpace };
                 for (const stale of saved.pendingRemoteCleanup) {
@@ -382,7 +433,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const key = ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', cacheStart, cacheEnd].join(':');
                 const source = await partCache.open({
                     key, size: cacheEnd - cacheStart + 1,
-                    owner: { userId: file.ownerId, diskSpace },
+                    owner: { userId: file.viewerId || file.ownerId, diskSpace },
                     start: localStart - cacheStart, end: localEnd - cacheStart, signal,
                     expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1 ? String(part.sha256 || '') : '',
                     // A browser normally cancels its old HTTP Range while seeking.
@@ -399,11 +450,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         return Readable.from(combine());
     }
     async function readRemote(backend, file, start, end, signal, diskSpace) {
-        try { return await openRemoteRange(backend, file, start, end, signal, diskSpace); }
-        catch (error) {
-            if (!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message)) throw error;
-            await wait(250); return openRemoteRange(backend, file, start, end, signal, diskSpace);
-        }
+        const lease=file.contentId ? content.lease(file.contentId,file.viewerId || file.ownerId || '',crypto.randomUUID(),'read') : '';
+        let timer, source, released=false;
+        const release=()=>{if(released)return;released=true;clearInterval(timer);if(lease)content.releaseLease(lease);};
+        try {
+            if(lease) {
+                file={...file,...content.leasedPhysical(lease)};
+                file.parts=file.parts.map((part,index)=>({...part,logicalFileId:file.id,partIndex:index+1,partCount:file.parts.length,originalSize:file.size}));
+                backend=await resolveStorageBackend(file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId),{strict:false});
+                timer=setInterval(()=>{try{if(!content.renewLease(lease))source?.destroy(new Error('CONTENT_LEASE_EXPIRED'));}catch(error){source?.destroy(error);}},60000);timer.unref?.();
+            }
+            try {source=await openRemoteRange(backend,file,start,end,signal,diskSpace);}
+            catch(error){if(!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message))throw error;await wait(250);source=await openRemoteRange(backend,file,start,end,signal,diskSpace);}
+            source.once('close',release);source.once('error',release);source.once('end',release);return source;
+        } catch(error) {release();throw error;}
     }
     const parseRange = (header, size) => {
         if (!header) return { start: 0, end: size - 1, partial: false };
@@ -425,7 +485,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         backend = await resolveStorageBackend(backend, { strict: false });
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-        const source = await objectStorage.openFile(backend, file, range.start, range.end, abort.signal, diskSpace);
+        const source = await objectStorage.openFile(backend, {...file,viewerId:req.diskViewerId || req.diskUser?.id || file.ownerId}, range.start, range.end, abort.signal, diskSpace);
         const length = range.end - range.start + 1;
         res.status(range.partial ? 206 : 200);
         res.set('Accept-Ranges', 'bytes');
@@ -476,6 +536,50 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use(csrf);
 
     admin.use(csrf);
+    admin.get('/content-objects',wrap((req,res)=>res.json(content.withDatabase(db=>({
+        contents:db.prepare(`SELECT c.*, (SELECT count(*) FROM disk_content_refs r WHERE r.content_id=c.id) AS reference_count,
+            (SELECT count(*) FROM disk_content_leases l WHERE l.content_id=c.id AND l.expires_at>?) AS active_leases FROM disk_contents c ORDER BY c.created_at DESC`).all(Date.now()),
+        cleanup:db.prepare("SELECT id,content_id,revision,purpose,state,attempts,retry_at,error FROM disk_content_cleanup WHERE state!='COMPLETED'").all(),
+        captions:db.prepare("SELECT content_id,revision,state,attempts,retry_at,error FROM disk_content_caption_jobs WHERE state!='COMPLETED'").all()
+    })))));
+    admin.get('/content-objects/:id',wrap((req,res)=>{
+        const item=content.resolve(req.params.id);if(!item)throw new Error('CONTENT_NOT_FOUND');
+        res.json(content.withDatabase(db=>({content:item,
+            references:db.prepare(`SELECT r.scope,r.logical_file_id,r.content_version,f.owner_id,f.folder_path,f.name
+                FROM disk_content_refs r JOIN disk_files f ON f.scope=r.scope AND f.id=r.logical_file_id WHERE r.content_id=?`).all(item.id),
+            revisions:db.prepare('SELECT revision,state,payload FROM disk_content_revisions WHERE content_id=? ORDER BY revision').all(item.id).map(row=>({...row,payload:JSON.parse(row.payload)})),
+            anchors:db.prepare('SELECT channel_id,message_id,revision,role,state FROM disk_content_anchors WHERE content_id=?').all(item.id),
+            leases:db.prepare('SELECT revision,kind,viewer_id,upload_id,expires_at FROM disk_content_leases WHERE content_id=? AND expires_at>?').all(item.id,Date.now())
+        })));
+    }));
+    // Explicit administrator action only. Startup/schema migration never reads
+    // Telegram to infer a trusted digest or merges historical contents.
+    admin.post('/content-objects/:id/verify',wrap((req,res)=>{
+        const candidate=content.resolve(req.params.id);
+        if(!candidate || candidate.hash_status==='anchor_conflict')throw new Error('CONTENT_NOT_AVAILABLE');
+        const ref=content.references(candidate.id)[0];if(!ref)throw new Error('CONTENT_NOT_REFERENCED');
+        const file=spaces.get(ref.scope).adminFiles().find(item=>item.id===ref.logical_file_id);
+        if(!file)throw new Error('FILE_NOT_FOUND');
+        const operation=operations.create({userId:file.ownerId,diskSpace:ref.scope},'content-verify','正在验证历史文件完整内容',file.size);
+        operations.run(operation.operation_id,async update=>{
+            const backend=file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+            const digest=crypto.createHash('sha256');let bytes=0;
+            if(file.size){const source=await readRemote(backend,file,0,file.size-1,undefined,ref.scope);
+                for await(const chunk of source){bytes+=chunk.length;digest.update(chunk);update({phase:'content-hashing',processedBytes:bytes,totalBytes:file.size,percent:bytes/file.size*100});}}
+            if(bytes!==file.size)throw new Error('CONTENT_SIZE_MISMATCH');
+            const sha=digest.digest('hex');content.verifyLegacy(candidate.id,sha,file.size,candidate.current_revision);
+            const canonical=content.find(sha,file.size);
+            let merged=0;
+            if(req.body?.merge===true && canonical && canonical!==candidate.id){
+                const existing=content.resolve(canonical),storage=existing.physical.backendId ? auth.backend(existing.physical.backendId) : getDefaultBackend(existing.physical.channelId);
+                if(telegram.check)await telegram.check(storage,{...existing.physical,size:existing.size});
+                merged=content.mergeVerified(candidate.id,canonical,candidate.current_revision).merged;
+                for(const entry of spaces.entries())entry.store.reloadPersistence();
+            }
+            return {verified:true,contentId:merged?canonical:candidate.id,merged};
+        });
+        res.status(202).json({operation_id:operation.operation_id});
+    }));
     admin.get('/apps', (req, res) => res.json({ apps: auth.apps() }));
     admin.post('/apps', wrap(async (req, res) => res.json(await auth.saveApp(req.body || {}))));
     admin.delete('/apps/:id', (req, res) => { auth.deleteApp(req.params.id); res.json({ ok: true }); });
@@ -489,16 +593,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         // MiB-aligned byte windows from logical file records for scoped cleanup.
         if (scope === 'all' || typeof telegram.parts !== 'function') return;
         for (const { diskSpace, store } of spaces.entries()) {
-            if (scope !== 'user' && diskSpace !== selectedSpace) continue;
             for (const file of store.adminFiles()) {
-                if (scope !== 'partition' && file.ownerId !== userId) continue;
                 let backend; try { backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId); } catch (_) { continue; }
                 if (!backend) continue;
                 const backendKey = crypto.createHash('sha256').update(String(backend.baseUrl || '') + '\0' + String(backend.token || '')).digest('hex');
                 for (const part of telegram.parts(file)) for (let start = 0; start < part.size; start += 1024 * 1024) {
                     for (let next = start + 1024 * 1024; ; next += 1024 * 1024) {
                         const end = Math.min(part.size - 1, next - 1);
-                        yield ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':');
+                        yield {key:['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':'),owner:{userId:file.ownerId,diskSpace}};
                         if (end === part.size - 1) break;
                     }
                 }
@@ -583,8 +685,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (action === 'unblock') return res.json(publicFile(store.setReviewStatus(userId, file.id, 'active')));
         if (action !== 'delete') throw new Error('REVIEW_ACTION_INVALID');
         if (file.reviewStatus !== 'deleted') {
-            const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
-            await telegram.remove(backend, file);
+            if(!file.contentId) await telegram.remove(adminFileBackend(file), file);
         }
         res.json(publicFile(store.tombstone(userId, file.id)));
     }));
@@ -597,7 +698,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (action !== 'delete') throw new Error('REVIEW_ACTION_INVALID');
         for (const file of tree.files) {
             if (file.reviewStatus === 'deleted') continue;
-            await telegram.remove(adminFileBackend(file), file);
+            if(!file.contentId) await telegram.remove(adminFileBackend(file), file);
         }
         res.json(store.tombstoneDirectory(userId, folderPath));
     }));
@@ -708,6 +809,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             req.body.folderPath ||= root;
             req.body.metadata = { ...(req.body.metadata || {}), collaborationId: entry.id };
         }
+        else if (entry.kind === 'directory' && method === 'POST' && path === '/content/preflight') {
+            req.body.folderPath=within(req.body?.folderPath || root);
+            for(const incoming of req.body?.files || []) {
+                if(incoming.source_path)throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                if(Object.hasOwn(incoming,'folderPath'))within(incoming.folderPath);
+            }
+        }
+        else if (entry.kind === 'directory' && method === 'POST' && ['/content/proof','/content/release'].includes(path)) { /* durable tickets remain viewer/grant/target bound */ }
         else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish|\/queue|\/failure)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
             const uploadId = path.split('/')[2], job = storage.upload(uploadId);
             if (!job || job.metadata?.collaborationId !== entry.id || !storage.ownsUpload(entry.ownerId, uploadId)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
@@ -788,7 +897,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const backend = req => req.diskApp ? req.diskApp.storage : getDefaultBackend();
         const fileBackend = (req, file) => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
-        const assertCurrentCollaboration = req => { if (req.collaboration && !collaborations.authorized(req.collaboration.id, req.diskViewerId)) throw new Error('COLLABORATION_NOT_FOUND'); };
+        const assertCurrentCollaboration = req => {
+            if(!req.collaboration)return;
+            const current=collaborations.authorized(req.collaboration.id,req.diskViewerId);
+            if(!current || req.collaboration.grantVersion!==undefined && String(current.grantVersion)!==String(req.collaboration.grantVersion))throw new Error('COLLABORATION_NOT_FOUND');
+        };
         const requireEntity = file => { if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW'); return file; };
         const jobResponse = (req, res, type, message, work, { immediateResult = false } = {}) => {
             const job = operations.create(scope(req), type, message);
@@ -880,14 +993,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/files/:id', wrap((req, res) => res.json(publicFile(getFile(req)))));
         router.get('/files/:id/thumbnail', wrap(async (req, res) => {
-            const file = requireEntity(getFile(req)), thumbnail = file.thumbnail;
+            const file = requireEntity(getFile(req));
+            const lease=file.contentId ? content.lease(file.contentId,req.diskViewerId || owner(req),'','read') : '';
+            try {
+            const physical=lease ? content.leasedPhysical(lease) : file, thumbnail = physical.thumbnail;
             if (!thumbnail?.fileId || !Number(thumbnail.size)) throw new Error('FILE_THUMBNAIL_NOT_FOUND');
             const abort = new AbortController();
             res.on('close', () => { if (!res.writableEnded) abort.abort(); });
             res.status(200).set({ 'Content-Type': thumbnail.type || 'image/jpeg', 'Content-Length': String(thumbnail.size), 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.name + '.cover.jpg')}` });
-            const source = await telegram.readPart(fileBackend(req, file), thumbnail, { start: 0, end: thumbnail.size - 1, signal: abort.signal });
+            const storage = await resolveStorageBackend(fileBackend(req, physical), { strict: false });
+            const source = await telegram.readPart(storage, thumbnail, { start: 0, end: thumbnail.size - 1, signal: abort.signal });
             assertCurrentCollaboration(req);
             await pipeline(source, res);
+            } finally {if(lease)content.releaseLease(lease);}
         }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
@@ -1192,6 +1310,26 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         };
         if (router === browser) coreUpload = { runUploadPipeline, runProgressiveUpload: (req, job, update, control) => runProgressiveUpload(req, store(req), job, update, control), pipelineWait, pipelineWake, rollbackPipelineRemote };
+        router.post('/content/preflight',rateLimit({windowMs:60000,max:200,standardHeaders:true,legacyHeaders:false}),wrap(async(req,res)=>{
+            const files=req.body?.files;
+            if(!Array.isArray(files) || !files.length || files.length>100) throw new Error('DISK_BATCH_LIMIT');
+            const results=[];
+            try {
+            for(const file of files){
+                if(!Number.isSafeInteger(file?.size) || file.size<0 || file.size>LOGICAL_FILE_UPLOAD_LIMIT)throw new Error('telegram-drive-upload-size-invalid');
+                if(typeof file.name!=='string' || !file.name.trim() || file.name.length>180)throw new Error('telegram-drive-name-invalid');
+                const folder=normalizeTelegramDrivePath(file.folderPath ?? req.body.folderPath ?? '');
+                if(folder.split('/').filter(Boolean).length>maxDepth())throw new Error('telegram-drive-depth-exceeded');
+                results.push(await contentProof.preflight(req,file,req.body.folderPath));
+            }
+            res.json({files:results});
+            } catch(error) {
+                contentProof.release(req,results.map(result=>result.ticket || result.reuseTicket || result.uploadTicket).filter(Boolean));
+                throw error;
+            }
+        }));
+        router.post('/content/proof',rateLimit({windowMs:60000,max:200,standardHeaders:true,legacyHeaders:false}),wrap((req,res)=>res.json(contentProof.prove(req,req.body?.ticket,req.body?.digests))));
+        router.post('/content/release',wrap((req,res)=>{contentProof.release(req,req.body?.tickets);res.json({ok:true});}));
         router.post('/uploads', wrap(async (req, res) => {
             const storage = await resolveStorageBackend(backend(req));
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
@@ -1209,10 +1347,25 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             job.storage = storage;
             if (progressive) activeProgressiveUploads.add(job.id);
             try {
+                for(const [index,file] of files.entries()) {
+                    if(file.size===0){job.files[index].emptyContent=true;job.files[index].finalized=true;job.files[index].contentSha256=crypto.createHash('sha256').update('').digest('hex');}
+                    const peer=files.findIndex((entry,previous)=>previous<index && file.contentSha256 && entry.contentSha256===file.contentSha256 && entry.size===file.size);
+                    if(progressive && peer>=0) { job.files[index].reuseFromIndex=peer; continue; }
+                    if(file.reuseTicket) {
+                        if(!progressive) throw new Error('CONTENT_REUSE_REQUIRES_PROGRESSIVE');
+                        const verified=contentProof.consume(req,file,req.body.folderPath);
+                        await store(req).reuseContent(job.id,index,verified.id,verified.lease);
+                    } else if(file.uploadTicket) {
+                        const claim=contentProof.consumeClaim(req,file,req.body.folderPath);
+                        job.files[index].contentCandidateId=claim.id; job.files[index].contentClaimToken=claim.token;
+                    }
+                }
                 const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
                 job.operationId = operation.operation_id;
                 await store(req).setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId, operationScope: scope(req),
-                    ...(req.collaboration ? { collaborationId: req.collaboration.id, viewerId: req.diskViewerId } : {}) });
+                    contentAuthorization:contentProof.authorization(req),
+                    ...(req.collaboration ? { collaborationId: req.collaboration.id, collaborationVersion:req.collaboration.grantVersion, viewerId: req.diskViewerId,
+                        contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion} } : {}) });
                 operations.update(job.operationId, { uploadId: job.id, progressive, telegramFileCount: files.length, folderPath: job.folderPath || '', ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
             } catch (error) {
                 activeProgressiveUploads.delete(job.id);
@@ -1225,7 +1378,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
             operations.run(job.operationId, (update, control) => job.progressive ? runProgressiveUpload(req, store(req), job, update, control) : runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
-            res.status(201).json({ uploadId: job.id, operation_id: job.operationId, progressive: job.progressive, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, uploadQueueCheck: true, queue: store(req).uploadQueue(job.id), files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length })) });
+            res.status(201).json({ uploadId: job.id, operation_id: job.operationId, progressive: job.progressive, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, uploadQueueCheck: true, queue: store(req).uploadQueue(job.id), files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length, reused:Boolean(file.emptyContent || file.reuseContentId || Number.isInteger(file.reuseFromIndex)) })) });
         }));
         router.get('/uploads/:uploadId/progress', wrap((req, res) => {
             // A single authenticated stream replaces frequent HTTP polls. This
@@ -1272,7 +1425,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             operations.update(job.operationId, { status: 'running', phase: 'client-upload', percent: null, message: '正在接收客户端文件：' + file.name });
             try {
                 const received = job.files.reduce((sum, file) => sum + file.received, 0);
-                const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
+                const totalBytes = job.files.filter(file=>!file.reuseContentId && !Number.isInteger(file.reuseFromIndex)).reduce((sum, file) => sum + file.size, 0);
                 let lastBytes = received, measuredAt = started, speed = 0;
                 const progress = bytes => {
                     receivedBytes = bytes; lastProgressAt = Date.now();
@@ -1377,9 +1530,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 try {
                     if (typeof telegram.check === 'function') await telegram.check(fileBackend(req, file), file);
                     else await telegram.call(fileBackend(req, file), 'getFile', { file_id: file.fileId });
-                    store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() }); return { valid: true };
+                    if(file.contentId) content.setHealth(file.contentId,file.physicalRevision,true);
+                    else store(req).update(owner(req), file.id, { lastCheckedAt: Date.now() });
+                    return { valid: true };
                 }
-                catch (_) { return { valid: false }; }
+                catch (error) { if(file.contentId)content.setHealth(file.contentId,file.physicalRevision,false,diskErrorCode(error));return { valid: false }; }
             });
         }));
         router.get('/files/:id/download', wrap(async (req, res) => {
@@ -1418,11 +1573,32 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 try {
                     if (!store(req).get(owner(req), file.id)) throw new Error('FILE_NOT_FOUND');
                     const before = { ...file, parts: (file.parts || []).map(part => ({ ...part })), thumbnail: file.thumbnail ? { ...file.thumbnail } : null };
-                    const [remote] = await enqueueTelegramUpload({ id: job.id, operationId: operation.operation_id }, () => telegram.upload(storage, [{ ...job.files[0], chunks: undefined, logicalId: file.id, name: file.name, folderPath: file.folderPath }], update, [], scope(req)));
+                    const actualSha=await store(req).verifyContentHash(job.id,0);
+                    if(!replacement && file.contentId) {
+                        let expected=file.contentSha256;
+                        if(!expected) {
+                            const digest=crypto.createHash('sha256');let count=0;
+                            const source=await readRemote(fileBackend(req,file),file,0,file.size-1,undefined,req.diskScope.diskSpace);
+                            for await(const bytes of source){count+=bytes.length;digest.update(bytes);}
+                            if(count!==file.size)throw new Error('CONTENT_SIZE_MISMATCH'); expected=digest.digest('hex');
+                            content.verifyLegacy(file.contentId,expected,file.size,file.physicalRevision);
+                        }
+                        if(actualSha!==expected)throw new Error('CONTENT_REPAIR_HASH_MISMATCH');
+                    }
+                    const [remote] = incomingSize===0 ? [{parts:[],fileId:'',fileUniqueId:'',messageId:0,mediaGroupId:'',thumbnail:null}]
+                        : await enqueueTelegramUpload({ id: job.id, operationId: operation.operation_id }, () => telegram.upload(storage, [{ ...job.files[0], chunks: undefined, logicalId: file.id, name: !replacement && file.contentId ? content.resolve(file.contentId).original_name : file.name, contentCandidateId:!replacement && file.contentId ? file.contentId : job.files[0].contentCandidateId, physicalRevision:!replacement ? file.physicalRevision+1 : 1, folderPath: file.folderPath }], update, [], scope(req)));
+                    let attached=false;
+                    try {
                     const previous = { fileId: file.fileId, fileUniqueId: file.fileUniqueId, messageId: file.messageId, mediaGroupId: file.mediaGroupId, parts: file.parts || [] };
-                    store(req).update(owner(req), file.id, { ...remote, ...(replacement ? { size: incomingSize, type: incomingType, thumbnail: null } : {}), channelId: storage.channelId, backendId: storage.id || '', repairedAt: Date.now(), fileIdHistory: [...(file.fileIdHistory || []), previous] });
-                    if (replacement) await telegram.remove(fileBackend(req, before), before).catch(error => log('collaboration.replace-cleanup-failed', { fileId: file.id, error: networkDetails(error) }));
+                    assertCurrentCollaboration(req);
+                    const current=store(req).get(owner(req),file.id);
+                    if(current?.contentId!==before.contentId || current?.logicalContentVersion!==before.logicalContentVersion || current?.physicalRevision!==before.physicalRevision)throw new Error('CONTENT_WRITE_CONFLICT');
+                    store(req).update(owner(req), file.id, { ...remote, ...(replacement ? { size: incomingSize, type: incomingType, thumbnail: null,
+                        contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion} } : {}), contentAuthorization:contentProof.authorization(req), expectedContentId:before.contentId,expectedContentVersion:before.logicalContentVersion,expectedPhysicalRevision:before.physicalRevision, contentSha256:actualSha, contentPhysicalRepair:!replacement, channelId: storage.channelId, backendId: storage.id || '', repairedAt: Date.now(), fileIdHistory: [...(file.fileIdHistory || []), previous] });
+                    attached=true;
+                    if (replacement && !before.contentId) await telegram.remove(fileBackend(req, before), before).catch(error => log('collaboration.replace-cleanup-failed', { fileId: file.id, error: networkDetails(error) }));
                     return { ok: true };
+                    } catch(error){if(!attached)content.enqueue({...remote,size:incomingSize,channelId:storage.channelId,backendId:storage.id || '',createdAt:Date.now()},'failed-repair');throw error;}
                 } finally { store(req).abort(job.id); }
             }));
             res.status(202).json({ operation_id: operation.operation_id });
@@ -1436,6 +1612,36 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const diskStore = spaces.get(diskSpace);
         const storage = await resolveStorageBackend(mapping.backendId ? auth.backend(mapping.backendId) : getDefaultBackend());
         if (!storage?.token || !storage?.channelId) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+        const reusable=expectedSha256 && expectedSha256!=='UNSIGNED-PAYLOAD' ? content.find(expectedSha256.toLowerCase(),size) : null;
+        if(reusable) {
+            const candidate=content.resolve(reusable),physical=candidate.physical;
+            const sourceBackend=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+            if(String(sourceBackend?.token)===String(storage.token) && String(sourceBackend?.baseUrl || '')===String(storage.baseUrl || '')) {
+                const lease=content.lease(reusable,owner.id,'s3-put','verified-input');
+                let leaseFailure;
+                const heartbeat=setInterval(()=>{
+                    try {if(!content.renewLease(lease))throw new Error('CONTENT_LEASE_EXPIRED');}
+                    catch(error){leaseFailure=error;input.destroy?.(error);}
+                },60000);heartbeat.unref?.();
+                let dir;
+                try {
+                    dir=await fsp.mkdtemp(path.join(dataDir,'s3-content-'));const target=path.join(dir,'input');
+                    const sha=crypto.createHash('sha256'),md5=crypto.createHash('md5');let bytes=0;
+                    const meter=new Transform({transform(chunk,encoding,done){bytes+=chunk.length;if(bytes>size)return done(new Error('EntityTooLarge'));sha.update(chunk);md5.update(chunk);done(null,chunk);}});
+                    await pipeline(input,meter,fs.createWriteStream(target),...(signal ? [{signal}] : []));
+                    if(leaseFailure)throw leaseFailure;
+                    if(bytes!==size)throw new Error('IncompleteBody');
+                    if(sha.digest('hex')!==expectedSha256.toLowerCase())throw new Error('XAmzContentSHA256Mismatch');
+                    const s3ETag=md5.digest('hex');if(expectedMd5 && expectedMd5!==Buffer.from(s3ETag,'hex').toString('base64'))throw new Error('BadDigest');
+                    if(telegram.check)try{await telegram.check(sourceBackend,{...physical,size});}catch(error){
+                        content.setHealth(reusable,candidate.current_revision,false,'TELEGRAM_SOURCE_INVALID');
+                        return await uploadObjectStream({mapping,owner,info,input:fs.createReadStream(target),size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal});
+                    }
+                    const source={...physical,size,type:contentType,metadata:{...metadata,s3ETag},contentId:reusable,contentLease:lease,contentSha256:expectedSha256.toLowerCase()};
+                    return diskStore.putCopiedObject(owner,info.folderPath,info.name,source,physical.parts,sourceBackend,maxDepth(),replaceId);
+                } finally {clearInterval(heartbeat);content.releaseLease(lease);if(dir)await fsp.rm(dir,{recursive:true,force:true});}
+            }
+        }
         const req = { diskScope: { userId: owner.id, diskSpace }, diskStore, diskUser: owner,
             diskApp: { appId: 's3', storage }, get: () => '' };
         const job = diskStore.begin({ owner, folderPath: info.folderPath, files: [{ name: info.name, type: contentType, size }], maxDepth: maxDepth(), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT,
@@ -1496,6 +1702,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const s3ETag = md5.digest('hex');
             if (expectedMd5 && expectedMd5 !== Buffer.from(s3ETag, 'hex').toString('base64')) throw new Error('BadDigest');
             job.metadata = { ...metadata, s3ETag };
+            job.files[0].contentSha256=actualSha;
             job.clientDone = true; job.finishing = true; coreUpload.pipelineWake(job);
             await running;
             return diskStore.adminFiles().find(file => file.ownerId === owner.id && file.folderPath === info.folderPath && file.name === info.name);
@@ -1516,6 +1723,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload,
         protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id), maxDepth });
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, metadataTiming, close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
+    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,
+        revokeContentSession: req => contentProof.revokeSession(req),
+        close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

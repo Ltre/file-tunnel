@@ -107,3 +107,43 @@
 - [Telegram sendMediaGroup](https://core.telegram.org/bots/api#sendmediagroup)：媒体组及 file_id 复用规则。
 - [Telegram Bot FAQ](https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this)：消息频率与限流。
 - [Undici fetch](https://github.com/nodejs/undici#undicifetchinput-init-promise)：流式请求及 duplex。
+
+## 261003-3：共享 Content Object 实施（阶段记录，2026-10-04 暂停交接）
+
+### 基线、范围和问题结论
+
+- 基于 `dev/2609-s5-disk-chunks-progressive-push`、HEAD `e9dc545dea735fe93d2129ed22109d26c80c418f`，按正式 Content Object 指南开发；当前差异尚未提交或暂存。
+- 旧 Logical 内直接携带 Telegram 物理关系，复用 file_id 仍会重新发送消息；直接按 Logical 删除物理消息不能安全支持跨用户共享。因此改为 Logical / Content / physical revision + Anchor 三层，而非只优化上传缓存。
+- 保留整批文件全部完成后一次提交的机制。hashing、PoP 取样、Telegram 上传和 FFmpeg 不在 SQLite 写事务内；引用、版本、batch marker 和 CAS 在短事务内统一提交。
+- 用户已有 `prompts/dev-prompt-logs/dev-2609.md` 改动保留；不操作真实网盘数据库、Telegram 频道或代理控制策略。
+
+### 已落地内容
+
+- SQLite schema v2、Content repository、完整二进制 key、canonical generation、refs、固定 revision leases、cleanup/caption outbox、claim/proof/batch 持久化；迁移前一致性备份。
+- 浏览器增量 SHA Worker、跨用户持有证明、命中零正文/零新 Telegram 消息、批内相同内容共享、mixed 原子提交；MISS 继续现有渐进推送和最终 Album。
+- v3 manifest 与完整 SHA/声明检查、已提交 SQL 识别、reuse lease 恢复、未知发送结果保留、失败只补偿本任务候选消息；清理不得删除共享 Anchor。
+- 最后引用删除宽限、DELETING 禁附着、worker fencing、旧 revision reader 保护；同内容 repair 与异内容 replacement 分离，0 Byte 不发送 Telegram。
+- S3 Copy 同账号/同 Bot 建引用；完整 SHA PUT 先验证真实正文后零消息命中；未知 hash 流仍早推，可能产生 loser 补偿，未伪装为零消息路径。
+- 协同按真实 viewer 做 PoP，成员授权代次阻止踢出后重加入使用旧 ticket；最终 refs 事务再次读取 SQLite 当前授权，防止其它连接撤销后旧内存状态仍提交。
+- 内容 caption 去除 Logical/owner/path 语义，最终关联由 outbox 补注，not-modified 幂等完成；Logical 改名、移动、分享及审核不编辑共享 caption。
+- 浏览器正文/封面/播放进度按 Logical 版本，服务器分片缓存共享 owner 重建；Range、Share、封面与 S3 读取固定物理 revision。未引入未经验证的 mediaIndex parser 或 HLS。
+- 新 Content 停服迁移工具及说明、频道迁移/JSON 迁移/诊断工具适配；后台 Content 汇总/详情、显式完整验证及可选合并 API；部署 Worker 指纹和 SW 更新。
+- 新 `docs/telegram-drive-content-objects.md`；传统网盘 API、S3 文档分别补充当前协议行为。
+
+### 实施边界和谨慎处理
+
+- Content Key 不包含 Bot，但实际复用仍受同 Bot/API 后端权限约束；不同 backend UUID 的 canonical 竞争保守处理，不猜跨 Bot file_id 有效性。
+- 轻量 claim/proof 使用现有 `/uploads` 名称预约和 operation，不另建第二套上传业务协议；claim/preflight 本身不创建任务。
+- getFile 检查不等价于物理 message 一定存在；PoP 抽样不是完整持有的数学证明。未向客户端输出其它用户来源或服务端 expected digest。
+- 历史包装不自动下载全库、不猜完整 SHA；精确物理集合可共享，部分重叠隔离，旧 history 缺可靠位置时留作审计。完整验证/合并需要管理员明确触发。
+- 数据库短事务/typed fencing 不意味着现有所有进程内业务队列已支持多 Node 实例协调。真实 Telegram/公网和 FolderSync 尚需灰度验证。
+
+### 中断点与测试证据
+
+- 较早两次完整回归分别 618/618、621/621 通过；最近完整回归 626 项中 625 通过、1 项旧 caption 时序断言失败。
+- 已修正该旧断言：提交前不编辑 caption，提交后消费 Content outbox，并验证六次补注及物理/Logical 字段隔离。后续 targeted 回归通过，完整 suite 尚待重跑。
+- 最近可确认的 Content/协同组合为 25/25；另有 GC/存储组合 22/22 和其它边界组合通过。此前语法/whitespace 检查通过，不能代替最新补丁验证。
+- 收尾正在补指南要求的账户退出/应用撤销最终 attach 验证：新增 Cookie 指纹撤销表、同 refs 事务校验会话/token/app、manifest 仅保存指纹及期限、logout 写撤销。代码已经落地，新增两项测试尚未执行成功。
+- 最新 targeted 启动被 Windows 沙箱 `spawn EPERM` 阻止；三个测试文件均未执行。用户此时要求因额度先交接，未继续申请并运行测试；不把该权限阻断解释为业务失败。
+- 下一轮先审查最新 session 补丁，再更新文档遗漏字段、跑完整 suite/语法检查并清理临时日志。本任务尚未最终验收，不能宣布已全部完成。
+- 详尽恢复入口：[261003-3 交接文档](handoff-261003-3.md)，列有实际文件、最新未验证代码、已知测试状态、下一步命令和根部临时日志清单。

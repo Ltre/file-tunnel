@@ -85,7 +85,7 @@
         try {
             const files = [];
             for (const item of pending.files) {
-                const cached = await window.TelegramDriveCache?.get(item.id);
+                const cached = await window.TelegramDriveCache?.get(item.id,item);
                 if (!cached?.blob) throw new Error('切换隧道后找不到完整网盘缓存，请重新转发');
                 const file = new File([cached.blob], item.name, { type: item.type });
                 if (item.relativePath) Object.defineProperty(file, 'relativePath', { value: item.relativePath });

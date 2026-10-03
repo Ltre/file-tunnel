@@ -5,11 +5,12 @@
     const expired = row => Boolean(row && (row.source === 'public-share' || String(row.id).startsWith('share:')) && (!row.cachedAt || Date.now() - row.cachedAt >= SHARE_TTL));
     function open() { return new Promise((resolve, reject) => { const req = indexedDB.open(DB, 1); req.onupgradeneeded = () => req.result.createObjectStore('files', { keyPath: 'id' }); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); }); }
     async function put(id, file) { const db = await open(); try { return await new Promise((resolve, reject) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put({ id, ...file, cachedAt: Date.now() }); tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error); }); } finally { db.close(); } }
-    async function get(id) {
+    const matches=(row,item)=>!item || Number(row?.logicalContentVersion || 1)===Number(item.logicalContentVersion || 1);
+    async function get(id,item) {
         const db = await open(); let row;
         try { row = await new Promise((resolve, reject) => { const req = db.transaction('files').objectStore('files').get(id); req.onsuccess = () => resolve(req.result || null); req.onerror = () => reject(req.error); }); }
         finally { db.close(); }
-        if (expired(row)) { await remove(id); return null; }
+        if (expired(row) || row && !matches(row,item)) { await remove(id); return null; }
         return row;
     }
     async function pruneExpiredShares() {
@@ -41,14 +42,14 @@
             const result = {}, tx = db.transaction('files');
             for (const item of items) {
                 const req = tx.objectStore('files').get(item.id);
-                req.onsuccess = () => { result[item.id] = Boolean(req.result?.blob && req.result.blob.size === item.size); };
+                req.onsuccess = () => { result[item.id] = Boolean(req.result?.blob && req.result.blob.size === item.size && matches(req.result,item)); };
             }
             tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(tx.error);
         }); } finally { db.close(); }
     }
     window.TelegramDriveCache = { get, status, remove, pruneExpiredShares,
-    async getThumbnail(id) { return (await get(THUMBNAIL_PREFIX + id))?.blob || null; },
-    async putThumbnail(id, blob) { if (blob instanceof Blob && blob.size) await put(THUMBNAIL_PREFIX + id, { blob, source: 'thumbnail' }); },
+    async getThumbnail(id,item) { return (await get(THUMBNAIL_PREFIX + id,item))?.blob || null; },
+    async putThumbnail(id, blob,item) { if (blob instanceof Blob && blob.size) await put(THUMBNAIL_PREFIX + id, { blob, source: 'thumbnail',logicalContentVersion:item?.logicalContentVersion || 1 }); },
     async put(id, file) {
         await put(id, file);
         window.dispatchEvent(new CustomEvent('disk-cache-changed', { detail: { id } }));

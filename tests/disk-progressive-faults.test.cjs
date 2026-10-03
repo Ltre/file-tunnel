@@ -198,9 +198,10 @@ test('temporary-message cleanup failure leaves committed files readable, retains
     assert.ok(warning.warnings.includes('TELEGRAM_TEMP_CLEANUP_PENDING'));
     const file = f.store.get(f.user.id, result.result.items[0].id);
     assert.deepEqual(file.parts.map(part => part.messageId), [103, 104]);
-    assert.deepEqual(file.pendingRemoteCleanup[0].parts.map(part => part.messageId), [101, 102]);
-    assert.equal(file.pendingRemoteCleanup[0].operationId, job.operation_id);
+    assert.deepEqual(file.pendingRemoteCleanup,[]);
+    const debt=openDiskRepository(f.dataDir).content.withDatabase(db=>JSON.parse(db.prepare("SELECT payload FROM disk_content_cleanup WHERE purpose='temporary-upload'").get().payload));
+    assert.deepEqual(debt.parts.map(part=>part.messageId),[101,102]);assert.equal(debt.operationId,job.operation_id);
     assert.equal(f.store.adminFiles().length, 1);
     const reloaded = createTelegramDriveStore({ dataDir: f.dataDir }).get(f.user.id, file.id);
-    assert.deepEqual(reloaded.pendingRemoteCleanup[0].parts.map(part => part.messageId), [101, 102]);
+    assert.deepEqual(reloaded.pendingRemoteCleanup,[]);
 });

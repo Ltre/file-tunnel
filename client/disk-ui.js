@@ -441,7 +441,7 @@ async function downloadTelegramDriveItem(item) {
 async function checkTelegramDriveItem(item) {
     const result = await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}/check`);
     if (result.valid) return showAppToast('Telegram 文件状态正常');
-    const cached = await window.TelegramDriveCache?.get(item.id);
+    const cached = await window.TelegramDriveCache?.get(item.id,item);
     if (!cached?.blob) return alert('Telegram 文件已失效，当前浏览器没有缓存副本，无法自动修复。');
     if (!await confirmTelegramDriveAction('修复 Telegram 文件', '文件已失效，是否使用本机缓存重新上传到当前网盘分区？', '开始修复')) return;
     await telegramDriveRequest('/api/telegram/drive/files/' + encodeURIComponent(item.id) + '/repair', { method: 'POST', headers: { 'X-Drop2Tunnel-File-Size': String(cached.blob.size), 'Content-Type': 'application/octet-stream' }, body: cached.blob });
@@ -1571,7 +1571,7 @@ async function generateTelegramDriveThumbnail(item) {
         const source = `/api/telegram/drive/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}`;
         return canvasThumbnail(await imageFromSource(source, item.name));
     }
-    const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
+    const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
     const completeBlob = cached?.blob?.size === Number(item.size) ? cached.blob : null;
     let sourceUrl = '', release = false;
     try {
@@ -1610,11 +1610,11 @@ function runDiskThumbnailQueue() {
         const { item, icon } = diskThumbnailQueue.shift();
         if (!icon?.isConnected) continue;
         diskThumbnailWorkers++;
-        Promise.resolve(window.TelegramDriveCache?.getThumbnail(item.id)).then(async cached => {
+        Promise.resolve(window.TelegramDriveCache?.getThumbnail(item.id,item)).then(async cached => {
             if (cached) return applyTelegramDriveThumbnail(icon, cached, item);
             const blob = await generateTelegramDriveThumbnail(item);
             if (!blob) return;
-            await window.TelegramDriveCache?.putThumbnail(item.id, blob).catch(() => {});
+            await window.TelegramDriveCache?.putThumbnail(item.id, blob,item).catch(() => {});
             applyTelegramDriveThumbnail(icon, blob, item);
         }).catch(() => {}).finally(() => { diskThumbnailWorkers--; runDiskThumbnailQueue(); });
     }
@@ -1638,7 +1638,7 @@ function saveDiskMediaProgress(item, media, ended = false) {
     const duration = Number(media.duration), currentTime = ended ? 0 : Number(media.currentTime);
     if (!Number.isFinite(currentTime) || currentTime < 0) return;
     if (ended || (Number.isFinite(duration) && duration > 0 && currentTime >= duration - 1)) delete diskMediaProgress[item.id];
-    else diskMediaProgress[item.id] = { time: currentTime, updatedAt: Date.now() };
+    else diskMediaProgress[item.id] = { time: currentTime, updatedAt: Date.now(), logicalContentVersion:item.logicalContentVersion || 1 };
     const entries = Object.entries(diskMediaProgress).sort((left, right) => Number(right[1]?.updatedAt) - Number(left[1]?.updatedAt)).slice(0, 300);
     diskMediaProgress = Object.fromEntries(entries);
     try { localStorage.setItem(diskMediaProgressKey, JSON.stringify(diskMediaProgress)); } catch (_) {}
@@ -1718,14 +1718,14 @@ async function loadDiskAudioPlayerCover(item, cover, cachedBlob) {
     }
     const metadataCover = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl;
     if (metadataCover) { try { await showImage(metadataCover); return; } catch (_) {} }
-    let thumbnail = await window.TelegramDriveCache?.getThumbnail(item.id).catch(() => null);
+    let thumbnail = await window.TelegramDriveCache?.getThumbnail(item.id,item).catch(() => null);
     if (!thumbnail && cachedBlob && loadAudioCover) {
         const source = await loadAudioCover(cachedBlob, item);
         if (source) { await showImage(source); return; }
     }
     if (!thumbnail) {
         thumbnail = await generateTelegramDriveThumbnail(item);
-        if (thumbnail) await window.TelegramDriveCache?.putThumbnail(item.id, thumbnail).catch(() => {});
+        if (thumbnail) await window.TelegramDriveCache?.putThumbnail(item.id, thumbnail,item).catch(() => {});
     }
     if (!thumbnail || !cover.isConnected) return;
     const source = URL.createObjectURL(thumbnail);
@@ -1808,7 +1808,8 @@ function createDiskMediaPlayer(item, source, type, cachedBlob = null) {
     media.addEventListener('loadedmetadata', () => {
         if (restoredProgress) return;
         restoredProgress = true;
-        const saved = Number(diskMediaProgress[item.id]?.time);
+        const progress=diskMediaProgress[item.id];
+        const saved = Number(Number(progress?.logicalContentVersion || 1)===Number(item.logicalContentVersion || 1) ? progress?.time : NaN);
         if (Number.isFinite(saved) && saved > .25 && saved < media.duration - .5) optimisticSeek(saved);
     });
     media._saveDiskProgress = () => saveDiskMediaProgress(item, media);
@@ -2016,7 +2017,7 @@ async function renderDiskPreview() {
     try {
         const type = getDiskPreviewType(item);
         if (type.startsWith('image/')) body.replaceChildren(createDiskPreviewImageLoading(item));
-        const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
+        const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
         const blob = cached?.blob?.size === Number(item.size) ? cached.blob : null;
         let element;
         if (!blob && (/^(image|audio|video)\//.test(type) || type === 'application/pdf')) {
@@ -2051,6 +2052,9 @@ function stepDiskPreview(delta) {
 }
 function diskUploadProgressLines(job) {
     const lines = [];
+    if(job.phase==='content-hashing' && Number.isFinite(job.hashedBytes))lines.push(`本地摘要 · ${formatFileSize(job.hashedBytes)}/${formatFileSize(job.hashTotalBytes || 0)}`);
+    if(job.reusedBytes>0)lines.push(`已复用共享内容 · ${formatFileSize(job.reusedBytes)}（无正文上传）`);
+    if(Number.isFinite(job.filesReady))lines.push(`文件准备 · ${job.filesReady}/${job.filesTotal || 0} · 整批完成后统一显示`);
     const progressLine = (label, bytes, total, speed) => {
         if (!Number.isFinite(bytes) || !Number.isFinite(total) || total < 0) return;
         const sent = Math.max(0, Math.min(total, bytes)), percent = total ? sent / total * 100 : 100;

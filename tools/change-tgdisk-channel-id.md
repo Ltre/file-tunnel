@@ -2,6 +2,8 @@
 
 适用于同一 Telegram 频道从公开 `@username` 改为私有数字 `chat_id` 的情况。脚本修改 SQLite 文件记录的 `channelId`（包括待清理旧消息的频道引用），不改文件、分片 ID、消息 ID、Bot 凭据或 Telegram 消息 caption。所有分区、所有用户的文件均会处理。
 
+共享 Content schema v2 中，工具改为更新 Content 的物理 revisions、Anchor 身份、分片绑定和清理/待补 caption 定位，同一事务处理所有引用。Logical payload 不重新保存物理频道。把多个不同 Chat 中的相同 message_id 合并到一个目标会报冲突，不会猜测消息归属；只能用于同一个真实频道的标识变更，不能用于搬迁消息到另一个频道。运行命令及停服备份要求不变。
+
 1. 在 Telegram 中取得**同一个频道**的真实数字 `chat_id`（通常以 `-100` 开头）。不同频道的消息 ID 不能直接迁移；若是新建频道，不能使用本脚本。
 2. **停止所有连接该数据目录的 Node 服务和后台任务**，确保没有写入进程。先备份整个 `.tunnel-data` 目录。
 3. 预演并核对旧频道分布和修改数量：

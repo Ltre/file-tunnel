@@ -216,6 +216,10 @@
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
                     for (const key of clientProgressFields) if (values[key] !== undefined) pending[key] = values[key];
+                    if (pending.operation_id.startsWith('local-upload-')) {
+                        for (const key of ['phase','message','percent','hashedBytes','hashTotalBytes'])
+                            if (values[key] !== undefined) pending[key] = values[key];
+                    }
                     update(values); emit();
                 }, controller.signal);
             } catch (error) {
@@ -317,7 +321,64 @@
             }),
             mediaIndex: String(file.type || '').startsWith('video/') ? { mode: 'unavailable', reason: 'container-parser-unavailable' } : undefined
         }));
-        const job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles, progressive: true }), signal));
+        const blobs=[];
+        const hashBlob=(blob,name)=>new Promise((resolve,reject)=>{
+            const worker=new Worker('/client/disk-content-hash-worker.js');
+            const finish=(error,value)=>{worker.terminate();userSignal.removeEventListener('abort',cancel);error?reject(error):resolve(value);};
+            const cancel=()=>finish(abortError()); userSignal.addEventListener('abort',cancel,{once:true});
+            worker.onerror=()=>finish(new Error('CONTENT_HASH_WORKER_FAILED'));
+            worker.onmessage=event=>{if(event.data.error)finish(new Error(event.data.error));else if(event.data.sha256)finish(null,event.data.sha256);else update({phase:'content-hashing',message:'正在计算文件内容指纹：'+name,hashedBytes:event.data.bytes,hashTotalBytes:blob.size,percent:blob.size?event.data.bytes/blob.size*100:null});};
+            if(userSignal.aborted)return cancel();worker.postMessage({file:blob});
+        });
+        for(let index=0;index<files.length;index++) {
+            const blob=await read(files[index]);if(userSignal.aborted)throw abortError();blobs.push(blob);
+            // Old browsers without Worker keep the established upload path;
+            // the server still computes a trusted digest before publishing.
+            if(typeof Worker==='function') {
+                update({phase:'content-hashing',message:'正在计算文件内容指纹：'+files[index].name,hashedBytes:0,hashTotalBytes:blob.size,percent:null});
+                try { plannedFiles[index].contentSha256=await hashBlob(blob,files[index].name); }
+                catch(error) {
+                    if(userSignal.aborted || error.name==='AbortError' || error.message==='OPERATION_CANCELLED')throw error;
+                    console.warn('[telegram-drive] 内容摘要 Worker 不可用，改用普通上传',error.message);
+                }
+            }
+        }
+        const seenContent=new Set();
+        const contentTickets=[];
+        let job;
+        try {
+        for(let index=0;index<files.length;index++) {
+            const blob=blobs[index],file=plannedFiles[index];
+            if(!file.contentSha256)continue;
+            const key=file.size+':'+file.contentSha256;
+            if(seenContent.has(key))continue;seenContent.add(key);
+            let preflight;
+            do {
+                update({phase:'content-preflight',message:'正在验证可复用内容：'+file.name,percent:null});
+                preflight=(await uploadRequest('/content/preflight',withSignal(json('POST',{folderPath,files:[file]}),signal))).files[0];
+                if(preflight.status==='wait')await delay(Math.max(4000,preflight.retryAfterMs || 4000),signal);
+            }while(preflight.status==='wait');
+            if(preflight.ticket)contentTickets.push(preflight.ticket);
+            if(preflight.status==='proof' && (typeof crypto==='undefined' || typeof crypto.subtle?.digest!=='function')) {
+                // LAN/non-secure browser contexts can lack WebCrypto even with
+                // Worker support. No digest means no reuse authorization.
+                await raw('/content/release',json('POST',{tickets:[preflight.ticket]})).catch(()=>{});
+                preflight={status:'miss'};
+            }
+            if(preflight.status==='proof') {
+                update({phase:'content-proof',message:'正在验证文件持有证明：'+file.name,percent:null});
+                const digests=[];
+                for(const range of preflight.ranges){const domain=new TextEncoder().encode('Drop2Tunnel-PoP-v1\0'),prefix=new Uint8Array(domain.length+32+12);prefix.set(domain);prefix.set(Uint8Array.from(preflight.nonce.match(/../g),byte=>parseInt(byte,16)),domain.length);const layout=new DataView(prefix.buffer,domain.length+32);layout.setUint32(0,Math.floor(range.offset/4294967296));layout.setUint32(4,range.offset>>>0);layout.setUint32(8,range.size);const bytes=new Uint8Array(await blob.slice(range.offset,range.offset+range.size).arrayBuffer()),sample=new Uint8Array(prefix.length+bytes.length);sample.set(prefix);sample.set(bytes,prefix.length);digests.push(Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',sample)),byte=>byte.toString(16).padStart(2,'0')).join(''));}
+                preflight=await uploadRequest('/content/proof',withSignal(json('POST',{ticket:preflight.ticket,digests}),signal));
+            }
+            if(preflight.reuseTicket){file.reuseTicket=preflight.reuseTicket;contentTickets.push(preflight.reuseTicket);}
+            if(preflight.uploadTicket){file.uploadTicket=preflight.uploadTicket;contentTickets.push(preflight.uploadTicket);}
+        }
+        job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles, progressive: true }), signal));
+        } catch(error) {
+            if(contentTickets.length)await request('/content/release',json('POST',{tickets:[...new Set(contentTickets)]})).catch(()=>{});
+            throw error;
+        }
         const transfer = newAbortController(); signal = transfer.signal;
         const cancelTransfer = () => transfer.abort();
         userSignal.addEventListener?.('abort', cancelTransfer, { once: true });
@@ -334,8 +395,7 @@
         };
         listeners.add(checkTerminal);
         const closeProgress = subscribeUploadProgress(job);
-        const blobs = [];
-        const totalBytes = plannedFiles.reduce((sum, file) => sum + Number(file.size), 0);
+        const totalBytes = plannedFiles.reduce((sum, file,index) => sum + (job.files?.[index]?.reused ? 0 : Number(file.size)), 0);
         let completedBytes = 0, lastProgressBytes = 0, lastProgressAt = Date.now(), lastPublishedAt = 0, uploadSpeed = 0;
         const reportClientProgress = (index, part, loaded, force = false) => {
             const count = plannedFiles[index].parts.length;
@@ -368,11 +428,11 @@
             update({ operationId: job.operation_id });
             start();
             for (let index = 0; index < files.length; index++) {
+                if(job.files?.[index]?.reused){update({phase:'content-reused',message:'已复用现有内容：'+files[index].name});continue;}
                 await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
-                const blob = await read(files[index]);
+                const blob = blobs[index];
                 if (signal.aborted) throw abortError();
-                blobs.push(blob);
                 const url = '/uploads/' + job.uploadId + '/files/' + index;
                 // Extract the embedded audio cover / representative video frame
                 // locally while regular chunks
@@ -407,7 +467,7 @@
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
             for (let index = 0; index < result.items.length; index++) {
-                await window.TelegramDriveCache?.put(result.items[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type }).catch(() => {});
+                await window.TelegramDriveCache?.put(result.items[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type,logicalContentVersion:result.items[index].logicalContentVersion || 1 }).catch(() => {});
             }
             return result;
         } catch (error) {
@@ -430,7 +490,7 @@
                 }
             }
             for (let index = 0; index < (error.partialItems?.length || 0); index++) {
-                await window.TelegramDriveCache?.put(error.partialItems[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type }).catch(() => {});
+                await window.TelegramDriveCache?.put(error.partialItems[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type,logicalContentVersion:error.partialItems[index].logicalContentVersion || 1 }).catch(() => {});
             }
             if (cancelled) await raw('/uploads/' + job.uploadId, { method: 'DELETE' }).catch(() => {});
             else await raw('/uploads/' + job.uploadId + '/failure', json('POST', {
@@ -455,7 +515,7 @@
         finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
     }
     async function readFile(item, { signal }, update) {
-        const cached = await window.TelegramDriveCache?.get(item.id).catch(() => null);
+        const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
         // The server streams Telegram parts as they arrive. Only bytes received
@@ -478,7 +538,7 @@
             blob = new Blob(chunks, { type: item.type || response.headers?.get('Content-Type') || 'application/octet-stream' });
         } else blob = await response.blob();
         if (Number(item.size) > 0 && blob.size !== Number(item.size)) throw new Error('DISK_READ_SIZE_MISMATCH');
-        await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type }).catch(() => {});
+        await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type,logicalContentVersion:item.logicalContentVersion || 1 }).catch(() => {});
         setCacheProgress(item.id, { phase: 'done', percent: 100 });
         refresh(); return blob;
     }

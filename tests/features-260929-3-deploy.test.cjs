@@ -29,10 +29,13 @@ test('发布脚本改写Worker及动态QRCode真实URL，补齐工坊、通知�
         + slice(build, 'function hashContent(', 'function formatBuildTimestamp(')
         + slice(build, 'function assetNameForScript(', 'function extractPageStyles('), context);
     const result = await context.buildScripts('/output', {});
-    for (const source of ['client/cache-store-worker.js', 'client/web-zip-runtime.js', 'client/web-workshop.js', 'client/notification-center.js', 'client/telegram-content.js', 'client/telegram-target-forward.js', 'client/s3-management.js']) assert.ok(result.assets[source]);
+    for (const source of ['client/cache-store-worker.js', 'client/disk-content-hash-worker.js', 'client/web-zip-runtime.js', 'client/web-workshop.js', 'client/notification-center.js', 'client/telegram-content.js', 'client/telegram-target-forward.js', 'client/s3-management.js']) assert.ok(result.assets[source]);
     const cacheScript = writes.get(path.join('/output', result.assets['client/cache-store.js'].slice(1)));
     assert.ok(cacheScript.includes(`new Worker('${result.assets['client/cache-store-worker.js']}')`));
     assert.ok(!cacheScript.includes("new Worker('/client/cache-store-worker.js')"));
+    const diskScript=writes.get(path.join('/output',result.assets['client/disk-client.js'].slice(1)));
+    assert.ok(diskScript.includes(`new Worker('${result.assets['client/disk-content-hash-worker.js']}')`));
+    assert.ok(!diskScript.includes("new Worker('/client/disk-content-hash-worker.js')"));
     const appScript = writes.get(path.join('/output', result.assets['app.js'].slice(1)));
     assert.ok(appScript.includes(`script.src = '${result.assets['client/qrcode-1.0.0.min.js']}'`));
 });

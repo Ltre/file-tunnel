@@ -141,7 +141,7 @@ test('主文件全部确认后才消费封面，封面 ECONNRESET 仅记录警�
     assert.deepEqual(result.result.warnings, ['TELEGRAM_THUMBNAIL_UPLOAD_FAILED']);
     assert.equal(result.telegramThumbnailBytesSent, null);
     assert.equal(f.store.adminFiles().length, 2);
-    assert.deepEqual(f.removed, []);
+    assert.deepEqual(f.removed, [201],'只清理同内容的独立重复候选，不触碰 committed Anchor');
 });
 
 test('Telegram 失败立即结束任务与队列等待，远程回滚仍独立执行', async t => {
@@ -298,7 +298,7 @@ test('optional chunk cache persistence failures cannot discard accepted messages
     const job = await f.create(); await f.send(job, 0); await f.send(job, 1);
     await f.request(`/uploads/${job.uploadId}/finish`, { method: 'POST' });
     assert.equal((await f.terminal(job)).status, 'completed');
-    assert.ok(failed > 0); assert.equal(f.store.list(f.user.id).files.length, 2); assert.deepEqual(f.removed, []);
+    assert.ok(failed > 0); assert.equal(f.store.list(f.user.id).files.length, 2); assert.deepEqual(f.removed, [201]);
 });
 
 test('permanent manifest EPERM rolls back every accepted message and reports a filesystem cause', async t => {

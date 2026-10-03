@@ -34,7 +34,7 @@ test('媒体进度持久化、缩略图和播放结束补全浏览器缓存均�
     const ui = source('client/disk-ui.js');
     assert.match(ui, /telegram-drive-media-progress-v1/);
     assert.match(ui, /localStorage\.setItem\(diskMediaProgressKey/);
-    assert.match(ui, /putThumbnail\(item\.id, blob\)/);
+    assert.match(ui, /putThumbnail\(item\.id, blob,item\)/);
     assert.match(ui, /media\.addEventListener\('ended'.*DiskClient\.read\(item, \{ silentLoading: true \}\)/s);
 });
 

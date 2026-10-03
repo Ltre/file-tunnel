@@ -3,6 +3,45 @@ const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 
+test('摘要进度进入任务列表，缺少 WebCrypto 的持有证明退回完整上传',async()=>{
+    const window={},requests=[],snapshots=[];let finished=false;
+    const Worker=class {postMessage(){queueMicrotask(()=>{this.onmessage({data:{bytes:2}});this.onmessage({data:{sha256:'a'.repeat(64)}});});}terminate(){}};
+    const fetch=async(url,options={})=>{
+        requests.push({url,options});let data={};
+        if(url.endsWith('/content/preflight'))data={files:[{status:'proof',ticket:'challenge'}]};
+        if(url.endsWith('/uploads'))data={uploadId:'u',operation_id:'op',files:[{reused:false}]};
+        if(url.endsWith('/finish')){finished=true;data={operation_id:'op'};}
+        if(url.includes('/operations?'))data={operations:[{operation_id:'op',status:finished?'completed':'running',result:{items:[{id:'file'}]}}]};
+        return {ok:true,json:async()=>data};
+    };
+    vm.runInNewContext(source('client/disk-client.js'),{window,fetch,Worker,queueMicrotask,AbortController,console,setInterval(){},Date,Map,Set,Promise,encodeURIComponent});
+    window.DiskClient.subscribe(jobs=>snapshots.push(...jobs.map(job=>({...job}))));
+    await window.DiskClient.upload([{name:'local.bin',size:4}], '',async()=>new Blob(['abcd']));
+    assert.ok(snapshots.some(job=>job.phase==='content-hashing' && job.hashedBytes===2 && job.hashTotalBytes===4 && job.percent===50));
+    assert.equal(requests.filter(request=>request.options.method==='PUT').length,1);
+    assert.equal(requests.some(request=>request.url.endsWith('/content/proof')),false);
+    assert.equal(requests.filter(request=>request.url.endsWith('/content/release')).length,1);
+});
+
+test('全命中浏览器不发送正文；Worker 失败仍可普通上传',async()=>{
+    for(const failWorker of [false,true]) {
+        const window={},requests=[];let finished=false;
+        const Worker=class {postMessage(){queueMicrotask(()=>failWorker ? this.onerror() : this.onmessage({data:{sha256:'b'.repeat(64)}}));}terminate(){}};
+        const fetch=async(url,options={})=>{
+            requests.push({url,options});let data={};
+            if(url.endsWith('/content/preflight'))data={files:[{status:'reuse',reuseTicket:'ticket'}]};
+            if(url.endsWith('/uploads'))data={uploadId:'u',operation_id:'op',files:[{reused:!failWorker}]};
+            if(url.endsWith('/finish')){finished=true;data={operation_id:'op'};}
+            if(url.includes('/operations?'))data={operations:[{operation_id:'op',status:finished?'completed':'running',result:{items:[{id:'file'}]}}]};
+            return {ok:true,json:async()=>data};
+        };
+        vm.runInNewContext(source('client/disk-client.js'),{window,fetch,Worker,queueMicrotask,AbortController,console:{warn(){}},setInterval(){},Date,Map,Set,Promise,encodeURIComponent});
+        await window.DiskClient.upload([{name:'local.bin',size:4}], '',async()=>new Blob(['abcd']));
+        assert.equal(requests.filter(request=>request.options.method==='PUT').length,failWorker?1:0);
+        assert.equal(requests.some(request=>request.url.endsWith('/content/preflight')),!failWorker);
+    }
+});
+
 test('浏览器缓存进度按实际收到的流字节从零计算', async () => {
     const snapshots = [], stored = [];
     const window = {

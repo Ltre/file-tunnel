@@ -12,6 +12,7 @@ const DEFAULT_OUT_DIR = 'dist';
 const SCRIPT_SOURCES = [
   // Build dependencies before rewriting their callers' dynamic asset URLs.
   'client/cache-store-worker.js',
+  'client/disk-content-hash-worker.js',
   'client/qrcode-1.0.0.min.js',
   'app.js',
   'client/cache-store.js',
@@ -496,6 +497,13 @@ async function main() {
   await copyDirRelative('server', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
+  await copyFileRelative('docs/telegram-drive-content-objects.md', outRoot);
+  await copyFileRelative('docs/adapter/telegram-disk-api.md', outRoot);
+  await copyFileRelative('tools/migrate-tgdisk-content-objects.cjs', outRoot);
+  await copyFileRelative('tools/migrate-tgdisk-content-objects.md', outRoot);
+  await copyFileRelative('tools/migrate-tgdisk-json-to-sqlite.cjs', outRoot);
+  await copyFileRelative('tools/change-tgdisk-channel-id.cjs', outRoot);
+  await copyFileRelative('tools/change-tgdisk-channel-id.md', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.cjs', outRoot);
   await copyFileRelative('tools/collect-tgdisk-diagnostics.md', outRoot);
   await copyFileRelative('tools/repair-engineio-security.cjs', outRoot);

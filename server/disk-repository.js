@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { DatabaseSync, backup } = require('node:sqlite');
+const { migrateContentSchema, createContentRepository, representationSignature } = require('./disk-content-repository');
 
 function transaction(connection, work, write = false) {
     connection.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN');
@@ -43,7 +44,11 @@ function openDiskRepository(dataDir) {
         db.exec('PRAGMA synchronous = FULL');
         db.exec('CREATE TABLE IF NOT EXISTS disk_schema_migrations (version INTEGER PRIMARY KEY)');
         const schemaVersion = Number(db.prepare('SELECT MAX(version) AS version FROM disk_schema_migrations').get().version) || 0;
-        if (schemaVersion > 1) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion > 2) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion === 1) {
+            const destination = path.join(root, `disk-before-content-${Date.now()}-${crypto.randomUUID()}.sqlite`);
+            db.prepare('VACUUM INTO ?').run(destination);
+        }
         for (const table of TABLES) {
             db.exec(`CREATE TABLE IF NOT EXISTS disk_${table} (
             scope TEXT NOT NULL DEFAULT '', id TEXT NOT NULL,
@@ -66,6 +71,22 @@ function openDiskRepository(dataDir) {
         CREATE UNIQUE INDEX IF NOT EXISTS disk_shares_token ON disk_shares(json_extract(payload, '$.token'));
         CREATE UNIQUE INDEX IF NOT EXISTS disk_backends_fingerprint ON disk_backends(json_extract(payload, '$.fingerprint'));`);
         db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (1)');
+        transaction(db, () => {
+            migrateContentSchema(db);
+            const content = createContentRepository(work => work(db));
+            // Import only real logical records. Bot archives are a separate store.
+            for (const row of db.prepare('SELECT scope,id,payload FROM disk_files').all()) {
+                if (db.prepare('SELECT 1 FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(row.scope,row.id)) continue;
+                const file = JSON.parse(row.payload);
+                if (file.reviewStatus === 'deleted') continue;
+                file.parts = db.prepare('SELECT payload FROM disk_file_parts WHERE scope=? AND file_id=? ORDER BY part_index').all(row.scope,row.id).map(part=>JSON.parse(part.payload));
+                content.syncFile(db,row.scope,file);
+                const payload=content.strip(file); delete payload.__partsHash;
+                payload.__partsHash=representationSignature(file);
+                db.prepare('UPDATE disk_files SET payload=? WHERE scope=? AND id=?').run(JSON.stringify(payload),row.scope,row.id);
+            }
+            db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(2)');
+        }, true);
     } finally { db.close(); }
 
     let activeConnection = null;
@@ -90,6 +111,7 @@ function openDiskRepository(dataDir) {
             remove: connection.prepare(`DELETE FROM disk_${table} WHERE scope = ? AND id = ?`)
         };
     }
+    const content = createContentRepository(withDatabase);
     function loadWithRevision(table, scope = '') {
         return withDatabase(connection => {
             const read = () => {
@@ -105,7 +127,7 @@ function openDiskRepository(dataDir) {
                 const items = rows.map(row => {
                     const file = JSON.parse(row.payload);
                     delete file.__partsHash;
-                    return { ...file, parts: grouped.get(row.id) || [] };
+                    return content.project(connection, { ...file, parts: grouped.get(row.id) || [] }, String(scope));
                 });
                 return { items, revisions };
             };
@@ -114,10 +136,10 @@ function openDiskRepository(dataDir) {
     }
     const load = (table, scope = '') => loadWithRevision(table, scope).items;
     function encodePayload(table, item) {
-        const payload = { ...item };
+        const payload = table === 'files' ? content.strip(item) : { ...item };
         if (table === 'files') {
             delete payload.parts;
-            payload.__partsHash = crypto.createHash('sha256').update(JSON.stringify(Array.isArray(item.parts) ? item.parts : [])).digest('hex');
+            payload.__partsHash = representationSignature(item);
         }
         return JSON.stringify(payload);
     }
@@ -132,7 +154,7 @@ function openDiskRepository(dataDir) {
             const id = String(rawId);
             if (seen.has(id)) throw new Error('DISK_RECORD_KEY_INVALID');
             seen.add(id);
-            const encoded = encodePayload(table, item);
+            let encoded = encodePayload(table, item);
             if (base?.get(id) === encoded) continue;
             const previousPayload = base ? getCurrent.get(scope, id)?.payload : existing.get(id);
             if (base) {
@@ -140,7 +162,14 @@ function openDiskRepository(dataDir) {
             }
             if (previousPayload !== encoded) sql.put.run(scope, id, String(item.ownerId || item.userId || ''),
                 String(item.folderPath || item.path || ''), String(item.name || ''), encoded);
-            if (table === 'files' && previousPayload !== encoded && (!previousPayload || JSON.parse(previousPayload).__partsHash !== JSON.parse(encoded).__partsHash)) {
+            if (table === 'files' && previousPayload !== encoded) {
+                content.syncFile(connection,scope,item);
+                const projected=content.project(connection,item,scope);
+                Object.assign(item,projected);
+                encoded=encodePayload(table,item);
+                sql.put.run(scope,id,String(item.ownerId || ''),String(item.folderPath || ''),String(item.name || ''),encoded);
+            }
+            if (table === 'files' && !item.contentId && previousPayload !== encoded && (!previousPayload || JSON.parse(previousPayload).__partsHash !== JSON.parse(encoded).__partsHash)) {
                 const previous = connection.prepare('SELECT part_index, payload FROM disk_file_parts WHERE scope = ? AND file_id = ?').all(scope, id);
                 const oldParts = new Map(previous.map(row => [row.part_index, row.payload]));
                 const parts = Array.isArray(item.parts) ? item.parts : [];
@@ -156,17 +185,19 @@ function openDiskRepository(dataDir) {
         }
         for (const id of base ? base.keys() : existing.keys()) if (!seen.has(id)) {
             if (base && getCurrent.get(scope, id)?.payload !== base.get(id)) throw new Error('DISK_WRITE_CONFLICT');
+            if(table === 'files') content.detach(connection,scope,id);
             sql.remove.run(scope, id);
         }
     }
-    const replaceTransaction = changes => withDatabase(connection => {
+    const replaceTransaction = (changes, batch) => withDatabase(connection => {
         const write = () => {
             for (const change of changes) replaceInside(connection, change.table, String(change.scope || ''), change.items, change.keyOf, change.base);
+            if(batch) content.commitBatch(connection,batch.id,batch.ids);
         };
         return activeConnection ? write() : transaction(connection, write, true);
     });
-    function replaceMany(changes) {
-        replaceTransaction(changes);
+    function replaceMany(changes, batch) {
+        replaceTransaction(changes, batch);
         for (const change of changes) if (change.base) {
             change.base.clear();
             for (const item of change.items) change.base.set(String(change.keyOf(item)), encodePayload(change.table, item));
@@ -210,6 +241,10 @@ function openDiskRepository(dataDir) {
         },
         close() { connections.delete(root); },
         filename
+        ,content,
+        projectFile(file, scope='') { return withDatabase(db=>content.project(db,file,String(scope))); },
+        projectFiles(files, scope='') { return withDatabase(db=>files.map(file=>content.project(db,file,String(scope)))); },
+        commitUploadBatch(id, ids) { if(!activeConnection) throw new Error('CONTENT_BATCH_REQUIRES_TRANSACTION'); content.commitBatch(activeConnection,id,ids); }
     };
     connections.set(root, repository);
     return repository;

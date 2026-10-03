@@ -33,6 +33,20 @@ function partSizeFailure(error, seen = new Set()) {
     return partSizeFailure(error.cause, seen);
 }
 function diskCaption(file, backend, context = {}, remote = {}) {
+    if(file.contentCandidateId || file.contentId) {
+        const fields=['Telegram Content Object', 'content_id: '+(file.contentId || file.contentCandidateId),
+        'physical_revision: '+(file.physicalRevision || 1),
+        'part: '+(remote.partIndex || 1)+'/'+(remote.partCount || file.parts?.length || 1), 'original_size: '+file.size,
+        'channel_id: '+backend.channelId,
+        ...(remote.fileId ? ['file_id: '+remote.fileId,'message_id: '+remote.messageId] : [])];
+        let caption=fields.join('\n');
+        if(caption.length>1024)throw new Error('CONTENT_CAPTION_TOO_LONG');
+        for(const field of [...(remote.sha256?['part_sha256: '+remote.sha256]:[]),'original_name: '+String(file.name || '').slice(0,180)]) {
+            const available=1024-caption.length-1;if(available<=0)break;
+            caption+='\n'+field.slice(0,available);
+        }
+        return caption;
+    }
     const fields = ['网盘文件', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId];
     if (file.logicalId || remote.logicalFileId) fields.push('logical_file_id: ' + (file.logicalId || remote.logicalFileId));
     if (remote.partCount) fields.push('part: ' + remote.partIndex + '/' + remote.partCount, 'original_size: ' + (remote.originalSize || file.size || 0));
@@ -40,6 +54,7 @@ function diskCaption(file, backend, context = {}, remote = {}) {
     return fields.join('\n').slice(0, 1024);
 }
 function diskThumbnailCaption(file, backend, context = {}) {
+    if(file.contentCandidateId || file.contentId) return ['Content Object thumbnail','content_id: '+(file.contentId || file.contentCandidateId),'physical_revision: '+(file.physicalRevision || 1),'channel_id: '+backend.channelId].join('\n');
     return ['网盘视频封面', 'user_id: ' + (context.userId || ''), 'disk_space: ' + (context.diskSpace || ''), 'name: ' + file.name, 'channel_id: ' + backend.channelId, 'logical_file_id: ' + (file.logicalId || '')].join('\n').slice(0, 1024);
 }
 function partitionMediaGroups(parts) {
@@ -55,6 +70,7 @@ function partitionMediaGroups(parts) {
 }
 function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api.telegram.org', dataDir = path.join(__dirname, '..', '.tunnel-data'), now = Date.now, resolveChatIdentifier = value => value, uploadScheduler = telegramUploadScheduler }) {
     const repository = openDiskRepository(dataDir);
+    let anchorGuard = physical => repository.content.allowed(physical);
     const placeholdersInFlight = new Map();
     const filePaths = new Map(), filePathRequests = new Map();
     const log = createDiskUploadLog(dataDir);
@@ -538,7 +554,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             }
             for (let index = 0; index < batch.length; index++) {
                 const part = batch[index], remote = remoteFromMessage(part, messages[index]);
-                if (!part.reuseFileId) {
+                if (!part.reuseFileId && !files[part.fileIndex].contentCandidateId && !files[part.fileIndex].contentId) {
                     try { await call(backend, 'editMessageCaption', { chat_id: backend.channelId, message_id: remote.messageId, caption: diskCaption(files[part.fileIndex], backend, context, remote) }, undefined, 0, { ...trace, fileId: remote.logicalFileId }); }
                     catch (_) { remote.captionWarning = 'TELEGRAM_CAPTION_UPDATE_FAILED'; }
                 }
@@ -688,6 +704,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     const batchBytes = batch.reduce((sum, file) => sum + file.size, 0);
                     for (let index = 0; index < batch.length; index++) {
                         const remote = accepted[index];
+                        if(files[batch[index].logicalIndex].contentCandidateId || files[batch[index].logicalIndex].contentId)continue;
                         update({ phase: 'telegram-caption', percent: null, processedBytes: done + batchBytes, totalBytes: total, message: `正在补充文件定位备注：${files[batch[index].logicalIndex].name}（${remote.partIndex}/${remote.partCount}）` });
                         try { await call(backend, 'editMessageCaption', { chat_id: backend.channelId, message_id: remote.messageId, caption: diskCaption(files[batch[index].logicalIndex], backend, context, remote) }, undefined, 0, { ...trace, fileId: remote.logicalFileId }); }
                         catch (_) { remote.captionWarning = 'TELEGRAM_CAPTION_UPDATE_FAILED'; }
@@ -736,6 +753,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         },
         async cleanupTemporaryMessages(backend, item, context = {}) {
             const channelId = resolveChatIdentifier(item.channelId || backend.channelId);
+            if(!anchorGuard({...item,channelId})) throw new Error('CONTENT_ANCHOR_IN_USE');
             const scheduledBackend = { ...backend, channelId };
             const parts = [...new Map(storedParts(item).filter(part => part?.messageId).map(part => [Number(part.messageId), part])).values()];
             if (!parts.length || parts.some(part => !Number.isSafeInteger(part.messageId) || part.messageId <= 0)) throw new Error('TELEGRAM_MESSAGE_MISSING');
@@ -775,6 +793,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             }
         },
         async remove(backend, item) {
+            if(!anchorGuard(item)) throw new Error('CONTENT_ANCHOR_IN_USE');
             let failure;
             const stored = [...storedParts(item), ...(item.thumbnail?.messageId ? [item.thumbnail] : [])];
             for (const part of stored) {
@@ -794,6 +813,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
             if (failure) throw failure;
         },
         async syncCaption(backend, item, context = {}, update = () => {}) {
+            if(item.contentId) return;
             let failure;
             for (const part of storedParts(item)) {
                 update({ phase: 'telegram-caption', percent: null, message: `正在同步 Telegram 备注：${item.name}（${part.partIndex}/${part.partCount}）` });
@@ -801,7 +821,8 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                 catch (error) { if (!notModified(error)) failure ||= error; }
             }
             if (failure) throw failure;
-        }
+        },
+        setAnchorGuard(guard) { anchorGuard=guard; }
     };
 }
 module.exports = { createDiskTelegram, diskCaption, partitionMediaGroups, MAX_TELEGRAM_PART_SIZE };

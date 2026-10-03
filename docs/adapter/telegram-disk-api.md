@@ -14,6 +14,7 @@
 - access_token 只鉴别后台登记的应用。持有令牌的服务端可指定 user_id，因此管理员只能登记可信应用；不要把应用密钥或令牌交给不可信前端。
 - 生产接口必须使用 HTTPS。Bot Token 只通过鉴权请求体提交，不放在业务 URL、日志或可解码令牌中。管理员登记的应用密钥以 scrypt 哈希保存；换取令牌时提供的四项接入参数另外使用 AES-256-GCM 加密缓存，详见下述完整流程。
 - 虚拟目录由本系统管理；内部文件节点关联 backend_id、Telegram channel_id、message_id、media_group_id、file_id。普通列表 / 元信息返回公共文件字段，不返回 Bot Token；上传完成结果另外包含 Telegram 来源标注，详见第 6 节。
+- 内部存储已分离 Logical File / Content Object / Telegram Anchor。权限、名称和目录仍属于 Logical；二进制及固有封面可以共享。共享不授予其他用户文件权限。详见 [Content Object 说明](../telegram-drive-content-objects.md)。
 
 ## 管理员配置
 
@@ -275,7 +276,7 @@ Content-Type: application/octet-stream
 
 ### 6.3 元信息与恢复边界
 
-每个物理分片（含 album 内每条消息）的 caption 记录 `user_id`、`disk_space`、文件名 `name`、`channel_id`、`logical_file_id`、分片序号/总片数和原始总大小。**新上传不写 `path` 字段**，目录位置以网盘索引为准。旧流水线新传二进制的分片发送后再通过 editMessageCaption 补齐 `file_id`、`message_id`、`album_id`；已验证 file_id 的复用路径不会额外执行这一补注步骤。渐进式最终分组不额外补注这些远端 ID，尤其不会把即将清理的临时 message_id 写入最终消息 caption；SQLite 中最终 message_id/media_group_id/file_id 关联才是定位依据。补注等待不计入文件字节进度，文件改名同步时仍可显示 `telegram-caption` 阶段。
+新 Content 的 caption 只保留 Content ID、physical revision、分片/实际消息定位及首次上传的排障名称，不再写用户、分区、Logical ID 或目录 path。最终 IDs 先持久化，再由物理 caption outbox 补注和重试，不写即将清理的临时 IDs，也不因补注失败重复上传正文。SQLite 中的关联是权威来源；历史消息 caption 不自动全库重写。Logical 改名和移动均只改自身索引，不修改共享 caption。
 
 渐进式安全重试最多 3 次尝试，只对明确 429 或能够确认请求未被接受 / 正文未发送完整的网络失败重试；重试需等待当前源分片完整落盘并校验，不能同时创建第二条竞争的 growing reader。正文已发送但响应丢失、无效返回或最终组提交结果未知时，不盲目重发，也不声称自动去重。对应任务会保留已知消息 ID、分片正文及状态清单，并提示先核对频道。最终分组失败保留完整临时副本和已确认分组，避免删掉仅存的可恢复文件。
 
@@ -285,11 +286,11 @@ Content-Type: application/octet-stream
 
 普通确定失败和用户主动取消尝试清理整批已知远端消息；清理失败记录待重试，不保证立即删完。渐进式最终索引提交后的临时消息删除失败通过 `TELEGRAM_TEMP_CLEANUP_PENDING` 提示并持久化重试，可能稍后出现在任务 warnings 中；已有效提交的文件保持 completed，不因此回滚。旧流水线重启仍按中断任务及半成品清理处理。
 
-下载、预览和转发时，服务端先校验分片序号、数量、offset、总大小，再按 `partIndex` 顺序逐片调用官方 getFile 并流式拼接，校验每片实际下载字节数；响应长度和文件名仍是原始逻辑文件。检测会验证全部分片。文件 / 目录移动及目录重命名只更新索引，不因路径变化编辑 Telegram caption；文件重命名仍同步该逻辑文件全部分片的 `name`。
+下载、预览和转发时，服务端先校验分片序号、数量、offset、总大小，再按 `partIndex` 顺序逐片调用官方 getFile 并流式拼接，校验每片实际下载字节数；响应长度和文件名仍是原始逻辑文件。Content read lease 固定读取 revision，避免 repair 后混拼。检测会验证全部分片，但 getFile 不保证原消息仍存在。文件及目录的移动、重命名均只更新 Logical 索引。
 
-caption 受 Telegram 1024 字符限制，完整目录路径保存于逻辑索引。上传补备注失败不会丢失已保存文件，warnings 包含 TELEGRAM_CAPTION_UPDATE_FAILED。文件重命名先持久化索引和 captionSyncPending，然后逐片更新备注；失败返回 TELEGRAM_CAPTION_SYNC_PENDING，服务器每分钟重试，重启后保留待同步标记。
+caption 受 Telegram 1024 字符限制，完整目录路径保存于 Logical 索引。物理 caption 重试独立于正文、改名及批次完成；异常可由管理员 Content 管理接口查看。普通 repair 要求可信完整 SHA/size 等于原 Content，切换物理 revision 后所有引用恢复；协同 replacement 则只切当前 Logical 引用。公共文件字段 `logicalContentVersion` 在异内容替换后增长；缓存调用方必须据此使正文、封面及播放进度失效，同内容 repair 不递增该版本。
 
-删除逐片执行：发送不足 **47 小时 57 分钟**使用 deleteMessage；达到该边界使用 editMessageMedia 替换为 1 Byte document，caption 改为“文件名 已删除”。此阈值在官方 48 小时限制前预留 3 分钟，逐片以调用时的时间判断；旧索引消息年龄不准导致 Telegram 拒绝删除时也尝试替换。占位文件首次使用时上传，file_id 按 Bot/API 地址隔离保存在 `disk.sqlite` 的占位映射中（旧 `tg-1byte-file.id` 可迁移），以后及重启后复用。已不存在的消息和已替换内容按幂等成功处理；某片失败仍尝试其余片，并保留逻辑索引供重试。媒体替换仍受 Telegram 的消息类型和编辑权限限制；修改频道消息不等同于擦除 Telegram 已保存的历史文件引用。
+删除先移除 Logical 引用；成功不再意味着 Telegram 消息已经同步删除。仍有引用或有效读租约时，禁止删除/替换共享消息。最后引用释放后默认等待 60 秒，清理 outbox 在事务外逐片执行；失败保留债务，后台重试，而不会恢复已删除的 Logical。物理清理沿用不足 **47 小时 57 分钟**删除消息、超出边界用 1 Byte document 替换的规则，文案使用 Content 排障名。占位 file_id 按 Bot/API 地址隔离保存在 `disk.sqlite`。已不存在/已替换消息按幂等成功处理；权限限制和 Telegram 历史引用的既有边界不变。
 
 新上传文档设置 disable_content_type_detection=true，同时兼容旧服务返回 video/audio/animation 等媒体字段，避免有效文件被误判为 TELEGRAM_UPLOAD_RESULT_INVALID。真正无效的响应仅记录安全的返回数量和媒体字段类型到 errorDetails，不记录 Bot token、URL 或原始 Telegram 消息。
 
@@ -300,6 +301,32 @@ DELETE `/uploads/{uploadId}` 表示用户主动取消，会中止流水线并尝
 需要提前保存音视频封面时，可在 finish 前 PUT `/uploads/{uploadId}/files/{index}/thumbnail`，请求体为图片字节，Content-Type 使用 image/*，`X-Disk-Thumbnail-Size`（或 Content-Length）声明 1–2,097,152 字节大小；同文件只接受一次。主文件全部确认后才发送封面，避免封面阻塞主文件队列。单次封面 Telegram 请求上限 60 秒；封面发送失败不回滚主文件，任务 / 结果的 warnings 返回 `TELEGRAM_THUMBNAIL_UPLOAD_FAILED`，后续仍可按现有预览流程提取封面。已经确认的封面若发生本地关联写入错误，仍按整批失败和回滚处理，以免遗漏远端消息。成功保存的封面通过 thumbnail 接口读取。服务端不保证替所有第三方上传自动提取封面，调用方可在初始化 files 项中携带已有 mediaIndex。
 
 最终 GET `/operations/{operation_id}` 的 result 包含 `{ "ok": true, "items": [...], "warnings": [...] }`。items 除公共文件字段外还返回 `telegramFileId`、`telegramFileUniqueId`、`telegramChatId`、`telegramMessageId`、`telegramPartFileIds`、`serverAssetUrl`，用于来源关联，不包含 Bot Token。**serverAssetUrl 当前指向 `/api/telegram/drive/files/{id}/stream`，要求浏览器网盘会话；传统 API 调用方应改用本基地址的 `/files/{id}/stream` 并携带 Bearer / 用户 / 分区。**
+
+### 6.4 可选的共享内容 preflight / PoP
+
+接口沿用本 API 的 Bearer、user_id 和 disk_space；浏览器基址 `/api/telegram/drive` 及已授权协同 scope 也提供相同能力。不接受调用者直接指定 Content ID 来附着文件。
+
+```http
+POST /content/preflight
+Content-Type: application/json
+
+{"folderPath":"music","files":[{"name":"song.m4a","type":"audio/mp4","size":12345,"contentSha256":"<完整 SHA-256 hex>"}]}
+```
+
+一次最多 100 文件，返回 `files` 与输入顺序对应：
+
+- `{"status":"miss","uploadTicket":"..."}`：获得短时 key claim，正常上传正文；无 ticket 的 miss 也可走普通上传。
+- `{"status":"wait","retryAfterMs":4000}`：相同 key 有其他 claimant，稍后再查询或取消。
+- `{"status":"reuse","reuseTicket":"..."}`：同一实际用户已持有内容，或空内容可复用。
+- `{"status":"proof","ticket":"...","nonce":"...","ranges":[{"offset":0,"size":65536}]}`：跨用户持有证明；只返回挑战，不返回源身份、物理位置或 expected digest。
+
+按 [PoP wire 定义](../telegram-drive-content-objects.md#2-浏览器上传与持有证明) 计算各范围 digest，然后调用 `POST /content/proof`，正文为 `{"ticket":"...","digests":["<hex>"]}`；成功返回 reuseTicket，失败不授权。不能凭客户端 hash 跳过证明。
+
+随后 `POST /uploads` 传 `progressive: true`，每个 files 项保留与 preflight 完全相同的目标字段及 contentSha256，并附 uploadTicket 或 reuseTicket。返回的 `files[index].reused` 为 true 时不发正文 PUT，仍需调用 finish、等待 operation 完成；全部文件原子可见。同批重复内容会标记 reused，目标名称仍分别校验。
+
+取消 preflight 可调用 `POST /content/release`，正文 `{"tickets":["..."]}`，每次最多 200 个。ticket 有效 15 分钟、一次性消费，绑定实际会话/viewer/目标/授权版本；不能重放、换目标或跨会话使用。任务运行续租，失败只清自身新建物理候选。preflight/proof 各限每分钟 200 请求；viewer 最多 200 个活跃 claim/challenge。
+
+上传任务增加 `reusedBytes`、`logicalBytesProcessed`、`filesReady`、`filesTotal`。网络字节字段只表示实际传输：全命中时浏览器和 Telegram 正文总量均为 0；复用大小不计为“已发送”。无可信 hash、Worker 不可用或证明无法回源时可继续旧正文上传，服务器验证实际 SHA 后 canonicalize，这种 fallback 不保证零新消息。
 
 ## 7. 公开分享
 

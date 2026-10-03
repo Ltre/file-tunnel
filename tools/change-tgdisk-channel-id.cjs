@@ -5,6 +5,37 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync, backup } = require('node:sqlite');
+const { representationSignature } = require('../server/disk-content-repository');
+
+async function changeContentChannels(db,options,filename) {
+    const revisions=db.prepare('SELECT * FROM disk_content_revisions').all();
+    const anchors=db.prepare('SELECT * FROM disk_content_anchors').all();
+    const files=db.prepare(`SELECT f.id,r.content_id FROM disk_files f LEFT JOIN disk_content_refs r ON r.scope=f.scope AND r.logical_file_id=f.id`).all();
+    const previous={};let changed=0;
+    for(const file of files){const physical=revisions.find(row=>row.content_id===file.content_id && row.state==='ACTIVE');const old=physical ? String(JSON.parse(physical.payload).channelId || '') : '';previous[old]=(previous[old] || 0)+1;if(physical && old!==options.chatId)changed++;}
+    const changedRevisions=revisions.filter(row=>String(JSON.parse(row.payload).channelId || '')!==options.chatId);
+    const report={mode:options.apply?'applied':'dry-run',database:filename,totalFiles:files.length,changed,changedContentRevisions:changedRevisions.length,oldChannelIds:previous,targetChatId:options.chatId};
+    const keys=new Map();
+    for(const row of anchors){const id=`telegram:${options.chatId}:${row.message_id}`;if(keys.has(id) && keys.get(id)!==row.id)throw new Error('目标频道下存在冲突的 Message ID；不会合并来自不同频道的消息');keys.set(id,row.id);}
+    if(!options.apply || !changedRevisions.length)return report;
+    const backupDir=path.join(options.dataDir,'migration-backups');fs.mkdirSync(backupDir,{recursive:true});
+    report.backup=path.join(backupDir,`content-channel-id-${Date.now()}-${crypto.randomUUID()}.sqlite`);await backup(db,report.backup);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+        db.exec('PRAGMA defer_foreign_keys=ON');
+        const current=db.prepare('SELECT * FROM disk_content_revisions').all();
+        if(JSON.stringify(current)!==JSON.stringify(revisions))throw new Error('备份期间 Content 数据发生变化；请先停止全部服务');
+        for(const row of changedRevisions){const physical=JSON.parse(row.payload);physical.channelId=options.chatId;const size=db.prepare('SELECT size FROM disk_contents WHERE id=?').get(row.content_id).size;db.prepare('UPDATE disk_content_revisions SET payload=?,signature=? WHERE content_id=? AND revision=?').run(JSON.stringify(physical),representationSignature({...physical,size}),row.content_id,row.revision);}
+        for(const row of anchors){const id=`telegram:${options.chatId}:${row.message_id}`;db.prepare('UPDATE disk_content_parts SET selected_anchor_id=? WHERE selected_anchor_id=?').run(id,row.id);db.prepare('UPDATE disk_content_anchors SET id=?,channel_id=? WHERE id=?').run(id,options.chatId,row.id);}
+        for(const row of db.prepare('SELECT id,payload FROM disk_content_cleanup').all()){const value=JSON.parse(row.payload);value.channelId=options.chatId;db.prepare('UPDATE disk_content_cleanup SET payload=? WHERE id=?').run(JSON.stringify(value),row.id);}
+        if(db.prepare("SELECT 1 FROM sqlite_master WHERE name='disk_content_caption_jobs'").get())for(const row of db.prepare('SELECT id,payload FROM disk_content_caption_jobs').all()){
+            const value=JSON.parse(row.payload);value.channelId=options.chatId;value.caption=value.caption.replace(/^channel_id: .*$/m,'channel_id: '+options.chatId);
+            db.prepare('UPDATE disk_content_caption_jobs SET id=?,payload=? WHERE id=?').run(`telegram:${options.chatId}:${value.messageId}`,JSON.stringify(value),row.id);
+        }
+        if(db.prepare('PRAGMA foreign_key_check').all().length)throw new Error('外键核验失败');
+        db.exec('COMMIT');return report;
+    }catch(error){if(db.isTransaction)db.exec('ROLLBACK');throw error;}
+}
 
 function args(argv, env = process.env) {
     // Keep the CLI's cwd-relative default; an explicit argument takes precedence.
@@ -85,6 +116,7 @@ async function main(argv = process.argv.slice(2)) {
         if (check.integrity_check !== 'ok') throw new Error('SQLite 完整性检查失败，已停止迁移');
         if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'disk_files'").get())
             throw new Error('指定数据库缺少网盘 disk_files 表；请检查数据目录、disk.sqlite 路径及网盘 SQLite schema，本工具不会创建表');
+        if(db.prepare("SELECT 1 FROM sqlite_master WHERE name='disk_content_revisions'").get() && db.prepare('SELECT 1 FROM disk_files LIMIT 1').get())return await changeContentChannels(db,options,filename);
         const rows = db.prepare('SELECT scope,id,payload FROM disk_files ORDER BY scope,id').all();
         const previous = new Map();
         for (const row of rows) {

@@ -151,7 +151,7 @@ test('频道 ID 迁移预演不写入，停服确认后跨分区事务更新且�
     const { dir, repository, flags } = fixture(t);
     const part = { fileId: 'telegram-file', messageId: 42, size: 3, offset: 0, partIndex: 1, partCount: 1 };
     repository.replace('files', [{ id: 'a', ownerId: 'u', folderPath: '', name: 'a.txt', channelId: '@old', parts: [part], pendingRemoteCleanup: [{ channelId: '@old', messageId: 40, parts: [part] }] }], file => file.id);
-    repository.replace('files', [{ id: 'b', ownerId: 'v', folderPath: '', name: 'b.txt', channelId: '-1002222222222', parts: [part] }], file => file.id, 'photos');
+    repository.replace('files', [{ id: 'b', ownerId: 'v', folderPath: '', name: 'b.txt', channelId: '-1002222222222', parts: [{...part,messageId:43}] }], file => file.id, 'photos');
     // Successfully migrated installations normally retain old JSON; it must not
     // prevent changing the live SQLite records, even if the old file is stale.
     fs.writeFileSync(path.join(dir, 'telegram-drive-index.json'), '{stale-old-json');
@@ -162,9 +162,10 @@ test('频道 ID 迁移预演不写入，停服确认后跨分区事务更新且�
     const applied = await main([...flags, '--service-stopped', '--apply']);
     assert.equal(applied.changed, 2); assert.ok(fs.existsSync(applied.backup));
     assert.equal(repository.load('files')[0].channelId, '-1001234567890');
-    assert.equal(repository.load('files')[0].pendingRemoteCleanup[0].channelId, '-1001234567890');
+    assert.equal(repository.content.withDatabase(db=>JSON.parse(db.prepare("SELECT payload FROM disk_content_cleanup WHERE purpose='legacy-debt'").get().payload).channelId),'-1001234567890');
     assert.equal(repository.load('files', 'photos')[0].channelId, '-1001234567890');
-    assert.deepEqual(repository.load('files')[0].parts, [part]);
+    assert.equal(repository.load('files')[0].parts[0].fileId,part.fileId);
+    assert.equal(repository.load('files')[0].parts[0].messageId,part.messageId);
     assert.equal(fs.readFileSync(path.join(dir, 'telegram-drive-index.json'), 'utf8'), '{stale-old-json');
     assert.equal((await main([...flags, '--service-stopped', '--apply'])).changed, 0);
 });

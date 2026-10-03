@@ -31,7 +31,8 @@ function createDiskCollaborationStore(dataDir) {
         find,
         publicEntry,
         accessible(userId) { return entries.filter(item => item.active !== false && (item.ownerId === String(userId) || item.members.includes(String(userId)))).map(publicEntry); },
-        authorized(id, userId) { const item = find(id); return item && (item.ownerId === String(userId) || item.members.includes(String(userId))) ? item : null; },
+        authorized(id, userId) { const item = find(id); return item && (item.ownerId === String(userId) || item.members.includes(String(userId)))
+            ? { ...item, grantVersion: Number(item.memberVersions?.[String(userId)]) || 1 } : null; },
         ownedTarget(ownerId, diskSpace, kind, target) { return entries.find(item => item.active !== false && sameScope(item,ownerId,diskSpace) && item.kind === kind && (kind === 'file' ? item.fileId === target : item.path === target)) || null; },
         byInvite(token) { return entries.find(item => item.active !== false && item.invites.some(invite => invite.token === String(token))) || null; },
         enable({ ownerId, diskSpace = '', kind, path:folderPath = '', fileId = '', name }) {
@@ -51,11 +52,17 @@ function createDiskCollaborationStore(dataDir) {
             if (!item) throw new Error('INVITE_NOT_FOUND');
             if (item.ownerId === String(userId)) return publicEntry(item);
             item.invites = item.invites.filter(invite => invite.token !== token);
-            if (!item.members.includes(String(userId))) item.members.push(String(userId));
+            if (!item.members.includes(String(userId))) {
+                item.members.push(String(userId));
+                item.memberVersions ||= {};
+                item.memberVersions[String(userId)] = (Number(item.memberVersions[String(userId)]) || 0) + 1;
+            }
             save(); return publicEntry(item);
         },
         revokeInvite(id, inviteId, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);const before=item.invites.length;item.invites=item.invites.filter(invite=>invite.id!==inviteId);if(before===item.invites.length)throw new Error('INVITE_NOT_FOUND');save();return publicEntry(item); },
-        kick(id, memberId, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);item.members=item.members.filter(id=>id!==String(memberId));save();return publicEntry(item); },
+        kick(id, memberId, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);item.members=item.members.filter(id=>id!==String(memberId));
+            item.memberVersions ||= {};item.memberVersions[String(memberId)]=(Number(item.memberVersions[String(memberId)]) || 1)+1;
+            save();return publicEntry(item); },
         disable(id, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);item.active=false;item.invites=[];item.members=[];save();return { ok:true }; },
         protectFile(ownerId,diskSpace,fileId) { return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&item.kind==='file'&&item.fileId===fileId); },
         protectDirectory(ownerId,diskSpace,folderPath) { const prefix=`${folderPath}/`;return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&(item.path===folderPath||item.path.startsWith(prefix))); },

@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { DatabaseSync, backup } = require('node:sqlite');
 const { openDiskRepository } = require('../server/disk-repository');
+const { createContentRepository,physicalRecord } = require('../server/disk-content-repository');
 
 const ARRAY_FILES = [
     ['disk-space-usage.json', 'space_usage', item => `${item.appId}:${item.userId}:${item.diskSpace}`],
@@ -26,9 +27,14 @@ const sha256 = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(message); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const label = (table, scope) => scope ? `${table}（分区 ${scope}）` : table;
-const sameItem = (table, left, right) => table === 'files'
-    ? isDeepStrictEqual({ ...left, parts: left.parts || [] }, { ...right, parts: right.parts || [] })
-    : isDeepStrictEqual(left, right);
+const stripFile=createContentRepository(()=>{throw new Error('Not a database operation');}).strip;
+function sameItem(table,left,right) {
+    if(table!=='files')return isDeepStrictEqual(left,right);
+    if(!left || !right)return false;
+    const logical=file=>{const value=stripFile(file);for(const key of ['contentId','logicalContentVersion','contentSha256','__partsHash'])delete value[key];return JSON.parse(JSON.stringify(value));};
+    const physical=file=>{const value=physicalRecord(file);return JSON.parse(JSON.stringify({channelId:value.channelId,parts:value.parts,thumbnail:value.thumbnail,mediaIndex:value.mediaIndex}));};
+    return isDeepStrictEqual(logical(left),logical(right)) && isDeepStrictEqual(physical(left),physical(right));
+}
 const CHUNK_VALUE_FIELDS = new Set(['fileId', 'fileUniqueId', 'size', 'updatedAt']);
 const USAGE_FIELDS = new Set(['appId', 'userId', 'diskSpace', 'createdAt', 'lastUsedAt']);
 function canRetainChunkId(existing, legacy) {

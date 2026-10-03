@@ -59,12 +59,12 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         restoreViews();
     };
     restoreViews();
-    const persist = (directoriesOnly = false) => {
+    const persist = (directoriesOnly = false, batch) => {
         try {
             repository.replaceMany([
                 ...(!directoriesOnly ? [{ table: 'files', scope: diskSpace, items: [...records.values()], keyOf: item => item.id, base: fileState.revisions }] : []),
                 { table: 'directories', scope: diskSpace, items: [...directories.values()], keyOf: item => `${item.ownerId}:${item.path}`, base: directoryState.revisions }
-            ]);
+            ], batch);
         } catch (error) {
             reloadPersistence();
             throw error;
@@ -72,12 +72,12 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
     };
     const uploadManifestPath = job => path.join(job.dir, 'upload-manifest.json');
     const uploadManifest = job => ({
-        version: job.progressive ? 2 : 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
+        version: job.progressive ? 3 : 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
         ...(job.progressive ? { progressive: true, owner: job.owner, metadata: job.metadata, sourceAppId: job.sourceAppId,
             replaceId: job.replaceId, folderPath: job.folderPath, maxDepth: job.maxDepth, uploadLimit: job.uploadLimit,
             clientDone: Boolean(job.clientDone), finishing: Boolean(job.finishing), committed: Boolean(job.committed),
-            collaborationId: job.collaborationId || '', viewerId: job.viewerId || '', operationScope: job.operationScope || '',
+            collaborationId: job.collaborationId || '', collaborationVersion:job.collaborationVersion || '', contentGrant:job.contentGrant || null, contentAuthorization:job.contentAuthorization || null, viewerId: job.viewerId || '', operationScope: job.operationScope || '',
             recoveryDisposition: job.recoveryDisposition || '', recoveryErrorCode: job.recoveryErrorCode || '',
             committedIds: job.committedIds || [], cleanupPending: job.cleanupPending || [] } : {}),
         pendingRollbackParts: job.pendingRollbackParts || [],
@@ -96,6 +96,10 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
                 updatedAt: Number(chunk.updatedAt) || 0, lastError: chunk.lastError || null,
                 unknownResult: Boolean(chunk.unknownResult), safeRetry: Boolean(chunk.safeRetry) } : {})
         })), ...(job.progressive ? { index: file.index, folderPath: file.folderPath, type: file.type, size: file.size,
+            contentCandidateId: file.contentCandidateId, contentClaimToken:file.contentClaimToken, declaredSha256: file.declaredSha256, contentSha256: file.contentSha256,
+            reuseContentId: file.reuseContentId, contentLease: file.contentLease,
+            reuseFromIndex:file.reuseFromIndex,
+            emptyContent:file.emptyContent,
             mediaIndex: file.mediaIndex, parts: file.parts, received: file.received, finalized: Boolean(file.finalized),
             finalGroups: file.finalGroups || [] } : {}) }))
     });
@@ -138,6 +142,12 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         for (const receiver of job.receivers || []) receiver.request.destroy(new Error('OPERATION_CANCELLED'));
         for (const chunk of job.files.flatMap(file => file.chunks || [])) stopGrowingReaders(chunk);
     };
+    const releaseUploadContent = job => repository.content.write(db=>{
+        for(const file of job.files) {
+            if(file.contentLease)db.prepare('DELETE FROM disk_content_leases WHERE id=?').run(file.contentLease);
+            if(file.contentClaimToken)db.prepare('DELETE FROM disk_content_claims WHERE token=?').run(file.contentClaimToken);
+        }
+    });
     const cleanupWarning = (job, error) => console.warn('[disk-upload] staging.cleanup-failed', { uploadId: job.id, code: error.code || 'UNKNOWN', syscall: error.syscall || '' });
     const unlinkStaging = (job, filename) => {
         const source = job?.files.flatMap(file => file.chunks || []).find(chunk => chunk.path === filename);
@@ -177,7 +187,11 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             console.warn('[disk-upload] recovery.manifest-invalid', { uploadId: entry.name, error: error?.message || String(error) });
         }
     }
-    const ownerRecords = ownerId => [...records.values()].filter(item => item.ownerId === String(ownerId));
+    const ownerRecords = ownerId => {
+        const items=[...records.values()].filter(item => item.ownerId === String(ownerId));
+        repository.projectFiles(items,diskSpace).forEach((item,index)=>Object.assign(items[index],item));
+        return items;
+    };
     const ownerDirectories = ownerId => [...directories.values()].filter(item => item.ownerId === String(ownerId));
     const directoryKey = (ownerId, folderPath) => `${ownerId}:${normalizePath(folderPath)}`;
     const assertDepth = (folderPath, maxDepth) => {
@@ -386,7 +400,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             persist();
             return { removedDirectories: snapshot.directories.length, removedFiles: snapshot.files.length };
         },
-        get(ownerId, id) { const item = records.get(String(id)); return item?.ownerId === String(ownerId) ? item : null; },
+        get(ownerId, id) { const item = records.get(String(id)); if(item?.ownerId !== String(ownerId)) return null; Object.assign(item,repository.projectFile(item,diskSpace)); return item; },
         getFileProperties(ownerId, id) { const item = this.get(ownerId, id); return item ? { ...item, kind: 'file', parentPath: normalizePath(item.folderPath || '') } : null; },
         moveFile(ownerId, id, destinationPath, maxDepth) {
             const item = this.get(ownerId, id);
@@ -427,7 +441,9 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             Object.assign(item, { folderPath: destination, name, updatedAt: Date.now(), ...(renamed ? { captionSyncPending: true } : {}) });
             touchDirectory(ownerId, destination); persist(); return item;
         },
-        hasChannel(channelId) { return [...records.values()].some(item => String(item.channelId) === String(channelId)); },
+        hasChannel(channelId) { return repository.content.usesChannel(channelId)
+            || [...records.values()].some(item => String(item.channelId) === String(channelId))
+            || [...uploads.values()].some(job => String(job.channelId) === String(channelId)); },
         begin({ owner, metadata = {}, folderPath, files, maxDepth, uploadLimit = maxFileSize(), backendId = '', sourceAppId = '', channelId = '', replaceId = '', progressive = false }) {
             const safePath = normalizePath(folderPath); assertDepth(safePath, maxDepth);
             const incoming = Array.isArray(files) ? files : [];
@@ -475,6 +491,10 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             const id = crypto.randomUUID(); const dir = path.join(stagingRoot, id); fs.mkdirSync(dir, { recursive: true });
             const job = { id, owner, metadata, backendId, channelId: String(channelId || ''), sourceAppId: String(sourceAppId || ''), replaceId: String(replaceId || ''), uploadLimit, folderPath: safePath, progressive: Boolean(progressive), cleanupPending: [],
 files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), folderPath: Object.hasOwn(file, 'folderPath') ? normalizePath(file.folderPath) : safePath, name: normalizeSegment(file?.name || `file-${index + 1}`, 180) || `file-${index + 1}`, type: String(file?.type || 'application/octet-stream').slice(0, 120), size: Number(file?.size) || 0, mediaIndex: file.mediaIndex && typeof file.mediaIndex === 'object' ? file.mediaIndex : { mode: 'unavailable' }, parts: normalizeUploadParts(file), path: '', received: 0, chunks: [] })), dir, createdAt: Date.now(), maxDepth };
+            for(const [index,file] of job.files.entries()) {
+                file.contentCandidateId=crypto.randomUUID();
+                file.declaredSha256=/^[a-f0-9]{64}$/.test(String(incoming[index].contentSha256)) ? incoming[index].contentSha256 : '';
+            }
             uploads.set(id, job);
             try { persistUpload(job); return job; }
             catch (error) { stopUpload(job); removeStaging(job); uploads.delete(id); throw error; }
@@ -485,7 +505,9 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (patch.channelId) job.channelId = String(patch.channelId);
             if (Object.hasOwn(patch, 'progressive')) job.progressive = Boolean(patch.progressive);
             if (Object.hasOwn(patch, 'collaborationId')) job.collaborationId = String(patch.collaborationId || '');
-            for (const key of ['viewerId', 'recoveryDisposition', 'recoveryErrorCode']) if (Object.hasOwn(patch, key)) job[key] = String(patch[key] || '');
+            if (patch.contentGrant)job.contentGrant={...patch.contentGrant};
+            if (patch.contentAuthorization)job.contentAuthorization={...patch.contentAuthorization};
+            for (const key of ['viewerId', 'collaborationVersion', 'recoveryDisposition', 'recoveryErrorCode']) if (Object.hasOwn(patch, key)) job[key] = String(patch[key] || '');
             if (Object.hasOwn(patch, 'operationScope')) job.operationScope = patch.operationScope && typeof patch.operationScope === 'object' ? structuredClone(patch.operationScope) : patch.operationScope || '';
             persistUpload(job); return job;
         },
@@ -495,7 +517,9 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (patch.channelId) job.channelId = String(patch.channelId);
             if (Object.hasOwn(patch, 'progressive')) job.progressive = Boolean(patch.progressive);
             if (Object.hasOwn(patch, 'collaborationId')) job.collaborationId = String(patch.collaborationId || '');
-            for (const key of ['viewerId', 'recoveryDisposition', 'recoveryErrorCode']) if (Object.hasOwn(patch, key)) job[key] = String(patch[key] || '');
+            if (patch.contentGrant)job.contentGrant={...patch.contentGrant};
+            if (patch.contentAuthorization)job.contentAuthorization={...patch.contentAuthorization};
+            for (const key of ['viewerId', 'collaborationVersion', 'recoveryDisposition', 'recoveryErrorCode']) if (Object.hasOwn(patch, key)) job[key] = String(patch[key] || '');
             if (Object.hasOwn(patch, 'operationScope')) job.operationScope = patch.operationScope && typeof patch.operationScope === 'object' ? structuredClone(patch.operationScope) : patch.operationScope || '';
             await persistUploadAsync(job); return job;
         },
@@ -513,6 +537,8 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 file.path = target; file.received = size;
                 if (!file.chunks.length) {
                     const chunk = { path: target, offset: 0, size, sha256: digest.digest('hex'), partIndex: 1, status: 'queued', remote: null };
+                    file.contentSha256=chunk.sha256;
+                    if(file.declaredSha256 && file.declaredSha256!==file.contentSha256) throw new Error('CONTENT_HASH_MISMATCH');
                     if (job.progressive) Object.assign(chunk, { writtenBytes: size, receivedBytes: size, sourceVerified: true, sourceComplete: false });
                     file.chunks.push(job.progressive ? attachGrowingSource(job, chunk) : chunk);
                 }
@@ -537,6 +563,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             file.receiving = true;
             const target = path.join(job.dir, `${file.index}-part-${file.chunks?.length || 0}`);
             let size = 0; const digest = crypto.createHash('sha256');
+            if(!job.progressive) file.contentDigest ||= crypto.createHash('sha256');
             if (job.progressive) {
                 const chunk = attachGrowingSource(job, { path: target, offset: start, size: length, partIndex: plan.index,
                     sha256: '', status: 'receiving', remote: null, tempRemote: null, finalRemote: null,
@@ -593,13 +620,14 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                     if (job.removeStagingPending) removeStaging(job);
                 }
             }
-            request.on('data', chunk => { size += chunk.length; digest.update(chunk); if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
+            request.on('data', chunk => { size += chunk.length; digest.update(chunk); file.contentDigest.update(chunk); if (size > length) request.destroy(new Error('telegram-drive-upload-size-mismatch')); onProgress?.(size); });
             try {
                 await receiveToStaging(request, target);
                 assertUploadActive(job);
                 if (size !== length) throw new Error('telegram-drive-upload-size-mismatch');
                 file.chunks.push({ path: target, offset: start, size, sha256: digest.digest('hex'), partIndex: plan.index, status: 'queued', remote: null });
                 file.received += size;
+                if(file.received === file.size) { file.contentSha256=file.contentDigest.digest('hex'); delete file.contentDigest; if(file.declaredSha256 && file.declaredSha256 !== file.contentSha256) throw new Error('CONTENT_HASH_MISMATCH'); }
                 await persistUploadAsync(job);
                 assertUploadActive(job);
                 return { received: file.received, complete: file.received === file.size };
@@ -769,6 +797,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             assertUploadActive(job);
             if (file.chunks.length === 1 && !file.chunks[0].finalRemote) file.chunks[0].finalRemote = file.chunks[0].tempRemote;
             if (file.chunks.some(chunk => !chunk.finalRemote)) throw new Error('UPLOAD_FINAL_GROUP_INCOMPLETE');
+            await this.verifyContentHash(uploadId,fileIndex);
             file.finalized = true;
             for (const chunk of file.chunks) { chunk.remote = chunk.finalRemote; chunk.status = 'uploaded'; }
             await persistUploadAsync(job);
@@ -776,6 +805,37 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             // source. Keep it until the entire final file is recorded safely.
             for (const chunk of file.chunks) unlinkStaging(job, chunk.path);
             return file;
+        },
+        async verifyContentHash(uploadId, index) {
+            const job=uploads.get(String(uploadId)),file=job?.files[index];
+            if(!file) throw new Error('UPLOAD_NOT_FOUND');
+            if(file.contentSha256) {
+                if(file.declaredSha256 && file.contentSha256!==file.declaredSha256)throw new Error('CONTENT_HASH_MISMATCH');
+                return file.contentSha256;
+            }
+            const digest=crypto.createHash('sha256'); let size=0;
+            const sources=file.path ? [file.path] : file.chunks.map(chunk=>chunk.path);
+            for(const source of sources) for await(const bytes of fs.createReadStream(source)) { assertUploadActive(job); size+=bytes.length; digest.update(bytes); }
+            if(size!==file.size) throw new Error('CONTENT_SIZE_MISMATCH');
+            const actual=digest.digest('hex');
+            if(file.declaredSha256 && actual!==file.declaredSha256) throw new Error('CONTENT_HASH_MISMATCH');
+            file.contentSha256=actual;
+            await persistUploadAsync(job); return file.contentSha256;
+        },
+        async reuseContent(uploadId,index,contentId,lease) {
+            const job=uploads.get(String(uploadId)),file=job?.files[index],content=repository.content.resolve(contentId);
+            if(!job?.progressive || !file || file.chunks.length || !content || content.size!==file.size) throw new Error('CONTENT_REUSE_INVALID');
+            file.reuseContentId=contentId; file.contentLease=lease; file.contentSha256=String(content.content_key).split(':').at(-1); file.finalized=true;
+            await persistUploadAsync(job);
+        },
+        renewContentLeases(uploadId) {
+            const job=uploads.get(String(uploadId)); if(!job)return;
+            for(const file of job.files) {
+                if(file.contentLease && !repository.content.renewLease(file.contentLease)) throw new Error('CONTENT_LEASE_EXPIRED');
+                if(file.contentClaimToken) repository.content.write(db=>{
+                    if(db.prepare('UPDATE disk_content_claims SET expires_at=? WHERE token=? AND expires_at>?').run(Date.now()+15*60_000,file.contentClaimToken,Date.now()).changes!==1) throw new Error('CONTENT_CLAIM_EXPIRED');
+                });
+            }
         },
         async setTemporaryCleanup(uploadId, remotes) {
             const job = uploads.get(String(uploadId));
@@ -846,7 +906,20 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         uploadResults(uploadId) {
             const job = uploads.get(String(uploadId));
             if (!job) return [];
-            return job.files.map(file => {
+            return job.files.map((file,index) => {
+                if(file.emptyContent)return {parts:[],size:0};
+                if(Number.isInteger(file.reuseFromIndex)) {
+                    const source=job.files[file.reuseFromIndex]; if(file.reuseFromIndex>=index || !source.finalized)return null;
+                    file.contentSha256=source.contentSha256;
+                    if(source.reuseContentId) { const physical=repository.content.resolve(source.reuseContentId).physical;return {...physical.parts[0],...physical,size:file.size}; }
+                    const parts=source.chunks.map(chunk=>chunk.remote);
+                    return {...parts[0],parts,size:file.size,thumbnail:source.thumbnail?.remote || null};
+                }
+                if(file.reuseContentId) {
+                    const content=repository.content.resolve(file.reuseContentId);
+                    if(!content || !['READY','DELETE_PENDING'].includes(content.state)) throw new Error('CONTENT_NOT_AVAILABLE');
+                    const parts=content.physical.parts; return {...parts[0],...content.physical,parts,size:file.size};
+                }
                 if (job.progressive && !file.finalized) return null;
                 const parts = file.chunks.map(chunk => chunk.remote).filter(Boolean).sort((a, b) => a.partIndex - b.partIndex);
                 if (parts.length !== file.parts.length) return null;
@@ -867,7 +940,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 }
             }
         },
-        finish(uploadId) { const job = uploads.get(String(uploadId)); if (!job) throw new Error('telegram-drive-upload-not-found'); if (job.files.some(file => file.receiving || (!file.path && (!file.chunks?.length || file.received !== file.size)) || (job.progressive && file.chunks.some(chunk => !chunk.sourceComplete || chunk.sourceError)))) throw new Error('telegram-drive-upload-incomplete'); return job; },
+        finish(uploadId) { const job = uploads.get(String(uploadId)); if (!job) throw new Error('telegram-drive-upload-not-found'); if (job.files.some(file => !file.emptyContent && !file.reuseContentId && !Number.isInteger(file.reuseFromIndex) && (file.receiving || (!file.path && (!file.chunks?.length || file.received !== file.size)) || (job.progressive && file.chunks.some(chunk => !chunk.sourceComplete || chunk.sourceError))))) throw new Error('telegram-drive-upload-incomplete'); return job; },
         ownsUpload(ownerId, uploadId) { const job = uploads.get(String(uploadId)); return Boolean(job && String(job.owner?.id) === String(ownerId)); },
         commit(uploadId, channelId, sent) {
             const job = this.finish(uploadId); const now = Date.now();
@@ -882,9 +955,23 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 const previous = job.replaceId ? this.get(job.owner.id, job.replaceId) : null;
                 if (job.replaceId && (!previous || previous.folderPath !== file.folderPath || previous.name !== file.name)) throw new Error('DISK_NAME_CONFLICT');
                 const item = { id: previous?.id || file.logicalId || crypto.randomUUID(), ownerId: String(job.owner.id), ownerName: String(job.owner.name || ''), ownerUsername: String(job.owner.username || ''), folderPath: file.folderPath, name: file.name, type: file.type, size: file.size, channelId: String(channelId), messageId: Number(remote.messageId) || 0, mediaGroupId: String(remote.mediaGroupId || ''), fileId: String(remote.fileId || ''), fileUniqueId: String(remote.fileUniqueId || ''), parts, partCount: parts.length, thumbnail, mediaIndex: file.mediaIndex || { mode: 'unavailable' }, fileIdHistory: [], createdAt: now, updatedAt: now, lastCheckedAt: 0 };
+                if(job.contentGrant)item.contentGrant={...job.contentGrant};
+                if(job.contentAuthorization)item.contentAuthorization={...job.contentAuthorization};
                 if (previous) for (const part of parts) part.logicalFileId = item.id;
                 item.metadata = job.metadata; item.backendId = job.backendId;
                 item.sourceAppId = job.sourceAppId || '';
+                item.contentCandidateId=file.contentCandidateId;
+                item.contentClaimToken=file.contentClaimToken;
+                item.contentSha256=file.contentSha256 || '';
+                if(Number.isInteger(file.reuseFromIndex)) {
+                    const source=job.files[file.reuseFromIndex],shared=source.reuseContentId ? repository.content.resolve(source.reuseContentId).physical : null;
+                    item.contentCandidateId=undefined;
+                    if(shared) {item.channelId=shared.channelId;item.backendId=shared.backendId;item.mediaIndex=shared.mediaIndex;}
+                }
+                if(file.reuseContentId) {
+                    item.contentId=file.reuseContentId; item.contentLease=file.contentLease;
+                    item.channelId=remote.channelId; item.backendId=remote.backendId; item.mediaIndex=remote.mediaIndex;
+                }
                 item.captionWarning = remote.captionWarning || '';
                 item.captionSyncPending = Boolean(remote.captionWarning);
                 if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({
@@ -896,7 +983,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 records.set(item.id, item); return item;
             });
             for (const file of job.files) touchDirectory(job.owner.id, file.folderPath, now);
-            persist();
+            persist(false,{id:job.id,ids:created.map(file=>file.id)});
             if (job.progressive) {
                 job.committed = true; job.committedIds = created.map(file => file.id);
                 // The SQLite transaction is authoritative after it succeeds.
@@ -905,13 +992,14 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             }
             stopUpload(job); removeStaging(job); uploads.delete(job.id); return created;
         },
-        abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; stopUpload(job); removeStaging(job); uploads.delete(job.id); },
+        abort(uploadId) { const job = uploads.get(String(uploadId)); if (!job) return; stopUpload(job);releaseUploadContent(job); removeStaging(job); uploads.delete(job.id); },
         async abortAsync(uploadId) {
             const job = uploads.get(String(uploadId)); if (!job) return;
             if (job.abortPromise) return job.abortPromise;
             if (job.preservePromise) { await job.preservePromise; return; }
             const pending = (async () => {
                 stopUpload(job);
+                releaseUploadContent(job);
                 await Promise.all([...(job.receivers || [])].map(receiver => receiver.done));
                 await Promise.all(job.files.flatMap(file => file.chunks || []).map(awaitGrowingReadersClosed));
                 await job.manifestWrite?.catch(() => {});
@@ -943,7 +1031,8 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const id = previous?.id || logicalId || crypto.randomUUID();
             const parts = remotes.map((remote, index) => ({ ...source.parts[index], ...remote, logicalFileId: id, partIndex: index + 1, partCount: remotes.length, originalSize: source.size }));
             const first = parts[0] || {};
-            const item = { ...source, id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: null, createdAt: now, updatedAt: now };
+            const item = { id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, type:source.type, size:source.size, metadata:{...(source.metadata || {})}, mediaIndex:source.mediaIndex,
+                contentId:source.contentId, contentLease:source.contentLease, contentSha256:source.contentSha256, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: source.contentId ? source.thumbnail : null, createdAt: now, updatedAt: now };
             delete item.pendingRemoteCleanup;
             if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
             records.set(item.id, item); touchDirectory(owner.id, safe, now); persist(); return item;
@@ -975,7 +1064,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
         finalizeExpired(uploadId) { this.abort(uploadId); },
         recoveredUploads() { return recoveredUploads.splice(0); },
         async activateRecoveredUpload(manifest) {
-            if (!manifest?.progressive || manifest.version !== 2 || !/^[a-f0-9-]{36}$/.test(String(manifest.id || '')) || !manifest.ownerId || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error('UPLOAD_RECOVERY_MANIFEST_INVALID');
+            if (!manifest?.progressive || ![2,3].includes(manifest.version) || !/^[a-f0-9-]{36}$/.test(String(manifest.id || '')) || !manifest.ownerId || !Array.isArray(manifest.files) || !manifest.files.length) throw new Error('UPLOAD_RECOVERY_MANIFEST_INVALID');
             if (uploads.has(manifest.id)) return uploads.get(manifest.id);
             const dir = path.join(stagingRoot, manifest.id);
             if (path.resolve(manifest.dir || dir) !== path.resolve(dir)) throw new Error('UPLOAD_RECOVERY_MANIFEST_INVALID');
@@ -986,11 +1075,27 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const validRemote = remote => Boolean(remote?.fileId && Number.isSafeInteger(remote.messageId) && remote.messageId > 0);
             const job = { ...manifest, owner: { ...(manifest.owner || {}), id: String(manifest.ownerId) }, dir, closed: false,
                 metadata: manifest.metadata || {}, maxDepth: Number(manifest.maxDepth) || 20, uploadLimit: Number(manifest.uploadLimit) || maxFileSize(), files: [] };
+            const acquiredLeases = [];
+            try {
             job.folderPath = normalizePath(job.folderPath); assertDepth(job.folderPath, job.maxDepth);
             for (const [index, saved] of manifest.files.entries()) {
                 if (!Number.isSafeInteger(saved.size) || saved.size < 0 || saved.size > job.uploadLimit || !saved.logicalId || !Array.isArray(saved.parts) || !saved.parts.length || saved.parts.length > 10000 || !Array.isArray(saved.chunks)) throw new Error('UPLOAD_RECOVERY_MANIFEST_INVALID');
                 const file = { ...saved, index, name: normalizeSegment(saved.name, 180), folderPath: normalizePath(saved.folderPath), receiving: false, path: '', chunks: [], finalGroups: saved.finalGroups || [] };
+                if(manifest.version===3 && saved.finalized && (!/^[a-f0-9]{64}$/.test(saved.contentSha256 || '') || saved.declaredSha256 && saved.declaredSha256!==saved.contentSha256))throw new Error('CONTENT_HASH_MISMATCH');
+                if(file.reuseContentId) {
+                    const content=repository.content.resolve(file.reuseContentId);
+                    if(!content || content.size!==file.size || String(content.content_key).split(':').at(-1)!==file.contentSha256) throw new Error('CONTENT_REUSE_INVALID');
+                    // A durable, previously proved reuse can reacquire its read/
+                    // attach protection after downtime, but never revive DELETING.
+                    if(!repository.content.renewLease(file.contentLease)) {
+                        file.contentLease=repository.content.lease(file.reuseContentId,job.viewerId || job.owner.id,job.id,'reuse');
+                        acquiredLeases.push(file.contentLease);
+                    }
+                    job.files.push(file); continue;
+                }
                 assertDepth(file.folderPath, job.maxDepth);
+                if(file.emptyContent){if(file.size!==0)throw new Error('CONTENT_REUSE_INVALID');job.files.push(file);continue;}
+                if(Number.isInteger(file.reuseFromIndex)) { if(file.reuseFromIndex<0 || file.reuseFromIndex>=index || saved.declaredSha256!==manifest.files[file.reuseFromIndex].declaredSha256)throw new Error('CONTENT_REUSE_INVALID');job.files.push(file);continue; }
                 let expectedOffset = 0;
                 for (const [planIndex, plan] of file.parts.entries()) {
                     if (plan.index !== planIndex + 1 || !Number.isSafeInteger(plan.size) || plan.size < 0 || plan.size > MAX_TELEGRAM_PART_SIZE || plan.byteStart !== expectedOffset || plan.byteEnd !== expectedOffset + plan.size - 1) throw new Error('UPLOAD_RECOVERY_MANIFEST_INVALID');
@@ -1036,9 +1141,20 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
                 }
                 job.files.push(file);
             }
+            for(const file of job.files) if(file.contentClaimToken) repository.content.write(db=>{
+                const claim=db.prepare('SELECT * FROM disk_content_claims WHERE token=? AND expires_at>?').get(file.contentClaimToken,Date.now());
+                if(claim)db.prepare('UPDATE disk_content_claims SET expires_at=? WHERE token=?').run(Date.now()+15*60_000,file.contentClaimToken);
+                // Confirmed candidate ownership lives in this manifest. A newer
+                // key claimant only affects canonical selection at atomic commit.
+                else delete file.contentClaimToken;
+            });
             uploads.set(job.id, job);
             try { await persistUploadAsync(job); return job; }
             catch (error) { uploads.delete(job.id); throw error; }
+            } catch (error) {
+                for (const lease of acquiredLeases) repository.content.releaseLease(lease);
+                throw error;
+            }
         },
         discardRecovered(job) { if (!job?.dir) return; uploads.delete(String(job.id)); removeStaging(job); },
         update(ownerId, id, patch) { const item = this.get(ownerId, id); if (!item) return null; Object.assign(item, patch, { updatedAt: Date.now() }); records.set(item.id, item); touchDirectory(ownerId, item.folderPath || ''); persist(); return item; },
@@ -1083,7 +1199,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const files = ownerRecords(ownerId).filter(item => item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
             return { folders, files };
         },
-        adminFiles() { return [...records.values()].map(item => ({ ...item })); },
+        adminFiles() { return repository.projectFiles([...records.values()],diskSpace); },
         adminDirectories() { return [...directories.values()].map(item => ({ ...item })); },
         remove(ownerId, id) { const item = this.get(ownerId, id); if (!item) return false; records.delete(item.id); touchDirectory(ownerId, item.folderPath || ''); persist(); return true; },
         removeMany(ownerId, ids) {

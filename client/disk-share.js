@@ -35,7 +35,7 @@
     }
     async function readFile(file, signal) {
         const cacheKey = 'share:' + token + ':' + file.id;
-        const cached = await window.TelegramDriveCache?.get(cacheKey).catch(() => null);
+        const cached = await window.TelegramDriveCache?.get(cacheKey,file).catch(() => null);
         if (cached?.blob instanceof Blob && (!Number(file.size) || cached.blob.size === Number(file.size))) {
             $('shareLoadingText').textContent = '已从浏览器缓存读取：' + file.name;
             $('shareLoadingProgress').value = 100;
@@ -65,7 +65,7 @@
                     blob = new Blob(chunks, { type: file.type || 'application/octet-stream' });
                 }
                 if (Number(file.size) && blob.size !== Number(file.size)) throw new Error('下载内容不完整');
-                await window.TelegramDriveCache?.put(cacheKey, { name: file.name, type: file.type, size: blob.size, blob, source: 'public-share' }).catch(() => undefined);
+                await window.TelegramDriveCache?.put(cacheKey, { name: file.name, type: file.type, size: blob.size, logicalContentVersion:file.logicalContentVersion || 1, blob, source: 'public-share' }).catch(() => undefined);
                 return blob;
             } catch (error) {
                 if (error.name === 'AbortError') throw error;
@@ -85,7 +85,7 @@
         const streamable = preview && (/^(image|audio|video)\//.test(file.type || '') || file.type === 'application/pdf');
         if (streamable) {
             const cacheKey = 'share:' + token + ':' + file.id;
-            const cached = await window.TelegramDriveCache?.get(cacheKey).catch(() => null);
+            const cached = await window.TelegramDriveCache?.get(cacheKey,file).catch(() => null);
             closePreview(); $('sharePreviewName').textContent = file.name;
             let source = base + '/files/' + encodeURIComponent(file.id) + '/download?inline=1';
             if (cached?.blob instanceof Blob && (!Number(file.size) || cached.blob.size === Number(file.size))) { url = URL.createObjectURL(cached.blob); source = url; }

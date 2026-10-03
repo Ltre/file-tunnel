@@ -143,3 +143,14 @@ test('CLI rejects ambiguous arguments and refuses to overwrite a live diagnostic
     assert.equal(JSON.parse(fs.readFileSync(output)).format, 'drop2tunnel-tgdisk-diagnostics-v1');
     assert.equal((await collect(options)).logs.length, 1);
 });
+test('Content 诊断只导出生命周期计数，不导出 PoP 秘密或物理来源',async t=>{
+    const {dataDir,now,options}=fixture(t),repository=require('../server/disk-repository').openDiskRepository(dataDir);
+    t.after(()=>repository.close());
+    repository.replace('files',[{id:'one',ownerId:'user',name:'one',folderPath:'',size:0}],file=>file.id);
+    repository.replace('operations',[{operation_id:'op',updatedAt:now-100,reusedBytes:123,logicalBytesProcessed:123,filesReady:1,filesTotal:2}],op=>op.operation_id);
+    const bundle=await collect(options);
+    assert.equal(bundle.contentObjects.references,1);
+    assert.equal(bundle.contentObjects.contents[0].state,'READY');
+    assert.equal(bundle.operations[0].reusedBytes,123);
+    const text=JSON.stringify(bundle.contentObjects);assert.doesNotMatch(text,/content_key|caption|nonce|digests|channel_id|file_id/);
+});

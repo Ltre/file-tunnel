@@ -113,9 +113,15 @@ PutObject 的 `Content-Type` 和合规的 `x-amz-meta-*` 元数据会保留；GE
 - Key 使用 ZIP / 网盘式相对路径，支持中文、日文和文件名内部空格；UTF-8 总长度最多 1024 字节，目录最多 20 层，文件名最多 180 字符。路径段前后空白、连续 `/`、`.` / `..`、反斜杠及网盘非法名称会返回 `InvalidObjectName`，不会静默归一化改名；目录层级还受后台设置限制。
 - S3 连续 PUT 请求体通过现有对象核心切成最多 20,000,000 字节的 Telegram 分片，复用原有网盘串行上传队列、分片哈希 / file_id 复用校验、逻辑文件关联、失败回滚及恢复清理。仍在每片接收完整后再发送 Telegram，收到合法分片消息确认后释放该片正文；不切入下面说明的可选渐进式上传。
 - **S3 PUT 仍等待 Telegram 确认及索引提交后才返回成功**，不会返回原生网盘的 202 operation_id。原生 API 的 `/uploads/:id/queue` 是其客户端分片协议，不是 S3 API，也不会把一个 S3 PUT 改成异步操作。
-- 覆盖先完成新对象上传 / 校验，再切换索引并安排旧消息清理；上传失败保留旧对象。同 Bot 复制可复用已验证的 Telegram file_id，跨存储后端按现有读取 / 上传链路复制。
+- 覆盖先完成新对象上传 / 校验，再切换 Logical 引用；上传失败保留旧对象。同用户、同 Bot 的 CopyObject 直接引用源 Content，不重新 sendDocument/sendMediaGroup 或上传封面；跨 Bot 按现有读取 / 上传链路复制，不支持跨用户 Copy。
 - S3 没有独立 RenameObject；客户端重命名通常使用 CopyObject 后 DeleteObject。删除文件以及覆盖目标（含 CopyObject 的目标覆盖）受现有协同编辑保护，受保护对象会返回 AccessDenied。
-- 文件路径以网盘索引为准，移动不再修改 Telegram caption 中的 `path`；新上传不写该字段，文件重命名仍保留名称同步机制。
+- 文件路径、名称和 MIME 等属于 Logical；新 Content caption 只保存物理排障信息。移动和改名不修改共享 caption。DELETE/覆盖只释放目标引用；最后引用和在途租约释放后由后台 outbox 清理，S3 删除成功不表示 Telegram 消息已同步删除。
+
+### 共享 Content Object
+
+已知完整 payload SHA-256 且命中健康 Content 的 PUT，先接收和验证实际全部请求体、大小及可选 MD5，再建立引用，命中时不新发 Telegram 正文消息。仍需发送 HTTP PUT 正文，不能把声明 hash 当作持有证明。候选损坏时改用已经验证的暂存正文构建新对象。
+
+UNSIGNED-PAYLOAD / 无完整 SHA 的 PUT 保持逐片上传，到 EOF 后才取得可信 key 并 canonicalize；可能产生只属于该候选的重复消息及补偿。命中的内容身份、权限、读取 revision、缓存版本及迁移说明见 [共享 Content Object](telegram-drive-content-objects.md)。0 Byte 普通对象引用不含消息的空 Content；目录 marker 不建立 Content。SigV4、ETag 和同步响应语义不变。
 
 ### 与可选渐进式上传的边界
 
