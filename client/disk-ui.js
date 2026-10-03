@@ -2093,9 +2093,8 @@ function initDiskLoading() {
         title.textContent = job?.title || activity?.message || '正在处理网盘任务';
         const percent = typeof job?.percent === 'number' && Number.isFinite(job.percent) ? Math.max(0, Math.min(100, job.percent)) : null;
         const stages = [];
-        if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}`);
-        if (Number.isFinite(job?.telegramBytesSent) && job.telegramTotalBytes) stages.push(`服务器 → Telegram 已发送 ${formatFileSize(job.telegramBytesSent)}/${formatFileSize(job.telegramTotalBytes)}`);
-        if (Number.isFinite(job?.telegramBytesConfirmed) && job.telegramTotalBytes) stages.push(`Telegram 已确认 ${formatFileSize(job.telegramBytesConfirmed)}/${formatFileSize(job.telegramTotalBytes)}`);
+        if (Number.isFinite(job?.clientBytesReceived) && job.clientTotalBytes) stages.push(`浏览器 → 服务器 ${formatFileSize(job.clientBytesReceived)}/${formatFileSize(job.clientTotalBytes)}${Number.isFinite(job.clientSpeedBps)&&job.clientSpeedBps>0?' · '+formatFileSize(job.clientSpeedBps)+'/s':''}${job.clientPartIndex?' · 分片 '+job.clientPartIndex+'/'+job.clientPartCount:''}`);
+        if (Number.isFinite(job?.telegramBytesSent) && job.telegramTotalBytes) stages.push(`服务器 → Telegram ${formatFileSize(job.telegramBytesSent)}/${formatFileSize(job.telegramTotalBytes)}${Number.isFinite(job.telegramSpeedBps)&&job.telegramSpeedBps>0?' · '+formatFileSize(job.telegramSpeedBps)+'/s':''}${job.telegramPartIndex?' · 分片 '+job.telegramPartIndex+'/'+job.telegramPartCount:''}`);
         if (Number.isFinite(job?.telegramThumbnailBytesSent) && job.telegramThumbnailTotalBytes) stages.push(`封面已发送 ${formatFileSize(job.telegramThumbnailBytesSent)}/${formatFileSize(job.telegramThumbnailTotalBytes)}`);
         detail.textContent = job
             ? [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', job.message, job.phase, percent === null ? '' : Math.round(percent) + '%', stages.join(' · ') || (job.totalBytes ? formatFileSize(job.processedBytes) + ' / ' + formatFileSize(job.totalBytes) : '')].filter(Boolean).join(' · ')

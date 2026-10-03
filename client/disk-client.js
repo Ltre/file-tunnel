@@ -36,8 +36,17 @@
         finally { activities.delete(activity); emitActivities(); }
     }
     const active = job => ['queued', 'running'].includes(job.status);
-    const visibleJobs = () => [...localUploads.values()].filter(job => !jobs.some(remote => remote.operation_id === job.operation_id && (job.status !== 'failed' || !active(remote))))
-        .concat(jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job)));
+    const visibleJobs = () => {
+        const clientFields = ['clientBytesReceived','clientTotalBytes','clientSpeedBps','clientFileIndex','clientFileCount','clientPartIndex','clientPartCount'];
+        const remote = jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job)).map(job => {
+            const local = localUploads.get(job.operation_id);
+            if (!local || !active(job)) return job;
+            const merged = { ...job };
+            for (const key of clientFields) if (local[key] !== undefined) merged[key] = local[key];
+            return merged;
+        });
+        return [...localUploads.values()].filter(job => !jobs.some(remoteJob => remoteJob.operation_id === job.operation_id && (job.status !== 'failed' || !active(remoteJob)))).concat(remote);
+    };
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
@@ -47,6 +56,38 @@
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
         return data;
+    }
+    async function uploadBlobRequest(url, options = {}, onProgress) {
+        if (typeof XMLHttpRequest === 'undefined') return raw(url, options);
+        const method = String(options.method || 'PUT').toUpperCase();
+        const target = url.startsWith('/api/') ? url : baseUrl() + url;
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            let settled = false;
+            const cleanup = () => options.signal?.removeEventListener?.('abort', abort);
+            const finish = (error, value) => {
+                if (settled) return; settled = true; cleanup();
+                error ? reject(error) : resolve(value);
+            };
+            const abort = () => { try { xhr.abort(); } catch (_) {} finish(abortError()); };
+            xhr.open(method, target, true);
+            xhr.withCredentials = true;
+            xhr.setRequestHeader('X-Disk-Device-Id', deviceId);
+            for (const [name, value] of Object.entries(options.headers || {})) if (value !== undefined) xhr.setRequestHeader(name, String(value));
+            xhr.upload.onprogress = event => onProgress?.(event.loaded, event.lengthComputable ? event.total : Number(options.body?.size) || 0);
+            xhr.onload = () => {
+                let data = {};
+                try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+                if (xhr.status >= 200 && xhr.status < 300) return finish(null, data);
+                const error = new Error(data.error || 'DISK_REQUEST_FAILED');
+                Object.assign(error, data); error.status = xhr.status; finish(error);
+            };
+            xhr.onerror = () => { const error = new Error('DISK_REQUEST_FAILED'); error.transportFailure = true; finish(error); };
+            xhr.onabort = () => finish(abortError());
+            options.signal?.addEventListener?.('abort', abort, { once:true });
+            if (options.signal?.aborted) return abort();
+            xhr.send(options.body);
+        });
     }
     async function refresh(force = false) {
         if (!enabled) return;
@@ -135,6 +176,7 @@
                         pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
+                    Object.assign(pending, values);
                     update(values); emit();
                 }, controller.signal);
             } catch (error) {
@@ -268,7 +310,20 @@
         try {
             update({ operationId: job.operation_id });
             start();
+            const clientTotalBytes = plannedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+            let clientCompletedBytes = 0, clientShownBytes = 0, clientLastAt = performance.now(), clientSpeed = 0;
+            const reportClientProgress = (logicalBytes, extra = {}) => {
+                const now = performance.now(), elapsed = now - clientLastAt;
+                const next = Math.max(clientShownBytes, Math.min(clientTotalBytes, logicalBytes));
+                if (elapsed >= 120 && next >= clientShownBytes) {
+                    const instant = elapsed > 0 ? (next - clientShownBytes) * 1000 / elapsed : 0;
+                    if (instant >= 0) clientSpeed = clientSpeed ? clientSpeed * .7 + instant * .3 : instant;
+                    clientLastAt = now; clientShownBytes = next;
+                }
+                update({ phase:'client-upload', clientBytesReceived:next, clientTotalBytes, clientSpeedBps:clientSpeed, ...extra });
+            };
             for (let index = 0; index < files.length; index++) {
+                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:0, clientPartCount:plannedFiles[index].parts.length });
                 await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
                 const blob = await read(files[index]);
@@ -288,7 +343,16 @@
                     if (!blob.size) break;
                     const offset = part.byteStart, end = part.byteEnd + 1;
                     while (true) {
-                        try { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': `bytes ${offset}-${end - 1}/${blob.size}` }, body: blob.slice(offset, end), signal })).queue; break; }
+                        try {
+                            await waitForQueue();
+                            const partBlob = blob.slice(offset, end);
+                            const result = await uploadBlobRequest(url, { method:'PUT', headers:{ 'Content-Type':'application/octet-stream', 'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}` }, body:partBlob, signal },
+                                loaded => reportClientProgress(clientCompletedBytes + loaded, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length }));
+                            queue = result.queue;
+                            clientCompletedBytes += part.size;
+                            reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
+                            break;
+                        }
                         catch (error) {
                             if (error.message !== 'UPLOAD_BACKPRESSURE') throw error;
                             queue = error.queue;
@@ -299,6 +363,7 @@
                     }
                 }
                 await thumbnailUpload;
+                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientPartIndex:plannedFiles[index].parts.length, clientPartCount:plannedFiles[index].parts.length });
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
