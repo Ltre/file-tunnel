@@ -209,3 +209,41 @@ for (const mode of ['file', 'part', 'thumbnail']) {
         assert.equal(fs.existsSync(job.dir), false);
     });
 }
+
+
+test('分片接收尚未结束时即暴露已落盘字节，增长 reader 等待后续数据而不提前 EOF', async t => {
+    const drive = createTelegramDriveStore({ dataDir: temporary(t) });
+    const job = drive.begin({ owner: { id:'user-1' }, folderPath:'', files:[{ name:'progressive.bin', size:6 }], maxDepth:20 });
+    const input = new PassThrough();
+    const receiving = drive.receivePart(job.id, 0, input, 'bytes 0-5/6');
+    input.write('abc');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const chunk = job.files[0].chunks[0];
+    assert.ok(chunk, '第一个 PUT 尚未结束时就必须建立 chunk');
+    assert.equal(chunk.status, 'receiving');
+    assert.equal(chunk.writtenBytes, 3);
+    assert.equal(chunk.sourceComplete, false);
+    assert.equal(drive.uploadQueue(job.id).receivedParts, 0);
+    assert.equal(drive.uploadQueue(job.id).pendingBytes, 3);
+
+    const source = chunk.streamFactory();
+    const iterator = source[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).value.toString(), 'abc');
+
+    let secondSettled = false;
+    const second = iterator.next().then(value => { secondSettled = true; return value; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(secondSettled, false, 'reader 追上 writtenBytes 后必须等待，不得把增长中的文件当 EOF');
+
+    input.end('def');
+    assert.equal((await second).value.toString(), 'def');
+    assert.equal((await iterator.next()).done, true);
+    await receiving;
+
+    assert.equal(chunk.sourceComplete, true);
+    assert.equal(chunk.writtenBytes, 6);
+    assert.match(chunk.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(drive.uploadQueue(job.id).receivedParts, 1);
+    assert.equal(drive.uploadQueue(job.id).pendingBytes, 6);
+});

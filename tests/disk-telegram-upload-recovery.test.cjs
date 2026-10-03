@@ -282,3 +282,50 @@ test('致命错误先通知流水线，再等待内部远程清理', async t => 
     await assert.rejects(telegram.uploadPhysical(backend, files, parts, () => {}, { onFailure: error => { order.push('failure'); assert.equal(error.message, 'TELEGRAM_400'); } }), /TELEGRAM_400/);
     assert.ok(order.indexOf('failure') < order.indexOf('cleanup'));
 });
+
+
+test('最终化 11 个临时分片只使用 file_id，按 9+2 合法媒体组提交且返回待清理临时消息', async t => {
+    const { dataDir } = fixture(t);
+    const file = { logicalId:'large', name:'large.bin', type:'application/octet-stream', size:33 };
+    const temp = Array.from({ length:11 }, (_, index) => ({
+        fileIndex:0, logicalFileId:'large', partIndex:index + 1, partCount:11, originalSize:33,
+        offset:index * 3, size:3, fileId:'temp-' + (index + 1), fileUniqueId:'tu-' + (index + 1),
+        messageId:100 + index, messageDate:1000
+    }));
+    const groups = []; let nextId = 500;
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (url, init) => {
+        const method = url.split('/').pop();
+        assert.equal(method, 'sendMediaGroup');
+        const payload = JSON.parse(init.body);
+        groups.push(payload.media.map(item => item.media));
+        assert.ok(payload.media.every(item => !String(item.media).startsWith('attach://')), '最终化不得重新上传文件正文');
+        return reply(payload.media.map(() => message(++nextId)));
+    } });
+    const result = await telegram.finalizePhysical(backend, [file], temp);
+    assert.deepEqual(groups.map(group => group.length), [9, 2]);
+    assert.equal(result.remotes.length, 11);
+    assert.equal(result.cleanupParts.length, 11);
+    assert.deepEqual(result.cleanupParts.map(part => part.messageId), temp.map(part => part.messageId));
+    assert.deepEqual(result.remotes.map(part => part.partIndex), Array.from({ length:11 }, (_, index) => index + 1));
+});
+
+test('最终媒体组部分成功后下一组失败，已创建的最终消息必须进入统一回滚清单', async t => {
+    const { dataDir } = fixture(t);
+    const file = { logicalId:'large', name:'large.bin', type:'application/octet-stream', size:63 };
+    const temp = Array.from({ length:21 }, (_, index) => ({
+        fileIndex:0, logicalFileId:'large', partIndex:index + 1, partCount:21, originalSize:63,
+        offset:index * 3, size:3, fileId:'temp-' + (index + 1), messageId:100 + index, messageDate:1000
+    }));
+    let group = 0, nextId = 700;
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (_url, init) => {
+        const payload = JSON.parse(init.body);
+        if (++group === 2) return reject('Bad Request: finalization failed');
+        return reply(payload.media.map(() => message(++nextId)));
+    } });
+    await assert.rejects(telegram.finalizePhysical(backend, [file], temp), error => {
+        assert.equal(error.message, 'TELEGRAM_400');
+        assert.ok(error.unremovedParts.length >= 2);
+        assert.ok(error.unremovedParts.every(part => part.messageId >= 701));
+        return true;
+    });
+});

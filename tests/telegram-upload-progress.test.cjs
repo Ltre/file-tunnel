@@ -68,3 +68,48 @@ test('进度回调异常不影响 HTTP 客户端，没有发送事件时不虚�
     assert.doesNotThrow(() => diagnostics.channel('undici:request:bodyChunkSent').publish({ request, chunk: Buffer.alloc(10) }));
     assert.equal(observer.snapshot().sentFileBytes, 10); observer.close();
 });
+
+
+test('multipart 可在源文件未完成时发送首批正文，并在增长源补齐后保持精确 Content-Length', async () => {
+    let releaseTail, firstYielded;
+    const tail = new Promise(resolve => { releaseTail = resolve; });
+    const first = new Promise(resolve => { firstYielded = resolve; });
+    const file = {
+        name:'progressive.bin', type:'application/octet-stream', size:6,
+        streamFactory: () => Readable.from((async function* () {
+            yield Buffer.from('abc');
+            firstYielded();
+            await tail;
+            yield Buffer.from('def');
+        })())
+    };
+    const updates = [];
+    const multipart = buildTelegramDocumentsMultipart({ chatId:'-100', files:[file], onProgress:(bytes, total, _name, _index, fileBytes) => updates.push({ bytes, total, fileBytes }) });
+    const iterator = multipart.body[Symbol.asyncIterator]();
+    const chunks = [];
+    // Consume multipart fields/header until the first file payload has been produced.
+    while (!updates.length) {
+        const entry = await iterator.next();
+        assert.equal(entry.done, false);
+        chunks.push(Buffer.from(entry.value));
+    }
+    await first;
+    assert.deepEqual(updates.at(-1), { bytes:3, total:6, fileBytes:3 });
+
+    let waiting = true;
+    const next = iterator.next().then(value => { waiting = false; return value; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(waiting, true, 'multipart 必须等待增长源，不能提前闭合请求体');
+
+    releaseTail();
+    chunks.push(Buffer.from((await next).value));
+    for (;;) {
+        const entry = await iterator.next();
+        if (entry.done) break;
+        chunks.push(Buffer.from(entry.value));
+    }
+    const body = Buffer.concat(chunks);
+    assert.equal(body.length, multipart.contentLength);
+    assert.deepEqual(updates.at(-1), { bytes:6, total:6, fileBytes:6 });
+    assert.match(body.toString('latin1'), /abc(?:def)/);
+});
