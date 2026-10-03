@@ -133,7 +133,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     async function cleanupExpiredUploads() {
         for (const { store, job } of spaces.cleanup()) {
             if (job.operationId) operations.fail(job.operationId, new Error('UPLOAD_EXPIRED'));
-            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
+            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || []), ...(job.pendingCleanupParts || [])];
             if (!parts.length) { await store.abortAsync(job.id); continue; }
             const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
             try {
@@ -153,7 +153,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         recoveringUploads = true;
         const pending = recoveryBacklog.splice(0);
         try { for (const { store, job } of pending) {
-            const parts = [...(job.files || []).flatMap(file => [...(file.chunks || []).map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
+            const parts = [...(job.files || []).flatMap(file => [...(file.chunks || []).map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || []), ...(job.pendingCleanupParts || [])];
             try {
                 if (parts.length) {
                     const storage = job.storage || (job.backendId ? auth.backend(job.backendId) : getDefaultBackend(job.channelId));
@@ -172,18 +172,49 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         cleanupRecoveredUploads().catch(error => console.warn('[网盘] 重启上传回滚失败：', error.message));
     });
     const mutations = new Map();
-    let telegramUploadTail = Promise.resolve();
-    async function enqueueTelegramUpload(job, work) {
-        const previous = telegramUploadTail;
-        const queuedAt = Date.now();
-        let release;
-        const slot = new Promise(resolve => { release = resolve; });
-        telegramUploadTail = previous.catch(() => {}).then(() => slot);
-        log('telegram.queue-wait', { uploadId: job.id, operationId: job.operationId });
-        await previous.catch(() => {});
-        log('telegram.queue-start', { uploadId: job.id, operationId: job.operationId, waitedMs: Date.now() - queuedAt });
-        try { return await work(); }
-        finally { log('telegram.queue-release', { uploadId: job.id, operationId: job.operationId, elapsedMs: Date.now() - queuedAt }); release(); }
+    const TELEGRAM_MAX_INFLIGHT = 4, TELEGRAM_MAX_PER_TARGET = 2, TELEGRAM_TARGET_PACING_MS = 900;
+    const telegramQueue = [], telegramActiveByTarget = new Map(), telegramLastStartByTarget = new Map();
+    let telegramActive = 0, telegramQueueSequence = 0;
+    const telegramTargetKey = job => {
+        const storage = job?.storage || {};
+        const token = String(storage.token || '');
+        const tokenKey = token ? crypto.createHash('sha256').update(token).digest('hex').slice(0, 12) : String(job?.backendId || '');
+        return [String(storage.baseUrl || ''), tokenKey, String(storage.channelId || job?.channelId || '')].join('|');
+    };
+    const drainTelegramQueue = () => {
+        while (telegramActive < TELEGRAM_MAX_INFLIGHT && telegramQueue.length) {
+            const index = telegramQueue.findIndex(entry => (telegramActiveByTarget.get(entry.target) || 0) < TELEGRAM_MAX_PER_TARGET);
+            if (index < 0) return;
+            const entry = telegramQueue.splice(index, 1)[0];
+            telegramActive++;
+            telegramActiveByTarget.set(entry.target, (telegramActiveByTarget.get(entry.target) || 0) + 1);
+            const delay = Math.max(0, (telegramLastStartByTarget.get(entry.target) || 0) + TELEGRAM_TARGET_PACING_MS - Date.now());
+            const run = async () => {
+                telegramLastStartByTarget.set(entry.target, Date.now());
+                log('telegram.queue-start', { uploadId: entry.job.id, operationId: entry.job.operationId, waitedMs: Date.now() - entry.queuedAt, inflight: telegramActive });
+                try { entry.resolve(await entry.work()); }
+                catch (error) { entry.reject(error); }
+                finally {
+                    log('telegram.queue-release', { uploadId: entry.job.id, operationId: entry.job.operationId, elapsedMs: Date.now() - entry.queuedAt });
+                    telegramActive--;
+                    const left = (telegramActiveByTarget.get(entry.target) || 1) - 1;
+                    if (left) telegramActiveByTarget.set(entry.target, left); else telegramActiveByTarget.delete(entry.target);
+                    drainTelegramQueue();
+                }
+            };
+            if (delay) {
+                const timer = setTimeout(run, delay);
+                timer.unref?.();
+            } else queueMicrotask(run);
+        }
+    };
+    function enqueueTelegramUpload(job, work) {
+        return new Promise((resolve, reject) => {
+            const entry = { id: ++telegramQueueSequence, job, work, resolve, reject, queuedAt: Date.now(), target: telegramTargetKey(job) };
+            telegramQueue.push(entry);
+            log('telegram.queue-wait', { uploadId: job.id, operationId: job.operationId, queued: telegramQueue.length, target: entry.target });
+            drainTelegramQueue();
+        });
     }
     // Serialize index mutations for one logical disk while remote work is pending.
     // Reads and unrelated users/spaces remain independent.
@@ -854,29 +885,38 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const physicalPart = (file, fileIndex, chunk) => {
             const count = file.parts.length, width = Math.max(2, String(count).length);
             const suffix = `.part${String(chunk.partIndex).padStart(width, '0')}-of-${String(count).padStart(width, '0')}`;
-            return { fileIndex, logicalFileId: file.logicalId, partIndex: chunk.partIndex, partCount: count, originalSize: file.size, offset: chunk.offset, start: 0, end: chunk.size ? chunk.size - 1 : undefined, size: chunk.size, sha256: chunk.sha256 || '', path: chunk.path, type: count === 1 ? file.type : 'application/octet-stream', name: count === 1 ? file.name : file.name.slice(0, Math.max(1, 180 - suffix.length)) + suffix };
+            return {
+                fileIndex, logicalFileId: file.logicalId, partIndex: chunk.partIndex, partCount: count,
+                originalSize: file.size, offset: chunk.offset, start: 0, end: chunk.size ? chunk.size - 1 : undefined,
+                size: chunk.size, sha256: chunk.sha256 || '', path: chunk.path,
+                ...(typeof chunk.streamFactory === 'function' ? {
+                    streamFactory: chunk.streamFactory,
+                    waitForSourceComplete: chunk.waitForSourceComplete,
+                    isSourceComplete: () => chunk.sourceComplete === true
+                } : {}),
+                type: count === 1 ? file.type : 'application/octet-stream',
+                name: count === 1 ? file.name : file.name.slice(0, Math.max(1, 180 - suffix.length)) + suffix
+            };
         };
         const nextPipelineBatch = job => {
-            const batch = []; let bytes = 0;
-            outer: for (let fileIndex = 0; fileIndex < job.files.length; fileIndex++) {
-                // Albums are for parts of one logical file. Combining unrelated
-                // files makes a single slow/lost response fail several files at
-                // once, and prevents the first file from being confirmed early.
-                if (batch.length && fileIndex !== batch[0].fileIndex) break;
+            // Progressive mode deliberately starts one physical chunk at a time.
+            // Each chunk first obtains an independent temporary file_id; final
+            // albums are assembled only after every chunk has been confirmed.
+            for (let fileIndex = 0; fileIndex < job.files.length; fileIndex++) {
                 const file = job.files[fileIndex];
                 for (let partIndex = 1; partIndex <= file.parts.length; partIndex++) {
                     const chunk = file.chunks.find(item => item.partIndex === partIndex);
-                    if (!chunk || chunk.status === 'receiving') break outer;
+                    if (!chunk) return [];
                     if (chunk.status === 'uploaded') continue;
-                    if (chunk.status !== 'queued') break outer;
-                    if (batch.length >= 2 || bytes + chunk.size > MAX_TELEGRAM_PART_SIZE * 2) break outer;
-                    batch.push(physicalPart(file, fileIndex, chunk)); bytes += chunk.size;
+                    if (chunk.status === 'receiving' && Number(chunk.writtenBytes) > 0 && typeof chunk.streamFactory === 'function') return [physicalPart(file, fileIndex, chunk)];
+                    if (chunk.status === 'queued') return [physicalPart(file, fileIndex, chunk)];
+                    return [];
                 }
             }
-            return batch;
+            return [];
         };
         const cleanupPipelineRemote = async job => {
-            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || [])];
+            const parts = [...job.files.flatMap(file => [...file.chunks.map(chunk => chunk.remote).filter(Boolean), ...(file.thumbnail?.remote ? [file.thumbnail.remote] : [])]), ...(job.pendingRollbackParts || []), ...(job.pendingCleanupParts || [])];
             if (!parts.length) return;
             await telegram.remove(job.storage, { name: job.files[0]?.name || '已取消文件', channelId: job.storage.channelId, createdAt: job.createdAt, parts });
         };
