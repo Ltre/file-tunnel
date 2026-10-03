@@ -172,3 +172,22 @@ node --test tests/disk-api.test.cjs
 ## 范围
 
 本次没有修改 `server/s3/*`、`server/object-storage.js`、隧道传输/WebRTC/Socket.IO 链路。S3 和传统网盘 API 可继续复用既有核心能力；本次浏览器渐进上传路径的协议变化记录在 `docs/adapter/telegram-disk-api.md` 与 `docs/overview/telegram-drive.md`。
+
+
+## 2026-10-03 补充：居中 Loading 上传明细修正
+
+此前实现只把 Browser → Node / Node → Telegram 字段拼进 `stages.join(' · ')`，仍是一整行，既没有文档要求的空行和缩进，也缺少当前文件大小、分片子状态和最终媒体组进度。
+
+本次继续在同一 WEBGPT 临时分支修正：
+
+- `#diskLoadingDetail` 改为 `white-space: pre-wrap` + 左对齐，实际保留换行与空行。
+- 上传任务标题统一为 `上传N个文件：首个文件名`。
+- 目录行后固定空一行。
+- 单文件 Browser → Node 显示总字节、百分比、速度以及“正在上传第 N 个分片，共 M 个”。
+- 多文件 Browser → Node 额外显示当前第 N 个文件及该文件大小，再显示该文件当前分片。
+- Telegram 区块同样显示有效逻辑字节、百分比、速度、当前文件/分片。
+- 分片发送过程中显示“正在推送第 N 个分片到TG”；Telegram 返回成功并写入 push-confirmed 后显示“第 N 个分片推送已确认”。
+- 正文达到 100% 后不视为 completed；进入 `telegram-finalize` 时继续显示“X 个分片均已推送”和“正在提交最终媒体组 · i/n”。
+- 最终媒体组进度由 `disk-telegram.js` 按整个上传任务累计，而不是每个逻辑文件单独从 1 重新计数。
+- operation 增加 uploadFiles / fileSize / partCount / telegramFinalGroupIndex 等仅用于准确 UI 展示的状态字段。
+- 新增 `tests/disk-loading-upload-detail.test.cjs`，锁定换行、缩进、单/多文件层级和 finalization 文案。
