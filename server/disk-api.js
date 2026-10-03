@@ -188,9 +188,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const entry = telegramQueue.splice(index, 1)[0];
             telegramActive++;
             telegramActiveByTarget.set(entry.target, (telegramActiveByTarget.get(entry.target) || 0) + 1);
-            const delay = Math.max(0, (telegramLastStartByTarget.get(entry.target) || 0) + TELEGRAM_TARGET_PACING_MS - Date.now());
+            const now = Date.now();
+            const previousStart = telegramLastStartByTarget.get(entry.target) || (now - TELEGRAM_TARGET_PACING_MS);
+            const reservedStart = Math.max(now, previousStart + TELEGRAM_TARGET_PACING_MS);
+            telegramLastStartByTarget.set(entry.target, reservedStart);
+            const delay = Math.max(0, reservedStart - now);
             const run = async () => {
-                telegramLastStartByTarget.set(entry.target, Date.now());
                 log('telegram.queue-start', { uploadId: entry.job.id, operationId: entry.job.operationId, waitedMs: Date.now() - entry.queuedAt, inflight: telegramActive });
                 try { entry.resolve(await entry.work()); }
                 catch (error) { entry.reject(error); }
