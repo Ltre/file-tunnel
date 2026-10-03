@@ -1262,7 +1262,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!file) throw new Error('FILE_NOT_FOUND');
             const trace = { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, range: req.get('Content-Range'), contentLength: req.get('Content-Length') };
             const started = Date.now(); let receivedBytes = 0, lastProgressAt = started;
-            let speedAt = started, speedBytes = 0;
+            let speedAt = started, speedBytes = 0, operationProgressAt = 0;
             let clientSpeedBps = Number(operations.get(job.operationId, scope(req))?.clientSpeedBps) || 0;
             log('browser.receive-start', trace);
             const heartbeat = setInterval(() => log('browser.receive-progress', { ...trace, receivedBytes, elapsedMs: Date.now() - started, idleMs: Date.now() - lastProgressAt }), 10000);
@@ -1281,11 +1281,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         clientSpeedBps = clientSpeedBps ? clientSpeedBps * .65 + instant * .35 : instant;
                         speedAt = progressAt; speedBytes = bytes;
                     }
-                    operations.update(job.operationId, { phase: 'client-upload', message: '浏览器 → 服务器：' + file.name,
-                        clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, clientSpeedBps,
-                        clientFileIndex:Number(req.params.index) + 1, clientFileCount:job.files.length, clientFileSize:Number(file.size) || 0,
-                        clientPartIndex:Number(activePlan?.index) || 1, clientPartCount:file.parts.length,
-                        processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
+                    // Persist/push actual Node receive progress at UI cadence
+                    // rather than emitting one SSE event per filesystem chunk.
+                    if (progressAt - operationProgressAt >= 80 || bytes >= Number(activePlan?.size || 0)) {
+                        operationProgressAt = progressAt;
+                        operations.update(job.operationId, { phase: 'client-upload', message: '浏览器 → 服务器：' + file.name,
+                            clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, clientSpeedBps,
+                            clientFileIndex:Number(req.params.index) + 1, clientFileCount:job.files.length, clientFileSize:Number(file.size) || 0,
+                            clientPartIndex:Number(activePlan?.index) || 1, clientPartCount:file.parts.length,
+                            processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
+                    }
                     pipelineWake(job);
                 };
                 const result = req.get('Content-Range')

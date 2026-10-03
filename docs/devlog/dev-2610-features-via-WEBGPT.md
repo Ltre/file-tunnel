@@ -191,3 +191,39 @@ node --test tests/disk-api.test.cjs
 - 最终媒体组进度由 `disk-telegram.js` 按整个上传任务累计，而不是每个逻辑文件单独从 1 重新计数。
 - operation 增加 uploadFiles / fileSize / partCount / telegramFinalGroupIndex 等仅用于准确 UI 展示的状态字段。
 - 新增 `tests/disk-loading-upload-detail.test.cjs`，锁定换行、缩进、单/多文件层级和 finalization 文案。
+
+
+## 2026-10-03：Browser → Server 真实进度与共享 Content Object 第一阶段
+
+### Browser → Server 真实进度
+
+此前居中 Loading 的 Browser → Server 字节与速度被客户端 XHR `upload.onprogress` 覆盖。该事件主要表示浏览器已经把多少请求体交给网络栈/代理缓冲，并不等于 Node 已经收到并写入 staging，因此会出现几十 MB/s 的虚高速，以及浏览器事件与服务端实际落盘错位的问题。
+
+本次修正：
+
+- 服务端 `receivePart()` 写入回调中的实际字节成为用户可见 Browser → Server 进度事实源；
+- Browser → Server 速度在 Node 侧基于实际接收字节时间差计算 EMA；
+- 客户端 XHR 只负责请求传输/取消，不再用 `upload.onprogress` 覆盖服务端实收字节与速度；
+- operation 增加 SSE 实时快照，活跃上传无需等待 2.4 秒 polling 才看到变化；
+- SSE 以约 80ms 为最小 UI 推送间隔，避免每个 filesystem chunk 都产生一条事件；
+- polling 继续作为不支持/拦截 SSE 的代理环境回退。
+- 新增 `tests/disk-browser-server-progress.test.cjs` 锁定上述语义。
+
+### 共享 Content Object：第一阶段基础设施
+
+依据 `prompts/dev-prompt-logs/[WEBGPT]dev-shared-content-object-design-guide-261003.md` 开始实施第一阶段。
+
+本阶段只建立新所有权模型的安全基础，不提前切换删除/PoP/S3 Copy：
+
+- SQLite schema 升级到 v2；
+- 新增全局 `disk_contents` 与独立 `disk_content_parts`；
+- Content parts 通过 `(scope, content_id)` 复合外键指向 Content Object；
+- 新增 `server/disk-content-store.js`；
+- 提供 Content Object get/put/remove、legacy resolve、manifest identity；
+- 新上传在现有 Logical physical commit 成功后，额外创建 READY Content Object 并给 Logical File 写入 `contentId`；
+- 当前仍保留 Logical File 原有 `parts/fileId/channelId/backendId` 作为兼容 source of truth；
+- 因此这一阶段尚未改变现有删除语义，不会因为多个 Logical File 共享 Content Object 而提前删除 Telegram anchor；
+- `manifestSha256` 仅作为当前分片结构的迁移/候选身份，不替代未来的完整文件 `contentSha256`；
+- 新增 `tests/disk-content-object-foundation.test.cjs`。
+
+下一阶段应先把下载/check 等读取路径接入 Content resolver，再切换 release-reference/delete 语义；PoP 和真正跨用户 HIT 复用应在所有权/删除模型稳定后启用。

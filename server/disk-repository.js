@@ -68,11 +68,11 @@ function openDiskRepository(dataDir) {
         db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (1)');
         if (schemaVersion < 2) {
             db.exec(`CREATE TABLE IF NOT EXISTS disk_content_parts (
-                content_id TEXT NOT NULL, part_index INTEGER NOT NULL,
-                payload TEXT NOT NULL, PRIMARY KEY (content_id, part_index),
-                FOREIGN KEY (content_id) REFERENCES disk_contents(id) ON DELETE CASCADE
+                scope TEXT NOT NULL DEFAULT '', content_id TEXT NOT NULL, part_index INTEGER NOT NULL,
+                payload TEXT NOT NULL, PRIMARY KEY (scope, content_id, part_index),
+                FOREIGN KEY (scope, content_id) REFERENCES disk_contents(scope, id) ON DELETE CASCADE
             );
-            CREATE INDEX IF NOT EXISTS disk_content_parts_content ON disk_content_parts(content_id, part_index);
+            CREATE INDEX IF NOT EXISTS disk_content_parts_content ON disk_content_parts(scope, content_id, part_index);
             CREATE UNIQUE INDEX IF NOT EXISTS disk_contents_sha_size
             ON disk_contents(json_extract(payload, '$.contentSha256'), json_extract(payload, '$.size'))
             WHERE json_extract(payload, '$.contentSha256') IS NOT NULL
@@ -111,7 +111,7 @@ function openDiskRepository(dataDir) {
                 if (table !== 'files' && table !== 'contents') return { items: rows.map(row => JSON.parse(row.payload)), revisions };
                 const content = table === 'contents';
                 const parts = content
-                    ? connection.prepare('SELECT content_id AS parent_id, payload FROM disk_content_parts ORDER BY content_id, part_index').all()
+                    ? connection.prepare('SELECT content_id AS parent_id, payload FROM disk_content_parts WHERE scope = ? ORDER BY content_id, part_index').all(String(scope))
                     : connection.prepare('SELECT file_id AS parent_id, payload FROM disk_file_parts WHERE scope = ? ORDER BY file_id, part_index').all(String(scope));
                 const grouped = new Map();
                 for (const part of parts) {
@@ -159,22 +159,22 @@ function openDiskRepository(dataDir) {
             if ((table === 'files' || table === 'contents') && previousPayload !== encoded && (!previousPayload || JSON.parse(previousPayload).__partsHash !== JSON.parse(encoded).__partsHash)) {
                 const content = table === 'contents';
                 const previous = content
-                    ? connection.prepare('SELECT part_index, payload FROM disk_content_parts WHERE content_id = ?').all(id)
+                    ? connection.prepare('SELECT part_index, payload FROM disk_content_parts WHERE scope = ? AND content_id = ?').all(scope, id)
                     : connection.prepare('SELECT part_index, payload FROM disk_file_parts WHERE scope = ? AND file_id = ?').all(scope, id);
                 const oldParts = new Map(previous.map(row => [row.part_index, row.payload]));
                 const parts = Array.isArray(item.parts) ? item.parts : [];
                 const putPart = content
-                    ? connection.prepare('INSERT INTO disk_content_parts(content_id,part_index,payload) VALUES (?,?,?) ON CONFLICT(content_id,part_index) DO UPDATE SET payload=excluded.payload')
+                    ? connection.prepare('INSERT INTO disk_content_parts(scope,content_id,part_index,payload) VALUES (?,?,?,?) ON CONFLICT(scope,content_id,part_index) DO UPDATE SET payload=excluded.payload')
                     : connection.prepare('INSERT INTO disk_file_parts(scope,file_id,part_index,payload) VALUES (?,?,?,?) ON CONFLICT(scope,file_id,part_index) DO UPDATE SET payload=excluded.payload');
                 const removePart = content
-                    ? connection.prepare('DELETE FROM disk_content_parts WHERE content_id = ? AND part_index = ?')
+                    ? connection.prepare('DELETE FROM disk_content_parts WHERE scope = ? AND content_id = ? AND part_index = ?')
                     : connection.prepare('DELETE FROM disk_file_parts WHERE scope = ? AND file_id = ? AND part_index = ?');
                 for (let index = 0; index < parts.length; index++) {
                     const value = JSON.stringify(parts[index]);
-                    if (oldParts.get(index) !== value) content ? putPart.run(id, index, value) : putPart.run(scope, id, index, value);
+                    if (oldParts.get(index) !== value) content ? putPart.run(scope, id, index, value) : putPart.run(scope, id, index, value);
                     oldParts.delete(index);
                 }
-                for (const index of oldParts.keys()) content ? removePart.run(id, index) : removePart.run(scope, id, index);
+                for (const index of oldParts.keys()) content ? removePart.run(scope, id, index) : removePart.run(scope, id, index);
             }
         }
         for (const id of base ? base.keys() : existing.keys()) if (!seen.has(id)) {
