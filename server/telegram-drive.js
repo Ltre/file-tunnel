@@ -183,13 +183,30 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             if (error?.syscall) persistenceError(error, 'browser-part-write');
             return error;
         };
+        const writeChunk = chunk => new Promise((resolve, reject) => {
+            const onError = error => { cleanup(); reject(markFilesystemError(error)); };
+            const cleanup = () => output.removeListener('error', onError);
+            output.once('error', onError);
+            output.write(chunk, error => {
+                cleanup();
+                error ? reject(markFilesystemError(error)) : resolve();
+            });
+        });
+        const finish = () => new Promise((resolve, reject) => {
+            const onError = error => { cleanup(); reject(markFilesystemError(error)); };
+            const onFinish = () => { cleanup(); resolve(); };
+            const cleanup = () => { output.removeListener('error', onError); output.removeListener('finish', onFinish); };
+            output.once('error', onError);
+            output.once('finish', onFinish);
+            output.end();
+        });
         try {
             for await (const raw of request) {
                 const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-                await new Promise((resolve, reject) => output.write(chunk, error => error ? reject(markFilesystemError(error)) : resolve()));
+                await writeChunk(chunk);
                 onWritten?.(chunk);
             }
-            await new Promise((resolve, reject) => output.end(error => error ? reject(markFilesystemError(error)) : resolve()));
+            await finish();
         } catch (error) {
             output.destroy();
             throw markFilesystemError(error);
@@ -620,11 +637,12 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const queued = chunks.filter(part => part.status === 'queued' || (part.status === 'receiving' && Number(part.writtenBytes) > 0));
             const pending = chunks.filter(part => part.status !== 'uploaded');
             const completeSource = part => part.sourceComplete === true || (!Object.hasOwn(part, 'sourceComplete') && part.status !== 'receiving');
+            const stagedBytes = part => completeSource(part) ? Number(part.size) || 0 : Math.max(0, Math.min(Number(part.size) || 0, Number(part.writtenBytes) || 0));
             return {
                 queuedParts: queued.length,
-                queuedBytes: queued.reduce((sum, part) => sum + Math.max(0, Number(part.size) - (Number(part.writtenBytes) || 0)), 0),
+                queuedBytes: queued.reduce((sum, part) => sum + stagedBytes(part), 0),
                 pendingParts: pending.length,
-                pendingBytes: pending.reduce((sum, part) => sum + Math.max(0, Number(part.size) - (Number(part.writtenBytes) || 0)), 0),
+                pendingBytes: pending.reduce((sum, part) => sum + stagedBytes(part), 0),
                 uploadedParts: chunks.filter(part => part.status === 'uploaded').length,
                 finalizedParts: chunks.filter(part => part.finalized === true).length,
                 receivedParts: chunks.filter(completeSource).length,

@@ -1032,10 +1032,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const confirmedProgress = bytes => ({ telegramBytesConfirmed: bytes, telegramBytesSent: bytes, telegramTotalBytes: totalBytes, processedBytes: bytes, totalBytes, percent: totalBytes ? Math.min(99, bytes / totalBytes * 100) : null });
                     update({ phase: 'telegram-queue', message: `服务器 → Telegram · 正在提交 ${batch.length} 个分片`, queueParts: Math.max(0, state.pendingParts - batch.length), telegramThumbnailBytesSent: null, telegramThumbnailTotalBytes: null, ...confirmedProgress(confirmedBytes) });
                     try {
-                        let sentBytes = confirmedBytes;
+                        let sentBytes = confirmedBytes, speedBytes = confirmedBytes, speedAt = performance.now(), telegramSpeedBps = 0;
+                        const progressPart = batch[0];
                         const progress = patch => {
                             if (Number.isFinite(patch.telegramBytesSent)) sentBytes = Math.max(confirmedBytes, Math.min(totalBytes, patch.telegramBytesSent));
+                            const now = performance.now(), elapsed = now - speedAt;
+                            if (elapsed >= 120 && sentBytes >= speedBytes) {
+                                const instant = (sentBytes - speedBytes) * 1000 / elapsed;
+                                telegramSpeedBps = telegramSpeedBps ? telegramSpeedBps * .7 + instant * .3 : instant;
+                                speedBytes = sentBytes; speedAt = now;
+                            }
                             update({ ...patch, telegramBytesConfirmed: confirmedBytes, telegramBytesSent: sentBytes, telegramTotalBytes: totalBytes,
+                                telegramSpeedBps, telegramFileIndex: Number(progressPart?.fileIndex) + 1, telegramFileCount: job.files.length,
+                                telegramPartIndex: progressPart?.partIndex, telegramPartCount: progressPart?.partCount,
                                 processedBytes: sentBytes, totalBytes, percent: totalBytes ? Math.min(99, sentBytes / totalBytes * 100) : null,
                                 message: '服务器 → Telegram · ' + patch.message });
                         };
