@@ -268,14 +268,15 @@ Passkey pending flow 是短期内存状态，不等于持久用户记录。
 - 多片重新聚合导致 413；
 - 进度把“浏览器→Node”和“Node→Telegram”叠加，显示翻倍。
 
-当前方向是：
+当前实现是：
 
-1. 浏览器按物理 part plan 逐片提交；
-2. Node staging；
-3. Telegram FIFO/消费；
-4. 每个 part 可重用已知 `file_id`；
-5. 客户端通过 Operation 轮询；
-6. Telegram 全部成功后，最终 commit 逻辑文件。
+1. 浏览器按物理 part plan 逐片提交，并用上传事件连续报告 Browser → Node 进度；
+2. Node 为每个 part 建立独立 growing staging file，字节落盘后立即可被旁路 reader 读取；
+3. Telegram scheduler 从首片开始即可在浏览器仍写入时执行 `sendDocument`，reader 追上写入点时等待增长而不是 EOF；
+4. 每个 part 成功后先持久化临时 `file_id/message_id`；内容 SHA-256 完成后继续维护同 Bot 的 file_id 去重缓存；
+5. 全部临时 part confirmed 后，以 file_id 按 2–10 项生成最终 media groups；单 part 不制造单项 group；
+6. 最终 Message[] 持久化后再清理临时消息，清理失败进入后台 cleanup debt；
+7. Telegram 全部最终化成功后，最终 commit 逻辑文件。
 
 ### 9.2 Staging
 
@@ -291,7 +292,7 @@ manifest 的重要意义是崩溃恢复：即使进程重启，系统还能知�
 
 `disk-api.js` 有：
 
-- 全局 Telegram upload tail / FIFO；
+- Telegram upload scheduler：全局并发 4、同目标并发 2、目标级启动 pacing，并接受 429 retry_after 冷却反馈；
 - 按 `[userId,diskSpace]` 的 `mutate()` Promise queue。
 
 `mutate()` 的注释明确说：同一个逻辑网盘的 index mutation 在远程 work pending 时串行化，读和其它用户/分区不受影响。
@@ -317,11 +318,7 @@ manifest 的重要意义是崩溃恢复：即使进程重启，系统还能知�
 
 普通进度约 500ms debounce，terminal 立即写。
 
-服务重启时非 terminal Operation 会被标为：
-
-- failed；
-- phase interrupted；
-- `SERVER_RESTARTED`。
+服务重启时，普通非 terminal Operation 仍会中断；带 `uploadId` 的上传先进入 `recovering`，由 staging recovery 扫描判断是否存在可补救状态。当前第一阶段对浏览器未完整发送的 part 不做虚假续传：恢复扫描会优先清理已知 Telegram 临时/最终残留，再把不能继续的旧任务明确标记 `SERVER_RESTARTED`。
 
 ### 10.1 居中 Loading
 
@@ -350,11 +347,17 @@ manifest 的重要意义是崩溃恢复：即使进程重启，系统还能知�
 
 当前已有：
 
+- growing staging manifest，记录 written/sourceComplete/temp remote/finalized/cleanup debt；
 - recovered upload scan；
 - cleanup expired；
 - recovery backlog；
 - Telegram `remove`；
+- push_confirmed 前必须通过 sourceComplete 与精确长度校验；
+- 最终 Message[] 持久化后才清理临时消息；
+- cleanup 失败转为后台 `pendingRemoteCleanup`；
 - 失败后保留 manifest 等机制。
+
+浏览器只上传了部分 part 时，服务端无法自行补齐剩余字节；当前按安全失败与远端补救处理，客户端 offset resume 仍属于后续协议能力。
 
 这也是未来 SQLite 事务重构里“Telegram 网络绝不能放进长事务”的基础。
 
