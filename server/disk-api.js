@@ -1110,6 +1110,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             }
                             return uploaded;
                         });
+                        // A Telegram 200 can race the browser request's final
+                        // stream/end notification. Do not persist push_confirmed
+                        // or delete staging until the source has formally passed
+                        // its exact-length validation.
+                        await Promise.all(batch.map(part => typeof part.waitForSourceComplete === 'function'
+                            ? part.waitForSourceComplete(job.pipelineAbort.signal) : Promise.resolve()));
                         await store(req).markPartsUploaded(job.id, remotes);
                         const acceptedBytes = remotes.reduce((sum, remote) => sum + Number(remote.size || 0), 0);
                         update({ phase: 'telegram-upload', message: `服务器 → Telegram · 已确认 ${state.uploadedParts + remotes.length}/${state.totalParts} 个分片`, telegramPartsUploaded: state.uploadedParts + remotes.length, ...confirmedProgress(confirmedBytes + acceptedBytes) });

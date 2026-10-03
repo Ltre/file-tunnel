@@ -668,7 +668,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             assertUploadActive(job);
             const confirmed = remotes.map(remote => {
                 const chunk = job.files[Number(remote.fileIndex)]?.chunks?.find(item => item.partIndex === Number(remote.partIndex));
-                if (!chunk) throw new Error('UPLOAD_PART_STATE_INVALID');
+                if (!chunk || chunk.sourceComplete === false) throw new Error('UPLOAD_PART_STATE_INVALID');
                 return { chunk, remote };
             });
             // Bind every accepted message before persistence can fail. Rollback
