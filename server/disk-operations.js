@@ -13,6 +13,15 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     };
     const executing = new Set();
     const cancelHandlers = new Map();
+    const subscribers = new Map();
+    const notify = job => {
+        const listeners = subscribers.get(job?.operation_id);
+        if (!listeners?.size) return;
+        const snapshot = view(job);
+        for (const listener of [...listeners]) {
+            try { listener(snapshot); } catch (_) {}
+        }
+    };
     let timer;
     const terminal = job => ['completed', 'failed', 'cancelled'].includes(job.status);
     function save() {
@@ -74,6 +83,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             if (Number.isFinite(patch.percent)) job.lastMeasuredPercent = Math.max(job.lastMeasuredPercent || 0, Math.min(100, patch.percent));
             if (job.status === 'running' && !job.startedAt) job.startedAt = now();
             if (terminal(job)) job.finishedAt = now();
+            notify(job);
             if (immediate || terminal(job)) save();
             else if (!timer) {
                 timer = setTimeout(() => {
@@ -103,6 +113,17 @@ function createDiskOperations({ dataDir, now = Date.now }) {
                 .catch(error => { console.warn('[disk-operations] 任务结束状态持久化失败', { operationId: id, code: diskErrorCode(error) }); })
                 .finally(() => { executing.delete(id); cancelHandlers.delete(id); });
             return true;
+        },
+        subscribe(id, scope, listener) {
+            const job = jobs.get(id);
+            if (!owns(job, scope) || typeof listener !== 'function') return null;
+            if (!subscribers.has(id)) subscribers.set(id, new Set());
+            subscribers.get(id).add(listener);
+            return () => {
+                const listeners = subscribers.get(id);
+                listeners?.delete(listener);
+                if (!listeners?.size) subscribers.delete(id);
+            };
         },
         onCancel(id, handler) { if (jobs.has(id) && typeof handler === 'function') cancelHandlers.set(id, handler); },
         async cancel(id, scope) {

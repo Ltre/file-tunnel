@@ -26,6 +26,33 @@
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
     const waiting = new Map();
+    const operationStreams = new Map();
+    const closeOperationStream = id => {
+        const stream = operationStreams.get(id);
+        if (!stream) return;
+        operationStreams.delete(id);
+        try { stream.close(); } catch (_) {}
+    };
+    const applyLiveOperation = job => {
+        if (!job?.operation_id) return;
+        const index = jobs.findIndex(item => item.operation_id === job.operation_id);
+        if (index >= 0) jobs[index] = job; else jobs.push(job);
+        if (!active(job)) closeOperationStream(job.operation_id);
+        emit();
+    };
+    const watchOperation = id => {
+        if (!id || operationStreams.has(id) || typeof EventSource === 'undefined') return;
+        const stream = new EventSource(baseUrl() + '/operations/' + encodeURIComponent(id) + '/events');
+        operationStreams.set(id, stream);
+        stream.onmessage = event => {
+            try { applyLiveOperation(JSON.parse(event.data)); } catch (_) {}
+        };
+        stream.onerror = () => {
+            // EventSource reconnects automatically. Regular polling remains a
+            // fallback if a proxy buffers or blocks SSE.
+            if (!enabled) closeOperationStream(id);
+        };
+    };
     const activities = new Set(), activityListeners = new Set();
     const emitActivities = () => activityListeners.forEach(listener => listener([...activities]));
     async function withActivity(message, run) {
@@ -37,14 +64,10 @@
     }
     const active = job => ['queued', 'running'].includes(job.status);
     const visibleJobs = () => {
-        const clientFields = ['clientBytesReceived','clientTotalBytes','clientSpeedBps','clientFileIndex','clientFileCount','clientPartIndex','clientPartCount'];
-        const remote = jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job)).map(job => {
-            const local = localUploads.get(job.operation_id);
-            if (!local || !active(job)) return job;
-            const merged = { ...job };
-            for (const key of clientFields) if (local[key] !== undefined) merged[key] = local[key];
-            return merged;
-        });
+        // Once the server operation exists it is authoritative for Browser → Server
+        // byte/speed progress. XHR upload.onprogress measures bytes handed to the
+        // browser/network stack and can run far ahead of bytes Node actually received.
+        const remote = jobs.filter(job => localUploads.get(job.operation_id)?.status !== 'failed' || !active(job));
         return [...localUploads.values()].filter(job => !jobs.some(remoteJob => remoteJob.operation_id === job.operation_id && (job.status !== 'failed' || !active(remoteJob)))).concat(remote);
     };
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
@@ -152,12 +175,13 @@
     function stop() {
         enabled = false; generation++; jobs = []; localUploads.clear();
         hiddenLoadingOperations.clear(); cacheProgressByFile.clear();
+        for (const id of [...operationStreams.keys()]) closeOperationStream(id);
         for (const handlers of waiting.values()) handlers.reject(new Error('LOGIN_REQUIRED'));
         waiting.clear(); emit();
     }
     // One batched poll for all jobs; idle home pages do not keep polling every second.
     setInterval(() => {
-        const interval = waiting.size || jobs.some(active) ? 2400 : 60000;
+        const interval = waiting.size || jobs.some(active) ? (operationStreams.size ? 2400 : 800) : 60000;
         if (enabled && Date.now() - lastRefresh >= interval) refresh();
     }, 800);
     function upload(files, folderPath, read = file => file, metadata = {}) {
@@ -180,6 +204,7 @@
                         localUploads.delete(previousId); uploadControllers.delete(previousId);
                         pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
+                        watchOperation(pending.operation_id);
                     }
                     Object.assign(pending, values);
                     update(values); emit();
@@ -316,19 +341,14 @@
             update({ operationId: job.operation_id });
             start();
             const clientTotalBytes = plannedFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
-            let clientCompletedBytes = 0, clientShownBytes = 0, clientLastAt = performance.now(), clientSpeed = 0;
-            const reportClientProgress = (logicalBytes, extra = {}) => {
-                const now = performance.now(), elapsed = now - clientLastAt;
-                const next = Math.max(clientShownBytes, Math.min(clientTotalBytes, logicalBytes));
-                if (elapsed >= 120 && next >= clientShownBytes) {
-                    const instant = elapsed > 0 ? (next - clientShownBytes) * 1000 / elapsed : 0;
-                    if (instant >= 0) clientSpeed = clientSpeed ? clientSpeed * .7 + instant * .3 : instant;
-                    clientLastAt = now; clientShownBytes = next;
-                }
-                update({ phase:'client-upload', clientBytesReceived:next, clientTotalBytes, clientSpeedBps:clientSpeed, ...extra });
+            let clientCompletedBytes = 0;
+            const reportClientActivity = (extra = {}) => {
+                // Only structural hints are local. Actual received bytes and speed
+                // come from Node's receivePart() progress events via the operation stream.
+                update({ phase:'client-upload', clientTotalBytes, ...extra });
             };
             for (let index = 0; index < files.length; index++) {
-                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:0, clientPartCount:plannedFiles[index].parts.length });
+                reportClientActivity({ clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:0, clientPartCount:plannedFiles[index].parts.length });
                 await uploadRequest('/uploads/' + job.uploadId + '/phase', withSignal(json('POST', { index }), signal));
                 await refresh();
                 const blob = await read(files[index]);
@@ -351,11 +371,11 @@
                         try {
                             await waitForQueue();
                             const partBlob = blob.slice(offset, end);
-                            const result = await uploadBlobRequest(url, { method:'PUT', headers:{ 'Content-Type':'application/octet-stream', 'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}` }, body:partBlob, signal },
-                                loaded => reportClientProgress(clientCompletedBytes + loaded, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length }));
+                            reportClientActivity({ clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
+                            const result = await uploadBlobRequest(url, { method:'PUT', headers:{ 'Content-Type':'application/octet-stream', 'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}` }, body:partBlob, signal });
                             queue = result.queue;
                             clientCompletedBytes += part.size;
-                            reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
+                            reportClientActivity({ clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:part.index, clientPartCount:plannedFiles[index].parts.length });
                             break;
                         }
                         catch (error) {
@@ -368,7 +388,7 @@
                     }
                 }
                 await thumbnailUpload;
-                reportClientProgress(clientCompletedBytes, { clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:plannedFiles[index].parts.length, clientPartCount:plannedFiles[index].parts.length });
+                reportClientActivity({ clientFileIndex:index + 1, clientFileCount:files.length, clientFileSize:plannedFiles[index].size, clientPartIndex:plannedFiles[index].parts.length, clientPartCount:plannedFiles[index].parts.length });
             }
             const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.

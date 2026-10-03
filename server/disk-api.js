@@ -773,6 +773,41 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!job || (req.collaboration && job.collaborationId !== req.collaboration.id)) throw new Error('OPERATION_NOT_FOUND');
             res.json(job);
         }));
+        router.get('/operations/:id/events', wrap((req, res) => {
+            const currentScope = scope(req);
+            const job = operations.get(req.params.id, currentScope);
+            if (!job || (req.collaboration && job.collaborationId !== req.collaboration.id)) throw new Error('OPERATION_NOT_FOUND');
+            res.status(200);
+            res.set({
+                'Content-Type':'text/event-stream; charset=utf-8',
+                'Cache-Control':'no-store, no-cache, must-revalidate',
+                'Connection':'keep-alive',
+                'X-Accel-Buffering':'no'
+            });
+            res.flushHeaders?.();
+            let closed = false, unsubscribe = null;
+            const finish = () => {
+                if (closed) return;
+                closed = true;
+                clearInterval(heartbeat);
+                unsubscribe?.();
+                if (!res.writableEnded) res.end();
+            };
+            const push = snapshot => {
+                if (closed || res.writableEnded) return;
+                if (req.collaboration && snapshot.collaborationId !== req.collaboration.id) return finish();
+                res.write('data: ' + JSON.stringify(snapshot) + '\n\n');
+                if (!['queued','running'].includes(snapshot.status)) finish();
+            };
+            const heartbeat = setInterval(() => {
+                if (!closed && !res.writableEnded) res.write(': keepalive\n\n');
+            }, 15000);
+            heartbeat.unref?.();
+            unsubscribe = operations.subscribe(req.params.id, currentScope, push);
+            if (!unsubscribe) return finish();
+            req.on('close', finish);
+            push(job);
+        }));
         router.delete('/operations/:id', wrap(async (req, res) => {
             if (req.collaboration && operations.get(req.params.id, scope(req))?.collaborationId !== req.collaboration.id) throw new Error('OPERATION_NOT_FOUND');
             const job = await operations.cancel(req.params.id, scope(req));
@@ -1227,6 +1262,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!file) throw new Error('FILE_NOT_FOUND');
             const trace = { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, range: req.get('Content-Range'), contentLength: req.get('Content-Length') };
             const started = Date.now(); let receivedBytes = 0, lastProgressAt = started;
+            let speedAt = started, speedBytes = 0;
+            let clientSpeedBps = Number(operations.get(job.operationId, scope(req))?.clientSpeedBps) || 0;
             log('browser.receive-start', trace);
             const heartbeat = setInterval(() => log('browser.receive-progress', { ...trace, receivedBytes, elapsedMs: Date.now() - started, idleMs: Date.now() - lastProgressAt }), 10000);
             heartbeat.unref?.();
@@ -1236,9 +1273,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const totalBytes = job.files.reduce((sum, file) => sum + file.size, 0);
                 const activePlan = file.parts.find(part => part.byteStart === file.received) || file.parts[Math.min(file.parts.length - 1, file.chunks.length)] || file.parts[0];
                 const progress = bytes => {
-                    receivedBytes = bytes; lastProgressAt = Date.now();
+                    const progressAt = Date.now();
+                    receivedBytes = bytes; lastProgressAt = progressAt;
+                    const elapsed = progressAt - speedAt;
+                    if (elapsed >= 180 && bytes >= speedBytes) {
+                        const instant = (bytes - speedBytes) * 1000 / elapsed;
+                        clientSpeedBps = clientSpeedBps ? clientSpeedBps * .65 + instant * .35 : instant;
+                        speedAt = progressAt; speedBytes = bytes;
+                    }
                     operations.update(job.operationId, { phase: 'client-upload', message: '浏览器 → 服务器：' + file.name,
-                        clientBytesReceived: received + bytes, clientTotalBytes: totalBytes,
+                        clientBytesReceived: received + bytes, clientTotalBytes: totalBytes, clientSpeedBps,
                         clientFileIndex:Number(req.params.index) + 1, clientFileCount:job.files.length, clientFileSize:Number(file.size) || 0,
                         clientPartIndex:Number(activePlan?.index) || 1, clientPartCount:file.parts.length,
                         processedBytes: received + bytes, totalBytes, percent: totalBytes ? (received + bytes) / totalBytes * 100 : null });
