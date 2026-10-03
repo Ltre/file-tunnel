@@ -308,6 +308,7 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
                     // are safe to retry; socket/response failures may have accepted it.
                     const retryable = error.message === 'TELEGRAM_429' || (error.message === 'TELEGRAM_NETWORK_ERROR' && error.details?.requestNotAccepted);
                     if (retryable && attempt < 2) {
+                        if (error.message === 'TELEGRAM_429') context.onRateLimit?.(error.retryAfter);
                         // If a growing source lost its Telegram connection before
                         // the source completed, let the browser finish staging and
                         // rebuild the retry from byte 0. Never create two uncertain

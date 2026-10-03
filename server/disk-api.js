@@ -173,7 +173,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     });
     const mutations = new Map();
     const TELEGRAM_MAX_INFLIGHT = 4, TELEGRAM_MAX_PER_TARGET = 2, TELEGRAM_TARGET_PACING_MS = 900;
-    const telegramQueue = [], telegramActiveByTarget = new Map(), telegramLastStartByTarget = new Map();
+    const telegramQueue = [], telegramActiveByTarget = new Map(), telegramLastStartByTarget = new Map(), telegramPenaltyUntil = new Map();
     let telegramActive = 0, telegramQueueSequence = 0;
     const telegramTargetKey = job => {
         const storage = job?.storage || {};
@@ -183,14 +183,18 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     const drainTelegramQueue = () => {
         while (telegramActive < TELEGRAM_MAX_INFLIGHT && telegramQueue.length) {
-            const index = telegramQueue.findIndex(entry => (telegramActiveByTarget.get(entry.target) || 0) < TELEGRAM_MAX_PER_TARGET);
+            const index = telegramQueue.findIndex(entry => {
+                const penalized = (telegramPenaltyUntil.get(entry.target) || 0) > Date.now();
+                const limit = penalized ? 1 : TELEGRAM_MAX_PER_TARGET;
+                return (telegramActiveByTarget.get(entry.target) || 0) < limit;
+            });
             if (index < 0) return;
             const entry = telegramQueue.splice(index, 1)[0];
             telegramActive++;
             telegramActiveByTarget.set(entry.target, (telegramActiveByTarget.get(entry.target) || 0) + 1);
             const now = Date.now();
             const previousStart = telegramLastStartByTarget.get(entry.target) || (now - TELEGRAM_TARGET_PACING_MS);
-            const reservedStart = Math.max(now, previousStart + TELEGRAM_TARGET_PACING_MS);
+            const reservedStart = Math.max(now, previousStart + TELEGRAM_TARGET_PACING_MS, telegramPenaltyUntil.get(entry.target) || 0);
             telegramLastStartByTarget.set(entry.target, reservedStart);
             const delay = Math.max(0, reservedStart - now);
             const run = async () => {
@@ -1052,6 +1056,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                                 message: '服务器 → Telegram · ' + patch.message });
                         };
                         const context = { ...scope(req), uploadId: job.id, operationId: job.operationId, totalBytes, confirmedBytes, signal: job.pipelineAbort.signal,
+                            onRateLimit: retryAfterSeconds => {
+                                const target = telegramTargetKey(job), until = Date.now() + Math.max(1, Number(retryAfterSeconds) || 1) * 1000;
+                                telegramPenaltyUntil.set(target, Math.max(telegramPenaltyUntil.get(target) || 0, until));
+                                log('telegram.queue-rate-limit', { uploadId:job.id, operationId:job.operationId, target, retryAfterSeconds, until });
+                            },
                             onFailure: error => {
                                 if (control.cancelled) return;
                                 job.pipelineFailure ||= error;
