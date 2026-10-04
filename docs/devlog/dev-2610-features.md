@@ -147,3 +147,28 @@
 - 最新 targeted 启动被 Windows 沙箱 `spawn EPERM` 阻止；三个测试文件均未执行。用户此时要求因额度先交接，未继续申请并运行测试；不把该权限阻断解释为业务失败。
 - 下一轮先审查最新 session 补丁，再更新文档遗漏字段、跑完整 suite/语法检查并清理临时日志。本任务尚未最终验收，不能宣布已全部完成。
 - 详尽恢复入口：[261003-3 交接文档](handoff-261003-3.md)，列有实际文件、最新未验证代码、已知测试状态、下一步命令和根部临时日志清单。
+
+## 261004-1：共享 Content Object 中断续作与整体收尾
+
+### 恢复基线与核对结论
+
+- 当前分支为 `dev/2609-s6-disk-shared-content-object`，HEAD 为 `282d9d274ebd52156906d43a13eda6a6c24c4520`。对照原始实施指南、交接文档、执行日志以及 HEAD 相对 `e9dc545dea735fe93d2129ed22109d26c80c418f` 的 49 个文件差异核对；上一轮 Content 核心已经进入 HEAD，本轮没有重复实现 schema、上传或生命周期。
+- 开始时工作区仅有用户的 `prompts/dev-prompt-logs/dev-2609.md` 改动；本轮没有覆盖、整理或清理该文件。旧日志中的“最新授权补丁未测”和“完整 suite 尚未重跑”是实际中断点，早期 618/621/625 的数字不能用作最终验收。
+- 指南中的 Logical / Content / revision-Anchor 分层、整批提交、PoP、渐进上传、S3、协同、caption outbox、历史包装与清理等主路径在 HEAD 中已经落地。本轮重点复核授权和物理清理边界，补缺口并重新全套回归。
+
+### 发现的根因与实际修复
+
+- **PoP 缓存归属**：样本从 Telegram 回源时此前会给尚未证明持有内容的 viewer 登记分片缓存 owner。取样读取改为不登记；正常授权的文件读取仍登记。异步 Telegram 健康检查和逐样本读取结束后再查会话/应用授权，失效时不签发证明并释放 lease。创建上传任务前也拦截已退出登录的旧 Cookie。
+- **0 Byte 快速复用**：空 Content 没有 Telegram 消息，原健康检查会构造无效空分片并误标损坏。保留同 Bot/backend 边界，但跳过对不存在的物理消息调用 `telegram.check`；0 Byte 重用仍不创建消息。
+- **历史频道别名**：旧 `@public` 与数字 Chat ID 可指向同一条 Telegram 消息，而旧 Anchor 键只比较原始字符串。GC 现按最新 Chat 字典比较同 message ID 的真实标识；确认重叠或未解析的可疑重叠写入清理债务错误并暂缓删除，claim 在进入 DELETING、撤除 canonical key 之前隔离。发送前和完成确认时再次防护；无关 message ID 的清理仍可继续。频道使用检测识别已确认的 public/数字别名；按 message ID 建 SQLite 索引避免每次清理全表扫描。未知映射不猜 chat_id，需要管理员确认。
+- **S3 长请求授权**：SigV4 请求入站验证后，凭据可能在耗时 PUT/Copy 期间被停用或轮换。实际写入前重新读取凭据和 Bucket 映射；完整 SHA 快速附着、普通流最终提交、Copy 和零字节元数据路径均执行检查。S3 凭据 JSON 与 Content SQLite 不是同一事务，跨进程恰好在最后检查后撤销仍有极短竞态，不宣称严格原子撤销。0 Byte S3 PUT 原本已走元数据专用路径，回归测试固定“不调用 Telegram、无 Anchor”的行为。
+- **灰度与进度**：加入 `DR2T_CONTENT_REUSE_MODE=all|owner|off` 和 `DR2T_CONTENT_CLEANUP_MODE=execute|observe`，默认保持 `all/execute`。`owner` 只开放同用户 preflight 快速命中，`off` 不发新的快速复用证明；两者不禁完整正文验真后的 canonical 归并，也不改变现有共享引用的读取/生命周期。`observe` 暂停 typed Content 清理 claim，不停上传、读取或 caption。客户端 PoP 按样本回显 `0/N` 到 `N/N`，不把本地摘要计算伪作网络上传字节。
+- 更新共享 Content 说明和迁移工具说明，补齐后台详情 API、撤销/协同授权、浏览器降级、别名清理隔离、灰度开关及迁移报告字段。传统网盘 API 和 S3 文档仍各自描述原协议，没有混写。
+
+### 指南验收与测试
+
+- 完整执行 `node --test --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs`：**642 tests、642 pass、0 fail、0 skipped、0 cancelled**。包含 Content、迁移、共享 GC、PoP、渐进上传、S3、协同、Share、旧网盘、隧道及部署回归。历史频道别名索引补充后又定向重跑 Content/迁移 **21/21**。
+- 本轮 12 个改动的 JS/CJS 脚本 `node --check` 通过；本任务差异 `git diff --check` 通过。用户 prompt 文件自身有既存空白告警，检查时明确排除且未改写。
+- 首次完整测试在 Windows 沙箱内因 `spawn EPERM` 未能启动任何测试文件；按工具权限流程在沙箱外重新运行并得到上述真实通过结果。该启动权限问题不等于应用业务的 EPERM。
+- 自动回归证实模拟 Telegram 调用次数与共享 Anchor 防误删；本轮未访问真实 Telegram、未对生产库迁移、未在 FolderSync 实机或公网代理灰度上传。指南的真实频道 19/21/38 片、断网/重启及实际限流/吞吐验收仍需部署后按运维文档执行；不能将模拟通过声称为真实网络验收。
+- 本轮没有执行 `git add`、`git commit`；仅保留当前分支工作区修改。

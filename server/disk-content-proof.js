@@ -8,7 +8,7 @@ const prefix = (nonce, range) => {
 
 // All proof state is durable. Network reads occur outside the short SQLite
 // transactions; the lease pins the revision used to calculate sample digests.
-function createContentProof({ content, open, validate }) {
+function createContentProof({ content, open, validate, reuseMode = 'all' }) {
     const session=req=>{
         const cookie=(String(req.headers?.cookie || '').split(';').map(value=>value.trim()).find(value=>value.startsWith('drop2tunnel_telegram_drive=')) || '');
         // Browser authentication uses the Cookie, so an unrelated Authorization
@@ -44,6 +44,7 @@ function createContentProof({ content, open, validate }) {
         async preflight(req,file,folder) {
             assertAuthorization(authorization(req));
             if(!contentKey(file.contentSha256,file.size)) throw new Error('CONTENT_KEY_INVALID');
+            if(reuseMode==='off') return {status:'miss'};
             content.write(db=>{
                 db.prepare('DELETE FROM disk_content_pop_challenges WHERE expires_at<?').run(Date.now());
                 db.prepare('DELETE FROM disk_content_leases WHERE expires_at<?').run(Date.now());
@@ -54,6 +55,7 @@ function createContentProof({ content, open, validate }) {
                 if(active>=200)throw new Error('CONTENT_ACTIVE_LIMIT');
             });
             const id=content.find(file.contentSha256,file.size);
+            if(id && reuseMode==='owner' && !content.owned(id,viewer(req))) return {status:'miss'};
             if(!id) return content.write(db=>{
                 const key=contentKey(file.contentSha256,file.size),current=db.prepare('SELECT * FROM disk_content_claims WHERE content_key=?').get(key);
                 if(current?.expires_at>Date.now()) return current.viewer_id===viewer(req) && current.binding===binding(req,file,folder) ? {status:'miss',uploadTicket:current.token} : {status:'wait',retryAfterMs:4000};
@@ -66,6 +68,9 @@ function createContentProof({ content, open, validate }) {
             // Reusing file_id across different bots is unsafe. Keep the existing
             // storage boundary even though the binary content key is universal.
             if(!await validate(candidate,req)) return {status:'miss'};
+            // Backend validation may wait on Telegram while the browser logs out
+            // or an external application is disabled in another process.
+            assertAuthorization(authorization(req));
             const ticket=crypto.randomUUID(),lease=content.lease(id,viewer(req),ticket,'proof');
             try {
                 if(file.size===0 || content.owned(id,viewer(req))) {
@@ -89,10 +94,14 @@ function createContentProof({ content, open, validate }) {
                     if(count!==range.size) throw new Error('CONTENT_PROOF_SOURCE_INVALID');
                     digests.push(digest.digest('hex'));
                 }
+                // A remote sample can take minutes. Logout or app revocation
+                // during that read must not leave a fresh challenge and lease.
+                assertAuthorization(authorization(req));
                 save(ticket,candidate,req,file,folder,{nonce,ranges,digests,verified:false},lease);
                 return {status:'proof',ticket,nonce,ranges};
             } catch(error) {
                 content.releaseLease(lease);
+                if(['CONTENT_SESSION_EXPIRED','ACCESS_TOKEN_INVALID'].includes(error.message)) throw error;
                 // A failed sample read grants no reference. The ordinary body
                 // upload can still verify the complete bytes and build a candidate.
                 return {status:'miss'};
@@ -101,6 +110,7 @@ function createContentProof({ content, open, validate }) {
         prove(req,ticket,digests) {
             return content.write(db=>{
                 assertContentAuthorization(db,authorization(req));
+                if(reuseMode!=='all') throw new Error('CONTENT_REUSE_DISABLED');
                 const row=db.prepare('SELECT * FROM disk_content_pop_challenges WHERE id=?').get(String(ticket));
                 if(!row || row.viewer_id!==viewer(req) || row.expires_at<=Date.now() || row.consumed!==0) throw new Error('CONTENT_PROOF_EXPIRED');
                 const saved=JSON.parse(row.payload);
@@ -117,8 +127,11 @@ function createContentProof({ content, open, validate }) {
         consume(req,file,folder) {
             return content.write(db=>{
                 assertContentAuthorization(db,authorization(req));
+                if(reuseMode==='off') throw new Error('CONTENT_REUSE_DISABLED');
                 const row=db.prepare('SELECT * FROM disk_content_pop_challenges WHERE id=?').get(String(file.reuseTicket));
                 if(!row || row.viewer_id!==viewer(req) || row.binding!==binding(req,file,folder) || row.expires_at<=Date.now() || row.consumed!==1) throw new Error('CONTENT_PROOF_INVALID');
+                if(reuseMode==='owner' && !db.prepare("SELECT 1 FROM disk_content_refs r JOIN disk_files f ON f.scope=r.scope AND f.id=r.logical_file_id WHERE r.content_id=? AND f.owner_id=? AND coalesce(json_extract(f.payload,'$.reviewStatus'),'') NOT IN ('blocked','deleted') LIMIT 1").get(row.content_id,viewer(req)))
+                    throw new Error('CONTENT_REUSE_DISABLED');
                 const saved=JSON.parse(row.payload);
                 if(!db.prepare('SELECT 1 FROM disk_content_leases WHERE id=? AND expires_at>?').get(saved.lease,Date.now())) throw new Error('CONTENT_LEASE_EXPIRED');
                 const candidate=content.resolve(row.content_id);

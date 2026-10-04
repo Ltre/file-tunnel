@@ -68,6 +68,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         return object;
     }
     async function put(mapping, key, input, { size, contentType = 'application/octet-stream', expectedSha256 = '', expectedMd5 = '', metadata = {}, signal } = {}) {
+        mapping.assertAuthorized?.();
         const info = objectKey(key), current = stat(mapping, key), store = storeOf(mapping), owner = auth.user(scopeOf(mapping).userId);
         if (!owner) throw new Error('AccessDenied');
         if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_LIMIT) throw new Error('EntityTooLarge');
@@ -79,6 +80,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             if (expectedSha256 && expectedSha256 !== 'UNSIGNED-PAYLOAD' && expectedSha256 !== digest) throw new Error('XAmzContentSHA256Mismatch');
             const s3ETag = crypto.createHash('md5').update('').digest('hex');
             if (expectedMd5 && expectedMd5 !== Buffer.from(s3ETag, 'hex').toString('base64')) throw new Error('BadDigest');
+            mapping.assertAuthorized?.();
             if (info.folder) store.setFolderMarker(owner.id, info.path, { ...metadata, s3ETag }, maxDepth());
             else store.putMetadataObject(owner, info.folderPath, info.name, contentType, { ...metadata, s3ETag }, maxDepth(), current?.file?.id || '');
             return cleanupReplaced(mapping, stat(mapping, key));
@@ -105,6 +107,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         await deleteFile(mapping, object.file);
     }
     async function copy(fromMapping, fromKey, toMapping, toKey) {
+        fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.();
         const source = stat(fromMapping, fromKey);
         if (!source) throw new Error('NoSuchKey');
         const target = objectKey(toKey);
@@ -128,6 +131,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             // S3 credentials already authorize the source object. This is a
             // reference transaction, not a Telegram file_id resend.
             if(scopeOf(fromMapping).userId !== scopeOf(toMapping).userId) throw new Error('AccessDenied');
+            fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.();
             return store.putCopiedObject(owner,target.folderPath,target.name,source.file,source.file.parts,fromBackend,maxDepth(),current?.file?.id || '',logicalId);
         }
         const physical = (source.file.parts || []).map((part, index) => ({ fileIndex: 0, logicalFileId: logicalId, partIndex: index + 1, partCount: source.file.parts.length, originalSize: source.size, offset: part.offset, size: part.size, sha256: part.sha256, reuseFileId: part.fileId, reuseFileUniqueId: part.fileUniqueId, name: target.name, type: source.type }));
@@ -135,7 +139,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             for (const part of physical) await telegram.call(toBackend, 'getFile', { file_id: part.reuseFileId });
             return telegram.uploadPhysical(toBackend, [{ name: target.name, size: source.size, type: source.type, folderPath: target.folderPath, logicalId: physical[0].logicalFileId }], physical, () => {}, { userId: owner.id, diskSpace: scopeOf(toMapping).diskSpace });
         });
-        try { return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(), current?.file?.id || '', logicalId); }
+        try { fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(), current?.file?.id || '', logicalId); }
         catch (error) { await telegram.remove(toBackend, { name: target.name, channelId: toBackend.channelId, createdAt: Date.now(), parts: remotes }).catch(() => {}); throw error; }
     }
     return { stat, list, open, openFile, put, remove, deleteFile, copy, keyInfo: objectKey, parseByteRange, limit: UPLOAD_LIMIT, partSize: MAX_TELEGRAM_PART_SIZE };

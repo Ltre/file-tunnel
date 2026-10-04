@@ -38,8 +38,9 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'd2t-s3-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     const auth = createDiskAuth({ dataDir }), owner = auth.fromTelegram({ id: '999001' });
-    const chunks = new Map(); let message = 0, removed = 0, uploaded = 0, reused = 0;
+    const chunks = new Map(); let message = 0, removed = 0, uploaded = 0, reused = 0, checked = 0;
     const telegram = {
+        check: async () => { checked++; return true; },
         call: async (_backend, method) => method === 'getFile' ? { file_path: 'ok' } : true,
         parts: file => { assert.ok(file.parts.every(part => part.logicalFileId === file.id), '分片必须关联最终逻辑文件 ID'); return file.parts; },
         readPart: async (_backend, part, { start = 0, end = part.size - 1 } = {}) => Readable.from([chunks.get(part.fileId).subarray(start, end + 1)]),
@@ -110,7 +111,17 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal(copy.status, 200, await copy.text());
     assert.equal(await (await send('GET', '/S3API/my-bucket/copied.txt')).text(), 'replacement');
     assert.equal(removed,removedBeforeReplacement,'覆盖不能清理仍由 large-copy 引用的旧 Content');
+    const beforeEmptyCheck=checked, beforeEmptyUpload=uploaded;
     assert.equal((await send('PUT', '/S3API/my-bucket/empty.txt', '')).status, 200);
+    assert.equal(checked,beforeEmptyCheck,'已知空 SHA 的零字节对象没有 Telegram 消息可供健康检查');
+    assert.equal(uploaded,beforeEmptyUpload,'零字节对象不创建 Telegram Anchor');
+    const emptyStored=disk.spaces.get('').adminFiles().find(file=>file.ownerId===owner.id && file.name==='empty.txt');
+    assert.ok(emptyStored?.contentId); assert.equal(emptyStored.parts.length,0);
+    assert.notEqual(emptyStored.healthStatus,'unavailable','空对象不应被误判为 BROKEN');
+    assert.equal((await send('PUT', '/S3API/my-bucket/empty-again.txt', '')).status,200);
+    const emptyAgain=disk.spaces.get('').adminFiles().find(file=>file.ownerId===owner.id && file.name==='empty-again.txt');
+    assert.equal(emptyAgain.contentId,emptyStored.contentId,'第二次已知空 SHA 的 PUT 直接复用空 Content');
+    assert.equal(checked,beforeEmptyCheck);assert.equal(uploaded,beforeEmptyUpload);
     assert.equal((await send('PUT', '/S3API/my-bucket/folder/', '')).status, 200);
     const listed = await send('GET', '/S3API/my-bucket?list-type=2&delimiter=%2F');
     const xml = await listed.text(); assert.match(xml, /<CommonPrefixes><Prefix>folder\/<\/Prefix>/); assert.match(xml, /<Contents><Key>copied.txt<\/Key>/);
@@ -127,4 +138,36 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     const badUrl = base + '/S3API/my-bucket/unknown';
     const bad = signed('GET', badUrl, credential); bad.headers.authorization = bad.headers.authorization.replace(/.$/, char => char === '0' ? '1' : '0');
     assert.equal(await statusAfterReading(fetch(badUrl, bad)), 403);
+});
+
+test('S3 在途 PUT 和 Copy 在发布前重验已停用的凭据', async t => {
+    const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'d2t-s3-revoke-'));
+    t.after(()=>fs.rmSync(dataDir,{recursive:true,force:true}));
+    let started, release;
+    const waitStarted=()=>new Promise(resolve=>{started=resolve;});
+    const hold=()=>new Promise(resolve=>{release=resolve;});
+    let published=0, gate=hold();
+    const storage={
+        async put(mapping,_key,input){for await(const _ of input){} started();await gate;mapping.assertAuthorized();published++;return {etag:'ok'};},
+        async copy(source,_sourceKey,target){started();await gate;source.assertAuthorized();target.assertAuthorized();published++;return {etag:'ok',updatedAt:Date.now()};}
+    };
+    const gateway=createS3Gateway({dataDir,objectStorage:storage});
+    const createCredential=()=>gateway.credentials.create({userId:'owner',bucketMappings:[{bucket:'my-bucket',diskSpace:''}]});
+    const app=express();app.use('/S3API',gateway.api);
+    const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+    t.after(()=>new Promise(resolve=>server.close(resolve)));
+    const base=`http://127.0.0.1:${server.address().port}`;
+    const putCredential=createCredential(), putUrl=base+'/S3API/my-bucket/file.bin';
+    const putStarted=waitStarted();
+    const put=fetch(putUrl,signed('PUT',putUrl,putCredential,Buffer.from('slow-body')));
+    await putStarted;gateway.credentials.disable(putCredential.accessKeyId);release();
+    assert.equal(await statusAfterReading(put),403);
+    assert.equal(published,0);
+    gate=hold();
+    const copyCredential=createCredential(),copyUrl=base+'/S3API/my-bucket/copy.bin';
+    const copyStarted=waitStarted();
+    const copy=fetch(copyUrl,signed('PUT',copyUrl,copyCredential,Buffer.alloc(0),{'x-amz-copy-source':'/my-bucket/file.bin'}));
+    await copyStarted;gateway.credentials.disable(copyCredential.accessKeyId);release();
+    assert.equal(await statusAfterReading(copy),403);
+    assert.equal(published,0);
 });

@@ -7,6 +7,7 @@ const { openDiskRepository } = require('../server/disk-repository');
 const { createContentProof, prefix } = require('../server/disk-content-proof');
 const { Sha256 } = require('../client/disk-content-hash-worker');
 const {createDiskAuth}=require('../server/disk-auth');
+const {createTelegramChatDictionary}=require('../server/telegram-chat-dictionary');
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture(t) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'content-object-'));
@@ -183,6 +184,65 @@ test('频道使用检测保留当前引用和待清理债务；超长 caption �
     assert.equal(job.state,'BLOCKED');assert.equal(job.error,'CONTENT_CAPTION_TOO_LONG');
     assert.equal(JSON.parse(job.payload).caption.includes(tooLong.parts[0].fileId),true);
     assert.equal(f.content.resolve(a.contentId).state,'DELETED');
+});
+
+test('运行期 Chat 字典保护 public/数字双表示的活跃 Anchor，且只隔离相同消息 ID',t=>{
+    const f=fixture(t),bytes=Buffer.from('alias');
+    const publicFile={...f.file('public','alice',bytes,601),channelId:'@legacy_channel',contentSha256:''};
+    const numeric={...f.file('numeric','bob',bytes,601),channelId:'-1001234567890'};
+    f.save(publicFile);f.save(numeric);
+    f.remove('numeric');
+    assert.equal(f.content.claimCleanup(Date.now()+120_000),null);
+    assert.equal(f.content.withDatabase(db=>db.prepare("SELECT error FROM disk_content_cleanup WHERE purpose='unreferenced-content'").get().error),'CONTENT_ANCHOR_ALIAS_UNRESOLVED');
+    const dictionary=createTelegramChatDictionary({dataDir:f.dir});
+    dictionary.replace([{chatId:'-1001234567890',username:'@legacy_channel'}],dictionary.list().revision);
+    assert.equal(f.content.usesChannel('-1001234567890'),true,'数字频道仍被 public 历史 revision 使用');
+    assert.equal(f.content.usesChannel('@legacy_channel'),true);
+    assert.equal(f.content.allowed({channelId:'-1001234567890',parts:[{messageId:601}]}),false);
+    assert.equal(f.content.claimCleanup(Date.now()+240_000),null);
+    assert.equal(f.content.withDatabase(db=>db.prepare("SELECT error FROM disk_content_cleanup WHERE purpose='unreferenced-content'").get().error),'CONTENT_ANCHOR_ALIAS_CONFLICT');
+    const independent=f.save({...f.file('independent','carol',Buffer.from('other'),602),channelId:'-1001234567890'});
+    f.remove('independent');
+    const cleanup=f.content.claimCleanup(Date.now()+120_000);
+    assert.equal(cleanup.physical.parts[0].messageId,602,'别名隔离不能阻塞同频道其它消息的清理');
+});
+
+test('频道使用检测在 Chat 字典运行期更新后识别待清理 public 债务',t=>{
+    const f=fixture(t), dictionary=createTelegramChatDictionary({dataDir:f.dir});
+    f.save({...f.file('old','alice',Buffer.from('old'),699),channelId:'@retired_channel',contentSha256:''});
+    f.remove('old');
+    assert.equal(f.content.usesChannel('-1001234567890'),false);
+    dictionary.replace([{chatId:'-1001234567890',username:'@retired_channel'}],dictionary.list().revision);
+    assert.equal(f.content.usesChannel('-1001234567890'),true);
+    assert.equal(f.content.usesChannel('-1009876543210'),false);
+});
+
+test('未解析 public 标识的消息仅在可疑 ID 上保守隔离，字典改为不同 Chat 后可恢复清理',t=>{
+    const f=fixture(t),bytes=Buffer.from('alias');
+    f.save({...f.file('public','alice',bytes,603),channelId:'@unknown_channel',contentSha256:''});
+    f.save({...f.file('numeric','bob',bytes,603),channelId:'-1001234567890'});
+    f.remove('numeric');
+    assert.equal(f.content.claimCleanup(Date.now()+120_000),null);
+    const dictionary=createTelegramChatDictionary({dataDir:f.dir});
+    dictionary.replace([{chatId:'-1009876543210',username:'@unknown_channel'}],dictionary.list().revision);
+    const cleanup=f.content.claimCleanup(Date.now()+240_000);
+    assert.equal(cleanup.physical.channelId,'-1001234567890');
+    assert.equal(cleanup.physical.parts[0].messageId,603);
+});
+
+test('cleanup claim 后新增别名映射仍被发送前 guard 和完成确认拦截',t=>{
+    const f=fixture(t),bytes=Buffer.from('alias'),dictionary=createTelegramChatDictionary({dataDir:f.dir});
+    dictionary.replace([{chatId:'-1009876543210',username:'@changing_channel'}],dictionary.list().revision);
+    f.save({...f.file('public','alice',bytes,604),channelId:'@changing_channel',contentSha256:''});
+    f.save({...f.file('numeric','bob',bytes,604),channelId:'-1001234567890'});
+    f.remove('numeric');
+    const claimed=f.content.claimCleanup(Date.now()+120_000);
+    assert.equal(claimed.physical.parts[0].messageId,604);
+    dictionary.replace([{chatId:'-1001234567890',username:'@changing_channel'}],dictionary.list().revision);
+    assert.equal(f.content.allowed(claimed.physical),false);
+    f.content.finishCleanup(claimed);
+    const row=f.content.withDatabase(db=>db.prepare('SELECT state,error FROM disk_content_cleanup WHERE id=?').get(claimed.id));
+    assert.equal(row.state,'PENDING');assert.equal(row.error,'CONTENT_ANCHOR_ALIAS_CONFLICT');
 });
 
 test('旧 cleanup 债务不能抢先删除 DELETE_PENDING 的当前 Anchor；退休清理保留当前共用封面',t=>{

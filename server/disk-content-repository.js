@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
+const { createTelegramChatDictionary, normalizeChatIdentifier } = require('./telegram-chat-dictionary');
 
 const PHYSICAL_FIELDS = ['parts', 'partCount', 'fileId', 'fileUniqueId', 'messageId', 'mediaGroupId', 'channelId', 'backendId', 'thumbnail', 'mediaIndex', 'fileIdHistory', 'pendingRemoteCleanup', 'captionSyncPending', 'captionWarning', 'lastCheckedAt', 'repairedAt', 'healthStatus', 'lastPhysicalError'];
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -61,6 +62,7 @@ function migrateContentSchema(db) {
         state TEXT NOT NULL DEFAULT 'ACTIVE',
         FOREIGN KEY(content_id,revision) REFERENCES disk_content_revisions(content_id,revision)
     );
+    CREATE INDEX IF NOT EXISTS disk_content_anchor_message ON disk_content_anchors(message_id);
     CREATE TABLE IF NOT EXISTS disk_content_parts (
         content_id TEXT NOT NULL, revision INTEGER NOT NULL, part_index INTEGER NOT NULL,
         selected_anchor_id TEXT REFERENCES disk_content_anchors(id), payload TEXT NOT NULL,
@@ -103,7 +105,50 @@ function migrateContentSchema(db) {
         if(!columns.has(name))db.exec('ALTER TABLE disk_contents ADD COLUMN '+name+' '+definition);
 }
 
-function createContentRepository(withDatabase) {
+function createContentRepository(withDatabase, { dataDir } = {}) {
+    // The dictionary is a separate administrator-maintained file. Read its
+    // latest revision for each cleanup/guard decision, including after a
+    // running server changes the mapping. A bad dictionary fails closed.
+    const chatDictionary = dataDir ? createTelegramChatDictionary({ dataDir }) : null;
+    const chatAliases = () => {
+        const aliases = new Map();
+        for (const entry of chatDictionary?.list().entries || []) {
+            for (const name of [entry.username, ...(entry.aliases || [])].filter(Boolean))
+                aliases.set(normalizeChatIdentifier(name), entry.chatId);
+        }
+        return aliases;
+    };
+    const normalizedChat = (value, aliases) => {
+        try {
+            const identifier = normalizeChatIdentifier(value);
+            return { value: aliases.get(identifier) || identifier, unresolved: identifier.startsWith('@') && !aliases.has(identifier) };
+        } catch (_) { return { value: String(value), unresolved: true }; }
+    };
+    // Two differently written chat identifiers may name the same Telegram
+    // message. Without a confirmed mapping, quarantine only the *matching
+    // message ID*, rather than stopping cleanup for every numeric chat.
+    function aliasConflict(db, physical, excludeContentId = '') {
+        const aliases = chatAliases(), candidate = normalizedChat(physical.channelId, aliases);
+        const entries = [...physicalRecord(physical).parts, ...(physical.thumbnail ? [physical.thumbnail] : [])];
+        for (const part of entries) {
+            const messageId = Number(part.messageId);
+            if (!Number.isSafeInteger(messageId) || messageId <= 0) continue;
+            const rows = db.prepare(`SELECT a.channel_id,c.id AS content_id FROM disk_content_anchors a
+                JOIN disk_contents c ON c.id=a.content_id
+                WHERE a.message_id=? AND a.channel_id!=? AND a.state!='CLEANED'
+                AND c.id!=? AND (c.hash_status='anchor_conflict'
+                  OR (a.revision=c.current_revision AND c.state IN ('READY','BROKEN','DELETE_PENDING'))
+                  OR EXISTS(SELECT 1 FROM disk_content_refs r WHERE r.content_id=c.id AND a.revision=c.current_revision)
+                  OR EXISTS(SELECT 1 FROM disk_content_leases l WHERE l.content_id=c.id AND l.revision=a.revision AND l.expires_at>?))`)
+                .all(messageId, String(physical.channelId), String(excludeContentId), Date.now());
+            for (const row of rows) {
+                const other = normalizedChat(row.channel_id, aliases);
+                if (candidate.value === other.value) return 'CONTENT_ANCHOR_ALIAS_CONFLICT';
+                if (candidate.unresolved || other.unresolved) return 'CONTENT_ANCHOR_ALIAS_UNRESOLVED';
+            }
+        }
+        return '';
+    }
     const write = work => withDatabase(db => {
         if (db.isTransaction) {
             const result = work(db);
@@ -341,6 +386,14 @@ function createContentRepository(withDatabase) {
                 // Protected/quarantined rows must not starve later cleanup work.
                 db.prepare('UPDATE disk_content_cleanup SET retry_at=? WHERE id=?').run(now+60_000,row.id);
                 const physical = JSON.parse(row.payload);
+                const aliasError = aliasConflict(db,physical,row.purpose==='unreferenced-content' ? row.content_id : '');
+                if (aliasError) {
+                    // Fence an expired CLAIMED worker as well: a newly added
+                    // dictionary mapping must not let its old token ack a
+                    // cleanup that is now quarantined.
+                    db.prepare("UPDATE disk_content_cleanup SET state='PENDING',token='',claimed_at=0,error=? WHERE id=?").run(aliasError,row.id);
+                    continue;
+                }
                 if(row.purpose!=='unreferenced-content') {
                     physical.parts=physical.parts.filter(part=>allowed(db,{...physical,parts:[part],thumbnail:null}));
                     if(physical.thumbnail && !allowed(db,{...physical,parts:[],thumbnail:physical.thumbnail}))physical.thumbnail=null;
@@ -364,6 +417,10 @@ function createContentRepository(withDatabase) {
         }); },
         finishCleanup(task, error) { return write(db => {
             const current=db.prepare('SELECT * FROM disk_content_cleanup WHERE id=? AND token=? AND state=\'CLAIMED\'').get(task.id,task.token); if(!current)return;
+            if(!error){
+                const aliasError=aliasConflict(db,task.physical,task.purpose==='unreferenced-content' ? task.content_id : '');
+                if(aliasError)error=new Error(aliasError);
+            }
             db.prepare('UPDATE disk_content_cleanup SET state=?,retry_at=?,error=? WHERE id=? AND token=?').run(error?'PENDING':'COMPLETED',error?Date.now()+Math.min(3600_000,30_000*2**Math.min(current.attempts,7)):0,error?String(error.code||error.message).slice(0,240):'',task.id,task.token);
             if(!error && task.content_id){
                 db.prepare("UPDATE disk_content_revisions SET state='CLEANED' WHERE content_id=? AND revision=?").run(task.content_id,task.revision);
@@ -375,13 +432,15 @@ function createContentRepository(withDatabase) {
         references(id) { return withDatabase(db=>db.prepare('SELECT scope,logical_file_id FROM disk_content_refs WHERE content_id=?').all(id)); },
         usesChannel(channelId) { return withDatabase(db => {
             const chat=String(channelId);
+            const aliases=chatAliases(), target=normalizedChat(chat,aliases).value;
             // A removed Logical row can still leave a retained revision, reader,
             // or retryable remote cleanup. Keep its backend available until done.
-            return Boolean(db.prepare(`SELECT 1 FROM disk_content_revisions v JOIN disk_contents c ON c.id=v.content_id
-                WHERE json_extract(v.payload,'$.channelId')=? AND v.state!='CLEANED'
+            const inUse=db.prepare(`SELECT DISTINCT json_extract(v.payload,'$.channelId') AS channel FROM disk_content_revisions v
+                JOIN disk_contents c ON c.id=v.content_id WHERE v.state!='CLEANED'
                 AND (c.state!='DELETED' OR EXISTS(SELECT 1 FROM disk_content_leases l
-                    WHERE l.content_id=c.id AND l.revision=v.revision AND l.expires_at>?)) LIMIT 1`).get(chat,Date.now())
-                || db.prepare("SELECT 1 FROM disk_content_cleanup WHERE state!='COMPLETED' AND json_extract(payload,'$.channelId')=? LIMIT 1").get(chat));
+                    WHERE l.content_id=c.id AND l.revision=v.revision AND l.expires_at>?))`).all(Date.now());
+            const cleanup=db.prepare("SELECT DISTINCT json_extract(payload,'$.channelId') AS channel FROM disk_content_cleanup WHERE state!='COMPLETED'").all();
+            return [...inUse,...cleanup].some(row=>normalizedChat(row.channel,aliases).value===target);
         }); },
         claimCaption(){return write(db=>{
             const row=db.prepare(`SELECT j.* FROM disk_content_caption_jobs j JOIN disk_contents c ON c.id=j.content_id
@@ -398,6 +457,7 @@ function createContentRepository(withDatabase) {
         withDatabase, write
     };
     function allowed(db, physical) {
+            if(aliasConflict(db,physical))return false;
             const entries = [...physicalRecord(physical).parts, ...(physical.thumbnail ? [physical.thumbnail] : [])];
             return entries.every(part => !db.prepare(`SELECT 1 FROM disk_content_parts p JOIN disk_contents c ON c.id=p.content_id
                 WHERE p.selected_anchor_id=? AND (c.hash_status='anchor_conflict' OR (p.revision=c.current_revision AND c.state IN ('READY','BROKEN','DELETE_PENDING')) OR EXISTS(SELECT 1 FROM disk_content_refs r WHERE r.content_id=c.id AND p.revision=c.current_revision)

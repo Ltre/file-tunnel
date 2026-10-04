@@ -114,7 +114,20 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 return res.type('application/xml').send(document('ListAllMyBucketsResult', `<Owner>${tag('ID', auth.credential.userId)}${tag('DisplayName', auth.credential.userId)}</Owner><Buckets>` + mappings.map(item => `<Bucket>${tag('Name', item.bucket)}${tag('CreationDate', iso(auth.credential.createdAt))}</Bucket>`).join('') + '</Buckets>'));
             }
             if (!mapping) throw new Error('NoSuchBucket');
-            selected = { ...mapping, userId: auth.credential.userId };
+            // SigV4 authenticates the request at entry. A long upload or Copy
+            // must also see credential disable/rotation or mapping edits before
+            // publishing its Logical File.
+            const authorizeMapping = bucketMapping => ({ ...bucketMapping, userId: auth.credential.userId,
+                assertAuthorized() {
+                    const current = credentials.find(auth.accessKeyId);
+                    if (!current || current.updatedAt !== auth.credential.updatedAt
+                        || current.secretAccessKey !== auth.credential.secretAccessKey
+                        || current.userId !== auth.credential.userId) throw new Error('AccessDenied');
+                    const active = current?.bucketMappings?.find(item => item.bucket === bucketMapping.bucket);
+                    if (!active || active.diskSpace !== bucketMapping.diskSpace
+                        || String(active.backendId || '') !== String(bucketMapping.backendId || '')) throw new Error('AccessDenied');
+                } });
+            selected = authorizeMapping(mapping);
             const query = Object.fromEntries(new URL(req.originalUrl, 'http://localhost').searchParams);
             if (!key) {
                 if (contentOnly) throw new Error('NotImplemented');
@@ -147,7 +160,7 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 catch (_) { throw new Error('InvalidArgument'); }
                 const sourceMapping = mappings.find(item => item.bucket === sourceBucket);
                 if (!sourceMapping) throw new Error('NoSuchBucket');
-                const copied = await objectStorage.copy({ ...sourceMapping, userId: auth.credential.userId }, sourceKey, selected, key);
+                const copied = await objectStorage.copy(authorizeMapping(sourceMapping), sourceKey, selected, key);
                 const object = copied?.etag ? copied : objectStorage.stat(selected, key);
                 return res.type('application/xml').send(document('CopyObjectResult', tag('LastModified', iso(object.updatedAt)) + tag('ETag', `"${object.etag}"`)));
             }

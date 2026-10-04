@@ -366,9 +366,10 @@
                 preflight={status:'miss'};
             }
             if(preflight.status==='proof') {
-                update({phase:'content-proof',message:'正在验证文件持有证明：'+file.name,percent:null});
+                const proofMessage=completed=>`正在验证文件持有证明：${file.name} · ${completed}/${preflight.ranges.length}`;
+                update({phase:'content-proof',message:proofMessage(0),percent:null});
                 const digests=[];
-                for(const range of preflight.ranges){const domain=new TextEncoder().encode('Drop2Tunnel-PoP-v1\0'),prefix=new Uint8Array(domain.length+32+12);prefix.set(domain);prefix.set(Uint8Array.from(preflight.nonce.match(/../g),byte=>parseInt(byte,16)),domain.length);const layout=new DataView(prefix.buffer,domain.length+32);layout.setUint32(0,Math.floor(range.offset/4294967296));layout.setUint32(4,range.offset>>>0);layout.setUint32(8,range.size);const bytes=new Uint8Array(await blob.slice(range.offset,range.offset+range.size).arrayBuffer()),sample=new Uint8Array(prefix.length+bytes.length);sample.set(prefix);sample.set(bytes,prefix.length);digests.push(Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',sample)),byte=>byte.toString(16).padStart(2,'0')).join(''));}
+                for(const range of preflight.ranges){const domain=new TextEncoder().encode('Drop2Tunnel-PoP-v1\0'),prefix=new Uint8Array(domain.length+32+12);prefix.set(domain);prefix.set(Uint8Array.from(preflight.nonce.match(/../g),byte=>parseInt(byte,16)),domain.length);const layout=new DataView(prefix.buffer,domain.length+32);layout.setUint32(0,Math.floor(range.offset/4294967296));layout.setUint32(4,range.offset>>>0);layout.setUint32(8,range.size);const bytes=new Uint8Array(await blob.slice(range.offset,range.offset+range.size).arrayBuffer()),sample=new Uint8Array(prefix.length+bytes.length);sample.set(prefix);sample.set(bytes,prefix.length);digests.push(Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',sample)),byte=>byte.toString(16).padStart(2,'0')).join(''));update({phase:'content-proof',message:proofMessage(digests.length),percent:null});}
                 preflight=await uploadRequest('/content/proof',withSignal(json('POST',{ticket:preflight.ticket,digests}),signal));
             }
             if(preflight.reuseTicket){file.reuseTicket=preflight.reuseTicket;contentTickets.push(preflight.reuseTicket);}

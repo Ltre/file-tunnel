@@ -23,6 +23,28 @@ test('摘要进度进入任务列表，缺少 WebCrypto 的持有证明退回完
     assert.equal(requests.filter(request=>request.url.endsWith('/content/release')).length,1);
 });
 
+test('持有证明逐个样本回显进度，不把本地摘要计为网络上传量',async()=>{
+    const {webcrypto}=require('node:crypto'),window={},requests=[],snapshots=[];let finished=false;
+    const Worker=class {postMessage(){queueMicrotask(()=>this.onmessage({data:{sha256:'a'.repeat(64)}}));}terminate(){}};
+    const fetch=async(url,options={})=>{
+        requests.push({url,options});let data={};
+        if(url.endsWith('/content/preflight'))data={files:[{status:'proof',ticket:'challenge',nonce:'00'.repeat(32),ranges:[{offset:0,size:2},{offset:2,size:2}]}]};
+        if(url.endsWith('/content/proof'))data={status:'reuse',reuseTicket:'reuse'};
+        if(url.endsWith('/uploads'))data={uploadId:'u',operation_id:'op',files:[{reused:true}]};
+        if(url.endsWith('/finish')){finished=true;data={operation_id:'op'};}
+        if(url.includes('/operations?'))data={operations:[{operation_id:'op',status:finished?'completed':'running',result:{items:[{id:'file'}]}}]};
+        return {ok:true,json:async()=>data};
+    };
+    vm.runInNewContext(source('client/disk-client.js'),{window,fetch,Worker,crypto:webcrypto,TextEncoder,queueMicrotask,AbortController,console,setInterval(){},Date,Map,Set,Promise,encodeURIComponent});
+    window.DiskClient.subscribe(jobs=>snapshots.push(...jobs.map(job=>({...job}))));
+    await window.DiskClient.upload([{name:'local.bin',size:4}], '',async()=>new Blob(['abcd']));
+    const messages=snapshots.filter(job=>job.phase==='content-proof').map(job=>job.message);
+    for(const progress of ['0/2','1/2','2/2'])assert.ok(messages.some(message=>message.includes(progress)),progress);
+    assert.ok(snapshots.filter(job=>job.phase==='content-proof').every(job=>!job.clientBytesReceived && job.percent===null));
+    assert.equal(requests.filter(request=>request.options.method==='PUT').length,0);
+    assert.equal(JSON.parse(requests.find(request=>request.url.endsWith('/content/proof')).options.body).digests.length,2);
+});
+
 test('全命中浏览器不发送正文；Worker 失败仍可普通上传',async()=>{
     for(const failWorker of [false,true]) {
         const window={},requests=[];let finished=false;

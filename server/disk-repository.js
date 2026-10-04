@@ -73,7 +73,7 @@ function openDiskRepository(dataDir) {
         db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (1)');
         transaction(db, () => {
             migrateContentSchema(db);
-            const content = createContentRepository(work => work(db));
+            const content = createContentRepository(work => work(db), { dataDir: root });
             // Import only real logical records. Bot archives are a separate store.
             for (const row of db.prepare('SELECT scope,id,payload FROM disk_files').all()) {
                 if (db.prepare('SELECT 1 FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(row.scope,row.id)) continue;
@@ -111,7 +111,7 @@ function openDiskRepository(dataDir) {
             remove: connection.prepare(`DELETE FROM disk_${table} WHERE scope = ? AND id = ?`)
         };
     }
-    const content = createContentRepository(withDatabase);
+    const content = createContentRepository(withDatabase, { dataDir: root });
     function loadWithRevision(table, scope = '') {
         return withDatabase(connection => {
             const read = () => {

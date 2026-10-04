@@ -4,6 +4,7 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {DatabaseSync}=require('node:sqlite');
 const {main}=require('../tools/migrate-tgdisk-content-objects.cjs');
 const {openDiskRepository}=require('../server/disk-repository');
+const {createTelegramChatDictionary}=require('../server/telegram-chat-dictionary');
 test('v1 停服迁移保留 Logical 身份，备份、重跑幂等、部分重叠隔离且不猜完整 hash',async t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-migration-')),filename=path.join(dir,'disk.sqlite');
     t.after(()=>{openDiskRepository(dir).close();fs.rmSync(dir,{recursive:true,force:true});});
@@ -43,6 +44,29 @@ test('相同二进制的显式历史合并保持 Logical 版本，旧消息等 r
     assert.equal(content.claimCleanup(Date.now()+120_000),null);content.releaseLease(lease);
     const cleanup=content.claimCleanup(Date.now()+240_000);assert.equal(cleanup.physical.parts[0].messageId,2);
     assert.equal(content.allowed({channelId:'-100',parts:[{messageId:1}]}),false);
+});
+
+test('v1 包装保留 public 原标识，已配置字典仍保护其数字别名的同一条消息',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-alias-migration-')),filename=path.join(dir,'disk.sqlite');
+    t.after(()=>{openDiskRepository(dir).close();fs.rmSync(dir,{recursive:true,force:true});});
+    const dictionary=createTelegramChatDictionary({dataDir:dir});
+    dictionary.replace([{chatId:'-1001234567890',username:'@old_storage'}],dictionary.list().revision);
+    const db=new DatabaseSync(filename);
+    db.exec(`CREATE TABLE disk_schema_migrations(version INTEGER PRIMARY KEY);INSERT INTO disk_schema_migrations VALUES(1);
+        CREATE TABLE disk_files(scope TEXT NOT NULL,id TEXT NOT NULL,owner_id TEXT NOT NULL,folder_path TEXT NOT NULL,name TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,id));
+        CREATE TABLE disk_file_parts(scope TEXT NOT NULL,file_id TEXT NOT NULL,part_index INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scope,file_id,part_index));`);
+    for(const [id,ownerId,channelId] of [['old','alice','@old_storage'],['new','bob','-1001234567890']]) {
+        db.prepare('INSERT INTO disk_files VALUES(?,?,?,?,?,?)').run('',id,ownerId,'',id,JSON.stringify({id,ownerId,name:id,folderPath:'',size:3,channelId}));
+        db.prepare('INSERT INTO disk_file_parts VALUES(?,?,?,?)').run('',id,0,JSON.stringify({partIndex:1,offset:0,size:3,fileId:'same-file',messageId:701}));
+    }
+    db.close();
+    const migrated=await main(['--data-dir',dir,'--apply','--service-stopped']);
+    assert.equal(migrated.after.bindings,2);
+    const repository=openDiskRepository(dir),files=repository.load('files');
+    assert.equal(files.find(file=>file.id==='old').channelId,'@old_storage','不擅自改写旧来源');
+    repository.replace('files',files.filter(file=>file.id==='old'),file=>file.id);
+    assert.equal(repository.content.claimCleanup(Date.now()+120_000),null);
+    assert.equal(repository.content.withDatabase(db=>db.prepare("SELECT error FROM disk_content_cleanup WHERE purpose='unreferenced-content'").get().error),'CONTENT_ANCHOR_ALIAS_CONFLICT');
 });
 test('已证明 reuse 重启可续建过期 lease，但不得恢复 DELETING；失败恢复不泄漏新 lease',async t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'content-recovery-')),repository=openDiskRepository(dir);
