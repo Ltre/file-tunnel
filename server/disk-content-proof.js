@@ -71,8 +71,9 @@ function createContentProof({ content, open, validate, reuseMode = 'all' }) {
             // Backend validation may wait on Telegram while the browser logs out
             // or an external application is disabled in another process.
             assertAuthorization(authorization(req));
-            const ticket=crypto.randomUUID(),lease=content.lease(id,viewer(req),ticket,'proof');
+            const ticket=crypto.randomUUID(); let lease;
             try {
+                lease=content.lease(id,viewer(req),ticket,'proof');
                 if(file.size===0 || content.owned(id,viewer(req))) {
                     save(ticket,candidate,req,file,folder,{verified:true},lease);
                     return {status:'reuse',reuseTicket:ticket};
@@ -100,7 +101,7 @@ function createContentProof({ content, open, validate, reuseMode = 'all' }) {
                 save(ticket,candidate,req,file,folder,{nonce,ranges,digests,verified:false},lease);
                 return {status:'proof',ticket,nonce,ranges};
             } catch(error) {
-                content.releaseLease(lease);
+                if (lease) content.releaseLease(lease);
                 if(['CONTENT_SESSION_EXPIRED','ACCESS_TOKEN_INVALID'].includes(error.message)) throw error;
                 // A failed sample read grants no reference. The ordinary body
                 // upload can still verify the complete bytes and build a candidate.

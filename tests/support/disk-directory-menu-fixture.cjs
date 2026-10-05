@@ -92,7 +92,7 @@ async function run() {
         await window.DiskUI.open();
         const first = await choose('自动定位目录'); await release(first.id); await first.saving;
         assert(window.DiskUI.path === '自动定位目录' && row('新文件.txt'), '保存完成未自动显示新目录与文件'); results.push('新目录上传完成自动定位并显示文件');
-        openMenu(); assert([...menu().children].map(button => button.textContent).join('|') === '上传文件|新建目录|当前目录属性|清理本级目录缓存', '空白菜单不完整');
+        openMenu(); assert([...menu().children].map(button => button.textContent).join('|') === '上传文件|新建目录|当前目录属性|邀请协同|清理本级目录缓存', '空白菜单不完整');
         await until(() => menu().style.left && menu().style.top); const bounds = menu().getBoundingClientRect(); assert(bounds.right <= innerWidth && bounds.bottom <= innerHeight, '菜单溢出屏幕');
         [...menu().children].find(button => button.textContent === '当前目录属性').click();
         await until(() => !document.getElementById('telegramDriveDialog').hidden);

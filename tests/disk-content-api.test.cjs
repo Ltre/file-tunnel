@@ -178,7 +178,7 @@ test('S3 上传在凭据停用后拒绝已知 SHA 复用与普通流的最终 Co
     assert.equal(f.store.adminFiles().length,1,'Telegram 已确认的候选不能在凭据停用后变成 Logical 引用');
     assert.ok(checks>=2,'普通流须在最终提交前重新核对凭据');
 });
-test('HTTP 全命中与跨用户持有证明：零正文、零新 Telegram 消息；mixed 整批提交',async t=>{
+test('HTTP 全命中与跨用户持有证明：mixed 整批提交，跨账号最后引用删除才清理',async t=>{
     t.mock.method(console,'info',()=>{});
     const telegram=fakeTelegram(),body=Buffer.from('shared-body');let sends=0;
     const original=telegram.pushChunk;
@@ -209,7 +209,94 @@ test('HTTP 全命中与跨用户持有证明：零正文、零新 Telegram 消�
     const end=await until(async()=>{const op=(await f.request('/operations/'+joined.operation_id,{headers})).data;return ['completed','failed'].includes(op.status)&&op;},'mixed upload timeout');
     assert.equal(end.status,'completed',JSON.stringify(end));assert.equal(sends,2);assert.equal(f.store.list(otherUser.id,'').files.length,2);
     assert.equal(f.store.get(otherUser.id,completed.result.items[0].id),null,'共享不授予其它 Logical 访问权');
+    const shared=f.store.get(f.user.id,completed.result.items[0].id),removed=[];
+    telegram.remove=async(_backend,item)=>removed.push(...item.parts.map(part=>part.messageId));
+    for (const file of [completed.result.items[0],result.result.items[0]]) {
+        const deleting=(await f.request('/files/'+file.id,{method:'DELETE'})).data;
+        assert.equal((await f.terminal(deleting)).status,'completed');
+    }
+    assert.deepEqual(removed,[],'其它账号仍有引用时不能删除共享消息');
+    const deleting=(await f.request('/files/'+end.result.items[0].id,{method:'DELETE',headers})).data;
+    const deleted=await until(async()=>{const op=(await f.request('/operations/'+deleting.operation_id,{headers})).data;return ['completed','failed'].includes(op.status)&&op;},'shared deletion timeout');
+    assert.equal(deleted.status,'completed');assert.equal(deleted.result.remoteCleanup.status,'completed');
+    assert.deepEqual(removed,shared.parts.map(part=>part.messageId));
+    const content=openDiskRepository(f.dataDir).content;
+    assert.equal(content.resolve(shared.contentId).state,'DELETED');
+    assert.equal(content.find(hash(body),body.length),null);
 });
+test('HTTP 目录批量删除立即调用真实 Telegram 删除适配器，后续同内容 preflight 全部 MISS',async t=>{
+    t.mock.method(console,'info',()=>{});
+    const f=await fixture(t,fakeTelegram()),requests=[];
+    const wire=createDiskTelegram({dataDir:f.dataDir,fetchImpl:async(url,options)=>{
+        const method=new URL(url).pathname.split('/').at(-1),payload=JSON.parse(options.body);
+        assert.equal(method,'deleteMessage'); requests.push(payload);
+        return new Response(JSON.stringify({ok:true,result:true}),{status:200,headers:{'Content-Type':'application/json'}});
+    }});
+    f.telegram.remove=(backend,item)=>wire.remove(backend,item);
+    const folder=(await f.request('/directories',{method:'POST',...json({path:'batch'})})).data;
+    assert.equal((await f.terminal(folder)).status,'completed');
+    const bodies=['har-one','har-two','har-three'].map(value=>Buffer.from(value));
+    const files=bodies.map((body,index)=>({name:`${index}.har`,size:body.length,contentSha256:hash(body)}));
+    const job=(await f.request('/uploads',{method:'POST',...json({progressive:true,folderPath:'batch',files})})).data;
+    for(let index=0;index<bodies.length;index++)await f.request(`/uploads/${job.uploadId}/files/${index}`,{method:'PUT',headers:{'Content-Range':`bytes 0-${bodies[index].length-1}/${bodies[index].length}`},body:bodies[index]});
+    await f.request(`/uploads/${job.uploadId}/finish`,{method:'POST'});
+    const uploaded=await f.terminal(job);assert.equal(uploaded.status,'completed');
+    const expected=f.store.adminFiles().flatMap(file=>file.parts.map(part=>part.messageId)).sort();
+    const deleting=(await f.request('/directories?path=batch&recursive=true',{method:'DELETE'})).data;
+    const result=await f.terminal(deleting);assert.equal(result.status,'completed');
+    assert.deepEqual(requests.map(request=>request.message_id).sort(),expected,'任务完成前必须真正发出全部消息的删除请求');
+    assert.ok(requests.every(request=>request.chat_id==='-100'));
+    const repository=openDiskRepository(f.dataDir);
+    assert.equal(repository.content.withDatabase(db=>db.prepare("SELECT count(*) AS n FROM disk_contents WHERE state!='DELETED'").get().n),0);
+    assert.equal(repository.content.withDatabase(db=>db.prepare('SELECT count(*) AS n FROM disk_content_keys').get().n),0);
+    const pre=(await f.request('/content/preflight',{method:'POST',...json({files})})).data;
+    assert.ok(pre.files.every(file=>file.status==='miss'));
+});
+
+test('批删中 Telegram 失败不跳过后续文件；待清理明确回显且不再复用，重试后真正清理',async t=>{
+    t.mock.method(console,'info',()=>{});
+    const f=await fixture(t,fakeTelegram()),attempts=[];
+    f.telegram.remove=async(_backend,item)=>{attempts.push(item.parts[0].messageId);if(attempts.length===1)throw Error('TELEGRAM_NETWORK_ERROR');};
+    const folder=(await f.request('/directories',{method:'POST',...json({path:'retry'})})).data;
+    assert.equal((await f.terminal(folder)).status,'completed');
+    const bodies=['first-body','second-body','third-body'].map(value=>Buffer.from(value));
+    const files=bodies.map((body,index)=>({name:`${index}.har`,size:body.length,contentSha256:hash(body)}));
+    const job=(await f.request('/uploads',{method:'POST',...json({progressive:true,folderPath:'retry',files})})).data;
+    for(let index=0;index<bodies.length;index++)await f.request(`/uploads/${job.uploadId}/files/${index}`,{method:'PUT',headers:{'Content-Range':`bytes 0-${bodies[index].length-1}/${bodies[index].length}`},body:bodies[index]});
+    await f.request(`/uploads/${job.uploadId}/finish`,{method:'POST'});assert.equal((await f.terminal(job)).status,'completed');
+    const deleting=(await f.request('/directories?path=retry&recursive=true',{method:'DELETE'})).data;
+    const result=await f.terminal(deleting);assert.equal(result.status,'completed');
+    assert.ok(result.warnings.includes('TELEGRAM_CONTENT_CLEANUP_PENDING'));
+    assert.equal(attempts.length,3,'首个失败不能让后面的文件跳过删除');
+    assert.equal(f.store.adminFiles().length,0);
+    const repository=openDiskRepository(f.dataDir);
+    for(const body of bodies)assert.equal(repository.content.find(hash(body),body.length),null);
+    repository.content.write(db=>db.prepare("UPDATE disk_content_cleanup SET retry_at=0 WHERE state='PENDING'").run());
+    await f.api.retryRemoteCleanup();
+    assert.equal(attempts.length,4);
+    assert.equal(repository.content.withDatabase(db=>db.prepare("SELECT count(*) AS n FROM disk_contents WHERE state!='DELETED'").get().n),0);
+});
+
+test('删除时在途读租约只延迟远端清理，任务明确提示且新上传不能复用',async t=>{
+    t.mock.method(console,'info',()=>{});
+    const f=await fixture(t,fakeTelegram()),body=Buffer.from('reading'),file={name:'read.har',size:body.length,contentSha256:hash(body)};
+    const job=await f.create([file]);
+    await f.request(`/uploads/${job.uploadId}/files/0`,{method:'PUT',headers:{'Content-Range':`bytes 0-${body.length-1}/${body.length}`},body});
+    await f.request(`/uploads/${job.uploadId}/finish`,{method:'POST'});assert.equal((await f.terminal(job)).status,'completed');
+    const saved=f.store.adminFiles()[0],content=openDiskRepository(f.dataDir).content,removed=[];
+    f.telegram.remove=async(_backend,item)=>removed.push(item.messageId);
+    const lease=content.lease(saved.contentId,f.user.id,'active-preview','read');
+    const deleting=(await f.request('/files/'+saved.id,{method:'DELETE'})).data;
+    const end=await f.terminal(deleting);assert.equal(end.status,'completed');
+    assert.equal(end.result.remoteCleanup.status,'pending');
+    assert.ok(end.warnings.includes('TELEGRAM_CONTENT_CLEANUP_PENDING'));assert.deepEqual(removed,[]);
+    assert.equal((await f.request('/content/preflight',{method:'POST',...json({files:[file]})})).data.files[0].status,'miss');
+    content.releaseLease(lease);
+    content.write(db=>db.prepare("UPDATE disk_content_cleanup SET retry_at=0 WHERE content_id=?").run(saved.contentId));
+    await f.api.retryRemoteCleanup();assert.equal(removed.length,1);
+    assert.equal(content.resolve(saved.contentId).state,'DELETED');
+});
+
 test('HTTP 空文件不发送 Telegram；客户端声明 hash 不符不能提交或复用',async t=>{
     t.mock.method(console,'info',()=>{});
     const telegram=fakeTelegram();let sends=0,checks=0;const original=telegram.pushChunk;telegram.pushChunk=async(...args)=>{sends++;return original(...args);};

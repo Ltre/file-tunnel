@@ -1,6 +1,6 @@
 # Telegram 网盘共享 Content Object
 
-最初实现于 2026-10-03，基于 `dev/2609-s5-disk-chunks-progressive-push` 的 `e9dc545dea735fe93d2129ed22109d26c80c418f`。本说明于 2026-10-04 对照 `dev/2609-s6-disk-shared-content-object` 的 `282d9d274ebd52156906d43a13eda6a6c24c4520` 复核。
+最初实现于 2026-10-03，基于 `dev/2609-s5-disk-chunks-progressive-push` 的 `e9dc545dea735fe93d2129ed22109d26c80c418f`。本说明于 2026-10-05 对照 `dev/2609-s6-disk-shared-content-object` 的 `9c5b7a792635e0d68fd0effd90ac6bac93037062` 及当前工作区删除修复复核。
 
 本文说明当前实现与部署方式。设计依据为 [实施指南](../prompts/dev-prompt-logs/dev-shared-content-object-implementation-guide-261003.md)。传统 JSON API 见 [网盘 API](adapter/telegram-disk-api.md)，S3 协议见 [S3 对接文档](telegram-drive-s3-compatible.md)，两套接口的鉴权和响应格式仍独立。
 
@@ -74,7 +74,10 @@ MISS 的 key claim 在 SQLite 中互斥，另一个上传者等待；claim 过�
 ## 4. 删除、覆盖、repair 和恢复
 
 - 删除文件/目录、S3 DELETE、审核 tombstone 先取消 Logical 引用。其他引用仍存在时不删除或替换共享消息；blocked 记录继续持有引用。
-- 最后一个引用释放后，Content 进入 DELETE_PENDING，默认等待 60 秒并检查有效 leases。尚未被 worker claim 的对象可以被合法附着重新激活；DELETING 对象禁止再附着，并撤除旧 canonical key。
+- 最后一个引用释放后，Content 进入 DELETE_PENDING，**在解除引用的同一 SQL 事务中立即撤掉 canonical key**。新的 preflight、PoP 和完整正文提交均不能复用零引用的待删除对象；即使消息因在途读取或远端错误仍在频道里，同内容重传也建立新 generation，而不是取消旧清理。
+- 显式删除文件/目录、S3 DELETE、审核 tombstone 不再等待 60 秒宽限。解除最后引用后立即尝试对应 Content 的清理，默认 execute 模式且没有有效 lease 时，删除任务等待本次 Telegram 删除/占位尝试结束。仍有共享引用则不清理。覆盖或历史合并释放的旧正文保留原 60 秒补偿宽限，但也立即停止新上传发现。
+- 删除前已经取得的有效 proof/reuse/read/caption lease 继续保护在途操作。只有合法在途附着可以恢复旧对象，并且不得覆盖另一个新 generation 的索引；DELETING 禁止附着。读取尚未结束、observe 模式或 Telegram 清理失败时，Logical 删除仍生效，浏览器任务明确返回 `TELEGRAM_CONTENT_CLEANUP_PENDING`，不伪称远端已清理。持久化 outbox 每 60 秒检查并按退避重试；不会绕过共享 Anchor 或异常隔离保护。
+- 清理完成后保留 DELETED 的 Content、revision 和任务行用于审计，不保留该 generation 的秒传索引。确认残留时应按完整 SHA/大小查 `disk_content_keys`、全部分区的 `disk_content_refs`、有效 `disk_content_leases` 和清理任务，不能仅按首次排障名称或 Content 行是否仍存在判断。
 - worker 通过 token claim outbox，再次检查实际 Anchor 是否被当前引用、旧 revision reader 或隔离异常保护。失败记录退避重试；失效 worker 不能完成新 claim 的状态。
 - 托管频道删除或改 ID 前的占用检查还覆盖所有未 CLEANED 的物理 revision、有效 reader lease、未完成清理债务及在途上传；仅查看当前 Logical 列表会漏掉已经解除引用、但仍待清理的消息。
 - 清理用途分为 `temporary-upload`、`retired-revision`、`unreferenced-content`、`abandoned-candidate`、`legacy-debt` 和 `failed-repair`。TEMP 清理不得包含有效最终消息；混合批次失败只补偿本批独立产生的消息，命中 Anchor 不进入回滚集合。

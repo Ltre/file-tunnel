@@ -367,14 +367,15 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         } finally { retryingCaptions = false; }
     }
-    let cleaningRemote = false;
-    async function retryRemoteCleanup() {
-        if (cleaningRemote || closed) return;
-        cleaningRemote = true;
-        try {
+    let cleaningRemote = null;
+    async function retryRemoteCleanup(contentId = '') {
+        while (cleaningRemote) await cleaningRemote;
+        if (closed) return;
+        const running = Promise.resolve().then(async () => {
             for(let i=0;contentCleanupMode==='execute' && i<30;i++) {
-                const task=content.claimCleanup(); if(!task) break;
+                const task=content.claimCleanup(Date.now(),contentId); if(!task) break;
                 let error;
+                log('content.cleanup-start',{cleanupId:task.id,contentId:task.content_id,purpose:task.purpose,attempt:task.attempts+1});
                 try {
                     const physical=task.physical;
                     const storage=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
@@ -383,7 +384,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         ? telegram.cleanupTemporaryMessages(storage,physical,{finalMessageIds:physical.finalMessageIds || []}) : telegram.remove(storage,physical));
                 } catch(failure) { error=failure;if(task.purpose==='temporary-upload' && task.physical.operationId)operations.addWarning?.(task.physical.operationId,'TELEGRAM_TEMP_CLEANUP_PENDING'); log('content.cleanup-retry',{contentId:task.content_id,error:networkDetails(failure)}); }
                 content.finishCleanup(task,error);
+                if (!error) log('content.cleanup-complete',{cleanupId:task.id,contentId:task.content_id,purpose:task.purpose});
             }
+            if (contentId) return;
             for (const { diskSpace, store } of spaces.entries()) for (const saved of store.adminFiles().filter(file => file.pendingRemoteCleanup?.length)) {
                 const scope = { userId: saved.ownerId, diskSpace };
                 for (const stale of saved.pendingRemoteCleanup) {
@@ -407,7 +410,18 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     }
                 }
             }
-        } finally { cleaningRemote = false; }
+        }).finally(() => { if (cleaningRemote === running) cleaningRemote = null; });
+        cleaningRemote = running;
+        return running;
+    }
+    async function cleanupDeletedContent(id) {
+        if (content.references(id).length) return { status:'shared' };
+        await retryRemoteCleanup(id);
+        const item=content.resolve(id);
+        if (item?.state === 'DELETED') return { status:'completed' };
+        if (content.references(id).length) return { status:'shared' };
+        log('content.cleanup-pending',{contentId:id,state:item?.state || 'missing',mode:contentCleanupMode});
+        return { status:'pending' };
     }
     const wrap = fn => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next);
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -698,7 +712,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (file.reviewStatus !== 'deleted') {
             if(!file.contentId) await telegram.remove(adminFileBackend(file), file);
         }
-        res.json(publicFile(store.tombstone(userId, file.id)));
+        const contentId=file.contentId, deleted=store.tombstone(userId, file.id);
+        if (contentId) await cleanupDeletedContent(contentId);
+        res.json(publicFile(deleted));
     }));
     admin.patch('/directories/review', wrap(async (req, res) => {
         const userId = String(req.body?.user_id || ''), diskSpace = String(req.body?.disk_space || '');
@@ -711,7 +727,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (file.reviewStatus === 'deleted') continue;
             if(!file.contentId) await telegram.remove(adminFileBackend(file), file);
         }
-        res.json(store.tombstoneDirectory(userId, folderPath));
+        const contentIds=new Set(tree.files.map(file=>file.contentId).filter(Boolean));
+        const deleted=store.tombstoneDirectory(userId, folderPath);
+        for (const id of contentIds) await cleanupDeletedContent(id);
+        res.json(deleted);
     }));
     admin.use(failure);
 
@@ -1040,8 +1059,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             jobResponse(req, res, 'delete-file', '正在删除 ' + file.name, async update => {
                 if (collaborations.protectFile(owner(req), req.diskScope.diskSpace, file.id)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
                 if (file.reviewStatus === 'deleted') { store(req).remove(owner(req), file.id); return { ok: true, removedPlaceholder: true }; }
-                update({ phase: 'telegram-delete', message: '正在请求 Telegram 删除：' + file.name });
-                await objectStorage.deleteFile(scope(req), file); return { ok: true };
+                update({ phase: 'telegram-delete', message: '正在删除文件并清理不再共享的 Telegram 消息：' + file.name });
+                const remoteCleanup=await objectStorage.deleteFile(scope(req), file);
+                return { ok: true, ...(remoteCleanup ? { remoteCleanup } : {}),
+                    ...(remoteCleanup?.status==='pending' ? {warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']} : {}) };
             });
         }));
         router.delete('/directories', wrap((req, res) => {
@@ -1056,15 +1077,22 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 store(req).assertDirectoryWritable(owner(req), folderPath);
                 const currentTree = store(req).getDirectoryTree(owner(req), folderPath);
                 if (!currentTree) throw new Error('DIRECTORY_NOT_FOUND');
-                let count = 0; const failures = [];
+                let count = 0, cleanupPending = false; const failures = [];
                 for (const file of currentTree.files) {
                     update({ phase: 'telegram-delete', percent: null, message: '正在删除 ' + (++count) + '/' + tree.files.length + '：' + file.name });
-                    try { if (file.reviewStatus !== 'deleted') await objectStorage.deleteFile(scope(req), file); else store(req).remove(owner(req), file.id); }
+                    try {
+                        if (file.reviewStatus !== 'deleted') {
+                            const cleanup=await objectStorage.deleteFile(scope(req), file);
+                            cleanupPending = cleanup?.status==='pending' || cleanupPending;
+                        }
+                        else store(req).remove(owner(req), file.id);
+                    }
                     catch (_) { failures.push(file.id); }
                 }
                 if (failures.length) throw new Error('DISK_DELETE_PARTIAL');
                 update({ phase: 'index-write', message: '正在清理虚拟目录索引' });
-                return store(req).removeDirectory(owner(req), folderPath, true);
+                return { ...store(req).removeDirectory(owner(req), folderPath, true),
+                    ...(cleanupPending ? {warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']} : {}) };
             });
         }));
         const pipelineWake = job => {
@@ -1632,7 +1660,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const candidate=content.resolve(reusable),physical=candidate.physical;
             const sourceBackend=physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
             if(String(sourceBackend?.token)===String(storage.token) && String(sourceBackend?.baseUrl || '')===String(storage.baseUrl || '')) {
-                const lease=content.lease(reusable,owner.id,'s3-put','verified-input');
+                let lease;
+                try { lease=content.lease(reusable,owner.id,'s3-put','verified-input'); }
+                catch (error) {
+                    if (error.message !== 'CONTENT_NOT_AVAILABLE') throw error;
+                    return uploadObjectStream({mapping,owner,info,input,size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal});
+                }
                 let leaseFailure;
                 const heartbeat=setInterval(()=>{
                     try {if(!content.renewLease(lease))throw new Error('CONTENT_LEASE_EXPIRED');}
@@ -1737,7 +1770,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
     }
     objectStorage = createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange: readRemote,
-        uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload,
+        uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload, onContentDelete: cleanupDeletedContent,
         protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id), maxDepth });
     browser.use(failure); external.use(failure);
     return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,

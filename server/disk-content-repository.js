@@ -170,12 +170,19 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
             VALUES(?,?,?,?, 'PENDING',?)`).run(key, id || null, rev || null, purpose, JSON.stringify({ ...physical,
                 name: id ? get(db,id)?.original_name || 'Telegram Content' : physical.name || 'Telegram Content' }));
     }
-    function released(db, id) {
+    function released(db, id, delay = 60_000) {
         if (!id || db.prepare('SELECT 1 FROM disk_content_refs WHERE content_id=? LIMIT 1').get(id)) return;
-        db.prepare(`UPDATE disk_contents SET state='DELETE_PENDING',cleanup_after=?,state_version=state_version+1
-            WHERE id=? AND state IN ('READY','BROKEN')`).run(Date.now() + 60_000, id);
+        const changed = db.prepare(`UPDATE disk_contents SET state='DELETE_PENDING',cleanup_after=?,state_version=state_version+1
+            WHERE id=? AND state IN ('READY','BROKEN')`).run(Date.now() + delay, id).changes;
+        // A lease protects existing readers/uploads, not discovery by a new
+        // upload after the last Logical has been deleted.
+        db.prepare('DELETE FROM disk_content_keys WHERE content_id=?').run(id);
         const item = get(db, id);
-        if (item?.state === 'DELETE_PENDING') queue(db, id, item.current_revision, 'unreferenced-content', revision(db, id, item.current_revision));
+        if (item?.state === 'DELETE_PENDING') {
+            queue(db, id, item.current_revision, 'unreferenced-content', revision(db, id, item.current_revision));
+            if (changed) db.prepare("UPDATE disk_content_cleanup SET retry_at=? WHERE content_id=? AND revision=? AND purpose='unreferenced-content' AND state='PENDING'")
+                .run(item.cleanup_after, id, item.current_revision);
+        }
     }
     function create(db, file, wantedId) {
         const id = wantedId || crypto.randomUUID(), physical = physicalRecord(file);
@@ -190,11 +197,13 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         // size, file_unique_id or a hash of chunk hashes.
         if (!key) {
             const same = db.prepare(`SELECT c.id FROM disk_contents c JOIN disk_content_revisions r
-                ON r.content_id=c.id AND r.revision=c.current_revision WHERE r.signature=? AND c.state IN ('READY','DELETE_PENDING')`).get(signature);
+                ON r.content_id=c.id AND r.revision=c.current_revision WHERE r.signature=? AND c.state='READY'
+                AND EXISTS(SELECT 1 FROM disk_content_refs ref WHERE ref.content_id=c.id)`).get(signature);
             if (same) return same.id;
         } else {
             const same = db.prepare(`SELECT c.* FROM disk_content_keys k JOIN disk_contents c ON c.id=k.content_id
-                WHERE k.content_key=? AND c.state IN ('READY','DELETE_PENDING')`).get(key);
+                WHERE k.content_key=? AND c.state='READY'
+                AND EXISTS(SELECT 1 FROM disk_content_refs ref WHERE ref.content_id=c.id)`).get(key);
             if (same) {
                 const currentPhysical=revision(db,same.id,same.current_revision);
                 if(String(currentPhysical.backendId || '')!==String(physical.backendId || '')) {
@@ -210,7 +219,7 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         db.prepare(`INSERT INTO disk_contents(id,content_key,size,hash_status,state,original_name,original_mime,created_at)
             VALUES(?,?,?,?, 'READY',?,?,?)`).run(id, key || null, Number(file.size) || 0, key ? 'verified' : 'legacy_unverified', String(file.name || ''), String(file.type || ''), Date.now());
         saveRevision(db, id, 1, physical, signature,Boolean(key));
-        if(key) db.prepare("DELETE FROM disk_content_keys WHERE content_key=? AND content_id IN (SELECT id FROM disk_contents WHERE state IN ('BROKEN','DELETING','DELETED'))").run(key);
+        if(key) db.prepare("DELETE FROM disk_content_keys WHERE content_key=? AND content_id IN (SELECT id FROM disk_contents WHERE state IN ('BROKEN','DELETE_PENDING','DELETING','DELETED'))").run(key);
         if (key) db.prepare('INSERT OR IGNORE INTO disk_content_keys(content_key,content_id,generation) VALUES(?,?,?)').run(key, id, crypto.randomUUID());
         return id;
     }
@@ -281,9 +290,10 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         const before = db.prepare('SELECT * FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, file.id);
         if (file.reviewStatus === 'deleted') {
             db.prepare('DELETE FROM disk_content_refs WHERE scope=? AND logical_file_id=?').run(scope, file.id);
-            released(db, before?.content_id); delete file.contentId; return;
+            released(db, before?.content_id, 0); delete file.contentId; return;
         }
         let id = file.contentId, old = id ? get(db, id) : null;
+        if (old?.state === 'DELETE_PENDING' && !file.contentLease) throw new Error('CONTENT_NOT_AVAILABLE');
         if(file.expectedContentId && (before?.content_id!==file.expectedContentId || before.content_version!==file.expectedContentVersion || old?.current_revision!==file.expectedPhysicalRevision)) throw new Error('CONTENT_WRITE_CONFLICT');
         if(file.contentClaimToken && !db.prepare('SELECT 1 FROM disk_content_claims WHERE token=? AND content_id=? AND expires_at>?').get(file.contentClaimToken,file.contentCandidateId,Date.now())) throw new Error('CONTENT_CLAIM_EXPIRED');
         if (file.contentLease) {
@@ -309,6 +319,10 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         const version = before ? before.content_version + (before.content_id !== id ? 1 : 0) : 1;
         db.prepare(`INSERT INTO disk_content_refs(scope,logical_file_id,content_id,content_version) VALUES(?,?,?,?)
             ON CONFLICT(scope,logical_file_id) DO UPDATE SET content_id=excluded.content_id,content_version=excluded.content_version`).run(scope, file.id, id, version);
+        // A previously acquired lease may finish an in-flight attach. Restore
+        // discovery only if a newer generation has not already claimed the key.
+        if (content.hash_status === 'verified' && content.content_key)
+            db.prepare('INSERT OR IGNORE INTO disk_content_keys VALUES(?,?,?)').run(content.content_key,id,crypto.randomUUID());
         file.contentId = id; file.logicalContentVersion = version;
         if(!file.expectedContentId)for(const entry of file.fileIdHistory || []) {
             // Old history often lacks chat/backend/size. Preserve the original
@@ -335,11 +349,12 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         strip(file) { const result = { ...file }; for (const field of PHYSICAL_FIELDS) delete result[field]; for (const field of ['physicalRevision','contentPhysicalRepair','contentGrant','contentAuthorization','contentLease','contentCandidateId','declaredSha256','contentClaimToken','expectedContentId','expectedContentVersion','expectedPhysicalRevision']) delete result[field]; return result; },
         detach(db, scope, fileId) {
             const ref = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, fileId);
-            db.prepare('DELETE FROM disk_content_refs WHERE scope=? AND logical_file_id=?').run(scope, fileId); released(db, ref?.content_id);
+            db.prepare('DELETE FROM disk_content_refs WHERE scope=? AND logical_file_id=?').run(scope, fileId); released(db, ref?.content_id, 0);
         },
         resolve(id) { return withDatabase(db => { const item = get(db, id); return item ? { ...item, physical: revision(db, id, item.current_revision) } : null; }); },
         find(sha, size) { return withDatabase(db => db.prepare(`SELECT c.id FROM disk_content_keys k JOIN disk_contents c ON c.id=k.content_id
-            WHERE k.content_key=? AND c.state IN ('READY','DELETE_PENDING') AND c.hash_status='verified'`).get(contentKey(sha, size))?.id || null); },
+            WHERE k.content_key=? AND c.state='READY' AND c.hash_status='verified'
+            AND EXISTS(SELECT 1 FROM disk_content_refs r WHERE r.content_id=c.id)`).get(contentKey(sha, size))?.id || null); },
         setHealth(id,rev,valid,error=''){return write(db=>db.prepare(`UPDATE disk_contents SET last_checked_at=?,health_status=?,last_physical_error=?,
             state=CASE WHEN ?=0 AND state='READY' THEN 'BROKEN' ELSE state END
             WHERE id=? AND current_revision=? AND state IN ('READY','BROKEN','DELETE_PENDING')`).run(Date.now(),valid?'available':'unavailable',String(error).slice(0,240),valid?1:0,id,rev).changes===1);},
@@ -349,8 +364,9 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
             const key=contentKey(sha,size);if(!key)throw new Error('CONTENT_KEY_INVALID');
             if(item.hash_status==='anchor_conflict')throw new Error('CONTENT_ANCHOR_CONFLICT');
             db.prepare("UPDATE disk_contents SET content_key=?,hash_status='verified' WHERE id=?").run(key,id);
-            db.prepare("DELETE FROM disk_content_keys WHERE content_key=? AND content_id!=? AND content_id IN (SELECT id FROM disk_contents WHERE state IN ('BROKEN','DELETING','DELETED'))").run(key,id);
-            db.prepare('INSERT OR IGNORE INTO disk_content_keys VALUES(?,?,?)').run(key,id,crypto.randomUUID());
+            db.prepare("DELETE FROM disk_content_keys WHERE content_key=? AND content_id!=? AND content_id IN (SELECT id FROM disk_contents WHERE state IN ('BROKEN','DELETE_PENDING','DELETING','DELETED'))").run(key,id);
+            if (item.state === 'READY' && db.prepare('SELECT 1 FROM disk_content_refs WHERE content_id=? LIMIT 1').get(id))
+                db.prepare('INSERT OR IGNORE INTO disk_content_keys VALUES(?,?,?)').run(key,id,crypto.randomUUID());
         }); },
         mergeVerified(id, canonicalId, expectedRevision) { return write(db=>{
             if(id===canonicalId)return {merged:0};
@@ -367,10 +383,13 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
             }
             db.prepare('UPDATE disk_content_refs SET content_id=? WHERE content_id=?').run(canonicalId,id);
             db.prepare("UPDATE disk_contents SET state='READY',cleanup_after=0 WHERE id=?").run(canonicalId);
+            if (refs.length) db.prepare('INSERT OR IGNORE INTO disk_content_keys VALUES(?,?,?)').run(target.content_key,canonicalId,crypto.randomUUID());
             released(db,id);return {merged:refs.length};
         }); },
         lease(id, viewer, upload, kind = 'reuse', duration = 15 * 60_000) { return write(db => {
             const item = get(db, id); if (!item || !['READY', 'DELETE_PENDING'].includes(item.state)) throw new Error('CONTENT_NOT_AVAILABLE');
+            if (['proof','verified-input'].includes(kind) && (item.state !== 'READY' || !db.prepare('SELECT 1 FROM disk_content_refs WHERE content_id=? LIMIT 1').get(id)))
+                throw new Error('CONTENT_NOT_AVAILABLE');
             const token = crypto.randomUUID(); db.prepare('INSERT INTO disk_content_leases VALUES(?,?,?,?,?,?,?)').run(token,id,item.current_revision,kind,String(viewer),String(upload),Date.now()+duration); return token;
         }); },
         releaseLease(token) { return write(db => db.prepare('DELETE FROM disk_content_leases WHERE id=?').run(token)); },
@@ -380,8 +399,9 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         batch(id) { return withDatabase(db => { const row=db.prepare('SELECT payload FROM disk_content_batches WHERE id=?').get(id); return row ? JSON.parse(row.payload) : null; }); },
         commitBatch(db, id, ids) { db.prepare('INSERT INTO disk_content_batches VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(id, JSON.stringify(ids)); },
         enqueue(physical, purpose='rollback') { return write(db => queue(db,null,null,purpose,physicalRecord(physical))); },
-        claimCleanup(now = Date.now()) { return write(db => {
-            const rows = db.prepare(`SELECT * FROM disk_content_cleanup WHERE (state='PENDING' AND retry_at<=?) OR (state='CLAIMED' AND claimed_at<?) ORDER BY retry_at,rowid LIMIT 100`).all(now,now-10*60_000);
+        claimCleanup(now = Date.now(), contentId = '') { return write(db => {
+            const rows = db.prepare(`SELECT * FROM disk_content_cleanup WHERE ((state='PENDING' AND retry_at<=?) OR (state='CLAIMED' AND claimed_at<?))
+                ${contentId ? 'AND content_id=?' : ''} ORDER BY retry_at,rowid LIMIT 100`).all(now,now-10*60_000,...(contentId ? [contentId] : []));
             for (const row of rows) {
                 // Protected/quarantined rows must not starve later cleanup work.
                 db.prepare('UPDATE disk_content_cleanup SET retry_at=? WHERE id=?').run(now+60_000,row.id);

@@ -172,3 +172,58 @@
 - 首次完整测试在 Windows 沙箱内因 `spawn EPERM` 未能启动任何测试文件；按工具权限流程在沙箱外重新运行并得到上述真实通过结果。该启动权限问题不等于应用业务的 EPERM。
 - 自动回归证实模拟 Telegram 调用次数与共享 Anchor 防误删；本轮未访问真实 Telegram、未对生产库迁移、未在 FolderSync 实机或公网代理灰度上传。指南的真实频道 19/21/38 片、断网/重启及实际限流/吞吐验收仍需部署后按运维文档执行；不能将模拟通过声称为真实网络验收。
 - 本轮没有执行 `git add`、`git commit`；仅保留当前分支工作区修改。
+
+## 261004：底部协同邀请入口与 HAR 删除后秒传排查
+
+> 以下是上一轮的调查记录，不再代表当前删除策略。该轮虽观察到旧 generation 后来已清理，但没有解决零引用待删除正文被反复重传重新激活的问题；2026-10-05 的补充修复与当前行为见下一节。
+
+### 基线与改动
+
+- 基于 `dev/2609-s6-disk-shared-content-object`、HEAD `9c5b7a792635e0d68fd0effd90ac6bac93037062`。开始时只有用户的 `prompts/dev-prompt-logs/dev-2609.md` 未提交改动，保留该文件；未提交、未暂存。
+- `client/disk-ui.js` 的当前目录/空白处菜单新增 `邀请协同`，复用现有 `inviteDiskCollaboration()`、一次性邀请 API 和链接对话框。没有选择项目时，右下角 `#telegramDriveBottomMenuBtn` 打开这个菜单；空白处右键/双指菜单也保持一致。邀请目标取菜单打开时的目录，根目录使用空路径，不受之后目录变化影响。已选项目仍沿用现有项目菜单。
+- 更新目录菜单回归及浏览器 fixture 的菜单预期；补充 Content 生命周期回归和 `docs/telegram-drive-content-objects.md` 的删除后复用、清理周期与审计残留说明。本轮没有修改 Content 删除策略或强行清理实际数据。
+
+### 实际数据库证据与根因
+
+- 通过 Node 内置 SQLite 的 `readOnly: true` 连接查询本地 `.tunnel-data/disk.sqlite`，对 `D:/Downloads/tun.miku.us.har`（1,510,740 Byte）计算完整 SHA/大小 key，跨所有 scope/账号查询引用，并额外检查同名历史未验证 Content；不读取或输出 HAR 请求正文、登录凭据、PoP nonce/digest。
+- 原 verified Content `e9703739-4450-4bdc-bc0c-38aa4f82eb49` 已是 `DELETED`、清理任务 `COMPLETED`。16:06:19 的上传又建立了新的 `958ee380-1fed-4b65-84b4-fbf8fb3fea46`，说明此前删除确实清理了旧 generation，并非一直复用同一条隐藏数据。
+- 16:07:14 删除后，16:07:42 再上传，相隔约 28 秒；16:08:12 删除后，16:09:45 再上传，相隔约 93 秒。两次任务的 `reusedBytes=14,244,386`、Telegram 发送/确认字节为 0。当前实现最后引用释放后设置 60 秒宽限，清理 worker 每分钟检查一次；worker 尚未 claim 的 `DELETE_PENDING` 仍允许健康验证和持有证明后复用，重新附着恢复 `READY`。所以超过 60 秒但尚未轮到清理的重传也可能秒传，并不是删除后一定立即停止复用。
+- 调查过程中，运行中的服务处理了 17:34:38 的新删除：该 Content 一度为 `DELETE_PENDING`、0 引用、0 lease；清理在 17:35:59 claim，17:36:26 已观察到 `DELETED`/`COMPLETED`。本轮工具仅只读观察，没有主动执行 Telegram 删除、触发清理或改库。
+- 最后核对时间为 **2026-10-04 17:39:37（Asia/Singapore）**：完整 key 对应的 canonical 行不存在；2 条 verified Content 和 3 条同名 legacy Content 全部 `DELETED`，全部 0 引用、0 有效租约、0 未清理 Anchor、0 未完成清理任务。没有发现其它账号/分区遗留的可复用 Content。保留的已删除审计行不能命中 preflight；分片缓存或旧 chunk file_id 映射也不等于存活的 Content canonical 引用。
+- 通常空闲且无保护租约时，最后引用删除后约 60～120 秒开始清理；proof/read/caption 等有效租约、队列或网络重试可延长时间。重传重新建立引用会重新保护正文。此次有现场证据支持宽限期/清理时序结论，不需要删除审计表或绕过共享 Anchor 保护。
+
+### 测试
+
+- `node --test --test-timeout=120000 tests/disk-directory-actions.test.cjs tests/disk-content.test.cjs tests/disk-content-api.test.cjs tests/disk-collaboration.test.cjs`：**38/38 通过**。覆盖当前/根目录邀请目标、目录切换后目标绑定、宽限期复用、重新附着保护、清理后索引失效，以及现有 PoP、跨用户共享和协同权限回归。
+- `node --check client/disk-ui.js` 和 `node --check tests/support/disk-directory-menu-fixture.cjs` 通过。新增生命周期测试使用独立临时数据库，不操作真实网盘或真实 Telegram；未执行浏览器 fixture 的实机触摸验收。
+- 本轮差异 `git diff --check` 通过；用户 prompt 的既有改动不纳入本轮检查或改写。
+
+## 261005：修复全量删除后频道正文残留与再次内容复用
+
+### 现场证据与根因
+
+- 基于 `dev/2609-s6-disk-shared-content-object`、HEAD `9c5b7a792635e0d68fd0effd90ac6bac93037062` 的当前工作区继续修改，保留上一轮的协同菜单成果及用户 prompt 改动；未暂存、未提交。
+- 只读查询本地 `disk.sqlite` 的全部分区/账号引用、Content、租约、清理任务和 operation，并对照本地诊断日志。没有读出 HAR 正文、凭据、PoP nonce/digest，也没有修改实际数据库或调用真实 Telegram 清理。
+- 2026-10-05 15:30:42（Asia/Singapore）建立的四个 verified Content 分别对应 `tun.miku.us-3.har`、`tun.miku.us-2.har`、`tun.miku.us.har`、`tun-test.miku.us.har`。15:32:34 删除根目录的四份，15:32:44 删除 `tun` 内最后三份，15:33:13 又整批复用；任务 `reusedBytes=14,244,386`、Telegram 发送字节为 0。核对时仅剩这次重传新建的四个 Logical 引用，没有其它账号隐藏副本或有效 lease；四个旧清理任务仍 PENDING、attempts=0。
+- 故障链路是：最后引用删除 → DELETE_PENDING 仍保留 canonical 且允许新 PoP/完整正文归并 → 清理 worker 尚未执行时，重传附着恢复 READY → 原清理跳过。普通删除只取消引用，任务立即完成，不主动运行对应 Content 的清理。反复重传可以持续阻止频道清理。上一轮把宽限期作为解释，没有纠正这一实际产品故障。
+
+### 生命周期与删除链路修改
+
+- `server/disk-content-repository.js`：在解除最后引用的同一短事务中撤掉 canonical key；`find()`、legacy 物理匹配及完整 SHA 归并仅接受 READY 且确有引用的对象。零引用 DELETE_PENDING 不再作为新上传候选，不重新签发 proof/verified-input lease。同内容完整重传建立新 generation，旧清理只撤自己的 key。
+- 显式文件/目录删除、审核 tombstone 设置零宽限，立即具备清理资格。已有读者、caption 或删除前已取得的合法上传租约继续保护正文；仅合法在途附着允许恢复对象，并以 INSERT OR IGNORE 防止覆盖新 generation 的索引。覆盖/历史合并仍保留原 60 秒补偿宽限，但也立即停止新的发现。
+- `server/object-storage.js` 与 `server/disk-api.js`：共享删除取消 Logical 引用后，立即尝试该 Content 的持久化清理任务；清理 worker 可按 Content ID 定向处理，使用 Promise 串行协调并保留原 Telegram 调度及 Anchor guard。无引用且无租约时，任务等待本次远端删除/占位尝试结束，不再仅等待下一分钟定时检查。
+- 有租约、observe 模式、网络/权限失败或异常隔离时，Logical 删除仍生效，任务返回 `TELEGRAM_CONTENT_CLEANUP_PENDING`，客户端任务详情明确显示正文待清理；outbox 保留重试。批量删除不会因为首个远端失败而跳过后续文件。新增 cleanup start/complete/pending 诊断事件。
+- 审核删除提前保存 Content IDs，再执行会清空原对象字段的 tombstone，防止清理目标丢失。`server/disk-content-proof.js` 将获取 proof lease 纳入降级处理，异步验证期间最后引用已被删除时返回 MISS；S3 候选消失的竞争使用尚未消费的原正文回退普通上传。
+
+### 兼容范围与文档
+
+- 共享正文仍有引用时不能误删；原 47 小时 57 分钟删除/过期占位、reader lease、CAS/fencing、混合批次整批提交、协同删除保护、历史别名隔离和失败补偿均保留。不修改代理控制、上传分片策略、P2P/provider、隧道缓存或网页工坊。
+- S3 DELETE 复用同一个删除服务；SigV4、PUT/GET/Copy、XML 响应及 Bucket 映射不变。传统网盘 API 说明同步更新删除语义、remoteCleanup 结果与 warning；共享 Content 说明删除后新的复用禁用及在途保护边界。
+- 数据库无需 schema 迁移。旧版本留下的零引用 pending key 即使还在表中，新查询也不会命中；下次创建同 hash generation 会清理该旧 key。已重新上传且确有引用的当前文件没有被强制删除。运行中的 Node 必须重启才加载本次代码；旧程序不能因磁盘文件改动自动采用新策略。
+
+### 测试与检查
+
+- 新增/强化回归覆盖：真实 `createDiskTelegram.remove()` 适配器发出全部 deleteMessage（注入模拟 HTTP 上游）；批删后全部 preflight MISS；跨账号最后引用清理；首个失败不跳过后续且重试完成；在途读租约仅延迟清理并明确回显；新旧 generation 的 key 隔离；迟到 PoP 不签发证明；单文件及目录审核最后引用清理。
+- 定向 API 回归 **23/23** 通过。初次测试的 1 个失败来自新测试误读公共上传结果中的内部 parts，改为读取权威 store 投影后通过；另一次沙箱中 `spawn EPERM` 在测试启动前发生，按权限流程重新运行通过，未将其当作应用故障。
+- 完整执行 `node --test --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs`：**647 tests、647 pass、0 fail、0 skipped、0 cancelled**。覆盖 Content、PoP、GC/recovery、SQLite/migration、S3、协同、Share、原网盘及隧道回归。
+- 本轮及保留的相关 JS/CJS 语法检查通过；任务文件的 `git diff --check` 通过。所有自动删除测试使用独立临时数据库与模拟 Telegram 上游，未宣称真实公网删除验收；真实数据库只读调查，没有后台强制清除有效当前引用。

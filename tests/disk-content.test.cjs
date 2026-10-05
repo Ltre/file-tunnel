@@ -68,6 +68,54 @@ test('共享引用不继承权限，删除最后一个引用才清理；read lea
     f.content.finishCleanup(task); assert.equal(f.content.resolve(a.contentId).state,'DELETED');
     assert.throws(()=>f.content.verifyLegacy(a.contentId,digest(bytes),bytes.length,1),/CONTENT_WRITE_CONFLICT/,'迟到的历史验证不能重新发布已删除 generation');
 });
+test('最后引用删除立即停止新复用；在途 lease 可完成，新 generation 不被旧清理撤除', t => {
+    const f=fixture(t), bytes=Buffer.from('delete then reupload');
+    const original=f.save(f.file('original','alice',bytes,8)), id=original.contentId;
+    const lease=f.content.lease(id,'alice','inflight','proof');
+    f.remove('original');
+    const pending=f.content.resolve(id);
+    assert.equal(pending.state,'DELETE_PENDING');
+    assert.equal(f.content.references(id).length,0);
+    assert.equal(f.content.find(digest(bytes),bytes.length),null,'最后引用已删除，新的上传不能再次发现旧正文');
+    assert.equal(f.content.claimCleanup(),null,'已有在途 lease 仍保护正文');
+    assert.throws(()=>f.content.lease(id,'bob','new','proof'),/CONTENT_NOT_AVAILABLE/);
+    assert.throws(()=>f.repository.replace('files',[{...original,id:'unleased'}],file=>file.id),/CONTENT_NOT_AVAILABLE/,'不能无租约复活零引用正文');
+
+    const fresh=f.save(f.file('fresh','alice',bytes,9));
+    assert.notEqual(fresh.contentId,id,'完整正文重传必须建立新 generation');
+    assert.equal(f.content.find(digest(bytes),bytes.length),fresh.contentId);
+
+    f.save({...original,id:'inflight',contentLease:lease});
+    assert.equal(f.content.resolve(id).state,'READY');
+    assert.equal(f.content.resolve(id).cleanup_after,0);
+    assert.equal(f.content.claimCleanup(pending.cleanup_after+60_000),null,'重新附着后旧清理任务不能删除正文');
+    assert.equal(f.content.references(id).length,1);
+    assert.equal(f.content.find(digest(bytes),bytes.length),fresh.contentId,'旧在途附着不能覆盖新 generation 的索引');
+
+    f.remove('inflight');
+    const cleanup=f.content.claimCleanup(pending.cleanup_after+240_000,id);
+    assert.equal(cleanup.content_id,id);
+    f.content.finishCleanup(cleanup);
+    assert.equal(f.content.resolve(id).state,'DELETED');
+    assert.equal(f.content.find(digest(bytes),bytes.length),fresh.contentId,'旧清理不能撤除其它 generation 的索引');
+    f.remove('fresh');
+    f.content.finishCleanup(f.content.claimCleanup(Date.now()+300_000,fresh.contentId));
+    assert.equal(f.content.find(digest(bytes),bytes.length),null);
+});
+
+test('删除前的在途附着可恢复索引，但异步检查期间已零引用不能签发新 proof',async t=>{
+    const f=fixture(t),bytes=Buffer.from('before-delete'),a=f.save(f.file('a','alice',bytes,10));
+    const lease=f.content.lease(a.contentId,'alice','before','proof');
+    f.remove('a');
+    f.save({...a,id:'restored',contentLease:lease});
+    assert.equal(f.content.find(digest(bytes),bytes.length),a.contentId);
+    const proof=createContentProof({content:f.content,validate:async()=>{f.remove('restored');return true;},open:async()=>{throw Error('不应读取已删除正文');}});
+    const result=await proof.preflight({diskUser:{id:'bob'},diskScope:{diskSpace:''}},{name:'later',size:bytes.length,contentSha256:digest(bytes)},'');
+    assert.deepEqual(result,{status:'miss'});
+    assert.equal(f.content.withDatabase(db=>db.prepare('SELECT count(*) AS n FROM disk_content_pop_challenges').get().n),0);
+    assert.equal(f.content.withDatabase(db=>db.prepare('SELECT count(*) AS n FROM disk_content_leases').get().n),0);
+});
+
 test('物理 repair 共享更新但 Logical replacement 只影响自己，旧 revision 读 lease 保持', t => {
     const f=fixture(t), bytes=Buffer.from('abc');
     const a=f.save(f.file('a','alice',bytes,10)), b=f.save(f.file('b','bob',bytes,11));

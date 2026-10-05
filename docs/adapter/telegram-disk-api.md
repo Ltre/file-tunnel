@@ -186,7 +186,7 @@ GET `/uploads/{uploadId}/progress` 提供可选的 Server-Sent Events（SSE）�
 |---|---|---|
 | GET | /files/{id} | 文件元信息 |
 | PATCH | /files/{id} | {"name":"新名称.flac","folderPath":"目标目录"}，可只填一项 |
-| DELETE | /files/{id} | 删除 Telegram 对象后移除索引；失败保留节点 |
+| DELETE | /files/{id} | 删除 Logical 文件及引用，最后引用释放后尝试清理 Telegram 正文 |
 | GET | /files/{id}/download | 文件流，响应头 X-Disk-Operation-Id 为读取任务 |
 | GET | /files/{id}/stream | inline 文件流，用于音视频 / 图片预览，不创建读取任务 |
 | GET | /files/{id}/thumbnail | 已保存的封面图流；无封面时 FILE_THUMBNAIL_NOT_FOUND |
@@ -208,7 +208,9 @@ Content-Type: application/octet-stream
 
 修复使用当前令牌对应的 Bot/频道；浏览器使用后台指定的当前网盘存储频道。确认上传成功后才替换旧映射。原文件的读取和删除仍使用文件自身记录的存储后端，不会误用最新令牌的频道。
 
-Telegram 可能因消息时限/权限拒绝删除。此时保留失败节点并报告错误；递归删除遇到部分失败时，已成功删除部分生效，其余保留。
+共享 Content 模式下，删除文件先移除该 Logical 的索引与引用；其他账号或分区仍有引用时保留共享 Telegram 消息。最后引用释放后立即停止新的内容复用，并在删除任务中尝试清理对应的正文分片及封面消息。不到 47 小时 57 分钟的消息使用 deleteMessage，超过此窗口沿用极小占位文件替换，不保证旧消息整条消失。
+
+单文件删除任务 result 可附带 `remoteCleanup: {"status":"shared"|"completed"|"pending"}`。在途读写租约、暂停清理模式或 Telegram 错误导致未能完成远端清理时，文件索引仍已删除，任务返回 `TELEGRAM_CONTENT_CLEANUP_PENDING` warning；服务器持久化清理债务并继续重试，同内容新上传不能复用这条零引用待清理正文。目录递归删除同样汇总此 warning；某个文件远端失败不会跳过后面的文件。尚未走共享 Content 的兼容节点仍沿用先请求远端、失败保留节点的逻辑。
 
 ## 6. 创建、分片上传与原手机路径
 

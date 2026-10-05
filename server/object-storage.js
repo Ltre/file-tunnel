@@ -30,7 +30,7 @@ function parseByteRange(header, size) {
     if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) throw new Error('InvalidRange');
     return { start, end: Math.min(end, size - 1), partial: true };
 }
-function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, protectFile = () => false, maxDepth = () => 20 }) {
+function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, maxDepth = () => 20 }) {
     const scopeOf = mapping => ({ userId: String(mapping.userId), diskSpace: String(mapping.diskSpace || '') });
     const storeOf = mapping => spaces.get(scopeOf(mapping).diskSpace);
     const backendOf = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
@@ -92,7 +92,10 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
     async function deleteFile(mapping, file) {
         const store = storeOf(mapping), scope = scopeOf(mapping);
         if (protectFile(scope.userId, scope.diskSpace, file.id)) throw new Error('AccessDenied');
-        if(file.contentId) { store.remove(scope.userId,file.id); return; }
+        if(file.contentId) {
+            store.remove(scope.userId,file.id);
+            return onContentDelete(file.contentId);
+        }
         for (const stale of file.pendingRemoteCleanup || []) {
             if (stale.parts?.length || stale.messageId || stale.thumbnail?.messageId) await queueTelegram({ id: `delete-${file.id}` }, () => telegram.remove(backendOf(stale), stale));
         }

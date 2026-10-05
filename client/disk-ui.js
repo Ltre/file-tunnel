@@ -105,6 +105,7 @@ function telegramDriveErrorText(error) {
 function telegramDriveWarningText(warnings = []) {
     const values = new Set(warnings), messages = [];
     if (values.has('TELEGRAM_TEMP_CLEANUP_PENDING')) messages.push('文件已保存，部分分片消息待清理，服务器将自动重试');
+    if (values.has('TELEGRAM_CONTENT_CLEANUP_PENDING')) messages.push('文件记录已删除，Telegram 正文仍待清理；服务器将在在途读写结束后继续处理，失败时自动重试');
     if (values.has('TELEGRAM_THUMBNAIL_UPLOAD_FAILED')) messages.push('文件已保存，部分封面未能上传');
     if (values.has('TELEGRAM_CAPTION_UPDATE_FAILED')) messages.push('文件已保存，部分定位备注未能更新');
     if (values.size && !messages.length) messages.push('文件已保存，部分附加处理未完成');
@@ -795,6 +796,7 @@ function showTelegramDriveBackgroundMenu(anchor) {
         ['上传文件', () => document.getElementById('telegramDriveFileInput').click()],
         ['新建目录', () => createTelegramDriveFolder(path)],
         ['当前目录属性', () => showTelegramDriveProperties(item)],
+        ['邀请协同', () => inviteDiskCollaboration(item)],
         ['清理本级目录缓存', async () => {
             const data = await window.DiskClient.raw('/list?path=' + encodeURIComponent(path));
             await clearTelegramDriveCache(data.files);

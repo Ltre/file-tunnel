@@ -320,4 +320,12 @@ test('后台按来源/用户/分区审计文件，屏蔽立即阻断分享，审
     for (let tries = 0; tries < 50 && drive.get(user.id, second.id); tries++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(drive.get(user.id, second.id), null, '用户删除审核占位时不应再次请求 Telegram');
     assert.equal(removals, 0); assert.ok(deletion.operation_id);
+    const contentId=drive.get(user.id,first.id).contentId;
+    assert.equal((await fetch(base + '/admin/reviews/' + first.id, { method: 'PATCH', ...json({ user_id: user.id, action: 'delete' }) })).status, 200);
+    assert.equal(removals,1,'审核最后引用时必须立即尝试远端清理，不能丢失 tombstone 前的 Content ID');
+    assert.equal(openDiskRepository(dataDir).content.resolve(contentId).state,'DELETED');
+    const only=await add('独立审核目录文件.txt','music-app','独立审核目录'),onlyContentId=only.contentId;
+    assert.equal((await fetch(base + '/admin/directories/review', { method: 'PATCH', ...json({ user_id: user.id, path: '独立审核目录', action: 'delete' }) })).status,200);
+    assert.equal(removals,2,'目录 tombstone 清空字段前应保存待清理的 Content IDs');
+    assert.equal(openDiskRepository(dataDir).content.resolve(onlyContentId).state,'DELETED');
 });

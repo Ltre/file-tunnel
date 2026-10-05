@@ -71,14 +71,15 @@ test('上传完成时网盘已最小化：记住新目录，标记待刷新，�
     assert.equal(f.rendered.length, 0);
 });
 
-test('空白处菜单使用打开时的目录，缓存清理仅处理本级文件，根目录属性也可访问', async () => {
+test('空白处菜单使用打开时的目录，支持根目录协同邀请，缓存清理仅处理本级文件', async () => {
     for (const folderPath of ['', '当前目录/子目录']) {
-        let menu, uploaded = 0, created, property, removed;
+        let menu, uploaded = 0, created, property, invited, removed;
         const requests = [];
         const context = vm.createContext({ telegramDrivePath: folderPath, telegramDriveMenuItem: null,
             document: { getElementById: () => ({ click: () => uploaded++ }) }, closeTelegramDriveItemMenu() {},
             renderTelegramDriveContextMenu: (item, anchor, actions) => { menu = { item, anchor, actions }; },
             createTelegramDriveFolder: path => { created = path; }, showTelegramDriveProperties: item => { property = item; },
+            inviteDiskCollaboration: item => { invited = item; },
             showAppToast() {}, updateDiskCacheLabels() {}, telegramDriveRequest: () => { throw Error('本级缓存不应递归读取目录树'); },
             window: { DiskClient: { raw: async url => { requests.push(url); return { files: [{ kind: 'file', id: 'a' }, { kind: 'file', id: 'b' }] }; } },
                 TelegramDriveCache: { remove: async ids => { removed = [...ids]; } } }
@@ -87,11 +88,13 @@ test('空白处菜单使用打开时的目录，缓存清理仅处理本级文�
             + ui.slice(ui.indexOf('function showTelegramDriveBackgroundMenu('), ui.indexOf('function renderTelegramDriveContextMenu('))
             + ';showTelegramDriveBackgroundMenu', context);
         const anchor = {}; show(anchor);
-        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录', '当前目录属性', '清理本级目录缓存']);
+        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录', '当前目录属性', '邀请协同', '清理本级目录缓存']);
         context.telegramDrivePath = '后来切换的目录';
-        await menu.actions[0][1](); await menu.actions[1][1](); await menu.actions[2][1](); await menu.actions[3][1]();
+        for (const [, action] of menu.actions) await action();
         assert.equal(uploaded, 1); assert.equal(created, folderPath); assert.equal(property.path, folderPath);
         assert.equal(property.kind, 'directory'); if (!folderPath) assert.equal(property.name, '根目录');
+        assert.equal(invited.kind, 'directory'); assert.equal(invited.path, folderPath);
+        assert.equal(invited.name, folderPath ? '子目录' : '根目录');
         assert.deepEqual(removed, ['a', 'b']); assert.deepEqual(requests, ['/list?path=' + encodeURIComponent(folderPath)]);
     }
 });
