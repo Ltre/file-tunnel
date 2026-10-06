@@ -123,6 +123,7 @@
             if (navigable && item.kind === 'directory' && item.reviewStatus !== 'deleted') { const button = el('button', 'name-button', '📁 ' + item.name); button.onclick = () => selectSpace(state.selected, item.path); nameCell.append(button); }
             else if (previewable(item)) { const button = el('button', 'name-button', '📄 ' + item.name); button.onclick = () => preview(item); nameCell.append(button); }
             else nameCell.textContent = (item.kind === 'directory' ? '📁 ' : '📄 ') + item.name;
+            if (item.kind !== 'directory') nameCell.append(infoButton(item));
             const status = item.reviewStatus || 'active';
             const labels = { active: '正常', blocked: '已屏蔽（仅本人可见）', deleted: '实体已删除（保留占位）' };
             const statusCell = el('td', 'status-' + status, item.kind === 'directory' ? `目录 · ${labels[status] || status}` : `${item.type || '文件'} · ${labels[status] || status}`);
@@ -145,6 +146,7 @@
             const nameCell = el('td');
             if (previewable(file)) { const button = el('button', 'name-button', file.name); button.onclick = () => preview(file); nameCell.append(button, document.createElement('br'), document.createTextNode(file.folderPath || '根目录')); }
             else nameCell.textContent = `${file.name}\n${file.folderPath || '根目录'}`;
+            nameCell.append(infoButton(file));
             const thumbCell = el('td'); thumbCell.append(thumbnail(file));
             row.append(thumbCell, nameCell, el('td', '', `${file.user?.username || file.user?.name || file.userId}\n${file.diskSpace || '默认分区'}`), el('td', '', file.appId), el('td', '', `${bytes(file.size)}\n${time(file.createdAt)}`), el('td', 'status-' + status, statusText), moderationButtons(file)); body.append(row);
         }
@@ -159,6 +161,61 @@
             const lookup = el('button', '', '查询同内容引用'); lookup.type = 'button'; lookup.onclick = () => lookupFiles(item.id, 0, item); actions.append(lookup);
         }
         return actions;
+    }
+    function infoButton(item) {
+        const info = el('button', 'technical-info-button', 'i'); info.type = 'button'; info.title = `查看 ${item.name} 的技术信息`;
+        info.setAttribute('aria-label', info.title);
+        info.onclick = event => { event.stopPropagation(); showTechnicalInfo(item); };
+        return info;
+    }
+    function technicalNode(key, value, depth = 0) {
+        const container = el('div');
+        if (value && typeof value === 'object') {
+            const details = el('details'); details.open = depth < 2;
+            const summary = el('summary', 'technical-key', `${key} ${Array.isArray(value) ? `[${value.length}]` : `{${Object.keys(value).length}}`}`);
+            details.append(summary);
+            for (const [name, child] of Object.entries(value)) details.append(technicalNode(name, child, depth + 1));
+            container.append(details);
+        } else container.append(el('span', 'technical-key', key + ': '), el('code', '', value === null ? 'null' : String(value)));
+        return container;
+    }
+    async function showTechnicalInfo(item) {
+        const modal = $('diskTechnicalModal'); modal.hidden = false;
+        $('diskTechnicalTitle').textContent = `文件技术信息：${item.name}`;
+        $('diskTechnicalTree').textContent = '正在读取…'; $('diskTechnicalJson').textContent = '';
+        try {
+            const query = new URLSearchParams({ user_id: item.userId, disk_space: item.diskSpace || '' });
+            const data = await request('/files/' + encodeURIComponent(item.id) + '/technical?' + query);
+            if (modal.hidden) return;
+            $('diskTechnicalTree').replaceChildren(technicalNode('文件', data));
+            $('diskTechnicalJson').textContent = JSON.stringify(data, null, 2);
+        } catch (error) { $('diskTechnicalTree').textContent = '读取失败：' + error.message; }
+    }
+    async function searchStorage(offset = 0) {
+        const query = $('storageSearchQuery').value.trim();
+        if (!query) return;
+        $('storageSearchStatus').textContent = '正在搜索…';
+        try {
+            const data = await request('/storage-search?' + new URLSearchParams({ q: query, offset, limit: 50 }));
+            const target = $('storageSearchResults'); clear(target);
+            renderFileTable(target, data.items, false);
+            $('storageSearchStatus').textContent = `找到 ${data.total} 项；目录与文件均按实际名称匹配。`;
+            pagination($('storageSearchPages'), data, searchStorage);
+        } catch (error) { $('storageSearchStatus').textContent = '搜索失败：' + error.message; }
+    }
+    async function searchFileHash() {
+        const file = $('contentHashFile').files[0]; if (!file) return;
+        $('contentHashSubmit').disabled = true; $('contentHashStatus').textContent = '正在计算文件内容并查找…';
+        clear($('contentHashResults'));
+        try {
+            const response = await fetch(api + '/content-reference-by-upload', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, cache: 'no-store' });
+            const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);
+            const refs = data.matches.flatMap(entry => entry.references);
+            $('contentHashStatus').textContent = `${file.name} · ${bytes(data.size)} · SHA-256 ${data.sha256} · ${refs.length} 个活动逻辑文件引用`;
+            for (const ref of refs) $('contentHashResults').append(positionCard(ref));
+            if (!refs.length) $('contentHashResults').append(el('div', 'lookup-empty', '没有找到内容相同的活动文件。'));
+        } catch (error) { $('contentHashStatus').textContent = '查找失败：' + error.message; }
+        finally { $('contentHashSubmit').disabled = false; }
     }
     const stateLabels = { READY: '可用', BROKEN: '正文异常', DELETE_PENDING: '等待安全清理', DELETING: '清理中 / 待重试', DELETED: '已清理' };
     function badge(value) { return el('span', 'content-state content-state-' + value, `${value} · ${stateLabels[value] || value}`); }
@@ -297,7 +354,11 @@
         finally { $('refreshBtn').disabled = false; }
     }
     $('diskAdminPreviewClose').onclick = closePreview;
-    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('diskAdminPreview').hidden) closePreview(); });
+    $('diskTechnicalClose').onclick = () => { $('diskTechnicalModal').hidden = true; };
+    $('diskTechnicalModal').onclick = event => { if (event.target === $('diskTechnicalModal')) $('diskTechnicalModal').hidden = true; };
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { if (!$('diskTechnicalModal').hidden) $('diskTechnicalModal').hidden = true; else if (!$('diskAdminPreview').hidden) closePreview(); } });
+    $('storageSearchForm').onsubmit = event => { event.preventDefault(); searchStorage(); };
+    $('contentHashForm').onsubmit = event => { event.preventDefault(); searchFileHash(); };
     $('contentReferenceForm').onsubmit = event => { event.preventDefault(); lookupFiles($('contentReferenceQuery').value.trim()); };
     $('contentCleanupRefresh').onclick = () => loadCleanup();
     $('contentCleanupState').onchange = () => loadCleanup(0);

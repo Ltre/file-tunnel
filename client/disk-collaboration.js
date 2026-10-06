@@ -185,6 +185,15 @@
         const meta = document.createElement('small'); meta.textContent = directory ? '目录' : `${(Number(item.size || 0) / 1024 / 1024).toFixed(2)} MB`;
         const actions = document.createElement('div'); actions.className = 'actions';
         if (!directory) actions.append(button('下载', () => { window.location.href = scoped(`/files/${encodeURIComponent(item.id)}/download`); }));
+        if (!grant.owned) actions.append(button('转存到我的网盘', async () => {
+            try {
+                const target = await window.DiskCopyPicker.choose(`转存“${item.name}”到自己的网盘`);
+                if (!target) return;
+                const result = await request(`${base}/collaborations/${encodeURIComponent(grant.id)}/copy`,
+                    json('POST', { selection: directory ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...target }));
+                status(`已转存 ${result.copied.length} 个文件到自己的网盘：/${result.destination}`);
+            } catch (error) { status(error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需转存。' : '转存失败：' + error.message, true); }
+        }));
         if (!directory) actions.append(button('替换内容', () => {
             const chooser = document.createElement('input'); chooser.type = 'file'; chooser.hidden = true;
             chooser.onchange = () => {

@@ -37,7 +37,8 @@ function createContentAdmin(content) {
     const fileFields = `f.scope,f.id AS logical_file_id,f.owner_id,f.folder_path,f.name,
         json_extract(f.payload,'$.size') AS size,json_extract(f.payload,'$.type') AS type,
         coalesce(json_extract(f.payload,'$.reviewStatus'),'active') AS review_status,
-        coalesce(json_extract(f.payload,'$.sourceAppId'),'') AS source_app_id`;
+        coalesce(json_extract(f.payload,'$.sourceAppId'),'') AS source_app_id,
+        json_extract(f.payload,'$.deletedContentId') AS deleted_content_id`;
     function detail(id) {
         return snapshot(db => {
             const item = db.prepare('SELECT * FROM disk_contents WHERE id=?').get(id);
@@ -84,10 +85,10 @@ function createContentAdmin(content) {
         return snapshot(db => {
             const where = "WHERE f.id=? OR instr(lower(f.name),lower(?))>0";
             return {
-                files: positions(db, db.prepare(`SELECT ${fileFields},r.content_id,c.state AS content_state,
-                    (SELECT count(*) FROM disk_content_refs ref WHERE ref.content_id=r.content_id) AS reference_count
+                files: positions(db, db.prepare(`SELECT ${fileFields},coalesce(r.content_id,json_extract(f.payload,'$.deletedContentId')) AS content_id,c.state AS content_state,
+                    (SELECT count(*) FROM disk_content_refs ref WHERE ref.content_id=coalesce(r.content_id,json_extract(f.payload,'$.deletedContentId'))) AS reference_count
                     FROM disk_files f LEFT JOIN disk_content_refs r ON r.scope=f.scope AND r.logical_file_id=f.id
-                    LEFT JOIN disk_contents c ON c.id=r.content_id ${where}
+                    LEFT JOIN disk_contents c ON c.id=coalesce(r.content_id,json_extract(f.payload,'$.deletedContentId')) ${where}
                     ORDER BY CASE WHEN f.id=? THEN 0 ELSE 1 END,f.name,f.owner_id,f.scope,f.id LIMIT ? OFFSET ?`)
                     .all(q, q, q, paging.limit, paging.offset)),
                 total: db.prepare(`SELECT count(*) AS n FROM disk_files f ${where}`).get(q, q).n,
@@ -95,6 +96,12 @@ function createContentAdmin(content) {
             };
         });
     }
-    return { list, detail, files };
+    function byHash(sha256, size) {
+        if (!/^[a-f0-9]{64}$/.test(String(sha256)) || !Number.isSafeInteger(size) || size < 0) throw Error('CONTENT_QUERY_INVALID');
+        return snapshot(db => db.prepare(`SELECT id FROM disk_contents WHERE content_key=? AND hash_status='verified'
+            AND EXISTS(SELECT 1 FROM disk_content_refs r WHERE r.content_id=disk_contents.id) ORDER BY created_at,id`)
+            .all(`sha256:v1:${size}:${sha256}`).map(row => detail(row.id)));
+    }
+    return { list, detail, files, byHash };
 }
 module.exports = { createContentAdmin };

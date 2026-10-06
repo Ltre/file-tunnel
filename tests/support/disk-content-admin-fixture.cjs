@@ -37,13 +37,13 @@ async function createFixture() {
     const telegram = { remove: async () => { remoteCalls++; throw Error('NO_REAL_TELEGRAM_IN_FIXTURE'); } };
     const auth = createDiskAuth({ dataDir }), store = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     const api = createDiskAPI({ dataDir, defaultStore: store, auth, operations, telegram, getDefaultBackend: () => ({ token: 'fixture-only', channelId: '-1001234567890', baseUrl: 'https://example.test' }),
-        getIdentity: () => auth.user('alice'), setIdentity() {}, getOrigin: () => 'http://localhost', isMockRequest: () => true, maxDepth: () => 20, contentCleanupMode: 'observe' });
+        getIdentity: req => auth.user(req.get('X-Test-User') || 'alice'), setIdentity() {}, getOrigin: () => 'http://localhost', isMockRequest: () => true, maxDepth: () => 20, contentCleanupMode: 'observe' });
     const app = express(), root = path.join(__dirname, '../..'); app.use(express.json());
     const admin = (req, res, next) => req.get('X-Test-Admin') === '1' || /(?:^|;\s*)fixture_admin=1(?:;|$)/.test(req.get('Cookie') || '') ? next() : res.status(401).json({ error: 'LOGIN_REQUIRED' });
     app.get('/fixture-login', (_req, res) => { res.cookie('fixture_admin', '1', { httpOnly: true, sameSite: 'strict' }); res.redirect('/disk-management'); });
     app.get('/disk-management', admin, (_req, res) => res.sendFile(path.join(root, 'pages/disk-management.html')));
     app.use('/client', express.static(path.join(root, 'client')));
-    app.use('/api/telegram/disk-admin', admin, api.admin); app.use('/api/telegram/drive', api.browser);
+    app.use('/api/telegram/disk-admin', admin, api.admin); app.use('/api/telegram/drive/shares', api.shared); app.use('/api/telegram/drive', api.browser);
     const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
     return { dataDir, repository, content, server, api, sharedId, deletingId, pendingId, get remoteCalls() { return remoteCalls; },
         base: 'http://127.0.0.1:' + server.address().port,

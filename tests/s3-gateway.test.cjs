@@ -125,6 +125,9 @@ test('S3 SigV4、流式分片、覆盖、Range、Copy、marker 和批量删除�
     assert.equal((await send('PUT', '/S3API/my-bucket/folder/', '')).status, 200);
     const listed = await send('GET', '/S3API/my-bucket?list-type=2&delimiter=%2F');
     const xml = await listed.text(); assert.match(xml, /<CommonPrefixes><Prefix>folder\/<\/Prefix>/); assert.match(xml, /<Contents><Key>copied.txt<\/Key>/);
+    const legacyList = await send('GET', '/S3API/my-bucket?delimiter=%2F');
+    assert.equal(legacyList.status, 200);
+    assert.match(await legacyList.text(), /<ListBucketResult\b[^>]*>.*<Contents><Key>copied.txt<\/Key>/);
     assert.equal((await send('DELETE', '/S3API/my-bucket/folder/')).status, 204);
     assert.doesNotMatch(await (await send('GET', '/S3API/my-bucket?list-type=2&delimiter=%2F')).text(), /<Prefix>folder\/<\/Prefix>/);
     const batch = Buffer.from('<Delete><Object><Key>copied.txt</Key></Object><Object><Key>empty.txt</Key></Object></Delete>');

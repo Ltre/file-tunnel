@@ -278,6 +278,31 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
     // Called inside the repository's existing file + directory transaction.
     function syncFile(db, scope, file) {
         assertContentAuthorization(db,file.contentAuthorization);
+        if (file.contentCopyGrant) {
+            const grant = file.contentCopyGrant;
+            const source = db.prepare('SELECT owner_id,folder_path,payload FROM disk_files WHERE scope=? AND id=?').get(grant.sourceSpace,grant.sourceFileId);
+            const sourceRef = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(grant.sourceSpace,grant.sourceFileId);
+            if (!source || source.owner_id !== grant.sourceOwnerId || source.owner_id === file.ownerId
+                || sourceRef?.content_id !== file.contentId || ['blocked','deleted'].includes(JSON.parse(source.payload).reviewStatus))
+                throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            if (grant.kind === 'share') {
+                const row = db.prepare("SELECT payload FROM disk_shares WHERE scope='' AND id=?").get(grant.id);
+                const share = row && JSON.parse(row.payload);
+                if (!share || share.stoppedAt || share.token !== grant.token || share.ownerId !== grant.sourceOwnerId
+                    || share.diskSpace !== grant.sourceSpace || !share.files.some(entry => entry.id === grant.sourceFileId))
+                    throw new Error('SHARE_NOT_FOUND');
+            } else if (grant.kind === 'collaboration') {
+                const row = db.prepare("SELECT payload FROM disk_collaborations WHERE scope='' AND id=?").get(grant.id);
+                const collaboration = row && JSON.parse(row.payload);
+                const viewer = String(grant.viewerId), version = Number(collaboration?.memberVersions?.[viewer]) || 1;
+                if (!collaboration || collaboration.active === false || collaboration.ownerId !== grant.sourceOwnerId
+                    || collaboration.diskSpace !== grant.sourceSpace || !collaboration.members.includes(viewer)
+                    || String(version) !== String(grant.version)
+                    || collaboration.kind === 'file' && collaboration.fileId !== grant.sourceFileId
+                    || collaboration.kind === 'directory' && collaboration.path && source.folder_path !== collaboration.path && !source.folder_path.startsWith(collaboration.path + '/'))
+                    throw new Error('COLLABORATION_NOT_FOUND');
+            } else throw new Error('CONTENT_COPY_SOURCE_INVALID');
+        }
         if(file.contentGrant) {
             // Recheck authorization inside the same write transaction as refs.
             // An in-memory member snapshot is not a cross-process write fence.
@@ -289,6 +314,9 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         }
         const before = db.prepare('SELECT * FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, file.id);
         if (file.reviewStatus === 'deleted') {
+            // Keep an audit pointer on the Logical File while releasing the
+            // live reference. It must never count as a Content reference.
+            if (before?.content_id) file.deletedContentId = before.content_id;
             db.prepare('DELETE FROM disk_content_refs WHERE scope=? AND logical_file_id=?').run(scope, file.id);
             released(db, before?.content_id, 0); delete file.contentId; return;
         }
@@ -346,7 +374,7 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
     }
     return {
         project, syncFile,
-        strip(file) { const result = { ...file }; for (const field of PHYSICAL_FIELDS) delete result[field]; for (const field of ['physicalRevision','contentPhysicalRepair','contentGrant','contentAuthorization','contentLease','contentCandidateId','declaredSha256','contentClaimToken','expectedContentId','expectedContentVersion','expectedPhysicalRevision']) delete result[field]; return result; },
+        strip(file) { const result = { ...file }; for (const field of PHYSICAL_FIELDS) delete result[field]; for (const field of ['physicalRevision','contentPhysicalRepair','contentGrant','contentCopyGrant','contentAuthorization','contentLease','contentCandidateId','declaredSha256','contentClaimToken','expectedContentId','expectedContentVersion','expectedPhysicalRevision']) delete result[field]; return result; },
         detach(db, scope, fileId) {
             const ref = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, fileId);
             db.prepare('DELETE FROM disk_content_refs WHERE scope=? AND logical_file_id=?').run(scope, fileId); released(db, ref?.content_id, 0);

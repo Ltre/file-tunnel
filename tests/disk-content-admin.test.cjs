@@ -56,3 +56,70 @@ test('查询参数合法性、字面文件名匹配、缺失 Content 和旧列�
     const old = await f.get('/content-objects'); assert.ok(old.data.contents.some(item => item.id === f.sharedId)); assert.ok(Array.isArray(old.data.captions));
     assert.equal(f.remoteCalls, 0);
 });
+test('删除逻辑文件后仍保留原 Content 审计指针并可查询其他引用', async t => {
+    const f = await fixture(t);
+    const before = f.repository.load('files');
+    f.repository.replace('files', before.map(file => file.id === 'file-a' ? { ...file, reviewStatus: 'deleted' } : file), file => file.id);
+    const result = await f.get('/content-reference-files?q=file-a');
+    assert.equal(result.data.files[0].content_id, f.sharedId);
+    assert.equal(result.data.files[0].review_status, 'deleted');
+    const detail = await f.get('/content-objects/' + f.sharedId);
+    assert.equal(detail.data.references.length, 2);
+    assert.deepEqual(new Set(detail.data.references.map(file => file.logical_file_id)), new Set(['file-b', 'file-photo']));
+});
+test('分享转存只新建独立 Logical 引用，来源撤销与自有资源限制生效', async t => {
+    const f = await fixture(t);
+    const source = await fetch(f.base + '/api/telegram/drive/shares', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Test-User': 'bob' },
+        body: JSON.stringify({ items: [{ kind: 'file', id: 'file-b' }] }) });
+    assert.equal(source.status, 201);
+    const createdShare = await source.json(), token = createdShare.url.split('/').at(-1);
+    const copy = async user => fetch(f.base + '/api/telegram/drive/shares/' + token + '/copy', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Test-User': user },
+        body: JSON.stringify({ selection: { kind: 'file', id: 'file-b' }, diskSpace: '', destinationPath: '' }) });
+    const self = await copy('bob'); assert.equal(self.status, 422); assert.equal((await self.json()).error, 'CONTENT_COPY_SELF_OWNED');
+    const result = await copy('alice'); assert.equal(result.status, 201, await result.clone().text());
+    const copied = (await result.json()).copied[0];
+    const alice = f.repository.load('files').find(file => file.id === copied.id);
+    assert.equal(alice.ownerId, 'alice'); assert.equal(alice.contentId, f.sharedId);
+    const revoked = await fetch(f.base + '/api/telegram/drive/shares/' + createdShare.id, { method: 'DELETE', headers: { 'X-Test-User': 'bob' } });
+    assert.equal(revoked.status, 200);
+    assert.equal(f.repository.load('files').find(file => file.id === copied.id).contentId, f.sharedId);
+    const refs = await f.get('/content-objects/' + f.sharedId);
+    assert.equal(refs.data.references.length, 4);
+});
+test('协同文件转存后属于受邀者，踢出成员不撤销已转存的引用', async t => {
+    const f = await fixture(t);
+    const send = (url, user, body, method = 'POST') => fetch(f.base + '/api/telegram/drive' + url, {
+        method, headers: { 'X-Test-User': user, 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const invitation = await send('/collaborations/invitations', 'bob', { kind: 'file', fileId: 'file-b' });
+    assert.equal(invitation.status, 201, await invitation.clone().text());
+    const created = await invitation.json(), token = created.url.split('/').at(-1);
+    const joined = await send('/collaborations/join', 'alice', { token });
+    assert.equal(joined.status, 200, await joined.clone().text());
+    const copy = await send('/collaborations/' + created.collaboration.id + '/copy', 'alice',
+        { selection: { kind: 'file', id: 'file-b' }, diskSpace: '', destinationPath: '' });
+    assert.equal(copy.status, 201, await copy.clone().text());
+    const copiedId = (await copy.json()).copied[0].id;
+    const kick = await send('/collaborations/' + created.collaboration.id + '/members/alice', 'bob', undefined, 'DELETE');
+    assert.equal(kick.status, 200);
+    const file = f.repository.load('files').find(entry => entry.id === copiedId);
+    assert.equal(file.ownerId, 'alice'); assert.equal(file.contentId, f.sharedId);
+});
+test('后台普通文件搜索、上传内容哈希查询和技术信息不会泄露账号密钥', async t => {
+    const f = await fixture(t);
+    const search = await f.get('/storage-search?q=' + encodeURIComponent('相同.har'));
+    assert.equal(search.status, 200); assert.equal(search.data.total, 3);
+    const response = await fetch(f.base + '/api/telegram/disk-admin/content-reference-by-upload', {
+        method: 'POST', headers: { 'X-Test-Admin': '1', 'Content-Type': 'application/octet-stream' }, body: Buffer.from('shared-fixture')
+    });
+    assert.equal(response.status, 200);
+    const byContent = await response.json();
+    assert.equal(byContent.matches[0].content.id, f.sharedId);
+    assert.equal(byContent.matches[0].references.length, 3);
+    const technical = await f.get('/files/file-b/technical?user_id=bob');
+    assert.equal(technical.status, 200);
+    assert.equal(technical.data.logicalFile.id, 'file-b');
+    assert.equal(technical.data.content.content.id, f.sharedId);
+    assert.doesNotMatch(JSON.stringify(technical.data), /DO-NOT-EXPOSE-PASSKEY|encryptedToken|secretAccessKey/);
+});

@@ -2447,6 +2447,7 @@ app.use('/api/telegram/drive', diskAPI.browser);
 app.use('/api/telegram/disk/v1', diskAPI.external);
 app.use('/api/telegram/disk-admin', adminAuth.requireAuth, diskAPI.admin);
 app.use('/api/telegram/disk-shares', diskAPI.shared);
+app.use('/s3pub', diskAPI.publicStatic);
 app.get(['/disk-collab/:token', '/disk-collab/view/:collaborationId'], (req, res) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'Referrer-Policy': 'no-referrer' });
     res.sendFile(path.join(__dirname, 'pages', 'disk-collaboration.html'));

@@ -86,6 +86,35 @@ function listV2({ objects, bucket, query, secret }) {
         (delimiter ? tag('Delimiter', display(delimiter)) : '') + (encoding ? tag('EncodingType', encoding) : '') + (startAfter ? tag('StartAfter', display(startAfter)) : '') +
         (continuation ? tag('ContinuationToken', continuation) : '') + (next ? tag('NextContinuationToken', next) : '') + content);
 }
+function listV1({ objects, bucket, query }) {
+    const prefix = String(query.prefix || ''), delimiter = String(query.delimiter || ''), marker = String(query.marker || '');
+    const encoding = String(query['encoding-type'] || '');
+    if (encoding && encoding !== 'url') throw new Error('InvalidArgument');
+    const rawMax = query['max-keys'] === undefined ? 1000 : Number(query['max-keys']);
+    if (!Number.isSafeInteger(rawMax) || rawMax < 0) throw new Error('InvalidArgument');
+    const max = Math.min(rawMax, 1000), groups = new Map(), items = [];
+    for (const object of objects) {
+        if (object.kind === 'virtual-directory' && !delimiter) continue;
+        if (!object.key.startsWith(prefix) || object.key <= marker) continue;
+        const rest = object.key.slice(prefix.length), at = delimiter ? rest.indexOf(delimiter) : -1;
+        if (at >= 0) {
+            const key = prefix + rest.slice(0, at + delimiter.length);
+            if (key <= marker) continue;
+            const existing = groups.get(key);
+            if (existing) existing.lastKey = object.key;
+            else groups.set(key, { kind: 'prefix', key, lastKey: object.key });
+        } else if (object.kind !== 'virtual-directory') items.push({ kind: 'object', key: object.key, lastKey: object.key, object });
+    }
+    const ordered = [...items, ...groups.values()].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    const page = ordered.slice(0, max), truncated = max > 0 && ordered.length > max;
+    const display = value => encoding === 'url' ? uri(value) : value;
+    const content = page.map(item => item.kind === 'prefix' ? `<CommonPrefixes>${tag('Prefix', display(item.key))}</CommonPrefixes>`
+        : `<Contents>${tag('Key', display(item.key))}${tag('LastModified', iso(item.object.updatedAt))}${tag('ETag', `"${item.object.etag}"`)}${tag('Size', item.object.size)}${tag('StorageClass', 'STANDARD')}</Contents>`).join('');
+    const next = truncated && delimiter && page.length ? tag('NextMarker', display(page.at(-1).key)) : '';
+    return document('ListBucketResult', tag('Name', bucket) + tag('Prefix', display(prefix)) + tag('Marker', display(marker))
+        + tag('MaxKeys', max) + tag('IsTruncated', truncated) + (delimiter ? tag('Delimiter', display(delimiter)) : '')
+        + (encoding ? tag('EncodingType', encoding) : '') + next + content);
+}
 async function readLimited(req, limit) {
     const chunks = []; let total = 0;
     for await (const chunk of req) { total += chunk.length; if (total > limit) throw new Error('EntityTooLarge'); chunks.push(chunk); }
@@ -134,6 +163,8 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 if (req.method === 'HEAD') return res.status(200).set('x-amz-bucket-region', auth.region).end();
                 if (req.method === 'GET' && Object.hasOwn(query, 'location')) return res.type('application/xml').send(document('LocationConstraint', esc(auth.region === 'us-east-1' ? '' : auth.region)));
                 if (req.method === 'GET' && query['list-type'] === '2') return res.type('application/xml').send(listV2({ objects: objectStorage.list(selected), bucket, query, secret: auth.credential.secretAccessKey }));
+                if (req.method === 'GET' && !Object.hasOwn(query, 'list-type') && !Object.hasOwn(query, 'uploads') && !Object.hasOwn(query, 'versions'))
+                    return res.type('application/xml').send(listV1({ objects: objectStorage.list(selected), bucket, query }));
                 if (req.method === 'POST' && Object.hasOwn(query, 'delete')) {
                     const bytes = await readLimited(req, 1024 * 1024);
                     if (auth.payloadHash !== 'UNSIGNED-PAYLOAD' && sha256(bytes) !== auth.payloadHash) throw new Error('XAmzContentSHA256Mismatch');
@@ -206,4 +237,4 @@ function createS3Gateway({ dataDir, objectStorage }) {
     content.use((req, res) => { dispatch(req, res, '/s3', true).catch(error => { if (!res.headersSent) res.status(500).end(); else res.destroy(error); }); });
     return { api, content, credentials };
 }
-module.exports = { createS3Gateway, listV2, partsFromRequest };
+module.exports = { createS3Gateway, listV1, listV2, partsFromRequest };

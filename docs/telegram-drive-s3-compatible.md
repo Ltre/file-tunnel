@@ -97,7 +97,7 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 | 配置项 | 设置 |
 |---|---|
 | 存储类型 | S3 Compatible |
-| Server address / Endpoint | `https://HOST/S3API` |
+| Server address / Endpoint | 先填 `https://HOST/S3API`；该表单没有独立 Bucket 栏时，可尝试 `https://HOST/S3API/{bucket}`，其中 `{bucket}` 必须是系统实际生成或后台映射的名称 |
 | Access Key ID / Secret Access Key | 凭据工具创建的值 |
 | Region | 推荐统一使用 `us-east-1` |
 | Use path-style access for all requests | 开启 |
@@ -105,6 +105,8 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 | 文件夹对象 / folder marker | 可以保留 |
 
 使用标准 payload signing。当前支持普通 SHA-256、`UNSIGNED-PAYLOAD`、不带 trailer 的 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`；不支持其它 trailer / checksum 签名变体。标准 PUT 提供 `Content-Length`；签名分块 PUT 提供 `x-amz-decoded-content-length`，每个签名块最多 20,000,000 字节。不要把 S3 Multipart Upload 与该签名分块格式或网盘内部 Telegram 分片混为一谈。
+
+FolderSync 的 S3 Compatible 表单只有服务器地址、Region、凭据及“为所有要求使用路径模式存取”等开关，没有独立的 Bucket 输入项。[FolderSync 官方说明](https://foldersync.io/docs/help/cloudservices/)也指出，**部分**兼容服务可在服务器地址后追加 `/bucketname`，但并不保证每个服务或客户端版本都会以同样方式请求。本服务已支持凭据可见 Bucket 的 ListBuckets、无 `list-type` 的 ListObjects V1 和 `list-type=2` 的 V2；先使用不带 Bucket 的端点进行连接测试。若需要附加 Bucket，应使用精确的 Bucket 名称，不是分区显示名。仍失败时应记录实际请求方法、路径、响应状态及 `x-amz-request-id`，不能仅根据 App 的堆栈判断是哪一种请求失败；不得关闭签名校验来绕过问题。
 
 客户端若默认启用 S3 Multipart Upload，应关闭或将其阈值调整到不会使用该 API；遇到客户端不能关闭的未支持功能时需核对请求，不能通过关闭鉴权规避。
 
@@ -118,6 +120,7 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 | HEAD | `/{bucket}` | HeadBucket，返回 `x-amz-bucket-region` |
 | GET | `/{bucket}?location` | GetBucketLocation；us-east-1 返回空 LocationConstraint |
 | GET | `/{bucket}?list-type=2` | ListObjectsV2 |
+| GET | `/{bucket}`（无 `list-type`） | ListObjects V1，兼容使用旧式列表请求的客户端；支持 `prefix`、`delimiter`、`marker`、`max-keys` 和 `encoding-type=url` |
 | PUT | `/{bucket}/{key}` | PutObject，成功返回 200 与 ETag |
 | GET | `/{bucket}/{key}` | GetObject，支持单段 Range |
 | HEAD | `/{bucket}/{key}` | HeadObject，返回大小、类型、ETag、Last-Modified 等 |

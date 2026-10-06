@@ -65,6 +65,25 @@ test('S3 凭据独立生成、JSON 加密、并发防覆盖、轮换及旧凭据
     assert.equal(validBucket('my.bucket-1'), true);
     assert.throws(() => firstStore.create({ ...fields, bucketMappings: [{ bucket: 'backup', diskSpace: '' }, { bucket: 'backup', diskSpace: 'photos' }] }), /S3_CREDENTIAL_INPUT_INVALID/);
 });
+test('用户分区 S3 凭据一对一生成，停用和轮换不创建重复 Bucket', t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's3-user-space-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const credentials = createS3Credentials(dir), owner = crypto.randomUUID();
+    const first = credentials.enableUserSpace(owner, '');
+    assert.equal(first.bucketMappings[0].bucket, 'userbucket-' + owner);
+    assert.ok(first.secretAccessKey);
+    assert.equal(credentials.enableUserSpace(owner, '').accessKeyId, first.accessKeyId);
+    const named = credentials.enableUserSpace(owner, '图片');
+    assert.notEqual(named.bucketMappings[0].bucket, first.bucketMappings[0].bucket);
+    assert.equal(credentials.list().length, 2);
+    const rotated = credentials.rotateUserSpace(owner, '');
+    assert.equal(rotated.accessKeyId, first.accessKeyId);
+    assert.notEqual(rotated.secretAccessKey, first.secretAccessKey);
+    assert.equal(credentials.disableUserSpace(owner, '').enabled, false);
+    assert.equal(credentials.find(first.accessKeyId), null);
+    assert.equal(credentials.enableUserSpace(owner, '').accessKeyId, first.accessKeyId);
+    assert.equal(credentials.list().length, 2);
+});
 
 test('后台 S3 管理鉴权、同源检查、用户分区隔离、版本冲突和敏感字段不外泄', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's3-admin-api-'));

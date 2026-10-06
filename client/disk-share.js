@@ -81,6 +81,19 @@
         }
         throw finalError;
     }
+    async function copyToOwnDisk(item) {
+        try {
+            const target = await window.DiskCopyPicker.choose(`转存“${item.name}”到自己的网盘`);
+            if (!target) return;
+            $('shareStatus').textContent = '正在建立独立的网盘文件引用…';
+            const response = await fetch(base + '/copy', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selection: item.kind === 'directory'
+                    ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...target }) });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);
+            $('shareStatus').textContent = `已转存 ${data.copied.length} 个文件到自己的网盘：/${data.destination}`;
+        } catch (error) { $('shareStatus').textContent = error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需再次转存给自己。' : '转存失败：' + error.message; }
+    }
     async function openFile(file, preview) {
         const streamable = preview && (/^(image|audio|video)\//.test(file.type || '') || file.type === 'application/pdf');
         if (streamable) {
@@ -134,6 +147,8 @@
                 const previewable = /^(image|audio|video|text)\//.test(item.type || '') || item.type === 'application/pdf';
                 open.onclick = () => item.kind === 'directory' ? list(item.path) : openFile(item, previewable);
                 row.append(open);
+                const copy = document.createElement('button'); copy.textContent = '转存到我的网盘'; copy.onclick = () => copyToOwnDisk(item);
+                row.append(copy);
                 if (item.kind !== 'directory') {
                     const size = document.createElement('small'); size.textContent = Number(item.size).toLocaleString('zh-CN') + ' 字节';
                     const download = document.createElement('button'); download.textContent = '下载'; download.onclick = () => openFile(item, false); row.append(size, download);

@@ -3,6 +3,7 @@
 (function () {
     const base = '/api/telegram/drive';
     let collaborationId = '';
+    let diskSpace = '';
     const baseUrl = () => collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
     const listeners = new Set();
     const localUploads = new Map();
@@ -73,7 +74,7 @@
             xhr.addEventListener('timeout', () => finish(Object.assign(new Error('UPLOAD_CLIENT_TIMEOUT'), { transportFailure: true })));
             xhr.addEventListener('abort', () => finish(abortError()));
             xhr.open(options.method || 'PUT', url, true); xhr.withCredentials = true;
-            for (const [key, value] of Object.entries({ ...options.headers, 'X-Disk-Device-Id': deviceId })) xhr.setRequestHeader(key, value);
+            for (const [key, value] of Object.entries({ ...options.headers, 'X-Disk-Device-Id': deviceId, 'X-Disk-Space': diskSpace })) xhr.setRequestHeader(key, value);
             signal?.addEventListener?.('abort', abort, { once: true });
             if (signal?.aborted) return abort();
             try { xhr.send(options.body); } catch (error) { error.transportFailure = true; finish(error); }
@@ -85,7 +86,7 @@
         if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
         const { onUploadProgress, ...requestOptions } = options;
         let response;
-        try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
+        try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId, 'X-Disk-Space': diskSpace } }); }
         catch (error) { error.transportFailure = true; throw error; }
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
@@ -522,7 +523,7 @@
         // The server streams Telegram parts as they arrive. Only bytes received
         // by this browser count toward the file badge's 0-100% progress.
         setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
-        const response = await fetch(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
+        const response = await fetch(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId, 'X-Disk-Space': diskSpace }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
         const total = Math.max(0, Number(response.headers?.get('Content-Length')) || Number(item.size) || 0);
@@ -546,6 +547,7 @@
     function streamUrl(item, { purpose = '', fresh = false } = {}) {
         const query = new URLSearchParams();
         query.set('v', String(item.updatedAt || item.size || 0));
+        if (diskSpace) query.set('disk_space', diskSpace);
         if (purpose) query.set('purpose', String(purpose));
         if (fresh) query.set('request', String(++streamSequence));
         return baseUrl() + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
@@ -555,7 +557,7 @@
         const safeEnd = Math.min(Number(item.size) - 1, Math.max(safeStart, Number(end) || 0));
         const response = await fetch(streamUrl(item, { purpose, fresh: true }), {
             credentials: 'same-origin', cache: 'no-store', signal,
-            headers: { Range: `bytes=${safeStart}-${safeEnd}`, 'X-Disk-Device-Id': deviceId }
+            headers: { Range: `bytes=${safeStart}-${safeEnd}`, 'X-Disk-Device-Id': deviceId, 'X-Disk-Space': diskSpace }
         });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         let blob = await response.blob();
@@ -576,6 +578,9 @@
         return true;
     }
     window.DiskClient = { raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+        setSpace(value) { diskSpace = String(value || ''); stop(); start(); },
+        getSpace() { return diskSpace; },
+        hasActiveOperations() { return visibleJobs().some(active); },
         setCollaboration(id) { collaborationId = String(id || ''); stop(); start(); },
         setAudioCoverExtractor(extractor) { audioCoverExtractor = typeof extractor === 'function' ? extractor : null; },
         isCaching(id) { return pendingReads.has(id); },

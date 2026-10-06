@@ -256,3 +256,25 @@
 - 完整回归 `node --test --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs`：**650/650 通过，0 fail、0 skipped、0 cancelled**。收尾增强目录链接读取断言后，新增定向测试 **3/3 通过**；一次沙箱 `spawn EPERM` 发生在测试启动前，按权限流程重新运行成功。JS/CJS 语法检查通过。
 - 使用 computer-use 在隔离 fixture 实际打开后台：验证文件搜索、三个跨账号/分区引用、DELETING 筛选、失败详情、新 Tab 对应目录及目标文件；截图核对卡片、状态与按钮布局，控制台无 error/warn。IAB 视口覆盖没有实际改变窗口宽度，因此未将该操作记为移动端实机验收；窄屏适配按 CSS 检查，仍需实际设备确认。
 - 没有访问或修改真实网盘数据库，也未调用真实 Telegram。测试服务器与临时数据库关闭清理，测试页面关闭，保留可重复使用的测试 fixture；共享 Content 文档同步补充 API 参数及后台操作说明。
+
+## 261006：网盘检索、转存、分区 S3 与静态资源；FolderSync 表单核对
+
+### 根因与设计判断
+
+- 原后台“同 Content 引用查询”按文件名定位 Content，无法直接做普通目录/文件搜索，也不能用用户上传的二进制内容定位；删除占位移除 live ref 后没有保存原 Content ID，导致无法继续从该文件查看剩余引用。
+- 分享与协同页面可读取授权范围内的资源，但缺少把资源变成当前用户独立 Logical File 的入口。复制正文会浪费 Telegram 空间；仅引用源分享又会随授权撤销失效。选用新 Logical File + 现有 Shared Content 引用，在写事务内复核来源授权与引用，并拒绝所有者转存自己的资源。
+- 前台以往隐式使用默认分区，S3 管理只有管理员配置。为用户按分区启用 S3 时，需要后端再次校验分区归属、确定性 Bucket 名称及凭据一对一关系；Secret 只在创建、重新启用或轮换时显示。
+- FolderSync 实际表单没有独立 Bucket 栏。其官方文档称部分 S3 兼容服务可在服务器地址附加 `/bucketname`，不能据此推断所有版本都如此。用户先前的 501/REST XML 栈与当前网关只接受 ListObjectsV2 的缺口相符，但缺少完整请求录制，不能断言真机错误已全部消失。
+
+### 改动
+
+- 管理员新增全账号/分区文件和目录名称搜索、上传二进制计算 SHA-256/大小并查询已验证 Content 的活动引用、文件技术信息树形/JSON 双栏；技术信息只投影公开身份字段，不输出 Passkey 等私密凭据。Logical tombstone 在释放 live ref 的同一事务中保存 `deletedContentId` 作为审计指针；旧版本中原本没记录该字段的历史占位无法倒推出原 Content。
+- 网盘全盘搜索的文件/目录菜单新增“定位到所在目录”并短暂高亮。分享与协同页面新增转存入口和用户自己分区/目录选择；服务端复制目录结构与 Logical File，共享健康 Content，不重发 Telegram 正文，提交前在 SQLite 事务中复核分享或协同授权。自己所有的来源直接拒绝，撤销原授权不影响已建立的个人引用。
+- 前台显示默认及命名分区，支持新建与切换；每个自己名下的分区可启用、停用或轮换 S3 凭据，Bucket 由用户 ID 和分区稳定生成。网关增加无 `list-type` 的 S3 ListObjects V1，保留 V2、SigV4 与现有对象上传链路；S3 接入指南按 FolderSync 实际表单补充地址与 Bucket 的选择规则和待真机验证边界。
+- 新增批量文件/目录静态资源签名，支持 1 天、1 周、30 天、自定义秒数及永久；`/s3pub/{token}/path` 校验 HMAC、用户、分区、选中路径、过期与撤销，允许 Range 读取并按剩余签名期限设置 Cache-Control。链接与撤销列表由前台提供；签名记录持久化 SQLite，跨实例新请求读取最新撤销状态。HTML/XHTML/SVG 响应加 sandbox CSP。
+
+### 验证与限制
+
+- 定向测试覆盖 S3 V1/V2 签名列表、用户分区唯一凭据、静态签名范围与跨实例撤销、后台搜索/哈希/技术信息脱敏、删除后 Content 审计、分享及协同转存后的独立引用。`s3-gateway`、`s3-admin`、`s3-list`、`disk-content-admin`、`disk-static-resources` 与原网盘/分享/协同测试均通过；新增分区查询参数后同步更新依赖旧 URL 的播放器测试桩。
+- FolderSync 真机与灰度域名尚未运行本地新代码，故只确认本地 SigV4 网关行为；灰度需部署后重新点击 App“测试”并按真实请求日志核对。永久签名的 HTTP max-age 以一年为单次上限；主动撤销不能删除客户端已在有效期内缓存的字节。
+- 全量 `node --test --test-reporter=dot --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs` 退出码 0；相关 JS 语法检查与 `git diff --check` 通过。首次全量运行暴露 4 个依赖旧 UI/URL 的测试桩断言，已同步改为验证新分区参数和新增菜单项；随后定向与全量复跑通过。未进行 FolderSync 真机或公网灰度写入验收，未使用用户附件中的 S3 Secret 发起请求。

@@ -22,6 +22,8 @@ const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 const { createProgressiveUploadRunner } = require('./disk-progressive-upload');
 const { createContentProof } = require('./disk-content-proof');
 const { createContentAdmin } = require('./disk-content-admin');
+const { createS3Credentials } = require('./s3/credentials');
+const { createDiskStaticResources } = require('./disk-static-resources');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -69,6 +71,21 @@ function createDiskSpaces(dataDir, defaultStore) {
         recoveries() { return this.entries().flatMap(({ store }) => store.recoveredUploads().map(job => ({ store, job }))); },
         entries() { return ['', ...new Set(spaces)].map(diskSpace => ({ diskSpace, store: this.get(diskSpace) })); },
         usages() { return usages.map(item => ({ ...item })); },
+        forUser(userId) {
+            const owned = new Set(['']);
+            for (const item of usages) if (item.userId === userId) owned.add(item.diskSpace);
+            for (const space of spaces) {
+                const drive = this.get(space);
+                if (drive.adminFiles().some(file => file.ownerId === userId) || drive.adminDirectories().some(folder => folder.ownerId === userId)) owned.add(space);
+            }
+            return [...owned];
+        },
+        createForUser(userId, name) {
+            if (typeof name !== 'string' || !name.trim() || name !== name.trim() || name.length > 100 || /[\\/<>:"|?*\u0000-\u001f]/.test(name)) throw new Error('DISK_SPACE_INVALID');
+            if (this.forUser(userId).includes(name)) throw new Error('DISK_SPACE_EXISTS');
+            this.get(name); track('system', userId, name);
+            return name;
+        },
         track(appId, userId, diskSpace = '') { track(String(appId || 'system'), String(userId), String(diskSpace || '')); },
         get(value = '') {
             if (typeof value !== 'string' || value.length > 100 || /[\u0000-\u001f]/.test(value)) throw new Error('DISK_SPACE_INVALID');
@@ -105,6 +122,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     if(!['all','owner','off'].includes(contentReuseMode)) throw new Error('CONTENT_REUSE_MODE_INVALID');
     if(!['execute','observe'].includes(contentCleanupMode)) throw new Error('CONTENT_CLEANUP_MODE_INVALID');
     const log = createDiskUploadLog(dataDir);
+    const userS3Credentials = createS3Credentials(dataDir);
     const recordUploadFailure = (job, error) => {
         try { operations.fail(job.operationId, error); }
         catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
@@ -143,8 +161,77 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
     });
     const shares = createDiskShares({ dataDir });
+    const staticResources = createDiskStaticResources({ dataDir });
     const collaborations = createDiskCollaborationStore(dataDir);
     const shared = express.Router();
+    const publicStatic = express.Router();
+    function copyGrantedItem({ kind, grant, ownerId, diskSpace, selection, targetUser, targetSpace, destinationPath }) {
+        if (ownerId === targetUser.id) throw new Error('CONTENT_COPY_SELF_OWNED');
+        if (!spaces.forUser(targetUser.id).includes(targetSpace)) throw new Error('DISK_SPACE_NOT_FOUND');
+        const targetDrive = spaces.get(targetSpace), sourceDrive = spaces.get(diskSpace);
+        const destination = normalizeTelegramDrivePath(destinationPath || '');
+        if (!targetDrive.getDirectory(targetUser.id, destination)) throw new Error('DIRECTORY_NOT_FOUND');
+        const selectedDirectory = selection?.kind === 'directory';
+        const selectedPath = selectedDirectory ? normalizeTelegramDrivePath(selection.path || '') : '';
+        let directories = [], files = [];
+        if (kind === 'share') {
+            if (selectedDirectory) {
+                if (!selectedPath || !grant.directories.includes(selectedPath)) throw new Error('DIRECTORY_NOT_FOUND');
+                directories = grant.directories.filter(value => value === selectedPath || value.startsWith(selectedPath + '/'));
+                files = grant.files.filter(entry => entry.folderPath === selectedPath || entry.folderPath.startsWith(selectedPath + '/'));
+            } else {
+                const selected = grant.files.find(entry => entry.id === selection?.id);
+                if (!selected) throw new Error('FILE_NOT_FOUND');
+                files = [selected];
+            }
+        } else {
+            const base = normalizeTelegramDrivePath(grant.path || '');
+            if (selectedDirectory) {
+                if (grant.kind !== 'directory' || !selectedPath || selectedPath !== base && !selectedPath.startsWith(base + '/')) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                const tree = sourceDrive.getDirectoryTree(ownerId, selectedPath);
+                if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
+                directories = tree.directories.map(entry => entry.path);
+                files = tree.files.map(entry => ({ id: entry.id, folderPath: entry.folderPath }));
+            } else {
+                const file = sourceDrive.get(ownerId, selection?.id);
+                if (!file || grant.kind === 'file' && file.id !== grant.fileId || grant.kind === 'directory' && base && file.folderPath !== base && !file.folderPath.startsWith(base + '/'))
+                    throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                files = [{ id: file.id, folderPath: file.folderPath }];
+            }
+        }
+        if (files.length > 10000 || directories.length > 10000) throw new Error('CONTENT_COPY_TOO_LARGE');
+        const rootName = selectedDirectory ? selectedPath.split('/').at(-1) : '';
+        const targetRoot = [destination, rootName].filter(Boolean).join('/');
+        if (selectedDirectory && targetDrive.getDirectory(targetUser.id, targetRoot)) throw new Error('DISK_NAME_CONFLICT');
+        const translate = path => selectedDirectory ? [targetRoot, path.slice(selectedPath.length).replace(/^\//, '')].filter(Boolean).join('/') : destination;
+        const candidates = files.map(entry => {
+            const source = sourceDrive.get(ownerId, entry.id);
+            if (!source || ['blocked', 'deleted'].includes(source.reviewStatus) || !source.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            return { source, folderPath: translate(entry.folderPath) };
+        });
+        const leases = new Map();
+        try {
+            for (const { source } of candidates) if (!leases.has(source.contentId)) leases.set(source.contentId, content.lease(source.contentId, targetUser.id, 'copy-granted', 'reuse'));
+            const created = persistence.atomic(() => {
+                for (const directory of directories.sort((a, b) => a.length - b.length)) targetDrive.createDirectory(targetUser.id, translate(directory), maxDepth(), 'system');
+                const result = [];
+                for (const { source, folderPath } of candidates) {
+                    const physical = content.resolve(source.contentId)?.physical;
+                    if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
+                    const backend = physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+                    if (!backend) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+                    const contentCopyGrant = { kind, id: grant.id, ...(kind === 'share' ? { token: grant.token } : { viewerId: targetUser.id, version: grant.memberVersions?.[targetUser.id] || 1 }),
+                        sourceSpace: diskSpace, sourceOwnerId: ownerId, sourceFileId: source.id };
+                    const copied = targetDrive.putCopiedObject(targetUser, folderPath, source.name,
+                        { ...source, ...physical, contentId: source.contentId, contentLease: leases.get(source.contentId), contentCopyGrant },
+                        physical.parts, backend, maxDepth());
+                    result.push({ id: copied.id, name: copied.name, folderPath: copied.folderPath });
+                }
+                return result;
+            }, () => targetDrive.reloadPersistence());
+            return { copied: created, directoryCount: directories.length, destination: targetRoot || destination };
+        } finally { for (const lease of leases.values()) content.releaseLease(lease); }
+    }
     let retryingCaptions = false, closed = false;
     let recoveringUploads = false, recoveryRetryTimer = null;
     const recoveryBacklog = [];
@@ -553,7 +640,53 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         try { shares.resolve(req.params.token); } catch (error) { remote.source.destroy(); throw error; }
         await pipeline(remote.source, res);
     }));
+    shared.post('/:token/copy', wrap((req, res) => {
+        const origin = req.get('Origin');
+        if (origin && origin !== getOrigin(req)) throw new Error('ORIGIN_MISMATCH');
+        const user = getIdentity(req);
+        if (!user) throw new Error('LOGIN_REQUIRED');
+        const share = shares.resolve(req.params.token);
+        const result = copyGrantedItem({ kind: 'share', grant: share, ownerId: share.ownerId, diskSpace: share.diskSpace,
+            selection: req.body?.selection, targetUser: user, targetSpace: String(req.body?.diskSpace || ''), destinationPath: req.body?.destinationPath || '' });
+        res.status(201).json(result);
+    }));
     shared.use(failure);
+    publicStatic.use(rateLimit({ windowMs: 60000, max: 1200, standardHeaders: true, legacyHeaders: false }));
+    publicStatic.use((req, res, next) => {
+        res.set({ 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin',
+            'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex, nofollow' });
+        next();
+    });
+    publicStatic.options('*', (_req, res) => res.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS').status(204).end());
+    publicStatic.use(wrap(async (req, res) => {
+        if (!['GET','HEAD'].includes(req.method)) return res.status(405).end();
+        const raw = req.originalUrl.split('?')[0];
+        if (!raw.startsWith('/s3pub/')) throw new Error('STATIC_NOT_FOUND');
+        const segments = raw.slice('/s3pub/'.length).split('/');
+        const token = segments.shift();
+        const decoded = segments.map(segment => decodeURIComponent(segment));
+        if (decoded.some(segment => !segment || segment === '.' || segment === '..' || /[\\/]/.test(segment))) throw new Error('STATIC_NOT_FOUND');
+        const grant = staticResources.resolve(token), filename = decoded.join('/');
+        const file = staticResources.file(grant, spaces.get(grant.diskSpace), filename);
+        const remaining = grant.expiresAt ? Math.max(0, Math.floor((grant.expiresAt - Date.now()) / 1000)) : 31536000;
+        if (!remaining) throw new Error('STATIC_NOT_FOUND');
+        res.set('Cache-Control', 'public, max-age=' + Math.min(remaining, 31536000));
+        if (/^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml)(?:;|$)/i.test(String(file.type || '')))
+            res.set('Content-Security-Policy', 'sandbox');
+        if (req.method === 'HEAD') return res.status(200).set({ 'Content-Type': file.type || 'application/octet-stream',
+            'Content-Length': String(file.size), 'Accept-Ranges': 'bytes' }).end();
+        const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+        const remote = await prepareRemoteResponse(req, res, backend, file, { inline: true, diskSpace: grant.diskSpace });
+        if (!remote) return;
+        try { staticResources.resolve(token); }
+        catch (error) { remote.source.destroy(); throw error; }
+        const afterWait = grant.expiresAt ? Math.max(0, Math.floor((grant.expiresAt - Date.now()) / 1000)) : 31536000;
+        if (!afterWait) { remote.source.destroy(); throw new Error('STATIC_NOT_FOUND'); }
+        res.set('Cache-Control', 'public, max-age=' + Math.min(afterWait, 31536000));
+        res.removeHeader('X-Drop2Tunnel-Telegram-Chat-Id');
+        await pipeline(remote.source, res);
+    }));
+    publicStatic.use(failure);
     const csrf = (req, res, next) => {
         const origin = req.get('Origin');
         if (origin && origin !== getOrigin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
@@ -566,6 +699,17 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     admin.get('/content-objects',wrap((req,res)=>res.set('Cache-Control','no-store').json({...contentAdmin.list(req.query),cleanup_mode:contentCleanupMode})));
     admin.get('/content-objects/:id',wrap((req,res)=>res.set('Cache-Control','no-store').json({...contentAdmin.detail(req.params.id),cleanup_mode:contentCleanupMode})));
     admin.get('/content-reference-files',wrap((req,res)=>res.set('Cache-Control','no-store').json(contentAdmin.files(req.query))));
+    admin.post('/content-reference-by-upload', wrap(async (req, res) => {
+        if (!String(req.get('Content-Type') || '').startsWith('application/octet-stream')) throw new Error('CONTENT_QUERY_INVALID');
+        const digest = crypto.createHash('sha256'); let size = 0;
+        for await (const chunk of req) {
+            size += chunk.length;
+            if (size > LOGICAL_FILE_UPLOAD_LIMIT) throw new Error('CONTENT_QUERY_TOO_LARGE');
+            digest.update(chunk);
+        }
+        const sha256 = digest.digest('hex');
+        res.json({ size, sha256, matches: contentAdmin.byHash(sha256, size) });
+    }));
     // Explicit administrator action only. Startup/schema migration never reads
     // Telegram to infer a trusted digest or merges historical contents.
     admin.post('/content-objects/:id/verify',wrap((req,res)=>{
@@ -672,6 +816,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const result = spaces.get(diskSpace).list(userId, req.query.path || '');
         res.json({ ...result, files: result.files.map(file => ({ ...publicFile(file), sourceAppId: inferSourceAppId(file, diskSpace) })) });
     }));
+    admin.get('/storage-search', wrap((req, res) => {
+        const q = String(req.query.q || '').trim();
+        const offset = Number(req.query.offset || 0), limit = Number(req.query.limit || 50);
+        if (!q || q.length > 256 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+            throw new Error('CONTENT_QUERY_INVALID');
+        const needle = q.toLocaleLowerCase('zh-CN'), users = adminUserMap(), results = [];
+        for (const { diskSpace, store: drive } of spaces.entries()) {
+            for (const folder of drive.adminDirectories()) {
+                if (!folder.path || !folder.name?.toLocaleLowerCase('zh-CN').includes(needle)) continue;
+                results.push({ ...folder, kind: 'directory', diskSpace, userId: folder.ownerId,
+                    user: users.get(folder.ownerId) || { id: folder.ownerId, name: '历史用户' }, appId: 'system' });
+            }
+            for (const file of drive.adminFiles()) {
+                if (!file.name.toLocaleLowerCase('zh-CN').includes(needle)) continue;
+                results.push({ ...publicFile(file), userId: file.ownerId, diskSpace,
+                    user: users.get(file.ownerId) || { id: file.ownerId, name: '历史用户' }, appId: inferSourceAppId(file, diskSpace) });
+            }
+        }
+        results.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-CN') || String(a.userId).localeCompare(String(b.userId)) || String(a.diskSpace).localeCompare(String(b.diskSpace)));
+        res.json({ items: results.slice(offset, offset + limit), total: results.length, offset, limit });
+    }));
     const adminFile = req => {
         const userId = String(req.query.user_id || req.body?.user_id || ''), diskSpace = String(req.query.disk_space || req.body?.disk_space || '');
         const store = spaces.get(diskSpace), file = store.get(userId, req.params.id);
@@ -679,6 +844,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         return { userId, diskSpace, store, file };
     };
     const adminFileBackend = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+    admin.get('/files/:id/technical', wrap((req, res) => {
+        const { userId, diskSpace, file } = adminFile(req);
+        const contentId = file.contentId || file.deletedContentId || '';
+        const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
+        const identity = auth.user(userId);
+        res.json({ logicalFile: file, owner: identity ? { id: identity.id, name: identity.name || '', username: identity.username || '',
+            telegramId: identity.telegramId || '', provider: identity.provider || '' } : { id: userId }, diskSpace,
+            storageBackend: backend ? { id: backend.id || '', channelId: backend.channelId || '', baseUrl: backend.baseUrl || '' } : null,
+            content: contentId ? contentAdmin.detail(contentId) : null });
+    }));
     admin.get('/files/:id/download', wrap(async (req, res) => {
         const { file } = adminFile(req);
         if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW');
@@ -786,6 +961,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!entry) throw new Error('COLLABORATION_NOT_FOUND');
         res.json({ collaboration: collaborationView(entry, req.diskUser.id) });
     }));
+    browser.post('/collaborations/:collaborationId/copy', wrap((req, res) => {
+        const entry = collaborations.authorized(req.params.collaborationId, req.diskUser.id);
+        if (!entry) throw new Error('COLLABORATION_NOT_FOUND');
+        const result = copyGrantedItem({ kind: 'collaboration', grant: entry, ownerId: entry.ownerId, diskSpace: entry.diskSpace,
+            selection: req.body?.selection, targetUser: req.diskUser, targetSpace: String(req.body?.diskSpace || ''), destinationPath: req.body?.destinationPath || '' });
+        res.status(201).json(result);
+    }));
     browser.delete('/collaborations/:collaborationId/invitations/:inviteId', wrap((req, res) => res.json(collaborations.revokeInvite(req.params.collaborationId, req.params.inviteId, req.diskUser.id, req.diskScope.diskSpace))));
     browser.delete('/collaborations/:collaborationId/members/:memberId', wrap((req, res) => res.json(collaborations.kick(req.params.collaborationId, req.params.memberId, req.diskUser.id, req.diskScope.diskSpace))));
     browser.delete('/collaborations/:collaborationId', wrap((req, res) => res.json(collaborations.disable(req.params.collaborationId, req.diskUser.id, req.diskScope.diskSpace))));
@@ -878,8 +1060,25 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!user) throw new Error('LOGIN_REQUIRED');
         req.diskUser = user; req.diskScope = { userId: user.id, diskSpace: '' }; req.diskStore = defaultStore;
         spaces.track('system', user.id, '');
+        const selectedSpace = String(req.get('X-Disk-Space') ?? req.query.disk_space ?? '');
+        if (selectedSpace) {
+            if (!spaces.usages().some(entry => entry.userId === user.id && entry.diskSpace === selectedSpace)
+                && !spaces.forUser(user.id).includes(selectedSpace)) throw new Error('DISK_SPACE_NOT_FOUND');
+            req.diskScope.diskSpace = selectedSpace;
+            req.diskStore = spaces.get(selectedSpace);
+            spaces.track('system', user.id, selectedSpace);
+        }
         next();
     }));
+    browser.get('/spaces', (req, res) => res.json({ spaces: spaces.forUser(req.diskUser.id).map(name => ({ id: name, name: name || '默认分区' })) }));
+    browser.post('/spaces', wrap((req, res) => res.status(201).json({ diskSpace: spaces.createForUser(req.diskUser.id, req.body?.name) })));
+    browser.get('/spaces/s3', (req, res) => res.json({ credential: userS3Credentials.userSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' }));
+    browser.post('/spaces/s3', wrap((req, res) => res.status(201).json({ credential: userS3Credentials.enableUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
+    browser.post('/spaces/s3/rotate', wrap((req, res) => res.json({ credential: userS3Credentials.rotateUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
+    browser.delete('/spaces/s3', wrap((req, res) => res.json({ credential: userS3Credentials.disableUserSpace(req.diskUser.id, req.diskScope.diskSpace) })));
+    browser.get('/static-resources', (req, res) => res.json({ links: staticResources.list(req.diskScope) }));
+    browser.post('/static-resources', wrap((req, res) => res.status(201).json({ link: staticResources.create(req.diskScope, req.diskStore, req.body || {}) })));
+    browser.delete('/static-resources/:id', wrap((req, res) => res.json({ link: staticResources.revoke(req.diskScope, req.params.id) })));
     external.use(wrap((req, res, next) => {
         const userId = req.get('X-Disk-User-Id') || req.query.user_id || req.body?.user_id;
         const telegramId = req.query.tg_user_id || req.body?.tg_user_id;
@@ -1762,7 +1961,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload, onContentDelete: cleanupDeletedContent,
         protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id), maxDepth });
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,
+    return { browser, external, admin, shared, publicStatic, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,
         revokeContentSession: req => contentProof.revokeSession(req),
         close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }

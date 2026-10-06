@@ -79,7 +79,7 @@ test('空白处菜单使用打开时的目录，支持根目录协同邀请，�
             document: { getElementById: () => ({ click: () => uploaded++ }) }, closeTelegramDriveItemMenu() {},
             renderTelegramDriveContextMenu: (item, anchor, actions) => { menu = { item, anchor, actions }; },
             createTelegramDriveFolder: path => { created = path; }, showTelegramDriveProperties: item => { property = item; },
-            inviteDiskCollaboration: item => { invited = item; },
+            inviteDiskCollaboration: item => { invited = item; }, manageTelegramDriveStaticLinks() {},
             showAppToast() {}, updateDiskCacheLabels() {}, telegramDriveRequest: () => { throw Error('本级缓存不应递归读取目录树'); },
             window: { DiskClient: { raw: async url => { requests.push(url); return { files: [{ kind: 'file', id: 'a' }, { kind: 'file', id: 'b' }] }; } },
                 TelegramDriveCache: { remove: async ids => { removed = [...ids]; } } }
@@ -88,7 +88,7 @@ test('空白处菜单使用打开时的目录，支持根目录协同邀请，�
             + ui.slice(ui.indexOf('function showTelegramDriveBackgroundMenu('), ui.indexOf('function renderTelegramDriveContextMenu('))
             + ';showTelegramDriveBackgroundMenu', context);
         const anchor = {}; show(anchor);
-        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录', '当前目录属性', '邀请协同', '清理本级目录缓存']);
+        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录', '当前目录属性', '邀请协同', '管理静态资源签名', '清理本级目录缓存']);
         context.telegramDrivePath = '后来切换的目录';
         for (const [, action] of menu.actions) await action();
         assert.equal(uploaded, 1); assert.equal(created, folderPath); assert.equal(property.path, folderPath);

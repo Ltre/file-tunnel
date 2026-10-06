@@ -1032,10 +1032,13 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const parts = remotes.map((remote, index) => ({ ...source.parts[index], ...remote, logicalFileId: id, partIndex: index + 1, partCount: remotes.length, originalSize: source.size }));
             const first = parts[0] || {};
             const item = { id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, type:source.type, size:source.size, metadata:{...(source.metadata || {})}, mediaIndex:source.mediaIndex,
-                contentId:source.contentId, contentLease:source.contentLease, contentSha256:source.contentSha256, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: source.contentId ? source.thumbnail : null, createdAt: now, updatedAt: now };
+                contentId:source.contentId, contentLease:source.contentLease, contentCopyGrant:source.contentCopyGrant, contentSha256:source.contentSha256, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: source.contentId ? source.thumbnail : null, createdAt: now, updatedAt: now };
             delete item.pendingRemoteCleanup;
             if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
-            records.set(item.id, item); touchDirectory(owner.id, safe, now); persist(); return item;
+            records.set(item.id, item); touchDirectory(owner.id, safe, now); persist();
+            delete item.contentCopyGrant;
+            delete item.contentLease;
+            return item;
         },
         preserveForRecovery(uploadId) {
             const job = uploads.get(String(uploadId));

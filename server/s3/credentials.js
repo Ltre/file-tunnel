@@ -35,8 +35,55 @@ function createS3Credentials(dataDir) {
         const item = read().credentials.find(entry => entry.accessKeyId === accessKeyId);
         return item?.enabled ? { ...item, secretAccessKey: unseal(item.encryptedSecret) } : null;
     }
-    const publicCredential = item => ({ accessKeyId: item.accessKeyId, enabled: item.enabled, userId: item.userId,
+    const publicCredential = item => ({ accessKeyId: item.accessKeyId, enabled: item.enabled, userId: item.userId, managedBy: item.managedBy || 'admin',
         remark: item.remark || '', bucketMappings: item.bucketMappings, createdAt: item.createdAt, updatedAt: item.updatedAt });
+    const userBucket = (userId, diskSpace) => `userbucket-${userId.toLowerCase()}${diskSpace ? '-' + crypto.createHash('sha256').update(diskSpace).digest('hex').slice(0, 12) : ''}`;
+    const userMapping = (item, userId, diskSpace) => item.userId === userId && item.bucketMappings?.some(mapping => mapping.diskSpace === diskSpace);
+    function userSpace(userId, diskSpace) {
+        const item = read().credentials.find(entry => entry.managedBy === 'owner-ui' && userMapping(entry, userId, diskSpace));
+        return item ? publicCredential(item) : null;
+    }
+    function enableUserSpace(userId, diskSpace) {
+        if (!/^[a-f0-9-]{36}$/i.test(userId) || typeof diskSpace !== 'string' || diskSpace.length > 100) throw new Error('S3_CREDENTIAL_INPUT_INVALID');
+        return mutate(data => {
+            const existing = data.credentials.filter(item => userMapping(item, userId, diskSpace));
+            if (existing.some(item => item.managedBy !== 'owner-ui') || existing.length > 1) throw new Error('S3_SPACE_ALREADY_MAPPED');
+            if (existing.length) {
+                const item = existing[0];
+                if (item.enabled) return publicCredential(item);
+                item.enabled = true;
+                const secretAccessKey = crypto.randomBytes(32).toString('base64url');
+                item.encryptedSecret = seal(secretAccessKey); item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+                return { ...publicCredential(item), secretAccessKey };
+            }
+            const bucket = userBucket(userId, diskSpace);
+            if (!validBucket(bucket) || data.credentials.some(item => item.bucketMappings?.some(mapping => mapping.bucket === bucket))) throw new Error('S3_SPACE_ALREADY_MAPPED');
+            let accessKeyId;
+            do { accessKeyId = `D2T${crypto.randomBytes(12).toString('hex').toUpperCase()}`; } while (data.credentials.some(item => item.accessKeyId === accessKeyId));
+            const secretAccessKey = crypto.randomBytes(32).toString('base64url'), now = Date.now();
+            const item = { accessKeyId, encryptedSecret: seal(secretAccessKey), userId, managedBy: 'owner-ui', enabled: true,
+                remark: `用户分区 · ${diskSpace || '默认分区'}`, bucketMappings: [{ bucket, diskSpace }], createdAt: now, updatedAt: now };
+            data.credentials.push(item);
+            return { ...publicCredential(item), secretAccessKey };
+        });
+    }
+    function rotateUserSpace(userId, diskSpace) {
+        return mutate(data => {
+            const item = data.credentials.find(entry => entry.managedBy === 'owner-ui' && userMapping(entry, userId, diskSpace) && entry.enabled);
+            if (!item) throw new Error('S3_ACCESS_KEY_NOT_FOUND');
+            const secretAccessKey = crypto.randomBytes(32).toString('base64url');
+            item.encryptedSecret = seal(secretAccessKey); item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+            return { ...publicCredential(item), secretAccessKey };
+        });
+    }
+    function disableUserSpace(userId, diskSpace) {
+        return mutate(data => {
+            const item = data.credentials.find(entry => entry.managedBy === 'owner-ui' && userMapping(entry, userId, diskSpace));
+            if (!item) throw new Error('S3_ACCESS_KEY_NOT_FOUND');
+            item.enabled = false; item.updatedAt = Math.max(Date.now(), item.updatedAt + 1);
+            return publicCredential(item);
+        });
+    }
     function validate({ userId, bucketMappings, remark = '', enabled = true }) {
         if (typeof userId !== 'string' || !userId || userId.length > 100 || typeof remark !== 'string' || remark.length > 160 || /[\u0000-\u001f\u007f]/.test(remark) || typeof enabled !== 'boolean'
             || !Array.isArray(bucketMappings) || !bucketMappings.length || bucketMappings.length > 100
@@ -103,6 +150,6 @@ function createS3Credentials(dataDir) {
     }
     function disable(accessKeyId) { return update(accessKeyId, { enabled: false }); }
     function list() { return read().credentials.map(publicCredential); }
-    return { find, create, update, rotate, disable, list };
+    return { find, create, update, rotate, disable, list, userSpace, enableUserSpace, rotateUserSpace, disableUserSpace, userBucket };
 }
 module.exports = { createS3Credentials, validBucket };

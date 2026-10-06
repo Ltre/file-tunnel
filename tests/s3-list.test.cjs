@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { listV2 } = require('../server/s3/routes');
+const { listV1, listV2 } = require('../server/s3/routes');
 const { objectKey, parseByteRange } = require('../server/object-storage');
 
 test('ListObjectsV2 的目录聚合、分页令牌和 start-after 按 Key 排序', () => {
@@ -18,6 +18,16 @@ test('ListObjectsV2 的目录聚合、分页令牌和 start-after 按 Key 排序
     const emptyDirectory = { kind: 'virtual-directory', key: 'empty/', size: 0 };
     assert.match(listV2({ objects: [emptyDirectory], bucket: 'backup', query: { delimiter: '/' }, secret: 'secret' }), /<CommonPrefixes><Prefix>empty\/<\/Prefix>/);
     assert.doesNotMatch(listV2({ objects: [emptyDirectory], bucket: 'backup', query: {}, secret: 'secret' }), /<Contents>/);
+});
+test('FolderSync 风格 ListObjects V1 支持无 list-type 的列表与 marker 翻页', () => {
+    const objects = ['a/1.txt', 'a/2.txt', 'b.txt'].map((key, index) => ({ key, kind: 'object', size: index, etag: 'e' + index, updatedAt: Date.now() }));
+    const first = listV1({ objects, bucket: 'backup', query: { delimiter: '/', 'max-keys': '1' } });
+    assert.match(first, /<CommonPrefixes><Prefix>a\/<\/Prefix>/);
+    assert.match(first, /<IsTruncated>true<\/IsTruncated>/);
+    assert.match(first, /<NextMarker>a\/<\/NextMarker>/);
+    const second = listV1({ objects, bucket: 'backup', query: { delimiter: '/', marker: 'a/' } });
+    assert.match(second, /<Key>b.txt<\/Key>/);
+    assert.doesNotMatch(second, /<Prefix>a\/<\/Prefix>/);
 });
 test('S3 Key 无法无损映射时明确拒绝，Range 仅返回指定字节', () => {
     assert.equal(objectKey('中 文/かな/# + %.txt').name, '# + %.txt');

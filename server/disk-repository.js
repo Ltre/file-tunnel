@@ -22,7 +22,7 @@ function transaction(connection, work, write = false) {
 const TABLES = new Set([
     'files', 'directories', 'users', 'apps', 'backends', 'tokens',
     'spaces', 'space_usage', 'shares', 'operations', 'chunk_ids',
-    'cache_owners', 'collaborations', 'placeholders'
+    'cache_owners', 'collaborations', 'placeholders', 'static_resources'
 ]);
 const connections = new Map();
 

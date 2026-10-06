@@ -168,7 +168,7 @@ test('目录查询发现登录已失效时仍回到登录界面，不把旧账�
     const context = vm.createContext({ telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
         telegramDriveSort: 'name', telegramDriveSortAscending: true, telegramDriveView: 'list',
         document: { getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); }, createElement: node },
-        window: { DiskClient: { raw: async () => { throw new Error('LOGIN_REQUIRED'); } } },
+        window: { DiskClient: { raw: async () => { throw new Error('LOGIN_REQUIRED'); }, getSpace: () => '' } },
         getTelegramDriveIdentity: async () => { identities++; return { identity: null, oidcMode: 'mock' }; },
         isTelegramDriveGlobalSearchActive: () => false, closeTelegramDriveItemMenu() {}, startTelegramDriveLogin() {}, encodeURIComponent });
     vm.runInContext(ui.slice(ui.indexOf('async function renderTelegramDrive('), ui.indexOf('async function navigateTelegramDrive(')), context);

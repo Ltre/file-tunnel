@@ -2601,6 +2601,26 @@
             background: color-mix(in srgb, var(--accent) 8%, var(--surface-soft));
         }
 
+        .telegram-drive-item.disk-search-located {
+            border-color: #f09021 !important;
+            background: #ffe7ae !important;
+            box-shadow: 0 0 0 3px #ffb74388;
+        }
+
+        .telegram-drive-space-picker { max-width: min(48vw, 210px); min-height: 34px; border: 1px solid var(--panel-border); border-radius: 8px; padding: 5px 8px; background: var(--surface-soft); color: inherit; }
+        .telegram-drive-space-manage { margin-left: 6px; padding: 6px 10px; }
+        .telegram-drive-space-dialog { display: grid; gap: 12px; max-height: 65vh; overflow: auto; }
+        .telegram-drive-static-dialog { display: grid; gap: 12px; max-height: min(60vh, 520px); overflow: auto; min-width: 0; }
+        .telegram-drive-static-dialog label { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+        .telegram-drive-static-dialog input, .telegram-drive-static-dialog select { box-sizing: border-box; width: 100%; min-width: 0; }
+        .telegram-drive-static-dialog label button { justify-self: start; }
+        .telegram-drive-static-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px; border: 1px solid rgba(120, 145, 165, .3); border-radius: 10px; }
+        .telegram-drive-space-create { display: flex; gap: 8px; flex-wrap: wrap; }
+        .telegram-drive-space-create input { min-width: 0; flex: 1 1 170px; padding: 8px; }
+        .telegram-drive-s3-details { display: grid; gap: 10px; min-width: 0; }
+        .telegram-drive-s3-details label { display: grid; gap: 4px; overflow-wrap: anywhere; }
+        .telegram-drive-s3-details input { min-width: 0; width: 100%; padding: 8px; font: 12px ui-monospace, Consolas, monospace; }
+
         .disk-drop-target {
             border-color: var(--accent) !important;
             background: color-mix(in srgb, var(--accent) 18%, var(--surface-soft)) !important;
