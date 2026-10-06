@@ -227,3 +227,32 @@
 - 定向 API 回归 **23/23** 通过。初次测试的 1 个失败来自新测试误读公共上传结果中的内部 parts，改为读取权威 store 投影后通过；另一次沙箱中 `spawn EPERM` 在测试启动前发生，按权限流程重新运行通过，未将其当作应用故障。
 - 完整执行 `node --test --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs`：**647 tests、647 pass、0 fail、0 skipped、0 cancelled**。覆盖 Content、PoP、GC/recovery、SQLite/migration、S3、协同、Share、原网盘及隧道回归。
 - 本轮及保留的相关 JS/CJS 语法检查通过；任务文件的 `git diff --check` 通过。所有自动删除测试使用独立临时数据库与模拟 Telegram 上游，未宣称真实公网删除验收；真实数据库只读调查，没有后台强制清除有效当前引用。
+
+## 261005：后台 Content Object 删除跟踪与跨账号引用查询
+
+### 问题与实现边界
+
+- 在 `dev/2609-s6-disk-shared-content-object` 当前代码基础上修改。开始时 HEAD 为 `29177fdef3ea1e369af4d9f6db2583a593d14592`，收尾时 HEAD 为 `0f451553134c644269a504bf845bb8e8220b1804`（期间用户仅更新 prompt）；未提交、未暂存，不改写用户 prompt。
+- 后台已有 Content 列表和详情 API，但 `/disk-management` 没有对应查询界面；不能直接按指定文件定位所有账号、分区的共享引用，也不能便捷核对 DELETING 的远端失败、重试和租约。不能用“频道消息仍在”或“审计行仍在”直接推断正文仍可复用。
+- 此次只增加管理员诊断与位置导航，不修改 Content 生命周期、清理 worker、PoP、上传、S3、协同或隧道传输，不主动验证、合并、下载或清理 Telegram 文件；无需 schema 迁移。
+
+### API 与一致性
+
+- 新增 `server/disk-content-admin.js`，封装短 SQLite 只读快照；列表和详情沿用管理员 API，添加状态筛选、分页、全局状态计数和实际 cleanup mode。清理任务显示 purpose/state、尝试次数、领取时间、下次检查时间及原始错误，详情包含已完成任务和有效租约。
+- 新增 `GET /api/telegram/disk-admin/content-reference-files`，支持文件名的字面子串或 Logical ID；文件查询默认每页 30 条、状态列表每页 50 条，单页上限 100；详情仍返回该 Content 在全部账号、全部 scope 下的完整引用。
+- 每个引用返回公开用户识别信息、完整路径、Logical ID、文件大小及管理页目录链接。仅从用户 payload 提取 name/username/Telegram ID/provider，不导出 Passkey、公钥、密钥、PoP challenge 或租约 token。审核删除占位不再计作活动引用。
+- 查询均使用参数绑定与 `Cache-Control: no-store`；未知状态、非法分页或空关键字明确报错。保留旧无参数 Content 全列表行为。检查确认 `disk_content_refs` 对 Logical File 有复合外键及 ON DELETE CASCADE；不为了模拟不合法孤立引用而放宽约束。
+
+### 页面交互
+
+- `/disk-management` 新增“同 Content Object 文件引用查询”和“Content Object 删除跟踪”。默认分别标示 DELETING / DELETE_PENDING，可筛选、翻页及手动刷新；observe 模式明确显示远端清理暂停。
+- 文件行增加“查询同内容引用”；搜索结果先区分同名不同位置，选择后按账号/分区分组显示全部引用卡片。详情展示清理任务、有效在途租约，以及可展开的历史 revision/Anchor 物理消息定位信息；零引用明确提示不能靠审计行判断可复用。
+- “打开所在目录 ↗”使用新 Tab 打开 `/disk-management?user_id=...&disk_space=...&path=...&file_id=...`，恢复目标账号/分区/目录并高亮文件约 3 秒。管理员查看其它账号仍走后台，不切换前台身份或绕过协同访问范围；会话过期后的重新登录保留这些位置参数。
+- 卡片、状态色、路径、按钮间距与页面原风格一致；窄屏 CSS 使用单列、换行及局部表格滚动。目录异步请求迟到的结果或错误不覆盖当前已切换目录。
+
+### 验证与收尾
+
+- 新增 `tests/disk-content-admin.test.cjs` 和独立临时 SQLite fixture：覆盖管理员权限、普通用户不可访问、状态分页、错误/租约展示、跨账号与跨分区引用、准确目录读取、中文/日文/`&` 路径编码、审核占位、凭据不泄漏、参数校验及旧接口兼容；断言查询不调用 Telegram、不改变清理状态。
+- 完整回归 `node --test --test-concurrency=4 --test-timeout=120000 tests/*.test.cjs`：**650/650 通过，0 fail、0 skipped、0 cancelled**。收尾增强目录链接读取断言后，新增定向测试 **3/3 通过**；一次沙箱 `spawn EPERM` 发生在测试启动前，按权限流程重新运行成功。JS/CJS 语法检查通过。
+- 使用 computer-use 在隔离 fixture 实际打开后台：验证文件搜索、三个跨账号/分区引用、DELETING 筛选、失败详情、新 Tab 对应目录及目标文件；截图核对卡片、状态与按钮布局，控制台无 error/warn。IAB 视口覆盖没有实际改变窗口宽度，因此未将该操作记为移动端实机验收；窄屏适配按 CSS 检查，仍需实际设备确认。
+- 没有访问或修改真实网盘数据库，也未调用真实 Telegram。测试服务器与临时数据库关闭清理，测试页面关闭，保留可重复使用的测试 fixture；共享 Content 文档同步补充 API 参数及后台操作说明。

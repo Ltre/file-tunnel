@@ -122,14 +122,24 @@ legacy_unverified 文件继续原权限读取，但不能通过 hash 跨用户�
 
 ```http
 GET /api/telegram/disk-admin/content-objects
+GET /api/telegram/disk-admin/content-objects?state=DELETING,DELETE_PENDING&limit=50&offset=0
 GET /api/telegram/disk-admin/content-objects/<content-id>
+GET /api/telegram/disk-admin/content-reference-files?q=<文件名或Logical文件ID>&limit=30&offset=0
 POST /api/telegram/disk-admin/content-objects/<content-id>/verify
 Content-Type: application/json
 
 {"merge": false}
 ```
 
-列表接口返回 Content 汇总、引用数、有效 lease 数以及待处理 cleanup/caption 队列。详情接口返回指定 Content、Logical 引用、各物理 revision、Anchor 和有效 lease；它是后台管理员接口，不应作为普通文件列表使用。verify 返回 202 `operation_id`；任务结果报告 `verified` / `contentId` / `merged`。`merge: true` 在完整 SHA/size 验证、同后端及 canonical 健康校验后合并。验证不在页面打开或启动时自动执行；大文件验证会产生真实回源流量。
+列表接口返回 Content 汇总、引用数、有效 lease 数以及待处理 cleanup/caption 队列。支持 `state`（逗号分隔）、`limit`（1～100）和 `offset`（从 0 开始）；指定筛选或分页时返回 `total`、`limit`、`offset`，队列仅包含这一页的 Content。未指定参数时保留原完整列表行为。另有全局状态 `counts` 和实际 `cleanup_mode`，可区分清理队列运行或 observe 暂停。
+
+文件查询接口对 Logical ID 精确匹配、文件名按字面子串匹配（不把 `%` / `_` 当通配符），`q` 非空且不超过 256 字符；返回 `files`、`total`、`limit`、`offset`。每个结果包括 `logical_file_id`、`owner_id`、`scope`、`content_id`、`reference_count`、`full_path`、公开用户识别信息及 `location_url`。同名文件按账号、分区和目录分别列出；审核删除占位可以被查到，但已解除 Content 的绑定，不计活动引用。
+
+详情接口返回指定 Content、**全部账号与分区的 Logical 引用**、各物理 revision、Anchor、有效 lease 和该 Content 的完整清理任务（含已完成任务）。引用同样附有完整路径和目录链接。三种 GET 都设置 `Cache-Control: no-store`，沿用管理员权限，仅执行短 SQLite 读取快照，不触发 Telegram、验证、合并或清理。公开用户识别信息不包含 Passkey、公钥、密钥或登录凭据。
+
+后台 `/disk-management` 提供“同 Content Object 文件引用查询”与“Content Object 删除跟踪”区域。也可在文件行点击“查询同内容引用”，选定文件后按账号/分区分组展示所有引用位置；“打开所在目录 ↗”在新页面进入后台的对应用户、分区及目录，并高亮目标文件约 3 秒，不切换前台登录身份。删除跟踪默认列出 DELETING 与 DELETE_PENDING，可单独筛选并分页，显示清理重试次数、下次检查时间、错误、有效租约和历史物理消息。通过“刷新状态”更新；页面不自动轮询或执行删除。零引用审计行仍存在不代表能复用，DELETING 也不等于 Telegram 已经清理成功。
+
+verify 返回 202 `operation_id`；任务结果报告 `verified` / `contentId` / `merged`。`merge: true` 在完整 SHA/size 验证、同后端及 canonical 健康校验后合并。验证不在页面打开或启动时自动执行；大文件验证会产生真实回源流量。
 
 诊断工具 `tools/collect-tgdisk-diagnostics.cjs` 继续导出实际网络日志和任务，可附加 Content 状态、引用、lease、清理的聚合计数；不导出 nonce、expected digest、凭据或物理正文。进度分别列出浏览器上传字节、Telegram 发送/确认字节、已复用字节和文件就绪数，不把复用字节计为网络流量。
 

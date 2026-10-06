@@ -21,6 +21,7 @@ const { createObjectStorage } = require('./object-storage');
 const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
 const { createProgressiveUploadRunner } = require('./disk-progressive-upload');
 const { createContentProof } = require('./disk-content-proof');
+const { createContentAdmin } = require('./disk-content-admin');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -561,22 +562,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use(csrf);
 
     admin.use(csrf);
-    admin.get('/content-objects',wrap((req,res)=>res.json(content.withDatabase(db=>({
-        contents:db.prepare(`SELECT c.*, (SELECT count(*) FROM disk_content_refs r WHERE r.content_id=c.id) AS reference_count,
-            (SELECT count(*) FROM disk_content_leases l WHERE l.content_id=c.id AND l.expires_at>?) AS active_leases FROM disk_contents c ORDER BY c.created_at DESC`).all(Date.now()),
-        cleanup:db.prepare("SELECT id,content_id,revision,purpose,state,attempts,retry_at,error FROM disk_content_cleanup WHERE state!='COMPLETED'").all(),
-        captions:db.prepare("SELECT content_id,revision,state,attempts,retry_at,error FROM disk_content_caption_jobs WHERE state!='COMPLETED'").all()
-    })))));
-    admin.get('/content-objects/:id',wrap((req,res)=>{
-        const item=content.resolve(req.params.id);if(!item)throw new Error('CONTENT_NOT_FOUND');
-        res.json(content.withDatabase(db=>({content:item,
-            references:db.prepare(`SELECT r.scope,r.logical_file_id,r.content_version,f.owner_id,f.folder_path,f.name
-                FROM disk_content_refs r JOIN disk_files f ON f.scope=r.scope AND f.id=r.logical_file_id WHERE r.content_id=?`).all(item.id),
-            revisions:db.prepare('SELECT revision,state,payload FROM disk_content_revisions WHERE content_id=? ORDER BY revision').all(item.id).map(row=>({...row,payload:JSON.parse(row.payload)})),
-            anchors:db.prepare('SELECT channel_id,message_id,revision,role,state FROM disk_content_anchors WHERE content_id=?').all(item.id),
-            leases:db.prepare('SELECT revision,kind,viewer_id,upload_id,expires_at FROM disk_content_leases WHERE content_id=? AND expires_at>?').all(item.id,Date.now())
-        })));
-    }));
+    const contentAdmin=createContentAdmin(content);
+    admin.get('/content-objects',wrap((req,res)=>res.set('Cache-Control','no-store').json({...contentAdmin.list(req.query),cleanup_mode:contentCleanupMode})));
+    admin.get('/content-objects/:id',wrap((req,res)=>res.set('Cache-Control','no-store').json({...contentAdmin.detail(req.params.id),cleanup_mode:contentCleanupMode})));
+    admin.get('/content-reference-files',wrap((req,res)=>res.set('Cache-Control','no-store').json(contentAdmin.files(req.query))));
     // Explicit administrator action only. Startup/schema migration never reads
     // Telegram to infer a trusted digest or merges historical contents.
     admin.post('/content-objects/:id/verify',wrap((req,res)=>{
