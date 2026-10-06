@@ -15,9 +15,33 @@ S3 与传统 API 是两个协议入口，共用网盘存储核心；`server/s3/r
 | S3 Endpoint | `https://HOST/S3API` | SigV4，path-style Bucket / 对象操作 |
 | 对象读取入口 | `https://HOST/s3/{bucket}/{key}` | 同样必须使用 SigV4，仅 GET / HEAD；不是公开分享链接 |
 
-例如 Bucket `backup` 中对象 `音乐/专辑/01 Song.flac` 的 API 路径为 `/S3API/backup/音乐/专辑/01 Song.flac`，客户端按标准 URL 编码并签名。签名必须包含完整挂载路径 `/S3API`（读取入口则为 `/s3`）；不能按 `/backup/...` 签名后再追加前缀。
+`/s3/{bucket}/{key}` 是另一个只读 HTTP 入口，不是可直接粘贴到浏览器地址栏的公开下载链接。每次 GET / HEAD 都要由 S3 客户端使用有权访问该 Bucket 的 Access Key / Secret Access Key 生成 SigV4 请求，并携带签名请求头；只有 URL、没有签名头会被拒绝。当前不支持 presigned URL，因此也不能生成无需签名请求头的临时下载链接。`/s3` 与 `/S3API` 使用同一组凭据和 Bucket 映射规则，但 SigV4 覆盖完整请求路径：针对 `/S3API/{bucket}/{key}` 算出的签名不能用于 `/s3/{bucket}/{key}`。两种路径都要结合签名凭据才能确定实际网盘对象。
 
-Bucket 是 **Access Key 所绑定的网盘用户 UUID 与分区的映射**，不是 Telegram 频道，也不是第三方 `app_id`。`backup=` 表示该用户的默认分区；`photos=photos` 表示名为 photos 的分区。凭据仅能访问其列出的 Bucket，不能通过请求另一个 `user_id` 切换用户。S3 对象和原生网盘中同一用户、同一分区的文件互相可见。
+例如 Bucket `mobile` 中对象 `音乐/专辑/01 Song.flac` 的 API 路径为 `/S3API/mobile/音乐/专辑/01 Song.flac`，客户端按标准 URL 编码并签名。签名必须包含完整挂载路径 `/S3API`（读取入口则为 `/s3`）；不能按 `/mobile/...` 签名后再追加前缀。`mobile` 是下文示例中的 Bucket 别名，名称本身不表示网盘分区。
+
+### 1.1 Bucket、网盘用户与分区
+
+一组 Access Key / Secret Access Key 固定绑定一个网盘用户 UUID（`userId`），其每条 Bucket 映射保存一个 S3 客户端可见的 `bucket` 名称和一个网盘分区名 `diskSpace`。请求 `/S3API/{bucket}/{key}` 时，服务端**先按签名中的 Access Key ID 确定凭据**，再只在该凭据的映射中查找 `bucket`，用凭据的 `userId` 加上映射的 `diskSpace` 定位网盘数据。`diskSpace` 为空字符串表示默认分区。Bucket 名只是可配置的别名，字面内容不会自动决定用户或分区；它不是 Telegram 频道，也不是第三方 `app_id`。
+
+以下均为示例映射，特意让 Bucket 名和分区名不同：
+
+| 签名凭据绑定用户 | Bucket → `diskSpace` | 请求路径 | 实际网盘逻辑位置 |
+|---|---|---|---|
+| 用户 U1 | `mobile` → `""` | `/S3API/mobile/a.zip` | U1 / 默认分区 / `a.zip` |
+| 用户 U1 | `camera` → `family` | `/S3API/camera/2027/b.jpg` | U1 / `family` 分区 / `2027/b.jpg` |
+| 用户 U2 的另一组凭据 | `vault` → `archive` | `/S3API/vault/2027/b.jpg` | U2 / `archive` 分区 / `2027/b.jpg` |
+
+斜杠后的 `key` 是分区内的相对目录和文件名：`a.zip` 对应 `a.zip`，不会因 Bucket 映射而改名为 `z.zip`。同一组凭据中的 Bucket 名不得重复。同一分区也可以有多个 Bucket 别名，它们看到的是同一批逻辑文件，不会生成副本。凭据仅能访问其列出的 Bucket，S3 请求不能另传 `user_id` 切换用户；S3 与原生网盘中同一用户、同一分区的文件互相可见。
+
+**当前实现的限制：请求路径本身不是全局唯一的对象标识。**不同凭据允许重复使用同一个 Bucket 名。例如，若 U1 的凭据把 `camera` 映射到 `family`，U2 的凭据也把 `camera` 映射到 `archive`，同一请求路径 `/S3API/camera/2027/b.jpg` 用 U1 的 Access Key 签名会访问 U1 / `family`，用 U2 的 Access Key 签名会访问 U2 / `archive`。因此必须连同签名凭据理解请求指向，不能仅凭 URL 路径判断是哪一份文件。修改凭据绑定用户或 Bucket 映射也会改变后续请求所指向的逻辑位置，不搬迁已有文件。若要求 URL 路径单独且长期唯一定位一份数据，需要另行设计全局 Bucket 唯一性和映射变更规则；当前代码没有实现。当前也不提供 S3 CreateBucket / DeleteBucket，Bucket 由接入配置中的映射建立。
+
+### 1.2 上传存储后端与已有文件
+
+`userId + diskSpace` 决定文件在网盘中的逻辑归属；“上传存储后端”决定需要向 Telegram 发送新文件内容时使用哪组 Bot 凭据、目标频道和 Bot API 地址。每条 Bucket 映射可以留空 `backendId`，使用服务器当前配置的 Bot Token、当前启用的网盘托管频道和 Bot API 地址；也可以指定一个已经保存的后端 ID。Bucket 名或分区名都不决定 Telegram 频道。
+
+后台“已有后端”下拉框读取网盘已保存的后端记录（`disk_backends`）；这些记录主要由传统网盘 API 换取令牌时，按 Bot Token、频道和 Bot API 地址组合登记。它们不是“托管频道”清单，后台 S3 页面也没有新建后端、核对历史文件与后端对应关系或迁移文件的流程。**现阶段普通 S3 接入请保持“默认网盘后端”**；显式后端 ID 是供已明确掌握相应 Bot/频道配置的现有接入复用的能力，不应仅凭下拉框里出现一个频道 ID 就选择它。第三方 S3 客户端不会取得 Bot Token。
+
+新对象上传和 CopyObject 目标需要写入 Telegram 时使用目标 Bucket 映射指定的后端；文件索引会保存实际使用的 `backendId` 和 `channelId`。已有文件的读取和删除按文件自身记录的物理后端处理，更改 Bucket 映射的后端或切换当前托管频道不会迁移旧文件。对于未记录显式 `backendId` 的默认后端文件，读取时使用文件记录的旧 `channelId` 和服务器**当前**配置的 Bot Token；更换 Bot 或撤销它对旧频道的访问权限，可能导致旧文件无法读取或清理。命中共享 Content 的上传可能复用已有 Telegram 内容，不必重新发送消息；0 Byte 对象和目录 marker 也不发送文件内容。
 
 ## 2. 管理第三方接入与凭据
 
@@ -27,11 +51,13 @@ Bucket 是 **Access Key 所绑定的网盘用户 UUID 与分区的映射**，不
 
 - **备注**：用于辨认第三方，例如“FolderSync · 手机 A”；最长 160 字符，可以修改。
 - **绑定网盘账号**：选择已经建立的网盘用户 UUID，不是 Telegram 数字 User ID。管理页同时显示账号名称和 UUID。
-- **Bucket → 网盘分区**：每个 Bucket 指向绑定用户的默认分区或已经存在的命名分区。默认分区显示“默认分区”；不同接入可以使用各自的 Bucket 名称。同一组凭据不能重复填写同名 Bucket。
-- **上传存储后端**：可以为映射选择已有后端，或保持默认网盘后端；不会向第三方客户端暴露 Bot Token。
+- **Bucket → 网盘分区**：为所选用户填写 S3 Bucket 别名并选择其默认分区或已存在的命名分区；Bucket 名与分区名不要求相同，映射规则见第 1.1 节。
+- **上传存储后端**：每条映射独立选择；普通接入保持“默认网盘后端”。“已有后端”及旧文件读取规则见第 1.2 节。
 - **启用 / 停用**：对新 S3 请求立即生效，不删除网盘用户、对象或已建立的映射。
 - **修改**：可以修改备注、绑定用户、Bucket 映射和启用状态；不会搬迁已有文件或改变文件所有权。若其他管理操作已经更新该凭据，过期表单会被拒绝，需要刷新再编辑。
 - **轮换 Secret**：Access Key ID 保持不变，生成新 Secret，原 Secret 对新请求立即失效。需要同步更新第三方客户端；新 Secret 只在本次生成后的卡片中显示，不会在以后查看列表时恢复显示。
+
+分区下拉框只显示当前用户的默认分区，以及该用户已有使用记录或文件 / 目录的命名分区；页面不提供新建分区操作。如果只有“默认分区”，可先通过已鉴权的传统网盘 API，以该用户 UUID 和所需 `disk_space` 发起业务请求：服务端在处理请求时登记该用户使用的分区，不必先上传文件；随后刷新本页即可选择。S3 客户端本身不需要调用传统 API。
 
 创建结果和轮换结果中的 Secret 只在当前页面暂时显示，不写入浏览器持久缓存；请及时复制并保存。管理页列出 Endpoint、Region、path-style 和 SigV4 配置信息；关闭 Secret 卡片或离开页面后不再显示 Secret。停用、轮换和改动映射不会强制终止已经通过鉴权的请求，请在敏感权限切换前安排客户端停止正在进行的传输。
 
@@ -44,12 +70,12 @@ Bucket 是 **Access Key 所绑定的网盘用户 UUID 与分区的映射**，不
 先在网盘中建立用户，取得网盘用户 UUID；不是 Telegram 数字 User ID。管理员在服务器项目目录执行：
 
 ~~~powershell
-node tools/s3-credentials.cjs --data-dir .tunnel-data --create --user-id "<网盘用户UUID>" --remark "FolderSync 手机" --bucket "backup=" --bucket "photos=photos"
+node tools/s3-credentials.cjs --data-dir .tunnel-data --create --user-id "<网盘用户UUID>" --remark "FolderSync 手机" --bucket "mobile=" --bucket "camera=photos"
 ~~~
 
-- 可重复 `--bucket bucket=diskSpace`；Bucket 名称为 3–63 位小写字母、数字、点或短横线，首尾为字母 / 数字，不能含连续两个点、IPv4 格式或 AWS 保留的前后缀，同一凭据下不得重复。新建及修改映射遵循这项约束，已有记录的读取和停用保持兼容。保留前缀为 `xn--`、`sthree-`、`amzn-s3-demo-`；保留后缀为 `-s3alias`、`--ol-s3`、`.mrap`、`--x-s3`、`--table-s3`、`-an`。参考 [AWS Bucket 命名规则](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html)。
-- 可选 `--backend-id "<后端UUID>"` 指定已存在的存储后端，应用于该凭据全部 Bucket；省略时使用默认网盘上传后端。旧对象的读取 / 删除仍使用文件自身关联的后端。
-- 可选 `--remark` 设置第三方备注。命令行保留预先指定新命名分区的既有能力；后台界面限定为用户已存在的分区，避免误绑定。
+- 可重复 `--bucket bucket=diskSpace`；等号左侧是 S3 Bucket 别名，右侧是所绑定用户的网盘分区名，留空右侧表示默认分区。示例中 `mobile` 指向默认分区，`camera` 指向 `photos` 分区；两侧名称无需相同。Bucket 名称为 3–63 位小写字母、数字、点或短横线，首尾为字母 / 数字，不能含连续两个点、IPv4 格式或 AWS 保留的前后缀，同一凭据下不得重复。新建及修改映射遵循这项约束，已有记录的读取和停用保持兼容。保留前缀为 `xn--`、`sthree-`、`amzn-s3-demo-`；保留后缀为 `-s3alias`、`--ol-s3`、`.mrap`、`--x-s3`、`--table-s3`、`-an`。参考 [AWS Bucket 命名规则](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html)。
+- 可选 `--backend-id "<后端UUID>"` 将同一个已保存的上传后端应用于本次创建的全部 Bucket；与后台页面逐条映射选择不同。普通接入请省略，使用默认网盘后端；旧对象的读取 / 删除仍使用文件自身关联的后端，详见第 1.2 节。
+- 可选 `--remark` 设置第三方备注。命令行允许预先填写尚未在后台下拉框出现的命名分区；这只保存 Bucket 映射，不会创建文件。后台界面限定为用户已登记或已有内容的分区，避免误绑定。
 - 创建结果含 `accessKeyId`、`secretAccessKey`、`userId`、`bucketMappings`、备注和状态等。Secret Access Key **只在创建或轮换的当次结果中输出**，立即安全保存。
 - `.tunnel-data/s3-credentials.json` 保存映射及 AES-256-GCM 加密 Secret，独立密钥位于 `.tunnel-data/s3-secret.key`。两者一起备份，不得公开。S3 凭据配置目前仍使用该独立文件，不在 `disk.sqlite` 中。
 
@@ -162,4 +188,4 @@ S3 入口放在 HTTPS 反向代理后；代理需保留原始路径、查询参�
 
 先在测试环境通过真实 FolderSync 设备确认：连接、列表与分页、多级目录、超过 20 MB 上传、跨分片 Range 下载、覆盖、复制 / 重命名、批量删除、0 Byte 文件、目录 marker、中文 / 日文 / 空格 Key，以及服务重启后读取。自动化测试不代替客户端真机和公网代理验收。
 
-实现位置：`server/s3/routes.js`、`server/s3/sigv4.js`、`server/s3/credentials.js`、`server/object-storage.js`；后台管理位于 `server/s3/admin.js` 和 `client/s3-management.js`，安全手册渲染位于 `server/s3/guide.js`。共用上传 / 读取适配位于 `server/disk-api.js`，凭据工具为 `tools/s3-credentials.cjs`。设计背景见 [Implementation Guide](<../prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md>)，实际支持范围以上述当前实现为准。
+实现位置：`server/s3/routes.js`、`server/s3/sigv4.js`、`server/s3/credentials.js`、`server/object-storage.js`；后台管理位于 `server/s3/admin.js` 和 `client/s3-management.js`，安全手册渲染位于 `server/s3/guide.js`。共用上传 / 读取适配及分区登记位于 `server/disk-api.js`；已保存后端的登记和解析位于 `server/disk-auth.js`，默认后端由 `server.js` 传入；凭据工具为 `tools/s3-credentials.cjs`。设计背景见 [Implementation Guide](<../prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md>)，实际支持范围以上述当前实现为准。
