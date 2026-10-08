@@ -101,7 +101,7 @@
 @media(max-width:600px){.disk-tasks{padding:8px 12px}.disk-passkey-controls input{min-width:0;width:100%;flex-basis:100%}}
 @media(max-width:600px){.telegram-drive-search-wrap{width:100%;min-width:0}.telegram-drive-search-scope{font-size:.76rem}}
 @media(max-width:600px){.telegram-drive-create-menu{box-sizing:border-box;max-width:calc(100vw - 24px)}.telegram-drive-header-actions{gap:3px!important}.telegram-drive-header-actions .telegram-drive-icon-btn{width:34px;height:34px}}
-.disk-tunnel-picker{box-sizing:border-box;width:min(460px,calc(100vw - 24px));border:0;border-radius:16px;padding:22px;color:#233849;box-shadow:0 20px 70px #0005}
+.disk-tunnel-picker{position:fixed;inset:0;margin:auto;box-sizing:border-box;width:min(460px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:auto;border:0;border-radius:16px;padding:22px;color:#233849;box-shadow:0 20px 70px #0005}
 .disk-tunnel-picker::backdrop{background:#10203099}
 .disk-tunnel-picker strong{display:block;font-size:18px}.disk-tunnel-picker p{color:#607184;line-height:1.6}.disk-tunnel-picker select{box-sizing:border-box;width:100%;padding:12px;border:1px solid #bac8d5;border-radius:9px;background:white;color:#233849;font:inherit}.disk-tunnel-picker>div{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}.disk-tunnel-picker button{padding:9px 16px;border:1px solid #bdcad5;border-radius:8px;background:white}.disk-tunnel-picker button.primary{background:#236777;color:white;border-color:#236777}
 #telegramDriveOverlay .telegram-drive-manager{display:flex;flex-direction:column}

@@ -194,7 +194,7 @@ test('后台刷新更新当前目录，过期目录请求不能覆盖导航后�
     const context = { telegramDriveCurrentData: { files: [] }, telegramDriveRenderGeneration: 0, telegramDrivePath: '',
         document: { getElementById: id => id === 'telegramDriveOverlay' ? { hidden: false } : summary },
         window: { DiskClient: { raw: () => new Promise(resolve => requests.push(resolve)) } }, encodeURIComponent,
-        renderTelegramDriveItems() { renders++; }, renderTelegramDriveBreadcrumbs() {}, updateTelegramDriveSelectionBar() {}, scheduleTelegramDriveSearch() {}, refreshDiskCollaborations() { return Promise.resolve(); } };
+        renderTelegramDriveItems() { renders++; }, renderTelegramDriveBreadcrumbs() {}, updateTelegramDriveSelectionBar() {}, scheduleTelegramDriveSearch() {}, refreshDiskCollaborations() { return Promise.resolve(); }, refreshTelegramDriveStaticLinks() { return Promise.resolve(); } };
     vm.runInNewContext(code.slice(code.indexOf('async function refreshTelegramDriveContents()'), code.indexOf('async function navigateTelegramDrive(')), context);
     const first = context.refreshTelegramDriveContents(); requests[0]({ files: ['new'], summary: { fileCount: 1 } }); await first;
     assert.deepEqual(context.telegramDriveCurrentData.files, ['new']); assert.equal(renders, 1);

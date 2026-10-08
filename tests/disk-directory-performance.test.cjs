@@ -154,7 +154,7 @@ test('进入空目录直接刷新列表和面包屑，不再请求 /me 或重建
     const context = vm.createContext({ telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
         document: { getElementById: () => ({ hidden: false }) }, window: { DiskClient: { raw: async url => { calls.push(url); return { path: 'new', files: [], folders: [], breadcrumbs: [{ name: 'new', path: 'new' }] }; } } },
         getTelegramDriveIdentity: () => assert.fail('目录切换不应另查身份'), renderTelegramDriveBreadcrumbs: data => breadcrumbs.push(data.path),
-        renderTelegramDriveItems() {}, updateTelegramDriveSelectionBar() {}, refreshDiskCollaborations: async () => {}, scheduleTelegramDriveSearch() {}, encodeURIComponent });
+        renderTelegramDriveItems() {}, updateTelegramDriveSelectionBar() {}, refreshDiskCollaborations: async () => {}, refreshTelegramDriveStaticLinks: async () => {}, scheduleTelegramDriveSearch() {}, encodeURIComponent });
     vm.runInContext(ui.slice(ui.indexOf('async function renderTelegramDrive('), ui.indexOf('async function navigateTelegramDrive(')), context);
     await context.renderTelegramDrive({ contentsOnly: true });
     assert.deepEqual(calls, ['/list?path=new']); assert.deepEqual(breadcrumbs, ['new']);

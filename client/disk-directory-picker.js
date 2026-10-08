@@ -8,7 +8,7 @@
     };
     const contains = (root, path) => !root || path === root || path.startsWith(root + '/');
     async function choose({ items = [], title = '移动到', confirmText = '移动', initialPath = '', rootPath = '', rootName = '根目录',
-        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, showError = error => alert(error.message) }) {
+        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, controls = [], showError = error => alert(error.message) }) {
         rootPath = normalize(rootPath);
         const blocked = path => items.some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
         const display = path => '/' + (rootPath ? path.slice(rootPath.length).replace(/^\//, '') : path);
@@ -121,8 +121,9 @@
             if (branch) { branch.open = true; editChild({ path: selected }, branch.querySelector('.disk-folder-children')); }
         };
         await reload();
+        onReady?.(reload);
         try {
-            return await openDialog({ title, body: [hint, root, pathInput, create, createChild, errorLabel], confirmText, historyEntry: true, dismissOnBackdrop: true, validate: async () => {
+            return await openDialog({ title, body: [...controls, hint, root, pathInput, create, createChild, errorLabel], confirmText, historyEntry: true, dismissOnBackdrop: true, validate: async () => {
                 if (busy) throw new Error('正在创建目录，请稍候');
                 const safe = resolve(pathInput.value);
                 if (blocked(safe)) throw new Error('不能移动到自己或子目录');

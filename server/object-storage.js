@@ -30,7 +30,7 @@ function parseByteRange(header, size) {
     if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) throw new Error('InvalidRange');
     return { start, end: Math.min(end, size - 1), partial: true };
 }
-function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, maxDepth = () => 20 }) {
+function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, protectDirectory = () => false, maxDepth = () => 20 }) {
     const scopeOf = mapping => ({ userId: String(mapping.userId), diskSpace: String(mapping.diskSpace || '') });
     const storeOf = mapping => spaces.get(scopeOf(mapping).diskSpace);
     const backendOf = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
@@ -73,6 +73,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         if (!owner) throw new Error('AccessDenied');
         if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_LIMIT) throw new Error('EntityTooLarge');
         if (info.folder && size !== 0) throw new Error('InvalidObjectName');
+        if (info.folder && protectDirectory(owner.id, scopeOf(mapping).diskSpace, info.path)) throw new Error('AccessDenied');
         if (current?.file && protectFile(owner.id, scopeOf(mapping).diskSpace, current.file.id)) throw new Error('AccessDenied');
         if (size === 0) {
             for await (const chunk of input) if (chunk.length) throw new Error('IncompleteBody');
@@ -106,7 +107,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         const object = stat(mapping, key);
         if (!object) return;
         const store = storeOf(mapping), scope = scopeOf(mapping);
-        if (object.kind === 'marker') { store.clearFolderMarker(scope.userId, object.directory.path); return; }
+        if (object.kind === 'marker') { if (protectDirectory(scope.userId, scope.diskSpace, object.directory.path)) throw new Error('AccessDenied'); store.clearFolderMarker(scope.userId, object.directory.path); return; }
         await deleteFile(mapping, object.file);
     }
     async function copy(fromMapping, fromKey, toMapping, toKey) {

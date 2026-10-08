@@ -44,7 +44,20 @@ async function createFixture() {
     app.get('/disk-management', admin, (_req, res) => res.sendFile(path.join(root, 'pages/disk-management.html')));
     app.use('/client', express.static(path.join(root, 'client')));
     app.use('/api/telegram/disk-admin', admin, api.admin); app.use('/api/telegram/drive/shares', api.shared); app.use('/api/telegram/drive', api.browser);
-    const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+    // An OS-assigned test port can be on Fetch's forbidden-port list (for
+    // example 6000). Probe it before returning the fixture and retry if so.
+    let server;
+    for (let attempt = 0; attempt < 12; attempt++) {
+        server = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => server.once('listening', resolve));
+        try {
+            const response = await fetch('http://127.0.0.1:' + server.address().port + '/fixture-login', { redirect: 'manual' });
+            if (response.status === 302) break;
+        } catch (_) { /* Fetch rejected the temporary port. */ }
+        await new Promise(resolve => server.close(resolve));
+        server = null;
+    }
+    if (!server) throw new Error('TEST_HTTP_PORT_UNAVAILABLE');
     return { dataDir, repository, content, server, api, sharedId, deletingId, pendingId, get remoteCalls() { return remoteCalls; },
         base: 'http://127.0.0.1:' + server.address().port,
         async close() { api.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); repository.close(); fs.rmSync(dataDir, { recursive: true, force: true }); } };

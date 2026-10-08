@@ -123,3 +123,57 @@ test('后台普通文件搜索、上传内容哈希查询和技术信息不会�
     assert.equal(technical.data.content.content.id, f.sharedId);
     assert.doesNotMatch(JSON.stringify(technical.data), /DO-NOT-EXPOSE-PASSKEY|encryptedToken|secretAccessKey/);
 });
+test('中文分区通过查询参数访问，跨分区复制和移动共享 Content 且失败不改变来源', async t => {
+    const f = await fixture(t);
+    const send = (space, body) => fetch(f.base + '/api/telegram/drive/spaces/transfer?disk_space=' + encodeURIComponent(space), {
+        method: 'POST', headers: { 'X-Test-User': 'alice', 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const source = (await (await fetch(f.base + '/api/telegram/drive/list?disk_space=' + encodeURIComponent('相册&照片') + '&path=' + encodeURIComponent('日本語 & 测试/留档'),
+        { headers: { 'X-Test-User': 'alice' } })).json()).files[0];
+    assert.equal(source.id, 'file-photo');
+    const copiedResponse = await send('相册&照片', { mode: 'copy', targetSpace: '', items: [{ kind: 'file', id: source.id }] });
+    assert.equal(copiedResponse.status, 200, await copiedResponse.clone().text());
+    const copied = (await copiedResponse.json()).copied[0];
+    assert.equal(f.api.spaces.get('').get('alice', copied.id).contentId, f.sharedId);
+    assert.equal(f.api.spaces.get('相册&照片').get('alice', source.id).contentId, f.sharedId);
+    const before = f.repository.content.resolve(f.sharedId);
+    const conflict = await send('相册&照片', { mode: 'move', targetSpace: '', items: [{ kind: 'file', id: source.id }] });
+    assert.notEqual(conflict.status, 200, '目标根目录同名时不得删除来源');
+    assert.ok(f.api.spaces.get('相册&照片').get('alice', source.id));
+    f.api.spaces.get('').createDirectory('alice', '迁移目标', 20);
+    const movedResponse = await send('相册&照片', { mode: 'move', targetSpace: '', destinationPath: '迁移目标', items: [{ kind: 'file', id: source.id }] });
+    assert.equal(movedResponse.status, 200, await movedResponse.clone().text());
+    assert.equal(f.api.spaces.get('相册&照片').get('alice', source.id), null);
+    assert.equal(f.api.spaces.get('').get('alice', (await movedResponse.json()).copied[0].id).contentId, f.sharedId);
+    assert.equal(f.repository.content.resolve(f.sharedId).id, before.id);
+    assert.equal(f.remoteCalls, 0);
+});
+test('静态开放文件阻止改名、删除和协同内容替换；停止开放后允许改名', async t => {
+    const f = await fixture(t), prefix = f.base + '/api/telegram/drive';
+    const send = (url, method, body) => fetch(prefix + url, { method, headers: { 'X-Test-User': 'alice', 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {}) });
+    const opened = await send('/static-resources/settings', 'POST', { item: { kind: 'file', id: 'file-a' }, preset: 'day' });
+    assert.equal(opened.status, 201, await opened.clone().text());
+    assert.equal((await send('/files/file-a', 'PATCH', { name: '改变.har' })).status, 409);
+    assert.equal((await send('/files/file-a', 'DELETE')).status, 409);
+    assert.equal((await send('/files/file-a/repair', 'POST')).status, 409);
+    const stopped = await send('/static-resources/stop', 'POST', { item: { kind: 'file', id: 'file-a' } });
+    assert.equal(stopped.status, 200);
+    const changed = await send('/files/file-a', 'PATCH', { name: '改变.har' });
+    assert.equal(changed.status, 202);
+});
+test('静态开放目录禁止移动删除；停用父级后独立子文件仍开放', async t => {
+    const f = await fixture(t), prefix = f.base + '/api/telegram/drive';
+    const send = (url, method, body) => fetch(prefix + url, { method, headers: { 'X-Test-User': 'alice', 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {}) });
+    const folder = '资料/同名';
+    const parent = await send('/static-resources/settings', 'POST', { item: { kind: 'directory', path: folder }, preset: 'month' });
+    assert.equal(parent.status, 201, await parent.clone().text());
+    const child = await send('/static-resources/settings', 'POST', { item: { kind: 'file', id: 'file-a' }, preset: 'week' });
+    assert.equal(child.status, 201);
+    assert.equal((await send('/directories', 'PATCH', { path: folder, name: '已改名' })).status, 409);
+    assert.equal((await send('/directories?path=' + encodeURIComponent(folder) + '&recursive=true', 'DELETE')).status, 409);
+    assert.equal((await send('/static-resources/stop', 'POST', { item: { kind: 'directory', path: folder } })).status, 200);
+    assert.equal((await (await send('/static-resources', 'GET')).json()).links.filter(link => !link.revokedAt).length, 1);
+    assert.equal((await send('/directories', 'PATCH', { path: folder, name: '仍不允许改名' })).status, 409);
+});

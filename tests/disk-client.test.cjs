@@ -248,6 +248,22 @@ test('网盘客户端正确拼接路由、合并任务等待且仅从源读取�
     const [a, b] = await Promise.all([window.DiskClient.wait('op-1'), window.DiskClient.wait('op-1')]);
     assert.equal(a.items[0].id, b.items[0].id);
 });
+test('非 ASCII 分区名通过编码查询参数传递，不写入 HTTP 请求头', async () => {
+    const calls = [], window = {};
+    vm.runInNewContext(source('client/disk-client.js'), {
+        window, URL, location: { origin: 'https://example.test' },
+        fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({}) }; },
+        setInterval: () => {}, Date, Map, Set, Promise, encodeURIComponent
+    });
+    window.DiskClient.setSpace('相册&照片');
+    await window.DiskClient.raw('/list?path=收藏');
+    const request = calls.find(entry => entry.url.includes('/list?'));
+    assert.ok(request);
+    const parsed = new URL(request.url, 'https://example.test');
+    assert.equal(parsed.searchParams.get('disk_space'), '相册&照片');
+    assert.equal(parsed.searchParams.get('path'), '收藏');
+    assert.equal(request.options.headers['X-Disk-Space'], undefined);
+});
 test('触屏长按会打开菜单并吞掉后续单击，滑动或多点触摸取消长按', () => {
     const ui = source('client/disk-ui.js');
     const body = ui.slice(ui.indexOf('function installContextGesture'), ui.indexOf('function installDiskDrop'));
