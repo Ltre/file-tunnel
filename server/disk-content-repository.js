@@ -40,6 +40,73 @@ function assertContentAuthorization(db, authorization) {
     }
 }
 
+function assertCopyPartition(db, ownerId, diskSpace) {
+    const row = db.prepare("SELECT payload FROM disk_partitions WHERE scope='' AND owner_id=? AND folder_path=?")
+        .get(String(ownerId), String(diskSpace));
+    if (!row || JSON.parse(row.payload).state !== 'ACTIVE') throw new Error('DISK_SPACE_NOT_FOUND');
+}
+
+function assertCopyVisiblePath(db, ownerId, diskSpace, folderPath, errorCode) {
+    let current = '';
+    for (const segment of String(folderPath || '').split('/').filter(Boolean)) {
+        current = current ? current + '/' + segment : segment;
+        const row = db.prepare('SELECT payload FROM disk_directories WHERE scope=? AND owner_id=? AND folder_path=?')
+            .get(String(diskSpace), String(ownerId), current);
+        const status = row && JSON.parse(row.payload).reviewStatus;
+        if (!row || status && status !== 'active') throw new Error(errorCode);
+    }
+}
+
+function assertCopyGrant(db, proof, actorId, ownerId, diskSpace, { fileId = '', folderPath = '', write = false } = {}) {
+    const row = db.prepare("SELECT payload FROM disk_collaborations WHERE scope='' AND id=?").get(String(proof?.id || ''));
+    const grant = row && JSON.parse(row.payload);
+    const version = Number(grant?.memberVersions?.[actorId]) || 1;
+    if (!grant || grant.active === false || grant.ownerId !== ownerId || grant.diskSpace !== diskSpace
+        || !grant.members?.includes(actorId) || String(version) !== String(proof.version)
+        || write && (grant.kind !== 'directory' || grant.memberRoles?.[actorId] === 'viewer'))
+        throw new Error('COLLABORATION_NOT_FOUND');
+    if (write) {
+        if (grant.path && folderPath !== grant.path && !folderPath.startsWith(grant.path + '/'))
+            throw new Error('COLLABORATION_OUT_OF_SCOPE');
+    } else if (grant.kind === 'file' ? grant.fileId !== fileId
+        : grant.kind !== 'directory' || grant.path && folderPath !== grant.path && !folderPath.startsWith(grant.path + '/'))
+        throw new Error('COLLABORATION_OUT_OF_SCOPE');
+}
+
+function assertCrossScopeCopy(db, proof, file, scope) {
+    const actorId = String(proof?.actorId || ''), source = proof?.source, target = proof?.target;
+    if (!actorId || !source || !target || !['native', 'collaboration'].includes(source.kind)
+        || !['native', 'collaboration'].includes(target.kind)
+        || source.kind === 'native' && target.kind === 'native'
+        || source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)
+        throw new Error('CONTENT_COPY_SCOPE_INVALID');
+    const sourceOwner = String(source.ownerId || ''), sourceSpace = String(source.diskSpace ?? ''),
+        targetOwner = String(target.ownerId || ''), targetSpace = String(target.diskSpace ?? '');
+    if (!sourceOwner || !targetOwner || targetOwner !== file.ownerId || targetSpace !== String(scope)
+        || sourceOwner === targetOwner && sourceSpace === targetSpace && source.fileId === file.id)
+        throw new Error('CONTENT_COPY_SCOPE_INVALID');
+    assertCopyPartition(db, sourceOwner, sourceSpace);
+    assertCopyPartition(db, targetOwner, targetSpace);
+    const sourceRow = db.prepare('SELECT owner_id,folder_path,payload FROM disk_files WHERE scope=? AND id=?')
+        .get(sourceSpace, String(source.fileId || ''));
+    const sourceRef = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?')
+        .get(sourceSpace, String(source.fileId || ''));
+    const sourceStatus = sourceRow && JSON.parse(sourceRow.payload).reviewStatus;
+    if (!sourceRow || sourceRow.owner_id !== sourceOwner || sourceRef?.content_id !== file.contentId
+        || sourceStatus && sourceStatus !== 'active')
+        throw new Error('CONTENT_COPY_SOURCE_INVALID');
+    assertCopyVisiblePath(db, sourceOwner, sourceSpace, sourceRow.folder_path, 'CONTENT_COPY_SOURCE_INVALID');
+    assertCopyVisiblePath(db, targetOwner, targetSpace, file.folderPath, 'CONTENT_COPY_TARGET_INVALID');
+    if (source.kind === 'native') {
+        if (sourceOwner !== actorId) throw new Error('CONTENT_COPY_SCOPE_INVALID');
+    } else assertCopyGrant(db, source, actorId, sourceOwner, sourceSpace,
+        { fileId: String(source.fileId), folderPath: sourceRow.folder_path });
+    if (target.kind === 'native') {
+        if (targetOwner !== actorId) throw new Error('CONTENT_COPY_SCOPE_INVALID');
+    } else assertCopyGrant(db, target, actorId, targetOwner, targetSpace,
+        { folderPath: String(file.folderPath || ''), write: true });
+}
+
 function migrateContentSchema(db) {
     db.exec(`CREATE TABLE IF NOT EXISTS disk_contents (
         id TEXT PRIMARY KEY, content_key TEXT, size INTEGER NOT NULL, hash_status TEXT NOT NULL,
@@ -280,6 +347,8 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
         assertContentAuthorization(db,file.contentAuthorization);
         if (file.contentCopyGrant) {
             const grant = file.contentCopyGrant;
+            if (grant.kind === 'cross-scope') assertCrossScopeCopy(db, grant, file, scope);
+            else {
             const source = db.prepare('SELECT owner_id,folder_path,payload FROM disk_files WHERE scope=? AND id=?').get(grant.sourceSpace,grant.sourceFileId);
             const sourceRef = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(grant.sourceSpace,grant.sourceFileId);
             if (!source || source.owner_id !== grant.sourceOwnerId || source.owner_id === file.ownerId
@@ -302,6 +371,7 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
                     || collaboration.kind === 'directory' && collaboration.path && source.folder_path !== collaboration.path && !source.folder_path.startsWith(collaboration.path + '/'))
                     throw new Error('COLLABORATION_NOT_FOUND');
             } else throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            }
         }
         if(file.contentGrant) {
             // Recheck authorization inside the same write transaction as refs.

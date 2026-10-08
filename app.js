@@ -23,6 +23,7 @@ function isWeChatEmbeddedBrowser() {
 }
 
 async function blockWeChatEmbeddedBrowser() {
+    window.TunnelStartupLoading?.dispose?.();
     const url = window.location.href;
     let copied = false;
     try {
@@ -635,7 +636,7 @@ function flushClientDebugLogs() {
 
 // ==================== 初始化 ====================
 // Times are relative to navigation; no session IDs, URLs or credentials are recorded.
-const startupTimings = window.TunnelStartup = { stages: [], shellReadyMs: null, completeMs: null };
+const startupTimings = window.TunnelStartup = { stages: [], currentStage: '', shellReadyMs: null, completeMs: null };
 
 function startupTimestamp() {
     return window.performance?.now?.() ?? Date.now();
@@ -645,11 +646,13 @@ function recordStartupStage(name, startedAt, details = {}) {
     const endedAt = startupTimestamp();
     const stage = { name, startedAt: Math.round(startedAt), elapsedMs: Math.round(endedAt - startedAt), ...details };
     startupTimings.stages.push(stage);
+    if (startupTimings.currentStage === name) startupTimings.currentStage = '';
     historyLog('startup-stage', stage);
 }
 
 async function runStartupStage(name, task) {
     const startedAt = startupTimestamp();
+    startupTimings.currentStage = name;
     try {
         const result = await task();
         recordStartupStage(name, startedAt);
@@ -662,6 +665,7 @@ async function runStartupStage(name, task) {
 
 function markStartupShellReady(view) {
     if (startupTimings.shellReadyMs !== null) return;
+    startupTimings.currentStage = '';
     startupTimings.shellReadyMs = Math.round(startupTimestamp());
     startupTimings.view = view;
     window.performance?.mark?.('tunnel-shell-ready');
@@ -755,6 +759,7 @@ function registerServiceWorker() {
 }
 
 function showStartupFailure(err) {
+    window.TunnelStartupLoading?.dispose?.();
     const message = err?.message || '未知错误';
     const shell = document.getElementById('appShell');
     const landing = document.getElementById('sessionLanding');

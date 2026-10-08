@@ -22,7 +22,8 @@ function transaction(connection, work, write = false) {
 const TABLES = new Set([
     'files', 'directories', 'users', 'apps', 'backends', 'tokens',
     'spaces', 'space_usage', 'shares', 'operations', 'chunk_ids',
-    'cache_owners', 'collaborations', 'placeholders', 'static_resources'
+    'cache_owners', 'collaborations', 'placeholders', 'static_resources',
+    'partitions', 'collaboration_mounts'
 ]);
 const connections = new Map();
 
@@ -44,9 +45,14 @@ function openDiskRepository(dataDir) {
         db.exec('PRAGMA synchronous = FULL');
         db.exec('CREATE TABLE IF NOT EXISTS disk_schema_migrations (version INTEGER PRIMARY KEY)');
         const schemaVersion = Number(db.prepare('SELECT MAX(version) AS version FROM disk_schema_migrations').get().version) || 0;
-        if (schemaVersion > 2) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion > 3) throw new Error('DISK_SCHEMA_TOO_NEW');
         if (schemaVersion === 1) {
             const destination = path.join(root, `disk-before-content-${Date.now()}-${crypto.randomUUID()}.sqlite`);
+            db.prepare('VACUUM INTO ?').run(destination);
+        }
+        if (schemaVersion === 2) {
+            // Back up the complete committed WAL view before any v3 DDL.
+            const destination = path.join(root, `disk-before-partitions-${Date.now()}-${crypto.randomUUID()}.sqlite`);
             db.prepare('VACUUM INTO ?').run(destination);
         }
         for (const table of TABLES) {
@@ -70,6 +76,55 @@ function openDiskRepository(dataDir) {
         WHERE json_extract(payload, '$.telegramId') IS NOT NULL AND json_extract(payload, '$.telegramId') != '';
         CREATE UNIQUE INDEX IF NOT EXISTS disk_shares_token ON disk_shares(json_extract(payload, '$.token'));
         CREATE UNIQUE INDEX IF NOT EXISTS disk_backends_fingerprint ON disk_backends(json_extract(payload, '$.fingerprint'));`);
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS disk_partitions_owner_scope
+            ON disk_partitions(owner_id, folder_path);
+        CREATE UNIQUE INDEX IF NOT EXISTS disk_partitions_active_name
+            ON disk_partitions(owner_id, lower(name))
+            WHERE json_extract(payload, '$.state') = 'ACTIVE';
+        CREATE UNIQUE INDEX IF NOT EXISTS disk_partitions_default
+            ON disk_partitions(owner_id)
+            WHERE json_extract(payload, '$.isDefault') = 1;
+        CREATE UNIQUE INDEX IF NOT EXISTS disk_collaboration_mounts_owner_path_name
+        ON disk_collaboration_mounts(owner_id, json_extract(payload, '$.diskSpace'), folder_path, name);`);
+        // The three Native namespace node kinds occupy one visible name slot.
+        // Check inside SQLite writes as well as the API preflight: two Node
+        // workers cannot each pass a stale in-memory collision check.
+        db.exec(`CREATE TRIGGER IF NOT EXISTS disk_mount_native_name_insert BEFORE INSERT ON disk_collaboration_mounts BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_files f WHERE f.scope=json_extract(NEW.payload,'$.diskSpace')
+                AND f.owner_id=NEW.owner_id AND f.folder_path=NEW.folder_path AND f.name=NEW.name)
+                OR EXISTS(SELECT 1 FROM disk_directories d WHERE d.scope=json_extract(NEW.payload,'$.diskSpace')
+                AND d.owner_id=NEW.owner_id AND d.folder_path=CASE WHEN NEW.folder_path='' THEN NEW.name ELSE NEW.folder_path||'/'||NEW.name END)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS disk_mount_native_name_update BEFORE UPDATE ON disk_collaboration_mounts BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_files f WHERE f.scope=json_extract(NEW.payload,'$.diskSpace')
+                AND f.owner_id=NEW.owner_id AND f.folder_path=NEW.folder_path AND f.name=NEW.name)
+                OR EXISTS(SELECT 1 FROM disk_directories d WHERE d.scope=json_extract(NEW.payload,'$.diskSpace')
+                AND d.owner_id=NEW.owner_id AND d.folder_path=CASE WHEN NEW.folder_path='' THEN NEW.name ELSE NEW.folder_path||'/'||NEW.name END)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS disk_file_mount_name_insert BEFORE INSERT ON disk_files BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_collaboration_mounts m WHERE m.owner_id=NEW.owner_id
+                AND json_extract(m.payload,'$.diskSpace')=NEW.scope AND m.folder_path=NEW.folder_path AND m.name=NEW.name)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS disk_file_mount_name_update BEFORE UPDATE ON disk_files BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_collaboration_mounts m WHERE m.owner_id=NEW.owner_id
+                AND json_extract(m.payload,'$.diskSpace')=NEW.scope AND m.folder_path=NEW.folder_path AND m.name=NEW.name)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS disk_directory_mount_name_insert BEFORE INSERT ON disk_directories BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_collaboration_mounts m WHERE m.owner_id=NEW.owner_id
+                AND json_extract(m.payload,'$.diskSpace')=NEW.scope
+                AND (CASE WHEN m.folder_path='' THEN m.name ELSE m.folder_path||'/'||m.name END)=NEW.folder_path)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS disk_directory_mount_name_update BEFORE UPDATE ON disk_directories BEGIN
+            SELECT CASE WHEN EXISTS(SELECT 1 FROM disk_collaboration_mounts m WHERE m.owner_id=NEW.owner_id
+                AND json_extract(m.payload,'$.diskSpace')=NEW.scope
+                AND (CASE WHEN m.folder_path='' THEN m.name ELSE m.folder_path||'/'||m.name END)=NEW.folder_path)
+                THEN RAISE(ABORT,'MOUNT_NAME_CONFLICT') END;
+        END;`);
         db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES (1)');
         transaction(db, () => {
             migrateContentSchema(db);
@@ -86,6 +141,7 @@ function openDiskRepository(dataDir) {
                 db.prepare('UPDATE disk_files SET payload=? WHERE scope=? AND id=?').run(JSON.stringify(payload),row.scope,row.id);
             }
             db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(2)');
+            db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(3)');
         }, true);
     } finally { db.close(); }
 
@@ -161,7 +217,8 @@ function openDiskRepository(dataDir) {
                 if (base.get(id) !== previousPayload) throw new Error('DISK_WRITE_CONFLICT');
             }
             if (previousPayload !== encoded) sql.put.run(scope, id, String(item.ownerId || item.userId || ''),
-                String(item.folderPath || item.path || ''), String(item.name || ''), encoded);
+                table === 'partitions' ? String(item.scopeKey ?? '') : String(item.folderPath || item.path || ''),
+                table === 'partitions' ? String(item.displayName || '') : String(item.name || ''), encoded);
             if (table === 'files' && previousPayload !== encoded) {
                 content.syncFile(connection,scope,item);
                 const projected=content.project(connection,item,scope);
@@ -233,6 +290,14 @@ function openDiskRepository(dataDir) {
                 if (result.length !== 1 || result[0].integrity_check !== 'ok') throw new Error('DISK_SQLITE_INTEGRITY_FAILED');
                 if (connection.prepare('PRAGMA foreign_key_check').all().length) throw new Error('DISK_SQLITE_FOREIGN_KEY_FAILED');
             });
+        },
+        activeContentLeases(scope, ownerId) {
+            return withDatabase(connection => Number(connection.prepare(`SELECT count(DISTINCT l.id) AS n
+                FROM disk_content_leases l
+                JOIN disk_content_refs r ON r.content_id=l.content_id
+                JOIN disk_files f ON f.scope=r.scope AND f.id=r.logical_file_id
+                WHERE r.scope=? AND f.owner_id=? AND l.expires_at>?`)
+                .get(String(scope), String(ownerId), Date.now())?.n || 0));
         },
         async backup(destination) {
             const connection = new DatabaseSync(filename);

@@ -29,11 +29,15 @@ test('公开分享仅包含选中内容快照，隔离用户/分区，撤销和�
     assert.equal(shares.list({ ...scope, diskSpace: 'other' }).length, 0);
     const files = shares.create(scope, store, [{ id: a.id }, { id: b.id }, { id: a.id }]);
     assert.equal(files.fileCount, 2);
+    const otherInstance = createDiskShares({ dataDir });
+    assert.equal(otherInstance.resolve(token).id, dir.id);
     store.moveDirectory('alice', '音乐', '', 20, '私藏');
     assert.equal(shares.contents(share, store, '音乐/专辑').files.length, 2);
     store.remove('alice', a.id); assert.equal(shares.contents(share, store, '音乐/专辑').files.length, 1);
     assert.throws(() => shares.file(share, store, a.id), /FILE_NOT_FOUND/);
-    shares.stop(scope, dir.id); assert.throws(() => createDiskShares({ dataDir }).resolve(token), /SHARE_NOT_FOUND/);
+    shares.stop(scope, dir.id);
+    assert.throws(() => otherInstance.resolve(token), /SHARE_NOT_FOUND/, '另一服务实例必须立即观察到链接撤销');
+    assert.throws(() => createDiskShares({ dataDir }).resolve(token), /SHARE_NOT_FOUND/);
 });
 
 test('发布目录 Passkey 路由优先使用已打包脚本，不依赖浏览器 npm 包', t => {

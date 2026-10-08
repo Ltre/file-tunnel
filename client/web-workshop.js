@@ -377,7 +377,92 @@
             textarea.focus();
         };
     }
-    function bindTree(draft,selected){const tree=content.querySelector('[data-web-tree]');installTreeDirectoryGestures(tree,draft);tree.onclick=event=>{const row=event.target.closest('[data-web-path]');if(row?.dataset.webDirectory==='true'){const filePath=row.dataset.webPath;if(expandedPaths.has(filePath))expandedPaths.delete(filePath);else expandedPaths.add(filePath);renderEditor(draft,filePath);return;}if(row)renderEditor(draft,row.dataset.webPath);};tree.addEventListener('dragstart',event=>{const row=event.target.closest('[data-web-path]');if(!row)return;draggedPath=row.dataset.webPath;event.dataTransfer.effectAllowed='copyMove';event.dataTransfer.setData('text/plain',draggedPath);row.classList.add('is-dragging');});tree.addEventListener('dragend',event=>{draggedPath='';event.target.closest('[data-web-path]')?.classList.remove('is-dragging');tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));});tree.addEventListener('dragover',event=>{const target=event.target.closest('[data-web-directory="true"]');if(!target&&event.target!==tree)return;event.preventDefault();event.dataTransfer.dropEffect='move';tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));(target||tree).classList.add('is-drop-target');});tree.addEventListener('drop',async event=>{event.preventDefault();const target=event.target.closest('[data-web-directory="true"]'),destination=target?.dataset.webPath||'',source=draggedPath||event.dataTransfer.getData('text/plain');tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));if(!source)return;try{const next=await moveDraftEntry(draft,source,destination);renderEditor(draft,next);}catch(error){showError(error);}});}
+    const EXTERNAL_IMPORT_LIMIT=100*1024*1024;
+    function isExternalTreeDrop(dataTransfer){return !draggedPath&&Array.from(dataTransfer?.types||[]).includes('Files');}
+    function readFileEntry(entry){return new Promise((resolve,reject)=>entry.file(resolve,reject));}
+    function readDirectoryBatch(reader){return new Promise((resolve,reject)=>reader.readEntries(resolve,reject));}
+    async function enumerateDroppedEntry(entry,prefix,found){
+        const path=prefix+entry.name;
+        if(entry.isFile){found.push({path,file:await readFileEntry(entry)});return;}
+        if(!entry.isDirectory)throw new Error(`无法读取拖入项目：${path}`);
+        found.push({path:path+'/',directory:true});
+        const reader=entry.createReader();
+        for(;;){const batch=await readDirectoryBatch(reader);if(!batch.length)break;for(const child of batch)await enumerateDroppedEntry(child,path+'/',found);}
+    }
+    async function enumerateDroppedHandle(handle,prefix,found){
+        const path=prefix+handle.name;
+        if(handle.kind==='file'){found.push({path,file:await handle.getFile()});return;}
+        if(handle.kind!=='directory')throw new Error(`无法读取拖入项目：${path}`);
+        found.push({path:path+'/',directory:true});
+        for await(const child of handle.values())await enumerateDroppedHandle(child,path+'/',found);
+    }
+    function captureExternalDrop(dataTransfer){
+        const items=Array.from(dataTransfer?.items||[]).filter(item=>item.kind==='file');
+        if(items.length)return items.map(item=>{const entry=item.webkitGetAsEntry?.()||null;return{entry,handle:entry?null:(item.getAsFileSystemHandle?.()||null),file:item.getAsFile?.()||null};});
+        return Array.from(dataTransfer?.files||[]).map(file=>({file}));
+    }
+    async function enumerateExternalDrop(captured){
+        const found=[];
+        for(const item of captured){
+            if(item.entry)await enumerateDroppedEntry(item.entry,'',found);
+            else if(item.handle)await enumerateDroppedHandle(await item.handle,'',found);
+            else if(item.file)found.push({path:item.file.webkitRelativePath||item.file.name,file:item.file});
+            else throw new Error('浏览器无法读取拖入的目录；请使用支持目录拖放的浏览器');
+        }
+        return found;
+    }
+    function prepareExternalImport(entries,destination,existing){
+        if(!entries.length)invalidTreePath('没有可导入的文件或目录');
+        const total=entries.reduce((sum,item)=>sum+(item.file?.size||0),0);
+        if(total>EXTERNAL_IMPORT_LIMIT)invalidTreePath(`来源文件合计 ${(total/1024/1024).toFixed(1)} MB，超过 100 MB 上限`);
+        const occupied=new Set(existing.map(item=>pathKey(item.path)));
+        const roots=new Set(entries.map(item=>item.path.split('/')[0]));
+        for(const root of roots){const rootPath=destination+root;if(occupied.has(pathKey(rootPath)))invalidTreePath(`目标目录已存在同名项目：${rootPath}`);}
+        const prepared=entries.map(item=>({path:newTreeEntryPath(destination,item.path.replace(/\/$/,''),item.directory?'directory':'file'),file:item.file,directory:!!item.directory}));
+        const seen=new Set();
+        for(const item of prepared){const key=pathKey(item.path);if(seen.has(key))invalidTreePath(`拖入内容存在同名项目：${item.path}`);seen.add(key);}
+        return prepared;
+    }
+    async function importExternalDrop(draft,captured,destination,tree){
+        const found=await enumerateExternalDrop(captured);
+        const prepared=prepareExternalImport(found,destination,draft.files);
+        commitEditorBuffer(draft);
+        tree.setAttribute('aria-busy','true');
+        try{
+            const additions=[];
+            for(const item of prepared)additions.push(item.directory
+                ?{path:item.path,type:'application/x-directory',data:new Uint8Array()}
+                :{path:item.path,type:item.file.type||guessType(item.path),data:new Uint8Array(await item.file.arrayBuffer())});
+            const merged=normalizeEntries([...draft.files,...additions],{allowIdenticalDirectory:true});
+            const previous=draft.files;
+            draft.files=merged;
+            try{await saveDraft(draft);}catch(error){draft.files=previous;throw error;}
+            for(let parent=destination;parent;parent=parentPath(parent))expandedPaths.add(parent);
+            for(const item of prepared)if(item.directory)expandedPaths.add(item.path);
+            if(tree.isConnected&&activeDraft===draft)renderEditor(draft,prepared[0].path);
+            config.toast?.(`已导入 ${prepared.filter(item=>!item.directory).length} 个文件`);
+        }finally{tree.removeAttribute('aria-busy');}
+    }
+    function bindTree(draft,selected){
+        const tree=content.querySelector('[data-web-tree]');installTreeDirectoryGestures(tree,draft);
+        tree.onclick=event=>{const row=event.target.closest('[data-web-path]');if(row?.dataset.webDirectory==='true'){const filePath=row.dataset.webPath;if(expandedPaths.has(filePath))expandedPaths.delete(filePath);else expandedPaths.add(filePath);renderEditor(draft,filePath);return;}if(row)renderEditor(draft,row.dataset.webPath);};
+        tree.addEventListener('dragstart',event=>{const row=event.target.closest('[data-web-path]');if(!row)return;draggedPath=row.dataset.webPath;event.dataTransfer.effectAllowed='copyMove';event.dataTransfer.setData('text/plain',draggedPath);row.classList.add('is-dragging');});
+        tree.addEventListener('dragend',event=>{draggedPath='';event.target.closest('[data-web-path]')?.classList.remove('is-dragging');tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));});
+        tree.addEventListener('dragover',event=>{const external=isExternalTreeDrop(event.dataTransfer),row=event.target.closest('[data-web-path]'),target=row?.dataset.webDirectory==='true'?row:(external?row:null);if(!external&&!target&&event.target!==tree)return;event.preventDefault();event.dataTransfer.dropEffect=external?'copy':'move';tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));(target||tree).classList.add('is-drop-target');});
+        tree.addEventListener('dragleave',event=>{if(!tree.contains(event.relatedTarget))tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));});
+        tree.addEventListener('drop',async event=>{
+            const external=isExternalTreeDrop(event.dataTransfer),row=event.target.closest('[data-web-path]'),destination=row?(row.dataset.webDirectory==='true'?row.dataset.webPath:parentPath(row.dataset.webPath)):'';
+            if(!external&&!draggedPath&&!event.dataTransfer?.getData('text/plain'))return;
+            event.preventDefault();event.stopPropagation();
+            tree.querySelectorAll('.is-drop-target').forEach(node=>node.classList.remove('is-drop-target'));
+            try{
+                const captured=external?captureExternalDrop(event.dataTransfer):null;
+                const source=external?'':(draggedPath||event.dataTransfer.getData('text/plain'));
+                if(external)await importExternalDrop(draft,captured,destination,tree);
+                else if(source){const next=await moveDraftEntry(draft,source,destination);renderEditor(draft,next);}
+            }catch(error){showError(error);}
+        });
+    }
     async function renderEditor(draft,selectedPath=''){document.querySelector('.web-tree-context-layer')?.closeMenu?.();if(activeDraft)commitEditorBuffer(activeDraft);editorSession=null;activeDraft=draft;revokePreviewUrls();draft.files=normalizeEntries(draft.files,{allowIdenticalDirectory:true});let selected=draft.files.find(file=>file.path===selectedPath)||draft.files.find(file=>/(^|\/)index\.html?$/i.test(file.path))||draft.files.find(isText)||draft.files[0];if(selected&&isText(selected))referenceBase=selected.path;for(let parent=selected?parentPath(selected.path):'';parent;parent=parentPath(parent))expandedPaths.add(parent);content.innerHTML=`<div class="web-workshop-package-name"><label for="webWorkshopPackageName">网页 ZIP 文件名</label><input id="webWorkshopPackageName" data-web-package-name type="text" aria-label="网页 ZIP 文件名" autocomplete="off"></div><div class="web-editor-toolbar"><button data-editor-action="upload">上传资源</button><button data-editor-action="import-tunnel">从隧道资源浏览器导入</button><button data-editor-action="new-file">新建文件</button><button data-editor-action="new-dir">新建目录</button><button data-editor-action="rename">重命名</button><button data-editor-action="delete">删除</button><button data-editor-action="save">保存</button><button data-editor-action="copy-path">复制路径</button><label class="web-workshop-publish-option"><input type="checkbox" data-web-hide-frame>发布后隐藏 网页ZIP框架</label><label class="web-workshop-publish-option"><input type="checkbox" data-web-fullscreen>是否以全屏浮层打开该网页 ZIP</label><span class="web-workshop-save-status" data-web-save-status data-state="saved" role="status">已保存</span><span></span><button data-editor-action="preview">预览</button><button class="primary" data-editor-action="publish">发布草稿</button><input type="file" multiple hidden></div><div class="web-editor"><aside data-web-tree role="tree" data-web-root="true">${renderTree(draft.files,'',0,selected?.path||'')}</aside><section>${selected&&isText(selected)?`<label>${escapeHtml(selected.path)}</label><textarea spellcheck="false"></textarea>`:`<div class="web-editor-binary">${selected?`${escapeHtml(selected.path)}${isDirectory(selected)?'<br>目录':`<br>${bytes(selected.data).byteLength} Bytes`}`:'请选择文件'}</div>`}</section></div>`;bindTree(draft,selected);bindPackageName(draft);const hideFrameInput=content.querySelector('[data-web-hide-frame]');hideFrameInput.checked=draft.webZipHideFrame===true;hideFrameInput.onchange=()=>{draft.webZipHideFrame=hideFrameInput.checked;scheduleSave(draft);};const fullscreenInput=content.querySelector('[data-web-fullscreen]');fullscreenInput.checked=draft.webZipFullscreen===true;fullscreenInput.onchange=()=>{draft.webZipFullscreen=fullscreenInput.checked;scheduleSave(draft);};const textarea=content.querySelector('textarea');if(textarea){textarea.value=new TextDecoder().decode(bytes(selected.data));editorSession={draft,path:selected.path,textarea,value:textarea.value,status:content.querySelector('[data-web-save-status]')};if((draftRevisions.get(draft.id)||0)!==(savedRevisions.get(draft.id)||0))setEditorSaveStatus('有未保存修改','dirty');textarea.oninput=()=>{if(commitEditorBuffer(draft))scheduleSave(draft);};installMediaInsertion(textarea,draft,selected);}const input=content.querySelector('input[type=file]');input.onchange=async event=>{commitEditorBuffer(draft);try{const targetDir=selected&&isDirectory(selected)?selected.path:(selected?parentPath(selected.path):''),additions=[];for(const file of event.target.files||[]){const relative=canonicalPath(file.webkitRelativePath||file.name);additions.push({path:targetDir+relative,type:file.type||guessType(relative),data:new Uint8Array(await file.arrayBuffer())});}const occupied=new Set(draft.files.map(item=>pathKey(item.path))),incoming=new Set();for(const entry of additions){const key=pathKey(entry.path);if(occupied.has(key)||incoming.has(key))throw new Error(`同一目录中已存在同名项目：${entry.path}`);incoming.add(key);}draft.files=normalizeEntries([...draft.files,...additions]);await saveDraft(draft);renderEditor(draft,additions[0]?.path||selected?.path);}catch(error){showError(error);}finally{event.target.value='';}};content.querySelector('.web-editor-toolbar').onclick=async event=>{const action=event.target.dataset.editorAction;if(!action)return;commitPackageName(draft);commitEditorBuffer(draft);try{if(action==='save')await flushEditorDraft(draft);if(action==='copy-path'&&selected)await copyZipPath(selected.path);if(action==='upload')input.click();if(action==='import-tunnel'){const imported=await importTunnelResources(draft);if(imported)renderEditor(draft,imported);}if(action==='new-file'){const requested=prompt('新文件路径（可用 / 分隔多级目录）','index.html');if(requested!==null)await addTreeEntry(draft,'',requested,'file');}if(action==='new-dir'){const requested=prompt('新目录路径（可用 / 分隔多级目录）','assets');if(requested!==null)await addTreeEntry(draft,'',requested,'directory');}if(action==='rename'&&selected){const requested=prompt('新名称',baseName(selected.path));if(requested){const result=renameEntry(draft.files,selected.path,requested);draft.files=result.entries;if(isDirectory(selected)){expandedPaths.delete(selected.path);expandedPaths.add(result.nextPath);}await saveDraft(draft);renderEditor(draft,result.nextPath);}}if(action==='delete'&&selected&&confirm(`确定删除 ${selected.path} 吗？`)){const prefix=isDirectory(selected)?selected.path:selected.path+'/';draft.files=draft.files.filter(item=>item.path!==selected.path&&!item.path.startsWith(prefix));await saveDraft(draft);renderEditor(draft);}if(action==='preview')await renderPreview(draft.files,draft.name,()=>renderEditor(draft,selected?.path));if(action==='publish')await publishDraft(draft,event.target);}catch(error){showError(error);}};}
     async function renderPreview(files,name,back,extraActions=''){commitEditorBuffer(activeDraft);revokePreviewUrls();const epoch=previewEpoch;if(!global.WebZipRuntime)throw new Error('网页 ZIP 运行组件未加载');content.innerHTML=`<div class="web-preview-toolbar"><button data-preview-back>← 返回</button><strong>${escapeHtml(name)}</strong><span></span>${extraActions}</div><div class="web-workshop-preview-status"><span></span><strong>正在准备网页 ZIP 预览…</strong></div>`;const status=content.querySelector('.web-workshop-preview-status strong');content.querySelector('[data-preview-back]').onclick=()=>{revokePreviewUrls();Promise.resolve(back()).catch(showError);};try{const runtime=await global.WebZipRuntime.mount(files,{onStatus:text=>{if(epoch===previewEpoch&&status?.isConnected)status.textContent=text;}});if(epoch!==previewEpoch){await global.WebZipRuntime.unmount(runtime.id).catch(()=>{});return;}previewRuntimeIds.push(runtime.id);const frame=document.createElement('iframe');frame.className='web-preview-frame';frame.setAttribute('sandbox','allow-same-origin allow-scripts allow-forms allow-modals allow-downloads allow-popups');frame.src=runtime.url;content.querySelector('.web-workshop-preview-status')?.replaceWith(frame);}catch(error){if(epoch!==previewEpoch)return;if(status?.isConnected)status.textContent=`预览失败：${error.message}`;throw error;}}
     async function publishDraft(draft,button){
@@ -419,5 +504,5 @@
     async function importPackage(fileInfo,blob,context={},mode='update'){ensureUi();revealImportEditor(context);const revision=presentationRevision,sandbox=await packageSandbox(fileInfo,blob,true);if(revision!==presentationRevision)return null;showForContent();return createDraft({name:fileInfo.name,files:sandbox.files,sourceFileId:mode==='update'?fileInfo.id:'',sourceMessageId:mode==='update'?(context.messageId||''):'',sourceFileInfo:mode==='update'?fileInfo:null,publishMode:mode==='update'?'update':'new',webZipHideFrame:typeof fileInfo.webZipHideFrame==='boolean'?fileInfo.webZipHideFrame:undefined,webZipFullscreen:typeof fileInfo.webZipFullscreen==='boolean'?fileInfo.webZipFullscreen:undefined});}
     async function openPackage(fileInfo,blob,context={}){ensureUi();const revision=presentationRevision,sandbox=await packageSandbox(fileInfo,blob,true);if(revision!==presentationRevision)return;showForContent();const canUpdate=config.canUpdate?.(fileInfo),actions=`<button data-sandbox-copy>创建我的副本</button>${canUpdate?'<button class="primary" data-sandbox-edit>转入草稿编辑</button>':'<button data-sandbox-request>申请编辑权限</button>'}`;await renderPreview(sandbox.files,fileInfo.name,renderHome,actions);content.querySelector('[data-sandbox-copy]').onclick=()=>importPackage(fileInfo,blob,context,'copy').catch(showError);content.querySelector('[data-sandbox-edit]')?.addEventListener('click',()=>importPackage(fileInfo,blob,context,'update').catch(showError));content.querySelector('[data-sandbox-request]')?.addEventListener('click',()=>config.requestEdit?.(fileInfo,context));}
     function init(next={}){config=next;ensureUi();cleanupSandboxes().catch(()=>{});}
-    global.WebWorkshop={init,open,close,minimize,restore,openPackage,importPackage,createDraft,_test:{canonicalPath,normalizeEntries,renameEntry,assertDestination,sortedChildren,updateTextEntry,readPackageManifest,updatePackageManifest,relativeZipPath,rootZipPath,mediaHtmlTag,newTreeEntryPath,refactorHtmlReferences}};
+    global.WebWorkshop={init,open,close,minimize,restore,openPackage,importPackage,createDraft,_test:{canonicalPath,normalizeEntries,renameEntry,assertDestination,sortedChildren,updateTextEntry,readPackageManifest,updatePackageManifest,relativeZipPath,rootZipPath,mediaHtmlTag,newTreeEntryPath,refactorHtmlReferences,prepareExternalImport,enumerateDroppedEntry}};
 })(window);

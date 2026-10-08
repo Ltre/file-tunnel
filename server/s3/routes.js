@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 const rateLimit = require('express-rate-limit');
 const { verify, decodeAwsChunks, sha256 } = require('./sigv4');
-const { esc, tag, document, deleteRequest } = require('./xml');
+const { esc, tag, document, errorDocument, deleteRequest } = require('./xml');
 const { createS3Credentials } = require('./credentials');
 
 const MESSAGES = {
@@ -124,7 +124,7 @@ function createS3Gateway({ dataDir, objectStorage }) {
     const credentials = createS3Credentials(dataDir), api = express.Router(), content = express.Router();
     const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10000, standardHeaders: false, legacyHeaders: false,
         validate: { xForwardedForHeader: false },
-        handler(req, res) { const id = crypto.randomBytes(12).toString('hex'); res.status(503).set({ 'Retry-After': '60', 'x-amz-request-id': id }).type('application/xml').send(document('Error', tag('Code', 'SlowDown') + tag('Message', MESSAGES.SlowDown) + tag('RequestId', id))); } });
+        handler(req, res) { const id = crypto.randomBytes(12).toString('hex'); res.status(503).set({ 'Retry-After': '60', 'x-amz-request-id': id }).type('application/xml').send(errorDocument('SlowDown', MESSAGES.SlowDown, id, (req.originalUrl || req.url).split('?')[0])); } });
     api.use(limiter); content.use(limiter);
     async function dispatch(req, res, mount, contentOnly) {
         const requestId = crypto.randomBytes(12).toString('hex');
@@ -139,7 +139,11 @@ function createS3Gateway({ dataDir, objectStorage }) {
             const { bucket, key } = partsFromRequest(req, mount), mappings = auth.credential.bucketMappings || [];
             const mapping = mappings.find(item => item.bucket === bucket);
             if (!bucket) {
-                if (contentOnly || req.method !== 'GET') throw new Error('NotImplemented');
+                if (contentOnly) throw new Error('NotImplemented');
+                // FolderSync probes its configured endpoint with HEAD before
+                // selecting a bucket. It is a signed service-root probe.
+                if (req.method === 'HEAD') return res.status(200).set('Content-Length', '0').end();
+                if (req.method !== 'GET') throw new Error('NotImplemented');
                 return res.type('application/xml').send(document('ListAllMyBucketsResult', `<Owner>${tag('ID', auth.credential.userId)}${tag('DisplayName', auth.credential.userId)}</Owner><Buckets>` + mappings.map(item => `<Bucket>${tag('Name', item.bucket)}${tag('CreationDate', iso(auth.credential.createdAt))}</Bucket>`).join('') + '</Buckets>'));
             }
             if (!mapping) throw new Error('NoSuchBucket');
@@ -230,7 +234,7 @@ function createS3Gateway({ dataDir, objectStorage }) {
             }
             res.status(STATUS[code] || 500).type('application/xml');
             if (req.method === 'HEAD') return res.end();
-            res.send(document('Error', tag('Code', code) + tag('Message', MESSAGES[code]) + tag('RequestId', requestId)));
+            res.send(errorDocument(code, MESSAGES[code], requestId, (req.originalUrl || req.url).split('?')[0]));
         }
     }
     api.use((req, res) => { dispatch(req, res, '/S3API', false).catch(error => { if (!res.headersSent) res.status(500).end(); else res.destroy(error); }); });

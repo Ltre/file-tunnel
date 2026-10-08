@@ -180,12 +180,13 @@ test('真实 HTTP 网盘 API：原手机路径、异步操作、移动重命名�
     assert.equal(await (await fetch(base + '/shared/' + shareToken + '/files/' + file.id + '/download')).text(), 'abc');
     assert.equal((await fetch(base + '/shared/' + shareToken + '/files/unknown/download')).status, 404);
     assert.equal((await request('/shares/' + share.id, { method: 'DELETE', headers: { 'X-Disk-User-Id': other.id } })).status, 404);
-    assert.equal((await request('/shares', { headers: { 'X-Disk-Space': 'other' } })).shares.length, 0);
+    assert.equal((await request('/shares', { headers: { 'X-Disk-Space': 'other' } })).status, 404,
+        '未知分区不能隐式创建或读取，以免跨分区请求落入空的全局 Store');
     assert.equal((await request('/shares/' + share.id, { method: 'DELETE' })).status, 200);
     assert.equal((await fetch(base + '/shared/' + shareToken)).status, 404);
     assert.equal((await fetch(base + '/shared/' + shareToken + '/files/' + file.id + '/download')).status, 404);
     assert.equal((await request('/uploads/' + job.uploadId + '/finish', { method: 'POST' })).operation_id, finished.operation_id); assert.equal(uploads, 1);
-    assert.equal((await request('/list', { headers: { 'X-Disk-Space': 'other' } })).folders.length, 0);
+    assert.equal((await request('/list', { headers: { 'X-Disk-Space': 'other' } })).status, 404);
     assert.equal((await request('/files/' + file.id, { headers: { 'X-Disk-User-Id': other.id } })).status, 404);
     const mkdir = await request('/directories', { method: 'POST', ...json({ path: 'new/deep' }) }); assert.equal((await wait(mkdir.operation_id)).status, 'completed');
     const moved = await request('/files/' + file.id, { method: 'PATCH', ...json({ folderPath: 'new/deep', name: 'renamed.txt' }) }); assert.equal((await wait(moved.operation_id)).status, 'completed');

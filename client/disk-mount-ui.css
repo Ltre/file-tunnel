@@ -1,0 +1,30 @@
+.disk-mount-dialog{box-sizing:border-box;width:min(620px,calc(100vw - 20px));max-height:calc(100dvh - 20px);margin:auto;padding:18px;border:1px solid var(--panel-border,#cbd6e2);border-radius:16px;background:var(--panel-bg,#fff);color:var(--text-main,#243349);box-shadow:0 18px 60px #091a3666}
+.disk-mount-dialog::backdrop,.disk-mount-frame::backdrop{background:#13243d99;backdrop-filter:blur(3px)}
+.disk-mount-dialog h2{margin:0 0 12px;font-size:1.15rem}
+.disk-mount-dialog-content{display:grid;gap:12px;max-height:min(70dvh,680px);overflow:auto}
+.disk-mount-dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:14px}
+.disk-mount-dialog button{border:1px solid var(--panel-border,#cbd6e2);border-radius:9px;background:var(--surface-soft,#f1f6fb);color:inherit;padding:8px 12px;cursor:pointer}
+.disk-mount-dialog button.primary{background:var(--accent,#3978c6);color:#fff}
+.disk-mount-picker-body{display:grid;gap:10px;min-width:0;min-height:0}
+.disk-mount-picker-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.disk-mount-picker-controls label,.disk-mount-name-label{display:grid;gap:5px;min-width:0;font-size:12px;font-weight:700;color:var(--text-muted,#586a7e)}
+.disk-mount-picker-controls :is(select,input),.disk-mount-name-label input,.disk-mount-picker-body>input,.disk-mount-picker-body .disk-folder-editor input{box-sizing:border-box;min-width:0;width:100%;padding:9px;border:1px solid var(--panel-border,#cbd6e2);border-radius:9px;background:var(--panel-bg,#fff);color:var(--text-main,#243349);font:inherit}
+.disk-mount-picker-body>p{margin:0;font-size:12px;color:var(--text-muted,#586a7e)}
+.disk-mount-picker-body .disk-destination-tree{position:relative;min-height:130px;max-height:min(39dvh,370px);overflow:auto;padding:7px;border:1px solid var(--panel-border,#cbd6e2);border-radius:11px;background:var(--surface-soft,#f1f6fb)}
+.disk-mount-picker-body .disk-folder-branch{margin:2px 0 2px 5px;min-width:max-content}
+.disk-mount-picker-body .disk-folder-branch summary{list-style:none}
+.disk-mount-picker-body .disk-folder-branch summary::-webkit-details-marker{display:none}
+.disk-mount-picker-body .disk-folder-target{width:100%;padding:7px 9px;border:0;border-radius:7px;background:transparent;color:var(--text-main,#243349);text-align:left;cursor:pointer}
+.disk-mount-picker-body .disk-folder-target:hover,.disk-mount-picker-body .disk-folder-target.selected{background:color-mix(in srgb,var(--accent,#3978c6) 18%,transparent)}
+.disk-mount-picker-body .disk-folder-children{margin-left:15px;border-left:1px solid var(--panel-border,#cbd6e2);padding-left:7px}
+.disk-mount-picker-body .disk-folder-editor{display:flex;align-items:center;gap:6px;padding:5px}
+.disk-mount-picker-body .disk-folder-editor button{white-space:nowrap}
+.disk-mount-picker-body .disk-tree-menu{position:absolute;z-index:2;display:grid;padding:5px;border:1px solid var(--panel-border,#cbd6e2);border-radius:8px;background:var(--panel-bg,#fff);box-shadow:0 6px 18px #0003}
+.disk-mount-error,.disk-mount-picker-body .disk-folder-error{min-height:0;margin:0;color:#bc3046;font-size:12px;overflow-wrap:anywhere}
+.disk-mount-frame{position:fixed;inset:0;box-sizing:border-box;display:flex;flex-direction:column;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:#fff}
+.disk-mount-frame-header{display:flex;align-items:center;gap:12px;min-height:54px;padding:8px calc(12px + env(safe-area-inset-right)) 8px calc(12px + env(safe-area-inset-left));border-bottom:1px solid var(--panel-border,#cbd6e2);background:var(--panel-bg,#fff);color:var(--text-main,#243349)}
+.disk-mount-frame-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disk-mount-frame-header span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted,#586a7e);font-size:12px}
+.disk-mount-frame-header button{flex:none;border:1px solid var(--panel-border,#cbd6e2);border-radius:8px;background:var(--surface-soft,#f1f6fb);color:var(--text-main,#243349);padding:8px 12px;cursor:pointer}
+.disk-mount-frame iframe{display:block;flex:1;min-height:0;width:100%;border:0}
+@media(max-width:560px){.disk-mount-picker-controls{grid-template-columns:1fr}.disk-mount-dialog{padding:12px}.disk-mount-picker-body .disk-destination-tree{max-height:32dvh}.disk-mount-frame-header{flex-wrap:wrap;gap:3px 8px}.disk-mount-frame-header strong{flex:1}.disk-mount-frame-header span{order:3;flex-basis:100%}}

@@ -19,7 +19,7 @@ function fixture(options = {}) {
         telegramDriveContentStale: false,
         document: { createElement: () => overlay, body: { append() {} }, addEventListener() {} },
         $disk: id => elements[id], formatFileSize: n => n + ' B', telegramDriveDisplayPath: value => '/' + value,
-        chooseTelegramDriveDestination: async () => options.cancelPicker ? null : 'target',
+        chooseTelegramDriveTransfer: async () => options.cancelPicker ? null : 'target',
         confirmTelegramDriveAction: async () => !options.cancelConfirmation,
         clearTelegramDriveSelection: () => { cleared++; }, showAppToast: message => toasts.push(message),
         renderTelegramDrive: async value => { refreshes.push({ ...value }); if (options.refreshPending) await options.refreshPending; },
@@ -77,7 +77,7 @@ test('移动确认后在首个 HTTP 响应前显示 Loading，覆盖整批移动
 });
 
 test('移动完成时保留内容变更标记，网盘最小化后恢复不能复用旧列表', async () => {
-    const f = fixture(), pending = f.move([file]);
+    const f = fixture(), pending = f.move([file], 'target');
     await turn();
     assert.equal(f.stale(), false);
     await f.accept(0, 'move-1'); await f.complete('move-1'); await pending;
@@ -85,7 +85,7 @@ test('移动完成时保留内容变更标记，网盘最小化后恢复不能�
 });
 
 test('移动请求未返回就后台执行，取得任务 ID 或切到下一项不重新弹出，可主动恢复', async () => {
-    const f = fixture(), pending = f.move([file, folder]);
+    const f = fixture(), pending = f.move([file, folder], 'target');
     await turn();
     f.elements.diskLoadingBackground.onclick();
     assert.equal(f.overlay.hidden, true);
@@ -111,7 +111,7 @@ test('取消移动不创建活动或请求，首个请求失败后撤掉 Loading
         await f.move([file], options.cancelConfirmation ? 'target' : undefined);
         assert.equal(f.overlay.hidden, true); assert.equal(f.requests.length, 0); assert.equal(f.cleared(), 0);
     }
-    const f = fixture(), pending = f.move([file]);
+    const f = fixture(), pending = f.move([file], 'target');
     await turn(); assert.equal(f.overlay.hidden, false);
     f.requests[0].resolve({ ok: false, status: 409, json: async () => ({ error: 'DISK_NAME_CONFLICT' }) });
     await assert.rejects(pending, /DISK_NAME_CONFLICT/);

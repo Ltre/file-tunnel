@@ -1,6 +1,6 @@
 # Telegram 网盘 S3 Compatible API
 
-实现核对日期：2026-10-03。
+实现核对日期：2026-10-08。
 
 本文用于要求 S3 协议的第三方系统（如 FolderSync）。接受本系统 HTTP JSON / 文件流协议的应用使用独立的 [传统网盘 API 文档](adapter/telegram-disk-api.md)，两套接口的凭据和响应格式不能互换。
 
@@ -97,7 +97,7 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 | 配置项 | 设置 |
 |---|---|
 | 存储类型 | S3 Compatible |
-| Server address / Endpoint | 先填 `https://HOST/S3API`；该表单没有独立 Bucket 栏时，可尝试 `https://HOST/S3API/{bucket}`，其中 `{bucket}` 必须是系统实际生成或后台映射的名称 |
+| Server address / Endpoint | 填 `https://HOST/S3API`；连接后从返回的 Bucket 列表中选择系统实际生成或后台映射的名称 |
 | Access Key ID / Secret Access Key | 凭据工具创建的值 |
 | Region | 推荐统一使用 `us-east-1` |
 | Use path-style access for all requests | 开启 |
@@ -106,7 +106,9 @@ node tools/s3-credentials.cjs --data-dir .tunnel-data --rotate "<AccessKeyID>"
 
 使用标准 payload signing。当前支持普通 SHA-256、`UNSIGNED-PAYLOAD`、不带 trailer 的 `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`；不支持其它 trailer / checksum 签名变体。标准 PUT 提供 `Content-Length`；签名分块 PUT 提供 `x-amz-decoded-content-length`，每个签名块最多 20,000,000 字节。不要把 S3 Multipart Upload 与该签名分块格式或网盘内部 Telegram 分片混为一谈。
 
-FolderSync 的 S3 Compatible 表单只有服务器地址、Region、凭据及“为所有要求使用路径模式存取”等开关，没有独立的 Bucket 输入项。[FolderSync 官方说明](https://foldersync.io/docs/help/cloudservices/)也指出，**部分**兼容服务可在服务器地址后追加 `/bucketname`，但并不保证每个服务或客户端版本都会以同样方式请求。本服务已支持凭据可见 Bucket 的 ListBuckets、无 `list-type` 的 ListObjects V1 和 `list-type=2` 的 V2；先使用不带 Bucket 的端点进行连接测试。若需要附加 Bucket，应使用精确的 Bucket 名称，不是分区显示名。仍失败时应记录实际请求方法、路径、响应状态及 `x-amz-request-id`，不能仅根据 App 的堆栈判断是哪一种请求失败；不得关闭签名校验来绕过问题。
+FolderSync 的 S3 Compatible 表单只有服务器地址、Region、凭据及“为所有要求使用路径模式存取”等开关，没有独立的 Bucket 输入项。[FolderSync 官方说明](https://foldersync.io/docs/help/cloudservices/)指出，**部分**兼容服务可在服务器地址后追加 `/bucketname`。这不是通用的 S3 Endpoint 规则：启用 path-style 后，如果客户端还把 Bucket 追加到完整地址，请求会变成 `/S3API/{bucket}/{bucket}`，本服务会把第二个 `{bucket}` 当作对象 Key。请先使用不带 Bucket 的 `/S3API`，由已签名的 `GET /S3API` 列出此凭据可见的 Bucket，再访问 `GET /S3API/{bucket}` 列表。只有抓到该客户端实际请求并确认不会重复追加 Bucket 时，才使用带 Bucket 的服务器地址。
+
+针对 2026-10-08 的两种连接测试错误，当前服务端代码中可确认：旧版本对 `HEAD /S3API` 元数据探测返回 501；现已对经过 SigV4 验证的服务根路径返回 200。旧版本还把 S3 错误写成带成功响应命名空间的 XML；现在错误使用标准的无命名空间 `<Error>`，并包含 `Code`、`Message`、`Resource`、`RequestId`。这使路径或权限错误能按 S3 REST-XML 解析。原始 FolderSync 日志没有提供实际 HTTP 方法、路径、状态和正文，因此不能证明第二次失败一定由 XML 命名空间、重复 Bucket 路径或公网代理造成。若仍失败，需记录这些字段和 `x-amz-request-id`，检查是否有代理返回 HTML/JSON/空正文，以及 Bucket 是否重复；不要关闭签名校验来绕过问题。
 
 客户端若默认启用 S3 Multipart Upload，应关闭或将其阈值调整到不会使用该 API；遇到客户端不能关闭的未支持功能时需核对请求，不能通过关闭鉴权规避。
 
@@ -118,6 +120,7 @@ FolderSync 的 S3 Compatible 表单只有服务器地址、Region、凭据及“
 |---|---|---|
 | GET | `/` | ListBuckets，仅返回当前凭据映射的 Bucket |
 | HEAD | `/{bucket}` | HeadBucket，返回 `x-amz-bucket-region` |
+| HEAD | `/` | 已签名的 Endpoint 根路径探测，供 FolderSync 等客户端检查连接；不代表某个 Bucket 存在 |
 | GET | `/{bucket}?location` | GetBucketLocation；us-east-1 返回空 LocationConstraint |
 | GET | `/{bucket}?list-type=2` | ListObjectsV2 |
 | GET | `/{bucket}`（无 `list-type`） | ListObjects V1，兼容使用旧式列表请求的客户端；支持 `prefix`、`delimiter`、`marker`、`max-keys` 和 `encoding-type=url` |
@@ -164,9 +167,9 @@ UNSIGNED-PAYLOAD / 无完整 SHA 的 PUT 保持逐片上传，到 EOF 后才取�
 
 ## 6. 未提供的功能与错误处理
 
-当前不提供 Create / Delete Bucket、ListObjects v1、S3 Multipart Upload API、匿名访问、presigned URL、SSE（S3 服务端加密）、ACL、对象版本控制、Object Lock、对象标签和非 STANDARD 存储类别。兼容能力以本节操作表为准，不能把它当作完整 AWS S3 服务。
+当前不提供 Create / Delete Bucket、S3 Multipart Upload API、匿名访问、presigned URL、SSE（S3 服务端加密）、ACL、对象版本控制、Object Lock、对象标签和非 STANDARD 存储类别。兼容能力以第 4 节操作表为准，不能把它当作完整 AWS S3 服务。
 
-错误响应为 S3 XML，包含 Code、Message、RequestId；响应头 `x-amz-request-id` 可用于关联问题。HEAD 错误不带正文。
+错误响应为无命名空间的 S3 REST-XML，包含 Code、Message、Resource、RequestId；响应头 `x-amz-request-id` 可用于关联问题。HEAD 错误不带正文。
 
 | HTTP | Code 示例 | 处理 |
 |---|---|---|

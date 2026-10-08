@@ -7,8 +7,79 @@
     <meta name="theme-color" content="#4f5ec2">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/tunnel-icon.svg" type="image/svg+xml">
+    <style>
+        #tunnelStartupLoading{position:fixed;inset:0;z-index:9998;display:grid;place-items:center;padding:24px;background:linear-gradient(135deg,#253b72,#415bb8 55%,#5278bd);color:#f8fbff;font:14px/1.5 system-ui,-apple-system,sans-serif}
+        #tunnelStartupLoading[hidden]{display:none}
+        #tunnelStartupLoading>section{width:min(440px,100%);padding:26px;border:1px solid #ffffff38;border-radius:20px;background:#ffffff18;box-shadow:0 18px 60px #1228555c;backdrop-filter:blur(18px)}
+        #tunnelStartupLoading h1{margin:0 0 5px;color:inherit;font-size:22px;letter-spacing:.01em}
+        #tunnelStartupLoading p{margin:0 0 18px;color:#e2eafe}
+        #tunnelStartupLoading progress{display:block;width:100%;height:9px;margin:12px 0;accent-color:#73d8c1}
+        #tunnelStartupLoading strong,#tunnelStartupLoading small{display:block;overflow-wrap:anywhere}
+        #tunnelStartupLoading strong{font-size:14px}
+        #tunnelStartupLoading small{margin-top:8px;color:#d8e4ff}
+        #tunnelStartupLoading details{margin-top:14px;color:#e2eafe;font-size:12px}
+        #tunnelStartupLoading details summary{cursor:pointer}
+        #tunnelStartupLoading ul{max-height:145px;overflow:auto;margin:6px 0 0;padding-left:19px}
+        #tunnelStartupLoading .startup-actions{display:flex;gap:9px;margin-top:16px}
+        #tunnelStartupLoading button{padding:8px 12px;border:1px solid #ffffff88;border-radius:9px;background:#ffffff20;color:#fff;cursor:pointer}
+    </style>
+    <script>
+        (function startupLoadingObserver(){
+            const known=new Map(),completed=new Set(),failed=new Set();
+            const labels={'/app.js':'应用界面','/socket.io/socket.io.js':'连接组件','/client/cache-store.js':'本地缓存','/client/file-assets.js':'文件传输','/client/web-workshop.js':'网页工坊','/client/disk-ui.js':'Telegram 网盘','/client/media.js':'媒体播放','/runtime-config.js':'运行配置'};
+            const stages={'indexeddb-open':'打开本地数据库','cache-store-create':'准备文件缓存','session-restore':'恢复本地会话','music-player-restore':'恢复音乐播放','contacts-restore':'恢复联系人','session-data-restore':'恢复传输记录'};
+            let lastStage='',slow=false,stalled=false,closed=false,lastCount=0,lastDone=0,lastFailed=0,lastAdvance=Date.now(),rendered=false;
+            const key=value=>{try{return new URL(value,location.href).href;}catch(_){return String(value||'');}};
+            const friendly=url=>{let name='';try{name=new URL(url).pathname;}catch(_){name=url;}return labels[name]||name.split('/').pop()||name;};
+            function scan(){
+                document.querySelectorAll('script[defer][src],link[rel="stylesheet"][href]').forEach(node=>{
+                    const url=key(node.src||node.href);if(url)known.set(url,friendly(url));
+                });
+            }
+            function render(){
+                const layer=document.getElementById('tunnelStartupLoading');if(!layer||closed)return false;
+                const done=Array.from(known.keys()).filter(url=>completed.has(url)&&!failed.has(url)).length;
+                const total=known.size;
+                const progress=layer.querySelector('progress');progress.max=Math.max(1,total);progress.value=done;
+                layer.querySelector('[data-startup-count]').textContent=`资源已加载 ${done} / ${total}`;
+                const waiting=Array.from(known.keys()).find(url=>!completed.has(url)&&!failed.has(url));
+                const current=window.TunnelStartup?.currentStage;
+                layer.querySelector('[data-startup-current]').textContent=stalled?'启动未能继续，请刷新重试或关闭提示':current?`正在${stages[current]||current}…`:waiting?`正在等待 ${known.get(waiting)}…`:'正在启动应用…';
+                const warning=layer.querySelector('[data-startup-warning]');
+                warning.textContent=failed.size?`${failed.size} 个资源加载失败，请尝试刷新。`:slow?'启动耗时较长，仍在等待资源或本地数据。':'';
+                const list=layer.querySelector('[data-startup-list]');
+                list.replaceChildren(...Array.from(known,([url,name])=>{const item=document.createElement('li');item.textContent=`${failed.has(url)?'失败':completed.has(url)?'完成':'等待'} · ${name}`;return item;}));
+                layer.querySelector('.startup-actions').hidden=!stalled&&!failed.size;
+                return true;
+            }
+            function tick(){
+                if(closed)return;scan();
+                const current=window.TunnelStartup?.currentStage||'';
+                const changed=current!==lastStage||known.size!==lastCount||completed.size!==lastDone||failed.size!==lastFailed;
+                if(changed){
+                    lastStage=current;lastCount=known.size;lastDone=completed.size;lastFailed=failed.size;lastAdvance=Date.now();
+                }
+                const beforeSlow=slow,beforeStalled=stalled;
+                const idle=Date.now()-lastAdvance;slow=idle>=12000;stalled=idle>=45000;
+                if(changed||slow!==beforeSlow||stalled!==beforeStalled||!rendered)rendered=render();
+            }
+            function onResource(entries){for(const entry of entries){if(entry.initiatorType==='script'||entry.initiatorType==='link')completed.add(key(entry.name));}tick();}
+            function onLoad(event){const node=event.target;if(node?.tagName==='SCRIPT'||node?.tagName==='LINK'){completed.add(key(node.src||node.href));tick();}}
+            function onError(event){const node=event.target;if(node?.tagName==='SCRIPT'||node?.tagName==='LINK'){failed.add(key(node.src||node.href));tick();}}
+            let observer=null;
+            try{observer=new PerformanceObserver(list=>onResource(list.getEntries()));observer.observe({type:'resource',buffered:true});}catch(_){observer=null;}
+            try{onResource(performance.getEntriesByType('resource'));}catch(_){}
+            const interval=setInterval(tick,200);
+            document.addEventListener('load',onLoad,true);document.addEventListener('error',onError,true);
+            function dispose(){if(closed)return;closed=true;clearInterval(interval);observer?.disconnect();document.removeEventListener('load',onLoad,true);document.removeEventListener('error',onError,true);document.removeEventListener('tunnel-shell-ready',dispose);document.getElementById('tunnelStartupLoading')?.remove();delete window.TunnelStartupLoading;}
+            document.addEventListener('tunnel-shell-ready',dispose);
+            document.addEventListener('DOMContentLoaded',()=>{const layer=document.getElementById('tunnelStartupLoading');layer?.querySelector('[data-startup-retry]')?.addEventListener('click',()=>location.reload());layer?.querySelector('[data-startup-dismiss]')?.addEventListener('click',dispose);tick();},{once:true});
+            window.TunnelStartupLoading={dispose};
+        })();
+    </script>
     <link rel="stylesheet" href="/client/notification-center.css">
     <link rel="stylesheet" href="/client/web-workshop.css">
+    <link rel="stylesheet" href="/client/disk-mount-ui.css">
     <title>Drop2Tunnel - 即时传输隧道</title>
     <script defer src="/socket.io/socket.io.js"></script>
     <script defer src="/client/qrcode-1.0.0.min.js"></script>
@@ -2619,7 +2690,7 @@
             box-shadow: 0 0 0 3px #ffb74388;
         }
 
-        .telegram-drive-space-picker { max-width: min(48vw, 210px); min-height: 36px; border: 0; border-left: 1px solid var(--panel-border); border-radius: 0; padding: 5px 8px; background: transparent; color: var(--text-main); }
+        .telegram-drive-space-picker { max-width: min(48vw, 210px); min-height: 36px; border: 0; border-radius: 0; padding: 5px 8px; background: transparent; color: var(--text-main); }
         .telegram-drive-space-manage { min-height: 36px; margin: 0; padding: 6px 10px; border: 0; border-radius: 0; background: transparent; color: var(--accent); font-weight: 650; }
         .telegram-drive-s3-details input[readonly] { cursor: pointer; }
         .disk-space-transfer-body { display: grid; gap: 14px; }
@@ -2627,8 +2698,17 @@
         .disk-space-transfer-tabs { display: flex; gap: 8px; }
         .disk-space-transfer-tabs button { flex: 1; min-height: 38px; border: 1px solid var(--panel-border); border-radius: 9px; background: var(--surface-soft); color: var(--text-main); cursor: pointer; }
         .disk-space-transfer-tabs button.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-bg)); color: var(--accent); font-weight: 700; }
+        .disk-space-transfer-header-picker { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; color: var(--text-muted); font-size: .82rem; white-space: nowrap; }
+        .disk-space-transfer-header-picker select { max-width: min(24vw, 190px); min-height: 34px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--surface-soft); color: var(--text-main); }
         #telegramDriveDialog.disk-space-transfer-open #telegramDriveDialogCloseBtn { color: #d83745; border-color: #d8374580; font-size: 1.3rem; }
         .telegram-drive-space-dialog { display: grid; gap: 12px; max-height: 65vh; overflow: auto; }
+        .disk-settings-dialog .disk-settings-section { display: grid; gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--surface-soft); }
+        .disk-settings-dialog .disk-settings-section h3 { margin: 0; color: var(--text-main); font-size: 1rem; }
+        .disk-settings-dialog .disk-settings-section p { margin: 0; color: var(--text-muted); line-height: 1.5; overflow-wrap: anywhere; }
+        .disk-settings-dialog .disk-settings-section label { display: grid; gap: 5px; min-width: 0; }
+        .disk-settings-dialog .disk-settings-section select { min-width: 0; width: 100%; min-height: 36px; border: 1px solid var(--panel-border); border-radius: 8px; padding: 6px 9px; background: var(--panel-bg); color: var(--text-main); }
+        .disk-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+        .disk-settings-actions .danger { color: #d83745; border-color: #d8374580; }
         .telegram-drive-static-dialog { display: grid; gap: 12px; max-height: min(60vh, 520px); overflow: auto; min-width: 0; }
         .telegram-drive-static-dialog label { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
         .telegram-drive-static-dialog input, .telegram-drive-static-dialog select { box-sizing: border-box; width: 100%; min-width: 0; }
@@ -2689,6 +2769,17 @@
         .disk-collaboration-popover { position: fixed; z-index: 10020; box-sizing: border-box; width: min(460px, calc(100vw - 16px)); max-width: calc(100vw - 16px); max-height: min(70dvh, 620px); overflow: auto; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel-bg); color: var(--text-main); box-shadow: 0 14px 40px #0004; backdrop-filter: blur(18px); }
         .disk-collaboration-popover header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: 700; }
         .disk-collaboration-popover header button { border: 0; background: transparent; color: inherit; font-size: 1.3rem; cursor: pointer; }
+        .disk-collaboration-manage-popover { display: flex; flex-direction: column; gap: 12px; padding: 18px; border-color: color-mix(in srgb, var(--accent) 28%, var(--panel-border)); background: color-mix(in srgb, var(--panel-bg) 94%, var(--accent)); }
+        .disk-collaboration-manage-popover header { margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--panel-border); color: var(--text-main); font-size: 1.05rem; }
+        .disk-collaboration-manage-popover header button { width: 30px; height: 30px; border-radius: 8px; color: #d83e4f; }
+        .disk-collaboration-manage-popover header button:hover { background: color-mix(in srgb, #d83e4f 12%, transparent); }
+        .disk-collaboration-manage-popover .disk-collaboration-list { gap: 12px; }
+        .disk-collaboration-manage-popover h4 { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-soft); color: var(--text-main); font-size: .9rem; }
+        .disk-collaboration-manage-popover .disk-collaboration-row { padding: 10px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel-bg); }
+        .disk-collaboration-manage-popover input { min-width: 0; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--surface-soft); color: var(--text-main); }
+        .disk-collaboration-manage-popover button:not(header button) { min-height: 34px; border-radius: 8px; cursor: pointer; }
+        .disk-collaboration-manage-popover .disk-collaboration-member { min-width: 0; flex: 1; overflow-wrap: anywhere; line-height: 1.45; }
+        .disk-collaboration-manage-popover .danger { color: #d83e4f; border-color: color-mix(in srgb, #d83e4f 55%, var(--panel-border)); }
         .disk-static-list-popover { display: grid; gap: 8px; }
         .disk-collaboration-list h4 { margin: 6px 0 0; }
         .disk-collaboration-row { display: flex; align-items: center; gap: 7px; }
@@ -2799,7 +2890,8 @@
         @media (max-width: 720px) {
             .telegram-drive-header-overflow-wrap:not([hidden]) { display: block; }
             #telegramDriveSharesBtn, #telegramDriveCollaborationListBtn, #telegramDriveStaticListBtn { display: none !important; }
-            #telegramDriveStaticCurrentBtn { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+            #telegramDriveStaticCurrentBtn { min-width: 33px; max-width: 33px; padding-inline: 0; font-size: 0; }
+            #telegramDriveStaticCurrentBtn::after { content: 'S'; font-size: .8rem; }
             .telegram-drive-bottom.disk-static-active #telegramDriveCollaborationManageBtn { right: 155px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
             .disk-collaboration-popover { width: calc(100vw - 16px); max-height: min(75dvh, 620px); }
             .disk-collaboration-row { flex-wrap: wrap; }
@@ -5495,6 +5587,9 @@
     <link rel="stylesheet" href="/client/disk-directory-picker.css">
 </head>
 <body>
+    <div id="tunnelStartupLoading" role="status" aria-live="polite">
+        <section><h1>Drop2Tunnel</h1><p>正在准备应用</p><strong data-startup-count>正在读取资源清单…</strong><progress max="1" value="0" aria-label="静态资源加载数量"></progress><strong data-startup-current>正在启动…</strong><small data-startup-warning></small><details><summary>查看加载明细</summary><ul data-startup-list></ul></details><div class="startup-actions" hidden><button type="button" data-startup-retry>刷新重试</button><button type="button" data-startup-dismiss>关闭提示</button></div></section>
+    </div>
     <div class="tunnel-landing" id="sessionLanding" hidden>
         <header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel Studio</strong></header>
         <main class="tunnel-landing-main">
@@ -5985,7 +6080,7 @@
                     <nav class="telegram-drive-breadcrumbs" id="telegramDriveBreadcrumbs" aria-label="网盘目录路径"></nav>
                     <div class="telegram-drive-toolbar-main">
                         <div class="telegram-drive-controls">
-                            <div class="telegram-drive-search-wrap"><span class="disk-search-input"><input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"><span id="telegramDriveSearchSpinner" class="disk-search-spinner" role="status" aria-label="正在搜索" hidden></span></span><label class="telegram-drive-search-scope"><input id="telegramDriveSearchAll" type="checkbox">搜索所有文件</label></div>
+                            <div class="telegram-drive-search-wrap"><span class="disk-search-input"><input class="telegram-drive-search" id="telegramDriveSearch" type="search" placeholder="搜索当前目录" aria-label="搜索当前目录"><span id="telegramDriveSearchSpinner" class="disk-search-spinner" role="status" aria-label="正在搜索" hidden></span></span><label class="telegram-drive-search-scope"><input id="telegramDriveSearchAll" type="checkbox">搜索所有文件</label><label class="telegram-drive-search-scope"><input id="telegramDriveSearchMounts" type="checkbox">附加已挂载的协同内容</label></div>
                             <select class="telegram-drive-sort" id="telegramDriveSort" aria-label="排序方式"><option value="name">按名称</option><option value="type">按类型</option><option value="size">按大小</option><option value="updatedAt">按最后修改</option></select>
                             <button class="telegram-drive-icon-btn" id="telegramDriveSortDirectionBtn" type="button" title="切换升降序" aria-label="当前升序">↑</button>
                             <button class="telegram-drive-icon-btn" id="telegramDriveViewBtn" type="button" title="切换列表或网格" aria-label="切换为网格视图">▦</button>
@@ -6026,6 +6121,7 @@
             document.write(`<script defer src="/client/simplewebauthn.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-client.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-directory-picker.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-mount-ui.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-ui.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-tunnel-adapter.js${suffix}"><\/script>`);
             document.write(`<script defer src="/app.js${suffix}"><\/script>`);

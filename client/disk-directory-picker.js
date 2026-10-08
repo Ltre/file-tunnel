@@ -10,7 +10,7 @@
     async function choose({ items = [], title = '移动到', confirmText = '移动', initialPath = '', rootPath = '', rootName = '根目录',
         loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, controls = [], showError = error => alert(error.message) }) {
         rootPath = normalize(rootPath);
-        const blocked = path => items.some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
+        const blocked = path => (typeof items === 'function' ? items() : items).some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
         const display = path => '/' + (rootPath ? path.slice(rootPath.length).replace(/^\//, '') : path);
         const resolve = value => normalize([rootPath, normalize(value)].filter(Boolean).join('/'));
         const root = document.createElement('div'); root.className = 'disk-destination-tree'; root.setAttribute('role', 'tree');

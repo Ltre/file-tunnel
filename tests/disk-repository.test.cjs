@@ -78,7 +78,7 @@ test('旧版本服务不会写入更高版本的网盘数据库', t => {
     t.after(() => fs.rmSync(dir, { recursive:true, force:true }));
     const repository = openDiskRepository(dir);
     const db = new DatabaseSync(repository.filename);
-    db.exec('INSERT INTO disk_schema_migrations(version) VALUES (3)');
+    db.exec('INSERT INTO disk_schema_migrations(version) VALUES (4)');
     db.close();
     repository.close();
     assert.throws(() => openDiskRepository(dir), /DISK_SCHEMA_TOO_NEW/);

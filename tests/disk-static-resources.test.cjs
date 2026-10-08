@@ -48,10 +48,12 @@ test('目录默认缓存期限与独立子项设置分层生效；停用父目�
     };
     const staticResources = createDiskStaticResources({ dataDir });
     const parent = staticResources.configureTarget(scope, store, { item: { kind: 'directory', path: '公开' }, preset: 'month' });
-    const child = staticResources.configureTarget(scope, store, { item: { kind: 'file', id: 'child-file' }, preset: 'week' });
-    staticResources.updateCache(scope, parent.id, { path: '公开', preset: 'day' });
-    assert.ok(staticResources.effectiveCacheSeconds(staticResources.resolve(parent.token), files[0]) >= 86399);
-    assert.ok(staticResources.effectiveCacheSeconds(staticResources.resolve(parent.token), files[1]) > 6 * 86400);
+    const child = staticResources.configureTarget(scope, store, { item: { kind: 'file', id: 'child-file' }, preset: 'month' });
+    staticResources.updateCache(scope, parent.id, { path: '公开', preset: 'week' });
+    const reopened = createDiskStaticResources({ dataDir }).list(scope).find(link => link.id === parent.id);
+    assert.ok(Math.abs(reopened.cacheOverrides['directory:公开'] - 7 * 86400) <= 2, '缓存期限重新读取后仍应回显为一周');
+    assert.ok(staticResources.effectiveCacheSeconds(staticResources.resolve(parent.token), files[0]) >= 7 * 86400 - 2);
+    assert.ok(staticResources.effectiveCacheSeconds(staticResources.resolve(parent.token), files[1]) > 29 * 86400);
     assert.equal(staticResources.protectFile(scope, files[1]), true);
     assert.equal(staticResources.protectDirectory(scope, store, '公开'), true);
     staticResources.stopTarget(scope, store, { kind: 'directory', path: '公开' });

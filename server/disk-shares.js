@@ -19,6 +19,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
     const owns = (item, scope) => item.ownerId === scope.userId && item.diskSpace === scope.diskSpace;
     const view = item => ({ id: item.id, url: '/disk-share/' + item.token, title: item.title, createdAt: item.createdAt, stoppedAt: item.stoppedAt, fileCount: item.files.length, directoryCount: item.directories.length });
     return {
+        reloadPersistence,
         create(scope, store, selections) {
             if (!Array.isArray(selections) || !selections.length || selections.length > 100) throw new Error('SHARE_SELECTION_INVALID');
             const files = new Map(), directories = new Set(), names = [];
@@ -55,6 +56,8 @@ function createDiskShares({ dataDir, now = Date.now }) {
         },
         resolve(token) {
             if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('SHARE_NOT_FOUND');
+            // A link may have been revoked or removed by another server process.
+            reloadPersistence();
             const item = records.find(item => item.token === token && !item.stoppedAt);
             if (!item) throw new Error('SHARE_NOT_FOUND');
             return item;

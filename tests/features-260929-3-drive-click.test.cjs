@@ -41,7 +41,7 @@ function fixture({ mobile = true, coarse = false, narrow = false } = {}) {
         getSortedTelegramDriveItems: data => [...(data.folders || []), ...(data.files || [])].filter(filter),
         getTelegramDriveDisplayData: () => context.telegramDriveSearchData || context.telegramDriveCurrentData,
         updateTelegramDriveBottomSummary() {}, telegramDriveMimeIcon: () => '📁', getTelegramDriveItemMeta: () => '', updateDiskCacheLabels() {},
-        isTelegramDriveStaticOpen: () => false, refreshTelegramDriveStaticLinks: async () => {},
+        staticLinksForItem: () => [], refreshTelegramDriveStaticLinks: async () => {},
         telegramDriveItemKey: item => item.kind === 'directory' ? 'directory:' + item.path : 'file:' + item.id,
         openTelegramDriveItem: async item => opened.push(item), showTelegramDriveItemMenu: async item => menus.push(item),
         moveTelegramDriveItems: async (items, destination) => moved.push({ items, destination }),

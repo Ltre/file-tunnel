@@ -2,6 +2,9 @@
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]);
 const tag = (name, value) => `<${name}>${esc(value)}</${name}>`;
 const document = (name, content) => `<?xml version="1.0" encoding="UTF-8"?><${name} xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${content}</${name}>`;
+// S3 REST errors use an unwrapped, unnamespaced Error element. The default
+// namespace above belongs to successful S3 XML responses only.
+const errorDocument = (code, message, requestId, resource) => `<?xml version="1.0" encoding="UTF-8"?><Error>${tag('Code', code)}${tag('Message', message)}${tag('Resource', resource)}${tag('RequestId', requestId)}</Error>`;
 const unescape = value => String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (match, entity) => {
     if (entity[0] === '#') { const number = entity[1]?.toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10); return Number.isSafeInteger(number) && number <= 0x10ffff ? String.fromCodePoint(number) : match; }
     return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity.toLowerCase()] || match;
@@ -14,4 +17,4 @@ function deleteRequest(xml) {
     const objects = rawObjects.map(unescape);
     return { keys: objects, quiet: /<Quiet>\s*true\s*<\/Quiet>/i.test(xml) };
 }
-module.exports = { esc, tag, document, deleteRequest };
+module.exports = { esc, tag, document, errorDocument, deleteRequest };

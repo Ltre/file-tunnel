@@ -84,6 +84,19 @@ function createS3Credentials(dataDir) {
             return publicCredential(item);
         });
     }
+    function retireUserSpace(userId, diskSpace) {
+        return mutate(data => {
+            let changed = 0;
+            for (const item of data.credentials) {
+                if (item.userId !== userId || !item.bucketMappings?.some(mapping => mapping.diskSpace === diskSpace)) continue;
+                if (item.bucketMappings.length === 1) item.enabled = false;
+                else item.bucketMappings = item.bucketMappings.filter(mapping => mapping.diskSpace !== diskSpace);
+                item.updatedAt = Math.max(Date.now(), Number(item.updatedAt) + 1);
+                changed++;
+            }
+            return changed;
+        });
+    }
     function validate({ userId, bucketMappings, remark = '', enabled = true }) {
         if (typeof userId !== 'string' || !userId || userId.length > 100 || typeof remark !== 'string' || remark.length > 160 || /[\u0000-\u001f\u007f]/.test(remark) || typeof enabled !== 'boolean'
             || !Array.isArray(bucketMappings) || !bucketMappings.length || bucketMappings.length > 100
@@ -150,6 +163,6 @@ function createS3Credentials(dataDir) {
     }
     function disable(accessKeyId) { return update(accessKeyId, { enabled: false }); }
     function list() { return read().credentials.map(publicCredential); }
-    return { find, create, update, rotate, disable, list, userSpace, enableUserSpace, rotateUserSpace, disableUserSpace, userBucket };
+    return { find, create, update, rotate, disable, list, userSpace, enableUserSpace, rotateUserSpace, disableUserSpace, retireUserSpace, userBucket };
 }
 module.exports = { createS3Credentials, validBucket };

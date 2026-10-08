@@ -12,6 +12,7 @@ const { createTelegramDriveStore, normalizeTelegramDrivePath } = require('./tele
 const { openDiskRepository } = require('./disk-repository');
 const { createDiskShares } = require('./disk-shares');
 const { createDiskCollaborationStore } = require('./disk-collaboration');
+const { createDiskCollaborationMountStore } = require('./disk-collaboration-mounts');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskMetadataTiming } = require('./disk-metadata-timing');
@@ -24,6 +25,7 @@ const { createContentProof } = require('./disk-content-proof');
 const { createContentAdmin } = require('./disk-content-admin');
 const { createS3Credentials } = require('./s3/credentials');
 const { createDiskStaticResources } = require('./disk-static-resources');
+const { createDiskPartitions, validateName: validatePartitionName } = require('./disk-partitions');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -47,6 +49,7 @@ const uploadResultFile = item => item ? {
 } : null;
 function createDiskSpaces(dataDir, defaultStore) {
     const stores = new Map([['', defaultStore]]);
+    let externalNameGuard = null;
     const repository = openDiskRepository(dataDir);
     let spacesState = repository.loadWithRevision('spaces');
     let usagesState = repository.loadWithRevision('space_usage');
@@ -67,6 +70,10 @@ function createDiskSpaces(dataDir, defaultStore) {
         else if (now - item.lastUsedAt > 60 * 60 * 1000) { item.lastUsedAt = now; saveUsages(); }
     };
     return {
+        installExternalNameGuard(guard) {
+            externalNameGuard = guard;
+            for (const [diskSpace, store] of stores) store.setExternalNameGuard?.((ownerId, parentPath, name) => guard(ownerId, diskSpace, parentPath, name));
+        },
         cleanup() { return [...stores.values()].flatMap(store => store.cleanup().map(job => ({ store, job }))); },
         recoveries() { return this.entries().flatMap(({ store }) => store.recoveredUploads().map(job => ({ store, job }))); },
         entries() { return ['', ...new Set(spaces)].map(diskSpace => ({ diskSpace, store: this.get(diskSpace) })); },
@@ -92,6 +99,7 @@ function createDiskSpaces(dataDir, defaultStore) {
             if (!stores.has(value)) {
                 const id = crypto.createHash('sha256').update(value).digest('hex');
                 stores.set(value, createTelegramDriveStore({ dataDir: path.join(dataDir, 'disk-spaces', id), repositoryDir: dataDir, diskSpace: value }));
+                if (externalNameGuard) stores.get(value).setExternalNameGuard?.((ownerId, parentPath, name) => externalNameGuard(ownerId, value, parentPath, name));
                 if (!spaces.includes(value)) {
                     spaces.push(value);
                     try { repository.replaceMany([{ table:'spaces', items:spaces.map(name => ({ name })), keyOf:item => item.name, base:spacesState.revisions }]); }
@@ -109,11 +117,13 @@ function createDiskSpaces(dataDir, defaultStore) {
 }
 function errorStatus(code) {
     if (/^COLLABORATION_|^INVITE_/.test(code)) return /NOT_FOUND/.test(code) ? 404 : 403;
+    if (/^MOUNT_(?:ACCESS_REVOKED|GRANT_NOT_AVAILABLE)/.test(code)) return 403;
+    if (/^MOUNT_(?:COLLABORATION_OVERLAP|NAME_CONFLICT|TRANSFER_UNSUPPORTED)/.test(code)) return 409;
     if (code === 'PASSKEY_SERVER_UNAVAILABLE') return 503;
     if (code === 'FILE_REMOVED_BY_REVIEW') return 410;
     if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
-    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE/.test(code)) return 409;
+    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE/.test(code)) return 409;
     if (/TELEGRAM_|STORAGE_/.test(code)) return 502;
     return 422;
 }
@@ -138,6 +148,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
+    const partitions = createDiskPartitions({ dataDir, spaces, s3Credentials: userS3Credentials });
     let objectStorage;
     const contentProof=createContentProof({content,reuseMode:contentReuseMode,
         validate:async (candidate,req)=>{
@@ -169,11 +180,21 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (staticResources.protectDirectory(scope, store, folder)) throw new Error('STATIC_RESOURCE_ACTIVE');
     };
     const collaborations = createDiskCollaborationStore(dataDir);
+    const mounts = createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAvailable: grant => {
+        try {
+            const ownerSpace = partitions.find(grant.ownerId, grant.diskSpace).scopeKey;
+            const ownerStore = spaces.get(ownerSpace);
+            ownerStore.reloadPersistence();
+            const target = grant.kind === 'file' ? ownerStore.get(grant.ownerId, grant.fileId) : ownerStore.getDirectory(grant.ownerId, grant.path);
+            return Boolean(target && !['blocked', 'deleted'].includes(target.reviewStatus));
+        } catch (_) { return false; }
+    } });
+    spaces.installExternalNameGuard((ownerId, diskSpace, parentPath, name) => mounts.assertNameFree(ownerId, diskSpace, parentPath, name));
     const shared = express.Router();
     const publicStatic = express.Router();
     function copyGrantedItem({ kind, grant, ownerId, diskSpace, selection, targetUser, targetSpace, destinationPath }) {
         if (ownerId === targetUser.id) throw new Error('CONTENT_COPY_SELF_OWNED');
-        if (!spaces.forUser(targetUser.id).includes(targetSpace)) throw new Error('DISK_SPACE_NOT_FOUND');
+        targetSpace = partitions.find(targetUser.id, targetSpace).scopeKey;
         const targetDrive = spaces.get(targetSpace), sourceDrive = spaces.get(diskSpace);
         const destination = normalizeTelegramDrivePath(destinationPath || '');
         if (!targetDrive.getDirectory(targetUser.id, destination)) throw new Error('DIRECTORY_NOT_FOUND');
@@ -236,6 +257,151 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 return result;
             }, () => targetDrive.reloadPersistence());
             return { copied: created, directoryCount: directories.length, destination: targetRoot || destination };
+        } finally { for (const lease of leases.values()) content.releaseLease(lease); }
+    }
+    function copyAcrossNamespaces(actor, input, defaultPartitionId) {
+        if (input?.mode !== 'copy') throw new Error('CONTENT_COPY_MODE_INVALID');
+        const sourceInput = input.source, targetInput = input.target;
+        if (!sourceInput || !targetInput || !['native', 'collaboration'].includes(sourceInput.kind)
+            || !['native', 'collaboration'].includes(targetInput.kind)
+            || sourceInput.kind === 'native' && targetInput.kind === 'native')
+            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        const resolve = (value, target) => {
+            if (value.kind === 'native') {
+                const partition = partitions.find(actor.id, value.partitionId ?? defaultPartitionId);
+                return { kind: 'native', ownerId: actor.id, diskSpace: partition.scopeKey,
+                    drive: spaces.get(partition.scopeKey), partitionId: partition.id };
+            }
+            const grant = collaborations.authorizedFresh(value.collaborationId, actor.id);
+            if (!grant || grant.ownerId === actor.id) throw new Error('COLLABORATION_NOT_FOUND');
+            if (target && grant.kind !== 'directory') throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if (target && grant.role !== 'editor') throw new Error('COLLABORATION_READ_ONLY');
+            const partition = partitions.find(grant.ownerId, grant.diskSpace);
+            return { kind: 'collaboration', id: grant.id, version: grant.grantVersion,
+                ownerId: grant.ownerId, diskSpace: partition.scopeKey, drive: spaces.get(partition.scopeKey), grant };
+        };
+        const source = resolve(sourceInput, false), target = resolve(targetInput, true);
+        if (source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)
+            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        const checkedPath = value => {
+            if (typeof value !== 'string' || value.includes('\\')) throw new Error('DISK_NAME_INVALID');
+            const normalized = normalizeTelegramDrivePath(value);
+            if (normalized !== value) throw new Error('DISK_NAME_INVALID');
+            return normalized;
+        };
+        const activeReview = item => item && (!item.reviewStatus || item.reviewStatus === 'active');
+        const assertVisibleDirectory = (drive, ownerId, value, errorCode) => {
+            let current = '';
+            for (const segment of value.split('/').filter(Boolean)) {
+                current = current ? current + '/' + segment : segment;
+                if (!activeReview(drive.getDirectory(ownerId, current))) throw new Error(errorCode);
+            }
+        };
+        const withinGrant = (grant, value) => !grant.path || value === grant.path || value.startsWith(grant.path + '/');
+        source.drive.reloadPersistence(); target.drive.reloadPersistence();
+        const selection = sourceInput.selection;
+        if (!selection || !['file', 'directory'].includes(selection.kind)) throw new Error('DISK_SELECTION_INVALID');
+        let sourcePath = '', directories = [], selectedFiles = [];
+        if (selection.kind === 'directory') {
+            sourcePath = checkedPath(selection.path);
+            if (!sourcePath || source.kind === 'collaboration'
+                && (source.grant.kind !== 'directory' || !withinGrant(source.grant, sourcePath)))
+                throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            const tree = source.drive.getDirectoryTree(source.ownerId, sourcePath);
+            if (!activeReview(tree) || tree.directories.some(item => !activeReview(item))
+                || tree.files.some(item => !activeReview(item))) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            assertVisibleDirectory(source.drive, source.ownerId, sourcePath, 'CONTENT_COPY_SOURCE_INVALID');
+            if (source.kind === 'native' && mounts.countTree(source.ownerId, source.diskSpace, sourcePath))
+                throw new Error('MOUNT_TRANSFER_UNSUPPORTED');
+            directories = tree.directories.map(item => item.path);
+            selectedFiles = tree.files.map(item => item.id);
+        } else {
+            const file = source.drive.get(source.ownerId, selection.id);
+            if (!activeReview(file) || source.kind === 'collaboration'
+                && (source.grant.kind === 'file' ? source.grant.fileId !== file.id
+                    : !withinGrant(source.grant, file.folderPath || '')))
+                throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            assertVisibleDirectory(source.drive, source.ownerId, file.folderPath || '', 'CONTENT_COPY_SOURCE_INVALID');
+            selectedFiles = [file.id];
+        }
+        if (directories.length > 10000 || selectedFiles.length > 10000) throw new Error('CONTENT_COPY_TOO_LARGE');
+        const destination = checkedPath(targetInput.destinationPath ?? '');
+        if (!activeReview(target.drive.getDirectory(target.ownerId, destination))) throw new Error('DIRECTORY_NOT_FOUND');
+        assertVisibleDirectory(target.drive, target.ownerId, destination, 'DIRECTORY_NOT_FOUND');
+        if (target.kind === 'collaboration' && !withinGrant(target.grant, destination))
+            throw new Error('COLLABORATION_OUT_OF_SCOPE');
+        assertStaticDirectoryWritable({ userId: target.ownerId, diskSpace: target.diskSpace }, target.drive, destination);
+        const rootName = sourcePath.split('/').at(-1) || '';
+        const targetRoot = sourcePath ? [destination, rootName].filter(Boolean).join('/') : destination;
+        if (sourcePath && target.drive.getDirectory(target.ownerId, targetRoot)) throw new Error('DISK_NAME_CONFLICT');
+        if (sourcePath && source.ownerId === target.ownerId && source.diskSpace === target.diskSpace
+            && (destination === sourcePath || destination.startsWith(sourcePath + '/')))
+            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        const translate = value => sourcePath
+            ? [targetRoot, value.slice(sourcePath.length).replace(/^\//, '')].filter(Boolean).join('/') : destination;
+        const candidates = selectedFiles.map(id => {
+            const file = source.drive.get(source.ownerId, id);
+            if (!activeReview(file) || !file.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            return { id, contentId: file.contentId, folderPath: file.folderPath || '' };
+        });
+        const leases = new Map();
+        try {
+            for (const candidate of candidates) if (!leases.has(candidate.contentId))
+                leases.set(candidate.contentId, content.lease(candidate.contentId, target.ownerId, 'cross-scope-copy', 'reuse'));
+            return persistence.atomic(() => {
+                for (const scope of [source, target]) {
+                    if (scope.kind === 'native') partitions.find(actor.id, scope.partitionId);
+                    else {
+                        const current = collaborations.authorizedFresh(scope.id, actor.id);
+                        if (!current || current.ownerId !== scope.ownerId || current.diskSpace !== scope.diskSpace
+                            || String(current.grantVersion) !== String(scope.version)
+                            || scope === target && (current.kind !== 'directory' || current.role !== 'editor'))
+                            throw new Error('COLLABORATION_NOT_FOUND');
+                        partitions.find(current.ownerId, current.diskSpace);
+                    }
+                }
+                source.drive.reloadPersistence(); target.drive.reloadPersistence();
+                if (!activeReview(target.drive.getDirectory(target.ownerId, destination))) throw new Error('DIRECTORY_NOT_FOUND');
+                assertVisibleDirectory(target.drive, target.ownerId, destination, 'DIRECTORY_NOT_FOUND');
+                assertStaticDirectoryWritable({ userId: target.ownerId, diskSpace: target.diskSpace }, target.drive, destination);
+                if (sourcePath) {
+                    const currentTree = source.drive.getDirectoryTree(source.ownerId, sourcePath);
+                    if (!activeReview(currentTree) || currentTree.directories.some(item => !activeReview(item))
+                        || currentTree.files.some(item => !activeReview(item))
+                        || currentTree.directories.map(item => item.path).sort().join('\n') !== directories.slice().sort().join('\n')
+                        || currentTree.files.map(item => item.id).sort().join('\n') !== selectedFiles.slice().sort().join('\n'))
+                        throw new Error('CONTENT_COPY_SOURCE_CHANGED');
+                    assertVisibleDirectory(source.drive, source.ownerId, sourcePath, 'CONTENT_COPY_SOURCE_INVALID');
+                    if (source.kind === 'native' && mounts.countTree(source.ownerId, source.diskSpace, sourcePath))
+                        throw new Error('MOUNT_TRANSFER_UNSUPPORTED');
+                }
+                for (const directory of directories.sort((a, b) => a.length - b.length))
+                    target.drive.createDirectory(target.ownerId, translate(directory), maxDepth(), 'system');
+                const targetUser = target.kind === 'native' ? actor : auth.user(target.ownerId);
+                if (!targetUser) throw new Error('USER_NOT_FOUND');
+                const copied = [];
+                for (const candidate of candidates) {
+                    const file = source.drive.get(source.ownerId, candidate.id);
+                    if (!activeReview(file) || file.contentId !== candidate.contentId
+                        || String(file.folderPath || '') !== candidate.folderPath) throw new Error('CONTENT_COPY_SOURCE_CHANGED');
+                    assertVisibleDirectory(source.drive, source.ownerId, file.folderPath || '', 'CONTENT_COPY_SOURCE_INVALID');
+                    const physical = content.resolve(file.contentId)?.physical;
+                    if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
+                    const backend = physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+                    if (!backend) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+                    const proof = { kind: 'cross-scope', actorId: actor.id,
+                        source: { kind: source.kind, ownerId: source.ownerId, diskSpace: source.diskSpace,
+                            fileId: file.id, ...(source.kind === 'collaboration' ? { id: source.id, version: source.version } : {}) },
+                        target: { kind: target.kind, ownerId: target.ownerId, diskSpace: target.diskSpace,
+                            ...(target.kind === 'collaboration' ? { id: target.id, version: target.version } : {}) } };
+                    const item = target.drive.putCopiedObject(targetUser, translate(file.folderPath || ''), file.name,
+                        { ...file, ...physical, contentId: file.contentId, contentLease: leases.get(file.contentId),
+                            contentCopyGrant: proof }, physical.parts || [], backend, maxDepth());
+                    copied.push({ id: item.id, name: item.name, folderPath: item.folderPath });
+                }
+                return { copied, directoryCount: directories.length, destination: targetRoot,
+                    sourceKind: source.kind, targetKind: target.kind };
+            }, () => { source.drive.reloadPersistence(); target.drive.reloadPersistence(); mounts.reloadPersistence(); });
         } finally { for (const lease of leases.values()) content.releaseLease(lease); }
     }
     let retryingCaptions = false, closed = false;
@@ -359,8 +525,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (activeProgressiveUploads.size >= 20) { queueUploadRecovery({ store: diskStore, job: manifest }); return; }
             if (!previous) throw new Error('OPERATION_NOT_FOUND');
             if (manifest.collaborationId) {
-                const grant=collaborations.authorized(manifest.collaborationId,manifest.viewerId || manifest.owner?.id);
-                if(!grant || manifest.collaborationVersion && String(grant.grantVersion)!==String(manifest.collaborationVersion)) throw new Error('COLLABORATION_NOT_FOUND');
+                const grant=collaborations.authorizedFresh(manifest.collaborationId,manifest.viewerId || manifest.owner?.id);
+                if(!grant || grant.role === 'viewer' || manifest.collaborationVersion && String(grant.grantVersion)!==String(manifest.collaborationVersion)) throw new Error('COLLABORATION_NOT_FOUND');
             }
             activeProgressiveUploads.add(manifest.id); reservation = true;
             const storage = await resolveStorageBackend(manifest.backendId ? auth.backend(manifest.backendId) : getDefaultBackend(manifest.channelId));
@@ -920,20 +1086,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use('/collaborations', wrap((req, res, next) => {
         const user = getIdentity(req);
         if (!user) throw new Error('LOGIN_REQUIRED');
-        req.diskUser = user; req.diskScope = { userId: user.id, diskSpace: '' }; req.diskStore = defaultStore;
+        const selected = partitions.find(user.id, String(req.get('X-Disk-Space') ?? req.query.disk_space ?? ''));
+        req.diskUser = user; req.diskPartition = selected;
+        req.diskScope = { userId: user.id, diskSpace: selected.scopeKey };
+        req.diskStore = spaces.get(selected.scopeKey);
         next();
     }));
     const collaborationView = (entry, viewerId) => {
         const owned = entry.ownerId === String(viewerId);
         const view = collaborations.publicEntry(entry);
-        if (!owned) { delete view.invites; delete view.members; }
+        const role = owned ? 'owner' : view.memberRoles?.[viewerId] || 'editor';
+        if (!owned) { delete view.invites; delete view.members; delete view.memberRoles; }
         else view.memberDetails = view.members.map(id => {
             const user = auth.user(id);
-            return { id, name: user?.name || '', username: user?.username || '', telegramId: user?.telegramId || '', provider: user?.provider || '' };
+            return { id, role: view.memberRoles?.[id] || 'editor', name: user?.name || '', username: user?.username || '', telegramId: user?.telegramId || '', provider: user?.provider || '' };
         });
-        return { ...view, owned };
+        return { ...view, owned, role };
     };
-    browser.get('/collaborations', (req, res) => res.json({ collaborations: collaborations.accessible(req.diskUser.id).map(entry => collaborationView(collaborations.find(entry.id), req.diskUser.id)) }));
+    browser.get('/collaborations', (req, res) => {
+        collaborations.reloadPersistence();
+        res.json({ collaborations: collaborations.accessible(req.diskUser.id).map(entry => collaborationView(collaborations.find(entry.id), req.diskUser.id)) });
+    });
     browser.get('/collaborations/invitations/:token/preview', wrap((req, res) => {
         const entry = collaborations.byInvite(req.params.token);
         if (!entry) throw new Error('INVITE_NOT_FOUND');
@@ -959,7 +1132,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             target = req.diskStore.get(ownerId, req.body?.fileId);
             if (!target || target.reviewStatus === 'deleted') throw new Error('FILE_NOT_FOUND');
         }
-        const result = collaborations.enable({ ownerId, diskSpace, kind, path: kind === 'file' ? target.folderPath || '' : target.path, fileId: kind === 'file' ? target.id : '', name: target.name });
+        const result = persistence.atomic(() => {
+            if (kind === 'directory') mounts.assertCanEnableDirectory(ownerId, diskSpace, target.path);
+            return collaborations.enable({ ownerId, diskSpace, kind, path: kind === 'file' ? target.folderPath || '' : target.path, fileId: kind === 'file' ? target.id : '', name: target.name });
+        }, () => { mounts.reloadPersistence(); collaborations.reloadPersistence(); });
         res.status(201).json({ collaboration: collaborationView(collaborations.find(result.collaboration.id), ownerId), url: `${getOrigin(req)}/disk-collab/${encodeURIComponent(result.invite.token)}` });
     }));
     browser.post('/collaborations/join', wrap((req, res) => {
@@ -967,12 +1143,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         res.json({ collaboration: collaborationView(collaborations.find(entry.id), req.diskUser.id) });
     }));
     browser.get('/collaborations/:collaborationId', wrap((req, res) => {
-        const entry = collaborations.authorized(req.params.collaborationId, req.diskUser.id);
+        const entry = collaborations.authorizedFresh(req.params.collaborationId, req.diskUser.id);
         if (!entry) throw new Error('COLLABORATION_NOT_FOUND');
         res.json({ collaboration: collaborationView(entry, req.diskUser.id) });
     }));
     browser.post('/collaborations/:collaborationId/copy', wrap((req, res) => {
-        const entry = collaborations.authorized(req.params.collaborationId, req.diskUser.id);
+        const entry = collaborations.authorizedFresh(req.params.collaborationId, req.diskUser.id);
         if (!entry) throw new Error('COLLABORATION_NOT_FOUND');
         const result = copyGrantedItem({ kind: 'collaboration', grant: entry, ownerId: entry.ownerId, diskSpace: entry.diskSpace,
             selection: req.body?.selection, targetUser: req.diskUser, targetSpace: String(req.body?.diskSpace || ''), destinationPath: req.body?.destinationPath || '' });
@@ -980,15 +1156,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     }));
     browser.delete('/collaborations/:collaborationId/invitations/:inviteId', wrap((req, res) => res.json(collaborations.revokeInvite(req.params.collaborationId, req.params.inviteId, req.diskUser.id, req.diskScope.diskSpace))));
     browser.delete('/collaborations/:collaborationId/members/:memberId', wrap((req, res) => res.json(collaborations.kick(req.params.collaborationId, req.params.memberId, req.diskUser.id, req.diskScope.diskSpace))));
+    browser.patch('/collaborations/:collaborationId/members/:memberId', wrap((req, res) => res.json(collaborations.setRole(req.params.collaborationId, req.params.memberId, req.body?.role, req.diskUser.id, req.diskScope.diskSpace))));
     browser.delete('/collaborations/:collaborationId', wrap((req, res) => res.json(collaborations.disable(req.params.collaborationId, req.diskUser.id, req.diskScope.diskSpace))));
     const collaborationContent = express.Router({ mergeParams: true });
     collaborationContent.use(wrap((req, res, next) => {
         const viewerId = req.diskUser.id;
-        const entry = collaborations.authorized(req.params.collaborationId, viewerId);
+        const entry = collaborations.authorizedFresh(req.params.collaborationId, viewerId);
         if (!entry) throw new Error('COLLABORATION_NOT_FOUND');
+        if (entry.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) throw new Error('COLLABORATION_READ_ONLY');
         const user = auth.user(entry.ownerId);
         if (!user) throw new Error('COLLABORATION_NOT_FOUND');
         const storage = spaces.get(entry.diskSpace), root = normalizeTelegramDrivePath(entry.path || '');
+        const grantTarget = entry.kind === 'file' ? storage.get(entry.ownerId, entry.fileId) : storage.getDirectory(entry.ownerId, root);
+        if (!grantTarget || ['blocked', 'deleted'].includes(grantTarget.reviewStatus)) throw new Error('COLLABORATION_TARGET_NOT_FOUND');
         const within = (value, strict = false) => {
             const candidate = normalizeTelegramDrivePath(value || '');
             if ((strict && candidate === root) || (root && candidate !== root && !candidate.startsWith(root + '/'))) throw new Error('COLLABORATION_OUT_OF_SCOPE');
@@ -996,7 +1176,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         };
         const file = id => {
             const found = storage.get(entry.ownerId, id);
-            if (!found || (entry.kind === 'file' ? found.id !== entry.fileId : false)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if (!found || ['blocked', 'deleted'].includes(found.reviewStatus) || (entry.kind === 'file' ? found.id !== entry.fileId : false)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
             if (entry.kind === 'directory') within(found.folderPath || '');
             return found;
         };
@@ -1037,6 +1217,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!job || job.collaborationId !== entry.id) throw new Error('COLLABORATION_OUT_OF_SCOPE');
         }
         else if (method === 'GET' && (path === '/operations' || /^\/operations\/[^/]+$/.test(path))) { /* response filters collaboration id */ }
+        else if (method === 'GET' && path === '/search' && entry.kind === 'directory') { /* result is restricted to this grant below */ }
         else if (method === 'DELETE' && /^\/operations\/[^/]+$/.test(path)) { /* checked by route */ }
         else throw new Error('COLLABORATION_OUT_OF_SCOPE');
         req.collaboration = entry; req.diskViewerId = viewerId; req.diskUser = user;
@@ -1071,20 +1252,217 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         req.diskUser = user; req.diskScope = { userId: user.id, diskSpace: '' }; req.diskStore = defaultStore;
         spaces.track('system', user.id, '');
         const selectedSpace = String(req.get('X-Disk-Space') ?? req.query.disk_space ?? '');
-        if (selectedSpace) {
-            if (!spaces.usages().some(entry => entry.userId === user.id && entry.diskSpace === selectedSpace)
-                && !spaces.forUser(user.id).includes(selectedSpace)) throw new Error('DISK_SPACE_NOT_FOUND');
-            req.diskScope.diskSpace = selectedSpace;
-            req.diskStore = spaces.get(selectedSpace);
-            spaces.track('system', user.id, selectedSpace);
-        }
+        // Completed partition-deletion jobs must remain pollable after their
+        // source partition becomes DELETED. No data route gets this exception.
+        const selected = (/^\/operations(?:\/[^/]+)?$/.test(req.path)
+            || (req.method === 'GET' && req.path === '/spaces')
+            || (req.method === 'POST' && /^\/spaces\/[^/]+\/recover-delete$/.test(req.path)))
+            ? partitions.findOperationScope(user.id, selectedSpace)
+            : partitions.find(user.id, selectedSpace);
+        req.diskPartition = selected;
+        req.diskScope.diskSpace = selected.scopeKey;
+        req.diskStore = spaces.get(selected.scopeKey);
+        spaces.track('system', user.id, selected.scopeKey);
         next();
     }));
-    browser.get('/spaces', (req, res) => res.json({ spaces: spaces.forUser(req.diskUser.id).map(name => ({ id: name, name: name || '默认分区' })) }));
-    browser.post('/spaces', wrap((req, res) => res.status(201).json({ diskSpace: spaces.createForUser(req.diskUser.id, req.body?.name) })));
+    browser.get('/spaces', (req, res) => res.json({ spaces: partitions.list(req.diskUser.id) }));
+    browser.post('/spaces', wrap((req, res) => {
+        const partition = partitions.create(req.diskUser.id, req.body?.name);
+        res.status(201).json({ diskSpace: partition.scopeKey, partition });
+    }));
+    browser.patch('/spaces/:id', wrap((req, res) => {
+        const partition = Object.hasOwn(req.body || {}, 'name')
+            ? partitions.rename(req.diskUser.id, req.params.id, req.body.name)
+            : partitions.updateSettings(req.diskUser.id, req.params.id, req.body?.settings);
+        res.json({ partition });
+    }));
+    browser.get('/spaces/:id/clone-preview', wrap((req, res) => {
+        const ownerId = req.diskUser.id, partition = partitions.find(ownerId, req.params.id);
+        const source = spaces.get(partition.scopeKey);
+        source.reloadPersistence();
+        const files = source.adminFiles().filter(file => file.ownerId === ownerId);
+        const directories = source.adminDirectories().filter(folder => folder.ownerId === ownerId);
+        const denied = directories.filter(folder => folder.reviewStatus && folder.reviewStatus !== 'active').map(folder => folder.path);
+        const allowed = folderPath => !denied.some(parent => folderPath === parent || folderPath.startsWith(parent + '/'));
+        const impact = {
+            files: files.filter(file => (!file.reviewStatus || file.reviewStatus === 'active') && allowed(file.folderPath || '')).length,
+            directories: directories.filter(folder => (!folder.reviewStatus || folder.reviewStatus === 'active') && allowed(folder.path)).length,
+            skippedFiles: files.filter(file => (file.reviewStatus && file.reviewStatus !== 'active') || !allowed(file.folderPath || '')).length,
+            skippedDirectories: directories.filter(folder => (folder.reviewStatus && folder.reviewStatus !== 'active') || !allowed(folder.path)).length,
+            skippedMounts: persistence.load('collaboration_mounts').filter(item => item.ownerId === ownerId && item.diskSpace === partition.scopeKey).length
+        };
+        res.json({ partition: partitions.publicItem(partition), impact });
+    }));
+    browser.post('/spaces/:id/clone', wrap((req, res) => {
+        const ownerId = req.diskUser.id, sourcePartition = partitions.find(ownerId, req.params.id);
+        const displayName = validatePartitionName(req.body?.name || sourcePartition.displayName + ' 副本');
+        const source = spaces.get(sourcePartition.scopeKey), targetScope = 'p-' + crypto.randomUUID();
+        const target = spaces.get(targetScope);
+        const operation = operations.create({ userId: ownerId, diskSpace: sourcePartition.scopeKey },
+            'space-clone', `正在复刻分区：${sourcePartition.displayName}`);
+        res.status(202).json({ operation_id: operation.operation_id });
+        // Respond before the large snapshot transaction starts. The target
+        // partition and every Content reference still commit atomically.
+        setImmediate(() => operations.run(operation.operation_id, async (update, control) => {
+            update({ phase: 'preflight', message: '正在验证待复刻的目录和正文引用', percent: 5 });
+            await new Promise(resolve => setImmediate(resolve));
+            control.throwIfCancelled();
+            const leases = [];
+            let partition;
+            try {
+            update({ phase: 'commit', message: '正在原子写入新分区及内容引用', percent: 20 });
+            // Partition visibility, new logical records and Content refs commit
+            // together. A crash or failure leaves no half-cloned partition.
+            const result = persistence.atomic(() => {
+                partitions.find(ownerId, sourcePartition.id);
+                source.reloadPersistence();
+                const existingFiles = source.adminFiles().filter(file => file.ownerId === ownerId);
+                const existingDirectories = source.adminDirectories().filter(folder => folder.ownerId === ownerId);
+                if (existingFiles.length > 10000 || existingDirectories.length > 10000) throw new Error('DISK_BATCH_LIMIT');
+                const deniedFolders = existingDirectories.filter(folder => folder.reviewStatus && folder.reviewStatus !== 'active').map(folder => folder.path);
+                const allowedFolders = existingDirectories.filter(folder => (!folder.reviewStatus || folder.reviewStatus === 'active')
+                    && !deniedFolders.some(parent => folder.path === parent || folder.path.startsWith(parent + '/')));
+                const allowedFiles = existingFiles.filter(file => (!file.reviewStatus || file.reviewStatus === 'active')
+                    && !deniedFolders.some(folder => file.folderPath === folder || file.folderPath.startsWith(folder + '/')));
+                const skippedMounts = persistence.load('collaboration_mounts').filter(item => item.ownerId === ownerId
+                    && item.diskSpace === sourcePartition.scopeKey).length;
+                partition = partitions.createWithin(ownerId, displayName, targetScope);
+                for (const folder of allowedFolders.sort((a, b) => a.path.length - b.path.length)) {
+                    target.createDirectory(ownerId, folder.path, maxDepth(), folder.sourceAppId || 'system');
+                }
+                const cloned = [];
+                for (const original of allowedFiles) {
+                    if (!original.contentId) source.update(ownerId, original.id, {});
+                    const file = source.get(ownerId, original.id);
+                    if (!file?.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+                    const physical = content.resolve(file.contentId)?.physical;
+                    if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
+                    const backend = physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
+                    if (!backend) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
+                    const lease = content.lease(file.contentId, ownerId, 'space-clone', 'reuse');
+                    leases.push(lease);
+                    const copy = target.putCopiedObject(req.diskUser, file.folderPath || '', file.name,
+                        { ...file, ...physical, contentId: file.contentId, contentLease: lease },
+                        physical.parts || [], backend, maxDepth());
+                    cloned.push(copy.id);
+                }
+                return { files: cloned.length, directories: allowedFolders.length,
+                    skippedFiles: existingFiles.length - allowedFiles.length,
+                    skippedDirectories: existingDirectories.length - allowedFolders.length, skippedMounts };
+            }, () => { source.reloadPersistence(); target.reloadPersistence(); partitions.reload(); });
+            let usageTrackingPending = false;
+            try { spaces.track('system', ownerId, targetScope); }
+            catch (error) { usageTrackingPending = true; console.warn('[disk-partition] 复刻后的使用记录待补写', error?.message || String(error)); }
+            update({ phase: 'finalizing', message: '新分区已写入，正在完成任务记录', percent: 95 });
+            return { partition, ...result, usageTrackingPending };
+            } finally { for (const lease of leases) {
+                try { content.releaseLease(lease); }
+                catch (error) { console.warn('[disk-partition] 内容租约释放待重试', error?.message || String(error)); }
+            } }
+        }));
+    }));
+    const partitionImpact = (ownerId, partition, exceptOperationId = '') => {
+        const diskSpace = partition.scopeKey, drive = spaces.get(diskSpace);
+        drive.reloadPersistence();
+        const files = drive.adminFiles().filter(file => file.ownerId === ownerId);
+        const directories = drive.adminDirectories().filter(folder => folder.ownerId === ownerId);
+        const now = Date.now();
+        const activeShares = persistence.load('shares').filter(item => item.ownerId === ownerId
+            && item.diskSpace === diskSpace && !item.stoppedAt).length;
+        const activeStaticLinks = persistence.load('static_resources').filter(item => item.ownerId === ownerId
+            && item.diskSpace === diskSpace && !item.revokedAt && (!item.expiresAt || item.expiresAt > now)).length;
+        const activeCollaborations = persistence.load('collaborations').filter(item => item.ownerId === ownerId
+            && item.diskSpace === diskSpace && item.active !== false).length;
+        const activeTasks = persistence.load('operations').filter(item => item.operation_id !== exceptOperationId && item.userId === ownerId
+            && item.diskSpace === diskSpace && !['completed', 'failed', 'cancelled'].includes(item.status)).length;
+        const activeLeases = persistence.activeContentLeases(diskSpace, ownerId);
+        const s3Credentials = userS3Credentials.list().filter(item => item.userId === ownerId && item.enabled
+            && item.bucketMappings?.some(mapping => mapping.diskSpace === diskSpace)).length;
+        return { files: files.length, directories: directories.length,
+            mounts: mounts.countScope(ownerId, diskSpace), activeShares, activeStaticLinks,
+            activeCollaborations, activeTasks, activeLeases, s3Credentials };
+    };
+    browser.get('/spaces/:id/delete-preview', wrap((req, res) => {
+        const partition = partitions.findAny(req.diskUser.id, req.params.id);
+        if (partition.isDefault) throw new Error('DISK_DEFAULT_SPACE_DELETE_FORBIDDEN');
+        res.json({ partition: partitions.publicItem(partition), impact: partitionImpact(req.diskUser.id, partition) });
+    }));
+    browser.post('/spaces/:id/recover-delete', wrap((req, res) => {
+        const partition = partitions.findAny(req.diskUser.id, req.params.id);
+        if (partition.state !== 'DELETING') throw new Error('DISK_SPACE_RECOVERY_NOT_NEEDED');
+        const jobs = persistence.load('operations').filter(item => item.userId === req.diskUser.id
+            && item.diskSpace === partition.scopeKey && item.type === 'space-delete')
+            .sort((a, b) => b.createdAt - a.createdAt);
+        if (!jobs.length || !['failed', 'cancelled'].includes(jobs[0].status)
+            || jobs.some(item => !['completed', 'failed', 'cancelled'].includes(item.status)))
+            throw new Error('DISK_SPACE_RECOVERY_BUSY');
+        // A committed removal marks the partition DELETED in the same SQLite
+        // transaction. DELETING therefore still has intact native records.
+        const recovered = partitions.recoverDeleting(req.diskUser.id, partition.id);
+        res.json({ partition: recovered, interruptedOperationId: jobs[0].operation_id });
+    }));
+    browser.delete('/spaces/:id', wrap((req, res) => {
+        if (req.body?.confirm !== true) throw new Error('DISK_SPACE_DELETE_CONFIRM_REQUIRED');
+        const ownerId = req.diskUser.id, partition = partitions.findAny(ownerId, req.params.id);
+        if (partition.isDefault) throw new Error('DISK_DEFAULT_SPACE_DELETE_FORBIDDEN');
+        const diskSpace = partition.scopeKey, drive = spaces.get(diskSpace);
+        const impact = partitionImpact(ownerId, partition);
+        if (impact.activeCollaborations) throw new Error('DISK_SPACE_COLLABORATION_ACTIVE');
+        if (impact.activeTasks || impact.activeLeases) throw new Error('DISK_SPACE_BUSY');
+        drive.assertDirectoryWritable(ownerId, '');
+        const operation = operations.create({ userId: ownerId, diskSpace }, 'space-delete',
+            `正在删除分区：${partition.displayName}`);
+        res.status(202).json({ operation_id: operation.operation_id });
+        setImmediate(() => operations.run(operation.operation_id, async (update, control) => {
+            update({ phase: 'preflight', message: '正在复核分区影响与活动任务', percent: 5 });
+            await new Promise(resolve => setImmediate(resolve));
+            control.throwIfCancelled();
+            const current = partitionImpact(ownerId, partition, operation.operation_id);
+            if (current.activeCollaborations) throw new Error('DISK_SPACE_COLLABORATION_ACTIVE');
+            if (current.activeTasks || current.activeLeases) throw new Error('DISK_SPACE_BUSY');
+            drive.assertDirectoryWritable(ownerId, '');
+            partitions.markDeleting(ownerId, partition.id);
+            try {
+                update({ phase: 'commit', message: '正在原子移除本分区的原生记录与挂载指针', percent: 20 });
+                const removed = persistence.atomic(() => {
+                    const latest = partitionImpact(ownerId, partition, operation.operation_id);
+                    if (latest.activeCollaborations || latest.activeTasks || latest.activeLeases) throw new Error('DISK_SPACE_BUSY');
+                    drive.assertDirectoryWritable(ownerId, '');
+                    const state = ['files', 'directories', 'shares', 'static_resources'].map(table =>
+                        ({ table, scope: table === 'files' || table === 'directories' ? diskSpace : '',
+                            snapshot: persistence.loadWithRevision(table, table === 'files' || table === 'directories' ? diskSpace : '') }));
+                    const match = item => item.ownerId === ownerId && item.diskSpace === diskSpace;
+                    const changes = state.map(({ table, scope, snapshot }) => ({ table, scope,
+                        items: snapshot.items.filter(item => table === 'files' || table === 'directories' ? item.ownerId !== ownerId : !match(item)),
+                        keyOf: table === 'directories' ? item => `${item.ownerId}:${item.path}` : item => item.id,
+                        base: snapshot.revisions }));
+                    persistence.replaceMany(changes);
+                    const removedMounts = mounts.removePartition(ownerId, diskSpace).removedMounts;
+                    const retired = partitions.retireWithin(ownerId, partition.id);
+                    return { partition: retired, removedMounts };
+                }, () => { drive.reloadPersistence(); shares.reloadPersistence(); mounts.reloadPersistence();
+                    staticResources.list({ userId: ownerId, diskSpace }); partitions.reload(); });
+                drive.reloadPersistence(); shares.reloadPersistence(); mounts.reloadPersistence();
+                staticResources.list({ userId: ownerId, diskSpace }); partitions.reload();
+                // A stale JSON credential cannot access a retired partition.
+                // Retire it after SQLite commits so a failed transaction does
+                // not disable S3 for an otherwise intact partition.
+                let revokedS3Credentials = 0, credentialCleanupPending = false;
+                try { revokedS3Credentials = userS3Credentials.retireUserSpace(ownerId, diskSpace); }
+                catch (error) { credentialCleanupPending = true; console.warn('[disk-partition] S3 凭证清理待重试', error?.message || String(error)); }
+                update({ phase: 'finalizing', message: '分区已删除，正在完成任务记录', percent: 95 });
+                return { ...removed, revokedS3Credentials, credentialCleanupPending, impact };
+            } catch (error) {
+                partitions.markDeleteFailed(ownerId, partition.id);
+                throw error;
+            }
+        }));
+    }));
     browser.post('/spaces/transfer', wrap((req, res) => {
-        const sourceSpace = req.diskScope.diskSpace, targetSpace = String(req.body?.targetSpace ?? ''), mode = req.body?.mode;
-        if (!['copy', 'move'].includes(mode) || targetSpace === sourceSpace || !spaces.forUser(req.diskUser.id).includes(targetSpace)) throw new Error('DISK_SPACE_TRANSFER_INVALID');
+        const sourceSpace = req.diskScope.diskSpace,
+            targetSpace = partitions.find(req.diskUser.id, req.body?.targetSpace ?? '').scopeKey,
+            mode = req.body?.mode;
+        if (!['copy', 'move'].includes(mode) || (targetSpace === sourceSpace && mode !== 'copy')) throw new Error('DISK_SPACE_TRANSFER_INVALID');
         const selection = req.body?.items;
         if (!Array.isArray(selection) || !selection.length || selection.length > 100) throw new Error('DISK_SELECTION_INVALID');
         const source = req.diskStore, target = spaces.get(targetSpace), ownerId = req.diskUser.id;
@@ -1094,6 +1472,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         for (const selected of selection) {
             if (selected?.kind === 'directory') {
                 const folder = normalizeTelegramDrivePath(selected.path || '');
+                if (targetSpace === sourceSpace && (root === folder || root.startsWith(folder + '/'))) throw new Error('DISK_SPACE_TRANSFER_INVALID');
                 if (!folder || roots.some(entry => entry.kind === 'directory' && (folder === entry.path || folder.startsWith(entry.path + '/')))) continue;
                 const tree = source.getDirectoryTree(ownerId, folder);
                 if (!tree || tree.directories.some(entry => ['blocked', 'deleted'].includes(entry.reviewStatus))) throw new Error('DIRECTORY_NOT_FOUND');
@@ -1116,6 +1495,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const matched = top.find(folder => oldPath === folder || oldPath.startsWith(folder + '/'));
             return matched ? [root, oldPath.slice(matched.lastIndexOf('/') + 1)].filter(Boolean).join('/') : root;
         };
+        const sourceMounts = mounts.list(ownerId, sourceSpace).filter(mount => top.some(folder => mount.parentPath === folder || mount.parentPath.startsWith(folder + '/')));
         const leases = new Map();
         try {
             // Older JSON-era files have a physical Telegram anchor but no
@@ -1143,14 +1523,55 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         { ...file, ...physical, contentId: file.contentId, contentLease: leases.get(file.id) }, physical.parts, backend, maxDepth());
                     result.push({ id: copy.id, name: copy.name, folderPath: copy.folderPath });
                 }
+                for (const mount of sourceMounts) {
+                    const parentPath = destination(mount.parentPath);
+                    if (mode === 'copy') mounts.create({ ownerId, diskSpace: targetSpace, parentPath, name: mount.name,
+                        collaborationId: mount.collaborationId, drive: target });
+                    else mounts.moveAcrossPartition(mount.id, ownerId, sourceSpace, targetSpace, parentPath, target);
+                }
                 if (mode === 'move') {
                     for (const folder of top) source.removeDirectory(ownerId, folder, true);
                     for (const entry of roots.filter(item => item.kind === 'file')) if (source.get(ownerId, entry.id)) source.remove(ownerId, entry.id);
                 }
                 return result;
-            }, () => { source.reloadPersistence(); target.reloadPersistence(); });
+            }, () => { source.reloadPersistence(); target.reloadPersistence(); mounts.reloadPersistence(); });
             res.json({ copied, moved: mode === 'move', targetSpace, destination: root });
         } finally { for (const lease of leases.values()) content.releaseLease(lease); }
+    }));
+    browser.post('/cross-scope/copy', wrap((req, res) => {
+        const result = copyAcrossNamespaces(req.diskUser, req.body, req.diskPartition.id);
+        res.status(201).json(result);
+    }));
+    browser.get('/mounts', wrap((req, res) => res.json({ mounts: mounts.list(req.diskUser.id, req.diskScope.diskSpace,
+        Object.hasOwn(req.query, 'parentPath') ? String(req.query.parentPath) : null) })));
+    browser.post('/mounts', wrap((req, res) => {
+        const created = persistence.atomic(() => mounts.create({ ownerId: req.diskUser.id,
+            diskSpace: req.diskScope.diskSpace, parentPath: req.body?.parentPath || '', name: req.body?.name,
+            collaborationId: req.body?.collaborationId, drive: req.diskStore }),
+        () => { mounts.reloadPersistence(); req.diskStore.reloadPersistence(); });
+        res.status(201).json({ mount: created });
+    }));
+    browser.get('/mounts/:id/resolve', wrap((req, res) => {
+        const { mount, grant } = mounts.resolve(req.params.id, req.diskUser.id, req.diskScope.diskSpace);
+        res.json({ mount, collaboration: collaborationView(grant, req.diskUser.id) });
+    }));
+    browser.patch('/mounts/:id', wrap((req, res) => {
+        const hasName = Object.hasOwn(req.body || {}, 'name');
+        const hasDestination = Object.hasOwn(req.body || {}, 'parentPath') || Object.hasOwn(req.body || {}, 'targetSpace');
+        if (hasName === hasDestination) throw new Error('MOUNT_UPDATE_INVALID');
+        const targetPartition = hasDestination ? partitions.find(req.diskUser.id, req.body?.targetSpace ?? req.diskPartition.id) : req.diskPartition;
+        const targetDrive = spaces.get(targetPartition.scopeKey);
+        const updated = persistence.atomic(() => hasName
+            ? mounts.rename(req.params.id, req.diskUser.id, req.diskScope.diskSpace, req.body.name, req.diskStore)
+            : mounts.moveAcrossPartition(req.params.id, req.diskUser.id, req.diskScope.diskSpace,
+                targetPartition.scopeKey, req.body.parentPath || '', targetDrive),
+        () => { mounts.reloadPersistence(); req.diskStore.reloadPersistence(); targetDrive.reloadPersistence(); });
+        res.json({ mount: updated });
+    }));
+    browser.delete('/mounts/:id', wrap((req, res) => {
+        const removed = persistence.atomic(() => mounts.remove(req.params.id, req.diskUser.id, req.diskScope.diskSpace),
+            () => mounts.reloadPersistence());
+        res.json(removed);
     }));
     browser.get('/spaces/s3', (req, res) => res.json({ credential: userS3Credentials.userSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' }));
     browser.post('/spaces/s3', wrap((req, res) => res.status(201).json({ credential: userS3Credentials.enableUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
@@ -1168,7 +1589,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const user = userId ? auth.user(userId) : (telegramId ? auth.fromTelegram({ id: telegramId }) : null);
         if (!user) throw new Error('USER_NOT_FOUND');
         if (telegramId) defaultStore.migrateOwner(String(telegramId), user.id);
-        const diskSpace = req.get('X-Disk-Space') ?? req.query.disk_space ?? req.body?.disk_space ?? '';
+        const partition = partitions.resolveExternal(user.id,
+            req.get('X-Disk-Space') ?? req.query.disk_space ?? req.body?.disk_space ?? '', req.diskApp.appId,
+            { allowCreate: req.method === 'POST' && (req.path === '/uploads' || req.path === '/directories') });
+        const diskSpace = partition.scopeKey;
+        req.diskPartition = partition;
         req.diskUser = user; req.diskScope = { userId: user.id, diskSpace }; req.diskStore = spaces.get(diskSpace);
         spaces.track(req.diskApp.appId, user.id, diskSpace);
         next();
@@ -1200,8 +1625,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const getFile = req => { const file = store(req).get(owner(req), req.params.id); if (!file) throw new Error('FILE_NOT_FOUND'); return file; };
         const assertCurrentCollaboration = req => {
             if(!req.collaboration)return;
-            const current=collaborations.authorized(req.collaboration.id,req.diskViewerId);
-            if(!current || req.collaboration.grantVersion!==undefined && String(current.grantVersion)!==String(req.collaboration.grantVersion))throw new Error('COLLABORATION_NOT_FOUND');
+            const current=collaborations.authorizedFresh(req.collaboration.id,req.diskViewerId);
+            if(!current || req.collaboration.role !== 'viewer' && current.role === 'viewer' || req.collaboration.grantVersion!==undefined && String(current.grantVersion)!==String(req.collaboration.grantVersion))throw new Error('COLLABORATION_NOT_FOUND');
         };
         const requireEntity = file => { if (file.reviewStatus === 'deleted') throw new Error('FILE_REMOVED_BY_REVIEW'); return file; };
         const jobResponse = (req, res, type, message, work, { immediateResult = false } = {}) => {
@@ -1249,11 +1674,26 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/list', wrap((req, res) => {
             const result = store(req).list(owner(req), req.query.path || '');
-            res.json({ ...result, user_id: owner(req), folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })) });
+            res.json({ ...result, user_id: owner(req), folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })),
+                ...(router === browser && !req.collaboration ? { mounts: mounts.list(owner(req), req.diskScope.diskSpace, result.path || '') } : {}) });
         }));
         router.get('/search', wrap((req, res) => {
-            const result = store(req).search(owner(req), req.query.q || '', 500);
-            res.json({ query: String(req.query.q || ''), folders: result.folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: result.files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })), summary: { folderCount: result.folders.length, fileCount: result.files.length } });
+            const root = req.collaboration?.path || '';
+            const result = store(req).search(owner(req), req.query.q || '', 500, root);
+            const inScope = value => !req.collaboration || !root || value === root || value.startsWith(root + '/');
+            const visible = item => !req.collaboration || !['blocked', 'deleted'].includes(item.reviewStatus);
+            const folders = result.folders.filter(folder => inScope(folder.path) && visible(folder));
+            const files = result.files.filter(file => inScope(file.folderPath || '') && visible(file));
+            const mounted = router === browser && !req.collaboration && req.query.include_mounts === '1'
+                ? mounts.searchMounted(owner(req), req.diskScope.diskSpace, req.query.q || '', grant => {
+                    try {
+                        const source = spaces.get(partitions.find(grant.ownerId, grant.diskSpace).scopeKey);
+                        source.reloadPersistence();
+                        return source;
+                    } catch (_) { return null; }
+                }) : { results: [], truncated: false, searchedGrants: 0 };
+            res.json({ query: String(req.query.q || ''), folders: folders.map(folder => ({ ...folder, collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'directory', folder.path)?.id || '' })), files: files.map(file => ({ ...publicFile(file), collaborationId: collaborations.ownedTarget(owner(req), req.diskScope.diskSpace, 'file', file.id)?.id || '' })), mounted: mounted.results, mountedTruncated: mounted.truncated,
+                summary: { folderCount: folders.length, fileCount: files.length, mountedCount: mounted.results.length } });
         }));
         router.get('/directories', (req, res) => {
             const root = req.collaboration?.path;
@@ -1288,9 +1728,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         : drive.renameDirectory(owner(req), req.body.path, req.body.name, maxDepth());
                     const oldPath = normalizeTelegramDrivePath(req.body.path);
                     const newPath = normalizeTelegramDrivePath(moved.path || moved.directory?.path || '');
-                    if (newPath && oldPath !== newPath) collaborations.relocateDirectory(owner(req), req.diskScope.diskSpace, oldPath, newPath);
+                    if (newPath && oldPath !== newPath) {
+                        mounts.relocateDirectory(owner(req), req.diskScope.diskSpace, oldPath, newPath);
+                        collaborations.relocateDirectory(owner(req), req.diskScope.diskSpace, oldPath, newPath);
+                    }
                     return moved;
-                }, () => { drive.reloadPersistence(); collaborations.reloadPersistence(); });
+                }, () => { drive.reloadPersistence(); collaborations.reloadPersistence(); mounts.reloadPersistence(); });
                 return result;
             });
         }));
@@ -1349,7 +1792,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (collaborations.protectDirectory(owner(req), req.diskScope.diskSpace, folderPath)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
             const tree = store(req).getDirectoryTree(owner(req), folderPath);
             if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
-            if (req.query.recursive !== 'true' && (tree.files.length || tree.directories.length > 1)) throw new Error('DIRECTORY_NOT_EMPTY');
+            if (req.query.recursive !== 'true' && (tree.files.length || tree.directories.length > 1 || mounts.countTree(owner(req), req.diskScope.diskSpace, folderPath))) throw new Error('DIRECTORY_NOT_EMPTY');
             jobResponse(req, res, 'delete-directory', '正在删除目录', async update => {
                 assertStaticDirectoryWritable(scope(req), store(req), folderPath);
                 if (collaborations.protectDirectory(owner(req), req.diskScope.diskSpace, folderPath)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
@@ -1370,7 +1813,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 }
                 if (failures.length) throw new Error('DISK_DELETE_PARTIAL');
                 update({ phase: 'index-write', message: '正在清理虚拟目录索引' });
-                return { ...store(req).removeDirectory(owner(req), folderPath, true),
+                const removed = persistence.atomic(() => {
+                    const result = store(req).removeDirectory(owner(req), folderPath, true);
+                    const mountCleanup = mounts.removeTree(owner(req), req.diskScope.diskSpace, folderPath);
+                    return { ...result, ...mountCleanup };
+                }, () => { store(req).reloadPersistence(); mounts.reloadPersistence(); });
+                return { ...removed,
                     ...(cleanupPending ? {warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']} : {}) };
             });
         }));

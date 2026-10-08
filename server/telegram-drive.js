@@ -201,7 +201,9 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
     const assertNoPendingTree = (ownerId, folderPath) => {
         if (pendingFiles(ownerId).some(file => file.folderPath === folderPath || file.folderPath.startsWith(folderPath + '/'))) throw new Error('DISK_UPLOAD_IN_PROGRESS');
     };
+    let externalNameGuard = null;
     const assertFreeName = (ownerId, folderPath, name, exceptId = '', exceptUpload = '') => {
+        externalNameGuard?.(ownerId, folderPath, name);
         const target = [folderPath, name].filter(Boolean).join('/');
         if (pendingFiles(ownerId, exceptUpload).some(file => (file.folderPath === folderPath && file.name === name) || file.folderPath === target || file.folderPath.startsWith(target + '/'))) throw new Error('DISK_NAME_CONFLICT');
         if (ownerRecords(ownerId).some(item => item.id !== exceptId && (item.folderPath || '') === folderPath && item.name === name) || directories.has(String(ownerId) + ':' + target)) throw new Error('DISK_NAME_CONFLICT');
@@ -211,6 +213,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         const segments = safe.split('/').filter(Boolean);
         segments.forEach((segment, index) => {
             const parent = segments.slice(0, index).join('/');
+            externalNameGuard?.(ownerId, parent, segment);
             if (pendingFiles(ownerId, exceptUpload).some(file => file.folderPath === parent && file.name === segment)) throw new Error('DISK_NAME_CONFLICT');
             if (ownerRecords(ownerId).some(file => (file.folderPath || '') === parent && file.name === segment)) throw new Error('DISK_NAME_CONFLICT');
         });
@@ -261,6 +264,10 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
 
     const store = {
         reloadPersistence,
+        setExternalNameGuard(guard) {
+            if (guard !== null && typeof guard !== 'function') throw new Error('DISK_NAME_GUARD_INVALID');
+            externalNameGuard = guard;
+        },
         assertDirectoryWritable(ownerId, folderPath) { assertNoPendingTree(ownerId, folderPath); },
         createDirectory(ownerId, folderPath, maxDepth, sourceAppId = '') {
             const safe = normalizePath(folderPath);
@@ -285,18 +292,29 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             persist(); return item;
         },
         clearFolderMarker(ownerId, folderPath) {
-            const item = directories.get(directoryKey(ownerId, folderPath));
-            if (!item?.s3Marker) return;
-            delete item.s3Marker; item.updatedAt = Date.now();
-            let current = normalizePath(folderPath);
-            while (current) {
-                const directory = directories.get(directoryKey(ownerId, current));
-                if (!directory?.s3CreatedDirectory || directory.s3Marker || ownerRecords(ownerId).some(file => (file.folderPath || '') === current || (file.folderPath || '').startsWith(current + '/'))
-                    || ownerDirectories(ownerId).some(child => child.path !== current && child.path.startsWith(current + '/'))) break;
-                directories.delete(directoryKey(ownerId, current));
-                current = parentPath(current);
-            }
-            persist();
+            // S3 marker removal can prune directories created only for that
+            // marker. Mounts are Native leaf nodes but live in a separate table;
+            // keep their parent directories even when no Native file remains.
+            // The SQLite write lock serializes this check with mount creation.
+            return repository.atomic(() => {
+                reloadPersistence();
+                const item = directories.get(directoryKey(ownerId, folderPath));
+                if (!item?.s3Marker) return;
+                const mountedPaths = repository.load('collaboration_mounts')
+                    .filter(mount => mount.ownerId === String(ownerId) && mount.diskSpace === diskSpace)
+                    .map(mount => mount.parentPath);
+                delete item.s3Marker; item.updatedAt = Date.now();
+                let current = normalizePath(folderPath);
+                while (current) {
+                    const directory = directories.get(directoryKey(ownerId, current));
+                    if (!directory?.s3CreatedDirectory || directory.s3Marker || ownerRecords(ownerId).some(file => (file.folderPath || '') === current || (file.folderPath || '').startsWith(current + '/'))
+                        || ownerDirectories(ownerId).some(child => child.path !== current && child.path.startsWith(current + '/'))
+                        || mountedPaths.some(path => path === current || path.startsWith(current + '/'))) break;
+                    directories.delete(directoryKey(ownerId, current));
+                    current = parentPath(current);
+                }
+                persist();
+            }, reloadPersistence);
         },
         list(ownerId, folderPath = '') {
             const owner = String(ownerId);
@@ -1031,7 +1049,9 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const id = previous?.id || logicalId || crypto.randomUUID();
             const parts = remotes.map((remote, index) => ({ ...source.parts[index], ...remote, logicalFileId: id, partIndex: index + 1, partCount: remotes.length, originalSize: source.size }));
             const first = parts[0] || {};
-            const item = { id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, type:source.type, size:source.size, metadata:{...(source.metadata || {})}, mediaIndex:source.mediaIndex,
+            const metadata = { ...(source.metadata || {}) };
+            delete metadata.collaborationId; // source workflow context never follows a copied Logical File
+            const item = { id, ownerId: String(owner.id), ownerName: String(owner.name || ''), ownerUsername: String(owner.username || ''), folderPath: safe, name: fileName, type:source.type, size:source.size, metadata, mediaIndex:source.mediaIndex,
                 contentId:source.contentId, contentLease:source.contentLease, contentCopyGrant:source.contentCopyGrant, contentSha256:source.contentSha256, backendId: backend.id || '', channelId: String(backend.channelId), parts, partCount: parts.length, fileId: first.fileId || '', fileUniqueId: first.fileUniqueId || '', messageId: first.messageId || 0, mediaGroupId: first.mediaGroupId || '', thumbnail: source.contentId ? source.thumbnail : null, createdAt: now, updatedAt: now };
             delete item.pendingRemoteCleanup;
             if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
@@ -1195,11 +1215,13 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             for (const item of snapshot.files) Object.assign(item, { reviewStatus: 'deleted', reviewUpdatedAt: now, deletedAt: now, updatedAt: now, fileId: '', fileUniqueId: '', fileIdHistory: [], messageId: 0, mediaGroupId: '', parts: [], partCount: 0, thumbnail: null });
             persist(); return this.getDirectory(ownerId, folderPath);
         },
-        search(ownerId, query, limit = 500) {
+        search(ownerId, query, limit = 500, rootPath = '') {
             const needle = String(query || '').trim().toLocaleLowerCase('zh-CN');
             if (!needle) return { folders: [], files: [] };
-            const folders = ownerDirectories(ownerId).filter(item => baseName(item.path).toLocaleLowerCase('zh-CN').includes(needle)).slice(0, limit).map(item => ({ ...directorySnapshot(ownerId, item.path), files: undefined, directories: undefined }));
-            const files = ownerRecords(ownerId).filter(item => item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
+            const root = normalizePath(rootPath);
+            const within = value => !root || value === root || value.startsWith(root + '/');
+            const folders = ownerDirectories(ownerId).filter(item => within(item.path) && baseName(item.path).toLocaleLowerCase('zh-CN').includes(needle)).slice(0, limit).map(item => ({ ...directorySnapshot(ownerId, item.path), files: undefined, directories: undefined }));
+            const files = ownerRecords(ownerId).filter(item => within(normalizePath(item.folderPath || '')) && item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
             return { folders, files };
         },
         adminFiles() { return repository.projectFiles([...records.values()],diskSpace); },

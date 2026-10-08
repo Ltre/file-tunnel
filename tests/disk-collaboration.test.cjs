@@ -53,12 +53,20 @@ test('一次性协同邀请只开放受邀目录，撤销成员和关闭协同�
     assert.equal(joined.data.collaboration.invites, undefined);
     const ownerView = await call(`/collaborations/${joined.data.collaboration.id}`, 'owner');
     assert.equal(ownerView.data.collaboration.memberDetails[0].telegramId, '202');
+    assert.equal(ownerView.data.collaboration.memberDetails[0].role, 'editor');
     assert.equal((await call('/collaborations/join', 'guest', 'POST', { token })).status, 404);
     const scope = `/collaboration-scope/${joined.data.collaboration.id}`;
     const listing = await call(scope + '/list?path=%E5%85%B1%E4%BA%AB', 'guest');
     assert.equal(listing.status, 200); assert.equal(listing.data.files[0].id, file.id);
     assert.equal((await call(scope + '/list?path=%E7%A7%81%E5%AF%86', 'guest')).status, 403);
     assert.equal((await call(scope + '/uploads', 'guest', 'POST', { folderPath: '私密', files: [{ name: 'x', size: 1 }] })).status, 403);
+    const grantId = joined.data.collaboration.id;
+    assert.equal((await call(`/collaborations/${grantId}/members/${guest.id}`, 'owner', 'PATCH', { role:'viewer' })).status, 200);
+    assert.equal((await call(scope + '/list?path=%E5%85%B1%E4%BA%AB', 'guest')).status, 200, 'viewer 可以读取');
+    assert.equal((await call(scope + '/uploads', 'guest', 'POST', { folderPath:'共享', files:[{ name:'blocked.txt', size:1 }] })).status, 403, 'viewer 不能创建');
+    assert.equal((await call(scope + '/files/' + file.id, 'guest', 'PATCH', { name:'blocked.txt' })).status, 403, 'viewer 不能改名');
+    assert.equal((await call(`/collaborations/${grantId}`, 'guest')).data.collaboration.memberRoles, undefined, '成员角色表不向访客公开');
+    assert.equal((await call(`/collaborations/${grantId}/members/${guest.id}`, 'owner', 'PATCH', { role:'editor' })).status, 200);
     const replaced = await fetch(base + scope + '/files/' + file.id + '/repair', { method:'POST', headers:{ 'X-Test-User':'guest', 'Content-Type':'application/octet-stream', 'X-Disk-File-Size':'3', 'X-Disk-File-Type':'text/plain' }, body:Buffer.from('new') });
     assert.equal(replaced.status, 202);
     const replacementJob = (await replaced.json()).operation_id;
@@ -70,7 +78,6 @@ test('一次性协同邀请只开放受邀目录，撤销成员和关闭协同�
     assert.equal((await call(scope + `/uploads/${allowedUpload.data.uploadId}`, 'guest', 'DELETE')).status, 200);
     assert.equal((await call('/files/' + file.id, 'owner', 'DELETE')).status, 202);
     assert.equal((await call('/directories?path=%E5%85%B1%E4%BA%AB&recursive=true', 'owner', 'DELETE')).status, 403);
-    const grantId = joined.data.collaboration.id;
     assert.equal((await call(`/collaborations/${grantId}/members/${guest.id}`, 'owner', 'DELETE')).status, 200);
     assert.equal((await call(scope + '/list', 'guest')).status, 404);
     assert.equal((await call(`/collaborations/${grantId}`, 'owner', 'DELETE')).status, 200);
