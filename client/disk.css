@@ -41,7 +41,22 @@
 @keyframes disk-cache-spin{to{transform:rotate(360deg)}}
 .telegram-drive-search-scope{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.82rem;color:#52617e}
 .telegram-drive-search-scope input{margin:0}
-.disk-mounted-search-item{border-left:3px solid #4f8dd7;background:color-mix(in srgb,#4f8dd7 7%,transparent)}
+.telegram-drive-item.disk-mounted-search-item{box-shadow:inset 3px 0 #4f8dd7;background:color-mix(in srgb,#4f8dd7 7%,transparent)}
+.disk-collaboration-list-row{display:flex;align-items:stretch;gap:8px;min-width:0;width:100%}
+.disk-collaboration-list-row .disk-collaboration-entry{flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+.disk-collaboration-list-row.is-owned .disk-collaboration-entry{border-left:4px solid #259679;background:color-mix(in srgb,#259679 10%,var(--panel-bg))}
+.disk-collaboration-list-row.is-invited .disk-collaboration-entry{border-left:4px solid #548fcd;background:color-mix(in srgb,#548fcd 10%,var(--panel-bg))}
+.disk-collaboration-list-row>button{box-sizing:border-box;min-height:44px;border-radius:9px;cursor:pointer;font:inherit}
+.disk-collaboration-list-row .disk-collaboration-mount-action{flex:0 0 auto;padding:8px 10px;border:1px solid #d48625;background:color-mix(in srgb,#ed9b39 18%,var(--panel-bg));color:#a75a09;font-size:.82rem;font-weight:650}
+.disk-collaboration-list-row .disk-collaboration-remove-action{flex:0 0 38px;padding:6px;border:1px solid #d65565;background:color-mix(in srgb,#d65565 12%,var(--panel-bg));color:#d83e4f;font-size:1.4rem}
+.disk-collaboration-list-row>button:hover{filter:brightness(1.08)}
+.disk-collaboration-list-row>button:disabled{opacity:.5;cursor:wait}
+.disk-settings-section-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.disk-settings-section-heading h3{margin:0}
+.telegram-drive-dialog-card:has(.disk-settings-dialog){display:flex;flex-direction:column;overflow:hidden}
+.telegram-drive-dialog-card:has(.disk-settings-dialog) .telegram-drive-dialog-body{min-height:0;overflow:auto;overscroll-behavior:contain}
+.telegram-drive-dialog-card:has(.disk-settings-dialog) :is(.telegram-drive-dialog-header,.telegram-drive-dialog-actions){flex-shrink:0}
+.telegram-drive-space-dialog.disk-settings-dialog{max-height:none;overflow:visible}
 .disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}
 .telegram-drive-item{touch-action:none;-webkit-user-select:none;user-select:none}
 .telegram-drive-items{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
@@ -112,9 +127,7 @@ body.telegram-drive-open{overflow:hidden!important;overscroll-behavior:none}
 #telegramDriveOverlay{overscroll-behavior:contain}
 #telegramDriveOverlay.telegram-drive-picker-mode{z-index:2147483140}
 body.telegram-drive-dialog-open{overflow:hidden!important}
-.telegram-drive-bottom{padding-right:48px!important}
-#telegramDriveBottomMenuBtn{position:absolute;right:5px;top:50%;transform:translateY(-50%);z-index:2;flex-shrink:0}
-.telegram-drive-selection{right:48px!important}
+#telegramDriveBottomMenuBtn{position:relative;flex:0 0 auto}
 body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 @media (hover:hover) and (pointer:fine){
   .telegram-drive-manager:not(.telegram-drive-has-selection) .telegram-drive-item-check{visibility:hidden;opacity:0;pointer-events:none}

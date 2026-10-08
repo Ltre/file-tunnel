@@ -232,9 +232,11 @@ function createDiskTelegram({ fetchImpl = fetch, getBaseUrl = () => 'https://api
         }
     }
     async function readPart(backend, part, options = {}) {
+        options.signal?.throwIfAborted();
         let file = await fileLocation(backend, part);
+        options.signal?.throwIfAborted();
         const start = Math.max(0, Number(options.start) || 0), end = Number.isSafeInteger(options.end) ? options.end : Number(part.size) - 1;
-        if (backend.baseUrl !== 'https://api.telegram.org' && path.isAbsolute(file.file_path)) return fs.createReadStream(file.file_path, { start, end });
+        if (backend.baseUrl !== 'https://api.telegram.org' && path.isAbsolute(file.file_path)) return fs.createReadStream(file.file_path, { start, end, signal: options.signal });
         let response;
         const headers = start > 0 || end < Number(part.size) - 1 ? { Range: `bytes=${start}-${end}` } : undefined;
         const timeout = AbortSignal.timeout(30 * 60 * 1000), signal = options.signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([timeout, options.signal]) : (options.signal || timeout);

@@ -5,10 +5,10 @@
     let collaborationId = '';
     let diskSpace = '';
     const baseUrl = () => collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
-    const withSpace = url => {
-        if (!diskSpace) return url;
+    const withSpace = (url, requestSpace = diskSpace) => {
+        if (!requestSpace) return url;
         const address = new URL(url, location.origin);
-        address.searchParams.set('disk_space', diskSpace);
+        address.searchParams.set('disk_space', requestSpace);
         return address.pathname + address.search + address.hash;
     };
     const listeners = new Set();
@@ -88,9 +88,9 @@
     }
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const target = withSpace(url.startsWith('/api/') ? url : baseUrl() + url);
+        const target = withSpace(url.startsWith('/api/') ? url : baseUrl() + url, options.diskSpace ?? diskSpace);
         if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
-        const { onUploadProgress, ...requestOptions } = options;
+        const { onUploadProgress, diskSpace: requestSpace, ...requestOptions } = options;
         let response;
         try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
         catch (error) { error.transportFailure = true; throw error; }

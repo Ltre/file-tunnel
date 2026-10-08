@@ -709,6 +709,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 return partStart + part.size - 1 >= start && partStart <= end;
             });
             for (let index = 0; index < needed.length; index++) {
+                signal?.throwIfAborted();
                 const part = needed[index];
                 const partStart = Number(part.offset) || 0;
                 const localStart = Math.max(0, start - partStart), localEnd = Math.min(part.size - 1, end - partStart);
@@ -720,10 +721,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     key, size: cacheEnd - cacheStart + 1,
                     owner: file.contentProofRead ? undefined : { userId: file.viewerId || file.ownerId, diskSpace },
                     start: localStart - cacheStart, end: localEnd - cacheStart, signal,
+                    cancelWhenUnused: file.cancelUnusedCacheFill === true,
                     expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1 ? String(part.sha256 || '') : '',
-                    // A browser normally cancels its old HTTP Range while seeking.
-                    // The shared cache fill must survive that one consumer leaving.
-                    source: () => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd })
+                    // Cache fills are shared; only the last departing reader stops upstream.
+                    source: cacheSignal => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd, signal: cacheSignal })
                 });
                 // Overlap only the next part's small getFile lookup with the
                 // current byte stream. Do not start a second file download.
@@ -746,7 +747,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 timer=setInterval(()=>{try{if(!content.renewLease(lease))source?.destroy(new Error('CONTENT_LEASE_EXPIRED'));}catch(error){source?.destroy(error);}},60000);timer.unref?.();
             }
             try {source=await openRemoteRange(backend,file,start,end,signal,diskSpace);}
-            catch(error){if(!/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message))throw error;await wait(250);source=await openRemoteRange(backend,file,start,end,signal,diskSpace);}
+            catch(error){if(signal?.aborted || !/TELEGRAM_(?:DOWNLOAD_NETWORK|NETWORK_ERROR|DOWNLOAD_FAILED|RANGE_INVALID|PART_SIZE_MISMATCH|PART_HASH_MISMATCH)/.test(error.message))throw error;await wait(250);source=await openRemoteRange(backend,file,start,end,signal,diskSpace);}
             source.once('close',release);source.once('error',release);source.once('end',release);return source;
         } catch(error) {release();throw error;}
     }
@@ -760,7 +761,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) return null;
         return { start, end: Math.min(end, size - 1), partial: true };
     };
-    async function prepareRemoteResponse(req, res, backend, file, { inline = false, operationId = '', diskSpace = req.diskScope?.diskSpace ?? req.query.disk_space ?? '' } = {}) {
+    async function prepareRemoteResponse(req, res, backend, file, { inline = false, operationId = '', diskSpace = req.diskScope?.diskSpace ?? req.query.disk_space ?? '', cancelUnusedCacheFill = false } = {}) {
         if (!Number(file.size)) {
             res.status(200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': file.type || 'application/octet-stream', 'Content-Length': '0', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}` });
             return { source: Readable.from([]), range: { start: 0, end: -1, partial: false }, abort: new AbortController() };
@@ -770,7 +771,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         backend = await resolveStorageBackend(backend, { strict: false });
         const abort = new AbortController();
         res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-        const source = await objectStorage.openFile(backend, {...file,viewerId:req.diskViewerId || req.diskUser?.id || file.ownerId}, range.start, range.end, abort.signal, diskSpace);
+        if (res.destroyed) abort.abort();
+        const source = await objectStorage.openFile(backend, {...file,viewerId:req.diskViewerId || req.diskUser?.id || file.ownerId,cancelUnusedCacheFill}, range.start, range.end, abort.signal, diskSpace);
         const length = range.end - range.start + 1;
         res.status(range.partial ? 206 : 200);
         res.set('Accept-Ranges', 'bytes');
@@ -806,7 +808,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const share = shares.resolve(req.params.token);
         const file = shares.file(share, spaces.get(share.diskSpace), req.params.id);
         const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
-        const remote = await prepareRemoteResponse(req, res, backend, file, { inline: req.query.inline === '1', diskSpace: share.diskSpace });
+        const remote = await prepareRemoteResponse(req, res, backend, file, { inline: req.query.inline === '1', diskSpace: share.diskSpace, cancelUnusedCacheFill: true });
         if (!remote) return;
         // Recheck revocation after an upstream wait, before releasing any bytes.
         try { shares.resolve(req.params.token); } catch (error) { remote.source.destroy(); throw error; }
@@ -1158,6 +1160,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.delete('/collaborations/:collaborationId/members/:memberId', wrap((req, res) => res.json(collaborations.kick(req.params.collaborationId, req.params.memberId, req.diskUser.id, req.diskScope.diskSpace))));
     browser.patch('/collaborations/:collaborationId/members/:memberId', wrap((req, res) => res.json(collaborations.setRole(req.params.collaborationId, req.params.memberId, req.body?.role, req.diskUser.id, req.diskScope.diskSpace))));
     browser.delete('/collaborations/:collaborationId', wrap((req, res) => res.json(collaborations.disable(req.params.collaborationId, req.diskUser.id, req.diskScope.diskSpace))));
+    browser.post('/collaborations/:collaborationId/leave', wrap((req, res) => res.json(collaborations.leave(req.params.collaborationId, req.diskUser.id))));
     const collaborationContent = express.Router({ mergeParams: true });
     collaborationContent.use(wrap((req, res, next) => {
         const viewerId = req.diskUser.id;

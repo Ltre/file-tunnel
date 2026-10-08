@@ -82,6 +82,18 @@ function createDiskCollaborationStore(dataDir) {
             if (item.memberRoles) delete item.memberRoles[String(memberId)];
             item.memberVersions ||= {};item.memberVersions[String(memberId)]=(Number(item.memberVersions[String(memberId)]) || 1)+1;
             save();return publicEntry(item); },
+        leave(id, userId) {
+            reloadPersistence();
+            const item = find(id), actor = String(userId);
+            if (!item || !item.members.includes(actor)) throw new Error('COLLABORATION_NOT_FOUND');
+            if (item.ownerId === actor) throw new Error('COLLABORATION_OWNER_CANNOT_LEAVE');
+            item.members = item.members.filter(member => member !== actor);
+            if (item.memberRoles) delete item.memberRoles[actor];
+            item.memberVersions ||= {};
+            item.memberVersions[actor] = (Number(item.memberVersions[actor]) || 1) + 1;
+            save();
+            return { ok: true };
+        },
         disable(id, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);item.active=false;item.invites=[];item.members=[];item.memberRoles={};save();return { ok:true }; },
         protectFile(ownerId,diskSpace,fileId) { return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&item.kind==='file'&&item.fileId===fileId); },
         protectDirectory(ownerId,diskSpace,folderPath) { const prefix=`${folderPath}/`;return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&(item.path===folderPath||item.path.startsWith(prefix))); },

@@ -94,7 +94,7 @@ test('协同 iframe 关闭只移除本层；忽略不匹配的窗口消息并保
         addEventListener(type, handler) { this.events[type] = handler; }
         showModal() { this.open = true; } close() { this.open = false; } remove() { this.removed = true; }
     }
-    const context = vm.createContext({ location: { origin: 'http://localhost' },
+    const context = vm.createContext({ URL, location: { origin: 'http://localhost' },
         window: { addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type) },
         document: { createElement: tag => new Element(tag), getElementById: id => ({ focus: () => focused.push(id) }),
             body: { append: node => children.push(node), classList: { add: value => classes.add(value), remove: value => classes.delete(value) } } } });
@@ -107,7 +107,8 @@ test('协同 iframe 关闭只移除本层；忽略不匹配的窗口消息并保
     listeners.get('message')({ origin: 'http://localhost', source: {}, data: { type: 'disk-collaboration:close' } }); assert.equal(dialog.open, true);
     close.onclick(); assert.equal(dialog.open, false); assert.equal(dialog.removed, true); assert.equal(frame.src, 'about:blank'); assert.equal(listeners.size, 0);
     assert.equal(vm.runInContext('telegramDrivePath', context), '原目录'); assert.equal(vm.runInContext('telegramDriveMinimized', context), false); assert.equal(classes.size, 0);
-    vm.runInContext('openDiskCollaborationFrame({id:"second",name:"共享2"})', context);
+    vm.runInContext('openDiskCollaborationFrame({id:"second",name:"共享2",mountId:"mount-1",path:"共享/子目录",fileId:"file-1"})', context);
+    assert.equal(children[1].children[0].src, '/disk-collab/view/second?embedded=1&mount_id=mount-1&path=%E5%85%B1%E4%BA%AB%2F%E5%AD%90%E7%9B%AE%E5%BD%95&file_id=file-1');
     const second = children[1]; listeners.get('message')({ origin: 'http://localhost', source: second.children[0].contentWindow, data: { type: 'disk-collaboration:close' } });
     assert.equal(second.removed, true); assert.equal(listeners.size, 0); assert.equal(focused.length, 2);
 });

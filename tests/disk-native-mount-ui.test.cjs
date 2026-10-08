@@ -39,6 +39,7 @@ function fixture() {
     const context = vm.createContext({ window, document:{ createElement:() => ({ append() {}, setAttribute() {} }), createTextNode:value => value },
         telegramDriveSpaces:[{ id:'partition-a', scopeKey:'scope-a' }],
         openTelegramDriveDialog:async () => 'collab-target', confirmTelegramDriveAction:async () => true,
+        openDiskCollaborationFrame:() => {},
         showAppToast:() => {}, telegramDriveErrorText:error => error.message, alert:message => errors.push(message),
         setTimeout, encodeURIComponent });
     vm.runInContext('let diskDragItems = []; const telegramDriveSpaceKey = space => String(space?.scopeKey ?? space?.diskSpace ?? space?.id ?? "");\n' + code, context);
@@ -54,6 +55,7 @@ test('mounted search result re-resolves grant and opens exact directory/file foc
     await page.invoke('openTelegramDriveMountedSearchResult({origin:"collaboration", mountId:"mount-a", collaborationId:"collab-target", kind:"mounted_file", id:"file-9", folderPath:"授权根/子目录"})');
     assert.deepEqual(page.reads, ['/mounts/mount-a/resolve']);
     assert.deepEqual(JSON.parse(JSON.stringify(page.opened[0].options)), { path:'授权根/子目录', fileId:'file-9' });
+    assert.equal(typeof page.opened[0].options.openFrame, 'function');
     await assert.rejects(page.invoke('openTelegramDriveMountedSearchResult({origin:"collaboration", mountId:"mount-a", collaborationId:"stale", kind:"mounted_directory", path:"授权根"})'), /已过期/);
     assert.equal(page.opened.length, 1);
 });

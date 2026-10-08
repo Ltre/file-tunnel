@@ -120,7 +120,15 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
     }
     async function ensure(key, size, source, expectedSha256 = '') {
         const id = digest(key);
-        if (inflight.has(id)) return inflight.get(id);
+        if (inflight.has(id)) {
+            const entry = inflight.get(id);
+            // A new reader must not inherit a cancelled producer or race its cleanup.
+            if (entry.controller.signal.aborted) {
+                await entry.ready.catch(() => {});
+                return ensure(key, size, source, expectedSha256);
+            }
+            return entry;
+        }
         if (preparing.has(id)) return preparing.get(id);
         const pending = prepare(id, size, source, expectedSha256);
         preparing.set(id, pending);
@@ -136,46 +144,78 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         const temporary = path.join(root, id + '.tmp');
         await fsp.unlink(temporary).catch(() => {});
         let opened, openFailed;
-        const entry = { target, temporary, written: 0, done: false, error: null, waiters: [], ready: null, opened: new Promise((resolve, reject) => { opened = resolve; openFailed = reject; }) };
+        const entry = { target, temporary, written: 0, done: false, error: null, waiters: [], ready: null, controller: new AbortController(), opened: new Promise((resolve, reject) => { opened = resolve; openFailed = reject; }) };
         entry.opened.catch(() => {});
         entry.ready = (async () => {
-            let output;
+            let output, upstream;
             try {
                 output = fs.createWriteStream(temporary, { flags: 'wx' });
                 await once(output, 'open');
                 opened();
-                const upstream = await source();
+                entry.controller.signal.throwIfAborted();
+                upstream = await source(entry.controller.signal);
+                entry.controller.signal.throwIfAborted();
+                const stop = () => upstream.destroy?.(new Error('OPERATION_CANCELLED'));
+                entry.controller.signal.addEventListener('abort', stop, { once: true });
                 const hash = expectedSha256 ? crypto.createHash('sha256') : null;
                 for await (const chunk of upstream) {
+                    entry.controller.signal.throwIfAborted();
                     if (!output.write(chunk)) await once(output, 'drain');
                     hash?.update(chunk);
                     entry.written += chunk.length; notify(entry);
                     if (entry.written > size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
                 }
                 output.end(); await once(output, 'close');
+                entry.controller.signal.throwIfAborted();
                 if (entry.written !== size) throw new Error('TELEGRAM_PART_SIZE_MISMATCH');
                 if (hash && hash.digest('hex') !== expectedSha256) throw new Error('TELEGRAM_PART_HASH_MISMATCH');
                 await fsp.rename(temporary, target); entry.done = true; notify(entry);
                 prune().catch(() => {});
             } catch (error) {
                 openFailed(error);
+                upstream?.destroy?.();
+                const closed = output && !output.closed ? once(output, 'close').catch(() => {}) : null;
                 output?.destroy(); entry.error = error; entry.done = true; notify(entry);
+                await closed;
                 await fsp.unlink(temporary).catch(() => {}); throw error;
             } finally { inflight.delete(id); }
         })();
         entry.ready.catch(() => {});
         inflight.set(id, entry); return entry;
     }
-    async function open({ key, size, source, start = 0, end = size - 1, signal, expectedSha256 = '', owner }) {
+    async function open({ key, size, source, start = 0, end = size - 1, signal, expectedSha256 = '', owner, cancelWhenUnused = false }) {
+        signal?.throwIfAborted();
         registerOwner(key, owner);
         const id = digest(key); readers.set(id, (readers.get(id) || 0) + 1);
-        const release = () => { const count = readers.get(id) - 1; if (count > 0) readers.set(id, count); else readers.delete(id); };
-        const attach = stream => { stream.once('close', release); return stream; };
+        let released = false, entry, stream;
+        const stopUnused = () => {
+            if (!readers.has(id) && entry && !entry.done && !entry.retainWhenUnused) {
+                entry.controller.abort(new Error('OPERATION_CANCELLED'));
+                notify(entry);
+            }
+        };
+        const release = () => {
+            if (released) return;
+            released = true;
+            signal?.removeEventListener('abort', onAbort);
+            const count = readers.get(id) - 1;
+            if (count > 0) readers.set(id, count); else readers.delete(id);
+            stopUnused();
+        };
+        const onAbort = () => { release(); notify(entry || { waiters: [] }); stream?.destroy(new Error('OPERATION_CANCELLED')); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        const attach = value => { stream = value; stream.once('close', release); return stream; };
         try {
-        const entry = await ensure(key, size, source, expectedSha256);
+        entry = await ensure(key, size, source, expectedSha256);
+        // Existing player/seek reads retain their background fill. Share downloads
+        // opt into cancellation, without stopping a fill shared with those reads.
+        if (!cancelWhenUnused && !signal?.aborted) entry.retainWhenUnused = true;
+        stopUnused();
+        signal?.throwIfAborted();
         const filename = entry.done && !entry.error ? entry.target : entry.temporary;
-        if (entry.done && !entry.error) return attach(fs.createReadStream(filename, { start, end }));
+        if (entry.done && !entry.error) return attach(fs.createReadStream(filename, { start, end, signal }));
         await entry.opened;
+        signal?.throwIfAborted();
         async function* growingFile() {
             const handle = await fsp.open(filename, 'r'); let position = start;
             try {

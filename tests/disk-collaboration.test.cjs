@@ -78,6 +78,13 @@ test('一次性协同邀请只开放受邀目录，撤销成员和关闭协同�
     assert.equal((await call(scope + `/uploads/${allowedUpload.data.uploadId}`, 'guest', 'DELETE')).status, 200);
     assert.equal((await call('/files/' + file.id, 'owner', 'DELETE')).status, 202);
     assert.equal((await call('/directories?path=%E5%85%B1%E4%BA%AB&recursive=true', 'owner', 'DELETE')).status, 403);
+    assert.equal((await call(`/collaborations/${grantId}`, 'guest', 'DELETE')).status, 404, '访客不能取消所有者协同');
+    assert.equal((await call(`/collaborations/${grantId}/leave`, 'guest', 'POST')).status, 200);
+    assert.equal((await call(scope + '/list', 'guest')).status, 404, '主动退出后立即阻断访问');
+    assert.equal((await call('/collaborations', 'guest')).data.collaborations.length, 0);
+    assert.equal((await call(`/collaborations/${grantId}`, 'owner')).status, 200, '退出不取消所有者项目');
+    const reinvited = await call('/collaborations/invitations', 'owner', 'POST', { kind:'directory', path:'共享' });
+    assert.equal((await call('/collaborations/join', 'guest', 'POST', { token:reinvited.data.url.split('/').pop() })).status, 200);
     assert.equal((await call(`/collaborations/${grantId}/members/${guest.id}`, 'owner', 'DELETE')).status, 200);
     assert.equal((await call(scope + '/list', 'guest')).status, 404);
     assert.equal((await call(`/collaborations/${grantId}`, 'owner', 'DELETE')).status, 200);

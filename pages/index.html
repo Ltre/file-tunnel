@@ -2583,33 +2583,37 @@
 
         .telegram-drive-bottom {
             position: relative;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 0 8px 0 18px;
             min-width: 0;
             height: 54px;
             overflow: hidden;
             border-top: 1px solid var(--panel-border);
             background: var(--surface-soft);
         }
-        #telegramDriveCollaborationManageBtn { position: absolute; right: 52px; top: 50%; z-index: 2; transform: translateY(-50%); max-width: 126px; padding: 7px 11px; border: 1px solid #37b590; border-radius: 999px; background: linear-gradient(135deg, #168b78, #286eaa); color: #fff; box-shadow: 0 3px 10px #176a8070; font-size: .78rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
+        #telegramDriveCollaborationManageBtn { flex: 0 0 auto; max-width: 126px; padding: 7px 11px; border: 1px solid #37b590; border-radius: 999px; background: linear-gradient(135deg, #168b78, #286eaa); color: #fff; box-shadow: 0 3px 10px #176a8070; font-size: .78rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
         #telegramDriveCollaborationManageBtn:hover { filter: brightness(1.12); }
-        #telegramDriveStaticCurrentBtn { position: absolute; right: 52px; top: 50%; z-index: 2; transform: translateY(-50%); max-width: 145px; padding: 7px 11px; border: 1px solid #3b9be2; border-radius: 999px; background: linear-gradient(135deg, #176fba, #2b54a1); color: #fff; box-shadow: 0 3px 10px #246bb260; font-size: .78rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
+        #telegramDriveStaticCurrentBtn { flex: 0 0 auto; max-width: 145px; padding: 7px 11px; border: 1px solid #3b9be2; border-radius: 999px; background: linear-gradient(135deg, #176fba, #2b54a1); color: #fff; box-shadow: 0 3px 10px #246bb260; font-size: .78rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
         #telegramDriveStaticCurrentBtn:hover { filter: brightness(1.12); }
-        .telegram-drive-bottom.disk-static-active #telegramDriveCollaborationManageBtn { right: 202px; }
-        .telegram-drive-bottom.disk-static-active .telegram-drive-bottom-summary { padding-right: 215px; }
-        .telegram-drive-bottom.disk-static-active.disk-collaboration-active .telegram-drive-bottom-summary { padding-right: 350px; }
+        .telegram-drive-bottom > button[hidden] { display: none !important; }
+        #telegramDriveBottom .telegram-drive-selection { position: static; flex: 1; min-width: 0; padding: 0; background: transparent; }
+        #telegramDriveBottom:has(.telegram-drive-selection:not([hidden])) .telegram-drive-bottom-summary { display: none; }
         .telegram-drive-header-overflow-wrap { position: relative; display: none; }
         .telegram-drive-header-overflow-wrap[hidden], .telegram-drive-header-overflow-menu[hidden] { display: none !important; }
         .telegram-drive-header-overflow-menu { position: fixed; z-index: 10025; display: grid; gap: 4px; min-width: 150px; padding: 6px; border: 1px solid var(--panel-border); border-radius: 10px; background: var(--panel-bg); color: var(--text-main); box-shadow: 0 12px 32px #0005; }
         .telegram-drive-header-overflow-menu button { padding: 9px 11px; border: 0; border-radius: 7px; background: transparent; color: var(--text-main); text-align: left; white-space: nowrap; cursor: pointer; }
         .telegram-drive-header-overflow-menu button:hover { background: var(--surface-soft); }
-        .telegram-drive-bottom.disk-collaboration-active .telegram-drive-bottom-summary { padding-right: 190px; }
-        .telegram-drive-bottom.disk-collaboration-active .telegram-drive-selection { right: 182px !important; }
 
         .telegram-drive-bottom-summary {
+            flex: 1;
+            min-width: 0;
             box-sizing: border-box;
             height: 100%;
             display: flex;
             align-items: center;
-            padding: 0 18px;
+            padding: 0;
             color: var(--text-muted);
             font-size: .82rem;
             white-space: nowrap;
@@ -2627,13 +2631,14 @@
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
             align-content: start;
-            gap: 12px;
+            gap: 18px;
+            grid-auto-rows: max-content;
         }
 
         .telegram-drive-item {
             position: relative;
             display: grid;
-            grid-template-columns: auto 44px minmax(0, 1fr) auto;
+            grid-template-columns: 18px 44px minmax(0, 1fr) 38px;
             align-items: center;
             gap: 10px;
             min-height: 66px;
@@ -2651,9 +2656,12 @@
 
         .telegram-drive-items[data-view="grid"] .telegram-drive-item {
             grid-template-columns: auto minmax(0, 1fr) auto;
-            grid-template-rows: 54px auto;
-            border-color: var(--panel-border);
-            background: var(--surface-soft);
+            grid-template-rows: 60px auto;
+            min-height: 142px;
+            align-content: start;
+            padding: 12px;
+            border-color: transparent;
+            background: color-mix(in srgb, var(--surface-soft) 65%, transparent);
         }
 
         .telegram-drive-items[data-view="grid"] .telegram-drive-item-check {
@@ -2668,8 +2676,34 @@
 
         .telegram-drive-items[data-view="grid"] .telegram-drive-item-info {
             grid-column: 1 / -1;
+            grid-row: 2;
             min-width: 0;
             text-align: center;
+        }
+        .telegram-drive-items[data-view="grid"] :is(.telegram-drive-item-name, .telegram-drive-item-meta) {
+            white-space: normal;
+            overflow: visible;
+            overflow-wrap: anywhere;
+            line-height: 1.45;
+        }
+        .telegram-drive-items[data-view="grid"] .telegram-drive-item-name {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            min-height: 2.9em;
+            max-height: 2.9em;
+            overflow: hidden;
+        }
+        .telegram-drive-items[data-view="list"] .telegram-drive-item-check { grid-column: 1; }
+        .telegram-drive-items[data-view="list"] .telegram-drive-item-icon { grid-column: 2; }
+        .telegram-drive-items[data-view="list"] .telegram-drive-item-info { grid-column: 3; }
+        .telegram-drive-items[data-view="list"] .telegram-drive-item-more { grid-column: 4; }
+        :is(.disk-mount-item, .disk-mounted-search-item) :is(.telegram-drive-item-name, .telegram-drive-item-meta) {
+            white-space: normal;
+            overflow: visible;
+            overflow-wrap: anywhere;
+            line-height: 1.45;
         }
 
         .telegram-drive-items[data-view="grid"] .telegram-drive-item-more {
@@ -2892,7 +2926,7 @@
             #telegramDriveSharesBtn, #telegramDriveCollaborationListBtn, #telegramDriveStaticListBtn { display: none !important; }
             #telegramDriveStaticCurrentBtn { min-width: 33px; max-width: 33px; padding-inline: 0; font-size: 0; }
             #telegramDriveStaticCurrentBtn::after { content: 'S'; font-size: .8rem; }
-            .telegram-drive-bottom.disk-static-active #telegramDriveCollaborationManageBtn { right: 155px; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+            .telegram-drive-bottom { padding-left: 10px; gap: 6px; }
             .disk-collaboration-popover { width: calc(100vw - 16px); max-height: min(75dvh, 620px); }
             .disk-collaboration-row { flex-wrap: wrap; }
             #telegramDriveOverlay { padding: 0; }
@@ -2910,7 +2944,7 @@
             .telegram-drive-selection { padding-inline: 10px; }
             .telegram-drive-items { padding: 6px 8px 18px; }
             .telegram-drive-items[data-view="grid"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .telegram-drive-item { grid-template-columns: auto 36px minmax(0, 1fr) auto; }
+            .telegram-drive-item { grid-template-columns: 18px 36px minmax(0, 1fr) 38px; }
         }
 
         #fileDetailsViewer .modal,
