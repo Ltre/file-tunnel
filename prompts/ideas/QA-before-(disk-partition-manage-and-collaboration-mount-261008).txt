@@ -3068,7 +3068,7 @@
     Markdown · 13 个主要章节 · 约 52 KB
 
 
-    
+    详见：《Drop2Tunnel 网盘分区管理与协同项目挂载：开发实施指南》（`prompts/ideas/disk-partition-manage-and-collaboration-mount-261008.md`）
 
     代码调查基线：
     dev/2609-s6-disk-shared-content-object
