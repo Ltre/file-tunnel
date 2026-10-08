@@ -1,0 +1,3095 @@
+问：
+
+
+
+    现在要求把主关注分支改为"dev/2609-s6-disk-shared-content-object"
+
+    先了解透彻需求：
+
+    1、网盘顶部的刷新按钮的相邻左边加个按钮“齿轮”（设置），点击后可以进行个人网盘全局设置和当前分区设置，还可以删除分区，重命名分区，复刻分区
+
+    2、协同编辑功能再升级：将别人的某个协同编辑页整体全部内容挂载到自己网盘的某个目录或某个分区，不过要考虑很多数据操作边界问题、作用域问题（可能会有嵌套目录污染操作问题），看看怎样将功能收益最大化的同时还能确保数据不会出现严重操作BUG
+
+    看看有哪些我没有想到的，不严谨的，没说清楚的
+
+    不要改代码！
+    
+    
+    
+    
+    
+答：
+
+
+
+
+
+
+
+    主关注分支切换为 dev/2609-s6-disk-shared-content-object，这轮只做需求和现状分析，不改代码、不提交。我会先核对这个分支最新 HEAD、网盘分区/顶部工具栏/协同编辑的实际实现，再把两个需求里容易踩的数据边界、权限边界和作用域问题拆清楚。
+
+    梳理了需求边界
+
+    明确了操作语义
+
+    审查共享内容、磁盘空间与协作实现及文档接口
+
+    我先确认了一个很关键的现状：你现在说的“分区名称”在 S6 里并不只是 UI 名称，它实际就是 diskSpace 作用域键。files/directories/content refs/collaboration/share/S3/static-resource/operation 等不少关系都围绕这个字符串工作；而且 spaces 名称本身是全局登记、用户是否拥有/使用该分区又靠 space_usage + 实际文件 推导。  
+    所以“重命名分区”如果直接把 diskSpace 字符串改掉，会变成一次大规模 scope migration，风险很高。这里我认为应该先把“稳定分区身份”和“用户可见名称”拆开，否则你后面要做删除、复刻、协同挂载都会越来越难收拾。
+
+    审查S6内容对象、资源存储及协作分支实现
+
+    已经把主关注分支切到：
+
+    `dev/2609-s6-disk-shared-content-object`
+
+    我按该分支当前最新 HEAD `be4424b3962ca4fe461f28e924ffb7ae7742fd60` 看了实际实现。**这轮没有改代码。**
+
+    你这两个需求方向都可行，但第二个如果直接做成“把别人协同目录塞进我的目录树”，很容易把现有 `userId + diskSpace + path` 作用域模型搞穿。更合适的是把它正式抽象成“挂载点”。
+
+    ## 1. 齿轮设置：需求本身没问题，但“分区”目前还不够像真正的实体
+
+    UI 位置很明确。现在头部本来就是：
+
+    `更多 / 已分享等 → 刷新 ↻ → 退出 → 最小化 → 关闭`
+
+    所以齿轮直接放在刷新左边最合理。现有代码其实已经有一个“管理分区 / S3”面板，只是入口在账号区域，能力只有：
+
+    新建分区 + 当前分区 S3 配置。
+
+    真正的问题在服务端。
+
+    目前所谓分区的 `diskSpace` 名称，同时承担了：
+
+    **显示名称 + 数据 namespace / scope key。**
+
+    比如 `"我的资料"` 不只是给用户看的名称，很多数据实际拿它作为作用域：
+
+    `userId + diskSpace + file/path`
+
+    而且协同、Share、Static Resource、Operation、Content reference、S3 等不少记录都直接保存 `diskSpace`。
+
+    因此：
+
+    > **“重命名分区”绝不能直接理解成把当前 `diskSpace` 字符串全局替换。**
+
+    这会变成一次危险的 scope migration。
+
+    我建议趁这次正式把分区实体化：
+
+    ```text
+    Partition
+        partitionId        永久稳定 ID
+        ownerId
+        scopeKey           永久稳定的内部 namespace
+        displayName        用户可修改
+        settings
+        createdAt
+        updatedAt
+    ```
+
+    已有分区可以迁移成：
+
+    ```text
+    旧 diskSpace = "影音"
+
+    scopeKey = "影音"       // 兼容旧数据，不动
+    displayName = "影音"
+    partitionId = 新 UUID
+    ```
+
+    以后用户把它改成“媒体库”：
+
+    ```text
+    scopeKey 仍然 = "影音"
+    displayName = "媒体库"
+    ```
+
+    这样协同、Content Object、S3、历史 Operation、Share 等都不需要跟着搬家。
+
+    ### 删除分区也有几个没说清楚的地方
+
+    “删除分区”不能等同于删一行 `spaces`。
+
+    它至少会牵涉：
+
+    - Logical Files / directories；
+    - Content Object references；
+    - 活动协同；
+    - 公共分享；
+    - Static Resource links；
+    - S3 credential / bucket mapping；
+    - 未完成 upload / operation / recovery；
+    - Content cleanup debt；
+    - 分区自身的设置和使用记录。
+
+    特别是 S6 已经是共享 Content Object 模型，所以删除分区应该是：
+
+    ```text
+    删除 Logical namespace
+    → release Content references
+    → 仍被其它 Logical 引用的 Content 保留
+    → 0 引用 Content 才进入原有 physical cleanup
+    ```
+
+    不能重新退化成“遍历文件删 Telegram message”。
+
+    我建议默认分区 `''` **不允许删除**。是否允许给它改显示名称，可以允许，但内部 scope 仍为 `''`。
+
+    ### “复刻分区”其实可以做得非常漂亮
+
+    S6 现在已经有 Content Object，复刻完全没必要重新上传 Telegram。
+
+    比较合理的是：
+
+    ```text
+    源 Partition
+        ↓ 一致性快照
+    复制目录结构
+        ↓
+    创建新的 Logical Files
+        ↓
+    引用原来的 Content Objects
+        ↓
+    新 Partition
+    ```
+
+    也就是说几万个文件也主要是数据库 Logical reference 操作。
+
+    但这里还要明确：**复刻什么，不复刻什么。**
+
+    我的建议是：
+
+    复制：
+
+    ```text
+    目录树
+    文件名
+    MIME
+    Logical metadata
+    Content Object reference
+    用户自定义文件属性
+    ```
+
+    不要默认复制：
+
+    ```text
+    公开分享
+    协同邀请 / 协同成员
+    Static Resource 外链
+    S3 credential
+    正在运行的任务
+    历史 Operation
+    审核工作流状态
+    ```
+
+    至于后面第二项新增的“协同挂载点”，复刻分区时最好做成一个选项：
+
+    `同时复刻协同挂载点`
+
+    默认关闭。即使开启，也只是复制 mount reference，不复制别人文件。
+
+    ---
+
+    # 2. “把别人整个协同编辑页挂载进自己网盘”——我认为很有价值
+
+    而且它比现在单独进入 `/disk-collab/...` 页面有用得多。
+
+    不过我不建议真的把对方文件写入你自己的目录表，也不建议做 Unix 那种靠路径字符串拼接的软链接。
+
+    应该新增一层：
+
+    ```text
+    Collaboration Mount
+    ```
+
+    例如：
+
+    ```text
+    我的网盘
+    └── 项目
+        └── 张三共享工程    ← mount point
+              ↓
+            collaborationId = C123
+              ↓
+            owner=张三
+            diskSpace=工作
+            root=/开发/工程A
+    ```
+
+    你的目录里只存一个 **Mount Record**：
+
+    ```text
+    mountId
+    ownerId                 // 挂载者
+    localPartitionId
+    localParentPath
+    displayName
+
+    collaborationId
+    createdAt
+    ```
+
+    不要保存一个可以独立信任的：
+
+    ```text
+    remoteOwnerId
+    remoteDiskSpace
+    remotePath
+    ```
+
+    作为授权依据。
+
+    这些都必须每次通过：
+
+    ```text
+    collaborationId
+    → 当前 collaboration record
+    → ownerId / diskSpace / root / current member
+    ```
+
+    重新解析。
+
+    这样对方把协同根目录重命名/移动后，现在已有的 `relocateDirectory()` 机制更新 collaboration target，挂载仍然有效。
+
+    ---
+
+    # 3. 最重要的边界：挂载进去，但不能“合并 namespace”
+
+    比如用户说：
+
+    > 挂载到某个分区。
+
+    我建议语义必须是：
+
+    ```text
+    目标分区根目录
+    └── 某协同项目
+    ```
+
+    而不是：
+
+    ```text
+    把协同根目录里面的东西直接平铺进目标分区根目录
+    ```
+
+    后一种会立刻产生：
+
+    ```text
+    本地 A/
+    远程 A/
+
+    本地 a.txt
+    远程 a.txt
+    ```
+
+    还会出现更危险的问题：
+
+    “删除当前目录”到底删本地的，还是顺便递归删掉别人的？
+
+    所以必须保证：
+
+    > **每个 collaboration mount 都是明确的 namespace boundary。**
+
+    即使挂在分区根，也必须表现为一个独立目录项。
+
+    ---
+
+    # 4. 你担心的“嵌套目录污染”确实是核心风险
+
+    我建议第一版直接规定：
+
+    > **Mount 只能建立在自己的原生目录中，不能建立在另一个 Mount 内部。**
+
+    例如：
+
+    ```text
+    我的文件/
+        A/
+            [协同项目1]   ✅
+    ```
+
+    可以。
+
+    但是：
+
+    ```text
+    [协同项目1]/
+        子目录/
+            [协同项目2]   ❌
+    ```
+
+    先禁止。
+
+    因为第二种意味着在“别人 namespace 的一个目录”里插一个只属于你自己的虚拟节点。
+
+    此时：
+
+    - 对方看不到；
+    - 你看得到；
+    - 对方改名；
+    - 对方删除父目录；
+    - 你移动父目录；
+    - 全局搜索；
+    - recursive delete；
+    - S3 LIST；
+
+    都会开始出现 overlay filesystem 才有的复杂语义。
+
+    收益暂时远小于风险。
+
+    ---
+
+    # 5. “删除挂载点”和“删除协同里的目录”必须是两个完全不同的操作
+
+    这是 UI 上必须特别明显的。
+
+    例如：
+
+    ```text
+    我的网盘/A/[张三项目]
+    ```
+
+    对 `[张三项目]` 本身执行：
+
+    > 移除挂载
+
+    只能删除自己的 Mount Record。
+
+    **绝不能操作张三的数据。**
+
+    但是进入以后：
+
+    ```text
+    [张三项目]/src/test
+    ```
+
+    删除 `test`：
+
+    这是：
+
+    ```text
+    collaboration mutation
+    → 张三 owner scope
+    ```
+
+    真的会删掉协同内容。
+
+    这两个动作不能都叫“删除”。
+
+    否则迟早出事故。
+
+    ---
+
+    # 6. 父目录递归删除尤其要小心
+
+    例如：
+
+    ```text
+    我的目录 A/
+        local.txt
+        [协同项目]
+    ```
+
+    删除 `A` 时应该：
+
+    ```text
+    删除 local.txt
+    删除 A 本地目录
+    解除 [协同项目] 挂载
+    ```
+
+    而**绝对不能递归进入 Mount 删除远端内容**。
+
+    所以以后：
+
+    ```text
+    getDirectoryTree()
+    recursive delete
+    directory size
+    directory file count
+    ```
+
+    都不能再把“视觉上的子项”无脑当成本地目录 descendant。
+
+    Mount 必须是终止递归的边界。
+
+    ---
+
+    # 7. 跨 Mount 边界的 Move，我强烈建议第一版禁止
+
+    例如：
+
+    ```text
+    张三协同/a.txt
+            ↓ 拖动
+    我的网盘/Documents/
+    ```
+
+    如果叫 Move，其真正含义就是：
+
+    ```text
+    给自己创建一份
+    +
+    删除张三那份
+    ```
+
+    跨 owner、跨 scope，而且两边任何一步失败都会产生很难补偿的状态。
+
+    第一版应该只提供：
+
+    > **复制到我的网盘**
+
+    反方向：
+
+    ```text
+    我的网盘/a.txt
+    → 张三协同目录
+    ```
+
+    也叫：
+
+    > **复制到协同目录**
+
+    而不是 Move。
+
+    S6 的 Content Object 在这里正好可以发挥价值。
+
+    经过明确授权的协同来源已经证明用户拥有读取该文件的权限，所以这种显式：
+
+    ```text
+    协同文件 → 我的网盘
+    ```
+
+    不需要再让用户下载几百 MB 再上传，也没有必要再走一般“陌生 SHA 命中”的 PoP。
+
+    可以直接：
+
+    ```text
+    授权源 Logical File
+    → Content Object
+    → 创建我的 Logical File reference
+    ```
+
+    **0 Telegram 正文流量。**
+
+    同理，把自己的文件复制进可写协同目录，也可以生成 owner scope 下的新 Logical reference。
+
+    ---
+
+    # 8. 批量操作也必须引入“同作用域原则”
+
+    现在 UI 支持多选。
+
+    将来可能一次选中：
+
+    ```text
+    本地文件 A
+    本地文件 B
+    协同挂载里的 C
+    另一个协同里的 D
+    ```
+
+    这时候不能让现有：
+
+    ```text
+    批量删除
+    批量移动
+    ```
+
+    照旧处理。
+
+    建议 mutation 操作必须先按 namespace 分组：
+
+    ```text
+    LOCAL(partition X)
+
+    MOUNT(collaboration A)
+
+    MOUNT(collaboration B)
+    ```
+
+    对于危险操作，第一版甚至应该要求：
+
+    > 一次批量 mutation 的所有项目必须处于同一个 mutation scope。
+
+    混合选择仍然可以：
+
+    ```text
+    下载
+    复制
+    转发到隧道
+    ```
+
+    但不能直接“一键移动/删除”。
+
+    ---
+
+    # 9. Mount 不应该赋予二次分享权限
+
+    现在一个 collaborator 本来只是：
+
+    ```text
+    owner
+    → member
+    ```
+
+    不能因为他把项目挂到自己的网盘，就突然变成：
+
+    ```text
+    owner
+    → member
+    → member 再分享给第三人
+    ```
+
+    因此挂载内容默认应该禁止：
+
+    - 创建普通公共 Share；
+    - 创建 Static Resource；
+    - 再创建 Collaboration invitation；
+    - 通过自己的 S3 credential 对外暴露。
+
+    除非未来明确加入 delegated permission。
+
+    这是一个非常重要的权限边界。
+
+    ---
+
+    # 10. S3 是否看得到 Mount，需要提前决定
+
+    我建议第一版：
+
+    > **S3 / External Disk API 不展示协同 Mount。**
+
+    先只让 Web 网盘 UI 看见。
+
+    原因是传统 S3 client 会认为：
+
+    ```text
+    LIST
+    COPY
+    DELETE
+    MOVE
+    ```
+
+    全部属于一个普通 bucket namespace。
+
+    如果把协同挂载透明塞进去，像 FolderSync 这样的客户端可能一次 recursive delete 就攻击到别人协同目录。
+
+    以后真想支持，可以做一个显式 option：
+
+    ```text
+    Expose collaboration mounts to API
+    ```
+
+    并设计只读/可写语义。
+
+    第一版不要透明暴露。
+
+    ---
+
+    # 11. Search 也有一个你没提到的问题
+
+    用户进入 Mount 后：
+
+    `搜索当前目录`
+
+    很好定义，就是 remote collaboration scope 内搜索。
+
+    但是人在自己的分区根目录点：
+
+    `搜索所有文件`
+
+    是否搜进 Mounted collaborations？
+
+    我倾向最终支持，但第一版建议：
+
+    ```text
+    搜索我的文件
+    ☑ 包括已挂载的协同内容
+    ```
+
+    或者至少搜索结果要明显标记：
+
+    ```text
+    协同 · 张三 / 项目A / xxx.mp4
+    ```
+
+    不能把 foreign Logical File 假装成自己的。
+
+    而且每次结果必须重新检查 collaboration authorization，不能使用长期缓存的授权结果。
+
+    ---
+
+    # 12. 撤销协同时，挂载点怎么处理
+
+    我建议不要悄悄消失。
+
+    例如 owner 把你踢掉后，你的目录仍显示：
+
+    ```text
+    ⚠ 张三项目
+       协同访问已失效
+    ```
+
+    用户可以：
+
+    > 移除挂载
+
+    这样比某个目录突然消失容易理解。
+
+    但：
+
+    - 不能继续列文件；
+    - 不能依靠旧缓存继续服务远端请求；
+    - 不能自动变成自己的一份副本。
+
+    已经主动缓存/下载到浏览器的数据当然无法真正“收回”，这和现在普通下载一样。
+
+    ---
+
+    # 13. Mount 本身应该支持改名和移动
+
+    但这两个动作只影响：
+
+    ```text
+    local mount record
+    ```
+
+    例如：
+
+    ```text
+    张三的项目
+    →
+    共同开发资料
+    ```
+
+    对方那边目录名完全不变。
+
+    把：
+
+    ```text
+    我的网盘/A/[协同]
+    ```
+
+    移动到：
+
+    ```text
+    我的网盘/B/[协同]
+    ```
+
+    也只是改：
+
+    ```text
+    localParentPath
+    ```
+
+    不应该向 collaboration owner 发 directory move。
+
+    这个区分很重要。
+
+    ---
+
+    # 14. 现有 collaboration 权限模型可能也值得趁机升级
+
+    我看了现在的 `disk-collaboration.js`。
+
+    目前主要就是：
+
+    ```text
+    owner
+    members[]
+    ```
+
+    加入以后基本属于可编辑 member，没有细粒度 role。
+
+    挂载进主网盘以后，这个功能会从一个独立协同页变成常驻文件系统能力，权限需求会明显增加。
+
+    数据结构最好至少预留：
+
+    ```text
+    viewer
+    editor
+    ```
+
+    未来甚至：
+
+    ```text
+    canRead
+    canUpload
+    canRename
+    canDelete
+    canMove
+    canCopyOut
+    ```
+
+    不一定这轮全部做 UI，但不要把 Mount 设计死成：
+
+    ```text
+    member === 所有编辑权限
+    ```
+
+    ---
+
+    # 我建议最后把两个需求明确成这个产品模型
+
+    ```text
+    个人网盘
+    │
+    ├─ Global Settings
+    │
+    ├─ Partition A
+    │   ├─ Native Directory
+    │   │   ├─ Logical File
+    │   │   └─ Collaboration Mount
+    │   │       └─ foreign collaboration namespace
+    │   │
+    │   └─ Native Directory
+    │
+    └─ Partition B
+    ```
+
+    而底层身份关系保持：
+
+    ```text
+    Partition
+        └─ immutable partition/scope identity
+
+    Logical File
+        └─ Content Object
+            └─ Telegram physical
+
+    Collaboration Mount
+        └─ Collaboration Grant
+            └─ Foreign Logical namespace
+    ```
+
+    **Mount 绝对不能变成 Foreign Logical File 的复制品，也不能变成本地 path 的一种特殊字符串。**
+
+    ---
+
+    ## 我认为目前还需要定死的关键决策
+
+    1. 分区重命名是否接受我建议的“只改 `displayName`，永久不改内部 scope”。
+    2. 默认分区能否删除——我建议不能；只能改显示名称和设置。
+    3. 复刻分区是否默认不复制 Share / Collaboration / Static Resource / S3——我建议是。
+    4. “挂载到分区”是否接受“在分区根创建一个独立 Mount 项”，而不是把远端根目录内容直接 merge 到根目录。
+    5. Mount 是否禁止嵌套在另一个 Mount 内——我建议第一版严格禁止。
+    6. 跨本地/Mount 的拖动是否统一解释为“复制”，不支持跨 scope Move——我建议第一版如此。
+    7. 挂载内容是否默认不进入 S3 / External API / Public Share——我建议先全部禁止。
+    8. collaboration 是否趁这次预留 `viewer/editor` 权限模型。
+
+    其中最重要的是 **1、4、5、6**。这四个定错了，后面很容易出现你说的“嵌套目录污染”和跨用户误操作；定对以后，这个功能反而能相当干净地建立在 S6 的 Content Object 和现有 collaboration scope 上。
+    
+    
+
+
+
+
+问：
+
+
+
+
+
+    1、分区重命名只改 `displayName`  ，不改内部 scope。
+    2、禁止删除默认分区，只能改名和设置。
+    3、复刻分区默认不复制 Share / Collaboration / Static Resource / S3
+    4、不搞“挂载到分区”这个概念了。其实在分区根创建一个独立mount项，实际就是在网盘的原生目录放置一个类型为协同项目的特殊文件，跟在网盘的任意层级原生目录挂载协同项目没有本质区别。所以就将所谓“挂载到分区”和“挂载到网盘目录”，都统一为“挂载到我的网盘”。
+    5、Mount 必须禁止嵌套在另一个 Mount 内
+    6、跨本地/Mount 的拖动应该统一解释为“复制”，不支持跨 scope Move
+    7、挂载内容默认不进入 S3 / External API / Public Share
+    8、collaboration 要趁这次预留 `viewer/editor` 权限模型 &#x20;
+
+    关于"嵌套目录污染"，还需要补充：
+    即使禁止将一个协同项目mount到另一个协同项目中，但是如果来自对方的协同页A中已经存在一个类型为协同项目的子目录，那么一旦对方的协同页A挂在到自己的原生目录中，就会在自己的网盘中出现了两层协同项目嵌套。
+    解决这个问题的方法是：
+    &#x20;   将某个原生目录A设置为协同项目前，要先检查其所有层级的子目录是否存在已经挂在的协同项目，如果存在，则禁止将A设为协同项目；
+    &#x20;   对于一个属于协同项目的目录内的所有子目录，都禁止挂载协同项目；
+    &#x20;   还要避免别人嵌套自己，自己再嵌套别人，形成相互无限递归嵌套的情况；
+    &#x20;   在自己原生目录内，挂载的协同项目都要视为一种特殊的文件，不要当作真实目录看待；
+    &#x20;   用户不可将来自别人的协同项目再次设置为自己的协同项目，也不可将来自别人协同项目的目录内的任何层级的子目录/文件设置为自己的协同项目。
+    其它约定：
+    &#x20;   用户不可将来自于别人的协同项目内的所有子目录/文件设置静态资源开放，道理很简单，要把别人的协同项目当作一个特殊文件看待，或者当作程序的指针来看。
+    &#x20;   唯一能对来自别人的协同项目的操作就是，别人对协同项目内的目录/文件的文件性修改，例如文件替换、文件命名、文件移动、目录移动、目录命名、文件删除、目录删除。
+    &#x20;   搜索文件选项改为：所有文件、附加已挂载的协同内容。（所有文件指的是自己的所有文件，不含来自于别人的协同内容）
+    
+    
+    
+    
+    
+答：
+
+
+
+
+
+
+    这套约束补完以后，模型就清晰很多了，而且能把“协同挂载”控制在一个相对安全的虚拟文件系统边界内。主关注分支继续以 `dev/2609-s6-disk-shared-content-object` 为准，这里只继续梳理需求，不改代码。
+
+    你补充的“嵌套目录污染”规则我基本同意，但还要再补几条才能真正闭环。
+
+    第一，**Mount 在父目录视角必须是“特殊文件”，在打开后的视角才表现成一个可浏览的 namespace**。也就是说类似：
+
+    ```text
+    我的目录/
+    ├── a.txt
+    ├── b/
+    └── 🔗 项目A        ← kind=collaboration_mount
+    ```
+
+    `项目A` 不是本地 `Directory`，不能被 `getDirectoryTree()` 当成本地子目录递归进去。用户双击它以后，UI 切换到：
+
+    ```text
+    mountId
+    → collaborationId
+    → foreign owner/diskSpace/root
+    ```
+
+    然后才进入现有 collaboration scope。
+
+    这样父目录的：
+
+    - 递归删除；
+    - 目录大小统计；
+    - 复刻；
+    - S3 LIST；
+    - Static Resource；
+    - Share；
+    - 本地目录树遍历；
+
+    天然都有一个明确的“到 Mount 为止”边界。
+
+    ---
+
+    ### 你提出的防嵌套规则还需要扩展到“移动”
+
+    你现在规定了：
+
+    ```text
+    原生目录 A
+    如果任意后代存在 Mount
+    → A 不能开启协同
+    ```
+
+    以及：
+
+    ```text
+    目录处于某个协同根以内
+    → 禁止在其任意层级创建 Mount
+    ```
+
+    这两个还不够，因为还可以通过 **Move 绕进去**。
+
+    比如：
+
+    ```text
+    A/                  ← 已开启协同
+    B/
+      └── Mount X
+    ```
+
+    如果允许：
+
+    ```text
+    B → A/B
+    ```
+
+    就绕过了创建时检查。
+
+    反过来也一样：
+
+    ```text
+    A/                  ← 已开启协同
+    B/
+      └── Mount X
+    ```
+
+    如果把 `Mount X` 移进 `A/`，也形成嵌套。
+
+    所以必须统一成一个不变量：
+
+    > **任何一次目录 rename/move、Mount move、开启 collaboration，都必须验证操作完成后的整棵相关子树仍满足“Active Collaboration subtree 与 Mount subtree 永不相交”。**
+
+    最好不要把规则散落成几个 UI `if`，而是在服务端形成统一 invariant validator。
+
+    ---
+
+    ### 还必须防并发竞态
+
+    例如同时发生：
+
+    ```text
+    请求1：检查 A 下没有 Mount → 准备开启协同
+    请求2：在 A/x 下创建 Mount
+    ```
+
+    两个检查单独都通过，最后却形成非法状态。
+
+    因此这一组操作：
+
+    - 开启目录协同；
+    - 创建 Mount；
+    - 移动 Mount；
+    - 移动带 Mount 的目录；
+    - 移动 active collaboration root / ancestor；
+
+    必须经过同一个 scope mutation 串行机制或者数据库事务/CAS 校验。
+
+    不能只是前端先检查一次。
+
+    ---
+
+    ## “别人嵌套自己、自己再嵌套别人”的无限环
+
+    按照你现在这套规则，其实最稳妥的做法不是专门去跑复杂的图环检测，而是让数据模型**从结构上无法形成 Mount → Mount 边**：
+
+    ```text
+    Native Directory
+        ↓
+    Mount
+        ↓
+    Foreign Collaboration Root
+    ```
+
+    到了 Foreign Collaboration namespace 以后：
+
+    ```text
+    禁止创建 Mount
+    禁止暴露其中已有 Mount
+    ```
+
+    不过这里有一个重要细节。
+
+    假设张三自己的网盘：
+
+    ```text
+    项目A/
+    └── Mount 李四项目
+    ```
+
+    然后张三想把 `项目A` 开成 collaboration。
+
+    按照你的规则：
+
+    > 因为 `项目A` 后代有 Mount，所以服务器直接禁止开启 collaboration。
+
+    这样最好。
+
+    因此协同参与者理论上永远不应该看到：
+
+    ```text
+    别人 collaboration
+    └── 别人的 Mount
+    ```
+
+    也就是说，**Mount node 不应该成为 collaboration scope 可见资源类型。**
+
+    这是比单纯“禁止用户再次挂载”更强、更干净的约束。
+
+    ---
+
+    ## collaboration root 的生命周期也要反向保护
+
+    现在已有逻辑主要是：
+
+    > active collaboration target 不能被 owner 随便破坏。
+
+    引入 Mount 后还需要多一条：
+
+    如果：
+
+    ```text
+    A/
+    └── Mount X
+    ```
+
+    则不仅不能：
+
+    ```text
+    A 开启 collaboration
+    ```
+
+    还要防止：
+
+    ```text
+    上级目录 Root/
+    └── A/
+        └── Mount X
+    ```
+
+    把 `Root` 开启 collaboration。
+
+    所以检查必须是**完整 descendants**，不是仅检查直接 children。
+
+    这点你已经提到了，我把它明确成服务端约束：
+
+    ```text
+    enableCollaboration(directory A)
+    → descendantsHasMount(A)
+    → true => reject
+    ```
+
+    ---
+
+    # 关于“来自别人协同内容允许做什么”
+
+    你现在写的是：
+
+    > 唯一能对来自别人的协同项目的操作就是，对协同项目内目录/文件的文件性修改，例如替换、命名、移动、删除……
+
+    这里有一个还需要补严谨的地方：
+
+    **是否允许新增内容？**
+
+    当前 collaboration 本来支持：
+
+    - 上传文件；
+    - 新建目录；
+    - rename；
+    - move；
+    - delete；
+    - replace。
+
+    你列出的“唯一允许操作”没有提：
+
+    ```text
+    上传文件
+    新建目录
+    ```
+
+    我认为应该继续允许，否则 `editor` 会从现在的协同能力倒退。
+
+    所以更准确的定义应该是：
+
+    > Mount 内只允许对协同 owner namespace 执行普通文件系统 CRUD；不得创建或管理任何“作用域之外的能力型资源”。
+
+    也就是 editor 可以：
+
+    ```text
+    读取
+    下载
+    上传
+    新建目录
+    重命名
+    移动（协同 scope 内）
+    替换文件内容
+    删除
+    ```
+
+    但不能：
+
+    ```text
+    创建 Collaboration
+    创建 Mount
+    创建 Public Share
+    创建 Static Resource
+    创建 S3 暴露
+    修改分区设置
+    访问 owner 其它目录
+    ```
+
+    这样边界会比“文件性修改”这个词更准确。
+
+    ---
+
+    # viewer / editor 建议现在就正式定义
+
+    既然你已经确定预留，我建议别只预留一个字符串但所有权限仍然一样，而是把语义至少定死：
+
+    ```text
+    viewer
+        list
+        search
+        preview
+        stream
+        download
+
+    editor
+        viewer 全部权限
+        upload
+        mkdir
+        rename
+        replace
+        move within collaboration scope
+        delete
+    ```
+
+    两种角色都不能：
+
+    ```text
+    invite others
+    create collaboration
+    mount collaboration
+    share publicly
+    create static resource
+    expose through S3
+    ```
+
+    所有者自己当然另算。
+
+    未来需要再细分权限，可以由 role 展开成 capability，不需要改数据模型。
+
+    ---
+
+    # “跨本地 / Mount 拖动 = Copy”还应该区分两个方向
+
+    你的决定正确，但 UI 最好不要继续把鼠标 dropEffect 表现成 `move`。
+
+    ### Foreign → Local
+
+    ```text
+    协同/a.mp4
+    →
+    我的目录/
+    ```
+
+    实际操作：
+
+    ```text
+    读取源 Logical
+    → 获得已有 Content Object
+    → 在自己的 scope 新建 Logical reference
+    ```
+
+    因为这是**用户明确拥有源文件读取权限的 Copy 操作**，无需重新上传 Telegram 正文。
+
+    ### Local → Foreign
+
+    ```text
+    我的/a.mp4
+    →
+    协同目录/
+    ```
+
+    则：
+
+    ```text
+    检查 editor 权限
+    → 在 collaboration owner 的 scope 创建新的 Logical reference
+    ```
+
+    同样应该优先 Content Object O(1) Copy。
+
+    ### Mount A → Mount B
+
+    这个你没有明确说。
+
+    我建议第一版也允许 **Copy**，前提是：
+
+    ```text
+    A：有 read
+    B：有 editor
+    ```
+
+    然后：
+
+    ```text
+    Content Object reference
+    A foreign Logical
+            ↓
+    B owner 新 Logical
+    ```
+
+    但不允许 Move。
+
+    这样功能收益很大，而且仍然保持两个 collaboration namespace 完全独立。
+
+    ---
+
+    # Mount 自身的 rename / move
+
+    这个之前的结论建议继续保持：
+
+    Mount 在自己的网盘中：
+
+    ```text
+    重命名
+    移动到另一个 Native Directory
+    ```
+
+    都只是修改本地 Mount Record。
+
+    例如：
+
+    ```text
+    张三项目
+    →
+    共享设计资料
+    ```
+
+    不能影响张三那边协同根目录的名字。
+
+    而：
+
+    ```text
+    我的/A/Mount
+    →
+    我的/B/Mount
+    ```
+
+    也不能触发 foreign directory move。
+
+    不过 Move Mount 时仍必须检查：
+
+    ```text
+    B 是否处于 active collaboration subtree
+    ```
+
+    如果是，则拒绝。
+
+    ---
+
+    # 搜索：你这次定义得更准确了
+
+    我理解你最终要的是两个独立搜索范围开关：
+
+    ```text
+    ☑ 所有文件
+    ☑ 附加已挂载的协同内容
+    ```
+
+    语义应该明确为：
+
+    ```text
+    当前目录搜索
+    ```
+
+    默认只搜索当前目录。
+
+    勾选：
+
+    ```text
+    所有文件
+    ```
+
+    表示：
+
+    > 搜索当前个人分区中自己的全部 Native Logical Files，**不进入任何 Mount**。
+
+    再勾选：
+
+    ```text
+    附加已挂载的协同内容
+    ```
+
+    才额外搜索：
+
+    > 当前个人分区中所有 Mount 所指向且当前仍有权限访问的 collaboration namespaces。
+
+    返回结果必须区分：
+
+    ```text
+    我的文件
+    协同 · 项目A
+    协同 · 项目B
+    ```
+
+    不能混成同一个 namespace。
+
+    而且协同搜索结果的点击目标必须保存类似：
+
+    ```text
+    mountId
+    relativePath
+    fileId
+    ```
+
+    不能只保存 foreign path，否则同一个 collaboration 被挂载两次时会不知道从哪个本地 Mount 上下文进入。
+
+    ---
+
+    # 同一个 Collaboration 是否允许挂载多次
+
+    这是你还没提到的一个细节。
+
+    例如：
+
+    ```text
+    我的/工作/Mount A
+    我的/快捷入口/Mount A
+    ```
+
+    我建议**允许**。
+
+    因为 Mount 本质就是指针。
+
+    两个 mount：
+
+    ```text
+    mountId1 → collaboration C
+    mountId2 → collaboration C
+    ```
+
+    不会复制文件，也不会产生数据一致性问题。
+
+    但 UI 可以提示：
+
+    > 此协同项目已在本分区挂载 1 次。
+
+    不要强制禁止。
+
+    ---
+
+    # 删除 Mount 的语义现在可以正式定死
+
+    在 Native namespace 中对：
+
+    ```text
+    kind=collaboration_mount
+    ```
+
+    执行“删除”，UI 建议直接叫：
+
+    > **移除挂载**
+
+    后台只做：
+
+    ```text
+    DELETE Mount Record
+    ```
+
+    绝对不能调用：
+
+    ```text
+    foreign recursive delete
+    collaboration disable
+    kick
+    Content ref release
+    Telegram cleanup
+    ```
+
+    而进入 Mount 后删除里面的文件，才属于真正的 collaboration filesystem mutation。
+
+    ---
+
+    # 分区设置：你的 1～3 条决定基本把底层方向定住了
+
+    最终应变成：
+
+    ```text
+    Partition
+        partitionId        immutable
+        scopeKey           immutable
+        displayName        mutable
+        settings
+    ```
+
+    齿轮面板可以明确分两部分：
+
+    ```text
+    个人网盘设置
+    ----------------
+    全局设置……
+
+    当前分区
+    ----------------
+    显示名称
+    S3 设置
+    复刻分区
+    删除分区
+    ```
+
+    默认分区：
+
+    ```text
+    可重命名 displayName
+    可设置
+    可复刻
+    不可删除
+    ```
+
+    普通分区：
+
+    ```text
+    可重命名
+    可设置
+    可复刻
+    可删除
+    ```
+
+    “管理分区 / S3”现有入口就可以逐步收进这个齿轮，不需要同时保留两套管理入口。
+
+    ---
+
+    # 复刻分区再补一个 Content Object 相关原则
+
+    既然 S6 已经真正实现 Shared Content Object，复刻分区应该是：
+
+    ```text
+    Directory records
+    +
+    Logical Files
+    +
+    Content refs
+    ```
+
+    不重新：
+
+    ```text
+    PoP
+    sendDocument
+    sendMediaGroup
+    Telegram copy
+    ```
+
+    因为是同一已认证用户主动复制自己的 namespace。
+
+    Mount 默认属于你已经决定“不复制 Collaboration”的范围，所以：
+
+    ```text
+    源分区/
+    ├── a.txt
+    ├── b/
+    └── Mount X
+    ```
+
+    默认复刻结果：
+
+    ```text
+    目标分区/
+    ├── a.txt
+    └── b/
+    ```
+
+    `Mount X` 不出现。
+
+    这里建议结果中明确提示：
+
+    ```text
+    复刻完成：
+    142 个文件
+    18 个目录
+    跳过 3 个协同挂载
+    ```
+
+    避免用户觉得漏数据。
+
+    ---
+
+    # 还有一个容易漏掉的情况：active collaboration 与“分区删除/复刻”
+
+    ### 删除分区
+
+    如果普通分区还有：
+
+    ```text
+    自己发起的 active collaboration
+    ```
+
+    我建议**直接拒绝删除分区**，要求先结束这些 collaboration。
+
+    不能默默 disable。
+
+    如果只有：
+
+    ```text
+    别人协同的 Mount
+    ```
+
+    删除分区时可以自动移除这些 Mount，因为它们只是自己的指针。
+
+    ### 复刻分区
+
+    自己发起的 collaboration 不复制。
+
+    别人 collaboration Mount 也默认不复制。
+
+    这样目标分区完全是一个新的 Native namespace。
+
+    ---
+
+    # 最终最重要的系统不变量
+
+    这次最好把以下几条直接当作设计级 invariant，而不是 UI 约定：
+
+    ```text
+    1. partitionId / scopeKey 永久不因显示名称改变。
+
+    2. Mount 只能存在于 Native namespace。
+
+    3. Mount 不能存在于任何 active collaboration subtree。
+
+    4. 含有任意 descendant Mount 的 Native Directory，
+       不能成为 collaboration root。
+
+    5. Foreign collaboration namespace 永远不能创建：
+       Mount / Collaboration / Share / Static Resource / S3 exposure。
+
+    6. Native ↔ Foreign、Foreign A ↔ Foreign B
+       跨 scope 操作只有 Copy，没有 Move。
+
+    7. Native recursive traversal 遇到 Mount 必须停止，
+       不得递归进入 foreign namespace。
+
+    8. 删除 Mount ≠ 删除 collaboration contents。
+
+    9. Collaboration authorization 每次服务端重新解析，
+       Mount 不缓存或复制授权。
+
+    10. Mount 不产生 Content Object reference；
+        只有真正 Copy foreign file 到另一个 namespace 时才新增 Logical reference。
+    ```
+
+    第 10 条尤其重要：**Mount 只是指针，不应该给它下面几万个 foreign 文件各创建一份自己的 Logical File / Content reference。** 否则就又退化成“复制协同项目”了。
+
+    按现在这些规则，我认为数据边界已经相当稳了。真正开始设计开发时，最应该先做的不是 UI，而是先定义 `Partition identity + CollaborationMount + namespace resolver + mutation-scope invariant` 四个底层概念；否则把特殊节点先塞进现有 path-based directory API，后面很容易越改越乱。
+    
+    
+    
+    
+问：
+
+
+
+
+    同意你以上最后一答中的建议。
+    你可以继续定义定义 `Partition identity + CollaborationMount + namespace resolver + mutation-scope invariant`  这四个底层概念。
+    
+    
+    
+    
+    
+    
+
+
+答：
+
+
+
+
+
+    可以，我继续只做设计定义，不改代码。接下来我会把这四个概念定义成可直接约束后续实现的数据模型与服务端边界，并结合 S6 当前 diskSpace / collaboration scope / Content Object 结构，避免定义成脱离现状的抽象名词。
+
+    定义核心模型
+
+    梳理当前分支存储架构与共享内容模型
+
+    可以。基于当前主关注分支 `dev/2609-s6-disk-shared-content-object`（我刚核对的 HEAD 仍是 `be4424b3962ca4fe461f28e924ffb7ae7742fd60`），我建议把这四个概念定义成下面这样。这里仍然只是设计，不改代码。
+
+    ## 1. Partition Identity：把“分区身份”和“分区名字”彻底拆开
+
+    现在 S6 的 `diskSpace` 同时承担“显示名称”和“内部 scope key”，以后必须拆开。
+
+    建议正式定义：
+
+    ```text
+    Partition {
+        partitionId        // UUID，永久不变
+        ownerId
+
+        scopeKey           // 内部作用域，永久不变
+        displayName        // 用户可修改
+
+        isDefault
+        settings
+
+        createdAt
+        updatedAt
+    }
+    ```
+
+    其中最关键的是三者语义：
+
+    ```text
+    partitionId
+    = 产品层稳定身份
+
+    scopeKey
+    = 当前底层 files/directories/collaboration/share/S3 等使用的作用域键
+
+    displayName
+    = 纯 UI 名称
+    ```
+
+    ### 对现有数据的兼容
+
+    例如旧分区：
+
+    ```text
+    diskSpace = "影音"
+    ```
+
+    迁移后：
+
+    ```text
+    partitionId = UUID-P1
+    scopeKey = "影音"
+    displayName = "影音"
+    ```
+
+    以后用户改名：
+
+    ```text
+    displayName = "媒体库"
+    ```
+
+    但是：
+
+    ```text
+    partitionId 不变
+    scopeKey 仍然是 "影音"
+    ```
+
+    当前默认分区：
+
+    ```text
+    scopeKey = ""
+    isDefault = true
+    ```
+
+    也不需要搬动已有数据。
+
+    ### 以后客户端不应该把 displayName 当身份
+
+    比如现在类似：
+
+    ```text
+    X-Disk-Space: 影音
+    ```
+
+    长期可以逐渐向：
+
+    ```text
+    X-Disk-Partition-Id: UUID-P1
+    ```
+
+    迁移。
+
+    服务端再：
+
+    ```text
+    partitionId
+    → Partition
+    → scopeKey
+    ```
+
+    最后兼容调用目前大量基于 `diskSpace` 的代码。
+
+    第一阶段甚至可以继续发 `X-Disk-Space`，但产品层已经不能再认为名称就是身份。
+
+    ### 分区名称冲突
+
+    我建议：
+
+    **同一个用户的 `displayName` 不允许重复。**
+
+    虽然底层完全可以允许：
+
+    ```text
+    P1 displayName = 工作
+    P2 displayName = 工作
+    ```
+
+    但 UI 非常难分辨，没有实际收益。
+
+    不同用户当然可以同名。
+
+    ---
+
+    ### 默认分区
+
+    按照已经确定的要求：
+
+    ```text
+    可修改 displayName
+    可修改 settings
+    可复刻
+
+    不可删除
+    scopeKey 永远 ""
+    ```
+
+    不要为了“默认分区改名”把 `''` 换掉。
+
+    ---
+
+    ### 分区删除
+
+    删除普通分区应该定义成一个 **Partition lifecycle operation**，而不是 `DELETE spaces row`。
+
+    至少状态建议有：
+
+    ```text
+    ACTIVE
+    DELETING
+    ```
+
+    甚至：
+
+    ```text
+    DELETE_FAILED
+    ```
+
+    删除开始以后禁止新的：
+
+    ```text
+    upload
+    mkdir
+    copy
+    mount
+    S3 mutation
+    collaboration creation
+    ```
+
+    然后清理这个 partition 下自己的 Logical namespace。
+
+    这里要区分：
+
+    ```text
+    自己发起的 active collaboration
+    ```
+
+    和：
+
+    ```text
+    别人 collaboration 的 Mount
+    ```
+
+    前者我维持上一答建议：
+
+    > 有自己发起的 active collaboration 时，禁止删除分区，要求先结束 collaboration。
+
+    后者可以直接：
+
+    ```text
+    remove mount records
+    ```
+
+    因为 Mount 只是自己的指针。
+
+    已有 Share / Static Resource 我建议删除分区时自动撤销，因为 partition 都不存在了，它们已经没有继续存活的合理语义。
+
+    S3 credential 同样应失效。
+
+    Content Object 按 S6 现有 reference 语义释放，不直接删除共享 physical。
+
+    ---
+
+    ## 2. CollaborationMount：它不是目录，而是 Native Namespace 中的一种特殊节点
+
+    这个定义非常关键。
+
+    建议实体：
+
+    ```text
+    CollaborationMount {
+        mountId
+
+        ownerId             // 谁把它挂进自己的网盘
+        partitionId
+        parentPath          // 只能是自己的 Native Directory
+        displayName
+
+        collaborationId
+
+        createdAt
+        updatedAt
+    }
+    ```
+
+    可以额外记录一些**非授权性缓存**：
+
+    ```text
+    lastKnownTitle
+    lastSeenAt
+    ```
+
+    但不要保存：
+
+    ```text
+    remoteOwnerId
+    remoteDiskSpace
+    remoteRootPath
+    role
+    ```
+
+    然后长期信任这些字段。
+
+    这些都应该每次通过：
+
+    ```text
+    collaborationId
+    → current collaboration
+    → current grant
+    ```
+
+    重新解析。
+
+    ---
+
+    ### Mount 在目录里的表现
+
+    例如：
+
+    ```text
+    我的网盘/
+    ├── music/
+    ├── abc.txt
+    └── 项目A
+    ```
+
+    其中：
+
+    ```text
+    项目A.kind = collaboration_mount
+    ```
+
+    它和：
+
+    ```text
+    file
+    directory
+    ```
+
+    是第三种 node。
+
+    也就是说 Native list 最终是：
+
+    ```text
+    nodes = directories + files + mounts
+    ```
+
+    而不是偷偷把 Mount 塞进：
+
+    ```text
+    directories[]
+    ```
+
+    这一点非常重要。
+
+    ---
+
+    ### Mount 是“文件式叶节点”
+
+    从 Native Namespace 看：
+
+    ```text
+    Mount 没有 native children
+    ```
+
+    因此这些 Native 操作：
+
+    ```text
+    directory recursive traversal
+    directory delete
+    directory size
+    directory clone
+    directory collaboration descendants scan
+    S3 LIST
+    Static Resource traversal
+    Share traversal
+    ```
+
+    遇到：
+
+    ```text
+    kind=collaboration_mount
+    ```
+
+    都必须停止。
+
+    只有用户执行：
+
+    ```text
+    open mount
+    ```
+
+    才发生一次 namespace switch。
+
+    ---
+
+    ### Mount 的名字
+
+    `displayName` 纯本地。
+
+    例如远端 collaboration 名叫：
+
+    ```text
+    《A计划》
+    ```
+
+    用户挂进来以后可以命名：
+
+    ```text
+    张三项目
+    ```
+
+    再改成：
+
+    ```text
+    共同开发资料
+    ```
+
+    不影响 collaboration owner。
+
+    ---
+
+    ### Mount 的 Move
+
+    只允许：
+
+    ```text
+    Native Directory A
+    →
+    Native Directory B
+    ```
+
+    实际上只改：
+
+    ```text
+    parentPath
+    ```
+
+    但目标 B 必须是 Native Namespace。
+
+    不能：
+
+    ```text
+    Mount
+    → Foreign Collaboration Namespace
+    ```
+
+    ---
+
+    ### 删除 Mount
+
+    逻辑必须叫：
+
+    ```text
+    Unmount / 移除挂载
+    ```
+
+    执行：
+
+    ```text
+    delete CollaborationMount record
+    ```
+
+    不执行任何：
+
+    ```text
+    remote delete
+    collaboration disable
+    kick member
+    Content reference release
+    Telegram cleanup
+    ```
+
+    ---
+
+    ### 一个 collaboration 可以挂多次
+
+    我继续建议允许：
+
+    ```text
+    /工作/项目A
+    /快捷入口/项目A
+    ```
+
+    对应：
+
+    ```text
+    M1 → C1
+    M2 → C1
+    ```
+
+    不会产生任何数据复制。
+
+    ---
+
+    ### Mount 本身不产生 Content Object reference
+
+    这条要定死：
+
+    ```text
+    Mount C1
+    ```
+
+    不是：
+
+    ```text
+    把 C1 下所有 foreign Logical File
+    逐个复制到我的 namespace
+    ```
+
+    所以哪怕对方有十万个文件：
+
+    ```text
+    一个 Mount Record
+    ```
+
+    就够。
+
+    真正执行：
+
+    ```text
+    复制到我的网盘
+    ```
+
+    时才：
+
+    ```text
+    foreign Logical
+    → Content Object
+    → new local Logical reference
+    ```
+
+    ---
+
+    ## 3. Namespace Resolver：以后任何文件操作先回答“你现在到底在哪个世界里”
+
+    目前网盘大量逻辑隐含假设：
+
+    ```text
+    当前 userId
+    + diskSpace
+    + path
+    ```
+
+    就足够定位数据。
+
+    有 Mount 后不够了。
+
+    我建议正式定义一个：
+
+    ```text
+    NamespaceContext
+    ```
+
+    所有 list/read/mutation 在进入真正 store 前先 resolve。
+
+    至少有两种：
+
+    ```text
+    NativeNamespace
+    ForeignCollaborationNamespace
+    ```
+
+    ---
+
+    ### Native Namespace
+
+    例如：
+
+    ```text
+    {
+        type: "native",
+
+        viewerId: U1,
+
+        ownerId: U1,
+
+        partitionId: P1,
+        scopeKey: "影音",
+
+        path: "A/B"
+    }
+    ```
+
+    含义：
+
+    > U1 正在操作自己的 P1 分区 `/A/B`。
+
+    这里可以看到：
+
+    ```text
+    local files
+    local directories
+    collaboration mounts
+    ```
+
+    ---
+
+    ### Collaboration Namespace
+
+    用户从：
+
+    ```text
+    P1:/工作/项目A
+    ```
+
+    打开 Mount M1 后，不应该变成：
+
+    ```text
+    path = 工作/项目A/src
+    ```
+
+    这种伪本地路径。
+
+    应该切换成：
+
+    ```text
+    {
+        type: "collaboration",
+
+        viewerId: U1,
+
+        mountId: M1,
+
+        collaborationId: C1,
+
+        remoteOwnerId: U2,
+        remoteScopeKey: "工作",
+
+        collaborationRoot: "ProjectA",
+        relativePath: "src",
+
+        role: "editor",
+        grantVersion: 7
+    }
+    ```
+
+    于是 UI 可以显示：
+
+    ```text
+    我的网盘 / 工作 / 项目A / src
+    ```
+
+    但后端知道：
+
+    ```text
+    前三段是 local navigation context
+    最后真正的数据来自 U2 scope
+    ```
+
+    这两者不能混为一条真实 path。
+
+    ---
+
+    ### Resolver 的核心职责
+
+    以后任何请求先做：
+
+    ```text
+    resolveNamespace(context)
+    ```
+
+    回答至少这些问题：
+
+    ```text
+    数据真正属于谁？
+    哪个 partition/scope？
+    路径基准是什么？
+    viewer 是谁？
+    当前 role 是什么？
+    允许什么能力？
+    是否位于 Mount 内？
+    是否允许跨 boundary？
+    ```
+
+    输出可以概念化成：
+
+    ```text
+    ResolvedNamespace {
+        kind
+
+        viewerId
+
+        dataOwnerId
+        scopeKey
+
+        localPartitionId?
+        mountId?
+        collaborationId?
+
+        rootPath
+        relativePath
+        effectivePath
+
+        role
+
+        capabilities
+    }
+    ```
+
+    ---
+
+    ### 最重要：Mount 不是 path translation
+
+    不要做：
+
+    ```text
+    /my/A/MountX/foo.txt
+          ↓ 字符串替换
+    /otherUser/project/foo.txt
+    ```
+
+    这种实现。
+
+    应该是：
+
+    ```text
+    mountId
+    → collaboration authorization
+    → remote root
+    → relative path
+    ```
+
+    每次动态解析。
+
+    否则 collaboration 被：
+
+    ```text
+    移动
+    重命名
+    撤销
+    踢人
+    改变角色
+    ```
+
+    以后，很容易留下陈旧 path 可以越权。
+
+    ---
+
+    ### Mount authorization 每次重新验证
+
+    Mount Record 只证明：
+
+    > 用户以前建立过这个入口。
+
+    它不证明：
+
+    > 用户现在仍有权限。
+
+    所以打开：
+
+    ```text
+    M1
+    ```
+
+    必须：
+
+    ```text
+    collaborations.authorized(C1, viewerId)
+    ```
+
+    如果已经被踢：
+
+    ```text
+    ResolvedMount {
+        status: inaccessible
+    }
+    ```
+
+    Native UI 仍然显示：
+
+    ```text
+    ⚠ 项目A
+    协同访问已失效
+    ```
+
+    只能：
+
+    ```text
+    移除挂载
+    ```
+
+    不能继续进入。
+
+    ---
+
+    ### Role 通过 resolver 转成 capability
+
+    不要让每个 route 自己到处写：
+
+    ```text
+    if (role === 'editor')
+    ```
+
+    建议 resolver 最终给出 capability：
+
+    ```text
+    viewer:
+        read
+        list
+        search
+        stream
+        download
+
+    editor:
+        viewer +
+        upload
+        mkdir
+        rename
+        moveWithinScope
+        replace
+        delete
+    ```
+
+    双方都没有：
+
+    ```text
+    createMount
+    createCollaboration
+    publicShare
+    staticResource
+    s3Expose
+    partitionAdmin
+    ```
+
+    未来即使角色扩展，业务 route 不需要全部重写。
+
+    ---
+
+    ## 4. Mutation Scope Invariant：所有写操作都必须先证明“不会越过 namespace 边界”
+
+    这是四个概念里最关键的一层。
+
+    不要把它理解成：
+
+    ```text
+    一个 validateDestinationPath()
+    ```
+
+    而应该定义成：
+
+    > 所有会改变 namespace topology 或 Logical ownership 的操作，在执行前都必须计算 Source Scope、Destination Scope 和 mutation type，然后通过统一规则判定。
+
+    建议抽象：
+
+    ```text
+    MutationContext {
+        actorId
+
+        operation
+
+        sourceNamespace
+        sourceNodes
+
+        destinationNamespace?
+
+        topologyImpact
+    }
+    ```
+
+    服务端统一：
+
+    ```text
+    validateMutationScope(ctx)
+    ```
+
+    ---
+
+    # 首先定义三类 mutation
+
+    ### A. Intra-Native Mutation
+
+    ```text
+    Native → 同一个 Native partition
+    ```
+
+    例如：
+
+    ```text
+    rename
+    move
+    mkdir
+    delete
+    ```
+
+    正常允许，但仍需要做 Mount/Collaboration subtree invariant 检查。
+
+    ---
+
+    ### B. Intra-Collaboration Mutation
+
+    ```text
+    Mount C1 内
+    →
+    仍然是 C1
+    ```
+
+    例如：
+
+    ```text
+    ProjectA/src/a
+    →
+    ProjectA/archive/a
+    ```
+
+    如果角色是 editor：
+
+    允许。
+
+    这里真正操作的是：
+
+    ```text
+    remote owner scope
+    ```
+
+    不是 Mount Record。
+
+    ---
+
+    ### C. Cross-Namespace Mutation
+
+    包括：
+
+    ```text
+    Native → Collaboration
+
+    Collaboration → Native
+
+    Collaboration A → Collaboration B
+
+    Partition A → Partition B
+    ```
+
+    统一原则：
+
+    > **禁止 Move，只允许 Copy。**
+
+    这是最干净的规则。
+
+    ---
+
+    # 5. Copy 与 Move 必须变成两个不同的底层语义
+
+    例如：
+
+    ```text
+    Foreign C1/a.mp4
+    → Native P1
+    ```
+
+    不得内部写成：
+
+    ```text
+    move()
+    ```
+
+    而应该明确：
+
+    ```text
+    copyAcrossNamespace()
+    ```
+
+    它：
+
+    ```text
+    读取 source authorization
+    → resolve source Logical
+    → resolve Content Object
+    → destination 创建新的 Logical File
+    ```
+
+    源 Logical 完全不动。
+
+    ---
+
+    ### Native → Collaboration
+
+    必须：
+
+    ```text
+    source read allowed
+    destination editor allowed
+    ```
+
+    然后：
+
+    ```text
+    在 collaboration owner scope
+    创建新 Logical reference
+    ```
+
+    ---
+
+    ### Collaboration A → Collaboration B
+
+    需要：
+
+    ```text
+    A: canRead
+    B: canWrite
+    ```
+
+    即可：
+
+    ```text
+    C1 Logical
+    → shared Content Object
+    → C2 owner 新 Logical
+    ```
+
+    依然没有 Telegram 正文流量。
+
+    ---
+
+    # 6. Topology Invariant：防 Mount / Collaboration 嵌套污染
+
+    这是你刚才补充后最应该正式写成数学不变量的地方。
+
+    定义：
+
+    ```text
+    M = 所有 Mount node
+    C = 所有 active directory collaboration root
+    ```
+
+    要求：
+
+    > 对任意 `m ∈ M` 和 `c ∈ C`，二者在同一个 Native scope 中不能存在 ancestor/descendant 关系。
+
+    也就是永远不能：
+
+    ```text
+    CollaborationRoot
+    └── ...
+        └── Mount
+    ```
+
+    也不能：
+
+    ```text
+    Directory containing Mount
+    ↑
+    后来把祖先开启成 CollaborationRoot
+    ```
+
+    ---
+
+    ### 创建 Mount 时
+
+    必须验证：
+
+    ```text
+    destinationParent
+    ```
+
+    不位于任何：
+
+    ```text
+    active collaboration root
+    ```
+
+    之内。
+
+    因为一旦 parent 在 collaboration subtree：
+
+    ```text
+    reject
+    ```
+
+    ---
+
+    ### 开启 Collaboration 时
+
+    设目标目录为 A。
+
+    必须验证：
+
+    ```text
+    A subtree
+    ```
+
+    不存在任何：
+
+    ```text
+    CollaborationMount
+    ```
+
+    哪怕在十层下面：
+
+    ```text
+    A/a/b/c/d/Mount
+    ```
+
+    也拒绝。
+
+    ---
+
+    ### Move Mount 时
+
+    目标 parent 必须重新验证：
+
+    ```text
+    not inside active collaboration subtree
+    ```
+
+    ---
+
+    ### Move Native Directory 时
+
+    这是最容易漏掉的。
+
+    假设：
+
+    ```text
+    B/
+    └── Mount
+    ```
+
+    用户移动：
+
+    ```text
+    B
+    →
+    A/
+    ```
+
+    而 A 属于 active collaboration。
+
+    必须拒绝。
+
+    所以移动目录必须计算：
+
+    ```text
+    sourceSubtreeHasMount
+    destinationInsideCollaboration
+    ```
+
+    组合验证。
+
+    ---
+
+    ### Move Collaboration Root / ancestor
+
+    反方向同样危险。
+
+    例如：
+
+    ```text
+    CollabRoot/
+    ```
+
+    移动到：
+
+    ```text
+    X/
+    └── Mount
+    ```
+
+    也会形成非法相交。
+
+    所以 topology validator 应看**操作完成后的拓扑**，而不是仅检查 source 当前是否合法。
+
+    ---
+
+    # 7. 并发不变量
+
+    这些检查绝不能：
+
+    ```text
+    HTTP request:
+    check()
+    ...
+    几百 ms
+    ...
+    write()
+    ```
+
+    完全分离。
+
+    必须和 mutation 写入共享同一个：
+
+    ```text
+    atomic/CAS boundary
+    ```
+
+    至少要保证：
+
+    ```text
+    createMount
+    enableCollaboration
+    moveMount
+    moveDirectory
+    ```
+
+    彼此不能同时穿透检查。
+
+    例如两个并发事务：
+
+    ```text
+    T1:
+    A 没有 Mount
+    → 开 Collaboration
+
+    T2:
+    A/x 不在 Collaboration
+    → 加 Mount
+    ```
+
+    不能全部提交成功。
+
+    建议以后 topology 有一个：
+
+    ```text
+    namespaceRevision
+    ```
+
+    或者利用 S6 现有 repository revision/CAS，让：
+
+    ```text
+    validate topology
+    +
+    mutation
+    ```
+
+    在同一个原子 persistence operation 内完成。
+
+    ---
+
+    # 8. Foreign Namespace 应从数据模型层禁止“能力型资源”
+
+    这一条我建议不要只是 route 黑名单。
+
+    可以正式定义：
+
+    ```text
+    NamespaceCapabilities
+    ```
+
+    Native：
+
+    ```text
+    files
+    directories
+    mount
+    collaboration
+    share
+    staticResource
+    s3
+    partition
+    ```
+
+    Foreign Collaboration：
+
+    ```text
+    files
+    directories
+    ```
+
+    就这两个。
+
+    所以 foreign 中：
+
+    ```text
+    Share
+    StaticResource
+    Collaboration
+    Mount
+    S3
+    Partition
+    ```
+
+    不是“没权限执行”，而是：
+
+    > **该 namespace 根本不存在这种资源类型。**
+
+    这样设计更稳。
+
+    ---
+
+    # 9. “特殊文件”最好独立 kind，不要真的伪造成 file
+
+    你说“视为一种特殊文件”这个产品理解是对的。
+
+    但底层不建议真的：
+
+    ```text
+    kind = file
+    mime = application/x-collaboration
+    ```
+
+    否则现有：
+
+    ```text
+    download
+    contentId
+    size
+    thumbnail
+    replace
+    Content Object
+    ```
+
+    全部会被误套。
+
+    应该明确：
+
+    ```text
+    kind:
+        file
+        directory
+        collaboration_mount
+    ```
+
+    UI 上它可以表现得像“特殊文件”。
+
+    底层绝不能认为它是 Logical File。
+
+    ---
+
+    # 10. Native Directory 统计也要定清楚
+
+    例如：
+
+    ```text
+    A/
+    ├── 1GB 本地文件
+    └── Mount
+        └── 500GB foreign
+    ```
+
+    A 的：
+
+    ```text
+    大小
+    文件数
+    递归 properties
+    ```
+
+    我建议只算：
+
+    ```text
+    1GB 本地内容
+    ```
+
+    不把 Mount 内 500GB 算进去。
+
+    可以另外显示：
+
+    ```text
+    1 个协同挂载
+    ```
+
+    否则：
+
+    - 分区 quota；
+    - 目录统计；
+    - 复刻估算；
+    - delete impact；
+
+    都会变得含糊。
+
+    ---
+
+    # 11. Partition clone 与 Namespace Resolver 的关系
+
+    复刻：
+
+    ```text
+    P1 → P2
+    ```
+
+    实际上应该调用：
+
+    ```text
+    cloneNativeNamespace(P1)
+    ```
+
+    只遍历：
+
+    ```text
+    Native Directory
+    Native Logical File
+    ```
+
+    遇到：
+
+    ```text
+    collaboration_mount
+    ```
+
+    停止并计入：
+
+    ```text
+    skippedMounts
+    ```
+
+    这样天然满足你已经确定的：
+
+    > 不复制 Collaboration。
+
+    不用专门再做一套排除 foreign file 的逻辑。
+
+    ---
+
+    # 12. Search 也可以正式基于 Namespace 定义
+
+    你已经确定：
+
+    ```text
+    所有文件
+    附加已挂载的协同内容
+    ```
+
+    可以精确定义成：
+
+    ### 所有文件
+
+    ```text
+    search NativeNamespace(currentPartition)
+    ```
+
+    只搜：
+
+    ```text
+    我的 Logical Files
+    ```
+
+    不 traverse Mount。
+
+    ### 附加已挂载的协同内容
+
+    再执行：
+
+    ```text
+    for each accessible Mount in current partition:
+        search ForeignCollaborationNamespace(mount)
+    ```
+
+    最后 merge results。
+
+    结果要保留 origin：
+
+    ```text
+    {
+        kind: file,
+        origin: "native"
+    }
+    ```
+
+    或者：
+
+    ```text
+    {
+        kind: file,
+        origin: "collaboration",
+        mountId: M1,
+        collaborationId: C1
+    }
+    ```
+
+    如果同一个 C1 挂了两次，我建议搜索时**按 collaboration 去重执行查询**，但结果导航可以选择一个 canonical Mount，或者在结果里标记：
+
+    ```text
+    通过“工作/项目A”进入
+    ```
+
+    避免同一个文件因为两个快捷 Mount 出现两遍。
+
+    ---
+
+    # 13. 四个概念最终关系
+
+    可以压缩成：
+
+    ```text
+    Partition Identity
+        │
+        │ 提供稳定 Native Scope
+        ▼
+    Native Namespace
+        │
+        ├── Directory
+        ├── Logical File ──→ Content Object
+        │
+        └── CollaborationMount
+                    │
+                    │ resolve
+                    ▼
+            Collaboration Grant
+                    │
+                    ▼
+         Foreign Collaboration Namespace
+    ```
+
+    所有操作先走：
+
+    ```text
+    Namespace Resolver
+    ```
+
+    所有写操作再走：
+
+    ```text
+    Mutation Scope Validator
+    ```
+
+    也就是：
+
+    ```text
+    request
+       ↓
+    resolve namespace
+       ↓
+    resolve authorization/capabilities
+       ↓
+    classify mutation
+       ↓
+    validate topology + scope invariant
+       ↓
+    atomic mutation
+    ```
+
+    ---
+
+    ## 我认为可以把这四个定义最终浓缩成四句话
+
+    **Partition Identity**
+
+    > 给用户自己的 Native Namespace 一个永久不随名称变化的身份；`displayName` 只是表现，`scopeKey` 是兼容底层数据的稳定作用域。
+
+    **CollaborationMount**
+
+    > 存在于 Native Namespace 的特殊叶节点，只保存进入某个 Collaboration Grant 的入口，不复制 foreign files，也不拥有 Content Object。
+
+    **Namespace Resolver**
+
+    > 将“用户当前看到的路径”解析成真正的数据 owner、scope、collaboration grant、relative path 和 capabilities，禁止通过字符串路径拼接跨作用域。
+
+    **Mutation-Scope Invariant**
+
+    > 任何写操作只能在一个 namespace 内真正 Move；跨 namespace 永远 Copy，并且任何 topology mutation 都必须保证 Collaboration subtree 与 Mount subtree 永不相交。
+
+    有了这四层以后，后面的“齿轮设置、分区改名/复刻/删除、协同挂载、viewer/editor、搜索和跨 scope Copy”都可以建立在同一个一致模型上，而不是各功能分别打补丁。
+
+
+
+
+
+
+
+--------------------------------------------
+问：
+
+    现在 你要结合最新版代码 [b4bedfdca3f36e999fc0c63263f9f08784cfdf75]，以及本次讨论的记录（已经整理到上方），全面深度思考，不要敷衍！编写开发指南文档，我要拿给codex用。
+
+    不过要在文档中声明要留给codex根据实际情况变通操作的余地，同时也要防止执行时误操作/误解原需求。
+
+
+答：
+
+    
+    已完成。我结合附件中的完整讨论记录，并重新核对了 GitHub 上最新的 S6 分支代码，编写了一份面向 Codex 的开发实施指南。
+    Drop2Tunnel S6：网盘分区设置与协同挂载开发实施指南
+    Markdown · 13 个主要章节 · 约 52 KB
+
+
+    
+
+    代码调查基线：
+    dev/2609-s6-disk-shared-content-object
+    b4bedfdca3f36e999fc0c63263f9f08784cfdf75
+    这是最新核对到的远程 HEAD，不再沿用之前的 be4424b…。
+    指南重点
+    文档详细覆盖了：
+    - Partition Identity：稳定分区身份、改名、设置、复刻、删除及历史数据迁移。
+    - CollaborationMount：特殊文件式挂载节点、生命周期、名称冲突和目录移动。
+    - Namespace Resolver：原生与外来协同作用域隔离、实时授权、viewer/editor 权限。
+    - Mutation-Scope Invariant：防止嵌套污染、循环引用、越界操作和并发竞态。
+    - 最新 S6 功能兼容：特别保留已经实现的原生跨分区 Copy/Move、静态资源管理和共享 Content Object。
+    - 开发执行要求：推荐实施阶段、SQLite 迁移、异常恢复和完整测试矩阵。
+    尤其按照你的要求，文档把两类内容明确区分：
+    不可变的产品需求：Codex 不得自行改变，例如 Mount 禁止嵌套、跨协同边界只能 Copy、不能删除默认分区。
+    可以灵活调整的技术实现：Codex 可以根据本地最新代码优化数据表、接口、组件、事务方案和开发顺序，但必须解释重要偏差，不能暗中改变原需求。
+    文档结构和关键约束已完成检查。
+
+
+    本轮没有修改、提交或推送任何 GitHub 仓库代码。
+    
+
+-------------------------------------------
+
