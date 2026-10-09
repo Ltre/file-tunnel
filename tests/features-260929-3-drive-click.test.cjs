@@ -26,7 +26,7 @@ function fixture({ mobile = true, coarse = false, narrow = false } = {}) {
     const selection = { hidden: true }, count = {}, manager = new Element();
     const nodes = { telegramDriveList: list, telegramDriveSelection: selection, telegramDriveSelectionCount: count, telegramDriveOverlay: { hidden: false } };
     const first = { kind: 'directory', path: 'a', name: '甲' }, second = { kind: 'directory', path: 'b', name: '乙' };
-    const context = vm.createContext({
+    const context = vm.createContext({telegramDriveMountContext:null,
         telegramDriveCurrentData: { folders: [first, second], files: [] }, telegramDriveSearchData: null,
         telegramDriveSelected: new Map(), telegramDriveSelectionAnchor: '', telegramDriveView: 'list', diskDragItems: [], telegramDrivePath: '', telegramDriveRenderGeneration: 0,
         document: { getElementById: id => nodes[id] || null, createElement: tag => new Element(tag),

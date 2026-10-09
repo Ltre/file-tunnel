@@ -477,3 +477,22 @@ test('居中 loading 同时列出所有运行任务并可左右切换', () => {
     elements.diskLoadingNext.onclick();
     assert.equal(elements.diskLoadingPosition.textContent, '2 / 2'); assert.equal(elements.diskLoadingTitle.textContent, '第二个任务');
 });
+test('后台上传切换挂载和分区后，后续分片与结束请求仍使用起始作用域',async()=>{
+    const window={},requests=[];let putReady,release;
+    const ready=new Promise(resolve=>{putReady=resolve;});
+    const fetch=async(url,options={})=>{
+        requests.push({url,options});
+        const parsed=new URL(url,'http://localhost');
+        if(parsed.pathname.endsWith('/uploads'))return {ok:true,json:async()=>({uploadId:'u',operation_id:'op',files:[{}]})};
+        if(options.method==='PUT'){putReady();await new Promise(resolve=>{release=resolve;});return {ok:true,json:async()=>({})};}
+        if(parsed.pathname.endsWith('/finish'))return {ok:true,json:async()=>({operation_id:'op',status:'completed',result:{items:[]}})};
+        return {ok:true,json:async()=>({operations:[]})};
+    };
+    vm.runInNewContext(source('client/disk-client.js'),{window,fetch,AbortController,setInterval(){},URL,location:{origin:'http://localhost'},Date,Map,Set,Promise,encodeURIComponent});
+    window.DiskClient.setSpace('中文分区');window.DiskClient.setMount('mount-a');
+    const uploaded=window.DiskClient.upload([{name:'file.bin',size:3}],'授权目录',async()=>({size:3,slice:()=>({size:3})}));
+    await ready;window.DiskClient.setSpace('其它分区');release();await uploaded;
+    const writes=requests.filter(request=>['PUT','POST'].includes(request.options.method));
+    assert.ok(writes.length>=3);
+    for(const request of writes){const url=new URL(request.url,'http://localhost');assert.ok(url.pathname.startsWith('/api/telegram/drive/mount-scope/mount-a/'));assert.equal(url.searchParams.get('disk_space'),'中文分区');}
+});

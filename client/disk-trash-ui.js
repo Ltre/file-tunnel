@@ -26,7 +26,7 @@
                 for(const entry of items){
                     const row=document.createElement('div');row.className='disk-trash-row';
                     const label=button(`${entry.kind==='directory'?'📁':'📄'} ${entry.name}`,()=>{if(entry.kind==='directory')load(item||entry,entry.path);});label.className='disk-trash-entry';if(entry.kind!=='directory')label.disabled=true;
-                    const info=document.createElement('small');info.textContent=item?`${entry.size||0} B`:`原位置：/${entry.originalParent||''} · ${new Date(entry.deletedAt).toLocaleString()} · ${entry.fileCount} 个文件`;
+                    const info=document.createElement('small');info.textContent=`原位置：/${entry.originalPath||entry.path||''} · ${entry.kind==='directory'?'目录':entry.type||'文件'} · ${global.formatFileSize?global.formatFileSize(entry.size||0):((entry.size||0)+' B')} · 删除时间：${new Date(entry.deletedAt||result.deletedAt).toLocaleString()}${entry.fileCount!==undefined?' · '+entry.fileCount+' 个文件':''}`;
                     label.append(document.createElement('br'),info);row.append(label);
                     if(!item){
                         const restore=button('还原',async()=>{if(loading)return;loading=true;restore.disabled=true;status.textContent='正在检查原目录和名称冲突…';try{const data=await request(`/trash/${entry.id}/restore`,global.DiskClient.json('POST',{}));finish();await onRestored(data.restored);}catch(error){status.textContent=global.DiskErrorMessages.format(error);}finally{loading=false;restore.disabled=false;}});

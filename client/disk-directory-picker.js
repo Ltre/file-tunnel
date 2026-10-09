@@ -3,7 +3,7 @@
 (function () {
     const normalize = value => {
         const parts = String(value || '').replace(/\\/g, '/').split('/').map(part => part.trim()).filter(part => part && part !== '.');
-        if (parts.some(part => part === '..' || part.length > 100 || /[:*?"<>|\u0000-\u001f]/.test(part)) || parts.length > 20) throw new Error('目录路径不合法：请检查名称、非法字符或目录层级');
+        if (parts.some(part => part === '..' || part.length > 100 || /[:*?"<>|\u0000-\u001f]/.test(part)) || parts.length > 30) throw new Error('目录路径不合法：请检查名称、非法字符或目录层级');
         return parts.join('/');
     };
     const contains = (root, path) => !root || path === root || path.startsWith(root + '/');

@@ -23,7 +23,7 @@ function fixture() {
     }
     // Mirrors app.js registering before DiskUI.init after asynchronous startup.
     listeners.push({ fn: () => { if (!context.drive.ownsHistory()) hostEvents++; }, capture: false });
-    const context = vm.createContext({ history, location: { href: 'http://localhost/#test' }, Date, Math, URL,
+    const context = vm.createContext({ telegramDriveMountContext:null, history, location: { href: 'http://localhost/#test' }, Date, Math, URL,
         document: { getElementById: node, body: { classList: { add() {}, remove() {} } } },
         window: { addEventListener(name, fn, options) { if (name === 'popstate') listeners.push({ fn, capture: !!options?.capture }); } },
         rendered, alert: message => { throw Error(message); }

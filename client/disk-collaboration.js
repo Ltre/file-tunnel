@@ -18,7 +18,7 @@
     const safeDirectoryPath = (value, root) => {
         if (typeof value !== 'string' || value.length > 2048 || value.includes('\\') || value.startsWith('/') || value.endsWith('/') || value.includes('//')) return root;
         const parts = value.split('/');
-        if (parts.length > 20 || parts.some(part => !part || part !== part.trim() || part === '.' || part === '..' || part.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(part))) return root;
+        if (parts.length > 30 || parts.some(part => !part || part !== part.trim() || part === '.' || part === '..' || part.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(part))) return root;
         return !root || value === root || value.startsWith(root + '/') ? value : root;
     };
     const relative = path => {

@@ -7,6 +7,7 @@ const { loadKey } = require('./disk-data');
 const { normalizeTelegramDrivePath } = require('./telegram-drive');
 
 function createDiskStaticResources({ dataDir }) {
+    let mountedNamespace;
     const repository = openDiskRepository(dataDir);
     const keyFile = path.join(dataDir, 's3pub-signing.key');
     let key;
@@ -25,7 +26,7 @@ function createDiskStaticResources({ dataDir }) {
         return payload + '.' + crypto.createHmac('sha256', key).update(payload).digest('base64url');
     };
     const view = item => ({ id: item.id, token: sign(item), ownerId: item.ownerId, diskSpace: item.diskSpace,
-        files: item.files, directories: item.directories, labels: item.labels || [], createdAt: item.createdAt, expiresAt: item.expiresAt,
+        files: item.files, directories: item.directories, mounts:item.mounts||[], labels: item.labels || [], createdAt: item.createdAt, expiresAt: item.expiresAt,
         cacheSeconds: item.cacheSeconds || 31536000, cacheOverrides: item.cacheOverrides || {}, revokedAt: item.revokedAt });
     const active = item => !item.revokedAt && (!item.expiresAt || item.expiresAt > Date.now());
     const matchesScope = (item, scope) => item.ownerId === scope.userId && item.diskSpace === scope.diskSpace && active(item);
@@ -39,6 +40,7 @@ function createDiskStaticResources({ dataDir }) {
         return Date.now() + seconds * 1000;
     }
     function selectedTarget(scope, store, selected) {
+        if(selected?.kind==='collaboration_mount'){const ns=mountedNamespace.resolve(scope.userId,scope.diskSpace,selected.id);return {kind:'mount',id:ns.mount.id,label:'挂载：'+ns.mount.name};}
         if (selected?.kind === 'directory') {
             const folder = normalizeTelegramDrivePath(selected.path || '');
             const target = folder && store.getDirectory(scope.userId, folder);
@@ -53,22 +55,26 @@ function createDiskStaticResources({ dataDir }) {
         throw new Error('STATIC_SELECTION_INVALID');
     }
     function removeTarget(item, target) {
-        const key = target.kind === 'file' ? 'files' : 'directories';
+        const key = target.kind === 'file' ? 'files' : target.kind==='mount'?'mounts':'directories';
+        item[key] ||= [];
         const index = item[key].indexOf(target.id);
         if (index < 0) return false;
         item[key].splice(index, 1);
         item.labels = (item.labels || []).filter(label => label !== target.label);
-        if (!item.files.length && !item.directories.length) item.revokedAt = Date.now();
+        if (!item.files.length && !item.directories.length && !item.mounts?.length) item.revokedAt = Date.now();
         return true;
     }
     return {
+        setMountedNamespace(value){mountedNamespace=value;},
+        stopMount(scope,id){reload();let changed=false;for(const item of records)if(matchesScope(item,scope))changed=removeTarget(item,{kind:'mount',id})||changed;if(changed)save();},
         create(scope, store, input = {}) {
             reload();
             const selections = input.items;
             if (!Array.isArray(selections) || !selections.length || selections.length > 100) throw new Error('STATIC_SELECTION_INVALID');
-            const files = new Set(), directories = new Set(), labels = [];
+            const files = new Set(), directories = new Set(), mounted = new Set(), labels = [];
             for (const selected of selections) {
-                if (selected?.kind === 'directory') {
+                if(selected?.kind==='collaboration_mount'){const target=selectedTarget(scope,store,selected);mounted.add(target.id);labels.push(target.label);}
+                else if (selected?.kind === 'directory') {
                     const folder = normalizeTelegramDrivePath(selected.path || '');
                     const target = folder && store.getDirectory(scope.userId, folder);
                     if (!target || ['blocked','deleted'].includes(target.reviewStatus)) throw new Error('DIRECTORY_NOT_FOUND');
@@ -83,14 +89,14 @@ function createDiskStaticResources({ dataDir }) {
             }
             const expiresAt = expiration(input);
             const item = { id: crypto.randomUUID(), ownerId: scope.userId, diskSpace: scope.diskSpace,
-                files: [...files], directories: [...directories], labels, createdAt: Date.now(), expiresAt,
+                files: [...files], directories: [...directories], mounts:[...mounted], labels, createdAt: Date.now(), expiresAt,
                 cacheSeconds: expiresAt ? Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)) : 31536000, revokedAt: 0 };
             records.push(item); save(); return view(item);
         },
         list(scope) { reload(); return records.filter(item => item.ownerId === scope.userId && item.diskSpace === scope.diskSpace).map(view); },
         forTarget(scope, selected) {
             reload();
-            return records.filter(item => matchesScope(item, scope) && (selected.kind === 'file'
+            return records.filter(item => matchesScope(item, scope) && (selected.kind==='collaboration_mount'?(item.mounts||[]).includes(selected.id):selected.kind === 'file'
                 ? item.files.includes(selected.id) : item.directories.includes(normalizeTelegramDrivePath(selected.path || '')))).map(view);
         },
         configureTarget(scope, store, input) {
@@ -99,7 +105,7 @@ function createDiskStaticResources({ dataDir }) {
             reload();
             for (const item of records) if (matchesScope(item, scope)) removeTarget(item, target);
             const item = { id: crypto.randomUUID(), ownerId: scope.userId, diskSpace: scope.diskSpace,
-                files: target.kind === 'file' ? [target.id] : [], directories: target.kind === 'directory' ? [target.id] : [],
+                files: target.kind === 'file' ? [target.id] : [], directories: target.kind === 'directory' ? [target.id] : [], mounts:target.kind==='mount'?[target.id]:[],
                 labels: [target.label], createdAt: Date.now(), expiresAt,
                 cacheSeconds: expiresAt ? Math.max(1, Math.floor((expiresAt - Date.now()) / 1000)) : 31536000, revokedAt: 0 };
             records.push(item); save(); return view(item);
@@ -169,6 +175,7 @@ function createDiskStaticResources({ dataDir }) {
             return item;
         },
         file(item, store, requestedPath) {
+            if(requestedPath.startsWith('mount/')){const [,mountId,...parts]=requestedPath.split('/');if(!(item.mounts||[]).includes(mountId))throw new Error('FILE_NOT_FOUND');const ns=mountedNamespace.resolve(item.ownerId,item.diskSpace,mountId),relative=parts.join('/');if(!relative||normalizeTelegramDrivePath(relative)!==relative)throw new Error('FILE_NOT_FOUND');if(ns.grant.kind==='file'){const f=ns.file(ns.grant.fileId);if(relative!==f.name)throw new Error('FILE_NOT_FOUND');return f;}const folder=[ns.root,parts.slice(0,-1).join('/')].filter(Boolean).join('/');ns.directory(folder);const file=ns.drive.list(ns.grant.ownerId,folder).files.find(f=>f.name===parts.at(-1));if(!file)throw new Error('FILE_NOT_FOUND');return ns.file(file.id);}
             const safe = normalizeTelegramDrivePath(requestedPath || '');
             if (!safe || requestedPath !== safe) throw new Error('FILE_NOT_FOUND');
             const name = safe.split('/').at(-1), folderPath = safe.split('/').slice(0, -1).join('/');

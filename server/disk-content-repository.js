@@ -81,7 +81,7 @@ function assertCrossScopeCopy(db, proof, file, scope) {
     if (!actorId || !source || !target || !['native', 'collaboration'].includes(source.kind)
         || !['native', 'collaboration'].includes(target.kind)
         || source.kind === 'native' && target.kind === 'native'
-        || source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)
+)
         throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', source?.kind==='native' && target?.kind==='native' ? 'NATIVE_PAIR'
             : source?.kind==='collaboration' && target?.kind==='collaboration' && source.id===target.id ? 'SAME_COLLABORATION' : 'REQUEST_SCOPE_INVALID');
     const sourceOwner = String(source.ownerId || ''), sourceSpace = String(source.diskSpace ?? ''),
@@ -95,7 +95,8 @@ function assertCrossScopeCopy(db, proof, file, scope) {
         .get(sourceSpace, String(source.fileId || ''));
     const sourceRef = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?')
         .get(sourceSpace, String(source.fileId || ''));
-    const sourceStatus = sourceRow && JSON.parse(sourceRow.payload).reviewStatus;
+    const sourcePayload=sourceRow&&JSON.parse(sourceRow.payload);
+    const sourceStatus = sourcePayload?.trashId?'deleted':sourcePayload?.reviewStatus;
     if (!sourceRow || sourceRow.owner_id !== sourceOwner || sourceRef?.content_id !== file.contentId
         || sourceStatus && sourceStatus !== 'active')
         throw diskOperationError('CONTENT_COPY_SOURCE_INVALID',!sourceRow || sourceRow.owner_id!==sourceOwner || sourceStatus&&sourceStatus!=='active' ? 'SOURCE_UNAVAILABLE' : !sourceRef ? 'CONTENT_REFERENCE_MISSING' : 'SOURCE_REFERENCE_CHANGED');
@@ -358,7 +359,14 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
             if (!source || source.owner_id !== grant.sourceOwnerId || source.owner_id === file.ownerId
                 || sourceRef?.content_id !== file.contentId || ['blocked','deleted'].includes(JSON.parse(source.payload).reviewStatus))
                 throw new Error('CONTENT_COPY_SOURCE_INVALID');
-            if (grant.kind === 'share') {
+            if(grant.kind==='mounted-share'){
+                const row=db.prepare("SELECT payload FROM disk_shares WHERE scope='' AND id=?").get(grant.id),share=row&&JSON.parse(row.payload);
+                const mountRow=share?.mounted&&db.prepare("SELECT payload FROM disk_collaboration_mounts WHERE scope='' AND id=?").get(share.mounted.mountId),mount=mountRow&&JSON.parse(mountRow.payload);
+                if(!share||share.stoppedAt||share.token!==grant.token||!share.files.some(f=>f.id===grant.sourceFileId)||!mount||mount.ownerId!==share.ownerId||mount.diskSpace!==share.diskSpace||mount.collaborationId!==share.mounted.collaborationId)throw new Error('SHARE_NOT_FOUND');
+                const collabRow=db.prepare("SELECT payload FROM disk_collaborations WHERE scope='' AND id=?").get(mount.collaborationId),collab=collabRow&&JSON.parse(collabRow.payload);
+                if(!collab)throw new Error('COLLABORATION_NOT_FOUND');
+                assertCopyGrant(db,{id:collab.id,version:collab.memberVersions?.[share.ownerId]||1},share.ownerId,grant.sourceOwnerId,grant.sourceSpace,{fileId:grant.sourceFileId,folderPath:source.folder_path});
+            }else if (grant.kind === 'share') {
                 const row = db.prepare("SELECT payload FROM disk_shares WHERE scope='' AND id=?").get(grant.id);
                 const share = row && JSON.parse(row.payload);
                 if (!share || share.stoppedAt || share.token !== grant.token || share.ownerId !== grant.sourceOwnerId

@@ -397,3 +397,14 @@ Content-Type: application/json
 - 服务端上传日志同时写 console 和 `.tunnel-data/disk-upload.log`，单文件达到约 10 MiB 时轮换为 `.1`。按 `uploadId`、`operationId`、逻辑 `fileId` 检索；批次附带每个分片的文件 ID、序号、总数和大小。不记录 Bot Token、Cookie、完整 Bot URL、文件正文或分享令牌。
 - `browser.receive-*` 记录 Content-Range、Content-Length、收到字节、耗时及 10 秒心跳；`upload.handoff` 表示浏览器全部字节已提交，Telegram 消费可在此前开始。`telegram.request/headers/response` 记录方法、请求大小、响应状态、重试次数和耗时；流式请求每 10 秒产生 `telegram.request-progress`，记录 `sentBodyBytes`（含 multipart 的连接发送量）、`sentFileBytes`（仅文件）、`idleMs`（距上次发送的毫秒数）、`waitingForResponse` 和 requestId / operationId。没有可用发送事件或文件字节范围时 sentFileBytes 为 null，不虚构进度。`telegram.request-body-produced` 只表示本地已生成请求体，`telegram.pipeline-part-confirmed` 才表示合法分片消息已经确认。`telegram.network-error` 同时保留失败阶段、底层 code/causeCode/syscall 及发送快照；`telegram.thumbnail-skipped` 表示可选封面失败。`telegram.cleanup-*` 记录失败后半成品清理结果。
 - 请求体进度不是 Telegram 持久化确认。网络失败时不盲目重发非幂等上传；明确 413 时拆小批次、明确 429 时有限重试的既有策略保持不变。
+## 协同挂载与目录限制补充（261009）
+
+- 网盘目录硬上限为 **30 层**，按真实目录计算，不包含文件名；个人账号可以设置更低上限。既有深层目录仍可读取。创建、上传、复制/移动及还原使用目标所有者的有效限制。
+- 列表中的 `mounts` 是本地协同挂载指针，不是本用户的原生目录。第三方 API 对挂载及内部内容一律只读，即使协同角色为 editor，也不能上传、覆盖、重命名、移动、删除或递归删除其父目录。
+- 可使用 `/list?path={本地挂载路径}` 读取目录挂载根或子目录；也可在原 API 前缀后使用 `/mount-scope/{mountId}/list?path={真实授权目录}`、`/mount-scope/{mountId}/files/{fileId}`、其 `/stream`、`/download`、`/properties` 等读取接口。继续携带本调用者的认证、用户和本地分区参数，不把身份改为来源所有者。单文件挂载通过文件接口读取。
+- 未授权、撤权、已移出协同范围或已删除的来源不能继续读取。写入挂载范围（包含不存在的子路径和批量目标）返回 `MOUNT_READ_ONLY`；普通原生资源仍保持原有 API 写入能力。
+- 文件公共输出增加不透明 `cacheIdentity`。缓存应同时检查它与 `logicalContentVersion`，避免文件写时复制后继续使用旧正文；此字段不是公开内容哈希。
+
+浏览器专用功能（不属于第三方 API 的挂载写入口）：`GET/PATCH /api/telegram/drive/settings` 管理跨分区个人限制，默认 `folderUploadMaxBytes=500000000`（十进制 500MB）、`maxDirectoryDepth=30`；`POST /folder-uploads` 保存完整目录上传清单并创建空目录，后续 `/uploads` 通过 `metadata.folderUploadId` 按最多 100 文件一批提交，`GET /folder-uploads/{id}` 查询分批结果。目录整体不承诺原子回滚，已成功批次保留，中断可重新选择同批来源继续未完成文件。
+
+浏览器编辑接口 `POST /files/content?folderPath=…&name=…`、`PUT /files/{id}/content` 接收原始正文，头部使用 `X-Disk-File-Size`、`X-Disk-File-Type`；编辑现有文件还必须提交 `X-Disk-Expected-Version`。在线编辑最大 20MB，返回任务 ID 后等待完成；新正文按写时复制切换当前逻辑文件引用，不修改其它引用的正文，并拒绝并发版本冲突。

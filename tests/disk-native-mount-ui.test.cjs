@@ -22,6 +22,7 @@ function fixture() {
             raw:async (route, options) => {
                 reads.push(route);
                 if (options?.method === 'POST') writes.push({ route, body:JSON.parse(options.body) });
+                if(route==='/files/file-9')return {id:'file-9'};
                 if (route === '/collaborations') return { collaborations:[target] };
                 if (route === '/collaborations/collab-target') return { collaboration:target };
                 if (route === '/mounts/mount-a/resolve') return { mount:{ id:'mount-a', collaborationId:'collab-target', status:'active' } };
@@ -36,9 +37,13 @@ function fixture() {
         DiskDirectoryPicker:{ choose:async options => { pickerOptions.push(options); return '授权根/子目录'; } },
         DiskMountUI:{ open:(mount, options) => { opened.push({ mount, options }); } }
     };
-    const context = vm.createContext({ window, document:{ createElement:() => ({ append() {}, setAttribute() {} }), createTextNode:value => value },
+    const context = vm.createContext({ telegramDriveMountContext:null, window, document:{ createElement:() => ({ append() {}, setAttribute() {} }), createTextNode:value => value },
         telegramDriveSpaces:[{ id:'partition-a', scopeKey:'scope-a' }],
         openTelegramDriveDialog:async () => 'collab-target', confirmTelegramDriveAction:async () => true,
+        openTelegramDriveMount:async(mount)=>opened.push({mount,options:{}}),
+        navigateTelegramDrive:async path=>opened.at(-1).options.path=path,
+        openDiskPreview:async file=>opened.at(-1).options.fileId=file.id,
+        highlightTelegramDriveSearchItem:async()=>{},
         openDiskCollaborationFrame:() => {},
         showAppToast:() => {}, telegramDriveErrorText:error => error.message, alert:message => errors.push(message),
         setTimeout, encodeURIComponent });
@@ -53,9 +58,9 @@ function fixture() {
 test('mounted search result re-resolves grant and opens exact directory/file focus', async () => {
     const page = fixture();
     await page.invoke('openTelegramDriveMountedSearchResult({origin:"collaboration", mountId:"mount-a", collaborationId:"collab-target", kind:"mounted_file", id:"file-9", folderPath:"授权根/子目录"})');
-    assert.deepEqual(page.reads, ['/mounts/mount-a/resolve']);
+    assert.deepEqual(page.reads, ['/mounts/mount-a/resolve','/files/file-9']);
     assert.deepEqual(JSON.parse(JSON.stringify(page.opened[0].options)), { path:'授权根/子目录', fileId:'file-9' });
-    assert.equal(typeof page.opened[0].options.openFrame, 'function');
+    assert.equal(page.opened[0].options.openFrame, undefined);
     await assert.rejects(page.invoke('openTelegramDriveMountedSearchResult({origin:"collaboration", mountId:"mount-a", collaborationId:"stale", kind:"mounted_directory", path:"授权根"})'), /已过期/);
     assert.equal(page.opened.length, 1);
 });

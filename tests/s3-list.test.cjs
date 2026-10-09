@@ -32,7 +32,7 @@ test('FolderSync 风格 ListObjects V1 支持无 list-type 的列表与 marker �
 test('S3 Key 无法无损映射时明确拒绝，Range 仅返回指定字节', () => {
     assert.equal(objectKey('中 文/かな/# + %.txt').name, '# + %.txt');
     assert.equal(objectKey('a/' + 'x'.repeat(150)).name.length, 150);
-    for (const key of ['a//b', 'a/../b', ' a.txt', 'a\\b', 'a:<b', 'a/'.repeat(22) + 'x']) assert.throws(() => objectKey(key), /InvalidObjectName/);
+    for (const key of ['a//b', 'a/../b', ' a.txt', 'a\\b', 'a:<b', 'a/'.repeat(62) + 'x']) assert.throws(() => objectKey(key), /InvalidObjectName/);
     assert.deepEqual(parseByteRange('bytes=-3', 10), { start: 7, end: 9, partial: true });
     assert.deepEqual(parseByteRange('bytes=8-', 10), { start: 8, end: 9, partial: true });
     assert.throws(() => parseByteRange('bytes=10-', 10), /InvalidRange/);

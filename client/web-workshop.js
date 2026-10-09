@@ -47,7 +47,7 @@
     }
     function setEditorSaveStatus(text,state=''){if(!editorSession?.status)return;editorSession.status.textContent=text;editorSession.status.dataset.state=state;}
     function commitEditorBuffer(draft=activeDraft){const session=editorSession;if(!draft||!session||session.draft!==draft||!session.textarea)return false;const value=session.textarea.value;if(value===session.value)return false;updateTextEntry(draft.files,session.path,value);session.value=value;draftRevisions.set(draft.id,(draftRevisions.get(draft.id)||0)+1);setEditorSaveStatus('有未保存修改','dirty');return true;}
-    function saveDraft(draft){if(!draft)return Promise.resolve(null);commitEditorBuffer(draft);const task=saveChain.catch(()=>{}).then(async()=>{commitEditorBuffer(draft);const revision=draftRevisions.get(draft.id)||0;draft.files=normalizeEntries(draft.files,{allowIdenticalDirectory:true});const snapshotFiles=draft.files.map(entry=>({...entry,data:bytes(entry.data).slice()})),snapshot={...draft,files:snapshotFiles,updatedAt:Date.now()};if(editorSession?.draft===draft)setEditorSaveStatus('正在保存…','saving');snapshot.archive=await pack(snapshotFiles);await put('drafts',snapshot);savedRevisions.set(draft.id,revision);if((draftRevisions.get(draft.id)||0)===revision){draft.updatedAt=snapshot.updatedAt;draft.archive=snapshot.archive;if(editorSession?.draft===draft)setEditorSaveStatus('已保存','saved');}else scheduleSave(draft);return{draft,revision,archive:snapshot.archive};});saveChain=task;return task;}
+    function saveDraft(draft){const signal=arguments[1]?.signal;if(!draft)return Promise.resolve(null);commitEditorBuffer(draft);const task=saveChain.catch(()=>{}).then(async()=>{signal?.throwIfAborted();commitEditorBuffer(draft);const revision=draftRevisions.get(draft.id)||0;draft.files=normalizeEntries(draft.files,{allowIdenticalDirectory:true});const snapshotFiles=draft.files.map(entry=>({...entry,data:bytes(entry.data).slice()})),snapshot={...draft,files:snapshotFiles,updatedAt:Date.now()};if(editorSession?.draft===draft)setEditorSaveStatus('正在保存…','saving');snapshot.archive=await pack(snapshotFiles);signal?.throwIfAborted();if(signal)await putImportedDraft(snapshot,signal);else await put('drafts',snapshot);savedRevisions.set(draft.id,revision);if((draftRevisions.get(draft.id)||0)===revision){draft.updatedAt=snapshot.updatedAt;draft.archive=snapshot.archive;if(editorSession?.draft===draft)setEditorSaveStatus('已保存','saved');}else scheduleSave(draft);return{draft,revision,archive:snapshot.archive};});saveChain=task;return task;}
     function scheduleSave(draft=activeDraft){clearTimeout(saveTimer);if(!draft)return;saveTimer=setTimeout(()=>saveDraft(draft).catch(error=>{setEditorSaveStatus('保存失败','error');showError(error);}),350);}
     async function flushEditorDraft(draft=activeDraft){clearTimeout(saveTimer);if(!draft)return null;commitPackageName(draft);commitEditorBuffer(draft);let saved;do{clearTimeout(saveTimer);saved=await saveDraft(draft);}while((draftRevisions.get(draft.id)||0)!==saved.revision);draft.archive=saved.archive;return saved;}
     function createDraftCopy(draft,name){
@@ -92,15 +92,27 @@
     async function renderHome(){await flushEditorDraft();editorSession=null;revokePreviewUrls();activeDraft=null;await cleanupSandboxes();const drafts=(await all('drafts')).sort((a,b)=>b.updatedAt-a.updatedAt);content.innerHTML=`<div class="web-workshop-toolbar"><button type="button" data-web-create>＋ 创建网页</button><label class="web-workshop-import">导入 .html.zip<input type="file" accept=".html.zip,application/zip" hidden></label></div><div class="web-draft-grid">${drafts.length?drafts.map(draft=>`<article data-draft-id="${draft.id}"><div class="web-draft-title"><strong>${escapeHtml(draft.name)}</strong>${draft.sourceMessageId?`<button type="button" data-action="source" title="跳转到来源传输记录">🔗 原记录</button>`:``}</div><small>${new Date(draft.updatedAt).toLocaleString()} · ${(draft.files||[]).filter(item=>!isDirectory(item)).length} 个文件</small><div><button data-action="rename">改名</button><button data-action="edit">编辑</button><button data-action="preview">预览</button><button data-action="publish">发布</button><button data-action="delete">删除</button></div></article>`).join(''):'<p class="web-workshop-empty">草稿箱为空。创建网页后，所有修改会先保存在本机草稿缓存中。</p>'}</div>`;content.querySelector('[data-web-create]').onclick=()=>createDraft().catch(showError);content.querySelector('input[type=file]').onchange=async event=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;try{const entries=await global.FolderArchive.extractZip(file);await createDraft({name:file.name,files:entries.map(entry=>({...entry,type:guessType(entry.path)}))});}catch(error){showError(error);}};content.querySelector('.web-draft-grid').onclick=async event=>{const card=event.target.closest('[data-draft-id]'),action=event.target.dataset.action;if(!card||!action)return;const draft=await get('drafts',card.dataset.draftId);if(!draft)return;try{draft.files=normalizeEntries(draft.files,{allowIdenticalDirectory:true});if(action==='source'){focusSourceRecord(draft.sourceMessageId);return;}if(action==='rename'){const name=prompt('草稿名称',draft.name);if(name){draft.name=safeName(name);await saveDraft(draft);await renderHome();}return;}if(action==='edit'){expandedPaths=new Set();renderEditor(draft);}if(action==='preview')await renderPreview(draft.files,draft.name,()=>renderEditor(draft));if(action==='publish')await publishDraft(draft,event.target);if(action==='delete'&&confirm(`确定删除草稿“${draft.name}”吗？`)){await remove('drafts',draft.id);renderHome();}}catch(error){showError(error);}};}
     const isText=entry=>!isDirectory(entry)&&(String(entry.type||'').startsWith('text/')||textExtensions.test(entry.path));
     let importMenuCleanup=null;
+    async function putImportedDraft(snapshot,signal){
+        const db=await openDb();signal.throwIfAborted();
+        await new Promise((resolve,reject)=>{
+            const tx=db.transaction('drafts','readwrite');
+            const abort=()=>tx.abort(),cleanup=()=>signal.removeEventListener('abort',abort);
+            signal.addEventListener('abort',abort,{once:true});
+            tx.oncomplete=()=>{cleanup();resolve();};
+            tx.onerror=tx.onabort=()=>{cleanup();reject(tx.error||new DOMException('导入已取消','AbortError'));};
+            tx.objectStore('drafts').put(snapshot);
+        });
+    }
     async function importDiskResources(draft,selected){
         const destination=selected&&isDirectory(selected)?selected.path:(selected?parentPath(selected.path):'');
         const validate=entries=>prepareExternalImport(entries.map(entry=>({path:entry.path,directory:entry.type==='application/x-directory',file:{size:entry.size||0}})),destination,draft.files);
-        const entries=await global.DiskImportPicker.choose({destination,validate});
+        const entries=await global.DiskImportPicker.choose({destination,validate,onImport:async(entries,signal)=>{
+            await flushEditorDraft(draft);signal.throwIfAborted();validate(entries);
+            const previous=draft.files,archive=draft.archive,updatedAt=draft.updatedAt;
+            try{draft.files=normalizeEntries([...previous,...entries.map(entry=>({path:destination+entry.path,type:entry.type||guessType(entry.path),data:bytes(entry.data)}))]);await saveDraft(draft,{signal});}
+            catch(error){draft.files=previous;draft.archive=archive;draft.updatedAt=updatedAt;throw error;}
+        }});
         if(!entries)return '';
-        commitEditorBuffer(draft);validate(entries);
-        const previous=draft.files;
-        try{draft.files=normalizeEntries([...previous,...entries.map(entry=>({path:destination+entry.path,type:entry.type||guessType(entry.path),data:bytes(entry.data)}))]);await saveDraft(draft);}
-        catch(error){draft.files=previous;throw error;}
         for(const entry of entries)if(entry.type==='application/x-directory')expandedPaths.add(destination+entry.path);
         return destination+(entries.find(entry=>entry.type!=='application/x-directory')?.path||entries[0]?.path||'');
     }

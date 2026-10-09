@@ -383,7 +383,7 @@ function normalizeTelegramBotConfig(config = {}) {
         songShareChannels,
         driveChannels,
         activeDriveChannelId: driveChannels.some(item => item.id === activeDriveChannelId) ? activeDriveChannelId : (driveChannels[0]?.id || ''),
-        driveMaxFolderDepth: Math.max(1, Math.min(20, Number(config.driveMaxFolderDepth || 20))),
+        driveMaxFolderDepth: 30,
         botApiBaseUrl: /^https?:\/\//i.test(botApiBaseUrl) ? botApiBaseUrl : '',
         oidcClientId: /^\d+$/.test(oidcClientId) ? oidcClientId : '',
         oidcClientSecret
@@ -2071,7 +2071,7 @@ app.get('/api/telegram/config', adminAuth.requireAuth, (req, res) => {
         songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' },
         driveChannels: config.driveChannels || [],
         activeDriveChannelId: config.activeDriveChannelId || '',
-        driveMaxFolderDepth: config.driveMaxFolderDepth || 20,
+        driveMaxFolderDepth: config.driveMaxFolderDepth || 30,
         botApiBaseUrl: config.botApiBaseUrl || '',
         oidcClientId: config.oidcClientId || '',
         oidcClientSecretConfigured: Boolean(config.oidcClientSecret),
@@ -2197,7 +2197,7 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             },
             driveChannels: req.body?.driveChannels ?? currentConfig.driveChannels ?? [],
             activeDriveChannelId: req.body?.activeDriveChannelId ?? currentConfig.activeDriveChannelId ?? '',
-            driveMaxFolderDepth: req.body?.driveMaxFolderDepth ?? currentConfig.driveMaxFolderDepth ?? 20,
+            driveMaxFolderDepth: req.body?.driveMaxFolderDepth ?? currentConfig.driveMaxFolderDepth ?? 30,
             botApiBaseUrl: req.body?.botApiBaseUrl ?? currentConfig.botApiBaseUrl ?? '',
             oidcClientId: requestedOidcClientId,
             oidcClientSecret
@@ -2215,7 +2215,7 @@ app.post('/api/telegram/config', adminAuth.requireAuth, async (req, res) => {
             webhookUnchanged: true,
             songShareChannels: config.songShareChannels || { base: '', pro: '', ultimate: '' },
             driveChannels: config.driveChannels || [], activeDriveChannelId: config.activeDriveChannelId || '',
-            driveMaxFolderDepth: config.driveMaxFolderDepth || 20, botApiBaseUrl: config.botApiBaseUrl || '',
+            driveMaxFolderDepth: config.driveMaxFolderDepth || 30, botApiBaseUrl: config.botApiBaseUrl || '',
             oidcClientId: config.oidcClientId || '', oidcClientSecretConfigured: Boolean(config.oidcClientSecret),
             oidcConfigured: isTelegramOidcConfigured(config), oidcRedirectUri: getTelegramOidcRedirectUri(req),
             oidcMockEnabled: isTelegramOidcMockRequest(req)

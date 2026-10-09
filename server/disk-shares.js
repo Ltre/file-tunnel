@@ -5,6 +5,7 @@ const { normalizeTelegramDrivePath } = require('./telegram-drive');
 
 // Capability links expose a snapshot of selected IDs, never a user-supplied owner/path.
 function createDiskShares({ dataDir, now = Date.now }) {
+    let mountedNamespace;
     const repository = openDiskRepository(dataDir);
     let state = repository.loadWithRevision('shares');
     const records = state.items;
@@ -19,6 +20,20 @@ function createDiskShares({ dataDir, now = Date.now }) {
     const owns = (item, scope) => item.ownerId === scope.userId && item.diskSpace === scope.diskSpace;
     const view = item => ({ id: item.id, url: '/disk-share/' + item.token, title: item.title, createdAt: item.createdAt, stoppedAt: item.stoppedAt, fileCount: item.files.length, directoryCount: item.directories.length });
     return {
+        setMountedNamespace(value){mountedNamespace=value;},
+        createMounted(scope,mountId,selections){
+            if(!Array.isArray(selections)||!selections.length||selections.length>100)throw new Error('SHARE_SELECTION_INVALID');
+            const ns=mountedNamespace.resolve(scope.userId,scope.diskSpace,mountId),files=new Map(),directories=new Map(),names=[];
+            for(const selection of selections){
+                if(selection.kind==='directory'){const dir=ns.directory(selection.path);const tree=ns.drive.getDirectoryTree(ns.grant.ownerId,dir.path),parent=dir.path.split('/').slice(0,-1).join('/');names.push(dir.name);
+                    for(const d of tree.directories){ns.directory(d.path);const path=parent?d.path.slice(parent.length+1):d.path;if(directories.has(path)&&directories.get(path).sourcePath!==d.path)throw new Error('SHARE_SELECTION_INVALID');directories.set(path,{path,sourcePath:d.path,createdAt:d.createdAt});}
+                    for(const f of tree.files){ns.file(f.id);files.set(f.id,{id:f.id,name:f.name,folderPath:parent?f.folderPath.slice(parent.length+1):f.folderPath});}
+                }else{const f=ns.file(selection.id);names.push(f.name);files.set(f.id,{id:f.id,name:f.name,folderPath:''});}
+            }
+            if(files.size>10000||directories.size>10000)throw new Error('SHARE_TOO_LARGE');
+            const item={id:crypto.randomUUID(),token:crypto.randomBytes(32).toString('base64url'),ownerId:scope.userId,diskSpace:scope.diskSpace,title:names.join('、'),createdAt:now(),stoppedAt:0,files:[...files.values()],directories:[...directories.keys()],mounted:{mountId,collaborationId:ns.grant.id,directories:[...directories.values()]}};
+            reloadPersistence();records.push(item);save();return view(item);
+        },
         reloadPersistence,
         create(scope, store, selections) {
             if (!Array.isArray(selections) || !selections.length || selections.length > 100) throw new Error('SHARE_SELECTION_INVALID');
@@ -63,6 +78,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
             return item;
         },
         contents(item, store, folderPath = '') {
+            if(item.mounted){const ns=mountedNamespace.resolve(item.ownerId,item.diskSpace,item.mounted.mountId);if(ns.grant.id!==item.mounted.collaborationId)throw new Error('SHARE_NOT_FOUND');for(const d of item.mounted.directories){const actual=ns.directory(d.sourcePath);if(actual.createdAt!==d.createdAt)throw new Error('SHARE_NOT_FOUND');}store={get:(_owner,id)=>{try{return ns.file(id);}catch(_){return null;}}};}
             const safe = normalizeTelegramDrivePath(folderPath);
             if (safe && !item.directories.includes(safe)) throw new Error('DIRECTORY_NOT_FOUND');
             const parent = value => value.split('/').slice(0, -1).join('/');
@@ -75,6 +91,7 @@ function createDiskShares({ dataDir, now = Date.now }) {
         },
         file(item, store, id) {
             if (!item.files.some(file => file.id === id)) throw new Error('FILE_NOT_FOUND');
+            if(item.mounted){const ns=mountedNamespace.resolve(item.ownerId,item.diskSpace,item.mounted.mountId);if(ns.grant.id!==item.mounted.collaborationId)throw new Error('SHARE_NOT_FOUND');return ns.file(id);}
             const file = store.get(item.ownerId, id);
             if (!file || ['blocked', 'deleted'].includes(file.reviewStatus)) throw new Error('FILE_NOT_FOUND');
             return file;

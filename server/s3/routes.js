@@ -8,6 +8,7 @@ const { esc, tag, document, errorDocument, deleteRequest } = require('./xml');
 const { createS3Credentials } = require('./credentials');
 
 const MESSAGES = {
+    MOUNT_READ_ONLY:'Mounted collaborations are read-only for S3. Use the Web drive for authorized changes.',
     NoSuchBucket: 'The specified bucket does not exist.', NoSuchKey: 'The specified key does not exist.',
     AccessDenied: 'Access denied.', InvalidAccessKeyId: 'The AWS Access Key Id you provided does not exist.',
     SignatureDoesNotMatch: 'The request signature we calculated does not match.', InvalidArgument: 'Invalid argument.',
@@ -21,7 +22,7 @@ const MESSAGES = {
 MESSAGES.OperationAborted = 'A conflicting operation is in progress.';
 MESSAGES.SlowDown = 'Please reduce your request rate.';
 MESSAGES.BadDigest = 'The Content-MD5 you specified did not match what we received.';
-const STATUS = { NoSuchBucket: 404, NoSuchKey: 404, InvalidAccessKeyId: 403, AccessDenied: 403, SignatureDoesNotMatch: 403,
+const STATUS = { MOUNT_READ_ONLY:403, NoSuchBucket: 404, NoSuchKey: 404, InvalidAccessKeyId: 403, AccessDenied: 403, SignatureDoesNotMatch: 403,
     InvalidArgument: 400, InvalidRange: 416, EntityTooLarge: 413, InvalidObjectName: 400, NotImplemented: 501,
     IncompleteBody: 400, XAmzContentSHA256Mismatch: 400, RequestTimeTooSkewed: 403, MalformedXML: 400, OperationAborted: 409, SlowDown: 503, BadDigest: 400 };
 const iso = value => new Date(Number(value) || Date.now()).toISOString();
@@ -182,6 +183,7 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 }
                 throw new Error('NotImplemented');
             }
+            if(!['GET','HEAD'].includes(req.method))objectStorage.assertWritable?.(selected,key,{tree:req.method==='DELETE'});
             if (contentOnly && !['GET', 'HEAD'].includes(req.method)) throw new Error('NotImplemented');
             if (req.method === 'PUT' && req.headers['x-amz-copy-source']) {
                 if (auth.payloadHash !== 'UNSIGNED-PAYLOAD' && auth.payloadHash !== sha256('')) throw new Error('XAmzContentSHA256Mismatch');
@@ -215,7 +217,7 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 const length = range.end - range.start + 1;
                 res.status(range.partial ? 206 : 200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': object.type,
                     'Content-Length': String(Math.max(0, length)), 'ETag': `"${object.etag}"`, 'Last-Modified': new Date(object.updatedAt).toUTCString() });
-                for (const [name, value] of Object.entries(object.kind === 'marker' ? object.directory.s3Marker.metadata || {} : object.file.metadata || {}))
+                for (const [name, value] of Object.entries(object.kind === 'marker' ? object.directory?.s3Marker?.metadata || {} : object.file.metadata || {}))
                     if (name.startsWith('x-amz-meta-') && typeof value === 'string') res.set(name, value);
                 if (range.partial) res.set('Content-Range', `bytes ${range.start}-${range.end}/${object.size}`);
                 if (req.method === 'HEAD') return res.end();

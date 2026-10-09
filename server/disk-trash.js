@@ -1,26 +1,27 @@
 'use strict';
 const crypto=require('node:crypto');
 const {diskOperationError}=require('./disk-errors');
-function createDiskTrash({repository,spaces,mounts,maxDepth,assertWritable=()=>{}}) {
+function createDiskTrash({repository,spaces,mounts,maxDepth,onMountRemoved=()=>{},assertWritable=()=>{}}) {
     const list=(user,space)=>repository.load('trash_items',space).filter(item=>item.ownerId===String(user));
     const save=(space,items)=>repository.replace('trash_items',items,item=>item.id,space);
     function find(user,space,id){const item=list(user,space).find(item=>item.id===id);if(!item)throw new Error('TRASH_NOT_FOUND');return item;}
-    function archive(user,space,selection){
+    function archive(user,space,selection,hooks={}){
         const drive=spaces.get(space);
         return repository.atomic(()=>{
             drive.reloadPersistence();
+            hooks.before?.(drive);
             assertWritable(user,space,selection,drive);
             const root=selection.kind==='directory'?drive.getDirectory(user,selection.path):drive.get(user,selection.id);
             if(!root)throw new Error('FILE_NOT_FOUND');
             if(selection.kind==='directory')drive.assertDirectoryWritable(user,selection.path);
-            const id=crypto.randomUUID(), path=selection.kind==='directory'?root.path:root.folderPath||'';
+            const originalName=root.name || root.path?.split('/').pop(), id=crypto.randomUUID(), path=selection.kind==='directory'?root.path:root.folderPath||'';
             const snapshot=drive.moveToTrash(user,id,selection);
             const savedMounts=selection.kind==='directory'?repository.load('collaboration_mounts').filter(m=>m.ownerId===String(user)&&m.diskSpace===space&&(m.parentPath===path||m.parentPath.startsWith(path+'/'))):[];
-            if(savedMounts.length)mounts.removeTree(user,space,path);
-            const item={id,ownerId:String(user),diskSpace:space,kind:selection.kind,name:root.name||path.split('/').pop(),path,
+            if(savedMounts.length){mounts.removeTree(user,space,path);for(const mount of savedMounts)onMountRemoved(user,space,mount.id);}
+            const item={id,ownerId:String(user),diskSpace:space,kind:selection.kind,name:originalName,path,
                 originalParent:selection.kind==='directory'?path.split('/').slice(0,-1).join('/'):path,
                 deletedAt:Date.now(),snapshot,mounts:savedMounts};
-            save(space,[...repository.load('trash_items',space),item]);return summary(item);
+            save(space,[...repository.load('trash_items',space),item]);const result=summary(item);hooks.after?.(result);return result;
         },()=>{drive.reloadPersistence();mounts.reloadPersistence();});
     }
     function restore(user,space,id){
@@ -44,21 +45,28 @@ function createDiskTrash({repository,spaces,mounts,maxDepth,assertWritable=()=>{
                 mounts.assertNameFree(user,space,file.folderPath||'',file.name);
                 if(file.contentId&&repository.content.resolve(file.contentId)?.state!=='READY')throw new Error('TRASH_CONTENT_UNAVAILABLE');
             }
-            drive.restoreTrash(user,id,snapshot,maxDepth());
+            drive.restoreTrash(user,id,snapshot,maxDepth(user));
             if(item.mounts?.length)mounts.restoreTree(user,space,item.mounts,drive);
             save(space,repository.load('trash_items',space).filter(entry=>entry.id!==id));
-            return {kind:item.kind,path:item.path,parentPath:item.originalParent,folderPath:item.originalParent,id:item.kind==='file'?snapshot.files[0].id:'',name:item.name};
+            return {kind:item.kind,path:item.path,parentPath:item.originalParent,folderPath:item.originalParent,id:item.kind==='file'?snapshot.files[0].id:'',name:summary(item).name};
         },()=>{drive.reloadPersistence();mounts.reloadPersistence();});
     }
     function purge(user,space,id){const drive=spaces.get(space);return repository.atomic(()=>{
         find(user,space,id);drive.reloadPersistence();const ids=drive.purgeTrash(user,id);save(space,repository.load('trash_items',space).filter(item=>item.id!==id));return ids;
     },()=>drive.reloadPersistence());}
-    function summary(item){return {id:item.id,kind:item.kind,name:item.name,path:item.path,originalParent:item.originalParent,deletedAt:item.deletedAt,fileCount:item.snapshot.files.length,size:item.snapshot.files.reduce((n,f)=>n+(Number(f.size)||0),0)};}
+    function summary(item){
+        const original=item.kind==='file'?item.snapshot.files[0]:null;
+        const name=original?.name || (String(item.name||'').startsWith(':recycle:')?'原名称信息缺失':item.name);
+        return {id:item.id,kind:item.kind,name,path:item.path,originalParent:item.originalParent,
+            originalPath:item.kind==='directory'?item.path:[item.originalParent,name].filter(Boolean).join('/'),
+            type:original?.type||'application/x-directory',deletedAt:item.deletedAt,fileCount:item.snapshot.files.length,
+            size:item.snapshot.files.reduce((n,f)=>n+(Number(f.size)||0),0)};
+    }
     function contents(user,space,id,path=''){
         const item=find(user,space,id),root=item.kind==='directory'?item.path:'';
         if(item.kind!=='directory'||path!==root&&!path.startsWith(root+'/'))throw new Error('TRASH_PATH_INVALID');
         if(!item.snapshot.directories.some(d=>d.path===path))throw new Error('DIRECTORY_NOT_FOUND');
-        return {root,path,folders:item.snapshot.directories.filter(d=>d.path!==path&&d.path.split('/').slice(0,-1).join('/')===path).map(d=>({kind:'directory',name:d.path.split('/').pop(),path:d.path})),files:item.snapshot.files.filter(f=>f.folderPath===path).map(f=>({kind:'file',id:f.id,name:f.name,size:f.size,type:f.type}))};
+        return {root,path,deletedAt:item.deletedAt,folders:item.snapshot.directories.filter(d=>d.path!==path&&d.path.split('/').slice(0,-1).join('/')===path).map(d=>({kind:'directory',name:d.path.split('/').pop(),path:d.path,originalPath:d.path,type:'application/x-directory',deletedAt:item.deletedAt,size:item.snapshot.files.filter(f=>f.folderPath===d.path||f.folderPath.startsWith(d.path+'/')).reduce((n,f)=>n+(Number(f.size)||0),0)})),files:item.snapshot.files.filter(f=>f.folderPath===path).map(f=>({kind:'file',id:f.id,name:f.name,size:f.size,type:f.type,originalPath:[f.folderPath,f.name].filter(Boolean).join('/'),deletedAt:item.deletedAt}))};
     }
     return {list:(user,space)=>list(user,space).map(summary),archive,restore,purge,contents};
 }

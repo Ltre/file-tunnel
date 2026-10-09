@@ -2,9 +2,11 @@
 // Browser transport for the standalone drive. The UI and integrations share jobs.
 (function () {
     const base = '/api/telegram/drive';
-    let collaborationId = '';
+    let collaborationId = '', mountId = '';
     let diskSpace = '';
-    const baseUrl = () => collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
+    const baseUrl = () => mountId ? base + '/mount-scope/' + encodeURIComponent(mountId) : collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
+    const transportContext=()=>({requestBase:baseUrl(),diskSpace});
+    const operationContexts=new Map();
     const withSpace = (url, requestSpace = diskSpace) => {
         if (!requestSpace) return url;
         const address = new URL(url, location.origin);
@@ -88,9 +90,9 @@
     }
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const target = withSpace(url.startsWith('/api/') ? url : baseUrl() + url, options.diskSpace ?? diskSpace);
+        const target = withSpace(url.startsWith('/api/') ? url : (/^\/(?:me|spaces|collaborations|mounts|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)?base:(options.requestBase||baseUrl())) + url, options.diskSpace ?? diskSpace);
         if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
-        const { onUploadProgress, diskSpace: requestSpace, ...requestOptions } = options;
+        const { onUploadProgress, diskSpace: requestSpace,requestBase, ...requestOptions } = options;
         let response;
         try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
         catch (error) { error.transportFailure = true; throw error; }
@@ -108,9 +110,9 @@
         if (merged.type === 'upload' && active(merged) && Number.isFinite(merged.telegramBytesSent) && merged.telegramTotalBytes > 0) merged.percent = Math.min(99, merged.telegramBytesSent / merged.telegramTotalBytes * 100);
         return merged;
     }
-    function subscribeUploadProgress(job) {
+    function subscribeUploadProgress(job,context=transportContext()) {
         if (!job.progressive || typeof EventSource !== 'function') return () => {};
-        let stream; try { stream = new EventSource(baseUrl() + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress'); } catch (_) { return () => {}; }
+        let stream; try { stream = new EventSource(withSpace(context.requestBase + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress',context.diskSpace)); } catch (_) { return () => {}; }
         uploadProgressStreams.set(job.operation_id, stream);
         const close = () => { stream.close(); if (uploadProgressStreams.get(job.operation_id) === stream) uploadProgressStreams.delete(job.operation_id); };
         stream.addEventListener('progress', event => {
@@ -140,30 +142,37 @@
         if (!force && Date.now() - lastRefresh < 1800) return;
         const current = generation; lastRefresh = Date.now();
         const requested = new Set(waiting.keys());
-        polling = raw('/operations?ids=' + encodeURIComponent([...requested].join(','))).then(data => {
-            if (current !== generation) return;
-            jobs = data.operations.map(mergeOperation);
-            for (const job of jobs) if (!active(job)) hiddenLoadingOperations.delete(job.operation_id);
-            for (const id of localUploads.keys()) if (jobs.some(job => job.operation_id === id && !active(job))) localUploads.delete(id);
-            for (const [id, handlers] of waiting) {
-                const job = jobs.find(item => item.operation_id === id);
-                // A waiter registered after this request started was not in
-                // its ids query; the server deliberately omits that result.
-                if (!job || active(job) || !requested.has(id)) continue;
+        const contexts=new Map(),view=transportContext();
+        const add=context=>contexts.set(context.requestBase+'?'+context.diskSpace,context);
+        add(view);for(const handlers of waiting.values())add(handlers.context);
+        for(const id of localUploads.keys())if(operationContexts.has(id))add(operationContexts.get(id));
+        polling = Promise.allSettled([...contexts.values()].map(async context=>{
+            const ids=[...requested].filter(id=>{const c=waiting.get(id)?.context;return c?.requestBase===context.requestBase&&c?.diskSpace===context.diskSpace;});
+            const data=await raw('/operations?ids='+encodeURIComponent(ids.join(',')),context);
+            return data.operations||[];
+        })).then(results=>{
+            if(current!==generation)return;
+            jobs=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value).map(mergeOperation);
+            for(const job of jobs)if(!active(job))hiddenLoadingOperations.delete(job.operation_id);
+            for(const id of localUploads.keys())if(jobs.some(j=>j.operation_id===id&&!active(j)))localUploads.delete(id);
+            for(const [id,handlers] of waiting){
+                const job=jobs.find(item=>item.operation_id===id);
+                if(!job||active(job)||!requested.has(id))continue;
                 waiting.delete(id);
-                if (job.status === 'completed') handlers.resolve(job.result);
-                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; error.errorDetails = job.errorDetails; error.userMessage = job.errorMessage; handlers.reject(error); }
+                if(job.status==='completed')handlers.resolve(job.result);
+                else handlers.reject(Object.assign(new Error(job.status==='cancelled'?'OPERATION_CANCELLED':job.errorCode||'DISK_OPERATION_FAILED'),{partialItems:job.result?.partialItems,errorDetails:job.errorDetails,userMessage:job.errorMessage}));
+            }
+            for(const result of results)if(result.status==='rejected'&&result.reason?.message==='LOGIN_REQUIRED'){
+                for(const [id,handlers] of waiting){handlers.reject(result.reason);waiting.delete(id);}break;
             }
             emit();
-        }).catch(error => {
-            if (error.message === 'LOGIN_REQUIRED') stop();
-        }).finally(() => { polling = null; });
+        }).finally(()=>{polling=null;});
         return polling;
     }
-    async function wait(id) {
+    async function wait(id,context=operationContexts.get(id)||transportContext()) {
         enabled = true;
         if (waiting.has(id)) return waiting.get(id).promise;
-        const pending = {};
+        const pending = {context};operationContexts.set(id,context);
         pending.promise = new Promise((resolve, reject) => { pending.resolve = resolve; pending.reject = reject; });
         waiting.set(id, pending);
         if (polling) polling.finally(() => { if (waiting.has(id)) refresh(true); });
@@ -171,13 +180,15 @@
         return pending.promise;
     }
     async function performRequest(url, options, update) {
-        const data = await raw(url, options);
+        const context={...transportContext(),...options};
+        const data = await raw(url, context);
+        if(data.operation_id)operationContexts.set(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace});
         if (data.operation_id) update?.({ operationId: data.operation_id });
         if (data.operation_id && !data.uploadId && data.status === 'completed') {
             refresh(true);
             return data.result;
         }
-        return data.operation_id && !data.uploadId ? wait(data.operation_id) : data;
+        return data.operation_id && !data.uploadId ? wait(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace}) : data;
     }
     function request(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
@@ -196,10 +207,12 @@
     function start() { enabled = true; refresh(); }
     function stop() {
         enabled = false; generation++; jobs = []; localUploads.clear();
+        for(const controller of uploadControllers.values())controller.abort();
+        for(const readers of pendingReads.values())for(const controller of readers)controller.abort();
         for (const stream of uploadProgressStreams.values()) stream.close(); uploadProgressStreams.clear();
         hiddenLoadingOperations.clear(); cacheProgressByFile.clear();
         for (const handlers of waiting.values()) handlers.reject(new Error('LOGIN_REQUIRED'));
-        waiting.clear(); emit();
+        waiting.clear();operationContexts.clear();emit();
     }
     // One batched poll for all jobs; idle home pages do not keep polling every second.
     setInterval(() => {
@@ -211,7 +224,7 @@
             // Also keep failures before the server can create a task (offline/HTTP errors).
             const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null };
             const controller = newAbortController();
-            const current = generation;
+            const current = generation,context=metadata.transportContext||transportContext();operationContexts.set(pending.operation_id,context);
             localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
             try {
                 return await uploadFiles(files, folderPath, read, metadata, values => {
@@ -219,7 +232,7 @@
                     if (values.operationId && values.operationId !== pending.operation_id) {
                         const previousId = pending.operation_id;
                         localUploads.delete(previousId); uploadControllers.delete(previousId);
-                        pending.operation_id = values.operationId; localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
+                        pending.operation_id = values.operationId;operationContexts.set(pending.operation_id,context); localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller);
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
                     for (const key of clientProgressFields) if (values[key] !== undefined) pending[key] = values[key];
@@ -228,7 +241,7 @@
                             if (values[key] !== undefined) pending[key] = values[key];
                     }
                     update(values); emit();
-                }, controller.signal);
+                }, controller.signal,context);
             } catch (error) {
                 if (current === generation && !jobs.some(job => job.operation_id === pending.operation_id && !active(job))) {
                     const cancelled = controller.signal.aborted || error.message === 'OPERATION_CANCELLED';
@@ -302,12 +315,12 @@
             video.removeAttribute('src'); try { video.load(); } catch (_) {} URL.revokeObjectURL(source);
         }
     }
-    async function uploadFiles(files, folderPath, read, metadata, update, userSignal) {
+    async function uploadFiles(files, folderPath, read, metadata, update, userSignal,context) {
         if (!files.length || files.length > 100) throw new Error('DISK_BATCH_LIMIT');
         let signal = userSignal, serverFailure = null;
         const uploadRequest = async (url, options) => {
             if (serverFailure) throw serverFailure;
-            try { return await raw(url, options); }
+            try { return await raw(url, {...options,...context}); }
             catch (error) {
                 if (serverFailure) throw serverFailure;
                 if (!signal.aborted && error.transportFailure) {
@@ -321,7 +334,7 @@
         };
         const plannedPartSize = 20_000_000;
         const plannedFiles = files.map(file => ({
-            name: file.name, type: inferredType(file), size: file.size,
+            name: file.name, type: inferredType(file), size: file.size, ...(file.diskFolderPath!==undefined?{folderPath:file.diskFolderPath}:{}),
             parts: Array.from({ length: Math.max(1, Math.ceil(file.size / plannedPartSize)) }, (_, index) => {
                 const byteStart = index * plannedPartSize, size = Math.min(plannedPartSize, file.size - byteStart);
                 return { index: index + 1, byteStart, byteEnd: byteStart + size - 1, size };
@@ -369,7 +382,7 @@
             if(preflight.status==='proof' && (typeof crypto==='undefined' || typeof crypto.subtle?.digest!=='function')) {
                 // LAN/non-secure browser contexts can lack WebCrypto even with
                 // Worker support. No digest means no reuse authorization.
-                await raw('/content/release',json('POST',{tickets:[preflight.ticket]})).catch(()=>{});
+                await uploadRequest('/content/release',json('POST',{tickets:[preflight.ticket]})).catch(()=>{});
                 preflight={status:'miss'};
             }
             if(preflight.status==='proof') {
@@ -382,9 +395,9 @@
             if(preflight.reuseTicket){file.reuseTicket=preflight.reuseTicket;contentTickets.push(preflight.reuseTicket);}
             if(preflight.uploadTicket){file.uploadTicket=preflight.uploadTicket;contentTickets.push(preflight.uploadTicket);}
         }
-        job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata, files: plannedFiles, progressive: true }), signal));
+        job = await uploadRequest('/uploads', withSignal(json('POST', { folderPath, metadata:Object.fromEntries(Object.entries(metadata).filter(([key])=>key!=='transportContext')), files: plannedFiles, progressive: true }), signal));
         } catch(error) {
-            if(contentTickets.length)await request('/content/release',json('POST',{tickets:[...new Set(contentTickets)]})).catch(()=>{});
+            if(contentTickets.length)await uploadRequest('/content/release',json('POST',{tickets:[...new Set(contentTickets)]})).catch(()=>{});
             throw error;
         }
         const transfer = newAbortController(); signal = transfer.signal;
@@ -402,7 +415,8 @@
             transfer.abort();
         };
         listeners.add(checkTerminal);
-        const closeProgress = subscribeUploadProgress(job);
+        operationContexts.set(job.operation_id,context);
+        const closeProgress = subscribeUploadProgress(job,context);
         const totalBytes = plannedFiles.reduce((sum, file,index) => sum + (job.files?.[index]?.reused ? 0 : Number(file.size)), 0);
         let completedBytes = 0, lastProgressBytes = 0, lastProgressAt = Date.now(), lastPublishedAt = 0, uploadSpeed = 0;
         const reportClientProgress = (index, part, loaded, force = false) => {
@@ -472,10 +486,10 @@
                 completedBytes += blob.size;
                 await thumbnailUpload;
             }
-            const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal }, update);
+            const result = await performRequest('/uploads/' + job.uploadId + '/finish', { method: 'POST', signal,...context }, update);
             // Keep repair copies, even when the uploaded object originated outside this UI.
             for (let index = 0; index < result.items.length; index++) {
-                await window.TelegramDriveCache?.put(result.items[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type,logicalContentVersion:result.items[index].logicalContentVersion || 1 }).catch(() => {});
+                await window.TelegramDriveCache?.put(result.items[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type,cacheIdentity:result.items[index].cacheIdentity,logicalContentVersion:result.items[index].logicalContentVersion || 1 }).catch(() => {});
             }
             return result;
         } catch (error) {
@@ -489,7 +503,7 @@
                     network.errorDetails = { stage: 'browser-upload/finish', method: 'POST', reason: String(error.message || '').slice(0, 200) };
                     error = network;
                 }
-                const failed = await raw('/operations/' + encodeURIComponent(job.operation_id)).catch(() => null);
+                const failed = await raw('/operations/' + encodeURIComponent(job.operation_id),context).catch(() => null);
                 if (failed?.errorCode) {
                     const original = new Error(failed.errorCode);
                     original.errorDetails = failed.errorDetails; original.userMessage = failed.errorMessage;
@@ -500,36 +514,38 @@
             for (let index = 0; index < (error.partialItems?.length || 0); index++) {
                 await window.TelegramDriveCache?.put(error.partialItems[index].id, { blob: blobs[index], name: files[index].name, type: files[index].type,logicalContentVersion:error.partialItems[index].logicalContentVersion || 1 }).catch(() => {});
             }
-            if (cancelled) await raw('/uploads/' + job.uploadId, { method: 'DELETE' }).catch(() => {});
-            else await raw('/uploads/' + job.uploadId + '/failure', json('POST', {
+            if (cancelled) await raw('/uploads/' + job.uploadId, { method: 'DELETE',...context }).catch(() => {});
+            else await raw('/uploads/' + job.uploadId + '/failure', {...context,...json('POST', {
                 errorCode: error.message, reason: error.errorDetails?.reason || error.message,
                 stage: error.errorDetails?.stage, method: error.errorDetails?.method
-            })).catch(() => {});
+            })}).catch(() => {});
             throw error;
         } finally { closeProgress(); listeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
     }
     async function read(item, options = {}) {
+        const context={...transportContext(),...options};
         const controller = newAbortController();
         const signal = options.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' ? AbortSignal.any([options.signal, controller.signal]) : (options.signal || controller.signal);
         let operationId = '';
         if (!pendingReads.has(item.id)) pendingReads.set(item.id, new Set());
         pendingReads.get(item.id).add(controller); cacheChanged();
-        const run = update => readFile(item, { ...options, signal }, values => {
-            if (values.operationId && values.operationId !== operationId) { if (operationId) readControllers.delete(operationId); operationId = values.operationId; readControllers.set(operationId, controller); }
+        const run = update => readFile(item, { ...context, signal }, values => {
+            if (values.operationId && values.operationId !== operationId) { if (operationId) readControllers.delete(operationId); operationId = values.operationId;operationContexts.set(operationId,context); readControllers.set(operationId, controller); }
             if (options.silentLoading && values.operationId) hiddenLoadingOperations.add(values.operationId);
             update(values);
         });
         try { return options.silentLoading ? await run(() => {}) : await withActivity({ message: '正在打开文件：' + item.name, folderPath: item.folderPath || '' }, run); }
         finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
     }
-    async function readFile(item, { signal }, update) {
+    async function readFile(item, { signal,requestBase=baseUrl(),diskSpace:requestSpace=diskSpace }, update) {
+        if(requestBase.includes('/mount-scope/'))await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace});
         const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
         // The server streams Telegram parts as they arrive. Only bytes received
         // by this browser count toward the file badge's 0-100% progress.
         setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
-        const response = await fetch(withSpace(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download'), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
+        const response = await fetch(withSpace(requestBase + '/files/' + encodeURIComponent(item.id) + '/download',requestSpace), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
         const total = Math.max(0, Number(response.headers?.get('Content-Length')) || Number(item.size) || 0);
@@ -546,7 +562,7 @@
             blob = new Blob(chunks, { type: item.type || response.headers?.get('Content-Type') || 'application/octet-stream' });
         } else blob = await response.blob();
         if (Number(item.size) > 0 && blob.size !== Number(item.size)) throw new Error('DISK_READ_SIZE_MISMATCH');
-        await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type,logicalContentVersion:item.logicalContentVersion || 1 }).catch(() => {});
+        await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type,cacheIdentity:item.cacheIdentity,logicalContentVersion:item.logicalContentVersion || 1 }).catch(() => {});
         setCacheProgress(item.id, { phase: 'done', percent: 100 });
         refresh(); return blob;
     }
@@ -575,7 +591,7 @@
     async function cancelOperation(id) {
         uploadControllers.get(id)?.abort();
         readControllers.get(id)?.abort();
-        if (!String(id).startsWith('local-upload-')) await raw('/operations/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (!String(id).startsWith('local-upload-')) await raw('/operations/' + encodeURIComponent(id), { method: 'DELETE',...(operationContexts.get(id)||{}) });
         refresh(true); return true;
     }
     function cancelRead(id) {
@@ -583,11 +599,13 @@
         for (const controller of readers) controller.abort();
         return true;
     }
-    window.DiskClient = { raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
-        setSpace(value) { diskSpace = String(value || ''); stop(); start(); },
+    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+        setSpace(value) { mountId=''; collaborationId=''; diskSpace = String(value || ''); start();if(polling)polling.finally(()=>refresh(true));else refresh(true); },
         getSpace() { return diskSpace; },
         hasActiveOperations() { return visibleJobs().some(active); },
-        setCollaboration(id) { collaborationId = String(id || ''); stop(); start(); },
+        setMount(id) { mountId=String(id||''); collaborationId=''; start();if(polling)polling.finally(()=>refresh(true));else refresh(true); },
+        getMount(){return mountId;},
+        setCollaboration(id) { mountId=''; collaborationId = String(id || ''); start();if(polling)polling.finally(()=>refresh(true));else refresh(true); },
         setAudioCoverExtractor(extractor) { audioCoverExtractor = typeof extractor === 'function' ? extractor : null; },
         isCaching(id) { return pendingReads.has(id); },
         cacheProgress(id) { return cacheProgressByFile.get(id) || null; },

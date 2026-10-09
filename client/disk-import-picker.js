@@ -19,7 +19,7 @@
         const names=new Set();for(const entry of result){if(names.has(entry.path))throw new Error('导入项目之间存在同名路径：'+entry.path);names.add(entry.path);}
         return result;
     }
-    async function choose({validate=()=>{},destination=''}={}){
+    async function choose({validate=()=>{},destination='',onImport}={}){
         const client=global.DiskClient,controller=new AbortController();
         const dialog=document.createElement('dialog');dialog.className='disk-import-picker';
         const header=document.createElement('header'),title=document.createElement('h2');title.textContent='从网盘导入';
@@ -56,7 +56,7 @@
             }
             spaces.onchange=async()=>{space=spaces.value;selected=new Map();loaded=new Map();expanded=new Set(['']);status.textContent='切换分区已清空选择';try{await load();}catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}};
             accept.onclick=async()=>{
-                if(busy||!selected.size)return;busy=true;accept.disabled=true;spaces.disabled=true;render();
+                if(busy||!selected.size)return;busy=true;accept.disabled=true;accept.classList?.add('disk-import-busy');accept.setAttribute('aria-busy','true');accept.textContent='正在导入…';spaces.disabled=true;render();
                 try{
                     const entries=await plan(client,space,[...selected.values()],controller.signal);if(done)return;validate(entries);
                     let received=0;const total=entries.reduce((n,file)=>n+Number(file.size||0),0);
@@ -70,8 +70,9 @@
                         if(size!==Number(file.size))throw new Error('文件未完整读取，未导入草稿。请重试');
                         file.data=new Uint8Array(size);let offset=0;for(const chunk of chunks){file.data.set(chunk,offset);offset+=chunk.length;}
                     }
+                    if(!done&&onImport){status.textContent='正在保存导入内容到草稿…';await onImport(entries,controller.signal);}
                     if(!done)finish(entries);
-                }catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}finally{busy=false;accept.disabled=false;spaces.disabled=false;if(!done)render();}
+                }catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}finally{busy=false;accept.disabled=false;accept.classList?.remove('disk-import-busy');accept.setAttribute('aria-busy','false');accept.textContent='导入所选';spaces.disabled=false;if(!done)render();}
             };
             (async()=>{try{const data=await client.raw('/spaces',{signal:controller.signal});if(done)return;for(const item of data.spaces||[]){const option=document.createElement('option');option.value=item.scopeKey??item.name;option.textContent=item.name;option.disabled=Boolean(item.state&&item.state!=='ACTIVE');spaces.append(option);}spaces.value=space;status.textContent='多选文件或目录；切换分区会清空选择。可随时取消。';await load();}catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}})();
         });

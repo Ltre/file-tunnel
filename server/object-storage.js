@@ -10,7 +10,7 @@ function objectKey(key) {
     if (typeof key !== 'string' || !key || Buffer.byteLength(key, 'utf8') > 1024 || key.startsWith('/') || key.includes('\\') || /[\u0000-\u001f]/.test(key)) throw new Error('InvalidObjectName');
     const folder = key.endsWith('/');
     const value = folder ? key.slice(0, -1) : key;
-    if (!value || value.split('/').length > (folder ? 20 : 21)) throw new Error('InvalidObjectName');
+    if (!value || value.split('/').length > (folder ? 60 : 61)) throw new Error('InvalidObjectName');
     const parts = value.split('/');
     if (parts.some(part => !part || part === '.' || part === '..' || part !== part.trim())) throw new Error('InvalidObjectName');
     const folderPath = parts.slice(0, -1).join('/'), name = parts.at(-1);
@@ -30,12 +30,13 @@ function parseByteRange(header, size) {
     if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) throw new Error('InvalidRange');
     return { start, end: Math.min(end, size - 1), partial: true };
 }
-function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, protectDirectory = () => false, maxDepth = () => 20 }) {
+function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, protectDirectory = () => false, maxDepth = () => 30, mountedNamespace }) {
     const scopeOf = mapping => ({ userId: String(mapping.userId), diskSpace: String(mapping.diskSpace || '') });
     const storeOf = mapping => spaces.get(scopeOf(mapping).diskSpace);
     const backendOf = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
     const uploadBackend = mapping => mapping.backendId ? auth.backend(mapping.backendId) : getDefaultBackend();
     function stat(mapping, key) {
+        const mounted = mountedNamespace?.object(mapping,key); if(mounted)return mounted;
         const info = objectKey(key), store = storeOf(mapping), userId = scopeOf(mapping).userId;
         if (info.folder) {
             const directory = store.listDirectories(userId).find(item => item.path === info.path && item.s3Marker);
@@ -52,14 +53,20 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         const directories = store.listDirectories(ownerId);
         const markers = directories.filter(item => item.s3Marker).map(item => ({ kind: 'marker', key: item.path + '/', size: 0, type: 'application/x-directory', updatedAt: item.s3Marker.updatedAt || item.updatedAt, etag: item.s3Marker.metadata?.s3ETag || crypto.createHash('md5').update('').digest('hex'), directory: item }));
         const virtual = directories.filter(item => !item.s3Marker).map(item => ({ kind: 'virtual-directory', key: item.path + '/', size: 0 }));
-        return [...files, ...markers, ...virtual].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+        return [...files, ...markers, ...virtual,...(mountedNamespace?.objects(mapping)||[])].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
     }
     async function open(mapping, key, rangeHeader, signal) {
         const object = stat(mapping, key);
         if (!object) throw new Error('NoSuchKey');
         const range = parseByteRange(rangeHeader, object.size);
         if (!object.size) return { object, range, stream: Readable.from([]) };
-        const stream = await openFile(backendOf(object.file), object.file, range.start, range.end, signal, scopeOf(mapping).diskSpace);
+        const stream = await openFile(backendOf(object.file), {...object.file,cancelUnusedCacheFill:Boolean(object.mounted)}, range.start, range.end, signal, object.file.sourceDiskSpace??scopeOf(mapping).diskSpace);
+        if(object.mounted) {
+            const validate=()=>{mapping.assertAuthorized?.();mountedNamespace.object(mapping,key);};
+            try{validate();}catch(error){stream.destroy();throw error;}
+            const timer=setInterval(()=>{try{validate();}catch(error){stream.destroy(error);}},1000);
+            timer.unref?.();stream.once('close',()=>clearInterval(timer));stream.once('end',()=>clearInterval(timer));
+        }
         return { object, range, stream };
     }
     const openFile = (backend, file, start, end, signal, diskSpace) => openRange(backend, file, start, end, signal, diskSpace);
@@ -69,6 +76,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
     }
     async function put(mapping, key, input, { size, contentType = 'application/octet-stream', expectedSha256 = '', expectedMd5 = '', metadata = {}, signal } = {}) {
         mapping.assertAuthorized?.();
+        mountedNamespace?.assertWritable(mapping,key);
         const info = objectKey(key), current = stat(mapping, key), store = storeOf(mapping), owner = auth.user(scopeOf(mapping).userId);
         if (!owner) throw new Error('AccessDenied');
         if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_LIMIT) throw new Error('EntityTooLarge');
@@ -82,8 +90,8 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             const s3ETag = crypto.createHash('md5').update('').digest('hex');
             if (expectedMd5 && expectedMd5 !== Buffer.from(s3ETag, 'hex').toString('base64')) throw new Error('BadDigest');
             mapping.assertAuthorized?.();
-            if (info.folder) store.setFolderMarker(owner.id, info.path, { ...metadata, s3ETag }, maxDepth());
-            else store.putMetadataObject(owner, info.folderPath, info.name, contentType, { ...metadata, s3ETag }, maxDepth(), current?.file?.id || '');
+            if (info.folder) store.setFolderMarker(owner.id, info.path, { ...metadata, s3ETag }, maxDepth(scopeOf(mapping)));
+            else store.putMetadataObject(owner, info.folderPath, info.name, contentType, { ...metadata, s3ETag }, maxDepth(scopeOf(mapping)), current?.file?.id || '');
             return cleanupReplaced(mapping, stat(mapping, key));
         }
         if (info.folder) throw new Error('InvalidObjectName');
@@ -91,6 +99,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         return cleanupReplaced(mapping, stat(mapping, key));
     }
     async function deleteFile(mapping, file) {
+        mountedNamespace?.assertWritable(mapping,[file.folderPath,file.name].filter(Boolean).join('/'));
         const store = storeOf(mapping), scope = scopeOf(mapping);
         if (protectFile(scope.userId, scope.diskSpace, file.id)) throw new Error('AccessDenied');
         if(file.contentId) {
@@ -104,6 +113,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         store.remove(scope.userId, file.id);
     }
     async function remove(mapping, key) {
+        mountedNamespace?.assertWritable(mapping,key,{tree:key.endsWith('/')});
         const object = stat(mapping, key);
         if (!object) return;
         const store = storeOf(mapping), scope = scopeOf(mapping);
@@ -112,8 +122,10 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
     }
     async function copy(fromMapping, fromKey, toMapping, toKey) {
         fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.();
+        mountedNamespace?.assertWritable(toMapping,toKey);
         const source = stat(fromMapping, fromKey);
         if (!source) throw new Error('NoSuchKey');
+        if(source.mounted)throw new Error('AccessDenied');
         const target = objectKey(toKey);
         if (source.kind === 'marker') {
             if (!target.folder) throw new Error('InvalidObjectName');
@@ -136,16 +148,16 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             // reference transaction, not a Telegram file_id resend.
             if(scopeOf(fromMapping).userId !== scopeOf(toMapping).userId) throw new Error('AccessDenied');
             fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.();
-            return store.putCopiedObject(owner,target.folderPath,target.name,source.file,source.file.parts,fromBackend,maxDepth(),current?.file?.id || '',logicalId);
+            return store.putCopiedObject(owner,target.folderPath,target.name,source.file,source.file.parts,fromBackend,maxDepth(scopeOf(toMapping)),current?.file?.id || '',logicalId);
         }
         const physical = (source.file.parts || []).map((part, index) => ({ fileIndex: 0, logicalFileId: logicalId, partIndex: index + 1, partCount: source.file.parts.length, originalSize: source.size, offset: part.offset, size: part.size, sha256: part.sha256, reuseFileId: part.fileId, reuseFileUniqueId: part.fileUniqueId, name: target.name, type: source.type }));
         const remotes = await queueTelegram({ id: crypto.randomUUID() }, async () => {
             for (const part of physical) await telegram.call(toBackend, 'getFile', { file_id: part.reuseFileId });
             return telegram.uploadPhysical(toBackend, [{ name: target.name, size: source.size, type: source.type, folderPath: target.folderPath, logicalId: physical[0].logicalFileId }], physical, () => {}, { userId: owner.id, diskSpace: scopeOf(toMapping).diskSpace });
         });
-        try { fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(), current?.file?.id || '', logicalId); }
+        try { fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(scopeOf(toMapping)), current?.file?.id || '', logicalId); }
         catch (error) { await telegram.remove(toBackend, { name: target.name, channelId: toBackend.channelId, createdAt: Date.now(), parts: remotes }).catch(() => {}); throw error; }
     }
-    return { stat, list, open, openFile, put, remove, deleteFile, copy, keyInfo: objectKey, parseByteRange, limit: UPLOAD_LIMIT, partSize: MAX_TELEGRAM_PART_SIZE };
+    return { assertWritable:(mapping,key,options)=>mountedNamespace?.assertWritable(mapping,key,options),stat, list, open, openFile, put, remove, deleteFile, copy, keyInfo: objectKey, parseByteRange, limit: UPLOAD_LIMIT, partSize: MAX_TELEGRAM_PART_SIZE };
 }
 module.exports = { createObjectStorage, objectKey, parseByteRange };

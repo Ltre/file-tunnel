@@ -195,7 +195,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
     const ownerDirectories = ownerId => [...directories.values()].filter(item => item.ownerId === String(ownerId));
     const directoryKey = (ownerId, folderPath) => `${ownerId}:${normalizePath(folderPath)}`;
     const assertDepth = (folderPath, maxDepth) => {
-        if (normalizePath(folderPath).split('/').filter(Boolean).length > Math.max(1, Math.min(20, Number(maxDepth) || 20))) throw new Error('telegram-drive-folder-depth-exceeded');
+        if (normalizePath(folderPath).split('/').filter(Boolean).length > Math.max(1, Math.min(30, Number(maxDepth) || 30))) throw new Error('telegram-drive-folder-depth-exceeded');
     };
     const pendingFiles = (ownerId, exceptUpload = '') => [...uploads.values()].filter(job => String(job.owner.id) === String(ownerId) && job.id !== exceptUpload).flatMap(job => job.files);
     const assertNoPendingTree = (ownerId, folderPath) => {
@@ -259,8 +259,8 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
 
     // Older indexes may only contain the deepest explicit path. Materialize every
     // ancestor once so directory CRUD has a stable object to operate on.
-    for (const directory of [...directories.values()]) ensureDirectoryRecords(directory.ownerId, directory.path, 20, Number(directory.createdAt) || Date.now());
-    for (const item of records.values()) if (item.folderPath) ensureDirectoryRecords(item.ownerId, item.folderPath, 20, Number(item.createdAt) || Date.now());
+    for (const directory of [...directories.values()]) ensureDirectoryRecords(directory.ownerId, directory.path, 30, Number(directory.createdAt) || Date.now());
+    for (const item of records.values()) if (item.folderPath) ensureDirectoryRecords(item.ownerId, item.folderPath, 30, Number(item.createdAt) || Date.now());
 
     const store = {
         reloadPersistence,
@@ -278,7 +278,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             persist(true);
             return result;
         },
-        setFolderMarker(ownerId, folderPath, metadata = {}, maxDepth = 20) {
+        setFolderMarker(ownerId, folderPath, metadata = {}, maxDepth = 30) {
             const safe = normalizePath(folderPath);
             if (!safe) throw new Error('DISK_NAME_INVALID');
             const existed = new Set(ownerDirectories(ownerId).map(item => item.path));
@@ -965,7 +965,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (job.receivers?.size || job.manifestPending) throw new Error('UPLOAD_IN_PROGRESS');
             if (job.pendingRollbackParts?.length) throw new Error('UPLOAD_ROLLBACK_PENDING');
             this.validateUpload(uploadId);
-            for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 20, now, job.id);
+            for (const file of job.files) if (file.folderPath) ensureDirectoryRecords(job.owner.id, file.folderPath, job.maxDepth || 30, now, job.id);
             const created = job.files.map((file, index) => {
                 const remote = sent[index] || {};
                 const parts = (Array.isArray(remote.parts) && remote.parts.length ? remote.parts : [remote]).map((part, partIndex, all) => ({ fileId: String(part.fileId || ''), fileUniqueId: String(part.fileUniqueId || ''), messageId: Number(part.messageId) || 0, messageDate: Number(part.messageDate) || now, mediaType: part.mediaType || 'document', mediaGroupId: String(part.mediaGroupId || ''), logicalFileId: file.logicalId, originalSize: file.size, partIndex: Number(part.partIndex) || partIndex + 1, partCount: Number(part.partCount) || all.length, size: Number(part.size) || (all.length === 1 ? file.size : 0), offset: Number(part.offset) || 0, sha256: String(part.sha256 || '') }));
@@ -1028,7 +1028,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             try { await pending; }
             finally { if (job.abortPromise === pending) job.abortPromise = null; }
         },
-        putMetadataObject(owner, folderPath, name, type = 'application/octet-stream', metadata = {}, maxDepth = 20, replaceId = '') {
+        putMetadataObject(owner, folderPath, name, type = 'application/octet-stream', metadata = {}, maxDepth = 30, replaceId = '') {
             const safe = normalizePath(folderPath), fileName = normalizeSegment(name, 180), now = Date.now();
             assertDepth(safe, maxDepth);
             const previous = replaceId ? this.get(owner.id, replaceId) : null;
@@ -1039,7 +1039,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             if (previous) item.pendingRemoteCleanup = [...(previous.pendingRemoteCleanup || []), previous].map(old => ({ name: old.name, channelId: old.channelId, backendId: old.backendId, createdAt: old.createdAt, parts: old.parts || [], fileId: old.fileId, messageId: old.messageId, thumbnail: old.thumbnail || null }));
             records.set(item.id, item); touchDirectory(owner.id, safe, now); persist(); return item;
         },
-        putCopiedObject(owner, folderPath, name, source, remotes, backend, maxDepth = 20, replaceId = '', logicalId = '') {
+        putCopiedObject(owner, folderPath, name, source, remotes, backend, maxDepth = 30, replaceId = '', logicalId = '') {
             const safe = normalizePath(folderPath), fileName = normalizeSegment(name, 180), now = Date.now();
             assertDepth(safe, maxDepth);
             const previous = replaceId ? this.get(owner.id, replaceId) : null;
@@ -1097,7 +1097,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             };
             const validRemote = remote => Boolean(remote?.fileId && Number.isSafeInteger(remote.messageId) && remote.messageId > 0);
             const job = { ...manifest, owner: { ...(manifest.owner || {}), id: String(manifest.ownerId) }, dir, closed: false,
-                metadata: manifest.metadata || {}, maxDepth: Number(manifest.maxDepth) || 20, uploadLimit: Number(manifest.uploadLimit) || maxFileSize(), files: [] };
+                metadata: manifest.metadata || {}, maxDepth: Number(manifest.maxDepth) || 30, uploadLimit: Number(manifest.uploadLimit) || maxFileSize(), files: [] };
             const acquiredLeases = [];
             try {
             job.folderPath = normalizePath(job.folderPath); assertDepth(job.folderPath, job.maxDepth);
@@ -1237,7 +1237,7 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             for (const directory of snapshot.directories) directories.delete(directoryKey(ownerId,directory.path));
             persist(); return snapshot;
         },
-        restoreTrash(ownerId, trashId, snapshot, maxDepth=20) {
+        restoreTrash(ownerId, trashId, snapshot, maxDepth=30) {
             for (const directory of snapshot.directories.slice().sort((a,b)=>a.path.length-b.path.length)) {
                 ensureDirectoryRecords(ownerId,directory.path,maxDepth);
                 Object.assign(directories.get(directoryKey(ownerId,directory.path)),directory,{updatedAt:Date.now()});

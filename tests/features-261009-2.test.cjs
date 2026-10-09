@@ -75,7 +75,7 @@ test('协同同项目、目录越界、只读权限与静态保护返回不同�
     const ids=[];for(const path of ['backup','目标']){const invitation=await call(f,'bob','/collaborations/invitations','POST',{kind:'directory',path});await call(f,'alice','/collaborations/join','POST',{token:invitation.data.url.split('/').at(-1)});ids.push(invitation.data.collaboration.id);}
     const source={kind:'collaboration',collaborationId:ids[0],selection:{kind:'file',id:'file-b'}};
     const same=await call(f,'alice','/cross-scope/copy','POST',{mode:'copy',source,target:{kind:'collaboration',collaborationId:ids[0],destinationPath:'backup'}});
-    assert.equal(same.data.errorDetails.reason,'SAME_COLLABORATION');assert.match(same.data.userMessage,/同一个协同项目/);
+    assert.equal(same.data.errorDetails.reason,'NAME_CONFLICT');assert.match(same.data.userMessage,/同名/);
     const outside=await call(f,'alice',`/collaboration-scope/${ids[0]}/list?path=`+encodeURIComponent('目标'));
     assert.equal(outside.data.errorDetails.reason,'PATH_OUTSIDE_GRANT');assert.match(outside.data.userMessage,/所选路径/);
     await call(f,'bob',`/collaborations/${ids[1]}/members/alice`,'PATCH',{role:'viewer'});
@@ -103,7 +103,7 @@ test('回收站独立连接读取、同时还原及分区删除保护保持数�
 test('复制完整静态链接兼容父作用域、个体优先、过期撤销与异步切换分区',async()=>{
     const source=read('client/disk-ui.js'),copied=[];let space='';
     const ctx=vm.createContext({window:{DiskClient:{getSpace:()=>space}},location:{origin:'https://example.test'},Date,encodeURIComponent,
-        telegramDriveStaticLinks:[],telegramDriveSpaceOwner:'alice',navigator:{clipboard:{writeText:async value=>copied.push(value)}},showAppToast(){},refreshTelegramDriveStaticLinks:async()=>{}});
+        telegramDriveMountContext:null,telegramDriveStaticLinks:[],telegramDriveSpaceOwner:'alice',navigator:{clipboard:{writeText:async value=>copied.push(value)}},showAppToast(){},refreshTelegramDriveStaticLinks:async()=>{}});
     vm.runInContext(source.slice(source.indexOf('function telegramDriveStaticUrl('),source.indexOf('async function refreshTelegramDriveStaticLinks('))+source.slice(source.indexOf('async function copyTelegramDriveStaticLink('),source.indexOf('async function showTelegramDriveTrash(')),ctx);
     const file={kind:'file',id:'f',folderPath:'资源/日本語',name:'图 & 1.png'},link={token:'parent',files:[],directories:['资源'],expiresAt:0};ctx.telegramDriveStaticLinks=[link];
     await ctx.copyTelegramDriveStaticLink(file);assert.equal(copied[0],'https://example.test/s3pub/parent/'+['资源','日本語','图 & 1.png'].map(encodeURIComponent).join('/'));
@@ -131,7 +131,7 @@ test('schema 3 升级回收站前备份完整数据库，不修改已有文件�
     const os=require('node:os'),{DatabaseSync}=require('node:sqlite'),{openDiskRepository}=require('../server/disk-repository');
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'disk-trash-migration-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     const first=openDiskRepository(dir);first.replace('files',[{id:'old-file',ownerId:'alice',name:'旧资料',size:0,type:'text/plain',folderPath:'',parts:[]}],file=>file.id);first.checkpoint();first.close();
-    const legacy=new DatabaseSync(path.join(dir,'disk.sqlite'));legacy.exec('DELETE FROM disk_schema_migrations WHERE version=4; DROP TABLE disk_trash_items');legacy.close();
+    const legacy=new DatabaseSync(path.join(dir,'disk.sqlite'));legacy.exec('DELETE FROM disk_schema_migrations WHERE version>=4; DROP TABLE disk_trash_items');legacy.close();
     const upgraded=openDiskRepository(dir);try{assert.equal(upgraded.load('files')[0].name,'旧资料');assert.deepEqual(upgraded.load('trash_items'),[]);upgraded.assertIntegrity();
         const backup=fs.readdirSync(dir).find(name=>name.startsWith('disk-before-trash-'));assert.ok(backup);const saved=new DatabaseSync(path.join(dir,backup),{readOnly:true});try{assert.equal(saved.prepare('SELECT MAX(version) AS version FROM disk_schema_migrations').get().version,3);assert.equal(saved.prepare('SELECT name FROM disk_files WHERE id=?').get('old-file').name,'旧资料');}finally{saved.close();}
     }finally{upgraded.close();}

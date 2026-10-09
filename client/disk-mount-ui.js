@@ -16,7 +16,7 @@
         const path = String(value ?? '');
         if (!path) return '';
         const parts = path.split('/');
-        if (path.length > 2048 || parts.length > 20 || parts.some(part => !part || part !== part.trim() || part === '.' || part === '..' || part.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(part)))
+        if (path.length > 2048 || parts.length > 30 || parts.some(part => !part || part !== part.trim() || part === '.' || part === '..' || part.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(part)))
             throw new Error('协同定位路径不合法');
         return path;
     };

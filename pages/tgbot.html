@@ -264,8 +264,8 @@
                     <button class="btn" type="button" id="addDriveChannelBtn">＋追加网盘分区频道</button>
                 </div>
                 <div class="field">
-                    <label for="driveMaxFolderDepth">网盘最大虚拟目录层数</label>
-                    <input id="driveMaxFolderDepth" type="number" min="1" max="20" value="20">
+                    <label for="driveMaxFolderDepth">系统目录层数上限（个人可在网盘设置中降低）</label>
+                    <input id="driveMaxFolderDepth" type="number" readonly min="1" max="30" value="30">
                 </div>
 
                 <div class="field">
@@ -439,7 +439,7 @@
             botApiBaseUrlInput.value = config.botApiBaseUrl || '';
             driveChannels = Array.isArray(config.driveChannels) ? config.driveChannels : [];
             activeDriveChannelId = config.activeDriveChannelId || driveChannels[0]?.id || '';
-            driveMaxFolderDepthInput.value = config.driveMaxFolderDepth || 20;
+            driveMaxFolderDepthInput.value = 30;
             renderDriveChannels();
             const channels = config.songShareChannels || {};
             songBaseChannelInput.value = channels.base || '';
@@ -472,7 +472,7 @@
                         activeDriveChannelId,
                         driveChannelDangerConfirmed,
                         driveChannelDangerConfirmedTwice,
-                        driveMaxFolderDepth: Math.max(1, Math.min(20, Number(driveMaxFolderDepthInput.value || 20))),
+                        driveMaxFolderDepth: 30,
                         songShareChannels: {
                             base: songBaseChannelInput.value.trim(),
                             pro: songProChannelInput.value.trim(),

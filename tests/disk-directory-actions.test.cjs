@@ -11,9 +11,9 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
     let finish;
     const result = { items: [{ id: 'uploaded-file', name: '新文件.txt' }] };
     const pending = new Promise((resolve, reject) => { finish = () => failed ? reject(Error('TELEGRAM_NETWORK_ERROR')) : resolve(result); });
-    const context = vm.createContext({ rendered, overlay, result,
+    const context = vm.createContext({ telegramDriveMountContext:null, rendered, overlay, result,
         document: { getElementById: () => overlay }, history: { pushState() {} }, location: { href: 'http://localhost/#fixture' },
-        window: { DiskClient: { raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
+        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
     });
     vm.runInContext(`
         let telegramDrivePath='原目录', telegramDriveNavigationVersion=0, telegramDriveHistorySession='fixture';
@@ -75,20 +75,20 @@ test('空白处菜单使用打开时的目录，支持根目录协同邀请，�
     for (const folderPath of ['', '当前目录/子目录']) {
         let menu, uploaded = 0, created, property, invited, removed;
         const requests = [];
-        const context = vm.createContext({ telegramDrivePath: folderPath, telegramDriveMenuItem: null,
+        const context = vm.createContext({ openTelegramDriveDialog:async()=>{},telegramDriveMountContext:null,telegramDrivePath: folderPath, telegramDriveMenuItem: null,
             document: { getElementById: () => ({ click: () => uploaded++ }) }, closeTelegramDriveItemMenu() {},
             renderTelegramDriveContextMenu: (item, anchor, actions) => { menu = { item, anchor, actions }; },
             createTelegramDriveFolder: path => { created = path; }, showTelegramDriveProperties: item => { property = item; },
             inviteDiskCollaboration: item => { invited = item; }, manageTelegramDriveStaticLinks() {},
             showAppToast() {}, updateDiskCacheLabels() {}, telegramDriveRequest: () => { throw Error('本级缓存不应递归读取目录树'); },
-            window: { DiskClient: { raw: async url => { requests.push(url); return { files: [{ kind: 'file', id: 'a' }, { kind: 'file', id: 'b' }] }; } },
+            window: { DiskFileEditor:{open:async()=>{}},DiskClient: { raw: async url => { requests.push(url); return { files: [{ kind: 'file', id: 'a' }, { kind: 'file', id: 'b' }] }; } },
                 TelegramDriveCache: { remove: async ids => { removed = [...ids]; } } }
         });
         const show = vm.runInContext(ui.slice(ui.indexOf('async function clearTelegramDriveCache('), ui.indexOf('async function cacheTelegramDriveItems('))
             + ui.slice(ui.indexOf('function showTelegramDriveBackgroundMenu('), ui.indexOf('function renderTelegramDriveContextMenu('))
             + ';showTelegramDriveBackgroundMenu', context);
         const anchor = {}; show(anchor);
-        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录', '当前目录属性', '邀请协同', '管理静态资源签名', '清理本级目录缓存']);
+        assert.deepEqual([...menu.actions].map(action => action[0]), ['上传文件', '新建目录','新建文件', '当前目录属性', '邀请协同', '管理静态资源签名', '清理本级目录缓存']);
         context.telegramDrivePath = '后来切换的目录';
         for (const [, action] of menu.actions) await action();
         assert.equal(uploaded, 1); assert.equal(created, folderPath); assert.equal(property.path, folderPath);

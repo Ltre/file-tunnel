@@ -195,3 +195,10 @@ S3 入口放在 HTTPS 反向代理后；代理需保留原始路径、查询参�
 先在测试环境通过真实 FolderSync 设备确认：连接、列表与分页、多级目录、超过 20 MB 上传、跨分片 Range 下载、覆盖、复制 / 重命名、批量删除、0 Byte 文件、目录 marker、中文 / 日文 / 空格 Key，以及服务重启后读取。自动化测试不代替客户端真机和公网代理验收。
 
 实现位置：`server/s3/routes.js`、`server/s3/sigv4.js`、`server/s3/credentials.js`、`server/object-storage.js`；后台管理位于 `server/s3/admin.js` 和 `client/s3-management.js`，安全手册渲染位于 `server/s3/guide.js`。共用上传 / 读取适配及分区登记位于 `server/disk-api.js`；已保存后端的登记和解析位于 `server/disk-auth.js`，默认后端由 `server.js` 传入；凭据工具为 `tools/s3-credentials.cjs`。设计背景见 [Implementation Guide](<../prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md>)，实际支持范围以上述当前实现为准。
+## 协同挂载的 S3 只读行为（261009）
+
+Bucket 中的协同挂载按本地挂载路径列出，内部授权文件及目录投影为对象和目录标记，可 LIST、HEAD、GET 和 Range 下载。每次访问验证当前挂载及协同授权；撤权、删除来源或移出授权范围后停止服务端读取。
+
+挂载本体、内部已有/不存在的子路径、以其为目标的 Copy，以及包含挂载的父目录递归删除，均不能通过 S3 改动，返回 `MOUNT_READ_ONLY`（HTTP 403）。批量删除逐项报告错误；不会把其它普通原生对象变为只读。Web 网盘编辑权限保持独立，受邀 editor 仍能在 Web 界面编辑。
+
+真实目录写入最多 30 层，并遵守目标所有者设置的更低上限；挂载只读路径可能同时包含本地及远端目录层级，虚拟显示层级不作为远端写入深度。
