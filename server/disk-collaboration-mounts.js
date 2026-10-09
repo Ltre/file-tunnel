@@ -137,6 +137,16 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
             save();
             return view(item);
         },
+        restoreTree(ownerId,diskSpace,snapshot,drive) {
+            reloadPersistence();collaborations.reloadPersistence();
+            for(const saved of snapshot){
+                if(saved.ownerId!==String(ownerId)||saved.diskSpace!==String(diskSpace)||entries.some(item=>item.id===saved.id))throw new Error('MOUNT_NAME_CONFLICT');
+                assertParent(drive,ownerId,saved.parentPath);assertTopology(ownerId,diskSpace,saved.parentPath);
+                assertNativeNameFree(drive,ownerId,saved.parentPath,saved.name);assertMountNameFree(ownerId,diskSpace,saved.parentPath,saved.name);
+                entries.push({...saved,updatedAt:Date.now()});
+            }
+            save();
+        },
         rename(id, ownerId, diskSpace, name, drive) {
             reloadPersistence();
             drive.reloadPersistence();

@@ -2724,7 +2724,6 @@
             box-shadow: 0 0 0 3px #ffb74388;
         }
 
-        .telegram-drive-space-picker { max-width: min(48vw, 210px); min-height: 36px; border: 0; border-radius: 0; padding: 5px 8px; background: transparent; color: var(--text-main); }
         .telegram-drive-space-manage { min-height: 36px; margin: 0; padding: 6px 10px; border: 0; border-radius: 0; background: transparent; color: var(--accent); font-weight: 650; }
         .telegram-drive-s3-details input[readonly] { cursor: pointer; }
         .disk-space-transfer-body { display: grid; gap: 14px; }
@@ -6101,7 +6100,7 @@
                     <div class="telegram-drive-title">Telegram网盘</div>
                 </div>
                 <div class="telegram-drive-header-actions">
-                    <div class="telegram-drive-header-overflow-wrap" id="telegramDriveHeaderOverflowWrap" hidden><button class="telegram-drive-icon-btn" id="telegramDriveHeaderOverflowBtn" type="button" title="更多网盘功能" aria-label="更多网盘功能" aria-expanded="false">☰</button><div class="telegram-drive-header-overflow-menu" id="telegramDriveHeaderOverflowMenu" hidden><button type="button" id="telegramDriveOverflowStaticBtn">已开放静态资源</button><button type="button" id="telegramDriveOverflowSharesBtn">已分享</button><button type="button" id="telegramDriveOverflowCollaborationsBtn">查看协同列表</button></div></div>
+                    <div class="telegram-drive-header-overflow-wrap" id="telegramDriveHeaderOverflowWrap" hidden><button class="telegram-drive-icon-btn" id="telegramDriveHeaderOverflowBtn" type="button" title="更多网盘功能" aria-label="更多网盘功能" aria-expanded="false">☰</button><div class="telegram-drive-header-overflow-menu" id="telegramDriveHeaderOverflowMenu" hidden><button type="button" id="telegramDriveOverflowTrashBtn">回收站</button><button type="button" id="telegramDriveOverflowStaticBtn">已开放静态资源</button><button type="button" id="telegramDriveOverflowSharesBtn">已分享</button><button type="button" id="telegramDriveOverflowCollaborationsBtn">查看协同列表</button></div></div>
                     <button class="telegram-drive-icon-btn" id="telegramDriveRefreshBtn" type="button" title="刷新" aria-label="刷新网盘">↻</button>
                     <button class="telegram-drive-icon-btn" id="telegramDriveLogoutBtn" type="button" title="退出网盘账号" aria-label="退出网盘账号" hidden>⇥</button>
 					<button class="telegram-drive-icon-btn" id="minimizeTelegramDriveBtn" type="button" title="最小化并保留当前目录" aria-label="最小化网盘">_</button>
@@ -6153,6 +6152,9 @@
             document.write(`<script defer src="/client/light-transfer.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/telegram-drive-cache.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/simplewebauthn.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-error-messages.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-trash-ui.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-import-picker.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-client.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-directory-picker.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-mount-ui.js${suffix}"><\/script>`);

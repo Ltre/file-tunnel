@@ -22,6 +22,7 @@ body{height:100dvh;overflow:hidden}.page{height:100dvh;min-height:0}header,nav,.
 </style>
 </head>
 <body><main class="page"><header><h1 id="title">Telegram 网盘 · 协同编辑</h1><a id="returnHome" href="/">返回首页</a></header><p class="status" id="status">正在验证邀请…</p><nav id="breadcrumbs" aria-label="协同目录路径"></nav><div class="toolbar" id="toolbar"><button id="uploadBtn" type="button">上传文件</button><button id="mkdirBtn" type="button">新建目录</button><button id="refreshBtn" type="button">刷新</button><input id="fileInput" type="file" multiple hidden></div><section class="list" id="list"></section><dialog id="preview"><header><strong id="previewName"></strong><button id="previewClose" type="button" aria-label="关闭预览">×</button></header><div id="previewBody"></div></dialog></main>
+<script src="/client/disk-error-messages.js"></script>
 <script src="/client/disk-client.js"></script>
 <script src="/client/disk-directory-picker.js"></script>
 <script src="/client/disk-copy-picker.js"></script>

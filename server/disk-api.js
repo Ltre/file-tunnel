@@ -19,13 +19,14 @@ const { createDiskMetadataTiming } = require('./disk-metadata-timing');
 const { createDiskPartCache } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
-const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
+const { diskErrorCode, diskErrorDetails, diskOperationError, diskUserMessage } = require('./disk-errors');
 const { createProgressiveUploadRunner } = require('./disk-progressive-upload');
 const { createContentProof } = require('./disk-content-proof');
 const { createContentAdmin } = require('./disk-content-admin');
 const { createS3Credentials } = require('./s3/credentials');
 const { createDiskStaticResources } = require('./disk-static-resources');
 const { createDiskPartitions, validateName: validatePartitionName } = require('./disk-partitions');
+const { createDiskTrash } = require('./disk-trash');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -174,10 +175,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const shares = createDiskShares({ dataDir });
     const staticResources = createDiskStaticResources({ dataDir });
     const assertStaticFileWritable = (scope, file) => {
-        if (staticResources.protectFile(scope, file)) throw new Error('STATIC_RESOURCE_ACTIVE');
+        if (staticResources.protectFile(scope, file)) throw diskOperationError('STATIC_RESOURCE_ACTIVE','STATIC_FILE_OPEN',{targetPath:[file.folderPath,file.name].filter(Boolean).join('/')});
     };
     const assertStaticDirectoryWritable = (scope, store, folder) => {
-        if (staticResources.protectDirectory(scope, store, folder)) throw new Error('STATIC_RESOURCE_ACTIVE');
+        if (staticResources.protectDirectory(scope, store, folder)) throw diskOperationError('STATIC_RESOURCE_ACTIVE','STATIC_DIRECTORY_OPEN',{targetPath:normalizeTelegramDrivePath(folder||'')});
     };
     const collaborations = createDiskCollaborationStore(dataDir);
     const mounts = createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAvailable: grant => {
@@ -190,6 +191,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         } catch (_) { return false; }
     } });
     spaces.installExternalNameGuard((ownerId, diskSpace, parentPath, name) => mounts.assertNameFree(ownerId, diskSpace, parentPath, name));
+    const trash = createDiskTrash({repository:persistence,spaces,mounts,maxDepth,assertWritable:(userId,diskSpace,selection,drive)=>{
+        partitions.find(userId,diskSpace);collaborations.reloadPersistence();
+        if(selection.kind==='file'){const file=drive.get(userId,selection.id);if(!file)throw new Error('FILE_NOT_FOUND');assertStaticFileWritable({userId,diskSpace},file);if(collaborations.protectFile(userId,diskSpace,file.id))throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');}
+        else if(selection.kind==='restore'){for(const file of selection.snapshot.files)assertStaticFileWritable({userId,diskSpace},file);for(const directory of selection.snapshot.directories)assertStaticDirectoryWritable({userId,diskSpace},drive,directory.path);}
+        else {assertStaticDirectoryWritable({userId,diskSpace},drive,selection.path);if(collaborations.protectDirectory(userId,diskSpace,selection.path))throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');}
+    }});
     const shared = express.Router();
     const publicStatic = express.Router();
     function copyGrantedItem({ kind, grant, ownerId, diskSpace, selection, targetUser, targetSpace, destinationPath }) {
@@ -214,7 +221,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         } else {
             const base = normalizeTelegramDrivePath(grant.path || '');
             if (selectedDirectory) {
-                if (grant.kind !== 'directory' || !selectedPath || selectedPath !== base && !selectedPath.startsWith(base + '/')) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                if (grant.kind !== 'directory' || !selectedPath || selectedPath !== base && !selectedPath.startsWith(base + '/')) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE',grant.kind==='file' ? 'FILE_GRANT_SOURCE' : 'SOURCE_OUTSIDE_GRANT');
                 const tree = sourceDrive.getDirectoryTree(ownerId, selectedPath);
                 if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
                 directories = tree.directories.map(entry => entry.path);
@@ -222,14 +229,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             } else {
                 const file = sourceDrive.get(ownerId, selection?.id);
                 if (!file || grant.kind === 'file' && file.id !== grant.fileId || grant.kind === 'directory' && base && file.folderPath !== base && !file.folderPath.startsWith(base + '/'))
-                    throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                    throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_OUTSIDE_GRANT');
                 files = [{ id: file.id, folderPath: file.folderPath }];
             }
         }
         if (files.length > 10000 || directories.length > 10000) throw new Error('CONTENT_COPY_TOO_LARGE');
         const rootName = selectedDirectory ? selectedPath.split('/').at(-1) : '';
         const targetRoot = [destination, rootName].filter(Boolean).join('/');
-        if (selectedDirectory && targetDrive.getDirectory(targetUser.id, targetRoot)) throw new Error('DISK_NAME_CONFLICT');
+        if (selectedDirectory && targetDrive.getDirectory(targetUser.id, targetRoot)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_CONFLICT',{targetPath:targetRoot});
         const translate = path => selectedDirectory ? [targetRoot, path.slice(selectedPath.length).replace(/^\//, '')].filter(Boolean).join('/') : destination;
         const candidates = files.map(entry => {
             const source = sourceDrive.get(ownerId, entry.id);
@@ -265,7 +272,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!sourceInput || !targetInput || !['native', 'collaboration'].includes(sourceInput.kind)
             || !['native', 'collaboration'].includes(targetInput.kind)
             || sourceInput.kind === 'native' && targetInput.kind === 'native')
-            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+            throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', sourceInput?.kind==='native' && targetInput?.kind==='native' ? 'NATIVE_PAIR' : 'REQUEST_SCOPE_INVALID');
         const resolve = (value, target) => {
             if (value.kind === 'native') {
                 const partition = partitions.find(actor.id, value.partitionId ?? defaultPartitionId);
@@ -273,16 +280,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     drive: spaces.get(partition.scopeKey), partitionId: partition.id };
             }
             const grant = collaborations.authorizedFresh(value.collaborationId, actor.id);
-            if (!grant || grant.ownerId === actor.id) throw new Error('COLLABORATION_NOT_FOUND');
-            if (target && grant.kind !== 'directory') throw new Error('COLLABORATION_OUT_OF_SCOPE');
-            if (target && grant.role !== 'editor') throw new Error('COLLABORATION_READ_ONLY');
+            if (!grant || grant.ownerId === actor.id) throw diskOperationError('COLLABORATION_NOT_FOUND',grant?.ownerId===actor.id ? 'OWN_PROJECT_USE_NATIVE' : 'GRANT_MEMBERSHIP_MISSING');
+            if (target && grant.kind !== 'directory') throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_GRANT_TARGET');
+            if (target && grant.role !== 'editor') throw diskOperationError('COLLABORATION_READ_ONLY','TARGET_READ_ONLY');
             const partition = partitions.find(grant.ownerId, grant.diskSpace);
             return { kind: 'collaboration', id: grant.id, version: grant.grantVersion,
                 ownerId: grant.ownerId, diskSpace: partition.scopeKey, drive: spaces.get(partition.scopeKey), grant };
         };
         const source = resolve(sourceInput, false), target = resolve(targetInput, true);
         if (source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)
-            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+            throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', 'SAME_COLLABORATION');
         const checkedPath = value => {
             if (typeof value !== 'string' || value.includes('\\')) throw new Error('DISK_NAME_INVALID');
             const normalized = normalizeTelegramDrivePath(value);
@@ -306,13 +313,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             sourcePath = checkedPath(selection.path);
             if (!sourcePath || source.kind === 'collaboration'
                 && (source.grant.kind !== 'directory' || !withinGrant(source.grant, sourcePath)))
-                throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                throw diskOperationError('COLLABORATION_OUT_OF_SCOPE',sourcePath ? 'SOURCE_OUTSIDE_GRANT' : 'SOURCE_ROOT_INVALID');
             const tree = source.drive.getDirectoryTree(source.ownerId, sourcePath);
             if (!activeReview(tree) || tree.directories.some(item => !activeReview(item))
-                || tree.files.some(item => !activeReview(item))) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+                || tree.files.some(item => !activeReview(item))) throw diskOperationError('CONTENT_COPY_SOURCE_INVALID','SOURCE_UNAVAILABLE');
             assertVisibleDirectory(source.drive, source.ownerId, sourcePath, 'CONTENT_COPY_SOURCE_INVALID');
             if (source.kind === 'native' && mounts.countTree(source.ownerId, source.diskSpace, sourcePath))
-                throw new Error('MOUNT_TRANSFER_UNSUPPORTED');
+                throw diskOperationError('MOUNT_TRANSFER_UNSUPPORTED','MOUNT_IN_SOURCE',{targetPath:sourcePath});
             directories = tree.directories.map(item => item.path);
             selectedFiles = tree.files.map(item => item.id);
         } else {
@@ -320,7 +327,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!activeReview(file) || source.kind === 'collaboration'
                 && (source.grant.kind === 'file' ? source.grant.fileId !== file.id
                     : !withinGrant(source.grant, file.folderPath || '')))
-                throw new Error('CONTENT_COPY_SOURCE_INVALID');
+                throw diskOperationError('CONTENT_COPY_SOURCE_INVALID',activeReview(file) ? 'FILE_OUTSIDE_GRANT' : 'SOURCE_UNAVAILABLE');
             assertVisibleDirectory(source.drive, source.ownerId, file.folderPath || '', 'CONTENT_COPY_SOURCE_INVALID');
             selectedFiles = [file.id];
         }
@@ -329,19 +336,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!activeReview(target.drive.getDirectory(target.ownerId, destination))) throw new Error('DIRECTORY_NOT_FOUND');
         assertVisibleDirectory(target.drive, target.ownerId, destination, 'DIRECTORY_NOT_FOUND');
         if (target.kind === 'collaboration' && !withinGrant(target.grant, destination))
-            throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','TARGET_OUTSIDE_GRANT');
         assertStaticDirectoryWritable({ userId: target.ownerId, diskSpace: target.diskSpace }, target.drive, destination);
         const rootName = sourcePath.split('/').at(-1) || '';
         const targetRoot = sourcePath ? [destination, rootName].filter(Boolean).join('/') : destination;
-        if (sourcePath && target.drive.getDirectory(target.ownerId, targetRoot)) throw new Error('DISK_NAME_CONFLICT');
+        if (sourcePath && target.drive.getDirectory(target.ownerId, targetRoot)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_CONFLICT',{targetPath:targetRoot});
         if (sourcePath && source.ownerId === target.ownerId && source.diskSpace === target.diskSpace
             && (destination === sourcePath || destination.startsWith(sourcePath + '/')))
-            throw new Error('CONTENT_COPY_SCOPE_INVALID');
+            throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', 'DESTINATION_INSIDE_SOURCE', {sourcePath,targetPath:destination});
         const translate = value => sourcePath
             ? [targetRoot, value.slice(sourcePath.length).replace(/^\//, '')].filter(Boolean).join('/') : destination;
         const candidates = selectedFiles.map(id => {
             const file = source.drive.get(source.ownerId, id);
-            if (!activeReview(file) || !file.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            if (!activeReview(file) || !file.contentId) throw diskOperationError('CONTENT_COPY_SOURCE_INVALID',activeReview(file)&&!file.contentId ? 'CONTENT_REFERENCE_MISSING' : 'SOURCE_UNAVAILABLE');
             return { id, contentId: file.contentId, folderPath: file.folderPath || '' };
         });
         const leases = new Map();
@@ -356,7 +363,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         if (!current || current.ownerId !== scope.ownerId || current.diskSpace !== scope.diskSpace
                             || String(current.grantVersion) !== String(scope.version)
                             || scope === target && (current.kind !== 'directory' || current.role !== 'editor'))
-                            throw new Error('COLLABORATION_NOT_FOUND');
+                            throw diskOperationError('COLLABORATION_NOT_FOUND',!current ? 'GRANT_MEMBERSHIP_MISSING' : scope===target&&current.role!=='editor' ? 'TARGET_READ_ONLY' : String(current.grantVersion)!==String(scope.version) ? 'GRANT_VERSION_CHANGED' : 'GRANT_CHANGED');
                         partitions.find(current.ownerId, current.diskSpace);
                     }
                 }
@@ -370,10 +377,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                         || currentTree.files.some(item => !activeReview(item))
                         || currentTree.directories.map(item => item.path).sort().join('\n') !== directories.slice().sort().join('\n')
                         || currentTree.files.map(item => item.id).sort().join('\n') !== selectedFiles.slice().sort().join('\n'))
-                        throw new Error('CONTENT_COPY_SOURCE_CHANGED');
+                        throw diskOperationError('CONTENT_COPY_SOURCE_CHANGED','SOURCE_REFERENCE_CHANGED');
                     assertVisibleDirectory(source.drive, source.ownerId, sourcePath, 'CONTENT_COPY_SOURCE_INVALID');
                     if (source.kind === 'native' && mounts.countTree(source.ownerId, source.diskSpace, sourcePath))
-                        throw new Error('MOUNT_TRANSFER_UNSUPPORTED');
+                        throw diskOperationError('MOUNT_TRANSFER_UNSUPPORTED','MOUNT_IN_SOURCE',{targetPath:sourcePath});
                 }
                 for (const directory of directories.sort((a, b) => a.length - b.length))
                     target.drive.createDirectory(target.ownerId, translate(directory), maxDepth(), 'system');
@@ -383,7 +390,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 for (const candidate of candidates) {
                     const file = source.drive.get(source.ownerId, candidate.id);
                     if (!activeReview(file) || file.contentId !== candidate.contentId
-                        || String(file.folderPath || '') !== candidate.folderPath) throw new Error('CONTENT_COPY_SOURCE_CHANGED');
+                        || String(file.folderPath || '') !== candidate.folderPath) throw diskOperationError('CONTENT_COPY_SOURCE_CHANGED','SOURCE_REFERENCE_CHANGED');
                     assertVisibleDirectory(source.drive, source.ownerId, file.folderPath || '', 'CONTENT_COPY_SOURCE_INVALID');
                     const physical = content.resolve(file.contentId)?.physical;
                     if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
@@ -788,7 +795,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const failure = (error, req, res, next) => {
         if (res.headersSent) return res.destroy();
         const code = diskErrorCode(error);
-        res.status(errorStatus(code)).json({ error: code, code, errorDetails: diskErrorDetails(error) });
+        const errorDetails = diskErrorDetails(error);
+        errorDetails.requestId ||= req.diskMetadataTiming?.requestId || crypto.randomUUID();
+        res.set('X-Disk-Request-Id',errorDetails.requestId);
+        res.status(errorStatus(code)).json({ error: code, code, userMessage: diskUserMessage(error), errorDetails });
     };
     const noStore = (req, res, next) => { res.set('Cache-Control', 'private, no-store'); next(); };
     browser.use(noStore); external.use(noStore); admin.use(noStore);
@@ -1174,12 +1184,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!grantTarget || ['blocked', 'deleted'].includes(grantTarget.reviewStatus)) throw new Error('COLLABORATION_TARGET_NOT_FOUND');
         const within = (value, strict = false) => {
             const candidate = normalizeTelegramDrivePath(value || '');
-            if ((strict && candidate === root) || (root && candidate !== root && !candidate.startsWith(root + '/'))) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if ((strict && candidate === root) || (root && candidate !== root && !candidate.startsWith(root + '/'))) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE', strict && candidate===root ? 'ROOT_PROTECTED' : ['GET','HEAD'].includes(req.method) ? 'PATH_OUTSIDE_GRANT' : 'TARGET_OUTSIDE_GRANT');
             return candidate;
         };
         const file = id => {
             const found = storage.get(entry.ownerId, id);
-            if (!found || ['blocked', 'deleted'].includes(found.reviewStatus) || (entry.kind === 'file' ? found.id !== entry.fileId : false)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if (!found || ['blocked', 'deleted'].includes(found.reviewStatus) || (entry.kind === 'file' ? found.id !== entry.fileId : false)) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_OUTSIDE_GRANT');
             if (entry.kind === 'directory') within(found.folderPath || '');
             return found;
         };
@@ -1190,7 +1200,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         else if ((/^\/files\/[^/]+(?:\/(?:thumbnail|stream|download))?$/.test(path) && ['GET', 'PATCH', 'DELETE'].includes(method)) || (method === 'POST' && /^\/files\/[^/]+\/repair$/.test(path))) {
             const id = decodeURIComponent(path.split('/')[2]); file(id);
             if (method === 'PATCH') {
-                if (entry.kind === 'file' && Object.hasOwn(req.body || {}, 'folderPath')) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                if (entry.kind === 'file' && Object.hasOwn(req.body || {}, 'folderPath')) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_OUTSIDE_GRANT');
                 if (entry.kind === 'directory' && Object.hasOwn(req.body || {}, 'folderPath')) within(req.body.folderPath);
             }
         }
@@ -1199,30 +1209,30 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         else if (entry.kind === 'directory' && method === 'DELETE' && path === '/directories') within(req.query.path, true);
         else if (entry.kind === 'directory' && method === 'POST' && path === '/uploads') {
             within(req.body?.folderPath || root);
-            for (const incoming of req.body?.files || []) { if (incoming.source_path) throw new Error('COLLABORATION_OUT_OF_SCOPE'); if (Object.hasOwn(incoming, 'folderPath')) within(incoming.folderPath); }
+            for (const incoming of req.body?.files || []) { if (incoming.source_path) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','UPLOAD_SOURCE_PATH'); if (Object.hasOwn(incoming, 'folderPath')) within(incoming.folderPath); }
             req.body.folderPath ||= root;
             req.body.metadata = { ...(req.body.metadata || {}), collaborationId: entry.id };
         }
         else if (entry.kind === 'directory' && method === 'POST' && path === '/content/preflight') {
             req.body.folderPath=within(req.body?.folderPath || root);
             for(const incoming of req.body?.files || []) {
-                if(incoming.source_path)throw new Error('COLLABORATION_OUT_OF_SCOPE');
+                if(incoming.source_path)throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','UPLOAD_SOURCE_PATH');
                 if(Object.hasOwn(incoming,'folderPath'))within(incoming.folderPath);
             }
         }
         else if (entry.kind === 'directory' && method === 'POST' && ['/content/proof','/content/release'].includes(path)) { /* durable tickets remain viewer/grant/target bound */ }
         else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish|\/queue|\/failure)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
             const uploadId = path.split('/')[2], job = storage.upload(uploadId);
-            if (!job || job.metadata?.collaborationId !== entry.id || !storage.ownsUpload(entry.ownerId, uploadId)) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if (!job || job.metadata?.collaborationId !== entry.id || !storage.ownsUpload(entry.ownerId, uploadId)) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','UPLOAD_OUTSIDE_GRANT');
         }
         else if (method === 'GET' && /^\/uploads\/[^/]+\/progress$/.test(path)) {
             const job = operations.findUpload(decodeURIComponent(path.split('/')[2]), { userId: entry.ownerId, diskSpace: entry.diskSpace });
-            if (!job || job.collaborationId !== entry.id) throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if (!job || job.collaborationId !== entry.id) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','UPLOAD_OUTSIDE_GRANT');
         }
         else if (method === 'GET' && (path === '/operations' || /^\/operations\/[^/]+$/.test(path))) { /* response filters collaboration id */ }
         else if (method === 'GET' && path === '/search' && entry.kind === 'directory') { /* result is restricted to this grant below */ }
         else if (method === 'DELETE' && /^\/operations\/[^/]+$/.test(path)) { /* checked by route */ }
-        else throw new Error('COLLABORATION_OUT_OF_SCOPE');
+        else throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','ROUTE_OUTSIDE_GRANT');
         req.collaboration = entry; req.diskViewerId = viewerId; req.diskUser = user;
         req.diskScope = { userId: entry.ownerId, diskSpace: entry.diskSpace };
         req.diskStore = storage;
@@ -1410,6 +1420,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (partition.isDefault) throw new Error('DISK_DEFAULT_SPACE_DELETE_FORBIDDEN');
         const diskSpace = partition.scopeKey, drive = spaces.get(diskSpace);
         const impact = partitionImpact(ownerId, partition);
+        if (trash.list(ownerId,diskSpace).length) throw new Error('DISK_SPACE_TRASH_NOT_EMPTY');
         if (impact.activeCollaborations) throw new Error('DISK_SPACE_COLLABORATION_ACTIVE');
         if (impact.activeTasks || impact.activeLeases) throw new Error('DISK_SPACE_BUSY');
         drive.assertDirectoryWritable(ownerId, '');
@@ -1421,6 +1432,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             await new Promise(resolve => setImmediate(resolve));
             control.throwIfCancelled();
             const current = partitionImpact(ownerId, partition, operation.operation_id);
+            if (trash.list(ownerId,diskSpace).length) throw new Error('DISK_SPACE_TRASH_NOT_EMPTY');
             if (current.activeCollaborations) throw new Error('DISK_SPACE_COLLABORATION_ACTIVE');
             if (current.activeTasks || current.activeLeases) throw new Error('DISK_SPACE_BUSY');
             drive.assertDirectoryWritable(ownerId, '');
@@ -1428,6 +1440,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             try {
                 update({ phase: 'commit', message: '正在原子移除本分区的原生记录与挂载指针', percent: 20 });
                 const removed = persistence.atomic(() => {
+                    if (trash.list(ownerId,diskSpace).length) throw new Error('DISK_SPACE_TRASH_NOT_EMPTY');
                     const latest = partitionImpact(ownerId, partition, operation.operation_id);
                     if (latest.activeCollaborations || latest.activeTasks || latest.activeLeases) throw new Error('DISK_SPACE_BUSY');
                     drive.assertDirectoryWritable(ownerId, '');
@@ -1602,6 +1615,16 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         next();
     }));
     let coreUpload;
+    browser.get('/trash',wrap((req,res)=>res.json({items:trash.list(req.diskUser.id,req.diskScope.diskSpace)})));
+    browser.get('/trash/:id',wrap((req,res)=>res.json(trash.contents(req.diskUser.id,req.diskScope.diskSpace,req.params.id,String(req.query.path||'')))));
+    browser.post('/trash/:id/restore',wrap((req,res)=>res.json({restored:trash.restore(req.diskUser.id,req.diskScope.diskSpace,req.params.id)})));
+    browser.delete('/trash/:id',wrap(async(req,res)=>{
+        if(req.query.permanent!=='true')throw new Error('TRASH_PURGE_CONFIRM_REQUIRED');
+        const ids=trash.purge(req.diskUser.id,req.diskScope.diskSpace,req.params.id);
+        const cleanups=[];for(const id of ids)cleanups.push(await cleanupDeletedContent(id));
+        const pending=cleanups.some(item=>item?.status==='pending');
+        res.json({ok:true,remoteCleanup:{status:pending?'pending':'completed'},...(pending?{warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']}:{})});
+    }));
     function contents(router) {
         const scope = req => ({ ...req.diskScope, deviceId: /^[a-zA-Z0-9_-]{8,120}$/.test(req.get('X-Disk-Device-Id') || '') ? req.get('X-Disk-Device-Id') : '' });
         const owner = req => req.diskUser.id;
@@ -1782,6 +1805,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 assertStaticFileWritable(scope(req), store(req).get(owner(req), file.id));
                 if (collaborations.protectFile(owner(req), req.diskScope.diskSpace, file.id)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
                 if (file.reviewStatus === 'deleted') { store(req).remove(owner(req), file.id); return { ok: true, removedPlaceholder: true }; }
+                if (!req.diskApp) {
+                    update({phase:'recycle',message:'正在移入当前分区回收站：'+file.name});
+                    return {ok:true,trashed:trash.archive(owner(req),req.diskScope.diskSpace,{kind:'file',id:file.id})};
+                }
                 update({ phase: 'telegram-delete', message: '正在删除文件并清理不再共享的 Telegram 消息：' + file.name });
                 const remoteCleanup=await objectStorage.deleteFile(scope(req), file);
                 return { ok: true, ...(remoteCleanup ? { remoteCleanup } : {}),
@@ -1802,6 +1829,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 store(req).assertDirectoryWritable(owner(req), folderPath);
                 const currentTree = store(req).getDirectoryTree(owner(req), folderPath);
                 if (!currentTree) throw new Error('DIRECTORY_NOT_FOUND');
+                if (!req.diskApp && currentTree.reviewStatus !== 'deleted') {
+                    update({phase:'recycle',message:'正在将整个目录移入当前分区回收站'});
+                    return {trashed:trash.archive(owner(req),req.diskScope.diskSpace,{kind:'directory',path:folderPath}),removedFiles:currentTree.files.length,removedDirectories:currentTree.directories.length};
+                }
                 let count = 0, cleanupPending = false; const failures = [];
                 for (const file of currentTree.files) {
                     update({ phase: 'telegram-delete', percent: null, message: '正在删除 ' + (++count) + '/' + tree.files.length + '：' + file.name });
@@ -2327,7 +2358,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.get('/files/:id/stream', wrap(async (req, res) => {
             const file = requireEntity(getFile(req));
-            const remote = await prepareRemoteResponse(req, res, fileBackend(req, file), file, { inline: true });
+            const remote = await prepareRemoteResponse(req, res, fileBackend(req, file), file, { inline: true, cancelUnusedCacheFill: req.query.purpose === 'web-import' });
             if (remote) { assertCurrentCollaboration(req); await pipeline(remote.source, res); }
         }));
         router.post('/files/:id/repair', wrap(async (req, res) => {

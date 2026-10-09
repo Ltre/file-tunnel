@@ -1,7 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { openDiskRepository } = require('./disk-repository');
-const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
+const { diskErrorCode, diskErrorDetails, diskUserMessage } = require('./disk-errors');
 function createDiskOperations({ dataDir, now = Date.now }) {
     const repository = openDiskRepository(dataDir);
     let state = repository.loadWithRevision('operations');
@@ -95,12 +95,12 @@ function createDiskOperations({ dataDir, now = Date.now }) {
                 ...(Array.isArray(warnings) && warnings.length ? { warnings } : {}) }, true);
         },
         fail(id, error) {
-            const errorDetails = diskErrorDetails(error);
+            const errorDetails = diskErrorDetails(error); errorDetails.requestId ||= id;
             const uncertainUpload = Boolean(errorDetails.requestOutcomeUnknown) || (error?.message === 'TELEGRAM_NETWORK_ERROR' && errorDetails.causeCode === 'UND_ERR_HEADERS_TIMEOUT');
             const errorMessage = error?.message === 'TELEGRAM_UPLOAD_OUTCOME_UNKNOWN' ? 'Telegram 发送结果未确认，已保留分片及消息记录；请核对频道消息后重试'
                 : error?.message === 'UPLOAD_SOURCE_INTERRUPTED' ? '服务重启时浏览器上传尚未完成，已保留分片记录；请重新上传'
                 : uncertainUpload ? 'Telegram 发送结果未确认，已保留恢复资料；请先核对频道消息，勿直接重复上传'
-                : errorDetails.telegramDescription || '操作失败，请检查错误码后重试';
+                : errorDetails.telegramDescription || diskUserMessage(error);
             return api.update(id, { status: 'failed', phase: 'failed', errorCode: diskErrorCode(error), errorMessage, message: '操作失败', errorDetails }, true);
         },
         run(id, work) {

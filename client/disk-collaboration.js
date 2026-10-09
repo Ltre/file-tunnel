@@ -28,7 +28,7 @@
     const within = path => !grant.path || path === grant.path || path.startsWith(grant.path + '/');
     const child = (parent, name) => [parent, name].filter(Boolean).join('/');
     const canEdit = () => grant?.role === 'editor' || grant?.role === 'owner';
-    const run = async task => { try { status('正在处理…'); await task(); status('操作已完成'); await load(); } catch (error) { status(error.message || '操作失败', true); } };
+    const run = async task => { try { status('正在处理…'); await task(); status('操作已完成'); await load(); } catch (error) { status(window.DiskErrorMessages.format(error), true); } };
     const button = (label, action) => { const node = document.createElement('button'); node.type = 'button'; node.textContent = label; node.onclick = action; return node; };
     function openActionDialog({ title, body, confirmText = '确定', validate = () => true }) {
         const dialog = document.createElement('dialog'); dialog.className = 'collab-action-dialog';
@@ -78,12 +78,12 @@
             const destination = await window.DiskDirectoryPicker.choose({ items: [item], title: `移动“${item.name}”`, confirmText: '移动',
                 rootPath: grant.path, rootName: grant.name, initialPath: currentPath,
                 loadDirectories: () => request('/directories'), createDirectory: path => client.request('/directories', json('POST', { path })),
-                openDialog: openActionDialog, onCreateDirectory: () => { created = true; }, showError: error => status(error.message, true) });
+                openDialog: openActionDialog, onCreateDirectory: () => { created = true; }, showError: error => status(window.DiskErrorMessages.format(error), true) });
             if (destination !== null) {
                 if (!validDestination(item, destination)) return status('项目已经在该目录中，或目标为自身 / 子目录。');
                 await moveItem(item, destination, { confirmed: true });
             } else { if (created) await load(); status(''); }
-        } catch (error) { status(error.message, true); } finally { picking = false; }
+        } catch (error) { status(window.DiskErrorMessages.format(error), true); } finally { picking = false; }
     }
     function endDrag() {
         clearTimeout(touchDrag?.timer); if (touchDrag?.frame) cancelAnimationFrame(touchDrag.frame);
@@ -108,7 +108,7 @@
         node.addEventListener('drop', event => {
             if (!dragged) return;
             event.preventDefault(); event.stopPropagation(); const item = dragged; endDrag();
-            moveItem(item, node.dataset.dropPath).catch(error => status(error.message, true));
+            moveItem(item, node.dataset.dropPath).catch(error => status(window.DiskErrorMessages.format(error), true));
         });
     }
     function installDrag(node, item) {
@@ -159,7 +159,7 @@
             if (!state.active) { endDrag(); return; }
             event.preventDefault(); event.stopPropagation(); suppressClickUntil = Date.now() + 700;
             const target = highlightDrop(state.x, state.y), destination = target?.dataset.dropPath;
-            endDrag(); if (destination !== undefined) moveItem(state.item, destination).catch(error => status(error.message, true));
+            endDrag(); if (destination !== undefined) moveItem(state.item, destination).catch(error => status(window.DiskErrorMessages.format(error), true));
         }, { passive: false });
         node.addEventListener('touchcancel', endDrag);
     }
@@ -191,7 +191,7 @@
         for (let attempt = 0; attempt < 120; attempt++) {
             const operation = await request(scope + '/operations/' + encodeURIComponent(response.operation_id));
             if (operation.status === 'completed') return operation.result;
-            if (['failed', 'cancelled'].includes(operation.status)) throw new Error(operation.error || '创建目录失败');
+            if (['failed', 'cancelled'].includes(operation.status)) throw Object.assign(new Error(operation.errorCode||operation.error||'DISK_OPERATION_FAILED'),{userMessage:operation.errorMessage,errorDetails:operation.errorDetails});
             await new Promise(resolve => setTimeout(resolve, 250));
         }
         throw new Error('创建目录超时，请刷新目标协同项目检查结果');
@@ -221,7 +221,7 @@
                 title:`复制“${item.name}”到 ${target.name}`, confirmText:'复制', rootPath:target.path, rootName:target.name, initialPath:target.path,
                 loadDirectories:() => request(scope + '/directories'),
                 createDirectory:async path => waitDestinationDirectory(scope, await request(scope + '/directories', json('POST', { path }))),
-                openDialog:openActionDialog, showError:error => status(error.message || '目标目录选择失败', true)
+                openDialog:openActionDialog, showError:error => status(window.DiskErrorMessages.format(error), true)
             });
             if (destinationPath === null) return;
             status('正在复制到目标协同项目…');
@@ -232,7 +232,7 @@
                 target:{ kind:'collaboration', collaborationId:target.id, destinationPath }
             }));
             status(`已复制 ${result.copied?.length || 0} 个文件到“${target.name}”/${result.destination || ''}；来源项目仍保留。`);
-        } catch (error) { status('复制失败：' + (error.message || '操作失败'), true); }
+        } catch (error) { status('复制失败：' + window.DiskErrorMessages.format(error), true); }
         finally { copying = false; }
     }
     function row(item, directory = false) {
@@ -253,7 +253,7 @@
                 const result = await request(`${base}/collaborations/${encodeURIComponent(grant.id)}/copy`,
                     json('POST', { selection: directory ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...target }));
                 status(`已转存 ${result.copied.length} 个文件到自己的网盘：/${result.destination}`);
-            } catch (error) { status(error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需转存。' : '转存失败：' + error.message, true); }
+            } catch (error) { status(error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需转存。' : '转存失败：' + window.DiskErrorMessages.format(error), true); }
         }));
         if (!grant.owned) actions.append(button('复制到另一个协同项目', () => copyToAnotherCollaboration(item)));
         if (canEdit() && !directory) actions.append(button('替换内容', () => {
@@ -313,7 +313,7 @@
         if (!(data.folders?.length || data.files?.length)) $('list').textContent = '此目录暂无文件';
         status('');
     }
-    function navigate(path) { if (!within(path)) return; currentPath = path; load().catch(error => status(error.message, true)); }
+    function navigate(path) { if (!within(path)) return; currentPath = path; load().catch(error => status(window.DiskErrorMessages.format(error), true)); }
     function closePreview() { const body = $('previewBody'); body.querySelectorAll('audio,video').forEach(media => { media.pause(); media.removeAttribute('src'); media.load(); }); body.replaceChildren(); $('preview').close(); }
     installDrop($('list'), '');
     document.addEventListener('click', event => {
@@ -328,7 +328,7 @@
     window.addEventListener('pagehide', () => { endDrag(); closePreview(); client.stop(); });
     $('previewClose').onclick = closePreview;
     $('preview').addEventListener('cancel', event => { event.preventDefault(); closePreview(); });
-    $('refreshBtn').onclick = () => load().catch(error => status(error.message, true));
+    $('refreshBtn').onclick = () => load().catch(error => status(window.DiskErrorMessages.format(error), true));
     $('mkdirBtn').onclick = () => { if (!canEdit()) return; run(async () => { const name = prompt('新目录名称'); if (!name) return; await client.request('/directories', json('POST', { path: child(currentPath, name) })); }); };
     $('uploadBtn').onclick = () => { if (canEdit()) $('fileInput').click(); };
     $('fileInput').onchange = event => { const files = [...event.target.files]; event.target.value = ''; if (!canEdit() || !files.length) return; run(async () => { await client.upload(files, currentPath); }); };
@@ -348,7 +348,7 @@
                 grant = (await request(`${base}/collaborations/join`, json('POST', { token }))).collaboration;
                 history.replaceState(null, '', `/disk-collab/view/${encodeURIComponent(grant.id)}`);
                 card.remove(); currentPath = grant.path; client.setCollaboration(grant.id); $('toolbar').hidden = false; await load();
-            } catch (error) { accept.disabled = false; cancel.disabled = false; status(error.message || '加入协同失败', true); }
+            } catch (error) { accept.disabled = false; cancel.disabled = false; status(window.DiskErrorMessages.format(error), true); }
         });
         const cancel = button('取消', () => { card.remove(); status('已取消，本账号没有加入协同编辑。'); });
         actions.append(accept, cancel); card.append(heading, description, details, actions); $('list').replaceChildren(card);
@@ -381,7 +381,7 @@
                 status('搜索结果所在目录已变化，已返回协同根目录。');
             }
         } catch (error) {
-            status(error.message === 'LOGIN_REQUIRED' ? '请先在功能首页登录 Telegram 网盘账号，然后返回此页面重试。' : `无法打开协同编辑：${error.message}`, true);
+            status(error.message === 'LOGIN_REQUIRED' ? '请先在功能首页登录 Telegram 网盘账号，然后返回此页面重试。' : `无法打开协同编辑：${window.DiskErrorMessages.format(error)}`, true);
             $('list').innerHTML = '<div class="error-panel">' + (embedded ? '请关闭协同浮层并在原网盘登录。' : '<a href="/">前往功能首页</a>') + ' · <button type="button" id="retryJoin">重试</button></div>';
             $('retryJoin').onclick = () => location.reload();
             $('toolbar').hidden = true;

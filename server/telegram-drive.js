@@ -8,7 +8,7 @@ const { pipeline } = require('stream/promises');
 const { readJson, writeJson, writeJsonAsync } = require('./disk-data');
 const { openDiskRepository } = require('./disk-repository');
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
-const { diskErrorCode, diskErrorDetails } = require('./disk-errors');
+const { diskErrorCode, diskErrorDetails, diskOperationError } = require('./disk-errors');
 const { createGrowingFileReadable, notifyGrowingFile, awaitGrowingFileComplete, stopGrowingReaders, awaitGrowingReadersClosed } = require('./growing-file-readable');
 
 
@@ -188,7 +188,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         }
     }
     const ownerRecords = ownerId => {
-        const items=[...records.values()].filter(item => item.ownerId === String(ownerId));
+        const items=[...records.values()].filter(item => item.ownerId === String(ownerId) && !item.trashId);
         repository.projectFiles(items,diskSpace).forEach((item,index)=>Object.assign(items[index],item));
         return items;
     };
@@ -205,8 +205,8 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
     const assertFreeName = (ownerId, folderPath, name, exceptId = '', exceptUpload = '') => {
         externalNameGuard?.(ownerId, folderPath, name);
         const target = [folderPath, name].filter(Boolean).join('/');
-        if (pendingFiles(ownerId, exceptUpload).some(file => (file.folderPath === folderPath && file.name === name) || file.folderPath === target || file.folderPath.startsWith(target + '/'))) throw new Error('DISK_NAME_CONFLICT');
-        if (ownerRecords(ownerId).some(item => item.id !== exceptId && (item.folderPath || '') === folderPath && item.name === name) || directories.has(String(ownerId) + ':' + target)) throw new Error('DISK_NAME_CONFLICT');
+        if (pendingFiles(ownerId, exceptUpload).some(file => (file.folderPath === folderPath && file.name === name) || file.folderPath === target || file.folderPath.startsWith(target + '/'))) throw diskOperationError('DISK_NAME_CONFLICT','NAME_PENDING_UPLOAD',{targetPath:target});
+        if (ownerRecords(ownerId).some(item => item.id !== exceptId && (item.folderPath || '') === folderPath && item.name === name) || directories.has(String(ownerId) + ':' + target)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_CONFLICT',{targetPath:target});
     };
     const ensureDirectoryRecords = (ownerId, folderPath, maxDepth, now = Date.now(), exceptUpload = '') => {
         const safe = normalizePath(folderPath); assertDepth(safe, maxDepth);
@@ -214,8 +214,8 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         segments.forEach((segment, index) => {
             const parent = segments.slice(0, index).join('/');
             externalNameGuard?.(ownerId, parent, segment);
-            if (pendingFiles(ownerId, exceptUpload).some(file => file.folderPath === parent && file.name === segment)) throw new Error('DISK_NAME_CONFLICT');
-            if (ownerRecords(ownerId).some(file => (file.folderPath || '') === parent && file.name === segment)) throw new Error('DISK_NAME_CONFLICT');
+            if (pendingFiles(ownerId, exceptUpload).some(file => file.folderPath === parent && file.name === segment)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_PENDING_UPLOAD',{targetPath:[parent,segment].filter(Boolean).join('/')});
+            if (ownerRecords(ownerId).some(file => (file.folderPath || '') === parent && file.name === segment)) throw diskOperationError('DISK_NAME_CONFLICT','PATH_BLOCKED_BY_FILE',{targetPath:[parent,segment].filter(Boolean).join('/')});
         });
         let current = '';
         for (const segment of safe.split('/').filter(Boolean)) {
@@ -418,7 +418,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
             persist();
             return { removedDirectories: snapshot.directories.length, removedFiles: snapshot.files.length };
         },
-        get(ownerId, id) { const item = records.get(String(id)); if(item?.ownerId !== String(ownerId)) return null; Object.assign(item,repository.projectFile(item,diskSpace)); return item; },
+        get(ownerId, id) { const item = records.get(String(id)); if(item?.ownerId !== String(ownerId) || item.trashId) return null; Object.assign(item,repository.projectFile(item,diskSpace)); return item; },
         getFileProperties(ownerId, id) { const item = this.get(ownerId, id); return item ? { ...item, kind: 'file', parentPath: normalizePath(item.folderPath || '') } : null; },
         moveFile(ownerId, id, destinationPath, maxDepth) {
             const item = this.get(ownerId, id);
@@ -1224,7 +1224,38 @@ files: incoming.map((file, index) => ({ index, logicalId: crypto.randomUUID(), f
             const files = ownerRecords(ownerId).filter(item => within(normalizePath(item.folderPath || '')) && item.name.toLocaleLowerCase('zh-CN').includes(needle)).slice(0, Math.max(0, limit - folders.length)).map(item => ({ ...item, kind: 'file' }));
             return { folders, files };
         },
-        adminFiles() { return repository.projectFiles([...records.values()],diskSpace); },
+        adminFiles() { return repository.projectFiles([...records.values()].filter(item => !item.trashId),diskSpace); },
+        moveToTrash(ownerId, trashId, selection) {
+            const selected = selection.kind === 'directory' ? directorySnapshot(ownerId, selection.path) : null;
+            const files = selected ? selected.files : [this.get(ownerId,selection.id)];
+            if (!files.every(Boolean) || selected && (!selected.path || !selected.directories.length)) throw new Error('FILE_NOT_FOUND');
+            const snapshot = { files:files.map(item=>({...item})), directories:selected ? selected.directories.map(item=>({...item})) : [] };
+            for (const original of files) {
+                const item=records.get(original.id);
+                Object.assign(item,{trashId,trashOriginalName:item.name,trashOriginalPath:item.folderPath||'',name:':recycle:'+item.id,folderPath:'',updatedAt:Date.now()});
+            }
+            for (const directory of snapshot.directories) directories.delete(directoryKey(ownerId,directory.path));
+            persist(); return snapshot;
+        },
+        restoreTrash(ownerId, trashId, snapshot, maxDepth=20) {
+            for (const directory of snapshot.directories.slice().sort((a,b)=>a.path.length-b.path.length)) {
+                ensureDirectoryRecords(ownerId,directory.path,maxDepth);
+                Object.assign(directories.get(directoryKey(ownerId,directory.path)),directory,{updatedAt:Date.now()});
+            }
+            for (const original of snapshot.files) {
+                const item=records.get(original.id);
+                if (!item || item.ownerId!==String(ownerId) || item.trashId!==trashId || item.contentId!==original.contentId) throw new Error('TRASH_CONTENT_UNAVAILABLE');
+                assertFreeName(ownerId,original.folderPath||'',original.name,item.id);
+                Object.assign(item,{name:original.name,folderPath:original.folderPath||'',updatedAt:Date.now()});
+                delete item.trashId; delete item.trashOriginalName; delete item.trashOriginalPath;
+            }
+            persist();
+        },
+        purgeTrash(ownerId,trashId) {
+            const contentIds=[];
+            for (const item of records.values()) if(item.ownerId===String(ownerId)&&item.trashId===trashId){if(item.contentId)contentIds.push(item.contentId);records.delete(item.id);}
+            persist(); return [...new Set(contentIds)];
+        },
         adminDirectories() { return [...directories.values()].map(item => ({ ...item })); },
         remove(ownerId, id) { const item = this.get(ownerId, id); if (!item) return false; records.delete(item.id); touchDirectory(ownerId, item.folderPath || ''); persist(); return true; },
         removeMany(ownerId, ids) {

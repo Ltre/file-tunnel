@@ -36,3 +36,5 @@
 .web-editor textarea.is-drop-target{outline:3px solid #2e9e69;outline-offset:-3px;background:#d8f5e733}
 .web-tree-touch-ghost{position:fixed;z-index:2147483000;max-width:min(220px,60vw);overflow:hidden;padding:7px 11px;border:1px solid #2e9e69;border-radius:9px;background:#e8fff3;color:#155f3e;box-shadow:0 8px 24px #0004;font:600 13px/1.3 system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
 @media(max-width:650px){.web-workshop>header{gap:6px;padding-left:8px;padding-right:8px}.web-workshop>header>strong{font-size:14px;white-space:nowrap}.web-workshop>header button{padding:7px}.web-workshop-guide-link{padding:7px;font-size:12px}}
+
+.web-import-control{position:relative;flex-shrink:0}.web-import-menu{position:fixed;z-index:18820;display:flex;flex-direction:column;gap:4px;min-width:210px;max-width:calc(100vw - 24px);padding:7px;box-sizing:border-box;border:1px solid var(--panel-border);border-radius:10px;background:var(--panel-bg);box-shadow:0 10px 30px #0004}.web-import-menu[hidden]{display:none}.web-import-menu button{text-align:left;white-space:nowrap}

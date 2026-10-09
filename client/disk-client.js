@@ -125,7 +125,7 @@
                 if (pending) {
                     waiting.delete(operation.operation_id);
                     if (operation.status === 'completed') pending.resolve(operation.result);
-                    else pending.reject(Object.assign(new Error(operation.status === 'cancelled' ? 'OPERATION_CANCELLED' : operation.errorCode || 'DISK_OPERATION_FAILED'), { errorDetails: operation.errorDetails, partialItems: operation.result?.partialItems }));
+                    else pending.reject(Object.assign(new Error(operation.status === 'cancelled' ? 'OPERATION_CANCELLED' : operation.errorCode || 'DISK_OPERATION_FAILED'), { errorDetails: operation.errorDetails, userMessage: operation.errorMessage, partialItems: operation.result?.partialItems }));
                 }
                 close();
             }
@@ -152,7 +152,7 @@
                 if (!job || active(job) || !requested.has(id)) continue;
                 waiting.delete(id);
                 if (job.status === 'completed') handlers.resolve(job.result);
-                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; error.errorDetails = job.errorDetails; handlers.reject(error); }
+                else { const error = new Error(job.status === 'cancelled' ? 'OPERATION_CANCELLED' : (job.errorCode || 'DISK_OPERATION_FAILED')); error.partialItems = job.result?.partialItems; error.errorDetails = job.errorDetails; error.userMessage = job.errorMessage; handlers.reject(error); }
             }
             emit();
         }).catch(error => {
@@ -395,7 +395,7 @@
             const operation = snapshot.find(item => item.operation_id === job.operation_id);
             if (!operation || !['failed', 'cancelled'].includes(operation.status)) return;
             serverFailure ||= Object.assign(new Error(operation.status === 'cancelled' ? 'OPERATION_CANCELLED' : operation.errorCode || 'DISK_OPERATION_FAILED'), {
-                errorDetails: operation.errorDetails, partialItems: operation.result?.partialItems
+                errorDetails: operation.errorDetails, userMessage: operation.errorMessage, partialItems: operation.result?.partialItems
             });
             // This abort stops in-flight PUT/queue requests. It is not a user
             // cancellation and must never call the upload DELETE endpoint.
@@ -492,7 +492,7 @@
                 const failed = await raw('/operations/' + encodeURIComponent(job.operation_id)).catch(() => null);
                 if (failed?.errorCode) {
                     const original = new Error(failed.errorCode);
-                    original.errorDetails = failed.errorDetails;
+                    original.errorDetails = failed.errorDetails; original.userMessage = failed.errorMessage;
                     original.partialItems = failed.result?.partialItems;
                     error = original;
                 }

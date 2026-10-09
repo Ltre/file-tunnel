@@ -1,5 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
+const {diskOperationError}=require('./disk-errors');
 const { createTelegramChatDictionary, normalizeChatIdentifier } = require('./telegram-chat-dictionary');
 
 const PHYSICAL_FIELDS = ['parts', 'partCount', 'fileId', 'fileUniqueId', 'messageId', 'mediaGroupId', 'channelId', 'backendId', 'thumbnail', 'mediaIndex', 'fileIdHistory', 'pendingRemoteCleanup', 'captionSyncPending', 'captionWarning', 'lastCheckedAt', 'repairedAt', 'healthStatus', 'lastPhysicalError'];
@@ -64,13 +65,15 @@ function assertCopyGrant(db, proof, actorId, ownerId, diskSpace, { fileId = '', 
     if (!grant || grant.active === false || grant.ownerId !== ownerId || grant.diskSpace !== diskSpace
         || !grant.members?.includes(actorId) || String(version) !== String(proof.version)
         || write && (grant.kind !== 'directory' || grant.memberRoles?.[actorId] === 'viewer'))
-        throw new Error('COLLABORATION_NOT_FOUND');
+        throw diskOperationError('COLLABORATION_NOT_FOUND', grant?.members?.includes(actorId)
+            ? write && grant.memberRoles?.[actorId]==='viewer' ? 'TARGET_READ_ONLY' : String(version)!==String(proof.version) ? 'GRANT_VERSION_CHANGED' : 'GRANT_CHANGED'
+            : 'GRANT_MEMBERSHIP_MISSING');
     if (write) {
         if (grant.path && folderPath !== grant.path && !folderPath.startsWith(grant.path + '/'))
-            throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','TARGET_OUTSIDE_GRANT');
     } else if (grant.kind === 'file' ? grant.fileId !== fileId
         : grant.kind !== 'directory' || grant.path && folderPath !== grant.path && !folderPath.startsWith(grant.path + '/'))
-        throw new Error('COLLABORATION_OUT_OF_SCOPE');
+        throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_OUTSIDE_GRANT');
 }
 
 function assertCrossScopeCopy(db, proof, file, scope) {
@@ -79,12 +82,13 @@ function assertCrossScopeCopy(db, proof, file, scope) {
         || !['native', 'collaboration'].includes(target.kind)
         || source.kind === 'native' && target.kind === 'native'
         || source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)
-        throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', source?.kind==='native' && target?.kind==='native' ? 'NATIVE_PAIR'
+            : source?.kind==='collaboration' && target?.kind==='collaboration' && source.id===target.id ? 'SAME_COLLABORATION' : 'REQUEST_SCOPE_INVALID');
     const sourceOwner = String(source.ownerId || ''), sourceSpace = String(source.diskSpace ?? ''),
         targetOwner = String(target.ownerId || ''), targetSpace = String(target.diskSpace ?? '');
     if (!sourceOwner || !targetOwner || targetOwner !== file.ownerId || targetSpace !== String(scope)
         || sourceOwner === targetOwner && sourceSpace === targetSpace && source.fileId === file.id)
-        throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        throw diskOperationError('CONTENT_COPY_SCOPE_INVALID','COPY_IDENTITY_INVALID');
     assertCopyPartition(db, sourceOwner, sourceSpace);
     assertCopyPartition(db, targetOwner, targetSpace);
     const sourceRow = db.prepare('SELECT owner_id,folder_path,payload FROM disk_files WHERE scope=? AND id=?')
@@ -94,15 +98,15 @@ function assertCrossScopeCopy(db, proof, file, scope) {
     const sourceStatus = sourceRow && JSON.parse(sourceRow.payload).reviewStatus;
     if (!sourceRow || sourceRow.owner_id !== sourceOwner || sourceRef?.content_id !== file.contentId
         || sourceStatus && sourceStatus !== 'active')
-        throw new Error('CONTENT_COPY_SOURCE_INVALID');
+        throw diskOperationError('CONTENT_COPY_SOURCE_INVALID',!sourceRow || sourceRow.owner_id!==sourceOwner || sourceStatus&&sourceStatus!=='active' ? 'SOURCE_UNAVAILABLE' : !sourceRef ? 'CONTENT_REFERENCE_MISSING' : 'SOURCE_REFERENCE_CHANGED');
     assertCopyVisiblePath(db, sourceOwner, sourceSpace, sourceRow.folder_path, 'CONTENT_COPY_SOURCE_INVALID');
     assertCopyVisiblePath(db, targetOwner, targetSpace, file.folderPath, 'CONTENT_COPY_TARGET_INVALID');
     if (source.kind === 'native') {
-        if (sourceOwner !== actorId) throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        if (sourceOwner !== actorId) throw diskOperationError('CONTENT_COPY_SCOPE_INVALID','NATIVE_OWNER_MISMATCH');
     } else assertCopyGrant(db, source, actorId, sourceOwner, sourceSpace,
         { fileId: String(source.fileId), folderPath: sourceRow.folder_path });
     if (target.kind === 'native') {
-        if (targetOwner !== actorId) throw new Error('CONTENT_COPY_SCOPE_INVALID');
+        if (targetOwner !== actorId) throw diskOperationError('CONTENT_COPY_SCOPE_INVALID','NATIVE_OWNER_MISMATCH');
     } else assertCopyGrant(db, target, actorId, targetOwner, targetSpace,
         { folderPath: String(file.folderPath || ''), write: true });
 }
@@ -380,7 +384,7 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
             const grant=row ? JSON.parse(row.payload) : null,viewer=String(proof.viewerId),version=Number(grant?.memberVersions?.[viewer]) || 1;
             if(!grant || grant.active===false || grant.ownerId!==String(file.ownerId) || grant.diskSpace!==String(scope)
                 || viewer!==grant.ownerId && !grant.members.includes(viewer) || String(version)!==String(proof.version))throw new Error('COLLABORATION_NOT_FOUND');
-            if(grant.kind==='file' ? grant.fileId!==file.id : grant.path && file.folderPath!==grant.path && !String(file.folderPath).startsWith(grant.path+'/'))throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            if(grant.kind==='file' ? grant.fileId!==file.id : grant.path && file.folderPath!==grant.path && !String(file.folderPath).startsWith(grant.path+'/'))throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','FILE_OUTSIDE_GRANT');
         }
         const before = db.prepare('SELECT * FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, file.id);
         if (file.reviewStatus === 'deleted') {

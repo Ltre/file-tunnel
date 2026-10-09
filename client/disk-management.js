@@ -11,10 +11,11 @@
         return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
     };
     const time = value => Number(value) ? new Date(Number(value)).toLocaleString('zh-CN') : '—';
+    const errorText = error => window.DiskErrorMessages.format(error);
     async function request(path, options = {}) {
         const response = await fetch(api + path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers }, cache: 'no-store' });
         if (response.status === 401) { location.href = '/admin-auth.html?next=' + encodeURIComponent(location.pathname + location.search); throw new Error('管理会话已失效'); }
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP_${response.status}`);
+        if (!response.ok) { const data=await response.json().catch(()=>({}));throw Object.assign(new Error(data.error||`HTTP_${response.status}`),data); }
         return response.json();
     }
     const clear = node => node.replaceChildren();
@@ -49,7 +50,7 @@
                 media.src = fileUrl(item);
             }
             $('diskAdminPreviewBody').replaceChildren(media); $('diskAdminPreviewStatus').textContent = /^(audio|video)\//.test(type) ? `按播放位置请求 Telegram 分片 · ${bytes(item.size)}` : `预览已加载 · ${bytes(item.size)}`;
-        } catch (error) { $('diskAdminPreviewStatus').textContent = '预览失败：' + error.message; }
+        } catch (error) { $('diskAdminPreviewStatus').textContent = '预览失败：' + errorText(error); }
     }
     function thumbnail(item) {
         const button = el('button', 'disk-admin-thumb'); button.type = 'button';
@@ -95,7 +96,7 @@
             const data = await request('/storage-contents?' + query);
             if (state.selected !== selected || state.path !== path) return;
             renderContents(data); $('pageStatus').textContent = '';
-        } catch (error) { if (state.selected === selected && state.path === path) $('pageStatus').textContent = '加载失败：' + error.message; }
+        } catch (error) { if (state.selected === selected && state.path === path) $('pageStatus').textContent = '加载失败：' + errorText(error); }
     }
     function renderContents(data) {
         const bread = $('contentBreadcrumbs'); clear(bread); const parts = state.path.split('/').filter(Boolean);
@@ -189,7 +190,7 @@
             if (modal.hidden) return;
             $('diskTechnicalTree').replaceChildren(technicalNode('文件', data));
             $('diskTechnicalJson').textContent = JSON.stringify(data, null, 2);
-        } catch (error) { $('diskTechnicalTree').textContent = '读取失败：' + error.message; }
+        } catch (error) { $('diskTechnicalTree').textContent = '读取失败：' + errorText(error); }
     }
     async function searchStorage(offset = 0) {
         const query = $('storageSearchQuery').value.trim();
@@ -201,7 +202,7 @@
             renderFileTable(target, data.items, false);
             $('storageSearchStatus').textContent = `找到 ${data.total} 项；目录与文件均按实际名称匹配。`;
             pagination($('storageSearchPages'), data, searchStorage);
-        } catch (error) { $('storageSearchStatus').textContent = '搜索失败：' + error.message; }
+        } catch (error) { $('storageSearchStatus').textContent = '搜索失败：' + errorText(error); }
     }
     async function searchFileHash() {
         const file = $('contentHashFile').files[0]; if (!file) return;
@@ -214,7 +215,7 @@
             $('contentHashStatus').textContent = `${file.name} · ${bytes(data.size)} · SHA-256 ${data.sha256} · ${refs.length} 个活动逻辑文件引用`;
             for (const ref of refs) $('contentHashResults').append(positionCard(ref));
             if (!refs.length) $('contentHashResults').append(el('div', 'lookup-empty', '没有找到内容相同的活动文件。'));
-        } catch (error) { $('contentHashStatus').textContent = '查找失败：' + error.message; }
+        } catch (error) { $('contentHashStatus').textContent = '查找失败：' + errorText(error); }
         finally { $('contentHashSubmit').disabled = false; }
     }
     const stateLabels = { READY: '可用', BROKEN: '正文异常', DELETE_PENDING: '等待安全清理', DELETING: '清理中 / 待重试', DELETED: '已清理' };
@@ -227,8 +228,11 @@
             el('div', 'muted', `User ID：${file.owner_id}${file.user?.telegramId ? ' · TG ' + file.user.telegramId : ''}`),
             el('code', 'reference-path', file.full_path),
             el('div', 'muted', `文件 ID：${file.logical_file_id} · ${bytes(file.size)}${file.review_status === 'blocked' ? ' · 已屏蔽' : file.review_status === 'deleted' ? ' · 审核删除占位' : ''}`));
-        const link = el('a', 'reference-location', '打开所在目录 ↗');
-        link.href = file.location_url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = file.full_path; card.append(link);
+        if (file.trash_id) card.append(el('div', 'muted', '回收站保留的内容引用 · 请在所属分区回收站中还原或永久删除'));
+        else {
+            const link = el('a', 'reference-location', '打开所在目录 ↗');
+            link.href = file.location_url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.title = file.full_path; card.append(link);
+        }
         return card;
     }
     function pagination(target, data, change) {
@@ -268,7 +272,7 @@
             }
             if (!data.contents.length) target.append(el('div', 'lookup-empty', '当前筛选下没有待清理 Content Object。'));
             pagination($('contentCleanupPages'), data, loadCleanup); $('contentCleanupStatus').textContent = '';
-        } catch (error) { if (generation === state.cleanupGeneration) $('contentCleanupStatus').textContent = '读取失败：' + error.message; }
+        } catch (error) { if (generation === state.cleanupGeneration) $('contentCleanupStatus').textContent = '读取失败：' + errorText(error); }
         finally { if (generation === state.cleanupGeneration) $('contentCleanupRefresh').disabled = false; }
     }
     async function lookupFiles(q, offset = 0, selected = null) {
@@ -290,7 +294,7 @@
             const chosen = selected ? data.files.find(file => file.logical_file_id === selected.id && file.owner_id === selected.userId && file.scope === (selected.diskSpace || '')) : data.total === 1 ? data.files[0] : null;
             if (chosen?.content_id) await showContentDetail(chosen.content_id, chosen);
             else if (selected) $('referenceTitle').scrollIntoView({ block: 'start' });
-        } catch (error) { if (generation === state.lookupGeneration) $('contentReferenceStatus').textContent = '查询失败：' + error.message; }
+        } catch (error) { if (generation === state.lookupGeneration) $('contentReferenceStatus').textContent = '查询失败：' + errorText(error); }
         finally { if (generation === state.lookupGeneration) $('contentReferenceSearchBtn').disabled = false; }
     }
     async function showContentDetail(id, file = null, scroll = true) {
@@ -323,7 +327,7 @@
             const body = el('tbody');
             for (const anchor of data.anchors) { const row = el('tr'); [anchor.channel_id, anchor.message_id, anchor.revision, anchor.role, anchor.state].forEach(value => row.append(el('td', '', value))); body.append(row); }
             table.append(body); wrap.append(table); physical.append(summary, wrap); target.append(physical);
-        } catch (error) { if (generation === state.detailGeneration) { clear(target); target.append(el('div', 'diagnostic-status', '读取失败：' + error.message)); } }
+        } catch (error) { if (generation === state.detailGeneration) { clear(target); target.append(el('div', 'diagnostic-status', '读取失败：' + errorText(error))); } }
     }
     async function review(item, action) {
         const words = action === 'block' ? '屏蔽后内容仅用户本人可见，且不可分享。' : action === 'unblock' ? '取消屏蔽后，内容可再次分享。' : '将从 Telegram 删除文件实体，并永久保留“已删除”占位；此操作不可恢复。';
@@ -333,7 +337,7 @@
             const endpoint = item.kind === 'directory' ? '/directories/review' : '/reviews/' + encodeURIComponent(item.id);
             await request(endpoint, { method: 'PATCH', body: JSON.stringify({ user_id: item.userId, disk_space: item.diskSpace || '', path: item.path || '', action }) });
             await refresh(); $('pageStatus').textContent = '审核操作已完成。';
-        } catch (error) { $('pageStatus').textContent = '审核失败：' + error.message; }
+        } catch (error) { $('pageStatus').textContent = '审核失败：' + errorText(error); }
     }
     async function refresh() {
         $('refreshBtn').disabled = true;
@@ -350,7 +354,7 @@
             if (state.selected) await selectSpace(state.selected, state.path);
             await loadCleanup();
             if (state.detailId) await showContentDetail(state.detailId, null, false);
-        } catch (error) { $('pageStatus').textContent = '刷新失败：' + error.message; }
+        } catch (error) { $('pageStatus').textContent = '刷新失败：' + errorText(error); }
         finally { $('refreshBtn').disabled = false; }
     }
     $('diskAdminPreviewClose').onclick = closePreview;

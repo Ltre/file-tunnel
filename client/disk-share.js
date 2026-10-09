@@ -4,10 +4,10 @@
     const base = '/api/telegram/disk-shares/' + encodeURIComponent(token);
     const $ = id => document.getElementById(id);
     let abort, url = '', generation = 0, listedPath = '';
-    const errorText = error => /NOT_FOUND/.test(error.message) ? '分享不存在、已停止，或所选文件已删除。' : '操作失败：' + error.message;
+    const errorText = error => window.DiskErrorMessages.format(error);
     async function request(path, signal) {
         const response = await fetch(base + path, { credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '网络请求失败');
+        if (!response.ok) {const data=await response.json().catch(()=>({}));throw Object.assign(new Error(data.error||'DISK_REQUEST_FAILED'),data);}
         return response;
     }
     function closePreview() {
@@ -92,7 +92,7 @@
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);
             $('shareStatus').textContent = `已转存 ${data.copied.length} 个文件到自己的网盘：/${data.destination}`;
-        } catch (error) { $('shareStatus').textContent = error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需再次转存给自己。' : '转存失败：' + error.message; }
+        } catch (error) { $('shareStatus').textContent = error.message === 'CONTENT_COPY_SELF_OWNED' ? '这是您自己拥有的资源，无需再次转存给自己。' : '转存失败：' + errorText(error); }
     }
     async function openFile(file, preview) {
         const streamable = preview && (/^(image|audio|video)\//.test(file.type || '') || file.type === 'application/pdf');

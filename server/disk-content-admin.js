@@ -19,6 +19,7 @@ function createContentAdmin(content) {
         return { limit, offset };
     }
     function location(file) {
+        if (file.trash_id) return null;
         const query = new URLSearchParams({ user_id: file.owner_id, disk_space: file.scope, path: file.folder_path, file_id: file.logical_file_id });
         return '/disk-management?' + query;
     }
@@ -34,7 +35,7 @@ function createContentAdmin(content) {
             return { ...row, user: users.get(row.owner_id), full_path: '/' + [row.folder_path, row.name].filter(Boolean).join('/'), location_url: location(row) };
         });
     }
-    const fileFields = `f.scope,f.id AS logical_file_id,f.owner_id,f.folder_path,f.name,
+    const fileFields = `f.scope,f.id AS logical_file_id,f.owner_id,coalesce(json_extract(f.payload,'$.trashOriginalPath'),f.folder_path) AS folder_path,coalesce(json_extract(f.payload,'$.trashOriginalName'),f.name) AS name,json_extract(f.payload,'$.trashId') AS trash_id,
         json_extract(f.payload,'$.size') AS size,json_extract(f.payload,'$.type') AS type,
         coalesce(json_extract(f.payload,'$.reviewStatus'),'active') AS review_status,
         coalesce(json_extract(f.payload,'$.sourceAppId'),'') AS source_app_id,
