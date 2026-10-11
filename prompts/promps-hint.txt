@@ -27,3 +27,7 @@
     mattpocock
         - https://github.com/mattpocock/skills
 
+
+### 子 Agent 使用原则
+
+根据任务的实际需求决定是否启用子 Agent。仅在确有必要时使用，尤其当任务较复杂、适合拆分并行处理，或预计整体任务量较大、可能占用过多上下文时，应优先考虑将任务拆分后交由子 Agent 执行。
