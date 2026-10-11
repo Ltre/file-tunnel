@@ -1,6 +1,6 @@
 (function(global){
     'use strict';
-    const MAX=20_000_000,PAGE=32*1024,HEX_PAGE=8*1024;
+    const MAX=20_000_000,PAGE=100*1024,HEX_PAGE=PAGE;
     const escape=text=>String(text).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     function bytesFromHex(text){const value=text.replace(/\s/g,'');if(value.length%2||/[^0-9a-f]/i.test(value))throw new Error('十六进制内容须由完整的两位字节组成，例如 00 7F FF');const out=new Uint8Array(value.length/2);for(let i=0;i<out.length;i++)out[i]=parseInt(value.slice(i*2,i*2+2),16);return out;}
     function markdown(text){return escape(text).replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>').replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/^[-*] (.+)$/gm,'<div>• $1</div>').replace(/\n/g,'<br>');}
@@ -20,6 +20,18 @@
     }
     function rawIndex(raw,position){let display=0,index=0;while(index<raw.length&&display<position){if(raw[index]==='\r'&&raw[index+1]==='\n')index++;index++;display++;}return index;}
     function difference(before,after){let start=0;while(start<before.length&&start<after.length&&before[start]===after[start])start++;if(start&&/[\uD800-\uDBFF]/.test(before[start-1]))start--;let left=before.length,right=after.length;while(left>start&&right>start&&before[left-1]===after[right-1]){left--;right--;}if(left<before.length&&/[\uDC00-\uDFFF]/.test(before[left])){left++;right++;}return {start,left,right};}
+    // Rendered Markdown and decoded hex can have different heights from their source.
+    // Match relative vertical positions, and consume the resulting programmatic event.
+    function syncScrollablePanes(edit,preview,enabled){
+        const expected=new WeakMap();let disposed=false;
+        const extent=node=>Math.max(0,(node.scrollHeight||0)-(node.clientHeight||0));
+        const align=origin=>{if(disposed||!enabled())return;const target=origin===edit?preview:edit,sourceExtent=extent(origin),targetExtent=extent(target);if(!sourceExtent)return;const ratio=Math.max(0,Math.min(1,(origin.scrollTop||0)/sourceExtent)),next=ratio*targetExtent;
+            if(Math.abs((target.scrollTop||0)-next)<1)return;target.scrollTop=next;expected.set(target,target.scrollTop);};
+        const fromEdit=()=>scroll(edit),fromPreview=()=>scroll(preview);
+        const scroll=origin=>{const previous=expected.get(origin);expected.delete(origin);if(previous!==undefined&&Math.abs((origin.scrollTop||0)-previous)<1)return;align(origin);};
+        edit.addEventListener('scroll',fromEdit);preview.addEventListener('scroll',fromPreview);
+        return {align:()=>align(edit),reset:()=>{for(const node of [edit,preview]){node.scrollTop=0;expected.set(node,node.scrollTop);}},destroy:()=>{disposed=true;edit.removeEventListener('scroll',fromEdit);preview.removeEventListener('scroll',fromPreview);}};
+    }
     async function open({item,path='',openDialog,onSaved}){
         const client=global.DiskClient,context={...client.context(),...(item?.diskTransportContext||{})};
         if(item&&item.size>MAX)throw new Error('编辑器最多打开 20MB 文件；大文件仍可下载');
@@ -32,9 +44,10 @@
         const toolbar=document.createElement('div');toolbar.className='disk-editor-navigation';const state=document.createElement('p');state.setAttribute('role','status');
         const offset=document.createElement('input');offset.type='number';offset.min='0';offset.setAttribute('aria-label','定位字节位置');const range=document.createElement('span');range.className='disk-editor-range';
         let current,loading=false,saving=false,composing=false,anchor=null,previewTimer,modeValue=mode.value;
+        const scrollSync=syncScrollablePanes(edit,preview,()=>mode.value!=='text');
         const encode=text=>new TextEncoder().encode(text);
         const button=(text,handler)=>{const b=document.createElement('button');b.type='button';b.className='btn btn-secondary';b.textContent=text;b.onclick=()=>Promise.resolve().then(()=>{if(saving||loading||composing)throw new Error('正在处理，请稍候');return handler();}).catch(error=>{state.textContent=error.message;});toolbar.append(b);return b;};
-        const updatePreview=()=>{preview.hidden=mode.value==='text';panes.classList.toggle('single',preview.hidden);if(mode.value==='markdown')preview.innerHTML=markdown(edit.value);else if(mode.value==='hex'){try{preview.textContent=new TextDecoder().decode(bytesFromHex(edit.value)).replace(/[\u0000-\u0008\u000b-\u001f]/g,'·');}catch(error){preview.textContent=error.message;}}};
+        const updatePreview=()=>{preview.hidden=mode.value==='text';panes.classList.toggle('single',preview.hidden);if(mode.value==='markdown')preview.innerHTML=markdown(edit.value);else if(mode.value==='hex'){try{preview.textContent=new TextDecoder().decode(bytesFromHex(edit.value)).replace(/[\u0000-\u0008\u000b-\u001f]/g,'·');}catch(error){preview.textContent=error.message;}}scrollSync.align();};
         const position=(pos=edit.selectionStart)=>current.start+(mode.value==='hex'?Math.floor(edit.value.slice(0,pos).replace(/\s/g,'').length/2):encode(current.raw.slice(0,rawIndex(current.raw,pos))).length);
         const commit=()=>{if(!current||composing||edit.value===current.text)return;
             if(mode.value==='hex'){const data=bytesFromHex(edit.value);doc.replace(current.start,current.end,new Blob([data]));current.end=current.start+data.length;current.raw=current.text=edit.value;}
@@ -42,7 +55,7 @@
                 const start=current.start+encode(current.raw.slice(0,a)).length,end=current.start+encode(current.raw.slice(0,b)).length,inserted=textBlob(rawInsert);doc.replace(start,end,inserted);current.end+=inserted.size-(end-start);current.raw=current.raw.slice(0,a)+rawInsert+current.raw.slice(b);current.text=edit.value;}
             state.textContent='尚未保存 · 撤销保留最近 50 步';anchor=null;
         };
-        const load=async(where,caret='start')=>{if(loading||saving||composing)return;commit();loading=true;edit.disabled=true;try{current=await doc.window(where,mode.value==='hex');edit.value=current.text;edit.scrollTop=0;edit.setSelectionRange(caret==='end'?edit.value.length:0,caret==='end'?edit.value.length:0);offset.value=String(current.start);range.textContent=`字节 ${current.start}–${current.end} / ${doc.blob.size} · 预览仅当前段`;updatePreview();}finally{loading=false;edit.disabled=false;}};
+        const load=async(where,caret='start')=>{if(loading||saving||composing)return;commit();loading=true;edit.disabled=true;try{current=await doc.window(where,mode.value==='hex');edit.value=current.text;scrollSync.reset();edit.setSelectionRange(caret==='end'?edit.value.length:0,caret==='end'?edit.value.length:0);offset.value=String(current.start);range.textContent=`字节 ${current.start}–${current.end} / ${doc.blob.size} · 预览仅当前段`;updatePreview();}finally{loading=false;edit.disabled=false;}};
         button('上一段',()=>load(Math.max(0,current.start-(mode.value==='hex'?HEX_PAGE:PAGE)),'end'));button('下一段',()=>load(current.end));toolbar.append(offset);button('定位',()=>{const at=Number(offset.value);if(!Number.isSafeInteger(at)||at<0||at>doc.blob.size)throw new Error(`请输入 0 至 ${doc.blob.size} 的整数字节位置`);return load(at);});
         const history=async redo=>{if(loading||composing||saving)return;try{commit();}catch(error){edit.value=current.text;updatePreview();state.textContent='已撤销尚未生效的输入：'+error.message;return;}const at=doc.history(redo);if(at!==null){current=null;anchor=null;await load(at);state.textContent='尚未保存';}};
         button('撤销',()=>history(false));button('重做',()=>history(true));
@@ -56,7 +69,7 @@
         edit.onpaste=event=>{if(mode.value==='hex'||composing)return;event.preventDefault();try{commit();const text=event.clipboardData.getData('text/plain'),start=position(),end=position(edit.selectionEnd),raw=current.raw.includes('\r\n')?text.replace(/\r\n?/g,'\n').replace(/\n/g,'\r\n'):text.replace(/\r\n?/g,'\n');doc.replace(start,end,textBlob(raw));current=null;anchor=null;load(start).catch(error=>{state.textContent=error.message;});state.textContent='尚未保存';}catch(error){state.textContent=error.message;}};
         edit.onkeydown=event=>{if(composing||event.isComposing)return;if((event.ctrlKey||event.metaKey)&&['z','y'].includes(event.key.toLowerCase())){event.preventDefault();history(event.key.toLowerCase()==='y'||event.shiftKey).catch(error=>{state.textContent=error.message;});}
             else if(event.ctrlKey&&['PageDown','PageUp'].includes(event.key)){event.preventDefault();load(event.key==='PageDown'?current.end:Math.max(0,current.start-(mode.value==='hex'?HEX_PAGE:PAGE))).catch(error=>{state.textContent=error.message;});}};
-        mode.onchange=async()=>{const next=mode.value,before=modeValue;mode.value=before;if(loading||saving||composing)return;try{commit();loading=true;edit.disabled=mode.disabled=true;if(next!=='hex'){state.textContent='正在验证 UTF-8…';await validUtf8(doc.blob);}mode.value=modeValue=next;loading=false;await load(current.start);state.textContent='尚未保存 · 预览仅当前段';}catch(error){mode.value=modeValue=before;state.textContent=error.message;}finally{loading=false;edit.disabled=mode.disabled=false;}};
+        mode.onchange=async()=>{const next=mode.value,before=modeValue;mode.value=before;if(loading||saving||composing)return;try{commit();loading=true;edit.disabled=mode.disabled=true;if(next!=='hex'){state.textContent='正在验证 UTF-8…';try{await validUtf8(doc.blob);}catch(_){throw new Error('当前内容不是有效 UTF-8，无法切换为纯文本或 Markdown；请继续使用十六进制编辑，原始字节已保留。');}}mode.value=modeValue=next;loading=false;await load(current.start);state.textContent='尚未保存 · 预览仅当前段';}catch(error){mode.value=modeValue=before;state.textContent=error.message;}finally{loading=false;edit.disabled=mode.disabled=false;}};
         let styledCard,cardStyle,overlayStyle;
         const viewport=()=>{const height=Math.min(innerHeight,global.visualViewport?.height||innerHeight);body.style.setProperty('--disk-editor-viewport',`${height}px`);
             const card=body.closest('.telegram-drive-dialog-card');if(!card)return;
@@ -70,8 +83,8 @@
             const route=item?'/files/'+encodeURIComponent(item.id)+'/content':'/files/content?folderPath='+encodeURIComponent(path)+'&name='+encodeURIComponent(name.value);
             state.textContent='正在保存新内容…';saving=true;edit.disabled=mode.disabled=name.disabled=true;try{const response=await client.raw(route,{...context,method:item?'PUT':'POST',headers:{'X-Disk-File-Size':String(data.size),'X-Disk-File-Type':type,'X-Disk-Expected-Version':String(item?.logicalContentVersion||0)},body:data});
             const saved=response.operation_id?await client.wait(response.operation_id,context):response;return {saved,name:name.value};}finally{saving=false;edit.disabled=mode.disabled=false;name.disabled=Boolean(item);}
-        }});viewport();result=await pending;}finally{clearTimeout(previewTimer);global.visualViewport?.removeEventListener('resize',viewport);global.visualViewport?.removeEventListener('scroll',viewport);global.removeEventListener('resize',viewport);if(styledCard){Object.assign(styledCard.style,cardStyle);Object.assign(styledCard.parentElement.style,overlayStyle);}doc.undoStack=[];doc.redoStack=[];}
+        }});viewport();result=await pending;}finally{clearTimeout(previewTimer);scrollSync.destroy();global.visualViewport?.removeEventListener('resize',viewport);global.visualViewport?.removeEventListener('scroll',viewport);global.removeEventListener('resize',viewport);if(styledCard){Object.assign(styledCard.style,cardStyle);Object.assign(styledCard.parentElement.style,overlayStyle);}doc.undoStack=[];doc.redoStack=[];}
         if(result)await onSaved?.(result);
     }
-    global.DiskFileEditor={open,_test:{bytesFromHex,markdown,Document,validUtf8,difference,rawIndex,textBlob,PAGE,HEX_PAGE}};
+    global.DiskFileEditor={open,_test:{bytesFromHex,markdown,Document,validUtf8,difference,rawIndex,textBlob,syncScrollablePanes,PAGE,HEX_PAGE}};
 })(window);

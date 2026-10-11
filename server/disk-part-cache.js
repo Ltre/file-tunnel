@@ -9,6 +9,15 @@ const { openDiskRepository } = require('./disk-repository');
 
 const CACHE_SCHEMA = '2';
 
+// Shared references keep sharing cache; a replacement/repair generation cannot
+// inherit bytes from an older Content Object or physical revision.
+function diskPartCacheKey(backendKey, file, part, start, end) {
+    const legacy = ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end];
+    return file.contentId
+        ? ['v3', file.contentId, Number(file.physicalRevision) || 1, ...legacy.slice(1)].join(':')
+        : legacy.join(':');
+}
+
 function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_PART_CACHE_BYTES) || 10 * 1024 * 1024 * 1024, ttlMs = 2 * 24 * 60 * 60 * 1000 } = {}) {
     const root = path.join(dataDir, 'telegram-part-cache');
     const inflight = new Map();
@@ -138,7 +147,15 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
     async function prepare(id, size, source, expectedSha256) {
         const target = path.join(root, id + '.part');
         const existing = await fsp.stat(target).catch(() => null);
-        if (existing?.size === size && Date.now() - existing.mtimeMs < ttlMs) { fsp.utimes(target, new Date(), new Date()).catch(() => {}); return { target, written: size, done: true, waiters: [] }; }
+        if (existing?.size === size && Date.now() - existing.mtimeMs < ttlMs) {
+            let valid = true;
+            if (expectedSha256) {
+                const hash = crypto.createHash('sha256');
+                try { for await (const bytes of fs.createReadStream(target)) hash.update(bytes); valid = hash.digest('hex') === expectedSha256; }
+                catch (error) { if (error.code !== 'ENOENT') throw error; valid = false; }
+            }
+            if (valid) { fsp.utimes(target, new Date(), new Date()).catch(() => {}); return { target, written: size, done: true, waiters: [] }; }
+        }
         if (existing) await fsp.unlink(target).catch(() => {});
         if (inflight.has(id)) return inflight.get(id);
         const temporary = path.join(root, id + '.tmp');
@@ -243,4 +260,4 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
     prune().catch(() => {});
     return { open, prune, clear, overview, inflightCount() { return inflight.size; } };
 }
-module.exports = { createDiskPartCache };
+module.exports = { createDiskPartCache, diskPartCacheKey };

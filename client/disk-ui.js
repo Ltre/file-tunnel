@@ -3181,6 +3181,11 @@ function initDiskEnhancements() {
         catch (error) { alert(telegramDriveErrorText(error)); }
     };
     const previousStatuses = new Map();
+    const taskNamespaceName = namespace => {
+        const name=namespace?.name ?? namespace?.displayName;
+        return typeof name==='string' && name.trim() && !['undefined','null'].includes(name.trim()) ? name
+            : namespace?.kind==='collaboration' ? '协同项目（历史名称未记录）' : '网盘分区（历史名称未记录）';
+    };
     window.DiskClient.subscribe(jobs => {
         jobs=jobs.filter(job=>!job.historyMirrorId||!jobs.some(other=>other.operation_id===job.historyMirrorId));
         const groups=new Map();
@@ -3210,11 +3215,12 @@ function initDiskEnhancements() {
             row.append(title, detail);
             if (job.transferDetails) {
                 const info=job.transferDetails, list=document.createElement('details'), summary=document.createElement('summary');
-                summary.textContent=`${info.mode==='move'?'移动':'复制'} ${info.source.entries.length} 项 · ${info.source.name} → ${info.target.name}`;
+                const sourceName=taskNamespaceName(info.source),targetName=taskNamespaceName(info.target),entries=Array.isArray(info.source?.entries)?info.source.entries:[];
+                summary.textContent=`${info.mode==='move'?'移动':'复制'} ${entries.length} 项 · ${sourceName} → ${targetName}`;
                 list.append(summary);list.className='disk-transfer-details';
-                for(const entry of info.source.entries){const line=document.createElement('p');
-                    const destination=[info.target.directory.replace(/\/$/,''),entry.name].join('/');
-                    line.textContent=`${entry.kind==='directory'?'📁':'📄'} 从“${info.source.name}” ${entry.path} → “${info.target.name}” ${destination} · ${entry.outcome|| (job.phase==='source-retained'?'已复制，来源仍保留':job.status==='completed'?'已完成':job.status==='failed'?'未完成，请核对结果':'执行中')}`;list.append(line);}
+                for(const entry of entries){const line=document.createElement('p');
+                    const destination=[String(info.target?.directory||'/').replace(/\/$/,''),entry.name].join('/');
+                    line.textContent=`${entry.kind==='directory'?'📁':'📄'} 从“${sourceName}” ${entry.path} → “${targetName}” ${destination} · ${entry.outcome|| (job.phase==='source-retained'?'已复制，来源仍保留':job.status==='completed'?'已完成':job.status==='failed'?'未完成，请核对结果':'执行中')}`;list.append(line);}
                 row.append(list);
             }
             if (['queued', 'running'].includes(job.status) && job.type !== 'transfer-history') {

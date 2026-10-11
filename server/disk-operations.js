@@ -32,9 +32,35 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     if (jobs.size) save();
     const view = job => job ? structuredClone(job) : null;
     const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '') && (job.type !== 'read' || (Boolean(job.deviceId) && job.deviceId === scope.deviceId));
+    // History belongs to its source namespace. Storage ownership remains the
+    // acting user; a grant's owner must not acquire that user's private target.
+    const historyOrigin = job => job?.historyOrigin || (job?.transferDetails?.source && {
+        kind: job.transferDetails.source.kind,
+        ...(job.transferDetails.source.kind === 'collaboration'
+            ? { collaborationId: job.transferDetails.source.id }
+            : { partitionId: job.transferDetails.source.id, diskSpace: job.transferDetails.source.diskSpace ?? job.diskSpace })
+    });
+    const historyVisible = (job, context) => {
+        const origin = historyOrigin(job);
+        if (!origin) return true;
+        if (job.historyActorId && job.historyActorId !== context.userId) return false;
+        if (context.collaborationId) return origin.kind === 'collaboration' && origin.collaborationId === context.collaborationId;
+        return origin.kind === 'native' && (context.partitionId && origin.partitionId
+            ? origin.partitionId === context.partitionId : origin.diskSpace === (context.diskSpace || ''));
+    };
+    const listView = (items, requested = []) => {
+        const wanted = new Set(requested);
+        return items.sort((a,b) => b.createdAt-a.createdAt)
+            .filter((job, index) => !terminal(job) || wanted.has(job.operation_id) || index < 100)
+            .map(job => { const copy = view(job); delete copy.response; if (!wanted.has(job.operation_id)) delete copy.result; return copy; });
+    };
     const api = {
         annotateTransfer(id, patch) { const job=jobs.get(id);if(job){Object.assign(job,patch);save();return view(job);} },
         findHistory(scope, requestId) { return [...jobs.values()].find(job => owns(job, scope) && job.type === 'transfer-history' && job.requestId === requestId); },
+        findHistoryForActor(userId, requestId) { return view([...jobs.values()].find(job => job.userId === userId && job.type === 'transfer-history' && job.requestId === requestId)); },
+        isHistoryVisible: historyVisible,
+        listHistory(context, requested = []) { return listView([...jobs.values()].filter(job => job.userId === context.userId && job.type === 'transfer-history' && historyVisible(job, context)), requested); },
+        getHistory(id, context) { const job=jobs.get(id);return job?.type==='transfer-history' && job.userId===context.userId && historyVisible(job,context) ? view(job) : null; },
         reopenHistory(id) { const job=jobs.get(id); if(job?.type==='transfer-history'){Object.assign(job,{status:'queued',finishedAt:0,errorCode:'',errorMessage:'',errorDetails:{}});save();} },
         mirrorHistory(source) {
             if (!source.historyMirrorId) return;
@@ -64,10 +90,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             job.warnings = [...(job.warnings || []), warning]; job.updatedAt = now(); save();
         },
         list(scope, requested = []) {
-            const wanted = new Set(requested);
-            return [...jobs.values()].filter(job => owns(job, scope)).sort((a,b) => b.createdAt-a.createdAt)
-                .filter((job, index) => !terminal(job) || wanted.has(job.operation_id) || index < 100)
-                .map(job => { const copy = view(job); delete copy.response; if (!wanted.has(job.operation_id)) delete copy.result; return copy; });
+            return listView([...jobs.values()].filter(job => owns(job, scope)), requested);
         },
         update(id, patch, immediate = false) {
             const job = jobs.get(id); if (!job || terminal(job)) return view(job);

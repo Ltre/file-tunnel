@@ -16,7 +16,7 @@ const { createDiskCollaborationMountStore } = require('./disk-collaboration-moun
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskMetadataTiming } = require('./disk-metadata-timing');
-const { createDiskPartCache } = require('./disk-part-cache');
+const { createDiskPartCache, diskPartCacheKey } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
 const { diskErrorCode, diskErrorDetails, diskOperationError, diskUserMessage } = require('./disk-errors');
@@ -778,13 +778,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const block = 1024 * 1024;
                 const cacheStart = Math.floor(localStart / block) * block;
                 const cacheEnd = Math.min(part.size - 1, Math.ceil((localEnd + 1) / block) * block - 1);
-                const key = ['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', cacheStart, cacheEnd].join(':');
+                const key = diskPartCacheKey(backendKey,file,part,cacheStart,cacheEnd);
                 const source = await partCache.open({
                     key, size: cacheEnd - cacheStart + 1,
                     owner: file.contentProofRead ? undefined : { userId: file.viewerId || file.ownerId, diskSpace },
                     start: localStart - cacheStart, end: localEnd - cacheStart, signal,
                     cancelWhenUnused: file.cancelUnusedCacheFill === true,
-                    expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1 ? String(part.sha256 || '') : '',
+                    expectedSha256: cacheStart === 0 && cacheEnd === Number(part.size) - 1
+                        ? String(part.sha256 || (parts.length===1 && Number(part.size)===Number(file.size) ? file.contentSha256 : '') || '') : '',
                     // Cache fills are shared; only the last departing reader stops upstream.
                     source: cacheSignal => telegram.readPart(backend, part, { start: cacheStart, end: cacheEnd, signal: cacheSignal })
                 });
@@ -1004,7 +1005,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 for (const part of telegram.parts(file)) for (let start = 0; start < part.size; start += 1024 * 1024) {
                     for (let next = start + 1024 * 1024; ; next += 1024 * 1024) {
                         const end = Math.min(part.size - 1, next - 1);
-                        yield {key:['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':'),owner:{userId:file.ownerId,diskSpace}};
+                        yield {key:diskPartCacheKey(backendKey,file,part,start,end),owner:{userId:file.ownerId,diskSpace}};
+                        // Retain scoped cleanup support for cache written before v3.
+                        if(file.contentId)yield {key:['v2', backendKey, part.fileId, Number(part.size), part.sha256 || '', start, end].join(':'),owner:{userId:file.ownerId,diskSpace}};
                         if (end === part.size - 1) break;
                     }
                 }
@@ -1362,7 +1365,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 return { kind:'collaboration', name:file?.name||grant.name, id:grant.id, root:file?.folderPath ?? grant.path ?? '', ownerId:grant.ownerId, diskSpace:grant.diskSpace, drive };
             }
             const partition=partitions.find(actor.id,value?.partitionId ?? req.diskPartition.id);
-            return {kind:'native',name:partition.name,id:partition.id,root:'',ownerId:actor.id,diskSpace:partition.scopeKey,drive:spaces.get(partition.scopeKey)};
+            return {kind:'native',name:partition.displayName || (partition.isDefault ? '默认分区' : '未命名分区'),id:partition.id,root:'',ownerId:actor.id,diskSpace:partition.scopeKey,drive:spaces.get(partition.scopeKey)};
         };
         let sourceInput=req.body?.source, targetInput=req.body?.target, selected=req.body?.items;
         const mounted=req.path.match(/^\/(mount-scope|collaboration-scope)\/([^/]+)/);
@@ -1390,7 +1393,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             !all.some((parent,i)=>i!==index&&parent.kind==='directory'&&entry.path.startsWith(parent.path+'/'))
             &&all.findIndex(other=>other.kind===entry.kind&&other.path===entry.path)===index);
         const batch=req.body.transferBatch;
-        return {mode,...(batch&&/^[-\w]{8,100}$/.test(batch.id)&&Number.isInteger(batch.total)&&batch.total>0&&batch.total<=100&&Number.isInteger(batch.index)&&batch.index>=0&&batch.index<batch.total?{batch:{id:batch.id,total:batch.total,index:batch.index}}:{}),source:{kind:source.kind,id:source.id,name:source.name,entries},target:{kind:target.kind,id:target.id,name:target.name,
+        return {mode,...(batch&&/^[-\w]{8,100}$/.test(batch.id)&&Number.isInteger(batch.total)&&batch.total>0&&batch.total<=100&&Number.isInteger(batch.index)&&batch.index>=0&&batch.index<batch.total?{batch:{id:batch.id,total:batch.total,index:batch.index}}:{}),source:{kind:source.kind,id:source.id,name:source.name,diskSpace:source.diskSpace,entries},target:{kind:target.kind,id:target.id,name:target.name,
             directory:visible(target,String(targetInput?.destinationPath ?? req.body.destinationPath ?? req.body.folderPath ?? ''))}};
     } }));
     browser.get('/spaces', (req, res) => res.json({ spaces: partitions.list(req.diskUser.id) }));
@@ -1819,13 +1822,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.delete('/shares/:id', wrap((req, res) => res.json(shares.stop(scope(req), req.params.id))));
         router.get('/operations', (req, res) => {
             const requested=String(req.query.ids || '').split(',').slice(0,100);
-            const jobs=operations.list(scope(req),requested).filter(job=>!req.collaboration||job.collaborationId===req.collaboration.id);
-            if(req.collaboration && req.diskLocalScope && req.diskLocalScope.userId!==owner(req))jobs.push(...operations.list(req.diskLocalScope).filter(job=>job.type==='transfer-history'&&job.transferDetails?.source.id===req.collaboration.id));
-            res.json({operations:jobs});
+            const actorId=req.diskViewerId || req.diskLocalScope?.userId || owner(req);
+            const context={userId:actorId,...(req.collaboration?{collaborationId:req.collaboration.id}:{diskSpace:scope(req).diskSpace,partitionId:req.diskPartition?.id})};
+            const jobs=operations.list(scope(req),requested).filter(job=>(!req.collaboration||job.collaborationId===req.collaboration.id)
+                &&(operations.isHistoryVisible(job,context)||requested.includes(job.operation_id)&&job.type!=='transfer-history'));
+            jobs.push(...operations.listHistory(context,requested));
+            res.json({operations:[...new Map(jobs.map(job=>[job.operation_id,job])).values()]});
         });
         router.get('/operations/:id', wrap((req, res) => {
-            const job = operations.get(req.params.id, scope(req));
-            if (!job || (req.collaboration && job.collaborationId !== req.collaboration.id)) throw new Error('OPERATION_NOT_FOUND');
+            const actorId=req.diskViewerId || req.diskLocalScope?.userId || owner(req);
+            const context={userId:actorId,...(req.collaboration?{collaborationId:req.collaboration.id}:{diskSpace:scope(req).diskSpace,partitionId:req.diskPartition?.id})};
+            let job = operations.get(req.params.id, scope(req));
+            if(job?.type==='transfer-history'&&!operations.isHistoryVisible(job,context))job=null;
+            job ||= operations.getHistory(req.params.id,context);
+            if (!job || (req.collaboration && job.type!=='transfer-history' && job.collaborationId !== req.collaboration.id)) throw new Error('OPERATION_NOT_FOUND');
             res.json(job);
         }));
         router.delete('/operations/:id', wrap(async (req, res) => {

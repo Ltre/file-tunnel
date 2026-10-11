@@ -21,8 +21,8 @@ test('大段粘贴不丢失未显示正文；十六进制及撤销历史保持�
     await assert.rejects(validUtf8(new Blob([Uint8Array.from([0xff,0x80])])));assert.throws(()=>doc.replace(0,0,new Blob([new Uint8Array(20_000_000)])),/20MB/);
 });
 test('实际编辑控制器跨段修改、复制粘贴、撤销重做后提交完整 Blob 与原版本',async()=>{
-    class Node {constructor(tag){this.tagName=tag;this.children=[];this.value='';this.style={setProperty(){}};this.classList={toggle(){}};}append(...v){this.children.push(...v);}add(v){this.children.push(v);}setAttribute(){}addEventListener(){}closest(){return null;}setSelectionRange(a,b){this.selectionStart=a;this.selectionEnd=b;}}
-    const original='BEGIN\r\n'+'x'.repeat(70000)+'\r\nEND',source=new Blob([original]),saved=[],clipboard=[];
+    class Node {constructor(tag){this.tagName=tag;this.children=[];this.value='';this.style={setProperty(){}};this.classList={toggle(){}};}append(...v){this.children.push(...v);}add(v){this.children.push(v);}setAttribute(){}addEventListener(){}removeEventListener(){}closest(){return null;}setSelectionRange(a,b){this.selectionStart=a;this.selectionEnd=b;}}
+    const original='BEGIN\r\n'+'x'.repeat(210000)+'\r\nEND',source=new Blob([original]),saved=[],clipboard=[];
     source.arrayBuffer=()=>{throw new Error('不应整份转成 ArrayBuffer');};
     const window={addEventListener(){},removeEventListener(){},DiskClient:{context:()=>({diskSpace:'中文分区'}),read:async()=>source,raw:async(route,options)=>{saved.push({route,options});return {ok:true};}}};
     const context={window,innerHeight:700,Blob,Uint8Array,TextEncoder,TextDecoder,document:{createElement:tag=>new Node(tag)},Option:class{constructor(text,value){this.text=text;this.value=value;}},setTimeout,clearTimeout,navigator:{clipboard:{writeText:async text=>clipboard.push(text)}}};
@@ -30,7 +30,8 @@ test('实际编辑控制器跨段修改、复制粘贴、撤销重做后提交�
     await window.DiskFileEditor.open({item:{id:'logical-1',name:'test.txt',size:source.size,logicalContentVersion:6},openDialog:async options=>{
         const body=options.body,toolbar=body.children.find(n=>n.className==='disk-editor-navigation'),panes=body.children.find(n=>n.className==='disk-editor-panes'),edit=panes.children[0],offset=toolbar.children.find(n=>n.tagName==='input');
         const click=async name=>toolbar.children.find(n=>n.textContent===name).onclick();
-        assert.ok(edit.value.length<33000);edit.value=edit.value.replace('BEGIN','START');edit.oninput();
+        assert.equal(edit.value.length,102399); // 100KiB source, with one CRLF normalized for textarea.
+        edit.value=edit.value.replace('BEGIN','START');edit.oninput();
         edit.setSelectionRange(0,0);await click('记住选区起点');offset.value='8000';await click('定位');edit.setSelectionRange(0,0);await click('复制到此光标');assert.ok(clipboard[0].startsWith('START\r\n'));
         offset.value=String(source.size-10);await click('定位');edit.setSelectionRange(edit.value.length,edit.value.length);
         const paste='中文😀'.repeat(10000);edit.onpaste({preventDefault(){},clipboardData:{getData:()=>paste}});for(let i=0;i<30&&edit.disabled;i++)await new Promise(r=>setImmediate(r));
@@ -77,8 +78,10 @@ test('挂载内部移动明细归操作人，来源所有者不获得对方网�
     const {mount}=await call('/mounts',{parentPath:'',name:'本地别名',collaborationId:invite.collaboration.id});
     const response=await call('/mount-scope/'+mount.id+'/files/file-b',{folderPath:'backup/a'},'alice','PATCH');
     for(let i=0;i<100;i++){const job=await call('/mount-scope/'+mount.id+'/operations/'+response.operation_id);if(job.status==='completed')break;if(job.status==='failed')throw new Error(job.errorCode);await new Promise(r=>setTimeout(r,10));}
-    const personal=(await call('/operations')).operations.find(job=>job.type==='transfer-history');assert.equal(personal.status,'completed');assert.equal(personal.transferDetails.source.entries[0].path,'/相同.har');assert.equal(personal.transferDetails.target.directory,'/a');
-    const sourceJob=(await call('/operations',null,'bob')).operations.find(job=>job.operation_id===response.operation_id);assert.equal(sourceJob.transferDetails,undefined);
+    assert.ok(!(await call('/operations')).operations.some(job=>job.type==='transfer-history'));
+    const personal=(await call('/mount-scope/'+mount.id+'/operations')).operations.find(job=>job.type==='transfer-history');assert.equal(personal.status,'completed');assert.equal(personal.transferDetails.source.entries[0].path,'/相同.har');assert.equal(personal.transferDetails.target.directory,'/a');
+    assert.ok(!(await call('/operations',null,'bob')).operations.some(job=>job.operation_id===response.operation_id));
+    const sourceJob=await call('/operations/'+response.operation_id,null,'bob');assert.equal(sourceJob.transferDetails,undefined);
     const scoped=(await call('/mount-scope/'+mount.id+'/operations')).operations;assert.ok(scoped.some(job=>job.operation_id===personal.operation_id));
 });
 test('复制完成但删源受保护时记录部分结果；安全重试仍只有一条明细',async t=>{
@@ -86,7 +89,8 @@ test('复制完成但删源受保护时记录部分结果；安全重试仍只�
     const invite=await call('/collaborations/invitations',{kind:'directory',path:'backup'},'bob');await call('/collaborations/join',{token:invite.url.split('/').at(-1)});
     const input={mode:'move',requestId:'partial-move-request',source:{kind:'collaboration',collaborationId:invite.collaboration.id,selection:{kind:'directory',path:'backup'}},target:{kind:'native',destinationPath:'目标'}};
     const first=await call('/cross-scope/move',input);assert.equal(first.state,'COPIED_SOURCE_RETAINED');const second=await call('/cross-scope/move',input);assert.equal(second.copied[0].id,first.copied[0].id);
-    const jobs=(await call('/operations')).operations.filter(job=>job.requestId===input.requestId);assert.equal(jobs.length,1);assert.equal(jobs[0].phase,'source-retained');assert.equal(jobs[0].transferDetails.mode,'move');assert.equal(jobs[0].message,'已复制，来源仍保留');
+    assert.ok(!(await call('/operations')).operations.some(job=>job.requestId===input.requestId));
+    const jobs=(await call('/collaboration-scope/'+invite.collaboration.id+'/operations')).operations.filter(job=>job.requestId===input.requestId);assert.equal(jobs.length,1);assert.equal(jobs[0].phase,'source-retained');assert.equal(jobs[0].transferDetails.mode,'move');assert.equal(jobs[0].message,'已复制，来源仍保留');
 });
 
 test('跨分区同时选择父目录和内部文件时明细只列实际复制的根项',async t=>{
