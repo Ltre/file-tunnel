@@ -17,3 +17,13 @@
 故要补救性地创建 dev-*****-FUNCTIONNAME-WRONGCODE分支，
 既可以固定修改前、后的版本，又可以安全地切换前、后版本测试
 
+
+
+有空研究这两个SKILL:
+    PUA
+        - https://github.com/tanweai/pua
+        - https://github.com/tanweai/pua/blob/main/skills/pua/SKILL.md
+        - https://openpua.ai/
+    mattpocock
+        - https://github.com/mattpocock/skills
+
