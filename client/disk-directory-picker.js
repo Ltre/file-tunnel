@@ -8,7 +8,7 @@
     };
     const contains = (root, path) => !root || path === root || path.startsWith(root + '/');
     async function choose({ items = [], title = '移动到', confirmText = '移动', initialPath = '', rootPath = '', rootName = '根目录',
-        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, controls = [], showError = error => alert(error.message) }) {
+        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, getRoot, controls = [], showError = error => alert(error.message) }) {
         rootPath = normalize(rootPath);
         const blocked = path => (typeof items === 'function' ? items() : items).some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
         const display = path => '/' + (rootPath ? path.slice(rootPath.length).replace(/^\//, '') : path);
@@ -22,7 +22,7 @@
         const createChild = document.createElement('button'); createChild.type = 'button'; createChild.className = 'btn'; createChild.textContent = '在所选目录新建子目录';
         const expanded = new Set([rootPath]);
         let selected = contains(rootPath, initialPath) && !blocked(initialPath) ? initialPath : rootPath;
-        let busy = false, closed = false, directories = [];
+        let busy = false, closed = false, directories = [], loadVersion = 0;
         function expandParents(path) {
             let cursor = path;
             while (contains(rootPath, cursor)) { expanded.add(cursor); if (cursor === rootPath || !cursor) break; cursor = cursor.split('/').slice(0, -1).join('/'); }
@@ -62,8 +62,17 @@
             row.append('📁', input, save, cancel); container.prepend(row); input.focus(); input.select();
         }
         async function reload() {
+            const version = ++loadVersion;
+            const scope = getRoot?.();
+            if (scope && normalize(scope.path) !== rootPath) {
+                rootPath = normalize(scope.path); rootName = scope.name || '根目录';
+                selected = contains(rootPath, scope.initialPath || '') && !blocked(scope.initialPath || '') ? scope.initialPath || '' : rootPath;
+                expanded.clear(); expandParents(selected);
+            } else if (scope) rootName = scope.name || '根目录';
+            pathInput.placeholder = rootPath ? '/子目录/新目录（相对协同根目录）' : '/音乐/日本/专辑（全路径）';
+            pathInput.setAttribute('aria-label', rootPath ? '目标目录（相对协同根目录）' : '目标目录全路径');
             const data = await loadDirectories();
-            if (closed) return;
+            if (closed || version !== loadVersion) return;
             directories = data.directories.filter(folder => contains(rootPath, folder.path) && !blocked(folder.path));
             root.replaceChildren();
             const children = new Map();
@@ -125,9 +134,11 @@
         try {
             return await openDialog({ title, body: [...controls, hint, root, pathInput, create, createChild, errorLabel], confirmText, historyEntry: true, dismissOnBackdrop: true, validate: async () => {
                 if (busy) throw new Error('正在创建目录，请稍候');
+                const version = loadVersion;
                 const safe = resolve(pathInput.value);
                 if (blocked(safe)) throw new Error('不能移动到自己或子目录');
                 const data = await loadDirectories();
+                if (version !== loadVersion) throw new Error('目标分区已切换，请重新选择目标目录');
                 if (safe !== rootPath && !data.directories.some(folder => folder.path === safe)) throw new Error('目标目录不存在，请先点击“创建多级目录并选中”');
                 return safe;
             } });

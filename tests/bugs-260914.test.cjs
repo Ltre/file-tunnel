@@ -82,7 +82,7 @@ test('音乐播放器及列表优先使用独立封面，显示前不读取任�
     const context = vm.createContext({
         getDiskPreviewType: () => 'audio/mp4', encodeURIComponent,
         imageFromSource: async url => { fetched.push(url); return { url }; }, canvasThumbnail: async image => image,
-        window: { DiskClient: { getSpace: () => '' }, TelegramDriveCache: { get() { throw Error('must not read song cache'); }, getThumbnail() { throw Error('must not read song cache'); } } }
+        window: { DiskClient: { getSpace: () => '',context:()=>({requestBase:'/api/telegram/drive',diskSpace:''}) }, TelegramDriveCache: { get() { throw Error('must not read song cache'); }, getThumbnail() { throw Error('must not read song cache'); } } }
     });
     vm.runInContext(ui.slice(ui.indexOf('async function generateTelegramDriveThumbnail('), ui.indexOf('function applyTelegramDriveThumbnail(')) +
         ui.slice(ui.indexOf('async function loadDiskAudioPlayerCover('), ui.indexOf('function createDiskMediaPlayer(')) +
@@ -97,7 +97,7 @@ test('音乐播放器及列表优先使用独立封面，显示前不读取任�
 
 test('播放器封面请求结束时若已关闭，不写入旧播放器', async () => {
     const ui = source('client/disk-ui.js'); let finish;
-    const context = vm.createContext({ encodeURIComponent, window: { DiskClient: { getSpace: () => '' } }, imageFromSource: () => new Promise(resolve => { finish = resolve; }) });
+    const context = vm.createContext({ encodeURIComponent, window: { DiskClient: { getSpace: () => '',context:()=>({requestBase:'/api/telegram/drive',diskSpace:''}) } }, imageFromSource: () => new Promise(resolve => { finish = resolve; }) });
     const load = vm.runInContext(ui.slice(ui.indexOf('async function loadDiskAudioPlayerCover('), ui.indexOf('function createDiskMediaPlayer(')) + ';loadDiskAudioPlayerCover', context);
     const cover = { isConnected: true, replaceChildren() { throw Error('old player updated'); } };
     const request = load({ thumbnailAvailable: true, id: 'song' }, cover, null);

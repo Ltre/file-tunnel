@@ -28,8 +28,9 @@ function createDiskTrash({repository,spaces,mounts,maxDepth,onMountRemoved=()=>{
         const drive=spaces.get(space);
         return repository.atomic(()=>{
             drive.reloadPersistence();const item=find(user,space,id),{snapshot}=item;
-            assertWritable(user,space,{kind:'restore',path:item.originalParent,snapshot},drive);
-            const segments=item.originalParent.split('/').filter(Boolean),parents=segments.length?segments.map((_,i)=>segments.slice(0,i+1).join('/')):[''];
+            const originalParent=summary(item).originalParent;
+            assertWritable(user,space,{kind:'restore',path:originalParent,snapshot},drive);
+            const segments=originalParent.split('/').filter(Boolean),parents=segments.length?segments.map((_,i)=>segments.slice(0,i+1).join('/')):[''];
             for(const path of parents){
                 const ancestor=drive.getDirectory(user,path);
                 if(!ancestor){const blocked=drive.adminFiles().some(file=>file.ownerId===String(user)&&[file.folderPath,file.name].filter(Boolean).join('/')===path);throw diskOperationError('TRASH_PARENT_MISSING',blocked?'PATH_BLOCKED_BY_FILE':'TRASH_PARENT_MISSING',{targetPath:path});}
@@ -48,7 +49,7 @@ function createDiskTrash({repository,spaces,mounts,maxDepth,onMountRemoved=()=>{
             drive.restoreTrash(user,id,snapshot,maxDepth(user));
             if(item.mounts?.length)mounts.restoreTree(user,space,item.mounts,drive);
             save(space,repository.load('trash_items',space).filter(entry=>entry.id!==id));
-            return {kind:item.kind,path:item.path,parentPath:item.originalParent,folderPath:item.originalParent,id:item.kind==='file'?snapshot.files[0].id:'',name:summary(item).name};
+            return {kind:item.kind,path:item.path,parentPath:originalParent,folderPath:originalParent,id:item.kind==='file'?snapshot.files[0].id:'',name:summary(item).name};
         },()=>{drive.reloadPersistence();mounts.reloadPersistence();});
     }
     function purge(user,space,id){const drive=spaces.get(space);return repository.atomic(()=>{
@@ -57,8 +58,9 @@ function createDiskTrash({repository,spaces,mounts,maxDepth,onMountRemoved=()=>{
     function summary(item){
         const original=item.kind==='file'?item.snapshot.files[0]:null;
         const name=original?.name || (String(item.name||'').startsWith(':recycle:')?'原名称信息缺失':item.name);
-        return {id:item.id,kind:item.kind,name,path:item.path,originalParent:item.originalParent,
-            originalPath:item.kind==='directory'?item.path:[item.originalParent,name].filter(Boolean).join('/'),
+        const originalParent=original?.folderPath??item.originalParent;
+        return {id:item.id,kind:item.kind,name,path:item.kind==='file'?originalParent:item.path,originalParent,
+            originalPath:item.kind==='directory'?item.path:[originalParent,name].filter(Boolean).join('/'),
             type:original?.type||'application/x-directory',deletedAt:item.deletedAt,fileCount:item.snapshot.files.length,
             size:item.snapshot.files.reduce((n,f)=>n+(Number(f.size)||0),0)};
     }

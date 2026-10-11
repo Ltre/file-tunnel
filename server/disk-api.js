@@ -458,7 +458,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 if(!current||current.role!=='editor'||current.grantVersion!==record.grantVersion)throw new Error('COLLABORATION_NOT_FOUND');
                 if(moveSnapshot(drive,grant.ownerId,input.source.selection)!==record.snapshot)throw new Error('CONTENT_COPY_SOURCE_CHANGED');
                 partitions.find(actor.id,targetPartition.id);targetDrive.reloadPersistence();
-                if(moveSnapshot(targetDrive,actor.id,targetSelection(record.result))!==record.targetSnapshot)throw new Error('CONTENT_COPY_TARGET_CHANGED');
+                try {
+                    if(moveSnapshot(targetDrive,actor.id,targetSelection(record.result))!==record.targetSnapshot)throw new Error('CONTENT_COPY_TARGET_CHANGED');
+                } catch (_) { throw new Error('CONTENT_COPY_TARGET_CHANGED'); }
             },after:()=>{record.state='COMPLETED';record.result={...record.result,state:'COMPLETED'};delete record.result.warning;save(record);}});return record.result;
         }catch(error){record.result.warning={code:diskErrorCode(error),userMessage:diskUserMessage(error)};save(record);return record.result;}
     }
@@ -902,6 +904,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const segments = raw.slice('/s3pub/'.length).split('/');
         const token = segments.shift();
         const decoded = segments.map(segment => decodeURIComponent(segment));
+        // A mount root is a prefix for directories and a stable leaf URL for
+        // file grants. Only this explicit root accepts the optional trailing /.
+        if(decoded.length===3&&decoded[0]==='mount'&&decoded[2]==='')decoded.pop();
         if (decoded.some(segment => !segment || segment === '.' || segment === '..' || /[\\/]/.test(segment))) throw new Error('STATIC_NOT_FOUND');
         const grant = staticResources.resolve(token), filename = decoded.join('/');
         const file = staticResources.file(grant, spaces.get(grant.diskSpace), filename);

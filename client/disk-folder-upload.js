@@ -10,7 +10,10 @@
             else throw new Error('来源包含无法读取的项目：'+path);
         }
         const entries=Array.from(transfer.items||[]).filter(item=>item.kind==='file').map(item=>item.webkitGetAsEntry?.());
-        if(!entries.some(entry=>entry?.isDirectory))return null;
+        if(!entries.some(entry=>entry?.isDirectory)){
+            if(entries.some(entry=>!entry)&&!transfer.files?.length)throw new Error('浏览器无法读取所选文件夹，请改用支持目录上传的浏览器');
+            return null;
+        }
         if(entries.some(entry=>!entry))throw new Error('浏览器无法完整读取所选目录，请改用支持目录上传的浏览器');
         for(const entry of entries)await visit(entry);return {directories,files};
     }

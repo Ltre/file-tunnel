@@ -175,7 +175,21 @@ function createDiskStaticResources({ dataDir }) {
             return item;
         },
         file(item, store, requestedPath) {
-            if(requestedPath.startsWith('mount/')){const [,mountId,...parts]=requestedPath.split('/');if(!(item.mounts||[]).includes(mountId))throw new Error('FILE_NOT_FOUND');const ns=mountedNamespace.resolve(item.ownerId,item.diskSpace,mountId),relative=parts.join('/');if(!relative||normalizeTelegramDrivePath(relative)!==relative)throw new Error('FILE_NOT_FOUND');if(ns.grant.kind==='file'){const f=ns.file(ns.grant.fileId);if(relative!==f.name)throw new Error('FILE_NOT_FOUND');return f;}const folder=[ns.root,parts.slice(0,-1).join('/')].filter(Boolean).join('/');ns.directory(folder);const file=ns.drive.list(ns.grant.ownerId,folder).files.find(f=>f.name===parts.at(-1));if(!file)throw new Error('FILE_NOT_FOUND');return ns.file(file.id);}
+            if(requestedPath.startsWith('mount/')) {
+                const [,mountId,...parts]=requestedPath.split('/');
+                if(!(item.mounts||[]).includes(mountId))throw new Error('FILE_NOT_FOUND');
+                const ns=mountedNamespace.resolve(item.ownerId,item.diskSpace,mountId),relative=parts.join('/');
+                if(ns.grant.kind==='file') {
+                    const file=ns.file(ns.grant.fileId);
+                    if(relative&&relative!==file.name)throw new Error('FILE_NOT_FOUND');
+                    return file;
+                }
+                const parent=parts.slice(0,-1).join('/'),name=parts.at(-1);
+                if(!name||normalizeTelegramDrivePath(parent)!==parent||name==='.'||name==='..')throw new Error('FILE_NOT_FOUND');
+                const folder=[ns.root,parent].filter(Boolean).join('/');ns.directory(folder);
+                const file=ns.drive.list(ns.grant.ownerId,folder).files.find(f=>f.name===name);
+                if(!file)throw new Error('FILE_NOT_FOUND');return ns.file(file.id);
+            }
             const safe = normalizeTelegramDrivePath(requestedPath || '');
             if (!safe || requestedPath !== safe) throw new Error('FILE_NOT_FOUND');
             const name = safe.split('/').at(-1), folderPath = safe.split('/').slice(0, -1).join('/');

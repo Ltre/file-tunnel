@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v2-trash-import';
+const CACHE_NAME = 'instant-tunnel-v78-content-v3-mounted-editor';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -16,6 +16,8 @@ const APP_SHELL = [
     '/client/disk-error-messages.js',
     '/client/disk-trash-ui.js',
     '/client/disk-import-picker.js',
+    '/client/disk-file-editor.js',
+    '/client/disk-folder-upload.js',
     '/client/disk-directory-picker.js',
     '/client/disk-ui.js',
     '/client/disk-collaboration.js',

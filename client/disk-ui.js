@@ -324,15 +324,18 @@ async function updateDiskCacheLabels() {
 
 function renderTelegramDriveBreadcrumbs(data) {
     const target = document.getElementById('telegramDriveBreadcrumbs');
-    const parts = telegramDriveMountContext ? [{name:'我的网盘',exitMount:true},{name:telegramDriveMountContext.mount.name,path:telegramDriveMountContext.grant.path||''},...(data.breadcrumbs||[]).filter(p=>p.path!==telegramDriveMountContext.grant.path && p.path.startsWith((telegramDriveMountContext.grant.path||'')+'/'))] : [{ name: '根目录', path: '' }, ...(data.breadcrumbs || [])];
+    const mount = telegramDriveMountContext;
+    const parentParts = (mount?.parentPath || '').split('/').filter(Boolean);
+    const parts = mount ? [{name:'根目录',nativePath:''},...parentParts.map((name,index)=>({name,nativePath:parentParts.slice(0,index+1).join('/')})),
+        {name:mount.mount.name,path:mount.grant.path||''},...(data.breadcrumbs||[]).filter(p=>p.path!==(mount.grant.path||'') && (!(mount.grant.path||'') || p.path.startsWith(mount.grant.path+'/')))]
+        : [{ name: '根目录', path: '' }, ...(data.breadcrumbs || [])];
     const nodes = [];
     parts.forEach((part, index) => {
         if (index) { const separator = document.createElement('span'); separator.textContent = '›'; separator.setAttribute('aria-hidden', 'true'); nodes.push(separator); }
         const button = document.createElement('button'); button.type = 'button'; button.textContent = part.name;
         if (index === parts.length - 1) button.setAttribute('aria-current', 'page');
-        button.dataset.diskBreadcrumbDrop = 'true';
-        installDiskDrop(button, part.path);
-        button.onclick = () => (part.exitMount?exitTelegramDriveMount():navigateTelegramDrive(part.path)).catch(error => alert(telegramDriveErrorText(error)));
+        if (!Object.hasOwn(part,'nativePath')) { button.dataset.diskBreadcrumbDrop = 'true'; installDiskDrop(button, part.path); }
+        button.onclick = () => (Object.hasOwn(part,'nativePath')?exitTelegramDriveMount(part.nativePath):navigateTelegramDrive(part.path)).catch(error => alert(telegramDriveErrorText(error)));
         nodes.push(button);
     });
     target.replaceChildren(...nodes);
@@ -588,7 +591,7 @@ async function shareDiskItems(items) {
     if (!items.length) return;
     if (items.some(item => ['blocked', 'deleted'].includes(item.reviewStatus))) throw new Error('管理员屏蔽或删除的文件不可分享');
     if (!await confirmTelegramDriveAction('创建公开分享', '持有链接的人无需登录即可查看和下载所选内容。目录按当前内容创建快照，之后新增文件不会自动公开；可在“已分享”中停止链接。', '创建分享')) return;
-    const share = await telegramDriveRequest('/api/telegram/drive/shares', window.DiskClient.json('POST', { items: items.map(item => item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }) }));
+    const share = await telegramDriveRequest('/api/telegram/drive/shares', {...items[0].diskTransportContext,...window.DiskClient.json('POST', { items: items.map(item => item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }) })});
     const input = document.createElement('input'); input.readOnly = true; input.value = new URL(share.url, location.origin).href; input.setAttribute('aria-label', '分享链接');
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'btn'; copy.textContent = '复制链接';
     copy.onclick = () => navigator.clipboard.writeText(input.value).then(() => showAppToast('分享链接已复制')).catch(() => { input.focus(); input.select(); showAppToast('请手动复制链接'); });
@@ -772,7 +775,7 @@ async function showDiskCollaborations() {
         const row = document.createElement('div'); row.className = 'disk-collaboration-list-row ' + (entry.owned ? 'is-owned' : 'is-invited');
         const button = document.createElement('button'); button.type = 'button'; button.className = 'disk-collaboration-entry';
         const ownerSpace = telegramDriveSpaces.find(space => telegramDriveSpaceKey(space) === entry.diskSpace);
-        button.textContent = `${entry.owned ? '我创建的' : '受邀加入'} · ${entry.name} · ${entry.kind === 'directory' ? '📁' : '📄'}${entry.owned && ownerSpace ? ' · ' + ownerSpace.name : ''}`;
+        button.textContent = `${entry.owned ? '我创建的' : '受邀加入'} · ${entry.name} · ${entry.kind === 'directory' ? '📁' : '📄'}${entry.owned && ownerSpace ? ' · <' + ownerSpace.name + '>' : ''}`;
         button.onclick = async () => {
             closeTelegramDriveDialog();
             if (!entry.owned) { openDiskCollaborationFrame(entry); return; }
@@ -836,13 +839,17 @@ async function locateTelegramDriveMount(mount) {
         setTimeout(() => row.classList.remove('disk-search-located'), 1000);
     }
 }
-async function exitTelegramDriveMount(){const parent=telegramDriveMountContext?.parentPath||'';telegramDriveMountContext=null;window.DiskClient.setMount('');telegramDriveCurrentData=null;await navigateTelegramDrive(parent);}
+async function exitTelegramDriveMount(path=telegramDriveMountContext?.parentPath||''){telegramDriveMountContext=null;window.DiskClient.setMount('');telegramDriveCurrentData=null;await navigateTelegramDrive(path);}
 async function openTelegramDriveMount(item) {
     if (item.status !== 'active') throw new Error('协同访问已失效；可从挂载菜单移除本地入口');
     const fresh = await window.DiskClient.raw('/mounts/' + encodeURIComponent(item.mountId || item.id) + '/resolve');
-    telegramDriveMountContext={mount:fresh.mount,grant:fresh.collaboration,parentPath:telegramDrivePath};
+    if(fresh.collaboration.kind==='file') {
+        const context={requestBase:'/api/telegram/drive/mount-scope/'+encodeURIComponent(fresh.mount.id),diskSpace:window.DiskClient.getSpace()};
+        const file=await window.DiskClient.raw('/files/'+encodeURIComponent(fresh.collaboration.fileId),context);
+        await openDiskPreview({...file,diskTransportContext:context},{single:true});return;
+    }
+    telegramDriveMountContext={mount:fresh.mount,grant:fresh.collaboration,parentPath:fresh.mount.parentPath||''};
     window.DiskClient.setMount(fresh.mount.id);clearTelegramDriveSelection();
-    if(fresh.collaboration.kind==='file'){await navigateTelegramDrive(fresh.collaboration.path||'');await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(fresh.collaboration.fileId)));return;}
     await navigateTelegramDrive(fresh.collaboration.path||'');
 }
 async function openTelegramDriveMountedSearchResult(item) {
@@ -850,6 +857,7 @@ async function openTelegramDriveMountedSearchResult(item) {
     // A search result is only navigation context, never an authorization token.
     const fresh = await window.DiskClient.raw('/mounts/' + encodeURIComponent(item.mountId) + '/resolve');
     if (fresh.mount?.collaborationId !== item.collaborationId) throw new Error('协同搜索结果已过期，请重新搜索');
+    if(fresh.collaboration?.kind==='file')return openTelegramDriveMount({...fresh.mount,status:'active'});
     const path = item.kind === 'mounted_directory' ? item.path : item.folderPath;
     await openTelegramDriveMount({...fresh.mount,status:'active'});
     await navigateTelegramDrive(path);
@@ -857,7 +865,7 @@ async function openTelegramDriveMountedSearchResult(item) {
 }
 async function copyTelegramDriveItemToCollaboration(item, preferredMount = null, { dropToRoot = false } = {}) {
     if (!item || !['file', 'directory'].includes(item.kind) || ['blocked', 'deleted'].includes(item.reviewStatus))
-        throw new Error('只能复制正常的本地网盘文件或目录');
+        throw new Error('只能复制正常且有权访问的网盘文件或目录');
     const sourceScope = window.DiskClient.getSpace();
     const sourcePartition = telegramDriveSpaces.find(space => telegramDriveSpaceKey(space) === sourceScope);
     if (!sourcePartition) throw new Error('当前网盘分区已失效');
@@ -872,7 +880,7 @@ async function copyTelegramDriveItemToCollaboration(item, preferredMount = null,
         const picker = document.createElement('select'); picker.setAttribute('aria-label', '目标协同项目');
         for (const entry of targets) { const option = document.createElement('option'); option.value = entry.id; option.textContent = entry.name; picker.append(option); }
         label.append(picker);
-        selectedId = await openTelegramDriveDialog({ title: '复制到协同项目', body: [document.createTextNode('只复制内容，原文件仍留在自己的网盘。'), label],
+        selectedId = await openTelegramDriveDialog({ title: '复制到协同项目', body: [document.createTextNode('只复制内容，原文件仍留在原所有者的网盘。'), label],
             confirmText: '选择目标目录', validate: () => picker.value });
         if (!selectedId) return;
     }
@@ -962,7 +970,10 @@ async function chooseTelegramDriveTransfer(items) {
     spaceSelect.onchange = () => reloadTree?.().catch(error => alert(telegramDriveErrorText(error)));
     const dialog = document.getElementById('telegramDriveDialog');
     const target = await window.DiskDirectoryPicker.choose({
-        items: () => scope() === currentSpace ? items : [], title: `复制/移动 ${items.length} 项`, confirmText: '复制',
+        items: () => spaceSelect.value==='@mounted'||!telegramDriveMountContext&&scope()===currentSpace ? items : [], title: `复制/移动 ${items.length} 项`, confirmText: '复制',
+        rootPath: spaceSelect.value==='@mounted'?telegramDriveMountContext.grant.path||'':'',
+        rootName: spaceSelect.value==='@mounted'?telegramDriveMountContext.mount.name:'根目录',
+        getRoot:()=>spaceSelect.value==='@mounted'?{path:telegramDriveMountContext.grant.path||'',name:telegramDriveMountContext.mount.name}:{path:'',name:'根目录'},
         initialPath: choices.some(space=>space.id==='@mounted')?telegramDriveMountContext.grant.path:telegramDriveMountContext?.parentPath??telegramDrivePath, controls: [tabs], onReady: reload => { reloadTree = reload; },
         loadDirectories: () => scopedRequest('/directories'),
         createDirectory: async path => {
@@ -1066,7 +1077,7 @@ async function cacheTelegramDriveItems(items) {
 
 function telegramDriveStaticUrl(link, item) {
     const path = item.kind==='collaboration_mount'?'mount/'+item.id:telegramDriveMountContext?'mount/'+telegramDriveMountContext.mount.id+'/'+(telegramDriveMountContext.grant.kind==='file'?item.name:(item.kind==='directory'?item.path:[item.folderPath,item.name].filter(Boolean).join('/')).slice((telegramDriveMountContext.grant.path||'').length).replace(/^\//,'')):item.kind === 'directory' ? item.path : [item.folderPath, item.name].filter(Boolean).join('/');
-    return location.origin + '/s3pub/' + encodeURIComponent(link.token) + '/' + path.split('/').map(encodeURIComponent).join('/') + (item.kind === 'directory' ? '/' : '');
+    return location.origin + '/s3pub/' + encodeURIComponent(link.token) + '/' + path.split('/').map(encodeURIComponent).join('/') + (item.kind === 'directory'||item.kind==='collaboration_mount' ? '/' : '');
 }
 function activeTelegramDriveStaticLinks() {
     return telegramDriveStaticLinks.filter(link => !link.revokedAt && (!link.expiresAt || link.expiresAt > Date.now()));
@@ -1173,7 +1184,7 @@ async function showTelegramDriveStaticSettings(item) {
         validate: settings });
     if (!result) return;
     const response = await window.DiskClient.raw('/static-resources/settings', window.DiskClient.json('POST', {
-        item: item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...result
+        item: item.kind === 'collaboration_mount'?{kind:'collaboration_mount',id:item.mountId||item.id}:item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...result
     }));
     await refreshTelegramDriveStaticLinks();
     const linkBody = document.createElement('div'); linkBody.className = 'telegram-drive-static-dialog';
@@ -2424,7 +2435,8 @@ async function generateTelegramDriveThumbnail(item) {
     const type = getDiskPreviewType(item);
     if (!/^(image|audio|video)\//.test(type)) return null;
     if (item.thumbnailAvailable) {
-        const source = `/api/telegram/drive/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(window.DiskClient.getSpace())}`;
+        const context=item.diskTransportContext||window.DiskClient.context();
+        const source = `${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}`;
         return canvasThumbnail(await imageFromSource(source, item.name));
     }
     const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
@@ -2526,9 +2538,9 @@ function closeDiskPreview({ fromHistory = false, replaceHistory = false } = {}) 
     else if (shouldGoBack) { diskPreviewHistoryClosing = true; history.back(); }
     else if (!history.state?.telegramDrivePreview || replaceHistory) { diskPreviewHistoryOpen = false; diskPreviewHistoryClosing = false; diskPreviewBaseState = null; }
 }
-async function openDiskPreview(item) {
-    if(telegramDriveMountContext)item=await window.DiskClient.raw('/files/'+encodeURIComponent(item.id));
-    previewItems = getSortedTelegramDriveItems(getTelegramDriveDisplayData()).filter(isDiskPreviewable);
+async function openDiskPreview(item,{single=false}={}) {
+    if(telegramDriveMountContext||item.diskTransportContext)item={...item,...await window.DiskClient.raw('/files/'+encodeURIComponent(item.id),item.diskTransportContext||{})};
+    previewItems = single?[item]:getSortedTelegramDriveItems(getTelegramDriveDisplayData()).filter(isDiskPreviewable).map(file=>file.id===item.id?item:file);
     previewIndex = Math.max(0, previewItems.findIndex(file => file.id === item.id));
     $disk('diskPreview').hidden = false;
     if (!diskPreviewHistoryOpen) {
@@ -2570,7 +2582,8 @@ async function loadDiskAudioPlayerCover(item, cover, cachedBlob) {
     };
     // The separately stored image is available without reading any song parts.
     if (item.thumbnailAvailable) {
-        try { await showImage(`/api/telegram/drive/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(window.DiskClient.getSpace())}`); return; }
+        const context=item.diskTransportContext||window.DiskClient.context();
+        try { await showImage(`${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}`); return; }
         catch (_) { /* Legacy/missing thumbnail: try the existing local sources. */ }
     }
     const metadataCover = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl;

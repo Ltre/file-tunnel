@@ -12,6 +12,14 @@ async function createUiFixture(){
     const invite=await call('bob','/collaborations/invitations',{kind:'directory',path:'backup'});
     await call('alice','/collaborations/join',{token:invite.url.split('/').at(-1)});
     await call('alice','/mounts',{parentPath:'',name:'受邀挂载验收',collaborationId:invite.collaboration.id});
+    drive.createDirectory('alice','1/2',30);drive.createDirectory('bob','backup/a/deep',30);drive.createDirectory('bob','另一个协同项目/子目录',30);
+    drive.update('bob','file-b',{type:'text/plain'});
+    await call('alice','/mounts',{parentPath:'1/2',name:'目录挂载验收',collaborationId:invite.collaboration.id});
+    const fileInvite=await call('bob','/collaborations/invitations',{kind:'file',fileId:'file-b'});
+    await call('alice','/collaborations/join',{token:fileInvite.url.split('/').at(-1)});
+    await call('alice','/mounts',{parentPath:'1/2',name:'单文件挂载验收',collaborationId:fileInvite.collaboration.id});
+    const targetInvite=await call('bob','/collaborations/invitations',{kind:'directory',path:'另一个协同项目'});
+    await call('alice','/collaborations/join',{token:targetInvite.url.split('/').at(-1)});
     for(let i=0;i<12;i++){const path='协同测试目录'+i;drive.createDirectory('alice',path,30);await call('alice','/collaborations/invitations',{kind:'directory',path});}
     app.get('/api/telegram/drive/me',(_req,res)=>res.json({identity:{id:'alice',name:'小林'},enabled:true,configured:true,oidcMode:'mock'}));
     app.get('/fixture-ui',(_req,res)=>{

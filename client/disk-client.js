@@ -90,7 +90,12 @@
     }
     async function raw(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
-        const target = withSpace(url.startsWith('/api/') ? url : (/^\/(?:me|spaces|collaborations|mounts|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)?base:(options.requestBase||baseUrl())) + url, options.diskSpace ?? diskSpace);
+        // Legacy UI callers pass full drive API paths. Treat them exactly as
+        // relative paths, so mounted edits cannot silently use the native drive.
+        if (url.startsWith(base + '/')) url = url.slice(base.length);
+        const globalRoute = /^\/(?:me|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
+            || method !== 'POST' && /^\/shares(?:[/?]|$)/.test(url);
+        const target = withSpace(url.startsWith('/api/') ? url : (globalRoute ? base : (options.requestBase || baseUrl())) + url, options.diskSpace ?? diskSpace);
         if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
         const { onUploadProgress, diskSpace: requestSpace,requestBase, ...requestOptions } = options;
         let response;
@@ -523,7 +528,7 @@
         } finally { closeProgress(); listeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
     }
     async function read(item, options = {}) {
-        const context={...transportContext(),...options};
+        const context={...transportContext(),...item.diskTransportContext,...options};
         const controller = newAbortController();
         const signal = options.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' ? AbortSignal.any([options.signal, controller.signal]) : (options.signal || controller.signal);
         let operationId = '';
@@ -538,7 +543,7 @@
         finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
     }
     async function readFile(item, { signal,requestBase=baseUrl(),diskSpace:requestSpace=diskSpace }, update) {
-        if(requestBase.includes('/mount-scope/'))await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace});
+        if(requestBase.includes('/mount-scope/'))item={...item,...await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace})};
         const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
@@ -567,12 +572,13 @@
         refresh(); return blob;
     }
     function streamUrl(item, { purpose = '', fresh = false } = {}) {
+        const context = item.diskTransportContext || transportContext();
         const query = new URLSearchParams();
         query.set('v', String(item.updatedAt || item.size || 0));
-        if (diskSpace) query.set('disk_space', diskSpace);
+        if (context.diskSpace) query.set('disk_space', context.diskSpace);
         if (purpose) query.set('purpose', String(purpose));
         if (fresh) query.set('request', String(++streamSequence));
-        return baseUrl() + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
+        return context.requestBase + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
     }
     async function readRange(item, start = 0, end = Number(item.size) - 1, { signal, purpose = 'metadata' } = {}) {
         const safeStart = Math.max(0, Number(start) || 0);

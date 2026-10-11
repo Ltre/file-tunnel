@@ -401,7 +401,7 @@ Content-Type: application/json
 
 - 网盘目录硬上限为 **30 层**，按真实目录计算，不包含文件名；个人账号可以设置更低上限。既有深层目录仍可读取。创建、上传、复制/移动及还原使用目标所有者的有效限制。
 - 列表中的 `mounts` 是本地协同挂载指针，不是本用户的原生目录。第三方 API 对挂载及内部内容一律只读，即使协同角色为 editor，也不能上传、覆盖、重命名、移动、删除或递归删除其父目录。
-- 可使用 `/list?path={本地挂载路径}` 读取目录挂载根或子目录；也可在原 API 前缀后使用 `/mount-scope/{mountId}/list?path={真实授权目录}`、`/mount-scope/{mountId}/files/{fileId}`、其 `/stream`、`/download`、`/properties` 等读取接口。继续携带本调用者的认证、用户和本地分区参数，不把身份改为来源所有者。单文件挂载通过文件接口读取。
+- 可使用 `/list?path={本地挂载路径}` 读取目录挂载根或子目录；也可在原 API 前缀后使用 `/mount-scope/{mountId}/list?path={真实授权目录}`、`/mount-scope/{mountId}/files/{fileId}` 读取属性，以及该文件的 `/stream`、`/download` 读取正文。目录属性使用 `/mount-scope/{mountId}/directories/properties?path=…`。继续携带本调用者的认证、用户和本地分区参数，不把身份改为来源所有者。单文件挂载通过文件接口读取。
 - 未授权、撤权、已移出协同范围或已删除的来源不能继续读取。写入挂载范围（包含不存在的子路径和批量目标）返回 `MOUNT_READ_ONLY`；普通原生资源仍保持原有 API 写入能力。
 - 文件公共输出增加不透明 `cacheIdentity`。缓存应同时检查它与 `logicalContentVersion`，避免文件写时复制后继续使用旧正文；此字段不是公开内容哈希。
 
