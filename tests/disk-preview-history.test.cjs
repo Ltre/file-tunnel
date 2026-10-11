@@ -37,7 +37,7 @@ function fixture() {
         let diskPreviewHistoryOpen=false, diskPreviewHistoryClosing=false, diskPreviewBaseState=null;
         let telegramDriveMenuHistoryOpen=false, telegramDriveDialogHistoryOpen=false;
         const $disk=id=>document.getElementById(id), disposeActiveDiskMedia=()=>{}, saveDiskWindow=retained=>{diskWindowState.retained=retained};
-        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, updateDiskCacheLabels=()=>{};
+        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, updateDiskCacheLabels=()=>{}, cancelTelegramDrivePendingMount=()=>{};
         const renderTelegramDriveBreadcrumbs=()=>{}, renderTelegramDriveItems=()=>{};
         const renderTelegramDrive=async()=>{rendered.push(telegramDrivePath);telegramDriveCurrentData={}};
         const closeTelegramDriveDialog=()=>{}, closeTelegramDriveItemMenu=()=>{}, closeDiskCollaborationFrame=()=>{}, telegramDriveErrorText=e=>e.message;

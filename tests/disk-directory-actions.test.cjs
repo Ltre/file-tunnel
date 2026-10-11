@@ -19,7 +19,7 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
         let telegramDrivePath='原目录', telegramDriveNavigationVersion=0, telegramDriveHistorySession='fixture';
         let telegramDriveCurrentData={}, telegramDriveContentStale=false, diskWindowState={retained:true,path:'原目录'};
         const saveDiskWindow=()=>{diskWindowState.path=telegramDrivePath};
-        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{};
+        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, cancelTelegramDrivePendingMount=()=>{};
         const renderTelegramDrive=async()=>{telegramDriveCurrentData={path:telegramDrivePath,files:result.items};rendered.push(telegramDriveCurrentData)};
         ${ui.slice(ui.indexOf('async function navigateTelegramDrive('), ui.indexOf('async function openTelegramDrive('))}
         window.DiskUI={setExporter(){}, open:async()=>{}, revealUploadedDirectory:revealTelegramDriveUploadedDirectory,

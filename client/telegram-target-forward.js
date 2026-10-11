@@ -41,6 +41,16 @@
         summary.textContent = '转发到指定的Telegram目标';
         const menu = document.createElement('div');
         menu.className = 'telegram-target-forward-menu';
+        const variantLabel = document.createElement('label');
+        variantLabel.className = 'telegram-target-variant';
+        variantLabel.hidden = true;
+        const variant = document.createElement('select');
+        variant.setAttribute('aria-label', '转发文件版本');
+        for (const [value, text] of [['original', '原版'], ['audio-repaired', '音轨修正版']]) {
+            const option = document.createElement('option'); option.value = value; option.textContent = text; variant.append(option);
+        }
+        variant.value = 'original';
+        variantLabel.append(document.createTextNode('转发版本'), variant);
         const input = document.createElement('input');
         input.className = 'telegram-target-input';
         input.placeholder = '@用户名、公开 t.me/用户名链接或数字 chat ID';
@@ -62,6 +72,7 @@
         send.type = 'button';
         send.className = 'telegram-target-send';
         send.textContent = '发送原文件';
+        variant.onchange = () => { send.textContent = variant.value === 'audio-repaired' ? '发送音轨修正版' : '发送原文件'; };
         const status = document.createElement('div');
         status.className = 'telegram-target-status';
         status.setAttribute('role', 'status');
@@ -128,10 +139,21 @@
             }
         }
 
+        async function refreshVariants() {
+            variantLabel.hidden = true;
+            variant.value = 'original'; variant.onchange();
+            if (task.status !== 'completed' || !String(task.downloadSections || '').trim() || task.asMusic || ['audio', 'song'].includes(task.mediaType)) return;
+            try {
+                const result = await request(`${root}/tasks/${encodeURIComponent(task.id)}/audio-repair/status`);
+                variantLabel.hidden = !(result.status === 'completed' && result.forwardAvailable === true);
+            } catch (_) { /* No verified repair: keep forwarding the original file. */ }
+        }
+
         details.addEventListener('toggle', async () => {
             if (!details.open) return;
             for (const component of components) if (component !== details && component.open) component.open = false;
-            if (state.loaded) return;
+            const variantsReady = refreshVariants();
+            if (state.loaded) { await variantsReady; return; }
             status.textContent = '正在读取历史目标…';
             try {
                 const result = await request('/api/telegram-forward-targets');
@@ -142,19 +164,22 @@
             } catch (error) {
                 status.textContent = `历史读取失败：${error.message}`;
             }
+            await variantsReady;
         });
 
         send.onclick = async () => {
             if (state.busy) return;
             const target = input.value.trim();
             if (!target) { status.textContent = '请先填写或选择 Telegram 目标。'; input.focus(); return; }
+            const fileVariant = variantLabel.hidden ? 'original' : variant.value;
             state.busy = true;
-            send.disabled = input.disabled = caption.disabled = videoPreview.disabled = true;
-            state.message = status.textContent = '正在向 Telegram 发送原文件，请保持页面打开…';
+            send.disabled = input.disabled = caption.disabled = videoPreview.disabled = variant.disabled = true;
+            state.message = status.textContent = `正在向 Telegram 发送${fileVariant === 'audio-repaired' ? '音轨修正版' : '原文件'}，请保持页面打开…`;
             try {
                 const result = await request(`${root}/tasks/${encodeURIComponent(task.id)}/telegram-forward`, {
                     method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({
                         target, caption:caption.value,
+                        fileVariant,
                         supportVideoPreview:videoPreview.checked
                     })
                 });
@@ -162,17 +187,17 @@
                 state.targets = result.targets ? normalizeTargets(result.targets) : [{ target:input.value, remark:'' }, ...state.targets.filter(item => item.target !== input.value)];
                 state.loaded = true;
                 renderTargets();
-                const sentLabel = result.mode === 'sendVideo' ? '可播放视频' : '原文件';
+                const sentLabel = result.fileVariant === 'audio-repaired' ? '音轨修正版' : (result.mode === 'sendVideo' ? '可播放视频' : '原文件');
                 state.message = status.textContent = `已将${sentLabel}发送到 ${input.value}${result.messageId ? `（消息 ${result.messageId}）` : ''}。`;
             } catch (error) {
                 state.message = status.textContent = `发送失败：${error.message}`;
             } finally {
                 state.busy = false;
-                send.disabled = input.disabled = caption.disabled = videoPreview.disabled = false;
+                send.disabled = input.disabled = caption.disabled = videoPreview.disabled = variant.disabled = false;
             }
         };
 
-        menu.append(input, history, caption, videoPreviewLabel, send, status);
+        menu.append(variantLabel, input, history, caption, videoPreviewLabel, send, status);
         details.append(summary, menu);
         renderTargets();
         return details;

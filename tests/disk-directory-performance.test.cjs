@@ -151,7 +151,7 @@ test('慢元数据请求有受控诊断，快列表不写日志，不包含请�
 
 test('进入空目录直接刷新列表和面包屑，不再请求 /me 或重建登录 UI', async () => {
     const ui = source('client/disk-ui.js'), calls = [], breadcrumbs = [];
-    const context = vm.createContext({telegramDriveMountContext:null, telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
+    const context = vm.createContext({telegramDriveMountContext:null,telegramDrivePendingMount:null, telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
         document: { getElementById: () => ({ hidden: false }) }, window: { DiskClient: { raw: async url => { calls.push(url); return { path: 'new', files: [], folders: [], breadcrumbs: [{ name: 'new', path: 'new' }] }; } } },
         getTelegramDriveIdentity: () => assert.fail('目录切换不应另查身份'), renderTelegramDriveBreadcrumbs: data => breadcrumbs.push(data.path),
         renderTelegramDriveItems() {}, updateTelegramDriveSelectionBar() {}, refreshDiskCollaborations: async () => {}, refreshTelegramDriveStaticLinks: async () => {}, scheduleTelegramDriveSearch() {}, encodeURIComponent });
@@ -165,7 +165,7 @@ test('目录查询发现登录已失效时仍回到登录界面，不把旧账�
     const ui = source('client/disk-ui.js'); let identities = 0;
     const nodes = new Map();
     const node = () => ({ hidden: false, setAttribute() {}, replaceChildren() {}, append() {} });
-    const context = vm.createContext({telegramDriveMountContext:null, telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
+    const context = vm.createContext({telegramDriveMountContext:null,telegramDrivePendingMount:null, telegramDriveCurrentData: { path: 'old', files: [] }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
         telegramDriveSort: 'name', telegramDriveSortAscending: true, telegramDriveView: 'list',
         document: { getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); }, createElement: node },
         window: { DiskClient: { raw: async () => { throw new Error('LOGIN_REQUIRED'); }, getSpace: () => '' } },
@@ -179,7 +179,7 @@ test('目录查询发现登录已失效时仍回到登录界面，不把旧账�
 
 test('账号变更时重新加载身份控件，普通目录刷新不反复查身份', async () => {
     const ui = source('client/disk-ui.js'); let identities = 0;
-    const context = vm.createContext({telegramDriveMountContext:null, telegramDriveCurrentData: { path: 'old', user_id: 'before' }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
+    const context = vm.createContext({telegramDriveMountContext:null,telegramDrivePendingMount:null, telegramDriveCurrentData: { path: 'old', user_id: 'before' }, telegramDrivePath: 'new', telegramDriveRenderGeneration: 0,
         document: { getElementById: () => ({ hidden: false }) }, encodeURIComponent,
         window: { DiskClient: { raw: async () => ({ path: 'new', user_id: 'after', files: [] }) } },
         renderTelegramDrive: async () => { identities++; } });

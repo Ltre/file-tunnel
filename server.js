@@ -59,7 +59,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
-const { createAudioTrackRepair, registerAudioTrackRepairRoutes } = require('./server/audio-track-repair');
+const { createAudioTrackRepair, registerAudioTrackRepairRoutes, resolveTelegramForwardFile } = require('./server/audio-track-repair');
 const { createVideoTranscodeService, registerVideoTranscodeRoutes } = require('./server/video-transcode');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
@@ -511,8 +511,8 @@ async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile) 
 
 async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
-    const file = service.getFile(taskId);
-    if (!file || !fs.existsSync(file.path)) throw new Error('Telegram 转发所需的服务端成品不存在');
+    const fileVariant = input?.fileVariant || 'original';
+    const file = resolveTelegramForwardFile(service, taskId, audioTrackRepair, fileVariant);
     const resolvedTarget = resolveTelegramForwardTarget(input?.target);
     const target = resolvedTarget.target;
     const caption = String(input?.caption || '').trim().slice(0, 1024);
@@ -554,7 +554,7 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     }
     const chatId = String(payload.result?.chat?.id || resolvedTarget.chatId || '');
     const targets = rememberTelegramForwardTarget(target);
-    return { ok:true, target, targets, mode:multipart.method, messageId:Number(payload.result?.message_id) || 0 };
+    return { ok:true, target, targets, mode:multipart.method, fileVariant, messageId:Number(payload.result?.message_id) || 0 };
 }
 
 function loadYoutubePremiumMetadataCache() {

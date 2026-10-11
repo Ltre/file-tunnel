@@ -113,6 +113,14 @@
         try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
         catch (error) { error.transportFailure = true; throw error; }
         const data = await response.json().catch(() => ({}));
+        // Cross-namespace transfers return their committed result directly,
+        // without an operation_id for request()/wait() to observe. Refresh
+        // source-view histories for raw callers too, including failed attempts.
+        // An in-flight poll may predate this mutation and must finish first.
+        if (method === 'POST' && /^\/(?:cross-scope\/(?:copy|move)|spaces\/transfer)(?:\?|$)/.test(url)) {
+            const updateHistory = () => refresh(true);
+            (polling ? polling.then(updateHistory, updateHistory) : updateHistory()).catch(() => {});
+        }
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
         onUploadProgress?.(Number(options.body?.size) || 0);
         return data;

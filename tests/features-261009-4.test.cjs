@@ -9,6 +9,7 @@ class Element {
     append(...nodes){this.children.push(...nodes);for(const node of nodes)if(node instanceof Element)node.parent=this;}
     replaceChildren(...nodes){this.children=[];this.append(...nodes);}
     setAttribute(name,value){this[name]=value;}
+    removeAttribute(name){delete this[name];}
     querySelectorAll(selector){return this.children.flatMap(n=>n instanceof Element?[...(selector==='[data-folder-path]'&&n.dataset.folderPath!==undefined?[n]:[]),...n.querySelectorAll(selector)]:[]);}
     querySelector(){return null;}
     addEventListener(){}
@@ -46,10 +47,10 @@ test('挂载内旧完整 API 路径进入实际来源，跨协同树入口不被
 
 test('挂载面包屑完整保留原生父路径，原生入口退出挂载且不注册错误的拖放目标',async()=>{
     const target=new Element(),drops=[],opened=[];
-    const context=vm.createContext({document:{getElementById:()=>target,createElement:tag=>new Element(tag)},telegramDriveMountContext:{parentPath:'1/2',mount:{name:'fuck'},grant:{path:'backup'}},installDiskDrop:(node,path)=>drops.push(path),exitTelegramDriveMount:async path=>opened.push(path),navigateTelegramDrive:async path=>opened.push(path),requestAnimationFrame:fn=>fn(),alert(){}});
+    const context=vm.createContext({document:{getElementById:()=>target,createElement:tag=>new Element(tag)},telegramDrivePendingMount:null,telegramDriveMountContext:{parentPath:'1/2',mount:{name:'fuck'},grant:{path:'backup'}},installDiskDrop:(node,path)=>drops.push(path),exitTelegramDriveMount:async path=>opened.push(path),navigateTelegramDrive:async path=>opened.push(path),requestAnimationFrame:fn=>fn(),alert(){}});
     vm.runInContext(section('function renderTelegramDriveBreadcrumbs(', 'function initDiskBreadcrumbScroll('),context);
     vm.runInContext('renderTelegramDriveBreadcrumbs({breadcrumbs:[{name:"backup",path:"backup"},{name:"a",path:"backup/a"}]})',context);
-    const buttons=target.children.filter(n=>n.tagName==='BUTTON');assert.deepEqual(buttons.map(n=>n.textContent),['根目录','1','2','fuck','a']);
+    const buttons=target.children.filter(n=>n.tagName==='BUTTON');assert.deepEqual(buttons.map(n=>n.textContent),['根目录','1','2','fuck','a','✎']);
     assert.deepEqual(drops,['backup','backup/a']);await buttons[1].onclick();assert.deepEqual(opened,['1']);
 });
 
@@ -75,8 +76,10 @@ test('挂载静态设置提交挂载类型，数字签名仅属于挂载者',asy
 
 test('单文件挂载直接预览，不切换原生列表；读取地址保留独立授权入口',async t=>{
     const f=await fixture(t),grant=await f.invite('file','file-b'),mount=(await f.call('alice','/mounts','POST',{parentPath:'1/2',name:'叶子挂载',collaborationId:grant.id})).mount;
-    const previews=[];Object.assign(f.context,{telegramDrivePath:'1/2',telegramDriveMountContext:null,openDiskPreview:async(item,options)=>previews.push({item,options}),navigateTelegramDrive:()=>{throw Error('不能进入单文件挂载伪目录');},clearTelegramDriveSelection:()=>{throw Error('不应重置原目录选择');}});
-    vm.runInContext(section('async function openTelegramDriveMount(', 'async function openTelegramDriveMountedSearchResult('),f.context);
+    const previews=[];Object.assign(f.context,{telegramDrivePath:'1/2',telegramDrivePendingMount:null,telegramDriveNavigationVersion:0,telegramDriveRenderGeneration:0,telegramDriveCurrentData:{path:'1/2'},telegramDriveMountContext:null,
+        renderTelegramDriveBreadcrumbs(){},renderTelegramDriveItems(){},clearTelegramDriveSearch(){},closeTelegramDriveItemMenu(){},
+        openDiskPreview:async(item,options)=>previews.push({item,options}),navigateTelegramDrive:()=>{throw Error('不能进入单文件挂载伪目录');},clearTelegramDriveSelection:()=>{throw Error('不应重置原目录选择');}});
+    vm.runInContext(section('function finishTelegramDrivePendingMount(', 'async function openTelegramDriveMountedSearchResult('),f.context);
     await vm.runInContext('openTelegramDriveMount(item)',Object.assign(f.context,{item:{...mount,status:'active'}}));assert.equal(previews[0].options.single,true);assert.equal(previews[0].item.id,'file-b');assert.equal(f.window.DiskClient.getMount(),'');assert.equal(f.context.telegramDrivePath,'1/2');
     assert.match(f.window.DiskClient.streamUrl(previews[0].item),new RegExp('/mount-scope/'+mount.id+'/files/file-b/stream'));
     const link=(await f.call('alice','/static-resources/settings','POST',{item:{kind:'collaboration_mount',id:mount.id},preset:'day'})).link;

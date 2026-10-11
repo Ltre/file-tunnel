@@ -12,6 +12,24 @@ const labels = {
     'audio-repair-not-ready': '请先完成抓取并保留服务端原文件',
     'audio-repair-cache-missing': '修正版缓存不存在或已失效，请重新生成'
 };
+function isAudioRepairForwardEligible(task) {
+    return task?.status === 'completed' && Boolean(String(task.downloadSections || '').trim())
+        && !task.asMusic && !['audio', 'song'].includes(task.mediaType);
+}
+function audioRepairForwardFile(service, taskId, repair) {
+    if (!isAudioRepairForwardEligible(service.get(taskId))) return null;
+    const file = service.getFile(taskId), directory = service.getTaskDirectory(taskId);
+    if (!file || !directory || repair.getStatus(file, directory)?.status !== 'completed') return null;
+    return repair.cached(file, directory);
+}
+function resolveTelegramForwardFile(service, taskId, repair, variant = 'original') {
+    if (variant !== 'original' && variant !== 'audio-repaired') throw new Error('未知的 Telegram 转发文件版本，请重新选择');
+    const file = variant === 'audio-repaired' ? audioRepairForwardFile(service, taskId, repair) : service.getFile(taskId);
+    if (!file || !fs.existsSync(file.path) || (variant === 'audio-repaired' && (!fs.statSync(file.path).isFile() || !fs.statSync(file.path).size))) {
+        throw new Error(variant === 'audio-repaired' ? '音轨修正版尚未完成、已失效或不适用于当前任务，请重新生成或选择原版' : 'Telegram 转发所需的服务端成品不存在');
+    }
+    return file;
+}
 function fingerprint(file) {
     const stat = fs.statSync(file.path);
     return crypto.createHash('sha256').update(JSON.stringify([VERSION, file.path, stat.size, stat.mtimeMs])).digest('hex');
@@ -202,6 +220,7 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
     };
     const responseFor = (taskId, job) => ({
         ...job,
+        forwardAvailable:Boolean(audioRepairForwardFile(service, taskId, repair)),
         statusUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/status?jobId=' + encodeURIComponent(job.jobId),
         downloadUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/file'
     });
@@ -233,4 +252,4 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
         } catch (error) { res.status(404).json({ error: labels[error.message] || sanitizeError(error) }); }
     });
 }
-module.exports = { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan, createProgressReader };
+module.exports = { createAudioTrackRepair, registerAudioTrackRepairRoutes, repairPlan, createProgressReader, resolveTelegramForwardFile };

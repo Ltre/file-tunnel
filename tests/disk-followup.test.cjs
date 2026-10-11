@@ -191,7 +191,7 @@ test('全局搜索取消旧请求，旧结果不能覆盖新结果且不启动�
 test('后台刷新更新当前目录，过期目录请求不能覆盖导航后的列表', async () => {
     const code = source('client/disk-ui.js'), summary = {}, requests = [];
     let renders = 0;
-    const context = { telegramDriveMountContext:null,telegramDriveCurrentData: { files: [] }, telegramDriveRenderGeneration: 0, telegramDrivePath: '',
+    const context = { telegramDriveMountContext:null,telegramDrivePendingMount:null,telegramDriveCurrentData: { files: [] }, telegramDriveRenderGeneration: 0, telegramDrivePath: '',
         document: { getElementById: id => id === 'telegramDriveOverlay' ? { hidden: false } : summary },
         window: { DiskClient: { raw: () => new Promise(resolve => requests.push(resolve)) } }, encodeURIComponent,
         renderTelegramDriveItems() { renders++; }, renderTelegramDriveBreadcrumbs() {}, updateTelegramDriveSelectionBar() {}, scheduleTelegramDriveSearch() {}, refreshDiskCollaborations() { return Promise.resolve(); }, refreshTelegramDriveStaticLinks() { return Promise.resolve(); } };
