@@ -85,7 +85,7 @@
         const spaces = await availableSpaces(options);
         const selectedSpace = spaces.find(space => spaceId(space) === String(options.currentSpace ?? '') || scopeKey(space) === String(options.currentSpace ?? '')) || spaces[0];
         const controls = document.createElement('div'); controls.className = 'disk-mount-picker-controls';
-        const partitionLabel = document.createElement('label'); partitionLabel.textContent = '目标网盘分区';
+        const partitionLabel = document.createElement('label'); partitionLabel.className = 'disk-partition-field'; partitionLabel.textContent = '目标网盘分区';
         const partition = document.createElement('select'); partition.setAttribute('aria-label', '目标网盘分区');
         for (const space of spaces) { const option = document.createElement('option'); option.value = spaceId(space); option.textContent = space.displayName || space.name || '默认分区'; partition.append(option); }
         partition.value = spaceId(selectedSpace); partitionLabel.append(partition); controls.append(partitionLabel);

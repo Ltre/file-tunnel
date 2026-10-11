@@ -33,6 +33,15 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     const view = job => job ? structuredClone(job) : null;
     const owns = (job, scope) => job && job.userId === scope.userId && job.diskSpace === (scope.diskSpace || '') && (job.type !== 'read' || (Boolean(job.deviceId) && job.deviceId === scope.deviceId));
     const api = {
+        annotateTransfer(id, patch) { const job=jobs.get(id);if(job){Object.assign(job,patch);save();return view(job);} },
+        findHistory(scope, requestId) { return [...jobs.values()].find(job => owns(job, scope) && job.type === 'transfer-history' && job.requestId === requestId); },
+        reopenHistory(id) { const job=jobs.get(id); if(job?.type==='transfer-history'){Object.assign(job,{status:'queued',finishedAt:0,errorCode:'',errorMessage:'',errorDetails:{}});save();} },
+        mirrorHistory(source) {
+            if (!source.historyMirrorId) return;
+            const mirror = jobs.get(source.historyMirrorId); if (!mirror || terminal(mirror)) return;
+            api.update(mirror.operation_id, { status:source.status,phase:source.phase,message:source.message,percent:source.percent,
+                result:source.result,errorCode:source.errorCode,errorMessage:source.errorMessage,errorDetails:source.errorDetails }, true);
+        },
         create(scope, type, message, totalBytes = 0) {
             const job = { operation_id: crypto.randomUUID(), userId: scope.userId, diskSpace: scope.diskSpace || '', type, status: 'queued', phase: 'queued', percent: null, processedBytes: 0, totalBytes, message, errorCode: '', errorMessage: '', createdAt: now(), startedAt: 0, finishedAt: 0 };
             job.title = message; job.updatedAt = now();
@@ -58,7 +67,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
             const wanted = new Set(requested);
             return [...jobs.values()].filter(job => owns(job, scope)).sort((a,b) => b.createdAt-a.createdAt)
                 .filter((job, index) => !terminal(job) || wanted.has(job.operation_id) || index < 100)
-                .map(job => { const copy = view(job); if (!wanted.has(job.operation_id)) delete copy.result; return copy; });
+                .map(job => { const copy = view(job); delete copy.response; if (!wanted.has(job.operation_id)) delete copy.result; return copy; });
         },
         update(id, patch, immediate = false) {
             const job = jobs.get(id); if (!job || terminal(job)) return view(job);
@@ -84,6 +93,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
                 }, 500);
                 timer.unref?.();
             }
+            if (job.historyMirrorId) api.mirrorHistory(job);
             return view(job);
         },
         complete(id, result) {

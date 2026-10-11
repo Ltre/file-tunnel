@@ -54,7 +54,7 @@ test('挂载面包屑完整保留原生父路径，原生入口退出挂载且�
 });
 
 test('目录选择器切换协同根和原生分区后显示真实多层树并提交正确路径',async()=>{
-    const window={},context=vm.createContext({window,document:{createElement:tag=>new Element(tag)},alert(){}});
+    const window={},context=vm.createContext({window,document:{createElement:tag=>new Element(tag),createTextNode:text=>text},alert(){}});
     vm.runInContext(fs.readFileSync('client/disk-directory-picker.js','utf8'),context);
     let scope={path:'backup',name:'fuck'},reload;
     const result=await window.DiskDirectoryPicker.choose({rootPath:'backup',rootName:'fuck',getRoot:()=>scope,initialPath:'backup',loadDirectories:async()=>({directories:scope.path?[{path:'backup',name:'backup'},{path:'backup/a',name:'a'},{path:'backup/a/deep',name:'deep'}]:[{path:'',name:'根目录'},{path:'mine',name:'mine'}]}),createDirectory:async path=>({path}),onReady:fn=>{reload=fn;},openDialog:async options=>{

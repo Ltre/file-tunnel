@@ -112,6 +112,10 @@ FolderSync 的 S3 Compatible 表单只有服务器地址、Region、凭据及“
 
 客户端若默认启用 S3 Multipart Upload，应关闭或将其阈值调整到不会使用该 API；遇到客户端不能关闭的未支持功能时需核对请求，不能通过关闭鉴权规避。
 
+2026-10-11 补充现场诊断：[FolderSync / S3 诊断工具说明](../tools/diagnose-s3-foldersync.md)。可用 `tools/diagnose-s3-foldersync.cjs` 对实际 Endpoint 执行只读签名探测；服务临时设置 `D2T_S3_DIAGNOSTICS=1` 可记录 App 实际请求的路径、允许的列表参数、响应状态、XML 样本及请求编号。默认关闭，不记录认证头、密钥或上传正文。工具通过并不等于 App 通过，两种地址填写方式应分别核对，尤其是代理在 Node 前返回 HTML/JSON、重复 Bucket 路径及 App 是否发出 ListBuckets。
+
+目录创建使用 Bucket 内的零字节 `path/` marker；不开放 CreateBucket。当前本地隔离验证覆盖 Bucket 列表、V1/V2 列表、空目录 marker 的创建/列出/清理及重复 Bucket 错误 XML。2026-10-11 的 FolderSync 报错仍缺少实际 HTTP 响应，尚不能确定现场根因或宣称 App 已修复。
+
 ## 4. 支持的操作
 
 以下路径相对于 `/S3API`，均需 SigV4；响应采用 S3 XML / 对象流，而不是原生 API 的 JSON 任务协议。

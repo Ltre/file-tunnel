@@ -84,7 +84,13 @@
             function branch(folder) {
                 const details = document.createElement('details'); details.className = 'disk-folder-branch'; details.open = expanded.has(folder.path);
                 const summary = document.createElement('summary');
-                const target = document.createElement('button'); target.type = 'button'; target.className = 'disk-folder-target'; target.dataset.folderPath = folder.path; target.textContent = '📁 ' + folder.name;
+                const target = document.createElement('button'); target.type = 'button'; target.className = 'disk-folder-target'; target.dataset.folderPath = folder.path;
+                target.append(document.createTextNode('📁 '));
+                for (const [enabled, text, title] of [[folder.collaborationOwned, '⇔', '本目录已开启协同编辑'], [folder.staticExplicit, 'S', '本目录单独开放静态资源']]) {
+                    if (!enabled) continue;
+                    const badge = document.createElement('span'); badge.className = 'disk-folder-state' + (text === 'S' ? ' static' : ''); badge.textContent = text; badge.title = title; target.append(badge, document.createTextNode(' '));
+                }
+                target.append(document.createTextNode(folder.name));
                 target.onclick = event => { event.preventDefault(); select(folder.path); details.open = true; expanded.add(folder.path); };
                 const nested = document.createElement('div'); nested.className = 'disk-folder-children'; nested.setAttribute('role', 'group');
                 summary.append(target); details.append(summary, nested);
@@ -117,7 +123,7 @@
                 return details;
             }
             if (selected !== rootPath && !directories.some(folder => folder.path === selected)) selected = rootPath;
-            root.append(branch({ path: rootPath, name: rootName })); select(selected);
+            root.append(branch({ ...directories.find(folder => folder.path === rootPath), path: rootPath, name: rootName })); select(selected);
         }
         root.addEventListener('click', event => { if (!event.target.closest('.disk-tree-menu')) root.querySelector('.disk-tree-menu')?.remove(); });
         create.onclick = async () => {

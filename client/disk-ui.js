@@ -176,11 +176,13 @@ function closeTelegramDriveItemMenu({ fromHistory = false, replaceHistory = fals
 function closeTelegramDriveDialog(result = null, { fromHistory = false, replaceHistory = false } = {}) {
     const dialog = document.getElementById('telegramDriveDialog');
     if (!dialog) return;
+    if (result === null && dialog._diskCanDismiss && !dialog._diskCanDismiss()) { showAppToast('正在保存，请等待结果后再关闭'); return; }
     const resolver = dialog._telegramDriveResolver;
     dialog._telegramDriveResolver = null;
     dialog.hidden = true;
     document.body.classList.remove('telegram-drive-dialog-open');
     dialog.onkeydown = null;
+    delete dialog._diskCanDismiss;
     delete dialog.dataset.dismissOnBackdrop;
     document.getElementById('telegramDriveDialogBody')?.replaceChildren();
     document.getElementById('telegramDriveDialogActions')?.replaceChildren();
@@ -199,13 +201,14 @@ function closeTelegramDriveDialog(result = null, { fromHistory = false, replaceH
     }
 }
 
-function openTelegramDriveDialog({ title, body, confirmText = '确定', confirmClass = 'btn-primary', cancelText = '取消', validate, historyEntry = false, dismissOnBackdrop = false } = {}) {
+function openTelegramDriveDialog({ title, body, confirmText = '确定', confirmClass = 'btn-primary', cancelText = '取消', validate, historyEntry = false, dismissOnBackdrop = false, canDismiss } = {}) {
     const dialog = document.getElementById('telegramDriveDialog');
     const titleEl = document.getElementById('telegramDriveDialogTitle');
     const bodyEl = document.getElementById('telegramDriveDialogBody');
     const actions = document.getElementById('telegramDriveDialogActions');
     closeTelegramDriveItemMenu({ replaceHistory: true });
     titleEl.textContent = title || 'Telegram网盘';
+    dialog._diskCanDismiss = canDismiss;
     bodyEl.replaceChildren(...(Array.isArray(body) ? body : [body]).filter(Boolean));
     actions.replaceChildren();
     const cancel = cancelText ? document.createElement('button') : null;
@@ -466,7 +469,7 @@ function getTelegramDriveItemMeta(item) {
     if (item.origin === 'collaboration') return `受邀协同 · ${item.mountName || '协同项目'} · ${item.relativePath || item.name} · ${item.kind === 'mounted_directory' ? '目录' : telegramDriveFileType(item) + ' · ' + formatFileSize(item.size || 0)}`;
     const global = document.getElementById('telegramDriveSearchAll')?.checked && String(document.getElementById('telegramDriveSearch')?.value || '').trim();
     const location = global ? `位置：${telegramDriveDisplayPath(item.kind === 'directory' || item.kind === 'collaboration_mount' ? item.parentPath : item.folderPath)} · ` : '';
-    if (item.kind === 'collaboration_mount') return `${location}协同挂载 · ${item.status === 'active' ? '受邀项目，内容仍归原所有者' : '访问已失效，可移除此挂载'}${item.lastKnownTitle ? ' · 来源：' + item.lastKnownTitle : ''}`;
+    if (item.kind === 'collaboration_mount') { const sourceName = item.sourceName ?? item.lastKnownTitle; return `${location}协同挂载 · ${item.status === 'active' ? '受邀项目，内容仍归原所有者' : '访问已失效，可移除此挂载'}${sourceName ? ' · 来源：' + sourceName : ''}`; }
     if (item.kind === 'directory' && item.reviewStatus === 'deleted') return `${location}已被管理员删除目录内容 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
     if (item.kind === 'directory' && item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件`;
     if (item.kind === 'directory') return `${location}${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件 · ${formatFileSize(item.size || 0)}`;
@@ -535,13 +538,15 @@ async function moveTelegramDriveItems(items, targetPath, { confirmed = false } =
         if (!await confirmTelegramDriveAction('确认移动', `确定要把 ${subject} 移动到 ${telegramDriveDisplayPath(destinationPath)} 吗？`, '移动')) return;
     }
     return window.DiskClient.withActivity({ message: `正在移动 ${items.length} 项`, folderPath: destinationPath }, async update => {
+        const batchId=globalThis.crypto?.randomUUID?.()||('move-'+Date.now()+'-'+Math.random().toString(36).slice(2));
         let selectionCleared = false;
         for (const [index, item] of items.entries()) {
             try {
             update({ operationId: '', message: `正在移动 ${index + 1}/${items.length} 项：${item.name}` });
             const url = item.kind === 'directory' ? '/api/telegram/drive/directories' : `/api/telegram/drive/files/${encodeURIComponent(item.id)}`;
-            const body = item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath };
+            const body = {...(item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath }), requestId:batchId+'-'+index, transferBatch:{id:batchId,index,total:items.length}};
             const response = await window.DiskClient.raw(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            if(response.historyWarning)showAppToast(response.historyWarning);
             // Keep the selection until the server accepts the first move.
             if (!selectionCleared) { clearTelegramDriveSelection(); selectionCleared = true; }
             update({ operationId: response.operation_id || '' });
@@ -911,10 +916,11 @@ async function copyTelegramDriveItemToCollaboration(item, preferredMount = null,
     if (window.DiskClient.getSpace() !== sourceScope) throw new Error('复制期间网盘分区已切换，请重新选择源文件');
     const selection = item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id };
     const result = await window.DiskClient.raw('/cross-scope/copy', window.DiskClient.json('POST', {
-        mode: 'copy', source: telegramDriveMountContext?{kind:'collaboration',collaborationId:telegramDriveMountContext.grant.id,selection}:{ kind: 'native', partitionId: sourcePartition.id, selection },
+        mode: 'copy', requestId:globalThis.crypto?.randomUUID?.(), source: telegramDriveMountContext?{kind:'collaboration',collaborationId:telegramDriveMountContext.grant.id,selection}:{ kind: 'native', partitionId: sourcePartition.id, selection },
         target: { kind: 'collaboration', collaborationId: target.id, destinationPath }
     }));
-    showAppToast(`已复制 ${result.copied?.length || 0} 个文件到协同项目；原文件保留`);
+    showAppToast(result.historyWarning || `已复制 ${result.copied?.length || 0} 个文件到协同项目；原文件保留`);
+    window.DiskClient.refresh?.(true);
     return result;
 }
 const telegramDriveSpaceKey = space => String(space?.scopeKey ?? space?.diskSpace ?? space?.id ?? '');
@@ -936,7 +942,7 @@ async function chooseTelegramDriveTransfer(items) {
     const choices = telegramDriveSpaces.filter(space => !space.state || space.state === 'ACTIVE');
     if (!choices.length) throw new Error('没有可用网盘分区');
     const currentSpace = window.DiskClient.getSpace();
-    const headerPicker = document.createElement('label'); headerPicker.className = 'disk-space-transfer-header-picker'; headerPicker.textContent = '目标分区';
+    const headerPicker = document.createElement('label'); headerPicker.className = 'disk-space-transfer-header-picker disk-partition-field'; headerPicker.textContent = '目标分区';
     if(telegramDriveMountContext?.grant.kind==='directory'&&telegramDriveMountContext.grant.role==='editor')choices.unshift({id:'@mounted',scopeKey:'@mounted',name:'当前协同项目'});
     const spaceSelect = document.createElement('select'); spaceSelect.setAttribute('aria-label', '目标网盘分区');
     for (const space of choices) { const option = document.createElement('option'); option.value = space.id; option.textContent = space.name; spaceSelect.append(option); }
@@ -1005,9 +1011,10 @@ async function chooseTelegramDriveTransfer(items) {
     if(telegramDriveMountContext){
         const context=telegramDriveMountContext;
         if(target.targetSpace==='@mounted' && target.mode==='move'){await moveTelegramDriveItems(items,target.destinationPath,{confirmed:true});return target;}
-        for(const item of items){const input={mode:'copy',requestId:crypto.randomUUID(),source:{kind:'collaboration',collaborationId:context.grant.id,selection:item.kind==='directory'?{kind:'directory',path:item.path}:{kind:'file',id:item.id}},target:target.targetSpace==='@mounted'?{kind:'collaboration',collaborationId:context.grant.id,destinationPath:target.destinationPath}:{kind:'native',partitionId:target.targetSpace,destinationPath:target.destinationPath}};
+        const batchId=crypto.randomUUID();
+        for(const [index,item] of items.entries()){const input={mode:target.mode,requestId:crypto.randomUUID(),transferBatch:{id:batchId,index,total:items.length},source:{kind:'collaboration',collaborationId:context.grant.id,selection:item.kind==='directory'?{kind:'directory',path:item.path}:{kind:'file',id:item.id}},target:target.targetSpace==='@mounted'?{kind:'collaboration',collaborationId:context.grant.id,destinationPath:target.destinationPath}:{kind:'native',partitionId:target.targetSpace,destinationPath:target.destinationPath}};
             const route=target.mode==='move'?'/cross-scope/move':'/cross-scope/copy';let result;
-            do{result=await window.DiskClient.raw(route,window.DiskClient.json('POST',input));if(result.state==='COPIED_SOURCE_RETAINED'){if(!confirm('复制已完成，来源仍保留：'+(result.warning?.userMessage||result.warning?.code||'')+'。是否安全重试删除来源？'))break;}}
+            do{result=await window.DiskClient.raw(route,window.DiskClient.json('POST',input));if(result.historyWarning)showAppToast(result.historyWarning);if(result.state==='COPIED_SOURCE_RETAINED'){if(!confirm('复制已完成，来源仍保留：'+(result.warning?.userMessage||result.warning?.code||'')+'。是否安全重试删除来源？'))break;}}
             while(result.state==='COPIED_SOURCE_RETAINED');
             if(result.state==='COPIED_SOURCE_RETAINED')showAppToast('已复制，来源未删除；目标副本已保留');
         }
@@ -1019,10 +1026,11 @@ async function chooseTelegramDriveTransfer(items) {
     }
     const result = await window.DiskClient.withActivity({ message: `正在${target.mode === 'copy' ? '复制' : '移动'}到其它分区`, folderPath: telegramDrivePath }, () =>
         window.DiskClient.raw('/spaces/transfer', window.DiskClient.json('POST', {
-            ...target, items: items.map(item => item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id })
+            ...target, requestId:globalThis.crypto?.randomUUID?.(), items: items.map(item => item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id })
         })));
     if (target.mode === 'move') { clearTelegramDriveSelection(); await refreshTelegramDriveContents(); }
-    showAppToast(`已${target.mode === 'copy' ? '复制' : '移动'} ${items.length} 项到“${choices.find(space => space.id === target.targetSpace)?.name}”`);
+    showAppToast(result.historyWarning || `已${target.mode === 'copy' ? '复制' : '移动'} ${items.length} 项到“${choices.find(space => space.id === target.targetSpace)?.name}”`);
+    window.DiskClient.refresh?.(true);
     return target;
 }
 async function locateTelegramDriveSearchItem(item) {
@@ -3174,6 +3182,16 @@ function initDiskEnhancements() {
     };
     const previousStatuses = new Map();
     window.DiskClient.subscribe(jobs => {
+        jobs=jobs.filter(job=>!job.historyMirrorId||!jobs.some(other=>other.operation_id===job.historyMirrorId));
+        const groups=new Map();
+        for(const job of jobs){const batch=job.transferDetails?.batch;if(batch){if(!groups.has(batch.id))groups.set(batch.id,[]);groups.get(batch.id).push(job);}}
+        const seen=new Set();jobs=jobs.flatMap(job=>{
+            const batch=job.transferDetails?.batch;if(!batch)return [job];if(seen.has(batch.id))return [];seen.add(batch.id);
+            const members=groups.get(batch.id).sort((a,b)=>a.transferDetails.batch.index-b.transferDetails.batch.index),complete=members.filter(item=>item.status==='completed').length;
+            const status=members.some(item=>item.status==='failed')?'failed':members.some(item=>['queued','running'].includes(item.status))?'running':complete===batch.total?'completed':'failed';
+            return [{...job,type:status==='running'?job.type:'transfer-history',status,message:`${complete}/${batch.total} 项完成${members.length<batch.total?'，其余尚未执行或确认':''}`,phase:status==='completed'?'completed':'batch',percent:Math.floor(complete/batch.total*100),
+                transferDetails:{...job.transferDetails,source:{...job.transferDetails.source,entries:members.flatMap(item=>item.transferDetails.source.entries.map(entry=>({...entry,outcome:item.phase==='source-retained'?'已复制，来源仍保留':item.status==='completed'?'已完成':item.status==='failed'?'未完成，请核对结果':'执行中'})))}}}];
+        });
         const changed = jobs.some(job => ['upload', 'repair'].includes(job.type) && ['queued', 'running'].includes(previousStatuses.get(job.operation_id)) && ['done', 'succeeded', 'completed', 'failed'].includes(job.status));
         for (const job of jobs) previousStatuses.set(job.operation_id, job.status);
         if (changed) {
@@ -3190,7 +3208,16 @@ function initDiskEnhancements() {
             if (job.type === 'upload') { detail.className = 'disk-task-upload-progress'; detail.textContent = [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', ...diskUploadProgressLines(job), job.status === 'failed' ? '已失败 · ' + telegramDriveErrorText({ message: job.errorCode, userMessage: job.errorMessage, errorDetails: job.errorDetails }) : job.status === 'completed' ? '已完成' : ''].filter(Boolean).join('\n'); }
             if (job.warnings?.length || job.result?.warnings?.length) detail.textContent += ' · ' + telegramDriveWarningText([...(job.warnings || []), ...(job.result?.warnings || [])]);
             row.append(title, detail);
-            if (['queued', 'running'].includes(job.status)) {
+            if (job.transferDetails) {
+                const info=job.transferDetails, list=document.createElement('details'), summary=document.createElement('summary');
+                summary.textContent=`${info.mode==='move'?'移动':'复制'} ${info.source.entries.length} 项 · ${info.source.name} → ${info.target.name}`;
+                list.append(summary);list.className='disk-transfer-details';
+                for(const entry of info.source.entries){const line=document.createElement('p');
+                    const destination=[info.target.directory.replace(/\/$/,''),entry.name].join('/');
+                    line.textContent=`${entry.kind==='directory'?'📁':'📄'} 从“${info.source.name}” ${entry.path} → “${info.target.name}” ${destination} · ${entry.outcome|| (job.phase==='source-retained'?'已复制，来源仍保留':job.status==='completed'?'已完成':job.status==='failed'?'未完成，请核对结果':'执行中')}`;list.append(line);}
+                row.append(list);
+            }
+            if (['queued', 'running'].includes(job.status) && job.type !== 'transfer-history') {
                 row.classList.add('disk-task-row-active'); row.tabIndex = 0; row.setAttribute('role', 'button');
                 row.setAttribute('aria-label', `查看任务进度：${job.title || job.message}`);
                 const showProgress = event => {

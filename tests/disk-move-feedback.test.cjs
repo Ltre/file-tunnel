@@ -57,7 +57,8 @@ test('移动确认后在首个 HTTP 响应前显示 Loading，覆盖整批移动
     assert.match(f.elements.diskLoadingDetail.textContent, /目录：\/target/);
     assert.equal(f.cleared(), 0, '服务器尚未接受时保留选择');
     assert.equal(f.requests.length, 1);
-    assert.deepEqual(f.requests[0].body, { folderPath: 'target' });
+    assert.equal(f.requests[0].body.folderPath, 'target');
+    assert.equal(f.requests[0].body.transferBatch.index,0);assert.equal(f.requests[0].body.transferBatch.total,2);
     await f.accept(0, 'move-1');
     assert.equal(f.cleared(), 1);
     assert.equal(f.elements.diskLoadingPosition.textContent, '1 / 1', '活动与服务器任务合并显示');
@@ -65,7 +66,8 @@ test('移动确认后在首个 HTTP 响应前显示 Loading，覆盖整批移动
     assert.equal(f.requests.length, 2);
     assert.equal(f.overlay.hidden, false);
     assert.match(f.elements.diskLoadingTitle.textContent, /2\/2.*nested/);
-    assert.deepEqual(f.requests[1].body, { path: 'source/nested', destinationPath: 'target' });
+    assert.equal(f.requests[1].body.path,'source/nested');assert.equal(f.requests[1].body.destinationPath,'target');
+    assert.equal(f.requests[1].body.transferBatch.id,f.requests[0].body.transferBatch.id);assert.equal(f.requests[1].body.transferBatch.index,1);
     await f.accept(1, 'move-2'); await f.complete('move-2');
     assert.equal(f.overlay.hidden, false, '目录刷新未结束时继续反馈');
     assert.match(f.elements.diskLoadingTitle.textContent, /正在刷新目录/);

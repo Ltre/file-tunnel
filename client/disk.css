@@ -203,3 +203,13 @@ body>.telegram-drive-subdialog{position:fixed;z-index:2147483170}
 @keyframes disk-import-spin{to{transform:rotate(360deg)}}
 
 .disk-file-editor{display:flex;flex-direction:column;gap:12px}.telegram-drive-dialog-card:has(.disk-file-editor){width:min(960px,96vw)}.disk-editor-panes{display:grid;grid-template-columns:1fr 1fr;gap:12px;height:min(55dvh,550px)}.disk-editor-panes.single{grid-template-columns:1fr}.disk-editor-panes textarea,.disk-editor-preview{min-width:0;overflow:auto;border:1px solid #cbd5e1;border-radius:9px;padding:12px;background:var(--panel-bg,#fff);color:inherit}.disk-editor-panes textarea{resize:none;font:14px/1.5 monospace}.disk-editor-preview{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:600px){.disk-editor-panes:not(.single){grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
+.telegram-drive-dialog-card:has(.disk-file-editor){width:min(960px,100%);min-width:0;max-height:min(90dvh,900px);height:min(90dvh,820px)}
+.telegram-drive-dialog-card:has(.disk-file-editor) .telegram-drive-dialog-body{flex:1;min-height:0;display:flex;overflow:auto}
+.telegram-drive-dialog-card:has(.disk-file-editor) :is(.telegram-drive-dialog-header,.telegram-drive-dialog-actions){flex-shrink:0}
+.disk-file-editor{width:100%;min-height:0;max-height:calc(var(--disk-editor-viewport,100dvh) - 160px);gap:8px}
+.disk-editor-panes{flex:1;min-height:80px;height:auto;grid-template-rows:minmax(0,1fr)}
+.disk-editor-panes textarea,.disk-editor-preview{height:100%;min-height:0;box-sizing:border-box}
+.disk-editor-navigation{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0}.disk-editor-navigation .btn{padding:6px 9px;font-size:.8rem}
+.disk-editor-navigation input{width:110px!important;min-width:0;padding:6px 8px!important}.disk-editor-range,.disk-file-editor>[role=status]{font-size:.8rem;color:var(--text-muted,#64748b);margin:0;overflow-wrap:anywhere}
+.disk-transfer-details{margin-top:7px;font-size:.85rem;overflow-wrap:anywhere}.disk-transfer-details summary{cursor:pointer;color:var(--text-main,#243747)}.disk-transfer-details p{white-space:pre-wrap;margin:8px 0}
+@media(max-width:600px){.disk-editor-panes:not(.single){grid-template-rows:repeat(2,minmax(0,1fr))}.disk-editor-navigation{max-height:100px;overflow:auto}.disk-file-editor{max-height:calc(var(--disk-editor-viewport,100dvh) - 145px)}}

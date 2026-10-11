@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v3-mounted-editor';
+const CACHE_NAME = 'instant-tunnel-v78-content-v4-windowed-editor';
 const APP_SHELL = [
     '/',
     '/index.html',

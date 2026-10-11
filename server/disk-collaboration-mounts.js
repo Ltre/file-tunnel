@@ -27,7 +27,7 @@ function checkedName(value) {
  * Mutations that also affect Native directories/grants belong in the caller's
  * repository.atomic() boundary, with reloadPersistence() on rollback.
  */
-function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAvailable } = {}) {
+function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAvailable, getTargetName } = {}) {
     if (!collaborations) throw new Error('MOUNT_COLLABORATIONS_REQUIRED');
     const repository = openDiskRepository(dataDir);
     let state = repository.loadWithRevision(TABLE);
@@ -49,12 +49,13 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
         try { return typeof isTargetAvailable !== 'function' || isTargetAvailable(grant) ? grant : null; }
         catch (_) { return null; }
     };
-    const view = item => ({
+    const view = item => { const grant = currentGrant(item); return ({
         id: item.id, mountId: item.id, kind: 'collaboration_mount', name: item.name,
         parentPath: item.parentPath, folderPath: item.parentPath, diskSpace: item.diskSpace,
-        collaborationId: item.collaborationId, status: currentGrant(item) ? 'active' : 'inaccessible',
+        collaborationId: item.collaborationId, status: grant ? 'active' : 'inaccessible',
+        sourceName: grant ? (getTargetName ? getTargetName(grant) : grant.name) || '' : item.lastKnownTitle || '',
         lastKnownTitle: item.lastKnownTitle || '', createdAt: item.createdAt, updatedAt: item.updatedAt
-    });
+    }); };
     const assertTopology = (ownerId, diskSpace, parentPath) => {
         collaborations.reloadPersistence();
         if (collaborations.forOwner(ownerId, diskSpace).some(grant =>

@@ -54,7 +54,9 @@
             const progress = Object.fromEntries(clientProgressFields.filter(key => local[key] !== undefined).map(key => [key, local[key]]));
             if (Number.isFinite(progress.clientBytesReceived)) progress.clientBytesReceived = Math.max(progress.clientBytesReceived, Number(job.clientBytesReceived) || 0);
             return { ...job, ...progress };
-        }));
+        })).filter(job => job.type==='transfer-history' && active(job)
+            ? !jobs.some(source => source.historyMirrorId===job.operation_id && active(source))
+            : !job.historyMirrorId || active(job) || !jobs.some(mirror => mirror.operation_id===job.historyMirrorId));
     const emit = () => listeners.forEach(listener => listener(visibleJobs()));
     function uploadBody(url, options) {
         return new Promise((resolve, reject) => {

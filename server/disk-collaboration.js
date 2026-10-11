@@ -97,7 +97,7 @@ function createDiskCollaborationStore(dataDir) {
         disable(id, ownerId, diskSpace) { const item=ensureOwner(id,ownerId,diskSpace);item.active=false;item.invites=[];item.members=[];item.memberRoles={};save();return { ok:true }; },
         protectFile(ownerId,diskSpace,fileId) { return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&item.kind==='file'&&item.fileId===fileId); },
         protectDirectory(ownerId,diskSpace,folderPath) { const prefix=`${folderPath}/`;return entries.some(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)&&(item.path===folderPath||item.path.startsWith(prefix))); },
-        relocateDirectory(ownerId,diskSpace,oldPath,newPath) { let changed=false;for(const item of entries){if(item.active===false||!sameScope(item,ownerId,diskSpace))continue;if(item.path===oldPath||item.path.startsWith(`${oldPath}/`)){item.path=newPath+item.path.slice(oldPath.length);changed=true;}}if(changed)save(); },
+        relocateDirectory(ownerId,diskSpace,oldPath,newPath) { let changed=false;for(const item of entries){if(item.active===false||!sameScope(item,ownerId,diskSpace))continue;if(item.path===oldPath||item.path.startsWith(`${oldPath}/`)){if(item.path===oldPath)item.name=newPath.split('/').at(-1);item.path=newPath+item.path.slice(oldPath.length);changed=true;}}if(changed)save(); },
         relocateFile(ownerId,diskSpace,fileId,newPath,newName) { const item=this.ownedTarget(ownerId,diskSpace,'file',fileId);if(!item)return;item.path=newPath;item.name=newName;save(); },
         forOwner(ownerId,diskSpace) { return entries.filter(item=>item.active!==false&&sameScope(item,ownerId,diskSpace)).map(publicEntry); }
     };

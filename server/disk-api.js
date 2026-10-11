@@ -195,7 +195,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const target = grant.kind === 'file' ? ownerStore.get(grant.ownerId, grant.fileId) : ownerStore.getDirectory(grant.ownerId, grant.path);
             return Boolean(target && !['blocked', 'deleted'].includes(target.reviewStatus));
         } catch (_) { return false; }
-    } });
+    }, getTargetName: grant => grant.kind === 'file'
+        ? spaces.get(grant.diskSpace).get(grant.ownerId,grant.fileId)?.name || ''
+        : grant.path.split('/').at(-1) || '根目录' });
     const mountedNamespace = require('./disk-mounted-namespace').createMountedNamespace({mounts,collaborations,partitions,spaces});
     shares.setMountedNamespace(mountedNamespace); staticResources.setMountedNamespace(mountedNamespace);
     spaces.installExternalNameGuard((ownerId, diskSpace, parentPath, name) => mounts.assertNameFree(ownerId, diskSpace, parentPath, name));
@@ -1303,6 +1305,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         else if (method === 'GET' && path === '/search' && entry.kind === 'directory') { /* result is restricted to this grant below */ }
         else if (method === 'DELETE' && /^\/operations\/[^/]+$/.test(path)) { /* checked by route */ }
         else throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','ROUTE_OUTSIDE_GRANT');
+        req.diskLocalScope ||= {...req.diskScope};
         req.collaboration = entry; req.diskViewerId = viewerId; req.diskUser = user;
         req.diskScope = { userId: entry.ownerId, diskSpace: entry.diskSpace };
         req.diskStore = storage;
@@ -1348,6 +1351,48 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         spaces.track('system', user.id, selected.scopeKey);
         next();
     }));
+    browser.use(require('./disk-transfer-history').transferHistory({ operations, describe(req, route) {
+        const actor = req.diskUser;
+        const namespace = value => {
+            if (value?.kind === 'collaboration') {
+                const grant = collaborations.authorizedFresh(value.collaborationId, actor.id);
+                if (!grant) throw new Error('COLLABORATION_NOT_FOUND');
+                const drive=spaces.get(grant.diskSpace);drive.reloadPersistence();
+                const file=grant.kind==='file'?drive.get(grant.ownerId,grant.fileId):null;
+                return { kind:'collaboration', name:file?.name||grant.name, id:grant.id, root:file?.folderPath ?? grant.path ?? '', ownerId:grant.ownerId, diskSpace:grant.diskSpace, drive };
+            }
+            const partition=partitions.find(actor.id,value?.partitionId ?? req.diskPartition.id);
+            return {kind:'native',name:partition.name,id:partition.id,root:'',ownerId:actor.id,diskSpace:partition.scopeKey,drive:spaces.get(partition.scopeKey)};
+        };
+        let sourceInput=req.body?.source, targetInput=req.body?.target, selected=req.body?.items;
+        const mounted=req.path.match(/^\/(mount-scope|collaboration-scope)\/([^/]+)/);
+        if (!sourceInput && mounted) {
+            const grant = mounted[1]==='mount-scope'?mounts.resolve(decodeURIComponent(mounted[2]),actor.id,req.diskScope.diskSpace).grant:collaborations.authorizedFresh(decodeURIComponent(mounted[2]),actor.id);
+            if(!grant)throw new Error('COLLABORATION_NOT_FOUND');
+            sourceInput={kind:'collaboration',collaborationId:grant.id};
+        }
+        const source=namespace(sourceInput);
+        const mode=req.method==='PATCH'||route==='/cross-scope/move'?'move':req.body?.mode || 'copy';
+        if(!selected)selected=[sourceInput?.selection || (route==='/directories'?{kind:'directory',path:req.body.path}:{kind:'file',id:decodeURIComponent(route.split('/')[2])})];
+        const target=targetInput?namespace(targetInput):route==='/spaces/transfer'?namespace({partitionId:req.body.targetSpace}):source;
+        const visible=(ns,path)=>{
+            if(ns.root && path!==ns.root && !path.startsWith(ns.root+'/'))throw new Error('COLLABORATION_OUT_OF_SCOPE');
+            return '/'+(ns.root?path.slice(ns.root.length).replace(/^\//,''):path);
+        };
+        source.drive.reloadPersistence();
+        let entries=selected.map(item=>{
+            const file=item.kind==='directory'?null:source.drive.get(source.ownerId,item.id);
+            const path=item.kind==='directory'?String(item.path):file && [file.folderPath,file.name].filter(Boolean).join('/');
+            if(!path)throw new Error('FILE_NOT_FOUND');
+            return {kind:item.kind,name:file?.name||path.split('/').at(-1),path:visible(source,path)};
+        });
+        if(route==='/spaces/transfer')entries=entries.filter((entry,index,all)=>
+            !all.some((parent,i)=>i!==index&&parent.kind==='directory'&&entry.path.startsWith(parent.path+'/'))
+            &&all.findIndex(other=>other.kind===entry.kind&&other.path===entry.path)===index);
+        const batch=req.body.transferBatch;
+        return {mode,...(batch&&/^[-\w]{8,100}$/.test(batch.id)&&Number.isInteger(batch.total)&&batch.total>0&&batch.total<=100&&Number.isInteger(batch.index)&&batch.index>=0&&batch.index<batch.total?{batch:{id:batch.id,total:batch.total,index:batch.index}}:{}),source:{kind:source.kind,id:source.id,name:source.name,entries},target:{kind:target.kind,id:target.id,name:target.name,
+            directory:visible(target,String(targetInput?.destinationPath ?? req.body.destinationPath ?? req.body.folderPath ?? ''))}};
+    } }));
     browser.get('/spaces', (req, res) => res.json({ spaces: partitions.list(req.diskUser.id) }));
     browser.post('/spaces', wrap((req, res) => {
         const partition = partitions.create(req.diskUser.id, req.body?.name);
@@ -1772,7 +1817,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.get('/shares', (req, res) => res.json({ shares: shares.list(scope(req)) }));
         router.post('/shares', wrap((req, res) => res.status(201).json(shares.create(scope(req), store(req), req.body?.items))));
         router.delete('/shares/:id', wrap((req, res) => res.json(shares.stop(scope(req), req.params.id))));
-        router.get('/operations', (req, res) => res.json({ operations: operations.list(scope(req), String(req.query.ids || '').split(',').slice(0, 100)).filter(job => !req.collaboration || job.collaborationId === req.collaboration.id) }));
+        router.get('/operations', (req, res) => {
+            const requested=String(req.query.ids || '').split(',').slice(0,100);
+            const jobs=operations.list(scope(req),requested).filter(job=>!req.collaboration||job.collaborationId===req.collaboration.id);
+            if(req.collaboration && req.diskLocalScope && req.diskLocalScope.userId!==owner(req))jobs.push(...operations.list(req.diskLocalScope).filter(job=>job.type==='transfer-history'&&job.transferDetails?.source.id===req.collaboration.id));
+            res.json({operations:jobs});
+        });
         router.get('/operations/:id', wrap((req, res) => {
             const job = operations.get(req.params.id, scope(req));
             if (!job || (req.collaboration && job.collaborationId !== req.collaboration.id)) throw new Error('OPERATION_NOT_FOUND');
@@ -1812,7 +1862,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.get('/directories', (req, res) => {
             const root = req.collaboration?.path;
             const directories = store(req).listDirectories(owner(req)).filter(folder => (root === undefined || !root || folder.path === root || folder.path.startsWith(root + '/'))&&mountedVisible(req,folder,true));
-            res.json({ directories });
+            collaborations.reloadPersistence();
+            const explicit = new Set(staticResources.list(req.diskScope).filter(link => !link.revokedAt && (!link.expiresAt || link.expiresAt > Date.now())).flatMap(link => link.directories));
+            const ownCollaborations = new Set((req.diskViewerId || owner(req)) === owner(req)
+                ? collaborations.forOwner(owner(req),req.diskScope.diskSpace).filter(grant=>grant.kind==='directory').map(grant=>grant.path) : []);
+            res.json({ directories: directories.map(folder => ({ ...folder,
+                collaborationOwned: ownCollaborations.has(folder.path),
+                staticExplicit: explicit.has(folder.path)
+            })) });
         });
         router.get('/directories/properties', wrap((req, res) => {
             const folder = store(req).getDirectory(owner(req), req.query.path || '');

@@ -123,6 +123,7 @@ async function readLimited(req, limit) {
 }
 function createS3Gateway({ dataDir, objectStorage }) {
     const credentials = createS3Credentials(dataDir), api = express.Router(), content = express.Router();
+    api.use(require('./diagnostics').diagnostics(dataDir));
     const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10000, standardHeaders: false, legacyHeaders: false,
         validate: { xForwardedForHeader: false },
         handler(req, res) { const id = crypto.randomBytes(12).toString('hex'); res.status(503).set({ 'Retry-After': '60', 'x-amz-request-id': id }).type('application/xml').send(errorDocument('SlowDown', MESSAGES.SlowDown, id, (req.originalUrl || req.url).split('?')[0])); } });
@@ -239,8 +240,9 @@ function createS3Gateway({ dataDir, objectStorage }) {
             res.send(errorDocument(code, MESSAGES[code], requestId, (req.originalUrl || req.url).split('?')[0]));
         }
     }
-    api.use((req, res) => { dispatch(req, res, '/S3API', false).catch(error => { if (!res.headersSent) res.status(500).end(); else res.destroy(error); }); });
-    content.use((req, res) => { dispatch(req, res, '/s3', true).catch(error => { if (!res.headersSent) res.status(500).end(); else res.destroy(error); }); });
+    const unexpected=(req,res,error)=>{if(res.headersSent)return res.destroy(error);const id=res.getHeader('x-amz-request-id')||crypto.randomBytes(12).toString('hex');res.status(500).type('application/xml');if(req.method==='HEAD')return res.end();return res.send(errorDocument('InternalError',MESSAGES.InternalError,id,(req.originalUrl||req.url).split('?')[0]));};
+    api.use((req, res) => { dispatch(req, res, '/S3API', false).catch(error => unexpected(req,res,error)); });
+    content.use((req, res) => { dispatch(req, res, '/s3', true).catch(error => unexpected(req,res,error)); });
     return { api, content, credentials };
 }
 module.exports = { createS3Gateway, listV1, listV2, partsFromRequest };

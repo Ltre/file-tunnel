@@ -38,7 +38,7 @@ function picker() {
     }
     let dialog, release, fail, waited = [], directories = [];
     const alerts = [], writes = [];
-    const context = vm.createContext({ document: { createElement: tag => new Element(tag) }, telegramDrivePath: '',
+    const context = vm.createContext({ document: { createElement: tag => new Element(tag), createTextNode: value => value }, telegramDrivePath: '',
         telegramDriveDisplayPath: path => path ? '/' + path : '/', installContextGesture() {},
         telegramDriveErrorText: error => error.message, alert: message => alerts.push(message),
         openTelegramDriveDialog: options => { dialog = options; return new Promise(() => {}); },

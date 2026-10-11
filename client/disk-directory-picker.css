@@ -16,3 +16,14 @@
 .disk-folder-editor button{padding:5px 8px}
 .disk-folder-target,.disk-tree-menu{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .disk-folder-error{color:#b4333c;margin:0;overflow-wrap:anywhere}
+.disk-folder-state{display:inline-flex;align-items:center;justify-content:center;min-width:1.25em;border-radius:4px;font-size:.82em;color:#26836e;background:#e8f5ee;padding:1px 3px;vertical-align:middle}
+.disk-folder-state.static{color:#1768b4;background:#e4f0ff}
+.disk-partition-field{display:flex!important;align-items:center;gap:10px;min-width:0;color:var(--text-muted,#64748b);font-size:.86rem;white-space:nowrap}
+.disk-partition-field select{flex:1;min-width:0;width:auto!important;max-width:100%;min-height:38px;padding:8px 28px 8px 10px!important;border:1px solid var(--panel-border,#cbd5e1);border-radius:9px;background:var(--surface-soft,#f1f5f9);color:var(--text-main,#243747);font:inherit;cursor:pointer}
+.disk-partition-field select:hover{border-color:#829faf}.disk-partition-field select:focus-visible{outline:2px solid #55a1ba;outline-offset:2px}
+.disk-partition-field select option{background:var(--panel-bg,#fff);color:var(--text-main,#243747)}
+.disk-space-transfer-open .telegram-drive-dialog-header{flex-wrap:wrap}
+.disk-space-transfer-open .telegram-drive-dialog-header>strong{flex:1;min-width:0;overflow-wrap:anywhere}
+.disk-space-transfer-open .disk-space-transfer-header-picker{flex:0 1 240px;margin-left:auto}
+.disk-mount-picker-controls .disk-partition-field{width:100%}
+@media(max-width:600px){.disk-space-transfer-open .disk-space-transfer-header-picker{order:3;flex-basis:100%;margin-left:0}.disk-space-transfer-open #telegramDriveDialogCloseBtn{margin-left:auto;flex:none}}

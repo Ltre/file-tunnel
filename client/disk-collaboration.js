@@ -382,7 +382,7 @@
             }
         } catch (error) {
             status(error.message === 'LOGIN_REQUIRED' ? '请先在功能首页登录 Telegram 网盘账号，然后返回此页面重试。' : `无法打开协同编辑：${window.DiskErrorMessages.format(error)}`, true);
-            $('list').innerHTML = '<div class="error-panel">' + (embedded ? '请关闭协同浮层并在原网盘登录。' : '<a href="/">前往功能首页</a>') + ' · <button type="button" id="retryJoin">重试</button></div>';
+            $('list').innerHTML = '<div class="error-panel">' + (embedded ? '请关闭协同浮层并在原网盘登录。' : '<a href="/disk">前往网盘首页</a>') + ' · <button type="button" id="retryJoin">重试</button></div>';
             $('retryJoin').onclick = () => location.reload();
             $('toolbar').hidden = true;
         }
