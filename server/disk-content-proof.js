@@ -10,7 +10,7 @@ const prefix = (nonce, range) => {
 // transactions; the lease pins the revision used to calculate sample digests.
 function createContentProof({ content, open, validate, reuseMode = 'all' }) {
     const session=req=>{
-        const cookie=(String(req.headers?.cookie || '').split(';').map(value=>value.trim()).find(value=>value.startsWith('drop2tunnel_telegram_drive=')) || '');
+        const cookie=req.diskSessionCookie || (String(req.headers?.cookie || '').split(';').map(value=>value.trim()).find(value=>value.startsWith('drop2tunnel_telegram_drive=')) || '');
         // Browser authentication uses the Cookie, so an unrelated Authorization
         // header cannot give a logged-out Cookie a new, unrevoked fingerprint.
         return crypto.createHash('sha256').update(req.diskApp ? String(req.headers?.authorization || '') : cookie || String(req.headers?.authorization || '')).digest('hex');
@@ -21,7 +21,7 @@ function createContentProof({ content, open, validate, reuseMode = 'all' }) {
         String(file.folderPath ?? folder ?? ''), String(file.name), String(file.type || 'application/octet-stream'), file.size, file.contentSha256]);
     const viewer = req => String(req.diskViewerId || req.diskUser.id);
     const authorization = req => {
-        const cookie=(String(req.headers?.cookie || '').split(';').map(value=>value.trim()).find(value=>value.startsWith('drop2tunnel_telegram_drive=')) || '').split('=').slice(1).join('=');
+        const cookie=(req.diskSessionCookie || (String(req.headers?.cookie || '').split(';').map(value=>value.trim()).find(value=>value.startsWith('drop2tunnel_telegram_drive=')) || '')).split('=').slice(1).join('=');
         const bearer=String(req.headers?.authorization || '').replace(/^Bearer\s+/i,'');
         if (!cookie && !bearer) return null; // Existing mock/internal calls have no browser session.
         let expiresAt=Date.now()+7*86400_000;

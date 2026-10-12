@@ -1,13 +1,13 @@
 (function(global){
     'use strict';
     const LIMIT=100*1024*1024;
-    async function plan(client,space,selected,signal){
+    async function plan(client,space,selected,signal,accountId){
         const directories=[],files=new Map();
         const roots=selected.filter(entry=>!selected.some(parent=>parent!==entry&&parent.kind==='directory'&&(entry.kind==='directory'?entry.path===parent.path||entry.path.startsWith(parent.path+'/'):entry.folderPath===parent.path||entry.folderPath?.startsWith(parent.path+'/'))));
         for(const item of roots){
             signal?.throwIfAborted();
             if(item.kind==='directory'){
-                const tree=await client.raw('/tree?path='+encodeURIComponent(item.path),{diskSpace:space,signal});
+                const tree=await client.raw('/tree?path='+encodeURIComponent(item.path),{diskSpace:space,signal,accountId});
                 const prefix=item.path.split('/').slice(0,-1).join('/');
                 for(const dir of tree.directories||[])directories.push({path:dir.path.slice(prefix?prefix.length+1:0)+'/',type:'application/x-directory'});
                 for(const file of tree.files||[]){if(['blocked','deleted'].includes(file.reviewStatus))throw new Error('所选目录包含不可访问文件，请重新选择');files.set(file.id,{...file,path:[file.folderPath,file.name].filter(Boolean).join('/').slice(prefix?prefix.length+1:0)});}
@@ -20,7 +20,7 @@
         return result;
     }
     async function choose({validate=()=>{},destination='',onImport}={}){
-        const client=global.DiskClient,controller=new AbortController();
+        const client=global.DiskClient,controller=new AbortController(),accountId=client.getAccount?.() || '';
         const dialog=document.createElement('dialog');dialog.className='disk-import-picker';
         const header=document.createElement('header'),title=document.createElement('h2');title.textContent='从网盘导入';
         const spaces=document.createElement('select');spaces.className='telegram-drive-space-picker';spaces.setAttribute('aria-label','导入来源分区');
@@ -38,7 +38,7 @@
             async function load(path=''){
                 const requestSpace=space;
                 const cache=loaded;
-                if(!cache.has(path)){const data=await client.raw('/list?path='+encodeURIComponent(path),{diskSpace:requestSpace,signal:controller.signal});if(!done&&space===requestSpace&&cache===loaded)cache.set(path,data);}
+                if(!cache.has(path)){const data=await client.raw('/list?path='+encodeURIComponent(path),{diskSpace:requestSpace,signal:controller.signal,accountId});if(!done&&space===requestSpace&&cache===loaded)cache.set(path,data);}
                 if(!done&&space===requestSpace)render();
             }
             function render(){
@@ -58,12 +58,12 @@
             accept.onclick=async()=>{
                 if(busy||!selected.size)return;busy=true;accept.disabled=true;accept.classList?.add('disk-import-busy');accept.setAttribute('aria-busy','true');accept.textContent='正在导入…';spaces.disabled=true;render();
                 try{
-                    const entries=await plan(client,space,[...selected.values()],controller.signal);if(done)return;validate(entries);
+                    const entries=await plan(client,space,[...selected.values()],controller.signal,accountId);if(done)return;validate(entries);
                     let received=0;const total=entries.reduce((n,file)=>n+Number(file.size||0),0);
                     for(const file of entries){
                         if(file.type==='application/x-directory'){file.data=new Uint8Array();continue;}
                         controller.signal.throwIfAborted();status.textContent=`正在导入 ${file.path} · ${received}/${total} B`;
-                        const response=await fetch('/api/telegram/drive/files/'+encodeURIComponent(file.id)+'/stream?purpose=web-import&disk_space='+encodeURIComponent(space),{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+                        const response=await fetch('/api/telegram/drive/files/'+encodeURIComponent(file.id)+'/stream?purpose=web-import&disk_space='+encodeURIComponent(space),{credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:accountId?{'X-Disk-Account':accountId}:{}});
                         if(!response.ok){const data=await response.json().catch(()=>({}));throw Object.assign(new Error(data.error||'DISK_READ_FAILED'),data);}
                         const reader=response.body.getReader(),chunks=[];let size=0;
                         while(true){const next=await reader.read();if(next.done)break;size+=next.value.length;received+=next.value.length;if(size>Number(file.size)||received>LIMIT){await reader.cancel();throw new Error('文件大小在导入期间发生变化，请刷新后重新选择');}chunks.push(next.value);status.textContent=`正在导入 ${file.path} · ${received}/${total} B`;}
@@ -74,7 +74,7 @@
                     if(!done)finish(entries);
                 }catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}finally{busy=false;accept.disabled=false;accept.classList?.remove('disk-import-busy');accept.setAttribute('aria-busy','false');accept.textContent='导入所选';spaces.disabled=false;if(!done)render();}
             };
-            (async()=>{try{const data=await client.raw('/spaces',{signal:controller.signal});if(done)return;for(const item of data.spaces||[]){const option=document.createElement('option');option.value=item.scopeKey??item.name;option.textContent=item.name;option.disabled=Boolean(item.state&&item.state!=='ACTIVE');spaces.append(option);}spaces.value=space;status.textContent='多选文件或目录；切换分区会清空选择。可随时取消。';await load();}catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}})();
+            (async()=>{try{const data=await client.raw('/spaces',{signal:controller.signal,accountId});if(done)return;for(const item of data.spaces||[]){const option=document.createElement('option');option.value=item.scopeKey??item.name;option.textContent=item.name;option.disabled=Boolean(item.state&&item.state!=='ACTIVE');spaces.append(option);}spaces.value=space;status.textContent='多选文件或目录；切换分区会清空选择。可随时取消。';await load();}catch(error){if(!done)status.textContent=global.DiskErrorMessages.format(error);}})();
         });
     }
     global.DiskImportPicker={choose,_test:{plan}};

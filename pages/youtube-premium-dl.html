@@ -398,6 +398,7 @@
 
 <script src="/client/cache-store.js"></script>
 <script src="/client/youtube-premium-cache.js"></script>
+<script src="/client/disk-pending-save.js"></script>
 <script src="/client/audio-track-repair.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
 <script>
@@ -1810,7 +1811,7 @@
         try {
             const data = await api('/api/youtube-premium/tasks?page=1&pageSize=1');
             const count = await premiumBrowserCache?.cleanupOrphans(data.ids || []) || 0;
-            notice.textContent = count ? `已清理 ${count} 条游离浏览器缓存。` : '没有发现游离浏览器缓存。';
+            notice.textContent = (count ? `已清理 ${count} 条游离浏览器缓存。` : '没有可清理的游离浏览器缓存。') + '待转存到网盘的缓存已保留。';
         } catch (error) {
             notice.textContent = `清理垃圾失败：${error.message}`;
         } finally {
@@ -2034,6 +2035,22 @@
             actions.appendChild(taskButton(task, '完全删除', '', 'DELETE', '任务记录和服务端成品都会被删除，且无法恢复，确定继续吗？', true));
         }
         main.appendChild(actions);
+        if (Number(task.completedAt) && Number(task.outputFileSize) > 0 && ['completed','cleared'].includes(task.status)) {
+            const saveToDisk = document.createElement('button'); saveToDisk.type = 'button'; saveToDisk.textContent = '转存到网盘';
+            saveToDisk.addEventListener('click', async () => {
+                saveToDisk.disabled = true;
+                try {
+                    const record = await window.DiskPendingSave.prepare({ source: 'youtube', task, cache: premiumBrowserCache, onStatus: text => { notice.textContent = text; } });
+                    if (!record) return;
+                    const opened = window.DiskPendingSave.open(record);
+                    const link = document.createElement('a'); link.href = opened.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = '打开网盘继续转存';
+                    notice.replaceChildren(document.createTextNode(record.status === 'completed' ? '此资源已转存。' : '待转存记录已保存，登录取消或失败后可继续。'), link);
+                    setBrowserCacheState(task.id, { status: 'browser_cache_cached', progress: 100 });
+                } catch (error) { notice.textContent = '转存准备失败：' + error.message; }
+                finally { saveToDisk.disabled = false; }
+            });
+            actions.appendChild(saveToDisk);
+        }
         if (task.hasFile) main.appendChild(window.TelegramTargetForward.create(task, '/api/youtube-premium', api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio', 'song'].includes(task.mediaType)) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
         card.append(cover, main);

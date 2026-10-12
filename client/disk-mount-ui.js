@@ -6,6 +6,7 @@
     const scopeKey = space => String(space?.scopeKey ?? space?.diskSpace ?? space?.id ?? '');
     const spaceId = space => String(space?.id ?? scopeKey(space));
     const mountId = mount => String(mount?.mountId || mount?.id || '');
+    const currentAccount = () => window.DiskClient?.getAccount?.() || new URL(location.href || location.origin).searchParams.get('disk_account') || '';
     const checkedName = value => {
         const name = String(value ?? '');
         if (!name || name !== name.trim() || name === '.' || name === '..' || name.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(name))
@@ -23,13 +24,14 @@
     const suggestedName = value => String(value || '协同项目').trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').slice(0, 100) || '协同项目';
 
     async function request(scope, route, options = {}) {
+        const accountId = options.accountId ?? currentAccount();
         const address = new URL(base + route, location.origin);
         address.searchParams.set('disk_space', String(scope ?? ''));
         let deviceId = '';
         try { deviceId = localStorage.getItem('disk-device-id') || ''; } catch (_) {}
         const response = await fetch(address.pathname + address.search, {
             credentials: 'same-origin', cache: 'no-store', ...options,
-            headers: { ...(deviceId ? { 'X-Disk-Device-Id': deviceId } : {}), ...options.headers }
+            headers: { ...(deviceId ? { 'X-Disk-Device-Id': deviceId } : {}), ...options.headers, ...(accountId ? { 'X-Disk-Account': accountId } : {}) }
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) { const error = new Error(data.error || `HTTP_${response.status}`); error.status = response.status; Object.assign(error, data); throw error; }
@@ -63,16 +65,16 @@
     }
 
     async function availableSpaces(options) {
-        const items = (options.spaces || (await request(options.currentSpace || '', '/spaces')).spaces || [])
+        const items = (options.spaces || (await request(options.currentSpace || '', '/spaces', { accountId: options.accountId })).spaces || [])
             .filter(space => !space.state || space.state === 'ACTIVE');
         if (!items.length) throw new Error('尚无可用的本人网盘分区');
         return items;
     }
-    async function waitDirectoryOperation(scope, response) {
+    async function waitDirectoryOperation(scope, response, accountId) {
         if (response.status === 'completed') return response.result;
         if (!response.operation_id) return response;
         for (let attempt = 0; attempt < 120; attempt++) {
-            const operation = await request(scope, '/operations/' + encodeURIComponent(response.operation_id));
+            const operation = await request(scope, '/operations/' + encodeURIComponent(response.operation_id), { accountId });
             if (operation.status === 'completed') return operation.result;
             if (['failed', 'cancelled'].includes(operation.status)) throw new Error(operation.error || '创建目录失败');
             await new Promise(resolve => setTimeout(resolve, 250));
@@ -81,6 +83,7 @@
     }
 
     async function chooseTarget(options = {}) {
+        options = { ...options, accountId: options.accountId ?? currentAccount() };
         if (!window.DiskDirectoryPicker?.choose) throw new Error('网盘目录选择器未加载');
         const spaces = await availableSpaces(options);
         const selectedSpace = spaces.find(space => spaceId(space) === String(options.currentSpace ?? '') || scopeKey(space) === String(options.currentSpace ?? '')) || spaces[0];
@@ -103,8 +106,8 @@
             title: options.title || '挂载到我的网盘', confirmText: options.confirmText || '创建挂载',
             rootPath: '', rootName: '根目录', initialPath: options.initialPath || '', controls: [controls, pickerError],
             onReady: reload => { reloadTree = reload; },
-            loadDirectories: () => request(scope(), '/directories'),
-            createDirectory: async path => waitDirectoryOperation(scope(), await request(scope(), '/directories', json('POST', { path }))),
+            loadDirectories: () => request(scope(), '/directories', { accountId: options.accountId }),
+            createDirectory: async path => waitDirectoryOperation(scope(), await request(scope(), '/directories', { ...json('POST', { path }), accountId: options.accountId }), options.accountId),
             showError: error => { pickerError.textContent = error.message || '选择目录失败'; },
             openDialog: pickerOptions => {
                 pickerBody.replaceChildren(...pickerOptions.body);
@@ -117,6 +120,7 @@
     }
 
     async function create(options = {}) {
+        options = { ...options, accountId: options.accountId ?? currentAccount() };
         const grant = options.collaboration;
         const collaborationId = String(grant?.id || grant?.collaborationId || '');
         if (!collaborationId || grant?.owned) throw new Error('只能挂载自己已加入的其他用户协同项目');
@@ -125,13 +129,14 @@
         });
         if (!chosen) return null;
         const name = checkedName(chosen.name);
-        const result = await request(chosen.targetDiskSpace, '/mounts', json('POST', {
+        const result = await request(chosen.targetDiskSpace, '/mounts', { accountId: options.accountId, ...json('POST', {
             collaborationId, parentPath: chosen.parentPath, name
-        }));
+        }) });
         await options.onChanged?.(result.mount || result);
         return result.mount || result;
     }
     async function rename(mount, options = {}) {
+        options = { ...options, accountId: options.accountId ?? currentAccount() };
         if (!mountId(mount)) throw new Error('挂载不存在');
         const input = document.createElement('input'); input.type = 'text'; input.maxLength = 100; input.value = mount.name || '';
         input.setAttribute('aria-label', '新的挂载名称');
@@ -140,31 +145,33 @@
             title: '重命名挂载', body: label, confirmText: '保存名称', validate: () => checkedName(input.value)
         });
         if (chosen === null) return null;
-        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), json('PATCH', { name: checkedName(chosen) }));
+        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), { accountId: options.accountId, ...json('PATCH', { name: checkedName(chosen) }) });
         await options.onChanged?.(result.mount || result);
         return result.mount || result;
     }
     async function move(mount, options = {}) {
+        options = { ...options, accountId: options.accountId ?? currentAccount() };
         if (!mountId(mount)) throw new Error('挂载不存在');
         const chosen = options.selectTarget ? await options.selectTarget() : await chooseTarget({
             ...options, title: '移动挂载到我的网盘', confirmText: '移动挂载', name: mount.name, includeName: false,
             currentSpace: mount.diskSpace || options.currentSpace, initialPath: mount.parentPath || ''
         });
         if (!chosen) return null;
-        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), json('PATCH', {
+        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), { accountId: options.accountId, ...json('PATCH', {
             parentPath: chosen.parentPath, targetSpace: chosen.targetSpace
-        }));
+        }) });
         await options.onChanged?.(result.mount || result);
         return result.mount || result;
     }
     async function remove(mount, options = {}) {
+        options = { ...options, accountId: options.accountId ?? currentAccount() };
         if (!mountId(mount)) throw new Error('挂载不存在');
         const message = document.createElement('p'); message.textContent = '只移除自己网盘中的挂载入口。对方的文件、协同授权和 Telegram 内容均不会删除。';
         const confirmed = options.confirm ? await options.confirm(mount) : await (options.openDialog || defaultDialog)({
             title: `移除挂载：${mount.name || '协同项目'}`, body: message, confirmText: '移除挂载'
         });
         if (!confirmed) return null;
-        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), { method:'DELETE' });
+        const result = await request(mount.diskSpace || '', '/mounts/' + encodeURIComponent(mountId(mount)), { method:'DELETE', accountId: options.accountId });
         await options.onChanged?.(mount);
         return result;
     }
@@ -185,6 +192,7 @@
         const frame = document.createElement('iframe'); frame.title = `协同项目：${mount.name || '协同项目'}`;
         const url = new URL('/disk-collab/view/' + encodeURIComponent(id), location.origin);
         url.searchParams.set('embedded','1'); url.searchParams.set('mount_id',mountId(mount));
+        if (currentAccount()) url.searchParams.set('disk_account', currentAccount());
         if (path) url.searchParams.set('path', path);
         if (fileId) url.searchParams.set('file_id', fileId);
         frame.src = url.pathname + url.search;

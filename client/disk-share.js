@@ -87,7 +87,7 @@
             if (!target) return;
             $('shareStatus').textContent = '正在建立独立的网盘文件引用…';
             const response = await fetch(base + '/copy', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
-                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selection: item.kind === 'directory'
+                headers: { 'Content-Type': 'application/json', ...(target.accountId ? { 'X-Disk-Account': target.accountId } : {}) }, body: JSON.stringify({ selection: item.kind === 'directory'
                     ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }, ...target }) });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);

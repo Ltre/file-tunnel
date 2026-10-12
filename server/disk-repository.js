@@ -23,7 +23,7 @@ const TABLES = new Set([
     'files', 'directories', 'users', 'apps', 'backends', 'tokens',
     'spaces', 'space_usage', 'shares', 'operations', 'chunk_ids',
     'cache_owners', 'collaborations', 'placeholders', 'static_resources',
-    'partitions', 'collaboration_mounts', 'trash_items', 'user_settings', 'namespace_moves', 'folder_uploads'
+    'partitions', 'collaboration_mounts', 'trash_items', 'user_settings', 'namespace_moves', 'folder_uploads', 'pending_saves'
 ]);
 const connections = new Map();
 
@@ -45,7 +45,8 @@ function openDiskRepository(dataDir) {
         db.exec('PRAGMA synchronous = FULL');
         db.exec('CREATE TABLE IF NOT EXISTS disk_schema_migrations (version INTEGER PRIMARY KEY)');
         const schemaVersion = Number(db.prepare('SELECT MAX(version) AS version FROM disk_schema_migrations').get().version) || 0;
-        if (schemaVersion > 5) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion > 6) throw new Error('DISK_SCHEMA_TOO_NEW');
+        if (schemaVersion === 5) db.prepare('VACUUM INTO ?').run(path.join(root, `disk-before-pending-saves-${Date.now()}-${crypto.randomUUID()}.sqlite`));
         if (schemaVersion === 4) db.prepare('VACUUM INTO ?').run(path.join(root, `disk-before-mounted-${Date.now()}-${crypto.randomUUID()}.sqlite`));
         if (schemaVersion === 3) db.prepare('VACUUM INTO ?').run(path.join(root, `disk-before-trash-${Date.now()}-${crypto.randomUUID()}.sqlite`));
         if (schemaVersion === 1) {
@@ -146,6 +147,7 @@ function openDiskRepository(dataDir) {
             db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(3)');
             db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(4)');
             db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(5)');
+            db.exec('INSERT OR IGNORE INTO disk_schema_migrations(version) VALUES(6)');
         }, true);
     } finally { db.close(); }
 

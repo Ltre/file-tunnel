@@ -53,7 +53,16 @@
             const db = await this.openDatabase();
             return new Promise((resolve, reject) => {
                 const transaction = db.transaction(STORE_NAME, 'readwrite');
-                transaction.objectStore(STORE_NAME).put(record);
+                const store = transaction.objectStore(STORE_NAME);
+                const current = store.get(record.id);
+                current.onsuccess = () => {
+                    if (current.result?.pendingTransferPins?.length) {
+                        transaction.abort();
+                        reject(new Error('该缓存仍被待转存记录使用，请先完成或取消网盘转存后再更新缓存。'));
+                        return;
+                    }
+                    store.put({ ...record, pendingTransferPins: current.result?.pendingTransferPins || [] });
+                };
                 transaction.oncomplete = () => resolve();
                 transaction.onerror = () => reject(transaction.error || new Error('browser-cache-write-failed'));
                 transaction.onabort = () => reject(transaction.error || new Error('browser-cache-write-aborted'));
@@ -70,16 +79,68 @@
         }
 
         async deleteRecord(record) {
+            if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + record?.id, () => this.deleteRecordUnlocked(record));
+            return this.deleteRecordUnlocked(record);
+        }
+
+        async deleteRecordUnlocked(record) {
             if (!record) return;
             const cacheStore = await this.cacheStorePromise;
-            if (record.cacheStoreRef) await cacheStore?.deleteReference(record).catch(() => {});
             const db = await this.openDatabase();
             await new Promise((resolve, reject) => {
                 const transaction = db.transaction(STORE_NAME, 'readwrite');
-                transaction.objectStore(STORE_NAME).delete(record.id);
+                const store = transaction.objectStore(STORE_NAME);
+                const current = store.get(record.id);
+                current.onsuccess = () => {
+                    if (current.result?.pendingTransferPins?.length) {
+                        transaction.abort();
+                        reject(new Error('该缓存正在用于待转存到网盘的记录，请先完成或取消转存；缓存已保留。'));
+                        return;
+                    }
+                    store.delete(record.id);
+                };
                 transaction.oncomplete = () => resolve();
                 transaction.onerror = () => reject(transaction.error || new Error('browser-cache-delete-failed'));
                 transaction.onabort = () => reject(transaction.error || new Error('browser-cache-delete-aborted'));
+            });
+            if (record.cacheStoreRef) await cacheStore?.deleteReference(record).catch(() => {});
+        }
+
+        async pin(task, pendingId) {
+            if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + task.id, () => this.pinUnlocked(task, pendingId));
+            return this.pinUnlocked(task, pendingId);
+        }
+
+        async pinUnlocked(task, pendingId) {
+            const cacheStore = await this.cacheStorePromise;
+            const db = await this.openDatabase();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.get(task.id);
+                let pinned;
+                request.onsuccess = () => {
+                    pinned = request.result;
+                    if (pinned?.version !== taskVersion(task) || !cacheStore?.hasComplete(pinned, { size: Number(task.outputFileSize) || 0 })) {
+                        transaction.abort(); reject(new Error('缓存缺失、文件不完整或版本已变化，请重新缓存后转存。')); return;
+                    }
+                    pinned.pendingTransferPins = [...new Set([...(pinned.pendingTransferPins || []), pendingId])];
+                    store.put(pinned);
+                };
+                transaction.oncomplete = () => resolve({ id: pinned.id, version: pinned.version, name: pinned.name, size: pinned.size, type: pinned.type });
+                transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error('待转存缓存引用保存失败'));
+            });
+        }
+
+        async unpin(taskId, pendingId) {
+            const db = await this.openDatabase();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                const request = store.get(taskId);
+                request.onsuccess = () => { if (request.result) store.put({ ...request.result, pendingTransferPins: (request.result.pendingTransferPins || []).filter(id => id !== pendingId) }); };
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error('待转存缓存引用释放失败'));
             });
         }
 
@@ -98,8 +159,18 @@
         }
 
         async store(task) {
+            if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + task.id, () => this.storeUnlocked(task));
+            return this.storeUnlocked(task);
+        }
+
+        async storeUnlocked(task) {
             if (!task?.downloadUrl) throw new Error('browser-cache-source-missing');
             const cacheStore = await this.cacheStorePromise;
+            const pinned = await this.getRecord(task.id);
+            if (pinned?.pendingTransferPins?.length) {
+                if (pinned.version === taskVersion(task) && cacheStore?.hasComplete(pinned, { size: Number(task.outputFileSize) || 0 })) return { status: 'cached' };
+                throw new Error('该任务的旧版本缓存仍用于待转存，请先完成或取消网盘转存后再缓存新版本。');
+            }
             if (!cacheStore?.beginWrite) throw new Error('browser-cache-store-unavailable');
             const response = await fetch(task.downloadUrl, { cache: 'no-store', credentials: 'same-origin' });
             if (response.status === 401) throw new Error('browser-cache-auth-required');
@@ -163,14 +234,21 @@
             const valid = new Set((Array.isArray(validTaskIds) ? validTaskIds : []).map(String));
             const records = await this.getAllRecords();
             const orphans = records.filter(record => !valid.has(String(record.id)));
-            for (const record of orphans) await this.deleteRecord(record);
-            return orphans.length;
+            const removable = orphans.filter(record => !record.pendingTransferPins?.length);
+            for (const record of removable) await this.deleteRecord(record);
+            return removable.length;
         }
 
         async getBlob(task) {
             const record = await this.getRecord(task.id);
             const cacheStore = await this.cacheStorePromise;
             if (record?.version !== taskVersion(task) || !cacheStore?.hasComplete(record, { size: task.outputFileSize })) return null;
+            if (record.cacheStoreRef?.driver === 'opfs' && global.navigator?.storage?.getDirectory) {
+                const root = await global.navigator.storage.getDirectory();
+                const directory = await root.getDirectoryHandle('drop2tunnel-file-cache');
+                const file = await (await directory.getFileHandle(record.cacheStoreRef.path)).getFile();
+                return file.size === record.size ? file : null;
+            }
             const materialized = dataSize(record.data) ? record : await cacheStore.materialize(record);
             if (!dataSize(materialized?.data)) return null;
             return materialized.data instanceof Blob

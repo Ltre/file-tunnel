@@ -6142,6 +6142,9 @@
             // Parser-inserted defer scripts fetch together and execute in dependency order.
             document.write(`<script defer src="/runtime-config.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/cache-store.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/sns-download-cache.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/youtube-premium-cache.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-pending-save.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/file-assets.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/folder-archive.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/web-zip-runtime.js${suffix}"><\/script>`);
@@ -6157,6 +6160,7 @@
             document.write(`<script defer src="/client/disk-import-picker.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-file-editor.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-folder-upload.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/disk-operation-order.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-client.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-directory-picker.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/disk-mount-ui.js${suffix}"><\/script>`);

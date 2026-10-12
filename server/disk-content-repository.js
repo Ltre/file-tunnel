@@ -456,6 +456,7 @@ function createContentRepository(withDatabase, { dataDir } = {}) {
     }
     return {
         project, syncFile,
+        sessionRevoked(session) { return withDatabase(db => Boolean(db.prepare('SELECT 1 FROM disk_content_revoked_sessions WHERE session=? AND expires_at>?').get(session, Date.now()))); },
         strip(file) { const result = { ...file }; for (const field of PHYSICAL_FIELDS) delete result[field]; for (const field of ['physicalRevision','contentPhysicalRepair','contentGrant','contentCopyGrant','contentAuthorization','contentLease','contentCandidateId','declaredSha256','contentClaimToken','expectedContentId','expectedContentVersion','expectedPhysicalRevision']) delete result[field]; return result; },
         detach(db, scope, fileId) {
             const ref = db.prepare('SELECT content_id FROM disk_content_refs WHERE scope=? AND logical_file_id=?').get(scope, fileId);

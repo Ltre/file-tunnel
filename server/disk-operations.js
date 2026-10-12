@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const { openDiskRepository } = require('./disk-repository');
 const { diskErrorCode, diskErrorDetails, diskUserMessage } = require('./disk-errors');
+const operationOrder = require('../client/disk-operation-order');
 function createDiskOperations({ dataDir, now = Date.now }) {
     const repository = openDiskRepository(dataDir);
     let state = repository.loadWithRevision('operations');
@@ -17,7 +18,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     const terminal = job => ['completed', 'failed', 'cancelled'].includes(job.status);
     function save() {
         clearTimeout(timer); timer = null;
-        const sorted = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+        const sorted = operationOrder.sort(jobs.values());
         const retained = sorted.filter((job, index) => !terminal(job) || index < 1000);
         try { repository.replaceMany([{ table:'operations', items:retained, keyOf:item => item.operation_id, base:state.revisions }]); }
         catch (error) { reloadPersistence(); throw error; }
@@ -50,7 +51,7 @@ function createDiskOperations({ dataDir, now = Date.now }) {
     };
     const listView = (items, requested = []) => {
         const wanted = new Set(requested);
-        return items.sort((a,b) => b.createdAt-a.createdAt)
+        return operationOrder.sort(items)
             .filter((job, index) => !terminal(job) || wanted.has(job.operation_id) || index < 100)
             .map(job => { const copy = view(job); delete copy.response; if (!wanted.has(job.operation_id)) delete copy.result; return copy; });
     };

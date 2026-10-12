@@ -4,8 +4,9 @@
     const base = '/api/telegram/drive';
     let collaborationId = '', mountId = '';
     let diskSpace = '';
+    let accountId = '';
     const baseUrl = () => mountId ? base + '/mount-scope/' + encodeURIComponent(mountId) : collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
-    const transportContext=()=>({requestBase:baseUrl(),diskSpace});
+    const transportContext=()=>({requestBase:baseUrl(),diskSpace,accountId});
     const operationContexts=new Map();
     const withSpace = (url, requestSpace = diskSpace) => {
         if (!requestSpace) return url;
@@ -13,6 +14,16 @@
         address.searchParams.set('disk_space', requestSpace);
         return address.pathname + address.search + address.hash;
     };
+    const withAccount = (url, value = accountId) => {
+        if (!value) return url;
+        const address = new URL(url, location.origin); address.searchParams.set('disk_account', value);
+        return address.pathname + address.search + address.hash;
+    };
+    const accountHeaders = (value = accountId) => value ? { 'X-Disk-Account': value } : {};
+    const sortJobs = values => window.DiskOperationOrder?.sort(values) || values.slice().sort((a, b) =>
+        Math.max(Number(b.createdAt) || 0, Number(b.startedAt) || 0, Number(b.finishedAt) || 0)
+        - Math.max(Number(a.createdAt) || 0, Number(a.startedAt) || 0, Number(a.finishedAt) || 0)
+        || String(a.operation_id || '').localeCompare(String(b.operation_id || '')));
     const listeners = new Set();
     const terminalListeners = new Set();
     const localUploads = new Map();
@@ -20,6 +31,7 @@
     let deviceId = uploadSession;
     try { deviceId = localStorage.getItem('disk-device-id') || uploadSession; localStorage.setItem('disk-device-id', deviceId); } catch (_) {}
     const pendingReads = new Map();
+    const readContexts = new Map();
     const uploadControllers = new Map();
     const uploadProgressStreams = new Map();
     const readControllers = new Map();
@@ -29,22 +41,23 @@
     const newAbortController = () => typeof AbortController === 'function' ? new AbortController() : { signal: { aborted: false, addEventListener() {} }, abort() { this.signal.aborted = true; } };
     const abortError = () => { const error = new Error('OPERATION_CANCELLED'); error.name = 'AbortError'; return error; };
     const cacheChanged = () => { if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('disk-cache-changed')); };
-    const setCacheProgress = (id, value) => {
-        const previous = cacheProgressByFile.get(id);
-        if (value) cacheProgressByFile.set(id, value); else cacheProgressByFile.delete(id);
+    const cacheKey = (id, context = transportContext()) => (context.accountId || '') + ':' + id;
+    const setCacheProgress = (id, value, context) => {
+        const key = cacheKey(id, context), previous = cacheProgressByFile.get(key);
+        if (value) cacheProgressByFile.set(key, value); else cacheProgressByFile.delete(key);
         if (!previous || !value || previous.phase !== value.phase || Math.floor(previous.percent ?? -1) !== Math.floor(value.percent ?? -1)) cacheChanged();
     };
     let uploadSequence = 0;
     let jobs = [], polling = null, generation = 0, enabled = false, lastRefresh = 0;
     const viewOperationIds = new Set();
-    const contextKey = context => context.requestBase + '?' + (context.diskSpace || '');
+    const contextKey = context => (context.accountId || '') + ':' + context.requestBase + '?' + (context.diskSpace || '');
     const belongsToView = job => viewOperationIds.has(job.operation_id)
         || localUploads.has(job.operation_id) && contextKey(operationContexts.get(job.operation_id) || transportContext()) === contextKey(transportContext());
     const waiting = new Map();
     const activities = new Set(), activityListeners = new Set();
-    const emitActivities = () => activityListeners.forEach(listener => listener([...activities]));
+    const emitActivities = () => activityListeners.forEach(listener => listener([...activities].filter(activity => activity.accountId === accountId)));
     async function withActivity(message, run) {
-        const activity = typeof message === 'object' ? { ...message, operationId: message.operationId || '' } : { message, operationId: '' };
+        const activity = typeof message === 'object' ? { accountId, ...message, operationId: message.operationId || '' } : { accountId, message, operationId: '' };
         activities.add(activity); emitActivities();
         const update = values => { Object.assign(activity, values); emitActivities(); };
         try { return await run(update); }
@@ -52,7 +65,7 @@
     }
     const active = job => ['queued', 'running'].includes(job.status);
     const clientProgressFields = ['clientBytesReceived', 'clientTotalBytes', 'clientBytesPerSecond', 'clientFileIndex', 'clientFileCount', 'clientFileName', 'clientFileSize', 'clientPartIndex', 'clientPartCount'];
-    const visibleJobs = () => [...localUploads.values()].filter(job => belongsToView(job) && !jobs.some(remote => remote.operation_id === job.operation_id && (job.status !== 'failed' || !active(remote))))
+    const visibleJobs = () => sortJobs([...localUploads.values()].filter(job => belongsToView(job) && !jobs.some(remote => remote.operation_id === job.operation_id && (job.status !== 'failed' || !active(remote))))
         .concat(jobs.filter(job => belongsToView(job) && (localUploads.get(job.operation_id)?.status !== 'failed' || !active(job))).map(job => {
             const local = localUploads.get(job.operation_id);
             if (!local || !active(job)) return job;
@@ -61,7 +74,7 @@
             return { ...job, ...progress };
         })).filter(job => job.type==='transfer-history' && active(job)
             ? !jobs.some(source => source.historyMirrorId===job.operation_id && active(source))
-            : !job.historyMirrorId || active(job) || !jobs.some(mirror => mirror.operation_id===job.historyMirrorId));
+            : !job.historyMirrorId || active(job) || !jobs.some(mirror => mirror.operation_id===job.historyMirrorId)));
     const emit = () => {
         // Upload failure detection must continue outside the current UI view.
         terminalListeners.forEach(listener => listener(jobs));
@@ -93,24 +106,25 @@
             xhr.addEventListener('timeout', () => finish(Object.assign(new Error('UPLOAD_CLIENT_TIMEOUT'), { transportFailure: true })));
             xhr.addEventListener('abort', () => finish(abortError()));
             xhr.open(options.method || 'PUT', url, true); xhr.withCredentials = true;
-            for (const [key, value] of Object.entries({ ...options.headers, 'X-Disk-Device-Id': deviceId })) xhr.setRequestHeader(key, value);
+            for (const [key, value] of Object.entries({ ...options.headers, ...accountHeaders(options.accountId), 'X-Disk-Device-Id': deviceId })) xhr.setRequestHeader(key, value);
             signal?.addEventListener?.('abort', abort, { once: true });
             if (signal?.aborted) return abort();
             try { xhr.send(options.body); } catch (error) { error.transportFailure = true; finish(error); }
         });
     }
     async function raw(url, options = {}) {
+        const requestAccount = options.accountId ?? accountId;
         const method = String(options.method || 'GET').toUpperCase();
         // Legacy UI callers pass full drive API paths. Treat them exactly as
         // relative paths, so mounted edits cannot silently use the native drive.
         if (url.startsWith(base + '/')) url = url.slice(base.length);
-        const globalRoute = /^\/(?:me|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
+        const globalRoute = /^\/(?:me|accounts|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
             || method !== 'POST' && /^\/shares(?:[/?]|$)/.test(url);
         const target = withSpace(url.startsWith('/api/') ? url : (globalRoute ? base : (options.requestBase || baseUrl())) + url, options.diskSpace ?? diskSpace);
-        if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, options);
-        const { onUploadProgress, diskSpace: requestSpace,requestBase, ...requestOptions } = options;
+        if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, { ...options, accountId: requestAccount });
+        const { onUploadProgress, diskSpace: requestSpace,requestBase, accountId: requestedAccount, ...requestOptions } = options;
         let response;
-        try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, 'X-Disk-Device-Id': deviceId } }); }
+        try { response = await fetch(target, { credentials: 'same-origin', cache: method === 'GET' ? 'no-store' : 'no-cache', ...requestOptions, headers: { ...options.headers, ...accountHeaders(requestAccount), 'X-Disk-Device-Id': deviceId } }); }
         catch (error) { error.transportFailure = true; throw error; }
         const data = await response.json().catch(() => ({}));
         // Cross-namespace transfers return their committed result directly,
@@ -136,7 +150,7 @@
     }
     function subscribeUploadProgress(job,context=transportContext()) {
         if (!job.progressive || typeof EventSource !== 'function') return () => {};
-        let stream; try { stream = new EventSource(withSpace(context.requestBase + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress',context.diskSpace)); } catch (_) { return () => {}; }
+        let stream; try { stream = new EventSource(withAccount(withSpace(context.requestBase + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress',context.diskSpace), context.accountId)); } catch (_) { return () => {}; }
         uploadProgressStreams.set(job.operation_id, stream);
         const close = () => { stream.close(); if (uploadProgressStreams.get(job.operation_id) === stream) uploadProgressStreams.delete(job.operation_id); };
         stream.addEventListener('progress', event => {
@@ -144,7 +158,7 @@
             let operation; try { operation = JSON.parse(event.data); } catch (_) { return; }
             if (operation?.operation_id !== job.operation_id) return;
             operation = mergeOperation(operation);
-            jobs = jobs.filter(item => item.operation_id !== operation.operation_id).concat(operation);
+            jobs = sortJobs(jobs.filter(item => item.operation_id !== operation.operation_id).concat(operation));
             if(contextKey(context)===contextKey(transportContext()))viewOperationIds.add(operation.operation_id);
             if (!active(operation)) {
                 hiddenLoadingOperations.delete(operation.operation_id); localUploads.delete(operation.operation_id);
@@ -168,11 +182,11 @@
         const current = generation; lastRefresh = Date.now();
         const requested = new Set(waiting.keys());
         const contexts=new Map(),view=transportContext();
-        const add=context=>contexts.set(context.requestBase+'?'+context.diskSpace,context);
+        const add=context=>contexts.set(contextKey(context),context);
         add(view);for(const handlers of waiting.values())add(handlers.context);
         for(const id of localUploads.keys())if(operationContexts.has(id))add(operationContexts.get(id));
         polling = Promise.allSettled([...contexts.values()].map(async context=>{
-            const ids=[...requested].filter(id=>{const c=waiting.get(id)?.context;return c?.requestBase===context.requestBase&&c?.diskSpace===context.diskSpace;});
+            const ids=[...requested].filter(id=>contextKey(waiting.get(id)?.context || transportContext()) === contextKey(context));
             const data=await raw('/operations?ids='+encodeURIComponent(ids.join(',')),context);
             return {context,operations:data.operations||[]};
         })).then(results=>{
@@ -181,7 +195,7 @@
             if(visible){viewOperationIds.clear();for(const job of visible.operations)viewOperationIds.add(job.operation_id);}
             // Poll every pending context so its promise can settle, but render
             // only records returned for the currently selected source view.
-            jobs=[...new Map(values.flatMap(value=>value.operations).map(job=>[job.operation_id,mergeOperation(job)])).values()];
+            jobs=sortJobs([...new Map(values.flatMap(value=>value.operations).map(job=>[job.operation_id,mergeOperation(job)])).values()]);
             for(const job of jobs)if(!active(job))hiddenLoadingOperations.delete(job.operation_id);
             for(const id of localUploads.keys())if(jobs.some(j=>j.operation_id===id&&!active(j)))localUploads.delete(id);
             for(const [id,handlers] of waiting){
@@ -191,8 +205,9 @@
                 if(job.status==='completed')handlers.resolve(job.result);
                 else handlers.reject(Object.assign(new Error(job.status==='cancelled'?'OPERATION_CANCELLED':job.errorCode||'DISK_OPERATION_FAILED'),{partialItems:job.result?.partialItems,errorDetails:job.errorDetails,userMessage:job.errorMessage}));
             }
-            for(const result of results)if(result.status==='rejected'&&result.reason?.message==='LOGIN_REQUIRED'){
-                for(const [id,handlers] of waiting){handlers.reject(result.reason);waiting.delete(id);}break;
+            for(let index=0;index<results.length;index++)if(results[index].status==='rejected'&&results[index].reason?.message==='LOGIN_REQUIRED'){
+                const failedContext=[...contexts.values()][index];
+                for(const [id,handlers] of waiting)if(contextKey(handlers.context)===contextKey(failedContext)){handlers.reject(results[index].reason);waiting.delete(id);}
             }
             emit();
         }).finally(()=>{polling=null;});
@@ -211,13 +226,13 @@
     async function performRequest(url, options, update) {
         const context={...transportContext(),...options};
         const data = await raw(url, context);
-        if(data.operation_id)operationContexts.set(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace});
+        if(data.operation_id)operationContexts.set(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace,accountId:context.accountId});
         if (data.operation_id) update?.({ operationId: data.operation_id });
         if (data.operation_id && !data.uploadId && data.status === 'completed') {
             refresh(true);
             return data.result;
         }
-        return data.operation_id && !data.uploadId ? wait(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace}) : data;
+        return data.operation_id && !data.uploadId ? wait(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace,accountId:context.accountId}) : data;
     }
     function request(url, options = {}) {
         const method = String(options.method || 'GET').toUpperCase();
@@ -243,17 +258,32 @@
         for (const handlers of waiting.values()) handlers.reject(new Error('LOGIN_REQUIRED'));
         waiting.clear();operationContexts.clear();emit();
     }
+    function stopAccount(id) {
+        const selected = String(id || '');
+        for (const [operationId, context] of operationContexts) {
+            if ((context.accountId || '') !== selected) continue;
+            uploadControllers.get(operationId)?.abort(); readControllers.get(operationId)?.abort();
+            uploadProgressStreams.get(operationId)?.close(); uploadProgressStreams.delete(operationId);
+            const handlers = waiting.get(operationId); if (handlers) handlers.reject(new Error('LOGIN_REQUIRED'));
+            waiting.delete(operationId); localUploads.delete(operationId); hiddenLoadingOperations.delete(operationId);
+            viewOperationIds.delete(operationId);
+        }
+        for (const [controller, context] of readContexts) if ((context.accountId || '') === selected) controller.abort();
+        emit(); emitActivities();
+    }
     // One batched poll for all jobs; idle home pages do not keep polling every second.
     setInterval(() => {
         const interval = waiting.size || jobs.some(active) ? 2400 : 60000;
         if (enabled && Date.now() - lastRefresh >= interval) refresh();
     }, 800);
     function upload(files, folderPath, read = file => file, metadata = {}) {
-        return withActivity('正在上传 ' + files.length + ' 个文件', async update => {
+        const uploadContext = metadata.transportContext || transportContext();
+        return withActivity({ message: '正在上传 ' + files.length + ' 个文件', accountId: uploadContext.accountId || '' }, async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
-            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null };
+            const createdAt = Date.now();
+            const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null, createdAt, startedAt: createdAt, updatedAt: createdAt };
             const controller = newAbortController();
-            const current = generation,context=metadata.transportContext||transportContext();operationContexts.set(pending.operation_id,context);
+            const current = generation,context=uploadContext;operationContexts.set(pending.operation_id,context);
             localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
             try {
                 return await uploadFiles(files, folderPath, read, metadata, values => {
@@ -265,6 +295,7 @@
                         if (hiddenLoadingOperations.delete(previousId)) hiddenLoadingOperations.add(pending.operation_id);
                     }
                     for (const key of clientProgressFields) if (values[key] !== undefined) pending[key] = values[key];
+                    pending.updatedAt = Date.now();
                     if (pending.operation_id.startsWith('local-upload-')) {
                         for (const key of ['phase','message','percent','hashedBytes','hashTotalBytes'])
                             if (values[key] !== undefined) pending[key] = values[key];
@@ -274,7 +305,7 @@
             } catch (error) {
                 if (current === generation && !jobs.some(job => job.operation_id === pending.operation_id && !active(job))) {
                     const cancelled = controller.signal.aborted || error.message === 'OPERATION_CANCELLED';
-                    Object.assign(pending, { status: cancelled ? 'cancelled' : 'failed', phase: cancelled ? 'cancelled' : 'failed', message: cancelled ? '用户已取消任务' : '上传请求失败', errorCode: cancelled ? '' : error.message });
+                    Object.assign(pending, { status: cancelled ? 'cancelled' : 'failed', phase: cancelled ? 'cancelled' : 'failed', message: cancelled ? '用户已取消任务' : '上传请求失败', errorCode: cancelled ? '' : error.message, finishedAt: Date.now(), updatedAt: Date.now() });
                     localUploads.set(pending.operation_id, pending);
                 }
                 throw error;
@@ -491,7 +522,7 @@
                 // decode only skips the optional cover; it never fails the file.
                 const thumbnailUpload = createUploadThumbnail(blob, plannedFiles[index]).then(thumbnail => {
                     if (!thumbnail?.size || signal.aborted) return;
-                    return raw(url + '/thumbnail', { method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
+                    return raw(url + '/thumbnail', { ...context, method: 'PUT', headers: { 'Content-Type': thumbnail.type || 'image/jpeg', 'X-Disk-Thumbnail-Size': String(thumbnail.size) }, body: thumbnail, signal });
                 }).catch(error => { if (!signal.aborted && error?.name !== 'AbortError') console.warn('[telegram-drive] 媒体封面提取失败', error.message); });
                 if (!blob.size) { await waitForQueue(); queue = (await uploadRequest(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: blob, signal, onUploadProgress: loaded => reportClientProgress(index, plannedFiles[index].parts[0], loaded, true) })).queue; }
                 for (const part of plannedFiles[index].parts) {
@@ -554,6 +585,7 @@
     async function read(item, options = {}) {
         const context={...transportContext(),...item.diskTransportContext,...options};
         const controller = newAbortController();
+        readContexts.set(controller, context);
         const signal = options.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' ? AbortSignal.any([options.signal, controller.signal]) : (options.signal || controller.signal);
         let operationId = '';
         if (!pendingReads.has(item.id)) pendingReads.set(item.id, new Set());
@@ -563,36 +595,37 @@
             if (options.silentLoading && values.operationId) hiddenLoadingOperations.add(values.operationId);
             update(values);
         });
-        try { return options.silentLoading ? await run(() => {}) : await withActivity({ message: '正在打开文件：' + item.name, folderPath: item.folderPath || '' }, run); }
-        finally { if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) { pendingReads.delete(item.id); setCacheProgress(item.id, null); } cacheChanged(); }
+        try { return options.silentLoading ? await run(() => {}) : await withActivity({ message: '正在打开文件：' + item.name, folderPath: item.folderPath || '', accountId: context.accountId || '' }, run); }
+        finally { readContexts.delete(controller); if (operationId) readControllers.delete(operationId); const readers = pendingReads.get(item.id); readers?.delete(controller); if (!readers?.size) pendingReads.delete(item.id); if (![...(readers || [])].some(reader => readContexts.get(reader)?.accountId === context.accountId)) setCacheProgress(item.id, null, context); cacheChanged(); }
     }
-    async function readFile(item, { signal,requestBase=baseUrl(),diskSpace:requestSpace=diskSpace }, update) {
-        if(requestBase.includes('/mount-scope/'))item={...item,...await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace})};
+    async function readFile(item, { signal,requestBase=baseUrl(),diskSpace:requestSpace=diskSpace,accountId:requestAccount=accountId }, update) {
+        const progress = value => setCacheProgress(item.id, value, { accountId: requestAccount });
+        if(requestBase.includes('/mount-scope/'))item={...item,...await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace,accountId:requestAccount})};
         const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
         if (cached?.blob && cached.blob.size === item.size) return cached.blob;
         start();
         // The server streams Telegram parts as they arrive. Only bytes received
         // by this browser count toward the file badge's 0-100% progress.
-        setCacheProgress(item.id, { phase: 'telegram', percent: 0 });
-        const response = await fetch(withSpace(requestBase + '/files/' + encodeURIComponent(item.id) + '/download',requestSpace), { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Disk-Device-Id': deviceId }, signal });
+        progress({ phase: 'telegram', percent: 0 });
+        const response = await fetch(withSpace(requestBase + '/files/' + encodeURIComponent(item.id) + '/download',requestSpace), { credentials: 'same-origin', cache: 'no-store', headers: { ...accountHeaders(requestAccount), 'X-Disk-Device-Id': deviceId }, signal });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         update({ operationId: response.headers?.get('X-Disk-Operation-Id') || '', message: '正在接收文件：' + item.name });
         const total = Math.max(0, Number(response.headers?.get('Content-Length')) || Number(item.size) || 0);
         let blob;
         if (response.body?.getReader) {
             const reader = response.body.getReader(), chunks = []; let received = 0;
-            setCacheProgress(item.id, { phase: 'browser', percent: 0, receivedBytes: 0, totalBytes: total });
+            progress({ phase: 'browser', percent: 0, receivedBytes: 0, totalBytes: total });
             while (true) {
                 const { done, value } = await reader.read(); if (done) break;
                 chunks.push(value); received += value.byteLength;
                 const percent = total ? Math.min(100, received / total * 100) : null;
-                setCacheProgress(item.id, { phase: 'browser', percent, receivedBytes: received, totalBytes: total });
+                progress({ phase: 'browser', percent, receivedBytes: received, totalBytes: total });
             }
             blob = new Blob(chunks, { type: item.type || response.headers?.get('Content-Type') || 'application/octet-stream' });
         } else blob = await response.blob();
         if (Number(item.size) > 0 && blob.size !== Number(item.size)) throw new Error('DISK_READ_SIZE_MISMATCH');
         await window.TelegramDriveCache?.put(item.id, { blob, name: item.name, type: item.type,cacheIdentity:item.cacheIdentity,logicalContentVersion:item.logicalContentVersion || 1 }).catch(() => {});
-        setCacheProgress(item.id, { phase: 'done', percent: 100 });
+        progress({ phase: 'done', percent: 100 });
         refresh(); return blob;
     }
     function streamUrl(item, { purpose = '', fresh = false } = {}) {
@@ -600,6 +633,7 @@
         const query = new URLSearchParams();
         query.set('v', String(item.updatedAt || item.size || 0));
         if (context.diskSpace) query.set('disk_space', context.diskSpace);
+        if (context.accountId) query.set('disk_account', context.accountId);
         if (purpose) query.set('purpose', String(purpose));
         if (fresh) query.set('request', String(++streamSequence));
         return context.requestBase + '/files/' + encodeURIComponent(item.id) + '/stream?' + query;
@@ -609,7 +643,7 @@
         const safeEnd = Math.min(Number(item.size) - 1, Math.max(safeStart, Number(end) || 0));
         const response = await fetch(streamUrl(item, { purpose, fresh: true }), {
             credentials: 'same-origin', cache: 'no-store', signal,
-            headers: { Range: `bytes=${safeStart}-${safeEnd}`, 'X-Disk-Device-Id': deviceId }
+            headers: { Range: `bytes=${safeStart}-${safeEnd}`, ...accountHeaders((item.diskTransportContext || transportContext()).accountId), 'X-Disk-Device-Id': deviceId }
         });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'DISK_READ_FAILED');
         let blob = await response.blob();
@@ -626,7 +660,7 @@
     }
     function cancelRead(id) {
         const readers = pendingReads.get(id); if (!readers?.size) return false;
-        for (const controller of readers) controller.abort();
+        for (const controller of readers) if ((readContexts.get(controller)?.accountId || '') === accountId) controller.abort();
         return true;
     }
     function changeTaskView(change) {
@@ -634,7 +668,9 @@
         if(previous!==contextKey(transportContext())){viewOperationIds.clear();emit();}
         start();if(polling)polling.finally(()=>refresh(true));else refresh(true);
     }
-    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, stopAccount, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+        setAccount(value) { const selected=String(value||''); if(selected===accountId)return; changeTaskView(()=>{accountId=selected;mountId='';collaborationId='';diskSpace='';}); emitActivities(); },
+        getAccount() { return accountId; },
         setSpace(value) { changeTaskView(()=>{mountId='';collaborationId='';diskSpace=String(value||'');}); },
         getSpace() { return diskSpace; },
         hasActiveOperations() { return visibleJobs().some(active); },
@@ -642,12 +678,12 @@
         getMount(){return mountId;},
         setCollaboration(id) { changeTaskView(()=>{mountId='';collaborationId=String(id||'');}); },
         setAudioCoverExtractor(extractor) { audioCoverExtractor = typeof extractor === 'function' ? extractor : null; },
-        isCaching(id) { return pendingReads.has(id); },
-        cacheProgress(id) { return cacheProgressByFile.get(id) || null; },
+        isCaching(id) { return [...(pendingReads.get(id) || [])].some(controller => (readContexts.get(controller)?.accountId || '') === accountId); },
+        cacheProgress(id) { return cacheProgressByFile.get(cacheKey(id)) || null; },
         isLoadingHidden(id) { return hiddenLoadingOperations.has(id); },
         hideLoading(id) { if (id) hiddenLoadingOperations.add(id); },
         showLoading(id) { if (id) hiddenLoadingOperations.delete(id); },
-        hasHiddenLoading() { return hiddenLoadingOperations.size > 0; },
-        subscribeActivity(listener) { activityListeners.add(listener); listener([...activities]); return () => activityListeners.delete(listener); },
+        hasHiddenLoading() { return [...hiddenLoadingOperations].some(id => contextKey(operationContexts.get(id) || transportContext()) === contextKey(transportContext())); },
+        subscribeActivity(listener) { activityListeners.add(listener); listener([...activities].filter(activity => activity.accountId === accountId)); return () => activityListeners.delete(listener); },
         subscribe(listener) { listeners.add(listener); listener(visibleJobs()); return () => listeners.delete(listener); } };
 })();

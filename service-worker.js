@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v6-drive-navigation';
+const CACHE_NAME = 'instant-tunnel-v78-content-v7-drive-accounts';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -13,6 +13,10 @@ const APP_SHELL = [
     '/app.js',
     '/client/cache-store.js',
     '/client/disk-client.js',
+    '/client/disk-operation-order.js',
+    '/client/disk-pending-save.js',
+    '/client/sns-download-cache.js',
+    '/client/youtube-premium-cache.js',
     '/client/disk-error-messages.js',
     '/client/disk-trash-ui.js',
     '/client/disk-import-picker.js',
@@ -34,6 +38,11 @@ const APP_SHELL = [
     '/client/notification-center.css',
     '/client/web-workshop.js',
     '/client/web-workshop.css',
+    '/client/vendor/web-markdown/marked-18.0.14.umd.js',
+    '/client/vendor/web-markdown/purify-3.4.16.min.js',
+    '/client/vendor/web-markdown/markdown-page.js',
+    '/client/vendor/web-markdown/markdown-page.css',
+    '/client/vendor/web-markdown/THIRD-PARTY-LICENSES.txt',
     '/web-workshop-guide.html',
     '/client/telegram-target-forward.js',
     '/client/telegram-target-forward.css',

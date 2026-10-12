@@ -1,0 +1,133 @@
+✔ 独立修正版面板先说明并确认，取消时不调用服务端或下载 (3.1871ms)
+✔ 勾选重修随 POST 传递，提交期间防重复且完成后等待用户下载 (3.1026ms)
+✔ 后端队列立即受理后轮询状态，不在转码期间阻塞任务列表刷新 (5.7887ms)
+✔ 服务端修正失败只显示错误，不下载，按钮恢复可用 (2.6512ms)
+✔ 修正版另存、重启后复用；勾选重新修正和原文件变化才再次生成 (33.8152ms)
+✔ 同一任务并发请求共享修正过程，失败重修保留原版及已有修正版 (47.6995ms)
+✔ 旧版复制视频的修正版缓存失效，重新编码成功后替换旧修正版并保留原版 (23.8771ms)
+✔ offset 修正版使用普通 ffmpeg 重新编码完整音视频，输出 MP4，无音轨拒绝 (1.4831ms)
+✔ ffmpeg 进度输出转换为可轮询的百分比、时间、速度和帧数 (0.5825ms)
+✔ 两个后台的准备和下载接口均需管理身份，拒绝未完成及无有效缓存任务 (536.3111ms)
+✔ 实际修正版与 ffmpeg -i INPUT.mp4 OUTPUT.mp4 输出一致，保留视频音频和原版 (10504.0006ms)
+✔ Premium 视频、音乐及备用客户端解析运行成功，不依赖不存在的 task 变量 (10.1042ms)
+✔ 无 MIME 的歌曲仍提取内嵌封面并 PUT 独立图片，歌曲分片与封面提取同时进行 (26.1773ms)
+✖ 音乐播放器及列表优先使用独立封面，显示前不读取任何歌曲分片或完整缓存 (5.8324ms)
+✔ 播放器封面请求结束时若已关闭，不写入旧播放器 (6.3562ms)
+[disk-upload] {"time":"2026-10-11T20:36:20.715Z","event":"telegram.request","fileId":"a1c0cba3-07bc-4e8e-824e-7a48490fe060","thumbnail":true,"requestId":"a6b227c9-8401-4608-955e-73e76c663f91","method":"sendDocument","retry":0,"channelId":"-100","requestBytes":688}
+[disk-upload] {"time":"2026-10-11T20:36:20.721Z","event":"telegram.headers","fileId":"a1c0cba3-07bc-4e8e-824e-7a48490fe060","thumbnail":true,"requestId":"a6b227c9-8401-4608-955e-73e76c663f91","method":"sendDocument","retry":0,"channelId":"-100","requestBytes":688,"elapsedMs":6}
+[disk-upload] {"time":"2026-10-11T20:36:20.723Z","event":"telegram.response","fileId":"a1c0cba3-07bc-4e8e-824e-7a48490fe060","thumbnail":true,"requestId":"a6b227c9-8401-4608-955e-73e76c663f91","method":"sendDocument","retry":0,"channelId":"-100","requestBytes":688,"ok":true,"description":"","elapsedMs":8}
+[disk-upload] {"time":"2026-10-11T20:36:20.724Z","event":"telegram.thumbnail-confirmed","fileId":"a1c0cba3-07bc-4e8e-824e-7a48490fe060","messageId":32,"bytes":3}
+✔ 歌曲封面单独发送 Telegram 消息并持久化 file_id、message_id，不计入音频分片 (206.5214ms)
+✔ 控制中心排序兼容新增磁贴、重复和失效项目，保留切换隧道面板分界 (4.7951ms)
+✔ 预览按钮滚动引导只在浮层重新打开时执行，收藏重绘保留滚动位置 (4.1816ms)
+✔ PC 左键越过拖动阈值后移动到命中目录，松开后不触发单击；多选一起移动 (2.7794ms)
+✔ 触屏短滑保留列表滚动并取消长按，长按后指针取消不执行移动 (1.3239ms)
+✔ 目录不能拖入自己或子目录，Escape 取消并释放拖动监听 (1.7633ms)
+✔ 指针捕获导致命中栈缺失时仍能把文件拖到面包屑目录 (1.8937ms)
+✔ 拖放移动先显示目标确认，服务端接受首个任务后立即清除多选 (1.7155ms)
+✔ 顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白关闭互不挤占首页 (9.1215ms)
+✔ 触屏来源优先于混合设备的 fine pointer 判定 (1.6125ms)
+✔ 窄屏移动布局不因合成 mouse click 落入 PC 勾选分支 (1.1914ms)
+
+
+#
+# Fatal process out of memory: Zone
+#
+----- Native stack trace -----
+
+ 1: 00007FF77DFD497D 
+ 2: 00007FF77F442FA6 
+ 3: 00007FF77ECCF7C5 
+ 4: 00007FF77E649726 
+ 5: 00007FF77F8C506A 
+ 6: 00007FF77F8C475B 
+ 7: 00007FF77F8C3C1D 
+ 8: 00007FF77F8C36F4 
+ 9: 00007FF77F8C2C81 
+10: 00007FF77F8C29DF 
+11: 00007FF77F6D0796 
+12: 00007FF77F6CF4B0 
+13: 00007FF77F4A328B 
+14: 00007FF77E343106 
+15: 00007FF77E33E843 
+16: 00007FF77E33E129 
+17: 00007FF77F4B613F 
+18: 00007FF77DFD083E 
+19: 00007FF77ED248B6 
+20: 00007FF77FF8B173 
+21: 00007FF9E2E3E957 BaseThreadInitThunk+23
+22: 00007FF9E41A7C1C RtlUserThreadStart+44
+✖ tests\disk-accounts-261012-1.test.cjs (7792.1714ms)
+✖ tests\disk-api.test.cjs (8018.1002ms)
+✔ 分片复用按 Bot、哈希和大小隔离，持久化后仍匹配原大小 (228.158ms)
+✔ 异常缓存索引的大小或 file_id 不匹配时忽略映射 (264.8339ms)
+✔ 无效分片或远端大小不符不写入、不覆盖已有有效映射 (144.0915ms)
+✔ 并存缓存实例的写入和失效同步可见，不抹掉其它映射 (563.8358ms)
+✔ 并发修改发生写入冲突时重载持久化映射，后续写入仍正常 (72.6ms)
+✔ 摘要进度进入任务列表，缺少 WebCrypto 的持有证明退回完整上传 (18.4134ms)
+✔ 持有证明逐个样本回显进度，不把本地摘要计为网络上传量 (18.6457ms)
+✔ 全命中浏览器不发送正文；Worker 失败仍可普通上传 (10.6063ms)
+✔ 浏览器缓存进度按实际收到的流字节从零计算 (7.8927ms)
+✔ large uploads wait through small queue probes and never hold another PUT while Telegram queue is full (7.8979ms)
+✔ Failed to fetch reports a durable network failure without invoking the user-cancel DELETE path (9.7061ms)
+✔ 轮询发现服务端失败时中止挂起 PUT，保留 ECONNRESET 而非误报用户取消 (5.5668ms)
+✔ 服务器队列等待期间发现失败，立即中断等待计时器和活动 (6.2146ms)
+✔ 110 MB 浏览器上传仅通过 slice 顺序发送六个请求，声明仍为逻辑文件总大小 (10.8612ms)
+✔ PC 顶栏只在真实拖动后捕获指针，不吞掉按钮的普通点击 (12.1353ms)
+✔ 面包屑边缘滚动按时间匀速，离开区域或隐藏网盘立即停止 (5.1889ms)
+✔ 刷新后本地上传失败使用新任务 ID，不被上次错误确认记录误屏蔽 (9.3035ms)
+✔ 网盘客户端正确拼接路由、合并任务等待且仅从源读取一次上传文件 (3.6046ms)
+✔ 非 ASCII 分区名通过编码查询参数传递，不写入 HTTP 请求头 (2.8018ms)
+✔ 触屏长按会打开菜单并吞掉后续单击，滑动或多点触摸取消长按 (3.7899ms)
+✔ 隧道适配器传递普通 File 与目录相对路径，选定目标后不再二次确认 (22.2749ms)
+✔ 右键操作保留整个选中集合，全选和反选只操作当前视图 (4.4023ms)
+✔ 公开分享显示流式百分比、使用独立浏览器缓存并为瞬时失败重试 (1.5082ms)
+✔ 网盘提供最小化、目标隧道选择与上次目标记忆，管理页独立于 tgbot (16.9991ms)
+✔ 居中 loading 的活动覆盖请求及服务端任务终态，后台轮询不产生新活动 (12.5113ms)
+✔ loading 在读取完整 Blob 前持续，失败或取消后清理，并发操作互不误关 (7.9302ms)
+✔ 上传 loading 覆盖初始化失败且只创建一个完整活动 (5.2142ms)
+✔ 上传悬浮球只显示未完成上传：失败保留全红，完成/取消或其他操作不显示 (6.4889ms)
+✔ 任务列表可按 operation_id 恢复任意后台任务，并保留多任务切换 (11.0846ms)
+✔ 居中 loading 同时列出所有运行任务并可左右切换 (19.4995ms)
+✔ 后台上传切换挂载和分区后，后续分片与结束请求仍使用起始作用域 (4.2105ms)
+✔ Mount 是独立持久化叶节点；同一协同可多处挂载，撤权后原位失效 (573.7993ms)
+✔ Mount 与原生目录和 active 协同目录不能重叠，但允许兄弟节点 (334.1568ms)
+✔ Native 目录移动与后代 Mount 路径同事务提交或一同回滚 (1321.9475ms)
+✔ 旧成员默认为 editor，降级后版本递增并持久化 (94.3164ms)
+✔ 没有 memberRoles 字段的旧协同成员继续拥有 editor 权限 (80.8011ms)
+✔ 远端目标失效时只保留本地挂载指针，不允许再访问或新建挂载 (129.1838ms)
+✔ Mount 可跨本人 Native 分区移动指针，回滚不产生双挂载 (146.5325ms)
+✔ SQLite 约束直接阻止绕过 API 的原生文件或目录与 Mount 重名 (95.0381ms)
+✔ 删除 S3 目录 marker 不会修剪包含 Mount 的原生父目录 (2171.5376ms)
+✔ 附加 Mount 搜索只返回授权根内可见内容，同一 Grant 多挂载不重复结果 (1199.0411ms)
+✔ 附加 Mount 搜索达到结果上限时标记截断且始终限定协同根 (97.387ms)
+✖ 挂载搜索路径仅在当前授权根内定位并高亮文件，viewer 只显示读取操作 (11.723ms)
+✖ viewer 可显式复制授权文件到另一 editor 协同项目，提交 copy 且保留源 (8.2928ms)
+✖ 越界、遍历和不规范的协同路径在发起 list 请求前回退到授权根 (7.3722ms)
+✖ 搜索命中的目录已经消失时回到授权根，文件级协同忽略路径 (7.6628ms)
+✔ SQLite 重启后仍保留协同邀请、成员、路径和删除保护 (218.4903ms)
+✔ 并存的协同存储实例不能抹掉新邀请或重复消费一次性链接 (150.8226ms)
+✔ 目录移动与协同授权路径同事务提交，失败后一同回滚 (244.7348ms)
+[disk-upload] {"time":"2026-10-11T20:36:29.198Z","event":"metadata.request","requestId":"0044001a-6a08-4d81-9f3b-2273cca1350c","operationId":"","method":"GET","route":"list","userId":"5087b326-5f61-4b21-bccd-98e65b98846f","diskSpace":"","serverMs":28,"status":403,"aborted":false}
+[disk-upload] {"time":"2026-10-11T20:36:30.388Z","event":"telegram.queue-wait","uploadId":"78188d8a-b038-4a77-9cb2-1123b96d7293","operationId":"6118ca87-2646-4ab7-a73b-700237fd25dd"}
+[disk-upload] {"time":"2026-10-11T20:36:30.390Z","event":"telegram.queue-start","uploadId":"78188d8a-b038-4a77-9cb2-1123b96d7293","operationId":"6118ca87-2646-4ab7-a73b-700237fd25dd","waitedMs":2}
+[disk-upload] {"time":"2026-10-11T20:36:30.392Z","event":"telegram.queue-release","uploadId":"78188d8a-b038-4a77-9cb2-1123b96d7293","operationId":"6118ca87-2646-4ab7-a73b-700237fd25dd","elapsedMs":4}
+[disk-upload] {"time":"2026-10-11T20:36:30.768Z","event":"upload.created","uploadId":"9b5ba026-76b1-4143-9b83-47c391895e07","operationId":"1aa40204-a287-4b44-9701-ca9dff8f2029","fileId":"0ab1c2b4-aded-4efe-8bdf-9d81ae7f3658","bytes":1}
+[disk-upload] {"time":"2026-10-11T20:36:30.812Z","event":"upload.pipeline-failed","uploadId":"9b5ba026-76b1-4143-9b83-47c391895e07","operationId":"1aa40204-a287-4b44-9701-ca9dff8f2029","stage":"telegram-or-index","error":{"name":"Error","code":"","message":"OPERATION_CANCELLED","causeCode":"","causeMessage":"","syscall":""},"details":{}}
+[disk-upload] {"time":"2026-10-11T20:36:30.840Z","event":"upload.cancelled","uploadId":"9b5ba026-76b1-4143-9b83-47c391895e07","operationId":"1aa40204-a287-4b44-9701-ca9dff8f2029"}
+[disk-upload] {"time":"2026-10-11T20:36:30.906Z","event":"metadata.mutation-queued","operationId":"cf0e5f3f-e7c7-401c-9bb1-e62c2860af57","requestId":"","type":"delete-file","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedBehindMutation":false}
+[disk-upload] {"time":"2026-10-11T20:36:30.907Z","event":"metadata.mutation-start","operationId":"cf0e5f3f-e7c7-401c-9bb1-e62c2860af57","requestId":"","type":"delete-file","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedMs":1}
+[disk-upload] {"time":"2026-10-11T20:36:30.936Z","event":"metadata.mutation-end","operationId":"cf0e5f3f-e7c7-401c-9bb1-e62c2860af57","requestId":"","type":"delete-file","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedMs":1,"workMs":29}
+[disk-upload] {"time":"2026-10-11T20:36:31.064Z","event":"metadata.request","requestId":"f62b5c6d-6f78-4bce-9bb3-380409199efd","operationId":"","method":"GET","route":"list","userId":"5087b326-5f61-4b21-bccd-98e65b98846f","diskSpace":"","serverMs":12,"status":404,"aborted":false}
+[disk-upload] {"time":"2026-10-11T20:36:31.287Z","event":"metadata.request","requestId":"540d5412-bef0-4a38-a828-c4424bd7c93a","operationId":"","method":"GET","route":"list","userId":"5087b326-5f61-4b21-bccd-98e65b98846f","diskSpace":"","serverMs":30,"status":404,"aborted":false}
+[disk-upload] {"time":"2026-10-11T20:36:31.445Z","event":"metadata.mutation-queued","operationId":"554a711f-e450-40c7-9cab-b46ac510090b","requestId":"","type":"delete-directory","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedBehindMutation":false}
+[disk-upload] {"time":"2026-10-11T20:36:31.446Z","event":"metadata.mutation-start","operationId":"554a711f-e450-40c7-9cab-b46ac510090b","requestId":"","type":"delete-directory","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedMs":1}
+[disk-upload] {"time":"2026-10-11T20:36:31.476Z","event":"metadata.mutation-end","operationId":"554a711f-e450-40c7-9cab-b46ac510090b","requestId":"","type":"delete-directory","userId":"50367d5f-9214-4451-8716-a89d12268f8d","diskSpace":"","folderPath":"共享","queuedMs":1,"workMs":30}
+✔ 一次性协同邀请只开放受邀目录，撤销成员和关闭协同立即阻断访问与删除保护 (10081.6651ms)
+✔ 后台按状态分页读取清理与租约，不执行清理；普通用户不能访问 (6949.7735ms)
+✔ 任意文件查找区分同名位置，全部引用跨账号跨分区且链接准确编码 (989.3633ms)
+✔ 查询参数合法性、字面文件名匹配、缺失 Content 和旧列表兼容 (760.9785ms)
+✔ 删除逻辑文件后仍保留原 Content 审计指针并可查询其他引用 (836.6953ms)
+✔ 分享转存只新建独立 Logical 引用，来源撤销与自有资源限制生效 (863.1314ms)
+✔ 协同文件转存后属于受邀者，踢出成员不撤销已转存的引用 (561.6552ms)
+✔ 后台普通文件搜索、上传内容哈希查询和技术信息不会泄露账号密钥 (534.5099ms)

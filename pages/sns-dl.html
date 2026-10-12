@@ -133,6 +133,7 @@
 
 <script src="/client/cache-store.js"></script>
 <script src="/client/sns-download-cache.js"></script>
+<script src="/client/disk-pending-save.js"></script>
 <script src="/client/audio-track-repair.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
 <script>
@@ -383,6 +384,16 @@
             actions.append(makeAction('原尺寸封面',()=>downloadThumbnail(task)));
         }
         actions.append(makeAction('抓取标签',()=>showTags(task)));
+        if (Number(task.completedAt) && Number(task.outputFileSize) > 0 && ['completed','cleared'].includes(task.status)) {
+            actions.append(makeAction('转存到网盘', async () => {
+                const record = await window.DiskPendingSave.prepare({ source: 'sns', task, cache: browserCache, onStatus: text => showNotice(text) });
+                if (!record) return;
+                const opened = window.DiskPendingSave.open(record);
+                const link = document.createElement('a'); link.href = opened.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = '打开网盘继续转存';
+                notice.replaceChildren(document.createTextNode(record.status === 'completed' ? '此资源已转存。' : '待转存记录已保存，登录取消或失败后可继续。'), link);
+                cacheStates.set(task.id, { status: 'cached' }); renderTaskCache(task.id);
+            }));
+        }
         if (['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('取消',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/cancel`,{method:'POST'});await loadTasks();}));
         if (['failed','cancelled','cleared'].includes(task.status)) actions.append(makeAction('重新抓取',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/retry`,{method:'POST'});await loadTasks();}));
         if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
@@ -447,7 +458,7 @@
     urlInput.addEventListener('input',scheduleAnalyze); analyzeBtn.addEventListener('click',()=>analyzeFormats(true)); startBtn.addEventListener('click',startDownload);
     cacheFilesInput.addEventListener('change',()=>localStorage.setItem('snsDownloadCacheFiles',cacheFilesInput.checked?'1':'0'));
     $('refreshBtn').addEventListener('click',loadTasks); $('prevBtn').addEventListener('click',()=>{if(page>1){page--;loadTasks();}}); $('nextBtn').addEventListener('click',()=>{if(page<pages){page++;loadTasks();}});
-    $('cleanupCacheBtn').addEventListener('click',async()=>{const data=await api(`${API_ROOT}/tasks?page=1&pageSize=1`);const removed=await browserCache?.cleanupOrphans(data.ids||[]);showNotice(`已清理 ${removed||0} 条无任务对应的浏览器缓存。`);});
+    $('cleanupCacheBtn').addEventListener('click',async()=>{const data=await api(`${API_ROOT}/tasks?page=1&pageSize=1`);const removed=await browserCache?.cleanupOrphans(data.ids||[]);showNotice(`已清理 ${removed||0} 条无任务对应的浏览器缓存；待转存到网盘的缓存已保留。`);});
     $('addTagBtn').addEventListener('click',addTag); tagInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addTag();}});
     $('saveTagsBtn').addEventListener('click',async()=>{if(!editingTask)return;await api(`${API_ROOT}/tasks/${encodeURIComponent(editingTask.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:editingTags})});tagDialog.close();await loadTasks();});
     $('forwardConfirm').addEventListener('click',()=>forwardCurrent().catch(error=>{forwardStatus.textContent=error.message;$('forwardConfirm').disabled=false;}));

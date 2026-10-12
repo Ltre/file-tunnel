@@ -28,6 +28,8 @@ const SCRIPT_SOURCES = [
   'client/light-transfer.js',
   'client/telegram-drive-cache.js',
   'client/disk-client.js',
+  'client/disk-operation-order.js',
+  'client/disk-pending-save.js',
   'client/disk-directory-picker.js',
   'client/disk-collaboration.js',
   'client/disk-ui.js',
@@ -495,6 +497,7 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
+  await copyDirRelative('client/vendor/web-markdown', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
   await copyFileRelative('docs/telegram-drive-content-objects.md', outRoot);

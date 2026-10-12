@@ -73,6 +73,7 @@ const { createAdminAuth } = require('./server/admin-auth');
 const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart, buildTelegramSingleFileMultipart } = require('./server/telegram-multipart');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
+const { createDiskAccountSessions } = require('./server/disk-account-sessions');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
@@ -794,31 +795,13 @@ function resolveDiskUser(req, identity) {
     telegramDriveStore.migrateOwner(String(identity.id), user.id);
     return user;
 }
-function signTelegramDriveIdentity(req, identity) {
-    const user = resolveDiskUser(req, identity);
-    const body = Buffer.from(JSON.stringify({ id: user.id, version: 2, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 })).toString('base64url');
-    const key = getDiskIdentitySessionKey(req);
-    return body + '.' + crypto.createHmac('sha256', key).update(body).digest('base64url');
-}
 function getDiskIdentitySessionKey(req) {
     return isTelegramOidcMockRequest(req)
         ? crypto.createHmac('sha256', diskAuth.sessionKey).update('telegram-drive-mock-session').digest()
         : diskAuth.sessionKey;
 }
 function getTelegramDriveIdentity(req) {
-    const raw = String(req.headers.cookie || '').split(';').map(item => item.trim()).find(item => item.startsWith(TELEGRAM_DRIVE_COOKIE + '='))?.slice(TELEGRAM_DRIVE_COOKIE.length + 1) || '';
-    const [body, signature] = raw.split('.');
-    if (!body || !signature) return null;
-    const keys = [getDiskIdentitySessionKey(req), getTelegramDriveSessionKey(req)].filter(Boolean);
-    if (!keys.some(key => {
-        const expected = crypto.createHmac('sha256', key).update(body).digest('base64url');
-        return expected.length === signature.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-    })) return null;
-    try {
-        const value = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-        if (!value?.id || Number(value.exp) <= Date.now()) return null;
-        return value.version === 2 ? diskAuth.user(value.id) : resolveDiskUser(req, value);
-    } catch (_) { return null; }
+    return diskAccountSessions.identity(req);
 }
 
 function loadTelegramChatTunnels() {
@@ -2266,9 +2249,15 @@ function constantTimeStringEqual(left, right) {
 }
 
 function setTelegramDriveIdentityCookie(req, res, identity) {
-    const secure = isSecurePublicRequest(req);
-    res.append('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=${signTelegramDriveIdentity(req, identity)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secure ? '; Secure' : ''}`);
+    diskAccountSessions.set(req, res, resolveDiskUser(req, identity));
 }
+
+const diskAccountSessions = createDiskAccountSessions({
+    cookieName: TELEGRAM_DRIVE_COOKIE, keyForRequest: getDiskIdentitySessionKey,
+    legacyKeysForRequest: req => [getTelegramDriveSessionKey(req)], user: id => diskAuth.user(id),
+    resolveLegacy: resolveDiskUser, secure: isSecurePublicRequest,
+    isRevoked: session => diskAPI.isContentSessionRevoked(session)
+});
 
 function clearTelegramOidcStateCookie(req, res) {
     const secure = isSecurePublicRequest(req);
@@ -2405,9 +2394,12 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
 });
 
 app.post('/api/telegram/drive/logout', (req, res) => {
-    try { diskAPI.revokeContentSession(req); }
-    catch { res.status(503).json({error:'DISK_LOGOUT_FAILED'}); return; }
-    res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`); res.json({ ok: true });
+    const identity = getTelegramDriveIdentity(req);
+    if (!identity) return res.status(401).json({ error: 'LOGIN_REQUIRED' });
+    const origin = req.get('Origin');
+    if (origin && origin !== getTelegramPublicOrigin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
+    try { const next = diskAccountSessions.remove(req, res, identity.id, request => diskAPI.revokeContentSession(request)); res.json({ ok: true, identity: next }); }
+    catch { res.status(503).json({error:'DISK_LOGOUT_FAILED'}); }
 });
 const diskAPI = createDiskAPI({
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
@@ -2427,13 +2419,14 @@ const diskAPI = createDiskAPI({
         saveTelegramBotConfig(config);
     }
 });
+diskAccountSessions.registerRoutes(app, { origin: getTelegramPublicOrigin, revoke: req => diskAPI.revokeContentSession(req) });
 app.get('/api/telegram/drive/me', diskAPI.metadataTiming, (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
     const identity = getTelegramDriveIdentity(req);
     const oidcMode = getTelegramOidcLoginMode(req);
-    res.json({ identity, enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
+    res.json({ identity, accounts: diskAccountSessions.list(req), enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
 });
 const { createS3Gateway } = require('./server/s3');
 const s3Gateway = createS3Gateway({ dataDir: SERVER_DATA_DIR, objectStorage: diskAPI.objectStorage });

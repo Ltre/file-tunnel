@@ -27,6 +27,10 @@ let telegramDriveCollaborations = [];
 let telegramDriveSpaceOwner = '';
 let telegramDriveSpaces = [];
 let telegramDriveStaticLinks = [];
+let telegramDriveAccountList = [];
+let telegramDriveLoginBaseline = null;
+let telegramDrivePendingSaveId = new URLSearchParams(location.search).get('pendingSave') || '';
+let telegramDrivePendingSaveRunning = false;
 let telegramDriveCollaborationFrame = null;
 let telegramDriveSelectionAnchor = '';
 const telegramDriveSelected = new Map();
@@ -39,6 +43,7 @@ let diskWindowState = {};
 try { diskWindowState = JSON.parse(localStorage.getItem(diskWindowKey)) || {}; } catch (_) {}
 if (diskWindowState.retained) telegramDrivePath = String(diskWindowState.path || '');
 function saveDiskWindow(retained) {
+    rememberTelegramDriveAccountView();
     diskWindowState = { retained, path: telegramDriveMountContext?.parentPath??telegramDrivePath }; // Reload resumes the native parent; browser history retains the authorized mount context.
     localStorage.setItem(diskWindowKey, JSON.stringify(diskWindowState));
     const button = document.getElementById('topbarDiskBtn'); if (button) button.hidden = !retained;
@@ -46,6 +51,175 @@ function saveDiskWindow(retained) {
 async function telegramDriveRequest(url, options = {}) { return window.DiskClient.request(url, options); }
 // Background identity/OIDC polling must not repeatedly open the loading dialog.
 async function getTelegramDriveIdentity() { return window.DiskClient.raw('/me'); }
+function rememberTelegramDriveAccountView() {
+    if (!telegramDriveSpaceOwner) return;
+    try {
+        localStorage.setItem('telegram-drive-path-' + telegramDriveSpaceOwner + ':' + window.DiskClient.getSpace(),
+            telegramDriveMountContext?.parentPath ?? telegramDrivePath);
+    } catch (_) {}
+}
+function rememberedTelegramDrivePath(userId, space) {
+    try { return localStorage.getItem('telegram-drive-path-' + userId + ':' + space) || ''; } catch (_) { return ''; }
+}
+async function switchTelegramDriveAccount(accountId) {
+    rememberTelegramDriveAccountView();
+    await window.DiskClient.raw('/accounts/select', { accountId: '', ...window.DiskClient.json('POST', { accountId }) });
+    cancelTelegramDrivePendingMount(); telegramDriveNavigationVersion++; telegramDriveRenderGeneration++;
+    closeDiskCollaborationFrame(); closeDiskPreview({ replaceHistory: true });
+    clearTelegramDriveSearch(); clearTelegramDriveSelection();
+    telegramDriveMountContext = null; telegramDriveCurrentData = null; telegramDriveStaticLinks = []; telegramDriveSpaceOwner = '';
+    window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setAccount(accountId);
+    try { localStorage.setItem('telegram-drive-active-account', accountId); } catch (_) {}
+    // Old history entries must not replay a different account's mount/path.
+    history.replaceState({ ...(history.state || {}), telegramDrivePath: '', diskMountContext: null, diskAccountId: accountId }, '', location.href);
+    await renderTelegramDrive();
+}
+function appendTelegramDriveAddAccount(target, status) {
+    const description = document.createElement('p'); description.textContent = '添加账号后保留现有账号的登录状态；需要重新验证的账号可单独登录。'; target.append(description);
+    if (status.oidcConfigured) {
+        const login = document.createElement('button'); login.type = 'button'; login.className = 'btn btn-primary';
+        login.textContent = status.oidcMode === 'mock' ? '添加 / 重新验证 Mock 账号' : '添加 / 重新验证 Telegram 账号';
+        login.onclick = () => { closeTelegramDriveDialog(null); startTelegramDriveLogin(); }; target.append(login);
+    }
+    if (status.oidcMode !== 'mock') appendPasskeyControls(target, null, { addAccount: true });
+}
+async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
+    const status = await window.DiskClient.raw('/accounts', { accountId: '' });
+    telegramDriveAccountList = status.accounts || [];
+    const body = document.createElement('div'); body.className = 'disk-account-list';
+    let selected = requiredId || window.DiskClient.getAccount() || status.identity?.id || '';
+    for (const entry of telegramDriveAccountList) {
+        const user = entry.identity; if (!user) continue;
+        const row = document.createElement('div'); row.className = 'disk-account-row';
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'btn disk-account-entry';
+        button.textContent = `👤 ${user.name || user.username || user.id}${entry.reauthRequired ? ' · 需要重新登录' : user.id === window.DiskClient.getAccount() ? ' · 当前账号' : ''}`;
+        button.title = `用户 ID：${user.id}`;
+        button.classList.toggle('selected', user.id === selected);
+        button.onclick = async () => {
+            if (entry.reauthRequired) { showAppToast('请使用下方登录入口重新验证该账号，原转存记录会保留'); return; }
+            if (requiredId && user.id !== requiredId) { showAppToast('这项未确认的转存仍绑定原账号，请重新验证原账号后继续'); return; }
+            selected = user.id;
+            if (choose) body.querySelectorAll('.disk-account-entry').forEach(node => node.classList.toggle('selected', node === button));
+            else { closeTelegramDriveDialog(null); try { await switchTelegramDriveAccount(user.id); } catch (error) { alert(telegramDriveErrorText(error)); } }
+        };
+        const exit = document.createElement('button'); exit.type = 'button'; exit.className = 'btn disk-account-exit'; exit.textContent = '退出';
+        exit.onclick = async () => {
+            closeTelegramDriveDialog(null);
+            await logoutTelegramDrive(user.id);
+            if (choose) showAppToast('待转存记录仍保留，可在账号登录后继续');
+        };
+        row.append(button, exit); body.append(row);
+    }
+    const info = await window.DiskClient.raw('/me', { accountId: '' });
+    appendTelegramDriveAddAccount(body, info);
+    const result = await openTelegramDriveDialog({ title: choose ? '选择转存目标账号' : '切换 / 管理网盘账号', body,
+        confirmText: choose ? '选择此账号' : '关闭', cancelText: choose ? '稍后继续' : '', validate: choose ? () => {
+            const entry = telegramDriveAccountList.find(item => item.identity?.id === selected);
+            if (!entry || entry.reauthRequired) throw new Error('请先添加或重新登录一个有效的网盘账号');
+            if (requiredId && selected !== requiredId) throw new Error('请重新登录原转存账号后继续');
+            return entry.identity;
+        } : undefined });
+    if (!result || !choose) return null;
+    await switchTelegramDriveAccount(result.id); return result;
+}
+async function showTelegramDrivePendingSaveBanner() {
+    if (!window.DiskPendingSave) return;
+    const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status));
+    const target = document.getElementById('telegramDriveAuth');
+    if (!target) return;
+    target.querySelector('.disk-pending-save-list')?.remove();
+    if (!records.length) return;
+    const banner = document.createElement('div'); banner.className = 'disk-pending-save-list';
+    for (const record of records) {
+        const row = document.createElement('div'); const label = document.createElement('span'); label.textContent = `待转存：${record.file.name} · ${formatFileSize(record.file.size)}`;
+        const resume = document.createElement('button'); resume.type = 'button'; resume.className = 'btn'; resume.textContent = '继续转存';
+        resume.onclick = () => { telegramDrivePendingSaveId = record.id; resumeTelegramDrivePendingSave(record.id).catch(error => alert(telegramDriveErrorText(error))); };
+        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = '取消待转存';
+        cancel.onclick = async () => {
+            try {
+                if (!await confirmTelegramDriveAction('取消待转存', '仅取消本浏览器的待转存记录并解除缓存保护；不会删除已转存的网盘文件。', '取消待转存')) return;
+                const current = await window.DiskPendingSave.get(record.id);
+                if (['uploading', 'verification-required'].includes(current.status)) {
+                    const target = current.target;
+                    const found = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(record.id), { accountId: target.accountId, diskSpace: target.diskSpace, requestBase: '/api/telegram/drive' });
+                    if (found.state === 'completed') { await window.DiskPendingSave.complete(record.id, found.result); await showTelegramDrivePendingSaveBanner(); return; }
+                    if (found.found && !found.safeRetry) throw new Error('原上传仍在处理或结果待核验，不能取消缓存保护；请先等待任务结束');
+                    await window.DiskPendingSave.update(record.id, { status: 'failed' });
+                }
+                await window.DiskPendingSave.cancel(record.id);
+                await showTelegramDrivePendingSaveBanner();
+            } catch (error) { alert(telegramDriveErrorText(error)); }
+        };
+        row.append(label, resume, cancel); banner.append(row);
+    }
+    target.append(banner);
+}
+async function choosePendingSaveTarget(record, account) {
+    if (record.target) return record.target;
+    const baseContext = { accountId: account.id, requestBase: '/api/telegram/drive', diskSpace: '' };
+    const spaces = (await window.DiskClient.raw('/spaces', baseContext)).spaces.filter(space => !space.state || space.state === 'ACTIVE');
+    if (!spaces.length) throw new Error('此账号没有可用分区，请先恢复分区');
+    const selector = document.createElement('select'); selector.setAttribute('aria-label', '转存目标分区');
+    for (const space of spaces) selector.add(new Option(space.name, space.id));
+    selector.value = spaces.find(space => telegramDriveSpaceKey(space) === window.DiskClient.getSpace())?.id || spaces[0].id;
+    const label = document.createElement('label'); label.className = 'disk-partition-field'; label.append('目标分区', selector);
+    const transport = () => ({ ...baseContext, diskSpace: telegramDriveSpaceKey(spaces.find(space => space.id === selector.value)) });
+    let reloadTree; selector.onchange = () => reloadTree?.().catch(error => alert(telegramDriveErrorText(error)));
+    return window.DiskDirectoryPicker.choose({ title: `转存 ${record.file.name}`, confirmText: '选择目标目录', controls: [label],
+        initialPath: rememberedTelegramDrivePath(account.id, transport().diskSpace),
+        loadDirectories: () => window.DiskClient.raw('/directories', transport()),
+        createDirectory: path => window.DiskClient.request('/directories', { ...transport(), ...window.DiskClient.json('POST', { path }) }),
+        onReady: reload => { reloadTree = reload; }, installContextGesture,
+        openDialog: options => openTelegramDriveDialog({ ...options, validate: async () => {
+            const path = await options.validate(), space = spaces.find(space => space.id === selector.value);
+            return { accountId: account.id, partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
+        } }), showError: error => alert(telegramDriveErrorText(error)) });
+}
+async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
+    if (!id || !window.DiskPendingSave || telegramDrivePendingSaveRunning) return;
+    telegramDrivePendingSaveRunning = true;
+    const transport = target => ({ accountId: target.accountId, requestBase: '/api/telegram/drive', diskSpace: target.diskSpace });
+    const ensureAccount = async accountId => {
+        const accounts = (await window.DiskClient.raw('/accounts', { accountId: '' })).accounts || [];
+        const entry = accounts.find(item => item.identity?.id === accountId && !item.reauthRequired);
+        if (!entry) return manageTelegramDriveAccounts({ choose: true, requiredId: accountId });
+        return entry.identity;
+    };
+    try {
+        await window.DiskPendingSave.resume(id, {
+            chooseAccount: record => record.target ? ensureAccount(record.target.accountId) : manageTelegramDriveAccounts({ choose: true }),
+            chooseTarget: choosePendingSaveTarget,
+            lookup: async record => {
+                if (!record.target || !await ensureAccount(record.target.accountId)) return { status: 'waiting-login' };
+                const result = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(id), transport(record.target));
+                if (!result.found) return { status: 'missing' };
+                if (result.state === 'completed') return { status: 'completed', result: result.result };
+                if (result.safeRetry) return { status: 'failed', retryable: true };
+                return { status: 'processing' };
+            },
+            verifyTarget: async (_record, target) => {
+                const ctx = transport(target);
+                const spaces = (await window.DiskClient.raw('/spaces', ctx)).spaces;
+                if (!spaces.some(space => space.id === target.partitionId && telegramDriveSpaceKey(space) === target.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw new Error('原目标分区已删除或不可用，请取消待转存后重新发起');
+                await window.DiskClient.raw('/list?path=' + encodeURIComponent(target.path), ctx);
+            },
+            confirm: (record, target) => confirmTelegramDriveAction('确认转存到网盘', `将“${record.file.name}”（${formatFileSize(record.file.size)}）转存到“${target.partitionName || '目标分区'}”的 ${telegramDriveDisplayPath(target.path)}？`, '转存'),
+            upload: (record, blob, target, metadata) => window.DiskClient.upload([{ name: record.file.name, size: blob.size, type: record.file.type }], target.path,
+                () => blob, { ...metadata, source: record.source, sourceTaskVersion: record.version, transportContext: transport(target) }),
+            onStatus: showAppToast,
+            onCompleted: async record => {
+                showAppToast('转存已完成；再次打开不会重复上传');
+                const target = record.target;
+                if (target && window.DiskClient.getAccount() === target.accountId) {
+                    if (window.DiskClient.getSpace() !== target.diskSpace) await switchTelegramDrivePartition(target.partitionId);
+                    await navigateTelegramDrive(target.path);
+                    const item = record.result?.items?.[0]; if (item) highlightTelegramDriveRow({ kind: 'file', id: item.id });
+                }
+                await showTelegramDrivePendingSaveBanner();
+            }
+        });
+    } finally { telegramDrivePendingSaveRunning = false; await showTelegramDrivePendingSaveBanner(); }
+}
 function telegramDriveErrorText(error) {
     if (typeof window!=='undefined' && error?.userMessage && window.DiskErrorMessages && !error?.errorDetails?.requestOutcomeUnknown && error?.message !== 'TELEGRAM_NETWORK_ERROR') return window.DiskErrorMessages.format(error);
     if (typeof window!=='undefined' && window.DiskErrorMessages?.codes[error?.message] && !error?.errorDetails?.requestOutcomeUnknown && !(error?.message==='TELEGRAM_NETWORK_ERROR'&&error?.errorDetails?.causeCode==='UND_ERR_HEADERS_TIMEOUT')) return window.DiskErrorMessages.format(error);
@@ -797,6 +971,7 @@ function openDiskCollaborationFrame(entry) {
     dialog.setAttribute('aria-label', `协同编辑：${entry.name}`);
     const frame = document.createElement('iframe'); frame.title = `协同编辑：${entry.name}`;
     const url = new URL('/disk-collab/view/' + encodeURIComponent(entry.id), location.origin);
+    url.searchParams.set('disk_account', window.DiskClient.getAccount());
     url.searchParams.set('embedded', '1');
     if (entry.mountId) url.searchParams.set('mount_id', entry.mountId);
     if (entry.path) url.searchParams.set('path', entry.path);
@@ -1041,17 +1216,19 @@ async function switchTelegramDrivePartition(idOrScope) {
     if (!space) throw new Error('目标分区不存在或无权访问');
     if (space.state && space.state !== 'ACTIVE') throw new Error('该分区正在删除或需要恢复，暂不能打开');
     if (window.DiskClient.hasActiveOperations()) throw new Error('当前分区仍有任务执行，请等待任务完成后切换');
+    rememberTelegramDriveAccountView();
     cancelTelegramDrivePendingMount();
     document.querySelector('.disk-static-list-popover')?._diskDismiss?.();
     document.querySelector('.disk-collaboration-manage-popover')?._diskDismiss?.();
     telegramDriveMountContext=null;window.DiskClient.setSpace(telegramDriveSpaceKey(space));
     try { localStorage.setItem('telegram-drive-space-' + telegramDriveSpaceOwner, space.id); } catch (_) {}
-    telegramDrivePath = ''; telegramDriveCurrentData = null; telegramDriveStaticLinks = [];
+    telegramDrivePath = rememberedTelegramDrivePath(telegramDriveSpaceOwner, window.DiskClient.getSpace()); telegramDriveCurrentData = null; telegramDriveStaticLinks = [];
     clearTelegramDriveSearch(); clearTelegramDriveSelection();
     await renderTelegramDrive();
 }
 async function chooseTelegramDriveTransfer(items) {
     if (!items.length) return null;
+    const actorContext = window.DiskClient.context();
     const choices = telegramDriveSpaces.filter(space => !space.state || space.state === 'ACTIVE');
     if (!choices.length) throw new Error('没有可用网盘分区');
     const currentSpace = window.DiskClient.getSpace();
@@ -1078,12 +1255,7 @@ async function chooseTelegramDriveTransfer(items) {
     const scope = () => telegramDriveSpaceKey(choices.find(space => space.id === spaceSelect.value));
     const scopedRequest = async (path, options = {}) => {
         if(spaceSelect.value==='@mounted')return window.DiskClient.raw(path,options);
-        const url = new URL('/api/telegram/drive' + path, location.origin);
-        url.searchParams.set('disk_space', scope());
-        const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', ...options });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);
-        return data;
+        return window.DiskClient.raw(path, { ...options, accountId: actorContext.accountId, requestBase: '/api/telegram/drive', diskSpace: scope() });
     };
     let reloadTree;
     spaceSelect.onchange = () => reloadTree?.().catch(error => alert(telegramDriveErrorText(error)));
@@ -1587,7 +1759,8 @@ function renderTelegramDriveItems() {
     if (!list || !telegramDriveCurrentData || telegramDrivePendingMount) return;
     reconcileTelegramDriveSelection();
     list.dataset.view = telegramDriveView;
-    const items = getSortedTelegramDriveItems(getTelegramDriveDisplayData());
+    const snapshot = window.DiskClient.context();
+    const items = getSortedTelegramDriveItems(getTelegramDriveDisplayData()).map(item => ({ ...item, diskTransportContext: item.diskTransportContext || snapshot }));
     updateTelegramDriveBottomSummary();
     if (!items.length) {
         const empty = document.createElement('div'); empty.className = 'telegram-drive-empty'; empty.innerHTML = '<div><div style="font-size:2rem">☁</div><strong>当前目录没有匹配的文件</strong><div>可通过“＋”上传文件或创建文件夹</div></div>';
@@ -1744,11 +1917,12 @@ function renderTelegramDriveItems() {
 
 async function uploadFilesToTelegramDrive(fileList, destination = telegramDrivePath) {
     const files = [...(fileList || [])]; if (!files.length) return;
+    const actor = window.DiskClient.context();
     const result = await window.DiskClient.upload(files, destination);
     showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；' + telegramDriveWarningText(result.warnings) : ''));
     // Only refresh the directory where the upload was initiated. A render
     // generation prevents an older in-flight list request from overwriting it.
-    if (telegramDrivePath === destination) await refreshTelegramDriveContents();
+    if (telegramDrivePath === destination && actor.accountId === window.DiskClient.getAccount() && actor.diskSpace === window.DiskClient.getSpace()) await refreshTelegramDriveContents();
 }
 
 async function createTelegramDriveFolder(parent = telegramDrivePath) {
@@ -1763,15 +1937,20 @@ async function createTelegramDriveFolder(parent = telegramDrivePath) {
     highlightTelegramDriveRow({ kind: 'directory', path });
 }
 
-async function logoutTelegramDrive() {
+async function logoutTelegramDrive(accountId = window.DiskClient.getAccount()) {
     if (!await confirmTelegramDriveAction('退出网盘账号', '退出只会清除本浏览器的网盘登录状态，不会删除网盘文件。', '退出账号')) return;
     cancelTelegramDrivePendingMount();
-    await window.DiskClient.raw('/logout', { method: 'POST' });
-    window.DiskClient.stop();
+    rememberTelegramDriveAccountView();
+    await window.DiskClient.raw('/accounts/' + encodeURIComponent(accountId), { method: 'DELETE', accountId: '' });
+    window.DiskClient.stopAccount(accountId);
+    if (accountId !== window.DiskClient.getAccount()) { showAppToast('已退出所选账号，其它账号不受影响'); return; }
+    const remaining = await window.DiskClient.raw('/accounts', { accountId: '' });
+    window.DiskClient.setAccount(remaining.identity?.id || remaining.accounts?.find(item => !item.reauthRequired)?.identity?.id || '');
     window.DiskClient.setSpace('');
     telegramDriveSpaceOwner = ''; telegramDriveSpaces = []; telegramDriveStaticLinks = [];
     closeDiskPreview();
     telegramDrivePath = '';
+    telegramDriveNavigationVersion++;
     telegramDriveCurrentData = null;
     clearTelegramDriveSearch();
     clearTelegramDriveSelection();
@@ -1995,7 +2174,7 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
         }
     }
     const generation = ++telegramDriveRenderGeneration;
-    const requestedPath = telegramDrivePath;
+    let requestedPath = telegramDrivePath;
     const retainedSearchData = isTelegramDriveGlobalSearchActive() ? telegramDriveSearchData : null;
     closeTelegramDriveItemMenu({ replaceHistory: true });
     const list = document.getElementById('telegramDriveList');
@@ -2008,6 +2187,7 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
     const backgroundTasksHidden = window.DiskClient.hasHiddenLoading?.();
     const status = await getTelegramDriveIdentity();
     if (generation !== telegramDriveRenderGeneration) return;
+    telegramDriveAccountList = status.accounts || [];
     logout.hidden = !status.identity;
     const collaborationListButton = document.getElementById('telegramDriveCollaborationListBtn'); if (collaborationListButton) collaborationListButton.hidden = !status.identity;
     const staticListButton = document.getElementById('telegramDriveStaticListBtn'); if (staticListButton) staticListButton.hidden = !status.identity;
@@ -2015,7 +2195,7 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
     const trashButton = document.getElementById('telegramDriveTrashBtn');if(trashButton)trashButton.hidden=!status.identity;
     const headerOverflow = document.getElementById('telegramDriveHeaderOverflowWrap'); if (headerOverflow) headerOverflow.hidden = !status.identity;
     if (!status.identity) {
-        window.DiskClient.stop?.();telegramDriveMountContext=null;
+        telegramDriveMountContext=null;
         telegramDriveSpaceOwner = ''; telegramDriveSpaces = []; telegramDriveStaticLinks = [];
         if (window.DiskClient.getSpace()) window.DiskClient.setSpace('');
         workspace.hidden = true;
@@ -2024,14 +2204,20 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
         const text = document.createElement('span'); text.textContent = isMock ? '本地开发使用 Telegram OIDC Mock；输入一个模拟 Telegram User ID 即可登录，不会连接 Telegram。' : '使用 Telegram 登录后即可认领和管理自己的网盘文件。';
         const button = document.createElement('button'); button.className = 'btn btn-primary'; button.id = 'telegramDriveLoginBtn'; button.type = 'button'; button.textContent = isMock ? '使用本地 Telegram Mock 登录' : '使用 Telegram 登录'; button.onclick = startTelegramDriveLogin;
         auth.replaceChildren(text);
+        if (telegramDriveAccountList.length) {
+            const switcher = document.createElement('button'); switcher.type = 'button'; switcher.className = 'btn'; switcher.textContent = '选择其它账号';
+            switcher.onclick = () => manageTelegramDriveAccounts().catch(error => alert(telegramDriveErrorText(error))); auth.append(switcher);
+        }
         if (status.oidcConfigured) auth.append(button);
         if (!isMock) appendPasskeyControls(auth);
+        showTelegramDrivePendingSaveBanner().catch(() => {});
         return;
     }
     const notices = [];
     if (telegramDriveSpaceOwner !== status.identity.id) {
-        if(telegramDriveSpaceOwner)window.DiskClient.stop?.();
+        rememberTelegramDriveAccountView();
         telegramDriveSpaceOwner = status.identity.id;
+        window.DiskClient.setAccount(status.identity.id);
         telegramDriveMountContext=null;window.DiskClient.setSpace('');
         telegramDriveSpaces = (await window.DiskClient.raw('/spaces')).spaces;
         if (generation !== telegramDriveRenderGeneration) return;
@@ -2039,7 +2225,8 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
         try { remembered = localStorage.getItem('telegram-drive-space-' + status.identity.id) || ''; } catch (_) {}
         const restored = telegramDriveSpaces.find(space => (space.id === remembered || telegramDriveSpaceKey(space) === remembered) && (!space.state || space.state === 'ACTIVE'));
         if (restored) window.DiskClient.setSpace(telegramDriveSpaceKey(restored));
-        telegramDrivePath = '';
+        telegramDrivePath = rememberedTelegramDrivePath(status.identity.id, window.DiskClient.getSpace());
+        requestedPath = telegramDrivePath;
         telegramDriveCurrentData = null;
     }
     if (!status.enabled) notices.push('管理员尚未启用 Telegram Bot');
@@ -2056,6 +2243,9 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
         openTelegramDriveDialog({ title: '网盘账号设置', body, confirmText: '关闭', cancelText: '' });
     };
     auth.replaceChildren(account);
+    const accountSwitcher = document.createElement('button'); accountSwitcher.type = 'button'; accountSwitcher.className = 'btn disk-account-switcher'; accountSwitcher.textContent = '切换 / 添加账号';
+    accountSwitcher.onclick = () => manageTelegramDriveAccounts().catch(error => alert(telegramDriveErrorText(error))); auth.append(accountSwitcher);
+    showTelegramDrivePendingSaveBanner().catch(() => {});
     const spacePicker = document.createElement('select'); spacePicker.className = 'telegram-drive-space-picker';
     spacePicker.setAttribute('aria-label', '当前网盘分区');
     for (const space of telegramDriveSpaces) {
@@ -2114,10 +2304,11 @@ async function navigateTelegramDrive(path, { fromHistory = false, deferRender = 
     cancelTelegramDrivePendingMount();
     if (!fromUpload) telegramDriveNavigationVersion++;
     telegramDrivePath = String(path || '');
+    rememberTelegramDriveAccountView();
     if (diskWindowState.retained) saveDiskWindow(true);
     clearTelegramDriveSearch();
     clearTelegramDriveSelection();
-    if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, diskMountContext:telegramDriveMountContext, telegramDriveHistorySession }, '', location.href);
+    if (!fromHistory && telegramDriveHistorySession) history.pushState({ ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, diskMountContext:telegramDriveMountContext, diskAccountId:window.DiskClient.getAccount(), telegramDriveHistorySession }, '', location.href);
     if (deferRender) { telegramDriveCurrentData = null; telegramDriveContentStale = true; }
     else await renderTelegramDrive({ contentsOnly: true });
 }
@@ -2134,7 +2325,7 @@ async function openTelegramDrive() {
     if (overlay.hidden) { const tasks = document.getElementById('diskTasks'); if (tasks) tasks.open = false; }
     const starting = !telegramDriveHistorySession;
     if (starting) telegramDriveHistorySession = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const state = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession };
+    const state = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, diskAccountId: window.DiskClient.getAccount(), telegramDriveHistorySession };
     if (starting) history.pushState(state, '', location.href); else history.replaceState(state, '', location.href);
     overlay.hidden = false; overlay.classList.add('active');
     document.body.classList.add('telegram-drive-open');
@@ -2175,6 +2366,7 @@ function startTelegramDriveLogin() {
         telegramDriveOidcPopup.focus();
         return;
     }
+    telegramDriveLoginBaseline = telegramDriveAccountList.map(entry => ({ id: entry.identity?.id, expiresAt: entry.expiresAt }));
     const popup = window.open('/api/telegram/drive/oidc/start', 'telegramDriveOidc', 'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes');
     if (!popup) {
         alert('浏览器阻止了 Telegram 登录弹窗。请允许本站弹出窗口后重试；系统不会改用整页跳转。');
@@ -2202,15 +2394,21 @@ async function finishTelegramDriveOidcLogin(result, error = '') {
     telegramDriveOidcPollGeneration += 1;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
-    await renderTelegramDrive();
-    if (result === 'success') showAppToast('Telegram 登录成功');
+    if (result === 'success') {
+        const status = await window.DiskClient.raw('/me', { accountId: '' });
+        if (status.identity) await switchTelegramDriveAccount(status.identity.id);
+        else await renderTelegramDrive();
+    } else await renderTelegramDrive();
+    if (result === 'success') { showAppToast('Telegram 登录成功'); if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error))); }
     else alert(`Telegram 登录失败${error ? `：${error}` : '，请重试'}`);
 }
 
 async function pollTelegramDriveOidcLogin(popup, generation, startedAt) {
     if (generation !== telegramDriveOidcPollGeneration || popup !== telegramDriveOidcPopup) return;
-    const status = await getTelegramDriveIdentity().catch(() => null);
-    if (status?.identity) return finishTelegramDriveOidcLogin('success');
+    const status = await window.DiskClient.raw('/me', { accountId: '' }).catch(() => null);
+    const entry = status?.accounts?.find(item => item.identity?.id === status.identity?.id);
+    const prior = telegramDriveLoginBaseline?.find(item => item.id === status?.identity?.id);
+    if (status?.identity && (!prior || Number(entry?.expiresAt) > Number(prior.expiresAt))) return finishTelegramDriveOidcLogin('success');
     if (status?.oidcMode !== 'mock' && Date.now() - startedAt >= 60000) {
         const text = document.querySelector('#telegramDriveAuth > span');
         if (text) text.textContent = '尚未完成 Telegram 授权。若弹窗提示等待确认但没有通知，请检查已登录的 Telegram 客户端服务通知及网络，或取消后使用 Passkey。本站不能代 Telegram 发出或批准登录确认；管理员可检查 OIDC 阶段日志。';
@@ -2235,7 +2433,7 @@ const diskMediaProgressKey = 'telegram-drive-media-progress-v1';
 let diskMediaProgress = {};
 try { diskMediaProgress = JSON.parse(localStorage.getItem(diskMediaProgressKey) || '{}') || {}; } catch (_) {}
 const $disk = id => document.getElementById(id);
-function appendPasskeyControls(target, user) {
+function appendPasskeyControls(target, user, { addAccount = !user } = {}) {
     const group = document.createElement('div'); group.className = 'disk-passkey-controls';
     const input = document.createElement('input'); input.placeholder = '账号名（3–64 位字母、数字、_.-）'; input.autocomplete = 'username webauthn'; input.setAttribute('aria-label', 'Passkey 账号名');
     input.value = user?.username || ''; input.readOnly = Boolean(user?.username);
@@ -2251,13 +2449,16 @@ function appendPasskeyControls(target, user) {
                 if (!window.isSecureContext) throw new Error('Passkey 需要 HTTPS 安全连接');
                 if (!window.PublicKeyCredential || !navigator.credentials) throw new Error('当前浏览器不支持 Passkey，请使用支持通行密钥的浏览器');
                 if (!window.SimpleWebAuthnBrowser) throw new Error('Passkey 脚本未加载，请管理员检查 /client/simplewebauthn.js 和发布依赖；这不是账号名或 HTTPS 的问题');
-                const flow = await window.DiskClient.raw('/passkeys/' + kind + '/options', window.DiskClient.json('POST', { username: input.value }));
+                const flow = await window.DiskClient.raw('/passkeys/' + kind + '/options', window.DiskClient.json('POST', { username: input.value, addAccount }));
                 const response = kind === 'login'
                     ? await window.SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: flow.options })
                     : await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: flow.options });
-                await window.DiskClient.raw('/passkeys/verify', window.DiskClient.json('POST', { flow_id: flow.flow_id, response }));
+                const verified = await window.DiskClient.raw('/passkeys/verify', window.DiskClient.json('POST', { flow_id: flow.flow_id, response, addAccount }));
                 if (user) closeTelegramDriveDialog(null);
-                await renderTelegramDrive();
+                else closeTelegramDriveDialog(null);
+                const status = verified.identity ? verified : await window.DiskClient.raw('/me', { accountId: '' });
+                if (status.identity) await switchTelegramDriveAccount(status.identity.id); else await renderTelegramDrive();
+                if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error)));
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { button.disabled = false; button.textContent = idleLabel; }
         };
         group.append(button);
@@ -2562,7 +2763,7 @@ async function generateTelegramDriveThumbnail(item) {
     if (!/^(image|audio|video)\//.test(type)) return null;
     if (item.thumbnailAvailable) {
         const context=item.diskTransportContext||window.DiskClient.context();
-        const source = `${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}`;
+        const source = `${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}&disk_account=${encodeURIComponent(context.accountId || '')}`;
         return canvasThumbnail(await imageFromSource(source, item.name));
     }
     const cached = await window.TelegramDriveCache?.get(item.id,item).catch(() => null);
@@ -2709,7 +2910,7 @@ async function loadDiskAudioPlayerCover(item, cover, cachedBlob) {
     // The separately stored image is available without reading any song parts.
     if (item.thumbnailAvailable) {
         const context=item.diskTransportContext||window.DiskClient.context();
-        try { await showImage(`${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}`); return; }
+        try { await showImage(`${context.requestBase}/files/${encodeURIComponent(item.id)}/thumbnail?v=${encodeURIComponent(item.updatedAt || '')}&disk_space=${encodeURIComponent(context.diskSpace)}&disk_account=${encodeURIComponent(context.accountId || '')}`); return; }
         catch (_) { /* Legacy/missing thumbnail: try the existing local sources. */ }
     }
     const metadataCover = item.metadata?.coverUrl || item.metadata?.cover || item.metadata?.thumbnailUrl;
@@ -3312,9 +3513,10 @@ function initDiskEnhancements() {
             const batch=job.transferDetails?.batch;if(!batch)return [job];if(seen.has(batch.id))return [];seen.add(batch.id);
             const members=groups.get(batch.id).sort((a,b)=>a.transferDetails.batch.index-b.transferDetails.batch.index),complete=members.filter(item=>item.status==='completed').length;
             const status=members.some(item=>item.status==='failed')?'failed':members.some(item=>['queued','running'].includes(item.status))?'running':complete===batch.total?'completed':'failed';
-            return [{...job,type:status==='running'?job.type:'transfer-history',status,message:`${complete}/${batch.total} 项完成${members.length<batch.total?'，其余尚未执行或确认':''}`,phase:status==='completed'?'completed':'batch',percent:Math.floor(complete/batch.total*100),
+            return [{...job,createdAt:Math.max(...members.map(item=>Number(item.createdAt)||0)),startedAt:Math.max(...members.map(item=>Number(item.startedAt)||0)),finishedAt:Math.max(...members.map(item=>Number(item.finishedAt)||0)),type:status==='running'?job.type:'transfer-history',status,message:`${complete}/${batch.total} 项完成${members.length<batch.total?'，其余尚未执行或确认':''}`,phase:status==='completed'?'completed':'batch',percent:Math.floor(complete/batch.total*100),
                 transferDetails:{...job.transferDetails,source:{...job.transferDetails.source,entries:members.flatMap(item=>item.transferDetails.source.entries.map(entry=>({...entry,outcome:item.phase==='source-retained'?'已复制，来源仍保留':item.status==='completed'?'已完成':item.status==='failed'?'未完成，请核对结果':'执行中'})))}}}];
         });
+        jobs = window.DiskOperationOrder.sort(jobs);
         const changed = jobs.some(job => ['upload', 'repair'].includes(job.type) && ['queued', 'running'].includes(previousStatuses.get(job.operation_id)) && ['done', 'succeeded', 'completed', 'failed'].includes(job.status));
         for (const job of jobs) previousStatuses.set(job.operation_id, job.status);
         if (changed) {
@@ -3389,6 +3591,9 @@ function handleTelegramDrivePopstate(event) {
     if (diskPreviewHistoryOpen) return;
     if (!telegramDriveHistorySession) return;
     if (event.state?.telegramDriveHistorySession !== telegramDriveHistorySession || !event.state?.telegramDriveOpen) return closeTelegramDrive();
+    if (event.state?.diskAccountId && event.state.diskAccountId !== window.DiskClient.getAccount()) {
+        showAppToast('此历史位置属于其它账号；请先切换账号再访问'); return;
+    }
     cancelTelegramDrivePendingMount();
     const overlay = document.getElementById('telegramDriveOverlay');
     if (overlay) { overlay.hidden = false; overlay.classList.add('active'); document.body.classList.add('telegram-drive-open'); }
@@ -3402,6 +3607,7 @@ function init(options = {}) {
     window.DiskClient?.setAudioCoverExtractor?.(loadAudioCover);
     if (telegramDriveInitialized) return;
     telegramDriveInitialized = true;
+    try { const saved = localStorage.getItem('telegram-drive-active-account'); if (saved) window.DiskClient.setAccount(saved); } catch (_) {}
     const driveDialog = document.getElementById('telegramDriveDialog');
     if (driveDialog && driveDialog.parentElement !== document.body) document.body.append(driveDialog);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
@@ -3509,6 +3715,7 @@ function init(options = {}) {
     initDiskEnhancements();
     if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') {
         openTelegramDrive().then(async () => {
+            if (telegramDrivePendingSaveId) { await resumeTelegramDrivePendingSave(); return; }
             const id = new URLSearchParams(location.search).get('collaboration');
             if (!id) return;
             const entry = (await window.DiskClient.raw('/collaborations/' + encodeURIComponent(id))).collaboration;
@@ -3519,6 +3726,7 @@ function init(options = {}) {
 }
 window.addEventListener('popstate', handleTelegramDrivePopstate, { capture: true });
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, ownsHistory: ownsTelegramDriveHistory, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,
+    chooseAccount: () => manageTelegramDriveAccounts({ choose: true }), switchAccount: switchTelegramDriveAccount, resumePendingSave: resumeTelegramDrivePendingSave,
     async chooseDirectory(options = {}) {
         prepareTelegramDrivePicker();
         const memoryKey = 'telegramDriveSaveDirectory:' + (options.userId || 'browser');

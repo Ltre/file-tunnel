@@ -16,6 +16,7 @@ const { createDiskCollaborationMountStore } = require('./disk-collaboration-moun
 const { MAX_TELEGRAM_PART_SIZE } = require('./disk-limits');
 const { createDiskUploadLog, networkDetails } = require('./disk-upload-log');
 const { createDiskMetadataTiming } = require('./disk-metadata-timing');
+const operationOrder = require('../client/disk-operation-order');
 const { createDiskPartCache, diskPartCacheKey } = require('./disk-part-cache');
 const { createDiskChunkFileCache } = require('./disk-chunk-file-cache');
 const { createObjectStorage } = require('./object-storage');
@@ -142,6 +143,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
     };
     const persistence = openDiskRepository(dataDir);
+    const pendingSaves = require('./disk-pending-saves').createDiskPendingSaves(persistence);
+    const finishPendingSave = (job, items) => {
+        if (!job.metadata?.pendingSaveId) return;
+        try { pendingSaves.complete(job.owner.id, job.metadata.pendingSaveId, items); }
+        catch (error) { log('pending-save.completion-write-failed', { operationId: job.operationId, code: diskErrorCode(error) }); }
+    };
     const content = persistence.content;
     const settings = require('./disk-user-settings').createDiskUserSettings(persistence);
     const depthFor = userId => settings.get(userId).maxDirectoryDepth;
@@ -1317,7 +1324,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     function passkeys(router, externalMode) {
         router.post('/passkeys/:kind/options', limiter(), wrap(async (req, res) => {
             if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
-            const current = externalMode ? null : getIdentity(req);
+            const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
             const origin = externalMode ? (req.diskApp.passkeyOrigin || getOrigin(req)) : getOrigin(req);
             const binding = externalMode ? req.diskApp.appId : crypto.randomBytes(32).toString('base64url');
             const result = await auth.passkeyOptions({ kind: req.params.kind, username: req.body?.username, existingUserId: current?.id || '', origin, binding });
@@ -1327,7 +1334,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.post('/passkeys/verify', limiter(), wrap(async (req, res) => {
             if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
             const binding = externalMode ? req.diskApp.appId : (String(req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith('disk_passkey_flow=')) || '').slice('disk_passkey_flow='.length);
-            const current = externalMode ? null : getIdentity(req);
+            const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
             const identity = await auth.passkeyVerify({ flowId: req.body?.flow_id, response: req.body?.response, binding, existingUserId: current?.id || '' });
             if (!externalMode) { res.clearCookie('disk_passkey_flow', { path: '/api/telegram/drive/passkeys', httpOnly: true, secure: true, sameSite: 'lax' }); setIdentity(req, res, identity); }
             res.json({ identity, user_id: identity.id });
@@ -1827,7 +1834,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const jobs=operations.list(scope(req),requested).filter(job=>(!req.collaboration||job.collaborationId===req.collaboration.id)
                 &&(operations.isHistoryVisible(job,context)||requested.includes(job.operation_id)&&job.type!=='transfer-history'));
             jobs.push(...operations.listHistory(context,requested));
-            res.json({operations:[...new Map(jobs.map(job=>[job.operation_id,job])).values()]});
+            res.json({operations:operationOrder.sort(new Map(jobs.map(job=>[job.operation_id,job])).values())});
         });
         router.get('/operations/:id', wrap((req, res) => {
             const actorId=req.diskViewerId || req.diskLocalScope?.userId || owner(req);
@@ -2068,6 +2075,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     if (sent.some(item => !item)) throw new Error('TELEGRAM_PARTS_INVALID');
                     job.assertAuthorized?.();
                     const items = store(req).commit(job.id, job.storage.channelId, sent);
+                    finishPendingSave(job, items);
                     for (const item of items) log('upload.file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
                     if (!job.backendId) onDefaultUpload(job.storage.requestedChannelId || job.storage.channelId);
                     return { ok: true, items: items.map(uploadResultFile), warnings: [
@@ -2099,7 +2107,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             job.rollbackPromise = (async () => {
                 try {
                     await cleanupPipelineRemote(job);
-                    job.rollbackState = 'cleaned'; await diskStore.abortAsync(job.id); return true;
+                    job.rollbackState = 'cleaned'; await diskStore.abortAsync(job.id);
+                    if (job.metadata?.pendingSaveId && !job.committed) pendingSaves.safeFailure(job.owner.id, job.metadata.pendingSaveId);
+                    return true;
                 } catch (error) {
                     job.rollbackState = 'pending';
                     try { await diskStore.preserveForRecoveryAsync(job.id); }
@@ -2160,6 +2170,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                             if (sent.some(result => !result)) throw new Error('TELEGRAM_PARTS_INVALID');
                             job.assertAuthorized?.();
                             const items = store(req).commit(job.id, job.storage.channelId, sent);
+                            finishPendingSave(job, items);
                             for (const item of items) log('upload.file-committed', { uploadId: job.id, operationId: job.operationId, fileId: item.id, bytes: item.size });
                             if (!job.backendId) onDefaultUpload(job.storage.requestedChannelId || job.storage.channelId);
                             const warnings = [...sent.filter(file => file.captionWarning).map(file => file.captionWarning), ...job.files.map(file => file.thumbnail?.warning).filter(Boolean)];
@@ -2290,7 +2301,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.post('/content/proof',rateLimit({windowMs:60000,max:200,standardHeaders:true,legacyHeaders:false}),wrap((req,res)=>res.json(contentProof.prove(req,req.body?.ticket,req.body?.digests))));
         router.post('/content/release',wrap((req,res)=>{contentProof.release(req,req.body?.tickets);res.json({ok:true});}));
+        router.get('/pending-saves/:id', wrap((req, res) => {
+            if (router !== browser || req.collaboration || req.diskMount) throw new Error('PENDING_SAVE_INVALID');
+            const item = pendingSaves.get(owner(req), req.params.id);
+            if (!item) return res.json({ found: false });
+            if (item.diskSpace !== scope(req).diskSpace) throw new Error('PENDING_SAVE_TARGET_CONFLICT');
+            const operation = item.operationId ? operations.get(item.operationId, scope(req)) : null;
+            // Publication can succeed even if its HTTP receipt / task write is lost.
+            const published = store(req).adminFiles().filter(file => file.ownerId === owner(req) && file.metadata?.pendingSaveId === item.id);
+            if (published.length && item.state !== 'completed') pendingSaves.complete(owner(req), item.id, published);
+            res.json({ found: true, state: published.length ? 'completed' : item.state, safeRetry: item.safeRetry && !published.length,
+                operation, result: published.length ? { ok: true, items: published.map(uploadResultFile) } : item.state === 'completed' ? { ok: true, items: (item.fileIds || []).map(id => ({ id })) } : null });
+        }));
         router.post('/uploads', wrap(async (req, res) => {
+            const pendingSaveId = req.body?.metadata?.pendingSaveId;
+            let pendingReserved = false, pendingJob, pendingCreationCleaned = false;
+            if (pendingSaveId) {
+                if (router !== browser || req.collaboration || req.diskMount) throw new Error('PENDING_SAVE_INVALID');
+                pendingSaves.reserve(owner(req), pendingSaveId, scope(req).diskSpace, normalizeTelegramDrivePath(req.body?.folderPath || ''), req.body?.files || []);
+                pendingReserved = true;
+            }
+            try {
             const storage = await resolveStorageBackend(backend(req));
             if (!storage?.channelId || !storage?.token) throw new Error('STORAGE_BACKEND_UNAVAILABLE');
             const contentAuthorization=contentProof.authorization(req);
@@ -2307,6 +2338,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (progressive && activeProgressiveUploads.size >= 20) throw new Error('UPLOAD_ACTIVE_LIMIT');
             if(req.body?.metadata?.folderUploadId)folderUploads.assertBatch(scope(req),req.body.metadata.folderUploadId,files);
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, progressive, maxDepth: depthFor(req.diskUser.id), uploadLimit: limit, backendId: storage.id || '', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
+            pendingJob = job;
             job.storage = storage;
             if (progressive) activeProgressiveUploads.add(job.id);
             try {
@@ -2325,6 +2357,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 }
                 const operation = operations.create(scope(req), 'upload', '上传 ' + job.files.length + ' 个文件：' + job.files[0].name, job.files.reduce((sum, file) => sum + file.size, 0));
                 job.operationId = operation.operation_id;
+                if (pendingSaveId) pendingSaves.attach(owner(req), pendingSaveId, job);
             if(job.metadata?.folderUploadId)try{folderUploads.claim(scope(req),job.metadata.folderUploadId,job);}catch(error){store(req).abort(job.id);throw error;}
                 await store(req).setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId, operationScope: scope(req),
                     contentAuthorization,
@@ -2334,7 +2367,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             } catch (error) {
                 activeProgressiveUploads.delete(job.id);
                 log('upload.create-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(error), details: diskErrorDetails(error) });
-                try { await store(req).abortAsync(job.id); }
+                try { await store(req).abortAsync(job.id); pendingCreationCleaned = true; }
                 catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
                 if (job.operationId) recordUploadFailure(job, error);
                 throw error;
@@ -2343,6 +2376,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             operations.run(job.operationId, (update, control) => job.progressive ? runProgressiveUpload(req, store(req), job, update, control) : runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
             res.status(201).json({ uploadId: job.id, operation_id: job.operationId, progressive: job.progressive, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, uploadQueueCheck: true, queue: store(req).uploadQueue(job.id), files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length, reused:Boolean(file.emptyContent || file.reuseContentId || Number.isInteger(file.reuseFromIndex)) })) });
+            } catch (error) {
+                if (pendingReserved && (!pendingJob || pendingCreationCleaned)) pendingSaves.safeFailure(owner(req), pendingSaveId);
+                throw error;
+            }
         }));
         router.get('/uploads/:uploadId/progress', wrap((req, res) => {
             // A single authenticated stream replaces frequent HTTP polls. This
@@ -2724,6 +2761,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use(failure); external.use(failure);
     return { browser, external, admin, shared, publicStatic, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,
         revokeContentSession: req => contentProof.revokeSession(req),
+        isContentSessionRevoked: session => content.sessionRevoked(crypto.createHash('sha256').update(session).digest('hex')),
         close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

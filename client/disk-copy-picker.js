@@ -1,13 +1,17 @@
 'use strict';
 (function () {
     async function request(path, options = {}) {
-        const response = await fetch('/api/telegram/drive' + path, { credentials: 'same-origin', cache: 'no-store', ...options });
+        const response = await fetch('/api/telegram/drive' + path, { credentials: 'same-origin', cache: 'no-store', ...options,
+            headers: { ...options.headers, ...(options.accountId ? { 'X-Disk-Account': options.accountId } : {}) } });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.error || `HTTP_${response.status}`);
         return data;
     }
     async function choose(title) {
-        const spaces = (await request('/spaces')).spaces || [];
+        const selected = window.DiskClient?.getAccount?.() || new URL(location.href || location.origin).searchParams.get('disk_account') || '';
+        const accountId = selected || (await request('/accounts')).identity?.id || '';
+        const bound = (path, options = {}) => request(path, { ...options, accountId });
+        const spaces = (await bound('/spaces')).spaces || [];
         if (!spaces.length) throw new Error('尚无可用网盘分区');
         const spaceLabel = document.createElement('label'); spaceLabel.textContent = '目标网盘分区';
         const space = document.createElement('select');
@@ -19,13 +23,13 @@
         return window.DiskDirectoryPicker.choose({
             title: title || '转存到自己的网盘', confirmText: '转存', rootPath: '', rootName: '根目录',
             controls: [spaceLabel], onReady: reload => { reloadTree = reload; },
-            loadDirectories: () => request(scoped('/directories')),
+            loadDirectories: () => bound(scoped('/directories')),
             createDirectory: async path => {
-                const created = await request(scoped('/directories'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+                const created = await bound(scoped('/directories'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
                 if (created.status === 'completed') return created.result;
                 if (!created.operation_id) return created;
                 for (let attempt = 0; attempt < 100; attempt++) {
-                    const operation = await request(scoped('/operations/' + encodeURIComponent(created.operation_id)));
+                    const operation = await bound(scoped('/operations/' + encodeURIComponent(created.operation_id)));
                     if (operation.status === 'completed') return operation.result;
                     if (['failed', 'cancelled'].includes(operation.status)) throw new Error(operation.error || '创建目录失败');
                     await new Promise(resolve => setTimeout(resolve, 150));
@@ -47,7 +51,7 @@
                     cancel.onclick = () => finish(null);
                     save.onclick = async () => {
                         save.disabled = true; error.textContent = '';
-                        try { const path = await validate(); if (!done) finish({ diskSpace: space.value, destinationPath: path }); }
+                        try { const path = await validate(); if (!done) finish({ diskSpace: space.value, destinationPath: path, accountId }); }
                         catch (cause) { if (!done) error.textContent = cause.message || '目标目录无效'; }
                         finally { save.disabled = false; }
                     };

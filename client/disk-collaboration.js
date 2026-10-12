@@ -13,6 +13,7 @@
     const base = '/api/telegram/drive';
     const scoped = path => `${base}/collaboration-scope/${encodeURIComponent(grant.id)}${path}`;
     const navigation = new URLSearchParams(location.search);
+    if (navigation.get('disk_account')) client.setAccount(navigation.get('disk_account'));
     const requestedPath = navigation.get('path');
     let focusFileId = navigation.get('file_id') || '';
     const safeDirectoryPath = (value, root) => {
@@ -358,6 +359,10 @@
     async function init() {
         const parts = location.pathname.split('/').filter(Boolean);
         try {
+            if (!client.getAccount()) {
+                const account = await request('/me');
+                if (account.identity) client.setAccount(account.identity.id);
+            }
             if (parts[1] === 'view') {
                 grant = (await request(`${base}/collaborations/${encodeURIComponent(parts[2] || '')}`)).collaboration;
             } else {
