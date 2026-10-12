@@ -358,6 +358,14 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         listDirectories(ownerId) {
             return ownerDirectories(ownerId).map(item => ({ ...item, name: baseName(item.path), parentPath: parentPath(item.path) })).sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'));
         },
+        // Authorization checks need existence/review metadata, not a complete
+        // descendant snapshot or Content projection for every ancestor.
+        getDirectoryRecord(ownerId, folderPath) {
+            const safe = normalizePath(folderPath);
+            const item = safe ? directories.get(directoryKey(ownerId, safe)) : { ownerId: String(ownerId), path: '' };
+            return item ? { ...item, kind: 'directory', name: safe ? baseName(safe) : '根目录', parentPath: parentPath(safe),
+                reviewStatus: item.reviewStatus || 'active', createdAt: Number(item.createdAt) || 0, updatedAt: Number(item.updatedAt) || 0 } : null;
+        },
         getDirectory(ownerId, folderPath) {
             const safe = normalizePath(folderPath);
             if (safe && !directoryExists(ownerId, safe)) return null;

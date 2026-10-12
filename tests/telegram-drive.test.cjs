@@ -149,7 +149,7 @@ test('Telegram 网盘保持独立存储、分区、album、修复与来电取消
     assert.match(server, /Cross-Origin-Opener-Policy', 'same-origin-allow-popups'/);
     assert.doesNotMatch(server, /verifyTelegramLoginPayload/);
     assert.doesNotMatch(app, /telegram-widget\.js/);
-    assert.match(app, /window\.open\('\/api\/telegram\/drive\/oidc\/start'/);
+    assert.match(app, /window\.open\('\/api\/telegram\/drive\/oidc\/start\?attempt=' \+ encodeURIComponent\(telegramDriveLoginAttempt\)/);
     assert.match(app, /使用本地 Telegram Mock 登录/);
     assert.match(app, /当前隧道与文件传输不会中断/);
     assert.match(app, /event\.source !== telegramDriveOidcPopup/);

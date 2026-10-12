@@ -163,6 +163,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const browser = express.Router();
     const external = express.Router();
     const metadataTiming = createDiskMetadataTiming(log);
+    const measureMetadata = (req, name, work) => req.diskMetadataTiming?.measure ? req.diskMetadataTiming.measure(name, work) : work();
     browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
     const spaces = createDiskSpaces(dataDir, defaultStore);
@@ -203,7 +204,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const ownerSpace = partitions.find(grant.ownerId, grant.diskSpace).scopeKey;
             const ownerStore = spaces.get(ownerSpace);
             ownerStore.reloadPersistence();
-            const target = grant.kind === 'file' ? ownerStore.get(grant.ownerId, grant.fileId) : ownerStore.getDirectory(grant.ownerId, grant.path);
+            const target = grant.kind === 'file' ? ownerStore.get(grant.ownerId, grant.fileId) : ownerStore.getDirectoryRecord(grant.ownerId, grant.path);
             return Boolean(target && !['blocked', 'deleted'].includes(target.reviewStatus));
         } catch (_) { return false; }
     }, getTargetName: grant => grant.kind === 'file'
@@ -1263,12 +1264,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const user = auth.user(entry.ownerId);
         if (!user) throw new Error('COLLABORATION_NOT_FOUND');
         const storage = spaces.get(entry.diskSpace), root = normalizeTelegramDrivePath(entry.path || '');
-        const grantTarget = entry.kind === 'file' ? storage.get(entry.ownerId, entry.fileId) : storage.getDirectory(entry.ownerId, root);
+        const grantTarget = entry.kind === 'file' ? storage.get(entry.ownerId, entry.fileId) : storage.getDirectoryRecord(entry.ownerId, root);
         if (!grantTarget || ['blocked', 'deleted'].includes(grantTarget.reviewStatus)) throw new Error('COLLABORATION_TARGET_NOT_FOUND');
         const within = (value, strict = false) => {
             const candidate = normalizeTelegramDrivePath(value || '');
             if ((strict && candidate === root) || (root && candidate !== root && !candidate.startsWith(root + '/'))) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE', strict && candidate===root ? 'ROOT_PROTECTED' : ['GET','HEAD'].includes(req.method) ? 'PATH_OUTSIDE_GRANT' : 'TARGET_OUTSIDE_GRANT');
-            if(req.diskMount){for(let p=candidate;p;p=p.split('/').slice(0,-1).join('/')){const folder=storage.getDirectory(entry.ownerId,p);if(folder&&['blocked','deleted'].includes(folder.reviewStatus))throw new Error('COLLABORATION_OUT_OF_SCOPE');}}
+            if(req.diskMount){for(let p=candidate;p;p=p.split('/').slice(0,-1).join('/')){const folder=storage.getDirectoryRecord(entry.ownerId,p);if(folder&&['blocked','deleted'].includes(folder.reviewStatus))throw new Error('COLLABORATION_OUT_OF_SCOPE');}}
             return candidate;
         };
         const file = id => {
@@ -1889,16 +1890,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 summary: { folderCount: folders.length, fileCount: files.length, mountedCount: mounted.results.length } });
         }));
         router.get('/directories', (req, res) => {
+            const result = measureMetadata(req, 'disk-directory-tree', () => {
             const root = req.collaboration?.path;
             const directories = store(req).listDirectories(owner(req)).filter(folder => (root === undefined || !root || folder.path === root || folder.path.startsWith(root + '/'))&&mountedVisible(req,folder,true));
             collaborations.reloadPersistence();
             const explicit = new Set(staticResources.list(req.diskScope).filter(link => !link.revokedAt && (!link.expiresAt || link.expiresAt > Date.now())).flatMap(link => link.directories));
             const ownCollaborations = new Set((req.diskViewerId || owner(req)) === owner(req)
                 ? collaborations.forOwner(owner(req),req.diskScope.diskSpace).filter(grant=>grant.kind==='directory').map(grant=>grant.path) : []);
-            res.json({ directories: directories.map(folder => ({ ...folder,
+            return directories.map(folder => ({ ...folder,
                 collaborationOwned: ownCollaborations.has(folder.path),
                 staticExplicit: explicit.has(folder.path)
-            })) });
+            }));
+            });
+            res.json({ directories: result });
         });
         router.get('/directories/properties', wrap((req, res) => {
             const folder = store(req).getDirectory(owner(req), req.query.path || '');
@@ -2640,8 +2644,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
     }
     contents(collaborationContent);
-    external.use('/mount-scope/:mountId',wrap((req,res,next)=>{if(!['GET','HEAD'].includes(req.method))throw new Error('MOUNT_READ_ONLY');req.diskLocalScope={...req.diskScope};req.diskMount=mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId);next();}),collaborationContent);
-    browser.use('/mount-scope/:mountId',wrap((req,res,next)=>{req.diskLocalScope={...req.diskScope};req.diskMount=mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId);next();}),collaborationContent);
+    external.use('/mount-scope/:mountId',wrap((req,res,next)=>{if(!['GET','HEAD'].includes(req.method))throw new Error('MOUNT_READ_ONLY');req.diskLocalScope={...req.diskScope};req.diskMount=measureMetadata(req,'disk-mount-resolve',()=>mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId));next();}),collaborationContent);
+    browser.use('/mount-scope/:mountId',wrap((req,res,next)=>{req.diskLocalScope={...req.diskScope};req.diskMount=measureMetadata(req,'disk-mount-resolve',()=>mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId));next();}),collaborationContent);
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal }) {

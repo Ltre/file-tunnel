@@ -28,7 +28,7 @@ let telegramDriveSpaceOwner = '';
 let telegramDriveSpaces = [];
 let telegramDriveStaticLinks = [];
 let telegramDriveAccountList = [];
-let telegramDriveLoginBaseline = null;
+let telegramDriveLoginAttempt = '';
 let telegramDrivePendingSaveId = new URLSearchParams(location.search).get('pendingSave') || '';
 let telegramDrivePendingSaveRunning = false;
 let telegramDriveCollaborationFrame = null;
@@ -98,6 +98,13 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
     telegramDriveAccountList = status.accounts || [];
     const body = document.createElement('div'); body.className = 'disk-account-list';
     let selected = requiredId || window.DiskClient.getAccount() || status.identity?.id || '';
+    const selectCandidate = (user, button) => {
+        selected = user.id;
+        body.querySelectorAll('.disk-account-entry').forEach(node => {
+            node.classList.toggle('selected', node === button);
+            node.setAttribute('aria-pressed', String(node === button));
+        });
+    };
     for (const entry of telegramDriveAccountList) {
         const user = entry.identity; if (!user) continue;
         const row = document.createElement('div'); row.className = 'disk-account-row';
@@ -105,11 +112,16 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
         button.textContent = `👤 ${user.name || user.username || user.id}${entry.reauthRequired ? ' · 需要重新登录' : user.id === window.DiskClient.getAccount() ? ' · 当前账号' : ''}`;
         button.title = `用户 ID：${user.id}`;
         button.classList.toggle('selected', user.id === selected);
+        button.setAttribute('aria-pressed', String(user.id === selected));
+        // Mouse selection can paint before release; touch scrolling and keyboard
+        // activation keep their normal click behavior. No account request here.
+        if (choose) button.addEventListener('pointerdown', event => {
+            if (event.pointerType === 'mouse' && event.button === 0 && !entry.reauthRequired && (!requiredId || user.id === requiredId)) selectCandidate(user, button);
+        });
         button.onclick = async () => {
             if (entry.reauthRequired) { showAppToast('请使用下方登录入口重新验证该账号，原转存记录会保留'); return; }
             if (requiredId && user.id !== requiredId) { showAppToast('这项未确认的转存仍绑定原账号，请重新验证原账号后继续'); return; }
-            selected = user.id;
-            if (choose) body.querySelectorAll('.disk-account-entry').forEach(node => node.classList.toggle('selected', node === button));
+            if (choose) selectCandidate(user, button);
             else { closeTelegramDriveDialog(null); try { await switchTelegramDriveAccount(user.id); } catch (error) { alert(telegramDriveErrorText(error)); } }
         };
         const exit = document.createElement('button'); exit.type = 'button'; exit.className = 'btn disk-account-exit'; exit.textContent = '退出';
@@ -2377,8 +2389,8 @@ function startTelegramDriveLogin() {
         telegramDriveOidcPopup.focus();
         return;
     }
-    telegramDriveLoginBaseline = telegramDriveAccountList.map(entry => ({ id: entry.identity?.id, expiresAt: entry.expiresAt }));
-    const popup = window.open('/api/telegram/drive/oidc/start', 'telegramDriveOidc', 'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes');
+    telegramDriveLoginAttempt = window.crypto?.randomUUID?.() || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+    const popup = window.open('/api/telegram/drive/oidc/start?attempt=' + encodeURIComponent(telegramDriveLoginAttempt), 'telegramDriveOidc', 'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes');
     if (!popup) {
         alert('浏览器阻止了 Telegram 登录弹窗。请允许本站弹出窗口后重试；系统不会改用整页跳转。');
         return;
@@ -2401,12 +2413,13 @@ function cancelTelegramDriveLogin() {
     renderTelegramDrive().catch(error => historyLog('telegram-drive-login-cancel-render-failed', { error: error.message }));
 }
 
-async function finishTelegramDriveOidcLogin(result, error = '') {
+async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') {
     telegramDriveOidcPollGeneration += 1;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
     if (result === 'success') {
-        const status = await window.DiskClient.raw('/me', { accountId: '' });
+        const status = await window.DiskClient.raw('/me', { accountId });
+        if (!status.identity) throw new Error('登录凭据尚未确认，请重新登录；待转存记录仍保留');
         if (status.identity) await switchTelegramDriveAccount(status.identity.id);
         else await renderTelegramDrive();
     } else await renderTelegramDrive();
@@ -2414,24 +2427,36 @@ async function finishTelegramDriveOidcLogin(result, error = '') {
     else alert(`Telegram 登录失败${error ? `：${error}` : '，请重试'}`);
 }
 
-async function pollTelegramDriveOidcLogin(popup, generation, startedAt) {
+async function pollTelegramDriveOidcLogin(popup, generation, startedAt, closedRechecked = false) {
     if (generation !== telegramDriveOidcPollGeneration || popup !== telegramDriveOidcPopup) return;
-    const status = await window.DiskClient.raw('/me', { accountId: '' }).catch(() => null);
-    const entry = status?.accounts?.find(item => item.identity?.id === status.identity?.id);
-    const prior = telegramDriveLoginBaseline?.find(item => item.id === status?.identity?.id);
-    if (status?.identity && (!prior || Number(entry?.expiresAt) > Number(prior.expiresAt))) return finishTelegramDriveOidcLogin('success');
+    const attempt = telegramDriveLoginAttempt;
+    const status = await window.DiskClient.raw('/me?oidc_attempt=' + encodeURIComponent(attempt), { accountId: '' }).catch(() => null);
+    // A completion message or a cancellation can arrive during this request.
+    if (generation !== telegramDriveOidcPollGeneration || popup !== telegramDriveOidcPopup) return;
+    const receipt = status?.loginAttempt;
+    if (receipt?.attemptId === attempt) {
+        if (receipt.result === 'error') return finishTelegramDriveOidcLogin('error', receipt.error);
+        if (receipt.result === 'success' && status.accounts?.some(entry => entry.identity?.id === receipt.accountId && !entry.reauthRequired))
+            return finishTelegramDriveOidcLogin('success', '', receipt.accountId);
+    }
     if (status?.oidcMode !== 'mock' && Date.now() - startedAt >= 60000) {
         const text = document.querySelector('#telegramDriveAuth > span');
         if (text) text.textContent = '尚未完成 Telegram 授权。若弹窗提示等待确认但没有通知，请检查已登录的 Telegram 客户端服务通知及网络，或取消后使用 Passkey。本站不能代 Telegram 发出或批准登录确认；管理员可检查 OIDC 阶段日志。';
     }
-    if (popup.closed) return finishTelegramDriveOidcLogin('error', '登录窗口已关闭或登录未完成');
+    if (popup.closed) {
+        // The poll may have read the old cookie immediately before callback
+        // headers arrived. Recheck once; an old valid login alone is no success.
+        if (!closedRechecked) return setTimeout(() => pollTelegramDriveOidcLogin(popup, generation, startedAt, true).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error: error.message })), 250);
+        return finishTelegramDriveOidcLogin('error', '登录窗口已关闭或登录未完成');
+    }
     if (Date.now() - startedAt >= 10 * 60 * 1000) return finishTelegramDriveOidcLogin('error', '登录已超时');
     setTimeout(() => pollTelegramDriveOidcLogin(popup, generation, startedAt).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error: error.message })), 2000);
 }
 
 function handleTelegramDriveOidcPopupMessage(event) {
     if (event.origin !== window.location.origin || event.source !== telegramDriveOidcPopup || event.data?.type !== 'telegram-drive-oidc-result') return;
-    finishTelegramDriveOidcLogin(event.data.result, event.data.error || '').catch(error => {
+    if (event.data.attemptId && event.data.attemptId !== telegramDriveLoginAttempt) return;
+    finishTelegramDriveOidcLogin(event.data.result, event.data.error || '', event.data.accountId || '').catch(error => {
         historyLog('telegram-drive-oidc-complete-failed', { error: error.message });
         alert(`Telegram 登录状态刷新失败：${error.message}`);
     });

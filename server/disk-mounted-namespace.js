@@ -8,9 +8,10 @@ function createMountedNamespace({mounts,collaborations,partitions,spaces}) {
         const partition=partitions.find(grant.ownerId,grant.diskSpace),drive=spaces.get(partition.scopeKey);drive.reloadPersistence();
         const root=normalize(grant.path||'');
         const visible=item=>item&&!['blocked','deleted'].includes(item.reviewStatus);
-        function ancestors(path){for(let p=path;p;p=p.split('/').slice(0,-1).join('/'))if(!visible(drive.getDirectory(grant.ownerId,p)))throw new Error('COLLABORATION_OUT_OF_SCOPE');}
+        const directoryRecord=path=>(drive.getDirectoryRecord || drive.getDirectory).call(drive,grant.ownerId,path);
+        function ancestors(path){for(let p=path;p;p=p.split('/').slice(0,-1).join('/'))if(!visible(directoryRecord(p)))throw new Error('COLLABORATION_OUT_OF_SCOPE');}
         function file(id){const item=drive.get(grant.ownerId,id);if(!visible(item)||(grant.kind==='file'?item.id!==grant.fileId:!inside(item.folderPath||'',root)))throw new Error('COLLABORATION_OUT_OF_SCOPE');ancestors(item.folderPath||'');return {...item,viewerId:ownerId,sourceDiskSpace:grant.diskSpace,proxyMount:{ownerId,space,mountId}};}
-        function directory(path){path=normalize(path);if(grant.kind!=='directory'||!inside(path,root))throw new Error('COLLABORATION_OUT_OF_SCOPE');const item=drive.getDirectory(grant.ownerId,path);if(!visible(item))throw new Error('DIRECTORY_NOT_FOUND');ancestors(path);return item;}
+        function directory(path){path=normalize(path);if(grant.kind!=='directory'||!inside(path,root))throw new Error('COLLABORATION_OUT_OF_SCOPE');const item=directoryRecord(path);if(!visible(item))throw new Error('DIRECTORY_NOT_FOUND');ancestors(path);return item;}
         if(grant.kind==='file')file(grant.fileId);else directory(root);
         return {mount,grant,drive,root,file,directory,assertCurrent(){const fresh=resolve(ownerId,space,mountId);if(fresh.grant.id!==grant.id||fresh.grant.grantVersion!==grant.grantVersion)throw new Error('COLLABORATION_NOT_FOUND');return fresh;}};
     }

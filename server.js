@@ -2258,6 +2258,9 @@ const diskAccountSessions = createDiskAccountSessions({
     resolveLegacy: resolveDiskUser, secure: isSecurePublicRequest,
     isRevoked: session => diskAPI.isContentSessionRevoked(session)
 });
+const diskOidcReceipt = require('./server/disk-oidc-receipt').createDiskOidcReceipt({
+    keyForRequest: getDiskIdentitySessionKey, secure: isSecurePublicRequest
+});
 
 function clearTelegramOidcStateCookie(req, res) {
     const secure = isSecurePublicRequest(req);
@@ -2268,8 +2271,8 @@ function serializeTelegramOidcInlineValue(value) {
     return JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
-function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '') {
-    const payload = { type: 'telegram-drive-oidc-result', result, error: sanitizeString(error, 120) };
+function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '', attemptId = '', accountId = '') {
+    const payload = { type: 'telegram-drive-oidc-result', result, error: sanitizeString(error, 120), attemptId, accountId };
     const success = result === 'success';
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.status(200).type('html').send(`<!doctype html>
@@ -2284,6 +2287,8 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
     setTelegramOidcNoStore(res);
     const config = loadTelegramBotConfig();
     try {
+        const attemptId = String(req.query.attempt || '');
+        if (attemptId && !diskOidcReceipt.validAttempt(attemptId)) throw new Error('telegram-oidc-attempt-invalid');
         const mockEnabled = isTelegramOidcMockRequest(req);
         if (!mockEnabled && !isTelegramOidcConfigured(config)) return res.status(503).json({ error: 'telegram-oidc-not-configured' });
         const redirectUri = getTelegramOidcRedirectUri(req);
@@ -2294,6 +2299,7 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
         const traceId = crypto.randomBytes(4).toString('hex');
         telegramOidcFlows.set(authorization.state, {
             traceId,
+            attemptId,
             mode: mockEnabled ? 'mock' : 'telegram',
             clientId: mockEnabled ? '' : config.oidcClientId,
             codeVerifier: authorization.codeVerifier,
@@ -2358,13 +2364,18 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
         console.warn('[网盘 OIDC] 回调状态校验失败（无效、过期或 Cookie 不匹配）');
         return sendTelegramOidcPopupCompletion(res, getTelegramPublicOrigin(req), 'error', '登录状态无效或已过期');
     }
-    if (req.query?.error) return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'error', String(req.query.error));
+    const complete = (result, error = '') => {
+        const accountId = result === 'success' ? req.diskAccountId || '' : '';
+        diskOidcReceipt.record(req, res, { attemptId: flow.attemptId, result, accountId, error: sanitizeString(error, 120) });
+        return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, result, error, flow.attemptId, accountId);
+    };
+    if (req.query?.error) return complete('error', String(req.query.error));
     try {
         if (flow.mode === 'mock') {
             if (!isTelegramOidcMockRequest(req)) throw new Error('telegram-oidc-mock-not-allowed');
             const identity = telegramOidcMock.parseIdentity(req.query?.mock_user_id);
             setTelegramDriveIdentityCookie(req, res, identity);
-            return sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
+            return complete('success');
         }
         const config = loadTelegramBotConfig();
         console.info('[网盘 OIDC] 已收到授权回调，开始交换令牌', { traceId: flow.traceId });
@@ -2386,10 +2397,10 @@ app.get('/api/telegram/drive/oidc/callback', async (req, res) => {
         };
         setTelegramDriveIdentityCookie(req, res, identity);
         console.info('[网盘 OIDC] 签名校验完成，登录成功', { traceId: flow.traceId });
-        sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'success');
+        complete('success');
     } catch (error) {
         console.warn('complete Telegram OIDC login failed:', error.message);
-        sendTelegramOidcPopupCompletion(res, flow.openerOrigin, 'error', error.message);
+        complete('error', error.message);
     }
 });
 
@@ -2426,7 +2437,7 @@ app.get('/api/telegram/drive/me', diskAPI.metadataTiming, (req, res) => {
     res.setHeader('Expires', '0');
     const identity = getTelegramDriveIdentity(req);
     const oidcMode = getTelegramOidcLoginMode(req);
-    res.json({ identity, accounts: diskAccountSessions.list(req), enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
+    res.json({ identity, accounts: diskAccountSessions.list(req), loginAttempt: diskOidcReceipt.get(req, req.query.oidc_attempt), enabled: isTelegramBotEnabled(), configured: Boolean(getTelegramDriveActiveChannel()), oidcConfigured: Boolean(oidcMode), oidcMode, localBotApi: false, uploadLimit: getTelegramDriveUploadLimit() });
 });
 const { createS3Gateway } = require('./server/s3');
 const s3Gateway = createS3Gateway({ dataDir: SERVER_DATA_DIR, objectStorage: diskAPI.objectStorage });

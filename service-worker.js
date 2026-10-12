@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v7-drive-accounts-recovery';
+const CACHE_NAME = 'instant-tunnel-v78-content-v7-drive-login-feedback';
 const APP_SHELL = [
     '/',
     '/index.html',

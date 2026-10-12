@@ -49,13 +49,13 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
         try { return typeof isTargetAvailable !== 'function' || isTargetAvailable(grant) ? grant : null; }
         catch (_) { return null; }
     };
-    const view = item => { const grant = currentGrant(item); return ({
+    const view = (item, grant = currentGrant(item)) => ({
         id: item.id, mountId: item.id, kind: 'collaboration_mount', name: item.name,
         parentPath: item.parentPath, folderPath: item.parentPath, diskSpace: item.diskSpace,
         collaborationId: item.collaborationId, status: grant ? 'active' : 'inaccessible',
         sourceName: grant ? (getTargetName ? getTargetName(grant) : grant.name) || '' : item.lastKnownTitle || '',
         lastKnownTitle: item.lastKnownTitle || '', createdAt: item.createdAt, updatedAt: item.updatedAt
-    }); };
+    });
     const assertTopology = (ownerId, diskSpace, parentPath) => {
         collaborations.reloadPersistence();
         if (collaborations.forOwner(ownerId, diskSpace).some(grant =>
@@ -82,7 +82,7 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
             reloadPersistence();
             collaborations.reloadPersistence();
             const path = parentPath === null ? null : checkedPath(parentPath);
-            return owned(ownerId, diskSpace).filter(item => path === null || item.parentPath === path).map(view);
+            return owned(ownerId, diskSpace).filter(item => path === null || item.parentPath === path).map(item => view(item));
         },
         find(id, ownerId, diskSpace) { reloadPersistence(); collaborations.reloadPersistence(); const item = raw(id, ownerId, diskSpace); return item ? view(item) : null; },
         /** Resolves a mount and its live grant; mount possession is not authorization. */
@@ -93,7 +93,7 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
             if (!item) throw new Error('MOUNT_NOT_FOUND');
             const grant = currentGrant(item);
             if (!grant) throw new Error('MOUNT_ACCESS_REVOKED');
-            return { mount: view(item), grant };
+            return { mount: view(item, grant), grant };
         },
         assertNameFree(ownerId, diskSpace, parentPath, name, exceptId = '') {
             reloadPersistence();
