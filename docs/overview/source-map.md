@@ -357,3 +357,15 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 4. test file。
 
 例如 Web ZIP 的外链 JS，自动测试第一次认为修好后，用户又发现 HTML parser 问题，直到后续 Runtime 修复才真正收敛。
+
+## 15. 2026-09—10 新增代码与需求定位
+
+- SQLite / 数据迁移：`server/disk-repository.js`、`tools/migrate-tgdisk-json-to-sqlite.cjs`、`tools/change-tgdisk-channel-id.cjs`；`docs/devlog/dev-2609-features.md` 60—66。
+- S3：`server/s3/*`、`server/object-storage.js`、`client/s3-management.js`、`pages/s3-management.html`；权威协议描述 `docs/telegram-drive-s3-compatible.md`；2609 Devlog 66、76、80，2610 Devlog 261006、261008。
+- 渐进上传：`server/disk-progressive-upload.js`、`server/growing-file-readable.js`、`server/telegram-upload-scheduler.js`、`server/telegram-upload-progress.js`；`docs/devlog/dev-2610-features.md` 261003。
+- 共享 Content：`server/disk-content-repository.js`、`server/disk-content-proof.js`、`server/disk-content-admin.js`、`client/disk-content-hash-worker.js`；权威专项说明 `docs/telegram-drive-content-objects.md`；261004—261006。
+- 分区/协同 Mount/文件处理：`server/disk-partitions.js`、`server/disk-collaboration-mounts.js`、`server/disk-mounted-namespace.js`、`server/disk-trash.js`、`server/disk-folder-uploads.js`、`server/disk-pending-saves.js`、`server/disk-account-sessions.js`；对应 `client/disk-mount-ui.js`、`disk-trash-ui.js`、`disk-file-editor.js`、`disk-folder-upload.js`、`disk-pending-save.js`、`disk-copy-picker.js`、`disk-import-picker.js`；261008—261012。
+- Telegram Chat 字典：`server/telegram-chat-dictionary.js`、`client/telegram-chat-dictionary.js`、`docs/setup/telegram-chat-dictionary.md`；2609 Devlog 74—75。
+- PWA/网页工坊：`app.js`、`service-worker.js`、`client/cache-store.js`、`client/web-workshop.js`、`client/vendor/web-markdown/*`；2609 Devlog 56—59/80、2610 Devlog 261012。
+- 安全/部署：`package-lock.json`、`tools/repair-engineio-security.cjs`、`tools/deploy/build.mjs`、`tools/deploy/verify.mjs`；2609 Devlog 2026-10-01。
+- 实际缺陷排查参考 `prompts/dev-prompt-logs/dev-2610.md`、261009 系列实施指南、261012 视频处理指南；这些 Prompt 仅提供需求和验证线索，未合入代码的部分不得当现状。
