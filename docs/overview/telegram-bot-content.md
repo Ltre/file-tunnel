@@ -1,7 +1,7 @@
 # Telegram Bot、中转、指定目标转发与内容管理
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
-> **文档更新时间**：`2026-09-26`
+> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **文档更新时间**：`2026-10-13`
 
 ## 1. 模块定位
 
@@ -316,3 +316,17 @@ YouTube Premium 歌曲元数据、内嵌封面、原尺寸封面、自定义封�
 - 与 tgbot / Telegram 的版本回归测试。
 
 人工验收与自动测试冲突时，应记录真实环境差异，例如正式 Bot 权限、群类型、Webhook 真实配置，而不是只相信 Mock。
+
+## 16. Telegram Chat 字典、来源数字化和迁移边界
+
+后台 `/tgbot` 新增管理员 Chat 字典，维护数字 Chat ID、public 名称、历史别名及备注；存储在 `.tunnel-data/telegram-chat-dictionary.json` 而非网盘 SQLite 用户表。输入有唯一性、格式、容量和 revision 冲突约束，保存不会自动修改 Token、Webhook 或 Telegram 消息。
+
+回源时 `getFile(file_id)` 仍是物理文件接口；字典仅在可证明映射且用 `getChat` 验证一致后升级历史来源。新的 Bot 媒体保存真实数字 Chat ID / message ID；已有来源由完整回源验证或用户主动“防失联检测及修复”渐进迁移。托管私有频道排除逻辑同样识别历史别名；不可把别名转换成其它频道的 file_id。
+
+停服工具 `tools/change-tgdisk-channel-id.cjs` 用于**同一频道**改为私有后的 SQLite 频道标注迁移，不能代替旧 JSON 数据导入。维护说明见 `docs/setup/telegram-chat-dictionary.md` 与工具 Markdown。
+
+## 17. Telegram 远端响应与音轨版本转发
+
+上传使用全局/单 Bot/单 Chat 受限调度，渐进任务的临时消息、最终媒体组及清理分离；未知请求结果不得盲目重发。部分长等待属于服务器到 Telegram 的代理/响应链路，当前逻辑仅提供限流、复用、进度、恢复和诊断，不承诺公网吞吐已修复。
+
+SNS/YouTube 成品的 Telegram 转发在有合法“音轨修正版”时可明确选择原版或修正版；原版仍是默认，未产生有效修正版时不出现虚假选项。用户选择的成品版本必须贯穿转发入口与最终字节来源。
