@@ -389,3 +389,19 @@ Prompt 里会出现：
 - 回退点。
 
 AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作为线索，但最终仍要看 diff/源码和后续提交。
+
+## 15. 2026-09—10 新增回归矩阵
+
+| 模块 | 重点测试入口 | 不能由模拟测试代替的验收 |
+|---|---|---|
+| SQLite / 旧 JSON 导入 | `disk-repository`、`disk-json-migration`、`disk-metadata-concurrency` | 真实数据目录、停服、密钥与在线备份恢复 |
+| Shared Content / PoP / GC | `disk-content*`、`disk-chunk-cache-integrity` | Telegram 正文清理窗口、跨 Bot、网络未知结果 |
+| 渐进上传 | `disk-progressive-*`、`telegram-progressive-push`、`telegram-upload-progress` | 公网代理、限流、重启/失联、真实大文件 |
+| 分区 / Mount / 回收站 | `disk-partitions`、`disk-collaboration-mounts`、`disk-mounted-directory-performance-261012-3`、`features-261009*` | 真实授权撤销、移动设备手势、大分区负载 |
+| 文件编辑/目录上传/缓存 | `disk-file-editor-261011-2`、`disk-editor-cache-261011-2`、`disk-pending-save-261012-1` | 文件系统访问授权、移动大文件、真实 Telegram |
+| 多账号/登录/导航 | `disk-accounts-261012-1`、`disk-login-selection-261012-3`、`disk-navigation-261011-3` | 原生 OIDC / Passkey 弹窗及真机登录 |
+| S3 | `s3-*`、`disk-static-resources`、`features-260929-3*` | FolderSync 真机、代理改写和签名行为 |
+| PWA/Web ZIP/部署 | `pwa-startup-260929`、`features-261008-workshop-startup`、`deploy-drive-261012-2` | SW 混版本、真实 Android PWA 启动、ZIP 发布 |
+| Engine.IO | `socketio-security`、`engineio-repair-tool` | 生产停服与多实例重启后的真实版本 |
+
+9 月开发记录曾报告 299、386、404 项等逐步扩大的测试集；10 月 12 日收尾报告 **840/840 通过**。这是代码开发时的验证记录，不是本轮文档维护重新跑出的结果。对已合并而新增的文件必须做语法、测试、部署产物和真实设备的分层核查，不得用“测试通过”覆盖未验收边界。
