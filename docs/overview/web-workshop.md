@@ -1,7 +1,7 @@
 # 网页工坊与 .html.zip Runtime
 
-> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
-> **文档更新时间**：`2026-09-26`
+> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **文档更新时间**：`2026-10-13`
 
 ## 1. 功能定位与产生背景
 
@@ -438,7 +438,7 @@ Runtime 根据路径推断：
 - 等 controllerchange/updatefound；
 - 最多约 30s readiness。
 
-当前应用壳缓存版本为 `instant-tunnel-v63`，并已把 `client/disk-collaboration.js` 纳入 app shell。
+应用壳已从 v63 多次升级，后续 v78 使用带功能后缀的缓存名；读取当前 `service-worker.js` 为准，并核对导入选择器和 Markdown 所需支持资源。
 
 因此修改 SW 时：
 
@@ -574,3 +574,12 @@ Runtime 根据路径推断：
 - old SW page after deployment；
 - minimize/restore；
 - update original then both devices open new content。
+
+## 21. 2026-09—10 新增编辑、运行与导入行为
+
+- 文件树移动端长按触摸拖动已有独立接管：短滑保留滚动，触摸拖动可落到目录或 HTML 编辑器，确认后移动/生成引用；原生长按菜单与 dragstart 被限制，桌面右键/拖动仍保留。移动端真实系统手势需真机验收。
+- 工坊展示使用 `closed/open/minimized` 统一状态；预览、发布和普通异步导入不擅自恢复。发布成功最小化工坊再定位传输记录，“🔗 原记录”同样保留恢复入口。原 ZIP 更新按当前消息/版本根重新定位，来源删除或无权限不能静默另建。
+- 工具栏“导入”整合本机、隧道和网盘来源。网盘选择器可跨分区展开树、多选文件/目录并保留空目录；全部字节成功读取后一次落草稿，限制 20 层/100MB，取消与失败不会留下半包。系统文件/目录拖放也先枚举、校验、完整读取再提交。只有用户显式“转入草稿箱编辑”可要求恢复已最小化的工坊。
+- 增加“另存为”语义：新草稿/副本与更新原记录要明确区分，防止无意覆盖原发布物。
+- 增加“一键 Markdown”：在当前目录成对生成 `markdown.html` 和 `markdown.md`，名称冲突整对递增；把 Marked、DOMPurify、样式、运行脚本和许可证内置到 ZIP 的专用 assets 名称空间，不依赖发布后 CDN。渲染前清理 HTML，按 Markdown 所在目录解析路径；既有编辑缓冲先保存。
+- 关联测试：`features-260926-3`、`features-260927-1/2`、`features-261008-workshop-startup`、`features-261009-2`、`disk-accounts-261012-1` 等；其中某些测试属于相关路径覆盖而非专属 Markdown 用例。
