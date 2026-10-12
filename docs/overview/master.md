@@ -6,10 +6,10 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`059099607a7aa986d9a66ff386f5fd691c604b78`
-- 源码提交时间：`2026-09-26T11:30:34Z`
+- 源码 Commit：`b1788ca4b219718ad802ed778ed41c081ecad39b`
+- 源码提交时间：`2026-10-12T16:47:42Z`
 - 首轮整理日期：2026-09-26
-- 文档更新时间：2026-09-26
+- 文档更新时间：2026-10-13
 
 精确增量锚点见 [VERSION.md](./VERSION.md)。
 
@@ -24,9 +24,9 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 - IndexedDB/OPFS/File System Access 与 P2P/Relay/Telegram/VClient 多来源恢复；
 - 文件预览、后台音乐、摄像头、群语音、对讲、联系人通话、远程预览；
 - Telegram Bot、Telegram 内容管理、Telegram 虚拟网盘；
-- Passkey/OIDC、第三方网盘 API、分享和审核；
+- Passkey/OIDC、多账号、第三方网盘/S3 API、分区、协同挂载、分享、静态开放、共享 Content 与审核；
 - SNS、YouTube Premium、音轨修复、FFmpeg 转码；
-- 网页 ZIP / 网页工坊；
+- 网页 ZIP / 网页工坊（含可离线 Markdown 页面）；
 - Light Transfer 光媒；
 - VClient 常驻缓存节点；
 - PWA / Service Worker / 移动工作区；
@@ -85,7 +85,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 - [source-map.md](./source-map.md) — 当前源码、Tests、Devlog、Prompt、Idea 的模块级对照索引。
 - [COVERAGE.md](./COVERAGE.md) — 初始创建阶段的历史范围、当前源码文件归属和完成判定。
-- [history/README.md](./history/README.md) — 历史时间线入口。
+- [history/README.md](./history/README.md) — 历史时间线入口，含 [2026-10](./history/2026-10.md)。
 
 ## 5. 信息来源优先级
 
@@ -131,12 +131,12 @@ Prompt 往往同时包含：原始需求、人工复现、Codex 处理说明、�
 
 例如：
 
-- 网盘当前仍是多 JSON 持久化，并新增 `disk-collaborations.json` 保存协同 capability；
+- 网盘共享元数据现采用原生 SQLite WAL；旧 JSON 由独立工具离线迁移，S3 凭据等继续独立文件存储；
 - 网盘文件/目录一次性邀请、成员管理和受限协作已是当前实现；
 - Web ZIP manifest、全屏浮层、多级路径与引用联动已是当前实现；
 - H.265 默认 MKV 与任务级输出后缀覆盖已是当前实现；
-- `disk.sqlite` WAL/Adapter 仍是未来重构设计；
-- S3 Compatible API 仍是未来设计。
+- `disk.sqlite` WAL Repository 与 S3 Compatible 有限网关已实现；
+- 完整 AWS S3 服务、多实例分布式锁与生产真实网络验收仍不能视作已完成。
 
 后续更新时，仍应只在功能真正合入目标源码后把它从“计划”移动到“当前实现”。
 
