@@ -283,7 +283,7 @@ manifest 的重要意义是崩溃恢复：即使进程重启，系统还能知�
 
 ## 10. Operation
 
-`disk-operations.json` 当前保存持久任务。
+持久操作任务现保存在 SQLite `disk_operations`；旧 `disk-operations.json` 仅为迁移来源。
 
 状态含：
 
@@ -412,7 +412,7 @@ placeholder 的 Telegram `file_id` 按 Bot 缓存，避免每删一个旧文件�
 
 owner metadata：
 
-- `.owners.json`
+- 旧 `.owners.json` 仅供旧数据离线导入；当前缓存归属在 SQLite `disk_cache_owners`
 - 一个 cache digest 可属于多个 `userId + diskSpace`。
 
 清理支持：
@@ -426,7 +426,7 @@ owner metadata：
 
 ## 16. Chunk `file_id` 重用
 
-`telegram-chunk-file-ids.json` 是内容分片 → Telegram file_id 的缓存。
+当前哈希分片 → Telegram `file_id` 映射位于 SQLite `disk_chunk_ids`；旧 `telegram-chunk-file-ids.json` 仅作迁移输入。
 
 key 关联：
 
@@ -541,7 +541,7 @@ UI 会展示：
 
 ## 22. 分享
 
-`disk-shares.json` 保存 capability link snapshot。
+分享 capability 记录位于 SQLite `disk_shares`；旧 `disk-shares.json` 不再作为运行时共享存储。
 
 Share 不是让外部用户自由传 `owner/path` 查询，而是创建时把用户选中的：
 
