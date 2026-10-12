@@ -649,6 +649,44 @@
     需要说明的是：目前我检查的是源码和官方技术文档，并没有取得你的实际故障视频、抓取日志或 FFprobe 轨道数据，因此已识别的是高风险处理环节，还不能宣称已经定位全部故障根因或找到一条对所有编码都有效的万能命令。
 
 
+问：
+
+
+   现在可以出后台的原型图了，先给我看看基础设施设置的
 
 
 
+答：
+
+
+   图见：prompts/resources/dev-video-frame-clip-guide-261012/infra.png
+
+
+问：
+
+
+   按图中标注修改基础设施设置页，在其中的服务器本地缓存设置中，路径前缀不要用/data/drop2tunnel，而是默认改成当前web目录下的.tunnel-data/cache，路径后面的则按具体的为准，除非用户选择了web目录以外的其它服务器目录。
+
+   接着，给我看：资源导入、提取会话、收藏资源库
+
+
+
+答：
+
+   图见：
+      prompts/resources/dev-video-frame-clip-guide-261012/import.png
+      prompts/resources/dev-video-frame-clip-guide-261012/session.png
+      prompts/resources/dev-video-frame-clip-guide-261012/collection.png
+
+
+问：
+
+
+   接着出：标签与人物、系统状态
+
+
+答：
+
+   图见：
+      prompts/resources/dev-video-frame-clip-guide-261012/tags.png
+      prompts/resources/dev-video-frame-clip-guide-261012/status.png
