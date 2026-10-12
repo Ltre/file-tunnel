@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const { createDiskOperations } = require('../server/disk-operations');
 const order = require('../client/disk-operation-order');
 
@@ -31,4 +32,26 @@ test('持久化任务先排序后限量：最晚完成的早期任务保留在�
     assert.equal(operations.list({ ...scope, userId: 'two' }).length, 0);
     assert.equal(operations.list({ ...scope, diskSpace: 'b' }).length, 0);
     assert.equal(createDiskOperations({ dataDir, now: () => now }).list(scope)[0].operation_id, earliest.operation_id);
+});
+
+test('最终UI汇总使用批次的最新时间，合并和去重后排序再取前30条', () => {
+    const ui = fs.readFileSync(path.join(__dirname, '../client/disk-ui.js'), 'utf8');
+    const start = ui.indexOf('window.DiskClient.subscribe(jobs => {');
+    const end = ui.indexOf('const changed = jobs.some(', start);
+    let render;
+    vm.runInNewContext(ui.slice(start, end) + 'return jobs; });', {
+        window: { DiskOperationOrder: order, DiskClient: { subscribe: callback => { render = callback; } } }
+    });
+    const history = Array.from({ length: 35 }, (_, index) => ({ operation_id: 'old-' + index, status: 'completed', createdAt: index + 1 }));
+    const member = (index, time) => ({ operation_id: 'batch-' + index, type: 'transfer-history', status: 'completed', createdAt: 2, finishedAt: time,
+        transferDetails: { batch: { id: 'b', index, total: 2 }, source: { entries: [{ name: '文件' + index }] } } });
+    const latest = { operation_id: 'latest', createdAt: 100, finishedAt: 101, status: 'completed' };
+    const jobs = render([...history, member(0, 10), latest, { operation_id: 'mirror-original', historyMirrorId: 'latest' }, member(1, 200)]);
+    assert.equal(jobs.length, 37);
+    assert.equal(jobs[0].transferDetails.batch.id, 'b');
+    assert.equal(jobs[0].finishedAt, 200);
+    assert.equal(jobs[0].transferDetails.source.entries.length, 2);
+    assert.equal(jobs[1].operation_id, 'latest');
+    assert.ok(jobs.slice(0, 30).some(job => job.operation_id === 'latest'));
+    assert.equal(jobs.some(job => job.operation_id === 'mirror-original'), false);
 });

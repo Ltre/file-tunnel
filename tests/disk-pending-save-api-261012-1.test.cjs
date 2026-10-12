@@ -55,3 +55,29 @@ test('真实HTTP转存：重复创建被拦截、发布完成可恢复、丢失�
     assert.equal((await request('/uploads', body)).data.error, 'PENDING_SAVE_ALREADY_STARTED');
     assert.equal(sends, 1); repository.assertIntegrity();
 });
+
+test('旧上传的延迟回滚不得解锁新尝试，完成状态也不能被失败回调覆盖', t => {
+    const repository = openDiskRepository(temp(t)), journal = createDiskPendingSaves(repository);
+    const id = crypto.randomUUID(), files = [{ name: 'a.txt', size: 1 }];
+    const first = journal.reserve('a', id, '', '', files);
+    journal.attach('a', id, { id: 'old', operationId: 'op-old' }, { attemptId: first.attemptId });
+    journal.safeFailure('a', id, { uploadId: 'old' });
+    const next = journal.reserve('a', id, '', '', files);
+    journal.attach('a', id, { id: 'new', operationId: 'op-new' }, { attemptId: next.attemptId });
+    journal.safeFailure('a', id, { uploadId: 'old' });
+    assert.equal(journal.get('a', id).safeRetry, false);
+    journal.complete('a', id, [{ id: 'logical-new' }], { uploadId: 'new' });
+    journal.safeFailure('a', id, { uploadId: 'new' });
+    assert.equal(journal.get('a', id).state, 'completed');
+});
+
+test('只有原进程已退出的裸预约可以重试，不能按等待时间抢占活动预约', t => {
+    const repository = openDiskRepository(temp(t)), journal = createDiskPendingSaves(repository);
+    const id = crypto.randomUUID(), files = [{ name: 'a.txt', size: 1 }];
+    const item = journal.reserve('a', id, '', '', files);
+    item.createdAt = 1; repository.replace('pending_saves', [item], value => value.id, 'a');
+    assert.equal(journal.get('a', id).safeRetry, false);
+    item.processId = 2147483647; repository.replace('pending_saves', [item], value => value.id, 'a');
+    assert.equal(journal.get('a', id).safeRetry, true);
+    assert.doesNotThrow(() => journal.reserve('a', id, '', '', files));
+});

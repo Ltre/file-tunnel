@@ -95,20 +95,20 @@ test('协同 iframe 关闭只移除本层；忽略不匹配的窗口消息并保
         showModal() { this.open = true; } close() { this.open = false; } remove() { this.removed = true; }
     }
     const context = vm.createContext({ URL, location: { origin: 'http://localhost' },
-        window: { addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type) },
+        window: { DiskClient: { getAccount: () => 'frame-account' }, addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type) },
         document: { createElement: tag => new Element(tag), getElementById: id => ({ focus: () => focused.push(id) }),
             body: { append: node => children.push(node), classList: { add: value => classes.add(value), remove: value => classes.delete(value) } } } });
     vm.runInContext('let telegramDriveCollaborationFrame=null; let telegramDrivePath="原目录"; let telegramDriveMinimized=false;\n' +
         source.slice(source.indexOf('function closeDiskCollaborationFrame()'), source.indexOf('async function showDiskCollaborations()')), context);
     vm.runInContext('openDiskCollaborationFrame({id:"grant",name:"共享"})', context);
     const dialog = children[0], [frame, close] = dialog.children;
-    assert.equal(frame.src, '/disk-collab/view/grant?embedded=1'); assert.equal(dialog.open, true);
+    assert.equal(frame.src, '/disk-collab/view/grant?disk_account=frame-account&embedded=1'); assert.equal(dialog.open, true);
     listeners.get('message')({ origin: 'https://other', source: frame.contentWindow, data: { type: 'disk-collaboration:close' } }); assert.equal(dialog.open, true);
     listeners.get('message')({ origin: 'http://localhost', source: {}, data: { type: 'disk-collaboration:close' } }); assert.equal(dialog.open, true);
     close.onclick(); assert.equal(dialog.open, false); assert.equal(dialog.removed, true); assert.equal(frame.src, 'about:blank'); assert.equal(listeners.size, 0);
     assert.equal(vm.runInContext('telegramDrivePath', context), '原目录'); assert.equal(vm.runInContext('telegramDriveMinimized', context), false); assert.equal(classes.size, 0);
     vm.runInContext('openDiskCollaborationFrame({id:"second",name:"共享2",mountId:"mount-1",path:"共享/子目录",fileId:"file-1"})', context);
-    assert.equal(children[1].children[0].src, '/disk-collab/view/second?embedded=1&mount_id=mount-1&path=%E5%85%B1%E4%BA%AB%2F%E5%AD%90%E7%9B%AE%E5%BD%95&file_id=file-1');
+    assert.equal(children[1].children[0].src, '/disk-collab/view/second?disk_account=frame-account&embedded=1&mount_id=mount-1&path=%E5%85%B1%E4%BA%AB%2F%E5%AD%90%E7%9B%AE%E5%BD%95&file_id=file-1');
     const second = children[1]; listeners.get('message')({ origin: 'http://localhost', source: second.children[0].contentWindow, data: { type: 'disk-collaboration:close' } });
     assert.equal(second.removed, true); assert.equal(listeners.size, 0); assert.equal(focused.length, 2);
 });
@@ -119,15 +119,15 @@ test('所有者直接打开邀请定位主网盘，不消费邀请、不切换�
         if (!elements.has(id)) elements.set(id, { dataset: {}, addEventListener() {}, classList: { toggle() {} } });
         return elements.get(id);
     };
-    const context = vm.createContext({ URLSearchParams, encodeURIComponent,
+    const context = vm.createContext({ URL, URLSearchParams, encodeURIComponent,
         location: { pathname: '/disk-collab/owner-token', search: '', origin: 'http://localhost', replace: url => redirects.push(url) },
         document: { getElementById: element, body: { classList: { toggle() {} } }, addEventListener() {} },
-        window: { parent: null, addEventListener() {}, DiskClient: { json() {}, subscribe() {},
+        window: { parent: null, addEventListener() {}, DiskClient: { getAccount: () => 'owner-account', json() {}, subscribe() {},
             raw: async url => { calls.push(url); return { invitation: { id: 'own/project', owned: true } }; },
             setCollaboration() { assert.fail('所有者不应进入受邀范围客户端'); } } } });
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../client/disk-collaboration.js'), 'utf8'), context);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(calls, ['/api/telegram/drive/collaborations/invitations/owner-token/preview']);
-    assert.deepEqual(redirects, ['/disk?collaboration=own%2Fproject']);
+    assert.deepEqual(redirects, ['/disk?collaboration=own%2Fproject&disk_account=owner-account']);
     assert.equal(element('returnHome').hidden, false);
 });

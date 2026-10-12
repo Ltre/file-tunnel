@@ -9,6 +9,8 @@ const { createDiskOperations } = require('../server/disk-operations');
 const { createDiskAPI } = require('../server/disk-api');
 const { openDiskRepository } = require('../server/disk-repository');
 const { partitionMediaGroups } = require('../server/disk-telegram');
+const { createDiskPendingSaves } = require('../server/disk-pending-saves');
+const crypto = require('node:crypto');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
     for (let index = 0; index < 300; index++) { const result = predicate(); if (result) return result; await sleep(10); }
@@ -19,15 +21,18 @@ function chunkRemote(file, chunk, messageId) {
         fileIndex: 0, logicalFileId: file.logicalId, partIndex: chunk.partIndex, partCount: file.parts.length,
         originalSize: file.size, offset: chunk.offset, size: chunk.size, sha256: chunk.sha256 };
 }
-async function setup(t, prepare, partCount = 2) {
+async function setup(t, prepare, partCount = 2, pendingSave = false) {
     t.mock.method(console, 'info', () => {});
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'progressive-recovery-'));
     let store = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     const auth = createDiskAuth({ dataDir }), user = auth.fromTelegram({ id: '1234' });
     const scope = { userId: user.id, diskSpace: '' }, backend = { token: 'fixture', channelId: '-100', baseUrl: 'https://example.test' };
-    const job = store.begin({ owner: user, folderPath: 'A/B', progressive: true,
+    const pendingSaveId = pendingSave ? crypto.randomUUID() : '';
+    const job = store.begin({ owner: user, folderPath: 'A/B', progressive: true, metadata: pendingSaveId ? { pendingSaveId } : {},
         files: [{ name: 'two.bin', size: partCount * 3, parts: Array.from({ length: partCount }, (_, index) => ({ byteStart: index * 3, byteEnd: index * 3 + 2, size: 3 })) }], maxDepth: 20, uploadLimit: 1000, channelId: backend.channelId });
     const operation = operations.create(scope, 'upload', '恢复测试', partCount * 3); job.operationId = operation.operation_id;
+    const journal = createDiskPendingSaves(openDiskRepository(dataDir));
+    if (pendingSaveId) { const attempt = journal.reserve(user.id, pendingSaveId, '', 'A/B', [{ name: 'two.bin', size: partCount * 3 }]); journal.attach(user.id, pendingSaveId, job, { attemptId: attempt.attemptId }); }
     await store.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: backend.channelId, operationScope: scope });
     operations.update(job.operationId, { progressive: true, uploadId: job.id, status: 'running', phase: 'telegram-queue' }, true);
     for (let index = 0; index < partCount; index++) await store.receivePart(job.id, 0, Readable.from(['abc']), `bytes ${index * 3}-${index * 3 + 2}/${partCount * 3}`);
@@ -67,7 +72,7 @@ async function setup(t, prepare, partCount = 2) {
         api.close(); await store.upload(job.id)?.pipelineDone;
         operations.flush(); openDiskRepository(dataDir).close(); fs.rmSync(dataDir, { recursive: true, force: true });
     });
-    return { job, dataDir, store, operations, user, scope, telegram, result, counts: () => ({ pushed, finalized, cleaned }) };
+    return { job, dataDir, store, operations, user, scope, telegram, result, journal, pendingSaveId, counts: () => ({ pushed, finalized, cleaned }) };
 }
 
 test('重启恢复完整落盘未请求分片，自动继续并仅整批提交一次', async t => {
@@ -145,4 +150,28 @@ test('普通任务重启仍失败，渐进上传恢复不是通用任务复活',
     assert.equal(next.get(moving.operation_id, scope).errorCode, 'SERVER_RESTARTED');
     assert.equal(next.get(progressive.operation_id, scope).phase, 'recovering');
     assert.equal(next.resumeUpload(progressive.operation_id, { userId: 'other' }), false); next.flush();
+});
+
+test('待转存浏览器上传中断后重启：已确认消息清理完成才解锁安全重试', async t => {
+    const f = await setup(t, async ({ store, job }) => {
+        const file = job.files[0]; await store.markPartsUploaded(job.id, file.chunks.map(chunk => chunkRemote(file, chunk, chunk.partIndex + 10)));
+        job.clientDone = false; await store.setUploadContextAsync(job.id, {});
+    }, 2, true);
+    await until(() => f.journal.get(f.user.id, f.pendingSaveId).safeRetry);
+    assert.equal(f.result().errorCode, 'UPLOAD_SOURCE_INTERRUPTED');
+    assert.deepEqual(f.counts(), { pushed: 0, finalized: 0, cleaned: 1 });
+    assert.equal(fs.existsSync(path.join(f.dataDir, 'telegram-drive-staging', f.job.id)), false);
+    assert.equal(f.store.adminFiles().length, 0);
+});
+
+test('待转存发送结果未知时重启：保留缓存和清单，不开放重试', async t => {
+    const f = await setup(t, async ({ store, job }) => {
+        await store.markProgressiveChunkState(job.id, 0, 1, 'awaiting_response', { attempts: 1 });
+        job.clientDone = false; await store.setUploadContextAsync(job.id, {});
+    }, 2, true);
+    await until(() => f.result().status === 'failed');
+    assert.equal(f.journal.get(f.user.id, f.pendingSaveId).safeRetry, false);
+    assert.equal(f.result().errorCode, 'TELEGRAM_UPLOAD_OUTCOME_UNKNOWN');
+    assert.deepEqual(f.counts(), { pushed: 0, finalized: 0, cleaned: 0 });
+    assert.ok(fs.existsSync(path.join(f.dataDir, 'telegram-drive-staging', f.job.id, 'upload-manifest.json')));
 });

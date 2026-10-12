@@ -277,7 +277,7 @@
         if (enabled && Date.now() - lastRefresh >= interval) refresh();
     }, 800);
     function upload(files, folderPath, read = file => file, metadata = {}) {
-        const uploadContext = metadata.transportContext || transportContext();
+        const uploadContext = { ...(metadata.transportContext || transportContext()) };
         return withActivity({ message: '正在上传 ' + files.length + ' 个文件', accountId: uploadContext.accountId || '' }, async update => {
             // Also keep failures before the server can create a task (offline/HTTP errors).
             const createdAt = Date.now();

@@ -6,6 +6,21 @@ import vm from 'node:vm';
 import Module from 'node:module';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const MARKDOWN_SUPPORT_ASSETS = [
+  '/client/vendor/web-markdown/marked-18.0.14.umd.js',
+  '/client/vendor/web-markdown/purify-3.4.16.min.js',
+  '/client/vendor/web-markdown/markdown-page.js',
+  '/client/vendor/web-markdown/markdown-page.css',
+  '/client/vendor/web-markdown/THIRD-PARTY-LICENSES.txt'
+];
+
+function stripBundledMarkdownPaths(source) {
+  // The byte-for-byte ZIP support bundle intentionally keeps fixed URLs.
+  // Do not exempt the rest of /client/ from the deployment asset checks.
+  let result = source;
+  for (const asset of MARKDOWN_SUPPORT_ASSETS) result = result.split(JSON.stringify(asset)).join('""').split("'"+asset+"'").join("''");
+  return result;
+}
 
 function parseArgs(argv) {
   const args = { dist: 'dist', profile: '' };
@@ -99,6 +114,12 @@ async function main() {
   if (!buildManifest.scripts?.['client/disk-share.js']) errors.push('missing public disk-share script');
   if (!buildManifest.scripts?.['client/cache-store-worker.js']) errors.push('missing OPFS cache worker');
   if (!buildManifest.scripts?.['client/s3-management.js']) errors.push('missing S3 management script');
+  for (const source of ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save']) {
+    if (!buildManifest.scripts?.[`client/${source}.js`]) errors.push(`missing drive module in release manifest: ${source}`);
+  }
+  for (const source of ['client/disk-error-messages.js', 'client/disk-operation-order.js']) {
+    if (!await exists(distRoot, '/' + source)) errors.push(`missing shared server module: ${source}`);
+  }
   if (!await exists(distRoot, '/docs/telegram-drive-s3-compatible.md')) errors.push('missing S3 API guide source');
   if ((buildManifest.appShell || []).some(ref => ref === '/s3-management' || ref === '/s3-api-guide' || ref === buildManifest.scripts?.['client/s3-management.js'] || ref === buildManifest.styles?.['s3-management'])) errors.push('S3 administration must not be in APP_SHELL');
 
@@ -129,13 +150,24 @@ async function main() {
 
   const sw = await fs.readFile(path.join(distRoot, 'service-worker.js'), 'utf8');
   if (!sw.includes(`instant-tunnel-${release.buildId}`)) errors.push('service-worker cache name does not include buildId');
-  if (/\/client\/|\/app\.js['"]/.test(sw)) errors.push('service-worker still caches source JS paths');
+  if (/\/client\/|\/app\.js['"]/.test(stripBundledMarkdownPaths(sw))) errors.push('service-worker still caches source JS paths');
+  for (const assetPath of MARKDOWN_SUPPORT_ASSETS) {
+    if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing bundled Markdown resource: ${assetPath}`);
+    if (!await exists(distRoot, assetPath)) { errors.push(`missing bundled Markdown resource: ${assetPath}`); continue; }
+    const relativePath = assetPath.slice(1);
+    const original = await fs.readFile(path.join(ROOT, relativePath));
+    const deployed = await fs.readFile(path.join(distRoot, relativePath));
+    if (!original.equals(deployed)) errors.push(`bundled Markdown bytes changed: ${assetPath}`);
+  }
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
     if (source === 'client/s3-management.js') continue;
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing ${assetPath}`);
   }
 
   await checkJavaScriptSyntax(distRoot, 'server.js', true);
+  for (const source of ['client/disk-error-messages.js', 'client/disk-operation-order.js']) {
+    if (await exists(distRoot, '/' + source)) await checkJavaScriptSyntax(distRoot, source, true);
+  }
   await checkJavaScriptSyntax(distRoot, 'service-worker.js');
   for (const assetPath of Object.values(buildManifest.scripts || {})) {
     await checkJavaScriptSyntax(distRoot, assetPath.replace(/^\//, ''));

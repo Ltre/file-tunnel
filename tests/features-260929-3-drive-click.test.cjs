@@ -32,7 +32,7 @@ function fixture({ mobile = true, coarse = false, narrow = false } = {}) {
         document: { getElementById: id => nodes[id] || null, createElement: tag => new Element(tag),
             querySelector: () => manager, querySelectorAll: () => [], elementsFromPoint: () => [], body: { append() {} } },
         window: { matchMedia: query => ({ matches: (mobile || coarse) && query.includes('coarse') || (mobile || narrow) && query.includes('max-width') || !mobile && query === '(pointer:fine)' }),
-            DiskClient: {},
+            DiskClient: { context: () => ({ accountId: 'fixture-account', requestBase: '/api/telegram/drive', diskSpace: '' }) },
             addEventListener: (type, fn) => { (windowListeners.get(type) || windowListeners.set(type, []).get(type)).push(fn); },
             removeEventListener: (type, fn) => windowListeners.set(type, (windowListeners.get(type) || []).filter(entry => entry !== fn)) },
         Date: { now: () => now }, Math, HTMLElement: Element,
@@ -149,7 +149,10 @@ test('同key记录真实改名/移动/审查及预览数据变化时更新显示
     await f.refresh({ path: '', folders: [], files: [changed] });
     assert.notEqual(f.row(), row); assert.equal(f.row().children[2].children[0].textContent, changed.name);
     f.tap(f.row()); f.tap(f.row(), { detail: 2 }); f.dispatch(f.row(), 'dblclick', { detail: 2, pointerType: '' });
-    assert.equal(f.opened[0], changed, '更新后的操作闭包必须使用新记录，不能继续引用旧分片/路径');
+    const opened = JSON.parse(JSON.stringify(f.opened[0]));
+    assert.deepEqual(opened.diskTransportContext, { accountId: 'fixture-account', requestBase: '/api/telegram/drive', diskSpace: '' });
+    delete opened.diskTransportContext;
+    assert.deepEqual(opened, changed, '更新后的操作闭包必须使用新记录，不能继续引用旧分片/路径');
 });
 
 test('鼠标行外松开后的无按钮hover不启动残留拖动，随后双击正常打开', () => {

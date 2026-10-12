@@ -13,13 +13,13 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
     const pending = new Promise((resolve, reject) => { finish = () => failed ? reject(Error('TELEGRAM_NETWORK_ERROR')) : resolve(result); });
     const context = vm.createContext({ telegramDriveMountContext:null, rendered, overlay, result,
         document: { getElementById: () => overlay }, history: { pushState() {} }, location: { href: 'http://localhost/#fixture' },
-        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
+        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { getAccount: () => 'fixture', raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
     });
     vm.runInContext(`
         let telegramDrivePath='原目录', telegramDriveNavigationVersion=0, telegramDriveHistorySession='fixture';
         let telegramDriveCurrentData={}, telegramDriveContentStale=false, diskWindowState={retained:true,path:'原目录'};
         const saveDiskWindow=()=>{diskWindowState.path=telegramDrivePath};
-        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, cancelTelegramDrivePendingMount=()=>{};
+        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, cancelTelegramDrivePendingMount=()=>{}, rememberTelegramDriveAccountView=()=>{};
         const renderTelegramDrive=async()=>{telegramDriveCurrentData={path:telegramDrivePath,files:result.items};rendered.push(telegramDriveCurrentData)};
         ${ui.slice(ui.indexOf('async function navigateTelegramDrive('), ui.indexOf('async function openTelegramDrive('))}
         window.DiskUI={setExporter(){}, open:async()=>{}, revealUploadedDirectory:revealTelegramDriveUploadedDirectory,

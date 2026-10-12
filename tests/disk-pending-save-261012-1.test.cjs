@@ -165,3 +165,61 @@ test('OPFS source returns a file-backed Blob without full materialization', asyn
     (await f.cache.cacheStorePromise).materialize = () => { throw new Error('不应复制整个大文件'); };
     assert.equal(await f.cache.getBlob(f.task), file);
 });
+
+test('new source caches retain Blob references; pinned reads load legacy bytes only once', async () => {
+    for (const source of ['sns', 'youtube']) {
+        const f = browser(source), record = await prepare(f);
+        assert.ok((await f.cache.getRecord(f.task.id)).data instanceof Blob);
+        const store = f.idb.databases.get(source === 'sns' ? 'Drop2TunnelSnsDownloadCache' : 'Drop2TunnelYoutubePremiumCache').get('files');
+        const legacy = store.get(f.task.id); store.set(f.task.id, { ...legacy, data: f.bytes.buffer });
+        let reads = 0; const original = f.cache.getRecord.bind(f.cache);
+        f.cache.getRecord = async id => { reads++; return original(id); };
+        const blob = await f.api.getBlob(record);
+        assert.equal(reads, 1); assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [...f.bytes]);
+        await f.cache.unpin(f.task.id, record.id);
+        await assert.rejects(() => f.api.getBlob(record), /缓存不完整/);
+    }
+});
+
+test('cancel verification and pin release share resume lock and cannot demote a committed upload', async () => {
+    const f = browser(), record = await prepare(f); let started;
+    const ready = new Promise(resolve => { started = resolve; }); let release;
+    const upload = f.api.resume(record.id, hooks({ upload: async () => { started(); await new Promise(resolve => { release = resolve; }); return { items: [{ id: 'done' }] }; } }));
+    await ready;
+    let verified = 0;
+    const cancelled = f.api.cancel(record.id, async () => { verified++; return { status: 'missing', retryable: true }; });
+    assert.equal((await f.api.get(record.id)).status, 'uploading');
+    assert.equal((await f.cache.getRecord(f.task.id)).pendingTransferPins.length, 1);
+    release(); await upload; const result = await cancelled;
+    assert.equal(result.status, 'completed'); assert.equal(verified, 0);
+    assert.equal((await f.api.get(record.id)).status, 'completed');
+});
+
+test('locked cancellation checks unknown outcomes before changing status or releasing cache references', async () => {
+    const f = browser(), record = await prepare(f);
+    await assert.rejects(() => f.api.resume(record.id, hooks({ upload: async () => { throw Error('Failed to fetch'); } })), /Failed to fetch/);
+    await assert.rejects(() => f.api.cancel(record.id, async () => ({ status: 'running' })), /仍在处理/);
+    await assert.rejects(() => f.api.cancel(record.id, async () => ({ status: 'missing' })), /尚未确认/);
+    assert.equal((await f.api.get(record.id)).status, 'verification-required');
+    assert.equal((await f.cache.getRecord(f.task.id)).pendingTransferPins.length, 1);
+    const cancelled = await f.api.cancel(record.id, async snapshot => {
+        assert.equal(snapshot.target.accountId, 'account-1'); return { status: 'failed', retryable: true };
+    });
+    assert.equal(cancelled.status, 'cancelled'); assert.equal((await f.cache.getRecord(f.task.id)).pendingTransferPins.length, 0);
+    const another = browser(), current = await prepare(another);
+    await assert.rejects(() => another.api.resume(current.id, hooks({ upload: async () => { throw Error('Failed to fetch'); } })), /Failed to fetch/);
+    const recovered = await another.api.cancel(current.id, async () => ({ status: 'completed', result: { items: [{ id: 'server-done' }] } }));
+    assert.equal(recovered.status, 'completed'); assert.equal(recovered.result.items[0].id, 'server-done');
+});
+
+test('without Web Locks this page still serializes cancellation with active resume', async () => {
+    const f = browser(), record = await prepare(f); delete f.context.navigator.locks;
+    let started, release; const ready = new Promise(resolve => { started = resolve; });
+    const uploading = f.api.resume(record.id, hooks({ upload: async () => { started(); await new Promise(resolve => { release = resolve; }); return { items: [{ id: 'no-lock-done' }] }; } }));
+    await ready;
+    let verified = 0; const cancelling = f.api.cancel(record.id, async () => { verified++; return { status: 'missing', retryable: true }; });
+    assert.equal((await f.api.get(record.id)).status, 'uploading');
+    release(); await uploading;
+    assert.equal((await cancelling).status, 'completed'); assert.equal(verified, 0);
+    assert.equal((await f.api.get(record.id)).result.items[0].id, 'no-lock-done');
+});

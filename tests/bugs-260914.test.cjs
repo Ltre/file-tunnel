@@ -82,7 +82,7 @@ test('音乐播放器及列表优先使用独立封面，显示前不读取任�
     const context = vm.createContext({
         getDiskPreviewType: () => 'audio/mp4', encodeURIComponent,
         imageFromSource: async url => { fetched.push(url); return { url }; }, canvasThumbnail: async image => image,
-        window: { DiskClient: { getSpace: () => '',context:()=>({requestBase:'/api/telegram/drive',diskSpace:''}) }, TelegramDriveCache: { get() { throw Error('must not read song cache'); }, getThumbnail() { throw Error('must not read song cache'); } } }
+        window: { DiskClient: { getSpace: () => '',context:()=>({requestBase:'/api/telegram/drive',diskSpace:'',accountId:'song-owner'}) }, TelegramDriveCache: { get() { throw Error('must not read song cache'); }, getThumbnail() { throw Error('must not read song cache'); } } }
     });
     vm.runInContext(ui.slice(ui.indexOf('async function generateTelegramDriveThumbnail('), ui.indexOf('function applyTelegramDriveThumbnail(')) +
         ui.slice(ui.indexOf('async function loadDiskAudioPlayerCover('), ui.indexOf('function createDiskMediaPlayer(')) +
@@ -91,7 +91,7 @@ test('音乐播放器及列表优先使用独立封面，显示前不读取任�
     let displayed;
     await context.load(item, { isConnected: true, replaceChildren(image) { displayed = image; } }, null);
     await context.generate(item);
-    assert.equal(displayed.url, '/api/telegram/drive/files/song/thumbnail?v=7&disk_space=');
+    assert.equal(displayed.url, '/api/telegram/drive/files/song/thumbnail?v=7&disk_space=&disk_account=song-owner');
     assert.deepEqual(fetched, [displayed.url, displayed.url]);
 });
 

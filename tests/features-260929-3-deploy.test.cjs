@@ -44,7 +44,8 @@ test('构建SW同步改写网络优先脚本路径及CSS资源，S3管理资源�
     let written;
     const context = vm.createContext({ ROOT: '/source', path, PAGE_ROUTES: { 'index.html': ['/index.html'] },
         fs: { readFile: async () => read('service-worker.js'), writeFile: async (_path, value) => { written = value; } }, sizeStat: () => ({}) });
-    vm.runInContext(slice(build, 'function escapeRegExp(', 'function extractPageStyles(')
+    vm.runInContext(slice(build, 'const MARKDOWN_SUPPORT_ASSETS = [', 'const SCRIPT_SOURCES = [')
+        + slice(build, 'function escapeRegExp(', 'function extractPageStyles(')
         + slice(build, 'async function buildServiceWorker(', 'function sizeStat('), context);
     const scripts = { 'app.js': '/assets/app.0123456789.min.js', 'client/web-zip-runtime.js': '/assets/web-zip-runtime.0123456789.min.js', 'client/s3-management.js': '/assets/s3-management.0123456789.min.js' };
     const styles = { index: '/assets/index.0123456789.min.css', 's3-management': '/assets/s3-management.0123456789.min.css' };

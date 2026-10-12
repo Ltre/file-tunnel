@@ -216,7 +216,7 @@
                     name: task.outputFileName || 'youtube-premium-file',
                     type: response.headers.get('Content-Type') || 'application/octet-stream',
                     size: storedSize,
-                    data: committed.data,
+                    data: committed.data ? new Blob([committed.data], { type: response.headers.get('Content-Type') || 'application/octet-stream' }) : undefined,
                     cacheStoreRef: committed.cacheStoreRef || null,
                     cacheStorage: committed.cacheStorage || 'indexeddb',
                     cachedAt: Date.now()
@@ -249,8 +249,9 @@
             return removable.length;
         }
 
-        async getBlob(task) {
+        async getBlob(task, { pendingId = '' } = {}) {
             const record = await this.getRecord(task.id);
+            if (pendingId && !record?.pendingTransferPins?.includes(pendingId)) return null;
             const cacheStore = await this.cacheStorePromise;
             if (record?.version !== taskVersion(task) || !cacheStore?.hasComplete(record, { size: task.outputFileSize })) {
                 return null;

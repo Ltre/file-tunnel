@@ -74,6 +74,7 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
     const uploadManifest = job => ({
         version: job.progressive ? 3 : 1, id: job.id, ownerId: String(job.owner?.id || ''), operationId: String(job.operationId || ''),
         backendId: String(job.backendId || ''), channelId: String(job.channelId || ''), createdAt: Number(job.createdAt) || Date.now(),
+        ...(!job.progressive && job.metadata?.pendingSaveId ? { metadata: { pendingSaveId: job.metadata.pendingSaveId } } : {}),
         ...(job.progressive ? { progressive: true, owner: job.owner, metadata: job.metadata, sourceAppId: job.sourceAppId,
             replaceId: job.replaceId, folderPath: job.folderPath, maxDepth: job.maxDepth, uploadLimit: job.uploadLimit,
             clientDone: Boolean(job.clientDone), finishing: Boolean(job.finishing), committed: Boolean(job.committed),

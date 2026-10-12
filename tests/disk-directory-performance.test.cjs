@@ -170,7 +170,7 @@ test('目录查询发现登录已失效时仍回到登录界面，不把旧账�
         document: { getElementById: id => { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); }, createElement: node },
         window: { DiskClient: { raw: async () => { throw new Error('LOGIN_REQUIRED'); }, getSpace: () => '' } },
         getTelegramDriveIdentity: async () => { identities++; return { identity: null, oidcMode: 'mock' }; },
-        isTelegramDriveGlobalSearchActive: () => false, closeTelegramDriveItemMenu() {}, startTelegramDriveLogin() {}, encodeURIComponent });
+        isTelegramDriveGlobalSearchActive: () => false, closeTelegramDriveItemMenu() {}, startTelegramDriveLogin() {}, showTelegramDrivePendingSaveBanner: async () => {}, encodeURIComponent });
     vm.runInContext(ui.slice(ui.indexOf('async function renderTelegramDrive('), ui.indexOf('async function navigateTelegramDrive(')), context);
     await context.renderTelegramDrive({ contentsOnly: true });
     assert.equal(identities, 1); assert.equal(context.telegramDriveCurrentData, null);

@@ -1,6 +1,6 @@
 # ZIP 内置 Markdown 支持资源
 
-这些固定版本资源只在网页工坊点击 `+ Markdown` 时读取，并随 ZIP 打包，不依赖运行时 CDN。部署构建保留本目录路径，Service Worker 缓存这些文件以支持离线创建。
+这些固定版本资源只在网页工坊点击 `+ Markdown` 时读取，并随 ZIP 打包，不依赖运行时 CDN。部署构建保留本目录路径，Service Worker 在支持文件联网读取成功后缓存，供后续离线创建使用；从未加载过这些文件的浏览器仍需首次联网获取。已生成 ZIP 的 Markdown 页面始终使用包内资源。
 
 - Marked 18.0.14，来自官方 npm `marked@18.0.14` 的 `lib/marked.umd.js`；[官方源码及版本](https://github.com/markedjs/marked/tree/v18.0.14)，MIT。
 - DOMPurify 3.4.16，来自官方 npm `dompurify@3.4.16` 的 `dist/purify.min.js`；[官方源码及版本](https://github.com/cure53/DOMPurify/tree/3.4.16)，Apache-2.0 或 MPL-2.0。

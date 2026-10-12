@@ -25,7 +25,7 @@ function fixture() {
     listeners.push({ fn: () => { if (!context.drive.ownsHistory()) hostEvents++; }, capture: false });
     const context = vm.createContext({ telegramDriveMountContext:null, history, location: { href: 'http://localhost/#test' }, Date, Math, URL,
         document: { getElementById: node, body: { classList: { add() {}, remove() {} } } },
-        window: { addEventListener(name, fn, options) { if (name === 'popstate') listeners.push({ fn, capture: !!options?.capture }); } },
+        window: { DiskClient: { getAccount: () => 'fixture-account' }, addEventListener(name, fn, options) { if (name === 'popstate') listeners.push({ fn, capture: !!options?.capture }); } },
         rendered, alert: message => { throw Error(message); }
     });
     const driveLifecycle = source.slice(source.indexOf('async function navigateTelegramDrive('), source.indexOf('function prepareTelegramDrivePicker('));
@@ -37,7 +37,7 @@ function fixture() {
         let diskPreviewHistoryOpen=false, diskPreviewHistoryClosing=false, diskPreviewBaseState=null;
         let telegramDriveMenuHistoryOpen=false, telegramDriveDialogHistoryOpen=false;
         const $disk=id=>document.getElementById(id), disposeActiveDiskMedia=()=>{}, saveDiskWindow=retained=>{diskWindowState.retained=retained};
-        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, updateDiskCacheLabels=()=>{}, cancelTelegramDrivePendingMount=()=>{};
+        const clearTelegramDriveSearch=()=>{}, clearTelegramDriveSelection=()=>{}, updateDiskCacheLabels=()=>{}, cancelTelegramDrivePendingMount=()=>{}, rememberTelegramDriveAccountView=()=>{};
         const renderTelegramDriveBreadcrumbs=()=>{}, renderTelegramDriveItems=()=>{};
         const renderTelegramDrive=async()=>{rendered.push(telegramDrivePath);telegramDriveCurrentData={}};
         const closeTelegramDriveDialog=()=>{}, closeTelegramDriveItemMenu=()=>{}, closeDiskCollaborationFrame=()=>{}, telegramDriveErrorText=e=>e.message;

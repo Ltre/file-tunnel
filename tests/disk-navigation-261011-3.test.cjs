@@ -15,10 +15,10 @@ function fixture(handler=async()=>({})){
     const get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
     let space='',mount='';
     const client={getSpace:()=>space,setSpace:value=>{space=value;mount='';},setMount:value=>{mount=value;contexts.push(value);},
-        hasActiveOperations:()=>false,raw:async(url,options={})=>{calls.push({url,options});return handler(url,options);},context:()=>({requestBase:'/api/telegram/drive'+(mount?'/mount-scope/'+mount:''),diskSpace:space})};
+        getAccount:()=> 'fixture-account',hasActiveOperations:()=>false,raw:async(url,options={})=>{calls.push({url,options});return handler(url,options);},context:()=>({accountId:'fixture-account',requestBase:'/api/telegram/drive'+(mount?'/mount-scope/'+mount:''),diskSpace:space})};
     const context=vm.createContext({window:{DiskClient:client,addEventListener(){}},localStorage:{getItem(){},setItem(){}},
         document:{getElementById:get,createElement:tag=>new Element(tag),querySelector:()=>null,querySelectorAll:()=>[]},
-        requestAnimationFrame:fn=>fn(),AbortController,URL,Map,Set,location:{origin:'http://localhost',href:'http://localhost/disk'},
+        requestAnimationFrame:fn=>fn(),AbortController,URL,URLSearchParams,Map,Set,location:{origin:'http://localhost',href:'http://localhost/disk',search:''},
         history:{state:{},pushState(){}},setTimeout,clearTimeout,alert:message=>toasts.push(message)});
     const hook=`
     renderTelegramDriveItems=()=>document.getElementById('telegramDriveList').replaceChildren(...(telegramDriveCurrentData?.folders||[]).map(p=>Object.assign(document.createElement('div'),{textContent:p.name})));

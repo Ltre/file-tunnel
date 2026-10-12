@@ -11,7 +11,12 @@
     const request = (url, options) => client.raw(url, options);
     const json = (method, body) => client.json(method, body);
     const base = '/api/telegram/drive';
-    const scoped = path => `${base}/collaboration-scope/${encodeURIComponent(grant.id)}${path}`;
+    const scoped = path => {
+        const address = new URL(`${base}/collaboration-scope/${encodeURIComponent(grant.id)}${path}`, location.origin);
+        const accountId = client.getAccount();
+        if (accountId) address.searchParams.set('disk_account', accountId);
+        return address.pathname + address.search;
+    };
     const navigation = new URLSearchParams(location.search);
     if (navigation.get('disk_account')) client.setAccount(navigation.get('disk_account'));
     const requestedPath = navigation.get('path');
@@ -370,7 +375,10 @@
                 const invitation = (await request(`${base}/collaborations/invitations/${encodeURIComponent(token)}/preview`)).invitation;
                 if (!invitation.owned) { showInvitation(invitation, token); return; }
                 // Owners locate their own project in the normal drive; do not consume the invitation.
-                location.replace('/disk?collaboration=' + encodeURIComponent(invitation.id));
+                const target = new URL('/disk', location.origin);
+                target.searchParams.set('collaboration', invitation.id);
+                if (client.getAccount()) target.searchParams.set('disk_account', client.getAccount());
+                location.replace(target.pathname + target.search);
                 return;
             }
             currentPath = grant.kind === 'directory' && requestedPath ? safeDirectoryPath(requestedPath, grant.path) : grant.path;

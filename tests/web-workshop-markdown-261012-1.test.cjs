@@ -126,3 +126,33 @@ test('MD 文件缺失时显示清晰读取错误；部署固定路径保留完�
     assert.match(output.textContent,/HTTP 404/);assert.equal(busy,false);assert.equal(failed,true);
     assert.match(read('tools/deploy/build.mjs'),/copyDirRelative\('client\/vendor\/web-markdown', outRoot\)/);
 });
+
+test('压缩部署重建 Service Worker 时仍缓存原字节的 Markdown 支持资源',async()=>{
+    const source=read('tools/deploy/build.mjs');
+    const fixed=source.match(/const MARKDOWN_SUPPORT_ASSETS = \[[\s\S]*?\];/)?.[0];
+    const builder=source.match(/async function buildServiceWorker\([\s\S]*?\n}\n/)?.[0];
+    assert.ok(fixed&&builder);
+    let written='';
+    const context={ROOT,fs:{readFile:async()=>read('service-worker.js'),writeFile:async(_path,value)=>{written=value;}},path,
+        PAGE_ROUTES:{'index.html':['/','/index.html','/disk']},replaceScriptReferences:value=>value,sizeStat:()=>({})};
+    vm.runInNewContext(fixed+'\n'+builder+'\nglobalThis.buildWorker = buildServiceWorker;',context);
+    const result=await context.buildWorker('release','test-build',{'client/web-workshop.js':'/assets/workshop.hash.js'},{});
+    for(const [name] of tools().markdownSupportFiles)assert.ok(result.appShell.includes('/client/vendor/web-markdown/'+name),name);
+    assert.match(written,/client\/vendor\/web-markdown\/marked-18\.0\.14\.umd\.js/);
+    assert.match(written,/instant-tunnel-test-build/);
+});
+
+test('部署核验只允许精确 Markdown 固定路径，不放宽其它源 JS 检查',()=>{
+    const source=read('tools/deploy/verify.mjs');
+    const fixed=source.match(/const MARKDOWN_SUPPORT_ASSETS = \[[\s\S]*?\];/)?.[0];
+    const strip=source.match(/function stripBundledMarkdownPaths\([\s\S]*?\n}\n/)?.[0];
+    assert.ok(fixed&&strip);
+    const context={};
+    vm.runInNewContext(fixed+'\n'+strip+'\nglobalThis.strip = stripBundledMarkdownPaths;',context);
+    const assets=tools().markdownSupportFiles.map(([name])=>'/client/vendor/web-markdown/'+name);
+    assert.doesNotMatch(context.strip(assets.map(JSON.stringify).join('\n')),/\/client\//);
+    assert.match(context.strip(assets.map(JSON.stringify).join('\n')+'\n/client/unbundled.js'),/\/client\/unbundled.js/);
+    assert.match(context.strip('/client/vendor/web-markdown/unknown.js'),/\/client\//);
+    assert.match(context.strip(JSON.stringify(assets[0]+'.unknown')),/\/client\//);
+    assert.match(source,/!original\.equals\(deployed\)/);
+});

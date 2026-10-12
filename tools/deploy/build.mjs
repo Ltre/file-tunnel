@@ -9,6 +9,15 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULT_OUT_DIR = 'dist';
+// These resources are read as bytes and copied into user ZIPs. Keep their fixed
+// paths and original bytes (including license text) in the release and its SW.
+const MARKDOWN_SUPPORT_ASSETS = [
+  '/client/vendor/web-markdown/marked-18.0.14.umd.js',
+  '/client/vendor/web-markdown/purify-3.4.16.min.js',
+  '/client/vendor/web-markdown/markdown-page.js',
+  '/client/vendor/web-markdown/markdown-page.css',
+  '/client/vendor/web-markdown/THIRD-PARTY-LICENSES.txt'
+];
 const SCRIPT_SOURCES = [
   // Build dependencies before rewriting their callers' dynamic asset URLs.
   'client/cache-store-worker.js',
@@ -27,10 +36,17 @@ const SCRIPT_SOURCES = [
   'client/device-camera.js',
   'client/light-transfer.js',
   'client/telegram-drive-cache.js',
+  'client/disk-error-messages.js',
   'client/disk-client.js',
   'client/disk-operation-order.js',
   'client/disk-pending-save.js',
   'client/disk-directory-picker.js',
+  'client/disk-copy-picker.js',
+  'client/disk-trash-ui.js',
+  'client/disk-import-picker.js',
+  'client/disk-file-editor.js',
+  'client/disk-folder-upload.js',
+  'client/disk-mount-ui.js',
   'client/disk-collaboration.js',
   'client/disk-ui.js',
   'client/disk-share.js',
@@ -454,6 +470,7 @@ async function buildServiceWorker(outRoot, buildId, assets, styles) {
     '/runtime-config.js',
     '/manifest.webmanifest',
     '/tunnel-icon.svg',
+    ...MARKDOWN_SUPPORT_ASSETS,
     ...assetShell
   ]));
   let built = replaceScriptReferences(raw, assets).replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'instant-tunnel-${buildId}';`);
@@ -497,6 +514,10 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
+  // These UMD modules are also required by the copied CommonJS server. Their
+  // browser callers still use hashed assets; the backend needs fixed filenames.
+  await copyFileRelative('client/disk-error-messages.js', outRoot);
+  await copyFileRelative('client/disk-operation-order.js', outRoot);
   await copyDirRelative('client/vendor/web-markdown', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);

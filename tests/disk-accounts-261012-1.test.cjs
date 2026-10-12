@@ -12,20 +12,21 @@ const { createDiskAPI } = require('../server/disk-api');
 const { createContentProof } = require('../server/disk-content-proof');
 const source = fs.readFileSync(path.join(__dirname, '../client/disk-client.js'), 'utf8');
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'disk-accounts-'));
     const repository = openDiskRepository(dataDir);
-    repository.replace('users', [{ id: 'alice', name: '小林', username: 'alice' }, { id: 'bob', name: '小陈', username: 'bob' }], value => value.id);
-    const auth = createDiskAuth({ dataDir }), store = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
+    repository.replace('users', ['alice', 'bob'].map(id => ({ id, name: id === 'alice' ? '小林' : '小陈', username: id,
+        ...(options.webauthn ? { passkeys: [{ id: id + '-passkey', publicKey: Buffer.from('fixture-public-key').toString('base64'), rpID: 'fixture.example', counter: 0 }] } : {}) })), value => value.id);
+    const auth = createDiskAuth({ dataDir, ...(options.webauthn ? { webauthn: async () => options.webauthn } : {}) }), store = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     store.createDirectory('alice', '甲目录', 30); store.createDirectory('bob', '乙目录', 30);
     store.putMetadataObject(auth.user('alice'), '甲目录', '甲.txt', 'text/plain', {}, 30);
     store.putMetadataObject(auth.user('bob'), '乙目录', '乙.txt', 'text/plain', {}, 30);
     let api, time = Date.now();
     const sessions = createDiskAccountSessions({ keyForRequest: () => auth.sessionKey, user: id => auth.user(id), now: () => time,
         isRevoked: value => api.isContentSessionRevoked(value) });
-    api = createDiskAPI({ dataDir, auth, defaultStore: store, operations, telegram: {}, getIdentity: req => sessions.identity(req),
-        setIdentity: (req, res, value) => sessions.set(req, res, value), getOrigin: req => req.protocol + '://' + req.get('host'),
-        isMockRequest: () => true, getDefaultBackend: () => ({ token: 'fixture-only', channelId: '-1001', baseUrl: 'https://example.invalid' }), maxDepth: () => 30, contentCleanupMode: 'observe' });
+    api = createDiskAPI({ dataDir, auth, defaultStore: store, operations, telegram: options.telegram || {}, getIdentity: req => sessions.identity(req),
+        setIdentity: (req, res, value) => sessions.set(req, res, value), getOrigin: req => options.webauthn ? 'https://fixture.example' : req.protocol + '://' + req.get('host'),
+        isMockRequest: () => !options.webauthn, getDefaultBackend: () => ({ token: 'fixture-only', channelId: '-1001', baseUrl: 'https://example.invalid' }), maxDepth: () => 30, contentCleanupMode: 'observe' });
     const app = express(); app.use(express.json());
     sessions.registerRoutes(app, { origin: req => req.protocol + '://' + req.get('host'), revoke: req => api.revokeContentSession(req) });
     app.post('/fixture-login/:id', (req, res) => { try { sessions.set(req, res, auth.user(req.params.id)); res.json({ ok: true }); } catch (error) { res.status(422).json({ error: error.message }); } });
@@ -38,9 +39,9 @@ async function fixture(t) {
     }
     assert.ok(server);
     const base = 'http://127.0.0.1:' + server.address().port, jar = new Map();
-    const call = async (route, body, { accountId, method = body ? 'POST' : 'GET', headers = {}, cookie, updateCookies = true } = {}) => {
+    const call = async (route, body, { accountId, method = body ? 'POST' : 'GET', headers = {}, cookie, updateCookies = true, rawBody } = {}) => {
         const response = await fetch(base + route, { method, headers: { Cookie: cookie ?? [...jar].map(([key, value]) => key + '=' + value).join('; '),
-            ...(accountId ? { 'X-Disk-Account': accountId } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+            ...(accountId ? { 'X-Disk-Account': accountId } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, ...(rawBody !== undefined ? { body: rawBody } : body ? { body: JSON.stringify(body) } : {}) });
         if (updateCookies) for (const value of response.headers.getSetCookie()) { const [name, token] = value.split(';')[0].split('='); if (/Max-Age=0(?:;|$)/.test(value)) jar.delete(name); else jar.set(name, token); }
         return { response, data: await response.json() };
     };
@@ -117,6 +118,61 @@ test('切换默认 Cookie 后，旧账号的 Content 复用票据仍绑定其自
     proof.assertAuthorization(proof.authorization(req()));
 });
 
+test('Passkey 添加其它账号与给原账号绑定通行密钥分离；默认账号变化不改变显式发起身份', async t => {
+    const { call, repository } = await fixture(t, { webauthn: {
+        generateAuthenticationOptions: async () => ({ challenge: 'fixture-auth-challenge' }),
+        verifyAuthenticationResponse: async () => ({ verified: true, authenticationInfo: { newCounter: 1 } }),
+        generateRegistrationOptions: async () => ({ challenge: 'fixture-register-challenge' }),
+        verifyRegistrationResponse: async () => ({ verified: true, registrationInfo: { credential: { id: 'alice-second-passkey', publicKey: new Uint8Array([1, 2, 3]), counter: 0 } } })
+    } });
+    await call('/fixture-login/alice', {});
+    const add = await call('/api/telegram/drive/passkeys/login/options', { username: 'bob', addAccount: true }, { accountId: 'alice' });
+    assert.equal(add.response.status, 200);
+    const login = await call('/api/telegram/drive/passkeys/verify', { flow_id: add.data.flow_id, response: { id: 'bob-passkey' }, addAccount: true }, { accountId: 'alice' });
+    assert.equal(login.data.identity.id, 'bob'); assert.equal((await call('/api/telegram/drive/accounts')).data.accounts.length, 2);
+    const bind = await call('/api/telegram/drive/passkeys/register/options', { username: 'alice', addAccount: false }, { accountId: 'alice' });
+    assert.equal(bind.response.status, 200);
+    await call('/api/telegram/drive/accounts/select', { accountId: 'bob' });
+    const result = await call('/api/telegram/drive/passkeys/verify', { flow_id: bind.data.flow_id, response: { id: 'alice-second-passkey' }, addAccount: false }, { accountId: 'alice' });
+    assert.equal(result.data.identity.id, 'alice');
+    const users = repository.load('users');
+    assert.ok(users.find(user => user.id === 'alice').passkeys.some(key => key.id === 'alice-second-passkey'));
+    assert.ok(!users.find(user => user.id === 'bob').passkeys.some(key => key.id === 'alice-second-passkey'));
+    const mismatch = await call('/api/telegram/drive/passkeys/register/options', { username: 'alice', addAccount: false }, { accountId: 'alice' });
+    const rejected = await call('/api/telegram/drive/passkeys/verify', { flow_id: mismatch.data.flow_id, response: { id: 'unexpected-key' }, addAccount: false }, { accountId: 'bob' });
+    assert.equal(rejected.data.error, 'PASSKEY_FLOW_INVALID');
+});
+
+test('真实 HTTP 渐进上传跨默认账号切换后仍只向发起者提交，另一账号不能接管分片', async t => {
+    let id = 100;
+    const { call } = await fixture(t, { telegram: {
+        async pushChunk(_backend, _file, part, update, context) {
+            await context.onState('pushing', { attempt: 1 }); let bytes = 0;
+            for await (const chunk of part.streamFactory(context.signal)) { bytes += chunk.length; update({ telegramPartBytesSent: bytes }); }
+            await part.awaitSourceComplete(context.signal);
+            const remote = { ...part, streamFactory: undefined, awaitSourceComplete: undefined, fileId: 'fixture-upload-' + ++id, messageId: id, messageDate: Date.now() };
+            await context.onConfirmed(remote); await context.onState('push_confirmed'); return remote;
+        },
+        async finalizeGroups(_backend, _file, parts, context) { await context.onGroupConfirmed(parts, 0); return parts; }, remove: async () => {}
+    } });
+    await call('/fixture-login/alice', {});
+    const started = await call('/api/telegram/drive/uploads', { progressive: true, folderPath: '甲目录', files: [{ name: '新正文.txt', type: 'text/plain', size: 5 }] }, { accountId: 'alice' });
+    assert.equal(started.response.status, 201);
+    await call('/fixture-login/bob', {});
+    const uploadId = started.data.uploadId, route = '/api/telegram/drive/uploads/' + uploadId;
+    const rejected = await call(route + '/files/0', null, { accountId: 'bob', method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-4/5' }, rawBody: 'wrong' });
+    assert.equal(rejected.response.status, 404);
+    const sent = await call(route + '/files/0', null, { accountId: 'alice', method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Range': 'bytes 0-4/5' }, rawBody: 'hello' });
+    assert.equal(sent.response.status, 200);
+    const finish = await call(route + '/finish', {}, { accountId: 'alice' }); assert.ok(finish.response.ok);
+    let terminal;
+    for (let i = 0; i < 250; i++) { const result = await call('/api/telegram/drive/operations/' + started.data.operation_id, null, { accountId: 'alice' }); if (['completed', 'failed', 'cancelled'].includes(result.data.status)) { terminal = result.data; break; } await new Promise(resolve => setTimeout(resolve, 20)); }
+    assert.equal(terminal?.status, 'completed', terminal?.errorCode);
+    const source = (await call('/api/telegram/drive/list?path=' + encodeURIComponent('甲目录'), null, { accountId: 'alice' })).data.files;
+    const other = (await call('/api/telegram/drive/list?path=' + encodeURIComponent('乙目录'), null, { accountId: 'bob' })).data.files;
+    assert.ok(source.some(file => file.name === '新正文.txt' && file.size === 5)); assert.ok(!other.some(file => file.name === '新正文.txt'));
+});
+
 test('客户端账号切换后上传 XHR、SSE、完成等待仍绑定原账号；当前界面不混入旧任务', async () => {
     const requests = [], xhrs = [], streams = [], snapshots = [], window = {}; let finished = false;
     class XHR {
@@ -137,10 +193,12 @@ test('客户端账号切换后上传 XHR、SSE、完成等待仍绑定原账号�
     };
     vm.runInNewContext(source, { window, fetch, location: { origin: 'http://fixture.test' }, URL, URLSearchParams, XMLHttpRequest: XHR, EventSource, AbortController, setInterval() {}, setTimeout, clearTimeout });
     const client = window.DiskClient; client.setAccount('alice'); client.subscribe(jobs => snapshots.push(jobs.map(value => value.operation_id)));
-    const upload = client.upload([{ name: '正文.bin', size: 10 }], '', async () => ({ size: 10, slice: () => ({ size: 10 }) }));
+    const initialContext = client.context();
+    const upload = client.upload([{ name: '正文.bin', size: 10 }], '', async () => ({ size: 10, slice: () => ({ size: 10 }) }), { transportContext: initialContext });
     for (let i = 0; i < 100 && !xhrs.length; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(xhrs.length, 1); assert.equal(xhrs[0].headers['X-Disk-Account'], 'alice');
     assert.equal(new URL(streams[0].url, 'http://fixture.test').searchParams.get('disk_account'), 'alice');
+    initialContext.accountId = 'bob'; initialContext.diskSpace = '后来切换的分区';
     client.setAccount('bob'); await new Promise(resolve => setImmediate(resolve)); await client.refresh(true);
     assert.equal(snapshots.at(-1).length, 0);
     xhrs[0].status = 200; xhrs[0].responseText = '{}'; xhrs[0].events.load();
@@ -205,4 +263,73 @@ test('后台浏览器缓存下载绑定发起账号，切换后其进度不污�
     client.setAccount('bob'); assert.equal(client.cacheProgress('shared-logical-file'), null); assert.equal(client.isCaching('shared-logical-file'), false);
     assert.equal(requests.find(value => value.url.endsWith('/download')).options.headers['X-Disk-Account'], 'alice');
     resume(); assert.equal((await reading).size, 4); client.stop();
+});
+
+function accountUiFixture(remaining = { identity: { id: 'bob' }, accounts: [{ identity: { id: 'bob' } }] }) {
+    const ui = fs.readFileSync(path.join(__dirname, '../client/disk-ui.js'), 'utf8');
+    const start = ui.indexOf('function rememberTelegramDriveActiveAccount('), end = ui.indexOf('\nfunction appendTelegramDriveAddAccount(', start);
+    const logoutStart = ui.indexOf('async function logoutTelegramDrive('), logoutEnd = ui.indexOf('\nasync function manageTelegramDriveSpaces(', logoutStart);
+    const startupSelection = ui.split('\n').find(line => line.includes("const saved = new URLSearchParams(location.search).get('disk_account')"));
+    assert.ok(start >= 0 && end > start && logoutStart >= 0 && logoutEnd > logoutStart && startupSelection, '测试使用实际账号记录、切换、退出函数与实际启动解析逻辑');
+    const storage = new Map([['telegram-drive-active-account', 'alice']]), records = [], requested = [], stopped = [], events = [], previewOptions = [];
+    let accountId = 'alice';
+    const location = { href: 'https://fixture.example/disk?disk_account=alice&pendingSave=pending-id&collaboration=alice-grant#record', pathname: '/disk',
+        search: '?disk_account=alice&pendingSave=pending-id&collaboration=alice-grant', origin: 'https://fixture.example' };
+    const history = { state: { retained: true, diskAccountId: 'alice', telegramDrivePath: '甲目录', diskMountContext: { id: 'old-mount' } },
+        replaceState(state, _title, target) { this.state = state; const address = new URL(target, location.href); location.href = address.href; location.pathname = address.pathname; location.search = address.search; records.push({ state, url: address.href }); } };
+    const client = { raw: async (route, options) => { requested.push({ route, options }); return route === '/accounts' ? remaining : { identity: { id: 'bob' } }; },
+        json: (method, body) => ({ method, body: JSON.stringify(body) }), setAccount: value => { accountId = value; }, getAccount: () => accountId,
+        setMount() {}, setCollaboration() {}, setSpace() {}, stopAccount: value => stopped.push(value) };
+    const context = vm.createContext({ window: { DiskClient: client }, location, history, URL, URLSearchParams,
+        localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
+        rememberTelegramDriveAccountView() {}, cancelTelegramDrivePendingMount() { events.push('cancel-mount'); }, closeDiskCollaborationFrame() { events.push('close-frame'); }, closeDiskPreview(options) { previewOptions.push(options); },
+        confirmTelegramDriveAction: async () => true, showAppToast() {},
+        clearTelegramDriveSearch() {}, clearTelegramDriveSelection() {}, renderTelegramDrive: async () => {},
+        telegramDriveNavigationVersion: 0, telegramDriveRenderGeneration: 0, telegramDriveMountContext: { id: 'old-mount' }, telegramDrivePath: '甲目录', telegramDriveCurrentData: {}, telegramDriveStaticLinks: [], telegramDriveSpaceOwner: 'alice', telegramDriveSpaces: [] });
+    vm.runInContext(ui.slice(start, end) + '\n' + ui.slice(logoutStart, logoutEnd), context);
+    return { context, location, history, storage, records, requested, stopped, events, previewOptions, client, startupSelection };
+}
+
+test('从显式账号链接切换后更新地址和历史状态；刷新采用新账号且保留待转存恢复参数', async () => {
+    const { context, client, location, storage, records, requested, previewOptions, startupSelection } = accountUiFixture();
+    await context.switchTelegramDriveAccount('bob');
+    assert.equal(requested[0].route, '/accounts/select'); assert.equal(JSON.parse(requested[0].options.body).accountId, 'bob');
+    assert.equal(records.at(-1).state.diskAccountId, 'bob'); assert.equal(records.at(-1).state.diskMountContext, null);
+    const updated = new URL(location.href);
+    assert.equal(updated.searchParams.get('disk_account'), 'bob'); assert.equal(updated.searchParams.get('pendingSave'), 'pending-id');
+    assert.equal(updated.hash, '#record'); assert.equal(updated.searchParams.has('collaboration'), false, '不能刷新后重放前一账号的协同定位');
+    assert.equal(previewOptions[0]?.replaceHistory, true, '切换账号不得通过关闭预览的history.back恢复旧账号URL');
+    client.setAccount(''); storage.set('telegram-drive-active-account', 'alice');
+    vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), 'bob', '刷新时URL的新账号优先于其它页面写入的localStorage账号');
+});
+
+test('退出当前账号后URL与剩余账号一致，最后退出清除选择器，退出其它账号不改变当前浏览状态', async t => {
+    await t.test('退出当前账号后刷新仍选择剩余账号', async () => {
+        const { context, client, location, history, storage, stopped, events, previewOptions, startupSelection } = accountUiFixture();
+        await context.logoutTelegramDrive('alice');
+        assert.deepEqual(stopped, ['alice']); assert.equal(client.getAccount(), 'bob');
+        assert.equal(history.state.diskAccountId, 'bob'); assert.equal(history.state.diskMountContext, null); assert.equal(context.telegramDriveMountContext, null);
+        assert.equal(new URL(location.href).searchParams.get('disk_account'), 'bob'); assert.equal(new URL(location.href).searchParams.has('collaboration'), false);
+        assert.equal(new URL(location.href).searchParams.get('pendingSave'), 'pending-id'); assert.equal(new URL(location.href).hash, '#record');
+        assert.equal(storage.get('telegram-drive-active-account'), 'bob'); assert.ok(events.includes('close-frame'));
+        assert.equal(previewOptions[0]?.replaceHistory, true, '退出账号不得通过关闭预览的history.back恢复已退出账号URL');
+        client.setAccount(''); vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), 'bob');
+    });
+    await t.test('最后一个账号退出后清除URL和本地活跃身份', async () => {
+        const { context, client, location, history, storage, startupSelection } = accountUiFixture({ identity: null, accounts: [] });
+        await context.logoutTelegramDrive('alice');
+        assert.equal(client.getAccount(), ''); assert.equal(history.state.diskAccountId, '');
+        assert.equal(new URL(location.href).searchParams.has('disk_account'), false); assert.equal(storage.has('telegram-drive-active-account'), false);
+        assert.equal(new URL(location.href).searchParams.get('pendingSave'), 'pending-id'); assert.equal(new URL(location.href).hash, '#record');
+        vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), '');
+    });
+    await t.test('退出非当前账号保留当前账号URL、路径和挂载导航', async () => {
+        const { context, client, location, history, storage, records, stopped, events } = accountUiFixture();
+        const originalUrl = location.href, originalState = history.state, originalMount = context.telegramDriveMountContext;
+        await context.logoutTelegramDrive('bob');
+        assert.deepEqual(stopped, ['bob']); assert.equal(client.getAccount(), 'alice'); assert.equal(location.href, originalUrl);
+        assert.equal(history.state, originalState); assert.equal(context.telegramDriveMountContext, originalMount); assert.equal(context.telegramDrivePath, '甲目录');
+        assert.equal(storage.get('telegram-drive-active-account'), 'alice'); assert.equal(records.length, 0);
+        assert.deepEqual(events, [], '退出其它账号不得取消当前账号的挂载导航或关闭其协同浮层');
+    });
 });

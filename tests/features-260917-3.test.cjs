@@ -29,7 +29,7 @@ test('网页 ZIP 两个入口显示启动阶段并对 Service Worker 等待设�
     assert.match(preview, /正在解压网页 ZIP/);
     assert.match(preview, /WebZipRuntime\.mount\(entries,\{onStatus/);
     assert.match(workshop, /web-workshop-preview-status/);
-    assert.match(workshop, /global\.WebZipRuntime\.mount\(files,\{onStatus/);
+    assert.match(workshop, /global\.WebZipRuntime\.mount\(files,\{entryPath,onStatus/);
     assert.match(preview, /renderEpoch/);
     assert.match(workshop, /previewEpoch/);
 });

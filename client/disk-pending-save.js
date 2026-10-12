@@ -4,6 +4,7 @@
     const STORE = 'records';
     const adapters = new Map();
     const active = new Map();
+    const recordLocks = new Map();
     let database;
     const versionOf = task => `${Number(task?.completedAt) || 0}-${Number(task?.outputFileSize) || 0}`;
     const sourceTypes = new Set(['sns', 'youtube']);
@@ -17,6 +18,17 @@
         return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     };
     const validId = id => /^[-a-zA-Z0-9_]{8,100}$/.test(String(id || ''));
+
+    function lockRecord(id, operation) {
+        if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-resume:' + id, operation);
+        // Older browsers still serialize cancellation and resume in this page.
+        // Cross-page publication remains guarded by the server's unique ID.
+        const result = (recordLocks.get(id) || Promise.resolve()).then(operation);
+        const tail = result.then(() => {}, () => {});
+        recordLocks.set(id, tail);
+        tail.then(() => { if (recordLocks.get(id) === tail) recordLocks.delete(id); });
+        return result;
+    }
 
     function openDatabase() {
         if (!global.indexedDB) return Promise.reject(new Error('当前浏览器不支持持久待转存记录'));
@@ -111,13 +123,16 @@
             cache ||= cacheFor(source);
             adapters.set(source, cache);
             if (existing) {
-                if (existing.status === 'preparing') {
-                    await verifySource(existing);
-                    const pinned = await cache.pin(existing.task, existing.id);
-                    existing.file = { name: pinned.name, size: pinned.size, type: pinned.type };
-                    existing.cache = { taskId: pinned.id, version: pinned.version };
-                    existing.status = 'pending'; existing.updatedAt = Date.now(); await put(existing);
-                }
+                if (existing.status === 'preparing') return lockRecord(existing.id, async () => {
+                    const latest = await get(existing.id);
+                    if (latest.status !== 'preparing') return latest;
+                    await verifySource(latest);
+                    const pinned = await cache.pin(latest.task, latest.id);
+                    latest.file = { name: pinned.name, size: pinned.size, type: pinned.type };
+                    latest.cache = { taskId: pinned.id, version: pinned.version };
+                    latest.status = 'pending'; latest.updatedAt = Date.now(); await put(latest);
+                    return latest;
+                });
                 return existing;
             }
             await verifySource({ source, task: { ...task, id: String(task.id) }, version });
@@ -137,7 +152,8 @@
                 sourceInfo: safeSource(task), file: { name: String(task.outputFileName || 'downloaded-file'), size: Number(task.outputFileSize), type: 'application/octet-stream' },
                 status: 'preparing', target: null, createdAt: Date.now(), updatedAt: Date.now() };
             await put(record);
-            try {
+            return lockRecord(record.id, async () => { try {
+                if ((await get(record.id))?.status === 'cancelled') throw new Error('待转存记录已取消，未建立缓存引用');
                 const pinned = await cache.pin(task, record.id);
                 record.file = { name: pinned.name, size: pinned.size, type: pinned.type };
                 record.cache = { taskId: pinned.id, version: pinned.version };
@@ -148,7 +164,7 @@
                 await cache.unpin(task.id, record.id).catch(() => {});
                 throw error;
             }
-            return record;
+            return record; });
         };
         return global.navigator?.locks ? global.navigator.locks.request('disk-pending-prepare:' + source + ':' + task?.id, prepareOne) : prepareOne();
     }
@@ -162,9 +178,10 @@
     }
     async function getBlob(record) {
         if (record.version !== versionOf(record.task)) throw new Error('待转存任务版本无效，请重新发起');
-        const cache = cacheFor(record.source), cached = await cache.getRecord(record.task.id);
-        if (cached?.version !== record.version || !cached.pendingTransferPins?.includes(record.id)) throw new Error('待转存缓存引用已失效，请回后台检查缓存');
-        const blob = await cache.getBlob(record.task);
+        // Let the source adapter validate the pinned version and read bytes in
+        // one IDB request; legacy ArrayBuffers must not be loaded twice.
+        const cache = cacheFor(record.source);
+        const blob = await cache.getBlob(record.task, { pendingId: record.id });
         if (!blob || blob.size !== record.file.size) throw new Error('待转存文件缓存不完整，请补充缓存后继续');
         return blob;
     }
@@ -173,15 +190,22 @@
         await cacheFor(record.source).unpin(record.task.id, record.id);
         return record;
     }
-    async function cancel(id) {
-        const operation = () => cancelUnlocked(id);
-        return global.navigator?.locks ? global.navigator.locks.request('disk-pending-resume:' + id, operation) : operation();
+    async function cancel(id, verifier) {
+        const operation = () => cancelUnlocked(id, verifier);
+        return lockRecord(id, operation);
     }
-    async function cancelUnlocked(id) {
-        const record = await get(id);
+    async function cancelUnlocked(id, verifier) {
+        let record = await get(id);
         if (!record) return null;
         if (record.status === 'completed') return record;
-        if (['uploading', 'verification-required'].includes(record.status)) throw new Error('上传结果尚未确认，请先核验任务结果后再取消待转存记录');
+        if (['uploading', 'verification-required'].includes(record.status)) {
+            const found = verifier ? await verifier(record) : null;
+            if (found?.status === 'completed') return complete(id, found.result);
+            if (!['failed', 'missing'].includes(found?.status) || found.retryable !== true) {
+                throw new Error('上传结果尚未确认或仍在处理，待转存记录及缓存已保留，请稍后核验');
+            }
+            record = await update(id, { status: 'failed' });
+        }
         const next = await update(id, { status: 'cancelled' });
         await cacheFor(record.source).unpin(record.task.id, id);
         return next;
@@ -223,7 +247,7 @@
             await hooks.onCompleted?.(record);
             return record;
         };
-        const promise = (global.navigator?.locks ? global.navigator.locks.request('disk-pending-resume:' + id, execute) : execute()).finally(() => active.delete(id));
+        const promise = lockRecord(id, execute).finally(() => active.delete(id));
         active.set(id, promise);
         return promise;
     }

@@ -7,11 +7,11 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'client/disk-collaboration.js'), 'utf8');
 
-function fixture({ search = '', role = 'viewer', kind = 'directory', missingPath = '' } = {}) {
+function fixture({ search = '', role = 'viewer', kind = 'directory', missingPath = '', thumbnailAvailable = false, pathname = '/disk-collab/view/collab-1' } = {}) {
     const elements = new Map(), calls = [], writes = [], pickerArgs = [], historyUrls = [];
     class Element {
         constructor(tag) {
-            this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {};
+            this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
             const names = new Set();
             this.classList = { names, toggle() {}, add:name => names.add(name), remove:name => names.delete(name) };
         }
@@ -31,6 +31,8 @@ function fixture({ search = '', role = 'viewer', kind = 'directory', missingPath
         raw: async (url, options) => {
             calls.push(url);
             if (options?.method === 'POST') writes.push({ url, body:JSON.parse(options.body) });
+            if (url === '/me') return { identity: { id: 'actor-1', name: '协同成员' } };
+            if (url === '/api/telegram/drive/collaborations/invitations/owner-token/preview') return { invitation: { id: 'collab-1', owned: true } };
             if (url === '/api/telegram/drive/collaborations/collab-1') return { collaboration:{ ...grant } };
             if (url === '/api/telegram/drive/collaborations') return { collaborations:[
                 { id:'collab-1', name:'项目', kind:'directory', role, owned:false },
@@ -48,20 +50,23 @@ function fixture({ search = '', role = 'viewer', kind = 'directory', missingPath
             }
             if (url.startsWith('/list?path=')) {
                 if (decodeURIComponent(url.split('=')[1]) === missingPath) throw new Error('DIRECTORY_NOT_FOUND');
-                return { folders:[], files:[{ id:'file-1', name:'报告.txt', type:'text/plain', folderPath:'共享/子目录' }] };
+                return { folders:[], files:[{ id:'file-1', name:'报告.txt', type:'text/plain', folderPath:'共享/子目录', thumbnailAvailable }] };
             }
             if (url === '/files/file-1') return { id:'file-1', name:'报告.txt', type:'text/plain', folderPath:'共享' };
             throw new Error('Unexpected request: ' + url);
         },
-        json(method, body) { return { method, body:JSON.stringify(body) }; }, setCollaboration(id) { this.collaborationId = id; }, subscribe() {}, stop() {}
+        json(method, body) { return { method, body:JSON.stringify(body) }; }, setCollaboration(id) { this.collaborationId = id; },
+        setAccount(id) { this.accountId = id; }, getAccount() { return this.accountId || ''; }, subscribe() {}, stop() {}
     };
     const window = { DiskClient:client, DiskDirectoryPicker:{ choose:async options => { pickerArgs.push(options); return '目标根/归档'; } }, addEventListener() {}, parent:null }; window.parent = window;
     const document = { getElementById:get, createElement:tag => new Element(tag), addEventListener() {}, querySelectorAll:() => [],
         body:{ classList:{ toggle() {} }, append() {} } };
-    const location = { pathname:'/disk-collab/view/collab-1', search, origin:'https://example.test' };
+    const location = { pathname, search, origin:'https://example.test', replace(url) { this.replaced = url; } };
+    window.location = location;
+    window.DiskErrorMessages = { format: error => error.message };
     vm.runInNewContext(source, { window, document, location, URLSearchParams, URL, history:{ replaceState(_state, _title, url) { historyUrls.push(url); } },
         setTimeout, clearTimeout, Date, console });
-    return { elements, calls, writes, pickerArgs, historyUrls, client, get };
+    return { elements, calls, writes, pickerArgs, historyUrls, client, get, location };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -119,4 +124,26 @@ test('搜索命中的目录已经消失时回到授权根，文件级协同忽�
     await settle();
     assert.equal(file.calls.some(url => url.startsWith('/list?path=')), false);
     assert.ok(file.calls.includes('/files/file-1'));
+});
+
+test('协同独立页先固定登录账号，iframe 显式账号及 direct 下载和缩略图不会跟随其它页默认账号', async () => {
+    for (const [search, accountId] of [['', 'actor-1'], ['?embedded=1&disk_account=actor-2', 'actor-2']]) {
+        const page = fixture({ search, thumbnailAvailable: true }); await settle();
+        assert.equal(page.client.getAccount(), accountId);
+        assert.equal(page.calls.includes('/me'), !search);
+        const line = page.get('list').children[0], thumbnail = line.children[0].children[0];
+        const imageURL = new URL(thumbnail.src, 'https://example.test');
+        assert.equal(imageURL.searchParams.get('disk_account'), accountId);
+        assert.equal(imageURL.pathname, '/api/telegram/drive/collaboration-scope/collab-1/files/file-1/thumbnail');
+        await line.children.at(-1).children.find(button => button.textContent === '下载').onclick();
+        assert.equal(new URL(page.location.href, page.location.origin).searchParams.get('disk_account'), accountId);
+    }
+});
+
+test('所有者打开本人邀请跳转原生网盘时带上已验证的页面账号，不把项目交给其它默认账号', async () => {
+    const page = fixture({ pathname: '/disk-collab/owner-token', search: '?disk_account=actor-2' }); await settle();
+    const target = new URL(page.location.replaced, page.location.origin);
+    assert.equal(target.pathname, '/disk'); assert.equal(target.searchParams.get('disk_account'), 'actor-2');
+    assert.equal(target.searchParams.get('collaboration'), 'collab-1');
+    assert.ok(!page.writes.some(value => value.url.includes('/join')));
 });
