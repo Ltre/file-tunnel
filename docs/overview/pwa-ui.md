@@ -1,7 +1,7 @@
 # PWA、功能首页 UI、响应式布局与全局交互
 
-> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
-> **文档更新时间**：`2026-09-26`
+> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **文档更新时间**：`2026-10-13`
 
 ## 子模块文档
 
@@ -71,7 +71,7 @@ fetch 根据资源类型采用网络/缓存 fallback；Web ZIP Runtime 又有独
 
 因此提交涉及关键 JS / CSS 时，经常同时更新 SW cache version 和相关 test assertion。
 
-当前基线的应用壳版本为 `instant-tunnel-v63`，并缓存了新增的 `/client/disk-collaboration.js`。
+当前应用壳已从 v63 演进到 v78 及其功能后缀；以当前 `service-worker.js` 的 `CACHE_NAME` 为准。新增网盘账户、编辑、挂载、目录选择及 Markdown 支持资源后，必须核对预缓存/构建资源与 Runtime 协议版本，不能机械假设二者总是相同。
 
 这不是所有改动都必须机械 bump，但如果文件属于 app shell 且现有缓存策略会复用旧响应，就要考虑版本更新。
 
@@ -401,3 +401,11 @@ UI 相关自动测试覆盖：
 - resize；
 - PWA standalone；
 - 部署后的旧 SW 标签页。
+
+## 20. 2026-09—10 启动性能、进度与资源集成
+
+首页解析阶段的客户端脚本改为 `defer` 并行下载但按依赖顺序执行；OPFS Worker 的可选探测后台完成，旧缓存引用的读取仍等待所需就绪状态。可观测 `window.TunnelStartup`、Performance mark / 事件及阶段耗时，用于区分 DCL、壳就绪、IndexedDB/历史恢复、Socket 与服务工作线程。
+
+Service Worker 对已有缓存壳的指定首页路由提供最长约 1 秒的 network-first 等待回退，首次无缓存不保证 1 秒启动；强制刷新仍走原路径。后来新增独立资源加载进度遮罩，基于 Resource Timing / PerformanceObserver **观察**加载，不劫持 fetch、XHR 或 Socket。加载完成清除观察器/遮罩；不能把遮罩自身当作网络加速。
+
+部署工具补齐动态脚本、Worker 和 CSS 资源的构建/校验路径，Markdown ZIP 依赖保留原字节。新增模块应同时检查普通页面、产物清单、SW 缓存和旧页升级；开发测试中“构建通过”与 Android PWA 真机冷/热启动尚需分开记录。
