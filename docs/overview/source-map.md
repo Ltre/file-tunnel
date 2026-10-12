@@ -202,15 +202,12 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - 54：协同邀请预览/确认、窄屏管理入口、网页工坊多级路径；
 - 55：网页工坊引用联动、路径边界、顶栏对齐、网盘转发去二次确认。
 
-### 未来设计
+### 历史设计及当前落地对照
 
-- `prompts/dev-prompt-logs/dev-tgdisk-json2sqlite-WAL-transaction-260915.md`
-- `prompts/dev-prompt-logs/QA-of-tgdisk-json2sqliteWAL.md`
-- `prompts/ideas/Make full use of Telegram storage 260920.md`
-- `prompts/ideas/QA of S3 base on Telegram Storage 260920.md`
-- `prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md`
+- `prompts/dev-prompt-logs/dev-tgdisk-json2sqlite-WAL-transaction-260915.md`、`QA-of-tgdisk-json2sqliteWAL.md`：当时的 SQLite 设计；当前 Repository 已落地，实际实现以 `server/disk-repository.js` 及迁移工具为准。
+- `prompts/ideas/Make full use of Telegram storage 260920.md`、`QA of S3 base on Telegram Storage 260920.md`、`Telegram Drive S3-Compatible API Implementation Guide (260920).md`：历史讨论/规范；当前已有有限 S3 Gateway，支持范围以 `server/s3/*` 及 `docs/telegram-drive-s3-compatible.md` 为准。
 
-这些是计划，不代表当前实现。
+**不要再把整个 SQLite WAL 与 S3 Gateway 标为未实现；但历史设计中超出当前代码的能力仍属于计划。**
 
 ## 8. 网页工坊 / Web ZIP
 
