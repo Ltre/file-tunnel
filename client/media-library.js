@@ -4,7 +4,7 @@
     const titles = { infra: '基础设施设置', imports: '资源导入', sessions: '提取会话', collection: '收藏资源库', entities: '标签与人物', status: '系统状态' };
     const states = { ready: '导入就绪', 'awaiting-task': '等待创建下载任务', 'waiting-download': '等待下载', 'download-failed': '抓取失败', queued: '排队中',
         receiving: '正在接收本地文件', transferring: '正在转存网盘', 'import-failed': '导入失败', running: '执行中', completed: '已完成', failed: '失败', cancelled: '已取消', expired: '已到期清理', interrupted: '中断待恢复', deleted: '已删除' };
-    let data = { imports: [], sessions: [], results: [], collections: [], entities: [], jobs: [], caches: [], events: [] }, tab = 'infra', sessionId = '', playerOffset = 0, selection = new Set(), polling = false, activeUpload;
+    let data = { imports: [], sessions: [], results: [], collections: [], entities: [], jobs: [], caches: [], events: [] }, tab = 'infra', sessionId = '', playerOffset = 0, selection = new Set(), polling = null, activeUpload, stateRevision = 0;
     let lastView = '', collectionQuery = '', collectionEntity = '';
     const el = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; };
     const notice = (text, failed = false) => { $('ml-notice').textContent = text; $('ml-notice').className = failed ? 'error' : ''; };
@@ -31,12 +31,30 @@
         if (!$('ml-dialog').open) $('ml-dialog').showModal();
     }
     function changeTab(next) { tab = next; document.querySelectorAll('[data-tab]').forEach(node => { node.classList.toggle('active', node.dataset.tab === tab); node.setAttribute('aria-selected', String(node.dataset.tab === tab)); }); render(); }
+    function rememberRecord(kind, record) {
+        const records = data[kind], index = records.findIndex(value => value.id === record.id);
+        if (index < 0) records.unshift(record); else records[index] = record;
+        stateRevision++;
+    }
     async function refresh(redraw = false) {
-        if (polling) return; polling = true;
-        try { data = await api('/state'); const version = JSON.stringify(data);
+        while (polling) { await polling; if (!redraw) return; }
+        const revision = stateRevision;
+        const flight = (async () => {
+            const snapshot = await api('/state');
+            // A response started before a successful mutation must not erase
+            // the returned session, Clip job or collection from the local UI.
+            if (revision !== stateRevision) return;
+            data = snapshot; const version = JSON.stringify(data);
             if ((redraw || version !== lastView && ['imports', 'status', 'collection', 'entities'].includes(tab)) && !$('ml-dialog').open && !activeUpload && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) render();
-            else if (tab === 'sessions' && version !== lastView) renderResults(); lastView = version; }
-        finally { polling = false; }
+            else if (tab === 'sessions' && version !== lastView) {
+                const chooser = $('ml-session-picker');
+                if (chooser) { chooser.replaceChildren(...data.sessions.filter(s => s.state === 'active').map(s => new Option(s.name, s.id))); chooser.value = sessionId; }
+                renderResults();
+            }
+            lastView = version;
+        })();
+        polling = flight;
+        try { await flight; } finally { if (polling === flight) polling = null; }
     }
     async function accounts() {
         const status = await api('/api/telegram/drive/accounts'); return (status.accounts || []).filter(a => !a.reauthRequired).map(a => a.identity);
@@ -120,11 +138,25 @@
             catch (error) { notice(error.name === 'AbortError' ? '已取消当前本地上传；此前完整到达服务器的文件继续后台处理。' : error.message, true); }
             finally { activeUpload = null; stopUpload.hidden = true; picker.value = ''; await refresh(true); } };
         const url = input(''); url.type = 'url'; url.placeholder = '粘贴 SNS / YouTube 链接'; const link = el('div', undefined, 'ml-row');
-        link.append(url, button('去原下载页创建任务', async () => { const value = await api('/links', json('POST', { url: url.value })); location.assign(value.url); }, 'primary'));
+        link.append(url, button('去原下载页创建任务', async () => {
+            // Open synchronously while user activation is still available.
+            const page = window.open('about:blank', '_blank');
+            if (!page) throw Error('新标签页被浏览器拦截，请允许弹出页面后重试。');
+            page.opener = null;
+            try { const value = await api('/links', json('POST', { url: url.value })); const target = new URL(value.url, location.origin);
+                if (target.origin !== location.origin || !['/sns-dl', '/youtube-premium-dl'].includes(target.pathname)) throw Error('下载页面地址无效');
+                page.location.replace(target.href);
+            } catch (error) { page.close(); throw error; }
+        }, 'primary'));
         box.append(sources, picker, stopUpload, link); main.append(box);
         const list = card('导入记录', '只有网盘保存确认完成且媒体读取有效时，才显示“导入就绪”。');
         for (const resource of data.imports) { const entry = card('', ''), actions = el('div', undefined, 'ml-actions'); entry.append(el('div', resource.name, 'ml-item-name'), badge(resource.state), el('p', `${resource.kind} · ${resource.source?.taskId || '无下载任务'} · ${resource.duration ? time(resource.duration * 1000) : ''} · ${date(resource.createdAt)}`));
-            if (resource.state === 'ready') { if (resource.duration) actions.append(button('新建提取会话', async () => { const session = await api('/sessions', json('POST', { importId: resource.id, name: prompt('会话名称', '提取会话') || '提取会话' })); sessionId = session.id; await refresh(); changeTab('sessions'); }));
+            if (resource.state === 'ready') { if (resource.duration) actions.append(button('新建提取会话', async () => {
+                const name = prompt('会话名称', '提取会话'); if (name === null) return;
+                const session = await api('/sessions', json('POST', { importId: resource.id, name: name || '提取会话' }));
+                rememberRecord('sessions', session); sessionId = session.id; selection.clear(); changeTab('sessions');
+                refresh(true).catch(error => notice(error.message, true));
+            }));
                 actions.append(button('正式收录', async () => { if (!confirm('保存到正式收藏位置？直接引用外部文件请在下一步选择；收藏不随工作区到期删除。')) return;
                     const external = !resource.managed && confirm('仅保留外部网盘文件引用？确定：直接引用；取消：独立转存到正式收藏区。'); await api('/imports/' + resource.id + '/collect', json('POST', { external })); await refresh(true); notice('已建立正式收录任务'); }));
                 if (resource.managed) actions.append(button('续期一年', async () => { await api('/imports/' + resource.id, json('PATCH', { days: 365 })); await refresh(true); }));
@@ -145,7 +177,7 @@
     function renderSessions() {
         if (!currentSession()) sessionId = data.sessions.find(s => s.state === 'active')?.id || '';
         const session = currentSession(), panel = card('提取会话'), chooser = select(data.sessions.filter(s => s.state === 'active').map(s => [s.id, s.name]), sessionId);
-        chooser.onchange = () => { sessionId = chooser.value; selection.clear(); render(); }; panel.append(label('当前会话', chooser));
+        chooser.id = 'ml-session-picker'; chooser.onchange = () => { sessionId = chooser.value; selection.clear(); render(); }; panel.append(label('当前会话', chooser));
         if (!session) { panel.append(el('p', '请在“资源导入”中选择一个就绪视频，新建提取会话。')); return panel; }
         const resource = data.imports.find(r => r.id === session.importId); if (!resource) { panel.append(el('p', '源记录不存在')); return panel; }
         panel.append(el('p', `${resource.name} · 时长 ${time(resource.duration * 1000)} · ${resource.available ? '来源可读' : '来源当前失效'}`));
@@ -154,27 +186,44 @@
         parameters.append(label('模式', mode), label('时间范围', ranges), label('随机数量', count), label('间隔（毫秒）', interval), el('p', '随机模式不填间隔时直接抽取指定数量；等间隔模式必须填写间隔。每批最多 500 张。'));
         parameters.append(button('开始取帧', async () => { await api('/sessions/' + session.id + '/extract', json('POST', { mode: mode.value, ranges: ranges.value, count: Number(count.value), intervalMs: Number(interval.value), minIntervalMs: Number(interval.value) })); notice('取帧任务已排队，可关页后回来继续查看'); }, 'primary'));
         const player = document.createElement('video'); player.id = 'ml-player'; player.className = 'ml-preview'; player.controls = true; player.preload = 'metadata'; player.src = root + '/files/' + resource.id;
-        playerOffset = 0; const clock = el('output', '00:00:00.000'); player.ontimeupdate = () => { clock.textContent = time((player.currentTime + playerOffset) * 1000); };
+        playerOffset = 0; let steppedFrame = null;
+        const playerTime = () => player.paused && steppedFrame && Math.abs(player.currentTime - steppedFrame.position) < .001 ? steppedFrame.time : player.currentTime + playerOffset;
+        const clock = el('output', '00:00:00.000'); player.ontimeupdate = () => { clock.textContent = time(playerTime() * 1000); };
         player.onerror = () => notice('浏览器可能不支持源视频编码。可先生成下方工作片段，以兼容 MP4 播放后继续操作。', true);
         const start = input('0'), end = input(String(Math.min(resource.duration, 30))), audio = input('', 'checkbox'); audio.checked = true;
         const precision = select([['precise', '精确裁切（重新编码、高画质）'], ['fast', '快速裁切（流复制，切点可能偏移）']]);
         const line = el('div', undefined, 'ml-player-line');
-        const step = async direction => { player.pause(); const at = player.currentTime + playerOffset;
-            const value = await api('/imports/' + resource.id + '/frame-neighbor?time=' + encodeURIComponent(at)); const target = value[direction]; if (target === null) throw Error('附近未找到可确认的实际帧，请稍后重试或直接输入时刻。'); player.currentTime = target - playerOffset; clock.textContent = time(target * 1000); };
+        let stepping = false;
+        const step = async direction => {
+            if (stepping) return; stepping = true; player.pause();
+            try {
+                const at = playerTime();
+                const value = await api('/imports/' + resource.id + '/frame-neighbor?time=' + encodeURIComponent(at));
+                if (!player.isConnected || sessionId !== session.id) return;
+                const target = value[direction];
+                if (!Number.isFinite(target)) throw Error(direction === 'previous' ? '已经到达第一帧，或附近未找到可确认的上一帧。' : '已经到达最后一帧，或附近未找到可确认的下一帧。');
+                const seek = value[direction + 'SeekTime'] ?? target;
+                if (seek < playerOffset || Number.isFinite(player.duration) && seek - playerOffset >= player.duration) throw Error('目标帧不在当前播放片段内。');
+                await seekMediaFrame(player, seek - playerOffset, target - playerOffset);
+                steppedFrame = { position: seek - playerOffset, time: target };
+                clock.textContent = time(target * 1000);
+            } finally { stepping = false; }
+        };
         line.append(button('← 上一帧', () => step('previous')), button('下一帧 →', () => step('next')), clock,
-            button('设为起点', () => { player.pause(); start.value = (player.currentTime + playerOffset).toFixed(3); }), button('设为终点', () => { player.pause(); end.value = (player.currentTime + playerOffset).toFixed(3); }));
+            button('设为起点', () => { player.pause(); start.value = playerTime().toFixed(3); }), button('设为终点', () => { player.pause(); end.value = playerTime().toFixed(3); }));
         player.onkeydown = event => { if (player.paused && ['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); step(event.key === 'ArrowLeft' ? 'previous' : 'next').catch(error => notice(error.message, true)); } };
         center.append(player, line);
         const controls = el('div', undefined, 'ml-row'), order = select([['time', '按实际播放时刻'], ['created', '按提取时间']]), unsaved = input('', 'checkbox'); order.id = 'ml-frame-order'; unsaved.id = 'ml-frame-unsaved';
         order.onchange = renderResults; unsaved.onchange = renderResults;
-        controls.append(order, label('只看未收藏', unsaved), button('收藏选中画面', async () => { if (!selection.size) throw Error('请先选择画面'); for (const id of selection) await api('/results/' + id + '/collect', json('POST')); selection.clear(); await refresh(); notice('已建立收藏转存任务，确认落盘后才标记已收藏'); }));
+        controls.append(order, label('只看未收藏', unsaved), button('收藏选中画面', async () => { if (!selection.size) throw Error('请先选择画面'); for (const id of [...selection]) await collectCandidate(id); selection.clear(); renderResults(); }));
         const results = el('div', undefined, 'ml-grid'); results.id = 'ml-results'; center.append(controls, results);
         right.append(label('起点（秒或时间）', start), label('终点', end), label('保留音频', audio), label('裁切方式', precision), el('p', '暂停播放器设定端点，左右键使用实际视频帧时间。快速裁切不承诺任意毫秒精度。'));
         const clipInput = () => ({ start: start.value, end: end.value, audio: audio.checked, precise: precision.value === 'precise' });
         right.append(button('预览选定范围', () => { const parse = v => v.split(':').map(Number).reduce((n, value) => n * 60 + value, 0); const begin = parse(start.value), finish = parse(end.value);
             if (!(begin >= playerOffset && finish > begin)) throw Error('请先设置有效端点'); player.currentTime = begin - playerOffset; player.play().catch(() => {});
             const stop = () => { if (player.currentTime + playerOffset >= finish) { player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }),
-            button('生成候选 Clip', async () => { await api('/sessions/' + session.id + '/clip', json('POST', clipInput())); notice('裁切已排队；音画校验完成后展示候选 Clip'); }, 'primary'),
+            button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));
+                rememberRecord('jobs', job); renderResults(); notice('裁切已排队；候选区可查看执行状态'); }, 'primary'),
             button('缓存工作片段并播放', async () => { const job = await api('/sessions/' + session.id + '/segment', json('POST', { ...clipInput(), precise: true }));
                 notice('正在准备可复用工作片段，状态页可查看进度'); const waiting = setInterval(async () => { if (tab !== 'sessions' || sessionId !== session.id || !player.isConnected) { clearInterval(waiting); return; }
                     try { await refresh(); const current = data.jobs.find(j => j.id === job.id);
@@ -183,12 +232,76 @@
             button('删除此会话记录', async () => { if (!confirm('停止使用此会话？正式收藏仍保留，帧日志和缓存不会被级联删除。')) return; await api('/sessions/' + session.id, { method: 'DELETE' }); await refresh(); sessionId = ''; render(); }, 'danger'));
         setTimeout(renderResults, 0); return panel;
     }
+    function seekMediaFrame(player, position, frameTime) {
+        return new Promise((resolve, reject) => {
+            let seeked = false, presented = false, callback, settled = false;
+            const finish = error => {
+                if (settled) return; settled = true; clearTimeout(timer);
+                player.removeEventListener('seeked', onSeeked); player.removeEventListener('error', onError);
+                if (callback !== undefined) player.cancelVideoFrameCallback?.(callback);
+                error ? reject(error) : resolve();
+            };
+            const onError = () => finish(Error('视频定位失败，浏览器可能不支持该视频编码。'));
+            const onSeeked = () => {
+                seeked = true;
+                if (!player.requestVideoFrameCallback) requestAnimationFrame(() => requestAnimationFrame(() => finish()));
+                else if (presented) finish();
+            };
+            const observe = () => { callback = player.requestVideoFrameCallback((_now, metadata) => {
+                if (settled) return;
+                presented = Math.abs(metadata.mediaTime - frameTime) < .003;
+                if (presented && seeked) finish(); else observe();
+            }); };
+            const timer = setTimeout(() => finish(Error('等待视频帧显示超时，请确认视频可以正常播放后重试。')), 15000);
+            player.addEventListener('seeked', onSeeked); player.addEventListener('error', onError);
+            try { if (player.requestVideoFrameCallback) observe(); player.currentTime = position; }
+            catch (error) { finish(error); }
+        });
+    }
+    const collecting = new Set();
+    const collectionErrors = new Map();
+    async function collectCandidate(id) {
+        if (collecting.has(id)) return;
+        collecting.add(id); collectionErrors.delete(id); renderResults();
+        try {
+            const record = await api('/results/' + id + '/collect', json('POST'));
+            rememberRecord('collections', record);
+            notice(record.state === 'ready' ? '已经收藏到网盘' : '已建立收藏转存任务，确认落盘后才标记已收藏');
+        } catch (error) { collectionErrors.set(id, error.message); throw error; }
+        finally { collecting.delete(id); renderResults(); }
+    }
+    function renderCollectionProgress(result, info, actions) {
+        const record = data.collections.find(c => c.resultId === result.id && c.state !== 'deleted');
+        const job = record && data.jobs.find(j => j.type === 'collect' && j.context.collectionId === record.id);
+        const status = collectionErrors.get(result.id) || (collecting.has(result.id) ? '正在提交收藏…' : record ?
+            record.state === 'ready' ? '已收藏到网盘' : `收藏到网盘：${states[record.state] || record.state}${job?.progress ? ' · ' + job.progress + '%' : ''}${job?.message ? ' · ' + job.message : ''}` : '');
+        if (status) { const line = el('small', status, 'ml-collection-progress'); line.setAttribute('role', 'status'); info.append(line); }
+        if (record?.state === 'ready' && record.file) {
+            const link = el('a', '▤', 'ml-disk-link'); link.title = '在网盘中定位收藏文件'; link.setAttribute('aria-label', link.title);
+            const path = record.file.path ?? record.location.path;
+            const params = new URLSearchParams({ disk_account: record.file.userId, disk_space: record.file.diskSpace || '',
+                disk_path: path || '', disk_file: record.file.fileId });
+            link.href = '/disk?' + params; link.target = '_blank'; link.rel = 'noopener'; actions.append(link);
+        }
+        return record;
+    }
     function renderResults() {
         const area = $('ml-results'); if (!area) return; const order = $('ml-frame-order')?.value, unsaved = $('ml-frame-unsaved')?.checked;
         const results = data.results.filter(r => !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId)).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : (a.actualMs ?? a.startMs) - (b.actualMs ?? b.startMs));
         area.replaceChildren();
+        for (const job of data.jobs.filter(j => j.type === 'clip' && j.context.sessionId === sessionId && !data.results.some(r => r.id === j.id)).sort((a, b) => b.createdAt - a.createdAt)) {
+            const box = el('article', undefined, 'ml-frame ml-pending-clip'), info = el('div'); box.dataset.jobId = job.id;
+            info.append(el('strong', '🎞 候选 Clip'), el('p', time(job.context.start * 1000) + '～' + time(job.context.end * 1000)), badge(job.state));
+            const meter = document.createElement('progress'); meter.max = 100; meter.value = job.progress || 0; meter.className = 'ml-progress';
+            info.append(meter, el('small', (job.progress || 0) + '%', 'ml-muted'));
+            if (job.error) info.append(el('p', job.message || job.error, 'ml-result-time'));
+            const actions = el('div', undefined, 'ml-actions');
+            if (['queued', 'running'].includes(job.state)) actions.append(button('取消', async () => { rememberRecord('jobs', await api('/jobs/' + job.id + '/cancel', json('POST'))); renderResults(); }));
+            if (['failed', 'cancelled', 'interrupted'].includes(job.state)) actions.append(button('重试', async () => { rememberRecord('jobs', await api('/jobs/' + job.id + '/retry', json('POST'))); renderResults(); }));
+            info.append(actions); box.append(info); area.append(box);
+        }
         for (const result of results) {
-            const box = el('article', undefined, 'ml-frame' + (selection.has(result.id) ? ' selected' : '')), info = el('div');
+            const box = el('article', undefined, 'ml-frame' + (selection.has(result.id) ? ' selected' : '')), info = el('div'); box.dataset.resultId = result.id;
             if (result.cacheReady && result.kind === 'image') { const image = document.createElement('img'); image.loading = 'lazy'; image.src = root + '/cache/' + result.cacheId; image.alt = '实际画面 ' + time(result.actualMs); box.append(image); }
             else box.append(el('p', result.kind === 'clip' ? '🎞 Clip' : '缓存已清理', 'ml-muted'));
             const chosen = input('', 'checkbox'); chosen.checked = selection.has(result.id); chosen.onchange = () => { chosen.checked ? selection.add(result.id) : selection.delete(result.id); box.classList.toggle('selected', chosen.checked); };
@@ -196,8 +309,16 @@
             if (result.kind === 'image') info.append(el('p', `请求 ${time(result.requestedMs)} · 实际 ${time(result.actualMs)}${result.duplicateIds?.length ? ' · 同时刻已有记录' : ''}`, 'ml-result-time'));
             info.append(el('div', date(result.extractedAt) + (result.savedId ? ' · 已收藏' : ' · 未收藏'), 'ml-muted'));
             const actions = el('div', undefined, 'ml-actions');
+            const collection = renderCollectionProgress(result, info, actions);
             if (result.cacheReady) actions.append(button('查看', () => { const media = document.createElement(result.kind === 'image' ? 'img' : 'video'); media.className = 'ml-preview'; media.src = root + '/cache/' + result.cacheId; if (result.kind === 'clip') media.controls = true; dialog('候选资源', media); }),
-                button(result.savedId ? '已收藏' : '收藏', async () => { await api('/results/' + result.id + '/collect', json('POST')); await refresh(); }));
+                button(collection?.state === 'ready' ? '已收藏' : collection && ['queued', 'transferring'].includes(collection.state) ? '收藏中…' : '收藏', async () => {
+                    if (collection && ['failed', 'cancelled', 'interrupted'].includes(collection.state)) {
+                        const job = data.jobs.find(j => j.type === 'collect' && j.context.collectionId === collection.id);
+                        if (job) { rememberRecord('jobs', await api('/jobs/' + job.id + '/retry', json('POST'))); rememberRecord('collections', { ...collection, state: 'queued' }); renderResults(); return; }
+                    }
+                    await collectCandidate(result.id);
+                }));
+            if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.textContent !== '查看') node.disabled = true; });
             if (result.kind === 'image') actions.append(button('相似度', () => compareDialog(result)));
             info.append(actions); box.append(info); area.append(box);
         }

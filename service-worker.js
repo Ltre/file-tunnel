@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v7-batch-upload-names';
+const CACHE_NAME = 'instant-tunnel-v78-content-v8-media-feedback-261013-2';
 const APP_SHELL = [
     '/',
     '/index.html',

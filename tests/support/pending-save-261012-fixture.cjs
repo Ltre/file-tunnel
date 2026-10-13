@@ -57,7 +57,7 @@ async function createFixture() {
         catch (_) { await new Promise(resolve => server.close(resolve)); server = null; }
     }
     if (!server) throw new Error('TEST_HTTP_PORT_UNAVAILABLE');
-    return { dataDir, repository, api, base: 'http://127.0.0.1:' + server.address().port,
+    return { dataDir, repository, api, app, sessions, auth, store, base: 'http://127.0.0.1:' + server.address().port,
         async close() { api.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); repository.close(); fs.rmSync(dataDir, { recursive: true, force: true }); } };
 }
 module.exports = { createFixture };

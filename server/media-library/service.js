@@ -238,7 +238,13 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const resource = item('result', resultId), settings = requireConfig(); grant(settings.collection.grantId, 'collection');
         return db.atomic(() => {
             const existing = db.matching('collection', scope(), 'resultId', resource.id)[0];
-            if (existing && existing.state !== 'deleted') return existing;
+            if (existing && existing.state !== 'deleted') {
+                if (['failed', 'cancelled'].includes(existing.state)) {
+                    const job = db.list('job', scope()).find(j => j.type === 'collect' && j.context.collectionId === existing.id);
+                    if (job && ['failed', 'cancelled', 'interrupted'].includes(job.state)) retry(job.id);
+                }
+                return item('collection', existing.id);
+            }
             if (existing) { const value = db.patch('collection', existing.id, scope(), { state: 'queued', location: settings.collection }); queue('collect', { collectionId: value.id }); return value; }
             const value = db.create('collection', scope(), { resultId, name: nameOf(input.name || (resource.kind === 'image' ? '画面' : 'Clip')), kind: resource.kind,
                 importId: resource.importId, state: 'queued', location: settings.collection, entities: [], source: { ...resource } });
@@ -348,7 +354,13 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     function retry(id) {
         const job = item('job', id); if (!['failed', 'cancelled', 'interrupted'].includes(job.state)) throw Error('MEDIA_JOB_NOT_RETRYABLE');
-        return db.patch('job', id, scope(), { state: 'queued', cancelled: false, error: '', progress: 0 });
+        return db.atomic(() => {
+            if (job.context.collectionId) {
+                const record = item('collection', job.context.collectionId);
+                if (record.state !== 'ready') db.patch('collection', record.id, scope(), { state: 'queued', error: '' });
+            }
+            return db.patch('job', id, scope(), { state: 'queued', cancelled: false, error: '', progress: 0 });
+        });
     }
     function watchDownloads() {
         for (const record of db.matching('import', scope(), 'state', 'waiting-download')) {

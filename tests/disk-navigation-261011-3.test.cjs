@@ -7,7 +7,8 @@ class Element {
     constructor(tag='div'){this.tagName=tag;this.children=[];this.dataset={};this.attrs={};this.listeners={};this.scrollTop=0;this.classList={add(){},remove(){},toggle(){}};}
     append(...nodes){this.children.push(...nodes);} replaceChildren(...nodes){this.children=nodes;}
     setAttribute(key,value){this.attrs[key]=value;} removeAttribute(key){delete this.attrs[key];}
-    contains(node){return this.children.includes(node);} focus(){this.focused=true;} select(){this.selected=true;}
+    contains(node){return this.children.includes(node)||this.children.some(child=>child.contains?.(node));} focus(){this.focused=true;} select(){this.selected=true;}
+    requestSubmit(){return this.onsubmit({preventDefault(){}});}
     addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);} emit(name,event={}){for(const fn of this.listeners[name]||[])fn({...event,type:name});}
 }
 function fixture(handler=async()=>({})){
@@ -19,7 +20,7 @@ function fixture(handler=async()=>({})){
     const context=vm.createContext({window:{DiskClient:client,addEventListener(){}},localStorage:{getItem(){},setItem(){}},
         document:{getElementById:get,createElement:tag=>new Element(tag),querySelector:()=>null,querySelectorAll:()=>[]},
         requestAnimationFrame:fn=>fn(),AbortController,URL,URLSearchParams,Map,Set,location:{origin:'http://localhost',href:'http://localhost/disk',search:''},
-        history:{state:{},pushState(){}},setTimeout,clearTimeout,alert:message=>toasts.push(message)});
+        history:{state:{},pushState(){}},setTimeout,clearTimeout,queueMicrotask,alert:message=>toasts.push(message)});
     const hook=`
     renderTelegramDriveItems=()=>document.getElementById('telegramDriveList').replaceChildren(...(telegramDriveCurrentData?.folders||[]).map(p=>Object.assign(document.createElement('div'),{textContent:p.name})));
     showAppToast=message=>window.test.toasts.push(message);
@@ -78,21 +79,30 @@ test('挂载授权或列表失败恢复原路径、内容及滚动位置；取�
 
 test('手动路径默认完整路径且全选，Enter 导航，点击外部或 Esc 取消；无效路径不请求',async()=>{
     const f=fixture(async url=>url==='/mounts'?{mounts:[]}:{path:'中文/目录',folders:[]});
-    f.api.edit();let input=f.get('telegramDriveBreadcrumbs').children[0];assert.equal(input.value,'/1/2');assert.ok(input.focused&&input.selected);
-    input.onblur();assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);assert.equal(f.calls.length,0);
-    f.api.edit();input=f.get('telegramDriveBreadcrumbs').children[0];input.value='/中文/目录';await input.onkeydown({key:'Enter',preventDefault(){}});
+    f.api.edit();let form=f.get('telegramDriveBreadcrumbs').children[0],input=form.children[0];assert.equal(input.value,'/1/2');assert.ok(input.focused&&input.selected);
+    form.emit('focusout');await turn();assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);assert.equal(f.calls.length,0);
+    f.api.edit();form=f.get('telegramDriveBreadcrumbs').children[0];input=form.children[0];input.value='/中文/目录';input.onkeydown({key:'Enter',preventDefault(){}});await turn();
     assert.equal(f.api.state().path,'中文/目录');assert.ok(f.calls.some(c=>c.url==='/directories/properties?path='+encodeURIComponent('中文/目录')));
-    f.api.edit();input=f.get('telegramDriveBreadcrumbs').children[0];await input.onkeydown({key:'Escape',preventDefault(){}});assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);
+    f.api.edit();input=f.get('telegramDriveBreadcrumbs').children[0].children[0];input.onkeydown({key:'Escape',preventDefault(){}});assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);
     const count=f.calls.length;await assert.rejects(f.api.inputPath('/中文/../私有'),/不合法/);assert.equal(f.calls.length,count);
 });
 
 test('挂载手动路径使用本地别名和原生前缀，远端相对路径仍通过实际挂载授权读取',async()=>{
     const f=fixture(async url=>url==='/mounts'?{mounts:[item]}:url.includes('/resolve')?resolved:{path:'源根/中文',folders:[],breadcrumbs:[{name:'中文',path:'源根/中文'}]});
     f.api.set({folders:[]},'源根/子目录',{mount:item,grant:resolved.collaboration,parentPath:'1/2'});
-    f.api.edit();assert.equal(f.get('telegramDriveBreadcrumbs').children[0].value,'/1/2/协同目录/子目录');
+    f.api.edit();assert.equal(f.get('telegramDriveBreadcrumbs').children[0].children[0].value,'/1/2/协同目录/子目录');
     await f.api.inputPath('/1/2/协同目录/中文');assert.equal(f.api.state().path,'源根/中文');
     const request=f.calls.find(c=>c.url==='/list?path='+encodeURIComponent('源根/中文'));
     assert.equal(request.options.requestBase,'/api/telegram/drive/mount-scope/mount-a');
+});
+
+test('移动键盘原生 submit 无需 keydown Enter；请求中失焦不丢掉路径输入',async()=>{
+    const gate=deferred(),f=fixture(async url=>url==='/mounts'?gate.promise:{path:'56',folders:[]});
+    f.api.edit();const form=f.get('telegramDriveBreadcrumbs').children[0],input=form.children[0];input.value='/56';
+    input.onkeydown({key:'Enter',isComposing:true,preventDefault(){throw Error('不应截获中文候选确认');}});
+    assert.equal(f.calls.length,0);
+    const submitted=form.requestSubmit();form.emit('focusout');await turn();assert.ok(f.get('telegramDriveBreadcrumbs').contains(input));
+    gate.resolve({mounts:[]});await submitted;assert.equal(f.api.state().path,'56');assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);
 });
 
 test('加号菜单的新建文件接入当前目录已有编辑器，owned 协同位置支持触摸长按且滚动不会误触',async()=>{

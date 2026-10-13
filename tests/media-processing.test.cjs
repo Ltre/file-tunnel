@@ -4,6 +4,19 @@ const { timestamp, ranges, sampleTimes, createMediaProcessing, execute, validate
 const { sectionDuration, verifyDownloadedSection } = require('../server/media-section-quality');
 const ffmpeg = process.env.TEST_FFMPEG || (fs.existsSync('D:/GreenApps/ffmpeg/5.1.2/bin/ffmpeg.exe') ? 'D:/GreenApps/ffmpeg/5.1.2/bin/ffmpeg.exe' : 'ffmpeg');
 const ffprobe = process.env.TEST_FFPROBE || path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+
+test('long GOP probing reaches the requested frame instead of ending six seconds after an earlier keyframe', { timeout: 60000 }, async t => {
+    try { await execute(ffmpeg, ['-version']); } catch (error) { if (error.code === 'ENOENT') { t.skip('FFmpeg is not installed'); return; } throw error; }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dr2t-long-gop-'));
+    t.after(() => { if (!dir.startsWith(path.join(os.tmpdir(), 'dr2t-long-gop-'))) throw Error('unsafe cleanup'); fs.rmSync(dir, { recursive: true, force: true }); });
+    const file = path.join(dir, 'long.mp4'), engine = createMediaProcessing({ ffmpeg, ffprobe });
+    await execute(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=96x64:rate=25:duration=20', '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '500', '-keyint_min', '500', '-sc_threshold', '0', '-y', file]);
+    const probe = await engine.probe(file);
+    const old = await execute(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-read_intervals', '12%+6', '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', file]);
+    assert.ok(Math.max(...JSON.parse(old.stdout).frames.map(f => Number(f.best_effort_timestamp_time))) < 15, 'reproduce the old missing-neighbor behavior');
+    const fixed = await engine.frameNeighbors(file, 15, probe);
+    assert.ok(fixed.some(n => Math.abs(n - 14.96) < .001)); assert.ok(fixed.some(n => Math.abs(n - 15.04) < .001));
+});
 test('multiple ranges merge, random sampling is bounded, malformed times fail', () => {
     assert.equal(timestamp('01:02:03.125'), 3723.125); assert.throws(() => timestamp('0:99'), /MEDIA_TIME_INVALID/);
     assert.deepEqual(ranges('1-3,2-4,5-6', 10), [[1, 4], [5, 6]]);

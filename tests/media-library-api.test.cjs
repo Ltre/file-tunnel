@@ -4,6 +4,19 @@ const { createFixture } = require('./support/media-library-fixture.cjs');
 const { createMediaRoutes } = require('../server/media-library/routes');
 const { createMediaDiskAdapter, createLoopbackSource } = require('../server/media-library/disk-adapter');
 const { createDiskAuth } = require('../server/disk-auth'), { createDiskOperations } = require('../server/disk-operations'), { createTelegramDriveStore } = require('../server/telegram-drive'), { createDiskAPI } = require('../server/disk-api');
+
+test('frame neighbors step relative to the displayed frame and provide an interior seek point; invalid times and revoked reads remain blocked', async t => {
+    const f=createFixture(),app=express();app.use(express.json());
+    app.use('/media',createMediaRoutes({service:f.service,disk:f.disk,downloads:f.downloads,identity:()=>({id:'alice'}),requireAuth:(_req,_res,next)=>next(),origin:()=> 'http://localhost'}));
+    const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+    t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await f.close();});
+    const resource=f.service.createImport({kind:'disk',...f.put('video')},{id:'alice'});await f.service.pump();
+    const base=`http://127.0.0.1:${server.address().port}/media/imports/${resource.id}/frame-neighbor`;
+    const reply=await (await fetch(base+'?time=0.45')).json();assert.equal(reply.previous,.32);assert.equal(reply.next,.48);
+    assert.ok(reply.previousSeekTime>.32&&reply.previousSeekTime<.4);assert.ok(reply.nextSeekTime>=.48);
+    assert.equal((await fetch(base+'?time=99')).status,422);
+    f.files.delete(f.service.get('import',resource.id).file.fileId);const denied=await fetch(base+'?time=0.45');assert.equal(denied.status,403);
+});
 test('admin API guards identity and origin, serves ranges, and revoked grants block media reads', async t => {
     const f = createFixture(); const app = express(); app.use(express.json());
     app.use('/api/media-library', createMediaRoutes({ service: f.service, disk: f.disk, downloads: f.downloads, identity: req => req.get('X-Test-Account') ? { id: req.get('X-Test-Account') } : null,

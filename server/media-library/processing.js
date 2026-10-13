@@ -129,7 +129,9 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
     }
     async function frameNeighbors(input, time, sourceProbe, signal) {
         const start = Math.max(0, time - 3), offset = Number(sourceProbe.format?.start_time) || 0;
-        const out = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-read_intervals', `${start + offset}%+6`, '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', ...localInput(input), input], { signal, maxBytes: 2 * 1024 * 1024 });
+        // Seeking can land at an earlier keyframe. A relative six-second
+        // duration then ends before the requested frame on long GOP videos.
+        const out = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-read_intervals', `${start + offset}%${time + offset + 3}`, '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', ...localInput(input), input], { signal, maxBytes: 2 * 1024 * 1024, timeoutMs: 30000 });
         return (JSON.parse(out.stdout.toString()).frames || []).map(f => Number(f.best_effort_timestamp_time) - offset).filter(n => Number.isFinite(n) && n >= 0).sort((a, b) => a - b);
     }
     async function timeline(input, signal) {

@@ -101,10 +101,18 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
     }));
     router.get('/imports/:id/frame-neighbor', wrap(async (req, res) => {
         const resource = service.get('import', req.params.id), time = timestamp(req.query.time);
+        if (!Number.isFinite(resource.duration) || time > resource.duration + .001) throw Error('MEDIA_RANGE_INVALID');
         const abort = new AbortController(); res.once('close', () => { if (!res.writableFinished) abort.abort(); });
         const input = await service.sourceInput(resource, abort.signal, { start: Math.max(0, time - 2), end: Math.min(resource.duration, time + 2) });
         try { const values = await service.processing.frameNeighbors(input.url, time - input.offset, input.probe, abort.signal);
-            const positions = values.map(n => n + input.offset); res.json({ previous: positions.filter(n => n < time - .0001).at(-1) ?? null, next: positions.find(n => n > time + .0001) ?? null }); }
+            const positions = [...new Set(values.map(n => n + input.offset))].sort((a, b) => a - b);
+            const current = positions.findLastIndex(n => n <= time + .000001);
+            const previous = current > 0 ? positions[current - 1] : null, nextIndex = current + 1;
+            const next = positions[nextIndex] ?? null;
+            // Seek inside the presentation interval, rather than exactly at
+            // its floating-point boundary, so the browser displays that frame.
+            const seekTime = index => positions[index] + (positions[index + 1] === undefined ? .000001 : (positions[index + 1] - positions[index]) / 2);
+            res.json({ previous, next, previousSeekTime: previous === null ? null : seekTime(current - 1), nextSeekTime: next === null ? null : seekTime(nextIndex) }); }
         finally { input.close(); }
     }));
     router.use((error, req, res, next) => {

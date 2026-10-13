@@ -94,24 +94,42 @@ test('转存候选账号鼠标按下即选中，无额外请求；触摸滚动�
     class Node {
         constructor() { this.children = []; this.attrs = {}; this.events = {}; const values = new Set(); this.classList = { toggle: (name, enabled) => enabled ? values.add(name) : values.delete(name), contains: name => values.has(name) }; }
         append(...nodes) { this.children.push(...nodes); } setAttribute(name, value) { this.attrs[name] = value; }
+        replaceChildren(...nodes) { this.children = nodes; } contains(node) { return this.children.includes(node); }
         addEventListener(name, callback) { this.events[name] = callback; }
         querySelectorAll() { return this.children.flatMap(row => row.children).filter(node => node.className?.includes('disk-account-entry')); }
     }
-    const calls = [], switches = [], toasts = [];
+    const calls = [], switches = [], toasts = [], body = new Node(), dialog = { hidden: true }; let options, resolve;
     const accounts = ['alice', 'bob', 'expired'].map(id => ({ identity: { id }, reauthRequired: id === 'expired' }));
     const context = vm.createContext({ window: { DiskClient: { raw: async route => { calls.push(route); return { accounts, identity: { id: 'alice' } }; }, getAccount: () => 'alice' } },
-        document: { createElement: () => new Node() }, telegramDriveAccountList: [], appendTelegramDriveAddAccount() {},
+        document: { createElement: () => new Node(), getElementById: id => id === 'telegramDriveDialogBody' ? body : dialog }, AbortController,
+        telegramDriveAccountList: [], appendTelegramDriveAddAccount() {},
         switchTelegramDriveAccount: async id => switches.push(id), showAppToast: message => toasts.push(message),
-        openTelegramDriveDialog: async options => {
+        openTelegramDriveDialog: value => { options = value; body.append(value.body); dialog.hidden = false; return new Promise(done => { resolve = done; }); } });
+    vm.runInContext(ui.slice(ui.indexOf('async function manageTelegramDriveAccounts('), ui.indexOf('async function showTelegramDrivePendingSaveBanner(')), context);
+    const pending = context.manageTelegramDriveAccounts({ choose: true });
+    assert.equal(dialog.hidden, false); assert.equal(options.body.textContent, '正在读取账号状态…');
+    await new Promise(setImmediate);
             const [alice, bob, expired] = options.body.querySelectorAll(); assert.equal(calls.length, 2);
             bob.events.pointerdown({ pointerType: 'touch', button: 0 }); assert.equal(alice.classList.contains('selected'), true);
             bob.events.pointerdown({ pointerType: 'mouse', button: 0 }); assert.equal(bob.classList.contains('selected'), true);
             assert.equal(bob.attrs['aria-pressed'], 'true'); assert.equal(alice.classList.contains('selected'), false); assert.equal(calls.length, 2);
             expired.events.pointerdown({ pointerType: 'mouse', button: 0 }); await expired.onclick(); assert.equal(bob.classList.contains('selected'), true);
             await alice.onclick(); assert.equal(alice.attrs['aria-pressed'], 'true'); await bob.onclick();
-            assert.equal(calls.length, 2); assert.equal(switches.length, 0); return options.validate();
-        } });
-    vm.runInContext(ui.slice(ui.indexOf('async function manageTelegramDriveAccounts('), ui.indexOf('async function showTelegramDrivePendingSaveBanner(')), context);
-    await context.manageTelegramDriveAccounts({ choose: true }); assert.deepEqual(switches, ['bob']); assert.equal(toasts.length, 1);
+            assert.equal(calls.length, 2); assert.equal(switches.length, 0); resolve(options.validate());
+    await pending; assert.deepEqual(switches, ['bob']); assert.equal(toasts.length, 1);
     assert.match(fs.readFileSync(path.join(__dirname, '../client/disk.css'), 'utf8'), /\.disk-account-list \.disk-account-entry\{[^}]*transition:none/);
+});
+
+test('账号浮层先于慢接口显示；关闭后迟到响应不更新列表或打开新浮层', async () => {
+    let complete, close, opened=0; const answer=new Promise(done=>{complete=done;}),calls=[];
+    const body={nodes:[],contains(node){return this.nodes.includes(node);}},dialog={hidden:true};
+    const context=vm.createContext({AbortController,telegramDriveAccountList:[],
+        window:{DiskClient:{getAccount:()=> 'alice',raw:(route,options)=>{calls.push({route,options});return answer;}}},
+        document:{getElementById:id=>id==='telegramDriveDialogBody'?body:dialog,createElement:()=>({setAttribute(){}})},
+        openTelegramDriveDialog:options=>{opened++;dialog.hidden=false;body.nodes=[options.body];return new Promise(done=>{close=done;});},
+        telegramDriveErrorText:error=>error.message});
+    vm.runInContext(ui.slice(ui.indexOf('async function manageTelegramDriveAccounts('),ui.indexOf('async function showTelegramDrivePendingSaveBanner(')),context);
+    const pending=context.manageTelegramDriveAccounts();assert.equal(opened,1);assert.equal(dialog.hidden,false);assert.equal(calls.length,2);
+    dialog.hidden=true;close(null);await pending;assert.ok(calls.every(call=>call.options.signal.aborted));
+    complete({accounts:[{identity:{id:'late'}}]});await new Promise(setImmediate);assert.equal(context.telegramDriveAccountList.length,0);assert.equal(opened,1);
 });

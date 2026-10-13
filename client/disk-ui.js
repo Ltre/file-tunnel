@@ -94,53 +94,73 @@ function appendTelegramDriveAddAccount(target, status) {
     if (status.oidcMode !== 'mock') appendPasskeyControls(target, null, { addAccount: true });
 }
 async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
-    const status = await window.DiskClient.raw('/accounts', { accountId: '' });
-    telegramDriveAccountList = status.accounts || [];
     const body = document.createElement('div'); body.className = 'disk-account-list';
-    let selected = requiredId || window.DiskClient.getAccount() || status.identity?.id || '';
-    const selectCandidate = (user, button) => {
-        selected = user.id;
-        body.querySelectorAll('.disk-account-entry').forEach(node => {
-            node.classList.toggle('selected', node === button);
-            node.setAttribute('aria-pressed', String(node === button));
-        });
-    };
-    for (const entry of telegramDriveAccountList) {
-        const user = entry.identity; if (!user) continue;
-        const row = document.createElement('div'); row.className = 'disk-account-row';
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'btn disk-account-entry';
-        button.textContent = `👤 ${user.name || user.username || user.id}${entry.reauthRequired ? ' · 需要重新登录' : user.id === window.DiskClient.getAccount() ? ' · 当前账号' : ''}`;
-        button.title = `用户 ID：${user.id}`;
-        button.classList.toggle('selected', user.id === selected);
-        button.setAttribute('aria-pressed', String(user.id === selected));
-        // Mouse selection can paint before release; touch scrolling and keyboard
-        // activation keep their normal click behavior. No account request here.
-        if (choose) button.addEventListener('pointerdown', event => {
-            if (event.pointerType === 'mouse' && event.button === 0 && !entry.reauthRequired && (!requiredId || user.id === requiredId)) selectCandidate(user, button);
-        });
-        button.onclick = async () => {
-            if (entry.reauthRequired) { showAppToast('请使用下方登录入口重新验证该账号，原转存记录会保留'); return; }
-            if (requiredId && user.id !== requiredId) { showAppToast('这项未确认的转存仍绑定原账号，请重新验证原账号后继续'); return; }
-            if (choose) selectCandidate(user, button);
-            else { closeTelegramDriveDialog(null); try { await switchTelegramDriveAccount(user.id); } catch (error) { alert(telegramDriveErrorText(error)); } }
-        };
-        const exit = document.createElement('button'); exit.type = 'button'; exit.className = 'btn disk-account-exit'; exit.textContent = '退出';
-        exit.onclick = async () => {
-            closeTelegramDriveDialog(null);
-            await logoutTelegramDrive(user.id);
-            if (choose) showAppToast('待转存记录仍保留，可在账号登录后继续');
-        };
-        row.append(button, exit); body.append(row);
-    }
-    const info = await window.DiskClient.raw('/me', { accountId: '' });
-    appendTelegramDriveAddAccount(body, info);
-    const result = await openTelegramDriveDialog({ title: choose ? '选择转存目标账号' : '切换 / 管理网盘账号', body,
+    body.textContent = '正在读取账号状态…'; body.setAttribute('aria-busy', 'true');
+    let selected = requiredId || window.DiskClient.getAccount() || '', entries = null;
+    const resultPromise = openTelegramDriveDialog({ title: choose ? '选择转存目标账号' : '切换 / 管理网盘账号', body,
         confirmText: choose ? '选择此账号' : '关闭', cancelText: choose ? '稍后继续' : '', validate: choose ? () => {
-            const entry = telegramDriveAccountList.find(item => item.identity?.id === selected);
+            if (!entries) throw new Error('账号状态仍在加载，请稍后选择');
+            const entry = entries.find(item => item.identity?.id === selected);
             if (!entry || entry.reauthRequired) throw new Error('请先添加或重新登录一个有效的网盘账号');
             if (requiredId && selected !== requiredId) throw new Error('请重新登录原转存账号后继续');
             return entry.identity;
         } : undefined });
+    const dialogBody = document.getElementById('telegramDriveDialogBody');
+    const controller = new AbortController();
+    const current = () => dialogBody.contains(body) && !document.getElementById('telegramDriveDialog').hidden && !controller.signal.aborted;
+    const load = async () => {
+        try {
+            const [status, info] = await Promise.all([
+                window.DiskClient.raw('/accounts', { accountId: '', signal: controller.signal }),
+                window.DiskClient.raw('/me', { accountId: '', signal: controller.signal })]);
+            if (!current()) return;
+            entries = status.accounts || []; telegramDriveAccountList = entries;
+            selected ||= status.identity?.id || '';
+            body.replaceChildren(); body.setAttribute('aria-busy', 'false');
+            const selectCandidate = (user, button) => {
+                selected = user.id;
+                body.querySelectorAll('.disk-account-entry').forEach(node => {
+                    node.classList.toggle('selected', node === button);
+                    node.setAttribute('aria-pressed', String(node === button));
+                });
+            };
+            for (const entry of entries) {
+                const user = entry.identity; if (!user) continue;
+                const row = document.createElement('div'); row.className = 'disk-account-row';
+                const button = document.createElement('button'); button.type = 'button'; button.className = 'btn disk-account-entry';
+                button.textContent = `👤 ${user.name || user.username || user.id}${entry.reauthRequired ? ' · 需要重新登录' : user.id === window.DiskClient.getAccount() ? ' · 当前账号' : ''}`;
+                button.title = `用户 ID：${user.id}`;
+                button.classList.toggle('selected', user.id === selected);
+                button.setAttribute('aria-pressed', String(user.id === selected));
+                // Mouse selection can paint before release; touch scrolling and keyboard
+                // activation keep their normal click behavior. No account request here.
+                if (choose) button.addEventListener('pointerdown', event => {
+                    if (event.pointerType === 'mouse' && event.button === 0 && !entry.reauthRequired && (!requiredId || user.id === requiredId)) selectCandidate(user, button);
+                });
+                button.onclick = async () => {
+                    if (entry.reauthRequired) { showAppToast('请使用下方登录入口重新验证该账号，原转存记录会保留'); return; }
+                    if (requiredId && user.id !== requiredId) { showAppToast('这项未确认的转存仍绑定原账号，请重新验证原账号后继续'); return; }
+                    if (choose) selectCandidate(user, button);
+                    else { closeTelegramDriveDialog(null); try { await switchTelegramDriveAccount(user.id); } catch (error) { alert(telegramDriveErrorText(error)); } }
+                };
+                const exit = document.createElement('button'); exit.type = 'button'; exit.className = 'btn disk-account-exit'; exit.textContent = '退出';
+                exit.onclick = async () => {
+                    closeTelegramDriveDialog(null);
+                    await logoutTelegramDrive(user.id);
+                    if (choose) showAppToast('待转存记录仍保留，可在账号登录后继续');
+                };
+                row.append(button, exit); body.append(row);
+            }
+            appendTelegramDriveAddAccount(body, info);
+        } catch (error) {
+            if (!current()) return;
+            body.textContent = telegramDriveErrorText(error); body.setAttribute('aria-busy', 'false');
+            const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn'; retry.textContent = '重新读取账号';
+            retry.onclick = () => { body.textContent = '正在读取账号状态…'; body.setAttribute('aria-busy', 'true'); load(); }; body.append(retry);
+        }
+    };
+    load();
+    const result = await resultPromise; controller.abort();
     if (!result || !choose) return null;
     await switchTelegramDriveAccount(result.id); return result;
 }
@@ -575,19 +595,33 @@ async function navigateTelegramDriveInputPath(value) {
 
 function editTelegramDrivePath() {
     const target = document.getElementById('telegramDriveBreadcrumbs');
+    const form = document.createElement('form'); form.className = 'disk-path-form';
     const input = document.createElement('input'); input.type = 'text'; input.className = 'disk-path-input'; input.value = telegramDriveVisiblePath();
+    input.enterKeyHint = 'go'; input.autocomplete = 'off'; input.spellcheck = false;
     input.setAttribute('aria-label', '目录完整路径'); input.title = '按 Enter 打开目录，按 Esc 或点击外部取消';
+    const go = document.createElement('button'); go.type = 'submit'; go.textContent = '前往';
     const close = () => { if (target.contains(input)) renderTelegramDriveBreadcrumbs(telegramDriveCurrentData || {}); };
-    input.onblur = close;
-    input.onkeydown = async event => {
+    let submitting = false;
+    form.addEventListener('focusout', () => queueMicrotask(() => {
+        if (!submitting && !form.contains(document.activeElement)) close();
+    }));
+    form.onsubmit = async event => {
+        event.preventDefault();
+        if (submitting) return;
+        submitting = true; go.disabled = true; form.setAttribute('aria-busy', 'true');
+        try { await navigateTelegramDriveInputPath(input.value); close(); }
+        catch (error) { showAppToast(telegramDriveErrorText(error)); if (target.contains(input)) input.focus(); }
+        finally { submitting = false; go.disabled = false; form.setAttribute('aria-busy', 'false'); }
+    };
+    input.onkeydown = event => {
         if (event.isComposing) return;
         if (event.key === 'Escape') { event.preventDefault(); close(); return; }
-        if (event.key !== 'Enter' || input.readOnly) return;
-        event.preventDefault(); input.readOnly = true;
-        try { await navigateTelegramDriveInputPath(input.value); close(); }
-        catch (error) { showAppToast(telegramDriveErrorText(error)); if (target.contains(input)) { input.readOnly = false; input.focus(); } }
+        // Native form submission also covers mobile keyboard actions that do
+        // not report a desktop Enter key. Do not make the input readonly and
+        // dismiss the keyboard before its committed value has been submitted.
+        if (event.key === 'Enter') { event.preventDefault(); form.requestSubmit(); }
     };
-    target.replaceChildren(input); target.scrollLeft = 0; input.focus(); input.select();
+    form.append(input, go); target.replaceChildren(form); target.scrollLeft = 0; input.focus(); input.select();
 }
 
 function initDiskBreadcrumbScroll() {
@@ -3756,7 +3790,17 @@ function init(options = {}) {
     if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') {
         openTelegramDrive().then(async () => {
             if (telegramDrivePendingSaveId) { await resumeTelegramDrivePendingSave(); return; }
-            const id = new URLSearchParams(location.search).get('collaboration');
+            const query = new URLSearchParams(location.search);
+            if (query.has('disk_file')) {
+                if (query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录收藏文件所属的网盘账号，再打开此链接');
+                const space = query.get('disk_space') || '';
+                if (space !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(space);
+                const file = await window.DiskClient.raw('/files/' + encodeURIComponent(query.get('disk_file')));
+                const item = file.file || file;
+                if (!item.id) throw new Error('收藏文件不存在或无法访问，请刷新收藏状态');
+                await navigateTelegramDrive(item.folderPath ?? item.path ?? ''); highlightTelegramDriveRow({ kind: 'file', id: item.id }); return;
+            }
+            const id = query.get('collaboration');
             if (!id) return;
             const entry = (await window.DiskClient.raw('/collaborations/' + encodeURIComponent(id))).collaboration;
             if (entry.owned) await locateOwnedDiskCollaboration(entry);

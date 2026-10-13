@@ -4,6 +4,16 @@ const { createFixture } = require('./support/media-library-fixture.cjs');
 const { createMediaDatabase } = require('../server/media-library/database');
 const { createMediaLibrary } = require('../server/media-library/service');
 const { createMediaCache } = require('../server/media-library/cache');
+
+test('single-result collection retries a failed write confirmation without selection or duplicate disk files', async t => {
+    const f = createFixture(); t.after(() => f.close());
+    const s = f.service, resource = s.createImport({ kind: 'disk', ...f.put('video') }, { id: 'alice' }); await s.pump();
+    const session = s.createSession(resource.id, '单项 Clip'); const clip = s.clip(session.id, { start: 0, end: 1 }); await s.pump();
+    f.failAfterWrite(); const record = s.collect(clip.id); await s.pump(); assert.equal(s.get('collection', record.id).state, 'failed'); assert.equal(f.writes, 1);
+    assert.equal(s.collect(clip.id).id, record.id); assert.equal(s.get('collection', record.id).state, 'queued');
+    assert.equal(s.list('job').filter(j => j.type === 'collect').length, 1); await s.pump();
+    assert.equal(s.get('collection', record.id).state, 'ready'); assert.equal(f.writes, 1); assert.equal(s.get('result', clip.id).savedId, record.id);
+});
 test('disk association, batches, repeated collection and expiration keep formal assets and external originals', async t => {
     const f = createFixture(); t.after(() => f.close()); const s = f.service, ref = f.put('original');
     const source = s.createImport({ kind: 'disk', ...ref }, { id: 'alice' }); assert.equal(s.createImport({ kind: 'disk', ...ref }, { id: 'alice' }).id, source.id);
