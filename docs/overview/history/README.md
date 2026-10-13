@@ -14,7 +14,8 @@
 
 - [2026-06-07.md](./2026-06-07.md)：项目起源、最初架构、协同编辑、P2P/Relay、磁链、设备 Profile/直接隧道、合辑、播放器、文件句柄、资源管理器、富文本权限。
 - [2026-08.md](./2026-08.md)：YouTube Premium、Light Transfer、持久审计、VClient、远程预览、SNS、Telegram 网盘起点。
-- [2026-09.md](./2026-09.md)：Telegram 网盘成熟、SQLite 设计、网页工坊、转码、Telegram 内容管理以及 260924 验收。
+- [2026-09.md](./2026-09.md)：Telegram 网盘成熟、SQLite 从设计到合入、S3 起点、网页工坊、转码与性能诊断。
+- [2026-10.md](./2026-10.md)：渐进上传、Content Object、分区、协同挂载、回收站、多账号和 Markdown。
 
 维护时请同时看：
 

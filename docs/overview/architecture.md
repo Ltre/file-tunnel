@@ -1,8 +1,8 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
-> **文档更新时间**：`2026-09-26`
-> 本文描述当前实现事实，并补充可从历史 Prompt、Devlog 和 Git Log 追溯出的设计初衷。规划中的 SQLite WAL 网盘重构、S3 Compatible API 等必须与当前实现区分。
+> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **文档更新时间**：`2026-10-13`
+> 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
 
@@ -208,25 +208,16 @@ Socket 事件至少包括：
 
 > 实时传输/广播链路优先完成，审计写入作为旁路批量处理，不能让持久化审计阻塞实时协议。
 
-### 4.3 Telegram 网盘 JSON
+### 4.3 Telegram 网盘 SQLite WAL、Content 与外围文件
 
-截至本基线，Telegram 网盘的共享权威元数据仍主要是 JSON / 文件系统持久化，而不是 `disk.sqlite` WAL。
+网盘当前由 `server/disk-repository.js` 的 `node:sqlite` / `DatabaseSync` 操作 `.tunnel-data/disk.sqlite`，开启 WAL、外键、busy timeout 和 FULL 同步；区别于上节 `infra.sqlite` 的 `sql.js` 整库 export。Node 最低版本已提升至 **24.15**。当前 SQLite schema 6，承载用户/应用/分区、文件/目录、协同与 Mount、共享 Content/Anchor/引用、分享/静态签名、任务、回收站、用户设置、待转存等实体。
 
-已知包括：
+Logical File 是网盘用户/分区内的逻辑名称和权限实体，Content Object 表示可共享且已验证的正文，Telegram Anchor 代表远端消息与分片定位；必须分别检查引用、所有权、持有证明（PoP）、租约和清理状态。SQLite 元数据短事务不能涵盖 Telegram 网络操作；未知发送结果依靠 staging manifest、outbox、补偿及恢复状态处理。版本差量与唯一约束不会自动提供跨 Node 进程业务分布式锁。
 
-- `telegram-drive-index.json`
-- `telegram-drive-directories.json`
-- `disk-auth.json`
-- `disk-operations.json`
-- `disk-shares.json`
-- `disk-collaborations.json`
-- `disk-spaces.json`
-- `disk-space-usage.json`
-- `telegram-chunk-file-ids.json`
-- `telegram-part-cache/.owners.json`
-- 以及上传 staging / manifest、占位 file_id 等辅助状态。
+旧 JSON 索引不再是运行时权威数据；`tools/migrate-tgdisk-json-to-sqlite.cjs` 是独立停服离线导入工具。运行中的数据库应走在线备份，不应单独复制不含 WAL 的主文件。`disk-secret.key`、S3 `s3-credentials.json` / `s3-secret.key`、Telegram Chat 字典、上传 staging、缓存二进制等仍在独立文件系统中。
 
-`prompts/dev-prompt-logs/dev-tgdisk-json2sqlite-WAL-transaction-260915.md` 与 `QA-of-tgdisk-json2sqliteWAL.md` 已规划未来迁移到原生 SQLite WAL / Repository / Adapter，但 **截至本文源码基线尚未实现**。后续 AI 不得把规划文档当成现状。
+S3 网关通过 `server/s3/*`、`server/object-storage.js` 直接复用网盘对象核心，`/S3API` 和原生 `/api/telegram/disk/v1` 为不同协议入口；前者为有限 SigV4 子集，不等于完整 AWS S3。协同 Mount 通过来源授权实时解析，普通浏览并不自动复制 Content；跨 Scope Copy 和某些移动使用显式事务/恢复边界。
+
 
 ### 4.4 Telegram
 
@@ -336,24 +327,9 @@ P2P 历史回归极多，尤其涉及：
 
 ## 8. 当前与未来架构的明确区分
 
-以下在基线中属于**当前能力**：
+**已经实现**：SQLite WAL Repository、离线 JSON 导入、共享 Content Object/PoP/GC、渐进上传和 SSE、S3 有限网关及凭据管理、分区与协同 Mount、回收站与 COW 编辑、静态签名、多账号和待转存恢复。详细的状态机与限制应读 `telegram-drive.md` 及 `docs/telegram-drive-content-objects.md`。
 
-- 多设备隧道；
-- 浏览器缓存 + P2P + Relay；
-- Telegram 网盘；
-- 网页工坊；
-- SNS / YouTube Premium；
-- 视频转码；
-- VClient；
-- Telegram 内容管理。
-
-以下属于**规划/设计材料，不能当成已经实现**：
-
-- Telegram 网盘共享 JSON 全面迁移 `disk.sqlite` WAL；
-- Repository / Database Adapter 完整替换当前网盘 JSON Store；
-- S3 Compatible Gateway；
-- 更完整的多实例数据库/分布式业务锁；
-- 260925 后提出但尚未合入当前源码基线的协同网盘目录/文件邀请等需求。
+**仍有限制或需外部验收**：完整 AWS S3 Multipart/ACL/SSE 功能、多实例实时视图与分布式锁、Telegram 未知请求结果下的严格 exactly-once、实际 FolderSync / Android / 公网代理吞吐及生产迁移。其它分支提案或 Idea 不可作为已合入功能。
 
 ## 9. 后续 AI 修改代码时的最低检查清单
 

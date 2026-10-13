@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
+> **当前实现源码锚点 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-09-26`
+> **文档更新时间**：`2026-10-13`
 
 ## 1. 本文件解决什么问题
 
@@ -59,29 +59,28 @@
 
 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
 
-第一轮增量维护已继续扫描并完整整理到：
+第一轮增量维护整理至 `059099607...`；第二轮整理至：
 
-`059099607a7aa986d9a66ff386f5fd691c604b78`
+`b1788ca4b219718ad802ed778ed41c081ecad39b`
 
 提交时间：
 
-`2026-09-26T11:30:34Z`
+`2026-10-12T16:47:42Z`
 
 提交：
 
-`先固定代码：完善网页工坊多级路径与资源引用联动`
+`先固定代码：修复网盘重复登录与账号选择反馈，优化挂载目录查询`
 
-本轮比较明确排除 `docs/overview/**` 自身。过滤后实际项目变化包括：
+两轮比较均排除 `docs/overview/**` 自身。第二轮非 Overview 变化包括：
 
-- Telegram Drive 协同相关 page/client/server；
-- Web Workshop、Disk UI/Adapter、主页面与 Service Worker；
-- Video Transcode；
-- 新增/调整测试；
-- `docs/devlog/dev-2609-features.md`、Prompt 与分支信息。
+- SQLite WAL、S3、共享 Content、渐进上传、分区、协同挂载、静态分享、回收站；
+- 目录上传、文件编辑、多账号与授权回执、成品转存、PWA 与 Web Workshop Markdown；
+- 新增页面、客户端/服务端模块、诊断与部署安全工具；
+- 开发日志、专项实现文档和新增回归测试。
 
 所以：
 
-> 当前 Overview 的代码事实终点已推进到 `059099607a7aa986d9a66ff386f5fd691c604b78`；初始 `b422e438...` 只作为历史冻结锚点保留。
+> 当前 Overview 的代码事实终点已推进到 `b1788ca4b219718ad802ed778ed41c081ecad39b`；初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -95,6 +94,7 @@
 | `pages/disk-management.html` | `telegram-drive.md` |
 | `pages/disk-share.html` | `telegram-drive.md` |
 | `pages/disk-collaboration.html` | `telegram-drive.md` |
+| `pages/s3-management.html` | `telegram-drive.md`、`admin-security-deployment.md` |
 | `pages/downloader.html` | `transfer-cache/magnet-download.md` |
 | `pages/downloadList.html` | `transfer-cache/magnet-download.md` |
 | `pages/light-file-parts.html` | `light-transfer.md` |
@@ -109,7 +109,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 21 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 22 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -131,12 +131,25 @@
 - `client/disk-admin.js`
 - `client/disk-client.js`
 - `client/disk-collaboration.js`
+- `client/disk-content-hash-worker.js`
+- `client/disk-copy-picker.js/.css`
+- `client/disk-directory-picker.js/.css`
+- `client/disk-error-messages.js`
+- `client/disk-file-editor.js`
+- `client/disk-folder-upload.js`
+- `client/disk-import-picker.js`
+- `client/disk-mount-ui.js/.css`
+- `client/disk-operation-order.js`
+- `client/disk-pending-save.js`
+- `client/disk-trash-ui.js`
+- `client/s3-management.js`
 - `client/disk-management.js`
 - `client/disk-share.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-ui.js`
 - `client/disk.css`
 - `client/telegram-drive-cache.js`
+- `client/telegram-chat-dictionary.js`
 
 以上统一归属 `telegram-drive.md`。
 
@@ -155,6 +168,7 @@
 
 - `client/web-workshop.js/.css`
 - `client/web-zip-runtime.js`
+- `client/vendor/web-markdown/README.md`、`THIRD-PARTY-LICENSES.txt`、`markdown-page.css`、`markdown-page.js`、`marked-18.0.14.umd.js`、`purify-3.4.16.min.js`
 
 归属 `web-workshop.md`。
 
@@ -169,7 +183,7 @@
 - `client/light-transfer.js` → `light-transfer.md`
 - `client/qrcode-1.0.0.min.js` → 第三方 QR Runtime，归入 `pwa-ui.md` / `light-transfer.md` 的依赖边界。
 
-**验收结果：当前 32 个 `client/**` 文件全部有明确模块归属。**
+**验收结果：当前 54 个 `client/**` 文件全部有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -201,7 +215,31 @@
 
 ### 6.5 Telegram Drive
 
+- `server/disk-account-sessions.js`
 - `server/disk-api.js`
+- `server/disk-collaboration-mounts.js`
+- `server/disk-content-admin.js`
+- `server/disk-content-proof.js`
+- `server/disk-content-repository.js`
+- `server/disk-errors.js`
+- `server/disk-folder-uploads.js`
+- `server/disk-metadata-timing.js`
+- `server/disk-mounted-namespace.js`
+- `server/disk-oidc-receipt.js`
+- `server/disk-partitions.js`
+- `server/disk-pending-saves.js`
+- `server/disk-progressive-upload.js`
+- `server/disk-repository.js`
+- `server/disk-static-resources.js`
+- `server/disk-transfer-history.js`
+- `server/disk-trash.js`
+- `server/disk-user-settings.js`
+- `server/growing-file-readable.js`
+- `server/object-storage.js`
+- `server/s3.js`、`server/s3/admin.js`、`credentials.js`、`diagnostics.js`、`guide.js`、`routes.js`、`sigv4.js`、`xml.js`
+- `server/telegram-chat-dictionary.js`
+- `server/telegram-upload-progress.js`
+- `server/telegram-upload-scheduler.js`
 - `server/disk-auth.js`
 - `server/disk-chunk-file-cache.js`
 - `server/disk-collaboration.js`
@@ -223,7 +261,7 @@
 
 - `server/vclient-control.js` → `vclient.md`
 
-**验收结果：当前 28 个 `server/**` 文件全部有明确模块归属。**
+**验收结果：当前 59 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -245,6 +283,16 @@
 - `tools/server-i18n-audit.js`
 
 → `pwa-ui/localization.md`
+
+### 网盘迁移、诊断与安全修补
+
+- `tools/migrate-tgdisk-json-to-sqlite.cjs`
+- `tools/change-tgdisk-channel-id.cjs/.md`
+- `tools/collect-tgdisk-diagnostics.cjs/.md`
+- `tools/s3-credentials.cjs`
+- `tools/repair-engineio-security.cjs/.md`
+
+→ `telegram-drive.md`、`admin-security-deployment.md`、`tests-and-regressions.md`
 
 ### VClient shell push
 
@@ -316,16 +364,16 @@
 - Audio Repair；
 - Telegram Content；
 - 260924 验收；
-- 260925—260926 平板三栏、H.265 输出后缀、Web ZIP manifest/fullscreen/路径引用联动、Telegram Drive 文件/目录协同及 299 项回归验证。
+- 260925—260926 平板三栏、H.265 输出后缀、Web ZIP manifest/fullscreen/路径引用联动、Telegram Drive 协同；
+- 9/27—30 SQLite/S3、Chat 字典、上传回滚与 PWA 启动；10/1—12 共享 Content、渐进上传、分区/Mount、回收站、多账号与 Markdown。
 
 ## 10. 计划/Idea 的处理
 
 以下存在于 Prompt/Idea，但在当前源码锚点中不能写成当前实现：
 
-- Telegram Drive JSON → native SQLite WAL；
-- S3 Compatible Gateway；
-- private Telegram storage channel 完整迁移；
-- `prompts/dev-prompt-logs/dev-2610.md` 中 Markdown、标签索引、视频随机取帧、网易云、Linux CLI、NFC、中继网等“下期/遥遥无期”项目。
+- 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
+- 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
+- `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 
 这些材料仍应保留为未来调研入口，但不能混进当前行为章节。
 
@@ -337,9 +385,9 @@
 - [x] 找到第一个代码版本；
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
-- [x] 当前 21 个 Pages 有归属；
-- [x] 当前 32 个 Client 文件有归属；
-- [x] 当前 28 个 Server 文件有归属；
+- [x] 当前 22 个 Pages 有归属；
+- [x] 当前 54 个 Client 文件有归属；
+- [x] 当前 59 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -348,4 +396,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第一轮增量维护，下一轮源码比较锚点为 `059099607a7aa986d9a66ff386f5fd691c604b78`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第一轮增量维护，下一轮源码比较锚点为 `b1788ca4b219718ad802ed778ed41c081ecad39b`，维护规则以 [VERSION.md](./VERSION.md) 为准。

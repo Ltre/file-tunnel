@@ -1,8 +1,8 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
-> **文档更新时间**：`2026-09-26`
-> **重要现状**：当前网盘核心共享元数据仍是 JSON/文件系统持久化。SQLite WAL 与 S3 Compatible 均是已有设计方案，但不属于本基线已实现能力。
+> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **文档更新时间**：`2026-10-13`
+> **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
 
@@ -27,6 +27,11 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 
 服务端：
 
+- `server/disk-repository.js`、`server/disk-content-repository.js`、`server/disk-content-proof.js`
+- `server/disk-partitions.js`、`server/disk-collaboration-mounts.js`、`server/disk-mounted-namespace.js`
+- `server/disk-progressive-upload.js`、`server/telegram-upload-scheduler.js`、`server/growing-file-readable.js`
+- `server/disk-trash.js`、`server/disk-pending-saves.js`、`server/disk-account-sessions.js`
+- `server/object-storage.js`、`server/s3/*`
 - `server/disk-api.js`
 - `server/telegram-drive.js`
 - `server/disk-telegram.js`
@@ -43,7 +48,11 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 
 - `client/disk-ui.js`
 - `client/disk-client.js`
-- `client/disk-collaboration.js`
+- `client/disk-collaboration.js`、`client/disk-directory-picker.js/.css`
+- `client/disk-mount-ui.js/.css`、`client/disk-copy-picker.js/.css`
+- `client/disk-file-editor.js`、`client/disk-folder-upload.js`、`client/disk-trash-ui.js`
+- `client/disk-pending-save.js`、`client/disk-operation-order.js`
+- `client/disk-import-picker.js`、`client/s3-management.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-share.js`
 - `client/disk-management.js`
@@ -55,7 +64,10 @@ Telegram 网盘的目标不是把浏览器 IndexedDB 搬到服务器，而是利
 - 主网盘 Overlay 在 `pages/index.html`；
 - `/disk-share/:token`；
 - `/disk-collab/:token` 与 `/disk-collab/view/:collaborationId`（`pages/disk-collaboration.html`）；
-- `/disk-management`。
+- `/disk-management`；
+- `/s3-management` 与 `/s3-api-guide`（管理员）；
+- `/S3API` 与 `/s3/{bucket}/{key}`（SigV4）；
+- `/s3pub/{token}/path`（受签名、路径和有效期约束的静态只读资源）。
 
 ## 3. 身份与授权
 
@@ -132,54 +144,25 @@ Passkey pending flow 是短期内存状态，不等于持久用户记录。
 - 来源 attribution；
 - usage 统计。
 
-这一点对未来 S3/第三方接口尤其重要，不能重新把 App 变成文件 namespace。
+S3 Bucket 也映射到明确用户及其分区，不能把应用 ID、Bucket、分区 ID 或 Telegram 频道当作同一个 namespace。
 
 ## 5. 当前数据持久化
 
-### 5.1 文件与目录
+### 5.1 原生 SQLite WAL
 
-每一个 Store 当前读取：
+`server/disk-repository.js` 使用 Node 24.15+ 内置 `node:sqlite` 的 `DatabaseSync`，管理 `.tunnel-data/disk.sqlite`；使用 WAL、外键、5 秒 busy timeout 和 FULL 同步。这里与 `server/infra-store.js` 使用 `sql.js` 的 `infra.sqlite` 不同，**不要混称为同一数据库架构**。
 
-- `telegram-drive-index.json`
-- `telegram-drive-directories.json`
+Repository 包含文件、目录、用户、应用、后端、令牌、分区、分享、协同、任务、分片缓存及引用、Content Object/Anchor、回收站、挂载、目录上传、用户设置和待转存等实体。逻辑文件、共享物理 Content、引用和 Telegram Anchor 分层管理。当前 schema 为 **6**；版本升级保留升级前 SQLite 备份，旧二进制不可直接混跑新 schema。
 
-进内存 Map。
+按记录版本差量提交，冲突拒绝并重新载入；文件/目录与授权路径、Content 引用等需共同修改的元数据在短事务内处理。Telegram 网络操作、传输字节和消息清理不持有长 SQL 事务。在线备份应通过 SQLite 备份接口，运行中不可只复制主 `disk.sqlite` 漏掉 WAL。SQLite 并不自动提供跨进程实时状态通知或分布式业务锁。
 
-默认 disk space 使用 `.tunnel-data` 根下的索引。
+### 5.2 旧 JSON 与离线迁移
 
-非默认 `disk_space` 当前通过：
+旧版 `telegram-drive-index.json`、`telegram-drive-directories.json`、`disk-auth.json`、`disk-shares.json`、`disk-collaborations.json`、分片索引等**不再是运行时权威源，也不双写**。存在 `tools/migrate-tgdisk-json-to-sqlite.cjs`：默认只读预检，在 SQLite 副本中试跑与检查；停服后显式 `--apply` 才做带备份和冲突校验的事务导入，原 JSON 不删。迁移工具经过旧用户身份映射、旧分片哈希冲突等兼容修正。不要凭脚本存在推断某一正式环境已完成迁移。
 
-`.tunnel-data/disk-spaces/<sha256(diskSpace)>/`
+### 5.3 独立文件的边界
 
-建立独立 Store。
-
-`disk-spaces.json` 记录逻辑分区列表。
-
-`disk-space-usage.json` 记录：
-
-- appId；
-- userId；
-- diskSpace；
-- createdAt；
-- lastUsedAt。
-
-### 5.2 其它共享 JSON
-
-- `disk-auth.json`
-- `disk-operations.json`
-- `disk-shares.json`
-- `disk-collaborations.json`
-- `telegram-chunk-file-ids.json`
-- `telegram-part-cache/.owners.json`
-
-单文件写入已使用临时文件 + rename，所以风险重点不是“每次都写半截 JSON”，而是：
-
-- 多个强关联文件不能一个事务提交；
-- 整集合反复重写；
-- 异步业务存在检查/提交竞争；
-- 多进程时进程内锁无效。
-
-未来 SQLite WAL 重构已经有单独设计文档，但尚未执行。
+`disk-secret.key`、上传 staging/manifest、Telegram 分片/Range 物理缓存、S3 `s3-credentials.json` / `s3-secret.key`、管理员维护的 `telegram-chat-dictionary.json` 等仍在文件系统。S3 Secret 使用独立 AES-256-GCM 保护，不位于网盘 SQLite 内。备份需要同时理解 SQLite、外部缓存/暂存和这些独立密钥的生命周期。
 
 ## 6. 目录模型
 
@@ -205,7 +188,7 @@ Passkey pending flow 是短期内存状态，不等于持久用户记录。
 - descendants；
 - descendant file `folderPath`。
 
-当前 JSON Store 通过内存修改后 persist；这也是未来事务化的重点。
+当前路径结构仍由逻辑文件与目录实体维护；SQLite Repository 的差量版本校验、唯一约束和短事务替代旧 JSON 整集合覆盖。
 
 ## 7. 文件模型
 
@@ -300,7 +283,7 @@ manifest 的重要意义是崩溃恢复：即使进程重启，系统还能知�
 
 ## 10. Operation
 
-`disk-operations.json` 当前保存持久任务。
+持久操作任务现保存在 SQLite `disk_operations`；旧 `disk-operations.json` 仅为迁移来源。
 
 状态含：
 
@@ -429,7 +412,7 @@ placeholder 的 Telegram `file_id` 按 Bot 缓存，避免每删一个旧文件�
 
 owner metadata：
 
-- `.owners.json`
+- 旧 `.owners.json` 仅供旧数据离线导入；当前缓存归属在 SQLite `disk_cache_owners`
 - 一个 cache digest 可属于多个 `userId + diskSpace`。
 
 清理支持：
@@ -443,7 +426,7 @@ owner metadata：
 
 ## 16. Chunk `file_id` 重用
 
-`telegram-chunk-file-ids.json` 是内容分片 → Telegram file_id 的缓存。
+当前哈希分片 → Telegram `file_id` 映射位于 SQLite `disk_chunk_ids`；旧 `telegram-chunk-file-ids.json` 仅作迁移输入。
 
 key 关联：
 
@@ -558,7 +541,7 @@ UI 会展示：
 
 ## 22. 分享
 
-`disk-shares.json` 保存 capability link snapshot。
+分享 capability 记录位于 SQLite `disk_shares`；旧 `disk-shares.json` 不再作为运行时共享存储。
 
 Share 不是让外部用户自由传 `owner/path` 查询，而是创建时把用户选中的：
 
@@ -583,7 +566,7 @@ API：
 
 持久化：
 
-- `.tunnel-data/disk-collaborations.json`；
+- SQLite `disk_collaborations`（旧 `.tunnel-data/disk-collaborations.json` 只属于离线迁移输入）；
 - 协同目标可以是单文件或目录；
 - 记录 owner、disk space、目标路径/fileId、成员和一次性邀请；
 - 文件/目录移动后会同步调整协同目标路径。
@@ -673,62 +656,70 @@ API：
 
 不要把两个系统的 fileId 当成同一 namespace。
 
-## 26. 当前数据可靠性问题与 SQLite 规划
+## 26. SQLite / Content Object / 渐进上传：已实现，不再是未来规划
 
-已有设计结论：
+### 26.1 Repository 与共享 Content
 
-当前单 Node 进程 + Map + temp rename 并不意味着“多人一操作 JSON 就一定损坏”，但是：
+网盘现采用 Logical File → Content Object → Telegram Anchor 三层实体，另有按逻辑文件版本绑定的 revision/引用记录。两个用户各自持有独立 Logical File，校验合格后可引用同一份内容，而不必重复上传 Telegram 正文。浏览器快速复用须完成基于随机取样的持有证明（PoP），**不能只报同名、相同大小或 SHA 值就得到他人的内容**；0 字节按独立规则处理。不同 Bot/存储后端的引用、归属及取样授权继续检查。
 
-- file index + directory index 跨文件不能事务；
-- auth/share/operation 关系复杂；
-- 整文件写放大；
-- 未来多进程风险高。
+Content 在仍有引用、租约、历史已确认关联或可疑频道别名时不得被误清理；删除最后一个引用后走状态机与受控 GC，删除中/已删除 generation 不能简单重新激活。Telegram 远端消息与本地 SQLite 无法同一事务提交，未知发送结果保留恢复记录而不盲目重试。管理员提供 Content 查询、已删除逻辑记录关联、清理状态和技术数据诊断。完整语义与灰度开关参见 [共享 Content Object 说明](../../docs/telegram-drive-content-objects.md)。
 
-用户已经允许测试阶段旧网盘 JSON 全部放弃，因此未来计划是：
+### 26.2 浏览器渐进上传
 
-- 新建 `.tunnel-data/disk.sqlite`；
-- 原生 SQLite WAL；
-- Repository + DB Adapter；
-- 业务层不散落 SQLite SQL；
-- Telegram 网络操作不包进长 transaction；
-- 保留 Saga / rollback / recovery；
-- 为未来 PostgreSQL/MySQL 留适配边界。
+显式 `progressive:true` 的网盘上传使用增长文件 reader/writer：浏览器当前分片写入一部分后，Telegram 已可读取已落盘的增长字节；前后两段相互解耦。XHR 产生浏览器发送进度，授权 SSE `/uploads/:id/progress` 回传服务端阶段与进度，轮询仍是兜底。
 
-**这仍是计划，不是本文源码基线所代表的当前实现。**
+临时片先发送，完成来源校验后经最终媒体组确立正式 `file_id/message_id/media_group_id`，并先持久化最终关联、整批提交逻辑文件，再低优先级清理临时消息。独立调度器支持全局/单 Bot/单 Chat 并发与 429 冷却；只对确定安全的失败重试。Manifest v2 持久化来源、尝试、最终关联与清理债务供重启恢复。完整请求体已发送而结果不明时不宣称成功、也不盲重发。传统非渐进 API 和 S3 上传仍保留各自路径。
 
-## 27. S3 Compatible 规划
+### 26.3 上传/目录性能与错误语义
 
-相关材料：
+目录导航不再每次先等待完整 /me；元数据列表按一次聚合处理，轻量 mkdir 可直接返回完成结果。进入挂载与权限确认优先使用 `getDirectoryRecord()` 轻量记录，不重复投影完整子树或 Content；`Server-Timing`、`X-Disk-Request-Id` 和磁盘日志记录可脱敏定位目录、挂载解析、队列等待阶段。
 
-1. `prompts/ideas/Make full use of Telegram storage 260920.md`
-2. `prompts/ideas/QA of S3 base on Telegram Storage 260920.md`
-3. `prompts/ideas/Telegram Drive S3-Compatible API Implementation Guide (260920).md`
+上传队列满时使用轻量 queue 查询和 `UPLOAD_BACKPRESSURE`，客户端真实网络故障通过 failure API 与主动取消区分。完整已确认的 Telegram 响应才推进确认进度，浏览器缓存角标按实际已接收字节从 0% 计算。分片缓存与 `getFile` 路径复用均有 Bot/哈希/大小及失败刷新校验。统一错误输出 `userMessage` 与安全 `errorDetails`，不泄漏 SQL、密钥或服务端路径。模拟性能改善不能替代真实网关/代理诊断。
 
-最终 Implementation Guide 的目标是在现有网盘 Object Storage 能力之上提供 FolderSync 等可使用的 S3 Compatible API。
+## 27. S3 Compatible：有限协议子集
 
-截至本源码基线尚未实现。后续实施应复用现有：
+入口 `/S3API`（path-style，AWS SigV4），另有需要签名的 GET/HEAD `/s3/{bucket}/{key}`。Bucket 绑定指定 Access Key 的用户 UUID、分区及可选后端；后台 `/s3-management`、CLI `tools/s3-credentials.cjs` 管理独立密钥、停用和轮换。前台也可给自身分区启用稳定映射；管理帮助 `/s3-api-guide` 读取单一源码手册。
 
-- multipart；
-- Range；
-- logical file；
-- backend；
-- auth；
+已支持 Bucket 探测、位置查询、ListBuckets、ListObjects V1/V2、普通及 AWS chunked PUT、GET/HEAD/单段 Range、COPY、DELETE、多对象删除；**不支持 S3 Multipart Upload API**、完整 AWS ACL/SSE/Object Lock 等。S3 和传统 JSON 网盘 API 是不同协议入口，共享底层存储但不互相 HTTP 套用；S3 PUT 仍等待 Telegram 确认和索引提交。曾有 FolderSync 兼容修复（根 HEAD 探测、REST-XML 错误），但不能把隔离协议测试等同于完整真机/公网验收。精确请求限制和配置见 [S3 接入说明](../../docs/telegram-drive-s3-compatible.md)。
 
-而不是重新实现一套 Telegram 分片系统。
+## 28. 已实现的网盘高级操作
 
-## 28. 未来私有托管频道规划
+### 28.1 分区、协同 Mount、跨界 Copy
 
-已有调研考虑把 public `@username` 托管频道改成 private chat ID。
+分区已区分稳定 ID / 不可变底层 scopeKey / 可修改显示名；默认分区不可删除。提供新建、重命名、复刻、删除与中断后的受限恢复；复刻独立引用，不复制 Telegram 正文，也不自动复制协同授权、分享、静态签名或 Mount。
 
-这是未来任务，需检查：
+受邀协同具 viewer/editor 角色和实时撤权检查；本人可在原生目录创建协同 Mount 指针，浏览不复制远端数据。目录 Mount 在原生面包屑下进入来源授权子树，单文件 Mount 原位预览。跨 Native/Foreign Scope 必须显式 Copy，部分场景的跨界 Move 采用持久两阶段提交：目标复制已完成而删源失败则返回 `COPIED_SOURCE_RETAINED`，保留目标和安全重试材料。Mount 不可二次挂载或逃出授予根；S3/传统外部 API 对 Mount 指针及内部路径只读。
 
-- 当前文件记录是否已经保存 channelId；
-- caption 中 channel 显示与真实寻址是否混淆；
-- 旧数据是否需要自动修复。
+### 28.2 目录上传、编辑与回收站
 
-不要因为 caption 里出现 `@username` 就推断底层索引没有 chat ID；必须查当前 source/object。
+递归文件夹上传先枚举/预检并确认，默认总量 500,000,000 B，系统真实目录深度硬上限 30 层；按最多 100 文件一批提交，可凭本地清单提示用户确认继续，但不把仅凭文件名/大小当作内容校验。文本、Markdown 和 Hex 编辑器最多支持 20 MB，写入新版本采用 Content Object 写时复制（COW），保留其它引用，不用改动共享正文；冲突拒绝覆盖。
+
+普通浏览器删除进入按账号/分区隔离的回收站，保留内容引用与原路径快照；还原检验祖先、重名、权限及引用，明确永久删除才释放引用。第三方传统 API、S3 和后台删除保留各自永久删除语义；旧版本已经永久清理的文件无法凭新回收站恢复。非空回收站阻止分区删除。
+
+### 28.3 分享、静态开放、任务、转存
+
+分享/协同授权文件支持向自己的分区与目录转存成独立 Logical File；拒绝把自己的来源伪装成外来转存。静态开放使用 HMAC 签名、可撤销和可设置期限的 `/s3pub`，读路径、用户、分区、过期与签名范围受约束；显式开放才显示蓝色 S，父目录继承开放不表示子项独立配置。静态开放保护相关文件/目录免遭破坏性改名、移动和删除；已进入客户端缓存的字节不能因撤销而追回。
+
+任务列表合并/去重后按最新创建、开始、完成时间稳定排序。SNS/YouTube 已完成成品有“转存到网盘”：先验证并 pin 源缓存，保留可恢复待转存记录；用户再选择已验证账号、分区及目录，后端以 `pending_saves` 幂等预约和 attemptId 防止结果未知时重复 Telegram 上传。失败、取消或重启可以恢复，**结果未知时不释放缓存保护或盲重试**。
+
+### 28.4 多账号及登录选择
+
+同一浏览器可保留最多 10 个网盘账号的独立签名 HttpOnly 会话 Cookie，当前账号选择器不是凭据。切换不取消其它账号在途任务，操作必须固定发起账号和分区；账号 Cookie 的保留期限不等于登录仍有效。OIDC 授权尝试采用独立完成回执而非比较有效期，修复重复登录同一账号的误判；候选账号按下即时高亮，切换仍需显式确认。协同页、预览、转存与后台任务不得偷偷退回默认账号。
+
+### 28.5 Chat 字典和频道迁移
+
+管理员在 `/tgbot` 维护数字 Chat ID、历史 public 名称与别名，`getChat` 验证成功后才能迁移可信来源；“Telegram 文件防失联检测及修复”只在用户主动触发时扫描，已有文件可只更新来源标记，不强迫重新下载。频道从 public 改为 private 可使用停服离线 `tools/change-tgdisk-channel-id.cjs` 修改网盘 SQLite 记录；它不能迁移不属于同一频道的消息，也不会把旧 JSON 自动导入。详见 `docs/setup/telegram-chat-dictionary.md`。
 
 ## 29. 关键测试
+
+新增测试族（以当前树为准）：
+
+- `disk-json-migration`、`disk-repository`、`disk-content-*`、`disk-progressive-*`、`telegram-progressive-push`、`telegram-upload-progress`；
+- `disk-partitions`、`disk-collaboration-mounts`、`disk-mounted-directory-performance-261012-3`、`disk-trash`（回收站能力通过相关 feature 用例覆盖）；
+- `disk-file-editor-261011-2`、`disk-folder-upload`（在 261009 feature 系列中覆盖）、`disk-account-*`、`disk-pending-save-*`、`disk-task-order-261012-1`；
+- `s3-gateway`、`s3-admin`、`disk-static-resources`、`disk-error-*`（错误文案在 feature 测试中覆盖）。
+
+2026-10-12 开发记录报告全量 **840/840** 通过；这属于该开发阶段的测试记录，**不是本轮文档维护重新执行的测试**。Telegram 公网、真实 FolderSync、Android 文件夹拖放及真实进程崩溃仍应独立验收。
 
 至少：
 
