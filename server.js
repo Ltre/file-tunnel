@@ -1284,6 +1284,7 @@ app.use([
     '/pages/sns-cookies.html',
     '/pages/sns-dl.html',
     '/pages/youtube-premium-dl.html',
+    '/pages/media-library.html',
     '/pages/vclient.html',
     '/pages/disk-management.html',
     '/pages/s3-management.html',
@@ -2451,6 +2452,13 @@ app.use('/api/telegram/drive', diskAPI.browser);
 app.use('/api/telegram/disk/v1', diskAPI.external);
 app.use('/api/telegram/disk-admin', adminAuth.requireAuth, diskAPI.admin);
 app.use('/api/telegram/disk-shares', diskAPI.shared);
+const mediaLibrary = require('./server/media-library').registerMediaLibrary(app, {
+    dataDir: SERVER_DATA_DIR, root: __dirname, diskAPI, auth: diskAuth,
+    backend: () => ({ token: getTelegramBotToken(), channelId: getTelegramDriveActiveChannel()?.id || '', baseUrl: getTelegramBotApiBaseUrl() }),
+    downloads: { sns: snsDownloadService, youtube: youtubePremiumService },
+    identity: getTelegramDriveIdentity, requireAuth: adminAuth.requireAuth, origin: getTelegramPublicOrigin,
+    ffmpeg: FFMPEG_COMMAND, ffprobe: FFPROBE_COMMAND
+});
 app.use('/s3pub', diskAPI.publicStatic);
 app.get(['/disk-collab/:token', '/disk-collab/view/:collaborationId'], (req, res) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'Referrer-Policy': 'no-referrer' });
@@ -6486,7 +6494,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
             ...getYtDlpCookieArgs(url, options.cookiePath),
             url
         ];
-        if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections));
+        if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections), '--force-keyframes-at-cuts');
         if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
         try {
             await spawnYtDlpCapture(args, {
@@ -6977,6 +6985,8 @@ async function downloadSnsDownloadTask({ task, analysis, taskDir, signal, onProg
         onDetail
     });
     const probe = await probeMediaFile(downloadedPath, { signal });
+    await require('./server/media-section-quality').verifyDownloadedSection(downloadedPath, task.downloadSections,
+        { ffmpeg: FFMPEG_COMMAND, ffprobe: FFPROBE_COMMAND }, signal);
     const requiredStream = expectedType === 'audio' ? 'audio' : 'video';
     if (!probe.streams?.some(stream => stream.codec_type === requiredStream)) {
         throw new Error(requiredStream === 'audio' ? 'sns-download-audio-stream-missing' : 'sns-download-video-stream-missing');
@@ -7499,6 +7509,8 @@ async function downloadYoutubePremiumTask({ task, analysis, taskDir, signal, onP
         });
         onDetail?.({ message: '开始使用 ffprobe 校验下载成品轨道', details: { downloadedPath } });
         const probe = await probeMediaFile(downloadedPath, { signal });
+        await require('./server/media-section-quality').verifyDownloadedSection(downloadedPath, task.downloadSections,
+            { ffmpeg: FFMPEG_COMMAND, ffprobe: FFPROBE_COMMAND }, signal);
         if (!probe.streams?.some(stream => stream.codec_type === (singleTrack === 'audio' ? 'audio' : 'video'))) {
             throw new Error(singleTrack === 'audio' ? 'youtube-premium-audio-stream-missing' : 'youtube-premium-video-stream-missing');
         }
@@ -10882,10 +10894,13 @@ startServer().catch(err => {
 
 // 优雅关闭
 let shutdownStarted = false;
-function shutdown(signal) {
+async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
     console.log(`${signal} received, shutting down gracefully`);
+    const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
+    await mediaLibrary.close();
+    clearTimeout(mediaStopDeadline);
     flushInfraAuditQueue();
     diskAPI.close();
     diskOperations.flush();

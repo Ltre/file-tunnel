@@ -2649,6 +2649,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal }) {
+        const sourceAppId = mapping.sourceAppId === 'media-library' ? 'media-library' : 's3';
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
         if (replaceId) assertStaticFileWritable({ userId: owner.id, diskSpace }, diskStore.get(owner.id, replaceId));
@@ -2691,13 +2692,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         }
         const req = { diskScope: { userId: owner.id, diskSpace }, diskStore, diskUser: owner,
-            diskApp: { appId: 's3', storage }, get: () => '' };
+            diskApp: { appId: sourceAppId, storage }, get: () => '' };
         const job = diskStore.begin({ owner, folderPath: info.folderPath, files: [{ name: info.name, type: contentType, size }], maxDepth: depthFor(owner.id), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT,
-            backendId: storage.id || '', channelId: storage.channelId, sourceAppId: 's3', metadata, replaceId });
+            backendId: storage.id || '', channelId: storage.channelId, sourceAppId, metadata, replaceId });
         job.storage = storage;
         job.assertAuthorized = mapping.assertAuthorized;
         try {
-            const operation = operations.create(req.diskScope, 'upload', `S3 上传：${info.key}`, size);
+            const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : '媒体收藏转存'}：${info.key}`, size);
             job.operationId = operation.operation_id;
             await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId });
         } catch (error) {

@@ -301,6 +301,7 @@
             const task = await api(`${API_ROOT}/tasks`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
                 url, mode:mode(), selectedFormatIds:mode() === 'custom' ? selectedFormats().map(item => item.id) : [], downloadSections:downloadSectionsInput.value.trim()
             }) });
+            window.MediaTaskLink?.created(task);
             showNotice(`任务 ${task.id.slice(0,8)} 已进入 ${platformLabels[task.platform] || 'SNS'} 队列。`); page = 1; await loadTasks();
         } catch (error) { showNotice(error.message, true); } finally { startBtn.disabled = false; }
     }
@@ -469,5 +470,6 @@
     loadTasks();
 })();
 </script>
+<script src="/client/media-task-link.js"></script>
 </body>
 </html>

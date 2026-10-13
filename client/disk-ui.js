@@ -1937,9 +1937,12 @@ function renderTelegramDriveItems() {
 }
 
 async function uploadFilesToTelegramDrive(fileList, destination = telegramDrivePath) {
-    const files = [...(fileList || [])]; if (!files.length) return;
+    let files = [...(fileList || [])]; if (!files.length) return;
     const actor = window.DiskClient.context();
-    const result = await window.DiskClient.upload(files, destination);
+    if (window.DiskUploadNames) files = await window.DiskUploadNames.prepare(files, destination,
+        text => confirmTelegramDriveAction('待上传文件重名', text, '自动重命名并上传'));
+    if (!files) return;
+    const result = await window.DiskClient.upload(files, destination, undefined, { transportContext: actor });
     showAppToast('已上传 ' + files.length + ' 个文件' + (result.warnings?.length ? '；' + telegramDriveWarningText(result.warnings) : ''));
     // Only refresh the directory where the upload was initiated. A render
     // generation prevents an older in-flight list request from overwriting it.

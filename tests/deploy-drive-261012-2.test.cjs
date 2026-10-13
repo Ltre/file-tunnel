@@ -14,7 +14,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     const run = args => execute(process.execPath, args, { cwd: ROOT, timeout: 110000, maxBuffer: 8 * 1024 * 1024 });
     await run(['tools/deploy/build.mjs', '--profile', 'txsl', '--out', relative, '--source-branch', 'fixture-261012', '--source-commit', '0123456789abcdef0123456789abcdef01234567']);
     const manifest = JSON.parse(fs.readFileSync(path.join(temporary, 'build-manifest.json')));
-    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save'];
+    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save'];
     const sourcePages = ['index.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
     for (const name of required) {
         const source = 'client/' + name + '.js', asset = manifest.scripts[source];
@@ -38,6 +38,13 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     assert.equal(probe.stdout, '');
     const checked = await run(['tools/deploy/verify.mjs', '--dist', relative, '--profile', 'txsl']);
     assert.match(checked.stdout, /verify ok: txsl/);
+    assert.ok(fs.existsSync(path.join(temporary, 'docs/media-library.md')));
+    for (const source of ['client/media-library.js', 'client/media-task-link.js']) {
+        const asset = manifest.scripts[source]; assert.ok(fs.existsSync(path.join(temporary, asset.slice(1))));
+        assert.ok(!manifest.appShell.includes(asset), 'independent administrator subsystem must not expand the PWA shell');
+    }
+    assert.ok(fs.readFileSync(path.join(temporary, 'pages/media-library.html'), 'utf8').includes(manifest.scripts['client/media-library.js']));
+    await run(['-e', 'const api=require(process.argv[1]); if(typeof api.registerMediaLibrary!=="function")process.exit(1);', path.join(temporary, 'server/media-library/index.js')]);
     // A manifest entry alone must not conceal a missing runtime helper.
     fs.unlinkSync(path.join(temporary, 'client/disk-operation-order.js'));
     await assert.rejects(run(['tools/deploy/verify.mjs', '--dist', relative, '--profile', 'txsl']), error => {

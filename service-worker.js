@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v7-drive-login-feedback';
+const CACHE_NAME = 'instant-tunnel-v78-content-v7-batch-upload-names';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -21,6 +21,7 @@ const APP_SHELL = [
     '/client/disk-trash-ui.js',
     '/client/disk-import-picker.js',
     '/client/disk-file-editor.js',
+    '/client/disk-upload-names.js',
     '/client/disk-folder-upload.js',
     '/client/disk-directory-picker.js',
     '/client/disk-ui.js',

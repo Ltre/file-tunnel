@@ -23,7 +23,9 @@
         const full=path=>[destination,path].filter(Boolean).join('/');
         if(plan.directories.some(path=>full(path).split('/').length>limits.maxDirectoryDepth))throw new Error('上传后目录层级超过 '+limits.maxDirectoryDepth+' 层');
         if(!confirm(`将上传 ${plan.files.length} 个文件、${plan.directories.length} 个目录（${total} B）到 /${destination}。确认继续？`))return;
-        const files=plan.files.map(({file,path})=>{const copy=new File([file],file.name,{type:file.type,lastModified:file.lastModified});copy.diskFolderPath=full(path.split('/').slice(0,-1).join('/'));return copy;});
+        let files=plan.files.map(({file,path})=>{const copy=new File([file],file.name,{type:file.type,lastModified:file.lastModified});copy.diskFolderPath=full(path.split('/').slice(0,-1).join('/'));return copy;});
+        if(global.DiskUploadNames)files=await global.DiskUploadNames.prepare(files,destination,text=>confirm(text));
+        if(!files)return;
         const manifest={directories:plan.directories.map(full),files:files.map(f=>({name:f.name,folderPath:f.diskFolderPath,size:f.size,type:f.type}))};
         const storageKey='disk-folder-upload-resume',signature=JSON.stringify({context,destination,manifest});
         let remembered=[],parent;

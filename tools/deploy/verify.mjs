@@ -81,7 +81,7 @@ function shouldExistAsStaticFile(ref) {
   if (ref === '/' || ref.startsWith('/?')) return false;
   if (ref === '/manifest.webmanifest' || ref.startsWith('/manifest.webmanifest?')) return false;
   if (ref === '/runtime-config.js') return false;
-  if (/^\/(?:admin|disk-management|s3-management|s3-api-guide|data-usage|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts|telegram-content|video-transcode|vclient|web-zip-preview|disk)(?:[/?#]|$)/.test(ref)) return false;
+  if (/^\/(?:admin|disk-management|s3-management|s3-api-guide|data-usage|media-library|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts|telegram-content|video-transcode|vclient|web-zip-preview|disk)(?:[/?#]|$)/.test(ref)) return false;
   return true;
 }
 
@@ -160,7 +160,8 @@ async function main() {
     if (!original.equals(deployed)) errors.push(`bundled Markdown bytes changed: ${assetPath}`);
   }
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
-    if (source === 'client/s3-management.js') continue;
+    if (['client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
+      'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js'].includes(source)) continue;
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing ${assetPath}`);
   }
 

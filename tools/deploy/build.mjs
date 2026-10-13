@@ -45,6 +45,7 @@ const SCRIPT_SOURCES = [
   'client/disk-trash-ui.js',
   'client/disk-import-picker.js',
   'client/disk-file-editor.js',
+  'client/disk-upload-names.js',
   'client/disk-folder-upload.js',
   'client/disk-mount-ui.js',
   'client/disk-collaboration.js',
@@ -57,6 +58,10 @@ const SCRIPT_SOURCES = [
   'client/s3-management.js',
   'client/simplewebauthn.js',
   'client/sns-download-cache.js',
+  'client/media-task-link.js',
+  'client/media-library.js',
+  'client/vendor/web-markdown/marked-18.0.14.umd.js',
+  'client/vendor/web-markdown/purify-3.4.16.min.js',
   'client/audio-track-repair.js',
   'client/i18n-catalog.js',
   'client/i18n.js',
@@ -68,6 +73,7 @@ const PAGE_ROUTES = {
   'admin.html': ['/admin'],
   'disk-management.html': ['/disk-management'],
   'data-usage.html': ['/data-usage'],
+  'media-library.html': ['/media-library'],
   'admin-auth.html': ['/admin-auth', '/admin-auth.html', '/admin.html'],
   'downloader.html': ['/downloader', '/downloader.html'],
   'downloadList.html': ['/downloadList', '/downloadList.html'],
@@ -462,9 +468,11 @@ async function writeGeneratedConfig(outRoot, profile, release) {
 
 async function buildServiceWorker(outRoot, buildId, assets, styles) {
   const raw = await fs.readFile(path.join(ROOT, 'service-worker.js'), 'utf8');
-  const assetShell = [...Object.entries(assets).filter(([source]) => source !== 'client/s3-management.js').map(([, asset]) => asset),
-    ...Object.entries(styles).filter(([page]) => page !== 's3-management').map(([, asset]) => asset)].sort();
-  const pageShell = Object.values(PAGE_ROUTES).flat();
+  const adminOnly = new Set(['client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
+    'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js']);
+  const assetShell = [...Object.entries(assets).filter(([source]) => !adminOnly.has(source)).map(([, asset]) => asset),
+    ...Object.entries(styles).filter(([page]) => !['s3-management', 'media-library'].includes(page)).map(([, asset]) => asset)].sort();
+  const pageShell = Object.entries(PAGE_ROUTES).filter(([page]) => page !== 'media-library.html').flatMap(([, routes]) => routes);
   const appShell = Array.from(new Set([
     ...pageShell,
     '/runtime-config.js',
@@ -523,6 +531,7 @@ async function main() {
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
   await copyFileRelative('docs/telegram-drive-content-objects.md', outRoot);
   await copyFileRelative('docs/adapter/telegram-disk-api.md', outRoot);
+  await copyFileRelative('docs/media-library.md', outRoot);
   await copyFileRelative('tools/migrate-tgdisk-content-objects.cjs', outRoot);
   await copyFileRelative('tools/migrate-tgdisk-content-objects.md', outRoot);
   await copyFileRelative('tools/migrate-tgdisk-json-to-sqlite.cjs', outRoot);
