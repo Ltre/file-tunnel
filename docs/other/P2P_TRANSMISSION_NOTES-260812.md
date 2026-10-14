@@ -91,6 +91,41 @@ stable-1.7.12 与 stable-1.7.27 的核心测试矩阵基本一致。这说明大
 - 两台 Android 只有一台启用 Igniter时，多数用例可以 P2P。
 - 两台 Android 都启用 Igniter 时，多数用例退回 relay。
 
+### 5.2 48 组原始用例的横向矩阵（不遗漏 PAC / 全局 / 直连）
+
+原始两份测试采用相同条件：同一 Wi-Fi/子网、Windows 11 + Android 10 或 Android 13 + Android 10；Windows 使用 trojan-gfw 1.1.6，Android 使用 Igniter 0.10.3-beta。**每一组都独立测试**三个入口：A=`http://10.0.0.11`，B=`https://tun-test.miku.us`，C=`https://tun.miku.us`。8 月 10 日 stable-1.7.12 和 8 月 11 日 stable-1.7.27 都有 1—48 号用例；下列结果是这两次历史记录，不代表不同版本、设备或网络的永久规则。
+
+**Windows 11 ↔ Android 10**（Windows 代理模式为测试时的 trojan-gfw 设置，Android VPN 均指 Igniter）：
+
+| Windows 模式 | Android 10 | A：局域网 HTTP | B：测试 HTTPS | C：正式 HTTPS | 三个入口原始用例 |
+|---|---|---|---|---|---|
+| 关闭、PAC、全局、增强（分别测试） | Igniter 关闭 | 全部 P2P | 全部 P2P | 全部 P2P | A：1/4/7/10；B：17/20/23/26；C：33/36/39/42 |
+| Windows 关闭 | Igniter 开，Exempt 开 | 全部 Socket.IO Relay | 全部 Socket.IO Relay | P2P 为主；8/10 用例 34 偶有 Relay | 2/18/34 |
+| Windows PAC | Igniter 开，Exempt 开 | 全部 Socket.IO Relay | 全部 Socket.IO Relay | 全部 P2P | 5/21/37 |
+| Windows 全局 | Igniter 开，Exempt 开 | 全部 Socket.IO Relay | 全部 Socket.IO Relay | 全部 P2P | 8/24/40 |
+| Windows 增强 | Igniter 开，Exempt 开 | 全部 Socket.IO Relay | 全部 Socket.IO Relay | 全部 P2P | 11/27/43 |
+| 关闭、PAC、全局、增强（分别测试） | Igniter 开，Exempt 关 | 页面不可访问，**不评估 P2P** | 页面不可访问，**不评估 P2P** | 页面不可访问，**不评估 P2P** | A：3/6/9/12；B：19/22/25/28；C：35/38/41/44 |
+
+这里的“增强”是 **trojan-gfw 自身的增强模式**，不是后来隧道设置中的“增强局域网 P2P”媒体授权功能，两者不能混同。页面不可访问的行原文明确标为“不需期望”，不能统计为 WebRTC 建链失败。
+
+**Android 13 ↔ Android 10**：
+
+| 双端 Igniter（启用时 Exempt 均开启） | A：局域网 HTTP | B：测试 HTTPS | C：正式 HTTPS | 原始用例 |
+|---|---|---|---|---|
+| 两端均关闭 | 全部 P2P | 全部 P2P | 全部 P2P | 13/29/45 |
+| Android 13 关、Android 10 开 | 全部 P2P | 全部 P2P | P2P 为主；8/11 用例 46 偶有 Relay | 14/30/46 |
+| Android 13 开、Android 10 关 | 全部 P2P | 全部 P2P | 全部 P2P | 15/31/47 |
+| 两端均开启 | 全部 Socket.IO Relay | 全部 Socket.IO Relay | 全部 P2P | 16/32/48 |
+
+原记录中“全部 P2P”“全部 Relay”属于该次样本的观察。偶发 Relay 也应原样保留：它可能是一次实际 fallback、瞬时网络波动或进度展示造成的混淆，仅凭旧文案无法确定，不可擅自归零或计算成准确失败率。
+
+**最值得记住的交叉结论**：
+
+- Windows **关闭/PAC/全局/增强**四种模式在已完成的 Windows↔Android 用例里没有改变结果分组；因此不能一看 PC 开了“全局代理”就断言文件的 WebRTC UDP 必然走该代理，更不能断言 PAC 必然保证 P2P。
+- 在 A/B 入口，**Android 10 开 Igniter（Exempt 开）**的 Windows↔Android 用例均退到 Socket.IO Relay；Android↔Android **双 Igniter**也均 Relay。
+- C 入口却在类似代理组合下基本 P2P，这是需要解释的反常对照，而不是证明 `tun.miku.us` 的 CDN、域名或 Node 端口具备特殊的 P2P 穿透能力。
+- 8/12 无痕窗口的权限实验补齐了一项可控制变量，见 §1 与下一小节；它解释了这批样本的主要差异，但**旧 48 组报告本身未记录两端具体媒体权限、候选列表或 selected candidate pair**，不能从矩阵倒推出确定的 ICE IP/接口。
+
 ### 5.2 tun.miku.us 的历史优势
 
 `https://tun.miku.us` 在相同设备和双代理条件下仍经常可以 P2P，长期被误认为域名、Cloudflare 或旧版链路代码拥有特殊优势。
@@ -233,6 +268,48 @@ OPFS、IndexedDB、内存拼接和 Worker 决定文件接收后的写入速度�
 | 5 | VPN 开 | VPN 开 | 授权后撤销 | 应重新表现为受限候选或 relay |
 
 测试小文件与大文件时也要分开判断。小文件可以验证建链时延，大文件用于验证背压、分片、commit 和持续吞吐，不能用大文件后半程的问题反推 ICE 初始候选一定错误。
+
+## 9.1 PC 全局/PAC、Android VPN 与 Socket.IO Relay 的分层判断
+
+面对“同一 Wi-Fi、同一个文件，在 PC 关代理/PAC/全局与 Android VPN 切换后，有时 P2P、有时 Relay”时，按以下**三层**区分：
+
+| 层 | 影响项 | 能证明什么 | 不能因此证明什么 |
+|---|---|---|---|
+| 页面与信令 | PC 代理规则、PAC、全局模式、域名/IP 分流、HTTPS/Socket.IO 可达 | 能否打开网页、加入同一隧道、交换 SDP 与 ICE candidate | 浏览器的 ICE UDP 一定绕开 VPN 或使用物理 Wi-Fi |
+| WebRTC ICE / DataChannel | Android VPN 虚拟接口、默认路由、mDNS、STUN、浏览器 Origin 权限及本地地址策略 | 选中候选对且 DataChannel 打开后，能否进行浏览器对浏览器传输 | “网页打开正常”或“信令正常”就等于 P2P 一定连通 |
+| 文件级传输与兜底 | PeerConnection 等待窗口、文件 DataChannel、分片 ACK、watchdog、供源选择、Socket.IO relay | 本文件/分片这次是 P2P 完成、Relay 完成，还是发生了重试、竞态或 UI 错标 | 仅从进度条出现 Relay 就断定前一段 P2P 从未成功 |
+
+**PAC 是 HTTP(S) 请求代理选择机制，不是 WebRTC UDP 接口枚举策略**；“全局代理”也不等于所有浏览器实现、所有 UDP/ICE 目的地址都会按同一规则转发。Windows trojan-gfw 和 Android Igniter 的机制及作用层级不同，不能把两个平台上同名“全局”作为相同控制变量。分流选项 `Exempt Chinese Domain/IPs` 只是在测试中的具体开关，不能推导出对任意 ICE candidate、mDNS、STUN 或 VPN split tunnel 的完整覆盖。
+
+浏览器的 ICE candidate 类型 `relay` 专指 **TURN relay candidate**，与 Drop2Tunnel 在文件任务失败后通过 **Socket.IO Relay** 转发字节是两个不同概念。本次源码的标准文件 PeerConnection `iceServers` 列表是 STUN、未配置 TURN；不能把 UI 的 Socket.IO Relay 标签反推为“选中了 TURN candidate”。
+
+### 9.2 1500 ms 等待窗口造成的时序差异
+
+当前 `client/file-assets.js` 保留 `P2P_TIMEOUT = 1500`（已有协商的等待窗口）与 `P2P_FILE_CHANNEL_TIMEOUT = 5000`（文件 DataChannel 就绪窗口）。一项文件任务赶在共享 PeerConnection 连通前触发，可能先走 Socket.IO Relay；**同一双设备稍后共享 ICE 连通，下一次文件请求仍可能直接 P2P**。因此，短时间内先 Relay 后 P2P 不必意味着 PAC/VPN 配置发生变化。
+
+`p2p-degrade-to-relay`、`relay-start`、`relay-completed` 与该 `requestId` 对应的 P2P/channel 状态，是比“当前这台设备曾经显示 P2P”更可靠的文件级证据。遇到多源分片还要核对 `transferId` / `attemptId`：同一文件不同分片可能走不同传输路径，不能把全文件视为只有一个连接结果。
+
+### 9.3 曾尝试但撤回的网络层方案
+
+`docs/devlog/dev-2607B-features.md` 记录了 2026-07-28—29 的历史演进：
+
+1. 曾在标准 PeerConnection 之外引入独立 `iceServers: []` 的 LAN-only PeerConnection，并尝试探测本地直连；后来因双 ICE 竞争、重复 offer、候选/连接代际错位和批量文件卡“建链中”而撤回。
+2. 其后保留**单一标准 STUN PeerConnection**，修复并发 offer 合并、旧连接回调污染、心跳引发的无文件重复建链，以及 stale offer 恢复问题。这里的每一轮修改针对的是不同生命周期故障，不等同于突破 Chrome/VPN 的网络接口隐私限制。
+3. 当时曾讨论 mDNS host candidate 与服务端可观察私网地址的补充方案，但服务端“知道”或猜测地址并不意味着浏览器 ICE agent 就能发送该地址上的 UDP；不能把候选字符串重写当成可靠的系统级 VPN 绕过手段。
+4. “把失败等待缩短、Relay 更快出现”只是加快降级，不是修复 P2P 建链；盲目加长超时也不能让浏览器产生被隐私策略隐藏的本地地址。
+
+这些是**失败方案/历史经验**，不是建议恢复旧 LAN-only 协议。当前是否仍存在某个候选处理分支，需要逐次以 `app.js`、`client/file-assets.js` 和实际回归测试确认，不可把历史开发日志的每个中间实现当成现状。
+
+### 9.4 重现问题的最小证据包
+
+复现时建议先用上面 §5.2 的代表性组合，保持同一文件、设备、Wi-Fi、Chrome/Profile 与版本，逐次只改一项：Windows 关闭/PAC/全局，Android Igniter 关/开，Origin A/B/C，站点媒体权限“未授权→授权并刷新→撤销”。每次至少留存：
+
+- 两台设备各自的代理应用/版本、模式、Igniter Exempt 状态；浏览器普通/无痕 Profile 与 Origin。
+- 页面及 Socket.IO 是否连通；ICE gathering/checking/connected/failed 的时间；候选类型和 selected candidate pair（host、srflx、prflx 或 TURN relay）。
+- 文件级 `assetId`、`requestId`、`transferId`、`attemptId`、P2P 等待/打开时间、`p2p-degrade-to-relay` 原因、Relay 开始/完成和 ACK。
+- 本次操作究竟是**建链就失败**、**P2P 已连通但文件 DataChannel 超时**、**文件传完未完成确认**，还是**仅 UI 进度来源混淆**；用这四类之一定位代码，不混修。
+
+没有候选对或底层网络抓包时，只能得出“历史对照与权限存在强关联，且授权切换可改变结果”的结论；不能声称已经证实 Chrome 某一个精确 ICE policy mode、确定的 UDP 出口或 PAC 实际转发路径。
 
 ## 10. 当前代码入口
 
