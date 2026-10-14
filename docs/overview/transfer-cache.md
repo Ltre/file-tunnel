@@ -170,11 +170,27 @@ Git 历史中大量提交专门处理：
 - receiver 断线；
 - 同 file 多来源。
 
-### 6.4 2026-08-12 WebRTC / VPN / 媒体权限复盘
+### 6.4 PC 代理模式、Android VPN 与 Origin 权限：2026-08 对照复盘
 
-参阅 [P2P_TRANSMISSION_NOTES-260812.md](../other/P2P_TRANSMISSION_NOTES-260812.md)。这是关于 Android Igniter VPN、不同 Origin、Chrome 普通/无痕模式与摄像头/麦克风权限的实际对照记录：当时两端启用 VPN 时，站点媒体授权状态足以改变 P2P 与 Socket.IO relay 的结果。文档还区分了 **ICE 候选与建链、传输完成确认、重复调度、缓存状态和 UI 进度** 等不同故障层级。
+**详细原始记录：** [P2P_TRANSMISSION_NOTES-260812.md](../other/P2P_TRANSMISSION_NOTES-260812.md)。其中 §5.2 直接交叉索引 2026-08-10 `stable-1.7.12` 和 08-11 `stable-1.7.27` 各自的 48 组用例；原始用例仍保存在 `TECH_CHALLENGES_OF_TRANSMISSION (260810/260811, ...).md`。
 
-排查时不要把 HTTP 可直连等同于 WebRTC UDP 可直连，也不要假设延长 ICE 等待、`iceTransportPolicy: 'all'` 或另建 LAN-only 连接能够绕过浏览器的本地地址隐私策略。记录中的“增强局域网 P2P”属于用户主动授权、媒体 track 随即停止、失败仍保留 relay 的策略；2026-08-12 的浏览器测试结论不能未经复测直接推广至所有后续浏览器版本。
+在同一局域网、Windows 11 trojan-gfw（关闭/PAC/全局/增强）和 Android Igniter 环境下，当时观察到：
+
+| 两端状态 | `10.0.0.11` / `tun-test.miku.us` | `tun.miku.us` |
+|---|---|---|
+| Windows 任意上述模式 + Android 10 Igniter 关 | P2P | P2P |
+| Windows 任意上述模式 + Android 10 Igniter 开、Exempt 开 | Socket.IO Relay | P2P 为主，个别样本偶发 Relay |
+| Android 13 与 Android 10 均未启用 Igniter | P2P | P2P |
+| 两台 Android 均启用 Igniter、Exempt 开 | Socket.IO Relay | P2P |
+| Android Igniter 开、Exempt 关且网页无法访问 | 不纳入 WebRTC 成败统计 | 不纳入统计 |
+
+**这不是“PC 全局代理必然损坏 P2P”或“正式域名天然有特殊穿透能力”。** 随后的 2026-08-12 双 Igniter/Chrome 无痕实验控制了站点媒体权限：未授权时 Relay、授权并刷新后 P2P、撤销后又 Relay；同一条件在 `tun.miku.us` 与 `tun-test.miku.us` 都复现。它支持 Origin 媒体授权状态影响浏览器 ICE 本地地址候选的解释；没有采集完整 candidate pair 的旧用例，不足以确定某次 UDP 走了哪个物理接口或 Chrome 内部哪种具体 IP 处理模式。
+
+**区分三个层级：** (1) PAC/全局/Exempt 影响网页与 Socket.IO 信令能否抵达服务端，不保证 WebRTC 的 UDP/mDNS/本地接口可达；(2) ICE 与 DataChannel 是否实际连接，受 VPN、候选、浏览器隐私权限影响；(3) 文件级等待、完成 ACK、重试与 Relay 决定单个文件/分片最终怎么传。当前 `client/file-assets.js` 的共享连接等待窗口为 1500ms、文件通道等待为 5000ms，先发的任务可能 Relay、后续连接就绪的任务可能 P2P；不能只凭进度条定因。
+
+当前标准文件 PeerConnection 使用 STUN、`iceTransportPolicy: 'all'`，没有在其 `iceServers` 中配置 TURN；**TURN ICE `relay` candidate 与应用层 Socket.IO Relay 是两个不同机制**。隧道设置中的“增强局域网 P2P”由用户主动获取媒体权限、立即停止 track，**不发送摄像头/麦克风内容**；授权后提示手动刷新，不自动中断传输。历史 LAN-only 独立 PeerConnection 试验已撤回，不应作为本问题的默认修复方向。
+
+排查时先复刻 §5.2 的 PC PAC/全局 × Android Igniter × 三种 Origin 矩阵，同时固定 Chrome Profile、权限、设备/文件；记录 `requestId` / `transferId` / `attemptId`、ICE selected pair、文件 DataChannel 状态、`p2p-degrade-to-relay` 和 ACK，以区分 ICE 失败、文件等待超时、完成竞态及 UI 错标。
 
 ## 7. Socket.IO Relay
 
