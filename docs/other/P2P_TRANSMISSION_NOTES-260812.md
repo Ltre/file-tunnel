@@ -2,6 +2,8 @@
 
 日期：2026-08-12
 
+维护补充：2026-10-14（§5.2 历史用例矩阵、§9.1—9.4 分层诊断；保留 8/12 原结论，并以当前 `dev/doc-overview` 代码复核超时/授权入口）
+
 参考测试记录：
 
 - `docs/other/TECH_CHALLENGES_OF_TRANSMISSION (260810, stable-1.7.12).md`
@@ -126,7 +128,7 @@ stable-1.7.12 与 stable-1.7.27 的核心测试矩阵基本一致。这说明大
 - C 入口却在类似代理组合下基本 P2P，这是需要解释的反常对照，而不是证明 `tun.miku.us` 的 CDN、域名或 Node 端口具备特殊的 P2P 穿透能力。
 - 8/12 无痕窗口的权限实验补齐了一项可控制变量，见 §1 与下一小节；它解释了这批样本的主要差异，但**旧 48 组报告本身未记录两端具体媒体权限、候选列表或 selected candidate pair**，不能从矩阵倒推出确定的 ICE IP/接口。
 
-### 5.2 tun.miku.us 的历史优势
+### 5.3 tun.miku.us 的历史优势
 
 `https://tun.miku.us` 在相同设备和双代理条件下仍经常可以 P2P，长期被误认为域名、Cloudflare 或旧版链路代码拥有特殊优势。
 
@@ -269,7 +271,7 @@ OPFS、IndexedDB、内存拼接和 Worker 决定文件接收后的写入速度�
 
 测试小文件与大文件时也要分开判断。小文件可以验证建链时延，大文件用于验证背压、分片、commit 和持续吞吐，不能用大文件后半程的问题反推 ICE 初始候选一定错误。
 
-## 9.1 PC 全局/PAC、Android VPN 与 Socket.IO Relay 的分层判断
+### 9.1 PC 全局/PAC、Android VPN 与 Socket.IO Relay 的分层判断
 
 面对“同一 Wi-Fi、同一个文件，在 PC 关代理/PAC/全局与 Android VPN 切换后，有时 P2P、有时 Relay”时，按以下**三层**区分：
 
