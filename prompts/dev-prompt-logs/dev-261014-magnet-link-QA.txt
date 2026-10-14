@@ -1,0 +1,47 @@
+问：
+
+    目前磁链是怎样寻址的，到底有没有借助过中心服务器
+    
+    
+    
+答：
+
+
+    我会从仓库里的开发记录、文档和 Git 历史查找“磁链 / magnet / BT / DHT / tracker”等线索，再对照相关实现判断寻址路径以及是否依赖中心服务器；只读检查，不改代码。
+
+    已读取文件运行了命令
+    目前已经找到一份专门记录磁链机制的架构文档，以及服务端磁链注册和下载器实现。我再核对一下历史需求与现行代码是否有差异，避免把“最初设计想法”和“现在实际走的链路”混为一谈。
+
+    运行了命令
+        
+    我查了当前实现和以前的开发记录。结论是：**有借助中心服务器，而且当前独立磁链下载器缺少本地缓存时，文件数据也会经过该服务器中继。**但服务器不是文件的持久存储位置。
+
+    ### 磁链如何定位文件
+
+    磁链不是 BitTorrent 的 infohash，也不是文件内容哈希。系统会生成一个随机 Magnet ID，服务端用它查到对应的 **隧道 `sessionId` 和文件 `assetId`**：
+
+    ```text
+    https://HOST/magnet/<随机ID>
+      → /downloader?magnet=<随机ID>
+      → 服务端按 ID 查询磁链记录
+      → 返回 sessionId、assetId、文件元数据和当前在线供源
+    ```
+
+    随机 ID 的生成和路由见 [server.js](server.js:3190)、[server.js](server.js:4105)；磁链记录保存在服务端进程内的 `magnets` Map 中，查出的记录再关联隧道的文件资源，见 [server.js](server.js:3646) 和 [磁链机制文档](docs/overview/transfer-cache/magnet-download.md:40)。
+
+    ### 中心服务器具体参与哪些环节
+
+    - **解析磁链和发现供源：**下载页请求中心服务器的 `/api/magnets/:id`，拿到对应的隧道、文件和当前在线供源列表。
+    - **协调下载：**下载器通过 Socket.IO 加入对应隧道并请求文件，服务端选择供源、转发请求。
+    - **中继文件数据：**当前独立下载器明确禁用 WebRTC 直连；缺少本地缓存时，文件分块经 Socket.IO Relay 从供源设备转发到下载器。[downloader.html](pages/downloader.html:391)、[server/file-assets.js](server/file-assets.js:713)
+
+    服务器不把文件正文存成磁链文件；它保存的是临时磁链索引和供源等元数据，Relay 负责转发数据。服务端重启会丢失磁链注册，链接也有有效期。[磁链机制文档](docs/overview/transfer-cache/magnet-download.md:40)
+
+    ### 以前的设想和现在的实现有区别
+
+    6 月的开发记录里，确实计划从服务器获取种子设备及网络打洞信息，并考虑从供源设备拉取文件；记录也明确说服务端登记元数据、不存文件内容。[开发记录](prompts/dev-prompt-logs/dev-260625-multi-relay.md:9)、[开发记录](prompts/dev-prompt-logs/dev-260625-multi-relay.md:92)
+
+    但按当前独立下载器代码，它不做 WebRTC 直连，而是走 Relay。因此不能把当前磁链描述成 DHT 寻址或纯 P2P 下载。主应用里普通文件传输有自己的 P2P/Relay 策略；磁链下载页是另一条偏向服务端中继的实现。
+
+
+
