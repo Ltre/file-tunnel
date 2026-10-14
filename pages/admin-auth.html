@@ -61,7 +61,7 @@ async function init(){
         }
         mode='setup';
         document.getElementById('title').textContent='绑定管理员身份验证器';
-        document.getElementById('description').textContent='这是首次设置。绑定成功后，管理会话将在本浏览器保持 14 天。';
+        document.getElementById('description').textContent='这是首次设置。绑定成功后，管理会话将在本浏览器保持 30 天。';
         setupEl.classList.remove('hidden');
         issuerInput.value=data.setup.issuer||'Instant Tunnel Admin';
         renderSetup(data.setup);

@@ -1231,7 +1231,10 @@ function initSessionLanding() {
     document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
     document.getElementById('leaveTunnelBtn').hidden = true;
     document.getElementById('mobileForceRefreshBtn').hidden = true;
-    if (!window.location.hash && window.location.search) {
+    // Disk entry parameters are consumed later by DiskUI.init(), after the
+    // tunnel landing page has initialized. Keep that destination intact.
+    if (!window.location.hash && window.location.search && window.location.pathname !== '/disk'
+        && new URLSearchParams(window.location.search).get('disk') !== '1') {
         history.replaceState(null, '', window.location.pathname);
     }
 

@@ -602,8 +602,12 @@ function editTelegramDrivePath() {
     const go = document.createElement('button'); go.type = 'submit'; go.textContent = '前往';
     const close = () => { if (target.contains(input)) renderTelegramDriveBreadcrumbs(telegramDriveCurrentData || {}); };
     let submitting = false;
-    form.addEventListener('focusout', () => queueMicrotask(() => {
-        if (!submitting && !form.contains(document.activeElement)) close();
+    // Touch browsers do not always focus a tapped button. Prevent the input
+    // blur from removing the form before the button's click can submit it.
+    go.addEventListener('pointerdown', event => event.preventDefault());
+    go.onclick = event => { event.preventDefault(); form.requestSubmit(); };
+    form.addEventListener('focusout', event => queueMicrotask(() => {
+        if (!submitting && !form.contains(event.relatedTarget) && !form.contains(document.activeElement)) close();
     }));
     form.onsubmit = async event => {
         event.preventDefault();
@@ -806,6 +810,45 @@ async function chooseTelegramDriveDestination(items = [], { title = '移动到',
         openDialog: openTelegramDriveDialog, installContextGesture,
         showError: error => alert(telegramDriveErrorText(error))
     });
+}
+
+async function chooseTelegramDriveSaveDestination({ userId, onCreateDirectory } = {}) {
+    prepareTelegramDrivePicker();
+    const accountId = userId || window.DiskClient.getAccount();
+    const native = { requestBase: '/api/telegram/drive', accountId, diskSpace: '' };
+    const spaces = ((await window.DiskClient.raw('/spaces', native)).spaces || []).filter(space => !space.state || space.state === 'ACTIVE');
+    if (!spaces.length) throw new Error('没有可用的网盘分区，请先登录网盘');
+    const control = document.createElement('label'); control.className = 'disk-space-transfer-picker disk-partition-field'; control.textContent = '目标网盘分区';
+    const picker = document.createElement('select'); picker.setAttribute('aria-label', '目标网盘分区');
+    for (const space of spaces) picker.add(new Option(space.name, space.id));
+    picker.value = (spaces.find(space => (space.scopeKey || '') === window.DiskClient.getSpace()) || spaces[0]).id;
+    control.append(picker);
+    const context = () => ({ ...native, diskSpace: spaces.find(space => space.id === picker.value).scopeKey || '' });
+    const memoryKey = () => 'telegramDriveSaveDirectory:' + accountId + ':' + picker.value;
+    const initialPath = () => {
+        try { const saved = localStorage.getItem(memoryKey()); if (saved !== null) return saved; } catch (_) {}
+        return !telegramDriveMountContext && accountId === window.DiskClient.getAccount() && context().diskSpace === window.DiskClient.getSpace() ? telegramDrivePath : '';
+    };
+    let reload;
+    picker.onchange = () => reload?.().catch(error => alert(telegramDriveErrorText(error)));
+    const path = await window.DiskDirectoryPicker.choose({
+        title: '选择保存到网盘的目录', confirmText: '保存到这里', controls: [control],
+        getRoot: () => ({ key: picker.value, path: '', initialPath: initialPath() }),
+        onReady: value => { reload = value; }, loadDirectories: () => window.DiskClient.raw('/directories', context()),
+        createDirectory: async path => {
+            const actor = context(); picker.disabled = true;
+            try {
+                const response = await window.DiskClient.raw('/directories', { ...actor, ...window.DiskClient.json('POST', { path }) });
+                const result = response.operation_id ? await window.DiskClient.wait(response.operation_id, actor) : response.result || response;
+                onCreateDirectory?.(path, actor);
+                return result;
+            } finally { picker.disabled = false; }
+        },
+        openDialog: openTelegramDriveDialog, installContextGesture, showError: error => alert(telegramDriveErrorText(error))
+    });
+    if (path === null) return null;
+    try { localStorage.setItem(memoryKey(), path); } catch (_) {}
+    return { path, transportContext: context() };
 }
 
 async function moveTelegramDriveItems(items, targetPath, { confirmed = false } = {}) {
@@ -3787,18 +3830,26 @@ function init(options = {}) {
         showTelegramDriveBackgroundMenu({ getBoundingClientRect: () => ({ left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY }) });
     }, null, { twoFingerTap: true, longPress: false, accept: event => !event.target.closest?.('.telegram-drive-item') });
     initDiskEnhancements();
-    if (location.pathname === '/disk' || new URLSearchParams(location.search).get('disk') === '1') {
+    const entryQuery = new URLSearchParams(location.search);
+    if (location.pathname === '/disk' || entryQuery.get('disk') === '1') {
         openTelegramDrive().then(async () => {
             if (telegramDrivePendingSaveId) { await resumeTelegramDrivePendingSave(); return; }
-            const query = new URLSearchParams(location.search);
+            // Account selection and history updates may rewrite the URL while
+            // opening. Use the explicit destination supplied at initialization.
+            const query = entryQuery;
             if (query.has('disk_file')) {
-                if (query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录收藏文件所属的网盘账号，再打开此链接');
+                if (query.has('disk_account') && query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录收藏文件所属的网盘账号，再打开此链接');
                 const space = query.get('disk_space') || '';
                 if (space !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(space);
                 const file = await window.DiskClient.raw('/files/' + encodeURIComponent(query.get('disk_file')));
                 const item = file.file || file;
                 if (!item.id) throw new Error('收藏文件不存在或无法访问，请刷新收藏状态');
                 await navigateTelegramDrive(item.folderPath ?? item.path ?? ''); highlightTelegramDriveRow({ kind: 'file', id: item.id }); return;
+            }
+            if (query.has('disk_path')) {
+                if (query.has('disk_account') && query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录目标位置所属的网盘账号，再打开此链接');
+                if (query.has('disk_space') && (query.get('disk_space') || '') !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(query.get('disk_space') || '');
+                await navigateTelegramDriveInputPath(query.get('disk_path') || '/'); return;
             }
             const id = query.get('collaboration');
             if (!id) return;
@@ -3810,6 +3861,7 @@ function init(options = {}) {
 }
 window.addEventListener('popstate', handleTelegramDrivePopstate, { capture: true });
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, ownsHistory: ownsTelegramDriveHistory, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,
+    chooseSaveDestination: chooseTelegramDriveSaveDestination,
     chooseAccount: () => manageTelegramDriveAccounts({ choose: true }), switchAccount: switchTelegramDriveAccount, resumePendingSave: resumeTelegramDrivePendingSave,
     async chooseDirectory(options = {}) {
         prepareTelegramDrivePicker();

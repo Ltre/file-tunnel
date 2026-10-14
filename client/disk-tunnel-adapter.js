@@ -14,15 +14,21 @@
         saveFiles(recordId, files) { return saveFiles(recordId, files); }
     };
     async function saveFiles(recordId, files) {
-        const status = await window.DiskClient.raw('/me');
+        const actor = window.DiskClient.context();
+        const status = await window.DiskClient.raw('/me', { ...actor, requestBase: '/api/telegram/drive' });
         if (!status.identity) { await window.DiskUI.open(); throw new Error('请先登录网盘，再选择保存'); }
         const createdDirectories = new Set();
-        const folderPath = await window.DiskUI.chooseDirectory({ title: '选择保存到网盘的目录', confirmText: '保存到这里', userId: status.identity.id, onCreateDirectory: path => createdDirectories.add(path) });
-        if (folderPath === null) return;
+        const target = await window.DiskUI.chooseSaveDestination({ userId: status.identity.id,
+            onCreateDirectory: (path, context) => createdDirectories.add(context.diskSpace + ':' + path) });
+        if (target === null) return;
+        const folderPath = target.path, transportContext = target.transportContext;
         const navigationVersion = window.DiskUI.navigationVersion;
-        const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId });
+        const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId, transportContext });
         await host.linkBackup?.(recordId, files, result?.items || []);
-        if (createdDirectories.has(folderPath)) await window.DiskUI.revealUploadedDirectory(folderPath, navigationVersion);
+        if (createdDirectories.has(transportContext.diskSpace + ':' + folderPath)
+            && window.DiskClient.getAccount() === transportContext.accountId && window.DiskClient.getSpace() === transportContext.diskSpace
+            && window.DiskClient.context().requestBase === transportContext.requestBase)
+            await window.DiskUI.revealUploadedDirectory(folderPath, navigationVersion);
         return result;
     }
     async function chooseTarget() {

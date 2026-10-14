@@ -66,6 +66,17 @@ test('目录选择器切换协同根和原生分区后显示真实多层树并�
     }});assert.equal(result,'backup/a');
 });
 
+test('不同原生分区的根路径相同，切换后重置目标路径与树的选中状态',async()=>{
+    const window={},context=vm.createContext({window,document:{createElement:tag=>new Element(tag),createTextNode:text=>text},alert(){}});
+    vm.runInContext(fs.readFileSync('client/disk-directory-picker.js','utf8'),context);
+    let key='first',reload;
+    const result=await window.DiskDirectoryPicker.choose({getRoot:()=>({key,path:'',initialPath:''}),loadDirectories:async()=>({directories:[{path:'',name:'根目录'},{path:key,name:key}]}),onReady:fn=>{reload=fn;},openDialog:async options=>{
+        const tree=options.body.find(n=>n.className==='disk-destination-tree');tree.querySelectorAll('[data-folder-path]')[1].onclick({preventDefault(){}});
+        assert.equal(await options.validate(),'first');key='second';await reload();assert.equal(await options.validate(),'');
+        tree.querySelectorAll('[data-folder-path]')[1].onclick({preventDefault(){}});return options.validate();
+    }});assert.equal(result,'second');
+});
+
 test('挂载静态设置提交挂载类型，数字签名仅属于挂载者',async t=>{
     const f=await fixture(t),body=[];Object.assign(f.context,{telegramDriveStaticExpiryControls:()=>()=>({preset:'day'}),staticLinksForItem:()=>[],isTelegramDriveStaticOpen:()=>false,telegramDriveStaticUrl:()=>'/url',refreshTelegramDriveStaticLinks:async()=>{},openTelegramDriveDialog:async options=>{body.push(options);return body.length===1?options.validate():null;}});
     vm.runInContext(section('async function showTelegramDriveStaticSettings(', 'async function createTelegramDriveStaticLink('),f.context);

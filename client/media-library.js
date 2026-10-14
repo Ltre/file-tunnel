@@ -5,7 +5,7 @@
     const states = { ready: '导入就绪', 'awaiting-task': '等待创建下载任务', 'waiting-download': '等待下载', 'download-failed': '抓取失败', queued: '排队中',
         receiving: '正在接收本地文件', transferring: '正在转存网盘', 'import-failed': '导入失败', running: '执行中', completed: '已完成', failed: '失败', cancelled: '已取消', expired: '已到期清理', interrupted: '中断待恢复', deleted: '已删除' };
     let data = { imports: [], sessions: [], results: [], collections: [], entities: [], jobs: [], caches: [], events: [] }, tab = 'infra', sessionId = '', playerOffset = 0, selection = new Set(), polling = null, activeUpload, stateRevision = 0;
-    let lastView = '', collectionQuery = '', collectionEntity = '';
+    let lastView = '', collectionQuery = '', collectionEntity = '', disposePlayer = () => {};
     const el = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; };
     const notice = (text, failed = false) => { $('ml-notice').textContent = text; $('ml-notice').className = failed ? 'error' : ''; };
     const bytes = n => !n ? '0 B' : n < 1024 ? n + ' B' : (n / (n >= 1024 ** 3 ? 1024 ** 3 : n >= 1024 ** 2 ? 1024 ** 2 : 1024)).toFixed(1) + (n >= 1024 ** 3 ? ' GB' : n >= 1024 ** 2 ? ' MB' : ' KB');
@@ -186,8 +186,9 @@
         parameters.append(label('模式', mode), label('时间范围', ranges), label('随机数量', count), label('间隔（毫秒）', interval), el('p', '随机模式不填间隔时直接抽取指定数量；等间隔模式必须填写间隔。每批最多 500 张。'));
         parameters.append(button('开始取帧', async () => { await api('/sessions/' + session.id + '/extract', json('POST', { mode: mode.value, ranges: ranges.value, count: Number(count.value), intervalMs: Number(interval.value), minIntervalMs: Number(interval.value) })); notice('取帧任务已排队，可关页后回来继续查看'); }, 'primary'));
         const player = document.createElement('video'); player.id = 'ml-player'; player.className = 'ml-preview'; player.controls = true; player.preload = 'metadata'; player.src = root + '/files/' + resource.id;
-        playerOffset = 0; let steppedFrame = null;
-        const playerTime = () => player.paused && steppedFrame && Math.abs(player.currentTime - steppedFrame.position) < .001 ? steppedFrame.time : player.currentTime + playerOffset;
+        playerOffset = 0; let steppedFrame = null, playerOrigin = Number(resource.probe?.format?.start_time) || 0, sourceCacheId = '', sourceVersion = 0, frameAbort, segmentWaiting;
+        disposePlayer = () => { frameAbort?.abort(); clearInterval(segmentWaiting); player.pause(); };
+        const playerTime = () => player.paused && steppedFrame && Math.abs(player.currentTime - steppedFrame.position) < .001 ? steppedFrame.time : Math.max(0, player.currentTime - playerOrigin) + playerOffset;
         const clock = el('output', '00:00:00.000'); player.ontimeupdate = () => { clock.textContent = time(playerTime() * 1000); };
         player.onerror = () => notice('浏览器可能不支持源视频编码。可先生成下方工作片段，以兼容 MP4 播放后继续操作。', true);
         const start = input('0'), end = input(String(Math.min(resource.duration, 30))), audio = input('', 'checkbox'); audio.checked = true;
@@ -196,17 +197,23 @@
         let stepping = false;
         const step = async direction => {
             if (stepping) return; stepping = true; player.pause();
+            const version = sourceVersion, abort = new AbortController(); frameAbort = abort;
             try {
+                await waitMediaMetadata(player, abort.signal);
                 const at = playerTime();
-                const value = await api('/imports/' + resource.id + '/frame-neighbor?time=' + encodeURIComponent(at));
-                if (!player.isConnected || sessionId !== session.id) return;
+                const value = await api('/imports/' + resource.id + '/frame-neighbor?time=' + encodeURIComponent(at)
+                    + '&player_time=' + encodeURIComponent(player.currentTime) + (sourceCacheId ? '&cache_id=' + encodeURIComponent(sourceCacheId) : ''), { signal: abort.signal });
+                if (!player.isConnected || sessionId !== session.id || version !== sourceVersion) return;
+                playerOrigin = value.timelineOrigin || 0;
                 const target = value[direction];
                 if (!Number.isFinite(target)) throw Error(direction === 'previous' ? '已经到达第一帧，或附近未找到可确认的上一帧。' : '已经到达最后一帧，或附近未找到可确认的下一帧。');
-                const seek = value[direction + 'SeekTime'] ?? target;
-                if (seek < playerOffset || Number.isFinite(player.duration) && seek - playerOffset >= player.duration) throw Error('目标帧不在当前播放片段内。');
-                await seekMediaFrame(player, seek - playerOffset, target - playerOffset);
-                steppedFrame = { position: seek - playerOffset, time: target };
+                const seek = value[direction + 'Position'] ?? ((value[direction + 'SeekTime'] ?? target) - playerOffset + playerOrigin);
+                if (seek < 0 || Number.isFinite(player.duration) && seek >= player.duration) throw Error('目标帧不在当前播放片段内。');
+                await seekMediaFrame(player, seek, value[direction + 'FrameTime'] ?? target - playerOffset + playerOrigin, abort.signal);
+                if (version !== sourceVersion || !player.isConnected) return;
+                steppedFrame = { position: seek, time: target };
                 clock.textContent = time(target * 1000);
+            } catch (error) { if (!abort.signal.aborted) throw error;
             } finally { stepping = false; }
         };
         line.append(button('← 上一帧', () => step('previous')), button('下一帧 →', () => step('next')), clock,
@@ -219,29 +226,62 @@
         const results = el('div', undefined, 'ml-grid'); results.id = 'ml-results'; center.append(controls, results);
         right.append(label('起点（秒或时间）', start), label('终点', end), label('保留音频', audio), label('裁切方式', precision), el('p', '暂停播放器设定端点，左右键使用实际视频帧时间。快速裁切不承诺任意毫秒精度。'));
         const clipInput = () => ({ start: start.value, end: end.value, audio: audio.checked, precise: precision.value === 'precise' });
+        const original = button('返回原视频', async () => {
+            const at = playerTime();
+            changeSource('', 0, Number(resource.probe?.format?.start_time) || 0);
+            await waitMediaMetadata(player);
+            if (!player.isConnected || sessionId !== session.id || sourceCacheId) return;
+            player.currentTime = Math.min(Math.max(0, at) + playerOrigin, Math.max(playerOrigin, player.duration - .001));
+            clock.textContent = time(at * 1000); notice('已返回完整原视频');
+        }); original.hidden = true;
+        function changeSource(cacheId, offset, origin = 0) {
+            clearInterval(segmentWaiting); segmentWaiting = null;
+            sourceVersion++; frameAbort?.abort(); steppedFrame = null;
+            player.pause(); sourceCacheId = cacheId; playerOffset = offset; playerOrigin = origin;
+            player.src = cacheId ? root + '/cache/' + cacheId : root + '/files/' + resource.id; player.load();
+            original.hidden = !cacheId;
+        }
         right.append(button('预览选定范围', () => { const parse = v => v.split(':').map(Number).reduce((n, value) => n * 60 + value, 0); const begin = parse(start.value), finish = parse(end.value);
-            if (!(begin >= playerOffset && finish > begin)) throw Error('请先设置有效端点'); player.currentTime = begin - playerOffset; player.play().catch(() => {});
-            const stop = () => { if (player.currentTime + playerOffset >= finish) { player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }),
+            if (!(begin >= playerOffset && finish > begin)) throw Error('请先设置有效端点'); steppedFrame = null; player.currentTime = begin - playerOffset + playerOrigin; player.play().catch(() => {});
+            const version = sourceVersion;
+            const stop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }),
             button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));
                 rememberRecord('jobs', job); renderResults(); notice('裁切已排队；候选区可查看执行状态'); }, 'primary'),
             button('缓存工作片段并播放', async () => { const job = await api('/sessions/' + session.id + '/segment', json('POST', { ...clipInput(), precise: true }));
-                notice('正在准备可复用工作片段，状态页可查看进度'); const waiting = setInterval(async () => { if (tab !== 'sessions' || sessionId !== session.id || !player.isConnected) { clearInterval(waiting); return; }
+                clearInterval(segmentWaiting);
+                notice('正在准备可复用工作片段，状态页可查看进度'); const waiting = segmentWaiting = setInterval(async () => { if (tab !== 'sessions' || sessionId !== session.id || !player.isConnected) { clearInterval(waiting); return; }
                     try { await refresh(); const current = data.jobs.find(j => j.id === job.id);
-                    if (current?.state === 'completed') { clearInterval(waiting); playerOffset = Number(job.context.start); player.src = root + '/cache/' + current.result.cacheId; notice('工作片段就绪，后续取帧和裁切会复用它'); }
+                    if (!player.isConnected || sessionId !== session.id || segmentWaiting !== waiting) return;
+                    if (current?.state === 'completed') { clearInterval(waiting); changeSource(current.result.cacheId, Number(job.context.start)); notice('工作片段就绪，后续取帧和裁切会复用它；可点击“返回原视频”切回完整视频'); }
                     else if (['failed', 'cancelled'].includes(current?.state)) { clearInterval(waiting); notice(current.message || current.error, true); } } catch (_) {} }, 2000); }),
+            original,
             button('删除此会话记录', async () => { if (!confirm('停止使用此会话？正式收藏仍保留，帧日志和缓存不会被级联删除。')) return; await api('/sessions/' + session.id, { method: 'DELETE' }); await refresh(); sessionId = ''; render(); }, 'danger'));
         setTimeout(renderResults, 0); return panel;
     }
-    function seekMediaFrame(player, position, frameTime) {
+    function waitMediaMetadata(player, signal) {
+        if (signal?.aborted) return Promise.reject(new DOMException('已取消', 'AbortError'));
+        if (player.error) return Promise.reject(Error('视频加载失败，请确认浏览器支持该编码，或先缓存兼容工作片段。'));
+        if (player.readyState >= 1) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+            const finish = error => { clearTimeout(timer); player.removeEventListener('loadedmetadata', ready); player.removeEventListener('error', failed); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(); };
+            const ready = () => finish(), failed = () => finish(Error('视频加载失败，请确认浏览器支持该编码，或先缓存兼容工作片段。'));
+            const abort = () => finish(new DOMException('已取消', 'AbortError'));
+            const timer = setTimeout(() => finish(Error('视频信息仍在加载，请稍后重试。')), 15000);
+            player.addEventListener('loadedmetadata', ready); player.addEventListener('error', failed); signal?.addEventListener('abort', abort, { once: true });
+        });
+    }
+    function seekMediaFrame(player, position, frameTime, signal) {
         return new Promise((resolve, reject) => {
             let seeked = false, presented = false, callback, settled = false;
             const finish = error => {
                 if (settled) return; settled = true; clearTimeout(timer);
                 player.removeEventListener('seeked', onSeeked); player.removeEventListener('error', onError);
+                signal?.removeEventListener('abort', onAbort);
                 if (callback !== undefined) player.cancelVideoFrameCallback?.(callback);
                 error ? reject(error) : resolve();
             };
             const onError = () => finish(Error('视频定位失败，浏览器可能不支持该视频编码。'));
+            const onAbort = () => finish(new DOMException('已取消', 'AbortError'));
             const onSeeked = () => {
                 seeked = true;
                 if (!player.requestVideoFrameCallback) requestAnimationFrame(() => requestAnimationFrame(() => finish()));
@@ -254,6 +294,8 @@
             }); };
             const timer = setTimeout(() => finish(Error('等待视频帧显示超时，请确认视频可以正常播放后重试。')), 15000);
             player.addEventListener('seeked', onSeeked); player.addEventListener('error', onError);
+            signal?.addEventListener('abort', onAbort, { once: true });
+            if (signal?.aborted) return onAbort();
             try { if (player.requestVideoFrameCallback) observe(); player.currentTime = position; }
             catch (error) { finish(error); }
         });
@@ -384,7 +426,7 @@
             button('清理全部未使用临时缓存', async () => { if (!confirm('清理未被任务保护的片段、候选和参考图缓存；帧日志及正式收藏保留。确认？')) return; await api('/cleanup', json('POST', { all: true })); await refresh(true); }, 'danger')); box.append(jobs);
         const events = card('最近事件 / 告警'); for (const event of data.events.slice(0, 50)) events.append(el('p', `${date(event.createdAt)} · ${event.message}`)); box.append(events); return box;
     }
-    function render() { const renderers = { infra: renderInfra, imports: renderImports, sessions: renderSessions, collection: renderCollection, entities: renderEntities, status: renderStatus }; $('ml-main').replaceChildren(renderers[tab]()); }
+    function render() { disposePlayer(); disposePlayer = () => {}; const renderers = { infra: renderInfra, imports: renderImports, sessions: renderSessions, collection: renderCollection, entities: renderEntities, status: renderStatus }; $('ml-main').replaceChildren(renderers[tab]()); }
     document.querySelectorAll('[data-tab]').forEach(node => node.onclick = () => changeTab(node.dataset.tab));
     $('ml-dialog-close').onclick = () => $('ml-dialog').close();
     $('ml-dialog').addEventListener('close', () => $('ml-dialog-body').querySelectorAll('video').forEach(v => { v.pause(); v.removeAttribute('src'); v.load(); }));

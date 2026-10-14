@@ -14,7 +14,19 @@ test('frame neighbors step relative to the displayed frame and provide an interi
     const base=`http://127.0.0.1:${server.address().port}/media/imports/${resource.id}/frame-neighbor`;
     const reply=await (await fetch(base+'?time=0.45')).json();assert.equal(reply.previous,.32);assert.equal(reply.next,.48);
     assert.ok(reply.previousSeekTime>.32&&reply.previousSeekTime<.4);assert.ok(reply.nextSeekTime>=.48);
+    const precise=await fetch(base+'?time=0.42600900000000004&player_time=0.42600900000000004');assert.equal(precise.status,200);
+    assert.equal((await precise.json()).next,.48);
+    for(const value of ['', 'NaN', 'Infinity', '-1', '0:01', '1&time=2'])assert.equal((await fetch(base+'?time='+value)).status,422);
+    assert.equal((await fetch(base+'?time=0.4&cache_id=missing')).status,422);
     assert.equal((await fetch(base+'?time=99')).status,422);
+    const session=f.service.createSession(resource.id,'same playback source'),job=f.service.clip(session.id,{start:.37,end:1.81},true);await f.service.pump();
+    const cacheId=f.service.get('job',job.id).result.cacheId,probed=[];
+    f.service.processing.frameNeighbors=async url=>{probed.push(url);return [.32,.4,.48];};
+    const segment=await fetch(base+'?time=0.8260090000000001&player_time=0.45600900000000005&cache_id='+cacheId);assert.equal(segment.status,200);
+    const frame=await segment.json();assert.ok(Math.abs(frame.next-.85)<1e-9);assert.equal(frame.nextFrameTime,.48);assert.equal(probed.at(-1).startsWith('http:'),false);
+    await fetch(base+'?time=0.45');assert.equal(probed.at(-1).startsWith('http:'),true,'original playback does not silently probe a cached encoding');
+    const other=f.service.createImport({kind:'disk',...f.put('other-video')},{id:'alice'});await f.service.pump();
+    const forged=await fetch(base.replace(resource.id,other.id)+'?time=0.4&cache_id='+cacheId);assert.equal(forged.status,422);assert.equal((await forged.json()).error,'MEDIA_SEGMENT_SOURCE_INVALID');
     f.files.delete(f.service.get('import',resource.id).file.fileId);const denied=await fetch(base+'?time=0.45');assert.equal(denied.status,403);
 });
 test('admin API guards identity and origin, serves ranges, and revoked grants block media reads', async t => {

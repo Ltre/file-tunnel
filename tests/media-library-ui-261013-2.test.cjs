@@ -10,6 +10,8 @@ class Node {
     replaceChildren(...nodes) { this.children = nodes; } setAttribute(key, value) { this.attrs[key] = value; }
     addEventListener(key, fn) { (this.listeners[key] ||= new Set()).add(fn); } removeEventListener(key, fn) { this.listeners[key]?.delete(fn); }
     emit(key, ...args) { for (const fn of this.listeners[key] || []) fn(...args); }
+    pause() { this.paused=true; }
+    load() { this.loadCalls=(this.loadCalls||0)+1;this.readyState=1;this.currentTime=0;this.duration=this.src?.includes('/cache/')?2:10; }
     querySelectorAll(selector) { return this.children.flatMap(n => [n, ...n.querySelectorAll(selector)]).filter(n => selector === 'button' && n.tagName === 'BUTTON'); }
     querySelector() { return null; }
 }
@@ -17,17 +19,18 @@ function fixture(handler = async () => ({})) {
     const ids = new Map(); const get = id => ids.get(id) || null;
     for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results']) ids.set(id, new Node());
     const calls = [], opened = [], window = { open() { const page = { opener: window, location: { replace(url) { page.url = url; } }, close() { page.closed = true; } }; opened.push(page); return page; } };
+    const intervals=[];
     const context = vm.createContext({ window, document: { getElementById: get, createElement: tag => new Node(tag), querySelectorAll: () => [], activeElement: null },
         Option: class extends Node { constructor(text, value) { super('option', text); this.value = value; } }, URL, URLSearchParams, location: { origin: 'http://localhost' },
-        prompt: () => '立即出现的新会话', setTimeout, clearTimeout, setInterval: () => 0, requestAnimationFrame: fn => fn(),
+        prompt: () => '立即出现的新会话', setTimeout, clearTimeout, setInterval: fn => {intervals.push(fn);return intervals.length;},clearInterval(){}, requestAnimationFrame: fn => fn(), AbortController, DOMException,
         fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: true, json: async () => value }; } });
     const end = source.lastIndexOf("    document.querySelectorAll('[data-tab]')");
     vm.runInContext(source.slice(0, end) + `
-        window.test = { refresh, collectCandidate, seekMediaFrame, renderResults, renderImports, rememberRecord,
-            set(value) { data = value; }, setSession(id) { sessionId = id; }, data() { return data; }, changeTab,
+        window.test = { refresh, collectCandidate, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
+            set(value) { data = value; }, setSession(id) { sessionId = id; }, setTab(value) { tab=value; }, data() { return data; }, changeTab,
             stubRender(fn) { render = fn; } };
     })();`, context);
-    return { ...window.test, ids, calls, opened, window };
+    return { ...window.test, ids, calls, opened, window, intervals };
 }
 const snapshot = () => ({ config: { workspace: {}, collection: {} }, imports: [{ id: 'video', name: '视频', state: 'ready', duration: 10 }],
     sessions: [{ id: 'old', name: '旧会话', state: 'active' }], results: [], collections: [], jobs: [], caches: [], events: [] });
@@ -88,4 +91,25 @@ test('frame seek resolves only after seeked and the requested decoded frame is p
     let done = false; const seeking = f.seekMediaFrame(video, .46, .44).then(() => { done = true; });
     video.emit('seeked'); next(0, { mediaTime: .4 }); await turn(); assert.equal(done, false);
     next(0, { mediaTime: .44 }); await seeking; assert.equal(video.currentTime, .46); assert.equal(cancelled, 1);
+});
+
+test('metadata readiness precedes seeking and source switches cancel pending metadata/frame waits', async () => {
+    const f=fixture(),video=new Node('video');video.readyState=0;
+    let ready=false;const metadata=f.waitMediaMetadata(video).then(()=>{ready=true;});await turn();assert.equal(ready,false);
+    video.readyState=1;video.emit('loadedmetadata');await metadata;assert.equal(ready,true);
+    const abort=new AbortController(),seek=f.seekMediaFrame(video,.46,.44,abort.signal);abort.abort();await assert.rejects(seek,{name:'AbortError'});
+    video.readyState=0;const stop=new AbortController(),waiting=f.waitMediaMetadata(video,stop.signal);stop.abort();await assert.rejects(waiting,{name:'AbortError'});
+    assert.equal(video.listeners.seeked.size,0);assert.equal(video.listeners.loadedmetadata.size,0);
+});
+
+test('work segment shows return action only on completion; overlapping polls cannot reload it after returning to the original',async()=>{
+    const state=snapshot();state.sessions[0].importId='video';state.jobs=[{id:'segment',state:'completed',result:{cacheId:'cached-segment'}}];
+    const f=fixture(async route=>route.endsWith('/segment')?{id:'segment',context:{start:.37}}:state);f.set(state);f.setSession('old');f.setTab('sessions');
+    const panel=f.renderSessions(),buttons=panel.querySelectorAll('button'),original=buttons.find(n=>n.textContent==='返回原视频');
+    const descendants=n=>[n,...n.children.flatMap(descendants)];const player=descendants(panel).find(n=>n.tagName==='VIDEO');
+    assert.equal(original.hidden,true);await buttons.find(n=>n.textContent==='缓存工作片段并播放').onclick();assert.equal(original.hidden,true);
+    await Promise.all([f.intervals[0](),f.intervals[0]()]);assert.equal(player.loadCalls,1);assert.match(player.src,/\/cache\/cached-segment$/);assert.equal(original.hidden,false);
+    player.currentTime=.5;await original.onclick();assert.match(player.src,/\/files\/video$/);assert.equal(player.duration,10);assert.equal(player.loadCalls,2);assert.equal(original.hidden,true);
+    assert.ok(Math.abs(player.currentTime-.87)<1e-9);
+    await f.intervals[0]();assert.equal(player.loadCalls,2,'a late completion cannot switch back to the segment');
 });

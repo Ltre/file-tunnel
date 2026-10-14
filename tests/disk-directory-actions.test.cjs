@@ -13,7 +13,7 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
     const pending = new Promise((resolve, reject) => { finish = () => failed ? reject(Error('TELEGRAM_NETWORK_ERROR')) : resolve(result); });
     const context = vm.createContext({ telegramDriveMountContext:null, rendered, overlay, result,
         document: { getElementById: () => overlay }, history: { pushState() {} }, location: { href: 'http://localhost/#fixture' },
-        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { getAccount: () => 'fixture', raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
+        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { context:()=>({accountId:'fixture',diskSpace:'',requestBase:'/api/telegram/drive'}),getSpace:()=>'',getAccount: () => 'fixture', raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
     });
     vm.runInContext(`
         let telegramDrivePath='原目录', telegramDriveNavigationVersion=0, telegramDriveHistorySession='fixture';
@@ -28,7 +28,7 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
             get version(){return telegramDriveNavigationVersion},get path(){return telegramDrivePath},get stale(){return telegramDriveContentStale},
             get savedPath(){return diskWindowState.path},hide(){overlay.hidden=true;telegramDriveHistorySession=''}};
     `, context);
-    context.window.DiskUI.chooseDirectory = async options => { if (created) options.onCreateDirectory(destination); return destination; };
+    context.window.DiskUI.chooseSaveDestination = async options => { if(destination===null)return null;const transportContext=context.window.DiskClient.context();if (created) options.onCreateDirectory(destination,transportContext); return {path:destination,transportContext}; };
     vm.runInContext(source('client/disk-tunnel-adapter.js'), context);
     context.window.DiskTunnelAdapter.configure({ filesForRecord: () => [{ id: 'source-file', name: '新文件.txt', size: 3, type: 'text/plain' }],
         readFile: async () => new Blob(['abc']), linkBackup: async (...args) => { linked.push(args); } });

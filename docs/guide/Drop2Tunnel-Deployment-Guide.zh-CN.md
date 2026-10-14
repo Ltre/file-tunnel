@@ -547,7 +547,7 @@ http://127.0.0.1:8080/admin-auth
 3. 完成首次绑定；
 4. 后续通过 `/admin` 或 `/tgbot` 登录。
 
-管理员会话默认有效期约 14 天，并使用 HttpOnly、SameSite=Strict Cookie；HTTPS 下还会加入 Secure。
+管理员新签发的会话默认有效期为 30 天，并使用 HttpOnly、SameSite=Strict Cookie；HTTPS 下还会加入 Secure。升级前已签发的会话不会自动延长，重新登录后使用新的有效期。
 
 ### 11.3 管理员认证数据
 

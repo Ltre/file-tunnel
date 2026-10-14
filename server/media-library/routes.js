@@ -3,6 +3,7 @@ const express = require('express'), fs = require('node:fs');
 const { pipeline } = require('node:stream/promises');
 const { timestamp } = require('./processing');
 const messages = {
+    MEDIA_SEGMENT_SOURCE_INVALID: '当前工作片段已失效或不属于这个视频，请返回原视频或重新缓存片段。',
     MEDIA_SETUP_REQUIRED: '请先配置工作区和正式收藏网盘位置。', MEDIA_WORKSPACE_FIRST: '请先授权工作区账号，再设置正式收藏位置。',
     MEDIA_LOCATION_OVERLAP: '工作区与正式收藏不能使用同一账号同一分区中的相同目录，请分别选择位置。',
     MEDIA_LOCATION_NOT_AUTHORIZED: '请用已经登录的目标网盘账号授权这个位置，不能直接填写其它用户 ID。', MEDIA_SOURCE_NOT_AUTHORIZED: '读取来源需要该网盘账号的有效登录。',
@@ -100,19 +101,39 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
         res.sendFile(lease.path);
     }));
     router.get('/imports/:id/frame-neighbor', wrap(async (req, res) => {
-        const resource = service.get('import', req.params.id), time = timestamp(req.query.time);
-        if (!Number.isFinite(resource.duration) || time > resource.duration + .001) throw Error('MEDIA_RANGE_INVALID');
+        // Player currentTime has sub-millisecond precision. The human time
+        // input parser deliberately accepts only milliseconds, but must not
+        // reject the browser's numeric timeline (including floating-point tails).
+        const resource = service.get('import', req.params.id);
+        const time = timestamp(typeof req.query.time === 'string' && req.query.time.trim() ? Number(req.query.time) : NaN);
+        if (req.query.cache_id !== undefined && (typeof req.query.cache_id !== 'string' || !validId(req.query.cache_id))) throw Error('MEDIA_SEGMENT_SOURCE_INVALID');
+        const playerTime = req.query.player_time === undefined ? null
+            : timestamp(typeof req.query.player_time === 'string' && req.query.player_time.trim() ? Number(req.query.player_time) : NaN);
+        if (!Number.isFinite(resource.duration) || playerTime === null && time > resource.duration + .001) throw Error('MEDIA_RANGE_INVALID');
         const abort = new AbortController(); res.once('close', () => { if (!res.writableFinished) abort.abort(); });
-        const input = await service.sourceInput(resource, abort.signal, { start: Math.max(0, time - 2), end: Math.min(resource.duration, time + 2) });
-        try { const values = await service.processing.frameNeighbors(input.url, time - input.offset, input.probe, abort.signal);
+        // Frame stepping must inspect the exact source shown by the player,
+        // never an automatically selected, differently encoded work segment.
+        const input = await service.sourceInput(resource, abort.signal, { original: true, cacheId: req.query.cache_id });
+        try {
+            const origin = Number(input.probe.format?.start_time) || 0;
+            const at = playerTime === null ? time : Math.max(0, playerTime - origin) + input.offset;
+            if (at > resource.duration + .001 || at < input.offset) throw Error('MEDIA_RANGE_INVALID');
+            const values = await service.processing.frameNeighbors(input.url, at - input.offset, input.probe, abort.signal);
             const positions = [...new Set(values.map(n => n + input.offset))].sort((a, b) => a - b);
-            const current = positions.findLastIndex(n => n <= time + .000001);
+            const current = positions.findLastIndex(n => n <= at + .000001);
             const previous = current > 0 ? positions[current - 1] : null, nextIndex = current + 1;
             const next = positions[nextIndex] ?? null;
             // Seek inside the presentation interval, rather than exactly at
             // its floating-point boundary, so the browser displays that frame.
             const seekTime = index => positions[index] + (positions[index + 1] === undefined ? .000001 : (positions[index + 1] - positions[index]) / 2);
-            res.json({ previous, next, previousSeekTime: previous === null ? null : seekTime(current - 1), nextSeekTime: next === null ? null : seekTime(nextIndex) }); }
+            res.json({ previous, next, previousSeekTime: previous === null ? null : seekTime(current - 1), nextSeekTime: next === null ? null : seekTime(nextIndex),
+                // FFprobe normalizes timestamps to the container origin;
+                // HTMLMediaElement.currentTime uses the source media timeline.
+                timelineOrigin: origin,
+                previousPosition: previous === null ? null : seekTime(current - 1) - input.offset + origin,
+                nextPosition: next === null ? null : seekTime(nextIndex) - input.offset + origin,
+                previousFrameTime: previous === null ? null : previous - input.offset + origin,
+                nextFrameTime: next === null ? null : next - input.offset + origin }); }
         finally { input.close(); }
     }));
     router.use((error, req, res, next) => {

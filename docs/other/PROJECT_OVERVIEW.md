@@ -205,7 +205,7 @@ Node.js 服务端包括：
 - Express 页面、PWA Manifest、Share Target 和 Range 下载；
 - Socket.IO 会话、历史、设备状态、信令、协同编辑和 Relay；
 - `sql.js`/SQLite 基础设施存储；
-- 管理员 TOTP、14 天 HttpOnly 管理会话和管理 API 鉴权；
+- 管理员 TOTP、30 天 HttpOnly 管理会话和管理 API 鉴权；
 - `/admin` 隧道/设备管理；
 - `/tgbot` Telegram 配置；
 - `/sns-cookies` 第三方平台 cookies；

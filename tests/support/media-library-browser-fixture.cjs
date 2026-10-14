@@ -7,6 +7,15 @@ const { createFixture } = require('./media-library-fixture.cjs'), { createMediaR
     const video = path.join(f.dataDir, 'sample.mp4'); await execute(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', video]);
     const reference = f.put(fs.readFileSync(video), { name: '可变片段测试.mp4', path: 'work', type: 'video/mp4' });
     const imported = f.service.createImport({ kind: 'disk', ...reference }, { id: 'alice' }); await f.service.pump(); const session = f.service.createSession(imported.id, '画面与 Clip 测试');
+    if (process.env.TEST_FRAME_SCENARIOS === '1') {
+        for (const [name, filters, origin] of [['非零原点与 B 帧', [], '2'], ['可变帧率与长 GOP', ['-vf', "select='not(mod(n,2))+not(mod(n,5))'", '-fps_mode', 'vfr'], '0']]) {
+            const target = path.join(f.dataDir, origin + '-scenario.mp4');
+            await execute(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25:duration=20', ...filters,
+                '-c:v', 'libx264', '-preset', 'fast', '-g', '500', '-keyint_min', '500', '-sc_threshold', '0', '-output_ts_offset', origin, '-y', target]);
+            const source = f.service.createImport({ kind: 'disk', ...f.put(fs.readFileSync(target), { name, type: 'video/mp4' }) }, { id: 'alice' });
+            await f.service.pump(); f.service.createSession(source.id, name);
+        }
+    }
     f.service.extract(session.id, { mode: 'interval', ranges: '0-2', intervalMs: 500 }); await f.service.pump();
     const person = f.service.entity({ entityKind: 'person', name: '测试人物', aliases: ['テスト'] }), org = f.service.entity({ entityKind: 'organization', name: '测试组织' });
     f.service.relate({ personId: person.id, organizationId: org.id, from: '2025-01-01' });
@@ -19,7 +28,7 @@ const { createFixture } = require('./media-library-fixture.cjs'), { createMediaR
     app.get('/api/telegram/drive/accounts', requireAuth, (req, res) => res.json({ accounts: [{ identity: { id: 'alice', name: '测试用户' } }] }));
     app.get('/api/telegram/drive/list', requireAuth, (req, res) => res.json({ files: [...f.files.values()].map(x => ({ ...x.ref, id: x.ref.fileId })) }));
     app.use('/client', express.static(path.join(root, 'client')));
-    const server = app.listen(0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
+    const server = app.listen(Number(process.env.TEST_FIXTURE_PORT) || 0, '127.0.0.1'); await new Promise(r => server.once('listening', r));
     console.log(JSON.stringify({ url: `http://127.0.0.1:${server.address().port}/fixture-login`, isolatedDataDir: f.dataDir }));
     const timer = setInterval(() => f.service.pump(), 500);
     const close = async () => { clearInterval(timer); server.closeAllConnections(); await new Promise(r => server.close(r)); await f.close(); process.exit(); };

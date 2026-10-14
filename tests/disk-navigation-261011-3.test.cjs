@@ -105,6 +105,15 @@ test('移动键盘原生 submit 无需 keydown Enter；请求中失焦不丢掉�
     gate.resolve({mounts:[]});await submitted;assert.equal(f.api.state().path,'56');assert.equal(f.get('telegramDriveBreadcrumbs').contains(input),false);
 });
 
+test('前往按钮按下保留输入焦点，click 与 Enter 共用提交；键盘转移焦点到按钮不提前关闭',async()=>{
+    const gate=deferred(),f=fixture(async url=>url==='/mounts'?gate.promise:{path:'56',folders:[]});
+    f.api.edit();const form=f.get('telegramDriveBreadcrumbs').children[0],input=form.children[0],go=form.children[1];input.value='/56';
+    let prevented=false;go.emit('pointerdown',{preventDefault(){prevented=true;}});assert.equal(prevented,true);
+    form.emit('focusout',{relatedTarget:go});await turn();assert.ok(f.get('telegramDriveBreadcrumbs').contains(input));
+    const pending=go.onclick({preventDefault(){}});form.emit('focusout');await turn();assert.ok(f.get('telegramDriveBreadcrumbs').contains(input));
+    gate.resolve({mounts:[]});await pending;await turn();assert.equal(f.api.state().path,'56');
+});
+
 test('加号菜单的新建文件接入当前目录已有编辑器，owned 协同位置支持触摸长按且滚动不会误触',async()=>{
     const page=fs.readFileSync('pages/index.html','utf8');assert.match(page,/id="telegramDriveCreateMenu"[^>]*>[\s\S]*?id="telegramDriveNewFileBtn"/);
     const start=source.indexOf("    document.getElementById('telegramDriveNewFileBtn')?.addEventListener"),end=source.indexOf("    document.getElementById('telegramDriveFileInput')",start);

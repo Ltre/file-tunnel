@@ -125,8 +125,11 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         if (resource.state !== 'ready') throw Error('MEDIA_IMPORT_NOT_READY');
         if (resource.managed) grant(resource.location.grantId, 'workspace');
         disk.file(resource.file);
-        const segment = range && db.list('cache', resource.scope).find(c => c.kind === 'segments' && c.status === 'ready' && c.precise
-            && c.sourceFingerprint === resource.file.fingerprint && c.start <= range.start && c.end >= range.end && (!range.audio || c.audio));
+        const segment = range?.cacheId ? db.get('cache', range.cacheId, resource.scope)
+            : range && !range.original && db.list('cache', resource.scope).find(c => c.kind === 'segments' && c.status === 'ready' && c.precise
+                && c.sourceFingerprint === resource.file.fingerprint && c.start <= range.start && c.end >= range.end && (!range.audio || c.audio));
+        if (range?.cacheId && (!segment || segment.kind !== 'segments' || segment.status !== 'ready' || !segment.precise
+            || segment.sourceFingerprint !== resource.file.fingerprint)) throw Error('MEDIA_SEGMENT_SOURCE_INVALID');
         if (segment) {
             const lease = cache.acquire(resource.scope, segment.id);
             try { return { url: lease.path, offset: segment.start, probe: await processing.probe(lease.path, signal), close: () => lease.release() }; }

@@ -22,7 +22,7 @@
         const createChild = document.createElement('button'); createChild.type = 'button'; createChild.className = 'btn'; createChild.textContent = '在所选目录新建子目录';
         const expanded = new Set([rootPath]);
         let selected = contains(rootPath, initialPath) && !blocked(initialPath) ? initialPath : rootPath;
-        let busy = false, closed = false, directories = [], loadVersion = 0;
+        let busy = false, closed = false, directories = [], loadVersion = 0, rootKey;
         function expandParents(path) {
             let cursor = path;
             while (contains(rootPath, cursor)) { expanded.add(cursor); if (cursor === rootPath || !cursor) break; cursor = cursor.split('/').slice(0, -1).join('/'); }
@@ -64,7 +64,8 @@
         async function reload() {
             const version = ++loadVersion;
             const scope = getRoot?.();
-            if (scope && normalize(scope.path) !== rootPath) {
+            if (scope && (normalize(scope.path) !== rootPath || scope.key !== rootKey)) {
+                rootKey = scope.key;
                 rootPath = normalize(scope.path); rootName = scope.name || '根目录';
                 selected = contains(rootPath, scope.initialPath || '') && !blocked(scope.initialPath || '') ? scope.initialPath || '' : rootPath;
                 expanded.clear(); expandParents(selected);
