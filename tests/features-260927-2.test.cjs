@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const workshop = fs.readFileSync(path.join(__dirname, '..', 'client/web-workshop.js'), 'utf8');
 const block = (start, end) => workshop.slice(workshop.indexOf(start), workshop.indexOf(end, workshop.indexOf(start)));
 
-test('网页工坊可见性由独立状态控制：历史变化与内容加载不解除最小化', () => {
+test('网页工坊可见性由独立状态控制：历史变化与内容加载不解除最小化', async () => {
     let popstate;
     const topbar = { hidden:true };
     const content = {};
@@ -87,6 +87,11 @@ test('网页工坊可见性由独立状态控制：历史变化与内容加载�
     controls.restore();
     assert.equal(context.mode(), 'open');
     assert.equal(topbar.hidden, true);
+    context.config.focusMessage = () => Promise.resolve(false);
+    await controls.focusSourceRecord('cancelled-switch', 'another-session');
+    assert.equal(context.mode(), 'open', '取消跨隧道跳转后恢复原本展开的工坊');
+    controls.minimize(); await controls.focusSourceRecord('cancelled-switch', 'another-session');
+    assert.equal(context.mode(), 'minimized', '原本最小化的工坊在取消跳转后继续保持最小化');
 });
 
 test('预览、草稿重绘和 ZIP 导入不直接切换最小化状态；发布成功后才返回传输记录', () => {

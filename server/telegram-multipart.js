@@ -53,6 +53,8 @@ function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName =
         primary:false
     }))];
     const fileParts = normalizedFiles.map(item => ({ item, header:Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${sanitizeMultipartHeaderValue(item.fieldName)}"; filename="${sanitizeMultipartHeaderValue(item.fileName)}"\r\nContent-Type: ${item.type}\r\n\r\n`, 'utf8') }));
+    let wireOffset = contentLength;
+    const payloadRanges = fileParts.map(part => { const range = { start: wireOffset + part.header.length, end: wireOffset + part.header.length + part.item.size, name: part.item.fileName }; wireOffset = range.end + 2; return range; });
     const closing = Buffer.from(`--${boundary}--\r\n`, 'utf8');
     contentLength += fileParts.reduce((total, part) => total + part.header.length + part.item.size + 2, 0) + closing.length;
     async function* generate() {
@@ -73,7 +75,7 @@ function buildTelegramSingleFileMultipart({ method = 'sendDocument', fieldName =
         }
         yield closing;
     }
-    return { method, body:Readable.from(generate()), contentLength, contentType:`multipart/form-data; boundary=${boundary}` };
+    return { method, body:Readable.from(generate()), contentLength, payloadRanges, contentType:`multipart/form-data; boundary=${boundary}` };
 }
 
 function buildTelegramDocumentsMultipart({ chatId, caption = '', files = [], onProgress, disableContentTypeDetection = false }) {

@@ -1,6 +1,9 @@
 'use strict';
 // Standalone drive UI: no tunnel/session/collection dependencies.
 (function () {
+// Capture the destination before asynchronous tunnel startup/history restore.
+const telegramDriveEntryUrl = new URL(location.href, location.origin);
+const telegramDriveEntryQuery = new URLSearchParams(telegramDriveEntryUrl.search);
 let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {}, loadAudioCover = null;
 let telegramDrivePath = '';
 let telegramDriveMountContext=null;
@@ -29,7 +32,7 @@ let telegramDriveSpaces = [];
 let telegramDriveStaticLinks = [];
 let telegramDriveAccountList = [];
 let telegramDriveLoginAttempt = '';
-let telegramDrivePendingSaveId = new URLSearchParams(location.search).get('pendingSave') || '';
+let telegramDrivePendingSaveId = telegramDriveEntryQuery.get('pendingSave') || '';
 let telegramDrivePendingSaveRunning = false;
 let telegramDriveCollaborationFrame = null;
 let telegramDriveSelectionAnchor = '';
@@ -3724,7 +3727,7 @@ function init(options = {}) {
     window.DiskClient?.setAudioCoverExtractor?.(loadAudioCover);
     if (telegramDriveInitialized) return;
     telegramDriveInitialized = true;
-    try { const saved = new URLSearchParams(location.search).get('disk_account') || localStorage.getItem('telegram-drive-active-account'); if (saved) window.DiskClient.setAccount(saved); } catch (_) {}
+    try { const saved = telegramDriveEntryQuery.get('disk_account') || localStorage.getItem('telegram-drive-active-account'); if (saved) window.DiskClient.setAccount(saved); } catch (_) {}
     const driveDialog = document.getElementById('telegramDriveDialog');
     if (driveDialog && driveDialog.parentElement !== document.body) document.body.append(driveDialog);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
@@ -3830,8 +3833,8 @@ function init(options = {}) {
         showTelegramDriveBackgroundMenu({ getBoundingClientRect: () => ({ left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY }) });
     }, null, { twoFingerTap: true, longPress: false, accept: event => !event.target.closest?.('.telegram-drive-item') });
     initDiskEnhancements();
-    const entryQuery = new URLSearchParams(location.search);
-    if (location.pathname === '/disk' || entryQuery.get('disk') === '1') {
+    const entryQuery = telegramDriveEntryQuery;
+    if (telegramDriveEntryUrl.pathname === '/disk' || entryQuery.get('disk') === '1') {
         openTelegramDrive().then(async () => {
             if (telegramDrivePendingSaveId) { await resumeTelegramDrivePendingSave(); return; }
             // Account selection and history updates may rewrite the URL while

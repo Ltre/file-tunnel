@@ -1164,7 +1164,7 @@ async function initSession() {
         state.shortCode = normalizeLocalShortCode(storedSession?.shortCode);
         state.sessionRemark = String(storedSession?.remark || '').trim().slice(0, 60);
         if (entryUrl.search) {
-            history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
+            history.replaceState(null, '', tunnelSessionEntryUrl(entryUrl, state.sessionId));
         }
     } else {
         let storedSessions = readSessionDirectoryCache();
@@ -1187,7 +1187,7 @@ async function initSession() {
             state.sessionId = state.recentSessionId;
             state.shortCode = normalizeLocalShortCode(recent.shortCode);
             state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
-            history.replaceState(null, '', `${window.location.pathname}#${state.sessionId}`);
+            history.replaceState(null, '', tunnelSessionEntryUrl(entryUrl, state.sessionId));
             updateSessionIdentityUi();
             return true;
         }
@@ -1197,6 +1197,11 @@ async function initSession() {
 
     updateSessionIdentityUi();
     return true;
+}
+
+function tunnelSessionEntryUrl(entryUrl, sessionId) {
+    const keepDiskDestination = entryUrl.pathname === '/disk' || entryUrl.searchParams.get('disk') === '1';
+    return entryUrl.pathname + (keepDiskDestination ? entryUrl.search : '') + '#' + sessionId;
 }
 
 function normalizeLocalShortCode(value) {
@@ -16541,6 +16546,18 @@ function setMobileWorkspaceView(view, options = {}) {
 
 async function focusTransferRecordById(messageId, options = {}) {
     if (!messageId) return false;
+    if (options.allowTunnelSwitch) {
+        const record = await getFromStore('messages', messageId).catch(() => null);
+        const sessionId = record?.sessionId || options.sessionId;
+        if (!sessionId || !/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) {
+            showAppToast('无法确认原记录所属隧道；原记录可能已被清理。'); return false;
+        }
+        if (sessionId !== state.sessionId) {
+            if (hasActiveTransferTasks() && !confirm('当前隧道仍有数据传输正在进行。切换隧道将重新加载页面，可能中断这些传输。是否继续切换到原记录所在隧道？')) return false;
+            window.location.assign(getTransferRecordAnchorUrl(messageId, sessionId));
+            return true;
+        }
+    }
     const timeoutMs = Math.max(1000, Number(options.timeoutMs || 30000));
     const deadline = Date.now() + timeoutMs;
     let historyRequested = false;
@@ -16777,7 +16794,7 @@ function initWorkspaceSwipeNavigation() {
 }
 
 function normalizeControlCenterOrder(saved) {
-    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'tunnels'];
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
 function initTunnelControlCenter(dialog) {
@@ -16792,7 +16809,8 @@ function initTunnelControlCenter(dialog) {
         ['resources', 'ꕡ', '资源管理器', 'resourceBrowserBtn'],
         ['workshop', '🌐', '网页工坊', 'webWorkshopBtn'],
         ['notifications', '🔔', '通知中心', 'notificationCenterBtn'],
-        ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn']
+        ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn'],
+        ['music', '♪', '全屏音乐播放器', 'topbarMusicBtn']
     ];
     let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
     let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
@@ -17764,7 +17782,8 @@ function initUI() {
         publishUpdate: publishWebZipUpdate,
         chooseResources: chooseWebWorkshopResources,
         focusFile: focusPublishedWebZip,
-        focusMessage: messageId => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth' }),
+        sessionId: () => state.sessionId,
+        focusMessage: (messageId, source = {}) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId }),
         toast: showAppToast,
         requestEdit: fileInfo => requestWebZipEditPermission(fileInfo).catch(error => alert(error.message))
     });
@@ -18428,7 +18447,7 @@ function updateProgressDrawerSummary() {
 
 function hasActiveTransferTasks() {
     const list = document.getElementById('progressList');
-    const visibleItems = list ? Array.from(list.children).filter(item => item.isConnected) : [];
+    const visibleItems = list ? Array.from(list.children).filter(item => item.isConnected && !['completed', 'failed', 'cancelled'].includes(item.dataset?.progressActivity)) : [];
     const snapshotFresh = Date.now() - progressQueueSnapshot.updatedAt <= PROGRESS_QUEUE_SNAPSHOT_TTL;
     return visibleItems.length > 0 ||
         (snapshotFresh && (progressQueueSnapshot.queueLength > 0 || progressQueueSnapshot.activeDownloads > 0));

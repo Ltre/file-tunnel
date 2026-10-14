@@ -71,6 +71,8 @@ const { createInfraStore } = require('./server/infra-store');
 const { createVClientControl } = require('./server/vclient-control');
 const { createAdminAuth } = require('./server/admin-auth');
 const { buildTelegramAudioMultipart, buildTelegramDocumentsMultipart, buildTelegramSingleFileMultipart } = require('./server/telegram-multipart');
+const { observeTelegramUpload } = require('./server/telegram-upload-progress');
+const { createTelegramForwardJobs } = require('./server/telegram-forward-jobs');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskAccountSessions } = require('./server/disk-account-sessions');
@@ -520,9 +522,11 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     const stat = fs.statSync(file.path);
     const mimeType = getMimeTypeFromFileName(file.name);
     const supportVideoPreview = input?.supportVideoPreview === true;
+    const reportProgress = typeof input?.onProgress === 'function' ? input.onProgress : () => {};
     let thumbnail = null;
     let multipart;
     if (supportVideoPreview && mimeType.startsWith('video/')) {
+        reportProgress({ phase:'thumbnail', detail:'正在准备 Telegram 视频封面', progress:0 });
         thumbnail = await prepareTelegramForwardVideoThumbnail(service, taskId, file);
         multipart = buildTelegramSingleFileMultipart({
             method:'sendVideo', fieldName:'video', chatId:resolvedTarget.chatId, caption,
@@ -540,8 +544,13 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
         });
     }
     let payload;
+    const observer = typeof input?.onProgress === 'function' ? observeTelegramUpload(`${getTelegramBotApiBaseUrl()}/bot${getTelegramBotToken()}/${multipart.method}`, multipart.payloadRanges, value => {
+        reportProgress({ phase:value.complete ? 'response' : 'upload', detail:value.complete ? '请求体已发送，正在等待 Telegram 确认' : '正在向 Telegram 发送文件',
+            sentBytes:value.bytes, totalBytes:value.total, progress:value.total ? value.bytes / value.total * 99 : 0 });
+    }) : null;
     try {
-        payload = await telegramFetchJson(multipart.method, {
+        reportProgress({ phase:'upload', detail:'正在连接 Telegram 并发送文件', progress:0 });
+        const dispatch = () => telegramFetchJson(multipart.method, {
             method: 'POST',
             headers: {
                 'Content-Type': multipart.contentType,
@@ -550,7 +559,9 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
             body: multipart.body,
             duplex: 'half'
         }, { operation });
+        payload = await (observer ? observer.run(dispatch) : dispatch());
     } finally {
+        observer?.close();
         thumbnail?.cleanup?.();
     }
     const chatId = String(payload.result?.chat?.id || resolvedTarget.chatId || '');
@@ -1277,9 +1288,12 @@ app.get('/web-workshop-guide.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'web-workshop-guide.html'));
 });
 
+require('./server/admin-layout').registerAdminLayout(app, { requireAuth:adminAuth.requireAuth, root:__dirname });
+
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
     '/pages/admin.html',
+    '/pages/admin-layout.html',
     '/pages/tgbot.html',
     '/pages/sns-cookies.html',
     '/pages/sns-dl.html',
@@ -1536,6 +1550,23 @@ app.get('/api/telegram-forward-targets', adminAuth.requireAuth, (req, res) => {
     res.json({ targets:loadTelegramForwardTargets() });
 });
 
+const telegramForwardJobs = createTelegramForwardJobs({ dataDir: SERVER_DATA_DIR,
+    validate(source, taskId, input) {
+        const service = source === 'sns' ? snsDownloadService : source === 'youtube' ? youtubePremiumService : null;
+        if (!service) throw new Error('未知的下载任务来源');
+        if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
+        const file = resolveTelegramForwardFile(service, taskId, audioTrackRepair, input.fileVariant || 'original');
+        if (input.supportVideoPreview && !getMimeTypeFromFileName(file.name).startsWith('video/')) throw new Error('当前成品不支持 Telegram 视频预览');
+        const stat = fs.statSync(file.path);
+        return { targets: input.targets.map(normalizeTelegramForwardTarget), fingerprint: crypto.createHash('sha256').update(JSON.stringify([file.path, stat.size, stat.mtimeMs])).digest('hex') };
+    },
+    send: (source, taskId, input) => forwardTaskFileToTelegram(source === 'sns' ? snsDownloadService : youtubePremiumService, taskId, input, source + '-telegram-forward')
+});
+app.get('/api/telegram-forward-jobs', adminAuth.requireAuth, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ jobs: telegramForwardJobs.list(String(req.query.source || ''), String(req.query.taskId || '')) });
+});
+
 app.post('/api/telegram-forward-targets/delete', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
@@ -1723,6 +1754,7 @@ app.post('/api/sns-dl/tasks/:taskId/forward', adminAuth.requireAuth, snsDownload
 app.post('/api/sns-dl/tasks/:taskId/telegram-forward', adminAuth.requireAuth, snsDownloadRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
+        if (req.body?.targets) return res.status(202).json({ job: telegramForwardJobs.create('sns', req.params.taskId, req.body) });
         res.status(201).json(await forwardTaskFileToTelegram(snsDownloadService, req.params.taskId, req.body, 'sns-download-telegram-forward'));
     } catch (error) {
         const status = error.message === 'Telegram 转发所需的服务端成品不存在' ? 404 : 422;
@@ -2016,6 +2048,7 @@ app.post('/api/youtube-premium/tasks/:taskId/forward', adminAuth.requireAuth, yo
 app.post('/api/youtube-premium/tasks/:taskId/telegram-forward', adminAuth.requireAuth, youtubePremiumRateLimit, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
+        if (req.body?.targets) return res.status(202).json({ job: telegramForwardJobs.create('youtube', req.params.taskId, req.body) });
         res.status(201).json(await forwardTaskFileToTelegram(youtubePremiumService, req.params.taskId, req.body, 'youtube-premium-telegram-forward'));
     } catch (error) {
         const status = error.message === 'Telegram 转发所需的服务端成品不存在' ? 404 : 422;
@@ -10897,6 +10930,7 @@ let shutdownStarted = false;
 async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    telegramForwardJobs.close();
     console.log(`${signal} received, shutting down gracefully`);
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();

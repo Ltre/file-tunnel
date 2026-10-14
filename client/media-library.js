@@ -226,6 +226,18 @@
         const results = el('div', undefined, 'ml-grid'); results.id = 'ml-results'; center.append(controls, results);
         right.append(label('起点（秒或时间）', start), label('终点', end), label('保留音频', audio), label('裁切方式', precision), el('p', '暂停播放器设定端点，左右键使用实际视频帧时间。快速裁切不承诺任意毫秒精度。'));
         const clipInput = () => ({ start: start.value, end: end.value, audio: audio.checked, precise: precision.value === 'precise' });
+        let segmentBusy = false;
+        const segmentFeedback = el('div', undefined, 'ml-segment-feedback'); segmentFeedback.hidden = true; segmentFeedback.setAttribute('role', 'status');
+        const paintSegment = job => {
+            segmentFeedback.hidden = false;
+            const running = ['queued', 'running', 'loading'].includes(job.state);
+            segmentFeedback.classList.toggle('is-running', running);
+            const percent = Math.max(0, Math.min(100, Number(job.progress) || 0)), meter = el('progress'); meter.max = 100; meter.value = percent;
+            const duration = Number(job.durationSeconds), processed = Number(job.processedSeconds);
+            segmentFeedback.replaceChildren(el('strong', `${states[job.state] || (job.state === 'loading' ? '载入播放器' : job.state)} · ${percent}%`),
+                el('span', job.state === 'completed' ? '片段已准备完成并载入播放器' : ['failed', 'cancelled', 'interrupted'].includes(job.state) ? job.message || job.error || states[job.state] : job.detail || job.message || (job.state === 'queued' ? '等待前面的处理任务完成' : '正在准备工作片段')),
+                ...(Number.isFinite(duration) && Number.isFinite(processed) ? [el('small', `已处理 ${Math.min(processed, duration).toFixed(2)} / ${duration.toFixed(2)} 秒`)] : []), meter);
+        };
         const original = button('返回原视频', async () => {
             const at = playerTime();
             changeSource('', 0, Number(resource.probe?.format?.start_time) || 0);
@@ -247,13 +259,25 @@
             const stop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }),
             button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));
                 rememberRecord('jobs', job); renderResults(); notice('裁切已排队；候选区可查看执行状态'); }, 'primary'),
-            button('缓存工作片段并播放', async () => { const job = await api('/sessions/' + session.id + '/segment', json('POST', { ...clipInput(), precise: true }));
+            button('缓存工作片段并播放', async () => {
+                if (segmentBusy) return;
+                segmentBusy = true; paintSegment({ state: 'running', progress: 0, detail: '正在提交工作片段任务' });
+                let job;
+                try { job = await api('/sessions/' + session.id + '/segment', json('POST', { ...clipInput(), precise: true })); }
+                catch (error) { segmentBusy = false; paintSegment({ state: 'failed', detail: error.message }); throw error; }
+                rememberRecord('jobs', job); paintSegment(job);
                 clearInterval(segmentWaiting);
                 notice('正在准备可复用工作片段，状态页可查看进度'); const waiting = segmentWaiting = setInterval(async () => { if (tab !== 'sessions' || sessionId !== session.id || !player.isConnected) { clearInterval(waiting); return; }
                     try { await refresh(); const current = data.jobs.find(j => j.id === job.id);
                     if (!player.isConnected || sessionId !== session.id || segmentWaiting !== waiting) return;
-                    if (current?.state === 'completed') { clearInterval(waiting); changeSource(current.result.cacheId, Number(job.context.start)); notice('工作片段就绪，后续取帧和裁切会复用它；可点击“返回原视频”切回完整视频'); }
-                    else if (['failed', 'cancelled'].includes(current?.state)) { clearInterval(waiting); notice(current.message || current.error, true); } } catch (_) {} }, 2000); }),
+                    if (current) paintSegment(current.state === 'completed' ? { ...current, state: 'loading', detail: '处理已完成，正在载入播放器' } : current);
+                    if (current?.state === 'completed') { clearInterval(waiting); changeSource(current.result.cacheId, Number(job.context.start)); const version = sourceVersion; let loaded = false;
+                        try { await waitMediaMetadata(player); if (player.isConnected && version === sourceVersion) { paintSegment(current); loaded = true; } }
+                        catch (error) { if (player.isConnected && version === sourceVersion) paintSegment({ state: 'failed', progress: 100, detail: '片段已生成，但播放器载入失败：' + error.message }); }
+                        segmentBusy = false; if (loaded) notice('工作片段就绪，后续取帧和裁切会复用它；可点击“返回原视频”切回完整视频'); }
+                    else if (['failed', 'cancelled'].includes(current?.state)) { clearInterval(waiting); segmentWaiting = null; segmentBusy = false; notice(current.message || current.error || states[current.state], true); }
+                    } catch (error) { if (player.isConnected && segmentWaiting === waiting) paintSegment({ state: 'running', progress: data.jobs.find(j => j.id === job.id)?.progress, detail: '暂时无法读取进度，后台处理仍在继续：' + error.message }); } }, 1000); }),
+            segmentFeedback,
             original,
             button('删除此会话记录', async () => { if (!confirm('停止使用此会话？正式收藏仍保留，帧日志和缓存不会被级联删除。')) return; await api('/sessions/' + session.id, { method: 'DELETE' }); await refresh(); sessionId = ''; render(); }, 'danger'));
         setTimeout(renderResults, 0); return panel;

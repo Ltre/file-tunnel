@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <title>Drop2Tunnel · 管理后台</title>
+    <link rel="stylesheet" href="/client/admin-layout.css">
+    <script defer src="/client/admin-layout.js"></script>
+</head>
+<body>
+    <aside class="admin-sidebar">
+        <header class="admin-brand"><a href="/admin" aria-label="管理后台首页"><span class="admin-mark">D²</span><span>Drop2Tunnel<small>管理控制台</small></span></a><button id="admin-menu-toggle" type="button" aria-expanded="false" aria-controls="admin-navigation" aria-label="展开后台菜单">☰</button></header>
+        <nav id="admin-navigation" aria-label="后台功能"></nav>
+        <footer><a href="/" target="_blank" rel="noopener">↗ 功能首页</a><a href="/disk" target="_blank" rel="noopener">↗ 我的网盘</a></footer>
+    </aside>
+    <main class="admin-workspace">
+        <header class="admin-workspace-header"><div><small>WORKSPACE</small><h1 id="admin-page-title">后台首页</h1></div><span id="admin-load-state" role="status">正在加载…</span><a id="admin-open-page" href="/admin/home?admin_frame=1" target="_blank" rel="noopener" title="单独打开当前功能">↗ 单独打开</a></header>
+        <div class="admin-frame-wrap"><iframe id="admin-content" title="后台功能页面" referrerpolicy="same-origin"></iframe></div>
+    </main>
+</body>
+</html>

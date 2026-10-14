@@ -112,7 +112,7 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
         return { actualMs: Math.round(actual * 1000), requestedMs: Math.round(requested * 1000),
             sha256: crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex'), ...await signature(output, signal) };
     }
-    async function cut(input, start, end, output, { audio = true, precise = true, signal, sourceProbe, onOutput } = {}) {
+    async function cut(input, start, end, output, { audio = true, precise = true, signal, sourceProbe, onOutput, onStage } = {}) {
         if (!(start >= 0 && end > start && end <= durationOf(sourceProbe) + .001)) throw Error('MEDIA_RANGE_INVALID');
         const hasAudio = audio && sourceProbe.streams.some(s => s.codec_type === 'audio');
         const args = [...common, '-loglevel', 'error', '-ss', String(start), ...localInput(input), '-i', input, '-t', String(end - start), '-map', '0:v:0', '-threads', '1'];
@@ -121,9 +121,13 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
         else args.push('-c:v', 'copy');
         if (hasAudio) args.push(...(precise ? ['-c:a', 'aac', '-b:a', '192k', '-af', 'aresample=async=1:first_pts=0'] : ['-c:a', 'copy']));
         args.push('-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', '-progress', 'pipe:2', '-y', output);
+        onStage?.('transcoding');
         await run(ffmpeg, args, { signal, onOutput });
+        onStage?.('validating');
         const result = await probe(output, signal); const quality = validateMedia(result, { expectedDuration: end - start, audio: hasAudio, precise });
+        onStage?.('decoding');
         await run(ffmpeg, [...common, '-v', 'error', '-xerror', '-i', output, '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0'] : []), '-f', 'null', '-'], { signal });
+        onStage?.('timeline');
         const packets = await timeline(output, signal); validatePacketBounds(packets, result, quality.tolerance);
         return { ...quality, packets, precise, qualityNotice: precise ? '重新编码精确裁切，保留高画质；仍可能受源质量影响' : '快速流复制：切点允许调整，实际时长以校验结果为准', start, end };
     }

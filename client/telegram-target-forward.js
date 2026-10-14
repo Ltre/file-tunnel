@@ -27,7 +27,7 @@
 
     function getState(root, task) {
         const key = `${root}:${task.id}`;
-        if (!componentStates.has(key)) componentStates.set(key, { busy:false, targets:[], loaded:false, message:'' });
+        if (!componentStates.has(key)) componentStates.set(key, { busy:false, targets:[], loaded:false, message:'', views:new Set(), job:null });
         return componentStates.get(key);
     }
 
@@ -51,9 +51,11 @@
         }
         variant.value = 'original';
         variantLabel.append(document.createTextNode('转发版本'), variant);
-        const input = document.createElement('input');
+        const input = document.createElement('textarea');
         input.className = 'telegram-target-input';
-        input.placeholder = '@用户名、公开 t.me/用户名链接或数字 chat ID';
+        input.placeholder = '@用户名、公开 t.me/用户名链接或数字 chat ID；多个目标用换行或逗号分隔';
+        input.rows = 2; input.value = state.draftTargets || '';
+        input.oninput = () => { state.draftTargets = input.value; };
         input.autocomplete = 'off';
         const history = document.createElement('div');
         history.className = 'telegram-target-history';
@@ -77,6 +79,25 @@
         status.className = 'telegram-target-status';
         status.setAttribute('role', 'status');
         status.textContent = state.message;
+        const mini = document.createElement('span'); mini.className = 'telegram-target-mini';
+        summary.append(mini);
+        const progress = document.createElement('progress'); progress.max = 100; progress.hidden = true;
+        const targetResults = document.createElement('div'); targetResults.className = 'telegram-target-results';
+        function paint() {
+            const job = state.job, active = job && ['queued','running'].includes(job.state);
+            mini.className = 'telegram-target-mini' + (active ? ' is-running' : '');
+            mini.textContent = job ? `${job.progress || 0}% · ${job.completedTargets}/${job.targets.length} 已发送` : '';
+            send.disabled = state.busy || active;
+            if (!job) { status.textContent = state.message; return; }
+            status.textContent = `${job.detail || job.state} · ${job.progress || 0}% · 已完成 ${job.completedTargets}/${job.targets.length} 个目标${job.currentTarget ? ' · ' + job.currentTarget : ''}${state.pollError ? ' · ' + state.pollError : ''}`;
+            if (state.busy || state.submitError) status.textContent = state.submitError || state.message;
+            progress.hidden = false; progress.value = job.progress || 0; targetResults.replaceChildren();
+            const labels = { queued:'等待发送', running:'正在发送', completed:'发送成功', failed:'发送失败，请先检查目标是否已收到', uncertain:'结果未确认，请先检查 Telegram' };
+            for (const item of job.targets) { const row = document.createElement('div'); row.textContent = `${item.target} · ${labels[item.state] || item.state}${item.state === 'running' ? ' ' + (item.progress || 0) + '%' : ''}${item.error ? ' · ' + item.error : ''}`; targetResults.append(row); }
+        }
+        state.views.add({ details, paint });
+        state.request = request; state.source = root.includes('youtube') ? 'youtube' : 'sns'; state.taskId = task.id;
+        paint();
 
         function renderTargets() {
             history.replaceChildren();
@@ -94,7 +115,7 @@
                 choose.type = 'button';
                 choose.textContent = target;
                 choose.title = `选择 ${target}`;
-                choose.onclick = () => { input.value = target; input.focus(); };
+                choose.onclick = () => { const values = parseTargets(input.value); if (!values.includes(target)) values.push(target); input.value = values.join('\n'); state.draftTargets = input.value; input.focus(); };
                 const remark = document.createElement('input');
                 remark.className = 'telegram-target-remark';
                 remark.maxLength = 100;
@@ -153,6 +174,7 @@
             if (!details.open) return;
             for (const component of components) if (component !== details && component.open) component.open = false;
             const variantsReady = refreshVariants();
+            refreshJobs(state).catch(() => {});
             if (state.loaded) { await variantsReady; return; }
             status.textContent = '正在读取历史目标…';
             try {
@@ -168,39 +190,61 @@
         });
 
         send.onclick = async () => {
-            if (state.busy) return;
-            const target = input.value.trim();
-            if (!target) { status.textContent = '请先填写或选择 Telegram 目标。'; input.focus(); return; }
+            if (state.busy || (state.job && ['queued','running'].includes(state.job.state))) return;
+            const targets = parseTargets(input.value);
+            if (!targets.length) { status.textContent = '请先填写或选择 Telegram 目标。'; input.focus(); return; }
+            if (targets.length > 50) { status.textContent = '一次最多发送 50 个目标。'; return; }
             const fileVariant = variantLabel.hidden ? 'original' : variant.value;
-            state.busy = true;
+            const payload = { targets, caption:caption.value, fileVariant, supportVideoPreview:videoPreview.checked };
+            const signature = JSON.stringify(payload);
+            if (state.submission !== signature) { state.submission = signature; state.requestId = global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2); }
+            state.busy = true; state.submitError = ''; state.message = '正在提交后台发送队列…'; updateViews(state);
             send.disabled = input.disabled = caption.disabled = videoPreview.disabled = variant.disabled = true;
-            state.message = status.textContent = `正在向 Telegram 发送${fileVariant === 'audio-repaired' ? '音轨修正版' : '原文件'}，请保持页面打开…`;
             try {
-                const result = await request(`${root}/tasks/${encodeURIComponent(task.id)}/telegram-forward`, {
-                    method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({
-                        target, caption:caption.value,
-                        fileVariant,
-                        supportVideoPreview:videoPreview.checked
-                    })
+                const result = await request(root + '/tasks/' + encodeURIComponent(task.id) + '/telegram-forward', {
+                    method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ ...payload, requestId:state.requestId })
                 });
-                input.value = result.target || target;
-                state.targets = result.targets ? normalizeTargets(result.targets) : [{ target:input.value, remark:'' }, ...state.targets.filter(item => item.target !== input.value)];
-                state.loaded = true;
-                renderTargets();
-                const sentLabel = result.fileVariant === 'audio-repaired' ? '音轨修正版' : (result.mode === 'sendVideo' ? '可播放视频' : '原文件');
-                state.message = status.textContent = `已将${sentLabel}发送到 ${input.value}${result.messageId ? `（消息 ${result.messageId}）` : ''}。`;
-            } catch (error) {
-                state.message = status.textContent = `发送失败：${error.message}`;
-            } finally {
+                if (result.job) { state.job = result.job; schedulePoll(state); }
+                else { // Compatibility with an older server during a rolling update.
+                    state.message = '已将' + (result.fileVariant === 'audio-repaired' ? '音轨修正版' : '原文件') + '发送到 ' + (result.target || targets.join('、')) + '。';
+                }
+                state.submission = null;
+            } catch (error) { state.submitError = state.message = '提交失败：' + error.message + '；可以重试同一请求。'; }
+            finally {
                 state.busy = false;
-                send.disabled = input.disabled = caption.disabled = videoPreview.disabled = variant.disabled = false;
+                input.disabled = caption.disabled = videoPreview.disabled = variant.disabled = false;
+                updateViews(state);
             }
         };
 
-        menu.append(variantLabel, input, history, caption, videoPreviewLabel, send, status);
+        menu.append(variantLabel, input, history, caption, videoPreviewLabel, send, status, progress, targetResults);
         details.append(summary, menu);
         renderTargets();
+        refreshJobs(state).catch(() => {});
         return details;
+    }
+
+    function parseTargets(value) {
+        return [...new Map(String(value).split(/[\s,，;；]+/).filter(Boolean).map(item => [item.toLowerCase(), item])).values()];
+    }
+    function updateViews(state) {
+        for (const view of state.views) { if (!view.details.isConnected) state.views.delete(view); else view.paint(); }
+    }
+    async function refreshJobs(state) {
+        if (state.polling) return;
+        state.polling = true;
+        const before = state.job;
+        try {
+            const result = await state.request('/api/telegram-forward-jobs?source=' + state.source + '&taskId=' + encodeURIComponent(state.taskId));
+            if (state.job === before && result.jobs?.length) state.job = result.jobs[0];
+            state.pollError = '';
+            updateViews(state);
+        } catch (error) { if (state.job && ['queued','running'].includes(state.job.state)) { state.pollError = '进度暂时读取失败，后台发送仍继续'; updateViews(state); } }
+        finally { state.polling = false; schedulePoll(state); }
+    }
+    function schedulePoll(state) {
+        if (state.timer || typeof setTimeout !== 'function' || !state.job || !['queued','running'].includes(state.job.state)) return;
+        state.timer = setTimeout(() => { state.timer = null; refreshJobs(state); }, 1000);
     }
 
     function busy(container = document) {

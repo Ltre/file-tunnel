@@ -9,3 +9,4 @@ button.loading::before { content: ''; display: inline-block; width: .85em; heigh
 #ml-dialog-actions { flex-wrap: wrap; }
 @media(max-width:1150px) { .ml-session-layout > .ml-card:last-child { grid-column: 1 / -1; } }
 @media(max-width:720px) { .ml-session-layout > .ml-card:last-child { grid-column: auto; } }
+.ml-segment-feedback{display:grid;gap:7px;padding:12px 14px;border:1px solid #c9d9e8;border-radius:11px;background:#edf5ff;color:#263d59;overflow-wrap:anywhere;font-size:.84rem;line-height:1.5}.ml-segment-feedback[hidden]{display:none}.ml-segment-feedback progress{width:100%;height:8px;accent-color:#347cf0}.ml-segment-feedback.is-running strong:before{content:'';display:inline-block;width:11px;height:11px;margin-right:7px;border:2px solid #abc9ed;border-top-color:#2874e5;border-radius:50%;animation:ml-segment-spin .8s linear infinite}@keyframes ml-segment-spin{to{transform:rotate(360deg)}}

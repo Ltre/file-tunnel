@@ -269,7 +269,9 @@ function accountUiFixture(remaining = { identity: { id: 'bob' }, accounts: [{ id
     const ui = fs.readFileSync(path.join(__dirname, '../client/disk-ui.js'), 'utf8');
     const start = ui.indexOf('function rememberTelegramDriveActiveAccount('), end = ui.indexOf('\nfunction appendTelegramDriveAddAccount(', start);
     const logoutStart = ui.indexOf('async function logoutTelegramDrive('), logoutEnd = ui.indexOf('\nasync function manageTelegramDriveSpaces(', logoutStart);
-    const startupSelection = ui.split('\n').find(line => line.includes("const saved = new URLSearchParams(location.search).get('disk_account')"));
+    const startupLine = ui.split('\n').find(line => line.includes("const saved = telegramDriveEntryQuery.get('disk_account')"));
+    // Every execution below represents a fresh page load, with a fresh entry snapshot.
+    const startupSelection = startupLine && `(() => { const telegramDriveEntryQuery = new URLSearchParams(location.search); ${startupLine} })();`;
     assert.ok(start >= 0 && end > start && logoutStart >= 0 && logoutEnd > logoutStart && startupSelection, '测试使用实际账号记录、切换、退出函数与实际启动解析逻辑');
     const storage = new Map([['telegram-drive-active-account', 'alice']]), records = [], requested = [], stopped = [], events = [], previewOptions = [];
     let accountId = 'alice';

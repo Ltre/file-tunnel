@@ -55,7 +55,7 @@ test('草稿支持改名和来源传输记录锚点', () => {
     assert.match(workshop, /data-action="rename">改名/);
     assert.match(workshop, /🔗 原记录/);
     assert.match(workshop, /config\.focusMessage/);
-    assert.match(app, /focusMessage: messageId => focusTransferRecordById/);
+    assert.match(app, /focusMessage: \(messageId, source = \{\}\) => focusTransferRecordById/);
 });
 
 test('网页 ZIP 更新先验证本机新版本缓存并让远端设备自动拉取', () => {

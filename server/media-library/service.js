@@ -213,6 +213,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         return queue(segment ? 'segment' : 'clip', { sessionId, importId: resource.id, start, end, audio: input.audio !== false, precise: input.precise !== false });
     }
     async function processClip(job, signal, progress) {
+        progress(1, { phase: 'preparing', detail: '正在检查来源、授权及可复用片段' });
         const input = job.context, resource = item('import', input.importId), settings = requireConfig();
         const cacheKind = job.type === 'segment' ? 'segments' : 'candidates';
         const prior = db.get('result', job.id, job.scope), priorCache = prior && db.get('cache', prior.cacheId, job.scope);
@@ -225,9 +226,16 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const meter = setInterval(() => { try { if (fs.existsSync(allocated.path)) cache.reserve(job.scope, allocated.record.id, fs.statSync(allocated.path).size, settings.caches[cacheKind]); }
             catch (error) { capacityError = error; controllers.get(job.id)?.abort(); } }, 250); meter.unref?.();
         try {
+            progress(3, { phase: 'source', detail: '正在读取源视频，准备截取区间' });
             source = await sourceInput(resource, signal, job.type === 'clip' ? input : undefined);
+            let outputTail = '';
+            const stages = { transcoding: [5, '正在截取并编码视频和音轨'], validating: [82, '正在校验片段时长及音画轨道'], decoding: [87, '正在完整解码检查输出片段'], timeline: [96, '正在检查帧时间及音画同步'] };
             const quality = await processing.cut(source.url, input.start - source.offset, input.end - source.offset, allocated.path, { ...input, sourceProbe: source.probe, signal,
-                onOutput: text => { const found = /out_time_us=(\d+)/.exec(text); if (found) progress(Math.min(98, Number(found[1]) / 1e6 / (input.end - input.start) * 95)); } });
+                onStage: phase => { const stage = stages[phase]; if (stage) progress(stage[0], { phase, detail: stage[1] }); },
+                onOutput: text => { outputTail = (outputTail + text).slice(-8192); const found = [...outputTail.matchAll(/out_time_us=(\d+)/g)].at(-1);
+                    if (found) progress(Math.min(81, 5 + Number(found[1]) / 1e6 / (input.end - input.start) * 76),
+                        { phase: 'transcoding', detail: '正在截取并编码视频和音轨', processedSeconds: Number(found[1]) / 1e6, durationSeconds: input.end - input.start }); } });
+            progress(99, { phase: 'committing', detail: '正在确认并保存完整工作片段' });
             cache.commit(job.scope, allocated.record.id, settings.caches[cacheKind]);
             db.patch('cache', allocated.record.id, job.scope, { sourceFingerprint: resource.file.fingerprint, start: input.start, end: input.end, audio: input.audio, precise: input.precise, importId: resource.id });
             if (job.type === 'segment') return { cacheId: allocated.record.id, quality };
@@ -386,7 +394,10 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             });
             if (!job) return;
             const controller = new AbortController(); controllers.set(job.id, controller); let lastProgress = 0;
-            const progress = value => { if (now() - lastProgress > 200 || value >= 99) { lastProgress = now(); db.patch('job', job.id, job.scope, { progress: Math.floor(value), heartbeat: now() }); } };
+            let lastPhase = '';
+            const progress = (value, details = {}) => { if (now() - lastProgress > 200 || value >= 99 || details.phase && details.phase !== lastPhase) {
+                lastProgress = now(); lastPhase = details.phase || lastPhase;
+                db.patch('job', job.id, job.scope, current => ({ ...current, ...details, progress: Math.max(current.progress || 0, Math.floor(value)), heartbeat: now() })); } };
             const beat = setInterval(() => { const value = item('job', job.id, job.scope); if (value.cancelled) controller.abort(); else db.patch('job', job.id, job.scope, { heartbeat: now() }); }, 2000); beat.unref?.();
             try {
                 let result;

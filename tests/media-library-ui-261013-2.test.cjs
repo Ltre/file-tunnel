@@ -104,7 +104,8 @@ test('metadata readiness precedes seeking and source switches cancel pending met
 
 test('work segment shows return action only on completion; overlapping polls cannot reload it after returning to the original',async()=>{
     const state=snapshot();state.sessions[0].importId='video';state.jobs=[{id:'segment',state:'completed',result:{cacheId:'cached-segment'}}];
-    const f=fixture(async route=>route.endsWith('/segment')?{id:'segment',context:{start:.37}}:state);f.set(state);f.setSession('old');f.setTab('sessions');
+    const completed=structuredClone(state);
+    const f=fixture(async route=>route.endsWith('/segment')?{id:'segment',state:'queued',context:{start:.37}}:completed);f.set(state);f.setSession('old');f.setTab('sessions');
     const panel=f.renderSessions(),buttons=panel.querySelectorAll('button'),original=buttons.find(n=>n.textContent==='返回原视频');
     const descendants=n=>[n,...n.children.flatMap(descendants)];const player=descendants(panel).find(n=>n.tagName==='VIDEO');
     assert.equal(original.hidden,true);await buttons.find(n=>n.textContent==='缓存工作片段并播放').onclick();assert.equal(original.hidden,true);
@@ -112,4 +113,16 @@ test('work segment shows return action only on completion; overlapping polls can
     player.currentTime=.5;await original.onclick();assert.match(player.src,/\/files\/video$/);assert.equal(player.duration,10);assert.equal(player.loadCalls,2);assert.equal(original.hidden,true);
     assert.ok(Math.abs(player.currentTime-.87)<1e-9);
     await f.intervals[0]();assert.equal(player.loadCalls,2,'a late completion cannot switch back to the segment');
+});
+
+test('work segment feedback appears while submitting and follows real queued/running/cancelled progress near its button', async () => {
+    const gate=deferred(), state=snapshot(); state.sessions[0].importId='video'; let remote={...snapshot(),jobs:[]};
+    const f=fixture(async route=>route.endsWith('/segment')?gate.promise:remote); f.set(state);f.setSession('old');f.setTab('sessions');
+    const panel=f.renderSessions(), descendants=n=>[n,...n.children.flatMap(descendants)];
+    const action=panel.querySelectorAll('button').find(n=>n.textContent==='缓存工作片段并播放'), feedback=descendants(panel).find(n=>n.className==='ml-segment-feedback');
+    const submitted=action.onclick(); assert.equal(feedback.hidden,false);assert.match(feedback.children[1].textContent,/提交/);
+    gate.resolve({id:'segment',state:'queued',progress:0,context:{start:0}});await submitted;assert.match(feedback.children[0].textContent,/排队中.*0%/);
+    remote={...snapshot(),jobs:[{id:'segment',state:'running',progress:42,detail:'正在完整解码检查输出片段'}]};await f.intervals[0]();
+    assert.match(feedback.children[0].textContent,/42%/);assert.match(feedback.children[1].textContent,/解码/);
+    remote={...snapshot(),jobs:[{id:'segment',state:'cancelled',progress:42,message:'用户已取消'}]};await f.intervals[0]();assert.match(feedback.children[0].textContent,/已取消/);
 });

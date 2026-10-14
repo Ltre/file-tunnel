@@ -39,11 +39,14 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     const checked = await run(['tools/deploy/verify.mjs', '--dist', relative, '--profile', 'txsl']);
     assert.match(checked.stdout, /verify ok: txsl/);
     assert.ok(fs.existsSync(path.join(temporary, 'docs/media-library.md')));
-    for (const source of ['client/media-library.js', 'client/media-task-link.js']) {
+    for (const source of ['client/media-library.js', 'client/media-task-link.js', 'client/admin-layout.js']) {
         const asset = manifest.scripts[source]; assert.ok(fs.existsSync(path.join(temporary, asset.slice(1))));
         assert.ok(!manifest.appShell.includes(asset), 'independent administrator subsystem must not expand the PWA shell');
     }
     assert.ok(fs.readFileSync(path.join(temporary, 'pages/media-library.html'), 'utf8').includes(manifest.scripts['client/media-library.js']));
+    assert.ok(fs.readFileSync(path.join(temporary, 'pages/admin-layout.html'), 'utf8').includes(manifest.scripts['client/admin-layout.js']));
+    assert.ok(fs.existsSync(path.join(temporary, 'server/admin-layout.js')));
+    assert.ok(fs.existsSync(path.join(temporary, 'server/telegram-forward-jobs.js')));
     await run(['-e', 'const api=require(process.argv[1]); if(typeof api.registerMediaLibrary!=="function")process.exit(1);', path.join(temporary, 'server/media-library/index.js')]);
     // A manifest entry alone must not conceal a missing runtime helper.
     fs.unlinkSync(path.join(temporary, 'client/disk-operation-order.js'));
