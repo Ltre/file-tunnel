@@ -1,7 +1,7 @@
 # 传输记录、文件资产、缓存与恢复链路
 
 > **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：`2026-10-13`
+> **文档更新时间**：`2026-10-14`
 
 ## 子模块文档
 
@@ -169,6 +169,12 @@ Git 历史中大量提交专门处理：
 - P2P 失败转 Relay；
 - receiver 断线；
 - 同 file 多来源。
+
+### 6.4 2026-08-12 WebRTC / VPN / 媒体权限复盘
+
+参阅 [P2P_TRANSMISSION_NOTES-260812.md](../other/P2P_TRANSMISSION_NOTES-260812.md)。这是关于 Android Igniter VPN、不同 Origin、Chrome 普通/无痕模式与摄像头/麦克风权限的实际对照记录：当时两端启用 VPN 时，站点媒体授权状态足以改变 P2P 与 Socket.IO relay 的结果。文档还区分了 **ICE 候选与建链、传输完成确认、重复调度、缓存状态和 UI 进度** 等不同故障层级。
+
+排查时不要把 HTTP 可直连等同于 WebRTC UDP 可直连，也不要假设延长 ICE 等待、`iceTransportPolicy: 'all'` 或另建 LAN-only 连接能够绕过浏览器的本地地址隐私策略。记录中的“增强局域网 P2P”属于用户主动授权、媒体 track 随即停止、失败仍保留 relay 的策略；2026-08-12 的浏览器测试结论不能未经复测直接推广至所有后续浏览器版本。
 
 ## 7. Socket.IO Relay
 
