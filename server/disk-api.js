@@ -2648,7 +2648,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use('/mount-scope/:mountId',wrap((req,res,next)=>{req.diskLocalScope={...req.diskScope};req.diskMount=measureMetadata(req,'disk-mount-resolve',()=>mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId));next();}),collaborationContent);
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
-    async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal }) {
+    async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal, onProgress }) {
         const sourceAppId = mapping.sourceAppId === 'media-library' ? 'media-library' : 's3';
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
@@ -2664,7 +2664,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 try { lease=content.lease(reusable,owner.id,'s3-put','verified-input'); }
                 catch (error) {
                     if (error.message !== 'CONTENT_NOT_AVAILABLE') throw error;
-                    return uploadObjectStream({mapping,owner,info,input,size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal});
+                    return uploadObjectStream({mapping,owner,info,input,size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal,onProgress});
                 }
                 let leaseFailure;
                 const heartbeat=setInterval(()=>{
@@ -2677,13 +2677,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const sha=crypto.createHash('sha256'),md5=crypto.createHash('md5');let bytes=0;
                     const meter=new Transform({transform(chunk,encoding,done){bytes+=chunk.length;if(bytes>size)return done(new Error('EntityTooLarge'));sha.update(chunk);md5.update(chunk);done(null,chunk);}});
                     await pipeline(input,meter,fs.createWriteStream(target),...(signal ? [{signal}] : []));
+                    onProgress?.({ percent: 0, phase: 'verifying', detail: '正文已读取，正在验证可复用内容', processedBytes: bytes, totalBytes: size });
                     if(leaseFailure)throw leaseFailure;
                     if(bytes!==size)throw new Error('IncompleteBody');
                     if(sha.digest('hex')!==expectedSha256.toLowerCase())throw new Error('XAmzContentSHA256Mismatch');
                     const s3ETag=md5.digest('hex');if(expectedMd5 && expectedMd5!==Buffer.from(s3ETag,'hex').toString('base64'))throw new Error('BadDigest');
                     if(telegram.check)try{await telegram.check(sourceBackend,{...physical,size});}catch(error){
                         content.setHealth(reusable,candidate.current_revision,false,'TELEGRAM_SOURCE_INVALID');
-                        return await uploadObjectStream({mapping,owner,info,input:fs.createReadStream(target),size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal});
+                        return await uploadObjectStream({mapping,owner,info,input:fs.createReadStream(target),size,contentType,expectedSha256,expectedMd5,metadata,replaceId,signal,onProgress});
                     }
                     const source={...physical,size,type:contentType,metadata:{...metadata,s3ETag},contentId:reusable,contentLease:lease,contentSha256:expectedSha256.toLowerCase()};
                     mapping.assertAuthorized?.();
@@ -2709,7 +2710,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
         job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
         const control = { cancelled: false, throwIfCancelled() { if (signal?.aborted) throw new Error('OPERATION_CANCELLED'); } };
-        const running = Promise.resolve().then(() => coreUpload.runUploadPipeline(req, job, patch => operations.update(job.operationId, patch), control))
+        const running = Promise.resolve().then(() => coreUpload.runUploadPipeline(req, job, patch => {
+            operations.update(job.operationId, patch);
+            onProgress?.(patch);
+        }, control))
             .then(result => { operations.complete(job.operationId, result); return result; }, error => { operations.fail(job.operationId, error); throw error; });
         running.catch(() => {});
         // A PUT request is one continuous stream, but the existing browser pipeline

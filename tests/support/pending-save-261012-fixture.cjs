@@ -5,6 +5,7 @@ const express = require('express');
 const { openDiskRepository } = require('../../server/disk-repository');
 const { createDiskAuth } = require('../../server/disk-auth');
 const { createDiskAccountSessions } = require('../../server/disk-account-sessions');
+const { createDiskOidcReceipt } = require('../../server/disk-oidc-receipt');
 const { createDiskOperations } = require('../../server/disk-operations');
 const { createDiskAPI } = require('../../server/disk-api');
 const { createTelegramDriveStore } = require('../../server/telegram-drive');
@@ -18,6 +19,8 @@ async function createFixture() {
     store.putMetadataObject(auth.user('bob'), '乙目录', '乙账号.txt', 'text/plain', {}, 30);
     let api, sends = 0; const bodies = new Map();
     const sessions = createDiskAccountSessions({ keyForRequest: () => auth.sessionKey, user: id => auth.user(id), isRevoked: value => api.isContentSessionRevoked(value) });
+    const receipts = createDiskOidcReceipt({ keyForRequest: () => auth.sessionKey });
+    let browserLoginAttempt = '';
     const telegram = { upload: async (_backend, files) => { sends += files.length; return files.map((file, index) => {
         const fileId = 'fixture-' + Date.now() + '-' + index; bodies.set(fileId, fs.readFileSync(file.path));
         return { fileId, messageId: sends + index, size: file.size };
@@ -28,9 +31,9 @@ async function createFixture() {
         getDefaultBackend: () => ({ token: 'fixture-no-telegram', channelId: '-1001', baseUrl: 'https://example.invalid' }), maxDepth: () => 30, contentReuseMode: 'off', contentCleanupMode: 'observe' });
     const app = express(), root = path.join(__dirname, '../..'); app.use(express.json()); app.use(express.urlencoded({ extended: false }));
     sessions.registerRoutes(app, { origin: req => req.protocol + '://' + req.get('host'), revoke: req => api.revokeContentSession(req) });
-    app.get('/api/telegram/drive/me', (req, res) => res.json({ identity: sessions.identity(req), ...sessions.list(req), enabled: true, configured: true, oidcConfigured: true, oidcMode: 'mock' }));
-    app.get('/api/telegram/drive/oidc/start', (_req, res) => res.type('html').send('<!doctype html><meta charset="utf-8"><h1>隔离 Mock 登录</h1><p>仅使用测试账号，不连接 Telegram。</p><form method="post" action="/fixture-login"><button name="id" value="alice">登录验收甲账号</button><button name="id" value="bob">登录验收乙账号</button></form>'));
-    app.post('/fixture-login', (req, res) => { sessions.set(req, res, auth.user(req.body.id)); res.type('html').send('<!doctype html><meta charset="utf-8"><p>Mock 登录成功</p><script>window.opener?.postMessage({type:"telegram-drive-oidc-result",result:"success"},location.origin);window.close();</script>'); });
+    app.get('/api/telegram/drive/me', (req, res) => res.json({ identity: sessions.identity(req), ...sessions.list(req), loginAttempt: receipts.get(req, req.query.oidc_attempt), enabled: true, configured: true, oidcConfigured: true, oidcMode: 'mock' }));
+    app.get('/api/telegram/drive/oidc/start', (req, res) => { browserLoginAttempt = String(req.query.attempt || browserLoginAttempt).replace(/[^a-zA-Z0-9-]/g, ''); res.type('html').send('<!doctype html><meta charset="utf-8"><h1>隔离 Mock 登录</h1><p>仅使用测试账号，不连接 Telegram。</p><form method="post" action="/fixture-login"><input type="hidden" name="attempt" value="' + browserLoginAttempt + '"><button name="id" value="alice">登录验收甲账号</button><button name="id" value="bob">登录验收乙账号</button></form>'); });
+    app.post('/fixture-login', (req, res) => { sessions.set(req, res, auth.user(req.body.id)); const message = { type: 'telegram-drive-oidc-result', result: 'success', attemptId: req.body.attempt, accountId: req.body.id }; receipts.record(req, res, { ...message, attemptId: req.body.attempt }); res.type('html').send('<!doctype html><meta charset="utf-8"><p>Mock 登录成功</p><script>window.opener?.postMessage(' + JSON.stringify(message) + ',location.origin);window.close();</script>'); });
     app.use('/api/telegram/drive', api.browser);
     const body = Buffer.from('后台缓存转存验收正文\n'.repeat(350));
     const tasks = ['sns', 'youtube'].map(source => ({ id: source + '-fixture', title: source === 'sns' ? 'SNS 转存验收' : 'YouTube 转存验收', outputFileName: source + '-后台成品.txt',

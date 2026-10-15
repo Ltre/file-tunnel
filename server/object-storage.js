@@ -74,7 +74,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         // The disk API's retry worker owns remote cleanup after the durable index switch.
         return object;
     }
-    async function put(mapping, key, input, { size, contentType = 'application/octet-stream', expectedSha256 = '', expectedMd5 = '', metadata = {}, signal } = {}) {
+    async function put(mapping, key, input, { size, contentType = 'application/octet-stream', expectedSha256 = '', expectedMd5 = '', metadata = {}, signal, onProgress } = {}) {
         mapping.assertAuthorized?.();
         mountedNamespace?.assertWritable(mapping,key);
         const info = objectKey(key), current = stat(mapping, key), store = storeOf(mapping), owner = auth.user(scopeOf(mapping).userId);
@@ -95,7 +95,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             return cleanupReplaced(mapping, stat(mapping, key));
         }
         if (info.folder) throw new Error('InvalidObjectName');
-        await uploadStream({ mapping, owner, key, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId: current?.file?.id || '', signal });
+        await uploadStream({ mapping, owner, key, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId: current?.file?.id || '', signal, onProgress });
         return cleanupReplaced(mapping, stat(mapping, key));
     }
     async function deleteFile(mapping, file) {

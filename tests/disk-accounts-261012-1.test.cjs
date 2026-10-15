@@ -287,7 +287,7 @@ function accountUiFixture(remaining = { identity: { id: 'bob' }, accounts: [{ id
         rememberTelegramDriveAccountView() {}, cancelTelegramDrivePendingMount() { events.push('cancel-mount'); }, closeDiskCollaborationFrame() { events.push('close-frame'); }, closeDiskPreview(options) { previewOptions.push(options); },
         confirmTelegramDriveAction: async () => true, showAppToast() {},
         clearTelegramDriveSearch() {}, clearTelegramDriveSelection() {}, renderTelegramDrive: async () => {},
-        telegramDriveNavigationVersion: 0, telegramDriveRenderGeneration: 0, telegramDriveMountContext: { id: 'old-mount' }, telegramDrivePath: '甲目录', telegramDriveCurrentData: {}, telegramDriveStaticLinks: [], telegramDriveSpaceOwner: 'alice', telegramDriveSpaces: [] });
+        telegramDriveEntryPending: false, telegramDriveNavigationVersion: 0, telegramDriveRenderGeneration: 0, telegramDriveMountContext: { id: 'old-mount' }, telegramDrivePath: '甲目录', telegramDriveCurrentData: {}, telegramDriveStaticLinks: [], telegramDriveSpaceOwner: 'alice', telegramDriveSpaces: [] });
     vm.runInContext(ui.slice(start, end) + '\n' + ui.slice(logoutStart, logoutEnd), context);
     return { context, location, history, storage, records, requested, stopped, events, previewOptions, client, startupSelection };
 }

@@ -67,7 +67,10 @@ test('real drive adapter stores verified content references, preserves others on
     store.createDirectory(owner.id, 'workspace'); const adapter = createMediaDiskAdapter({ dataDir, diskAPI: api, auth, backend: () => ({ token: 'fixture', channelId: '-100123' }) });
     assert.throws(() => adapter.location({ userId: owner.id, path: 'workspace' }, other), /NOT_AUTHORIZED/);
     const loc = adapter.location({ userId: owner.id, path: 'workspace' }, owner), body = path.join(dataDir, 'body.mp4'); fs.writeFileSync(body, 'shared-content');
-    const a = await adapter.write(loc, body, 'a.mp4', 'producer-a', () => {}), b = await adapter.write(loc, body, 'b.mp4', 'producer-b', () => {});
+    const progress = [], reused = [];
+    const a = await adapter.write(loc, body, 'a.mp4', 'producer-a', () => {}, undefined, patch => progress.push(patch)), b = await adapter.write(loc, body, 'b.mp4', 'producer-b', () => {}, undefined, patch => reused.push(patch));
+    assert.ok(progress.some(patch => patch.phase === 'hashing')); assert.ok(progress.some(patch => Number.isFinite(patch.telegramBytesSent)), 'the existing Telegram upload pipeline reports real byte progress');
+    assert.equal(progress.at(-1).phase, 'committing'); assert.ok(reused.some(patch => patch.phase === 'verifying')); assert.equal(reused.at(-1).phase, 'committing');
     assert.equal(messages, 1, 'second body reuses verified Content Object without re-sending'); assert.equal(adapter.file(a).item.contentId, adapter.file(b).item.contentId);
     store.createDirectory(other.id, 'collection'); const otherLocation = adapter.location({ userId: other.id, path: 'collection' }, other);
     const c = await adapter.write(otherLocation, body, 'c.mp4', 'producer-c', () => {});

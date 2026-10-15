@@ -275,11 +275,12 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         return db.atomic(() => { const record = db.create('collection', scope(), { name: nameOf(input.name || resource.name), kind: resource.file.type?.startsWith('image/') ? 'image' : 'video',
             importId, wholeSource: true, state: 'queued', location: settings.collection, entities: [], source: { ...resource.source, ...resource.signature } }); queue('collect', { collectionId: record.id }); return record; });
     }); }
-    async function processCollection(job, signal) {
+    async function processCollection(job, signal, progress) {
         const record = item('collection', job.context.collectionId); if (record.state === 'ready') return record;
         const authorization = grant(record.location.grantId, 'collection'); let lease, transient;
         try {
             db.patch('collection', record.id, job.scope, { state: 'transferring', error: '' }); let localPath, name;
+            progress(0, { phase: 'preparing', detail: '正在确认收藏目录权限与本地正文' });
             if(record.compressionId){const variant=item('compression',record.compressionId);lease=cache.acquire(job.scope,variant.cacheId);localPath=lease.path;name=record.name+'.mkv';}
             else if (record.resultId) { const candidate = item('result', record.resultId); lease = cache.acquire(job.scope, candidate.cacheId); localPath = lease.path; name = record.name + (candidate.kind === 'image' ? '.jpg' : '.mp4'); }
             else {
@@ -292,7 +293,11 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                     done(received > opened.object.size ? Error('MEDIA_UPLOAD_SIZE_MISMATCH') : null, chunk); } }), fs.createWriteStream(transient.path), { signal });
                 if (received !== opened.object.size) throw Error('MEDIA_UPLOAD_SIZE_MISMATCH'); localPath = transient.path;
             }
-            const file = await disk.write(authorization.location, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal);
+            const file = await disk.write(authorization.location, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal, patch => {
+                const details = {};
+                for (const key of ['phase','detail','processedBytes','totalBytes','telegramBytesSent','telegramBytesConfirmed']) if (patch[key] !== undefined) details[key] = patch[key];
+                progress(Number.isFinite(patch.percent) ? Math.max(0, Math.min(99, patch.percent)) : 0, details);
+            });
             return db.atomic(() => { const value = db.patch('collection', record.id, job.scope, { state: 'ready', file, collectedAt: now(), error: '' });
                 if (record.resultId) db.patch('result', record.resultId, job.scope, { savedId: record.id }); if(record.compressionId)db.patch('compression',record.compressionId,job.scope,{savedId:record.id});return value; });
         } finally { lease?.release(); if (transient) cache.discard(job.scope, transient.record.id); }
@@ -434,7 +439,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 if (job.type === 'import') result = await processImport(job, controller.signal);
                 else if (job.type === 'frames') result = await processFrames(job, controller.signal, progress);
                 else if (job.type === 'clip' || job.type === 'segment') result = await processClip(job, controller.signal, progress);
-                else if (job.type === 'collect') result = await processCollection(job, controller.signal);
+                else if (job.type === 'collect') result = await processCollection(job, controller.signal, progress);
                 else if (job.type === 'transcode') result = await processTranscode(job, controller.signal, progress);
                 else if (job.type === 'reference') {
                     const lease = cache.acquire(job.scope, job.context.cacheId);

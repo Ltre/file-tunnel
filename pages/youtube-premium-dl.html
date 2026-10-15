@@ -1985,7 +1985,23 @@
                 transcode.textContent = '前往转码处理';
                 actions.appendChild(transcode);
             }
-            const preference=document.createElement('button');preference.textContent=task.autoCacheEnabled===false?'允许自动缓存到浏览器':'停止自动缓存到浏览器';preference.onclick=async()=>{preference.disabled=true;try{const enabled=task.autoCacheEnabled===false;if(!enabled)premiumBrowserCache?.cancelAutomatic(task.id);await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoCacheEnabled:enabled})});await loadTasks();}finally{preference.disabled=false;}};actions.appendChild(preference);
+            const preference = document.createElement('button');
+            preference.textContent = task.autoCacheEnabled === false ? '允许自动缓存到浏览器' : '停止自动缓存到浏览器';
+            preference.onclick = async () => {
+                preference.disabled = true;
+                try {
+                    const enabled = task.autoCacheEnabled === false;
+                    if (!enabled) premiumBrowserCache?.cancelAutomatic(task.id);
+                    const updated = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}`, {
+                        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ autoCacheEnabled: enabled })
+                    });
+                    task.autoCacheEnabled = updated.task?.autoCacheEnabled ?? enabled;
+                    preference.textContent = task.autoCacheEnabled === false ? '允许自动缓存到浏览器' : '停止自动缓存到浏览器';
+                    await loadTasks();
+                } catch (error) { notice.textContent = '更新自动缓存设置失败：' + error.message; }
+                finally { preference.disabled = false; }
+            };
+            actions.appendChild(preference);
             const tagButton = document.createElement('button');
             tagButton.type = 'button';
             tagButton.textContent = '打标签';

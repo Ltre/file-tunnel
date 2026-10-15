@@ -21,7 +21,7 @@
     function button(text, action, cls = '') {
         const node = el('button', text, cls); node.type = 'button'; if(cls==='ml-notes-toggle'){node.title='会话备注';node.setAttribute('aria-label','会话备注');}
         node.onclick = async () => { if (node.disabled) return; node.disabled = true; node.classList.add('loading');
-            try { await action(node); } catch (error) { notice(error.message, true); } finally { node.disabled = false; node.classList.remove('loading'); } }; return node;
+            try { await action(node); } catch (error) { notice(error.message, true); } finally { node.disabled = node.dataset.busy === 'true' || node.dataset.keepDisabled === 'true'; node.classList.toggle('loading', node.dataset.busy === 'true'); } }; return node;
     }
     const card = (title, description) => { const node = el('section', undefined, 'ml-card'); if (title) node.append(el('h2', title)); if (description) node.append(el('p', description)); return node; };
     const input = (value = '', type = 'text') => { const node = document.createElement('input'); node.type = type; node.value = value; return node; };
@@ -340,6 +340,8 @@
     }
     const collecting = new Set();
     const collectionErrors = new Map();
+    const collectingCompressions = new Set();
+    const compressionCollectionErrors = new Map();
     async function collectCandidate(id) {
         if (collecting.has(id)) return;
         collecting.add(id); collectionErrors.delete(id); renderResults();
@@ -355,9 +357,9 @@
         const job = record && data.jobs.find(j => j.type === 'collect' && j.context.collectionId === record.id);
         const status = collectionErrors.get(result.id) || (collecting.has(result.id) ? '正在提交收藏…' : record ?
             record.state === 'ready' ? '已收藏到网盘' : `收藏到网盘：${states[record.state] || record.state}${job?.progress ? ' · ' + job.progress + '%' : ''}${job?.message ? ' · ' + job.message : ''}` : '');
-        if (status) { const line = el('small', status, 'ml-collection-progress'); line.setAttribute('role', 'status'); info.append(line); }
+        const line = el('small', status || '未收藏', 'ml-collection-progress'); line.setAttribute('role', 'status'); line.title = line.textContent; info.append(line);
         if (record?.state === 'ready' && record.file) {
-            const link = el('a', '▤', 'ml-disk-link'); link.title = '在网盘中定位收藏文件'; link.setAttribute('aria-label', link.title);
+            const link = el('a', '▤', 'ml-disk-link'); link.dataset.collectionLink = record.id; link.title = '在网盘中定位收藏文件'; link.setAttribute('aria-label', link.title);
             const path = record.file.path ?? record.location.path;
             const params = new URLSearchParams({ disk_account: record.file.userId, disk_space: record.file.diskSpace || '',
                 disk_path: path || '', disk_file: record.file.fileId });
@@ -368,38 +370,48 @@
     function renderResults() {
         if(compressionViewing&&$('ml-dialog').open)renderCompressionView();
         for(const line of $('ml-results')?.querySelectorAll('[data-compression-job]')||[]){const job=data.jobs.find(j=>j.id===line.dataset.compressionJob);if(job){line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';}}
-        if($('ml-results')?.querySelector('textarea[data-dirty="1"]')) {
-            for(const job of data.jobs.filter(j=>j.type==='transcode')){const box=$('ml-results').querySelector('[data-result-id="'+job.context.resultId+'"]');if(!box)continue;
-                let line=box.querySelector('[data-compression-job="'+job.id+'"]');if(!line){line=el('p');line.dataset.compressionJob=job.id;box.append(line);}line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';
-            }return;
-        }
         const area = $('ml-results'); if (!area) return; const order = $('ml-frame-order')?.value, unsaved = $('ml-frame-unsaved')?.checked;
+        // Keep only the actively edited cards; other jobs must still advance.
+        const dirtyRows = new Map(Array.from(area.children).filter(box => box.querySelector('[data-dirty="1"]')).map(box => [box.dataset.resultId, box]));
+        if(dirtyRows.size) {
+            for (const [id, box] of dirtyRows) {
+                const result = data.results.find(item => item.id === id); if (!result) continue;
+                const status = box.querySelector('.ml-result-status'), actions = box.querySelector('.ml-actions');
+                if (status && actions) { status.querySelector('.ml-collection-progress')?.remove(); actions.querySelector('.ml-disk-link[data-collection-link]')?.remove(); renderCollectionProgress(result, status, actions); }
+            }
+            for(const job of data.jobs.filter(j=>j.type==='transcode')){const box=$('ml-results').querySelector('[data-result-id="'+job.context.resultId+'"]');if(!box)continue;
+                let line=box.querySelector('[data-compression-job="'+job.id+'"]');if(!line){line=el('p');line.dataset.compressionJob=job.id;(box.querySelector('.ml-result-status')||box).append(line);}line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';
+            }
+        }
         area.classList.toggle('ml-list',resultView==='list');
-        const results = data.results.filter(r => !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId)).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : (a.actualMs ?? a.startMs) - (b.actualMs ?? b.startMs));
-        area.replaceChildren();
+        const results = data.results.filter(r => !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId || dirtyRows.has(r.id))).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : (a.actualMs ?? a.startMs) - (b.actualMs ?? b.startMs));
+        const rows = [];
         for (const job of data.jobs.filter(j => j.type === 'clip' && j.context.sessionId === sessionId && !data.results.some(r => r.id === j.id)).sort((a, b) => b.createdAt - a.createdAt)) {
-            const box = el('article', undefined, 'ml-frame ml-pending-clip'), info = el('div'); box.dataset.jobId = job.id;
-            info.append(el('strong', '🎞 候选 Clip'), el('p', time(job.context.start * 1000) + '～' + time(job.context.end * 1000)), badge(job.state));
+            const box = el('article', undefined, 'ml-frame ml-clip ml-pending-clip'), info = el('div'), heading = el('div', undefined, 'ml-result-heading'); box.dataset.jobId = job.id;
+            heading.append(el('strong', 'Clip ' + time(job.context.start * 1000) + '～' + time(job.context.end * 1000)), el('span', date(job.createdAt), 'ml-result-date')); info.append(heading);
+            const footer = el('div', undefined, 'ml-result-footer'), status = el('div', undefined, 'ml-result-status');
             const meter = document.createElement('progress'); meter.max = 100; meter.value = job.progress || 0; meter.className = 'ml-progress';
-            info.append(meter, el('small', (job.progress || 0) + '%', 'ml-muted'));
-            if (job.error) info.append(el('p', job.message || job.error, 'ml-result-time'));
+            const detail = el('small', `${states[job.state] || job.state} · ${job.progress || 0}% · ${job.detail || job.message || job.error || '等待生成 Clip'}`, 'ml-collection-progress'); detail.title = detail.textContent; detail.setAttribute('role', 'status'); status.append(detail, meter);
             const actions = el('div', undefined, 'ml-actions');
             if (['queued', 'running'].includes(job.state)) actions.append(button('取消', async () => { rememberRecord('jobs', await api('/jobs/' + job.id + '/cancel', json('POST'))); renderResults(); }));
             if (['failed', 'cancelled', 'interrupted'].includes(job.state)) actions.append(button('重试', async () => { rememberRecord('jobs', await api('/jobs/' + job.id + '/retry', json('POST'))); renderResults(); }));
-            info.append(actions); box.append(info); area.append(box);
+            footer.append(status, actions); info.append(footer); box.append(info); rows.push(box);
         }
         for (const result of results) {
-            const box = el('article', undefined, 'ml-frame' + (selection.has(result.id) ? ' selected' : '')), info = el('div'); box.dataset.resultId = result.id;
+            if (dirtyRows.has(result.id)) { rows.push(dirtyRows.get(result.id)); continue; }
+            const box = el('article', undefined, 'ml-frame' + (result.kind === 'clip' ? ' ml-clip' : '') + (selection.has(result.id) ? ' selected' : '')), info = el('div'); box.dataset.resultId = result.id;
             if (result.cacheReady && result.kind === 'image') { const image = document.createElement('img'); image.loading = 'lazy'; image.src = root + '/cache/' + result.cacheId; image.alt = '实际画面 ' + time(result.actualMs); box.append(image); }
-            else box.append(el('p', result.kind === 'clip' ? '🎞 Clip' : '缓存已清理', 'ml-muted'));
+            else if (result.kind !== 'clip') box.append(el('p', '缓存已清理', 'ml-muted'));
             const chosen = input('', 'checkbox'); chosen.checked = selection.has(result.id); chosen.onchange = () => { chosen.checked ? selection.add(result.id) : selection.delete(result.id); box.classList.toggle('selected', chosen.checked); };
-            info.append(label(result.kind === 'image' ? time(result.actualMs) : time(result.startMs) + '～' + time(result.endMs), chosen));
+            const heading = el('div', undefined, 'ml-result-heading'), chosenLabel = el('label');
+            chosenLabel.append(chosen, el('span', result.kind === 'image' ? time(result.actualMs) : 'Clip ' + time(result.startMs) + '～' + time(result.endMs))); heading.append(chosenLabel); info.append(heading);
             if (result.kind === 'image') info.append(el('p', `请求 ${time(result.requestedMs)} · 实际 ${time(result.actualMs)}${result.duplicateIds?.length ? ' · 同时刻已有记录' : ''}`, 'ml-result-time'));
-            info.append(el('div', date(result.extractedAt) + (result.savedId ? ' · 已收藏' : ' · 未收藏'), 'ml-muted'));
+            heading.append(el('span', date(result.extractedAt), 'ml-result-date'));
+            const footer = el('div', undefined, 'ml-result-footer'), status = el('div', undefined, 'ml-result-status');
             const actions = el('div', undefined, 'ml-actions');
-            const collection = renderCollectionProgress(result, info, actions);
+            const collection = renderCollectionProgress(result, status, actions);
             const icon=(glyph,title,run)=>{const node=button(glyph,run);node.title=title;node.setAttribute('aria-label',title);return node;};
-            if (result.cacheReady) actions.append(icon('◉','查看', () => { const media = document.createElement(result.kind === 'image' ? 'img' : 'video'); media.className = 'ml-preview'; media.src = root + '/cache/' + result.cacheId; if (result.kind === 'clip') media.controls = true; dialog('候选资源', media); }),
+            if (result.cacheReady) actions.append(icon('👁','查看', () => { const media = document.createElement(result.kind === 'image' ? 'img' : 'video'); media.className = 'ml-preview'; media.src = root + '/cache/' + result.cacheId; if (result.kind === 'clip') media.controls = true; dialog('候选资源', media); }),
                 icon(collection?.state === 'ready' ? '★' : collection && ['queued', 'transferring'].includes(collection.state) ? '◌' : '☆',collection?.state === 'ready'?'已收藏':'收藏', async () => {
                     if (collection && ['failed', 'cancelled', 'interrupted'].includes(collection.state)) {
                         const job = data.jobs.find(j => j.type === 'collect' && j.context.collectionId === collection.id);
@@ -409,17 +421,21 @@
                 }));
             if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.title !== '查看') node.disabled = true; });
             if(result.kind==='clip'){
-                const note=el('textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.oninput=()=>{note.dataset.dirty='1';};
-                info.append(note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();}));
+                const note=el(resultView==='list'?'input':'textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.setAttribute('aria-label','Clip 备注');note.oninput=()=>{note.dataset.dirty='1';};
+                const remark = el('div', undefined, 'ml-clip-remark'); remark.append(note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();})); heading.append(remark);
                 if(result.cacheReady){const download=el('a','⇩','ml-disk-link');download.href=root+'/results/'+result.id+'/download';download.title='下载 Clip';actions.append(download);}
-                const variants=(data.compressions||[]).filter(v=>v.resultId===result.id&&v.cacheReady);
                 actions.append(button('压缩',()=>compressionViewer(result),'ml-compression-view'));
-                for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id&&j.state!=='completed')){const jobLine=el('p', compressionStatus(job));jobLine.dataset.compressionJob=job.id;info.append(jobLine);if(['queued','running'].includes(job.state))info.append(button('取消转码',async()=>{rememberRecord('jobs',await api('/jobs/'+job.id+'/cancel',json('POST')));renderResults();}));}
+                for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id&&j.state!=='completed')){const jobLine=el('p', compressionStatus(job));jobLine.dataset.compressionJob=job.id;status.append(jobLine);if(['queued','running'].includes(job.state))actions.append(button('取消转码',async()=>{rememberRecord('jobs',await api('/jobs/'+job.id+'/cancel',json('POST')));renderResults();}));}
             }
             if (result.kind === 'image') actions.append(button('相似度', () => compareDialog(result)));
-            info.append(actions); box.append(info); area.append(box);
+            footer.append(status, actions); info.append(footer); box.append(info); rows.push(box);
         }
-        if(order==='created'){const stamp=node=>{const result=data.results.find(r=>r.id===node.dataset.resultId);return result?.extractedAt??data.jobs.find(j=>j.id===node.dataset.jobId)?.createdAt??0;};area.append(...Array.from(area.children).sort((a,b)=>stamp(b)-stamp(a)));}
+        if(order==='created'){const stamp=node=>{const result=data.results.find(r=>r.id===node.dataset.resultId);return result?.extractedAt??data.jobs.find(j=>j.id===node.dataset.jobId)?.createdAt??0;};rows.sort((a,b)=>stamp(b)-stamp(a));}
+        if (!dirtyRows.size) area.replaceChildren(...rows);
+        else {
+            for (const child of Array.from(area.children)) if (!rows.includes(child)) child.remove();
+            rows.forEach((row,index) => { if (area.children[index] !== row) area.insertBefore(row, area.children[index] || null); });
+        }
     }
     function transcodeDialog(result){
         const modal=el('dialog',undefined,'ml-transcode-dialog'),body=el('div',undefined,'ml-stack'),width=input('','number'),height=input('','number'),crf=input('28','number'),preset=select(['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].map(value=>[value,value||'默认']));
@@ -428,8 +444,41 @@
         modal.addEventListener('close',()=>modal.remove(),{once:true});document.body.append(modal);modal.showModal();
     }
     function compressionViewer(result){const wrap=el('div',undefined,'ml-compression-viewer');dialog('Clip 压缩版本',wrap);compressionViewing=result;compressionSelection='';renderCompressionView();}
+    async function collectCompressedVersion(variant) {
+        if (collectingCompressions.has(variant.id)) return;
+        collectingCompressions.add(variant.id); compressionCollectionErrors.delete(variant.id); renderCompressionView();
+        try { rememberRecord('collections', await api('/compressions/' + variant.id + '/collect', json('POST'))); }
+        catch (error) { compressionCollectionErrors.set(variant.id, error.message); throw error; }
+        finally { collectingCompressions.delete(variant.id); renderCompressionView(); }
+    }
+    function renderCompressionCollection(variant, meta, right) {
+        const saved = data.collections.find(c => c.compressionId === variant.id && c.state !== 'deleted');
+        const job = saved && data.jobs.filter(j => j.type === 'collect' && j.context.collectionId === saved.id).sort((a,b) => b.createdAt - a.createdAt).at(0);
+        const submitting = collectingCompressions.has(variant.id), active = submitting || ['queued','transferring'].includes(saved?.state);
+        const save = right.querySelector('[data-compression-collect]');
+        if (save) {
+            save.dataset.busy = String(active); save.dataset.keepDisabled = String(saved?.state === 'ready'); save.disabled = active || saved?.state === 'ready';
+            save.classList.toggle('loading', active); save.setAttribute('aria-busy', String(active));
+            save.textContent = active ? '正在存到网盘…' : saved?.state === 'ready' ? '已存到网盘' : '存到网盘';
+        }
+        if (!saved && !submitting && !compressionCollectionErrors.has(variant.id)) return;
+        const line = el('p', undefined, 'ml-compression-collection' + (active ? ' is-running' : ''));
+        line.setAttribute('role', 'status'); line.setAttribute('aria-live', 'polite'); line.setAttribute('aria-busy', String(active));
+        const error = compressionCollectionErrors.get(variant.id) || saved?.error || (job?.state === 'failed' ? job.message || job.error : '');
+        const text = submitting ? '正在提交转存到网盘…' : error ? '转存失败：' + error : saved?.state === 'ready' ? '已保存到网盘' : `存到网盘：${states[saved?.state] || saved?.state}${job?.phase ? ' · ' + job.phase : ''}${job?.detail || job?.message ? ' · ' + (job.detail || job.message) : ''}`;
+        line.append(el('span', text));
+        if (active && job && Number.isFinite(job.progress)) {
+            const meter = el('progress'); meter.max = 100; meter.value = job.progress; meter.setAttribute('aria-label','存到网盘进度'); line.append(el('span', ` ${job.progress}%`), meter);
+            if (Number.isFinite(job.telegramBytesSent)) line.append(el('small', `Telegram 已发送 ${bytes(job.telegramBytesSent)} / ${bytes(job.totalBytes)} · 已确认 ${bytes(job.telegramBytesConfirmed || 0)}`));
+        }
+        if (saved?.state === 'ready' && saved.file) {
+            const link = el('a', '▤ 在网盘中查看'); link.target = '_blank'; link.rel = 'noopener';
+            link.href = '/disk?' + new URLSearchParams({ disk_account: saved.file.userId, disk_space: saved.file.diskSpace || '', disk_path: saved.file.path ?? saved.location.path, disk_file: saved.file.fileId }); line.append(link);
+        }
+        meta.append(line);
+    }
     function renderCompressionView(){
-        const wrap=$('ml-dialog-body').querySelector('.ml-compression-viewer');if(!wrap)return;
+        const wrap=$('ml-dialog-body').querySelector('.ml-compression-viewer');if(!wrap||!compressionViewing)return;
         const result=compressionViewing,variants=(data.compressions||[]).filter(v=>v.resultId===result.id).sort((a,b)=>a.ordinal-b.ordinal);
         const left=el('aside'),top=el('div',undefined,'ml-compression-toolbar');top.append(button('+ 压缩转码',()=>transcodeDialog(result)));left.append(top);
         let right=wrap.querySelector('.ml-compression-detail');if(!right)right=el('section',undefined,'ml-compression-detail');
@@ -439,14 +488,14 @@
         if(!variants.length)left.append(el('p','暂无压缩版本','ml-muted'));
         // Retain the active video during polling; update only metadata/status.
         if(right.dataset.variantId!==selected?.id||!right.firstChild){right.replaceChildren();right.dataset.variantId=selected?.id||'';
-            if(selected?.cacheReady){const video=el('video');video.controls=true;video.className='ml-preview';video.src=root+'/cache/'+selected.cacheId;video.onerror=()=>notice('当前浏览器不支持此压缩格式，可下载后播放。',true);right.append(video);const actions=el('div',undefined,'ml-actions'),download=el('a','⇩ 下载');download.href=root+'/compressions/'+selected.id+'/download';actions.append(download,button('存到网盘',async()=>{const saved=await api('/compressions/'+selected.id+'/collect',json('POST'));rememberRecord('collections',saved);renderCompressionView();}));right.append(actions);}
+            if(selected?.cacheReady){const video=el('video');video.controls=true;video.className='ml-preview';video.src=root+'/cache/'+selected.cacheId;video.onerror=()=>notice('当前浏览器不支持此压缩格式，可下载后播放。',true);right.append(video);const actions=el('div',undefined,'ml-actions'),download=el('a','⇩ 下载');download.href=root+'/compressions/'+selected.id+'/download';const save=button('存到网盘',()=>collectCompressedVersion(selected));save.dataset.compressionCollect=selected.id;actions.append(download,save);right.append(actions);}
             else right.append(el('p',selected?'此版本缓存已清理，参数和历史保留。':'点击左侧“+ 压缩转码”创建第一个版本。'));
             right.append(el('div',undefined,'ml-compression-metadata'));}
         const meta=right.querySelector('.ml-compression-metadata');meta.replaceChildren();
-        if(selected){meta.append(el('p','压'+selected.ordinal+' · 转码完成 · '+date(selected.completedAt)));const table=el('table'),head=el('tr');['文件信息','转码前','转码后'].forEach(v=>head.append(el('th',v)));table.append(head);
+        if(selected){meta.append(el('p','压'+selected.ordinal+' · 转码完成 · '+date(selected.completedAt)));renderCompressionCollection(selected,meta,right);const table=el('table'),head=el('tr');['文件信息','转码前','转码后'].forEach(v=>head.append(el('th',v)));table.append(head);
             const original=selected.sourceInfo||{bytes:selected.sourceBytes},after=selected.quality||{},fields=[['大小','bytes',bytes],['分辨率','width',(_,o)=>o.width&&o.height?o.width+'×'+o.height:'未提供'],['视频码率','videoBitRate',v=>v?Math.round(v/1000)+' kbps':'未提供'],['时长','duration',v=>v?v.toFixed(3)+' 秒':'未提供'],['音轨编码','audioCodec',v=>v||'未提供']];
             for(const [title,key,format] of fields){const row=el('tr');row.append(el('th',title),el('td',format(original[key],original)),el('td',format(after[key],after)));table.append(row);}meta.append(table,el('pre',JSON.stringify({参数:selected.params,执行结果:selected.quality},null,2)));
-            const saved=data.collections.find(c=>c.compressionId===selected.id&&c.state!=='deleted');if(saved){meta.append(el('p','存到网盘：'+(saved.state==='ready'?'已保存':states[saved.state]||saved.state)));if(saved.state==='ready'&&saved.file){const link=el('a','▤ 在网盘中查看');link.target='_blank';link.rel='noopener';link.href='/disk?'+new URLSearchParams({disk_account:saved.file.userId,disk_space:saved.file.diskSpace||'',disk_path:saved.file.path??saved.location.path,disk_file:saved.file.fileId});meta.append(link);}}}
+        }
         for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id&&j.state!=='completed'))meta.append(el('p',compressionStatus(job)));
         if(right.parentNode===wrap)wrap.firstElementChild.replaceWith(left);else wrap.replaceChildren(left,right);
     }

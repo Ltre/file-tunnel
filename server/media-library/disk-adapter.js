@@ -54,7 +54,7 @@ function createMediaDiskAdapter({ dataDir, diskAPI, auth, backend }) {
         const opened = await diskAPI.objectStorage.open(mapping, current.key, range, signal);
         return { ...opened, current };
     }
-    async function write(location, localPath, name, producerId, assertAuthorized, signal) {
+    async function write(location, localPath, name, producerId, assertAuthorized, signal, onProgress) {
         assertAuthorized(); const { store } = checkLocation(location);
         const key = [location.path, name].filter(Boolean).join('/'), mapping = { userId: location.userId, diskSpace: location.diskSpace, sourceAppId: 'media-library',
             backendId: location.backendId, assertAuthorized: () => { assertAuthorized(); checkLocation(location); } };
@@ -75,8 +75,11 @@ function createMediaDiskAdapter({ dataDir, diskAPI, auth, backend }) {
         const extension = name.split('.').at(-1).toLowerCase();
         const type = ({ jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', mkv: 'video/x-matroska' })[extension] || 'application/octet-stream';
         const hash = crypto.createHash('sha256');
+        onProgress?.({ percent: 0, phase: 'hashing', detail: '正在校验本地文件正文', totalBytes: stat.size });
         for await (const chunk of fs.createReadStream(localPath, { signal })) hash.update(chunk);
-        await diskAPI.objectStorage.put(mapping, key, fs.createReadStream(localPath), { size: stat.size, contentType: type, expectedSha256: hash.digest('hex'), metadata: { mediaProducerId: producerId, mediaSubsystem: 'media-library' }, signal });
+        onProgress?.({ percent: 0, phase: 'upload', detail: '正在提交正文并等待 Telegram 确认', totalBytes: stat.size });
+        await diskAPI.objectStorage.put(mapping, key, fs.createReadStream(localPath), { size: stat.size, contentType: type, expectedSha256: hash.digest('hex'), metadata: { mediaProducerId: producerId, mediaSubsystem: 'media-library' }, signal, onProgress });
+        onProgress?.({ percent: 99, phase: 'committing', detail: '正文已确认，正在确认网盘文件引用', totalBytes: stat.size });
         assertAuthorized(); const output = diskAPI.objectStorage.stat(mapping, key);
         if (!output || output.file.metadata?.mediaProducerId !== producerId) throw Error('MEDIA_WRITE_UNCONFIRMED');
         return { ...location, fileId: output.file.id, name: output.file.name, size: output.size, type, fingerprint: file({ ...location, fileId: output.file.id }).fingerprint };

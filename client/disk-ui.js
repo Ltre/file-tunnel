@@ -4,6 +4,8 @@
 // Capture the destination before asynchronous tunnel startup/history restore.
 const telegramDriveEntryUrl = new URL(location.href, location.origin);
 const telegramDriveEntryQuery = new URLSearchParams(telegramDriveEntryUrl.search);
+let telegramDriveEntryPending = telegramDriveEntryQuery.has('disk_file') || telegramDriveEntryQuery.has('disk_path');
+let telegramDriveEntryFlight = null;
 let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {}, loadAudioCover = null;
 let telegramDrivePath = '';
 let telegramDriveMountContext=null;
@@ -70,7 +72,8 @@ function rememberTelegramDriveActiveAccount(accountId) {
         else localStorage.removeItem('telegram-drive-active-account');
     } catch (_) {}
     const accountUrl = new URL(location.href, location.origin);
-    if (accountId) accountUrl.searchParams.set('disk_account', accountId);
+    const pendingAccount = telegramDriveEntryPending && telegramDriveEntryQuery.get('disk_account');
+    if (pendingAccount || accountId) accountUrl.searchParams.set('disk_account', pendingAccount || accountId);
     else accountUrl.searchParams.delete('disk_account');
     accountUrl.searchParams.delete('collaboration');
     history.replaceState({ ...(history.state || {}), telegramDrivePath: '', diskMountContext: null, diskAccountId: accountId }, '', accountUrl.href);
@@ -86,6 +89,33 @@ async function switchTelegramDriveAccount(accountId) {
     // Old history entries must not replay a different account's mount/path.
     rememberTelegramDriveActiveAccount(accountId);
     await renderTelegramDrive();
+    await resumeTelegramDriveEntry();
+}
+async function resumeTelegramDriveEntry() {
+    if (!telegramDriveEntryPending) return false;
+    if (telegramDriveEntryFlight) { await telegramDriveEntryFlight; return resumeTelegramDriveEntry(); }
+    const query = telegramDriveEntryQuery, accountId = telegramDriveSpaceOwner;
+    // Keep the original destination until its account is actually authenticated.
+    if (!accountId || (query.has('disk_account') && query.get('disk_account') !== accountId)) return false;
+    const flight = (async () => {
+        const space = query.get('disk_space') || '';
+        if ((query.has('disk_space') || query.has('disk_file')) && space !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(space);
+        if (accountId !== telegramDriveSpaceOwner || accountId !== window.DiskClient.getAccount()) return false;
+        const navigation = telegramDriveNavigationVersion;
+        if (query.has('disk_file')) {
+            const file = await window.DiskClient.raw('/files/' + encodeURIComponent(query.get('disk_file')));
+            if (navigation !== telegramDriveNavigationVersion || accountId !== telegramDriveSpaceOwner || accountId !== window.DiskClient.getAccount()) return false;
+            const item = file.file || file;
+            if (!item.id) throw new Error('目标文件不存在或无法访问，请刷新文件状态');
+            await navigateTelegramDrive(item.folderPath ?? item.path ?? '');
+            if (accountId !== telegramDriveSpaceOwner || accountId !== window.DiskClient.getAccount()) return false;
+            highlightTelegramDriveRow({ kind: 'file', id: item.id });
+        } else await navigateTelegramDriveInputPath(query.get('disk_path') || '/');
+        telegramDriveEntryPending = false;
+        return true;
+    })();
+    telegramDriveEntryFlight = flight;
+    try { return await flight; } finally { if (telegramDriveEntryFlight === flight) telegramDriveEntryFlight = null; }
 }
 function appendTelegramDriveAddAccount(target, status) {
     const description = document.createElement('p'); description.textContent = '添加账号后保留现有账号的登录状态；需要重新验证的账号可单独登录。'; target.append(description);
@@ -3840,19 +3870,9 @@ function init(options = {}) {
             // Account selection and history updates may rewrite the URL while
             // opening. Use the explicit destination supplied at initialization.
             const query = entryQuery;
-            if (query.has('disk_file')) {
-                if (query.has('disk_account') && query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录收藏文件所属的网盘账号，再打开此链接');
-                const space = query.get('disk_space') || '';
-                if (space !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(space);
-                const file = await window.DiskClient.raw('/files/' + encodeURIComponent(query.get('disk_file')));
-                const item = file.file || file;
-                if (!item.id) throw new Error('收藏文件不存在或无法访问，请刷新收藏状态');
-                await navigateTelegramDrive(item.folderPath ?? item.path ?? ''); highlightTelegramDriveRow({ kind: 'file', id: item.id }); return;
-            }
-            if (query.has('disk_path')) {
-                if (query.has('disk_account') && query.get('disk_account') !== telegramDriveSpaceOwner) throw new Error('请先登录目标位置所属的网盘账号，再打开此链接');
-                if (query.has('disk_space') && (query.get('disk_space') || '') !== window.DiskClient.getSpace()) await switchTelegramDrivePartition(query.get('disk_space') || '');
-                await navigateTelegramDriveInputPath(query.get('disk_path') || '/'); return;
+            if (telegramDriveEntryPending) {
+                if (!await resumeTelegramDriveEntry()) showAppToast('请先登录目标位置所属的网盘账号，登录后将自动定位');
+                return;
             }
             const id = query.get('collaboration');
             if (!id) return;
