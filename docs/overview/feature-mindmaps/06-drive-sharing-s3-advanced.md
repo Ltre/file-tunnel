@@ -12,15 +12,35 @@ mindmap
   root((网盘高级功能))
     共享与外链
       文件分享
+        访问条件
+          Share Token
+          有效期
+          文件身份
+          当前授权
+          分享不转让所有权
         分享有效期
         分享访问权限
         下载入口
         Share 文件引用
       目录分享
+        授权子树
+          当前根目录
+          子目录及后代
+          禁止访问父级与兄弟目录
+          撤权后重新校验访问
         目录授权范围
         目录子树浏览
         范围外禁止访问
       静态开放
+        公开访问
+          HMAC 签名
+          s3pub 路径
+          到期与撤销
+          授权用户与分区绑定
+        状态
+          显式开放显示蓝色 S
+          继承公开不等于独立设置
+          已下载字节无法追回
         仅显式授权
         HMAC 签名
         s3pub 静态路径
@@ -38,12 +58,26 @@ mindmap
         拒绝和过期
       角色
         Viewer 只读
+          权限
+            允许查看被授予的内容
+            不允许修改原始对象
+            读取时仍检查实时授权
         Editor 可编辑
+          操作范围
+            授权子树内编辑
+            修改新版本
+            移动改名必须留在授权根
+            被撤权后禁止继续操作
         所有者管理
       协同成员
         邀请列表
         移除成员
         撤权即时检查
+          每次动作
+            检验受邀成员
+            检验来源 Scope
+            检验授权文件和目录根
+            不以浏览器旧权限为准
         访问日志
       文件与目录权限
         根授权约束
@@ -63,10 +97,20 @@ mindmap
       用户本机原生目录中建立指针
       来源受邀协同授权
       目录挂载
+        实现
+          Native 目录内保存 Mount 指针
+          Foreign 资源仍保留原拥有者
+          面包屑路径不逃逸授权根
+          不是复制 Telegram 正文
         进入来源子树
         原生面包屑保持清楚
         避免重复挂载
       单文件挂载
+        交互
+          在本地目录呈现文件
+          可原位预览
+          授权已过期显示失效
+          禁止伪装本地可任意写对象
         原位预览
         无法当原生内容随意改写
       挂载管理
@@ -77,6 +121,13 @@ mindmap
       跨作用域
         Native 和 Foreign Scope
         跨界 Move 拆成 Copy 然后 Delete
+          二阶段
+            目标复制成功
+            后续删除源对象
+          源删除失败
+            COPIED_SOURCE_RETAINED
+            目标不能回滚为不存在
+            保留安全重试依据
         复制成功删源失败状态
         保留安全重试凭证
         不跨越授权根目录
@@ -93,6 +144,13 @@ mindmap
       复制到另一协同项目
       复制不等于移动
     网盘回收站
+      普通浏览器删除
+        按账户分区隔离
+        保存原路径
+        保留 Content 引用
+      例外
+        S3 删除依其永久删除语义
+        后台 API 删除可能直接永久
       浏览器普通删除先入回收站
       按用户及分区隔离
       记录来源路径
@@ -101,9 +159,19 @@ mindmap
       还原
         原目录祖先合法
         同名冲突
+          恢复前
+            祖先目录合法
+            原名称是否占用
+            仍有恢复权限
+            Content 引用可用
         权限校验
         引用仍可用
       永久删除
+        清理
+          释放逻辑文件引用
+          检查 Content 引用和 Lease
+          未确认状态不直接远端销毁
+          Generation 不能错误复活
         释放引用
         受控 GC
       API 和 S3 删除另有永久语义
@@ -118,6 +186,12 @@ mindmap
       只修改当前 Logical File
       不更改其他引用文件
     文件夹上传
+      预检
+        本机递归枚举
+        实际深度最多 30
+        默认总字节不超过 500000000
+        分批最多一百文件
+        不能凭文件名大小证明字节相同
       本地目录递归选择
       目录树预检
       总大小默认五亿字节
@@ -131,25 +205,50 @@ mindmap
       SigV4 认证
       用户 UUID 及分区绑定
       Access Key 创建
+        授权
+          SigV4
+          固定用户 UUID
+          Bucket 与分区关联
+          支持停用与轮换
       密钥停用轮换
       Bucket 定位
       ListBuckets
       GetBucketLocation
       ListObjects V1
       ListObjects V2
+        列举
+          分页
+          Prefix
+          Bucket 授权检查
+          仅有限协议子集
       PUT Object
         普通 PUT
         AWS chunked PUT
+          过程
+            校验请求签名
+            解析 chunked 请求体
+            远端 Telegram 成功后入库
+            异常不能提供虚假已提交对象
         Telegram 成功后提交索引
       GET Object
       HEAD Object
       单段 Range
+        支持
+          GET 单段字节范围
+          HEAD 对象元信息
+        限制
+          不表示支持 Multi Range
       CopyObject
       DeleteObject
       DeleteObjects 批量
       S3 错误响应 REST XML
       FolderSync 适配修复
       未支持 Multipart Upload API
+        不可使用
+          CreateMultipartUpload
+          UploadPart
+          CompleteMultipartUpload
+          需选择普通 PUT 或受支持 AWS chunked PUT
       未支持完整 ACL SSE Object Lock
     第三方网盘 API
       App 与 Access Token
@@ -162,6 +261,11 @@ mindmap
       逻辑文件与共享正文分离
       同内容安全复用
       Proof of Possession
+        权益
+          SHA 只是候选
+          请求者须出示被挑战实际内容
+          没有证明不能借用别人的 Content
+          所属 Scope 和权限仍需验证
       引用计数及租约
       远端锚点生存状态
       未知 Telegram 响应保护
@@ -179,6 +283,12 @@ mindmap
     SNS 成品转存
       下载缓存 Pin
       Pending Saves
+        幂等
+          SNS 成品 Pin 缓存
+          attemptId
+          账号分区目录确认
+          恢复任务保存
+          状态未知禁止盲重传
       Idempotency
       attempt ID
       登录账号及分区选择
