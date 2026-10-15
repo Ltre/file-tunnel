@@ -83,6 +83,8 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 ### 调研导航
 
+- [全功能思维导图集](./feature-mindmaps/README.md) — 全景导航与各模块末梢功能图；串流控制台需求独立标注为规划。
+
 - [source-map.md](./source-map.md) — 当前源码、Tests、Devlog、Prompt、Idea 的模块级对照索引。
 - [COVERAGE.md](./COVERAGE.md) — 初始创建阶段的历史范围、当前源码文件归属和完成判定。
 - [history/README.md](./history/README.md) — 历史时间线入口，含 [2026-10](./history/2026-10.md)。
