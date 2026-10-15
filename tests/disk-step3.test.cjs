@@ -48,12 +48,12 @@ test('播放器不再用重载 URL 冒充 Range 恢复，预览返回只消费�
 });
 
 test('移动端长按进入拖动模式并以双指单击打开上下文菜单', () => {
-    const ui = source('client/disk-ui.js'), page = source('pages/index.html');
+    const ui = source('client/disk-ui.js'), css = source('client/index.css');
     assert.match(ui, /function installContextGesture\(element, open, beginTouchDrag = null, options = \{\}\)/);
     assert.match(ui, /touches\.size === 2/);
     assert.match(ui, /function beginTouchDiskDrag/);
     assert.match(ui, /dataset\.diskDropPath/);
-    assert.match(page, /telegram-drive-touch-drag/);
+    assert.match(css, /telegram-drive-touch-drag/);
 });
 
 test('SNS 预览关闭会释放媒体，参考信息交互会暂停刷新；Premium 支持创建前备注', () => {

@@ -328,7 +328,7 @@ test('网盘提供最小化、目标隧道选择与上次目标记忆，管理�
     assert.match(page, /id="minimizeTelegramDriveBtn"/); assert.match(adapter, /telegram-drive-last-tunnel/);
     assert.match(page, /id="mobileForceRefreshBtn"[\s\S]*?id="tunnelTopbarButtonGroup"[\s\S]*?id="tunnelSettingsBtn"[\s\S]*?id="topbarDiskBtn"[\s\S]*?id="topbarMusicBtn"[\s\S]*?id="leaveTunnelBtn"/);
     assert.match(page, /topbar-now-playing-slot/); assert.match(page, /id="telegramDriveSearchAll"/);
-    assert.match(page, /tunnel-topbar-scroll[\s\S]*?overflow-x: auto/);
+    assert.match(source('client/index.css'), /tunnel-topbar-scroll[\s\S]*?overflow-x: auto/);
     assert.match(source('app.js'), /function initTopbarOverflowScroll[\s\S]*?scroller\.scrollLeft = drag\.scrollLeft - dx/);
     assert.match(ui, /function minimizeTelegramDrive\([^]*?saveDiskWindow\(true\)/);
     assert.match(ui, /function closeTelegramDrive\([^]*?if \(forget\) \{ saveDiskWindow\(false\)/);

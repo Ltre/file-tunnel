@@ -289,8 +289,9 @@ test('preview remote-control UI keeps the command next to music and supports eve
 test('remote preview picker stays above preview G and repeated commands are idempotent and retryable', () => {
     const page = read('pages/index.html');
     const app = read('app.js');
-    const previewZ = Number(page.match(/#filePreviewViewer\s*\{\s*z-index:\s*(\d+)/)?.[1]);
-    const pickerZ = Number(page.match(/\.remote-preview-device-layer\s*\{[\s\S]*?z-index:\s*(\d+)/)?.[1]);
+    const css = read('client/index.css');
+    const previewZ = Number(css.match(/#filePreviewViewer\s*\{\s*z-index:\s*(\d+)/)?.[1]);
+    const pickerZ = Number(css.match(/\.remote-preview-device-layer\s*\{[\s\S]*?z-index:\s*(\d+)/)?.[1]);
     assert.ok(pickerZ > previewZ, `remote picker z-index ${pickerZ} must exceed preview G z-index ${previewZ}`);
     assert.match(page, /<dialog class="remote-preview-device-layer" id="remotePreviewDeviceModal"/);
     assert.match(app, /typeof modal\.showModal === 'function'/);
@@ -325,8 +326,8 @@ test('remote preview control panel exposes the five-row layout, draggable bubble
     ]) assert.match(page, new RegExp(`id="${id}"`));
     assert.match(page, /远程预览控制/);
     assert.match(page, /id="remotePreviewControlBubble"[^>]*hidden>#️⃣<\/button>/);
-    assert.match(page, /\.remote-preview-control-window-actions button\s*\{[\s\S]*?border:0/);
-    assert.match(page, /\.remote-preview-control-bubble\s*\{[\s\S]*?touch-action:none/);
+    assert.match(read('client/index.css'), /\.remote-preview-control-window-actions button\s*\{[\s\S]*?border:0/);
+    assert.match(read('client/index.css'), /\.remote-preview-control-bubble\s*\{[\s\S]*?touch-action:none/);
     assertAppearsBefore(page, 'id="remotePreviewControlPrevBtn"', 'id="remotePreviewControlPlaybackBtn"', 'navigation row must precede optional playback row');
     assert.match(app, /sendRemotePreviewControl\('previous'\)/);
     assert.match(app, /sendRemotePreviewControl\('next'\)/);
@@ -401,8 +402,8 @@ test('clipboard image paste area uses a two-thirds split and converts only image
     for (const id of ['fileUploadComposer', 'dropZone', 'pasteImageZone']) {
         assert.match(page, new RegExp(`id="${id}"`));
     }
-    assert.match(page, /\.file-upload-composer\.clipboard-image-ready\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 2fr\) minmax\(0, 1fr\)/);
-    assert.match(page, /\.paste-image-zone\s*\{[\s\S]*?aspect-ratio:\s*1/);
+    assert.match(read('client/index.css'), /\.file-upload-composer\.clipboard-image-ready\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 2fr\) minmax\(0, 1fr\)/);
+    assert.match(read('client/index.css'), /\.paste-image-zone\s*\{[\s\S]*?aspect-ratio:\s*1/);
     assert.match(page, /点此粘贴图片/);
     assert.match(app, /initClipboardImagePaste\(\)/);
     assert.match(app, /addEventListener\('clipboardchange', handleClipboardImageChange\)/);
@@ -664,7 +665,7 @@ test('homepage exposes visible global voice-call entries above preview overlays'
     const page = read('pages/index.html');
     const app = read('app.js');
     assert.match(page, /id="deviceVoiceCallBtn"[^>]*>☎ 语音通话</);
-    assert.match(page, /\.contact-call-overlay\s*\{[\s\S]*?z-index:\s*10000/);
+    assert.match(read('client/index.css'), /\.contact-call-overlay\s*\{[\s\S]*?z-index:\s*10000/);
     const deviceRow = readBlock(app, 'function renderDeviceRow(device, options = {})', 'function renderContacts()');
     assert.match(deviceRow, /voiceButton\.textContent = '☎'/);
     assert.match(deviceRow, /startContactVoiceCall\(normalized\)/);

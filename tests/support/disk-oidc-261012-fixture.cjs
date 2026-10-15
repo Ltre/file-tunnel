@@ -48,8 +48,8 @@ async function createFixture() {
         const ui = fs.readFileSync(path.join(__dirname, '../../client/disk-ui.js'), 'utf8');
         const choose = ui.slice(ui.indexOf('async function manageTelegramDriveAccounts('), ui.indexOf('async function showTelegramDrivePendingSaveBanner('));
         const page = fs.readFileSync(path.join(__dirname, '../../pages/index.html'), 'utf8');
-        const style = page.slice(page.indexOf('<style>'), page.lastIndexOf('</style>') + 8);
-        res.type('html').send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${style}<link rel="stylesheet" href="/client/disk.css"></head>
+        const style = [...page.matchAll(/<style\b[^>]*>[\s\S]*?<\/style>|<link\b[^>]*\brel=["']stylesheet["'][^>]*>/gi)].map(match => match[0]).join('\n');
+        res.type('html').send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">${style}</head>
 <body><main style="padding:32px"><h1>账号选择隔离验收</h1><p>实际选择函数与样式；仅使用测试账号。</p><button id="choose" class="btn">选择转存目标账号</button><output id="http">HTTP 请求：0</output><p id="result"></p></main>
 <div id="dialog" class="telegram-drive-subdialog" hidden><section class="telegram-drive-dialog-card"><header class="telegram-drive-dialog-header"><strong id="title"></strong></header><div id="body" class="telegram-drive-dialog-body"></div><footer id="actions" class="telegram-drive-dialog-actions"></footer></section></div>
 <script>let account='fixture-999000002',telegramDriveAccountList=[],resolver,requests=0;

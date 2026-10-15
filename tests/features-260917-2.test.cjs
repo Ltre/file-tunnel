@@ -78,7 +78,7 @@ test('网盘菜单脱离带 backdrop-filter 的卡片并统一按视口定位', 
 
 test('路由页在桌面与移动端使用独立固定顶栏显示品牌标题', () => {
     const page = source('pages/index.html');
-    assert.match(page, /\.tunnel-landing-topbar\s*\{[\s\S]*?position:\s*fixed/);
+    assert.match(source('client/index.css'), /\.tunnel-landing-topbar\s*\{[\s\S]*?position:\s*fixed/);
     assert.match(page, /id="sessionLanding"[\s\S]*?<header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel Studio<\/strong><\/header>/);
     assert.doesNotMatch(page, /tunnel-landing-main">\s*<div class="header">/);
 });
