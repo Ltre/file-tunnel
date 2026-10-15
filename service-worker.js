@@ -12,6 +12,7 @@ const APP_SHELL = [
     '/runtime-config.js',
     '/app.js',
     '/client/cache-store.js',
+    '/client/index.css',
     '/client/disk-client.js',
     '/client/disk-operation-order.js',
     '/client/disk-pending-save.js',
