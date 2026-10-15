@@ -2,7 +2,9 @@
 const express = require('express'), fs = require('node:fs');
 const { pipeline } = require('node:stream/promises');
 const { timestamp } = require('./processing');
+const { clipName } = require('./clip-name');
 const messages = {
+    MEDIA_REMARK_INVALID:'备注必须是文本，长度不能超过 65535 个字符。', MEDIA_TRANSCODE_PARAMETERS_INVALID:'转码参数无效：分辨率应为 2～16384 的偶数，CRF 应为 0～51，preset 应为受支持的编码预设。',
     MEDIA_SEGMENT_SOURCE_INVALID: '当前工作片段已失效或不属于这个视频，请返回原视频或重新缓存片段。',
     MEDIA_SETUP_REQUIRED: '请先配置工作区和正式收藏网盘位置。', MEDIA_WORKSPACE_FIRST: '请先授权工作区账号，再设置正式收藏位置。',
     MEDIA_LOCATION_OVERLAP: '工作区与正式收藏不能使用同一账号同一分区中的相同目录，请分别选择位置。',
@@ -52,6 +54,7 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
         const present = (record, kind) => { try { service.authorizeRead(record, kind, snapshot); disk.file(record.file, snapshot); return true; } catch (_) { return false; } };
         const results = service.list('result').map(r => { const { pixels, ...out } = r; const c = service.db.get('cache', r.cacheId, scope); return { ...out, cacheReady: c?.status === 'ready' && fs.existsSync(service.cache.filename(c)) }; });
         res.json({ config, imports: service.list('import').map(r => { const { bindToken, probe, ...out } = r; return { ...out, message: r.error ? readable(r.error) : '', available: r.file ? present(r) : false }; }), sessions: service.list('session'), batches: service.list('batch'), results,
+            compressions:service.list('compression').map(r=>({...r,cacheReady:service.db.get('cache',r.cacheId,scope)?.status==='ready'})),
             collections: service.list('collection').map(r => ({ ...r, available: r.state === 'ready' && present(r, 'collection') })), entities: service.list('entity'), relations: service.list('relation'),
             jobs: service.list('job').map(j => ({ ...j, message: j.error ? readable(j.error) : '' })), caches: service.list('cache'), events: service.list('event').slice(0, 200) });
     }));
@@ -70,6 +73,11 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
         res.status(202).json(await service.receiveReference({ size: req.get('X-Media-Size'), name: decodeURIComponent(req.get('X-Media-Name') || '') }, req, abort.signal));
     }));
     router.post('/sessions', wrap((req, res) => res.status(201).json(service.createSession(req.body.importId, req.body.name))));
+    router.patch('/sessions/:id',wrap((req,res)=>res.json(service.remark('session',req.params.id,req.body))));
+    router.patch('/results/:id',wrap((req,res)=>res.json(service.remark('result',req.params.id,req.body))));
+    router.post('/results/:id/transcode',wrap((req,res)=>res.status(202).json(service.transcode(req.params.id,req.body))));
+    router.get('/results/:id/download',wrap((req,res)=>{const result=service.get('result',req.params.id);if(result.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');const lease=service.cache.acquire(service.scope(),result.cacheId);res.once('close',()=>lease.release());
+        res.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(clipName(service.get('session',result.sessionId),result)+'.mp4').replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase())}`);res.sendFile(lease.path);}));
     router.delete('/sessions/:id', wrap((req, res) => res.json(service.removeSession(req.params.id))));
     router.post('/sessions/:id/extract', wrap((req, res) => res.status(202).json(service.extract(req.params.id, req.body))));
     router.post('/sessions/:id/clip', wrap((req, res) => res.status(202).json(service.clip(req.params.id, { ...req.body, start: timestamp(req.body.start), end: timestamp(req.body.end) }))));

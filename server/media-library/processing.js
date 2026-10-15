@@ -158,7 +158,19 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
         if (tracks.length > 1 && (Math.max(...tracks.map(p => p.start)) - Math.min(...tracks.map(p => p.start)) > tolerance
             || Math.max(...tracks.map(p => p.end)) - Math.min(...tracks.map(p => p.end)) > tolerance)) throw Error('MEDIA_AV_TIMELINE_MISMATCH');
     }
-    return { probe, signature, frame, cut, frameNeighbors,
+    async function compress(input,output,options={}) {
+        const {signal,onOutput,width,height,crf=28,preset}=options;
+        const args=[...common,'-loglevel','error','-i',input,'-map','0:v:0','-map','0:a?','-c:v','libx265','-movflags','+faststart'];
+        if(width||height)args.push('-vf',`scale=${width||-2}:${height||-2}`);
+        if(preset)args.push('-preset',preset);
+        args.push('-crf',String(crf),'-c:a','copy','-progress','pipe:2','-y',output);
+        await run(ffmpeg,args,{signal,onOutput});
+        const info=await probe(output,signal);validateMedia(info,{expectedDuration:options.duration,audio:options.audio,precise:true});
+        await run(ffmpeg,[...common,'-v','error','-xerror','-i',output,'-f','null','-'],{signal});
+        return {codec:'libx265',container:'matroska',width:info.streams.find(s=>s.codec_type==='video')?.width,height:info.streams.find(s=>s.codec_type==='video')?.height,duration:durationOf(info),bytes:fs.statSync(output).size};
+    }
+    async function thumbnail(input,output,signal){await run(ffmpeg,[...common,'-v','error','-i',input,'-frames:v','1','-vf','scale=240:-2','-y',output],{signal});}
+    return { probe, signature, frame, cut, compress, thumbnail, frameNeighbors,
         async probeVersion() { const versions = await Promise.all([run(ffmpeg, ['-version']), run(ffprobe, ['-version'])]); return versions.map(value => value.stdout.toString().split('\n')[0]); },
         async verify(input, options) { const info = await probe(input, options?.signal), value = validateMedia(info, options); await run(ffmpeg, [...common, '-v', 'error', '-xerror', '-i', input, '-f', 'null', '-'], { signal: options?.signal });
             const packets = await timeline(input, options?.signal); validatePacketBounds(packets, info, value.tolerance); return { ...value, packets }; } };

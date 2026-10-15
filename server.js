@@ -484,7 +484,7 @@ function resolveTelegramForwardTarget(input) {
     return { target, chatId:target };
 }
 
-async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile) {
+async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile, options = {}) {
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive:true });
     const outputPath = path.join(SNS_MEDIA_WORK_DIR, `telegram-video-thumb-${crypto.randomBytes(10).toString('hex')}.jpg`);
     try {
@@ -493,7 +493,7 @@ async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile) 
                 '-y', '-hide_banner', '-loglevel', 'error', '-i', videoFile.path,
                 '-vf', "scale=w='if(gte(dar,1),320,-2)':h='if(gte(dar,1),-2,320)':flags=lanczos,setsar=1",
                 '-frames:v', '1', '-q:v', String(quality), outputPath
-            ], { timeoutMs:60000, timeoutError:'telegram-video-thumbnail-timeout' });
+            ], { signal:options.signal, timeoutMs:60000, timeoutError:'telegram-video-thumbnail-timeout' });
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0 && fs.statSync(outputPath).size < 200000) {
                 return {
                     path:outputPath,
@@ -507,13 +507,16 @@ async function prepareTelegramForwardVideoThumbnail(service, taskId, videoFile) 
         throw new Error('telegram-video-thumbnail-too-large');
     } catch (error) {
         try { fs.rmSync(outputPath, { force:true }); } catch (_) {}
+        if(options.signal?.aborted)throw error;
         console.warn(`[telegram-forward] 生成视频封面失败，将继续发送无封面视频：${error.message}`);
         return null;
     }
 }
 
 async function forwardTaskFileToTelegram(service, taskId, input, operation) {
-    if (!getTelegramBotToken()) throw new Error('尚未配置 Telegram Bot Token');
+    input?.signal?.throwIfAborted();
+    const botToken=getTelegramBotToken(),apiBaseUrl=getTelegramBotApiBaseUrl();
+    if (!botToken) throw new Error('尚未配置 Telegram Bot Token');
     const fileVariant = input?.fileVariant || 'original';
     const file = resolveTelegramForwardFile(service, taskId, audioTrackRepair, fileVariant);
     const resolvedTarget = resolveTelegramForwardTarget(input?.target);
@@ -527,7 +530,7 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     let multipart;
     if (supportVideoPreview && mimeType.startsWith('video/')) {
         reportProgress({ phase:'thumbnail', detail:'正在准备 Telegram 视频封面', progress:0 });
-        thumbnail = await prepareTelegramForwardVideoThumbnail(service, taskId, file);
+        thumbnail = await prepareTelegramForwardVideoThumbnail(service, taskId, file, {signal:input.signal});
         multipart = buildTelegramSingleFileMultipart({
             method:'sendVideo', fieldName:'video', chatId:resolvedTarget.chatId, caption,
             fields:{ supports_streaming:'true', ...(thumbnail ? { thumbnail:'attach://thumbnail' } : {}) },
@@ -544,7 +547,7 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
         });
     }
     let payload;
-    const observer = typeof input?.onProgress === 'function' ? observeTelegramUpload(`${getTelegramBotApiBaseUrl()}/bot${getTelegramBotToken()}/${multipart.method}`, multipart.payloadRanges, value => {
+    const observer = typeof input?.onProgress === 'function' ? observeTelegramUpload(`${apiBaseUrl}/bot${botToken}/${multipart.method}`, multipart.payloadRanges, value => {
         reportProgress({ phase:value.complete ? 'response' : 'upload', detail:value.complete ? '请求体已发送，正在等待 Telegram 确认' : '正在向 Telegram 发送文件',
             sentBytes:value.bytes, totalBytes:value.total, progress:value.total ? value.bytes / value.total * 99 : 0 });
     }) : null;
@@ -557,8 +560,9 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
                 'Content-Length': String(multipart.contentLength)
             },
             body: multipart.body,
+            signal:input.signal,
             duplex: 'half'
-        }, { operation });
+        }, { operation, token:botToken, apiBaseUrl });
         payload = await (observer ? observer.run(dispatch) : dispatch());
     } finally {
         observer?.close();
@@ -566,7 +570,7 @@ async function forwardTaskFileToTelegram(service, taskId, input, operation) {
     }
     const chatId = String(payload.result?.chat?.id || resolvedTarget.chatId || '');
     const targets = rememberTelegramForwardTarget(target);
-    return { ok:true, target, targets, mode:multipart.method, fileVariant, messageId:Number(payload.result?.message_id) || 0 };
+    return { ok:true, target, chatId, targets, mode:multipart.method, fileVariant, messageId:Number(payload.result?.message_id) || 0 };
 }
 
 function loadYoutubePremiumMetadataCache() {
@@ -1294,6 +1298,8 @@ require('./server/admin-layout').registerAdminLayout(app, { requireAuth:adminAut
 app.use([
     '/pages/admin.html',
     '/pages/admin-layout.html',
+    '/pages/admin-devices.html',
+    '/pages/admin-magnets.html',
     '/pages/tgbot.html',
     '/pages/sns-cookies.html',
     '/pages/sns-dl.html',
@@ -1558,10 +1564,13 @@ const telegramForwardJobs = createTelegramForwardJobs({ dataDir: SERVER_DATA_DIR
         const file = resolveTelegramForwardFile(service, taskId, audioTrackRepair, input.fileVariant || 'original');
         if (input.supportVideoPreview && !getMimeTypeFromFileName(file.name).startsWith('video/')) throw new Error('当前成品不支持 Telegram 视频预览');
         const stat = fs.statSync(file.path);
-        return { targets: input.targets.map(normalizeTelegramForwardTarget), fingerprint: crypto.createHash('sha256').update(JSON.stringify([file.path, stat.size, stat.mtimeMs])).digest('hex') };
+        return { targets: input.targets.map(normalizeTelegramForwardTarget), botFingerprint:crypto.createHash('sha256').update(getTelegramBotToken()).digest('hex'), fingerprint: crypto.createHash('sha256').update(JSON.stringify([file.path, stat.size, stat.mtimeMs])).digest('hex') };
     },
-    send: (source, taskId, input) => forwardTaskFileToTelegram(source === 'sns' ? snsDownloadService : youtubePremiumService, taskId, input, source + '-telegram-forward')
+    send: (source, taskId, input) => forwardTaskFileToTelegram(source === 'sns' ? snsDownloadService : youtubePremiumService, taskId, input, source + '-telegram-forward'),
+    retract:async ({chatId,messageId,botFingerprint})=>{if(botFingerprint!==crypto.createHash('sha256').update(getTelegramBotToken()).digest('hex'))throw Error('Bot 配置已改变，无法确认原消息的发送身份');if(!/^-?\d+$/.test(String(chatId))||!Number.isSafeInteger(messageId)||messageId<1)throw Error('缺少已确认的目标或消息 ID，无法安全撤回');
+        await telegramFetchJson('deleteMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:chatId,message_id:messageId}),signal:AbortSignal.timeout(20000)},{operation:'telegram-forward-cancel'});}
 });
+app.post('/api/telegram-forward-jobs/:id/cancel',adminAuth.requireAuth,(req,res)=>{try{res.json({job:telegramForwardJobs.cancel(req.params.id)});}catch(error){res.status(422).json({message:error.message});}});
 app.get('/api/telegram-forward-jobs', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ jobs: telegramForwardJobs.list(String(req.query.source || ''), String(req.query.taskId || '')) });
@@ -3231,24 +3240,14 @@ app.post('/api/magnets', (req, res) => {
             return res.status(409).json({ error: 'No online seed device for this file' });
         }
 
-        if (magnets.size >= MAX_MAGNETS) cleanupExpiredMagnets();
-        if (magnets.size >= MAX_MAGNETS) {
-            return res.status(429).json({ error: 'Magnet registry is full' });
-        }
-
-        let existingId = null;
-        for (const [id, magnet] of magnets) {
-            if (magnet.sessionId === sessionId && magnet.assetId === fileId) {
-                existingId = id;
-                break;
-            }
-        }
-
+        if (magnets.size >= MAX_MAGNETS) { cleanupExpiredMagnets(); if (magnets.size >= MAX_MAGNETS) magnets.delete(magnets.keys().next().value); }
+        const durable = infraStore?.findMagnet(sessionId, fileId);
+        const existingId = durable?.id || [...magnets.values()].find(m => m.sessionId === sessionId && m.assetId === fileId)?.id;
         const id = existingId || createMagnetId();
-        const existingMagnet = magnets.get(id);
+        const existingMagnet = durable || magnets.get(id);
         const createdByDeviceId = isValidDeviceId(deviceId) ? deviceId : existingMagnet?.createdByDeviceId || null;
         const createdByDevice = createdByDeviceId ? session.devices.get(createdByDeviceId) : null;
-        magnets.set(id, {
+        const savedMagnet = {
             id,
             sessionId,
             assetId: fileId,
@@ -3256,7 +3255,10 @@ app.post('/api/magnets', (req, res) => {
             createdByDeviceId,
             createdByDeviceName: createdByDevice?.deviceName || existingMagnet?.createdByDeviceName || '',
             createdAt: existingMagnet?.createdAt || Date.now()
-        });
+        };
+        if (!infraStore) throw Error('Magnet registry is not ready');
+        infraStore.saveMagnet(savedMagnet);
+        magnets.set(id, savedMagnet);
 
         const url = `${getRequestBaseUrl(req)}/magnet/${id}`;
         historyLog('magnet-created', {
@@ -3278,12 +3280,14 @@ app.get('/api/magnets', adminAuth.requireAuth, (req, res) => {
     try {
         cleanupExpiredMagnets();
         const baseUrl = getRequestBaseUrl(req);
-        const items = Array.from(magnets.values())
+        const items = (infraStore?.listMagnets({ limit:req.query.limit, offset:req.query.offset }) || Array.from(magnets.values()))
             .map(magnet => {
                 const session = sessions.get(magnet.sessionId);
                 const record = session?.fileAssets?.get(magnet.assetId);
                 const seedDevices = getLiveSeedDevices(session, record);
                 return {
+                    ...magnet,
+                    shortCode: infraStore?.findShortCodeForSession(magnet.sessionId) || '',
                     id: magnet.id,
                     url: `${baseUrl}/magnet/${magnet.id}`,
                     sessionId: magnet.sessionId,
@@ -3303,6 +3307,13 @@ app.get('/api/magnets', adminAuth.requireAuth, (req, res) => {
         console.error('list magnets error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
+});
+
+app.post('/api/magnets/:magnetId/downloads', (req, res) => {
+    try {
+    if (!isValidMagnetId(req.params.magnetId) || !/^[a-zA-Z0-9_-]{8,100}$/.test(req.body?.eventId || '')) return res.sendStatus(400);
+    res.sendStatus(infraStore?.recordMagnetDownload(req.params.magnetId, req.body.eventId) ? 204 : 404);
+    }catch(_){res.status(503).json({error:'Magnet statistics unavailable'});}
 });
 
 app.get('/api/magnets/:magnetId', (req, res) => {
@@ -3501,6 +3512,7 @@ app.delete('/api/sessions/:sessionId', adminAuth.requireAuth, (req, res) => {
         for (const [magnetId, magnet] of magnets) {
             if (magnet.sessionId === sessionId) magnets.delete(magnetId);
         }
+        infraStore?.revokeTunnelMagnets(sessionId);
         sessions.delete(sessionId);
         historyLog('session-deleted-by-admin', {
             sessionId,
@@ -8123,8 +8135,8 @@ function cleanupExpiredMagnets() {
 }
 
 function getMagnetPayload(magnetId) {
-    const magnet = magnets.get(magnetId);
-    if (!magnet) return null;
+    const magnet = infraStore?.getMagnet(magnetId) || magnets.get(magnetId);
+    if (!magnet || magnet.revoked) return null;
     const session = sessions.get(magnet.sessionId);
     const record = session?.fileAssets?.get(magnet.assetId);
     const seedDevices = getLiveSeedDevices(session, record);

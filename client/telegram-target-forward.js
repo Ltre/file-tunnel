@@ -54,7 +54,7 @@
         const input = document.createElement('textarea');
         input.className = 'telegram-target-input';
         input.placeholder = '@用户名、公开 t.me/用户名链接或数字 chat ID；多个目标用换行或逗号分隔';
-        input.rows = 2; input.value = state.draftTargets || '';
+        input.rows = 5; input.value = state.draftTargets || '';
         input.oninput = () => { state.draftTargets = input.value; };
         input.autocomplete = 'off';
         const history = document.createElement('div');
@@ -92,12 +92,15 @@
             status.textContent = `${job.detail || job.state} · ${job.progress || 0}% · 已完成 ${job.completedTargets}/${job.targets.length} 个目标${job.currentTarget ? ' · ' + job.currentTarget : ''}${state.pollError ? ' · ' + state.pollError : ''}`;
             if (state.busy || state.submitError) status.textContent = state.submitError || state.message;
             progress.hidden = false; progress.value = job.progress || 0; targetResults.replaceChildren();
-            const labels = { queued:'等待发送', running:'正在发送', completed:'发送成功', failed:'发送失败，请先检查目标是否已收到', uncertain:'结果未确认，请先检查 Telegram' };
-            for (const item of job.targets) { const row = document.createElement('div'); row.textContent = `${item.target} · ${labels[item.state] || item.state}${item.state === 'running' ? ' ' + (item.progress || 0) + '%' : ''}${item.error ? ' · ' + item.error : ''}`; targetResults.append(row); }
+            const labels = { cancelled:'已取消，未发送', queued:'等待发送', running:'正在发送', completed:'发送成功', failed:'发送失败，请先检查目标是否已收到', uncertain:'结果未确认，请先检查 Telegram' };
+            for (const item of job.targets) { const row = document.createElement('div'); row.textContent = `${item.target} · ${labels[item.state] || item.state}${item.state === 'running' ? ' ' + (item.progress || 0) + '%' : ''}${item.error ? ' · ' + item.error : ''}${item.rollbackState ? ' · ' + (item.rollbackState==='retracted'?'已撤回':'撤回失败：'+item.rollbackError) : ''}`; targetResults.append(row); }
         }
-        state.views.add({ details, paint });
+        const cancel=document.createElement('button');cancel.type='button';cancel.className='telegram-target-cancel';cancel.textContent='取消发送';cancel.hidden=true;
+        cancel.onclick=async()=>{if(!state.job)return;cancel.disabled=true;try{const result=await request('/api/telegram-forward-jobs/'+state.job.id+'/cancel',{method:'POST'});state.job=result.job;updateViews(state);schedulePoll(state);}catch(error){state.submitError='取消失败：'+error.message;updateViews(state);}finally{cancel.disabled=Boolean(state.job?.cancelRequested);}};
+        const previousPaint=paint;const paintWithCancel=()=>{previousPaint();cancel.hidden=!state.job||!['queued','running'].includes(state.job.state);cancel.disabled=Boolean(state.job?.cancelRequested);cancel.textContent=state.job?.cancelRequested?'正在取消…':'取消发送';};
+        state.views.add({ details, paint:paintWithCancel });
         state.request = request; state.source = root.includes('youtube') ? 'youtube' : 'sns'; state.taskId = task.id;
-        paint();
+        paintWithCancel();
 
         function renderTargets() {
             history.replaceChildren();
@@ -217,7 +220,7 @@
             }
         };
 
-        menu.append(variantLabel, input, history, caption, videoPreviewLabel, send, status, progress, targetResults);
+        menu.append(variantLabel, input, history, caption, videoPreviewLabel, send, status, progress, targetResults, cancel);
         details.append(summary, menu);
         renderTargets();
         refreshJobs(state).catch(() => {});

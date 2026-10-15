@@ -11,6 +11,7 @@ class Node {
     addEventListener(key, fn) { (this.listeners[key] ||= new Set()).add(fn); } removeEventListener(key, fn) { this.listeners[key]?.delete(fn); }
     emit(key, ...args) { for (const fn of this.listeners[key] || []) fn(...args); }
     pause() { this.paused=true; }
+    play() { this.paused=false;this.playCalls=(this.playCalls||0)+1;return Promise.resolve(); }
     load() { this.loadCalls=(this.loadCalls||0)+1;this.readyState=1;this.currentTime=0;this.duration=this.src?.includes('/cache/')?2:10; }
     querySelectorAll(selector) { return this.children.flatMap(n => [n, ...n.querySelectorAll(selector)]).filter(n => selector === 'button' && n.tagName === 'BUTTON'); }
     querySelector() { return null; }
@@ -19,10 +20,10 @@ function fixture(handler = async () => ({})) {
     const ids = new Map(); const get = id => ids.get(id) || null;
     for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results']) ids.set(id, new Node());
     const calls = [], opened = [], window = { open() { const page = { opener: window, location: { replace(url) { page.url = url; } }, close() { page.closed = true; } }; opened.push(page); return page; } };
-    const intervals=[];
+    const intervals=[],prompts=[];
     const context = vm.createContext({ window, document: { getElementById: get, createElement: tag => new Node(tag), querySelectorAll: () => [], activeElement: null },
         Option: class extends Node { constructor(text, value) { super('option', text); this.value = value; } }, URL, URLSearchParams, location: { origin: 'http://localhost' },
-        prompt: () => '立即出现的新会话', setTimeout, clearTimeout, setInterval: fn => {intervals.push(fn);return intervals.length;},clearInterval(){}, requestAnimationFrame: fn => fn(), AbortController, DOMException,
+        prompt: (...args) => {prompts.push(args);return '立即出现的新会话';}, setTimeout, clearTimeout, setInterval: fn => {intervals.push(fn);return intervals.length;},clearInterval(){}, requestAnimationFrame: fn => fn(), AbortController, DOMException,
         fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: true, json: async () => value }; } });
     const end = source.lastIndexOf("    document.querySelectorAll('[data-tab]')");
     vm.runInContext(source.slice(0, end) + `
@@ -30,7 +31,7 @@ function fixture(handler = async () => ({})) {
             set(value) { data = value; }, setSession(id) { sessionId = id; }, setTab(value) { tab=value; }, data() { return data; }, changeTab,
             stubRender(fn) { render = fn; } };
     })();`, context);
-    return { ...window.test, ids, calls, opened, window, intervals };
+    return { ...window.test, ids, calls, opened, window, intervals, prompts };
 }
 const snapshot = () => ({ config: { workspace: {}, collection: {} }, imports: [{ id: 'video', name: '视频', state: 'ready', duration: 10 }],
     sessions: [{ id: 'old', name: '旧会话', state: 'active' }], results: [], collections: [], jobs: [], caches: [], events: [] });
@@ -42,7 +43,7 @@ test('creating a session renders the returned session immediately; an older poll
     f.stubRender(() => { rendered = f.data().sessions.map(s => s.id); });
     const polling = f.refresh();
     const entry = f.renderImports().querySelectorAll('button').find(n => n.textContent === '新建提取会话');
-    await entry.onclick(); assert.ok(rendered.includes('new')); assert.equal(f.data().sessions[0].id, 'new');
+    await entry.onclick(); assert.ok(rendered.includes('new')); assert.equal(f.data().sessions[0].id, 'new'); assert.equal(f.prompts[0][1],state.imports[0].name);
     slow.resolve(snapshot()); await polling; await turn();
     assert.equal(f.data().sessions[0].id, 'new');
     assert.equal(f.calls.filter(c => c.route.endsWith('/state')).length, 2);
@@ -78,10 +79,10 @@ test('per-card collection needs no checkbox and renders progress; navigation lin
     const pending = button.onclick(); await turn(); assert.equal(f.calls.length, 1); assert.match(f.calls[0].route, /\/results\/clip\/collect$/);
     slow.resolve({ id: 'saved', resultId: 'clip', state: 'queued' }); await pending;
     let info = f.ids.get('ml-results').children[0].children.at(-1); assert.ok(info.children.some(n => n.textContent.includes('收藏到网盘')));
-    assert.equal(info.children.at(-1).children.some(n => n.tagName === 'A'), false);
+    assert.equal(info.children.at(-1).children.some(n => n.tagName === 'A' && n.textContent === '▤'), false);
     f.rememberRecord('collections', { id: 'saved', resultId: 'clip', state: 'ready', location: { path: 'collection' }, file: { userId: 'alice', diskSpace: '中文分区', fileId: 'file' } });
     f.renderResults(); info = f.ids.get('ml-results').children[0].children.at(-1);
-    const link = info.children.at(-1).children.find(n => n.tagName === 'A'); assert.ok(link); const params = new URL(link.href, 'http://localhost').searchParams;
+    const link = info.children.at(-1).children.find(n => n.tagName === 'A' && n.textContent === '▤'); assert.ok(link); const params = new URL(link.href, 'http://localhost').searchParams;
     assert.equal(params.get('disk_account'), 'alice'); assert.equal(params.get('disk_space'), '中文分区'); assert.equal(params.get('disk_file'), 'file');
 });
 
@@ -125,4 +126,11 @@ test('work segment feedback appears while submitting and follows real queued/run
     remote={...snapshot(),jobs:[{id:'segment',state:'running',progress:42,detail:'正在完整解码检查输出片段'}]};await f.intervals[0]();
     assert.match(feedback.children[0].textContent,/42%/);assert.match(feedback.children[1].textContent,/解码/);
     remote={...snapshot(),jobs:[{id:'segment',state:'cancelled',progress:42,message:'用户已取消'}]};await f.intervals[0]();assert.match(feedback.children[0].textContent,/已取消/);
+});
+
+test('range preview starts playback on the first click and stops at the selected end',async()=>{
+    const state=snapshot();state.sessions[0].importId='video';const f=fixture();f.set(state);f.setSession('old');f.setTab('sessions');
+    const panel=f.renderSessions(),descendants=n=>[n,...n.children.flatMap(descendants)],player=descendants(panel).find(n=>n.tagName==='VIDEO');player.readyState=1;player.duration=10;
+    const action=panel.querySelectorAll('button').find(n=>n.textContent==='预览选定范围');await action.onclick();assert.equal(player.playCalls,1);assert.equal(player.paused,false);
+    const feedback=descendants(panel).find(n=>n.className==='ml-preview-feedback ml-segment-feedback');assert.equal(feedback.textContent,'正在播放选定范围');player.currentTime=10;player.emit('timeupdate');assert.equal(player.paused,true);
 });

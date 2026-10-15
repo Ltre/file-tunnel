@@ -7577,6 +7577,17 @@ function syncRenderedExternalFileSource(fileId, handleReadable) {
         .forEach(messageEl => syncFileMessageExternalSourceBadge(messageEl, handleReadable));
 }
 
+async function resolveWebWorkshopSourceTunnelLabels(drafts) {
+    const labels={}, sessions=await getAllFromStore('sessions').catch(()=>[]);let messages;
+    for(const draft of drafts){
+        const record=draft.sourceMessageId?await getFromStore('messages',draft.sourceMessageId).catch(()=>null):null;
+        let sessionId=record?.sessionId||draft.sourceSessionId;
+        if(!sessionId&&draft.sourceFileId){messages ||= await getAllFromStore('messages').catch(()=>[]);const ids=[...new Set(messages.filter(m=>m.fileInfo?.id===draft.sourceFileId||m.collection?.files?.some(f=>f.id===draft.sourceFileId)).map(m=>m.sessionId).filter(Boolean))];if(ids.length===1)sessionId=ids[0];}
+        const code=normalizeLocalShortCode(sessions.find(s=>s.sessionId===sessionId)?.shortCode||readSessionDirectoryCache().find(s=>s.sessionId===sessionId)?.shortCode||(state.sessionId===sessionId?state.shortCode:''));
+        if(code)labels[draft.id]='来源隧道：'+code;
+    }return labels;
+}
+
 function getTransferRecordAnchorUrl(messageId, sessionId = state.sessionId) {
     const url = new URL('/', window.location.origin);
     url.searchParams.set('record', messageId);
@@ -17782,6 +17793,7 @@ function initUI() {
         publishUpdate: publishWebZipUpdate,
         chooseResources: chooseWebWorkshopResources,
         focusFile: focusPublishedWebZip,
+        sourceTunnelLabels: resolveWebWorkshopSourceTunnelLabels,
         sessionId: () => state.sessionId,
         focusMessage: (messageId, source = {}) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId }),
         toast: showAppToast,

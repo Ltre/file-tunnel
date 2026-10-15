@@ -362,7 +362,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔧 管理后台</h1>
+            <h1>🔗 隧道总览</h1>
             <p>即时传输隧道管理</p>
             <button class="btn btn-secondary" id="adminLogoutBtn" type="button">退出管理会话</button>
         </div>
@@ -427,35 +427,6 @@
             </div>
         </div>
 
-        <div class="panel">
-            <div class="panel-header">
-                <span>📡 所有访问设备</span>
-                <button class="btn btn-secondary" onclick="loadData()">刷新</button>
-            </div>
-            <div class="panel-content">
-                <div id="deviceList" class="device-list">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📱</div>
-                        <div>暂无访问设备</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="panel">
-            <div class="panel-header">
-                <span>🧲 已分享磁链</span>
-                <button class="btn btn-secondary" onclick="loadData()">刷新</button>
-            </div>
-            <div class="panel-content">
-                <div id="magnetList" class="magnet-list">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">🧲</div>
-                        <div>暂无已分享磁链</div>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
     
     <button class="refresh-btn" onclick="loadData()" title="刷新">🔄</button>
@@ -489,15 +460,8 @@
         async function loadData() {
             try {
                 // 从服务器获取会话信息
-                const [sessionsResponse, devicesResponse, magnetsResponse] = await Promise.all([
-                    fetch('/api/sessions'),
-                    fetch('/api/devices'),
-                    fetch('/api/magnets')
-                ]);
+                const sessionsResponse = await fetch('/api/sessions');
                 const data = await sessionsResponse.json();
-                const deviceData = devicesResponse.ok ? await devicesResponse.json() : { devices: [] };
-                const magnetData = magnetsResponse.ok ? await magnetsResponse.json() : { magnets: [] };
-                
                 const sessions = (data.sessions || [])
                     .filter(session => isValidSessionId(session.id))
                     .map(session => ({
@@ -513,13 +477,12 @@
                     }));
                 updateStats({
                     sessions,
-                    totalDevices: data.totalDevices ?? deviceData.onlineDevices ?? 0,
+                    totalDevices: data.totalDevices ?? 0,
                     totalMessages: sessions.reduce((total, session) => total + (session.messageCount || 0), 0),
                     totalFiles: sessions.reduce((total, session) => total + (session.fileCount || 0), 0)
                 });
                 renderSessions(sessions);
-                renderDevices(deviceData.devices || []);
-                renderMagnets(magnetData.magnets || []);
+
                 
                 document.getElementById('lastUpdate').textContent = 
                     '更新于: ' + new Date().toLocaleTimeString('zh-CN');

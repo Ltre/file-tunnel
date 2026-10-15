@@ -33,6 +33,7 @@ const SCRIPT_SOURCES = [
   'client/telegram-content.js',
   'client/telegram-target-forward.js',
   'client/admin-layout.js',
+  'client/admin-records.js',
   'client/media.js',
   'client/device-camera.js',
   'client/light-transfer.js',
@@ -73,6 +74,8 @@ const PAGE_ROUTES = {
   'index.html': ['/', '/index.html', '/disk'],
   'admin-layout.html': ['/admin'],
   'admin.html': ['/admin/home'],
+  'admin-devices.html': ['/admin/devices'],
+  'admin-magnets.html': ['/admin/magnets'],
   'disk-management.html': ['/disk-management'],
   'data-usage.html': ['/data-usage'],
   'media-library.html': ['/media-library'],
@@ -470,7 +473,7 @@ async function writeGeneratedConfig(outRoot, profile, release) {
 
 async function buildServiceWorker(outRoot, buildId, assets, styles) {
   const raw = await fs.readFile(path.join(ROOT, 'service-worker.js'), 'utf8');
-  const adminOnly = new Set(['client/admin-layout.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
+  const adminOnly = new Set(['client/admin-records.js', 'client/admin-layout.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
     'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js']);
   const assetShell = [...Object.entries(assets).filter(([source]) => !adminOnly.has(source)).map(([, asset]) => asset),
     ...Object.entries(styles).filter(([page]) => !['s3-management', 'media-library'].includes(page)).map(([, asset]) => asset)].sort();

@@ -38,6 +38,11 @@ class InfraStore {
 
     migrate() {
         this.db.run(`
+            CREATE TABLE IF NOT EXISTS magnets(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, asset_id TEXT NOT NULL, created_at INTEGER NOT NULL, payload_json TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_magnets_asset ON magnets(session_id,asset_id);
+            CREATE TABLE IF NOT EXISTS magnet_shares(event_id TEXT PRIMARY KEY, magnet_id TEXT NOT NULL, shared_at INTEGER NOT NULL, payload_json TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_magnet_shares_time ON magnet_shares(magnet_id,shared_at DESC);
+            CREATE TABLE IF NOT EXISTS magnet_downloads(magnet_id TEXT NOT NULL,event_id TEXT NOT NULL,occurred_at INTEGER NOT NULL,PRIMARY KEY(magnet_id,event_id));
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS tunnels (
                 session_id TEXT PRIMARY KEY,
@@ -213,6 +218,41 @@ class InfraStore {
         // A persisted "online" bit cannot survive a server restart. New joins will
         // mark the currently connected devices online again.
         this.db.run('UPDATE devices SET online = 0, active = 0 WHERE online <> 0 OR active <> 0');
+    }
+
+    getMagnet(id) {
+        const row = this.get('SELECT payload_json FROM magnets WHERE id=?', [id]);
+        if (!row) return null;
+        return { ...JSON.parse(row.payload_json), downloadCount: this.get('SELECT count(*) AS n FROM magnet_downloads WHERE magnet_id=?', [id]).n };
+    }
+
+    findMagnet(sessionId, assetId) {
+        const row = this.get('SELECT id FROM magnets WHERE session_id=? AND asset_id=? ORDER BY created_at DESC LIMIT 1', [sessionId, assetId]);
+        const value = row && this.getMagnet(row.id); return value?.revoked ? null : value;
+    }
+
+    saveMagnet(value) {
+        this.run('BEGIN');
+        try {
+            this.run('INSERT INTO magnets VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json', [value.id, value.sessionId, value.assetId, value.createdAt, JSON.stringify(value)]);
+            this.run('INSERT INTO magnet_shares VALUES(?,?,?,?)', [crypto.randomUUID(), value.id, Date.now(), JSON.stringify({ deviceId:value.createdByDeviceId, deviceName:value.createdByDeviceName, asset:value.asset })]);
+            this.run('COMMIT');
+        } catch (error) { this.run('ROLLBACK'); throw error; }
+        if(!this.save())throw Error('MAGNET_PERSIST_FAILED'); return this.getMagnet(value.id);
+    }
+
+    listMagnets({ limit=100, offset=0 }={}) {
+        return this.query('SELECT id FROM magnets ORDER BY created_at DESC,id LIMIT ? OFFSET ?', [Math.min(200, Math.max(1,Number(limit)||100)), Math.max(0,Number(offset)||0)]).map(row => ({ ...this.getMagnet(row.id),
+            shares:this.query('SELECT shared_at,payload_json FROM magnet_shares WHERE magnet_id=? ORDER BY shared_at DESC', [row.id]).map(s => ({ ...JSON.parse(s.payload_json), sharedAt:s.shared_at })) }));
+    }
+
+    recordMagnetDownload(id, eventId) {
+        const value=this.getMagnet(id); if(!value || value.revoked) return false;
+        this.run('INSERT OR IGNORE INTO magnet_downloads VALUES(?,?,?)', [id,eventId,Date.now()]); if(!this.save())throw Error('MAGNET_PERSIST_FAILED'); return true;
+    }
+
+    revokeTunnelMagnets(sessionId) {
+        this.run("UPDATE magnets SET payload_json=json_set(payload_json,'$.revoked',json('true')) WHERE session_id=?", [sessionId]); this.save();
     }
 
     save() {
@@ -410,6 +450,7 @@ class InfraStore {
         const now = Date.now();
         this.run('BEGIN');
         try {
+            this.run("UPDATE magnets SET payload_json=json_set(payload_json,'$.revoked',json('true')) WHERE session_id=?",[sessionId]);
             this.run(
                 'UPDATE tunnels SET deleted_at = COALESCE(deleted_at, ?), short_code = NULL WHERE session_id = ?',
                 [now, sessionId]

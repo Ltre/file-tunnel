@@ -6,6 +6,7 @@ const { createMediaDatabase } = require('./database');
 const { createMediaCache } = require('./cache');
 const { createLoopbackSource } = require('./disk-adapter');
 const { createMediaProcessing, sampleTimes, durationOf, similarity } = require('./processing');
+const { clipName } = require('./clip-name');
 const nameOf = value => String(value || '资源').replace(/[\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 145) || '资源';
 function createMediaLibrary({ dataDir, disk, downloads, processing = createMediaProcessing(), now = Date.now, autoStart = true }) {
     const db = createMediaDatabase(dataDir, now), cache = createMediaCache({ dataDir, database: db, now });
@@ -257,7 +258,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 return item('collection', existing.id);
             }
             if (existing) { const value = db.patch('collection', existing.id, scope(), { state: 'queued', location: settings.collection }); queue('collect', { collectionId: value.id }); return value; }
-            const value = db.create('collection', scope(), { resultId, name: nameOf(input.name || (resource.kind === 'image' ? '画面' : 'Clip')), kind: resource.kind,
+            const value = db.create('collection', scope(), { resultId, clipNamed:resource.kind==='clip', name: resource.kind==='clip'?clipName(item('session',resource.sessionId),resource):nameOf(input.name || '画面'), kind: resource.kind,
                 importId: resource.importId, state: 'queued', location: settings.collection, entities: [], source: { ...resource } });
             queue('collect', { collectionId: value.id }); return value;
         });
@@ -290,11 +291,29 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                     done(received > opened.object.size ? Error('MEDIA_UPLOAD_SIZE_MISMATCH') : null, chunk); } }), fs.createWriteStream(transient.path), { signal });
                 if (received !== opened.object.size) throw Error('MEDIA_UPLOAD_SIZE_MISMATCH'); localPath = transient.path;
             }
-            const file = await disk.write(authorization.location, localPath, record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal);
+            const file = await disk.write(authorization.location, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal);
             return db.atomic(() => { const value = db.patch('collection', record.id, job.scope, { state: 'ready', file, collectedAt: now(), error: '' });
                 if (record.resultId) db.patch('result', record.resultId, job.scope, { savedId: record.id }); return value; });
         } finally { lease?.release(); if (transient) cache.discard(job.scope, transient.record.id); }
     }
+    function remark(kind,id,input){const record=item(kind,id);if(kind==='result'&&record.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');if(typeof input.remark!=='string'||input.remark.length>65535)throw Error('MEDIA_REMARK_INVALID');return db.patch(kind,id,scope(),{remark:input.remark},input.version);}
+    function transcode(resultId,input={}){const result=item('result',resultId);if(result.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');
+        const params={crf:input.crf===undefined||input.crf===''?28:Number(input.crf),preset:String(input.preset||'')};
+        for(const axis of ['width','height']){params[axis]=input[axis]===''||input[axis]==null?null:Number(input[axis]);if(params[axis]!==null&&(!Number.isInteger(params[axis])||params[axis]<2||params[axis]>16384||params[axis]%2))throw Error('MEDIA_TRANSCODE_PARAMETERS_INVALID');}
+        if(!Number.isFinite(params.crf)||params.crf<0||params.crf>51||!['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].includes(params.preset))throw Error('MEDIA_TRANSCODE_PARAMETERS_INVALID');
+        const lease=cache.acquire(scope(),result.cacheId);lease.release();
+        return queue('transcode',{resultId,sessionId:result.sessionId,importId:result.importId,cacheId:result.cacheId,params});}
+    async function processTranscode(job,signal,progress){const result=item('result',job.context.resultId),settings=requireConfig();
+        const existing=db.get('compression',job.id,job.scope);if(existing){const c=db.get('cache',existing.cacheId,job.scope),t=db.get('cache',existing.thumbnailCacheId,job.scope);if(c?.status==='ready'&&t?.status==='ready'&&fs.existsSync(cache.filename(c))&&fs.existsSync(cache.filename(t)))return existing;}
+        const lease=cache.acquire(job.scope,job.context.cacheId);let output,thumb,meter,capacityError;
+        try { output=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.mkv');thumb=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.jpg');
+        meter=setInterval(()=>{try{if(fs.existsSync(output.path))cache.reserve(job.scope,output.record.id,fs.statSync(output.path).size,settings.caches.candidates);}catch(error){capacityError=error;controllers.get(job.id)?.abort();}},250);meter.unref?.();
+        progress(1,{phase:'transcoding',detail:'正在压缩视频，音轨保持复制'});const probe=await processing.probe(lease.path,signal);let tail='';
+            const quality=await processing.compress(lease.path,output.path,{...job.context.params,signal,duration:(result.endMs-result.startMs)/1000,audio:probe.streams.some(s=>s.codec_type==='audio'),onOutput:text=>{tail=(tail+text).slice(-8192);const value=[...tail.matchAll(/out_time_us=(\d+)/g)].at(-1);if(value)progress(Math.min(94,Number(value[1])/1000/(result.endMs-result.startMs)*94),{phase:'transcoding',detail:'正在执行 libx265 压缩转码'});}});
+            progress(96,{phase:'thumbnail',detail:'正在生成缩略图并确认转码结果'});await processing.thumbnail(output.path,thumb.path,signal);cache.commit(job.scope,output.record.id,settings.caches.candidates);cache.commit(job.scope,thumb.record.id,settings.caches.candidates);
+            const prior=db.get('compression',job.id,job.scope),payload={resultId:result.id,sessionId:result.sessionId,cacheId:output.record.id,thumbnailCacheId:thumb.record.id,params:job.context.params,quality,sourceBytes:lease.record.size,completedAt:now()};
+            return prior?db.patch('compression',job.id,job.scope,payload):db.create('compression',job.scope,payload,job.id);
+        }catch(error){if(output)cache.discard(job.scope,output.record.id);if(thumb)cache.discard(job.scope,thumb.record.id);throw capacityError||error;}finally{clearInterval(meter);lease.release();}}
     function compare(resultId, input) {
         const source = item('result', resultId); if (source.kind !== 'image') throw Error('MEDIA_IMAGE_REQUIRED');
         if (input.threshold !== undefined && (!Number.isFinite(Number(input.threshold)) || Number(input.threshold) < 0 || Number(input.threshold) > 100)) throw Error('MEDIA_COMPARISON_INVALID');
@@ -405,6 +424,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 else if (job.type === 'frames') result = await processFrames(job, controller.signal, progress);
                 else if (job.type === 'clip' || job.type === 'segment') result = await processClip(job, controller.signal, progress);
                 else if (job.type === 'collect') result = await processCollection(job, controller.signal);
+                else if (job.type === 'transcode') result = await processTranscode(job, controller.signal, progress);
                 else if (job.type === 'reference') {
                     const lease = cache.acquire(job.scope, job.context.cacheId);
                     try { const previous = db.get('result', job.id, job.scope); if (previous) result = previous; else { const signature = await processing.signature(lease.path, controller.signal); result = db.create('result', job.scope, { reference: true, name: job.context.name,
@@ -437,7 +457,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     if (autoStart) { timer = setInterval(() => pump().catch(() => {}), 2000); timer.unref?.(); }
     return { db, cache, processing, config, scope, grant, configureLocation, setCachePolicies, createImport, createLink, attachTask, receive, createSession, extract, clip,
-        collect, collectImport, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput,
+        collect, collectImport, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput, remark, transcode,
         authorizeRead(record, kind = 'import', snapshot) { if (kind === 'import' && record.managed) grant(record.location.grantId, 'workspace', snapshot); else if (kind === 'collection' && !record.external) grant(record.location.grantId, 'collection', snapshot); },
         retryImport(id) { return db.atomic(() => {
             const record = item('import', id); if (!['download-failed', 'import-failed', 'cancelled'].includes(record.state)) throw Error('MEDIA_JOB_NOT_RETRYABLE');

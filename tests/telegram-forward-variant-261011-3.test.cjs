@@ -126,7 +126,7 @@ test('实际转发函数按所选版本构建正文 multipart，文档和视频�
     const multipart = require('../server/telegram-multipart'), received = [];
     const context = {
         fs, audioTrackRepair:f.repair, resolveTelegramForwardFile,
-        getTelegramBotToken:() => 'test', resolveTelegramForwardTarget:() => ({ target:'-100123', chatId:'-100123' }),
+        getTelegramBotToken:() => 'test', getTelegramBotApiBaseUrl:()=>'https://api.telegram.org', resolveTelegramForwardTarget:() => ({ target:'-100123', chatId:'-100123' }),
         getMimeTypeFromFileName:() => 'video/mp4', prepareTelegramForwardVideoThumbnail:async () => null,
         buildTelegramSingleFileMultipart:multipart.buildTelegramSingleFileMultipart, buildTelegramDocumentsMultipart:multipart.buildTelegramDocumentsMultipart,
         rememberTelegramForwardTarget:() => [],

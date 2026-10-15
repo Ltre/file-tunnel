@@ -11,13 +11,14 @@
     const bytes = n => !n ? '0 B' : n < 1024 ? n + ' B' : (n / (n >= 1024 ** 3 ? 1024 ** 3 : n >= 1024 ** 2 ? 1024 ** 2 : 1024)).toFixed(1) + (n >= 1024 ** 3 ? ' GB' : n >= 1024 ** 2 ? ' MB' : ' KB');
     const time = ms => { if (!Number.isFinite(ms)) return '—'; const seconds = ms / 1000, hours = Math.floor(seconds / 3600), mins = Math.floor(seconds / 60) % 60; return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${(seconds % 60).toFixed(3).padStart(6, '0')}`; };
     const date = n => n ? new Date(n).toLocaleString() : '—';
+    const compressionStatus=job=>'压缩转码 · '+(states[job.state]||job.state)+' · '+(job.progress||0)+'% · '+(job.state==='completed'?'压缩版本已就绪':job.message||job.error||(['cancelled','interrupted'].includes(job.state)?'处理已停止':job.detail||'等待处理'));
     async function api(route, options = {}) {
         const response = await fetch(route.startsWith('/api/') ? route : root + route, { credentials: 'same-origin', cache: 'no-store', ...options });
         const value = await response.json(); if (!response.ok) throw Error((value.message || value.error || '操作失败') + (value.error ? ` [${value.error}]` : '')); return value;
     }
     const json = (method, body = {}) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     function button(text, action, cls = '') {
-        const node = el('button', text, cls); node.type = 'button';
+        const node = el('button', text, cls); node.type = 'button'; if(cls==='ml-notes-toggle'){node.title='会话备注';node.setAttribute('aria-label','会话备注');}
         node.onclick = async () => { if (node.disabled) return; node.disabled = true; node.classList.add('loading');
             try { await action(node); } catch (error) { notice(error.message, true); } finally { node.disabled = false; node.classList.remove('loading'); } }; return node;
     }
@@ -152,7 +153,7 @@
         const list = card('导入记录', '只有网盘保存确认完成且媒体读取有效时，才显示“导入就绪”。');
         for (const resource of data.imports) { const entry = card('', ''), actions = el('div', undefined, 'ml-actions'); entry.append(el('div', resource.name, 'ml-item-name'), badge(resource.state), el('p', `${resource.kind} · ${resource.source?.taskId || '无下载任务'} · ${resource.duration ? time(resource.duration * 1000) : ''} · ${date(resource.createdAt)}`));
             if (resource.state === 'ready') { if (resource.duration) actions.append(button('新建提取会话', async () => {
-                const name = prompt('会话名称', '提取会话'); if (name === null) return;
+                const name = prompt('会话名称', resource.name || '提取会话'); if (name === null) return;
                 const session = await api('/sessions', json('POST', { importId: resource.id, name: name || '提取会话' }));
                 rememberRecord('sessions', session); sessionId = session.id; selection.clear(); changeTab('sessions');
                 refresh(true).catch(error => notice(error.message, true));
@@ -178,6 +179,7 @@
         if (!currentSession()) sessionId = data.sessions.find(s => s.state === 'active')?.id || '';
         const session = currentSession(), panel = card('提取会话'), chooser = select(data.sessions.filter(s => s.state === 'active').map(s => [s.id, s.name]), sessionId);
         chooser.id = 'ml-session-picker'; chooser.onchange = () => { sessionId = chooser.value; selection.clear(); render(); }; panel.append(label('当前会话', chooser));
+        if(session){const notes=el('div',undefined,'ml-session-notes'),memo=el('textarea');memo.maxLength=65535;memo.value=session.remark||'';memo.placeholder='会话备注（最多 65535 字符）';notes.hidden=true;notes.append(memo,button('保存会话备注',async()=>{const saved=await api('/sessions/'+session.id,json('PATCH',{remark:memo.value,version:session.version}));rememberRecord('sessions',saved);session.version=saved.version;notice('会话备注已保存');}));panel.querySelector('h2')?.append(button('▤',()=>{notes.hidden=!notes.hidden;},'ml-notes-toggle'));panel.append(notes);}
         if (!session) { panel.append(el('p', '请在“资源导入”中选择一个就绪视频，新建提取会话。')); return panel; }
         const resource = data.imports.find(r => r.id === session.importId); if (!resource) { panel.append(el('p', '源记录不存在')); return panel; }
         panel.append(el('p', `${resource.name} · 时长 ${time(resource.duration * 1000)} · ${resource.available ? '来源可读' : '来源当前失效'}`));
@@ -186,8 +188,8 @@
         parameters.append(label('模式', mode), label('时间范围', ranges), label('随机数量', count), label('间隔（毫秒）', interval), el('p', '随机模式不填间隔时直接抽取指定数量；等间隔模式必须填写间隔。每批最多 500 张。'));
         parameters.append(button('开始取帧', async () => { await api('/sessions/' + session.id + '/extract', json('POST', { mode: mode.value, ranges: ranges.value, count: Number(count.value), intervalMs: Number(interval.value), minIntervalMs: Number(interval.value) })); notice('取帧任务已排队，可关页后回来继续查看'); }, 'primary'));
         const player = document.createElement('video'); player.id = 'ml-player'; player.className = 'ml-preview'; player.controls = true; player.preload = 'metadata'; player.src = root + '/files/' + resource.id;
-        playerOffset = 0; let steppedFrame = null, playerOrigin = Number(resource.probe?.format?.start_time) || 0, sourceCacheId = '', sourceVersion = 0, frameAbort, segmentWaiting;
-        disposePlayer = () => { frameAbort?.abort(); clearInterval(segmentWaiting); player.pause(); };
+        playerOffset = 0; let steppedFrame = null, playerOrigin = Number(resource.probe?.format?.start_time) || 0, sourceCacheId = '', sourceVersion = 0, frameAbort, segmentWaiting, previewAbort, previewStop;
+        disposePlayer = () => { previewAbort?.abort(); if(previewStop)player.removeEventListener('timeupdate',previewStop); frameAbort?.abort(); clearInterval(segmentWaiting); player.pause(); };
         const playerTime = () => player.paused && steppedFrame && Math.abs(player.currentTime - steppedFrame.position) < .001 ? steppedFrame.time : Math.max(0, player.currentTime - playerOrigin) + playerOffset;
         const clock = el('output', '00:00:00.000'); player.ontimeupdate = () => { clock.textContent = time(playerTime() * 1000); };
         player.onerror = () => notice('浏览器可能不支持源视频编码。可先生成下方工作片段，以兼容 MP4 播放后继续操作。', true);
@@ -248,15 +250,24 @@
         }); original.hidden = true;
         function changeSource(cacheId, offset, origin = 0) {
             clearInterval(segmentWaiting); segmentWaiting = null;
-            sourceVersion++; frameAbort?.abort(); steppedFrame = null;
+            sourceVersion++; previewAbort?.abort(); frameAbort?.abort(); steppedFrame = null;
             player.pause(); sourceCacheId = cacheId; playerOffset = offset; playerOrigin = origin;
             player.src = cacheId ? root + '/cache/' + cacheId : root + '/files/' + resource.id; player.load();
             original.hidden = !cacheId;
         }
-        right.append(button('预览选定范围', () => { const parse = v => v.split(':').map(Number).reduce((n, value) => n * 60 + value, 0); const begin = parse(start.value), finish = parse(end.value);
-            if (!(begin >= playerOffset && finish > begin)) throw Error('请先设置有效端点'); steppedFrame = null; player.currentTime = begin - playerOffset + playerOrigin; player.play().catch(() => {});
-            const version = sourceVersion;
-            const stop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }),
+        const previewFeedback=el('div',undefined,'ml-preview-feedback ml-segment-feedback');previewFeedback.hidden=true;let previewing=false;
+        right.append(button('预览选定范围', async () => {
+            if(previewing)return;previewing=true;previewFeedback.hidden=false;previewFeedback.textContent='正在读取媒体信息，准备定位…';
+            const version=sourceVersion;previewAbort?.abort();const abort=previewAbort=new AbortController();let reportBuffer;
+            try{await waitMediaMetadata(player,abort.signal); if(version!==sourceVersion)throw Error('播放来源已切换'); const parse = v => v.split(':').map(Number).reduce((n, value) => n * 60 + value, 0); const begin = parse(start.value), finish = parse(end.value);
+            if (!(begin >= playerOffset && finish > begin)) throw Error('请先设置有效端点'); if(finish>playerOffset+player.duration||begin<playerOffset)throw Error('所选范围不在当前视频内，请返回原视频或重新设定端点');
+            const target=begin-playerOffset+playerOrigin;previewFeedback.textContent='正在定位到 '+time(begin*1000)+'，等待视频帧…';steppedFrame=null;
+            player.pause();player.currentTime=target;
+            reportBuffer=()=>{let loaded=0;for(let i=0;i<(player.buffered?.length||0);i++)loaded+=Math.max(0,Math.min(player.buffered.end(i),finish-playerOffset+playerOrigin)-Math.max(player.buffered.start(i),target));previewFeedback.textContent='正在定位、缓冲并开始播放…'+(loaded?' · 选定范围已缓冲 '+Math.min(100,Math.floor(loaded/(finish-begin)*100))+'%':'');};
+            player.addEventListener('progress',reportBuffer);reportBuffer();if(previewStop)player.removeEventListener('timeupdate',previewStop);
+            const playback=player.play();abort.signal.addEventListener('abort',()=>player.pause(),{once:true});await playback;
+            if(abort.signal.aborted||version!==sourceVersion)return;previewFeedback.textContent='正在播放选定范围';
+            const stop = previewStop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }catch(error){previewFeedback.textContent=abort.signal.aborted?'预览已取消':'预览未开始：'+error.message;if(!abort.signal.aborted)throw error;}finally{if(reportBuffer)player.removeEventListener('progress',reportBuffer);previewing=false;} }), previewFeedback,
             button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));
                 rememberRecord('jobs', job); renderResults(); notice('裁切已排队；候选区可查看执行状态'); }, 'primary'),
             button('缓存工作片段并播放', async () => {
@@ -352,6 +363,13 @@
         return record;
     }
     function renderResults() {
+        for(const line of $('ml-results')?.querySelectorAll('[data-compression-job]')||[]){const job=data.jobs.find(j=>j.id===line.dataset.compressionJob);if(job)line.textContent=compressionStatus(job);}
+        if($('ml-results')?.querySelector('textarea[data-dirty="1"]')) {
+            for(const job of data.jobs.filter(j=>j.type==='transcode')){const box=$('ml-results').querySelector('[data-result-id="'+job.context.resultId+'"]');if(!box)continue;
+                let line=box.querySelector('[data-compression-job="'+job.id+'"]');if(!line){line=el('p');line.dataset.compressionJob=job.id;box.append(line);}line.textContent=compressionStatus(job);
+                const result=data.results.find(r=>r.id===job.context.resultId);if(result&&(data.compressions||[]).some(v=>v.resultId===result.id&&v.cacheReady)&&!box.querySelector('.ml-compression-view'))box.append(button('看压缩版',()=>compressionViewer(result),'ml-compression-view'));
+            }return;
+        }
         const area = $('ml-results'); if (!area) return; const order = $('ml-frame-order')?.value, unsaved = $('ml-frame-unsaved')?.checked;
         const results = data.results.filter(r => !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId)).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : (a.actualMs ?? a.startMs) - (b.actualMs ?? b.startMs));
         area.replaceChildren();
@@ -385,10 +403,27 @@
                     await collectCandidate(result.id);
                 }));
             if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.textContent !== '查看') node.disabled = true; });
+            if(result.kind==='clip'){
+                const note=el('textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.oninput=()=>{note.dataset.dirty='1';};
+                info.append(el('small','修改备注后点击保存，下载和收藏使用已保存备注','ml-muted'),note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();}));
+                if(result.cacheReady){const download=el('a','⇩','ml-disk-link');download.href=root+'/results/'+result.id+'/download';download.title='下载 Clip';actions.append(download,button('压缩转码',()=>transcodeDialog(result)));}
+                const variants=(data.compressions||[]).filter(v=>v.resultId===result.id&&v.cacheReady);
+                if(variants.length)actions.append(button('看压缩版',()=>compressionViewer(result)));
+                for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id)){const jobLine=el('p', compressionStatus(job));jobLine.dataset.compressionJob=job.id;info.append(jobLine);if(['queued','running'].includes(job.state))info.append(button('取消转码',async()=>{rememberRecord('jobs',await api('/jobs/'+job.id+'/cancel',json('POST')));renderResults();}));}
+            }
             if (result.kind === 'image') actions.append(button('相似度', () => compareDialog(result)));
             info.append(actions); box.append(info); area.append(box);
         }
     }
+    function transcodeDialog(result){const body=el('div',undefined,'ml-stack'),width=input('','number'),height=input('','number'),crf=input('28','number'),preset=select(['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].map(value=>[value,value||'默认']));body.append(label('目标宽度（可选）',width),label('目标高度（可选）',height),label('CRF',crf),label('preset（可选）',preset));
+        dialog('压缩转码',body,[button('提交转码',async()=>{const job=await api('/results/'+result.id+'/transcode',json('POST',{width:width.value,height:height.value,crf:crf.value,preset:preset.value}));rememberRecord('jobs',job);$('ml-dialog').close();renderResults();notice('压缩任务已排队，Clip 卡片中可查看进度');},'primary')]);}
+    function compressionViewer(result){const wrap=el('div',undefined,'ml-compression-viewer'),left=el('aside'),right=el('section'),top=el('div',undefined,'ml-compression-toolbar');
+        top.append(button('+ 以其它参数转码',()=>transcodeDialog(result)));left.append(top);
+        const choose=variant=>{const video=el('video');video.controls=true;video.className='ml-preview';video.src=root+'/cache/'+variant.cacheId;video.onerror=()=>{right.append(el('p','当前浏览器可能不支持此 HEVC/MKV 压缩版本，可下载后使用兼容播放器打开。'));};
+            const download=el('a','⇩ 下载此压缩版');download.href=video.src;download.download='clip-'+variant.id+'.mkv';
+            const details=el('pre',JSON.stringify({参数:variant.params,结果:variant.quality,源大小:variant.sourceBytes,完成时间:date(variant.completedAt)},null,2));right.replaceChildren(video,download,details);};
+        const variants=(data.compressions||[]).filter(v=>v.resultId===result.id&&v.cacheReady);
+        for(const variant of variants){const entry=button('CRF '+variant.params.crf+' · '+(variant.params.width||'自动')+'×'+(variant.params.height||'自动'),()=>choose(variant));const img=el('img');img.src=root+'/cache/'+variant.thumbnailCacheId;img.alt='压缩结果缩略图';entry.append(img);left.append(entry);}wrap.append(left,right);dialog('Clip 压缩版本',wrap);if(variants.length)choose(variants[0]);}
     async function compareDialog(result) {
         const body = el('div', undefined, 'ml-stack'), against = select([['session', '当前会话'], ['video', '同源视频全部会话'], ['collection', '正式收藏画面'], ['references', '临时参考图集']]);
         const threshold = input(80, 'number'), matches = el('div', undefined, 'ml-grid'); body.append(label('比较范围', against), label('感知哈希初筛阈值（0～100）', threshold), el('p', '先比较感知哈希，再比较归一化灰度像素。近似度是提示，不是人物识别或自动删除决定。'), matches);

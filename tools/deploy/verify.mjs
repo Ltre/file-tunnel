@@ -160,7 +160,7 @@ async function main() {
     if (!original.equals(deployed)) errors.push(`bundled Markdown bytes changed: ${assetPath}`);
   }
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
-    if (['client/admin-layout.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
+    if (['client/admin-records.js', 'client/admin-layout.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
       'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js'].includes(source)) continue;
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing ${assetPath}`);
   }

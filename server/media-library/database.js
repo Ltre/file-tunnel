@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
-const KINDS = new Set(['config', 'grant', 'import', 'session', 'batch', 'result', 'collection', 'entity', 'relation', 'job', 'cache', 'event']);
+const KINDS = new Set(['config', 'grant', 'import', 'session', 'batch', 'result', 'compression', 'collection', 'entity', 'relation', 'job', 'cache', 'event']);
 function createMediaDatabase(dataDir, now = Date.now) {
     fs.mkdirSync(dataDir, { recursive: true });
     const db = new DatabaseSync(path.join(dataDir, 'media-library.sqlite'));

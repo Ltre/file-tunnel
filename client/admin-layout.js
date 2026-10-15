@@ -1,7 +1,9 @@
 'use strict';
 (function () {
     const items = [
-        ['概览', '/admin/home', '⌂', '后台首页'],
+        ['概览', '/admin/home', '⌂', '隧道总览'],
+        ['', '/admin/devices', '◎', '所有访问设备'],
+        ['', '/admin/magnets', '🧲', '已分享磁链'],
         ['媒体工具', '/sns-dl', '↓', 'SNS 媒体下载'],
         ['', '/youtube-premium-dl', '▶', 'YouTube Premium 下载'],
         ['', '/media-library', '▧', '画面提取与多媒体收藏'],

@@ -370,6 +370,7 @@
         a.download = file.name || magnet?.asset?.name || 'download';
         document.body.appendChild(a);
         a.click();
+        if (magnet?.id) fetch('/api/magnets/' + encodeURIComponent(magnet.id) + '/downloads', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({eventId:crypto.randomUUID()}), keepalive:true }).catch(()=>{});
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         setStatus('已触发下载。浏览器无法可靠确认文件是否保存成功，缓存会保留，可到“缓存列表”手动删除。');

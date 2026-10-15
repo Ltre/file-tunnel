@@ -1,15 +1,15 @@
 # Drop2Tunnel 磁链分享、种子发现与独立下载器
 
 > **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
-> **文档更新时间**：`2026-09-26`
+> **文档更新时间**：`2026-10-14`（261014-3 更新持久登记与历史统计）
 
 ## 1. 术语说明
 
-本项目中的“磁链”是 **Drop2Tunnel 自定义的临时文件分享链接**，不是 BitTorrent 的 `magnet:?` 协议，也没有 DHT / Tracker / BT swarm。
+本项目中的“磁链”是 **Drop2Tunnel 自定义的文件分享定位链接**，不是 BitTorrent 的 `magnet:?` 协议，也没有 DHT / Tracker / BT swarm。
 
 它的核心语义是：
 
-> 为某个隧道中的 file asset 生成一个短期 capability link，外部打开链接后，通过仍在线的 Drop2Tunnel 供源设备和现有 FileAssetTransfer 协议获取该文件。
+> 为某个隧道中的 file asset 生成持久登记的 capability link，外部打开链接后，通过可用的 Drop2Tunnel 供源设备和现有 FileAssetTransfer 协议获取该文件。记录可以解析不代表供源始终在线。
 
 主要实现：
 
@@ -39,15 +39,17 @@
 
 ## 3. 服务端 Registry
 
-服务端内存：
+权威记录保存在统计数据库 `infra.sqlite`：`magnets` 保存定位和文件快照，`magnet_shares` 保存历次分享设备、时间及文件信息，`magnet_downloads` 保存下载触发事件。
+
+服务端另有有界内存缓存：
 
 `magnets = new Map()`
 
 当前限制：
 
-- `MAX_MAGNETS = 1000`
+- `MAX_MAGNETS = 1000`，仅约束热缓存；
 - 单个 magnet asset 最大约 1 GiB；
-- `MAGNET_TTL = 24h`
+- `MAGNET_TTL = 24h`，仅用于淘汰热缓存，不删除持久登记或分享历史。
 
 Magnet ID：
 
@@ -55,7 +57,7 @@ Magnet ID：
 
 合法格式约束为 URL-safe 字符串，长度 12-64。
 
-注意：registry 当前是进程内状态，服务重启后不会像数据库记录一样永久存在。
+服务重启后按 ID 从数据库恢复解析；在线供源仍按当前连接查询，不恢复旧的在线状态。旧版已经丢失且无留存记录的随机 ID 不能反推。
 
 ## 4. 创建磁链
 
@@ -76,7 +78,7 @@ API：
 2. 查当前 session 的 `fileAssets`；
 3. 如果服务端尚未登记资产，但请求设备在线且 metadata 合法，可将请求设备登记为 provider；
 4. 如果已有同 `sessionId + assetId` magnet，复用已有 ID；
-5. 保存 creator device；
+5. 持久保存登记及此次分享事件，确认落盘后再返回成功；
 6. 计算当前 live seed devices；
 7. 返回：
    - magnet ID；
@@ -132,14 +134,14 @@ API：
 
 `cleanupExpiredMagnets()` 在相关请求/清理流程中运行。
 
-删除条件：
+内存热缓存淘汰条件：
 
 - 超过 TTL；
 - 所属 session 已不存在。
 
-管理员删除 session 时，也会清掉该 session 的 magnet registry。
+管理员明确删除隧道时，对应链接停用，但登记和分享历史仍保留用于查看。设备离线、会话暂不在内存及超过缓存 TTL 均不删除持久记录。
 
-所以磁链不是永久公开链接。
+后台通过 `/admin/magnets` 分页查看全部登记和分享历史。下载次数按下载器触发浏览器下载记录（含命中缓存的下载），事件标识去重；轮询磁链或只打开页面不计数。浏览器无法确认用户最终是否完成系统文件保存，该数字不是文件保存成功证明。
 
 ## 8. 独立下载器
 
@@ -265,7 +267,7 @@ API：
 
 因此命名虽然叫“磁链”，技术上更接近：
 
-> 短期 capability URL + asset/provider discovery。
+> 持久 capability URL + asset/provider discovery。
 
 ## 15. 与网盘分享的区别
 
@@ -278,7 +280,7 @@ Telegram 网盘 share：
 Magnet：
 
 - 源文件属于隧道 file asset；
-- registry 当前内存态；
+- registry 和分享历史持久保存，内存仅作热缓存；
 - 依赖在线 seed/provider；
 - 独立 downloader 获取后写浏览器本机缓存。
 
@@ -286,9 +288,9 @@ Magnet：
 
 ## 16. 高风险点
 
-- server restart 后 magnet registry 丢失；
+- 旧版未持久保存的历史 ID 无法自动还原；
 - session 删除后链接失效；
 - provider metadata 与真实 byte 不一致；
 - downloader 自己加入 session 造成设备 UI 污染；
 - 把 magnet cache 和主 TunnelDB cache 当同一个引用；
-- 后续如果改为持久 magnet，需重新评估 TTL、权限和已删除历史。
+- 长期链接仍依赖可用供源；显式删除隧道会停用链接，历史记录不因此消失。
