@@ -113,6 +113,7 @@ function createSnsDownloadService({
         const taskPath = `/api/sns-dl/tasks/${encodeURIComponent(task.id)}`;
         return {
             id: task.id,
+            autoCacheEnabled: task.autoCacheEnabled !== false,
             url: task.url,
             platform: task.platform || '',
             title: task.title || '',
@@ -344,7 +345,8 @@ function createSnsDownloadService({
             const remark = String(input.remark ?? task.remark ?? '').slice(0, 4000);
             const tags = [...new Set((Array.isArray(input.tags) ? input.tags : task.tags || [])
                 .map(tag => String(tag || '').trim().slice(0, 80)).filter(Boolean))].slice(0, 100);
-            return publicTask(update(task, { remark, tags }));
+            if (input.autoCacheEnabled !== undefined && typeof input.autoCacheEnabled !== 'boolean') throw Error('自动缓存设置必须为布尔值');
+            return publicTask(update(task, { remark, tags, autoCacheEnabled: input.autoCacheEnabled ?? task.autoCacheEnabled ?? true }));
         },
         setCoverPath(id, coverPath) {
             const task = getTask(id);

@@ -24,6 +24,8 @@ const messages = {
     MEDIA_ENTITY_ALIAS_CONFLICT: '同类型人物、组织或标签已有这个名称或别名，请复用现有记录。', MEDIA_VERSION_CONFLICT: '记录已被其它操作更新，请刷新后重新修改。',
     MEDIA_SESSION_BUSY: '此会话仍有执行中的任务，请先取消或等任务完成。', MEDIA_FILE_SIZE_INVALID: '文件为空、超出网盘单文件上限或本地缓存容量。',
     MEDIA_CONFIG_BUSY: '工作区仍有未完成导入或处理任务，请先完成或取消，再切换工作区账号。', MEDIA_CANCELLED: '任务已取消，已确认的网盘成果和收藏不会被误删。',
+    MEDIA_TRANSCODE_PARAMETERS_INVALID: '压缩参数无效：宽高须为 2–16384 的偶数或留空，CRF 为 0–51，preset 须使用列表中的值。',
+    MEDIA_REMARK_INVALID: '备注须为文本，最多 65535 个字符。',
     MEDIA_JOB_NOT_RETRYABLE: '该任务仍在执行或已经完成，不能重复重试。', MEDIA_EXTERNAL_FILE_PROTECTED: '这是外部网盘文件引用，本子系统不会删除其原文件。',
     MEDIA_TASK_LINK_INVALID: '下载任务与本次导入来源不符或关联凭据失效，未绑定其它任务。', MEDIA_TASK_ALREADY_BOUND: '该导入记录已经关联另一个任务，未重复绑定。',
     MEDIA_UPLOAD_INTERRUPTED: '本地文件尚未完整到达服务器时服务中断，请重新上传。', MEDIA_TIMESTAMP_DISCONTINUITY: '媒体解码时间戳发生倒退，未接受此成果，请检查来源或使用精确重编码裁切。'
@@ -54,7 +56,7 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
         const present = (record, kind) => { try { service.authorizeRead(record, kind, snapshot); disk.file(record.file, snapshot); return true; } catch (_) { return false; } };
         const results = service.list('result').map(r => { const { pixels, ...out } = r; const c = service.db.get('cache', r.cacheId, scope); return { ...out, cacheReady: c?.status === 'ready' && fs.existsSync(service.cache.filename(c)) }; });
         res.json({ config, imports: service.list('import').map(r => { const { bindToken, probe, ...out } = r; return { ...out, message: r.error ? readable(r.error) : '', available: r.file ? present(r) : false }; }), sessions: service.list('session'), batches: service.list('batch'), results,
-            compressions:service.list('compression').map(r=>({...r,cacheReady:service.db.get('cache',r.cacheId,scope)?.status==='ready'})),
+            compressions:service.list('compression').map(r=>({...service.compressionDetails(r),cacheReady:service.db.get('cache',r.cacheId,scope)?.status==='ready'&&fs.existsSync(service.cache.filename(service.db.get('cache',r.cacheId,scope)))})),
             collections: service.list('collection').map(r => ({ ...r, available: r.state === 'ready' && present(r, 'collection') })), entities: service.list('entity'), relations: service.list('relation'),
             jobs: service.list('job').map(j => ({ ...j, message: j.error ? readable(j.error) : '' })), caches: service.list('cache'), events: service.list('event').slice(0, 200) });
     }));
@@ -76,6 +78,8 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
     router.patch('/sessions/:id',wrap((req,res)=>res.json(service.remark('session',req.params.id,req.body))));
     router.patch('/results/:id',wrap((req,res)=>res.json(service.remark('result',req.params.id,req.body))));
     router.post('/results/:id/transcode',wrap((req,res)=>res.status(202).json(service.transcode(req.params.id,req.body))));
+    router.post('/compressions/:id/collect',wrap((req,res)=>res.status(202).json(service.collectCompression(req.params.id))));
+    router.get('/compressions/:id/download',wrap((req,res)=>{const variant=service.compressionDetails(service.get('compression',req.params.id)),result=service.get('result',variant.resultId),lease=service.cache.acquire(service.scope(),variant.cacheId);res.once('close',()=>lease.release());const name=require('./clip-name').compressionName(service.get('session',result.sessionId),result,variant)+'.mkv';res.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase())}`);res.sendFile(lease.path);}));
     router.get('/results/:id/download',wrap((req,res)=>{const result=service.get('result',req.params.id);if(result.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');const lease=service.cache.acquire(service.scope(),result.cacheId);res.once('close',()=>lease.release());
         res.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(clipName(service.get('session',result.sessionId),result)+'.mp4').replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase())}`);res.sendFile(lease.path);}));
     router.delete('/sessions/:id', wrap((req, res) => res.json(service.removeSession(req.params.id))));

@@ -49,6 +49,9 @@
                 warning.textContent=failed.size?`${failed.size} 个资源加载失败，请尝试刷新。`:slow?'启动耗时较长，仍在等待资源或本地数据。':'';
                 const list=layer.querySelector('[data-startup-list]');
                 list.replaceChildren(...Array.from(known,([url,name])=>{const item=document.createElement('li');item.textContent=`${failed.has(url)?'失败':completed.has(url)?'完成':'等待'} · ${name}`;return item;}));
+                const pendingIndex=Array.from(known.keys()).findIndex(url=>!completed.has(url)&&!failed.has(url));
+                const pending=list.children?.[pendingIndex];
+                list.scrollTop=pending ? Math.max(0,pending.offsetTop-list.offsetTop-list.clientHeight/3) : list.scrollHeight;
                 layer.querySelector('.startup-actions').hidden=!stalled&&!failed.size;
                 return true;
             }
@@ -73,7 +76,7 @@
             document.addEventListener('load',onLoad,true);document.addEventListener('error',onError,true);
             function dispose(){if(closed)return;closed=true;clearInterval(interval);observer?.disconnect();document.removeEventListener('load',onLoad,true);document.removeEventListener('error',onError,true);document.removeEventListener('tunnel-shell-ready',dispose);document.getElementById('tunnelStartupLoading')?.remove();delete window.TunnelStartupLoading;}
             document.addEventListener('tunnel-shell-ready',dispose);
-            document.addEventListener('DOMContentLoaded',()=>{const layer=document.getElementById('tunnelStartupLoading');layer?.querySelector('[data-startup-retry]')?.addEventListener('click',()=>location.reload());layer?.querySelector('[data-startup-dismiss]')?.addEventListener('click',dispose);tick();},{once:true});
+            document.addEventListener('DOMContentLoaded',()=>{const layer=document.getElementById('tunnelStartupLoading');layer?.querySelector('details')?.addEventListener('toggle',()=>render());layer?.querySelector('[data-startup-retry]')?.addEventListener('click',()=>location.reload());layer?.querySelector('[data-startup-dismiss]')?.addEventListener('click',dispose);tick();},{once:true});
             window.TunnelStartupLoading={dispose};
         })();
     </script>

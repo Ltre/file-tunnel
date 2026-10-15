@@ -280,7 +280,8 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const authorization = grant(record.location.grantId, 'collection'); let lease, transient;
         try {
             db.patch('collection', record.id, job.scope, { state: 'transferring', error: '' }); let localPath, name;
-            if (record.resultId) { const candidate = item('result', record.resultId); lease = cache.acquire(job.scope, candidate.cacheId); localPath = lease.path; name = record.name + (candidate.kind === 'image' ? '.jpg' : '.mp4'); }
+            if(record.compressionId){const variant=item('compression',record.compressionId);lease=cache.acquire(job.scope,variant.cacheId);localPath=lease.path;name=record.name+'.mkv';}
+            else if (record.resultId) { const candidate = item('result', record.resultId); lease = cache.acquire(job.scope, candidate.cacheId); localPath = lease.path; name = record.name + (candidate.kind === 'image' ? '.jpg' : '.mp4'); }
             else {
                 const source = item('import', record.importId); name = nameOf(source.name);
                 const opened = await disk.open(source.file, undefined, signal);
@@ -293,10 +294,17 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             }
             const file = await disk.write(authorization.location, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal);
             return db.atomic(() => { const value = db.patch('collection', record.id, job.scope, { state: 'ready', file, collectedAt: now(), error: '' });
-                if (record.resultId) db.patch('result', record.resultId, job.scope, { savedId: record.id }); return value; });
+                if (record.resultId) db.patch('result', record.resultId, job.scope, { savedId: record.id }); if(record.compressionId)db.patch('compression',record.compressionId,job.scope,{savedId:record.id});return value; });
         } finally { lease?.release(); if (transient) cache.discard(job.scope, transient.record.id); }
     }
     function remark(kind,id,input){const record=item(kind,id);if(kind==='result'&&record.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');if(typeof input.remark!=='string'||input.remark.length>65535)throw Error('MEDIA_REMARK_INVALID');return db.patch(kind,id,scope(),{remark:input.remark},input.version);}
+    function compressionDetails(record){const versions=db.matching('compression',scope(),'resultId',record.resultId).sort((a,b)=>(a.completedAt||a.createdAt)-(b.completedAt||b.createdAt)||a.id.localeCompare(b.id));return {...record,ordinal:record.ordinal||versions.findIndex(v=>v.id===record.id)+1};}
+    function collectCompression(id){return db.atomic(()=>{const variant=compressionDetails(item('compression',id)),result=item('result',variant.resultId),settings=requireConfig();
+        const existing=db.matching('collection',scope(),'compressionId',id).find(c=>c.state!=='deleted');if(existing){if(['failed','cancelled','interrupted'].includes(existing.state)){const lease=cache.acquire(scope(),variant.cacheId);lease.release();queue('collect',{collectionId:existing.id,cacheId:variant.cacheId});return db.patch('collection',existing.id,scope(),{state:'queued',error:''});}return existing;}
+        const lease=cache.acquire(scope(),variant.cacheId);lease.release();
+        const name=require('./clip-name').compressionName(item('session',result.sessionId),result,variant);
+        const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,entities:[],source:{...variant}});
+        queue('collect',{collectionId:record.id,cacheId:variant.cacheId});return record;});}
     function transcode(resultId,input={}){const result=item('result',resultId);if(result.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');
         const params={crf:input.crf===undefined||input.crf===''?28:Number(input.crf),preset:String(input.preset||'')};
         for(const axis of ['width','height']){params[axis]=input[axis]===''||input[axis]==null?null:Number(input[axis]);if(params[axis]!==null&&(!Number.isInteger(params[axis])||params[axis]<2||params[axis]>16384||params[axis]%2))throw Error('MEDIA_TRANSCODE_PARAMETERS_INVALID');}
@@ -311,8 +319,11 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         progress(1,{phase:'transcoding',detail:'正在压缩视频，音轨保持复制'});const probe=await processing.probe(lease.path,signal);let tail='';
             const quality=await processing.compress(lease.path,output.path,{...job.context.params,signal,duration:(result.endMs-result.startMs)/1000,audio:probe.streams.some(s=>s.codec_type==='audio'),onOutput:text=>{tail=(tail+text).slice(-8192);const value=[...tail.matchAll(/out_time_us=(\d+)/g)].at(-1);if(value)progress(Math.min(94,Number(value[1])/1000/(result.endMs-result.startMs)*94),{phase:'transcoding',detail:'正在执行 libx265 压缩转码'});}});
             progress(96,{phase:'thumbnail',detail:'正在生成缩略图并确认转码结果'});await processing.thumbnail(output.path,thumb.path,signal);cache.commit(job.scope,output.record.id,settings.caches.candidates);cache.commit(job.scope,thumb.record.id,settings.caches.candidates);
-            const prior=db.get('compression',job.id,job.scope),payload={resultId:result.id,sessionId:result.sessionId,cacheId:output.record.id,thumbnailCacheId:thumb.record.id,params:job.context.params,quality,sourceBytes:lease.record.size,completedAt:now()};
-            return prior?db.patch('compression',job.id,job.scope,payload):db.create('compression',job.scope,payload,job.id);
+            const sourceVideo=probe.streams.find(s=>s.codec_type==='video')||{},sourceAudio=probe.streams.find(s=>s.codec_type==='audio')||{};
+            const sourceInfo={bytes:lease.record.size,width:sourceVideo.width,height:sourceVideo.height,videoCodec:sourceVideo.codec_name,videoBitRate:Number(sourceVideo.bit_rate)||null,audioCodec:sourceAudio.codec_name,audioBitRate:Number(sourceAudio.bit_rate)||null,duration:Number(probe.format?.duration)||null};
+            return db.atomic(()=>{const versions=db.matching('compression',job.scope,'resultId',result.id),ordinal=Math.max(versions.length,...versions.map(v=>v.ordinal||0))+1;
+            const prior=db.get('compression',job.id,job.scope),payload={resultId:result.id,sessionId:result.sessionId,ordinal:prior?.ordinal||ordinal,cacheId:output.record.id,thumbnailCacheId:thumb.record.id,params:job.context.params,quality,sourceInfo,sourceBytes:lease.record.size,completedAt:now()};
+            return prior?db.patch('compression',job.id,job.scope,payload):db.create('compression',job.scope,payload,job.id);});
         }catch(error){if(output)cache.discard(job.scope,output.record.id);if(thumb)cache.discard(job.scope,thumb.record.id);throw capacityError||error;}finally{clearInterval(meter);lease.release();}}
     function compare(resultId, input) {
         const source = item('result', resultId); if (source.kind !== 'image') throw Error('MEDIA_IMAGE_REQUIRED');
@@ -457,7 +468,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     if (autoStart) { timer = setInterval(() => pump().catch(() => {}), 2000); timer.unref?.(); }
     return { db, cache, processing, config, scope, grant, configureLocation, setCachePolicies, createImport, createLink, attachTask, receive, createSession, extract, clip,
-        collect, collectImport, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput, remark, transcode,
+        collect, collectImport, collectCompression, compressionDetails, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput, remark, transcode,
         authorizeRead(record, kind = 'import', snapshot) { if (kind === 'import' && record.managed) grant(record.location.grantId, 'workspace', snapshot); else if (kind === 'collection' && !record.external) grant(record.location.grantId, 'collection', snapshot); },
         retryImport(id) { return db.atomic(() => {
             const record = item('import', id); if (!['download-failed', 'import-failed', 'cancelled'].includes(record.state)) throw Error('MEDIA_JOB_NOT_RETRYABLE');

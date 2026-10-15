@@ -683,7 +683,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await runStartupStage('indexeddb-open', initStorage);
         await runStartupStage('cache-store-create', initFileCacheStore);
         registerServiceWorker();
-        if (!await runStartupStage('session-restore', initSession)) {
+        if (!await runStartupStage('session-restore', initSession) || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
             initLandingNearbyPresence();
             initSessionLanding();
             markStartupShellReady('landing');
@@ -1127,6 +1127,15 @@ function replaceSessionDirectoryCache(sessions = []) {
 }
 
 // ==================== 会话管理 ====================
+function savedTunnelGrant(id){try{return localStorage.getItem('tunnel-access:'+id)||'';}catch(_){return '';}}
+function storeTunnelGrant(id,grant){if(id&&grant)localStorage.setItem('tunnel-access:'+id,grant);}
+async function ensureTunnelAccess(){
+    let response;try{response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,grant:savedTunnelGrant(state.sessionId),shortCode:state.shortCode})});}catch(_){if(savedTunnelGrant(state.sessionId)||state.shortCode)return true;}
+    if(response?.status>=500&&(savedTunnelGrant(state.sessionId)||state.shortCode))return true;
+    const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelGrant(state.sessionId,data.grant);return true;}
+    state.sessionId=null;state.shortCode='';state.pendingRecordId='';state.pendingRecordDetails=false;state.pendingTunnelInviteReceipt=null;
+    const url=new URL(window.location.href);if(url.pathname.startsWith('/record/'))url.pathname='/';url.hash='';for(const key of ['record','invite','from'])url.searchParams.delete(key);history.replaceState(null,'',url.pathname+url.search);return false;
+}
 async function initSession() {
     // 生成或获取设备ID
     state.deviceId = localStorage.getItem('deviceId') || generateId();
@@ -1311,10 +1320,11 @@ function initSessionLanding() {
         note.textContent = '正在查找传输隧道...';
         joinInProgress = true;
         try {
-            const response = await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`);
+            const response = await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`,{headers:{'X-Tunnel-Device':state.deviceId,'X-Tunnel-Grant':savedTunnelGrant(readSessionDirectoryCache().find(s=>s.shortCode===shortCode)?.sessionId)},cache:'no-store'});
             if (!response.ok) throw new Error('没有找到该传输隧道，或它已经被删除。');
             const data = await response.json();
             if (!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId || '')) throw new Error('传输隧道响应无效。');
+            storeTunnelGrant(data.sessionId,data.grant);
             openSession(data.sessionId);
         } catch (err) {
             note.textContent = err.message;
@@ -1343,7 +1353,7 @@ function initSessionLanding() {
         });
     });
     document.getElementById('landingCreateBtn').addEventListener('click', () => {
-        openSession(generateId());
+        const id=generateId();sessionStorage.setItem('tunnel-create:'+id,'1');openSession(id);
     });
     if (window.matchMedia('(min-width: 768px)').matches) {
         requestAnimationFrame(() => inputs[0]?.focus());
@@ -1861,7 +1871,9 @@ function initSocket() {
             deviceName: state.deviceName,
             deviceModel: state.deviceModel,
             localIp: state.reportedLanIp,
-            shortCode: state.shortCode
+            shortCode: state.shortCode,
+            accessGrant:savedTunnelGrant(state.sessionId),
+            createTunnel:sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1'
         });
         announceNearbyPresence();
         if (nearbyPresenceTimer) clearInterval(nearbyPresenceTimer);
@@ -1945,7 +1957,10 @@ function initSocket() {
     state.socket.on('permission-denied', data => {
         showAppToast(`操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
+    state.socket.on('tunnel-access-grant',data=>{storeTunnelGrant(data.sessionId,data.grant);sessionStorage.removeItem('tunnel-create:'+data.sessionId);});
+    state.socket.on('tunnel-access-required',()=>{const target=new URL(window.location.href);if(target.pathname.startsWith('/record/'))target.pathname='/';target.hash='';for(const key of ['record','invite','from'])target.searchParams.delete(key);target.searchParams.set('leave','1');state.socket.disconnect();window.location.replace(target.href);});
     state.socket.on('short-code-session', (data) => {
+        storeTunnelGrant(data?.sessionId,data?.grant);
         if (data?.sessionId && data.sessionId !== state.sessionId) {
             window.location.hash = data.sessionId;
             window.location.reload();
@@ -8392,6 +8407,7 @@ async function shareFileMagnet(messageId) {
                 sessionId: state.sessionId,
                 fileId: fileInfo.id,
                 deviceId: state.deviceId,
+                accessGrant:savedTunnelGrant(state.sessionId),
                 asset: {
                     id: fileInfo.id,
                     name: fileInfo.name || storedFile.name || 'file',
@@ -9767,6 +9783,7 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
             sessionId: state.sessionId,
             fileId: fileInfo.id,
             deviceId: state.deviceId,
+                accessGrant:savedTunnelGrant(state.sessionId),
             asset: {
                 id: fileInfo.id,
                 name: fileInfo.name || storedFile.name || 'file',
@@ -16945,7 +16962,7 @@ async function showJoinedSessionSwitcher() {
     document.body.appendChild(dialog);
     initTunnelControlCenter(dialog);
     dialog.addEventListener('click', event => {
-        if (event.target === dialog) dialog.remove();
+        if (!event.target.closest('.control-center-tile, [data-control-panel], .control-center-drag-label') && !event.defaultPrevented) dialog.remove();
     });
     dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
     const scroller = dialog.querySelector('#sessionSwitcherList');
@@ -17695,6 +17712,7 @@ function initTunnelSettings() {
         if (event.target.closest('button')) close();
     }, true);
     document.getElementById('tunnelSettingsBtn')?.addEventListener('click', open);
+    const rotate=document.createElement('button');rotate.type='button';rotate.className='btn btn-secondary';rotate.textContent='修改隧道短码';rotate.onclick=()=>{if(state.sessionOwnerDeviceId!==state.deviceId){showAppToast('仅隧道创建者或后台管理员可修改短码');return;}const shortCode=prompt('输入新的 5 位短码。旧短码将失效，已加入设备不受影响。',state.shortCode||'');if(shortCode===null)return;state.socket?.emit('session-short-code-update',{shortCode},result=>{if(!result?.ok)alert(result?.error||'短码修改失败');else showAppToast('短码已更新，旧短码不再允许加入');});};settingsToolGrid?.append(rotate);
     document.getElementById('grantLanP2pPermissionBtn')?.addEventListener('click', grantLanP2pPermission);
     document.getElementById('closeTunnelSettingsBtn')?.addEventListener('click', close);
     layer?.addEventListener('click', event => {
@@ -18622,7 +18640,7 @@ async function announceKnownSessionCodes() {
     if (state.sessionId && state.shortCode && !entries.some(entry => entry.sessionId === state.sessionId)) {
         entries.push({ sessionId: state.sessionId, shortCode: state.shortCode });
     }
-    socket.emit('register-session-codes', { entries });
+    socket.emit('register-session-codes', { deviceId:state.deviceId,entries:entries.map(entry=>({...entry,accessGrant:savedTunnelGrant(entry.sessionId)})) });
     historyLog('session-code-directory-announced', { entryCount: entries.length });
 }
 
@@ -18633,7 +18651,7 @@ function joinByShortCode() {
         alert('请输入 5 位字母或数字组成的隧道暗号。');
         return;
     }
-    state.socket?.emit('join-by-short-code', { shortCode });
+    state.socket?.emit('join-by-short-code', { shortCode,deviceId:state.deviceId });
 }
 
 async function pollClipboard() {

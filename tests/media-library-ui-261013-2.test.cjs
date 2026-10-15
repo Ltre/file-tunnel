@@ -75,7 +75,7 @@ test('queued Clip card appears before completion; the same task becomes a result
 test('per-card collection needs no checkbox and renders progress; navigation link exists only after confirmed disk save', async () => {
     const slow = deferred(), f = fixture(async () => slow.promise), state = snapshot();
     state.results = [{ id: 'clip', kind: 'clip', sessionId: 'old', cacheReady: true }]; f.set(state); f.setSession('old'); f.renderResults();
-    const button = f.ids.get('ml-results').querySelectorAll('button').find(n => n.textContent === '收藏');
+    const button = f.ids.get('ml-results').querySelectorAll('button').find(n => n.attrs['aria-label'] === '收藏');
     const pending = button.onclick(); await turn(); assert.equal(f.calls.length, 1); assert.match(f.calls[0].route, /\/results\/clip\/collect$/);
     slow.resolve({ id: 'saved', resultId: 'clip', state: 'queued' }); await pending;
     let info = f.ids.get('ml-results').children[0].children.at(-1); assert.ok(info.children.some(n => n.textContent.includes('收藏到网盘')));
@@ -132,5 +132,5 @@ test('range preview starts playback on the first click and stops at the selected
     const state=snapshot();state.sessions[0].importId='video';const f=fixture();f.set(state);f.setSession('old');f.setTab('sessions');
     const panel=f.renderSessions(),descendants=n=>[n,...n.children.flatMap(descendants)],player=descendants(panel).find(n=>n.tagName==='VIDEO');player.readyState=1;player.duration=10;
     const action=panel.querySelectorAll('button').find(n=>n.textContent==='预览选定范围');await action.onclick();assert.equal(player.playCalls,1);assert.equal(player.paused,false);
-    const feedback=descendants(panel).find(n=>n.className==='ml-preview-feedback ml-segment-feedback');assert.equal(feedback.textContent,'正在播放选定范围');player.currentTime=10;player.emit('timeupdate');assert.equal(player.paused,true);
+    const feedback=descendants(panel).find(n=>n.className==='ml-preview-feedback ml-segment-feedback');assert.equal(feedback.hidden,true);assert.equal(feedback.textContent,'');player.currentTime=10;player.emit('timeupdate');assert.equal(player.paused,true);
 });

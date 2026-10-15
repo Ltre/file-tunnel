@@ -10,9 +10,9 @@ const read=file=>fs.readFileSync(path.join(ROOT,file),'utf8');
 const data=text=>new TextEncoder().encode(text);
 const text=entry=>new TextDecoder().decode(entry.data);
 const file=(path,value='')=>({path,type:path.endsWith('/')?'application/x-directory':'text/plain',data:data(value)});
-function tools(fetch){
-    const window={crypto:webcrypto};
-    vm.runInNewContext(read('client/web-workshop.js'),{window,Uint8Array,TextEncoder,TextDecoder,Blob,Map,Set,Date,Math,String,Number,Object,Array,RegExp,Error,Promise,URL,setTimeout,clearTimeout,AbortController,fetch});
+function tools(fetch,options={}){
+    const window={crypto:options.crypto||webcrypto};
+    vm.runInNewContext(read('client/web-workshop.js'),{window,Uint8Array,TextEncoder,TextDecoder,Blob,Map,Set,Date,Math,String,Number,Object,Array,RegExp,Error,Promise,URL,setTimeout,clearTimeout,AbortController,fetch,Worker:options.Worker});
     return window.WebWorkshop._test;
 }
 function support(){return tools().markdownSupportFiles.map(([name])=>({path:name,data:new Uint8Array(fs.readFileSync(path.join(ROOT,'client/vendor/web-markdown',name)))}));}
@@ -155,4 +155,11 @@ test('部署核验只允许精确 Markdown 固定路径，不放宽其它源 JS 
     assert.match(context.strip('/client/vendor/web-markdown/unknown.js'),/\/client\//);
     assert.match(context.strip(JSON.stringify(assets[0]+'.unknown')),/\/client\//);
     assert.match(source,/!original\.equals\(deployed\)/);
+});
+
+test('Android HTTP origin without Web Crypto uses the existing SHA-256 worker and still checks all support bytes',async()=>{
+    let terminated=0;const {Sha256}=require('../client/disk-content-hash-worker');
+    class Worker{constructor(url){assert.equal(url,'/client/disk-content-hash-worker.js');}postMessage({file}){file.arrayBuffer().then(data=>this.onmessage({data:{sha256:new Sha256().update(new Uint8Array(data)).digest()}}));}terminate(){terminated++;}}
+    const api=tools(async url=>({ok:true,arrayBuffer:async()=>{const file=fs.readFileSync(path.join(ROOT,url.slice(1)));return file.buffer.slice(file.byteOffset,file.byteOffset+file.byteLength);}}),{crypto:{},Worker});
+    assert.equal((await api.readMarkdownSupport()).length,5);assert.equal(terminated,5);
 });

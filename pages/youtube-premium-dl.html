@@ -897,7 +897,7 @@
                     version,
                     status: stored.status === 'cached' ? 'browser_cache_cached' :
                         (stored.status === 'cleared' ? 'browser_cache_cleared' :
-                            (cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled')),
+                            (task.autoCacheEnabled!==false&&cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled')),
                     progress: stored.status === 'cached' ? 100 : 0,
                     error: ''
                 });
@@ -908,6 +908,7 @@
     }
 
     function queueBrowserCache(task, force = false) {
+        if(!force&&task?.autoCacheEnabled===false){premiumBrowserCache?.cancelAutomatic(task.id);return Promise.resolve(false);}
         if (!task?.hasFile || !premiumBrowserCache) return Promise.resolve(false);
         if (browserCacheJobs.has(task.id)) return browserCacheJobs.get(task.id);
         const state = browserCacheStates.get(task.id);
@@ -920,10 +921,11 @@
             }
             setBrowserCacheState(task.id, { status: 'browser_cache_caching', progress: 0, error: '' });
             try {
-                await premiumBrowserCache.store(task);
+                await premiumBrowserCache.store(task,{automatic:!force});
                 setBrowserCacheState(task.id, { status: 'browser_cache_cached', progress: 100 });
                 return true;
             } catch (error) {
+                if(error.name==='AbortError'){setBrowserCacheState(task.id,{status:'browser_cache_disabled',progress:0});return false;}
                 if (error.message === 'browser-cache-auth-required') {
                     location.href = `/admin-auth?next=${encodeURIComponent(location.pathname)}`;
                 }
@@ -1983,6 +1985,7 @@
                 transcode.textContent = '前往转码处理';
                 actions.appendChild(transcode);
             }
+            const preference=document.createElement('button');preference.textContent=task.autoCacheEnabled===false?'允许自动缓存到浏览器':'停止自动缓存到浏览器';preference.onclick=async()=>{preference.disabled=true;try{const enabled=task.autoCacheEnabled===false;if(!enabled)premiumBrowserCache?.cancelAutomatic(task.id);await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoCacheEnabled:enabled})});await loadTasks();}finally{preference.disabled=false;}};actions.appendChild(preference);
             const tagButton = document.createElement('button');
             tagButton.type = 'button';
             tagButton.textContent = '打标签';

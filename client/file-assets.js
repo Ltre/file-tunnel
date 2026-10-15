@@ -181,6 +181,7 @@
             return `req-${String(assetId || '').slice(0, 8)}-${Date.now().toString(36)}-${random}`;
         }
 
+        sourceAccessGrant(assetId){try{return global.localStorage?.getItem('tunnel-access:'+this.sourceSessionId(assetId))||'';}catch(_){return '';}}
         sourceSessionId(assetId) {
             const sourceSessionId = this.requestedMetadata.get(assetId)?.backupSourceSessionId;
             return typeof sourceSessionId === 'string' && sourceSessionId && sourceSessionId !== this.deps.getSessionId()
@@ -413,6 +414,7 @@
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     sourceSessionId: this.sourceSessionId(assetId),
+                    sourceAccessGrant: this.sourceAccessGrant(assetId),
                     assetId,
                     mode: needsManifest ? 'manifest' : undefined,
                     preferredProviderId: this.desiredAssets.get(assetId),
@@ -472,6 +474,7 @@
             socket.emit('file-asset-discovery', {
                 sessionId: this.deps.getSessionId(),
                 sourceSessionId: this.sourceSessionId(assetId),
+                    sourceAccessGrant: this.sourceAccessGrant(assetId),
                 assetId,
                 reason
             });
@@ -601,6 +604,7 @@
             socket.emit('file-asset-request', {
                 sessionId: this.deps.getSessionId(),
                 sourceSessionId: this.sourceSessionId(asset.id),
+                    sourceAccessGrant: this.sourceAccessGrant(asset.id),
                 assetId: asset.id,
                 preferredProviderId: selectedProviderId,
                 force: forced,
@@ -716,6 +720,7 @@
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
                     sourceSessionId: this.sourceSessionId(assetId),
+                    sourceAccessGrant: this.sourceAccessGrant(assetId),
                     assetId,
                     preferredProviderId,
                     transferId,

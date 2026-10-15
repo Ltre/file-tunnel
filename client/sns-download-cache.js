@@ -158,12 +158,20 @@
             return { status: 'missing' };
         }
 
-        async store(task) {
-            if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + task.id, () => this.storeUnlocked(task));
-            return this.storeUnlocked(task);
+        cancelAutomatic(taskId) { this.automaticControllers?.get(taskId)?.abort(); }
+        async store(task, options = {}) {
+            if(!options.automatic){if(global.navigator?.locks)return global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + task.id,()=>this.storeUnlocked(task));return this.storeUnlocked(task);}
+            const controller=new AbortController();this.automaticControllers ||= new Map();
+            let timer,checking=false;
+            const check=async()=>{if(checking||controller.signal.aborted)return;checking=true;try{const response=await fetch(task.downloadUrl.replace(/\/file(?:\?.*)?$/,''),{cache:'no-store',credentials:'same-origin',signal:controller.signal});if(!response.ok)throw Error('无法核验自动缓存设置');const current=await response.json();if(current.autoCacheEnabled===false)controller.abort();}finally{checking=false;}};
+            if(options.automatic){this.automaticControllers.set(task.id,controller);try{await check();controller.signal.throwIfAborted();}catch(error){this.automaticControllers.delete(task.id);throw error;}controller.signal.throwIfAborted();timer=setInterval(()=>check().catch(()=>{}),1000);}
+            try { const run=()=>{controller.signal.throwIfAborted();return this.storeUnlocked(task,{signal:controller.signal,automatic:true,beforeCommit:check});};
+                if (global.navigator?.locks) return await global.navigator.locks.request('disk-pending-cache:' + DB_NAME + ':' + task.id, run);
+                return await run();
+            }catch(error){try{await check();}catch(_){}if(controller.signal.aborted)throw new DOMException('已停止自动缓存到浏览器','AbortError');throw error;}finally{clearInterval(timer);if(this.automaticControllers.get(task.id)===controller)this.automaticControllers.delete(task.id);}
         }
 
-        async storeUnlocked(task) {
+        async storeUnlocked(task, options = {}) {
             if (!task?.downloadUrl) throw new Error('browser-cache-source-missing');
             const cacheStore = await this.cacheStorePromise;
             const pinned = await this.getRecord(task.id);
@@ -172,7 +180,7 @@
                 throw new Error('该任务的旧版本缓存仍用于待转存，请先完成或取消网盘转存后再缓存新版本。');
             }
             if (!cacheStore?.beginWrite) throw new Error('browser-cache-store-unavailable');
-            const response = await fetch(task.downloadUrl, { cache: 'no-store', credentials: 'same-origin' });
+            const response = await fetch(task.downloadUrl, { cache: 'no-store', credentials: 'same-origin', signal: options.signal, headers: options.automatic?{'X-Task-Auto-Cache':'1'}:{} });
             if (response.status === 401) throw new Error('browser-cache-auth-required');
             if (!response.ok) throw new Error(`browser-cache-http-${response.status}`);
             const expected = Number(task.outputFileSize) || Number(response.headers.get('Content-Length')) || 0;
@@ -201,6 +209,7 @@
                     received = data.byteLength;
                 }
                 if (expected && received !== expected) throw new Error(`browser-cache-size-mismatch:${received}/${expected}`);
+                await options.beforeCommit?.(); options.signal?.throwIfAborted();
                 committed = await writer.commit();
                 const storedSize = dataSize(committed.data) || Number(committed.cacheStoreRef?.size) || 0;
                 if (expected && storedSize !== expected) throw new Error(`browser-cache-size-mismatch:${storedSize}/${expected}`);

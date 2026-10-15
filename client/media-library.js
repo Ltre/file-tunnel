@@ -6,6 +6,7 @@
         receiving: '正在接收本地文件', transferring: '正在转存网盘', 'import-failed': '导入失败', running: '执行中', completed: '已完成', failed: '失败', cancelled: '已取消', expired: '已到期清理', interrupted: '中断待恢复', deleted: '已删除' };
     let data = { imports: [], sessions: [], results: [], collections: [], entities: [], jobs: [], caches: [], events: [] }, tab = 'infra', sessionId = '', playerOffset = 0, selection = new Set(), polling = null, activeUpload, stateRevision = 0;
     let lastView = '', collectionQuery = '', collectionEntity = '', disposePlayer = () => {};
+    let resultView='grid',compressionViewing=null,compressionSelection='';
     const el = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; };
     const notice = (text, failed = false) => { $('ml-notice').textContent = text; $('ml-notice').className = failed ? 'error' : ''; };
     const bytes = n => !n ? '0 B' : n < 1024 ? n + ' B' : (n / (n >= 1024 ** 3 ? 1024 ** 3 : n >= 1024 ** 2 ? 1024 ** 2 : 1024)).toFixed(1) + (n >= 1024 ** 3 ? ' GB' : n >= 1024 ** 2 ? ' MB' : ' KB');
@@ -28,6 +29,7 @@
     function select(values, selected) { const node = document.createElement('select'); values.forEach(([id, name]) => node.add(new Option(name, id))); if (selected !== undefined) node.value = selected; return node; }
     const badge = (state, text = states[state] || state) => el('span', text, 'ml-badge ' + state);
     function dialog(title, body, actions = []) {
+        compressionViewing=null;
         $('ml-dialog-title').textContent = title; $('ml-dialog-body').replaceChildren(body); $('ml-dialog-actions').replaceChildren(...actions, button('关闭', () => $('ml-dialog').close()));
         if (!$('ml-dialog').open) $('ml-dialog').showModal();
     }
@@ -224,7 +226,8 @@
         center.append(player, line);
         const controls = el('div', undefined, 'ml-row'), order = select([['time', '按实际播放时刻'], ['created', '按提取时间']]), unsaved = input('', 'checkbox'); order.id = 'ml-frame-order'; unsaved.id = 'ml-frame-unsaved';
         order.onchange = renderResults; unsaved.onchange = renderResults;
-        controls.append(order, label('只看未收藏', unsaved), button('收藏选中画面', async () => { if (!selection.size) throw Error('请先选择画面'); for (const id of [...selection]) await collectCandidate(id); selection.clear(); renderResults(); }));
+        const view=select([['grid','宫格'],['list','列表']],resultView);view.setAttribute('aria-label','候选视图');view.onchange=()=>{resultView=view.value;renderResults();};
+        controls.append(order,view,label('只看未收藏', unsaved), button('收藏选中画面', async () => { if (!selection.size) throw Error('请先选择画面'); for (const id of [...selection]) await collectCandidate(id); selection.clear(); renderResults(); }));
         const results = el('div', undefined, 'ml-grid'); results.id = 'ml-results'; center.append(controls, results);
         right.append(label('起点（秒或时间）', start), label('终点', end), label('保留音频', audio), label('裁切方式', precision), el('p', '暂停播放器设定端点，左右键使用实际视频帧时间。快速裁切不承诺任意毫秒精度。'));
         const clipInput = () => ({ start: start.value, end: end.value, audio: audio.checked, precise: precision.value === 'precise' });
@@ -266,7 +269,7 @@
             reportBuffer=()=>{let loaded=0;for(let i=0;i<(player.buffered?.length||0);i++)loaded+=Math.max(0,Math.min(player.buffered.end(i),finish-playerOffset+playerOrigin)-Math.max(player.buffered.start(i),target));previewFeedback.textContent='正在定位、缓冲并开始播放…'+(loaded?' · 选定范围已缓冲 '+Math.min(100,Math.floor(loaded/(finish-begin)*100))+'%':'');};
             player.addEventListener('progress',reportBuffer);reportBuffer();if(previewStop)player.removeEventListener('timeupdate',previewStop);
             const playback=player.play();abort.signal.addEventListener('abort',()=>player.pause(),{once:true});await playback;
-            if(abort.signal.aborted||version!==sourceVersion)return;previewFeedback.textContent='正在播放选定范围';
+            if(abort.signal.aborted||version!==sourceVersion)return;previewFeedback.textContent='';previewFeedback.hidden=true;
             const stop = previewStop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }catch(error){previewFeedback.textContent=abort.signal.aborted?'预览已取消':'预览未开始：'+error.message;if(!abort.signal.aborted)throw error;}finally{if(reportBuffer)player.removeEventListener('progress',reportBuffer);previewing=false;} }), previewFeedback,
             button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));
                 rememberRecord('jobs', job); renderResults(); notice('裁切已排队；候选区可查看执行状态'); }, 'primary'),
@@ -363,14 +366,15 @@
         return record;
     }
     function renderResults() {
-        for(const line of $('ml-results')?.querySelectorAll('[data-compression-job]')||[]){const job=data.jobs.find(j=>j.id===line.dataset.compressionJob);if(job)line.textContent=compressionStatus(job);}
+        if(compressionViewing&&$('ml-dialog').open)renderCompressionView();
+        for(const line of $('ml-results')?.querySelectorAll('[data-compression-job]')||[]){const job=data.jobs.find(j=>j.id===line.dataset.compressionJob);if(job){line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';}}
         if($('ml-results')?.querySelector('textarea[data-dirty="1"]')) {
             for(const job of data.jobs.filter(j=>j.type==='transcode')){const box=$('ml-results').querySelector('[data-result-id="'+job.context.resultId+'"]');if(!box)continue;
-                let line=box.querySelector('[data-compression-job="'+job.id+'"]');if(!line){line=el('p');line.dataset.compressionJob=job.id;box.append(line);}line.textContent=compressionStatus(job);
-                const result=data.results.find(r=>r.id===job.context.resultId);if(result&&(data.compressions||[]).some(v=>v.resultId===result.id&&v.cacheReady)&&!box.querySelector('.ml-compression-view'))box.append(button('看压缩版',()=>compressionViewer(result),'ml-compression-view'));
+                let line=box.querySelector('[data-compression-job="'+job.id+'"]');if(!line){line=el('p');line.dataset.compressionJob=job.id;box.append(line);}line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';
             }return;
         }
         const area = $('ml-results'); if (!area) return; const order = $('ml-frame-order')?.value, unsaved = $('ml-frame-unsaved')?.checked;
+        area.classList.toggle('ml-list',resultView==='list');
         const results = data.results.filter(r => !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId)).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : (a.actualMs ?? a.startMs) - (b.actualMs ?? b.startMs));
         area.replaceChildren();
         for (const job of data.jobs.filter(j => j.type === 'clip' && j.context.sessionId === sessionId && !data.results.some(r => r.id === j.id)).sort((a, b) => b.createdAt - a.createdAt)) {
@@ -394,36 +398,58 @@
             info.append(el('div', date(result.extractedAt) + (result.savedId ? ' · 已收藏' : ' · 未收藏'), 'ml-muted'));
             const actions = el('div', undefined, 'ml-actions');
             const collection = renderCollectionProgress(result, info, actions);
-            if (result.cacheReady) actions.append(button('查看', () => { const media = document.createElement(result.kind === 'image' ? 'img' : 'video'); media.className = 'ml-preview'; media.src = root + '/cache/' + result.cacheId; if (result.kind === 'clip') media.controls = true; dialog('候选资源', media); }),
-                button(collection?.state === 'ready' ? '已收藏' : collection && ['queued', 'transferring'].includes(collection.state) ? '收藏中…' : '收藏', async () => {
+            const icon=(glyph,title,run)=>{const node=button(glyph,run);node.title=title;node.setAttribute('aria-label',title);return node;};
+            if (result.cacheReady) actions.append(icon('◉','查看', () => { const media = document.createElement(result.kind === 'image' ? 'img' : 'video'); media.className = 'ml-preview'; media.src = root + '/cache/' + result.cacheId; if (result.kind === 'clip') media.controls = true; dialog('候选资源', media); }),
+                icon(collection?.state === 'ready' ? '★' : collection && ['queued', 'transferring'].includes(collection.state) ? '◌' : '☆',collection?.state === 'ready'?'已收藏':'收藏', async () => {
                     if (collection && ['failed', 'cancelled', 'interrupted'].includes(collection.state)) {
                         const job = data.jobs.find(j => j.type === 'collect' && j.context.collectionId === collection.id);
                         if (job) { rememberRecord('jobs', await api('/jobs/' + job.id + '/retry', json('POST'))); rememberRecord('collections', { ...collection, state: 'queued' }); renderResults(); return; }
                     }
                     await collectCandidate(result.id);
                 }));
-            if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.textContent !== '查看') node.disabled = true; });
+            if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.title !== '查看') node.disabled = true; });
             if(result.kind==='clip'){
                 const note=el('textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.oninput=()=>{note.dataset.dirty='1';};
-                info.append(el('small','修改备注后点击保存，下载和收藏使用已保存备注','ml-muted'),note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();}));
-                if(result.cacheReady){const download=el('a','⇩','ml-disk-link');download.href=root+'/results/'+result.id+'/download';download.title='下载 Clip';actions.append(download,button('压缩转码',()=>transcodeDialog(result)));}
+                info.append(note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();}));
+                if(result.cacheReady){const download=el('a','⇩','ml-disk-link');download.href=root+'/results/'+result.id+'/download';download.title='下载 Clip';actions.append(download);}
                 const variants=(data.compressions||[]).filter(v=>v.resultId===result.id&&v.cacheReady);
-                if(variants.length)actions.append(button('看压缩版',()=>compressionViewer(result)));
-                for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id)){const jobLine=el('p', compressionStatus(job));jobLine.dataset.compressionJob=job.id;info.append(jobLine);if(['queued','running'].includes(job.state))info.append(button('取消转码',async()=>{rememberRecord('jobs',await api('/jobs/'+job.id+'/cancel',json('POST')));renderResults();}));}
+                actions.append(button('压缩',()=>compressionViewer(result),'ml-compression-view'));
+                for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id&&j.state!=='completed')){const jobLine=el('p', compressionStatus(job));jobLine.dataset.compressionJob=job.id;info.append(jobLine);if(['queued','running'].includes(job.state))info.append(button('取消转码',async()=>{rememberRecord('jobs',await api('/jobs/'+job.id+'/cancel',json('POST')));renderResults();}));}
             }
             if (result.kind === 'image') actions.append(button('相似度', () => compareDialog(result)));
             info.append(actions); box.append(info); area.append(box);
         }
+        if(order==='created'){const stamp=node=>{const result=data.results.find(r=>r.id===node.dataset.resultId);return result?.extractedAt??data.jobs.find(j=>j.id===node.dataset.jobId)?.createdAt??0;};area.append(...Array.from(area.children).sort((a,b)=>stamp(b)-stamp(a)));}
     }
-    function transcodeDialog(result){const body=el('div',undefined,'ml-stack'),width=input('','number'),height=input('','number'),crf=input('28','number'),preset=select(['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].map(value=>[value,value||'默认']));body.append(label('目标宽度（可选）',width),label('目标高度（可选）',height),label('CRF',crf),label('preset（可选）',preset));
-        dialog('压缩转码',body,[button('提交转码',async()=>{const job=await api('/results/'+result.id+'/transcode',json('POST',{width:width.value,height:height.value,crf:crf.value,preset:preset.value}));rememberRecord('jobs',job);$('ml-dialog').close();renderResults();notice('压缩任务已排队，Clip 卡片中可查看进度');},'primary')]);}
-    function compressionViewer(result){const wrap=el('div',undefined,'ml-compression-viewer'),left=el('aside'),right=el('section'),top=el('div',undefined,'ml-compression-toolbar');
-        top.append(button('+ 以其它参数转码',()=>transcodeDialog(result)));left.append(top);
-        const choose=variant=>{const video=el('video');video.controls=true;video.className='ml-preview';video.src=root+'/cache/'+variant.cacheId;video.onerror=()=>{right.append(el('p','当前浏览器可能不支持此 HEVC/MKV 压缩版本，可下载后使用兼容播放器打开。'));};
-            const download=el('a','⇩ 下载此压缩版');download.href=video.src;download.download='clip-'+variant.id+'.mkv';
-            const details=el('pre',JSON.stringify({参数:variant.params,结果:variant.quality,源大小:variant.sourceBytes,完成时间:date(variant.completedAt)},null,2));right.replaceChildren(video,download,details);};
-        const variants=(data.compressions||[]).filter(v=>v.resultId===result.id&&v.cacheReady);
-        for(const variant of variants){const entry=button('CRF '+variant.params.crf+' · '+(variant.params.width||'自动')+'×'+(variant.params.height||'自动'),()=>choose(variant));const img=el('img');img.src=root+'/cache/'+variant.thumbnailCacheId;img.alt='压缩结果缩略图';entry.append(img);left.append(entry);}wrap.append(left,right);dialog('Clip 压缩版本',wrap);if(variants.length)choose(variants[0]);}
+    function transcodeDialog(result){
+        const modal=el('dialog',undefined,'ml-transcode-dialog'),body=el('div',undefined,'ml-stack'),width=input('','number'),height=input('','number'),crf=input('28','number'),preset=select(['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].map(value=>[value,value||'默认']));
+        body.append(label('目标宽度（可选）',width),label('目标高度（可选）',height),label('CRF',crf),label('preset（可选）',preset));
+        modal.append(el('h2','压缩转码'),body,button('提交转码',async()=>{const job=await api('/results/'+result.id+'/transcode',json('POST',{width:width.value,height:height.value,crf:crf.value,preset:preset.value}));rememberRecord('jobs',job);modal.close();renderResults();},'primary'),button('取消',()=>modal.close()));
+        modal.addEventListener('close',()=>modal.remove(),{once:true});document.body.append(modal);modal.showModal();
+    }
+    function compressionViewer(result){const wrap=el('div',undefined,'ml-compression-viewer');dialog('Clip 压缩版本',wrap);compressionViewing=result;compressionSelection='';renderCompressionView();}
+    function renderCompressionView(){
+        const wrap=$('ml-dialog-body').querySelector('.ml-compression-viewer');if(!wrap)return;
+        const result=compressionViewing,variants=(data.compressions||[]).filter(v=>v.resultId===result.id).sort((a,b)=>a.ordinal-b.ordinal);
+        const left=el('aside'),top=el('div',undefined,'ml-compression-toolbar');top.append(button('+ 压缩转码',()=>transcodeDialog(result)));left.append(top);
+        let right=wrap.querySelector('.ml-compression-detail');if(!right)right=el('section',undefined,'ml-compression-detail');
+        const selected=variants.find(v=>v.id===compressionSelection)||variants.at(-1);if(selected)compressionSelection=selected.id;
+        for(const variant of variants){const entry=button('压'+variant.ordinal+' · '+variant.quality.width+'×'+variant.quality.height,()=>{compressionSelection=variant.id;renderCompressionView();},variant.id===selected?.id?'selected':'');
+            if(variant.cacheReady){const img=el('img');img.src=root+'/cache/'+variant.thumbnailCacheId;img.alt='压缩版本 '+variant.ordinal;entry.append(img);}else entry.append(el('small','缓存已清理'));left.append(entry);}
+        if(!variants.length)left.append(el('p','暂无压缩版本','ml-muted'));
+        // Retain the active video during polling; update only metadata/status.
+        if(right.dataset.variantId!==selected?.id||!right.firstChild){right.replaceChildren();right.dataset.variantId=selected?.id||'';
+            if(selected?.cacheReady){const video=el('video');video.controls=true;video.className='ml-preview';video.src=root+'/cache/'+selected.cacheId;video.onerror=()=>notice('当前浏览器不支持此压缩格式，可下载后播放。',true);right.append(video);const actions=el('div',undefined,'ml-actions'),download=el('a','⇩ 下载');download.href=root+'/compressions/'+selected.id+'/download';actions.append(download,button('存到网盘',async()=>{const saved=await api('/compressions/'+selected.id+'/collect',json('POST'));rememberRecord('collections',saved);renderCompressionView();}));right.append(actions);}
+            else right.append(el('p',selected?'此版本缓存已清理，参数和历史保留。':'点击左侧“+ 压缩转码”创建第一个版本。'));
+            right.append(el('div',undefined,'ml-compression-metadata'));}
+        const meta=right.querySelector('.ml-compression-metadata');meta.replaceChildren();
+        if(selected){meta.append(el('p','压'+selected.ordinal+' · 转码完成 · '+date(selected.completedAt)));const table=el('table'),head=el('tr');['文件信息','转码前','转码后'].forEach(v=>head.append(el('th',v)));table.append(head);
+            const original=selected.sourceInfo||{bytes:selected.sourceBytes},after=selected.quality||{},fields=[['大小','bytes',bytes],['分辨率','width',(_,o)=>o.width&&o.height?o.width+'×'+o.height:'未提供'],['视频码率','videoBitRate',v=>v?Math.round(v/1000)+' kbps':'未提供'],['时长','duration',v=>v?v.toFixed(3)+' 秒':'未提供'],['音轨编码','audioCodec',v=>v||'未提供']];
+            for(const [title,key,format] of fields){const row=el('tr');row.append(el('th',title),el('td',format(original[key],original)),el('td',format(after[key],after)));table.append(row);}meta.append(table,el('pre',JSON.stringify({参数:selected.params,执行结果:selected.quality},null,2)));
+            const saved=data.collections.find(c=>c.compressionId===selected.id&&c.state!=='deleted');if(saved){meta.append(el('p','存到网盘：'+(saved.state==='ready'?'已保存':states[saved.state]||saved.state)));if(saved.state==='ready'&&saved.file){const link=el('a','▤ 在网盘中查看');link.target='_blank';link.rel='noopener';link.href='/disk?'+new URLSearchParams({disk_account:saved.file.userId,disk_space:saved.file.diskSpace||'',disk_path:saved.file.path??saved.location.path,disk_file:saved.file.fileId});meta.append(link);}}}
+        for(const job of data.jobs.filter(j=>j.type==='transcode'&&j.context.resultId===result.id&&j.state!=='completed'))meta.append(el('p',compressionStatus(job)));
+        if(right.parentNode===wrap)wrap.firstElementChild.replaceWith(left);else wrap.replaceChildren(left,right);
+    }
     async function compareDialog(result) {
         const body = el('div', undefined, 'ml-stack'), against = select([['session', '当前会话'], ['video', '同源视频全部会话'], ['collection', '正式收藏画面'], ['references', '临时参考图集']]);
         const threshold = input(80, 'number'), matches = el('div', undefined, 'ml-grid'); body.append(label('比较范围', against), label('感知哈希初筛阈值（0～100）', threshold), el('p', '先比较感知哈希，再比较归一化灰度像素。近似度是提示，不是人物识别或自动删除决定。'), matches);

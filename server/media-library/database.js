@@ -28,6 +28,7 @@ function createMediaDatabase(dataDir, now = Date.now) {
         CREATE INDEX IF NOT EXISTS media_frame_time ON media_documents(scope,json_extract(data,'$.importId'),json_extract(data,'$.actualMs')) WHERE kind='result';
         CREATE UNIQUE INDEX IF NOT EXISTS media_import_source ON media_documents(scope,json_extract(data,'$.sourceKey')) WHERE kind='import';
         CREATE UNIQUE INDEX IF NOT EXISTS media_collection_result ON media_documents(scope,json_extract(data,'$.resultId')) WHERE kind='collection';
+        CREATE UNIQUE INDEX IF NOT EXISTS media_collection_compression ON media_documents(scope,json_extract(data,'$.compressionId')) WHERE kind='collection' AND json_extract(data,'$.state')!='deleted';
         CREATE UNIQUE INDEX IF NOT EXISTS media_entity_name ON media_documents(scope,json_extract(data,'$.entityKind'),json_extract(data,'$.normalizedName')) WHERE kind='entity';
         PRAGMA user_version=2;`);
     db.exec('COMMIT');

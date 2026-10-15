@@ -398,6 +398,8 @@ class InfraStore {
         return shortCode;
     }
 
+    rotateShortCode(sessionId,shortCode){const original=this.getTunnel(sessionId);if(!original)throw Error('隧道不存在');const other=this.findSessionIdByShortCode(shortCode);if(other&&other!==sessionId)throw Error('该短码已被其它隧道使用');this.run('UPDATE tunnels SET short_code=? WHERE session_id=? AND deleted_at IS NULL',[shortCode,sessionId]);if(!this.save()){this.run('UPDATE tunnels SET short_code=? WHERE session_id=?',[original.short_code,sessionId]);throw Error('短码保存失败');}return shortCode;}
+
     touchTunnel(sessionId, { shortCode = '', createdAt = Date.now(), lastActivity = Date.now() } = {}) {
         this.touchTunnelRow(sessionId, { shortCode, createdAt, lastActivity });
         this.scheduleSave();

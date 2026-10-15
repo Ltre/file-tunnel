@@ -167,6 +167,8 @@ const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 let vclientControl = null;
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
+const tunnelAccess=require('./server/tunnel-access').createTunnelAccess(SERVER_DATA_DIR);
+const taskAutoCache=require('./server/task-auto-cache').createTaskAutoCache();
 const youtubePremiumMetadataCache = loadYoutubePremiumMetadataCache();
 const snsDownloadMetadataCache = loadSnsDownloadMetadataCache();
 
@@ -1160,6 +1162,7 @@ app.get('/api/admin/auth/status', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
         authenticated,
+        authReason:authenticated?'VALID':adminAuth.diagnose(req),
         configured,
         setupAllowed,
         setup: setupAllowed ? adminAuth.getSetup(req.query?.issuer) : undefined
@@ -1627,6 +1630,7 @@ app.patch('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const task = snsDownloadService.updateDetails(req.params.taskId, req.body);
     if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
+    if(task.autoCacheEnabled===false)taskAutoCache.stop('sns:'+task.id);
     res.json(task);
 });
 
@@ -1683,6 +1687,7 @@ app.delete('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
 registerAudioTrackRepairRoutes(app, { root: '/api/sns-dl', service: snsDownloadService, requireAuth: adminAuth.requireAuth,
     repair: audioTrackRepair, sanitizeError: sanitizeSnsDownloadError });
 app.get('/api/sns-dl/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
+    if(!taskAutoCache.admit('sns:'+req.params.taskId,req,res,snsDownloadService.get(req.params.taskId)))return;
     const file = snsDownloadService.getFile(req.params.taskId);
     if (!file) return res.status(404).json({ error: 'sns-download-file-not-found' });
     const stat = fs.statSync(file.path);
@@ -1825,6 +1830,7 @@ app.patch('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res
     res.setHeader('Cache-Control', 'no-store');
     const task = youtubePremiumService.updateDetails(req.params.taskId, req.body);
     if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
+    if(task.autoCacheEnabled===false)taskAutoCache.stop('youtube:'+task.id);
     res.json(task);
 });
 
@@ -1968,6 +1974,7 @@ app.delete('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, re
 registerAudioTrackRepairRoutes(app, { root: '/api/youtube-premium', service: youtubePremiumService, requireAuth: adminAuth.requireAuth,
     repair: audioTrackRepair, sanitizeError: sanitizeYoutubePremiumError });
 app.get('/api/youtube-premium/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
+    if(!taskAutoCache.admit('youtube:'+req.params.taskId,req,res,youtubePremiumService.get(req.params.taskId)))return;
     const file = youtubePremiumService.getFile(req.params.taskId);
     if (!file) return res.status(404).json({ error: 'youtube-premium-file-not-found' });
     const stat = fs.statSync(file.path);
@@ -3215,6 +3222,7 @@ app.post('/api/magnets', (req, res) => {
             return res.status(404).json({ error: 'Session is not online' });
         }
 
+        if(!tunnelAccess.verify(req.body?.accessGrant,sessionId,deviceId))return res.status(403).json({error:'TUNNEL_ACCESS_REQUIRED'});
         if (!session.fileAssets) session.fileAssets = new Map();
         let record = session.fileAssets.get(fileId);
         const canRegisterRequester = isValidDeviceId(deviceId) && session.devices.has(deviceId) && deviceSockets.has(deviceId);
@@ -3566,17 +3574,20 @@ app.get('/api/admin/external-dependencies', adminAuth.requireAuth, (req, res) =>
 
 // ==================== Socket.io 配置 ====================
 
-app.get('/api/short-codes/:shortCode', (req, res) => {
-    const shortCode = normalizeShortCode(req.params.shortCode);
-    if (!shortCode) return res.status(400).json({ error: 'Invalid short code' });
-
-    const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
-    if (!sessionId || !isValidSessionId(sessionId)) {
-        deleteShortCode(shortCode);
-        return res.status(404).json({ error: 'Short code not found' });
-    }
-
-    res.json({ sessionId });
+function rotateTunnelShortCode(sessionId,value){const code=normalizeShortCode(value);if(!code)throw Error('短码应为 5 位字母或数字');if(infraStore.findShortCodeForSession(sessionId)===code)throw Error('新短码与当前短码相同，请输入不同的短码');infraStore.rotateShortCode(sessionId,code);for(const [old,id]of shortCodes)if(id===sessionId)shortCodes.delete(old);shortCodes.set(code,sessionId);const session=sessions.get(sessionId);if(session)session.shortCode=code;io.to(sessionId).emit('session-short-code',{shortCode:code});return code;}
+app.post('/api/sessions/:sessionId/short-code',adminAuth.requireAuth,(req,res)=>{try{res.json({shortCode:rotateTunnelShortCode(req.params.sessionId,req.body?.shortCode)});}catch(error){res.status(422).json({error:error.message});}});
+app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
+    const tunnel=infraStore?.getTunnel(sessionId),session=sessions.get(sessionId),code=tunnel?.short_code||session?.shortCode;
+    if(!tunnel&&!session)return res.json({allowed:true,creating:true});
+    if(tunnelAccess.verify(grant,sessionId,deviceId))return res.json({allowed:true,grant});
+    if(!tunnelAccess.attempt(req.ip))return res.status(429).json({allowed:false});
+    if(code&&normalizeShortCode(shortCode)===code&&!tunnelAccess.enrolled(sessionId,deviceId))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
+    res.status(403).json({allowed:false});
+});
+app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');if(!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
+    const shortCode=normalizeShortCode(req.params.shortCode);if(!shortCode)return res.status(400).json({error:'Invalid short code'});
+    const sessionId=infraStore?.findSessionIdByShortCode(shortCode)||shortCodes.get(shortCode);if(!sessionId)return res.status(404).json({error:'Short code not found'});
+    const deviceId=req.get('X-Tunnel-Device'),canIssue=isValidDeviceId(deviceId)&&(!tunnelAccess.enrolled(sessionId,deviceId)||tunnelAccess.verify(req.get('X-Tunnel-Grant'),sessionId,deviceId));res.json({sessionId,...(canIssue?{grant:tunnelAccess.issue(sessionId,deviceId)}:{})});
 });
 
 const io = new Server(webServer, {
@@ -3775,6 +3786,7 @@ function canManageTunnel(session, deviceId) {
 function canUseTunnelCapability(session, deviceId, capability) {
     if (!session || !deviceId) return false;
     const clientType = session.devices?.get(deviceId)?.clientType;
+    if (clientType === 'magnet') return false;
     if (clientType === 'vclient') return capability === 'read';
     if (clientType === 'server-shell') return true;
     if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
@@ -8833,6 +8845,14 @@ io.on('connection', (socket) => {
         ...details,
         message: socketText(message)
     });
+    socket.use(([event,data],next)=>{
+        if(['file-asset-request','file-asset-discovery'].includes(event)&&data?.sourceSessionId&&data.sourceSessionId!==currentSession&&!trustedInternalClient&&!tunnelAccess.verify(data.sourceAccessGrant,data.sourceSessionId,currentDevice))return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+        if(!socket.data.magnetAssetId||event==='join-session')return next();
+        const allowed=['file-asset-request','file-asset-discovery','file-asset-transfer-status'],magnet=infraStore?.getMagnet(socket.data.magnetId)||magnets.get(socket.data.magnetId);
+        if(allowed.includes(event)&&(data?.assetId||data?.fileId)===socket.data.magnetAssetId&&(!data.sessionId||data.sessionId===currentSession)&&!data.sourceSessionId&&magnet&&!magnet.revoked)return next();
+        emitSocketError('permission-denied','磁链只允许下载已分享的文件');
+    });
+    socket.on('session-short-code-update',(data,ack)=>{try{const session=sessions.get(currentSession);if(!session||currentDevice!==session.ownerDeviceId)throw Error('仅隧道创建者可修改短码');const code=rotateTunnelShortCode(currentSession,data?.shortCode);ack?.({ok:true,shortCode:code});}catch(error){ack?.({ok:false,error:error.message});}});
     socket.on('set-language', data => {
         socketLanguage = normalizeLanguageCode(data?.language || socketLanguage);
     });
@@ -9193,6 +9213,21 @@ io.on('connection', (socket) => {
                 return emitSocketError('error', '无效的设备名称');
             }
             
+            const knownTunnel=infraStore?.getTunnel(sessionId),knownSession=sessions.get(sessionId);
+            if(clientType==='browser'){
+                const publicMagnet=data.magnetId&&getMagnetPayload(data.magnetId);
+                if(publicMagnet&&publicMagnet.sessionId===sessionId&&deviceId!==(knownSession?.ownerDeviceId||knownTunnel?.owner_device_id)&&!knownSession?.devices.has(deviceId)&&!tunnelAccess.enrolled(sessionId,deviceId)){
+                    const publicAccess=parseStoredTunnelAccess(knownTunnel?.permissions_json),publicSession=knownSession||{devices:new Map(),editorAssets:new Map(),fileAssets:new Map(),history:[],historySize:0,deletedMessageIds:loadPersistedDeletionTombstones(sessionId),shortCode:knownTunnel?.short_code||'',remark:knownTunnel?.remark||'',ownerDeviceId:knownTunnel?.owner_device_id||'',permissions:publicAccess.permissions,admins:publicAccess.admins,createdAt:Number(knownTunnel?.created_at)||Date.now(),lastActivity:Date.now()};
+                    if(!knownSession)sessions.set(sessionId,publicSession);
+                    currentSession=sessionId;currentDevice=deviceId;socket.data.magnetAssetId=publicMagnet.assetId;socket.data.magnetId=data.magnetId;
+                    publicSession.devices.set(deviceId,{deviceId,deviceName:'磁链下载器',socketId:socket.id,clientType:'magnet',joinedAt:Date.now(),lastSeenAt:Date.now()});bindSocketToDevice(socket,deviceId);socket.emit('session-history',{messages:[],deletedMessageIds:[]});return;
+                }
+                if(!knownTunnel&&!knownSession&&data.createTunnel!==true)return emitSocketError('tunnel-access-required','请选择有效短码或主动创建新隧道');
+                const authorized=tunnelAccess.verify(data.accessGrant,sessionId,deviceId);
+                const code=knownTunnel?.short_code||knownSession?.shortCode;
+                if((knownTunnel||knownSession)&&!authorized&&(!tunnelAccess.attempt(clientIp)||!code||requestedShortCode!==code||tunnelAccess.enrolled(sessionId,deviceId)))return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
+                socket.data.magnetAssetId='';socket.data.magnetId='';socket.emit('tunnel-access-grant',{sessionId,grant:tunnelAccess.issue(sessionId,deviceId)});
+            }
             // 清理过期会话
             cleanupExpiredSessions();
             
@@ -9396,6 +9431,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join-by-short-code', data => {
+        if(!tunnelAccess.attempt(clientIp))return emitSocketError('short-code-error','短码尝试过于频繁，请稍后再试');
         const shortCode = normalizeShortCode(data?.shortCode);
         if (!shortCode) return emitSocketError('short-code-error', '短码应为 5 位字母或数字');
         const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
@@ -9403,7 +9439,9 @@ io.on('connection', (socket) => {
             deleteShortCode(shortCode);
             return emitSocketError('short-code-error', '短码无效或会话已结束');
         }
-        socket.emit('short-code-session', { sessionId });
+        const deviceId=data?.deviceId||currentDevice||profileDevice;
+        const canIssue=isValidDeviceId(deviceId)&&(!tunnelAccess.enrolled(sessionId,deviceId)||tunnelAccess.verify(data?.accessGrant,sessionId,deviceId));
+        socket.emit('short-code-session', { sessionId, ...(canIssue?{grant:tunnelAccess.issue(sessionId,deviceId)}:{}) });
     });
 
     socket.on('session-remark-update', data => {
@@ -9511,7 +9549,8 @@ io.on('connection', (socket) => {
                     continue;
                 }
                 const session = sessions.get(sessionId);
-                if (session?.shortCode && session.shortCode !== shortCode) {
+                const storedCode=infraStore?.findShortCodeForSession(sessionId);
+                if (!tunnelAccess.verify(entry.accessGrant,sessionId,data?.deviceId||currentDevice||profileDevice)||(storedCode&&storedCode!==shortCode)||(session?.shortCode && session.shortCode !== shortCode)) {
                     rejectedCount++;
                     continue;
                 }

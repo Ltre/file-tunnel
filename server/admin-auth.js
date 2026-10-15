@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const {privateKeyFile}=require('./private-key-file');
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const COOKIE_NAME = 'tunnel_admin_session';
@@ -86,10 +87,7 @@ function createAdminAuth(options) {
     }
 
     function ensurePrivateFile(filePath, contents) {
-        fs.mkdirSync(dataDir, { recursive: true });
-        if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, contents, { mode: 0o600 });
-        try { fs.chmodSync(filePath, 0o600); } catch (_) {}
-        return fs.readFileSync(filePath, 'utf8').trim();
+        return privateKeyFile(filePath,()=>contents);
     }
 
     function writePrivateFile(filePath, contents) {
@@ -121,7 +119,7 @@ function createAdminAuth(options) {
     }
 
     function isConfigured() {
-        return Boolean(readMarker());
+        return fs.existsSync(markerPath);
     }
 
     function getSetup(requestedIssuer) {
@@ -190,7 +188,10 @@ function createAdminAuth(options) {
     }
 
     function isAuthenticated(req) {
-        return verifySession(parseCookies(req.headers.cookie)[COOKIE_NAME]);
+        // Cookies with the same name but different paths can coexist. A stale
+        // duplicate must not mask a valid signed session; malformed input is ignored.
+        for(const part of String(req.headers.cookie||'').split(';')){const index=part.indexOf('=');if(part.slice(0,index).trim()!==COOKIE_NAME)continue;try{const value=decodeURIComponent(part.slice(index+1));if(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)&&verifySession(value))return true;}catch(_){} }
+        return false;
     }
 
     function cookieHeader(req, value, maxAge = Math.floor(SESSION_TTL_MS / 1000)) {
@@ -200,11 +201,13 @@ function createAdminAuth(options) {
 
     function requireAuth(req, res, next) {
         if (isAuthenticated(req)) return next();
+        res.setHeader('X-Admin-Auth-Reason',diagnose(req));
         if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'admin-auth-required' });
         return res.redirect(`/admin-auth?next=${encodeURIComponent(req.originalUrl || '/admin')}`);
     }
 
     return {
+        diagnose,
         markerPath,
         isConfigured,
         isAuthenticated,
@@ -215,6 +218,8 @@ function createAdminAuth(options) {
         cookieHeader,
         requireAuth
     };
+    function diagnose(req){if(isAuthenticated(req))return 'VALID';const values=String(req.headers.cookie||'').split(';').filter(p=>p.trim().startsWith(COOKIE_NAME+'='));if(!values.length)return 'COOKIE_MISSING';
+        if(!readMarker())return 'AUTH_CONFIGURATION_UNREADABLE';for(const part of values){try{const value=decodeURIComponent(part.slice(part.indexOf('=')+1)),[payload,signature]=value.split('.'),expected=crypto.createHmac('sha256',signingKey()).update(payload).digest('base64url');if(signature!==expected)continue;const data=JSON.parse(Buffer.from(payload,'base64url'));if(data.marker!==readMarker()?.createdAt)return 'AUTH_CONFIGURATION_CHANGED';if(Number(data.exp)<=Date.now())return 'SESSION_EXPIRED';}catch(_){} }return 'SESSION_SIGNATURE_MISMATCH';}
 }
 
 module.exports = { createAdminAuth };

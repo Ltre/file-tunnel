@@ -167,7 +167,8 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
         await run(ffmpeg,args,{signal,onOutput});
         const info=await probe(output,signal);validateMedia(info,{expectedDuration:options.duration,audio:options.audio,precise:true});
         await run(ffmpeg,[...common,'-v','error','-xerror','-i',output,'-f','null','-'],{signal});
-        return {codec:'libx265',container:'matroska',width:info.streams.find(s=>s.codec_type==='video')?.width,height:info.streams.find(s=>s.codec_type==='video')?.height,duration:durationOf(info),bytes:fs.statSync(output).size};
+        const video=info.streams.find(s=>s.codec_type==='video'),audio=info.streams.find(s=>s.codec_type==='audio');
+        return {codec:'libx265',container:'matroska',width:video?.width,height:video?.height,videoBitRate:Number(video?.bit_rate)||null,audioCodec:audio?.codec_name,audioBitRate:Number(audio?.bit_rate)||null,overallBitRate:Number(info.format?.bit_rate)||null,duration:durationOf(info),bytes:fs.statSync(output).size};
     }
     async function thumbnail(input,output,signal){await run(ffmpeg,[...common,'-v','error','-i',input,'-frames:v','1','-vf','scale=240:-2','-y',output],{signal});}
     return { probe, signature, frame, cut, compress, thumbnail, frameNeighbors,

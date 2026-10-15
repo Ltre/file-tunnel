@@ -285,6 +285,17 @@
         ['THIRD-PARTY-LICENSES.txt','e5c8263c23dba827b7eddd4dc5417443923e5459ecfaa7de36bf867e710dbb97']
     ];
     let markdownSupportPromise=null;
+    async function markdownSupportDigest(data,signal){
+        if(global.crypto?.subtle){const digest=await global.crypto.subtle.digest('SHA-256',data);return Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,'0')).join('');}
+        // Web Crypto is unavailable on Android HTTP LAN origins. Reuse the
+        // existing SHA-256 worker; integrity checks also remain active offline.
+        return new Promise((resolve,reject)=>{const worker=new Worker('/client/disk-content-hash-worker.js');let timer;
+            const finish=(error,value)=>{clearTimeout(timer);worker.terminate();signal?.removeEventListener('abort',abort);error?reject(error):resolve(value);};
+            const abort=()=>finish(new Error('Markdown 支持资源校验已取消'));
+            worker.onmessage=event=>{if(event.data.sha256)finish(null,event.data.sha256);else if(event.data.error)finish(new Error(event.data.error));};
+            worker.onerror=()=>finish(new Error('Markdown 支持资源校验失败'));timer=setTimeout(()=>finish(new Error('Markdown 支持资源校验超时')),15000);
+            if(signal?.aborted)return abort();signal?.addEventListener('abort',abort,{once:true});worker.postMessage({file:new Blob([data])});});
+    }
     async function readMarkdownSupport(){
         if(markdownSupportPromise)return markdownSupportPromise;
         markdownSupportPromise=(async()=>{
@@ -293,8 +304,7 @@
                 const response=await fetch('/client/vendor/web-markdown/'+name,{signal:controller.signal});
                 if(!response.ok)throw new Error('Markdown 支持资源读取失败：'+name+'（HTTP '+response.status+'）');
                 const data=new Uint8Array(await response.arrayBuffer());
-                const digest=await global.crypto.subtle.digest('SHA-256',data);
-                const actual=Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,'0')).join('');
+                const actual=await markdownSupportDigest(data,controller.signal);
                 if(actual!==expected)throw new Error('Markdown 支持资源版本不一致，请更新或刷新页面后重试：'+name);
                 return {path:name,type:guessType(name),data};
             }));}catch(error){controller.abort();throw error;}finally{clearTimeout(timer);}

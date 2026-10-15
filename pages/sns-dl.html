@@ -307,23 +307,25 @@
     }
     function cacheStateText(task) {
         const state = cacheStates.get(task.id);
+        if(task.autoCacheEnabled===false&&!['cached','caching'].includes(state?.status))return '已停止自动缓存到浏览器';
         if (!state) return cacheFilesInput.checked ? '浏览器缓存：待检查' : '浏览器缓存：未启用';
-        return ({ cached:'浏览器缓存：已完成', caching:`浏览器缓存：${Math.round(state.progress || 0)}%`, missing:'浏览器缓存：未缓存', cleared:'浏览器缓存：已清除', failed:`浏览器缓存失败：${state.error || ''}` })[state.status] || '';
+        return ({ cached:'浏览器缓存：已完成', caching:`浏览器缓存：${Math.round(state.progress || 0)}%`, missing:'浏览器缓存：未缓存', cleared:'浏览器缓存：已清除', stopped:'已停止自动缓存到浏览器', failed:`浏览器缓存失败：${state.error || ''}` })[state.status] || '';
     }
     function renderTaskCache(taskId) {
         const task = currentTasks.find(item => item.id === taskId); const node = taskList.querySelector(`[data-task-id="${CSS.escape(taskId)}"] [data-cache-state]`);
         if (task && node) node.textContent = cacheStateText(task);
     }
-    async function ensureBrowserCache(task) {
+    async function ensureBrowserCache(task, force = false) {
+        if(!force&&task.autoCacheEnabled===false){browserCache?.cancelAutomatic(task.id);return;}
         if (!browserCache || cacheJobs.has(task.id)) return;
         const job = (async () => {
             try {
                 let state = await browserCache.inspect(task);
                 if (state.status !== 'cached' && cacheFilesInput.checked && task.hasFile) {
-                    cacheStates.set(task.id,{status:'caching',progress:0}); renderTaskCache(task.id); state = await browserCache.store(task);
+                    cacheStates.set(task.id,{status:'caching',progress:0}); renderTaskCache(task.id); state = await browserCache.store(task,{automatic:!force});
                 }
                 cacheStates.set(task.id,{status:state.status});
-            } catch (error) { cacheStates.set(task.id,{status:'failed',error:error.message}); }
+            } catch (error) { cacheStates.set(task.id,{status:error.name==='AbortError'?'stopped':'failed',error:error.message}); }
             renderTaskCache(task.id);
         })().finally(() => cacheJobs.delete(task.id));
         cacheJobs.set(task.id,job); await job;
@@ -380,7 +382,8 @@
             if (task.status === 'completed' && !task.asMusic && !['audio','song'].includes(task.mediaType)) {
                 const transcode=document.createElement('a');transcode.className='button';transcode.href=`/video-transcode?source=sns&taskId=${encodeURIComponent(task.id)}`;transcode.textContent='前往转码处理';actions.append(transcode);
             }
-            actions.append(makeAction('缓存到浏览器',async()=>{cacheFilesInput.checked=true;localStorage.setItem('snsDownloadCacheFiles','1');await ensureBrowserCache(task);}));
+            actions.append(makeAction('缓存到浏览器',async()=>{cacheFilesInput.checked=true;localStorage.setItem('snsDownloadCacheFiles','1');await ensureBrowserCache(task,true);}));
+            actions.append(makeAction(task.autoCacheEnabled===false?'允许自动缓存到浏览器':'停止自动缓存到浏览器',async()=>{const enabled=task.autoCacheEnabled===false;if(!enabled)browserCache?.cancelAutomatic(task.id);await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoCacheEnabled:enabled})});await loadTasks();}));
             actions.append(makeAction('转发到隧道',()=>showForward(task)));
             actions.append(makeAction('原尺寸封面',()=>downloadThumbnail(task)));
         }

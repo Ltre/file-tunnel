@@ -859,6 +859,7 @@
                             </button>`}
                             ${cacheAction}
                             ${cacheView}
+                            ${isDeleted ? '' : `<button class="btn" onclick="rotateSessionCode('${safeId}')">修改短码</button>`}
                             ${isDeleted ? '' : `<button class="btn btn-danger" onclick="deleteSession('${safeId}')">
                                 <span>删除</span>
                             </button>`}
@@ -1033,6 +1034,7 @@
             }
         }
 
+        async function rotateSessionCode(sessionId){const shortCode=prompt('新 5 位短码（旧短码失效，已加入设备不受影响）');if(shortCode===null)return;const response=await fetch('/api/sessions/'+encodeURIComponent(sessionId)+'/short-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shortCode})});const value=await response.json();if(!response.ok)return alert(value.error||'修改失败');await loadData();}
         async function deleteSession(sessionId) {
             if (!isValidSessionId(sessionId) || !confirm(`删除会话 ${sessionId}？这会断开在线设备，并释放对应的隧道暗号。`)) return;
             try {
