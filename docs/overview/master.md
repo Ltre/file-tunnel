@@ -6,10 +6,10 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`b1788ca4b219718ad802ed778ed41c081ecad39b`
-- 源码提交时间：`2026-10-12T16:47:42Z`
+- 源码 Commit：`10ebe1000b9bd57097f90e51337a251ba17734f3`
+- 源码提交时间：`2026-10-16T19:18:08Z`
 - 首轮整理日期：2026-09-26
-- 文档更新时间：2026-10-13
+- 文档更新时间：2026-10-17
 
 精确增量锚点见 [VERSION.md](./VERSION.md)。
 
@@ -19,18 +19,18 @@
 
 Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作与传输系统。它已经从网页端即时传输工具扩展为多层系统：
 
-- 隧道路由、设备发现、多设备历史与权限；
+- 隧道路由、设备发现、多设备历史、稳定会话身份、短码与签名成员权限；
 - 文本、富文本、文件、合辑、目录；
 - IndexedDB/OPFS/File System Access 与 P2P/Relay/Telegram/VClient 多来源恢复；
 - 文件预览、后台音乐、摄像头、群语音、对讲、联系人通话、远程预览；
 - Telegram Bot、Telegram 内容管理、Telegram 虚拟网盘；
 - Passkey/OIDC、多账号、第三方网盘/S3 API、分区、协同挂载、分享、静态开放、共享 Content 与审核；
-- SNS、YouTube Premium、音轨修复、FFmpeg 转码；
+- SNS、YouTube Premium、音轨修复、FFmpeg 转码，以及独立视频画面提取与多媒体收藏；
 - 网页 ZIP / 网页工坊（含可离线 Markdown 页面）；
 - Light Transfer 光媒；
 - VClient 常驻缓存节点；
 - PWA / Service Worker / 移动工作区；
-- 管理后台、安全、构建和部署。
+- 独立后台布局、设备/磁链统计、持久磁链登记、安全、构建和部署。
 
 后续修改任何子系统，都不应只读单个 UI 文件。大量功能通过 `app.js`、`server.js`、`client/*`、`server/*`、Service Worker、IndexedDB、Socket.IO 与外部服务交叉。
 
@@ -60,12 +60,13 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
   - [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md) — Drop2Tunnel 自定义磁链、种子发现、独立下载器与磁链缓存。
   - [transfer-cache/folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md) — 文件夹 ZIP、合辑打包与 File System Access 目录镜像。
 - [media-player-realtime.md](./media-player-realtime.md) — 图片/视频/音频预览、音乐播放器、摄像头、语音、对讲、联系人呼叫、远程预览。
+- [media-library.md](./media-library.md) — 独立媒体后台、画面抽取、逐帧/Clip/压缩版本、工作区、收藏、网盘授权与恢复。
 - [light-transfer.md](./light-transfer.md) — D2L1 光学二维码文件协议、残片、网络加速、完整性与完成写入。
 
 ### Telegram
 
 - [telegram-bot-content.md](./telegram-bot-content.md) — Telegram Bot、中转、Webhook、指定目标转发、后台 Chat/成员管理。
-- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、上传恢复、Range、缓存、分享、文件/目录协同、审核、第三方 API、未来 SQLite/S3 边界。
+- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、上传恢复、Range、缓存、分享、文件/目录协同、审核、第三方 API、已落地 SQLite WAL 与有限 S3 Gateway、Content Object 和当前局限。
 
 ### 内容生产与下载处理
 
@@ -77,7 +78,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 - [pwa-ui.md](./pwa-ui.md) — PWA、Service Worker、主题、宽屏三栏、移动 workspace、Overlay、全局 UI 状态。
   - [pwa-ui/localization.md](./pwa-ui/localization.md) — 16 语言、本地化运行时、服务端 Telegram 翻译与 i18n 审计。
-- [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台、TOTP、Secrets、数据占用、Nginx/CDN、构建部署。
+- [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台布局/拆页、磁链统计、TOTP、Secrets、数据占用、Nginx/CDN、构建部署。
 - [vclient.md](./vclient.md) — VClient 常驻缓存节点、控制面、资产供源、服务器 Shell 推送。
 - [tests-and-regressions.md](./tests-and-regressions.md) — 自动测试、人工验收、失败版本和故障注入原则。
 
