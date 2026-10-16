@@ -1,7 +1,7 @@
 # Drop2Tunnel 全功能思维导图集
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：2026-10-16  
+> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **文档更新时间**：2026-10-17  
 > **工作基线**：此目录的“已实现”部分仅依据 `dev/doc-overview` 已合入的代码及 [Overview 体系](../master.md)，不把其它分支或当前讨论当作已交付功能。
 
 ## 阅读方式
@@ -14,7 +14,8 @@
 mindmap
   root((Drop2Tunnel))
     隧道核心
-      短码与设备
+      稳定身份与成员凭据
+      短码轮换与设备
       传输历史
       富文本协同
       关注与权限
@@ -24,6 +25,7 @@ mindmap
       本地句柄
       Telegram 恢复
       Magnet 下载器
+        持久登记与授权
     预览与实时
       图片视频音频
       音乐播放器
@@ -42,6 +44,10 @@ mindmap
       协同挂载与分享
       S3 与回收站
     生产与处理
+      独立媒体库
+        截图逐帧
+        Clip与压缩
+        收藏与网盘授权
       SNS 下载
       YouTube Premium
       音轨修复
@@ -57,6 +63,7 @@ mindmap
       D2L1 光媒
       VClient 常驻缓存
     管理保障
+      Admin独立布局与磁链统计
       Admin 与鉴权
       配置部署备份
       日志监测与测试
@@ -83,10 +90,11 @@ mindmap
 - [光媒 D2L1 与 VClient 常驻缓存节点](./10-light-transfer-vclient.md)
 - [后台管理、安全、部署、存储与测试回归](./11-admin-security-deploy-tests.md)
 - [规划：串流控制台、动态频道与监控大爷模式](./12-planned-streaming-console.md) — **规划，未实现**
+- [视频画面提取与多媒体收藏](./13-media-library.md) — **已实现的独立管理子系统**
 
 ## 来源、范围与边界
 
 - 每个子图顶部给出主要来源文档；完整源码入口见 [source-map.md](../source-map.md)。
-- 既有 Overview 已整理的源代码事实终点是 `b1788ca4b219718ad802ed778ed41c081ecad39b`，详见 [VERSION.md](../VERSION.md)；本次仅新增视图型文档，**不推进源码锚点**。
+- 当前 Overview 已整理的源码快照终点为 `10ebe1000b9bd57097f90e51337a251ba17734f3`，详见 [VERSION.md](../VERSION.md)。旧的 01—12 子图大多形成于 `b1788ca4...` 基线，本轮总图与新增 13 模块已补记 10 月 13—17 日能力；涉及旧子图未细化的最新行为，应以对应 Overview 模块文档和实际源码为准。
 - 图中的“支持”表达对应源码基线所记录的能力或受限能力，并**不意味着真机、真实 Telegram、所有浏览器和所有第三方 S3 客户端均已验收**。
 - `12-planned-streaming-console.md` 明确记录对话形成的未来需求，不应从这张图推断功能已上线。
