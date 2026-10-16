@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：`2026-10-13`
+> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **文档更新时间**：`2026-10-17`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -346,3 +346,21 @@ P2P 历史回归极多，尤其涉及：
 - 是否影响 P2P / Relay fallback；
 - 是否让服务器审计/持久化进入实时链路；
 - 是否混淆“服务器元数据”和“文件字节真实来源”。
+
+## 10. 2026-10-13—17 新模块、签名成员及资产所有权
+
+### 10.1 独立媒体收藏的三重存储边界
+
+`/media-library` 由 `server/media-library/index.js` 注册，`server/media-library/routes.js` 负责后台受保护 HTTP API。独立 `media-library.sqlite` 保存会话、任务、帧、候选、收藏、账号/授权和事件，`server/media-library/cache.js` 保存专属工作区中间字节；正式收藏才通过 `server/media-library/disk-adapter.js` 接入网盘的 Logical File/Content Object。FFmpeg 可使用仅监听 loopback 的临时资源地址读取已授权来源。**不得把独立媒体任务 DB、网盘 SQLite、原 infra.sql.js 合并成同一数据所有权模型**。
+
+### 10.2 新的隧道访问身份
+
+服务端 `server/tunnel-access.js` 用稳定的 `sessionId + deviceId` 签名凭据控制已加入成员，而短码用于新设备登记、可由拥有权限者轮换；`.tunnel-access.key` 与 `.tunnel-access-members` 是持续访问所需的服务端持久材料。凭据缺失、账本异常都不能退回“只知道 ID 就能加入”的旧隐式行为。磁链是仅限指定资产的 capability，不能被提升成普通会话成员。
+
+### 10.3 管理后台与服务端转发
+
+`server/admin-layout.js` 和 `pages/admin-layout.html` / `client/admin-layout.js` 以受限页面白名单组织后台导航；磁链登记持久化在 `infra.sqlite`，不是内存热缓存的自然寿命。Telegram 多目标转发另由 `server/telegram-forward-jobs.js` 维护确认、进度、取消与可能的撤回，未知远端结果不能宣称 exactly-once 或已经撤回。
+
+### 10.4 页面资源结构
+
+主 UI 原大量内联 CSS 已迁到 `client/index.css`，`pages/index.html` 仍提供 DOM，`app.js` 继续编排。业务页面已有独立 `client/media-library.js/.css`、`audio-track-repair.css`、`admin-layout.js/.css` 等资源；部署构建和 Service Worker 的版本/哈希需同步检查，但后台专用页面不应机械塞进前台 app shell。
