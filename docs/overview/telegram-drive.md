@@ -1,7 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：`2026-10-13`
+> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **文档更新时间**：`2026-10-17`
 > **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
@@ -740,3 +740,13 @@ Content 在仍有引用、租约、历史已确认关联或可疑频道别名时
 - 其它 2609 feature regression。
 
 真实 Telegram 端到端仍应单独验收，因为 Mock 无法完整覆盖 Telegram 的 delete window、file_id、album、Range proxy、权限等真实行为。
+
+## 30. 2026-10-13—16 上传与路径定位的新增约束
+
+1. **批量上传重名预检**：`client/disk-upload-names.js` 以最终相对目录与 trim 后文件名组合为碰撞域，整批预留名称，递增重命名并保留扩展名和 Unicode 边界。普通文件与递归目录上传均需确认，File 包装副本保留原字节/类型/修改时间。客户端确认及上传固定原账号，不能中途切换身份。
+2. **路径输入**：面包屑手动编辑改为真实 form submit、移动键盘 `enterKeyHint=go`、可点击“前往”，并保护中文输入候选和提交中失焦；指向挂载目录仍使用原本的服务端 scope 校验。点击“前往”的 pointerdown 与提交事件不能被 blur 先移除输入框。
+3. **账号管理浮层**：入口立即显示加载态，账号列表与当前身份并行读取，关闭时中止请求并拒绝迟到覆盖；候选高亮不等于真正已切换登录身份。
+4. **位置深链**：`/disk`、`disk=1` 所带 `disk_account`、`disk_space`、`disk_file`、`disk_path` 会跨主页面初始化、未登录、OIDC/Passkey 和账号切换保留到导航成功；仅在目标账号、分区和文件当前目录真实核对后滚动高亮。登录其它账号或失败不会消耗原目标；旧响应不得把当前用户带回原目录。
+5. **转存结果**：来自隧道、媒体收藏和压缩版本的保存必须固定目标账号、分区、目录以及来源版本；适配器可传入上传进度回调（发送/确认/复用阶段），确认持久文件与 Content 引用后才显示成功。当前没有为了这些页面变化改动 S3 协议本身。
+
+相关入口：`client/disk-ui.js`、`client/disk-directory-picker.js`、`client/disk-folder-upload.js`、`client/disk-tunnel-adapter.js`、`client/disk-upload-names.js`、`server/object-storage.js`。真实 Android 中文键盘、生产登录与真实 Telegram 仍需验收。
