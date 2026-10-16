@@ -177,17 +177,21 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     function extract(sessionId, parameters) {
         const session = item('session', sessionId); if (session.state !== 'active') throw Error('MEDIA_SESSION_REMOVED');
         const resource = item('import', session.importId), times = sampleTimes(parameters, resource.duration);
-        return db.atomic(() => { const batch = db.create('batch', scope(), { sessionId, importId: resource.id, parameters, times, state: 'queued', actualCount: 0 });
+        return db.atomic(() => { const previous = db.matching('batch', scope(), 'sessionId', sessionId);
+            const ordinal = Math.max(previous.length, ...previous.map(value => value.ordinal || 0)) + 1;
+            const batch = db.create('batch', scope(), { sessionId, importId: resource.id, ordinal, parameters, times, state: 'queued', actualCount: 0 });
             return { batch, job: queue('frames', { batchId: batch.id }) }; });
     }
     async function processFrames(job, signal, progress) {
         const batch = item('batch', job.context.batchId), session = item('session', batch.sessionId);
         const resource = item('import', session.importId), settings = requireConfig();
-        db.patch('batch', batch.id, job.scope, { state: 'running' });
+        db.patch('batch', batch.id, job.scope, { state: 'running', error: '' });
+        progress(0, { phase: 'source', detail: '正在读取源视频并准备取帧', framesDone: 0, framesTotal: batch.times.length });
         const source = await sourceInput(resource, signal, { start: Math.min(...batch.times), end: Math.max(...batch.times) });
         try {
             for (let index = 0; index < batch.times.length; index++) {
                 if (signal.aborted) throw Error('MEDIA_CANCELLED');
+                progress(Math.floor(index / batch.times.length * 99), { phase: 'extracting', detail: `正在提取第 ${index + 1}/${batch.times.length} 帧 · 目标时刻 ${batch.times[index].toFixed(3)} 秒`, framesDone: index, framesTotal: batch.times.length });
                 const id = batch.id + '-' + index;
                 const existing = db.get('result', id, job.scope), oldCache = existing && db.get('cache', existing.cacheId, job.scope);
                 if (!existing || oldCache?.status !== 'ready' || !fs.existsSync(cache.filename(oldCache))) {
@@ -202,9 +206,10 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                         if (existing) db.patch('result', id, job.scope, payload); else db.create('result', job.scope, payload, id);
                     } catch (error) { cache.discard(job.scope, output.record.id); throw error; }
                 }
-                progress(Math.round((index + 1) / batch.times.length * 99));
+                db.patch('batch', batch.id, job.scope, { actualCount: index + 1 });
+                progress(Math.round((index + 1) / batch.times.length * 99), { phase: 'extracting', detail: `已提取 ${index + 1}/${batch.times.length} 帧`, framesDone: index + 1, framesTotal: batch.times.length });
             }
-            return db.patch('batch', batch.id, job.scope, { state: 'completed', actualCount: batch.times.length });
+            return db.patch('batch', batch.id, job.scope, { state: 'completed', actualCount: batch.times.length, error: '' });
         } finally { source.close(); }
     }
     function clip(sessionId, input, segment = false) {
@@ -303,20 +308,31 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         } finally { lease?.release(); if (transient) cache.discard(job.scope, transient.record.id); }
     }
     function remark(kind,id,input){const record=item(kind,id);if(kind==='result'&&record.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');if(typeof input.remark!=='string'||input.remark.length>65535)throw Error('MEDIA_REMARK_INVALID');return db.patch(kind,id,scope(),{remark:input.remark},input.version);}
-    function compressionDetails(record){const versions=db.matching('compression',scope(),'resultId',record.resultId).sort((a,b)=>(a.completedAt||a.createdAt)-(b.completedAt||b.createdAt)||a.id.localeCompare(b.id));return {...record,ordinal:record.ordinal||versions.findIndex(v=>v.id===record.id)+1};}
+    function compressionDetails(record,tenant=scope()){const versions=db.matching('compression',tenant,'resultId',record.resultId).sort((a,b)=>(a.completedAt||a.createdAt)-(b.completedAt||b.createdAt)||a.id.localeCompare(b.id));return {...record,ordinal:record.ordinal||versions.findIndex(v=>v.id===record.id)+1};}
     function collectCompression(id){return db.atomic(()=>{const variant=compressionDetails(item('compression',id)),result=item('result',variant.resultId),settings=requireConfig();
         const existing=db.matching('collection',scope(),'compressionId',id).find(c=>c.state!=='deleted');if(existing){if(['failed','cancelled','interrupted'].includes(existing.state)){const lease=cache.acquire(scope(),variant.cacheId);lease.release();queue('collect',{collectionId:existing.id,cacheId:variant.cacheId});return db.patch('collection',existing.id,scope(),{state:'queued',error:''});}return existing;}
         const lease=cache.acquire(scope(),variant.cacheId);lease.release();
         const name=require('./clip-name').compressionName(item('session',result.sessionId),result,variant);
         const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,entities:[],source:{...variant}});
         queue('collect',{collectionId:record.id,cacheId:variant.cacheId});return record;});}
+    function reserveCompressionOrdinals(resultId, tenant) {
+        const versions = db.matching('compression', tenant, 'resultId', resultId), jobs = db.matching('job', tenant, 'type', 'transcode').filter(job => job.context.resultId === resultId);
+        const versionNumbers = new Map(versions.map(version => [version.id, compressionDetails(version, tenant).ordinal]));
+        let ordinal = Math.max(0, ...versionNumbers.values(), ...jobs.map(job => job.context.ordinal || 0));
+        for (const job of jobs) if (!job.context.ordinal) db.patch('job', job.id, tenant, { context: { ...job.context, ordinal: versionNumbers.get(job.id) || ++ordinal } });
+        return ordinal;
+    }
     function transcode(resultId,input={}){const result=item('result',resultId);if(result.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');
         const params={crf:input.crf===undefined||input.crf===''?28:Number(input.crf),preset:String(input.preset||'')};
         for(const axis of ['width','height']){params[axis]=input[axis]===''||input[axis]==null?null:Number(input[axis]);if(params[axis]!==null&&(!Number.isInteger(params[axis])||params[axis]<2||params[axis]>16384||params[axis]%2))throw Error('MEDIA_TRANSCODE_PARAMETERS_INVALID');}
         if(!Number.isFinite(params.crf)||params.crf<0||params.crf>51||!['','ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow','placebo'].includes(params.preset))throw Error('MEDIA_TRANSCODE_PARAMETERS_INVALID');
         const lease=cache.acquire(scope(),result.cacheId);lease.release();
-        return queue('transcode',{resultId,sessionId:result.sessionId,importId:result.importId,cacheId:result.cacheId,params});}
+        return db.atomic(() => {
+            const ordinal = reserveCompressionOrdinals(resultId, scope()) + 1;
+            return queue('transcode',{resultId,sessionId:result.sessionId,importId:result.importId,cacheId:result.cacheId,ordinal,params});
+        });}
     async function processTranscode(job,signal,progress){const result=item('result',job.context.resultId),settings=requireConfig();
+        if (!job.context.ordinal) { db.atomic(() => reserveCompressionOrdinals(result.id, job.scope)); job = db.get('job', job.id, job.scope); }
         const existing=db.get('compression',job.id,job.scope);if(existing){const c=db.get('cache',existing.cacheId,job.scope),t=db.get('cache',existing.thumbnailCacheId,job.scope);if(c?.status==='ready'&&t?.status==='ready'&&fs.existsSync(cache.filename(c))&&fs.existsSync(cache.filename(t)))return existing;}
         const lease=cache.acquire(job.scope,job.context.cacheId);let output,thumb,meter,capacityError;
         try { output=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.mkv');thumb=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.jpg');
@@ -327,7 +343,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             const sourceVideo=probe.streams.find(s=>s.codec_type==='video')||{},sourceAudio=probe.streams.find(s=>s.codec_type==='audio')||{};
             const sourceInfo={bytes:lease.record.size,width:sourceVideo.width,height:sourceVideo.height,videoCodec:sourceVideo.codec_name,videoBitRate:Number(sourceVideo.bit_rate)||null,audioCodec:sourceAudio.codec_name,audioBitRate:Number(sourceAudio.bit_rate)||null,duration:Number(probe.format?.duration)||null};
             return db.atomic(()=>{const versions=db.matching('compression',job.scope,'resultId',result.id),ordinal=Math.max(versions.length,...versions.map(v=>v.ordinal||0))+1;
-            const prior=db.get('compression',job.id,job.scope),payload={resultId:result.id,sessionId:result.sessionId,ordinal:prior?.ordinal||ordinal,cacheId:output.record.id,thumbnailCacheId:thumb.record.id,params:job.context.params,quality,sourceInfo,sourceBytes:lease.record.size,completedAt:now()};
+            const prior=db.get('compression',job.id,job.scope),payload={resultId:result.id,sessionId:result.sessionId,ordinal:prior?.ordinal||job.context.ordinal||ordinal,cacheId:output.record.id,thumbnailCacheId:thumb.record.id,params:job.context.params,quality,sourceInfo,sourceBytes:lease.record.size,completedAt:now()};
             return prior?db.patch('compression',job.id,job.scope,payload):db.create('compression',job.scope,payload,job.id);});
         }catch(error){if(output)cache.discard(job.scope,output.record.id);if(thumb)cache.discard(job.scope,thumb.record.id);throw capacityError||error;}finally{clearInterval(meter);lease.release();}}
     function compare(resultId, input) {
@@ -401,6 +417,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     function retry(id) {
         const job = item('job', id); if (!['failed', 'cancelled', 'interrupted'].includes(job.state)) throw Error('MEDIA_JOB_NOT_RETRYABLE');
         return db.atomic(() => {
+            if (job.context.batchId) db.patch('batch', job.context.batchId, scope(), { state: 'queued', error: '' });
             if (job.context.collectionId) {
                 const record = item('collection', job.context.collectionId);
                 if (record.state !== 'ready') db.patch('collection', record.id, scope(), { state: 'queued', error: '' });

@@ -149,6 +149,8 @@ test('forward UI submits multiple targets once, updates while collapsed and rest
     timers.shift()(); await turn(); assert.match(details.children[0].children[0].textContent, /42%.*0\/2/); assert.match(menu.children[6].textContent, /发送正文/); assert.equal(menu.children[5].disabled, true);
     details.isConnected = false; current = { ...current, state: 'completed', progress: 100, completedTargets: 2, detail: '发送结束', targets: current.targets.map(target => ({ ...target, state: 'completed' })) };
     const replacement = window.TelegramTargetForward.create(task, '/api/sns-dl', request); await turn();
+    assert.match(replacement.children[0].children[0].textContent, /42%.*0\/2/);
+    timers.shift()(); await turn();
     assert.match(replacement.children[0].children[0].textContent, /100%.*2\/2/); assert.equal(replacement.children[1].children[5].disabled, false);
     assert.equal(calls.filter(call => call.options?.method === 'POST').length, 1);
 });

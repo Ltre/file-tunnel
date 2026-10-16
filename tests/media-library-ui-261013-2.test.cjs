@@ -5,7 +5,10 @@ const turn = () => new Promise(setImmediate);
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 class Node {
     constructor(tag = 'div', text = '') { this.tagName = tag.toUpperCase(); this.textContent = text; this.children = []; this.dataset = {}; this.attrs = {}; this.listeners = {}; this.value = ''; this.isConnected = true;
-        this.classList = { toggle() {}, add() {}, remove() {} }; }
+        this.style = { setProperty(key,value) { this[key] = value; } };
+        const classes = () => new Set((this.className || '').split(' ').filter(Boolean));
+        this.classList = { contains: name => classes().has(name), add: name => { const values = classes(); values.add(name); this.className = [...values].join(' '); },
+            remove: name => { const values = classes(); values.delete(name); this.className = [...values].join(' '); }, toggle: (name,on) => { const values = classes(); const enabled = on ?? !values.has(name); enabled ? values.add(name) : values.delete(name); this.className = [...values].join(' '); return enabled; } }; }
     append(...nodes) { this.children.push(...nodes); for (const node of nodes) node.parentNode = this; } add(node) { this.append(node); if (this.children.length === 1) this.value = node.value; }
     replaceChildren(...nodes) { this.children = []; this.append(...nodes); } setAttribute(key, value) { this.attrs[key] = value; }
     get firstChild() { return this.children[0]; } get firstElementChild() { return this.children[0]; }
@@ -30,24 +33,25 @@ class Node {
 }
 function fixture(handler = async () => ({})) {
     const ids = new Map(); const get = id => ids.get(id) || null;
-    for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results', 'ml-dialog-body', 'ml-dialog-title', 'ml-dialog-actions']) ids.set(id, new Node());
+    for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results', 'ml-dialog-body', 'ml-dialog-title', 'ml-dialog-actions', 'ml-frames-dialog', 'ml-frames-title', 'ml-frame-progress', 'ml-frame-batches', 'ml-frame-grid', 'ml-frame-count']) ids.set(id, new Node());
     const calls = [], opened = [], window = { open() { const page = { opener: window, location: { replace(url) { page.url = url; } }, close() { page.closed = true; } }; opened.push(page); return page; } };
     const intervals=[],prompts=[];
-    const context = vm.createContext({ window, document: { getElementById: get, createElement: tag => new Node(tag), querySelectorAll: () => [], activeElement: null },
+    const body = new Node('body');
+    const context = vm.createContext({ window, document: { body, getElementById: get, createElement: tag => new Node(tag), querySelectorAll: () => [], activeElement: null },
         Option: class extends Node { constructor(text, value) { super('option', text); this.value = value; } }, URL, URLSearchParams, location: { origin: 'http://localhost' },
         prompt: (...args) => {prompts.push(args);return '立即出现的新会话';}, setTimeout, clearTimeout, setInterval: fn => {intervals.push(fn);return intervals.length;},clearInterval(){}, requestAnimationFrame: fn => fn(), AbortController, DOMException,
         fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: true, json: async () => value }; } });
     const end = source.lastIndexOf("    document.querySelectorAll('[data-tab]')");
     vm.runInContext(source.slice(0, end) + `
-        window.test = { refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
+        window.test = { refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, transcodeDialog, submitFrames, openFrameGallery, renderFrameGallery, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
             set(value) { data = value; }, setSession(id) { sessionId = id; }, setTab(value) { tab=value; }, data() { return data; }, changeTab,
             setView(value) { resultView=value; },
             stubRender(fn) { render = fn; } };
     })();`, context);
-    return { ...window.test, ids, calls, opened, window, intervals, prompts };
+    return { ...window.test, ids, calls, opened, window, intervals, prompts, body };
 }
 const snapshot = () => ({ config: { workspace: {}, collection: {} }, imports: [{ id: 'video', name: '视频', state: 'ready', duration: 10 }],
-    sessions: [{ id: 'old', name: '旧会话', state: 'active' }], results: [], collections: [], jobs: [], caches: [], events: [] });
+    sessions: [{ id: 'old', name: '旧会话', state: 'active' }], batches: [], results: [], collections: [], jobs: [], caches: [], events: [] });
 
 test('creating a session renders the returned session immediately; an older poll cannot erase it', async () => {
     const slow = deferred(), state = snapshot(), created = { id: 'new', name: '新会话', state: 'active', importId: 'video' }; let reads = 0;
@@ -167,6 +171,53 @@ test('compression collection submission errors stop the busy state and allow ret
     const body = f.ids.get('ml-dialog-body'), save = body.querySelector('[data-compression-collect]'); await save.onclick();
     assert.equal(save.disabled, false); assert.equal(save.attrs['aria-busy'], 'false');
     assert.match(body.querySelector('.ml-compression-collection').children[0].textContent, /转存失败.*上传失败/);
+});
+
+test('screenshots have a dedicated time-ordered gallery, independent Clip selection and toggleable batch colors', async () => {
+    const f = fixture(), state = snapshot(); f.set(state); f.setSession('old');
+    state.batches.push({ id: 'b2', sessionId: 'old', ordinal: 2, createdAt: 2, state: 'completed' }, { id: 'b1', sessionId: 'old', ordinal: 1, createdAt: 1, state: 'completed' });
+    state.results.push({ id: 'late', kind: 'image', sessionId: 'old', batchId: 'b1', actualMs: 5000, cacheReady: true }, { id: 'clip', kind: 'clip', sessionId: 'old', cacheReady: true },
+        { id: 'early', kind: 'image', sessionId: 'old', batchId: 'b2', actualMs: 1000, cacheReady: true }, { id: 'middle', kind: 'image', sessionId: 'old', batchId: 'b1', actualMs: 3000, cacheReady: true },
+        { id: 'foreign', kind: 'image', sessionId: 'another', actualMs: 0, cacheReady: true });
+    f.renderResults(); assert.deepEqual(f.ids.get('ml-results').children.map(row => row.dataset.resultId), ['clip']); f.openFrameGallery('old');
+    const grid = f.ids.get('ml-frame-grid'), tiles = f.ids.get('ml-frame-batches');
+    assert.deepEqual(grid.children.map(row => row.dataset.resultId), ['early','middle','late']);
+    assert.deepEqual(grid.children.map(row => row.querySelector('.ml-frame-batch-marker').textContent), ['批次 2','批次 1','批次 1']);
+    await tiles.children[0].onclick(); assert.equal(grid.children[0].classList.contains('batch-highlighted'), false); assert.equal(grid.children[1].classList.contains('batch-highlighted'), true);
+    await tiles.children[1].onclick(); assert.ok(grid.children.every(row => row.classList.contains('batch-highlighted')));
+    await tiles.children[0].onclick(); assert.equal(grid.children[1].classList.contains('batch-highlighted'), false); assert.equal(grid.children[0].classList.contains('batch-highlighted'), true);
+    assert.notEqual(grid.children[0].style['--ml-batch-color'], grid.children[1].style['--ml-batch-color']);
+    const choose = grid.children[0].querySelector('input'); choose.checked = true; choose.onchange(); assert.match(f.ids.get('ml-frame-count').textContent, /已选 1/);
+    f.renderResults(); assert.equal(f.ids.get('ml-results').querySelector('input').checked, false);
+});
+
+test('submitting extraction opens the gallery immediately, reports progress, and flashes only new frames once the batch completes', async () => {
+    const slow = deferred(), f = fixture(async () => slow.promise), state = snapshot(); f.set(state); f.setSession('old');
+    state.batches.push({ id: 'old-batch', sessionId: 'old', createdAt: 1, state: 'completed' }); state.results.push({ id: 'existing', kind: 'image', sessionId: 'old', batchId: 'old-batch', actualMs: 0, cacheReady: true });
+    const pending = f.submitFrames('old', { count: 1 }); assert.equal(f.ids.get('ml-frames-dialog').open, true); assert.match(f.ids.get('ml-frame-progress').children[0].textContent, /正在提交/);
+    slow.resolve({ batch: { id: 'new-batch', sessionId: 'old', ordinal: 2, createdAt: 2, state: 'queued', times: [1], actualCount: 0 }, job: { id: 'job', type: 'frames', state: 'queued', context: { batchId: 'new-batch' }, progress: 0 } }); await pending;
+    state.results.push({ id: 'new', kind: 'image', sessionId: 'old', batchId: 'new-batch', actualMs: 1000, cacheReady: true }); state.jobs[0].progress = 50; state.jobs[0].detail = '正在解码'; f.renderResults();
+    const grid = f.ids.get('ml-frame-grid'), fresh = grid.querySelector('[data-result-id="new"]'); assert.equal(fresh.classList.contains('ml-frame-new'), false);
+    assert.equal(f.ids.get('ml-frame-progress').querySelector('progress').value, 50);
+    state.batches.find(batch => batch.id === 'new-batch').state = 'completed'; f.renderResults(); assert.equal(fresh.classList.contains('ml-frame-new'), true);
+    assert.equal(grid.querySelector('[data-result-id="existing"]').classList.contains('ml-frame-new'), false);
+    await new Promise(resolve => setTimeout(resolve, 1150)); assert.equal(fresh.classList.contains('ml-frame-new'), false);
+    f.renderResults(); assert.equal(fresh.classList.contains('ml-frame-new'), false);
+});
+
+test('a submitted compression appears immediately as the newest placeholder, follows progress and becomes one completed version', async () => {
+    const queued = { id: 'new', type: 'transcode', createdAt: 3, context: { resultId: 'clip', ordinal: 3, params: { width: 960, height: 540 } }, state: 'queued', progress: 0 };
+    const f = fixture(async () => queued), state = snapshot(); state.compressions = [1,2].map(ordinal => ({ id: 'v'+ordinal, resultId: 'clip', ordinal, createdAt: ordinal, quality: { width: 1280, height: 720 }, cacheReady: true })); f.set(state); f.compressionViewer({ id: 'clip' });
+    const previousVideo = f.ids.get('ml-dialog-body').querySelector('video'); await previousVideo.play();
+    f.transcodeDialog({ id: 'clip' }); const form = f.body.children.at(-1); await form.querySelectorAll('button').find(button => button.textContent === '提交转码').onclick(); assert.equal(previousVideo.paused, true);
+    let entries = f.ids.get('ml-dialog-body').querySelectorAll('.ml-compression-entry'); assert.deepEqual(entries.map(node => node.dataset.compressionId), ['new','v2','v1']);
+    assert.match(entries[0].textContent, /压3.*960×540/); assert.equal(entries[0].querySelector('progress').value, 0);
+    state.jobs[0].state = 'running'; state.jobs[0].progress = 37; state.jobs[0].detail = '正在压缩视频'; f.renderCompressionView();
+    entries = f.ids.get('ml-dialog-body').querySelectorAll('.ml-compression-entry'); assert.equal(entries[0].querySelector('progress').value, 37);
+    state.compressions.push({ id: queued.id, resultId: 'clip', ordinal: 3, createdAt: 5, quality: { width: 960, height: 540 }, cacheReady: true }); state.jobs[0].state = 'completed'; f.renderCompressionView();
+    entries = f.ids.get('ml-dialog-body').querySelectorAll('.ml-compression-entry'); assert.equal(entries.length, 3); assert.equal(entries[0].querySelector('progress'), null); assert.ok(entries[0].querySelector('img'));
+    const right = f.ids.get('ml-dialog-body').querySelector('.ml-compression-detail'); assert.ok(right.querySelector('video'));
+    assert.equal(right.querySelector('a').className, right.querySelector('button').className);
 });
 
 test('metadata readiness precedes seeking and source switches cancel pending metadata/frame waits', async () => {

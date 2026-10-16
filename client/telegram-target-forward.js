@@ -2,6 +2,8 @@
 (function attachTelegramTargetForward(global) {
     const componentStates = new Map();
     const components = new Set();
+    const IDLE_REFRESH_MS = 60000;
+    const ACTIVE_REFRESH_MS = 1000;
     let outsideDismissBound = false;
 
     function normalizeTargets(targets) {
@@ -177,7 +179,7 @@
             if (!details.open) return;
             for (const component of components) if (component !== details && component.open) component.open = false;
             const variantsReady = refreshVariants();
-            refreshJobs(state).catch(() => {});
+            refreshJobs(state, { force: true }).catch(() => {});
             if (state.loaded) { await variantsReady; return; }
             status.textContent = '正在读取历史目标…';
             try {
@@ -233,9 +235,12 @@
     function updateViews(state) {
         for (const view of state.views) { if (!view.details.isConnected) state.views.delete(view); else view.paint(); }
     }
-    async function refreshJobs(state) {
+    async function refreshJobs(state, { force = false } = {}) {
         if (state.polling) return;
+        const active = state.job && ['queued','running'].includes(state.job.state);
+        if (!force && state.jobsCheckedAt !== undefined && Date.now() - state.jobsCheckedAt < (active ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS)) return;
         state.polling = true;
+        state.jobsCheckedAt = Date.now();
         const before = state.job;
         try {
             const result = await state.request('/api/telegram-forward-jobs?source=' + state.source + '&taskId=' + encodeURIComponent(state.taskId));
@@ -247,7 +252,7 @@
     }
     function schedulePoll(state) {
         if (state.timer || typeof setTimeout !== 'function' || !state.job || !['queued','running'].includes(state.job.state)) return;
-        state.timer = setTimeout(() => { state.timer = null; refreshJobs(state); }, 1000);
+        state.timer = setTimeout(() => { state.timer = null; refreshJobs(state, { force: true }); }, ACTIVE_REFRESH_MS);
     }
 
     function busy(container = document) {
