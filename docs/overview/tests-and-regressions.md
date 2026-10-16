@@ -408,3 +408,15 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 | Engine.IO | `socketio-security`、`engineio-repair-tool` | 生产停服与多实例重启后的真实版本 |
 
 9 月开发记录曾报告 299、386、404 项等逐步扩大的测试集；10 月 12 日收尾报告 **840/840 通过**。这是代码开发时的验证记录，不是本轮文档维护重新跑出的结果。对已合并而新增的文件必须做语法、测试、部署产物和真实设备的分层核查，不得用“测试通过”覆盖未验收边界。
+
+## 16. 2026-10-13—17 新增回归与真实验收界线
+
+- **媒体独立服务：** `tests/media-library.test.cjs`、`media-library-api.test.cjs`、`media-processing.test.cjs`、`media-library-ui-261013-2.test.cjs`。覆盖账号/目录授权、媒体队列恢复、Clip/截图时间轴、缓存租约、Content 写入幂等、真实合成视频的 FFmpeg/ffprobe 与缩略图/完整解码。
+- **版本功能测试：** `tests/features-261014-1.test.cjs`、`features-261014-2.test.cjs`、`features-261014-3.test.cjs`、`features-261015-1.test.cjs`、`features-261015-2.test.cjs`、`features-261016-1.test.cjs`、`features-261017-2.test.cjs`；以及 `tests/support/features-261017-1-browser-fixture.cjs`、`features-261017-2-browser-fixture.cjs`。
+- **身份/安全：** 新短码签名、已登记成员防冒用、磁链文件范围、跨隧道读取、管理员密钥并发创建、重复 Cookie、自动缓存响应中止。只有“知道 sessionId 或旧短码”不能重建成员权限。
+- **UI/状态机：** 网盘未登录定位与账号切换、输入法/blur；压缩成果排队即时占位、Clip 编号事务回滚/历史补号、多 Worker 串行、截图连续预览、工坊 ZIP 默认入口与当前文件入口严格分离；Telegram 空闲历史节流而运行时进度持续更新、取消/撤回未知结果。
+- **磁链/后台：** `infra.sqlite` 关闭再打开、磁链离线可解析但无供源、重复分享历史、下载事件幂等、显式删除隧道后撤销；后台 iframe 仅能访问允许的页面，外来 URL 不可注入。
+
+261013—261017 每轮开发日志含不同阶段的全量和聚焦结果；**261017-2 收尾报告 932/932** 全量通过。该结果并非本轮同步文档重新运行测试。相关浏览器为本机/隔离服务的真实前端与合成数据，其中 390px 视口只是窄屏模拟；Telegram 真实撤回、Android 真机键盘/手势、正式数据迁移与真实外部平台仍待分层验收。
+
+如对以上模块改动，应重新执行对应回归，并分别记录“源码/自动化通过、隔离浏览器通过、正式外部服务验证”三种证据。
