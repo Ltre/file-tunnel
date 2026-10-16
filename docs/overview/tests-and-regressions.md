@@ -200,11 +200,14 @@ Node/jsdom 静态断言不能证明：
 
 其中 `0b8e4e18...` 一度被后续文档当作重要稳定传输对照基线。
 
-修改文件传输时应阅读：
+修改**隧道文件的 WebRTC P2P / Socket.IO Relay** 时应阅读：
 
-- `docs/other/TECH_CHALLENGES_OF_TRANSMISSION*.md`
-- `docs/other/P2P_TRANSMISSION_NOTES-260812.md`
-- `docs/devlog/dev-260713-file-transfer-strategy...`
+- `docs/other/TECH_CHALLENGES_OF_TRANSMISSION (260810, stable-1.7.12).md` 与 `(260811, stable-1.7.27).md`：**各 48 组** Windows 关闭/PAC/全局/增强 × Android Igniter/Exempt × 本地/测试/正式 Origin 的原始期望及观测；
+- [`docs/other/P2P_TRANSMISSION_NOTES-260812.md`](../other/P2P_TRANSMISSION_NOTES-260812.md)：历史组合矩阵、Chrome Origin 媒体权限对照、为何 HTTP 直连不等于 WebRTC UDP 可达、1500ms 建链与文件层兜底、已撤回的 LAN-only 实验和抓取证据清单；
+- `docs/devlog/dev-2607B-features.md`：并发 offer、心跳重建、旧 candidate/PeerConnection 污染及 LAN-only 回退记录；
+- `docs/devlog/dev-260713-file-transfer-strategy...`：其它文件传输调度历史。
+
+**实测要分开记**：网页/Socket.IO 信令连通、ICE selected pair、文件 DataChannel 是否打开、单文件或分片实际传输方式、完成 ACK 和进度 UI。不能把所有 Relay 都视为代理导致建链失败，也不能从一次 P2P 成功推断所有 PAC/VPN 组合均稳定直连。
 
 ## 6. Music player 回归历史
 
