@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **当前实现源码锚点 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-10-13`
+> **文档更新时间**：`2026-10-17`
 
 ## 1. 本文件解决什么问题
 
@@ -59,28 +59,28 @@
 
 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
 
-第一轮增量维护整理至 `059099607...`；第二轮整理至：
+第一轮增量维护整理至 `059099607...`；第二轮整理至 `b1788ca4...`；第三轮增量整理至：
 
-`b1788ca4b219718ad802ed778ed41c081ecad39b`
+`10ebe1000b9bd57097f90e51337a251ba17734f3`
 
 提交时间：
 
-`2026-10-12T16:47:42Z`
+`2026-10-16T19:18:08Z`
 
 提交：
 
-`先固定代码：修复网盘重复登录与账号选择反馈，优化挂载目录查询`
+`Merge branch 'dev/doc-overview' into dev/2610-s2`（代码与文档共存的合并快照；按非 Overview 路径核对当前事实）
 
-两轮比较均排除 `docs/overview/**` 自身。第二轮非 Overview 变化包括：
+本轮以三段连续 Git compare 核对 `b1788ca4...` → `eadf20b2...` → `866a9fe7...` → `10ebe100...`，绕开 GitHub 单次比较最多返回 300 个变更文件的限制；始终排除 `docs/overview/**` 自身。第三轮非 Overview 变化包括：
 
-- SQLite WAL、S3、共享 Content、渐进上传、分区、协同挂载、静态分享、回收站；
-- 目录上传、文件编辑、多账号与授权回执、成品转存、PWA 与 Web Workshop Markdown；
-- 新增页面、客户端/服务端模块、诊断与部署安全工具；
-- 开发日志、专项实现文档和新增回归测试。
+- 新增独立媒体提取与收藏子系统，`media-library.sqlite`、FFmpeg 截图/Clip/压缩版本、正式网盘收藏及恢复；
+- 隧道签名成员凭据与短码轮换、磁链持久登记、文件范围授权、后台侧栏与设备/磁链拆页；
+- Telegram 多目标转发/取消与状态节流、音轨修正版预览、下载自动缓存控制、网盘上传命名及登录深链恢复；
+- PWA 首页 CSS 外置、网页工坊两种预览入口、相关测试和 261013—261017 开发日志。
 
 所以：
 
-> 当前 Overview 的代码事实终点已推进到 `b1788ca4b219718ad802ed778ed41c081ecad39b`；初始 `b422e438...` 只作为历史冻结锚点保留。
+> 当前 Overview 的代码事实终点已推进到 `10ebe1000b9bd57097f90e51337a251ba17734f3`；初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -89,6 +89,10 @@
 | `pages/index.html` | `tunnel-core.md`、`transfer-cache.md`、`media-player-realtime.md`、`pwa-ui.md` |
 | `pages/admin-auth.html` | `admin-security-deployment.md` |
 | `pages/admin.html` | `admin-security-deployment.md` |
+| `pages/admin-layout.html` | `admin-security-deployment.md` |
+| `pages/admin-devices.html` | `admin-security-deployment.md` |
+| `pages/admin-magnets.html` | `admin-security-deployment.md` |
+| `pages/media-library.html` | `media-library.md` |
 | `pages/data-usage.html` | `admin-security-deployment.md` |
 | `pages/device.html` | `tunnel-core/device-direct.md` |
 | `pages/disk-management.html` | `telegram-drive.md` |
@@ -109,7 +113,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 22 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 26 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -124,7 +128,9 @@
 
 - `client/device-camera.js` → `tunnel-core/device-direct.md`、`media-player-realtime.md`
 - `client/media.js` → `media-player-realtime.md`
+- `client/media-library.js/.css` → `media-library.md`
 - `client/notification-center.js/.css` → `tunnel-core.md`、`pwa-ui.md`
+- `client/admin-layout.js/.css`、`client/admin-records.js/.css` → `admin-security-deployment.md`
 
 ### 5.3 Telegram Drive
 
@@ -147,6 +153,7 @@
 - `client/disk-share.js`
 - `client/disk-tunnel-adapter.js`
 - `client/disk-ui.js`
+- `client/disk-upload-names.js`
 - `client/disk.css`
 - `client/telegram-drive-cache.js`
 - `client/telegram-chat-dictionary.js`
@@ -160,7 +167,8 @@
 
 ### 5.5 下载/转码
 
-- `client/audio-track-repair.js` → `download-transcode.md`
+- `client/audio-track-repair.js/.css` → `download-transcode.md`
+- `client/media-task-link.js` → `media-library.md`、`download-transcode.md`
 - `client/sns-download-cache.js` → `download-transcode.md`
 - `client/youtube-premium-cache.js` → `download-transcode.md`
 
@@ -180,16 +188,19 @@
 
 归属 `pwa-ui/localization.md`。
 
+- `client/index.css` → `pwa-ui.md`、`architecture.md`
 - `client/light-transfer.js` → `light-transfer.md`
 - `client/qrcode-1.0.0.min.js` → 第三方 QR Runtime，归入 `pwa-ui.md` / `light-transfer.md` 的依赖边界。
 
-**验收结果：当前 54 个 `client/**` 文件全部有明确模块归属。**
+**验收结果：当前 64 个 `client/**` 文件全部有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
 ### 6.1 管理/基础设施
 
 - `server/admin-auth.js` → `admin-security-deployment.md`
+- `server/admin-layout.js`、`server/private-key-file.js` → `admin-security-deployment.md`
+- `server/tunnel-access.js` → `tunnel-core.md`
 - `server/data-usage.js` → `admin-security-deployment.md`
 - `server/infra-store.js` → `architecture.md`、`vclient.md`、`tests-and-regressions.md`
 - `server/browser-assets.js` → Passkey browser asset 解析辅助，归属 `telegram-drive.md` 的认证支持边界
@@ -199,6 +210,7 @@
 
 - `server/file-assets.js` → `transfer-cache.md`
 - `server/media-session.js` → `media-player-realtime.md`
+- `server/media-section-quality.js` → `media-library.md`、`download-transcode.md`
 
 ### 6.3 SNS / YouTube / 转码
 
@@ -206,8 +218,10 @@
 - `server/youtube-premium.js`
 - `server/audio-track-repair.js`
 - `server/video-transcode.js`
+- `server/task-auto-cache.js`
+- `server/telegram-forward-jobs.js`
 
-归属 `download-transcode.md`。
+归属 `download-transcode.md`、`telegram-bot-content.md`（转发任务）、`tests-and-regressions.md`。
 
 ### 6.4 Telegram Content
 
@@ -257,11 +271,24 @@
 
 归属 `telegram-drive.md`。其中 `telegram-multipart.js` 是 Telegram Bot API multipart body 构建辅助，不是第二套逻辑文件分片模型。
 
-### 6.6 VClient
+### 6.6 独立视频画面提取与收藏
+
+- `server/media-library/index.js`
+- `server/media-library/routes.js`
+- `server/media-library/service.js`
+- `server/media-library/database.js`
+- `server/media-library/cache.js`
+- `server/media-library/processing.js`
+- `server/media-library/disk-adapter.js`
+- `server/media-library/clip-name.js`
+
+归属 `media-library.md`。
+
+### 6.7 VClient
 
 - `server/vclient-control.js` → `vclient.md`
 
-**验收结果：当前 59 个 `server/**` 文件全部有明确模块归属。**
+**验收结果：当前 73 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -323,6 +350,7 @@
 - `history/2026-06-07.md`
 - `history/2026-08.md`
 - `history/2026-09.md`
+- `history/2026-10.md`
 
 其中 2026-06-07 时间线要求覆盖：
 
@@ -373,6 +401,7 @@
 
 - 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
 - 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
+- `prompts/ideas/streaming-console-QA-261016.md`、`prompts/resources/streaming-console-QA-261016/**` 是串流控制台规划/原型，不是已合入独立串流服务；
 - `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 
 这些材料仍应保留为未来调研入口，但不能混进当前行为章节。
@@ -385,9 +414,9 @@
 - [x] 找到第一个代码版本；
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
-- [x] 当前 22 个 Pages 有归属；
-- [x] 当前 54 个 Client 文件有归属；
-- [x] 当前 59 个 Server 文件有归属；
+- [x] 当前 26 个 Pages 有归属；
+- [x] 当前 64 个 Client 文件有归属；
+- [x] 当前 73 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -396,4 +425,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第一轮增量维护，下一轮源码比较锚点为 `b1788ca4b219718ad802ed778ed41c081ecad39b`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第三轮增量维护，下一轮源码比较锚点为 `10ebe1000b9bd57097f90e51337a251ba17734f3`，维护规则以 [VERSION.md](./VERSION.md) 为准。
