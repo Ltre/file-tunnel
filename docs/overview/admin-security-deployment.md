@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：`2026-10-13`
+> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **文档更新时间**：`2026-10-17`
 
 ## 1. 管理后台定位
 
@@ -439,3 +439,11 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 2026-10-01 锁文件将 Engine.IO 升至修补后的 **6.6.11**；`npm ci` 审计及相关协议升级测试在对应开发记录中通过。新增 `tools/repair-engineio-security.cjs`，默认只读检查旧部署；正式修补要求显式停服务、`--apply --service-stopped` 和目标端口，先在隔离环境验证、备份后定向替换，失败自动回滚并支持手动恢复。工具**不会**自行停启生产服务，必须重启所有 Node 进程使补丁生效；使用说明见 `tools/repair-engineio-security.md`。
 
 网盘故障诊断由 `tools/collect-tgdisk-diagnostics.cjs` 收集现有轮转日志与 SQLite 任务状态，支持按时间/任务过滤，导出前脱敏；目录请求还提供 `Server-Timing` 和 `X-Disk-Request-Id`。发布构建已补齐新增网盘模块/Markdown 依赖/Worker 等资源并强化 verify，生产发布仍须以当前构建产物实际验证，不把历史一次通过当作以后每次构建必然通过。
+
+## 22. 2026-10-13—15：后台工作台、独立磁链页与认证私钥安全
+
+- 后台增加独立布局 `/admin` → 内部 `/admin/home`，以及 `/admin/devices`、`/admin/magnets`；`pages/admin-layout.html`、`client/admin-layout.js/.css` 负责白名单导航与 iframe，`pages/admin-devices.html`、`pages/admin-magnets.html` 由 `client/admin-records.js/.css` 呈现。服务端注册 `server/admin-layout.js`，仍须后台 Session，不能允许任意 URL 当后台 iframe 目标。前端业务页仍有直接打开时的认证要求，不靠嵌入布局获得授权。
+- 旧版磁链登记仅在内存，改为 `infra.sqlite` 中 `magnets`、`magnet_shares`、`magnet_downloads` 的持久数据及索引；同资源重复分享保留历史事件，文件当前离线只表示暂无供源。管理员可查看分享设备、时间、触发下载次数，但**点击下载不代表操作系统确已保存**。显式删除隧道撤销链接，不能恢复此前已丢失的未持久磁链 ID。
+- `server/private-key-file.js` 通过排他创建防止双实例首次启动竞态覆盖认证签名密钥。已存在空密钥或无法解密的配置**失败关闭**，不能当成初次未配置重新绑定。重复同名但不同 Path 的 Cookie 逐条验签，不能被无效项遮盖有效会话；30 天管理会话本身未改。
+- 新增 `server/tunnel-access.js` 的稳定会话签名密钥 `.tunnel-access.key` 和登记账本 `.tunnel-access-members`；两者是持久授权资料，迁移/备份时应一并保留。换短码不撤销已登记用户，不把原短码恢复成公开永久通行凭据。
+- 媒体收藏后台的 `media-library.sqlite` 和其缓存目录有独立授权与清理范围，不得错误并入 `disk.sqlite`、`infra.sqlite` 的备份或清理流程。参见 [media-library.md](./media-library.md)。
