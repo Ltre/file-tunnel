@@ -1,0 +1,20 @@
+
+问：
+
+
+    我比较倾向有另一款原型图（概念版，见`prompts/resources/streaming-console-QA-261016/傻逼gptchat异想天开的专业UI/v2`）的串流控制台布局，看起来更有条理，这个布局的前身是v1目录的原型（`prompts/resources/streaming-console-QA-261016/傻逼gptchat异想天开的专业UI/v1`）。
+    不过可能漏了一些原原型（`prompts/resources/streaming-console-QA-261016/v2`）提到的一些功能
+
+
+    请你几乎复刻另一款原型图（概念版，见`prompts/resources/streaming-console-QA-261016/傻逼gptchat异想天开的专业UI/v2`）布局，并且补充参考原原型（`prompts/resources/streaming-console-QA-261016/v2`）比前者多出的一些功能，出一整份v3原型，放到 prompts/resources/streaming-console-QA-261016/v3 目录。
+    要注意之前我跟你提过的一些约束和注意事项，例如不要篡改当前功能首页的UI布局、防止加入了串流控制台后导致原有的三栏UI在移动端侧滑切换出现BUG、不要把创建串流台导入资源和管理已导入资源的界面做得四不像
+
+    新的v3串流控制台布局，直接以全屏浮层加载，并考虑在手机等窄屏设备的UI兼容。
+
+
+
+
+答：
+
+
+
