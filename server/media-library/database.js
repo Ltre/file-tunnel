@@ -74,6 +74,7 @@ function createMediaDatabase(dataDir, now = Date.now) {
         },
         remove(kind, id, scope) { return db.prepare('DELETE FROM media_documents WHERE kind=? AND id=? AND scope=?').run(kind, id, scope).changes; },
         scopes() { return db.prepare("SELECT DISTINCT scope FROM media_documents WHERE kind IN ('job','import','cache')").all().map(row => row.scope); },
+        clipSessions() { return db.prepare("SELECT DISTINCT scope,json_extract(data,'$.sessionId') AS sessionId FROM media_documents WHERE kind='result' AND json_extract(data,'$.kind')='clip' AND json_extract(data,'$.sessionId') IS NOT NULL").all(); },
         event(scope, message, level = 'info', relatedId = '') { return create('event', scope, { message: String(message).slice(0, 600), level, relatedId }); },
         close() { db.close(); }, path: path.join(dataDir, 'media-library.sqlite') };
 }

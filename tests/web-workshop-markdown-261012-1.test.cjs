@@ -29,7 +29,7 @@ test('当前文件预览指定选中文件，生成的 Markdown 使用配套 HTM
 });
 
 test('编辑器新入口预览选中文件的未保存内容，旧预览继续选择默认入口',async()=>{
-    const source=read('client/web-workshop.js'),api=tools(),textarea={value:''},toolbar={},previewCalls=[];
+    const source=read('client/web-workshop.js'),api=tools(),textarea={value:''},toolbar={},previewCalls=[];let selectedPath;
     const nodes={'textarea':textarea,'.web-editor-toolbar':toolbar,'input[type=file]':{},'[data-web-hide-frame]':{},'[data-web-fullscreen]':{},'[data-web-save-status]':{}};
     const content={innerHTML:'',querySelector:selector=>nodes[selector]};
     const context=vm.createContext({content,activeDraft:null,editorSession:null,importMenuCleanup:null,document:{querySelector:()=>null},
@@ -39,17 +39,22 @@ test('编辑器新入口预览选中文件的未保存内容，旧预览继续�
         renderTree:()=>'',bindTree(){},bindPackageName(){},revokePreviewUrls(){},setEditorSaveStatus(){},installMediaInsertion(){},commitPackageName(){},
         updateTextEntry:api.updateTextEntry,bytes:value=>value,TextDecoder,TextEncoder,Uint8Array,
         markdownPreviewPath:api.markdownPreviewPath,currentPreviewPath:api.currentPreviewPath,
-        renderPreview:async(files,_name,_back,_actions,path)=>previewCalls.push({path,body:text(files.find(f=>f.path==='子目录/次页.html'))}),
+        renderPreview:async(files,_name,_back,_actions,path='')=>previewCalls.push({path,body:text(files.find(f=>f.path===selectedPath))}),
         showError:error=>{throw error;}});
     const commit=source.slice(source.indexOf('    function commitEditorBuffer('),source.indexOf('    function saveDraft('));
     const render=source.slice(source.indexOf('function renderEditor('),source.indexOf('    async function renderPreview('));
     vm.runInContext(commit+'\n'+render+'\nthis.renderEditor=renderEditor;',context);
-    context.renderEditor({id:'draft',name:'网页',files:[file('index.html','home'),file('子目录/次页.html','old')]},'子目录/次页.html');
-    assert.match(content.innerHTML,/preview-current[^>]*>预览当前编辑文件<\/button><button data-editor-action="preview">/);
-    textarea.value='<h1>尚未保存的正文</h1>';
-    await toolbar.onclick({target:{dataset:{editorAction:'preview-current'}}});
-    assert.equal(previewCalls[0].path,'子目录/次页.html');assert.match(previewCalls[0].body,/尚未保存/);
-    await toolbar.onclick({target:{dataset:{editorAction:'preview'}}});assert.equal(previewCalls[1].path,'');
+    const generated=api.prepareMarkdownPage([file('index.html','home'),file('子目录/次页.html','old')],file('子目录/'),support());
+    const draft={id:'draft',name:'网页',files:generated.entries};
+    for(selectedPath of ['子目录/次页.html',generated.markdownPath,generated.htmlPath]){
+        previewCalls.length=0;context.renderEditor(draft,selectedPath);
+        assert.match(content.innerHTML,/preview-current[^>]*>预览当前编辑文件<\/button><button data-editor-action="preview">/);
+        // Preserve the Markdown loader metadata when editing its HTML carrier.
+        textarea.value+='\n尚未保存的正文';
+        await toolbar.onclick({target:{dataset:{editorAction:'preview-current'}}});
+        assert.equal(previewCalls[0].path,selectedPath===generated.markdownPath?generated.htmlPath:selectedPath);assert.match(previewCalls[0].body,/尚未保存/);
+        await toolbar.onclick({target:{dataset:{editorAction:'preview'}}});assert.equal(previewCalls[1].path,'','ZIP preview must ignore the selected file, including generated Markdown');
+    }
 });
 
 test('Markdown 在选中目录、文件父目录或根创建，多个页面共享一套完整资源',()=>{

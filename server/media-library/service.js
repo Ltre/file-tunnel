@@ -172,7 +172,21 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     function createSession(importId, name) {
         const resource = item('import', importId); if (resource.state !== 'ready' || !resource.duration) throw Error('MEDIA_VIDEO_REQUIRED');
-        disk.file(resource.file); return db.create('session', scope(), { importId, name: nameOf(name || '提取会话'), state: 'active' });
+        disk.file(resource.file); return db.create('session', scope(), { importId, name: nameOf(name || '提取会话'), state: 'active', clipOrdinalCounter: 0 });
+    }
+    function ensureClipOrdinals(sessionId, tenant) {
+        return db.atomic(() => {
+            const session = item('session', sessionId, tenant), clips = db.matching('result', tenant, 'sessionId', sessionId).filter(result => result.kind === 'clip');
+            const used = new Set(clips.map(result => result.clipOrdinal).filter(value => Number.isSafeInteger(value) && value > 0));
+            let next = 1, maximum = Number.isSafeInteger(session.clipOrdinalCounter) ? session.clipOrdinalCounter : 0;
+            for (const result of clips) {
+                if (Number.isSafeInteger(result.clipOrdinal) && result.clipOrdinal > 0) { maximum = Math.max(maximum, result.clipOrdinal); continue; }
+                while (used.has(next)) next++;
+                db.patch('result', result.id, tenant, { clipOrdinal: next }); used.add(next); maximum = Math.max(maximum, next++);
+            }
+            if (session.clipOrdinalCounter !== maximum) db.patch('session', sessionId, tenant, { clipOrdinalCounter: maximum });
+            return maximum;
+        });
     }
     function extract(sessionId, parameters) {
         const session = item('session', sessionId); if (session.state !== 'active') throw Error('MEDIA_SESSION_REMOVED');
@@ -245,9 +259,15 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             cache.commit(job.scope, allocated.record.id, settings.caches[cacheKind]);
             db.patch('cache', allocated.record.id, job.scope, { sourceFingerprint: resource.file.fingerprint, start: input.start, end: input.end, audio: input.audio, precise: input.precise, importId: resource.id });
             if (job.type === 'segment') return { cacheId: allocated.record.id, quality };
-            const payload = { sessionId: input.sessionId, importId: resource.id, kind: 'clip', cacheId: allocated.record.id,
-                startMs: Math.round(input.start * 1000), endMs: Math.round(input.end * 1000), quality, savedId: prior?.savedId || '', extractedAt: now() };
-            return prior ? db.patch('result', prior.id, job.scope, payload) : db.create('result', job.scope, payload, job.id);
+            return db.atomic(() => {
+                const session = item('session', input.sessionId, job.scope), existing = db.get('result', job.id, job.scope);
+                const maximum = Number.isSafeInteger(session.clipOrdinalCounter) && session.clipOrdinalCounter >= 0 ? session.clipOrdinalCounter : ensureClipOrdinals(input.sessionId, job.scope);
+                const clipOrdinal = existing?.clipOrdinal || maximum + 1;
+                if (!existing?.clipOrdinal) db.patch('session', input.sessionId, job.scope, { clipOrdinalCounter: clipOrdinal });
+                const payload = { sessionId: input.sessionId, importId: resource.id, kind: 'clip', clipOrdinal, cacheId: allocated.record.id,
+                    startMs: Math.round(input.start * 1000), endMs: Math.round(input.end * 1000), quality, savedId: existing?.savedId || '', extractedAt: now() };
+                return existing ? db.patch('result', existing.id, job.scope, payload) : db.create('result', job.scope, payload, job.id);
+            });
         } catch (error) { cache.discard(job.scope, allocated.record.id); throw capacityError || error; }
         finally { clearInterval(meter); source?.close(); }
     }
@@ -309,11 +329,20 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     function remark(kind,id,input){const record=item(kind,id);if(kind==='result'&&record.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');if(typeof input.remark!=='string'||input.remark.length>65535)throw Error('MEDIA_REMARK_INVALID');return db.patch(kind,id,scope(),{remark:input.remark},input.version);}
     function compressionDetails(record,tenant=scope()){const versions=db.matching('compression',tenant,'resultId',record.resultId).sort((a,b)=>(a.completedAt||a.createdAt)-(b.completedAt||b.createdAt)||a.id.localeCompare(b.id));return {...record,ordinal:record.ordinal||versions.findIndex(v=>v.id===record.id)+1};}
+    function repairConflictedCompressionName(record) {
+        // Only a definite pre-write name conflict can safely change a saved
+        // destination. Uncertain writes must keep their original recovery key.
+        if (!record.compressionId || record.state !== 'failed' || record.error !== 'MEDIA_OUTPUT_NAME_CONFLICT' || record.clipOrdinal) return record;
+        const variant = item('compression', record.compressionId), result = item('result', variant.resultId);
+        const suffix = /-压\d+-\d+x\d+$/.exec(record.name);
+        if (!suffix || !result.clipOrdinal) return record;
+        return db.patch('collection', record.id, scope(), { name: record.name.slice(0, suffix.index) + '-CLIP' + result.clipOrdinal + suffix[0], clipOrdinal: result.clipOrdinal });
+    }
     function collectCompression(id){return db.atomic(()=>{const variant=compressionDetails(item('compression',id)),result=item('result',variant.resultId),settings=requireConfig();
-        const existing=db.matching('collection',scope(),'compressionId',id).find(c=>c.state!=='deleted');if(existing){if(['failed','cancelled','interrupted'].includes(existing.state)){const lease=cache.acquire(scope(),variant.cacheId);lease.release();queue('collect',{collectionId:existing.id,cacheId:variant.cacheId});return db.patch('collection',existing.id,scope(),{state:'queued',error:''});}return existing;}
+        const existing=db.matching('collection',scope(),'compressionId',id).find(c=>c.state!=='deleted');if(existing){if(['failed','cancelled','interrupted'].includes(existing.state)){const lease=cache.acquire(scope(),variant.cacheId);lease.release();repairConflictedCompressionName(existing);queue('collect',{collectionId:existing.id,cacheId:variant.cacheId});return db.patch('collection',existing.id,scope(),{state:'queued',error:''});}return existing;}
         const lease=cache.acquire(scope(),variant.cacheId);lease.release();
         const name=require('./clip-name').compressionName(item('session',result.sessionId),result,variant);
-        const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,entities:[],source:{...variant}});
+        const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,clipOrdinal:result.clipOrdinal,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,entities:[],source:{...variant}});
         queue('collect',{collectionId:record.id,cacheId:variant.cacheId});return record;});}
     function reserveCompressionOrdinals(resultId, tenant) {
         const versions = db.matching('compression', tenant, 'resultId', resultId), jobs = db.matching('job', tenant, 'type', 'transcode').filter(job => job.context.resultId === resultId);
@@ -419,7 +448,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         return db.atomic(() => {
             if (job.context.batchId) db.patch('batch', job.context.batchId, scope(), { state: 'queued', error: '' });
             if (job.context.collectionId) {
-                const record = item('collection', job.context.collectionId);
+                const record = repairConflictedCompressionName(item('collection', job.context.collectionId));
                 if (record.state !== 'ready') db.patch('collection', record.id, scope(), { state: 'queued', error: '' });
             }
             return db.patch('job', id, scope(), { state: 'queued', cancelled: false, error: '', progress: 0 });
@@ -477,6 +506,11 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 db.event(job.scope, '任务未完成：' + code, 'error', job.id);
             } finally { clearInterval(beat); controllers.delete(job.id); }
         } finally { busy = false; }
+    }
+    // Assign legacy Clip identities before requests or worker recovery can
+    // generate names. The per-session counter and all assignments commit together.
+    for (const { scope: tenant, sessionId } of db.clipSessions()) {
+        if (db.get('session', sessionId, tenant)) ensureClipOrdinals(sessionId, tenant);
     }
     // Resume only work from a dead process. A live foreign worker retains its
     // durable claim; stale heartbeats alone do not authorize duplicate uploads.
