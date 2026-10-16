@@ -1,7 +1,7 @@
 # 网页工坊与 .html.zip Runtime
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
-> **文档更新时间**：`2026-10-13`
+> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **文档更新时间**：`2026-10-17`
 
 ## 1. 功能定位与产生背景
 
@@ -585,3 +585,12 @@ Runtime 根据路径推断：
 - 增加“另存为”语义：新草稿/副本与更新原记录要明确区分，防止无意覆盖原发布物。
 - 增加“一键 Markdown”：在当前目录成对生成 `markdown.html` 和 `markdown.md`，名称冲突整对递增；把 Marked、DOMPurify、样式、运行脚本和许可证内置到 ZIP 的专用 assets 名称空间，不依赖发布后 CDN。渲染前清理 HTML，按 Markdown 所在目录解析路径；既有编辑缓冲先保存。
 - 关联测试：`features-260926-3`、`features-260927-1/2`、`features-261008-workshop-startup`、`features-261009-2`、`disk-accounts-261012-1` 等；其中某些测试属于相关路径覆盖而非专属 Markdown 用例。
+
+## 22. 2026-10-14—17 草稿来源、SHA Worker 与预览语义
+
+- 有原记录来源的草稿卡片显示可确认的**来源隧道短码**；先匹配原传输消息或已保存来源，旧文件 ID 只有唯一匹配时才补充短码。新副本“另存为”不继承虚假的原来源；不能从当前打开的隧道短码推断所有草稿来源。
+- Android 局域网 HTTP 等非安全上下文可能缺失 `crypto.subtle`，Markdown 资源摘要校验改为复用已有 SHA-256 Worker 的兼容路径；**仍需校验固定资源的完整哈希，不允许因此跳过完整性验证**。构建时保留 Worker 资源路径映射和离线包内 Markdown 依赖。
+- 工具栏现在区分两个按钮：普通“**预览**”始终调用 ZIP 的默认入口逻辑，不随当前选择的 HTML/Markdown 改变；“**预览当前编辑文件**”则提交尚未保存的编辑缓冲，按所选 HTML 执行（Markdown 用其配套 HTML 承载页）。禁止把目录当文件入口，返回后保留原选中文件。2026-10-17 已专项修复初版对 Markdown 选中状态意外改变默认预览入口的问题。
+- 修改草稿的发布/原记录权限及状态机不受这两个预览入口调整影响；同一 ZIP 至少测试“默认首页”“子目录 HTML”“生成的 Markdown”“Markdown 配套 HTML”“未保存正文”五种用例。
+
+关联 `tests/features-261017-1.test.cjs`、`features-261017-2.test.cjs`、`client/web-workshop.js` 与 `docs/devlog/dev-2610-features.md` 261015-1 / 261017-1 / 261017-2。
