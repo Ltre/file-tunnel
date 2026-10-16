@@ -1,0 +1,42 @@
+'use strict';
+// Isolated browser acceptance: temporary media database, synthetic AV and real FFmpeg.
+const express = require('express'), fs = require('node:fs'), path = require('node:path');
+const { createFixture } = require('./media-library-fixture.cjs');
+const { createMediaRoutes } = require('../../server/media-library/routes');
+const { createMediaProcessing, execute } = require('../../server/media-library/processing');
+const { createAudioTrackRepair, registerAudioTrackRepairRoutes } = require('../../server/audio-track-repair');
+let fixture, server;
+(async () => {
+    const root = path.resolve(__dirname, '../..'), ffmpeg = process.env.TEST_FFMPEG || 'D:/GreenApps/ffmpeg/5.1.2/bin/ffmpeg.exe';
+    const engine = createMediaProcessing({ ffmpeg, ffprobe: path.join(path.dirname(ffmpeg), 'ffprobe.exe') });
+    fixture = createFixture({ processing: engine }); const service = fixture.service;
+    const input = path.join(fixture.dataDir, 'source.mp4');
+    await execute(ffmpeg, ['-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=25:duration=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-c:a','aac','-y',input]);
+    const source = service.createImport({ kind: 'disk', ...fixture.put(fs.readFileSync(input), { name: '截图切换验收.mp4' }) }, { id: 'alice' }); await service.pump();
+    const session = service.createSession(source.id, '全屏截图与键盘切换验收');
+    service.extract(session.id, { mode:'interval', ranges:'0-4', intervalMs:200 }); await service.pump();
+    const app = express(); app.use(express.json());
+    const auth = (_req,_res,next) => next();
+    app.get('/media-library', (_req,res) => res.sendFile(path.join(root,'pages/media-library.html')));
+    app.use('/api/media-library', createMediaRoutes({ service, disk: fixture.disk, downloads: fixture.downloads, identity: () => ({ id:'alice' }), requireAuth:auth, origin:req => 'http://' + req.get('Host') }));
+    const repair = createAudioTrackRepair({ probe:engine.probe, run:async (args, options) => { await new Promise(resolve => setTimeout(resolve, 600)); return execute(ffmpeg,args,options); } });
+    const downloadService = { get:() => ({status:'completed',downloadSections:'0-4'}), getFile:() => ({path:input,name:'测试截取片段.mp4'}), getTaskDirectory:() => fixture.dataDir };
+    for (const type of ['sns','youtube']) registerAudioTrackRepairRoutes(app, { root:'/api/test-' + type, service:downloadService, requireAuth:auth, repair, sanitizeError:error => error.message });
+    app.get('/audio', (_req,res) => res.type('html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/client/audio-track-repair.css"><style>:root{--panel:#fff;--text:#243047;--line:#d8dfeb;--muted:#667085}body{font:14px system-ui;background:#f2f7fd;padding:20px}button{padding:8px 13px;border:1px solid var(--line);border-radius:8px;cursor:pointer}.primary{background:#246bfe;color:white}.danger{color:#d33}button:disabled{opacity:.5}</style><h1>合成视频音轨修正验收</h1><div id="sns"></div><div id="youtube"></div><script src="/client/audio-track-repair.js"></script><script>window.confirm=()=>true;const request=async(url,options)=>{const response=await fetch(url,options),data=await response.json();if(!response.ok)throw Error(data.error);return data;};for(const type of ['sns','youtube'])document.getElementById(type).append(AudioTrackRepair.create({id:'test'},'/api/test-'+type,request));</script>`));
+    const setup = `WebWorkshop.init({deviceId:()=> 'fixture',toast:console.log});document.getElementById('fixture-workshop').onclick=async()=>{await WebWorkshop.createDraft({name:'当前文件预览验收',files:[{path:'index.html',type:'text/html',data:new TextEncoder().encode('<h1>默认首页</h1>')},{path:'子目录/当前.html',type:'text/html',data:new TextEncoder().encode('<link rel="stylesheet" href="../assets/style.css"><h1>当前编辑页</h1>')},{path:'assets/style.css',type:'text/css',data:new TextEncoder().encode('h1{color:rgb(0,100,160)}')}]});WebWorkshop.open();};`;
+    app.get('/workshop', (_req,res) => {
+        let html = fs.readFileSync(path.join(root,'pages/index.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'');
+        html = html.replace('</body>', '<button id="fixture-workshop" style="position:fixed;top:20px;left:20px;z-index:30000">打开工坊验收</button>' + ['/client/folder-archive.js','/client/web-zip-runtime.js','/client/web-workshop.js','/workshop-setup.js'].map(src=>`<script src="${src}"></script>`).join('') + '</body>');
+        res.type('html').send(html);
+    });
+    app.get('/workshop-setup.js', (_req,res) => res.type('js').send("document.getElementById('tunnelStartupLoading')?.remove();" + setup));
+    app.get('/service-worker.js', (_req,res) => res.sendFile(path.join(root,'service-worker.js')));
+    app.use('/client', express.static(path.join(root,'client')));
+    app.get(['/','/index.html'], (_req,res) => res.send('<!doctype html><title>隔离验收</title>'));
+    app.get('/manifest.webmanifest', (_req,res) => res.sendFile(path.join(root,'manifest.webmanifest')));
+    app.get('/tunnel-icon.svg', (_req,res) => res.sendFile(path.join(root,'tunnel-icon.svg')));
+    server = app.listen(0,'127.0.0.1'); await new Promise(resolve => server.once('listening',resolve));
+    console.log(JSON.stringify({ base:'http://127.0.0.1:' + server.address().port, dataDir:fixture.dataDir }));
+    const timer = setInterval(() => service.pump(),500);
+    process.once('SIGINT', async () => { clearInterval(timer); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await fixture.close(); process.exit(); });
+})().catch(async error => { console.error(error); server?.close(); await fixture?.close(); process.exit(1); });

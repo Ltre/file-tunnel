@@ -83,6 +83,7 @@ test('两个后台的准备和下载接口均需管理身份，拒绝未完成�
         const url = base + root + '/tasks/test/audio-repair';
         assert.equal((await fetch(url, { method: 'POST' })).status, 401);
         assert.equal((await fetch(url + '/file')).status, 401);
+        assert.equal((await fetch(url + '/file?inline=1')).status, 401);
         const options = { method: 'POST', headers: { 'x-test-auth': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ force:true }) };
         ready = false; assert.equal((await fetch(url, options)).status, 400); ready = true;
         const response = await fetch(url, options); assert.equal(response.status, 202);
@@ -98,6 +99,9 @@ test('两个后台的准备和下载接口均需管理身份，拒绝未完成�
         const download = await fetch(base + data.downloadUrl, { headers: { 'x-test-auth': '1' } });
         assert.equal(download.status, 200); assert.match(download.headers.get('content-disposition'), /attachment/);
         assert.equal(await download.text(), 'corrected');
+        const preview = await fetch(base + data.previewUrl, { headers: { 'x-test-auth': '1', Range: 'bytes=0-3' } });
+        assert.equal(preview.status, 206); assert.equal(preview.headers.get('content-disposition'), null);
+        assert.match(preview.headers.get('content-type'), /video\/mp4/); assert.equal(await preview.text(), 'corr');
     }
 });
 test('实际修正版与 ffmpeg -i INPUT.mp4 OUTPUT.mp4 输出一致，保留视频音频和原版', async t => {

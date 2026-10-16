@@ -8,6 +8,7 @@
     let lastView = '', collectionQuery = '', collectionEntity = '', disposePlayer = () => {};
     let resultView='grid',compressionViewing=null,compressionSelection='';
     let framesViewing = '', frameKnownIds = new Set(), frameNewIds = new Set();
+    let disposeFramePreview = () => {};
     const frameSelection = new Set(), frameBatchHighlights = new Map(), frameSubmissions = new Set(), frameSubmitErrors = new Map();
     const el = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; };
     const notice = (text, failed = false) => { $('ml-notice').textContent = text; $('ml-notice').className = failed ? 'error' : ''; };
@@ -31,6 +32,7 @@
     function select(values, selected) { const node = document.createElement('select'); values.forEach(([id, name]) => node.add(new Option(name, id))); if (selected !== undefined) node.value = selected; return node; }
     const badge = (state, text = states[state] || state) => el('span', text, 'ml-badge ' + state);
     function dialog(title, body, actions = []) {
+        disposeFramePreview();
         compressionViewing=null;
         $('ml-dialog-title').textContent = title; $('ml-dialog-body').replaceChildren(body); $('ml-dialog-actions').replaceChildren(...actions, button('关闭', () => $('ml-dialog').close()));
         if (!$('ml-dialog').open) $('ml-dialog').showModal();
@@ -442,6 +444,48 @@
         }
     }
     const batchColor = ordinal => `hsl(${Math.round((ordinal - 1) * 137.508) % 360} 65% 43%)`;
+    function sessionFrames(id) {
+        return data.results.filter(value => value.kind === 'image' && !value.reference && value.sessionId === id)
+            .sort((a,b) => (a.actualMs ?? a.requestedMs) - (b.actualMs ?? b.requestedMs) || a.extractedAt - b.extractedAt || a.id.localeCompare(b.id));
+    }
+    function openFramePreview(result) {
+        const modal = $('ml-dialog'), stage = el('div', undefined, 'ml-image-stage'), image = el('img'), count = el('span', undefined, 'ml-image-count');
+        const failure = el('p', '截图暂时无法加载，可切换查看其它截图。', 'ml-image-error'); failure.hidden = true;
+        image.className = 'ml-preview'; image.draggable = false; image.onerror = () => { failure.hidden = false; };
+        stage.append(image, failure);
+        let currentId = result.id, start = null;
+        const available = () => sessionFrames(result.sessionId).filter(value => value.cacheReady);
+        const previous = button('← 上一张', () => move(-1)), next = button('下一张 →', () => move(1));
+        const show = () => {
+            const frames = available(), index = frames.findIndex(value => value.id === currentId), current = frames[index];
+            previous.disabled = index <= 0; next.disabled = index < 0 || index >= frames.length - 1;
+            previous.dataset.keepDisabled = String(previous.disabled); next.dataset.keepDisabled = String(next.disabled);
+            if (!current) return;
+            failure.hidden = true; image.src = root + '/cache/' + current.cacheId;
+            image.alt = '截图 · ' + time(current.actualMs ?? current.requestedMs);
+            $('ml-dialog-title').textContent = '截图预览 · ' + time(current.actualMs ?? current.requestedMs);
+            count.textContent = `${index + 1} / ${frames.length}`;
+        };
+        function move(delta) {
+            const frames = available(), index = frames.findIndex(value => value.id === currentId), target = frames[index + delta];
+            if (index >= 0 && target) { currentId = target.id; show(); }
+        }
+        const onKey = event => {
+            if (event.altKey || event.ctrlKey || event.metaKey || ['INPUT','TEXTAREA','SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable) return;
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); move(event.key === 'ArrowLeft' ? -1 : 1); }
+        };
+        stage.onpointerdown = event => { if (event.isPrimary !== false && ['touch','pen'].includes(event.pointerType)) start = { id: event.pointerId, x: event.clientX, y: event.clientY }; };
+        stage.onpointerup = event => {
+            const origin = start; start = null; if (!origin || origin.id !== event.pointerId) return;
+            const dx = event.clientX - origin.x, dy = event.clientY - origin.y;
+            if (Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.3) move(dx < 0 ? 1 : -1);
+        };
+        stage.onpointercancel = () => { start = null; };
+        dialog('截图预览', stage, [count, previous, next]);
+        modal.classList.add('ml-image-dialog'); modal.addEventListener('keydown', onKey);
+        const cleanup = () => { modal.removeEventListener('keydown', onKey); modal.removeEventListener('close', cleanup); modal.classList.remove('ml-image-dialog'); start = null; disposeFramePreview = () => {}; };
+        disposeFramePreview = cleanup; modal.addEventListener('close', cleanup); show();
+    }
     function frameBatches(id) {
         const batches = (data.batches || []).filter(batch => batch.sessionId === id).sort((a,b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
         const used = new Set(batches.map(batch => batch.ordinal).filter(Boolean)); let next = 1;
@@ -478,8 +522,7 @@
         const id = framesViewing, batches = frameBatches(id), highlighted = frameBatchHighlights.get(id) || new Set();
         const session = data.sessions.find(value => value.id === id);
         $('ml-frames-title').textContent = '提取截图 · ' + (session?.name || '会话不可用');
-        const results = data.results.filter(value => value.kind === 'image' && !value.reference && value.sessionId === id)
-            .sort((a,b) => (a.actualMs ?? a.requestedMs) - (b.actualMs ?? b.requestedMs) || a.extractedAt - b.extractedAt || a.id.localeCompare(b.id));
+        const results = sessionFrames(id);
         const progress = $('ml-frame-progress'); progress.replaceChildren();
         if (frameSubmissions.has(id)) progress.append(el('p', '正在提交取帧任务…', 'ml-frame-working'));
         if (frameSubmitErrors.has(id)) progress.append(el('p', frameSubmitErrors.get(id), 'error'));
@@ -517,7 +560,7 @@
             const state = row.querySelector('.ml-frame-state'), actions = row.querySelector('.ml-actions'); state.replaceChildren(); actions.replaceChildren();
             const record = renderCollectionProgress(result, state, actions);
             if (result.cacheReady) {
-                const preview = button('👁', () => { const image = el('img'); image.className = 'ml-preview'; image.src = root + '/cache/' + result.cacheId; dialog('截图预览 · ' + time(result.actualMs), image); }); preview.title = '查看截图'; preview.setAttribute('aria-label', preview.title);
+                const preview = button('👁', () => openFramePreview(result)); preview.title = '查看截图'; preview.setAttribute('aria-label', preview.title);
                 const save = button(record?.state === 'ready' ? '★' : '☆', () => collectFrame(result.id)); save.title = record?.state === 'ready' ? '已收藏' : '收藏截图'; save.setAttribute('aria-label', save.title);
                 save.disabled = collecting.has(result.id) || ['ready','queued','transferring'].includes(record?.state); actions.append(preview, save, button('相似度', () => compareDialog(result)));
             }

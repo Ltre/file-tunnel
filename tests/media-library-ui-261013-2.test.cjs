@@ -15,7 +15,7 @@ class Node {
     remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(n => n !== this); }
     replaceWith(node) { const index = this.parentNode.children.indexOf(this); this.parentNode.children[index] = node; node.parentNode = this.parentNode; }
     insertBefore(node, anchor) { node.remove(); const index = this.children.indexOf(anchor); this.children.splice(index < 0 ? this.children.length : index, 0, node); node.parentNode = this; }
-    showModal() { this.open = true; } close() { this.open = false; }
+    showModal() { this.open = true; } close() { this.open = false; this.emit('close'); }
     addEventListener(key, fn) { (this.listeners[key] ||= new Set()).add(fn); } removeEventListener(key, fn) { this.listeners[key]?.delete(fn); }
     emit(key, ...args) { for (const fn of this.listeners[key] || []) fn(...args); }
     pause() { this.paused=true; }
@@ -43,7 +43,7 @@ function fixture(handler = async () => ({})) {
         fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: true, json: async () => value }; } });
     const end = source.lastIndexOf("    document.querySelectorAll('[data-tab]')");
     vm.runInContext(source.slice(0, end) + `
-        window.test = { refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, transcodeDialog, submitFrames, openFrameGallery, renderFrameGallery, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
+        window.test = { dialog, openFramePreview, refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, transcodeDialog, submitFrames, openFrameGallery, renderFrameGallery, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
             set(value) { data = value; }, setSession(id) { sessionId = id; }, setTab(value) { tab=value; }, data() { return data; }, changeTab,
             setView(value) { resultView=value; },
             stubRender(fn) { render = fn; } };
@@ -52,6 +52,31 @@ function fixture(handler = async () => ({})) {
 }
 const snapshot = () => ({ config: { workspace: {}, collection: {} }, imports: [{ id: 'video', name: '视频', state: 'ready', duration: 10 }],
     sessions: [{ id: 'old', name: '旧会话', state: 'active' }], batches: [], results: [], collections: [], jobs: [], caches: [], events: [] });
+
+test('screenshot preview navigates the session timeline by keyboard/buttons/swipes and disposes handlers on close or replacement', async () => {
+    const f = fixture(), state = snapshot();
+    state.results = [
+        {id:'late',sessionId:'old',kind:'image',actualMs:2000,cacheId:'late-cache',cacheReady:true},
+        {id:'first',sessionId:'old',kind:'image',actualMs:0,cacheId:'first-cache',cacheReady:true},
+        {id:'expired',sessionId:'old',kind:'image',actualMs:500,cacheReady:false},
+        {id:'middle',sessionId:'old',kind:'image',actualMs:1000,cacheId:'middle-cache',cacheReady:true},
+        {id:'reference',sessionId:'old',kind:'image',actualMs:1500,cacheReady:true,reference:true},
+        {id:'other',sessionId:'other',kind:'image',actualMs:1500,cacheReady:true}
+    ]; f.set(state); f.openFramePreview(state.results[1]);
+    const modal = f.ids.get('ml-dialog'), stage = f.ids.get('ml-dialog-body').children[0], image = stage.children[0], actions = f.ids.get('ml-dialog-actions');
+    const previous = actions.children[1], next = actions.children[2], key = (value,target) => modal.emit('keydown',{key:value,target,preventDefault(){}});
+    assert.equal(previous.disabled,true); assert.equal(actions.children[0].textContent,'1 / 3');
+    await next.onclick(); assert.match(image.src,/middle-cache$/); key('ArrowRight'); assert.match(image.src,/late-cache$/); assert.equal(next.disabled,true);
+    key('ArrowLeft',{tagName:'INPUT'}); assert.match(image.src,/late-cache$/);
+    const point = (x,y=0) => ({isPrimary:true,pointerType:'touch',pointerId:1,clientX:x,clientY:y});
+    stage.onpointerdown(point(0)); stage.onpointerup(point(100)); assert.match(image.src,/middle-cache$/);
+    stage.onpointerdown(point(0)); stage.onpointerup(point(20,100)); assert.match(image.src,/middle-cache$/);
+    stage.onpointerdown(point(100)); stage.onpointercancel(); stage.onpointerup(point(0)); assert.match(image.src,/middle-cache$/);
+    await previous.onclick(); assert.match(image.src,/first-cache$/); assert.equal(previous.disabled,true);
+    modal.close(); assert.equal(modal.listeners.keydown.size,0); assert.equal(modal.classList.contains('ml-image-dialog'),false);
+    f.openFramePreview(state.results[2+1]); f.dialog('其它操作',new Node()); assert.equal(modal.listeners.keydown.size,0);
+    assert.equal(modal.classList.contains('ml-image-dialog'),false);
+});
 
 test('creating a session renders the returned session immediately; an older poll cannot erase it', async () => {
     const slow = deferred(), state = snapshot(), created = { id: 'new', name: '新会话', state: 'active', importId: 'video' }; let reads = 0;

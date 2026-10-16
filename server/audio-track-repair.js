@@ -222,7 +222,8 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
         ...job,
         forwardAvailable:Boolean(audioRepairForwardFile(service, taskId, repair)),
         statusUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/status?jobId=' + encodeURIComponent(job.jobId),
-        downloadUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/file'
+        downloadUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/file',
+        previewUrl:root + '/tasks/' + encodeURIComponent(taskId) + '/audio-repair/file?inline=1'
     });
     app.post(root + '/tasks/:taskId/audio-repair', requireAuth, (req, res) => {
         res.setHeader('Cache-Control', 'no-store');
@@ -248,7 +249,8 @@ function registerAudioTrackRepairRoutes(app, { root, service, requireAuth, repai
         try {
             const { file, directory } = getSource(req.params.taskId), result = repair.cached(file, directory);
             if (!result) throw new Error('audio-repair-cache-missing');
-            res.download(result.path, result.name);
+            if (req.query.inline === '1') res.sendFile(result.path);
+            else res.download(result.path, result.name);
         } catch (error) { res.status(404).json({ error: labels[error.message] || sanitizeError(error) }); }
     });
 }

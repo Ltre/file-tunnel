@@ -4,15 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>SNS 媒体下载</title>
+    <link rel="stylesheet" href="/client/audio-track-repair.css">
     <style>
         :root { color-scheme:light dark; --bg:#eef2f7; --panel:#fff; --text:#162033; --muted:#69758a; --line:#d9e0ea; --accent:#3567d6; --danger:#c83c4a; --ok:#15805f; --warn:#a76a08; --shadow:0 14px 42px rgba(34,48,80,.09); }
         @media (prefers-color-scheme:dark) { :root { --bg:#111722; --panel:#1b2433; --text:#edf2fb; --muted:#9ca9bb; --line:#344054; --accent:#75a2ff; --danger:#ff8490; --ok:#55d2a6; --warn:#e4ad4e; --shadow:0 18px 48px rgba(0,0,0,.22); } }
         * { box-sizing:border-box; }
-        .audio-repair-panel { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
-        .audio-repair-panel label { display:flex; align-items:center; gap:6px; cursor:pointer; }
-        .audio-repair-status { color:var(--muted); flex-basis:100%; }
-        .audio-repair-progress { width:min(100%,520px); height:8px; }
-        .audio-repair-panel button.is-ready { background:#1f9d55; border-color:#178247; color:#fff; font-weight:700; }
         body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }
         button,input,select,textarea { font:inherit; color:inherit; }
         button,.button { border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:8px 13px; cursor:pointer; text-decoration:none; }
