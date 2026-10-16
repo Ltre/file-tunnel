@@ -9,7 +9,7 @@
 - `server.js`：服务端总编排、HTTP、Socket、Telegram/SNS 大量集成。
 - `app.js`：功能首页前端总编排，隧道、历史、传输、预览、播放器、协同、设备。
 - `pages/index.html`：路由页 + 功能首页 DOM。
-- `pages/index.html` 内联样式 + `client/*.css`：主 UI、模块 UI 与 responsive 样式。
+- `pages/index.html` + `client/index.css`：首页 DOM、已外置的主要样式和响应式布局；模块专用样式在其它 `client/*.css`。
 - `service-worker.js`：PWA app shell + Web ZIP Runtime。
 
 ### 历史入口
@@ -26,6 +26,8 @@
 - `app.js`
 - `server.js`
 - `server/infra-store.js`
+- `server/tunnel-access.js`
+- `server/private-key-file.js`
 - `client/notification-center.js`
 
 重点搜索：
@@ -84,7 +86,7 @@
 
 ### 当前源码
 
-- `server.js` 中 `/api/magnets*` 与 registry
+- `server.js` 中 `/api/magnets*`，`server/infra-store.js` 持久磁链登记（`magnets`/分享/下载事件）
 - `pages/downloader.html`
 - `pages/downloadList.html`
 - `app.js` 中 `shareFileMagnet*`
@@ -366,3 +368,24 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - PWA/网页工坊：`app.js`、`service-worker.js`、`client/cache-store.js`、`client/web-workshop.js`、`client/vendor/web-markdown/*`；2609 Devlog 56—59/80、2610 Devlog 261012。
 - 安全/部署：`package-lock.json`、`tools/repair-engineio-security.cjs`、`tools/deploy/build.mjs`、`tools/deploy/verify.mjs`；2609 Devlog 2026-10-01。
 - 实际缺陷排查参考 `prompts/dev-prompt-logs/dev-2610.md`、261009 系列实施指南、261012 视频处理指南；这些 Prompt 仅提供需求和验证线索，未合入代码的部分不得当现状。
+
+## 16. 2026-10-13—17 业务代码及回归定位
+
+### 独立媒体子系统
+
+- 代码：`server/media-library/index.js`、`service.js`、`database.js`、`cache.js`、`processing.js`、`disk-adapter.js`、`routes.js`、`clip-name.js`；`pages/media-library.html`、`client/media-library.js/.css`。
+- 横向资源：`server/media-section-quality.js`、`client/media-task-link.js`、`server/object-storage.js` 的保存进度回调。
+- 说明：[media-library.md](./media-library.md)、`docs/media-library.md`、`docs/devlog/dev-2610-features.md` 261013-1 至 261017-2。
+- 回归：`tests/media-library.test.cjs`、`media-library-api.test.cjs`、`media-library-ui-261013-2.test.cjs`、`media-processing.test.cjs`、`features-261017-2.test.cjs` 及相关 browser fixture。
+
+### 隧道成员、磁链、后台和下载
+
+- 会话签名：`server/tunnel-access.js`、`server/private-key-file.js`、`app.js` / `server.js`；短码轮换、已登记成员、磁链文件范围见 `tunnel-core.md`、`transfer-cache/magnet-download.md`。
+- 后台布局：`server/admin-layout.js`、`pages/admin-layout.html`、`client/admin-layout.js/.css`；设备/磁链拆页使用 `pages/admin-devices.html`、`pages/admin-magnets.html`、`client/admin-records.js/.css`。
+- 转发与缓存：`server/telegram-forward-jobs.js`、`server/task-auto-cache.js`、`client/telegram-target-forward.js/.css`、`client/audio-track-repair.js/.css`。
+- 网盘上传重名：`client/disk-upload-names.js`；定位/账号/分区：`client/disk-ui.js`、`client/disk-directory-picker.js`。
+- 首页样式外置：`client/index.css`、`pages/index.html`、`tools/deploy/build.mjs`、`service-worker.js`。
+
+### 开发日志与需求归属
+
+按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）及只有规划图的 `prompts/ideas/streaming-console-QA-261016.md`。**串流控制台多版原型图不是已实现的独立串流子系统。**
