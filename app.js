@@ -7958,51 +7958,88 @@ async function associateTelegramDriveBackup(messageId, sourceFiles, uploadedItem
     historyLog('telegram-drive-backup-linked', { messageId, fileIds: [...uploadedBySource.keys()] });
 }
 
+function recordTextPayload(message) {
+    if (message.type !== 'rich') return { text: String(message.type === 'text' ? message.text || '' : message.remark || message.fileInfo?.remark || message.collection?.remark || ''), html: '' };
+    const content = document.createElement('div'); content.innerHTML = getRichMessageContent(message);
+    content.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(node => node.remove());
+    content.querySelectorAll('*').forEach(node => { for (const attribute of Array.from(node.attributes)) {
+        if (/^on/i.test(attribute.name) || /^(?:href|src|action)$/i.test(attribute.name) && /^\s*(?:javascript|vbscript):/i.test(attribute.value)) node.removeAttribute(attribute.name);
+    } });
+    const plain = content.cloneNode(true);
+    plain.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+    plain.querySelectorAll('p,div,li,tr,h1,h2,h3,h4,h5,h6,blockquote').forEach(node => node.append('\n'));
+    return { text: (plain.textContent || '').replace(/\n{3,}/g, '\n\n').trim(), html: content.innerHTML };
+}
+async function copyTransferRecordText(messageId) {
+    const message = await getFromStore('messages', messageId); if (!message) throw Error('记录不存在');
+    const payload = recordTextPayload(message); if (!payload.text && !payload.html) throw Error('此记录没有可复制文本');
+    let copied = false;
+    if (payload.html) {
+        if (window.isSecureContext && navigator.clipboard?.write && window.ClipboardItem) {
+            try { await navigator.clipboard.write([new window.ClipboardItem({ 'text/plain': new Blob([payload.text], {type:'text/plain'}), 'text/html': new Blob([payload.html], {type:'text/html'}) })]); copied = true; } catch (_) {}
+        }
+        if (!copied) {
+            const input = document.createElement('textarea'), active = document.activeElement;
+            input.value = payload.text; input.style.cssText = 'position:fixed;left:-9999px'; document.body.append(input); input.select();
+            const write = event => { if (event.clipboardData) { event.clipboardData.setData('text/plain', payload.text); event.clipboardData.setData('text/html', payload.html); event.preventDefault(); } };
+            document.addEventListener('copy', write);
+            try { copied = document.execCommand('copy'); } finally { document.removeEventListener('copy', write); input.remove(); active?.focus?.({preventScroll:true}); }
+        }
+    } else { try { copied = await copyTextToClipboard(payload.text); } catch (_) {} }
+    if (!copied) throw Error('复制失败，请检查浏览器剪贴板权限');
+    showAppToast('已复制文本');
+}
+function createRecordActionButton(glyph, text, title, run) {
+    const button = createFileActionButton(text, title, run), icon = document.createElement('span'), label = document.createElement('span');
+    icon.className = 'record-action-icon'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = glyph; label.textContent = text;
+    button.replaceChildren(icon, label); return button;
+}
 function renderMessageRecordActions(messageEl, message) {
     messageEl.querySelector('.message-record-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
     const menuItems = [];
-    menuItems.push(createFileActionButton('详情', '查看这条传输记录的完整信息', () => {
+    menuItems.push(createRecordActionButton('ℹ', '详情', '查看这条传输记录的完整信息', () => {
         showTransferRecordDetails(message.id).catch(err => showAppToast(`详情加载失败：${err.message}`));
     }));
-    menuItems.push(createFileActionButton('复制此锚点', '复制可直接定位到此记录的链接', () => {
+    menuItems.push(createRecordActionButton('🔗', '复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
-    menuItems.push(createFileActionButton(message.favorite ? '★ 取消收藏' : '☆ 收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
+    menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的文本、富文本或备注', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
+    menuItems.push(createRecordActionButton(message.favorite ? '★' : '☆', message.favorite ? '取消收藏' : '收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
         toggleTransferRecordFavorite(message.id).catch(err => {
             alert(`收藏状态保存失败：${err.message}`);
         });
     }));
     if (message.type === 'file' || message.type === 'collection') {
-        menuItems.push(createFileActionButton('备注', '添加或修改这条文件记录的备注', () => {
+        menuItems.push(createRecordActionButton('✎', '备注', '添加或修改这条文件记录的备注', () => {
             editTransferRecordRemark(message.id).catch(err => {
                 alert(`备注保存失败：${err.message}`);
             });
         }));
     }
     const webZipFile = message.type === 'file' && /\.html\.zip$/i.test(String(message.fileInfo?.name || '')) ? message.fileInfo : null;
-    if (webZipFile) menuItems.push(createFileActionButton('编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender })));
+    if (webZipFile) menuItems.push(createRecordActionButton('🌐', '编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender })));
     if (message.type === 'file' || message.type === 'collection') {
-        menuItems.push(createFileActionButton('✴↗ 使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
+        menuItems.push(createRecordActionButton('✴↗', '使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
             shareHistoryMessageViaLight(message.id).catch(err => {
                 alert(`光媒分享失败：${err.message}`);
                 historyLog('light-share-record-failed', { messageId: message.id, error: err.message });
             });
         }));
     }
-    menuItems.push(createFileActionButton('⎇ 发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+    menuItems.push(createRecordActionButton('⎇', '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
     if (message.type === 'file' || message.type === 'collection') {
-        menuItems.push(createFileActionButton('☁ 保存到telegram网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
+        menuItems.push(createRecordActionButton('☁', '保存到telegram网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
             saveMessageToTelegramDrive(message).catch(error => alert(`保存到 Telegram 网盘失败：${error.message}`));
         }));
     }
-    menuItems.push(createFileActionButton('删除', '从会话中删除此记录', () => {
+    menuItems.push(createRecordActionButton('🗑', '删除', '从会话中删除此记录', () => {
         deleteHistoryMessage(message.id);
     }));
     const trigger = document.createElement('button');

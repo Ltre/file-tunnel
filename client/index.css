@@ -906,6 +906,9 @@ body[data-theme="atelier"] .main-layout {
 }
 
 .message-record-action-menu .history-action {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
     min-height: 38px;
     justify-content: flex-start;
@@ -914,6 +917,7 @@ body[data-theme="atelier"] .main-layout {
     color: #34415a;
     text-align: left;
 }
+.message-record-action-menu .record-action-icon { flex: 0 0 24px; text-align: center; }
 
 .message-record-action-menu .history-action:hover {
     background: #f2f5fa;

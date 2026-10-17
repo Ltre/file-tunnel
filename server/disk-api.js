@@ -1057,9 +1057,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     admin.get('/storage-overview', (req, res) => {
         const users = adminUserMap(), groups = new Map();
+        const names = new Map(persistence.load('partitions').map(partition => [JSON.stringify([partition.ownerId, partition.scopeKey]), partition]));
         const add = (appId, userId, diskSpace) => {
             const key = JSON.stringify([appId, userId, diskSpace]);
-            if (!groups.has(key)) groups.set(key, { appId, appLabel: appLabel(appId), userId, user: users.get(userId) || { id: userId, name: '历史用户' }, diskSpace, fileCount: 0, size: 0, lastActivity: 0 });
+            const partition = names.get(JSON.stringify([userId, diskSpace]));
+            if (!groups.has(key)) groups.set(key, { appId, appLabel: appLabel(appId), userId, user: users.get(userId) || { id: userId, name: '历史用户' }, diskSpace,
+                partitionId: partition?.id || '', partitionName: partition?.displayName || (diskSpace?.startsWith('p-') ? '历史分区（名称未记录）' : diskSpace || '默认分区'), fileCount: 0, size: 0, lastActivity: 0 });
             return groups.get(key);
         };
         const usages = spaces.usages();
@@ -1075,7 +1078,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!systems.has(group.appId)) systems.set(group.appId, { appId: group.appId, label: group.appLabel, users: new Map() });
             const system = systems.get(group.appId);
             if (!system.users.has(group.userId)) system.users.set(group.userId, { ...group.user, userId: group.userId, spaces: [] });
-            system.users.get(group.userId).spaces.push({ diskSpace: group.diskSpace, fileCount: group.fileCount, size: group.size, lastActivity: group.lastActivity });
+            system.users.get(group.userId).spaces.push({ diskSpace: group.diskSpace, partitionId: group.partitionId, partitionName: group.partitionName, fileCount: group.fileCount, size: group.size, lastActivity: group.lastActivity });
         }
         res.json({ systems: [...systems.values()].map(system => ({ appId: system.appId, label: system.label, users: [...system.users.values()] })) });
     });

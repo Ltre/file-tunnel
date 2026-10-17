@@ -64,10 +64,14 @@ function createMediaCache({ dataDir, database, now = Date.now }) {
             database.patch('cache', id, scope, current => ({ ...current, leases: (current.leases || []).filter(l => l.token !== token) })); };
         releases.add(release); return { record, path: filename(record), release };
     }); }
+    function assertDiscardable(scope, id) {
+        const record = database.get('cache', id, scope);
+        if (record && (leases.get(id) || record.leases?.some(l => l.until > now()))) throw Error('MEDIA_CACHE_IN_USE');
+    }
     function discard(scope, id) { return database.atomic(() => {
         const record = database.get('cache', id, scope); if (!record) return;
         if (record.status === 'cleared') return;
-        if (leases.get(id) || record.leases?.some(l => l.until > now())) throw Error('MEDIA_CACHE_IN_USE');
+        assertDiscardable(scope, id);
         try { fs.unlinkSync(filename(record)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
         return database.patch('cache', id, scope, { status: 'cleared', size: 0, reservedBytes: 0 });
     }); }
@@ -94,6 +98,6 @@ function createMediaCache({ dataDir, database, now = Date.now }) {
             const stat = fs.statfsSync(root); return { kind, root, availableBytes: Number(stat.bavail) * Number(stat.bsize) };
         });
     }
-    return { defaults, validate, allocate, reserve, filename, commit, acquire, discard, cleanup, check, close() { [...releases].forEach(release => release()); } };
+    return { defaults, validate, allocate, reserve, filename, commit, acquire, assertDiscardable, discard, cleanup, check, close() { [...releases].forEach(release => release()); } };
 }
 module.exports = { createMediaCache };

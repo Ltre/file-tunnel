@@ -46,7 +46,7 @@ function fixture() {
         ${previewLifecycle}
         ${handler}
         ${source.match(/window\.addEventListener\('popstate', handleTelegramDrivePopstate[^;]+;/)[0]}
-        this.drive={open:openTelegramDrive,close:closeTelegramDrive,navigate:navigateTelegramDrive,preview:()=>openDiskPreview({id:'media'}),closePreview:closeDiskPreview,
+        this.drive={open:openTelegramDrive,close:closeTelegramDrive,navigate:navigateTelegramDrive,preview:()=>openDiskPreview({id:'media'}),closePreview:closeDiskPreview,minimizePreview:minimizeDiskPreview,restorePreview:restoreDiskPreview,
             path:()=>telegramDrivePath, previewOpen:()=>diskPreviewHistoryOpen, ownsHistory:ownsTelegramDriveHistory};
     `, context);
     return { drive: context.drive, node, history, stack, rendered, hostEvents: () => hostEvents, flush: () => { while (pending.length) pending.shift()(); } };
@@ -79,4 +79,19 @@ test('返回手势先退出预览，随后一次返回切换上一级；不重�
     f.history.back(); f.flush(); assert.equal(f.drive.previewOpen(), false); assert.equal(f.drive.path(), 'A/B');
     f.history.back(); f.flush(); assert.equal(f.drive.path(), 'A');
     f.drive.close(); f.history.back(); f.flush(); assert.equal(f.hostEvents(), 1);
+});
+
+test('minimize preserves the preview DOM, removes just its history entry and restores without loading media again',async()=>{
+    const f=fixture();await f.drive.open();await f.drive.navigate('A');await f.drive.navigate('A/B');await f.drive.preview();
+    const body=f.node('diskPreviewBody');let cleared=0;body.replaceChildren=()=>cleared++;
+    const depth=f.stack.length;f.drive.minimizePreview();assert.equal(f.node('diskPreview').hidden,true);assert.equal(f.node('diskPreviewRestore').hidden,false);f.flush();
+    assert.equal(f.drive.previewOpen(),false);assert.equal(cleared,0);assert.equal(f.drive.path(),'A/B');
+    f.drive.restorePreview();assert.equal(f.node('diskPreview').hidden,false);assert.equal(f.drive.previewOpen(),true);assert.equal(f.stack.length,depth);assert.equal(cleared,0);
+    f.drive.closePreview();f.flush();assert.equal(cleared,1);assert.equal(f.node('diskPreviewRestore').hidden,true);
+    f.history.back();f.flush();assert.equal(f.drive.path(),'A');
+});
+
+test('restoring immediately after minimizing waits for its pending back event and does not lose the preview',async()=>{
+    const f=fixture();await f.drive.open();await f.drive.navigate('current');await f.drive.preview();f.drive.minimizePreview();f.drive.restorePreview();f.flush();
+    assert.equal(f.node('diskPreview').hidden,false);assert.equal(f.drive.previewOpen(),true);assert.equal(f.drive.path(),'current');
 });

@@ -2471,7 +2471,7 @@ async function openTelegramDrive() {
 function closeTelegramDrive({ forget = false } = {}) {
     cancelTelegramDrivePendingMount();
     closeDiskCollaborationFrame();
-    if (!$disk('diskPreview')?.hidden) closeDiskPreview({ replaceHistory: true });
+    if (!$disk('diskPreview')?.hidden || $disk('diskPreview')?._minimized) closeDiskPreview({ replaceHistory: true });
     closeTelegramDriveDialog(null, { replaceHistory: true }); closeTelegramDriveItemMenu({ replaceHistory: true });
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
     document.body.classList.remove('telegram-drive-open');
@@ -2483,7 +2483,7 @@ function closeTelegramDrive({ forget = false } = {}) {
 }
 function minimizeTelegramDrive() {
     cancelTelegramDrivePendingMount();
-    if (!$disk('diskPreview')?.hidden) closeDiskPreview({ replaceHistory: true });
+    if (!$disk('diskPreview')?.hidden || $disk('diskPreview')?._minimized) closeDiskPreview({ replaceHistory: true });
     closeTelegramDriveDialog(null, { replaceHistory: true }); closeTelegramDriveItemMenu({ replaceHistory: true });
     const overlay = document.getElementById('telegramDriveOverlay'); overlay.classList.remove('active'); overlay.hidden = true;
     document.body.classList.remove('telegram-drive-open');
@@ -3001,11 +3001,14 @@ function disposeActiveDiskMedia() {
 }
 function closeDiskPreview({ fromHistory = false, replaceHistory = false } = {}) {
     if (diskPreviewHistoryClosing && !fromHistory && !replaceHistory) return;
-    disposeActiveDiskMedia();
-    previewGeneration++; previewAbort?.abort();
     const overlay = $disk('diskPreview'); if (!overlay) return;
-    overlay.hidden = true; $disk('diskPreviewBody').replaceChildren();
-    if (previewURL) URL.revokeObjectURL(previewURL); previewURL = '';
+    if (!overlay.hidden || overlay._minimized) {
+        disposeActiveDiskMedia(); previewGeneration++; previewAbort?.abort();
+        $disk('diskPreviewBody').replaceChildren();
+        if (previewURL) URL.revokeObjectURL(previewURL); previewURL = '';
+    }
+    overlay.hidden = true; overlay._minimized = false; overlay._restoreAfterMinimize = false;
+    const restore = $disk('diskPreviewRestore'); if (restore) restore.hidden = true;
     const shouldGoBack = diskPreviewHistoryOpen && !fromHistory && !replaceHistory && history.state?.telegramDrivePreview && !diskPreviewHistoryClosing;
     if (replaceHistory && history.state?.telegramDrivePreview) {
         const next = { ...(history.state || {}) }; delete next.telegramDrivePreview;
@@ -3015,11 +3018,28 @@ function closeDiskPreview({ fromHistory = false, replaceHistory = false } = {}) 
     else if (shouldGoBack) { diskPreviewHistoryClosing = true; history.back(); }
     else if (!history.state?.telegramDrivePreview || replaceHistory) { diskPreviewHistoryOpen = false; diskPreviewHistoryClosing = false; diskPreviewBaseState = null; }
 }
+function minimizeDiskPreview() {
+    const overlay = $disk('diskPreview'); if (!overlay || overlay.hidden || diskPreviewHistoryClosing) return;
+    overlay.hidden = true; overlay._minimized = true;
+    const restore = $disk('diskPreviewRestore'); if (restore) { restore.hidden = false; restore.title = $disk('diskPreviewName')?.textContent || '返回文件预览'; }
+    diskPreviewHistoryOpen = false;
+    if (history.state?.telegramDrivePreview) { overlay._minimizingHistory = true; history.back(); }
+}
+function restoreDiskPreview() {
+    const overlay = $disk('diskPreview'); if (!overlay?._minimized) return;
+    if (overlay._minimizingHistory) { overlay._restoreAfterMinimize = true; return; }
+    const base = { ...(history.state || {}), telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession };
+    delete base.telegramDrivePreview; diskPreviewBaseState = base;
+    history.replaceState(base, '', location.href); history.pushState({ ...base, telegramDrivePreview: true }, '', location.href);
+    diskPreviewHistoryOpen = true; diskPreviewHistoryClosing = false; overlay._minimized = false; overlay.hidden = false;
+    const restore = $disk('diskPreviewRestore'); if (restore) restore.hidden = true;
+}
 async function openDiskPreview(item,{single=false}={}) {
     if(telegramDriveMountContext||item.diskTransportContext)item={...item,...await window.DiskClient.raw('/files/'+encodeURIComponent(item.id),item.diskTransportContext||{})};
     previewItems = single?[item]:getSortedTelegramDriveItems(getTelegramDriveDisplayData()).filter(isDiskPreviewable).map(file=>file.id===item.id?item:file);
     previewIndex = Math.max(0, previewItems.findIndex(file => file.id === item.id));
-    $disk('diskPreview').hidden = false;
+    $disk('diskPreview').hidden = false; $disk('diskPreview')._minimized = false;
+    const restore = $disk('diskPreviewRestore'); if (restore) restore.hidden = true;
     if (!diskPreviewHistoryOpen) {
         // Anchor the entry below the preview to the directory that is actually
         // visible now.  A retained drive window can otherwise inherit a stale
@@ -3552,8 +3572,10 @@ function initDiskEnhancements() {
     const bubble = document.createElement('button'); bubble.id = 'diskTaskBubble'; bubble.type = 'button'; bubble.hidden = true; bubble.setAttribute('aria-label', '查看网盘任务');
     bubble.innerHTML = '<span>☁</span><small></small>'; document.body.append(bubble);
     const preview = document.createElement('section'); preview.id = 'diskPreview'; preview.hidden = true; preview.setAttribute('role', 'dialog'); preview.setAttribute('aria-modal', 'true');
-    preview.innerHTML = '<header><strong id="diskPreviewName"></strong><button id="diskPreviewClose" aria-label="关闭预览">×</button></header><div id="diskPreviewBody"></div><footer><button id="diskPreviewPrev" aria-label="上一个文件">←</button><span id="diskPreviewCount"></span><button id="diskPreviewNext" aria-label="下一个文件">→</button></footer>';
+    preview.innerHTML = '<header><strong id="diskPreviewName"></strong><button id="diskPreviewMinimize" aria-label="最小化预览" title="最小化预览">_</button><button id="diskPreviewClose" aria-label="关闭预览">×</button></header><div id="diskPreviewBody"></div><footer><button id="diskPreviewPrev" aria-label="上一个文件">←</button><span id="diskPreviewCount"></span><button id="diskPreviewNext" aria-label="下一个文件">→</button></footer>';
     document.body.append(preview);
+    const restorePreview = document.createElement('button'); restorePreview.id = 'diskPreviewRestore'; restorePreview.type = 'button'; restorePreview.hidden = true; restorePreview.textContent = '▣ 返回文件预览'; restorePreview.onclick = restoreDiskPreview; document.body.append(restorePreview);
+    $disk('diskPreviewMinimize').onclick = event => { event.preventDefault(); event.stopPropagation(); minimizeDiskPreview(); };
     $disk('diskPreviewClose').onclick = event => { event.preventDefault(); event.stopPropagation(); closeDiskPreview(); };
     $disk('diskPreviewPrev').onclick = () => stepDiskPreview(-1); $disk('diskPreviewNext').onclick = () => stepDiskPreview(1);
     document.addEventListener('keydown', event => {
@@ -3722,13 +3744,20 @@ function initDiskEnhancements() {
     getTelegramDriveIdentity().then(status => { if (status.identity) window.DiskClient.start(); }).catch(() => {});
 }
 function ownsTelegramDriveHistory() {
-    return Boolean(telegramDriveMenuHistoryOpen || telegramDriveDialogHistoryOpen || diskPreviewHistoryOpen || telegramDriveHistorySession);
+    return Boolean(telegramDriveMenuHistoryOpen || telegramDriveDialogHistoryOpen || diskPreviewHistoryOpen || $disk('diskPreview')?._minimizingHistory || telegramDriveHistorySession);
 }
 function handleTelegramDrivePopstate(event) {
     if (!ownsTelegramDriveHistory()) return;
     // Installed at script evaluation, before app.js (not in asynchronous init).
     // At Window's target phase, earlier listeners can run before capture ones.
     event.stopImmediatePropagation();
+    const preview = $disk('diskPreview');
+    if (preview?._minimizingHistory) {
+        preview._minimizingHistory = false;
+        if (diskPreviewBaseState) history.replaceState(diskPreviewBaseState, '', location.href);
+        if (preview._restoreAfterMinimize) { preview._restoreAfterMinimize = false; restoreDiskPreview(); }
+        return;
+    }
     if (telegramDriveMenuHistoryOpen && !event.state?.telegramDriveMenu) { closeTelegramDriveItemMenu({ fromHistory: true }); return; }
     if (telegramDriveDialogHistoryOpen && !event.state?.telegramDriveDialog) { closeTelegramDriveDialog(null, { fromHistory: true }); return; }
     if (diskPreviewHistoryClosing || (diskPreviewHistoryOpen && !event.state?.telegramDrivePreview)) {

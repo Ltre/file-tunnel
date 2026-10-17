@@ -87,7 +87,9 @@
 #diskPreview{position:fixed;inset:0;z-index:2147483100;background:#101820;color:#fff;display:flex;flex-direction:column}
 #diskPreview[hidden],#diskTaskBubble[hidden],.disk-tasks[hidden]{display:none!important}
 #diskPreview header,#diskPreview footer{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 20px;background:#18232f}
-#diskPreview header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#diskPreview header strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#diskPreviewRestore{position:fixed;right:18px;bottom:max(90px,calc(70px + env(safe-area-inset-bottom)));z-index:4500;max-width:calc(100vw - 36px);padding:10px 16px;border:1px solid #94a3b8;border-radius:22px;background:#18232f;color:#fff;box-shadow:0 4px 18px #0004;cursor:pointer}
+#diskPreviewRestore[hidden]{display:none!important}
 #diskPreview footer{justify-content:center;padding-bottom:max(12px,env(safe-area-inset-bottom))}
 #diskPreview button{border:0;border-radius:9px;background:#314459;color:white;min-width:44px;height:40px;font-size:24px;cursor:pointer}
 #diskPreview button:disabled{opacity:.3;cursor:default}

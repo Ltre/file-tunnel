@@ -75,7 +75,8 @@
                 userSummary.append(el('span', '', user.username || user.name || '网盘用户'), el('span', 'muted', ` · ${user.userId}${user.telegramId ? ' · TG ' + user.telegramId : ''} · ${user.provider || '通用账号'}`));
                 userNode.append(userSummary);
                 for (const space of user.spaces || []) {
-                    const button = el('button', 'space', `${space.diskSpace || '默认分区'} · 来源：${system.label || system.appId} · ${space.fileCount} 个文件 · ${bytes(space.size)}`);
+                    const button = el('button', 'space', `${space.partitionName || space.diskSpace || '默认分区'} · 来源：${system.label || system.appId} · ${space.fileCount} 个文件 · ${bytes(space.size)}`);
+                    button.title = space.diskSpace || '默认分区';
                     const selected = state.selected && state.selected.appId === system.appId && state.selected.userId === user.userId && state.selected.diskSpace === space.diskSpace;
                     if (selected) { button.classList.add('active'); systemNode.open = true; userNode.open = true; }
                     button.onclick = () => selectSpace({ appId: system.appId, appLabel: system.label, userId: user.userId, user, ...space });
@@ -89,7 +90,7 @@
     }
     async function selectSpace(selected, path = '') {
         state.selected = selected; state.path = path; renderTree();
-        $('contentTitle').textContent = `${selected.appLabel} / ${selected.user.username || selected.user.name || selected.userId} / ${selected.diskSpace || '默认分区'}`;
+        $('contentTitle').textContent = `${selected.appLabel} / ${selected.user.username || selected.user.name || selected.userId} / ${selected.partitionName || selected.diskSpace || '默认分区'}`;
         $('pageStatus').textContent = '正在加载目录…';
         try {
             const query = new URLSearchParams({ user_id: selected.userId, disk_space: selected.diskSpace || '', app_id: selected.appId, path });

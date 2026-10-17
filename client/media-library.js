@@ -372,6 +372,13 @@
         }
         return record;
     }
+    async function deleteCandidate(result) {
+        if (!confirm('删除此' + (result.kind === 'clip' ? ' Clip' : '截图') + '及其服务器临时文件和压缩版本？已保存的正式收藏和源文件保留。')) return;
+        await api('/results/' + result.id, json('DELETE'));
+        selection.delete(result.id); frameSelection.delete(result.id);
+        if (compressionViewing?.id === result.id) { compressionViewing = null; $('ml-dialog')?.close(); }
+        await refresh(true); renderFrameGallery(); notice('资源及关联临时文件已删除');
+    }
     function renderResults() {
         renderFrameGallery();
         if(compressionViewing&&$('ml-dialog').open)renderCompressionView();
@@ -426,6 +433,7 @@
                     await collectCandidate(result.id);
                 }));
             if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.title !== '查看') node.disabled = true; });
+            actions.append(icon('🗑', '删除候选资源', () => deleteCandidate(result)));
             if(result.kind==='clip'){
                 const note=el(resultView==='list'?'input':'textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.setAttribute('aria-label','Clip 备注');note.oninput=()=>{note.dataset.dirty='1';};
                 const remark = el('div', undefined, 'ml-clip-remark'); remark.append(note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();})); heading.append(remark);
@@ -564,6 +572,7 @@
                 const save = button(record?.state === 'ready' ? '★' : '☆', () => collectFrame(result.id)); save.title = record?.state === 'ready' ? '已收藏' : '收藏截图'; save.setAttribute('aria-label', save.title);
                 save.disabled = collecting.has(result.id) || ['ready','queued','transferring'].includes(record?.state); actions.append(preview, save, button('相似度', () => compareDialog(result)));
             }
+            const remove = button('🗑', () => deleteCandidate(result)); remove.title = '删除截图'; remove.setAttribute('aria-label', remove.title); actions.append(remove);
             rows.push(row);
         }
         for (const row of Array.from(grid.children)) if (!rows.includes(row)) row.remove();

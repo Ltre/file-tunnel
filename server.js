@@ -3574,14 +3574,21 @@ app.get('/api/admin/external-dependencies', adminAuth.requireAuth, (req, res) =>
 
 // ==================== Socket.io 配置 ====================
 
-function rotateTunnelShortCode(sessionId,value){const code=normalizeShortCode(value);if(!code)throw Error('短码应为 5 位字母或数字');if(infraStore.findShortCodeForSession(sessionId)===code)throw Error('新短码与当前短码相同，请输入不同的短码');infraStore.rotateShortCode(sessionId,code);for(const [old,id]of shortCodes)if(id===sessionId)shortCodes.delete(old);shortCodes.set(code,sessionId);const session=sessions.get(sessionId);if(session)session.shortCode=code;io.to(sessionId).emit('session-short-code',{shortCode:code});return code;}
+function rotateTunnelShortCode(sessionId,value){
+    const code=normalizeShortCode(value),previous=infraStore.findShortCodeForSession(sessionId);
+    if(!code)throw Error('短码应为 5 位字母或数字');if(previous===code)throw Error('新短码与当前短码相同，请输入不同的短码');
+    const session=sessions.get(sessionId),legacyIds=infraStore.query('SELECT device_id FROM tunnel_members WHERE session_id=?',[sessionId]).map(row=>row.device_id);
+    tunnelAccess.preserveLegacy(sessionId,previous,[...legacyIds,...(session?.devices.keys()||[])]);
+    infraStore.rotateShortCode(sessionId,code);for(const [old,id]of shortCodes)if(id===sessionId)shortCodes.delete(old);shortCodes.set(code,sessionId);
+    if(session)session.shortCode=code;io.to(sessionId).emit('session-short-code',{shortCode:code});return code;
+}
 app.post('/api/sessions/:sessionId/short-code',adminAuth.requireAuth,(req,res)=>{try{res.json({shortCode:rotateTunnelShortCode(req.params.sessionId,req.body?.shortCode)});}catch(error){res.status(422).json({error:error.message});}});
 app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
     const tunnel=infraStore?.getTunnel(sessionId),session=sessions.get(sessionId),code=tunnel?.short_code||session?.shortCode;
     if(!tunnel&&!session)return res.json({allowed:true,creating:true});
     if(tunnelAccess.verify(grant,sessionId,deviceId))return res.json({allowed:true,grant});
     if(!tunnelAccess.attempt(req.ip))return res.status(429).json({allowed:false});
-    if(code&&normalizeShortCode(shortCode)===code&&!tunnelAccess.enrolled(sessionId,deviceId))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
+    if(code&&!tunnelAccess.enrolled(sessionId,deviceId)&&(normalizeShortCode(shortCode)===code||tunnelAccess.verifyLegacy(sessionId,deviceId,normalizeShortCode(shortCode))))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
     res.status(403).json({allowed:false});
 });
 app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');if(!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
@@ -9225,7 +9232,7 @@ io.on('connection', (socket) => {
                 if(!knownTunnel&&!knownSession&&data.createTunnel!==true)return emitSocketError('tunnel-access-required','请选择有效短码或主动创建新隧道');
                 const authorized=tunnelAccess.verify(data.accessGrant,sessionId,deviceId);
                 const code=knownTunnel?.short_code||knownSession?.shortCode;
-                if((knownTunnel||knownSession)&&!authorized&&(!tunnelAccess.attempt(clientIp)||!code||requestedShortCode!==code||tunnelAccess.enrolled(sessionId,deviceId)))return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
+                if((knownTunnel||knownSession)&&!authorized&&(!tunnelAccess.attempt(clientIp)||!code||tunnelAccess.enrolled(sessionId,deviceId)||requestedShortCode!==code&&!tunnelAccess.verifyLegacy(sessionId,deviceId,requestedShortCode)))return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
                 socket.data.magnetAssetId='';socket.data.magnetId='';socket.emit('tunnel-access-grant',{sessionId,grant:tunnelAccess.issue(sessionId,deviceId)});
             }
             // 清理过期会话
