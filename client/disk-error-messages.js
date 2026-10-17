@@ -116,5 +116,6 @@
         const text=uncertain ? 'Telegram 发送结果未确认，已保留恢复资料；请先核对频道消息，勿直接重复上传。' : error?.userMessage||describe(value,error?.errorDetails?.reason,error?.errorDetails);
         return `${text} [${value}]`+(error?.errorDetails?.requestId?` · 请求编号：${error.errorDetails.requestId}`:'')+progress;
     }
+    codes.UPLOAD_SOURCE_INTERRUPTED = '上传端已中断或长时间无响应，已停止等待并保留恢复记录；请核对已确认的文件后重新上传';
     return {describe,format,codes,reasons};
 });

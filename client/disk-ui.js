@@ -3574,7 +3574,7 @@ function initDiskEnhancements() {
     const preview = document.createElement('section'); preview.id = 'diskPreview'; preview.hidden = true; preview.setAttribute('role', 'dialog'); preview.setAttribute('aria-modal', 'true');
     preview.innerHTML = '<header><strong id="diskPreviewName"></strong><button id="diskPreviewMinimize" aria-label="最小化预览" title="最小化预览">_</button><button id="diskPreviewClose" aria-label="关闭预览">×</button></header><div id="diskPreviewBody"></div><footer><button id="diskPreviewPrev" aria-label="上一个文件">←</button><span id="diskPreviewCount"></span><button id="diskPreviewNext" aria-label="下一个文件">→</button></footer>';
     document.body.append(preview);
-    const restorePreview = document.createElement('button'); restorePreview.id = 'diskPreviewRestore'; restorePreview.type = 'button'; restorePreview.hidden = true; restorePreview.textContent = '▣ 返回文件预览'; restorePreview.onclick = restoreDiskPreview; document.body.append(restorePreview);
+    const restorePreview = document.createElement('button'); restorePreview.id = 'diskPreviewRestore'; restorePreview.type = 'button'; restorePreview.hidden = true; restorePreview.className = 'telegram-drive-icon-btn'; restorePreview.title = '返回文件预览'; restorePreview.setAttribute('aria-label','返回文件预览'); restorePreview.innerHTML = '<img src="/prompts/resources/icons/fileview.png" alt="">'; restorePreview.onclick = restoreDiskPreview;
     $disk('diskPreviewMinimize').onclick = event => { event.preventDefault(); event.stopPropagation(); minimizeDiskPreview(); };
     $disk('diskPreviewClose').onclick = event => { event.preventDefault(); event.stopPropagation(); closeDiskPreview(); };
     $disk('diskPreviewPrev').onclick = () => stepDiskPreview(-1); $disk('diskPreviewNext').onclick = () => stepDiskPreview(1);
@@ -3615,6 +3615,7 @@ function initDiskEnhancements() {
     const collaborationManage = document.createElement('button'); collaborationManage.id = 'telegramDriveCollaborationManageBtn'; collaborationManage.className = 'btn btn-secondary'; collaborationManage.textContent = '协同中'; collaborationManage.hidden = true;
     collaborationManage.onclick = () => { const entry = telegramDriveCollaborations.find(item => item.owned && item.kind === 'directory' && item.path === telegramDrivePath && item.diskSpace === window.DiskClient.getSpace()); if (entry) manageDiskCollaboration(entry, collaborationManage).catch(error => alert(telegramDriveErrorText(error))); };
     $disk('telegramDriveBottomMenuBtn').before(collaborationManage);
+    $disk('telegramDriveBottomMenuBtn').before(restorePreview);
     const shares = document.createElement('button'); shares.id = 'telegramDriveSharesBtn'; shares.className = 'btn btn-secondary'; shares.textContent = '已分享'; shares.onclick = () => showDiskShares().catch(error => alert(telegramDriveErrorText(error)));
     $disk('telegramDriveRefreshBtn').before(shares);
     const settings = document.createElement('button'); settings.id = 'telegramDriveSettingsBtn'; settings.type = 'button'; settings.className = 'telegram-drive-icon-btn'; settings.title = '个人网盘与当前分区设置'; settings.setAttribute('aria-label', settings.title); settings.textContent = '⚙'; settings.hidden = true;

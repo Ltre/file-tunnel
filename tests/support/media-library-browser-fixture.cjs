@@ -20,6 +20,11 @@ const { createFixture } = require('./media-library-fixture.cjs'), { createMediaR
     const person = f.service.entity({ entityKind: 'person', name: '测试人物', aliases: ['テスト'] }), org = f.service.entity({ entityKind: 'organization', name: '测试组织' });
     f.service.relate({ personId: person.id, organizationId: org.id, from: '2025-01-01' });
     const collection = f.service.collect(f.service.list('result')[0].id); await f.service.pump(); f.service.associate(collection.id, [person.id, org.id]);
+    if(process.env.TEST_FEATURE_261017_4==='1'){
+        f.service.extract(session.id,{mode:'random',count:24});await f.service.pump();
+        for(const start of [0,1,2]){f.service.clip(session.id,{start,end:start+1});await f.service.pump();}
+        f.service.removeResult(f.service.list('result').find(result=>result.kind==='clip').id);
+    }
     const app = express(), requireAuth = (req, res, next) => (req.headers.cookie || '').includes('fixture_media=1') ? next() : res.status(401).json({ error: 'AUTH_REQUIRED' });
     app.use(express.json()); app.get('/fixture-login', (req, res) => res.cookie('fixture_media', '1', { httpOnly: true }).redirect('/media-library'));
     app.get('/media-library', requireAuth, (req, res) => res.sendFile(path.join(root, 'pages/media-library.html')));

@@ -3,7 +3,7 @@
 const express=require('express'),fs=require('node:fs'),path=require('node:path');
 const root=path.resolve(__dirname,'../..'),app=express(),source=fs.readFileSync(path.join(root,'app.js'),'utf8');
 const slice=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
-const functions=[slice('function createFileActionButton(','function syncFileMessageExternalSourceBadge('),slice('function recordTextPayload(','async function toggleTransferRecordFavorite('),slice('function openMessageRecordActionMenu(','async function editTransferRecordRemark('),slice('async function copyTextToClipboard(','async function shareFileMagnet(')].join('\n');
+const functions=[slice('function getCollectionFiles(','async function createCollectionTileHtml('),slice('function createFileActionButton(','function syncFileMessageExternalSourceBadge('),slice('function recordTextPayload(','async function toggleTransferRecordFavorite('),slice('function openMessageRecordActionMenu(','async function editTransferRecordRemark('),slice('async function copyTextToClipboard(','async function shareFileMagnet(')].join('\n');
 const image='<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="#ddeaff"/><text x="100" y="190" font-size="32">261017-3 preview</text></svg>';
 app.get('/',(req,res)=>{
     let html=fs.readFileSync(path.join(root,'pages/index.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'');
@@ -12,6 +12,7 @@ app.get('/',(req,res)=>{
 });
 app.get('/fixture.js',(req,res)=>res.type('js').send(`
 const messages=[{id:'plain',type:'text',text:'第一行\\n第二行'},{id:'rich',type:'rich',content:'<p><strong>粗体标题</strong></p><p>第二段 <a href="https://example.com">链接</a></p>'},{id:'file',type:'file',remark:'这是文件备注',fileInfo:{name:'测试文件.txt'}}];
+messages.push({id:'collection',type:'collection',collection:{files:[{id:'a',name:'甲文件.txt'},{id:'b',name:'乙文件.png'}]}});
 async function getFromStore(_store,id){return messages.find(m=>m.id===id)}
 function getRichMessageContent(message){return message.content||''}
 function showAppToast(text){document.getElementById('fixture-status').textContent=text}
@@ -23,7 +24,7 @@ for(const message of messages){const row=document.createElement('article');row.c
 app.get('/api/telegram/drive/me',(req,res)=>res.json({identity:{id:'fixture',name:'本地交互检查'},enabled:true,configured:true}));
 app.get('/api/telegram/drive/spaces',(req,res)=>res.json({spaces:[{id:'default',scopeKey:'',displayName:'测试分区',state:'ACTIVE'}]}));
 app.get('/api/telegram/drive/accounts',(req,res)=>res.json({accounts:[]}));
-for(const name of ['magnifier-plus.svg','magnifier-minus.svg'])app.get('/prompts/resources/'+name,(req,res)=>res.sendFile(path.join(root,'prompts/resources',name)));
+for(const name of ['magnifier-plus.svg','magnifier-minus.svg','icons/fileview.png'])app.get('/prompts/resources/'+name,(req,res)=>res.sendFile(path.join(root,'prompts/resources',name)));
 app.get('/api/telegram/drive/list',(req,res)=>{
     const current=String(req.query.path||''),parts=current.split('/').filter(Boolean);
     res.json({path:current,breadcrumbs:parts.map((name,index)=>({name,path:parts.slice(0,index+1).join('/')})),summary:{folderCount:1,fileCount:1},folders:[{kind:'directory',name:'下一层',path:[current,'下一层'].filter(Boolean).join('/')}],files:[{id:'fixture-image',kind:'file',name:'测试图片.svg',path:current,type:'image/svg+xml',size:Buffer.byteLength(image)}]});

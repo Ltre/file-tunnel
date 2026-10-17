@@ -14,7 +14,7 @@ async function until(predicate) {
     assert.ok(predicate(), 'client request did not start');
 }
 function clientHarness() {
-    const window = {}, requests = [], xhrs = [], streams = [];
+    const window = {}, requests = [], xhrs = [], streams = [], timers = new Map();let timerId=0;
     let now = 1000, finished = false, finishQueued = false, operation = { operation_id: 'op', type: 'upload', status: 'running', telegramBytesSent: 0, telegramTotalBytes: 100, clientBytesReceived: 0 };
     class XHR {
         constructor() { this.events = {}; this.uploadEvents = {}; this.headers = {}; this.upload = { addEventListener: (name, fn) => { this.uploadEvents[name] = fn; } }; }
@@ -42,10 +42,10 @@ function clientHarness() {
         return { ok: true, json: async () => data };
     };
     const FakeDate = class extends Date { static now() { return now; } };
-    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, XMLHttpRequest: XHR, EventSource: ProgressStream, AbortController, Date: FakeDate, setInterval() {}, setTimeout, clearTimeout, Promise, Map, Set, encodeURIComponent });
+    vm.runInNewContext(source('client/disk-client.js'), { window, fetch, XMLHttpRequest: XHR, EventSource: ProgressStream, AbortController, Date: FakeDate, setInterval(fn,ms) {const id=++timerId;timers.set(id,{fn,ms});return id;}, clearInterval(id) {timers.delete(id);}, setTimeout, clearTimeout, Promise, Map, Set, encodeURIComponent });
     const snapshots = [];
     window.DiskClient.subscribe(jobs => { snapshots.push(jobs.map(job => ({ ...job }))); });
-    return { window, requests, xhrs, streams, snapshots, setOperation(value) { operation = value; }, queueFinish() { finishQueued = true; } };
+    return { window, requests, xhrs, streams, snapshots, timers, setOperation(value) { operation = value; }, queueFinish() { finishQueued = true; } };
 }
 
 test('XHR 在单个分片请求尚未结束时连续更新真实上传字节、速度和分片信息', async () => {
@@ -53,6 +53,7 @@ test('XHR 在单个分片请求尚未结束时连续更新真实上传字节、�
     const uploading = h.window.DiskClient.upload([file], 'folder', async () => blob);
     await until(() => h.xhrs.length === 1);
     const xhr = h.xhrs[0];
+    const heartbeat=[...h.timers].find(([,timer])=>timer.ms===30000);assert.ok(heartbeat);heartbeat[1].fn();await until(()=>h.requests.some(request=>request.url.includes('/uploads/upload/heartbeat')));
     assert.equal(xhr.headers['Content-Range'], 'bytes 0-99/100');
     assert.ok(xhr.headers['X-Disk-Device-Id']); assert.equal(xhr.withCredentials, true);
     xhr.progress(20);
@@ -66,6 +67,7 @@ test('XHR 在单个分片请求尚未结束时连续更新真实上传字节、�
     xhr.respond(); await uploading;
     assert.ok(h.snapshots.some(snapshot => snapshot.some(job => job.clientBytesReceived === 100)));
     assert.equal(h.streams[0].closed, true);
+    assert.equal(h.timers.has(heartbeat[0]),false,'source heartbeat ends with its initiating upload');
 });
 
 test('上传 SSE 连续接收 Telegram 字节，过期轮询和服务端较低浏览器进度不能覆盖新进度', async () => {

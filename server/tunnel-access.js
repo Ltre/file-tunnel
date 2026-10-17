@@ -15,6 +15,9 @@ function createTunnelAccess(dataDir){const key=privateKeyFile(path.join(dataDir,
     function preserveLegacy(sessionId,code,deviceIds){if(!/^[A-Z0-9]{5}$/.test(code||''))return;loadLegacy();const proofs=[...new Set(deviceIds)].filter(id=>!enrolled(sessionId,id)).map(id=>legacyProof(sessionId,id,code)).filter(proof=>!legacy.has(proof));if(!proofs.length)return;
         const fd=fs.openSync(legacyLedger,'a',0o600);try{fs.writeSync(fd,proofs.join('\n')+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}legacySize=-1;}
     function verifyLegacy(sessionId,deviceId,code){if(enrolled(sessionId,deviceId)||!/^[A-Z0-9]{5}$/.test(code||''))return false;loadLegacy();return legacy.has(legacyProof(sessionId,deviceId,code));}
-    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy};
+    const joinRevision=(sessionId,code)=>sign('join-revision\0'+sessionId+'\0'+code);
+    function issueJoin(sessionId,code){const payload=Buffer.from(JSON.stringify({purpose:'join',sessionId,revision:joinRevision(sessionId,code)})).toString('base64url');return payload+'.'+sign(payload);}
+    function verifyJoin(token,sessionId,code){try{if(!code||typeof token!=='string'||token.length>2048)return false;const [payload,signature,...extra]=token.split('.'),expected=sign(payload);if(extra.length||!signature||signature.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected)))return false;const value=JSON.parse(Buffer.from(payload,'base64url'));return value.purpose==='join'&&value.sessionId===sessionId&&value.revision===joinRevision(sessionId,code);}catch(_){return false;}}
+    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy,issueJoin,verifyJoin};
 }
 module.exports={createTunnelAccess};

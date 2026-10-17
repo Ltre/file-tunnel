@@ -17,7 +17,7 @@ async function until(predicate, description, ms = 5000) {
     while (Date.now() < end) { const value = await predicate(); if (value) return value; await sleep(10); }
     throw new Error(description);
 }
-async function fixture(t, telegram) {
+async function fixture(t, telegram, apiOptions = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'progressive-api-'));
     const store = createTelegramDriveStore({ dataDir }), auth = createDiskAuth({ dataDir }), operations = createDiskOperations({ dataDir });
     const user = auth.fromTelegram({ id: '1234' }), other = auth.fromTelegram({ id: '5678' });
@@ -25,7 +25,7 @@ async function fixture(t, telegram) {
     telegram ||= {};
     telegram.remove ||= async () => {};
     const api = createDiskAPI({ dataDir, defaultStore: store, auth, operations, telegram, getDefaultBackend: () => storage,
-        getIdentity: req => req.get('X-Other') ? other : user, setIdentity() {}, getOrigin: () => 'http://localhost', isMockRequest: () => false, maxDepth: () => 20 });
+        getIdentity: req => req.get('X-Other') ? other : user, setIdentity() {}, getOrigin: () => 'http://localhost', isMockRequest: () => false, maxDepth: () => 20, ...apiOptions });
     const app = express(); app.use(express.json()); app.use('/api/telegram/drive', api.browser);
     const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}/api/telegram/drive`;
@@ -45,6 +45,33 @@ async function fixture(t, telegram) {
     return { api, dataDir, store, auth, operations, user, storage, telegram, base, request, create, terminal };
 }
 function remote(part, id) { return { ...part, streamFactory: undefined, awaitSourceComplete: undefined, fileId: `remote-${id}`, fileUniqueId: `unique-${id}`, messageId: id, messageDate: Date.now() }; }
+
+test('an abandoned browser upload stops waiting without a server restart; polling from another machine cannot keep it alive',async t=>{
+    t.mock.method(console,'info',()=>{});let clock=1000;
+    const f=await fixture(t,fakeTelegram(),{uploadNow:()=>clock,uploadSourceIdleMs:1000}),job=await f.create([{name:'first.bin',size:3},{name:'missing.bin',size:3}]);
+    await f.request(`/uploads/${job.uploadId}/files/0`,{method:'PUT',headers:{'Content-Range':'bytes 0-2/3'},body:Buffer.from('one')});
+    clock=5000;await f.request('/operations');await f.api.expireIdleUploads();
+    const final=await f.terminal(job);assert.equal(final.status,'failed');assert.equal(final.errorCode,'UPLOAD_SOURCE_INTERRUPTED');
+    assert.equal((await f.request('/operations/'+job.operation_id)).data.status,'failed');
+});
+
+test('source heartbeat renews only the authorized upload and expires after heartbeats stop',async t=>{
+    t.mock.method(console,'info',()=>{});let clock=1000;
+    const f=await fixture(t,fakeTelegram(),{uploadNow:()=>clock,uploadSourceIdleMs:1000}),job=await f.create([{name:'source.bin',size:3}]);
+    clock=1800;assert.equal((await f.request(`/uploads/${job.uploadId}/heartbeat`,{method:'POST',...json({})})).status,200);
+    clock=2500;await f.api.expireIdleUploads();assert.equal((await f.request('/operations/'+job.operation_id)).data.status,'running');
+    assert.notEqual((await f.request(`/uploads/${job.uploadId}/heartbeat`,{method:'POST',headers:{'X-Other':'1',...json({}).headers},body:'{}'})).status,200);
+    clock=3000;await f.api.expireIdleUploads();assert.equal((await f.terminal(job)).errorCode,'UPLOAD_SOURCE_INTERRUPTED');
+});
+
+test('client handoff keeps a legitimate slow Telegram finalization alive after browser heartbeats stop',async t=>{
+    t.mock.method(console,'info',()=>{});let clock=1000,started=false,release;const waiting=new Promise(resolve=>release=resolve),telegram=fakeTelegram(),finalize=telegram.finalizeGroups;
+    t.after(()=>release());telegram.finalizeGroups=async(...args)=>{started=true;await waiting;return finalize(...args);};
+    const f=await fixture(t,telegram,{uploadNow:()=>clock,uploadSourceIdleMs:1000}),job=await f.create([{name:'complete.bin',size:3}]);
+    await f.request(`/uploads/${job.uploadId}/files/0`,{method:'PUT',headers:{'Content-Range':'bytes 0-2/3'},body:Buffer.from('one')});
+    await f.request(`/uploads/${job.uploadId}/finish`,{method:'POST'});await until(()=>started,'finalizer did not start');
+    clock=100000;await f.api.expireIdleUploads();assert.equal((await f.request('/operations/'+job.operation_id)).data.status,'running');release();assert.equal((await f.terminal(job)).status,'completed');
+});
 function fakeTelegram() {
     let id = 100;
     return {

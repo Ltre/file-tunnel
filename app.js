@@ -1130,11 +1130,11 @@ function replaceSessionDirectoryCache(sessions = []) {
 function savedTunnelGrant(id){try{return localStorage.getItem('tunnel-access:'+id)||'';}catch(_){return '';}}
 function storeTunnelGrant(id,grant){if(id&&grant)localStorage.setItem('tunnel-access:'+id,grant);}
 async function ensureTunnelAccess(){
-    let response;try{response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,grant:savedTunnelGrant(state.sessionId),shortCode:state.shortCode})});}catch(_){if(savedTunnelGrant(state.sessionId)||state.shortCode)return true;}
-    if(response?.status>=500&&(savedTunnelGrant(state.sessionId)||state.shortCode))return true;
-    const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelGrant(state.sessionId,data.grant);return true;}
-    state.sessionId=null;state.shortCode='';state.pendingRecordId='';state.pendingRecordDetails=false;state.pendingTunnelInviteReceipt=null;
-    const url=new URL(window.location.href);if(url.pathname.startsWith('/record/'))url.pathname='/';url.hash='';for(const key of ['record','invite','from'])url.searchParams.delete(key);history.replaceState(null,'',url.pathname+url.search);return false;
+    let response;try{response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,grant:savedTunnelGrant(state.sessionId),shortCode:state.shortCode,joinToken:state.tunnelJoinToken})});}catch(_){if(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken)return true;}
+    if(response?.status>=500&&(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken))return true;
+    const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelGrant(state.sessionId,data.grant);if(data.grant)state.tunnelJoinToken='';return true;}
+    state.sessionId=null;state.shortCode='';state.tunnelJoinToken='';state.pendingRecordId='';state.pendingRecordDetails=false;state.pendingTunnelInviteReceipt=null;
+    const url=new URL(window.location.href);if(url.pathname.startsWith('/record/'))url.pathname='/';url.hash='';for(const key of ['record','invite','from','tunnel_join'])url.searchParams.delete(key);history.replaceState(null,'',url.pathname+url.search);return false;
 }
 async function initSession() {
     // 生成或获取设备ID
@@ -1150,6 +1150,7 @@ async function initSession() {
     // A shared hash always wins. A plain home page resumes the most recent local
     // session, unless it was opened as a PWA share target and needs a destination.
     const entryUrl = new URL(window.location.href);
+    state.tunnelJoinToken = entryUrl.searchParams.get('tunnel_join') || '';
     const recordRouteMatch = entryUrl.pathname.match(/^\/record\/([^/]+)\/([^/]+)\/?$/);
     const routeSessionId = recordRouteMatch ? decodeURIComponent(recordRouteMatch[1]) : '';
     state.pendingRecordId = recordRouteMatch
@@ -1210,7 +1211,8 @@ async function initSession() {
 
 function tunnelSessionEntryUrl(entryUrl, sessionId) {
     const keepDiskDestination = entryUrl.pathname === '/disk' || entryUrl.searchParams.get('disk') === '1';
-    return entryUrl.pathname + (keepDiskDestination ? entryUrl.search : '') + '#' + sessionId;
+    const destination=new URL(entryUrl);destination.searchParams.delete('tunnel_join');
+    return destination.pathname + (keepDiskDestination ? destination.search : '') + '#' + sessionId;
 }
 
 function normalizeLocalShortCode(value) {
@@ -1492,12 +1494,23 @@ function renderQRCodeFallback(qrContainer, message) {
     qrContainer.appendChild(fallback);
 }
 
-function generateQRCode() {
+let tunnelQRCodeRevision = 0;
+async function generateQRCode() {
     const qrContainer = document.getElementById('qrcode');
     if (!qrContainer) return;
     qrContainer.innerHTML = '';
 
-    const currentUrl = window.location.href;
+    const revision = ++tunnelQRCodeRevision, sessionId = state.sessionId, deviceId = state.deviceId, grant = savedTunnelGrant(sessionId);
+    if (!sessionId || !grant) { renderQRCodeFallback(qrContainer, '二维码加载中...'); return; }
+    let currentUrl;
+    try {
+        const response = await fetch('/api/tunnel-join-links', {method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId,deviceId,grant})});
+        if (!response.ok) throw Error('join-link-unavailable');
+        const result = await response.json(), url = new URL('/',window.location.href);
+        if (!result.joinToken) throw Error('join-link-unavailable');
+        url.hash = sessionId; url.searchParams.set('tunnel_join', result.joinToken); currentUrl = url.href;
+    } catch (_) { if (revision === tunnelQRCodeRevision) renderQRCodeFallback(qrContainer,'二维码暂不可用，请稍后重试'); return; }
+    if (revision !== tunnelQRCodeRevision || state.sessionId !== sessionId) return;
     if (!window.QRCode) {
         renderQRCodeFallback(qrContainer, '二维码加载中...');
         ensureQRCodeLibrary()
@@ -1872,6 +1885,7 @@ function initSocket() {
             deviceModel: state.deviceModel,
             localIp: state.reportedLanIp,
             shortCode: state.shortCode,
+            joinToken: state.tunnelJoinToken,
             accessGrant:savedTunnelGrant(state.sessionId),
             createTunnel:sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1'
         });
@@ -1957,7 +1971,7 @@ function initSocket() {
     state.socket.on('permission-denied', data => {
         showAppToast(`操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
-    state.socket.on('tunnel-access-grant',data=>{storeTunnelGrant(data.sessionId,data.grant);sessionStorage.removeItem('tunnel-create:'+data.sessionId);});
+    state.socket.on('tunnel-access-grant',data=>{storeTunnelGrant(data.sessionId,data.grant);sessionStorage.removeItem('tunnel-create:'+data.sessionId);generateQRCode();});
     state.socket.on('tunnel-access-required',()=>{const target=new URL(window.location.href);if(target.pathname.startsWith('/record/'))target.pathname='/';target.hash='';for(const key of ['record','invite','from'])target.searchParams.delete(key);target.searchParams.set('leave','1');state.socket.disconnect();window.location.replace(target.href);});
     state.socket.on('short-code-session', (data) => {
         storeTunnelGrant(data?.sessionId,data?.grant);
@@ -7959,7 +7973,11 @@ async function associateTelegramDriveBackup(messageId, sourceFiles, uploadedItem
 }
 
 function recordTextPayload(message) {
-    if (message.type !== 'rich') return { text: String(message.type === 'text' ? message.text || '' : message.remark || message.fileInfo?.remark || message.collection?.remark || ''), html: '' };
+    if (message.type !== 'rich') {
+        const text = String(message.type === 'text' ? message.text || '' : message.remark || message.fileInfo?.remark || message.collection?.remark || '');
+        const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? getCollectionFiles(message) : [];
+        return { text: text + files.filter(file=>file?.name).map(file=>'\n'+file.name+'\n').join(''), html: '' };
+    }
     const content = document.createElement('div'); content.innerHTML = getRichMessageContent(message);
     content.querySelectorAll('script,style,iframe,object,embed,link,meta').forEach(node => node.remove());
     content.querySelectorAll('*').forEach(node => { for (const attribute of Array.from(node.attributes)) {
@@ -8005,7 +8023,7 @@ function renderMessageRecordActions(messageEl, message) {
     menuItems.push(createRecordActionButton('🔗', '复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
-    menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的文本、富文本或备注', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
+    menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的正文、备注和文件名', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
     menuItems.push(createRecordActionButton(message.favorite ? '★' : '☆', message.favorite ? '取消收藏' : '收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
         toggleTransferRecordFavorite(message.id).catch(err => {
             alert(`收藏状态保存失败：${err.message}`);

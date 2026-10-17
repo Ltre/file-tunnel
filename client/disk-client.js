@@ -477,6 +477,9 @@
         terminalListeners.add(checkTerminal);
         operationContexts.set(job.operation_id,context);
         const closeProgress = subscribeUploadProgress(job,context);
+        const sourceHeartbeat = setInterval(() => {
+            if (!signal.aborted) uploadRequest('/uploads/' + job.uploadId + '/heartbeat', withSignal(json('POST', {}), signal)).catch(() => {});
+        }, 30000);
         const totalBytes = plannedFiles.reduce((sum, file,index) => sum + (job.files?.[index]?.reused ? 0 : Number(file.size)), 0);
         let completedBytes = 0, lastProgressBytes = 0, lastProgressAt = Date.now(), lastPublishedAt = 0, uploadSpeed = 0;
         const reportClientProgress = (index, part, loaded, force = false) => {
@@ -580,7 +583,7 @@
                 stage: error.errorDetails?.stage, method: error.errorDetails?.method
             })}).catch(() => {});
             throw error;
-        } finally { closeProgress(); terminalListeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
+        } finally { if (sourceHeartbeat !== undefined) clearInterval(sourceHeartbeat); closeProgress(); terminalListeners.delete(checkTerminal); userSignal.removeEventListener?.('abort', cancelTransfer); refresh(); }
     }
     async function read(item, options = {}) {
         const context={...transportContext(),...item.diskTransportContext,...options};

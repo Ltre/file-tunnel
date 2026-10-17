@@ -201,10 +201,21 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const resource = item('import', session.importId), settings = requireConfig();
         db.patch('batch', batch.id, job.scope, { state: 'running', error: '' });
         progress(0, { phase: 'source', detail: '正在读取源视频并准备取帧', framesDone: 0, framesTotal: batch.times.length });
-        const source = await sourceInput(resource, signal, { start: Math.min(...batch.times), end: Math.max(...batch.times) });
+        const original = await sourceInput(resource, signal, { start: Math.min(...batch.times), end: Math.max(...batch.times) });
+        let clustered, clusterEnd = -1;
         try {
             for (let index = 0; index < batch.times.length; index++) {
                 if (signal.aborted) throw Error('MEDIA_CANCELLED');
+                if (index > clusterEnd) {
+                    clustered?.close(); clustered = null; clusterEnd = index;
+                    while (clusterEnd + 1 < batch.times.length && batch.times[clusterEnd + 1] - batch.times[index] <= 3) clusterEnd++;
+                    if (clusterEnd > index && /^http:/.test(original.url)) {
+                        const segment = db.matching('cache',job.scope,'kind','segments').find(value=>value.status==='ready'&&value.precise&&value.sourceFingerprint===resource.file.fingerprint&&value.start<=batch.times[index]&&value.end>=batch.times[clusterEnd]);
+                        if (segment) try { clustered = await sourceInput(resource,signal,{cacheId:segment.id}); }
+                        catch (error) { if(signal.aborted || !/^MEDIA_CACHE_/.test(error.message))throw error; }
+                    }
+                }
+                const source = clustered || original;
                 progress(Math.floor(index / batch.times.length * 99), { phase: 'extracting', detail: `正在提取第 ${index + 1}/${batch.times.length} 帧 · 目标时刻 ${batch.times[index].toFixed(3)} 秒`, framesDone: index, framesTotal: batch.times.length });
                 const id = batch.id + '-' + index;
                 const existing = db.get('result', id, job.scope), oldCache = existing && db.get('cache', existing.cacheId, job.scope);
@@ -225,7 +236,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 progress(Math.round((index + 1) / batch.times.length * 99), { phase: 'extracting', detail: `已提取 ${index + 1}/${batch.times.length} 帧`, framesDone: index + 1, framesTotal: batch.times.length });
             }
             return db.patch('batch', batch.id, job.scope, { state: 'completed', actualCount: batch.times.length, error: '' });
-        } finally { source.close(); }
+        } finally { clustered?.close(); original.close(); }
     }
     function clip(sessionId, input, segment = false) {
         const session = item('session', sessionId), resource = item('import', session.importId);

@@ -3583,11 +3583,16 @@ function rotateTunnelShortCode(sessionId,value){
     if(session)session.shortCode=code;io.to(sessionId).emit('session-short-code',{shortCode:code});return code;
 }
 app.post('/api/sessions/:sessionId/short-code',adminAuth.requireAuth,(req,res)=>{try{res.json({shortCode:rotateTunnelShortCode(req.params.sessionId,req.body?.shortCode)});}catch(error){res.status(422).json({error:error.message});}});
-app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
+app.post('/api/tunnel-join-links',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant}=req.body||{},code=infraStore?.findShortCodeForSession(sessionId)||sessions.get(sessionId)?.shortCode;
+    if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId)||!code||!tunnelAccess.verify(grant,sessionId,deviceId))return res.status(403).json({error:'TUNNEL_ACCESS_REQUIRED'});
+    res.json({joinToken:tunnelAccess.issueJoin(sessionId,code)});
+});
+app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode,joinToken}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
     const tunnel=infraStore?.getTunnel(sessionId),session=sessions.get(sessionId),code=tunnel?.short_code||session?.shortCode;
     if(!tunnel&&!session)return res.json({allowed:true,creating:true});
     if(tunnelAccess.verify(grant,sessionId,deviceId))return res.json({allowed:true,grant});
     if(!tunnelAccess.attempt(req.ip))return res.status(429).json({allowed:false});
+    if(tunnelAccess.verifyJoin(joinToken,sessionId,code))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
     if(code&&!tunnelAccess.enrolled(sessionId,deviceId)&&(normalizeShortCode(shortCode)===code||tunnelAccess.verifyLegacy(sessionId,deviceId,normalizeShortCode(shortCode))))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
     res.status(403).json({allowed:false});
 });
@@ -9230,8 +9235,8 @@ io.on('connection', (socket) => {
                     publicSession.devices.set(deviceId,{deviceId,deviceName:'磁链下载器',socketId:socket.id,clientType:'magnet',joinedAt:Date.now(),lastSeenAt:Date.now()});bindSocketToDevice(socket,deviceId);socket.emit('session-history',{messages:[],deletedMessageIds:[]});return;
                 }
                 if(!knownTunnel&&!knownSession&&data.createTunnel!==true)return emitSocketError('tunnel-access-required','请选择有效短码或主动创建新隧道');
-                const authorized=tunnelAccess.verify(data.accessGrant,sessionId,deviceId);
                 const code=knownTunnel?.short_code||knownSession?.shortCode;
+                const authorized=tunnelAccess.verify(data.accessGrant,sessionId,deviceId)||(data.joinToken&&tunnelAccess.attempt(clientIp)&&tunnelAccess.verifyJoin(data.joinToken,sessionId,code));
                 if((knownTunnel||knownSession)&&!authorized&&(!tunnelAccess.attempt(clientIp)||!code||tunnelAccess.enrolled(sessionId,deviceId)||requestedShortCode!==code&&!tunnelAccess.verifyLegacy(sessionId,deviceId,requestedShortCode)))return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
                 socket.data.magnetAssetId='';socket.data.magnetId='';socket.emit('tunnel-access-grant',{sessionId,grant:tunnelAccess.issue(sessionId,deviceId)});
             }

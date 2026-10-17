@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v8-features-261017-3';
+const CACHE_NAME = 'instant-tunnel-v78-content-v8-features-261017-4';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -57,7 +57,8 @@ const APP_SHELL = [
     '/client/light-transfer.js',
     '/client/qrcode-1.0.0.min.js',
     '/manifest.webmanifest',
-    '/tunnel-icon.svg'
+    '/tunnel-icon.svg',
+    '/prompts/resources/icons/fileview.png'
 ];
 const PRECACHE_CORE = ['/index.html', '/manifest.webmanifest', '/tunnel-icon.svg'];
 

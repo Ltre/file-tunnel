@@ -79,10 +79,10 @@ test('admin overview resolves renamed opaque partitions by owner and stable scop
     assert.equal(row.partitionName,'6');assert.equal(row.partitionId,partition.id);assert.match(row.diskSpace,/^p-/);
 });
 
-test('record text selection copies message bodies and file/collection remarks without substituting file names',async()=>{
-    const source=fs.readFileSync('app.js','utf8'),context=vm.createContext({});vm.runInContext(source.slice(source.indexOf('function recordTextPayload('),source.indexOf('async function copyTransferRecordText(')),context);
+test('record text selection retains message bodies and remarks while including newline-wrapped file names',async()=>{
+    const source=fs.readFileSync('app.js','utf8'),context=vm.createContext({});vm.runInContext(source.slice(source.indexOf('function getCollectionFiles('),source.indexOf('async function createCollectionTileHtml('))+source.slice(source.indexOf('function recordTextPayload('),source.indexOf('async function copyTransferRecordText(')),context);
     assert.equal(context.recordTextPayload({type:'text',text:'第一行\n第二行'}).text,'第一行\n第二行');
-    assert.equal(context.recordTextPayload({type:'file',remark:'备注',fileInfo:{name:'不应复制.mp4',remark:'旧备注'}}).text,'备注');
+    assert.equal(context.recordTextPayload({type:'file',remark:'备注',fileInfo:{name:'现在支持文件名.mp4',remark:'旧备注'}}).text,'备注\n现在支持文件名.mp4\n');
     assert.equal(context.recordTextPayload({type:'collection',collection:{remark:'合辑备注'}}).text,'合辑备注');
-    assert.equal(context.recordTextPayload({type:'file',fileInfo:{name:'仅文件名.mp4'}}).text,'');
+    assert.equal(context.recordTextPayload({type:'file',fileInfo:{name:'仅文件名.mp4'}}).text,'\n仅文件名.mp4\n');
 });
