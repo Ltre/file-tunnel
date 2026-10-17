@@ -44,7 +44,8 @@
  function pane(title,content,cls=''){return `<section class="card ${cls}">${title?`<div class="section-title"><h2>${title}</h2></div>`:''}${content}</section>`;}
  function navTabs(active){return `<nav class="app-nav" aria-label="串流控制台页面">${[['发现','02-discovery'],['我创建的','10-my-stations'],['我订阅的','11-my-subscriptions'],['监控','08-monitor-wall']].map(([s,id])=>btn(s,id,active===id?'active':'')).join('')}</nav>`;}
  function homeShortcuts(){return `<nav class="home-shortcuts" aria-label="收起控制台并打开首页">${[['连接设备','22-home-background'],['传输记录','m-home-records'],['协同编辑','m-home-editor']].map(([s,id])=>btn(s,id,'',`aria-label="收起控制台，打开${s}"`)).join('')}</nav>`;}
- function shell(title,content,{actions='',nav='',back='02-discovery',classes='',shortcuts=true}={}){return `<section class="app-view ${classes}"><header class="app-header">${nav?'':btn('‹',back,'back',`aria-label="返回上一页"`)}<h1>${title}</h1>${action('回首页','home','','home-return',`aria-label="收起控制台并回到首页"`)}</header>${nav?navTabs(nav):''}<main class="scroll" id="screen-scroll"><div class="stack">${content}</div></main>${actions?`<footer class="action-bar">${actions}</footer>`:''}${shortcuts?homeShortcuts():''}</section>`;}
+ function invitationSupplement(){return pane('邀请设备或转发到隧道',`<p class="small muted">创建仅邀请台后，可选择本机可见设备发送邀请；接收端从通知中心查看并接受。也可发送一条隧道 Markdown 邀请消息。</p><div class="button-row" style="margin-top:12px">${action('邀请设备','invite-flow','devices','primary')}${action('转发到隧道','invite-flow','tunnel')}</div><small>补充交互演示，不发送真实邀请。</small>`);}
+ function shell(title,content,{actions='',nav='',back='02-discovery',classes='',shortcuts=true}={}){return `<section class="app-view ${classes}"><header class="app-header">${nav?'':btn('‹',back,'back',`aria-label="返回上一页"`)}<h1>${title}</h1>${action('回首页','home','','home-return',`aria-label="收起控制台并回到首页"`)}</header>${nav?navTabs(nav):''}<main class="scroll" id="screen-scroll"><div class="stack">${title==='邀请与可见性'?invitationSupplement():''}${content}</div></main>${actions?`<footer class="action-bar">${actions}</footer>`:''}${shortcuts?homeShortcuts():''}</section>`;}
  function sectionTabs(current){return `<div class="mini-tabs" aria-label="发起端内容">${[['播放','06-owner'],['播放列表','m-owner-playlist'],['观看者','m-owner-viewers']].map(([s,id])=>btn(s,id,current===id?'active':'')).join('')}</div>`;}
  function media(label='旅行视频.mp4',type='video',live=false){if(type==='audio')return `<div class="media-preview audio"><span class="media-caption">${esc(label)}</span><div class="wave" aria-label="音频波形示意">${Array.from({length:36},(_,i)=>`<i style="height:${(i%7+2)*6}px"></i>`).join('')}</div></div>`;return `<div class="media-preview"><span class="media-caption">${esc(label)}</span>${live?'<span class="live-tag">LIVE · 实时画面</span>':''}</div>`;}
  function timeline(duration=6756){return `<div><label class="small" for="shared-progress">共享播放进度</label><input id="shared-progress" type="range" min="0" max="100" step="0.1" value="${state.progress}" data-change="progress" data-duration="${duration}" aria-label="共享播放进度"><div class="range-label"><span id="progress-label">${progressText(duration)}</span><span>${timeText(duration)}</span></div></div>`;}
@@ -146,7 +147,7 @@
    case 'filter':state.filter=value;repaint();break;
    case 'save-current-config':toast('已保存当前演示台配置');break;
    case 'stop-file':state.fileStopped=!state.fileStopped;state.playing=!state.fileStopped;repaint();toast(state.fileStopped?'已停止供流，配置与订阅保留':'已重新开始当前台');break;
-   case 'save-form':toast('已保存演示配置');navigate(state.pool.length>5?'10-my-stations':'06-owner');break;
+   case 'save-form':state.visibility=state.form.visibility;toast(state.visibility==='仅限邀请'?'已创建仅邀请台，可选择可见设备发送邀请':'已保存演示配置');navigate(state.visibility==='仅限邀请'?'09-access':state.pool.length>5?'10-my-stations':'06-owner');break;
    case 'mock-files':toast('演示已列出本机候选文件，不读取真实文件');break;
    case 'random':toast('已演示台统一抽取结果；候选可取消勾选');break;
    case 'pending-remove':state.pending.splice(Number(value),1);repaint();break;
@@ -181,7 +182,8 @@
    case 'share-choice':document.querySelectorAll('.share-choice').forEach(el=>el.classList.toggle('selected',el===element));break;
    case 'home-menu':navigate(route==='01-home-entry'?'22-home-background':'01-home-entry');break;
    case 'clear-editor':state.editor='<p><br></p>';repaint();break;
-   case 'native-tool':toast('首页原有功能位置示意；此原型不运行应用功能');break;
+   case 'invite-flow':window.top.location.href=new URL('../42-invitation-flow.html?from=mobile#'+value,location.href).href;break;
+   case 'native-tool':if(value==='通知中心'){window.top.location.href=new URL('../42-invitation-flow.html?from=mobile#notifications',location.href).href;break;}toast('首页原有功能位置示意；此原型不运行应用功能');break;
    case 'resolve-invite':toast('已展示演示邀请，核对信息后可接受');break;
    case 'invite-new':toast('已生成演示邀请，不产生真实授权');break;
    case 'revoke-invite':toast('演示邀请已撤销；台可见性与原订阅分别处理');break;

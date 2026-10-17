@@ -121,3 +121,45 @@
     C:/Users/Dell/AppData/Local/Temp/stream-v3-theme-check.cjsC:/Users/Dell/AppData/Local/Temp/stream-v3-theme-check.cjs+19-0
 
 
+
+
+傻逼CODEX：
+
+
+    ❓ Q3 — 是否增加站内定向邀请？
+    在“邀请与可见性”中增加“邀请设备”：A 选择自己可见的设备并发送 → B 的通知中心收到邀请 → B 查看并接受 → 订阅观看，是否采用这条流程？
+    ➡️ 建议：是。 将它作为站内邀请渠道，同时保留现有的复制链接、邀请码，供用户通过其它渠道转交。
+
+
+
+问：
+
+
+
+    Q3：是。
+    不过要扩展一下，可以在创建仅邀请的串流台后，提供创建者设备的可见其它设备选择并发送，接收者则通知通知中心接受邀请。创建者还可以将串流台邀请链接点击转发到隧道 ，选择要发送的隧道，随之在隧道中新增一条markdown类型的消息（用来承载富文本和超链接）。相应的原型也要补充一下，保存到串流控制台v3原型目录prompts/resources/streaming-console-QA-261016/v3 
+    为此，需要简单实现一下发送markdown的需求了，先限制可预览markdown长度为10行，超过的用毛玻璃效果遮住后续部分，点击可以展开查看完整markdown。markdown可以引用隧道中的任何blob资源，但不引用网盘中的资源（因为别的设备要登录网盘账号才能授权，且网络加载慢）。markdown被下载或上传到网盘时，其中引用的多媒体资源会连同markdown本身打包成zip。你可以把这一小段需求也整理到streaming-console-QA-261016.md文档的结尾QA中。
+    -------------------
+    以上需求产生了一次分叉，你要记得解决完后回到主线
+    
+    
+    
+答：
+        
+        
+        
+    已将 Q3 的扩展及 Markdown 支线整理到[QA 文档](D:/Workspace/github/Ltre/file-tunnel/prompts/ideas/streaming-console-QA-261016.md)，并补充了[v3 交互原型](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/streaming-console-QA-261016/v3/42-invitation-flow.html)。
+
+    原型可演示设备邀请、通知中心接受／拒绝、转发到隧道，以及 Markdown 十行预览、毛玻璃遮挡、展开和 ZIP 打包清单。已检查宽窄屏布局；真实消息发送和打包尚未接入。支线澄清完成后会回到串流控制台主线。
+
+    ❓ **Q4 — 隧道邀请的接受范围**
+
+    A 将“仅限邀请”串流台的邀请链接转发到隧道。B 能看到这条消息，但没有被 A 单独选中邀请。
+
+    **B 是否可以直接打开链接并确认加入，无需 A 再逐个批准？**
+
+    ➡️ **建议：是。** 定向设备邀请和隧道消息邀请是两个独立渠道，后者不要求接收设备事先出现在定向邀请名单中。
+    
+    
+
+
