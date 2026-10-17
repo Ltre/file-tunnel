@@ -47,6 +47,8 @@ async function fixture(t, telegram, apiOptions = {}) {
         for (const job of operations.list({ userId: user.id })) if (!['completed', 'failed', 'cancelled'].includes(job.status)) await operations.cancel(job.operation_id, { userId: user.id });
         for (const job of operations.list({ userId: user.id })) await store.upload(job.uploadId)?.pipelineDone;
         operations.flush(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+        // Response completion can precede the source stream's lease release.
+        await until(() => !openDiskRepository(dataDir).content.withDatabase(db => db.prepare("SELECT count(*) AS n FROM disk_content_leases WHERE kind='read' AND expires_at>?").get(Date.now()).n), 'read leases remained active during fixture cleanup');
         openDiskRepository(dataDir).close(); fs.rmSync(dataDir, { recursive: true, force: true });
     });
     return { api, dataDir, store, auth, operations, user, storage, telegram, base, request, create, terminal };

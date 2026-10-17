@@ -65,7 +65,7 @@ function createMediaDatabase(dataDir, now = Date.now) {
         });
     }
     return { get, list, create, patch, atomic,
-        frameDuplicates(scope, importId, actualMs) { return db.prepare("SELECT id FROM media_documents WHERE kind='result' AND scope=? AND json_extract(data,'$.importId')=? AND json_extract(data,'$.actualMs')=?")
+        frameDuplicates(scope, importId, actualMs) { return db.prepare("SELECT id FROM media_documents WHERE kind='result' AND scope=? AND json_extract(data,'$.importId')=? AND json_extract(data,'$.actualMs')=? AND COALESCE(json_extract(data,'$.state'),'')!='deleted'")
             .all(scope, importId, actualMs).map(row => row.id); },
         matching(kind, scope, field, value) {
             if (!KINDS.has(kind) || !/^[a-zA-Z][a-zA-Z0-9]{0,50}$/.test(field)) throw Error('MEDIA_RECORD_INVALID');

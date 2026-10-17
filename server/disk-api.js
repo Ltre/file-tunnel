@@ -133,7 +133,7 @@ function errorStatus(code) {
     return 422;
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {}, resolveStorageBackend = async backend => backend,
-    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute' }) {
+    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute', uploadSourceIdleMs = 5 * 60000, uploadNow = Date.now }) {
     if(!['all','owner','off'].includes(contentReuseMode)) throw new Error('CONTENT_REUSE_MODE_INVALID');
     if(!['execute','observe'].includes(contentCleanupMode)) throw new Error('CONTENT_CLEANUP_MODE_INVALID');
     const log = createDiskUploadLog(dataDir);
@@ -482,6 +482,21 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     let recoveringUploads = false, recoveryRetryTimer = null;
     const recoveryBacklog = [];
     const activeProgressiveUploads = new Set();
+    const uploadSources = new Map();
+    const touchUploadSource = job => { if (uploadSources.has(job.id)) job.sourceLastSeenAt = uploadNow(); };
+    async function expireIdleUploads() {
+        for (const [id, entry] of uploadSources) {
+            const {store, job, wake} = entry;
+            if (store.upload(id) !== job || job.clientDone || job.pipelineFailure) { uploadSources.delete(id); continue; }
+            const idleMs = uploadNow() - job.sourceLastSeenAt;
+            if (idleMs < uploadSourceIdleMs) continue;
+            uploadSources.delete(id);
+            const error = new Error('UPLOAD_SOURCE_INTERRUPTED'); error.details = {stage:'browser-upload',reason:'source-heartbeat-expired',idleMs};
+            job.pipelineFailure = error; recordUploadFailure(job,error);
+            job.pipelineAbort?.abort(error); wake();
+            if (!job.pipelineDone) await store.abortAsync(id);
+        }
+    }
     const queueUploadRecovery = (entry, delayMs = 60000) => {
         if (!entry?.job?.id || recoveryBacklog.some(item => item.store === entry.store && item.job.id === entry.job.id)) return;
         recoveryBacklog.push(entry);
@@ -492,6 +507,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }
     };
     const cleanupTimer = setInterval(() => {
+        expireIdleUploads().catch(() => console.warn('[网盘] 上传端状态检查失败'));
         cleanupExpiredUploads().catch(() => console.warn('[网盘] 暂存清理失败，请检查数据目录权限'));
         retryCaptions().catch(() => {});
         retryRemoteCleanup().catch(error => console.warn('[网盘] 旧对象清理重试失败：', error.message));
@@ -1057,9 +1073,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     admin.get('/storage-overview', (req, res) => {
         const users = adminUserMap(), groups = new Map();
+        const names = new Map(persistence.load('partitions').map(partition => [JSON.stringify([partition.ownerId, partition.scopeKey]), partition]));
         const add = (appId, userId, diskSpace) => {
             const key = JSON.stringify([appId, userId, diskSpace]);
-            if (!groups.has(key)) groups.set(key, { appId, appLabel: appLabel(appId), userId, user: users.get(userId) || { id: userId, name: '历史用户' }, diskSpace, fileCount: 0, size: 0, lastActivity: 0 });
+            const partition = names.get(JSON.stringify([userId, diskSpace]));
+            if (!groups.has(key)) groups.set(key, { appId, appLabel: appLabel(appId), userId, user: users.get(userId) || { id: userId, name: '历史用户' }, diskSpace,
+                partitionId: partition?.id || '', partitionName: partition?.displayName || (diskSpace?.startsWith('p-') ? '历史分区（名称未记录）' : diskSpace || '默认分区'), fileCount: 0, size: 0, lastActivity: 0 });
             return groups.get(key);
         };
         const usages = spaces.usages();
@@ -1075,7 +1094,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!systems.has(group.appId)) systems.set(group.appId, { appId: group.appId, label: group.appLabel, users: new Map() });
             const system = systems.get(group.appId);
             if (!system.users.has(group.userId)) system.users.set(group.userId, { ...group.user, userId: group.userId, spaces: [] });
-            system.users.get(group.userId).spaces.push({ diskSpace: group.diskSpace, fileCount: group.fileCount, size: group.size, lastActivity: group.lastActivity });
+            system.users.get(group.userId).spaces.push({ diskSpace: group.diskSpace, partitionId: group.partitionId, partitionName: group.partitionName, fileCount: group.fileCount, size: group.size, lastActivity: group.lastActivity });
         }
         res.json({ systems: [...systems.values()].map(system => ({ appId: system.appId, label: system.label, users: [...system.users.values()] })) });
     });
@@ -1316,7 +1335,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }
         }
         else if (entry.kind === 'directory' && method === 'POST' && ['/content/proof','/content/release'].includes(path)) { /* durable tickets remain viewer/grant/target bound */ }
-        else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish|\/queue|\/failure)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
+        else if (entry.kind === 'directory' && /^\/uploads\/[^/]+(?:\/files\/\d+(?:\/thumbnail)?|\/phase|\/finish|\/queue|\/failure|\/heartbeat)?$/.test(path) && ['GET','PUT','POST','DELETE'].includes(method)) {
             const uploadId = path.split('/')[2], job = storage.upload(uploadId);
             if (!job || job.metadata?.collaborationId !== entry.id || !storage.ownsUpload(entry.ownerId, uploadId)) throw diskOperationError('COLLABORATION_OUT_OF_SCOPE','UPLOAD_OUTSIDE_GRANT');
         }
@@ -1783,6 +1802,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const job = store(req).upload(id);
                 if (job.pipelineFailure) throw job.pipelineFailure;
                 if (job.pipelineError) throw new Error(job.pipelineError);
+                if (req.method !== 'GET' || req.path.endsWith('/queue')) touchUploadSource(job);
                 return job;
             }
             const previous = operations.findUpload(id, scope(req));
@@ -2388,6 +2408,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 throw error;
             }
             job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
+            job.sourceLastSeenAt = uploadNow(); uploadSources.set(job.id,{store:store(req),job,wake:()=>pipelineWake(job)});
             operations.run(job.operationId, (update, control) => job.progressive ? runProgressiveUpload(req, store(req), job, update, control) : runUploadPipeline(req, job, update, control));
             for (const file of job.files) log('upload.created', { uploadId: job.id, operationId: job.operationId, fileId: file.logicalId, bytes: file.size });
             res.status(201).json({ uploadId: job.id, operation_id: job.operationId, progressive: job.progressive, uploadLimit: limit, partSize: MAX_TELEGRAM_PART_SIZE, uploadQueueCheck: true, queue: store(req).uploadQueue(job.id), files: job.files.map(file => ({ logicalFileId: file.logicalId, partCount: file.parts.length, reused:Boolean(file.emptyContent || file.reuseContentId || Number.isInteger(file.reuseFromIndex)) })) });
@@ -2420,6 +2441,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const job = uploadJob(req), queue = store(req).uploadQueue(job.id);
             res.set('Cache-Control', 'no-store').json({ ready: !job.finishing && queue.pendingParts < 5 && queue.pendingBytes < 100_000_000, queue, retryAfterMs: 1000 });
         }));
+        router.post('/uploads/:uploadId/heartbeat', wrap((req,res)=>{const job=uploadJob(req);res.json({ok:true,clientDone:Boolean(job.clientDone)});}));
         router.put('/uploads/:uploadId/files/:index', wrap(async (req, res) => {
             const job = uploadJob(req);
             if (job.finishing) throw new Error('UPLOAD_IN_PROGRESS');
@@ -2444,6 +2466,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const totalBytes = job.files.filter(file=>!file.reuseContentId && !Number.isInteger(file.reuseFromIndex)).reduce((sum, file) => sum + file.size, 0);
                 let lastBytes = received, measuredAt = started, speed = 0;
                 const progress = bytes => {
+                    touchUploadSource(job);
                     receivedBytes = bytes; lastProgressAt = Date.now();
                     const current = job.progressive && req.get('Content-Range') ? job.files.reduce((sum, item) => sum + item.received, 0) : received + bytes;
                     const elapsed = (lastProgressAt - measuredAt) / 1000;
@@ -2779,9 +2802,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             || staticResources.protectFile({ userId, diskSpace }, spaces.get(diskSpace).get(userId, id)),
         protectDirectory: (userId, diskSpace, folder) => staticResources.protectDirectory({ userId, diskSpace }, spaces.get(diskSpace), folder), maxDepth:scope=>depthFor(scope.userId), mountedNamespace });
     browser.use(failure); external.use(failure);
-    return { browser, external, admin, shared, publicStatic, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming,
+    return { browser, external, admin, shared, publicStatic, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming, expireIdleUploads,
         revokeContentSession: req => contentProof.revokeSession(req),
         isContentSessionRevoked: session => content.sessionRevoked(crypto.createHash('sha256').update(session).digest('hex')),
-        close() { closed = true; clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
+        close() { closed = true; uploadSources.clear(); clearInterval(cleanupTimer); if (recoveryRetryTimer) clearTimeout(recoveryRetryTimer); } };
 }
 module.exports = { createDiskAPI, createDiskSpaces, publicFile };

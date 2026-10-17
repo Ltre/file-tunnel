@@ -8,7 +8,7 @@
     let lastView = '', collectionQuery = '', collectionEntity = '', disposePlayer = () => {};
     let resultView='grid',compressionViewing=null,compressionSelection='';
     let framesViewing = '', frameKnownIds = new Set(), frameNewIds = new Set();
-    let disposeFramePreview = () => {};
+    let disposeFramePreview = () => {}, refreshFramePreview = () => {}, deletingCandidates = false;
     const frameSelection = new Set(), frameBatchHighlights = new Map(), frameSubmissions = new Set(), frameSubmitErrors = new Map();
     const el = (tag, text, cls) => { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; };
     const notice = (text, failed = false) => { $('ml-notice').textContent = text; $('ml-notice').className = failed ? 'error' : ''; };
@@ -233,6 +233,7 @@
         order.onchange = renderResults; unsaved.onchange = renderResults;
         const view=select([['grid','宫格'],['list','列表']],resultView);view.setAttribute('aria-label','候选视图');view.onchange=()=>{resultView=view.value;renderResults();};
         controls.append(order,view,label('只看未收藏', unsaved), button('收藏选中 Clip', async () => { if (!selection.size) throw Error('请先选择 Clip'); for (const id of [...selection]) await collectCandidate(id); selection.clear(); renderResults(); }));
+        controls.append(button('删除选中 Clip', () => deleteCandidates(data.results.filter(result=>result.kind==='clip'&&result.sessionId===sessionId&&selection.has(result.id))), 'danger'));
         const results = el('div', undefined, 'ml-grid'); results.id = 'ml-results'; center.append(controls, results);
         right.append(label('起点（秒或时间）', start), label('终点', end), label('保留音频', audio), label('裁切方式', precision), el('p', '暂停播放器设定端点，左右键使用实际视频帧时间。快速裁切不承诺任意毫秒精度。'));
         const clipInput = () => ({ start: start.value, end: end.value, audio: audio.checked, precise: precision.value === 'precise' });
@@ -372,8 +373,35 @@
         }
         return record;
     }
+    async function deleteCandidate(result) { return deleteCandidates([result]); }
+    async function deleteCandidates(results) {
+        if (deletingCandidates) throw Error('正在删除资源，请等待本次操作结束');
+        const selected = [...new Map(results.map(result=>[result.id,result])).values()];
+        if (!selected.length) throw Error('请先选择要删除的资源');
+        if (!confirm('删除选中的 ' + selected.length + ' 个资源及其服务器临时文件和压缩版本？已保存的正式收藏和源文件保留。')) return;
+        deletingCandidates = true; const failed = []; let deleted = 0, refreshError = '';
+        const status = $('ml-frame-action-status');
+        try {
+            for (const result of selected) {
+                if (status) status.textContent = `正在删除 ${deleted + failed.length + 1}/${selected.length}…`;
+                try {
+                    await api('/results/' + result.id, json('DELETE')); deleted++;
+                    data.results = data.results.filter(value=>value.id!==result.id);
+                    data.compressions = (data.compressions || []).filter(value=>value.resultId!==result.id);
+                    stateRevision++; selection.delete(result.id); frameSelection.delete(result.id);
+                    if (compressionViewing?.id === result.id) { compressionViewing = null; $('ml-dialog')?.close(); }
+                } catch (error) { failed.push({id:result.id,error:error.message}); }
+            }
+            try { await refresh(true); } catch (error) { refreshError = '；列表刷新失败：' + error.message; }
+            renderResults(); refreshFramePreview();
+            const message = `已删除 ${deleted}/${selected.length} 个资源` + (failed.length ? `；${failed.length} 项失败：` + failed.map(value=>value.id+'：'+value.error).join('；') : '') + refreshError;
+            if (status) status.textContent = message; notice(message,Boolean(failed.length || refreshError));
+            return {deleted,failed,message};
+        } finally { deletingCandidates = false; }
+    }
     function renderResults() {
         renderFrameGallery();
+        refreshFramePreview();
         if(compressionViewing&&$('ml-dialog').open)renderCompressionView();
         for(const line of $('ml-results')?.querySelectorAll('[data-compression-job]')||[]){const job=data.jobs.find(j=>j.id===line.dataset.compressionJob);if(job){line.textContent=job.state==='completed'?'':compressionStatus(job);line.hidden=job.state==='completed';}}
         const area = $('ml-results'); if (!area) return; const order = $('ml-frame-order')?.value, unsaved = $('ml-frame-unsaved')?.checked;
@@ -392,7 +420,7 @@
         area.classList.toggle('ml-list',resultView==='list');
         const results = data.results.filter(r => r.kind === 'clip' && !r.reference && r.sessionId === sessionId && (!unsaved || !r.savedId || dirtyRows.has(r.id))).sort((a, b) => order === 'created' ? b.extractedAt - a.extractedAt : a.startMs - b.startMs);
         const rows = [];
-        for (const job of data.jobs.filter(j => j.type === 'clip' && j.context.sessionId === sessionId && !data.results.some(r => r.id === j.id)).sort((a, b) => b.createdAt - a.createdAt)) {
+        for (const job of data.jobs.filter(j => j.type === 'clip' && j.state !== 'completed' && j.context.sessionId === sessionId && !data.results.some(r => r.id === j.id)).sort((a, b) => b.createdAt - a.createdAt)) {
             const box = el('article', undefined, 'ml-frame ml-clip ml-pending-clip'), info = el('div'), heading = el('div', undefined, 'ml-result-heading'); box.dataset.jobId = job.id;
             heading.append(el('strong', 'Clip ' + time(job.context.start * 1000) + '～' + time(job.context.end * 1000)), el('span', date(job.createdAt), 'ml-result-date')); info.append(heading);
             const footer = el('div', undefined, 'ml-result-footer'), status = el('div', undefined, 'ml-result-status');
@@ -426,6 +454,7 @@
                     await collectCandidate(result.id);
                 }));
             if (collection && ['ready', 'queued', 'transferring'].includes(collection.state) || collecting.has(result.id)) actions.querySelectorAll('button').forEach(node => { if (node.title !== '查看') node.disabled = true; });
+            actions.append(icon('🗑', '删除候选资源', () => deleteCandidate(result)));
             if(result.kind==='clip'){
                 const note=el(resultView==='list'?'input':'textarea');note.value=result.remark||'';note.maxLength=65535;note.placeholder='Clip 备注';note.setAttribute('aria-label','Clip 备注');note.oninput=()=>{note.dataset.dirty='1';};
                 const remark = el('div', undefined, 'ml-clip-remark'); remark.append(note,button('保存备注',async()=>{const saved=await api('/results/'+result.id,json('PATCH',{remark:note.value,version:result.version}));rememberRecord('results',saved);note.dataset.dirty='';notice('Clip 备注已保存');renderResults();})); heading.append(remark);
@@ -453,15 +482,24 @@
         const failure = el('p', '截图暂时无法加载，可切换查看其它截图。', 'ml-image-error'); failure.hidden = true;
         image.className = 'ml-preview'; image.draggable = false; image.onerror = () => { failure.hidden = false; };
         stage.append(image, failure);
-        let currentId = result.id, start = null;
+        let currentId = result.id, currentIndex = 0, start = null;
         const available = () => sessionFrames(result.sessionId).filter(value => value.cacheReady);
         const previous = button('← 上一张', () => move(-1)), next = button('下一张 →', () => move(1));
+        const feedback = el('span', undefined, 'ml-preview-action-status'); feedback.setAttribute('role','status');
+        const favorite = button('☆', async () => { try { await collectFrame(currentId); show(); } catch (error) { feedback.textContent=error.message; } });
+        const remove = button('🗑', async () => { const current=available().find(value=>value.id===currentId);if(!current)return;const outcome=await deleteCandidate(current);if(outcome?.failed.length)feedback.textContent=outcome.message;show(); }, 'danger');
+        remove.title='删除截图';remove.setAttribute('aria-label','删除截图');
         const show = () => {
-            const frames = available(), index = frames.findIndex(value => value.id === currentId), current = frames[index];
+            const frames = available(); let index = frames.findIndex(value => value.id === currentId);
+            if (index < 0) { index = Math.min(currentIndex,frames.length-1); currentId=frames[index]?.id; }
+            const current = frames[index]; currentIndex=Math.max(0,index);
             previous.disabled = index <= 0; next.disabled = index < 0 || index >= frames.length - 1;
             previous.dataset.keepDisabled = String(previous.disabled); next.dataset.keepDisabled = String(next.disabled);
-            if (!current) return;
-            failure.hidden = true; image.src = root + '/cache/' + current.cacheId;
+            if (!current) { modal.close(); return; }
+            const collection=data.collections.find(value=>value.resultId===currentId&&value.state!=='deleted');
+            favorite.textContent=collection?.state==='ready'?'★':'☆';favorite.title=collection?.state==='ready'?'已收藏':'收藏截图';favorite.setAttribute('aria-label',favorite.title);
+            favorite.disabled=collecting.has(currentId)||['ready','queued','transferring'].includes(collection?.state);favorite.dataset.keepDisabled=String(favorite.disabled);
+            if (image.dataset.cacheId !== current.cacheId) { failure.hidden = true; image.src = root + '/cache/' + current.cacheId; image.dataset.cacheId = current.cacheId; }
             image.alt = '截图 · ' + time(current.actualMs ?? current.requestedMs);
             $('ml-dialog-title').textContent = '截图预览 · ' + time(current.actualMs ?? current.requestedMs);
             count.textContent = `${index + 1} / ${frames.length}`;
@@ -481,9 +519,10 @@
             if (Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.3) move(dx < 0 ? 1 : -1);
         };
         stage.onpointercancel = () => { start = null; };
-        dialog('截图预览', stage, [count, previous, next]);
+        dialog('截图预览', stage, [count, previous, next, favorite, remove, feedback]);
+        refreshFramePreview = show;
         modal.classList.add('ml-image-dialog'); modal.addEventListener('keydown', onKey);
-        const cleanup = () => { modal.removeEventListener('keydown', onKey); modal.removeEventListener('close', cleanup); modal.classList.remove('ml-image-dialog'); start = null; disposeFramePreview = () => {}; };
+        const cleanup = () => { modal.removeEventListener('keydown', onKey); modal.removeEventListener('close', cleanup); modal.classList.remove('ml-image-dialog'); start = null; disposeFramePreview = () => {}; refreshFramePreview = () => {}; };
         disposeFramePreview = cleanup; modal.addEventListener('close', cleanup); show();
     }
     function frameBatches(id) {
@@ -498,6 +537,7 @@
         frameNewIds = new Set();
         if (!frameBatchHighlights.has(id)) frameBatchHighlights.set(id, new Set());
         const modal = $('ml-frames-dialog'); if (!modal.open) modal.showModal();
+        if ($('ml-frame-action-status')) $('ml-frame-action-status').textContent='';
         renderFrameGallery();
     }
     async function submitFrames(id, parameters) {
@@ -550,8 +590,11 @@
                 if (result.cacheReady) { const image = el('img'); image.loading = 'lazy'; image.src = root + '/cache/' + result.cacheId; image.alt = '截图 ' + time(result.actualMs); row.append(image); }
                 else row.append(el('p', '截图缓存已清理', 'ml-muted'));
                 const info = el('div'), choose = input('', 'checkbox'), caption = el('label');
-                choose.setAttribute('aria-label', '选择截图 ' + time(result.actualMs)); choose.onchange = () => { choose.checked ? frameSelection.add(result.id) : frameSelection.delete(result.id); renderFrameGallery(); };
-                caption.append(choose, el('span', time(result.actualMs))); info.append(caption, el('p', `请求 ${time(result.requestedMs)} · 实际 ${time(result.actualMs)}${result.duplicateIds?.length ? ' · 同时刻已有记录' : ''}`, 'ml-result-time'), el('div', undefined, 'ml-frame-state'), el('div', undefined, 'ml-actions'), el('small', '批次 ' + ordinal, 'ml-frame-batch-marker')); row.append(info);
+                choose.setAttribute('aria-label', '选择截图 ' + time(result.actualMs)); choose.onclick = event => event.stopPropagation();
+                choose.onchange = event => { event?.stopPropagation(); choose.checked ? frameSelection.add(result.id) : frameSelection.delete(result.id); renderFrameGallery(); };
+                const timestamp = el('p', `请求 ${time(result.requestedMs)} · 实际 ${time(result.actualMs)}${result.duplicateIds?.length ? ' · 同时刻已有记录' : ''}`, 'ml-result-time');
+                caption.onclick = timestamp.onclick = event => { event.preventDefault(); event.stopPropagation(); choose.checked=!choose.checked;choose.onchange(); };
+                caption.append(choose, el('span', time(result.actualMs))); info.append(caption, timestamp, el('div', undefined, 'ml-frame-state'), el('div', undefined, 'ml-actions'), el('small', '批次 ' + ordinal, 'ml-frame-batch-marker')); row.append(info);
             }
             if (!frameKnownIds.has(result.id)) frameNewIds.add(result.id);
             frameKnownIds.add(result.id); row.style.setProperty('--ml-batch-color', batchColor(ordinal)); row.classList.toggle('batch-highlighted', highlighted.has(result.batchId));
@@ -564,6 +607,7 @@
                 const save = button(record?.state === 'ready' ? '★' : '☆', () => collectFrame(result.id)); save.title = record?.state === 'ready' ? '已收藏' : '收藏截图'; save.setAttribute('aria-label', save.title);
                 save.disabled = collecting.has(result.id) || ['ready','queued','transferring'].includes(record?.state); actions.append(preview, save, button('相似度', () => compareDialog(result)));
             }
+            const remove = button('🗑', () => deleteCandidate(result)); remove.title = '删除截图'; remove.setAttribute('aria-label', remove.title); actions.append(remove);
             rows.push(row);
         }
         for (const row of Array.from(grid.children)) if (!rows.includes(row)) row.remove();
@@ -718,6 +762,12 @@
     $('ml-dialog-close').onclick = () => $('ml-dialog').close();
     $('ml-dialog').addEventListener('close', () => $('ml-dialog-body').querySelectorAll('video').forEach(v => { v.pause(); v.removeAttribute('src'); v.load(); }));
     $('ml-frames-close').onclick = $('ml-frames-done').onclick = () => $('ml-frames-dialog').close();
+    $('ml-frames-delete').onclick = async () => {
+        const button=$('ml-frames-delete');if(button.disabled)return;button.disabled=true;
+        try { await deleteCandidates(sessionFrames(framesViewing).filter(result=>frameSelection.has(result.id))); }
+        catch (error) { $('ml-frame-action-status').textContent=error.message; }
+        finally { button.disabled=false; }
+    };
     $('ml-frames-collect').onclick = async () => {
         const button = $('ml-frames-collect'); if (button.disabled) return; button.disabled = true;
         try {

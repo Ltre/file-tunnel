@@ -94,23 +94,48 @@ function createMediaProcessing({ ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', run = e
     const common = ['-nostdin', '-hide_banner', '-threads', '1', '-filter_threads', '1'];
     const localInput = input => /^http:\/\/127\.0\.0\.1:\d+\//.test(input) ? ['-http_proxy', ''] : [];
     async function probe(input, signal) { const out = await run(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', ...localInput(input), input], { signal }); return JSON.parse(out.stdout.toString()); }
+    const signatureFilters = '[small]scale=9:8,format=gray,pad=9:32[hash];[large]scale=32:32,format=gray[pixels];[hash][pixels]hstack=inputs=2[sig]';
+    function imageSignature(bytes) {
+        if (bytes.length !== 41 * 32) throw Error('MEDIA_IMAGE_INVALID');
+        let hash = 0n; const pixels = Buffer.alloc(1024);
+        for (let row = 0; row < 32; row++) {
+            bytes.copy(pixels, row * 32, row * 41 + 9, row * 41 + 41);
+            if (row < 8) for (let col = 0; col < 8; col++) hash = (hash << 1n) | BigInt(bytes[row * 41 + col] > bytes[row * 41 + col + 1]);
+        }
+        return { dHash: hash.toString(16).padStart(16, '0'), pixels: pixels.toString('base64') };
+    }
     async function signature(input, signal) {
-        const small = await run(ffmpeg, [...common, '-loglevel', 'error', ...localInput(input), '-i', input, '-frames:v', '1', '-vf', 'scale=9:8,format=gray', '-f', 'rawvideo', 'pipe:1'], { signal });
-        const pixels = await run(ffmpeg, [...common, '-loglevel', 'error', ...localInput(input), '-i', input, '-frames:v', '1', '-vf', 'scale=32:32,format=gray', '-f', 'rawvideo', 'pipe:1'], { signal });
-        if (small.stdout.length !== 72 || pixels.stdout.length !== 1024) throw Error('MEDIA_IMAGE_INVALID');
-        let hash = 0n; for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) hash = (hash << 1n) | BigInt(small.stdout[row * 9 + col] > small.stdout[row * 9 + col + 1]);
-        return { dHash: hash.toString(16).padStart(16, '0'), pixels: pixels.stdout.toString('base64') };
+        const value = await run(ffmpeg, [...common, '-loglevel', 'error', ...localInput(input), '-i', input,
+            '-filter_complex', '[0:v:0]split=2[small][large];' + signatureFilters,
+            '-map', '[sig]', '-frames:v', '1', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'], { signal });
+        return imageSignature(value.stdout);
     }
     async function frame(input, requested, output, sourceProbe, signal) {
         const start = Number(sourceProbe.format?.start_time) || 0;
-        const value = await run(ffmpeg, [...common, '-loglevel', 'info', '-copyts', '-ss', String(requested), ...localInput(input), '-i', input,
-            '-map', '0:v:0', '-vf', 'showinfo', '-frames:v', '1', '-threads', '1', '-fps_mode', 'passthrough', '-q:v', '2', '-y', output], { signal });
-        const match = /\bn:\s*0\s+pts:.*?pts_time:\s*([\d.e+-]+)/.exec(value.stderr);
-        if (!match || !fs.existsSync(output) || !fs.statSync(output).size) throw Error('MEDIA_FRAME_TIME_UNCONFIRMED');
-        const actual = Number(match[1]) - start;
+        async function capture(at) {
+            let timestamp, tail = '';
+            const observe = text => { tail = (tail + text).slice(-8192); const match = /\bn:\s*0\s+pts:.*?pts_time:\s*([\d.eE+-]+)/.exec(tail); if (match && timestamp === undefined) timestamp = Number(match[1]); };
+            const value = await run(ffmpeg, [...common, '-loglevel', 'info', '-copyts', '-ss', String(at), ...localInput(input), '-i', input,
+                '-filter_complex', '[0:v:0]showinfo,split=3[picture][small][large];' + signatureFilters,
+                '-map', '[picture]', '-frames:v', '1', '-fps_mode', 'passthrough', '-q:v', '2', '-y', output,
+                '-map', '[sig]', '-frames:v', '1', '-fps_mode', 'passthrough', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:1'], { signal, onOutput: observe });
+            observe(value.stderr);
+            if (timestamp === undefined || !value.stdout.length || !fs.existsSync(output) || !fs.statSync(output).size) return null;
+            return { timestamp, signature: imageSignature(value.stdout) };
+        }
+        let value = await capture(requested);
+        if (!value) {
+            // A valid time inside the last frame's duration has no subsequent
+            // frame to decode. Locate a real preceding frame, never invent PTS.
+            const neighbors = await frameNeighbors(input, requested, sourceProbe, signal);
+            const previous = neighbors.filter(time => time <= requested + .000001).at(-1);
+            if (previous !== undefined) value = await capture(Math.max(0, previous - .000001));
+        }
+        if (!value) throw Error('MEDIA_FRAME_TIME_UNCONFIRMED');
+        const actual = value.timestamp - start;
         if (!Number.isFinite(actual) || actual < -.001) throw Error('MEDIA_FRAME_TIME_UNCONFIRMED');
         return { actualMs: Math.round(actual * 1000), requestedMs: Math.round(requested * 1000),
-            sha256: crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex'), ...await signature(output, signal) };
+            sha256: crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex'), ...value.signature };
     }
     async function cut(input, start, end, output, { audio = true, precise = true, signal, sourceProbe, onOutput, onStage } = {}) {
         if (!(start >= 0 && end > start && end <= durationOf(sourceProbe) + .001)) throw Error('MEDIA_RANGE_INVALID');

@@ -22,7 +22,7 @@ const messages = {
     MEDIA_OUTPUT_DURATION_MISMATCH: '处理后的实际时长与指定范围不符，未接受该成果。', MEDIA_AV_TIMELINE_MISMATCH: '音视频时间线差异超出允许范围，未接受该成果。',
     MEDIA_DECODE_FAILED: '媒体解码或转码失败，请检查源文件是否损坏及 FFmpeg 支持情况。', MEDIA_OUTPUT_INVALID: '媒体缺少必需轨道或有效时长，未标记成功。',
     MEDIA_ENTITY_ALIAS_CONFLICT: '同类型人物、组织或标签已有这个名称或别名，请复用现有记录。', MEDIA_VERSION_CONFLICT: '记录已被其它操作更新，请刷新后重新修改。',
-    MEDIA_SESSION_BUSY: '此会话仍有执行中的任务，请先取消或等任务完成。', MEDIA_FILE_SIZE_INVALID: '文件为空、超出网盘单文件上限或本地缓存容量。',
+    MEDIA_SESSION_BUSY: '此会话仍有执行中的任务，请先取消或等任务完成。', MEDIA_RESULT_BUSY: '此资源仍有取帧、转码或收藏任务，请先取消或等任务完成后再删除。', MEDIA_FILE_SIZE_INVALID: '文件为空、超出网盘单文件上限或本地缓存容量。',
     MEDIA_CONFIG_BUSY: '工作区仍有未完成导入或处理任务，请先完成或取消，再切换工作区账号。', MEDIA_CANCELLED: '任务已取消，已确认的网盘成果和收藏不会被误删。',
     MEDIA_TRANSCODE_PARAMETERS_INVALID: '压缩参数无效：宽高须为 2–16384 的偶数或留空，CRF 为 0–51，preset 须使用列表中的值。',
     MEDIA_REMARK_INVALID: '备注须为文本，最多 65535 个字符。',
@@ -77,6 +77,7 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
     router.post('/sessions', wrap((req, res) => res.status(201).json(service.createSession(req.body.importId, req.body.name))));
     router.patch('/sessions/:id',wrap((req,res)=>res.json(service.remark('session',req.params.id,req.body))));
     router.patch('/results/:id',wrap((req,res)=>res.json(service.remark('result',req.params.id,req.body))));
+    router.delete('/results/:id',wrap((req,res)=>res.json(service.removeResult(req.params.id))));
     router.post('/results/:id/transcode',wrap((req,res)=>res.status(202).json(service.transcode(req.params.id,req.body))));
     router.post('/compressions/:id/collect',wrap((req,res)=>res.status(202).json(service.collectCompression(req.params.id))));
     router.get('/compressions/:id/download',wrap((req,res)=>{const variant=service.compressionDetails(service.get('compression',req.params.id)),result=service.get('result',variant.resultId),lease=service.cache.acquire(service.scope(),variant.cacheId);res.once('close',()=>lease.release());const name=require('./clip-name').compressionName(service.get('session',result.sessionId),result,variant)+'.mkv';res.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase())}`);res.sendFile(lease.path);}));

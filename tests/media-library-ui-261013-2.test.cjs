@@ -33,25 +33,56 @@ class Node {
 }
 function fixture(handler = async () => ({})) {
     const ids = new Map(); const get = id => ids.get(id) || null;
-    for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results', 'ml-dialog-body', 'ml-dialog-title', 'ml-dialog-actions', 'ml-frames-dialog', 'ml-frames-title', 'ml-frame-progress', 'ml-frame-batches', 'ml-frame-grid', 'ml-frame-count']) ids.set(id, new Node());
+    for (const id of ['ml-main', 'ml-notice', 'ml-dialog', 'ml-results', 'ml-dialog-body', 'ml-dialog-title', 'ml-dialog-actions', 'ml-frames-dialog', 'ml-frames-title', 'ml-frame-progress', 'ml-frame-batches', 'ml-frame-grid', 'ml-frame-count', 'ml-frame-action-status']) ids.set(id, new Node());
     const calls = [], opened = [], window = { open() { const page = { opener: window, location: { replace(url) { page.url = url; } }, close() { page.closed = true; } }; opened.push(page); return page; } };
-    const intervals=[],prompts=[];
+    const intervals=[],prompts=[],confirmations=[];
     const body = new Node('body');
     const context = vm.createContext({ window, document: { body, getElementById: get, createElement: tag => new Node(tag), querySelectorAll: () => [], activeElement: null },
         Option: class extends Node { constructor(text, value) { super('option', text); this.value = value; } }, URL, URLSearchParams, location: { origin: 'http://localhost' },
         prompt: (...args) => {prompts.push(args);return '立即出现的新会话';}, setTimeout, clearTimeout, setInterval: fn => {intervals.push(fn);return intervals.length;},clearInterval(){}, requestAnimationFrame: fn => fn(), AbortController, DOMException,
-        fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: true, json: async () => value }; } });
+        confirm: text => {confirmations.push(text);return true;},
+        fetch: async (route, options) => { calls.push({ route, options }); const value = await handler(route, options); return { ok: !value?.fixtureStatus || value.fixtureStatus<400, json: async () => value }; } });
     const end = source.lastIndexOf("    document.querySelectorAll('[data-tab]')");
     vm.runInContext(source.slice(0, end) + `
-        window.test = { dialog, openFramePreview, refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, transcodeDialog, submitFrames, openFrameGallery, renderFrameGallery, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord,
+        window.test = { dialog, openFramePreview, refresh, collectCandidate, collectCompressedVersion, compressionViewer, renderCompressionView, transcodeDialog, submitFrames, openFrameGallery, renderFrameGallery, seekMediaFrame, waitMediaMetadata, renderResults, renderImports, renderSessions, rememberRecord, deleteCandidates,
+            selectFrames(ids) {for(const id of ids)frameSelection.add(id);},
             set(value) { data = value; }, setSession(id) { sessionId = id; }, setTab(value) { tab=value; }, data() { return data; }, changeTab,
             setView(value) { resultView=value; },
             stubRender(fn) { render = fn; } };
     })();`, context);
-    return { ...window.test, ids, calls, opened, window, intervals, prompts, body };
+    return { ...window.test, ids, calls, opened, window, intervals, prompts, confirmations, body };
 }
 const snapshot = () => ({ config: { workspace: {}, collection: {} }, imports: [{ id: 'video', name: '视频', state: 'ready', duration: 10 }],
     sessions: [{ id: 'old', name: '旧会话', state: 'active' }], batches: [], results: [], collections: [], jobs: [], caches: [], events: [] });
+
+test('deleted Clip results do not resurrect completed job placeholders; queued and failed jobs remain visible',()=>{
+    const f=fixture(),state=snapshot();state.jobs=['completed','queued','failed'].map(status=>({id:status,type:'clip',state:status,context:{sessionId:'old',start:3,end:6},progress:status==='completed'?100:0}));
+    f.set(state);f.setSession('old');f.renderResults();assert.deepEqual(f.ids.get('ml-results').children.map(row=>row.dataset.jobId),['queued','failed']);
+});
+
+test('screenshot label and timestamp each toggle once and stop propagation; checkbox retains native change handling',()=>{
+    const f=fixture(),state=snapshot();state.results=[{id:'image',sessionId:'old',kind:'image',cacheReady:true,cacheId:'cache',actualMs:0}];f.set(state);f.openFrameGallery('old');
+    const row=f.ids.get('ml-frame-grid').children[0],info=row.children[1],caption=info.children[0],checkbox=caption.children[0],timestamp=info.children[1];let stopped=0,prevented=0;
+    const event=()=>({stopPropagation(){stopped++;},preventDefault(){prevented++;}});
+    caption.onclick(event());assert.equal(checkbox.checked,true);timestamp.onclick(event());assert.equal(checkbox.checked,false);
+    checkbox.checked=true;checkbox.onclick(event());checkbox.onchange(event());assert.equal(checkbox.checked,true);assert.equal(stopped,4);assert.equal(prevented,2);
+});
+
+test('bulk deletion confirms once, continues after a busy item, keeps failed selection and reports actual outcomes',async()=>{
+    const state=snapshot();state.results=['a','blocked','c'].map(id=>({id,sessionId:'old',kind:'image',cacheReady:true,cacheId:id,actualMs:0}));
+    const f=fixture(async(route,options)=>{if(options?.method==='DELETE'&&route.endsWith('/blocked'))return {fixtureStatus:409,error:'MEDIA_CACHE_IN_USE'};return route.endsWith('/state')?state:{};});
+    f.set(state);f.setSession('old');f.openFrameGallery('old');f.selectFrames(['a','blocked','c']);
+    const result=await f.deleteCandidates([...state.results]);assert.equal(result.deleted,2);assert.equal(result.failed.length,1);assert.equal(f.confirmations.length,1);
+    assert.deepEqual(state.results.map(item=>item.id),['blocked']);assert.match(f.ids.get('ml-frame-count').textContent,/已选 1 张/);assert.match(f.ids.get('ml-frame-action-status').textContent,/已删除 2\/3/);
+});
+
+test('single-image preview exposes collection/delete actions and advances after deletion, closing only when no images remain',async()=>{
+    const state=snapshot();state.results=['a','b'].map((id,i)=>({id,sessionId:'old',kind:'image',cacheReady:true,cacheId:id,actualMs:i*1000}));
+    const f=fixture(async route=>route.endsWith('/state')?state:{});f.set(state);f.setSession('old');f.openFrameGallery('old');f.openFramePreview(state.results[0]);
+    const modal=f.ids.get('ml-dialog'),actions=f.ids.get('ml-dialog-actions');assert.equal(actions.children[3].attrs['aria-label'],'收藏截图');
+    await actions.children[4].onclick();assert.equal(modal.open,true);assert.match(f.ids.get('ml-dialog-body').children[0].children[0].src,/b$/);
+    await actions.children[4].onclick();assert.equal(modal.open,false);assert.equal(f.ids.get('ml-frames-dialog').open,true);
+});
 
 test('screenshot preview navigates the session timeline by keyboard/buttons/swipes and disposes handlers on close or replacement', async () => {
     const f = fixture(), state = snapshot();

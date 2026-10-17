@@ -14,7 +14,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     const config = () => db.get('config', 'media-config', 'system');
     const scope = () => config()?.workspace?.userId || '';
     const requireConfig = () => { if (closed) throw Error('MEDIA_SERVICE_STOPPING'); const value = config(); if (!value?.workspace || !value?.collection) throw Error('MEDIA_SETUP_REQUIRED'); return value; };
-    const item = (kind, id, tenant = scope()) => { const value = db.get(kind, id, tenant); if (!value) throw Error('MEDIA_RECORD_NOT_FOUND'); return value; };
+    const item = (kind, id, tenant = scope()) => { const value = db.get(kind, id, tenant); if (!value || ['result','compression'].includes(kind) && value.state === 'deleted') throw Error('MEDIA_RECORD_NOT_FOUND'); return value; };
     function grant(id, purpose, snapshot) {
         const value = item('grant', id); if (value.revokedAt || purpose && value.purpose !== purpose) throw Error('MEDIA_AUTHORIZATION_REVOKED');
         disk.checkLocation(value.location, snapshot); return value;
@@ -201,15 +201,27 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const resource = item('import', session.importId), settings = requireConfig();
         db.patch('batch', batch.id, job.scope, { state: 'running', error: '' });
         progress(0, { phase: 'source', detail: '正在读取源视频并准备取帧', framesDone: 0, framesTotal: batch.times.length });
-        const source = await sourceInput(resource, signal, { start: Math.min(...batch.times), end: Math.max(...batch.times) });
+        const original = await sourceInput(resource, signal, { start: Math.min(...batch.times), end: Math.max(...batch.times) });
+        let clustered, clusterEnd = -1;
         try {
             for (let index = 0; index < batch.times.length; index++) {
                 if (signal.aborted) throw Error('MEDIA_CANCELLED');
+                if (index > clusterEnd) {
+                    clustered?.close(); clustered = null; clusterEnd = index;
+                    while (clusterEnd + 1 < batch.times.length && batch.times[clusterEnd + 1] - batch.times[index] <= 3) clusterEnd++;
+                    if (clusterEnd > index && /^http:/.test(original.url)) {
+                        const segment = db.matching('cache',job.scope,'kind','segments').find(value=>value.status==='ready'&&value.precise&&value.sourceFingerprint===resource.file.fingerprint&&value.start<=batch.times[index]&&value.end>=batch.times[clusterEnd]);
+                        if (segment) try { clustered = await sourceInput(resource,signal,{cacheId:segment.id}); }
+                        catch (error) { if(signal.aborted || !/^MEDIA_CACHE_/.test(error.message))throw error; }
+                    }
+                }
+                const source = clustered || original;
                 progress(Math.floor(index / batch.times.length * 99), { phase: 'extracting', detail: `正在提取第 ${index + 1}/${batch.times.length} 帧 · 目标时刻 ${batch.times[index].toFixed(3)} 秒`, framesDone: index, framesTotal: batch.times.length });
                 const id = batch.id + '-' + index;
                 const existing = db.get('result', id, job.scope), oldCache = existing && db.get('cache', existing.cacheId, job.scope);
-                if (!existing || oldCache?.status !== 'ready' || !fs.existsSync(cache.filename(oldCache))) {
+                if (existing?.state !== 'deleted' && (!existing || oldCache?.status !== 'ready' || !fs.existsSync(cache.filename(oldCache)))) {
                     const output = cache.allocate(job.scope, 'candidates', settings.caches.candidates, undefined, '.jpg');
+                    db.patch('cache', output.record.id, job.scope, { resultId: id });
                     try {
                         const signature = await processing.frame(source.url, batch.times[index] - source.offset, output.path, source.probe, signal);
                         signature.actualMs += Math.round(source.offset * 1000); signature.requestedMs = Math.round(batch.times[index] * 1000);
@@ -224,7 +236,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 progress(Math.round((index + 1) / batch.times.length * 99), { phase: 'extracting', detail: `已提取 ${index + 1}/${batch.times.length} 帧`, framesDone: index + 1, framesTotal: batch.times.length });
             }
             return db.patch('batch', batch.id, job.scope, { state: 'completed', actualCount: batch.times.length, error: '' });
-        } finally { source.close(); }
+        } finally { clustered?.close(); original.close(); }
     }
     function clip(sessionId, input, segment = false) {
         const session = item('session', sessionId), resource = item('import', session.importId);
@@ -242,6 +254,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             && c.sourceFingerprint === resource.file.fingerprint && c.start === input.start && c.end === input.end && c.audio === input.audio && c.precise === input.precise);
         if (reusable) { const lease = cache.acquire(job.scope, reusable.id); lease.release(); return { cacheId: reusable.id }; }
         const allocated = cache.allocate(job.scope, cacheKind, settings.caches[cacheKind], undefined, '.mp4');
+        if (job.type === 'clip') db.patch('cache', allocated.record.id, job.scope, { resultId: job.id });
         let source, capacityError;
         const meter = setInterval(() => { try { if (fs.existsSync(allocated.path)) cache.reserve(job.scope, allocated.record.id, fs.statSync(allocated.path).size, settings.caches[cacheKind]); }
             catch (error) { capacityError = error; controllers.get(job.id)?.abort(); } }, 250); meter.unref?.();
@@ -328,6 +341,23 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         } finally { lease?.release(); if (transient) cache.discard(job.scope, transient.record.id); }
     }
     function remark(kind,id,input){const record=item(kind,id);if(kind==='result'&&record.kind!=='clip')throw Error('MEDIA_RECORD_INVALID');if(typeof input.remark!=='string'||input.remark.length>65535)throw Error('MEDIA_REMARK_INVALID');return db.patch(kind,id,scope(),{remark:input.remark},input.version);}
+    function removeResult(id) { return db.atomic(() => {
+        const tenant = scope(), record = item('result', id), variants = db.matching('compression', tenant, 'resultId', id);
+        const collections = new Set([...db.matching('collection', tenant, 'resultId', id), ...variants.flatMap(value => db.matching('collection', tenant, 'compressionId', value.id))].map(value => value.id));
+        if (['queued','running'].flatMap(state => db.matching('job', tenant, 'state', state)).some(job =>
+            job.id === id || job.context.resultId === id || record.batchId && job.context.batchId === record.batchId || collections.has(job.context.collectionId))) throw Error('MEDIA_RESULT_BUSY');
+        const owned = new Set([record.cacheId, ...variants.flatMap(value => [value.cacheId, value.thumbnailCacheId]),
+            ...db.matching('cache', tenant, 'resultId', id).map(value => value.id)].filter(Boolean));
+        for (const cacheId of owned) {
+            const references = ['result','compression'].flatMap(kind => ['cacheId','thumbnailCacheId'].flatMap(field =>
+                db.matching(kind, tenant, field, cacheId).filter(value => value.state !== 'deleted' && (kind === 'result' ? value.id !== id : value.resultId !== id))));
+            if (references.length) owned.delete(cacheId);
+        }
+        for (const cacheId of owned) cache.assertDiscardable(tenant, cacheId);
+        for (const cacheId of owned) cache.discard(tenant, cacheId);
+        for (const variant of variants) db.patch('compression', variant.id, tenant, { state: 'deleted', deletedAt: now() });
+        return db.patch('result', id, tenant, { state: 'deleted', deletedAt: now() });
+    }); }
     function compressionDetails(record,tenant=scope()){const versions=db.matching('compression',tenant,'resultId',record.resultId).sort((a,b)=>(a.completedAt||a.createdAt)-(b.completedAt||b.createdAt)||a.id.localeCompare(b.id));return {...record,ordinal:record.ordinal||versions.findIndex(v=>v.id===record.id)+1};}
     function repairConflictedCompressionName(record) {
         // Only a definite pre-write name conflict can safely change a saved
@@ -365,6 +395,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const existing=db.get('compression',job.id,job.scope);if(existing){const c=db.get('cache',existing.cacheId,job.scope),t=db.get('cache',existing.thumbnailCacheId,job.scope);if(c?.status==='ready'&&t?.status==='ready'&&fs.existsSync(cache.filename(c))&&fs.existsSync(cache.filename(t)))return existing;}
         const lease=cache.acquire(job.scope,job.context.cacheId);let output,thumb,meter,capacityError;
         try { output=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.mkv');thumb=cache.allocate(job.scope,'candidates',settings.caches.candidates,undefined,'.jpg');
+        for (const entry of [output, thumb]) db.patch('cache', entry.record.id, job.scope, { resultId: result.id });
         meter=setInterval(()=>{try{if(fs.existsSync(output.path))cache.reserve(job.scope,output.record.id,fs.statSync(output.path).size,settings.caches.candidates);}catch(error){capacityError=error;controllers.get(job.id)?.abort();}},250);meter.unref?.();
         progress(1,{phase:'transcoding',detail:'正在压缩视频，音轨保持复制'});const probe=await processing.probe(lease.path,signal);let tail='';
             const quality=await processing.compress(lease.path,output.path,{...job.context.params,signal,duration:(result.endMs-result.startMs)/1000,audio:probe.streams.some(s=>s.codec_type==='audio'),onOutput:text=>{tail=(tail+text).slice(-8192);const value=[...tail.matchAll(/out_time_us=(\d+)/g)].at(-1);if(value)progress(Math.min(94,Number(value[1])/1000/(result.endMs-result.startMs)*94),{phase:'transcoding',detail:'正在执行 libx265 压缩转码'});}});
@@ -378,7 +409,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     function compare(resultId, input) {
         const source = item('result', resultId); if (source.kind !== 'image') throw Error('MEDIA_IMAGE_REQUIRED');
         if (input.threshold !== undefined && (!Number.isFinite(Number(input.threshold)) || Number(input.threshold) < 0 || Number(input.threshold) > 100)) throw Error('MEDIA_COMPARISON_INVALID');
-        let targets = db.list('result', scope(), { limit: 10000 }).filter(r => r.kind === 'image' && r.id !== source.id);
+        let targets = db.list('result', scope(), { limit: 10000 }).filter(r => r.state !== 'deleted' && r.kind === 'image' && r.id !== source.id);
         if (input.against === 'session') targets = targets.filter(r => r.sessionId === source.sessionId);
         else if (input.against === 'video') targets = targets.filter(r => r.importId === source.importId);
         else if (input.against === 'collection') targets = db.list('collection', scope(), { limit: 10000 }).filter(c => c.kind === 'image' && c.state === 'ready' && c.source?.dHash)
@@ -524,7 +555,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
     }
     if (autoStart) { timer = setInterval(() => pump().catch(() => {}), 2000); timer.unref?.(); }
     return { db, cache, processing, config, scope, grant, configureLocation, setCachePolicies, createImport, createLink, attachTask, receive, createSession, extract, clip,
-        collect, collectImport, collectCompression, compressionDetails, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput, remark, transcode,
+        collect, collectImport, collectCompression, compressionDetails, compare, entity, associate, relate, cleanup, cancel, retry, pump, sourceInput, remark, transcode, removeResult,
         authorizeRead(record, kind = 'import', snapshot) { if (kind === 'import' && record.managed) grant(record.location.grantId, 'workspace', snapshot); else if (kind === 'collection' && !record.external) grant(record.location.grantId, 'collection', snapshot); },
         retryImport(id) { return db.atomic(() => {
             const record = item('import', id); if (!['download-failed', 'import-failed', 'cancelled'].includes(record.state)) throw Error('MEDIA_JOB_NOT_RETRYABLE');
@@ -534,7 +565,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
             if (!record.source?.taskId) throw Error('MEDIA_DOWNLOAD_PRODUCT_UNAVAILABLE');
             return db.patch('import', id, scope(), { state: 'waiting-download', error: '' });
         }); },
-        list: kind => db.list(kind, scope(), { limit: 10000 }), get: item,
+        list: kind => db.list(kind, scope(), { limit: 10000 }).filter(value => !['result','compression'].includes(kind) || value.state !== 'deleted'), get: item,
         renew(id, days = 365) { if (!Number.isInteger(days) || days < 1 || days > 3650) throw Error('MEDIA_TTL_INVALID'); const resource = item('import', id); if (!resource.managed) throw Error('MEDIA_EXTERNAL_FILE_PROTECTED'); return db.patch('import', id, scope(), { expiresAt: now() + days * 86400000 }); },
         async check() { const settings = requireConfig(); grant(settings.workspace.grantId, 'workspace'); grant(settings.collection.grantId, 'collection'); const tool = await processing.probeVersion?.(); return { caches: cache.check(settings.caches), tool, database: db.path }; },
         revoke(id) { return db.atomic(() => {
