@@ -1,0 +1,118 @@
+
+
+问：
+
+
+    帮我安装这个：https://github.com/mattpocock/skills
+    并告诉我在什么阶段应该具体怎么使用它，不要写太复杂，简明扼要。并且结合实际的需求场景，指导我将会遇到什么情况以及应该怎样运用这个SKILL来解决问题
+    以下是具体的需求场景（注意，不是让你改代码！）：
+    
+        XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+        
+答：
+
+
+
+    我会先查看这个仓库包含哪些技能并安装，再结合你这份需求说明各阶段怎么用；不会修改项目代码。
+
+    加载了工具运行了命令
+
+    我会使用 skill-installer 安装，并参考 OpenAI Docs 确认在 Codex 中的调用方式。
+
+    运行了命令已搜索网页
+
+    仓库当前主推 27 个技能，我会将这 27 个安装到 Codex 的用户技能目录。针对你的需求，最有用的是：澄清串流规则、拆分实施任务，以及排查截图失败；实验目录和 Claude 专用工具先不安装。
+
+    运行了命令已搜索网页
+    
+    已安装 **27 个正式技能**到 [Codex 技能目录](C:/Users/Dell/.codex/skills)，实验和杂项目录未安装。**没有修改项目代码。下一条消息即可使用。**
+
+    这是一个技能包，按阶段选用即可，不必全部掌握。[仓库说明](https://github.com/mattpocock/skills)
+
+    首次实际使用前，运行 `$setup-matt-pocock-skills`，建议选择“本地 Markdown”保存需求和任务；它会配置项目文档。
+
+    针对你的 **261017-3**，这样用：
+
+    | 阶段／遇到的情况 | 使用技能 | 具体解决什么 |
+    |---|---|---|
+    | 开发前，规则容易理解不一致 | `$grill-with-docs` | 逐项问清：删除 CLIP 是否连带删除截图；静音影响本机还是所有人；“下线但不踢人”后还能否继续控制。 |
+    | 规则确认，需要形成验收依据 | `$to-spec` | 将需求、已有开发文档和 v3 原型整理成规格，明确缓存清理、多端同步、可见性变化的预期结果。 |
+    | 串流功能太大，一次开发容易漏项 | `$to-tickets` | 拆成可单独验收的任务，例如：单文件串流→发现与订阅→多人同步→跨渠道资源→监控方阵，并标明依赖。 |
+    | 截图慢、最终只有 12/24 成功 | `$diagnosing-bugs` | 固定影片复现，区分耗时发生在定位、解码还是确认帧时间；用证据确定原因。仅凭报错还不能判断算法差。 |
+    | 正式开始开发与检查 | `$implement`、`$code-review` | 按任务实现并测试，再检查是否漏掉转码缓存、并发控制、断线恢复等要求。 |
+
+    在 Codex 输入 **`$技能名 + 你的要求`** 即可显式调用。[OpenAI 官方说明](https://developers.openai.com/blog/eval-skills)
+
+    你下一步可以直接复制：
+
+    ```text
+    $grill-with-docs
+    针对需求261017-3，阅读已有串流开发文档和v3原型，
+    先澄清会影响实现和验收的歧义，每轮只问最关键的问题。
+    只讨论并整理文档，暂不修改代码。
+    ```
+
+    单独处理截图问题时，复制：
+
+    ```text
+    $diagnosing-bugs
+    针对全片提取24张图很慢、最终12/24失败的问题，
+    先只诊断，不修改项目代码。给出复现步骤、已有证据、
+    待验证假设，以及怎样区分性能瓶颈和帧时间确认失败。
+    ```
+
+
+问：
+
+
+
+    1、目前开发日志保存到：docs/devlog
+    2、用于理解整个项目整理到细节末梢的文档保存在：docs/overview ，该目录通常由dev/doc-overview根据合并入其分支的代码差异、上次版本记录基线来维护，文档维护指引参考docs/overview/master.md
+    3、平时开发时我会要求在指定分支改代码，并在指定位置追加开发日志，不准提交，不准暂存、不准push、不准pull、不准merge、不准切换分支、不准撤回提交等对分支/版本等改动性操作，一律由我最后验收完毕后，手动提交代码、操作分支
+    像这些信息怎么结合以上技能使用
+
+
+
+答：
+
+
+    **把这些信息固化为项目规则，所有技能都按你的规则执行。** 建议放在项目根目录的 `AGENTS.md`；Codex 会在工作时读取它。[官方说明](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+
+    我上一条漏说了一点：[implement](C:/Users/Dell/.codex/skills/implement/SKILL.md) 默认最后会提交代码，[implement-spec](C:/Users/Dell/.codex/skills/implement-spec/SKILL.md) 还会创建分支、工作树并合并。**这些步骤与你的规定冲突，使用时必须跳过，不能让技能默认流程覆盖你的要求。**
+
+    建议这样结合：
+
+    | 你的约定 | 技能应该怎样执行 |
+    |---|---|
+    | 理解整个项目 | 先读 [master.md](D:/Workspace/github/Ltre/file-tunnel/docs/overview/master.md)，按导航阅读相关模块，再核对当前源码；总览可能落后于开发分支。 |
+    | 需求澄清、规格、任务拆分 | 用 `$grill-with-docs` → `$to-spec` → `$to-tickets`。需求与任务保存到约定的本地目录，例如 `.scratch/261017-3/`；不要混入总览或开发日志。 |
+    | 开发与修复 | 用 `$implement` 或 `$diagnosing-bugs`。先核对当前分支，符合指定分支才继续；只改代码、验证并追加指定日志。 |
+    | 开发日志 | 在 [docs/devlog](D:/Workspace/github/Ltre/file-tunnel/docs/devlog) 的指定文件追加：改了什么、为什么改、验证结果、待人工验收项。 |
+    | 总览维护 | 等你手动合并到 `dev/doc-overview` 后，再按 `master.md` 和上次基线增量维护；普通功能开发阶段默认只读总览。 |
+
+    初始化 `$setup-matt-pocock-skills` 时，应明确：**使用现有总览体系、本地任务追踪，不另建重复的知识文档；Git 操作全部由你完成。**
+
+    以后每次开发，你只需要补充“分支、日志位置、本次任务”，例如：
+
+    ```text
+    $implement
+
+    实现需求261017-3中已经确认的任务。
+
+    指定分支：<分支名>
+    追加日志：<docs/devlog 下的具体文件>
+
+    遵守项目 AGENTS.md：
+    - 先核对当前分支；不一致就停止，交给我手动切换。
+    - 禁止暂存、提交、push、pull、merge、切换或创建分支、
+      撤回提交，以及其他改变版本状态的操作。
+    - 跳过技能中的自动提交、分支、工作树及合并步骤。
+    - docs/overview 本次只读。
+    - 完成实现、测试和审查后，保留改动供我验收。
+    ```
+
+    **固定约定写一次，每次任务只补充变量。** 本轮仅说明用法，没有修改任何文件。
