@@ -683,7 +683,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         await runStartupStage('indexeddb-open', initStorage);
         await runStartupStage('cache-store-create', initFileCacheStore);
         registerServiceWorker();
-        if (!await runStartupStage('session-restore', initSession) || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
+        const restoredSession = await runStartupStage('session-restore', initSession);
+        initStreamingConsoleIntegration();
+        if (!restoredSession || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
             initLandingNearbyPresence();
             initSessionLanding();
             markStartupShellReady('landing');
@@ -1171,6 +1173,9 @@ async function initSession() {
     // A shared hash always wins. A plain home page resumes the most recent local
     // session, unless it was opened as a PWA share target and needs a destination.
     const entryUrl = new URL(window.location.href);
+    // Public station / invitation links are independent entry points. They do
+    // not resume a tunnel or discard the station query during tunnel routing.
+    if (entryUrl.searchParams.has('stream') || entryUrl.searchParams.has('stream_invite')) return false;
     state.tunnelJoinToken = entryUrl.searchParams.get('tunnel_join') || '';
     const recordRouteMatch = entryUrl.pathname.match(/^\/record\/([^/]+)\/([^/]+)\/?$/);
     const routeSessionId = recordRouteMatch ? decodeURIComponent(recordRouteMatch[1]) : '';
@@ -1273,7 +1278,8 @@ function initSessionLanding() {
     // Disk entry parameters are consumed later by DiskUI.init(), after the
     // tunnel landing page has initialized. Keep that destination intact.
     if (!window.location.hash && window.location.search && window.location.pathname !== '/disk'
-        && new URLSearchParams(window.location.search).get('disk') !== '1') {
+        && new URLSearchParams(window.location.search).get('disk') !== '1'
+        && !new URLSearchParams(window.location.search).has('stream') && !new URLSearchParams(window.location.search).has('stream_invite')) {
         history.replaceState(null, '', window.location.pathname);
     }
 
@@ -7396,7 +7402,9 @@ async function addMessageToChat(message, isOwn, options = {}) {
     let contentHtml = '';
     let fileRenderState = null;
 
-    if (message.type === 'text') {
+    if (message.type === 'markdown') {
+        contentHtml = '<div class="message-bubble" data-tunnel-markdown></div>';
+    } else if (message.type === 'text') {
         contentHtml = `<div class="message-bubble">${escapeHtml(message.text)}</div>`;
     } else if (message.type === 'file') {
         const fileInfo = message.fileInfo;
@@ -7532,6 +7540,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
         ${contentHtml}
     `;
     syncTransferRecordFavoriteBadge(messageEl, message);
+    if (message.type === 'markdown') window.TunnelMarkdown?.mount(messageEl.querySelector('[data-tunnel-markdown]'), message);
     syncTransferRecordSnsBadge(messageEl, message);
     if (fileRecordRemark) {
         const remark = document.createElement('div');
@@ -7548,7 +7557,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     } else if (message.type === 'collection') {
         attachCollectionRecordInteractions(messageEl);
         renderMessageRecordActions(messageEl, message);
-    } else if (message.type === 'text' || message.type === 'rich') {
+    } else if (message.type === 'text' || message.type === 'rich' || message.type === 'markdown') {
         renderMessageRecordActions(messageEl, message);
     }
 
@@ -7650,6 +7659,7 @@ async function copyTransferRecordLink(messageId) {
 }
 
 function getTransferRecordTypeLabel(message) {
+    if (message?.type === 'markdown') return 'Markdown';
     if (message?.type === 'collection') return '文件合辑';
     if (message?.type === 'file') return '单文件';
     if (message?.type === 'rich') return '富文本';
@@ -7719,7 +7729,7 @@ async function showTransferRecordDetails(messageId) {
                     <div><dt>发送时间</dt><dd>${escapeHtml(formatDateTime(message.timestamp || Date.now()))}</dd></div>
                     <div><dt>备注</dt><dd>${escapeHtml(String(message.remark || message.collection?.remark || '无'))}</dd></div>
                 </dl>
-                ${message.type === 'text' ? `<section class="transfer-record-details-content"><h3>消息内容</h3><p>${escapeHtml(message.text || '')}</p></section>` : ''}
+                ${message.type === 'text' || message.type === 'markdown' ? `<section class="transfer-record-details-content"><h3>消息内容</h3><p>${escapeHtml(message.type === 'markdown' ? message.markdown || '' : message.text || '')}</p></section>` : ''}
                 ${message.type === 'rich' ? `<section class="transfer-record-details-content"><h3>富文本摘要</h3><p>${escapeHtml(String(message.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000))}</p></section>` : ''}
                 ${fileDetails.length ? `<section class="transfer-record-details-files"><h3>文件信息 · ${fileDetails.length}</h3>${fileDetails.map((entry, index) => `
                     <article class="transfer-record-detail-file">
@@ -7989,6 +7999,7 @@ async function associateTelegramDriveBackup(messageId, sourceFiles, uploadedItem
 }
 
 function recordTextPayload(message) {
+    if (message.type === 'markdown') return { text: String(message.markdown || ''), html: '' };
     if (message.type !== 'rich') {
         const text = String(message.type === 'text' ? message.text || '' : message.remark || message.fileInfo?.remark || message.collection?.remark || '');
         const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? getCollectionFiles(message) : [];
@@ -8062,7 +8073,7 @@ function renderMessageRecordActions(messageEl, message) {
             });
         }));
     }
-    menuItems.push(createRecordActionButton('⎇', '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+    if (message.type !== 'markdown') menuItems.push(createRecordActionButton('⎇', '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
@@ -16792,6 +16803,7 @@ function settleCurrentMobileWorkspaceView() {
 
 function isAnyBlockingOverlayOpen() {
     return Boolean(
+        window.StreamingConsole?.ownsHistory() ||
         document.querySelector('.modal-overlay.active') ||
         document.getElementById('filePreviewViewer')?.classList.contains('active') ||
         document.getElementById('mediaFullscreenViewer')?.classList.contains('active') ||
@@ -16834,12 +16846,14 @@ function initWorkspaceSwipeNavigation() {
         swipeStart = null;
     };
     const normalizeSoon = () => requestAnimationFrame(normalizeMobileWorkspaceView);
+    window.addEventListener('streaming-visibility-change', () => { if (swipeStart?.pointerId !== undefined && appShell.hasPointerCapture(swipeStart.pointerId)) appShell.releasePointerCapture(swipeStart.pointerId); resetTrack(); });
     appShell.addEventListener('pointerdown', event => {
         if (!window.matchMedia('(max-width: 767px)').matches) return;
         if (event.pointerType !== 'touch') return;
         if (isAnyBlockingOverlayOpen() || shouldIgnoreWorkspaceSwipeTarget(event.target)) return;
         const index = getWorkspaceViewIndex();
         swipeStart = {
+            pointerId: event.pointerId,
             x: event.clientX,
             y: event.clientY,
             lastX: event.clientX,
@@ -17881,17 +17895,30 @@ function initTunnelSettings() {
     });
 }
 
+function initStreamingConsoleIntegration() {
+    window.DiskUI?.init({ formatFileSize, showAppToast, historyLog });
+    window.NotificationCenter?.init({
+        deviceId: () => localStorage.getItem('deviceId') || state.deviceId,
+        onAction: (item, action) => {
+            if (item.type === 'stream-invitation') return window.StreamingConsole.notification(item, action);
+            return new Promise((resolve, reject) => {
+                if (item.type !== 'web-zip-edit-request') return resolve();
+                state.socket.timeout(8000).emit('web-zip-edit-response', { requestId:item.data?.requestId, approved:action === 'approve' }, (err, response) => err || !response?.ok ? reject(new Error(response?.error || '处理申请失败')) : resolve(response));
+            });
+        }
+    });
+    const adapter = window.StreamingAppAdapter?.create({ state, listSessions: () => getAllFromStore('sessions'), authorization: tunnelAuthorization,
+        file: fileId => getFromStore('files', fileId), message: messageId => getFromStore('messages', messageId),
+        materialize: file => materializeExternalFileRecord(file, { requestPermission: false }), complete: hasCompleteFileCache,
+        receiveMessage: async (message, sessionId) => { if (!message) return; await saveToStore('messages', { ...message, sessionId }); if (state.sessionId === sessionId) await addMessageToChat(message, true, { autoRequestAsset: false }); },
+        home: view => setMobileWorkspaceView(view), toast: showAppToast });
+    if (adapter) window.StreamingConsole?.init(adapter);
+}
+
 function initUI() {
     initTunnelSettings();
     initLanP2pGuide();
     initThemeSwitcher();
-    window.NotificationCenter?.init({
-        deviceId: () => state.deviceId,
-        onAction: (item, action) => new Promise((resolve, reject) => {
-            if (item.type !== 'web-zip-edit-request') return resolve();
-            state.socket.timeout(8000).emit('web-zip-edit-response', { requestId:item.data?.requestId, approved:action === 'approve' }, (error, response) => error || !response?.ok ? reject(new Error(response?.error || '处理申请失败')) : resolve(response));
-        })
-    });
     window.WebWorkshop?.init({
         deviceId: () => state.deviceId,
         canUpdate: canEditWebZip,
@@ -19116,6 +19143,7 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', event => {
+    if (window.StreamingConsole?.ownsHistory() || event.state?.streamingConsole || event.state?.streamingDialog) return;
     if (window.DiskUI?.ownsHistory()) return;
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
         if (event.state?.[MUSIC_QUEUE_HISTORY_KEY]) {

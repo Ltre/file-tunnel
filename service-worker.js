@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v78-content-v8-features-261019-2';
+const CACHE_NAME = 'instant-tunnel-v78-content-v8-streaming-261019-3';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -38,6 +38,12 @@ const APP_SHELL = [
     '/client/web-zip-runtime.js',
     '/client/notification-center.js',
     '/client/notification-center.css',
+    '/client/streaming-console.js',
+    '/client/streaming-console.css',
+    '/client/streaming-player.js',
+    '/client/streaming-app-adapter.js',
+    '/client/tunnel-markdown.js',
+    '/client/streaming-i18n.js',
     '/client/web-workshop.js',
     '/client/web-workshop.css',
     '/client/vendor/web-markdown/marked-18.0.14.umd.js',

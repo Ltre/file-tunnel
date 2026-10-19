@@ -41,8 +41,12 @@
             try {
                 await options.onAction?.(item, action.dataset.notificationAction);
                 const items = read(); const current = items.find(entry => entry.id === item.id);
-                if (current) { current.read = true; current.resolved = action.dataset.notificationAction; write(items); }
+                if (current) { current.read = true; if (action.dataset.notificationAction !== 'open') current.resolved = action.dataset.notificationAction; write(items); }
                 render();
+            } catch (error) {
+                const status = document.createElement('p'); status.setAttribute('role', 'alert');
+                status.textContent = (window.TunnelI18n?.t('通知操作未完成，请重新核对邀请或申请状态') || '通知操作未完成，请重新核对邀请或申请状态') + ' [' + error.message + ']';
+                action.closest('.notification-card')?.append(status);
             } finally { action.disabled = false; }
         });
     }
@@ -55,7 +59,8 @@
             <div class="notification-card-head"><strong>${escapeHtml(item.title || '设备通知')}</strong><time>${new Date(item.createdAt).toLocaleString()}</time></div>
             <p>${escapeHtml(item.body || '')}</p>
             ${item.type === 'web-zip-edit-request' && !item.resolved ? `<div class="notification-card-actions"><button type="button" data-notification-action="approve">允许编辑</button><button type="button" data-notification-action="reject">拒绝</button></div>` : ''}
-            ${item.resolved ? `<small>已处理：${item.resolved === 'approve' ? '已允许' : '已拒绝'}</small>` : ''}
+            ${item.type === 'stream-invitation' && !item.resolved ? `<div class="notification-card-actions"><button type="button" data-notification-action="accept">接受邀请</button><button type="button" data-notification-action="reject">拒绝</button><button type="button" data-notification-action="open">查看邀请</button></div>` : ''}
+            ${item.resolved ? `<small>${escapeHtml(window.TunnelI18n?.t(({approve:'已允许',accept:'已接受',accepted:'已接受',reject:'已拒绝',rejected:'已拒绝',expired:'已到期',revoked:'已撤销',open:'已查看'})[item.resolved] || '已处理') || item.resolved)}</small>` : ''}
         </article>`).join('');
     }
     function open() {

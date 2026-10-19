@@ -2317,6 +2317,10 @@ const diskAccountSessions = createDiskAccountSessions({
     resolveLegacy: resolveDiskUser, secure: isSecurePublicRequest,
     isRevoked: session => diskAPI.isContentSessionRevoked(session)
 });
+function revokeGlobalAccountSession(req) {
+    diskAPI.revokeContentSession(req);
+    streamingConsole.service.revokeLogin(require('./server/streaming-console').digest(req.diskSessionCookie));
+}
 const diskOidcReceipt = require('./server/disk-oidc-receipt').createDiskOidcReceipt({
     keyForRequest: getDiskIdentitySessionKey, secure: isSecurePublicRequest
 });
@@ -2468,7 +2472,7 @@ app.post('/api/telegram/drive/logout', (req, res) => {
     if (!identity) return res.status(401).json({ error: 'LOGIN_REQUIRED' });
     const origin = req.get('Origin');
     if (origin && origin !== getTelegramPublicOrigin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
-    try { const next = diskAccountSessions.remove(req, res, identity.id, request => diskAPI.revokeContentSession(request)); res.json({ ok: true, identity: next }); }
+    try { const next = diskAccountSessions.remove(req, res, identity.id, revokeGlobalAccountSession); res.json({ ok: true, identity: next }); }
     catch { res.status(503).json({error:'DISK_LOGOUT_FAILED'}); }
 });
 const diskAPI = createDiskAPI({
@@ -2492,7 +2496,42 @@ const diskAPI = createDiskAPI({
         saveTelegramBotConfig(config);
     }
 });
-diskAccountSessions.registerRoutes(app, { origin: getTelegramPublicOrigin, revoke: req => diskAPI.revokeContentSession(req) });
+diskAccountSessions.registerRoutes(app, { origin: getTelegramPublicOrigin, revoke: revokeGlobalAccountSession });
+const streamingTunnels = require('./server/streaming-tunnels').createStreamingTunnels({
+    mapDevices: values => streamingConsole.service.rootsForAliases(values),
+    session: sessionId => {
+        const existing = sessions.get(sessionId); if (existing) return existing;
+        if (!infraStore?.getTunnel(sessionId)) return null;
+        const current = getOrCreateTelegramSession(sessionId);
+        const restored = infraStore.hydrateTunnelHistory(sessionId, { limit: MAX_HISTORY_MESSAGES })?.messages || [];
+        current.history = restored.map(message => ({ message, size: Buffer.byteLength(JSON.stringify(message)) }));
+        current.historySize = current.history.reduce((sum, entry) => sum + entry.size, 0); return current;
+    },
+    messages: sessionId => {
+        const current = sessions.get(sessionId);
+        if (current) return current.history.map(entry => entry.message);
+        return infraStore?.hydrateTunnelHistory(sessionId, { limit: MAX_HISTORY_MESSAGES })?.messages || [];
+    },
+    admitted: (sessionId, deviceId, grant) => isValidSessionId(sessionId) && tunnelAccess.verify(grant, sessionId, deviceId),
+    capability: canUseTunnelCapability,
+    publish: (sessionId, current, message, deviceId) => {
+        const result = addToSessionHistory(sessionId, current, message, { fromDeviceId: deviceId, source: 'streaming-markdown' });
+        if (!result.stored) throw new Error('STREAM_MESSAGE_NOT_SAVED');
+        emitToReadableSessionDevices(current, 'message', { message }); scheduleSessionHistoryBroadcast(sessionId, 'streaming-markdown');
+    }
+});
+const streamingDisk = require('./server/streaming-disk').createStreamingDisk({
+    objects: diskAPI.objectStorage, identity: getTelegramDriveIdentity,
+    partitions: require('./server/disk-partitions').createDiskPartitions({ dataDir: SERVER_DATA_DIR, spaces: diskAPI.spaces })
+});
+const streamingSources = require('./server/streaming-sources').createStreamingSources({ disk: streamingDisk, tunnel: streamingTunnels });
+const streamingConsole = require('./server/streaming-http').registerStreamingConsole(app, {
+    dataDir: SERVER_DATA_DIR, identity: getTelegramDriveIdentity, proofs: req => diskAccountSessions.proofs(req), user: id => diskAuth.user(id),
+    loginRevoked: hash => require('./server/disk-repository').openDiskRepository(SERVER_DATA_DIR).content.sessionRevoked(hash), origin: getTelegramPublicOrigin,
+    visibleDevices: (deviceId, aliases = []) => [...new Set([...sessions.values()].filter(current => [deviceId, ...aliases].some(alias => current.devices.has(alias) && canUseTunnelCapability(current, alias, 'read'))).flatMap(current => [...current.devices.keys()]))],
+    sources: streamingSources, tunnel: streamingTunnels
+});
+streamingTunnels.bind(streamingConsole.service);
 app.get('/api/telegram/drive/me', diskAPI.metadataTiming, (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -11019,6 +11058,7 @@ async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
     telegramForwardJobs.close();
+    streamingConsole.close();
     console.log(`${signal} received, shutting down gracefully`);
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();

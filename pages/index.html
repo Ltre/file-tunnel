@@ -81,12 +81,14 @@
         })();
     </script>
     <link rel="stylesheet" href="/client/notification-center.css">
+    <link rel="stylesheet" href="/client/streaming-console.css">
     <link rel="stylesheet" href="/client/web-workshop.css">
     <link rel="stylesheet" href="/client/disk-mount-ui.css">
     <title>Drop2Tunnel - 即时传输隧道</title>
     <script defer src="/socket.io/socket.io.js"></script>
     <script defer src="/client/qrcode-1.0.0.min.js"></script>
     <script defer src="/client/i18n-catalog.js?v=20260812-1"></script>
+    <script defer src="/client/streaming-i18n.js"></script>
     <script defer src="/client/i18n.js?v=20260812-1"></script>
 
     <!-- 手动试着将此处原有的5000多行CSS代码转移到 /client/index.css 中，如有错误，就再迁移回来 -->
@@ -134,6 +136,7 @@
                 <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
                 <button class="tunnel-topbar-action" id="topbarDiskBtn" type="button" title="恢复 Telegram 网盘" aria-label="恢复 Telegram 网盘" hidden>▤</button>
                 <button class="tunnel-topbar-action" id="topbarWorkshopBtn" type="button" title="恢复网页工坊" aria-label="恢复网页工坊" hidden>🌐</button>
+                <button class="tunnel-topbar-action" id="topbarStreamingBtn" type="button" title="恢复串流控制台" aria-label="恢复串流控制台" hidden>▣</button>
                 <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
             </div>
         </div>
@@ -245,6 +248,7 @@
                                 <button type="button" id="receiveLightBtn">接收光媒</button>
                                 <button type="button" id="connectionResourceBrowserBtn">资源浏览器</button>
                                 <button type="button" id="webWorkshopBtn">网页工坊</button>
+                                <button type="button" id="streamingConsoleBtn">串流控制台</button>
                                 <button type="button" id="notificationCenterBtn">通知中心 <span data-notification-count hidden></span></button>
                                 <button type="button" id="telegramDriveBtn">Telegram网盘</button>
                             </div>
@@ -352,6 +356,7 @@
                         </div>
                         <div class="input-area">
                             <textarea id="textInput" rows="1" placeholder="输入消息..." maxlength="1000" aria-label="输入消息..."></textarea>
+                            <button class="btn btn-secondary" id="sendMarkdownBtn" type="button" title="编写 Markdown 消息" aria-label="编写 Markdown 消息">MD</button>
                             <button class="btn btn-primary" id="sendTextBtn">
                                 <!-- <span>📤</span> --> <!-- 注释此行代码原因：难看、冗余 -->
                                 <span>发送</span>
@@ -623,6 +628,12 @@
             document.write(`<script defer src="/client/folder-archive.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/web-zip-runtime.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/notification-center.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/vendor/web-markdown/marked-18.0.14.umd.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/vendor/web-markdown/purify-3.4.16.min.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/tunnel-markdown.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/streaming-player.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/streaming-console.js${suffix}"><\/script>`);
+            document.write(`<script defer src="/client/streaming-app-adapter.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/web-workshop.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/media.js${suffix}"><\/script>`);
             document.write(`<script defer src="/client/device-camera.js${suffix}"><\/script>`);

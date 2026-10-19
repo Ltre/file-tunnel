@@ -1,0 +1,164 @@
+'use strict';
+const express = require('express');
+const rateLimit = require('express-rate-limit');
+const crypto = require('node:crypto');
+const { once } = require('node:events');
+const { createStreamingConsole, digest } = require('./streaming-console');
+const { parseByteRange } = require('./object-storage');
+
+function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginRevoked, origin,
+    visibleDevices, sources, tunnel, now = Date.now }) {
+    const listeners = new Map(); let scheduled = false;
+    const publish = () => { if (scheduled) return; scheduled = true; queueMicrotask(() => { scheduled = false; for (const listener of listeners.values()) listener.send(); }); };
+    const service = createStreamingConsole({ dataDir, user, loginRevoked, visibleDevices, sources, now, onChange: publish });
+    const router = express.Router(), tickets = new Map();
+    const wrap = action => async (req, res, next) => { try { await action(req, res, next); } catch (error) { next(error); } };
+    const actor = req => {
+        const deviceId = service.authenticate(req.get('X-Stream-Device'), req.get('X-Stream-Key'));
+        return { deviceId, userId: identity(req)?.id || null, logins: proofs(req) };
+    };
+    router.use((_req, res, next) => { res.set({ 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' }); next(); });
+    router.use((req, res, next) => {
+        if (req.get('Sec-Fetch-Site') === 'cross-site' || req.get('Origin') && req.get('Origin') !== origin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
+        next();
+    });
+    router.post('/devices', rateLimit({ windowMs: 60000, max: 120, standardHeaders: true, legacyHeaders: false }), wrap((req, res) => {
+        const result = service.register(req.body?.deviceId, req.body?.key, req.body?.name);
+        res.cookie('stream_device_' + digest(result.deviceId).slice(0, 20), req.body.key, { httpOnly: true, sameSite: 'strict', secure: origin(req).startsWith('https:'), path: '/', maxAge: 30 * 86400000 });
+        res.json(result);
+    }));
+    router.get('/media/:ticket', wrap(async (req, res) => {
+        const ticket = tickets.get(req.params.ticket);
+        if (!ticket || ticket.expiresAt < now()) throw new Error('STREAM_TICKET_EXPIRED');
+        const cookies = new Map(String(req.headers.cookie || '').split(';').map(part => part.trim().split('=')));
+        const proof = req.get('X-Stream-Device') === ticket.deviceId ? req.get('X-Stream-Key') : cookies.get('stream_device_' + digest(ticket.deviceId).slice(0, 20));
+        service.authenticate(ticket.deviceId, proof);
+        const selected = Object.create(req); selected.headers = { ...req.headers, 'x-disk-account': ticket.userId || '' };
+        selected.query = { ...req.query }; delete selected.query.disk_account;
+        const a = { deviceId: ticket.deviceId, userId: identity(selected)?.id || null };
+        const get = async () => {
+            if (ticket.preview) {
+                if (ticket.userId && a.userId !== ticket.userId) throw new Error('LOGIN_REQUIRED');
+                sources.stat(ticket.source); return { source: ticket.source, deviceId: ticket.deviceId, epoch: 0 };
+            }
+            const value = await service.resource(ticket.stationId, ticket.itemId, a, ticket.reference);
+            if (value.sourceVersion !== ticket.sourceVersion || value.epoch !== ticket.epoch) throw new Error('STREAM_TICKET_EXPIRED'); return value; };
+        const resource = await get();
+        if (resource.epoch !== ticket.epoch) throw new Error('STREAM_TICKET_EXPIRED');
+        let metadata;
+        try { metadata = sources.stat(resource.source); }
+        catch (error) { if (!ticket.preview && !ticket.reference && ['STREAM_SOURCE_DELETED', 'STREAM_SOURCE_REVOKED'].includes(error.message)) service.unavailable(ticket.stationId, ticket.itemId, error.message); throw error; }
+        const size = Number(metadata.size);
+        let range;
+        try { range = size ? parseByteRange(req.get('Range'), size) : { start: 0, end: -1, partial: false }; }
+        catch (_) { res.status(416).set('Content-Range', 'bytes */' + size).end(); return; }
+        if (!range || size && (range.start < 0 || range.end >= size)) { res.status(416).set('Content-Range', 'bytes */' + size).end(); return; }
+        const controller = new AbortController(); res.once('close', () => { if (!res.writableEnded) controller.abort(); });
+        const mime = /^(video|audio|image)\//.test(metadata.type || '') && metadata.type !== 'image/svg+xml' ? metadata.type : 'text/plain; charset=utf-8';
+        const headers = () => {
+            res.status(range.partial ? 206 : 200).set({ 'Content-Type': mime, 'Content-Length': String(Math.max(0, range.end - range.start + 1)),
+                'Accept-Ranges': 'bytes', 'Content-Security-Policy': "sandbox; default-src 'none'" });
+            if (range.partial) res.set('Content-Range', `bytes ${range.start}-${range.end}/${size}`);
+        };
+        if (req.method === 'HEAD' || !size) { headers(); res.end(); return; }
+        try {
+            for (let start = range.start; start <= range.end && !controller.signal.aborted; start += sources.MAX_CHUNK) {
+                await get();
+                const stream = await sources.read(resource.source, start, Math.min(range.end, start + sources.MAX_CHUNK - 1), controller.signal, resource.deviceId);
+                try {
+                    await get(); // Access may have changed while the provider was reading.
+                    if (!res.headersSent) headers();
+                    for await (const chunk of stream) {
+                        await get();
+                        if (!res.write(chunk)) await Promise.race([once(res, 'drain'), once(res, 'close').then(() => { throw new Error('STREAM_READ_CANCELLED'); })]);
+                    }
+                } finally { stream.destroy(); }
+            }
+            res.end();
+        } catch (error) {
+            if (!ticket.preview && !ticket.reference && ['STREAM_SOURCE_DELETED', 'STREAM_SOURCE_MISSING', 'STREAM_SOURCE_REVOKED', 'STREAM_PROVIDER_OFFLINE'].includes(error.message)) service.unavailable(ticket.stationId, ticket.itemId, error.message);
+            throw error;
+        }
+    }));
+    router.use((req, _res, next) => { try { req.streamActor = actor(req); next(); } catch (error) { next(error); } });
+    router.post('/sync', wrap((req, res) => {
+        const aliases = (Array.isArray(req.body?.tunnels) ? req.body.tunnels : []).slice(0, 500).flatMap(entry => { try { return [tunnel.alias(entry, req.streamActor)]; } catch (_) { return []; } });
+        service.syncDevice(req.streamActor, { follows: Array.isArray(req.body?.follows) ? req.body.follows : [], aliases });
+        res.json({ identity: identity(req), accounts: proofs(req).map(({ hash, ...proof }) => proof) });
+    }));
+    router.get('/stations', wrap((req, res) => res.json({ stations: service.list(req.streamActor, req.query.kind, req.query.ownerId) })));
+    router.post('/stations', wrap((req, res) => res.status(201).json(service.create(req.streamActor, req.body || {}))));
+    router.get('/stations/:id', wrap((req, res) => res.json(service.view(req.params.id, req.streamActor, { manage: req.query.manage === '1' }))));
+    router.get('/stations/:id/events', wrap((req, res) => {
+        const deviceId = req.streamActor.deviceId;
+        if (listeners.size >= 128 || [...listeners.values()].filter(value => value.deviceId === deviceId).length >= 16) throw new Error('STREAM_LIMIT');
+        service.view(req.params.id, req.streamActor);
+        res.status(200).set({ 'Content-Type': 'application/x-ndjson; charset=utf-8', 'X-Accel-Buffering': 'no', 'Cache-Control': 'private, no-store, no-transform' });
+        res.flushHeaders(); const key = crypto.randomUUID();
+        const close = () => { clearInterval(heartbeat); listeners.delete(key); };
+        const send = () => {
+            try { if (!res.write(JSON.stringify({ station: service.view(req.params.id, actor(req)) }) + '\n')) res.end(); }
+            catch (error) { res.end(JSON.stringify({ error: error.message }) + '\n'); }
+        };
+        const heartbeat = setInterval(send, 10000); heartbeat.unref();
+        res.once('close', close); res.once('finish', close); listeners.set(key, { deviceId, send, end: () => res.end() }); send();
+    }));
+    router.put('/stations/:id', wrap(async (req, res) => res.json(await service.edit(req.params.id, req.streamActor, req.body || {}, req))));
+    router.delete('/stations/:id', wrap((req, res) => res.json(service.remove(req.params.id, req.streamActor))));
+    router.post('/stations/:id/control', wrap((req, res) => res.json(service.control(req.params.id, req.streamActor, req.body || {}))));
+    router.post('/stations/:id/visibility', wrap((req, res) => res.json(service.visibility(req.params.id, req.streamActor, req.body || {}))));
+    router.post('/stations/:id/ownership', wrap((req, res) => res.json(service.ownership(req.params.id, req.streamActor, req.body?.action))));
+    router.put('/stations/:id/bookmark', wrap((req, res) => res.json(service.bookmark(req.params.id, req.streamActor, true))));
+    router.delete('/stations/:id/bookmark', wrap((req, res) => res.json(service.bookmark(req.params.id, req.streamActor, false))));
+    router.get('/stations/:id/invitations', wrap((req, res) => res.json({ invitations: service.invitations(req.params.id, req.streamActor) })));
+    router.post('/stations/:id/invitations', wrap((req, res) => res.status(201).json(service.invitation(req.params.id, req.streamActor, req.body || {}))));
+    router.delete('/stations/:id/invitations/:inviteId', wrap((req, res) => res.json(service.revoke(req.params.id, req.streamActor, req.params.inviteId))));
+    router.get('/invitations/:token', wrap((req, res) => res.json(service.inspectInvite(req.params.token, req.streamActor))));
+    router.post('/invitations/:token', wrap((req, res) => res.json(service.accept(req.params.token, req.streamActor, req.body?.decision))));
+    router.get('/inbox', wrap((req, res) => res.json({ invitations: service.inbox(req.streamActor) })));
+    router.post('/invitations/:token/delivered', wrap((req, res) => res.json(service.delivered(req.params.token, req.streamActor))));
+    router.post('/stations/:id/access', wrap((req, res) => res.json(service.access(req.params.id, req.streamActor, req.body?.deviceId, req.body?.allow === true))));
+    router.post('/stations/:id/report', wrap((req, res) => res.json(service.report(req.params.id, req.streamActor, req.body || {}))));
+    router.post('/stations/:id/ticket', wrap(async (req, res) => {
+        const a = req.streamActor, itemId = req.body?.itemId, reference = req.body?.reference;
+        const resource = await service.resource(req.params.id, itemId, a, reference);
+        for (const [key, ticket] of tickets) if (ticket.expiresAt <= now()) tickets.delete(key);
+        if (tickets.size >= 4096) throw new Error('STREAM_LIMIT');
+        const token = crypto.randomBytes(24).toString('base64url'), expiresAt = now() + 3600000;
+        tickets.set(token, { stationId: req.params.id, itemId, reference, epoch: resource.epoch, sourceVersion: resource.sourceVersion, deviceId: a.deviceId, userId: a.userId, expiresAt });
+        res.json({ url: '/api/streaming/media/' + token, expiresAt, references: service.references(req.params.id, itemId, a) });
+    }));
+    router.post(['/preview', '/blob-preview'], wrap(async (req, res) => {
+        const allFiles = req.path === '/blob-preview';
+        if (allFiles && req.body?.source?.kind !== 'tunnel') throw new Error('STREAM_TUNNEL_DENIED');
+        const a = req.streamActor, resolved = await sources.resolve(req.body?.source, a, req, allFiles);
+        for (const [key, ticket] of tickets) if (ticket.expiresAt <= now()) tickets.delete(key);
+        if (tickets.size >= 4096) throw new Error('STREAM_LIMIT');
+        const token = crypto.randomBytes(24).toString('base64url'), expiresAt = now() + 600000;
+        tickets.set(token, { preview: true, source: resolved.source, epoch: 0, deviceId: a.deviceId, userId: a.userId, expiresAt });
+        res.json({ url: '/api/streaming/media/' + token, expiresAt });
+    }));
+    router.get('/provider-work', wrap(async (req, res) => {
+        const controller = new AbortController(); res.once('close', () => controller.abort());
+        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal) });
+    }));
+    router.post('/provider-work/:requestId', express.raw({ type: 'application/octet-stream', limit: sources.MAX_CHUNK }), wrap((req, res) => {
+        sources.broker.provide(req.streamActor.deviceId, req.params.requestId, req.body, req.get('X-Stream-Error'));
+        res.json({ ok: true });
+    }));
+    // The tunnel adapter uses the tunnel's signed admission and existing read /
+    // send capabilities; station permissions never turn into tunnel membership.
+    router.post('/tunnel-candidates', wrap((req, res) => res.json(tunnel.candidates(req.body || {}, req.streamActor))));
+    router.post('/tunnel-resources', wrap((req, res) => res.json(tunnel.resources(req.body || {}, req.streamActor))));
+    router.post('/tunnel-markdown', wrap((req, res) => res.json(tunnel.send(req.body || {}, req.streamActor))));
+    router.use((error, _req, res, _next) => {
+        if (res.headersSent) { res.destroy(); return; }
+        const code = String(error.message || 'STREAM_FAILED');
+        const publicCode = /^(STREAM_[A-Z_]+|LOGIN_REQUIRED|ORIGIN_MISMATCH)$/.test(code) ? code : 'STREAM_SOURCE_UNAVAILABLE';
+        res.status(code === 'STREAM_CONFLICT' ? 409 : code === 'STREAM_NOT_FOUND' ? 404 : /REQUIRED|DENIED|KICKED|LOCAL_ONLY|DEVICE$|REVOKED|EXPIRED/.test(code) ? 403 : 422).json({ error: publicCode });
+    });
+    app.use('/api/streaming', router);
+    const timer = setInterval(() => { try { service.tick(); } catch (error) { console.warn('streaming clock persistence failed:', error.code || error.message); } }, 1000); timer.unref();
+    return { service, close() { clearInterval(timer); sources.broker.close(); tickets.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
+}
+module.exports = { registerStreamingConsole };

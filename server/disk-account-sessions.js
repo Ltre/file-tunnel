@@ -120,6 +120,12 @@ function createDiskAccountSessions({ cookieName = 'drop2tunnel_telegram_drive', 
             res.json({ identity: selected, accounts: list(req).filter(item => item.identity.id !== req.params.accountId).map(item => ({ ...item, active: item.identity.id === selected?.id })) });
         }));
     }
-    return { identity, list, set, select, remove, registerRoutes, accountCookie };
+    // Shared global features need login lifetime/revocation evidence, never the
+    // cookie itself. Selection remains separate from retained valid accounts.
+    function proofs(req) {
+        return [...entries(req).byId.values()].map(entry => ({ id: entry.identity.id, expiresAt: entry.expiresAt,
+            hash: crypto.createHash('sha256').update(cookieName + '=' + entry.token).digest('hex') }));
+    }
+    return { identity, list, set, select, remove, registerRoutes, accountCookie, proofs };
 }
 module.exports = { createDiskAccountSessions };
