@@ -41,6 +41,9 @@
         .notice { min-height:22px; color:#2aa4a5; margin-top:10px; }
         .notice:empty { min-height: 0; margin-top: 0; padding: 0; /* 如果以后加了 padding，这里也能一起重置 */ }
         .format-list { max-height:520px; margin-top:10px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
+        .manual-format { display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:12px; }
+        .manual-format input[type="text"] { flex:1;min-width:180px;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text); }
+        .manual-format label { display:flex;align-items:center;gap:6px; }
         .format-row { display:grid; grid-template-columns:34px minmax(90px,130px) 1fr; gap:10px; align-items:start; padding:10px 12px; border-bottom:1px solid var(--line); }
         .format-row:last-child { border-bottom:0; }
         .format-row.is-disabled { background:#f0f2f6; color:var(--muted); cursor:not-allowed; opacity:.52; }
@@ -202,6 +205,10 @@
                     <div class="format-status" id="formatStatus">输入 URL 后将自动解析。</div>
                 </div>
                 <button id="analyzeBtn" type="button">重新解析</button>
+            </div>
+            <div class="manual-format">
+                <input id="manualFormatInput" type="text" maxlength="2048" autocomplete="off" aria-label="手写媒体格式" placeholder="手写媒体格式，例如 137+140">
+                <label><input id="useManualFormatInput" type="checkbox">以此手写格式为准</label>
             </div>
             <div class="format-list" id="formatList"></div>
             <div class="selection" id="selectionSummary" hidden></div>
@@ -408,6 +415,8 @@
     const preDownloadRemarkInput = document.getElementById('preDownloadRemarkInput');
     const formatStatus = document.getElementById('formatStatus');
     const formatList = document.getElementById('formatList');
+    const manualFormatInput = document.getElementById('manualFormatInput');
+    const useManualFormatInput = document.getElementById('useManualFormatInput');
     const selectionSummary = document.getElementById('selectionSummary');
     const notice = document.getElementById('notice');
     const setupWizardBtn = document.getElementById('setupWizardBtn');
@@ -547,7 +556,13 @@
             throw new Error('管理会话已失效');
         }
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+            const error = new Error(response.status === 429 && data.source === 'server'
+                ? '本地服务器请求过于频繁，请稍后再试'
+                : data.error || `HTTP ${response.status}`);
+            Object.assign(error, { status: response.status, code: data.code || '', source: data.source || '', retryAfterSeconds: data.retryAfterSeconds || 0 });
+            throw error;
+        }
         return data;
     }
 
@@ -657,7 +672,11 @@
         return item;
     }
 
+    function activeManualFormat() {
+        return mode() === 'custom' && useManualFormatInput.checked ? manualFormatInput.value.trim() : '';
+    }
     function selectedFormats() {
+        if (activeManualFormat()) return [];
         const ids = [...formatList.querySelectorAll('input[type="checkbox"]:checked')].map(input => input.value);
         return ids.map(id => analysis?.formats.find(format => format.id === id)).filter(Boolean);
     }
@@ -671,6 +690,12 @@
     }
 
     function updateSelectionSummary() {
+        if (activeManualFormat()) {
+            selectionSummary.hidden = false;
+            selectionSummary.className = 'selection';
+            selectionSummary.textContent = '以此手写格式为准：' + activeManualFormat();
+            return true;
+        }
         const selected = selectedFormats();
         selectionSummary.hidden = false;
         selectionSummary.className = 'selection';
@@ -779,7 +804,7 @@
 
     function scheduleAnalyze() {
         clearTimeout(analyzeTimer);
-        if (mode() !== 'custom' || !urlInput.value.trim()) return;
+        if (mode() !== 'custom' || !urlInput.value.trim() || activeManualFormat()) return;
         if (analysis && analysisInputUrl === urlInput.value.trim()) {
             renderFormats(analysis);
             return;
@@ -790,19 +815,21 @@
     async function startDownload() {
         const url = urlInput.value.trim();
         if (!url) return void (notice.textContent = '请先填写 URL。');
-        const selectedFormatIds = mode() === 'custom'
+        const manualFormat = activeManualFormat();
+        const selectedFormatIds = mode() === 'custom' && !manualFormat
             ? selectedFormats().map(format => format.id)
             : [];
-        if (mode() === 'custom' && (!analysis || analysisInputUrl !== url || !updateSelectionSummary())) {
+        if (mode() === 'custom' && !manualFormat && (!analysis || analysisInputUrl !== url || !updateSelectionSummary())) {
             return void (notice.textContent = '请先完成格式解析并确认有效组合。');
         }
         if (selectedMusicCutNeedsOffsetWarning() && !confirm('在剪切模式下选取非 m4a/aac 音频编码，可能导致实际提取片段略有偏移，即更可能无法准确吻合期望的剪切首尾 offset。')) return;
+        let created;
         try {
             startBtn.disabled = true;
             notice.textContent = '正在创建私人下载任务...';
-            const created = await api('/api/youtube-premium/tasks', {
+            created = await api('/api/youtube-premium/tasks', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, downloadSections: downloadSectionsInput.value.trim(), remark: preDownloadRemarkInput.value.trim(), selectedFormatIds }), keepalive: true
+                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, downloadSections: downloadSectionsInput.value.trim(), remark: preDownloadRemarkInput.value.trim(), selectedFormatIds, manualFormat, useManualFormat: Boolean(manualFormat) }), keepalive: true
             });
             notice.textContent = '任务已创建。';
             window.MediaTaskLink?.created(created);
@@ -817,7 +844,8 @@
                 setTimeout(() => card.classList.remove('created-highlight'), 2000);
             }
         } catch (error) {
-            notice.textContent = `创建失败：${error.message}`;
+            notice.textContent = created ? `任务已创建，但页面更新失败：${error.message}` : `创建失败：${error.message}`;
+            notice.title = error.code || '';
         } finally {
             startBtn.disabled = false;
         }
@@ -1884,6 +1912,7 @@
             task.downloadSections ? `指定片段：${task.downloadSections}` : '',
             task.mediaType ? `类型：${task.mediaType === 'song' ? '音乐' : '视频'}` : '',
             task.selectedFormatIds?.length ? `格式：${task.selectedFormatIds.join(' + ')}` : '',
+            task.manualFormat ? `手写格式：${task.manualFormat}` : '',
             task.outputFileName ? `文件：${task.outputFileName}` : '',
             task.outputFileSize ? `大小：${formatSize(task.outputFileSize)}` : '',
             task.songMetadataEditedAt ? '已修改歌曲元信息' : '',
@@ -2102,6 +2131,13 @@
         });
     }
 
+    function onManualFormatChange() {
+        clearTimeout(analyzeTimer);
+        updateSelectionSummary();
+        if (!activeManualFormat() && (!analysis || analysisInputUrl !== urlInput.value.trim())) scheduleAnalyze();
+    }
+    manualFormatInput.addEventListener('input', onManualFormatChange);
+    useManualFormatInput.addEventListener('change', onManualFormatChange);
     document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
         customPanel.hidden = mode() !== 'custom';
         if (!customPanel.hidden) {
@@ -2111,6 +2147,7 @@
     }));
     asMusicInput.addEventListener('change', () => {
         if (mode() !== 'custom') return;
+        if (activeManualFormat()) { updateSelectionSummary(); return; }
         if (analysis && analysisInputUrl === urlInput.value.trim()) applyFormatMode(analysis);
         else analyzeFormats();
     });

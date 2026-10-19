@@ -1317,19 +1317,28 @@ body[data-theme="atelier"] .main-layout {
     margin-top: 15px;
     display: flex;
     gap: 10px;
+    align-items: flex-end;
 }
 
-.input-area input[type="text"] {
+.input-area #textInput {
     flex: 1;
-    padding: 12px 15px;
+    min-width: 0;
+    padding: 7px 12px;
     border: 2px solid #e0e0e0;
     border-radius: 25px;
     font-size: 1rem;
+    font-family: inherit;
+    line-height: 1.5;
+    box-sizing: border-box;
+    min-height: calc(1.5em + 18px);
+    max-height: calc(6em + 18px);
+    resize: none;
+    overflow-y: hidden;
     outline: none;
     transition: border-color 0.2s;
 }
 
-.input-area input[type="text"]:focus {
+.input-area #textInput:focus {
     /* border-color: #667eea; 备选，不要删 */
     border-color: #285f75;
 }

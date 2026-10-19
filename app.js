@@ -1547,7 +1547,7 @@ async function generateQRCode() {
             text: currentUrl,
             width: 180,
             height: 180,
-            colorDark: '#667eea',
+            colorDark: '#111827',
             colorLight: '#ffffff',
             correctLevel: window.QRCode.CorrectLevel?.M
         });
@@ -14787,6 +14787,27 @@ async function publishHistoryMessage(message, options = {}) {
     });
 }
 
+function updateTextInputHeight() {
+    const input = document.getElementById('textInput');
+    if (!input) return;
+    const style = getComputedStyle(input);
+    const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5 || 24;
+    const padding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+    const maximum = line * 4 + padding + border;
+    input.style.height = 'auto';
+    const needed = input.scrollHeight + border;
+    input.style.height = Math.min(maximum, Math.max(line + padding + border, needed)) + 'px';
+    input.style.overflowY = needed > maximum ? 'auto' : 'hidden';
+}
+function handleTextInputKeydown(event) {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    const touch = window.matchMedia?.('(pointer: coarse)').matches;
+    if (event.ctrlKey || event.metaKey || (!event.shiftKey && !touch)) {
+        event.preventDefault();
+        sendText();
+    }
+}
 async function sendText() {
     if (!requireTunnelPermission('sendText')) return;
     const input = document.getElementById('textInput');
@@ -14805,6 +14826,7 @@ async function sendText() {
 
     await publishHistoryMessage(message);
     input.value = '';
+    updateTextInputHeight();
 }
 
 // ==================== 协同编辑 ====================
@@ -18064,9 +18086,10 @@ function initUI() {
 
     // 发送文本
     document.getElementById('sendTextBtn').addEventListener('click', sendText);
-    document.getElementById('textInput').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendText();
-    });
+    document.getElementById('textInput').addEventListener('input', updateTextInputHeight);
+    document.getElementById('textInput').addEventListener('keydown', handleTextInputKeydown);
+    window.addEventListener('resize', updateTextInputHeight, { passive: true });
+    updateTextInputHeight();
 
     // 文件上传
     document.getElementById('dropZone').addEventListener('click', () => {

@@ -245,10 +245,9 @@ function isAllowedOrigin(origin) {
 // 速率限制配置
 const RATE_LIMIT = {
     windowMs: 15 * 60 * 1000, // 15分钟
-    max: 1000, // 每个IP最多100个请求
+    max: 1000, // 每个 IP 在窗口内最多 1000 个请求
     handler(req, res, next, options) {
-        const language = normalizeLanguageCode(req.headers['accept-language'] || 'zh-Hans');
-        res.status(options.statusCode).json({ error: translateTelegramText('请求过于频繁，请稍后再试', language) });
+        sendLocalRateLimit(req, res, options, 'LOCAL_REQUEST_RATE_LIMIT', '请求过于频繁，请稍后再试');
     },
     validate: {
         xForwardedForHeader: false
@@ -265,6 +264,14 @@ const RATE_LIMIT = {
             req.path.startsWith('/api/telegram/disk-shares');
     }
 };
+function sendLocalRateLimit(req, res, options, code, message) {
+    const language = normalizeLanguageCode(req.headers['accept-language'] || 'zh-Hans');
+    const reset = Number(req.rateLimit?.resetTime) || Date.now() + options.windowMs;
+    res.status(options.statusCode).json({
+        error: translateTelegramText(message, language), code, source: 'server',
+        retryAfterSeconds: Math.max(1, Math.ceil((reset - Date.now()) / 1000))
+    });
+}
 const adminAuthRateLimit = rateLimit({
     windowMs: 5 * 60 * 1000,
     max: 12,
@@ -287,7 +294,9 @@ const youtubePremiumRateLimit = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
-    message: { error: 'youtube-premium-rate-limited' }
+    handler(req, res, next, options) {
+        sendLocalRateLimit(req, res, options, 'YOUTUBE_PREMIUM_RATE_LIMIT', 'youtube-premium-rate-limited');
+    }
 });
 const snsDownloadRateLimit = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -7338,22 +7347,25 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     });
     const detectedMediaType = options.forceMusic === true ? 'song' : classifySnsMedia(url, baseMeta);
     if (detectedMediaType === 'unsupported') throw new Error('youtube-playlist-not-supported');
+    const manualFormat = String(options.manualFormat || '').trim();
     const defaultSelector = detectedMediaType === 'song' ? getYtDlpAudioFormatSelector() : getYtDlpFormatSelector(url);
     report('媒体类型识别与默认格式策略已确定', { detectedMediaType, defaultSelector });
-    // For songs, do not run a second metadata command with -f. It is unnecessary and was
-    // the direct source of "Requested format is not available" during parsing when an
+    // For songs, do not run a second metadata command with -f unless a manual selector
+    // explicitly overrides automatic selection. The automatic probe was the direct
+    // source of "Requested format is not available" during parsing when an
     // authenticated browser cookie caused YouTube to return a limited client format set.
     let selectedMeta = baseMeta;
-    if (detectedMediaType !== 'song') {
-        report('正在按默认视频格式策略确认可下载轨道', { formatSelector: defaultSelector });
+    if (manualFormat || detectedMediaType !== 'song') {
+        report(manualFormat ? '正在按手写格式确认可下载轨道' : '正在按默认视频格式策略确认可下载轨道', { formatSelector: manualFormat || defaultSelector });
         selectedMeta = await runYtDlpJson(url, {
             noPlaylist: true,
             cookiePath,
-            formatSelector: defaultSelector,
-            allowIgnoreNoFormatsFallback: true,
+            formatSelector: manualFormat || defaultSelector,
+            formatSelectionFallback: !manualFormat,
+            allowIgnoreNoFormatsFallback: !manualFormat,
             signal: options.signal
         });
-        report('默认视频轨道确认完成', {
+        report(manualFormat ? '手写格式轨道确认完成' : '默认视频轨道确认完成', {
             requestedFormats: Array.isArray(selectedMeta.requested_formats)
                 ? selectedMeta.requested_formats.map(format => String(format?.format_id || '')).filter(Boolean)
                 : [String(selectedMeta.format_id || '')].filter(Boolean),
@@ -7361,6 +7373,12 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
         });
     }
     let formats = normalizeYtDlpFormats(selectedMeta.formats?.length ? selectedMeta.formats : baseMeta.formats);
+    if (manualFormat) {
+        const chosen = selectedMeta.requested_formats || selectedMeta.requested_downloads?.[0]?.requested_formats || [selectedMeta];
+        const inventory = new Map(formats.map(format => [format.id, format]));
+        for (const format of normalizeYtDlpFormats(chosen)) inventory.set(format.id, format);
+        formats = [...inventory.values()];
+    }
     let preferredMusicFormat = getPreferredMusicAudioFormat(formats);
     report('格式库存已标准化', {
         normalizedFormatCount: formats.length,
@@ -7372,7 +7390,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     // Some logged-in YouTube sessions currently expose only a narrow client set. If the
     // initial authenticated metadata has no audio at all, make one cache-bypassed probe with
     // alternate clients. This is best-effort and never replaces the original metadata fields.
-    if (detectedMediaType === 'song' && !preferredMusicFormat) {
+    if (!manualFormat && detectedMediaType === 'song' && !preferredMusicFormat) {
         try {
             report('主播放器客户端没有可用纯音频，开始备用客户端探测', {
                 playerClients: 'web_safari,web,android_vr,tv_embedded'
@@ -7423,7 +7441,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
     const preferredVideoAudio = automaticIds.map(id => formatById.get(id)).find(format => format?.kind === 'audio') ||
         formats.filter(format => format.kind === 'audio' && (format.ext === 'm4a' || /^(?:mp4a|aac)/i.test(format.audioCodec)))
             .sort((a, b) => (b.audioBitrate || b.totalBitrate) - (a.audioBitrate || a.totalBitrate))[0];
-    const requestedIds = Array.isArray(options.selectedFormatIds) && options.selectedFormatIds.length
+    const requestedIds = manualFormat ? getSelectedFormatIds(selectedMeta) : Array.isArray(options.selectedFormatIds) && options.selectedFormatIds.length
         ? options.selectedFormatIds
         : (options.forceMusic === true
             ? [preferredMusicFormat?.id].filter(Boolean)
@@ -7432,6 +7450,7 @@ async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
                 : automaticIds));
     if (options.forceMusic === true && !requestedIds.length) throw new Error('youtube-premium-audio-format-missing');
     const selection = validateFormatSelection(formats, requestedIds, detectedMediaType, options.forceMusic === true);
+    if (manualFormat) selection.formatSelector = manualFormat;
     const mediaType = resolveYoutubePremiumMediaType(detectedMediaType, selection, options.forceMusic === true);
     report('最终格式选择已通过校验', {
         requestedIds,
@@ -7841,6 +7860,7 @@ function sanitizeYoutubePremiumError(error) {
         'custom-format-not-found': '所选媒体格式已失效，请重新解析',
         'custom-single-format-invalid': '单选编号必须包含音频或视频轨',
         'custom-music-format-invalid': '以音乐形式下载时只能选择一个纯音频媒体编号',
+        'custom-manual-format-invalid': '手写媒体格式无效：请输入不超过 2048 字符的单行格式表达式',
         'youtube-premium-audio-format-missing': '没有找到可用于音乐下载的纯音频媒体编号',
         'custom-video-format-conflict': '请选择一个纯视频格式和一个纯音频格式',
         'youtube-premium-audio-stream-missing': '下载结果中没有找到音频轨',

@@ -391,6 +391,7 @@ function createYoutubePremiumService({
                 ? `/api/youtube-premium/tasks/${encodeURIComponent(task.id)}/cover`
                 : '',
             mode: task.mode,
+            manualFormat: task.manualFormat || '',
             asMusic: task.asMusic === true,
             downloadSections: task.downloadSections || '',
             selectedFormatIds: task.selectedFormatIds || [],
@@ -435,6 +436,7 @@ function createYoutubePremiumService({
             const analysis = await analyze(task.url, {
                 includeFormats: task.mode === 'custom',
                 selectedFormatIds: task.selectedFormatIds,
+                manualFormat: task.manualFormat || '',
                 forceMusic: task.asMusic === true,
                 signal: controller.signal,
                 onDetail(entry = {}) {
@@ -590,15 +592,17 @@ function createYoutubePremiumService({
                 !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(parsed.hostname.toLowerCase())) {
                 throw new Error('youtube-url-required');
             }
-            const selectedFormatIds = mode === 'custom'
+            const manualFormat = mode === 'custom' && input.useManualFormat === true ? String(input.manualFormat || '').trim() : '';
+            if (manualFormat && (manualFormat.length > 2048 || /[\u0000-\u001f\u007f]/.test(manualFormat))) throw new Error('custom-manual-format-invalid');
+            const selectedFormatIds = mode === 'custom' && !manualFormat
                 ? [...new Set((Array.isArray(input.selectedFormatIds) ? input.selectedFormatIds : []).map(String).map(id => id.trim()).filter(Boolean))]
                 : [];
-            if (mode === 'custom' && !selectedFormatIds.length) throw new Error('custom-format-required');
+            if (mode === 'custom' && !manualFormat && !selectedFormatIds.length) throw new Error('custom-format-required');
             if (selectedFormatIds.length > 2) throw new Error('custom-format-count-invalid');
             const downloadSections = String(input.downloadSections || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 500);
             const now = Date.now();
             const task = {
-                id: crypto.randomUUID(), url, title: '', cover: '', mode, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
+                id: crypto.randomUUID(), url, title: '', cover: '', mode, manualFormat, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
                 updatedAt: now, completedAt: 0, remark: String(input.remark || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 4000), tags: [], songMetadata: null,
