@@ -1314,7 +1314,7 @@ body[data-theme="atelier"] .main-layout {
 
 /* 输入区域 */
 .input-area {
-    margin-top: 15px;
+    margin-top: 6px;
     display: flex;
     gap: 10px;
     align-items: flex-end;
@@ -1446,8 +1446,10 @@ body[data-theme="atelier"] .main-layout {
 .file-upload-composer {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    margin-bottom: 10px;
+    margin-bottom: 0;
 }
+
+.center-panel > .panel > .panel-content { padding-bottom: 10px; }
 
 .file-upload-composer.clipboard-image-ready {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
@@ -5351,13 +5353,13 @@ body[data-theme="graphite"] .control-center-tile{background:#283445;border-color
         display: none;
     }
 
-    .center-panel .panel-content {
+    .center-panel > .panel > .panel-content {
         display: flex;
         height: 100%;
         min-height: 0;
         flex-direction: column;
-        gap: 10px;
-        padding: calc(12px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
+        gap: 6px;
+        padding: calc(12px + env(safe-area-inset-top)) 12px calc(10px + env(safe-area-inset-bottom));
     }
 
     .chat-messages {

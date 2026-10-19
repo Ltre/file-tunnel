@@ -2474,6 +2474,9 @@ app.post('/api/telegram/drive/logout', (req, res) => {
 const diskAPI = createDiskAPI({
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
     operations: diskOperations, telegram: diskTelegram,
+    resolveTaskSource: require('./server/download-task-source').createDownloadTaskSource({
+        services: { sns: snsDownloadService, youtube: youtubePremiumService }, isAdmin: req => adminAuth.isAuthenticated(req)
+    }),
     resolveStorageBackend: resolveTelegramStorageBackend,
     getIdentity: getTelegramDriveIdentity, setIdentity: setTelegramDriveIdentityCookie,
     getOrigin: getTelegramPublicOrigin, isMockRequest: isTelegramOidcMockRequest,

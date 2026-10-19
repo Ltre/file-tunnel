@@ -38,6 +38,9 @@
         TRASH_RESTORE_CONFLICT:'原位置存在同名项目或文件阻挡了目录路径。请处理冲突后再还原。'
     };
     const codes = {
+        TASK_SAVE_ADMIN_AUTH_REQUIRED:'后台登录已失效，未发起转存。请重新登录后台后继续。',
+        TASK_SAVE_SOURCE_UNAVAILABLE:'抓取任务的服务端成品不存在或不可用，未发起转存。请检查任务，必要时重新抓取。',
+        TASK_SAVE_VERSION_CONFLICT:'来源任务已更新，未使用新文件替换原转存内容。请从后台重新发起转存。',
         CONTENT_COPY_SCOPE_INVALID:'复制的来源与目标范围不符合当前操作要求。请重新选择。',
         COLLABORATION_OUT_OF_SCOPE:'操作超出当前协同授权范围。请在受邀项目内部操作。',
         COLLABORATION_NOT_FOUND:reasons.GRANT_CHANGED,

@@ -197,6 +197,7 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
     if (!result || !choose) return null;
     await switchTelegramDriveAccount(result.id); return result;
 }
+function pendingSaveTransferId(record) { return record.serverTransferId || record.id; }
 async function showTelegramDrivePendingSaveBanner() {
     if (!window.DiskPendingSave) return;
     const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status));
@@ -216,7 +217,7 @@ async function showTelegramDrivePendingSaveBanner() {
                 await window.DiskPendingSave.cancel(record.id, async current => {
                     const target = current.target;
                     if (!target?.accountId) return { status: 'processing' };
-                    const found = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(record.id), { accountId: target.accountId, diskSpace: target.diskSpace, requestBase: '/api/telegram/drive' });
+                    const found = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(pendingSaveTransferId(record)), { accountId: target.accountId, diskSpace: target.diskSpace, requestBase: '/api/telegram/drive' });
                     if (found.state === 'completed') return { status: 'completed', result: found.result };
                     if (!found.found) return { status: 'missing', retryable: true };
                     return found.safeRetry ? { status: 'failed', retryable: true } : { status: 'processing' };
@@ -265,7 +266,7 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
             chooseTarget: choosePendingSaveTarget,
             lookup: async record => {
                 if (!record.target || !await ensureAccount(record.target.accountId)) return { status: 'waiting-login' };
-                const result = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(id), transport(record.target));
+                const result = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(pendingSaveTransferId(record)), transport(record.target));
                 if (!result.found) return { status: 'missing' };
                 if (result.state === 'completed') return { status: 'completed', result: result.result };
                 if (result.safeRetry) return { status: 'failed', retryable: true };
@@ -280,6 +281,8 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
             confirm: (record, target) => confirmTelegramDriveAction('确认转存到网盘', `将“${record.file.name}”（${formatFileSize(record.file.size)}）转存到“${target.partitionName || '目标分区'}”的 ${telegramDriveDisplayPath(target.path)}？`, '转存'),
             upload: (record, blob, target, metadata) => window.DiskClient.upload([{ name: record.file.name, size: blob.size, type: record.file.type }], target.path,
                 () => blob, { ...metadata, source: record.source, sourceTaskVersion: record.version, transportContext: transport(target) }),
+            transferServer: (record, target) => window.DiskClient.request('/task-saves', { ...transport(target),
+                ...window.DiskClient.json('POST', { pendingSaveId: pendingSaveTransferId(record), source: record.source, taskId: record.task.id, version: record.version, partitionId: target.partitionId, folderPath: target.path }) }),
             onStatus: showAppToast,
             onCompleted: async record => {
                 showAppToast('转存已完成；再次打开不会重复上传');

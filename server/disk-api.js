@@ -126,14 +126,14 @@ function errorStatus(code) {
     if (/^MOUNT_(?:COLLABORATION_OVERLAP|NAME_CONFLICT|TRANSFER_UNSUPPORTED)/.test(code)) return 409;
     if (code === 'PASSKEY_SERVER_UNAVAILABLE') return 503;
     if (code === 'FILE_REMOVED_BY_REVIEW') return 410;
-    if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID/.test(code)) return 401;
+    if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID|TASK_SAVE_ADMIN_AUTH_REQUIRED/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
-    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE/.test(code)) return 409;
+    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|PENDING_SAVE_ALREADY_STARTED|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE/.test(code)) return 409;
     if (/TELEGRAM_|STORAGE_/.test(code)) return 502;
     return 422;
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {}, resolveStorageBackend = async backend => backend,
-    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute', uploadSourceIdleMs = 5 * 60000, uploadNow = Date.now }) {
+    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute', uploadSourceIdleMs = 5 * 60000, uploadNow = Date.now, resolveTaskSource }) {
     if(!['all','owner','off'].includes(contentReuseMode)) throw new Error('CONTENT_REUSE_MODE_INVALID');
     if(!['execute','observe'].includes(contentCleanupMode)) throw new Error('CONTENT_CLEANUP_MODE_INVALID');
     const log = createDiskUploadLog(dataDir);
@@ -144,6 +144,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     const persistence = openDiskRepository(dataDir);
     const pendingSaves = require('./disk-pending-saves').createDiskPendingSaves(persistence);
+    const activeTaskSaves = new Set();
     const finishPendingSave = (job, items) => {
         if (!job.metadata?.pendingSaveId) return;
         try { pendingSaves.complete(job.owner?.id || job.ownerId, job.metadata.pendingSaveId, items, { uploadId: job.id }); }
@@ -2349,6 +2350,56 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             res.json({ found: true, state: published.length ? 'completed' : item.state, safeRetry: item.safeRetry && !published.length,
                 operation, result: published.length ? { ok: true, items: published.map(uploadResultFile) } : item.state === 'completed' ? { ok: true, items: (item.fileIds || []).map(id => ({ id })) } : null });
         }));
+        router.post('/task-saves', wrap(async (req, res) => {
+            if (router !== browser || req.collaboration || req.diskMount || !resolveTaskSource) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
+            if (req.body?.partitionId && req.body.partitionId !== req.diskPartition.id) throw new Error('PENDING_SAVE_TARGET_CONFLICT');
+            if (activeTaskSaves.size >= 20) throw new Error('UPLOAD_ACTIVE_LIMIT');
+            const activeId = Symbol(), context = { ...scope(req) }, diskStore = store(req), actor = req.diskUser;
+            const id = req.body?.pendingSaveId, folderPath = normalizeTelegramDrivePath(req.body?.folderPath || '');
+            activeTaskSaves.add(activeId);
+            let handle, input, reservation, announced = false, handedOff = false;
+            try {
+                const source = await resolveTaskSource(req, req.body);
+                try { handle = await fsp.open(source.path, 'r'); }
+                catch (_) { throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE'); }
+                const stat = await handle.stat(), current = await resolveTaskSource(req, req.body);
+                if (!stat.isFile() || stat.size !== source.size || source.size <= 0 || source.size > LOGICAL_FILE_UPLOAD_LIMIT || current.path !== source.path || current.version !== source.version) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
+                const authorization = contentProof.authorization(req);
+                const assertAuthorized = () => {
+                    contentProof.assertAuthorization(authorization);
+                    if (partitions.find(actor.id, context.diskSpace).scopeKey !== context.diskSpace) throw new Error('DISK_SPACE_NOT_FOUND');
+                    assertStaticDirectoryWritable(context, diskStore, folderPath);
+                    objectStorage.assertWritable(context, [folderPath, source.name].filter(Boolean).join('/'));
+                };
+                assertAuthorized();
+                reservation = pendingSaves.reserve(actor.id, id, context.diskSpace, folderPath,
+                    [{ name: source.name, size: source.size, type: source.type }], { source: req.body.source, taskId: req.body.taskId, version: source.version });
+                input = handle.createReadStream();
+                let accept, reject;
+                const ready = new Promise((resolve, fail) => { accept = resolve; reject = fail; });
+                const work = uploadObjectStream({ mapping: { diskSpace: context.diskSpace, sourceAppId: 'download-task', assertAuthorized,
+                    onCreated(job) {
+                        pendingSaves.attach(actor.id, id, job, { attemptId: reservation.attemptId });
+                        operations.update(job.operationId, { status: 'running', phase: 'source-read', message: '抓取任务转存：' + source.name }, true);
+                        announced = true;
+                        accept({ operation_id: job.operationId });
+                    },
+                    isCancelled: job => operations.get(job.operationId, context)?.cancelRequested
+                }, owner: actor, info: { folderPath, name: source.name, key: [folderPath, source.name].filter(Boolean).join('/') },
+                    input, size: source.size, contentType: source.type, metadata: { pendingSaveId: id, source: req.body.source, sourceTaskId: req.body.taskId, sourceTaskVersion: source.version, sourceInfo: source.sourceInfo } });
+                handedOff = true;
+                work.catch(error => {
+                    if (!announced) {
+                        try { pendingSaves.safeFailure(actor.id, id, { attemptId: reservation.attemptId }); }
+                        finally { reject(error); }
+                    }
+                }).finally(async () => { input.destroy(); await handle.close().catch(() => {}); activeTaskSaves.delete(activeId); })
+                    .catch(error => log('task-save.cleanup-failed', { code: diskErrorCode(error) }));
+                res.status(202).json(await ready);
+            } finally {
+                if (!handedOff) { await handle?.close().catch(() => {}); activeTaskSaves.delete(activeId); }
+            }
+        }));
         router.post('/uploads', wrap(async (req, res) => {
             const pendingSaveId = req.body?.metadata?.pendingSaveId;
             let pendingReservation, pendingJob, pendingCreationCleaned = false;
@@ -2672,7 +2723,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal, onProgress }) {
-        const sourceAppId = mapping.sourceAppId === 'media-library' ? 'media-library' : 's3';
+        const sourceAppId = ['media-library', 'download-task'].includes(mapping.sourceAppId) ? mapping.sourceAppId : 's3';
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
         if (replaceId) assertStaticFileWritable({ userId: owner.id, diskSpace }, diskStore.get(owner.id, replaceId));
@@ -2722,9 +2773,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         job.storage = storage;
         job.assertAuthorized = mapping.assertAuthorized;
         try {
-            const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : '媒体收藏转存'}：${info.key}`, size);
+            const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : sourceAppId === 'download-task' ? '抓取任务转存' : '媒体收藏转存'}：${info.key}`, size);
             job.operationId = operation.operation_id;
-            await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId });
+            await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId, operationScope: req.diskScope });
+            mapping.onCreated?.(job);
         } catch (error) {
             try { await diskStore.abortAsync(job.id); }
             catch (cleanupError) { log('upload.staging-cleanup-failed', { uploadId: job.id, error: networkDetails(cleanupError) }); }
@@ -2732,7 +2784,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             throw error;
         }
         job.pipelineDone = new Promise(resolve => { job.pipelineDoneResolve = resolve; });
-        const control = { cancelled: false, throwIfCancelled() { if (signal?.aborted) throw new Error('OPERATION_CANCELLED'); } };
+        const control = { get cancelled() { return Boolean(signal?.aborted || mapping.isCancelled?.(job)); }, throwIfCancelled() { if (this.cancelled) throw new Error('OPERATION_CANCELLED'); } };
         const running = Promise.resolve().then(() => coreUpload.runUploadPipeline(req, job, patch => {
             operations.update(job.operationId, patch);
             onProgress?.(patch);
@@ -2748,7 +2800,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         async function* bytesForPart(wanted) {
             let left = wanted;
             while (left) {
-                if (signal?.aborted) throw new Error('OPERATION_CANCELLED');
+                control.throwIfCancelled();
                 if (!carry.length) {
                     const next = await iterator.next();
                     if (next.done) throw new Error('IncompleteBody');
@@ -2763,6 +2815,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         try {
             for (const part of job.files[0].parts) {
                 while (true) {
+                    control.throwIfCancelled();
                     if (job.pipelineError) throw job.pipelineFailure || new Error(job.pipelineError);
                     const state = diskStore.uploadQueue(job.id);
                     if (!state) throw new Error('UPLOAD_NOT_FOUND');

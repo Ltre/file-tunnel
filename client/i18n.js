@@ -73,6 +73,8 @@
     let applyingTranslations = false;
     const DYNAMIC_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
     const DYNAMIC_TEMPLATES = [
+        [/^(抓取任务转存)：(.+)$/, DYNAMIC_LANGUAGES.map(() => '{1}: {raw2}')],
+        [/^(.+) \[(TASK_SAVE_[A-Z_]+)\](.*)$/, DYNAMIC_LANGUAGES.map(() => '{1} [{raw2}]{raw3}')],
         [/^(\d+)\s*个任务$/, ['{n} 個工作','{n} tasks','タスク {n} 件','{n} tâches','Задач: {n}','{n} tareas','{n} attività','작업 {n}개','{n} tugas','{n} tugas','{n} tác vụ','{n} งาน']],
         [/^进行中\s*(\d+)$/, ['進行中 {n}','{n} active','実行中 {n}','{n} en cours','Выполняется: {n}','{n} en curso','{n} in corso','진행 중 {n}','{n} aktif','{n} aktif','{n} đang chạy','กำลังทำ {n}']],
         [/^(\d+)\s*个停滞$/, ['{n} 個停滯','{n} stalled','停滞 {n} 件','{n} bloquées','Зависло: {n}','{n} detenidas','{n} bloccate','정체 {n}개','{n} terhenti','{n} terhenti','{n} bị dừng','ค้าง {n}']],
@@ -145,9 +147,10 @@
                 const entry = CATALOG.get(key);
                 return entry.translations[lang] || entry.translations.en || entry.source;
             };
-            return template
-                .replace(/\{n\}/g, localizeCapture(match[1]))
-                .replace(/\{(\d+)\}/g, (_, index) => localizeCapture(match[Number(index)] || ''));
+            return template.replace(/\{(raw)?(\d+|n)\}/g, (_, raw, index) => {
+                const value = match[index === 'n' ? 1 : Number(index)] || '';
+                return raw ? value : localizeCapture(value);
+            });
         }
         return '';
     }

@@ -35,10 +35,10 @@ function createDiskPendingSaves(repository) {
     });
     return {
         get,
-        reserve(userId, id, diskSpace, folderPath, files) {
+        reserve(userId, id, diskSpace, folderPath, files, taskSource) {
             validate(id);
             if (!Array.isArray(files) || files.length !== 1 || !files[0] || typeof files[0].name !== 'string') throw new Error('PENDING_SAVE_INVALID');
-            const signature = crypto.createHash('sha256').update(JSON.stringify({ diskSpace, folderPath,
+            const signature = crypto.createHash('sha256').update(JSON.stringify({ diskSpace, folderPath, ...(taskSource ? { taskSource } : {}),
                 files: files.map(file => ({ name: file.name, size: file.size, type: file.type || '', sha256: file.contentSha256 || '' })) })).digest('hex');
             return repository.atomic(() => {
                 const old = get(userId, id);

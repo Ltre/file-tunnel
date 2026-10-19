@@ -168,6 +168,31 @@
         };
         return global.navigator?.locks ? global.navigator.locks.request('disk-pending-prepare:' + source + ':' + task?.id, prepareOne) : prepareOne();
     }
+    async function prepareServer({ source, task }) {
+        if (!sourceTypes.has(source) || !task?.id || !Number(task.completedAt) || !Number.isSafeInteger(Number(task.outputFileSize)) || Number(task.outputFileSize) <= 0) {
+            throw new Error('仅可转存已完成且文件信息完整的任务，请刷新后台任务记录');
+        }
+        const operation = async () => {
+            const version = versionOf(task);
+            const existing = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === version && record.status !== 'cancelled');
+            if (existing && (existing.transferMode === 'server' || ['completed', 'uploading', 'verification-required'].includes(existing.status))) return existing;
+            const current = await verifySource({ source, task: { ...task, id: String(task.id) }, version });
+            if (!current.hasFile || current.status !== 'completed') throw new Error('服务端成品已清理或不可用，请重新抓取后转存');
+            if (existing) return lockRecord(existing.id, async () => {
+                const latest = await get(existing.id);
+                if (['completed', 'uploading', 'verification-required'].includes(latest.status)) return latest;
+                const upgraded = { ...latest, transferMode: 'server', serverTransferId: uuid(), legacyCachePin: true, status: 'pending', updatedAt: Date.now() };
+                delete upgraded.cache;
+                await put(upgraded);
+                return upgraded;
+            });
+            return put({ id: uuid(), source, version, transferMode: 'server',
+                task: { id: String(task.id), completedAt: Number(task.completedAt), outputFileSize: Number(task.outputFileSize), outputFileName: String(task.outputFileName || task.title || 'downloaded-file') },
+                sourceInfo: safeSource(task), file: { name: String(task.outputFileName || 'downloaded-file'), size: Number(task.outputFileSize), type: 'application/octet-stream' },
+                status: 'pending', target: null, createdAt: Date.now(), updatedAt: Date.now() });
+        };
+        return global.navigator?.locks ? global.navigator.locks.request('disk-pending-prepare:' + source + ':' + task.id, operation) : operation();
+    }
     function open(record) {
         if (!validId(record?.id)) throw new Error('待转存记录标识无效');
         const url = '/disk?pendingSave=' + encodeURIComponent(record.id);
@@ -187,7 +212,7 @@
     }
     async function complete(id, result) {
         const record = await update(id, { status: 'completed', completedAt: Date.now(), result, error: '' });
-        await cacheFor(record.source).unpin(record.task.id, record.id);
+        if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id);
         return record;
     }
     async function cancel(id, verifier) {
@@ -207,7 +232,7 @@
             record = await update(id, { status: 'failed' });
         }
         const next = await update(id, { status: 'cancelled' });
-        await cacheFor(record.source).unpin(record.task.id, id);
+        if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, id);
         return next;
     }
     async function resume(id, hooks) {
@@ -215,9 +240,9 @@
         const execute = async () => {
             let record = await get(id);
             if (!record) throw new Error('待转存记录不在此浏览器中，请在原浏览器打开网盘');
-            if (record.status === 'completed') { await cacheFor(record.source).unpin(record.task.id, record.id); await hooks.onCompleted?.(record); return record; }
+            if (record.status === 'completed') { if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id); await hooks.onCompleted?.(record); return record; }
             if (record.status === 'cancelled') throw new Error('这条待转存记录已取消，请回后台重新发起');
-            if (record.status === 'preparing') throw new Error('上次缓存引用准备未完成，请在后台重新发起转存');
+            if (record.status === 'preparing' && !hooks.transferServer) throw new Error('上次缓存引用准备未完成，请在后台重新发起转存');
             if (['uploading', 'verification-required'].includes(record.status)) {
                 if (!hooks.lookup) throw new Error('上次上传结果尚未确认，请核验网盘任务后继续，未重复上传');
                 const found = await hooks.lookup(record);
@@ -227,7 +252,16 @@
                 }
                 record = await update(id, { status: 'failed' });
             }
-            const blob = await getBlob(record);
+            // Migrate old metadata only after any previous upload outcome is known.
+            if (record.transferMode !== 'server' && hooks.transferServer) {
+                const current = await verifySource(record);
+                if (!current.hasFile || current.status !== 'completed') throw new Error('服务端成品已清理或不可用，请重新抓取后转存');
+                const upgraded = { ...record, transferMode: 'server', serverTransferId: uuid(), legacyCachePin: true, status: 'pending', updatedAt: Date.now() };
+                delete upgraded.cache;
+                await put(upgraded);
+                record = upgraded;
+            }
+            const blob = record.transferMode === 'server' ? null : await getBlob(record);
             const account = await hooks.chooseAccount(record);
             if (!account) return record;
             const target = await hooks.chooseTarget(record, account);
@@ -238,7 +272,9 @@
             if (!await hooks.confirm(record, target)) return record;
             record = await update(id, { status: 'uploading', target, attemptedAt: Date.now(), error: '' });
             try {
-                const result = await hooks.upload(record, blob, target, { pendingSaveId: id, sourceInfo: record.sourceInfo });
+                const result = record.transferMode === 'server'
+                    ? await hooks.transferServer(record, target)
+                    : await hooks.upload(record, blob, target, { pendingSaveId: id, sourceInfo: record.sourceInfo });
                 record = await complete(id, result);
             } catch (error) {
                 if ((await get(id))?.status !== 'completed') await update(id, { status: 'verification-required', error: String(error.message || error).slice(0, 1000) });
@@ -251,5 +287,5 @@
         active.set(id, promise);
         return promise;
     }
-    global.DiskPendingSave = { prepare, open, get, list, update, getBlob, complete, cancel, resume, verifySource, _test: { versionOf, safeSource, cacheFor } };
+    global.DiskPendingSave = { prepare, prepareServer, open, get, list, update, getBlob, complete, cancel, resume, verifySource, _test: { versionOf, safeSource, cacheFor } };
 })(window);

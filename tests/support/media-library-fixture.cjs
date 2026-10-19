@@ -24,7 +24,9 @@ function createFixture(options = {}) {
     const downloads = { sns: { get: id => tasks.get(id), getFile: id => { const task = tasks.get(id); return task?.status === 'completed' ? { path: task.path, name: 'download.mp4' } : null; }, list: () => ({ tasks: [...tasks.values()], page: 1, pages: 1 }) } }; downloads.youtube = downloads.sns;
     const probe = { format: { duration: '4', start_time: '0' }, streams: [{ codec_type: 'video', codec_name: 'h264', duration: '4' }, { codec_type: 'audio', codec_name: 'aac', duration: '4' }] };
     const signature = { dHash: 'ffffffffffffffff', pixels: Buffer.alloc(1024, 80).toString('base64') };
-    const processing = { async probe(url) { if (url.startsWith('http:')) { const response = await fetch(url); if (!response.ok) throw Error('MEDIA_DECODE_FAILED'); await response.arrayBuffer(); } return probe; },
+    const processing = { async probe(url) { if (url.startsWith('http:')) await new Promise((resolve,reject)=>{
+        require('node:http').get(url,response=>{response.on('error',reject);response.resume();if(response.statusCode<200||response.statusCode>=300)return reject(Error('MEDIA_DECODE_FAILED'));response.on('end',resolve);}).on('error',reject);
+    }); return probe; },
         probeVersion: async () => ['fixture'], signature: async () => signature,
         async frame(url, requested, output, sourceProbe, signal) { if (signal?.aborted) throw Error('MEDIA_CANCELLED'); fs.writeFileSync(output, 'image'); return { ...signature, sha256: 'aa', actualMs: Math.ceil(requested * 25) / 25 * 1000, requestedMs: requested * 1000 }; },
         async cut(url, start, end, output, settings) { if (settings.signal?.aborted) throw Error('MEDIA_CANCELLED'); fs.writeFileSync(output, 'clip'); return { precise: settings.precise, duration: end - start }; }, frameNeighbors: async () => [.32, .4, .48] };
