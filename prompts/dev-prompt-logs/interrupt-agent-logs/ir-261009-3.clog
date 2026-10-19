@@ -1,0 +1,1034 @@
+[编号261009-3]问（因额度不足被中断）：
+
+
+    【OK】1. 网盘回收站中的已删除文件，目前竟然显示为：
+
+       ```
+       📄 :recycle:3dbb17d5-6924-4ecb-a15f-dc0909b47965
+       原位置：/fdsjaio · 2026/10/9 07:49:43 · 1 个文件
+       ```
+
+       该文件的原始名称实际上是 `新建 Microsoft Word 文档.docx`。回收站至少应正确显示文件或目录的原始名称、原始完整路径、文件类型、文件大小（目录则显示合计大小）及删除时间，而不是显示内部使用的回收标识。
+
+    【OK】2. 网盘的“查看协同列表”浮层面板中，右上角和右下角的关闭按钮应始终固定在各自位置，不受浮层内容区域滚动条的影响，避免按钮随内容滚动或被遮挡。
+
+    【OK】3. 网页工坊的“从网盘导入”浮层中，点击“导入”按钮后，在等待网盘文件下载及导入完成期间，应在按钮上显示旋转菊花 Loading 动画，直到整个导入操作结束。导入失败或取消时，也应及时停止动画并恢复按钮状态。
+
+    【基本OK】4. 升级已挂载到网盘原生目录中的协同项目的使用体验。点击协同挂载项后，应直接在当前网盘界面内原地展开协同内容，而不再弹出独立的全屏协同页面。
+
+       原地展开后，应沿用原生网盘的文件管理界面和交互方式，支持`多选`、`预览`、`下载`、`重命名`、`复制/移动`、`复制路径`、`属性`、`缓存到浏览器`、`复制到协同项目`、`转发到隧道`、`分享`、`静态资源设置`、`复制静态链接`及`删除`等操作，具体要求如下：
+
+       - `重命名`：对协同内部文件或目录的重命名，应真正修改原所有者网盘中的对应名称；对挂载项本身的重命名，则只修改自己网盘中的挂载名称。
+       - `复制/移动`：支持协同项目内部的复制与移动，也支持将协同内容复制或移动到自己指定的网盘分区及目录。跨作用域移动可采用先完整复制成功、再删除来源的方式，必须妥善处理失败和部分完成的情况。
+       - `分享`：默认允许受邀用户分享其有权访问的协同文件或目录，除非以后增加了更细粒度的权限限制。分享记录只保存在分享者自己的网盘中，不在原所有者网盘中产生分享记录，也不因分享而强制限制原所有者修改、移动或删除文件。
+       - `静态资源设置`：只能对协同挂载特殊文件本身设置静态资源开放，不能对协同内部的文件或目录单独设置。开放记录仅保存在挂载者自己的网盘中。
+       - `复制静态链接`：既可以在协同挂载项上复制静态链接，也可以在协同内部复制对应文件或目录的静态链接。己方只需保存挂载项绑定的静态资源开放记录，内部资源的链接通过挂载作用域及相对路径生成，不在原所有者网盘中产生相关记录。
+       - `删除`：删除协同内部的文件或目录，意味着真正删除原所有者网盘中的对应内容；移除协同挂载项则只删除自己网盘中的挂载指针，绝不能删除远端协同内容。
+       - 不提供`防失联检测`、`邀请协同编辑`功能。继续严格禁止目录嵌套污染、子目录套入父目录、同级名称重复，以及对协同内容二次设置协同。
+
+       【没有检查】对于 **S3API 和对外网盘 API**，已挂载的协同项目及其内部文件、目录统一采用**只读模式**：允许列出、查看和下载，但暂不支持新增、修改、覆盖、重命名、移动、删除或移除挂载项，更不能通过递归操作删除协同内容。Web 网盘界面则继续根据协同权限支持上述编辑操作。
+
+       需要特别区分两种访问入口：以上升级只针对**已挂载到原生网盘目录中的协同项目**。网盘顶部“查看协同列表”中，对于来自他人的协同项目仍保持点击后继续通过全屏浮层打开协同页面，对于自己创建的协同项目则保持点击后继续跳转到项目所在网盘的具体目录位置并短暂高亮显示。
+
+    5. **【搁置不做】** 网盘支持下载指定目录的全部内容，并可选择是否包含其中挂载的协同项目文件。本项暂不纳入此次开发范围。
+
+    【OK】6. 网盘应支持从系统文件管理器直接拖放文件夹，并递归上传其中所有层级的文件及目录，保留原有目录结构。上传前应检查文件夹内所有文件的合计大小，以及上传后目标网盘目录的最终层级是否超出限制。
+
+       同时，在网盘齿轮设置中增加两个个人网盘全局配置项：
+
+       - `上传文件夹最大尺寸`：默认 **500MB**，允许调整。
+       - `网盘允许最大目录层级`：默认 **30 层**，并将整个网盘系统的目录层级上限统一调整为 30 层。
+
+       注意：“上传文件夹最大尺寸”仅指**单次拖放上传的文件夹及其所有子目录内文件的合计大小**，并非限制网盘中某个目录能够存放的文件总大小。
+
+    【X】7. 网盘新增“新建文件”功能，支持选择`纯文本`、`Markdown`或`十六进制`类型，并提供相应的文件编辑能力。其中，Markdown 和十六进制编辑器应采用双栏布局，一侧编辑内容，另一侧实时预览。
+
+       文件编辑保存时，必须遵守现有 Content Object 的数据引用机制：**不得直接修改原有 Content Object 的内容，而应创建新的 Content Object，再将当前文件的 Logical File 引用关联到新内容**，避免影响其它引用相同 Content Object 的文件。
+
+
+
+
+
+
+---
+
+目前处于分支：
+
+```text
+dev/2609-s7-disk-partition-collaboration-mount
+```
+
+以上需求，要结合[网盘协同挂载、目录上传与文件编辑开发指南（精简原则版）](prompts/dev-prompt-logs/dev-261009-3-guide.md) 理解。
+
+请直接在该分支当前代码基础上修改。
+要读取完毕所有需求条目后，再科学地安排每个需求的实现先后顺序。
+
+**不要提交，不要暂存（不要执行 `git commit`、`git add`）。**
+
+推理结论、问题根因、实际修改内容、测试情况及开发记录保存到：
+
+```text
+docs/devlog/dev-2610-features.md
+```
+
+最后请另外给出建议使用的 Git 提交日志，但不要实际提交。
+
+Git 提交日志要求：
+
+- `title` 以中文为主，简洁概括本次改动；
+- `description` 以中文为主；
+- `description` 按功能分成若干简短小节；
+- 每个小节使用几行列表概括主要修改；
+- 内容有条理但不要写得过于冗长。
+- 将git日志的title和description分开显示，并分别使用代码模式以便于一键复制。
+
+
+
+
+
+答（因额度不足被中断）：
+
+
+
+
+
+    我已读完全部需求，会先修复回收站、关闭区域和导入 Loading，再建立挂载内容的统一来源与权限处理，接入原地操作、分享/静态链接和 API 只读访问，最后完成目录上传与文件编辑。修改会保留现有工作区成果，并逐项验证、记录到开发日志。
+
+    编辑了文件运行了命令
+    已运行 git branch --show-current; git rev-parse HEAD; git status --short; rg --files -g AGENTS.md -g package.json -g 'dev-261009-3-guide.md'; Get-Content package.json; Get-Content prompts/dev-prompt-logs/dev-261009-3-guide.md
+
+    已运行 Get-Content server/disk-collaboration-mounts.js; Get-Content server/disk-static-resources.js
+
+    已运行 $d=Get-Content server/disk-api.js; $d[125..426]
+
+    已运行 $d=Get-Content server/disk-api.js; $d[720..861]; $d[1000..1188]; $d[1560..1758]
+
+    已运行 $d=Get-Content server/disk-api.js; $d[1170..1240]; $d[1598..1683]; $d[2490..2565]; Get-Content client/disk-client.js -TotalCount 170; Get-Content client/disk-trash-ui.js
+
+    已编辑 disk-import-picker.js+2-2
+
+    已编辑 disk-trash-ui.js+1-1
+
+    已编辑 disk-trash.js+12-5
+
+    已运行 Get-Content client/disk.css -Tail 40; $d=Get-Content server/disk-repository.js; $d[65..100]; rg -n 'INSERT.*migrations|version.*4|maxDepth' server/disk-repository.js server/object-storage.js; rg -n 'setCollaboration|baseUrl|setSpace|withSpace|folderPath|const planned|window.DiskClient' client/disk-client.js
+
+    已运行 Get-Content client/disk-client.js -TotalCount 18; Get-Content client/disk-client.js -Tail 18; $d=Get-Content server/disk-api.js; $d[2520..2560]; $d=Get-Content client/disk-ui.js; $d[0..130]; $d[800..858]; $d[1000..1115]; $d[1370..1505]
+
+    当前 HEAD 已更新为 5f828ff…，工作区起始状态干净。三个小问题的修复已落地；接下来复用现有协同授权路由处理挂载内容，避免把远端节点复制进自己的目录表。分享和静态记录会继续归挂载者，远端正文始终按实时授权读取。
+
+    编辑了文件运行了命令
+    已运行 rg -n 'async function (loadTelegramDrive|refreshTelegramDrive|navigateTelegramDrive|openTelegramDriveMount|showTelegramDriveItemMenu)|function (telegramDriveItemKey|renderTelegramDriveBreadcrumb|selectTelegramDriveItems)|setSpace|function staticLinks|async function .*Static|function .*Static' client/disk-ui.js; rg -n 'contents\(|collaborationContent|function mutate|userSettings|static-resources|restoreTrash' server/disk-api.js; Get-Content server/object-storage.js -TotalCount 175
+
+    已运行 $d=Get-Content client/disk-ui.js; $d[320..345]; $d[830..855]; $d[1043..1072]; $d[1090..1162]; $d[1270..1340]; $d[1917..1985]; $d[1613..1653]; $d=Get-Content client/disk-client.js; $d[305..340]
+
+    已创建 disk-mounted-namespace.js+41-0
+
+    已编辑 disk-repository.js+4-2
+
+    已创建 disk-user-settings.js+13-0
+
+    已运行 Get-Content server/telegram-drive.js -TotalCount 58; $d=Get-Content server/disk-content-repository.js; $d[77..121]; $d=Get-Content client/disk-ui.js; $d[1272..1334]; $d=Get-Content server/disk-api.js; $d[843..870]; Get-Content server/disk-errors.js -TotalCount 40
+
+    已编辑 disk.css+5-0
+
+    已编辑 object-storage.js+15-8
+
+    已编辑 disk-shares.js+17-0
+
+    已编辑 disk-static-resources.js+14-8
+
+    已运行 @'
+    const fs=require('fs');
+    function edit(p,work){const old=fs.readFileSync(p,'utf8'),next=work(old);if(next===old)throw Error('No edit: '+p);fs.writeFileSync(p,next);}
+    function rep(s,a,b){if(!s.includes(a))throw Error('Missing: '+a.slice(0,100));return s.replace(a,b);}
+    edit('server/telegram-drive.js',s=>s.replace(/Math\.min\(20, Number\(maxDepth\) \|\| 20\)/g,'Math.min(30, Number(maxDepth) || 30)').replace(/maxDepth = 20/g,'maxDepth = 30').replace(/maxDepth=20/g,'maxDepth=30').replace(/job\.maxDepth \|\| 20/g,'job.maxDepth || 30').replace(/Number\(manifest\.maxDepth\) \|\| 20/g,'Number(manifest.maxDepth) || 30').replace(/ensureDirectoryRecords\(([^\n]+), 20\)/g,'ensureDirectoryRecords($1, 30)'));
+    edit('server.js',s=>s.replace(/driveMaxFolderDepth: Math\.max\(1, Math\.min\(20, Number\(config\.driveMaxFolderDepth \|\| 20\)\)\)/g,'driveMaxFolderDepth: Math.max(1, Math.min(30, Number(config.driveMaxFolderDepth || 30)))').replace(/driveMaxFolderDepth \|\| 20/g,'driveMaxFolderDepth || 30').replace(/driveMaxFolderDepth \?\? 20/g,'driveMaxFolderDepth ?? 30'));
+    edit('pages/tgbot.html',s=>s.replace('max="20" value="20"','max="30" value="30"').replace(/driveMaxFolderDepth \|\| 20/g,'driveMaxFolderDepth || 30').replace('Math.min(20, Number(driveMaxFolderDepthInput.value || 20))','Math.min(30, Number(driveMaxFolderDepthInput.value || 30))'));
+    edit('client/disk-mount-ui.js',s=>s.replace('parts.length > 20','parts.length > 30'));
+    edit('server/disk-api.js',s=>{
+    s=rep(s,'    const content = persistence.content;',"    const content = persistence.content;\n    const settings = require('./disk-user-settings').createDiskUserSettings(persistence);\n    const depthFor = userId => settings.get(userId).maxDirectoryDepth;");
+    s=rep(s,'    spaces.installExternalNameGuard',"    const mountedNamespace = require('./disk-mounted-namespace').createMountedNamespace({mounts,collaborations,partitions,spaces});\n    shares.setMountedNamespace(mountedNamespace); staticResources.setMountedNamespace(mountedNamespace);\n    browser.get('/settings',wrap((req,res)=>res.json({settings:settings.get(req.diskUser.id)})));\n    browser.patch('/settings',wrap((req,res)=>res.json({settings:settings.update(req.diskUser.id,req.body)})));\n    spaces.installExternalNameGuard");
+    s=rep(s,'repository:persistence,spaces,mounts,maxDepth,','repository:persistence,spaces,mounts,maxDepth:depthFor,');
+    s=s.replace(/targetDrive\.createDirectory\(targetUser.id, translate\(directory\), maxDepth\(\)/g,'targetDrive.createDirectory(targetUser.id, translate(directory), depthFor(targetUser.id)').replace('physical.parts, backend, maxDepth());','physical.parts, backend, depthFor(targetUser.id));');
+    s=s.replace(/target\.drive\.createDirectory\(target.ownerId, translate\(directory\), maxDepth\(\)/g,'target.drive.createDirectory(target.ownerId, translate(directory), depthFor(target.ownerId)').replace('physical.parts || [], backend, maxDepth());','physical.parts || [], backend, depthFor(target.ownerId));');
+    s=s.replace(/maxDepth\(\)/g,'depthFor(req.diskUser.id)');
+    // The S3 upload helper has owner rather than a browser request.
+    const start=s.indexOf('    async function uploadObjectStream'); if(start>=0){s=s.slice(0,start)+s.slice(start).replace(/depthFor\(req.diskUser.id\)/g,'depthFor(owner.id)');}
+    s=rep(s,'protectDirectory: (userId, diskSpace, folder) => staticResources.protectDirectory({ userId, diskSpace }, spaces.get(diskSpace), folder), maxDepth });','protectDirectory: (userId, diskSpace, folder) => staticResources.protectDirectory({ userId, diskSpace }, spaces.get(diskSpace), folder), maxDepth:scope=>depthFor(scope.userId), mountedNamespace });');
+    s=rep(s,'        const viewerId = req.diskUser.id;','        const viewerId = req.diskUser.id;\n        if(req.diskMount) req.params.collaborationId=req.diskMount.grant.id;');
+    s=rep(s,"        if (entry.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method))", "        if (entry.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !(req.diskMount && req.path==='/shares' && req.method==='POST'))");
+    s=rep(s,"        const path = req.path, method = req.method;", "        const path = req.path, method = req.method;\n        if(req.diskMount && path==='/shares' && method==='POST'){res.status(201).json(shares.createMounted(req.diskLocalScope,req.diskMount.mount.id,req.body?.items));return;}\n        if(method==='PUT' && /^\\/files\\/[^/]+\\/content$/.test(path)){file(decodeURIComponent(path.split('/')[2]));}\n        else if(method==='POST' && path==='/files/content' && entry.kind==='directory'){within(req.query.folderPath||root);}\n        else");
+    s=rep(s,'        req.diskScope = { userId: entry.ownerId, diskSpace: entry.diskSpace };','        req.diskScope = { userId: entry.ownerId, diskSpace: entry.diskSpace };');
+    s=rep(s,'    contents(collaborationContent);',"    contents(collaborationContent);\n    browser.use('/mount-scope/:mountId',wrap((req,res,next)=>{req.diskLocalScope={...req.diskScope};req.diskMount=mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId);next();}),collaborationContent);");
+    s=rep(s,'        if(!req.collaboration)return;','        if(req.diskMount)mountedNamespace.resolve(req.diskViewerId,req.diskLocalScope.diskSpace,req.diskMount.mount.id);\n            if(!req.collaboration)return;');
+    s=rep(s,'                return mutate(req, async () => {','                return mutate(req, async () => {\n                    assertCurrentCollaboration(req);');
+    s=rep(s,"    external.use(wrap((req, res, next) => {\n        const userId", "    external.use(wrap((req, res, next) => {\n        const userId");
+    s=rep(s,'    let coreUpload;',"    external.use(wrap((req,res,next)=>{\n        if(!['GET','HEAD','OPTIONS'].includes(req.method)){const path=req.body?.folderPath??req.body?.path??req.query.path;if(path!==undefined)mountedNamespace.assertWritable(req.diskScope,String(path),{tree:true});}\n        const ns=mountedNamespace.locate(req.diskScope,String(req.query.path||''));\n        if(ns){if(!['GET','HEAD'].includes(req.method))throw new Error('MOUNT_READ_ONLY');if(!['/list','/tree','/directories/properties'].includes(req.path))throw new Error('MOUNT_READ_ONLY');const sourcePath=[ns.root,ns.relative].filter(Boolean).join('/');ns.directory(sourcePath);req.diskUser=auth.user(ns.grant.ownerId);req.diskScope={userId:ns.grant.ownerId,diskSpace:ns.grant.diskSpace};req.diskStore=ns.drive;req.collaboration=ns.grant;req.diskViewerId=ns.mount.ownerId;req.query.path=sourcePath;}next();\n    }));\n    let coreUpload;");
+    s=rep(s,"diskSpace: share.diskSpace, cancelUnusedCacheFill", "diskSpace: file.sourceDiskSpace??share.diskSpace, cancelUnusedCacheFill");
+    s=rep(s,"try { shares.resolve(req.params.token); }", "try { const latest=shares.resolve(req.params.token);shares.file(latest,spaces.get(latest.diskSpace),req.params.id); }");
+    s=s.replace('inline: true, diskSpace: grant.diskSpace','inline: true, diskSpace: file.sourceDiskSpace??grant.diskSpace');
+    s=s.replace("try { staticResources.resolve(token); }","try { const latest=staticResources.resolve(token);staticResources.file(latest,spaces.get(latest.diskSpace),filename); }");
+    s=s.replace("res.set('Cache-Control', 'public, max-age=' + Math.min(remaining, 31536000));","res.set('Cache-Control', file.sourceDiskSpace!==undefined?'private, no-store':'public, max-age=' + Math.min(remaining, 31536000));").replace("res.set('Cache-Control', 'public, max-age=' + Math.min(afterWait, 31536000));","res.set('Cache-Control', file.sourceDiskSpace!==undefined?'private, no-store':'public, max-age=' + Math.min(afterWait, 31536000));");
+    return s;
+    });
+    console.log('Updated depth policy and mounted routes');
+    '@ | node
+
+    已运行 rg -n 'browser.use|browser.get.*settings|depthFor|maxDepth|schemaVersion' server/disk-api.js; $d=Get-Content client/disk-ui.js; $d[1290..1325]; rg -n 'getTelegramDriveActions|移动到|选择目录|pick.*Directory|choose.*Destination|choose.*Target' client/disk-ui.js
+
+    已运行 @'
+    const fs=require('fs');let p='server/disk-api.js',s=fs.readFileSync(p,'utf8');
+    const lines="    browser.get('/settings',wrap((req,res)=>res.json({settings:settings.get(req.diskUser.id)})));\n    browser.patch('/settings',wrap((req,res)=>res.json({settings:settings.update(req.diskUser.id,req.body)})));\n";if(!s.includes(lines))throw Error('settings');s=s.replace(lines,'').replace('    let coreUpload;',lines+'    let coreUpload;');
+    s=s.replace("    browser.use('/mount-scope/:mountId',", "    external.use('/mount-scope/:mountId',wrap((req,res,next)=>{if(!['GET','HEAD'].includes(req.method))throw new Error('MOUNT_READ_ONLY');req.diskLocalScope={...req.diskScope};req.diskMount=mountedNamespace.resolve(req.diskUser.id,req.diskScope.diskSpace,req.params.mountId);next();}),collaborationContent);\n    browser.use('/mount-scope/:mountId',");
+    s=s.replace("router === browser && !req.collaboration ? { mounts:","(router === browser || router === external) && !req.collaboration ? { mounts:");
+    s=s.replace("        if (source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)\n            throw diskOperationError('CONTENT_COPY_SCOPE_INVALID', 'SAME_COLLABORATION');\n",'');
+    fs.writeFileSync(p,s);
+    p='server/disk-content-repository.js';s=fs.readFileSync(p,'utf8');s=s.replace("        || source.kind === 'collaboration' && target.kind === 'collaboration' && source.id === target.id)",")");fs.writeFileSync(p,s);
+    p='server/disk-trash.js';s=fs.readFileSync(p,'utf8').replace('snapshot,maxDepth());','snapshot,maxDepth(user));');fs.writeFileSync(p,s);
+    '@ | node; node --check server/disk-api.js; node --check server/disk-content-repository.js; rg -n 'AccessDenied|error.*code' server/s3/errors.js; Get-Content tests/disk-cross-scope-copy.test.cjs -TotalCount 100
+
+    正在重新连接 /5
+
+    编辑了文件运行了命令
+    已编辑 disk-api.js+33-0
+
+    已运行 $d=Get-Content server/disk-api.js; $d[2370..2460]; $d[2480..2540]; $d=Get-Content server/telegram-drive.js; $d[1040..1076]; $d=Get-Content client/disk-ui.js; $d[927..986]
+
+    已运行 @'
+    const fs=require('fs'),p='server/disk-api.js';let s=fs.readFileSync(p,'utf8');
+    s=s.replace("router.post('/files/:id/repair', wrap(async (req, res) => {", "const saveContent = wrap(async (req, res) => {");
+    s=s.replace('const replacement = Boolean(req.collaboration);','const replacement = Boolean(req.collaboration || req.editorSave);\n            const expectedVersion=Number(req.get(\'X-Disk-Expected-Version\'));\n            if(req.editorSave && (!Number.isSafeInteger(expectedVersion)||expectedVersion!==Number(file.logicalContentVersion||0)))throw new Error(\'CONTENT_WRITE_CONFLICT\');');
+    s=s.replace('const before = { ...file, parts:',"if(req.editorSave && Number(store(req).get(owner(req),file.id)?.logicalContentVersion||0)!==expectedVersion)throw new Error('CONTENT_WRITE_CONFLICT');\n                    const before = { ...file, parts:");
+    s=s.replace('const actualSha=await store(req).verifyContentHash(job.id,0);',"const actualSha=await store(req).verifyContentHash(job.id,0);\n                    if(req.editorSave && actualSha===before.contentSha256 && incomingSize===before.size && incomingType===before.type){operations.complete(operation.operation_id,{id:file.id,unchanged:true});return {id:file.id,unchanged:true};}");
+    s=s.replace("contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion} }", "mediaIndex:{mode:'unavailable'}, ...(req.collaboration?{contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion}}:{}) }");
+    s=s.replace("current?.physicalRevision!==before.physicalRevision)throw", "current?.physicalRevision!==before.physicalRevision || current?.name!==before.name || current?.folderPath!==before.folderPath)throw");
+    const anchor='    contents(collaborationContent);';const index=s.indexOf(anchor);let before=s.slice(0,index),after=s.slice(index);
+    const end=before.lastIndexOf('        }));');if(end<0)throw Error('repair end');before=before.slice(0,end)+before.slice(end).replace('        }));',`        });
+            router.post('/files/:id/repair',saveContent);
+            router.put('/files/:id/content',(req,res,next)=>{req.editorSave=true;saveContent(req,res,next);});
+            router.post('/files/content',wrap(async(req,res,next)=>{
+                const folder=normalizeTelegramDrivePath(req.query.folderPath||'');
+                assertStaticDirectoryWritable(scope(req),store(req),folder);
+                const created=store(req).putMetadataObject(req.diskUser,folder,req.query.name,req.get('X-Disk-File-Type')||'text/plain',{},depthFor(owner(req)));
+                req.params.id=created.id;req.editorSave=true;
+                req.headers['x-disk-expected-version']=String(created.logicalContentVersion||0);
+                await saveContent(req,res,next);
+            }));`);s=before+after;fs.writeFileSync(p,s);
+    '@ | node; node --check server/disk-api.js; $d=Get-Content server/disk-api.js; $d[2448..2480]
+
+    挂载内容已接入服务端解析，并开始复用现有列表、读取和协同操作路由；S3 适配层也加入了挂载只读检查。跨协同移动会持久记录复制结果，删源失败时保留目标并报告部分完成。文件编辑则单独处理正文版本切换，不放宽原有的同正文修复校验。
+
+    编辑了文件运行了命令
+    已创建 disk-file-editor.js+30-0
+
+    已编辑 disk-api.js+1-1
+
+    已运行 rg -n 'disk-trash-ui|disk-import-picker|disk-client.js' pages/index.html; Get-Content tests/support/disk-content-admin-fixture.cjs -TotalCount 50; rg -n 'MOUNT|AccessDenied|function s3Error' server/s3/*.js
+
+    已创建 disk-folder-uploads.js+20-0
+
+    已运行 @'
+    const fs=require('fs');const p='server/disk-api.js';let s=fs.readFileSync(p,'utf8');s=s.replace("    const depthFor = userId => settings.get(userId).maxDirectoryDepth;","    const depthFor = userId => settings.get(userId).maxDirectoryDepth;\n    const folderUploads=require('./disk-folder-uploads').createFolderUploads({repository:persistence,settings,operations});");
+    s=s.replace("        else if (entry.kind === 'directory' && method === 'POST' && path === '/uploads')", "        else if(entry.kind==='directory' && path==='/folder-uploads' && method==='POST'){for(const d of req.body?.directories||[])within(d,true);for(const f of req.body?.files||[])within(f.folderPath);req.body.collaborationId=entry.id;}\n        else if(entry.kind==='directory' && method==='GET' && /^\\/folder-uploads\\/[^/]+$/.test(path)){if(folderUploads.get(path.split('/')[2],{userId:entry.ownerId,diskSpace:entry.diskSpace}).collaborationId!==entry.id)throw new Error('COLLABORATION_OUT_OF_SCOPE');}\n        else if (entry.kind === 'directory' && method === 'POST' && path === '/uploads')");
+    s=s.replace("        router.get('/users/me',", "        router.post('/folder-uploads',wrap((req,res)=>{assertCurrentCollaboration(req);for(const d of req.body?.directories||[])assertStaticDirectoryWritable(scope(req),store(req),d);res.status(201).json(folderUploads.create(scope(req),store(req),req.body));}));\n        router.get('/folder-uploads/:id',wrap((req,res)=>res.json(folderUploads.get(req.params.id,scope(req)))));\n        router.get('/users/me',");
+    const needle='            const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, progressive,';s=s.replace(needle,"            if(req.body?.metadata?.folderUploadId)folderUploads.assertBatch(scope(req),req.body.metadata.folderUploadId,files);\n"+needle);
+    s=s.replace('            const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, progressive, maxDepth: depthFor(req.diskUser.id), uploadLimit: limit, backendId: storage.id || \'\', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || \'system\', metadata: req.body?.metadata || {} });','            const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, progressive, maxDepth: depthFor(req.diskUser.id), uploadLimit: limit, backendId: storage.id || \'\', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || \'system\', metadata: req.body?.metadata || {} });');
+    // Claim after operation ID is assigned below; failures must cancel this new batch.
+    s=s.replace('job.operationId = operation.operation_id;', "job.operationId = operation.operation_id;\n            if(job.metadata?.folderUploadId)try{folderUploads.claim(scope(req),job.metadata.folderUploadId,job);}catch(error){store(req).abort(job.id);throw error;}");
+    fs.writeFileSync(p,s);
+    '@ | node; rg -n 'folderUploads.claim|operationId.*operation_id|drive.list\(scope.userId' server/disk-api.js server/disk-folder-uploads.js
+
+    已创建 disk-folder-upload.js+30-0
+
+    已运行 @'
+    const fs=require('fs');
+    function edit(p,fn){let s=fs.readFileSync(p,'utf8');fs.writeFileSync(p,fn(s));}
+    edit('client/disk-client.js',s=>s.replace("let collaborationId = '';","let collaborationId = '', mountId = ''; ").replace("const baseUrl = () => collaborationId ?", "const baseUrl = () => mountId ? base + '/mount-scope/' + encodeURIComponent(mountId) : collaborationId ?").replace("url.startsWith('/api/') ? url : baseUrl() + url", "url.startsWith('/api/') ? url : (/^\\/(?:me|spaces|collaborations|mounts|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)?base:baseUrl()) + url").replace("name: file.name, type: inferredType(file), size: file.size,", "name: file.name, type: inferredType(file), size: file.size, ...(file.diskFolderPath!==undefined?{folderPath:file.diskFolderPath}:{}),").replace("setSpace(value) { diskSpace", "setSpace(value) { mountId=''; collaborationId=''; diskSpace").replace("setCollaboration(id) { collaborationId", "setMount(id) { mountId=String(id||''); collaborationId=''; stop(); start(); },\n        getMount(){return mountId;},\n        setCollaboration(id) { mountId=''; collaborationId"));
+    edit('pages/index.html',s=>s.replace('            document.write(`<script defer src="/client/disk-client.js', '            document.write(`<script defer src="/client/disk-file-editor.js${suffix}"><\\/script>`);\n            document.write(`<script defer src="/client/disk-folder-upload.js${suffix}"><\\/script>`);\n            document.write(`<script defer src="/client/disk-client.js'));
+    edit('client/disk.css',s=>s+'\n.disk-file-editor{display:flex;flex-direction:column;gap:12px}.telegram-drive-dialog-card:has(.disk-file-editor){width:min(960px,96vw)}.disk-editor-panes{display:grid;grid-template-columns:1fr 1fr;gap:12px;height:min(55dvh,550px)}.disk-editor-panes.single{grid-template-columns:1fr}.disk-editor-panes textarea,.disk-editor-preview{min-width:0;overflow:auto;border:1px solid #cbd5e1;border-radius:9px;padding:12px;background:var(--panel-bg,#fff);color:inherit}.disk-editor-panes textarea{resize:none;font:14px/1.5 monospace}.disk-editor-preview{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:600px){.disk-editor-panes:not(.single){grid-template-columns:1fr;grid-template-rows:1fr 1fr}}\n');
+    edit('server/disk-folder-uploads.js',s=>s.replace("drive.list(scope.userId,file.folderPath).files.some(f=>f.name===file.name)","drive.adminFiles().some(f=>f.ownerId===scope.userId&&f.folderPath===file.folderPath&&f.name===file.name)"));
+    edit('server/disk-api.js',s=>s.replace("        router.post('/folder-uploads',", "        router.get('/limits',(req,res)=>res.json({settings:settings.get(owner(req))}));\n        router.post('/folder-uploads',").replace("if (method === 'GET' && path === '/list'", "if(method==='GET' && path==='/limits'){ /* effective owner limits */ }\n        else if (method === 'GET' && path === '/list'"));
+    '@ | node; node --check client/disk-client.js; node --check server/disk-api.js
+
+    已运行 $d=Get-Content client/disk-ui.js; $d[1800..1918]; $d[983..1001]; $d[126..133]; $d[288..302]; $d[1275..1297]; $d[2150..2198]; $d[3265..3298]
+
+    已运行 @'
+    const fs=require('fs'),p='client/disk-ui.js';let s=fs.readFileSync(p,'utf8');
+    s=s.replace("let telegramDrivePath = '';","let telegramDrivePath = '';\nlet telegramDriveMountContext=null;");
+    s=s.replace("const parts = [{ name: '根目录', path: '' }, ...(data.breadcrumbs || [])];","const parts = telegramDriveMountContext ? [{name:'我的网盘',exitMount:true},{name:telegramDriveMountContext.mount.name,path:telegramDriveMountContext.grant.path||''},...(data.breadcrumbs||[]).filter(p=>p.path!==telegramDriveMountContext.grant.path && p.path.startsWith((telegramDriveMountContext.grant.path||'')+'/'))] : [{ name: '根目录', path: '' }, ...(data.breadcrumbs || [])];");
+    s=s.replace("button.onclick = () => navigateTelegramDrive(part.path).catch", "button.onclick = () => (part.exitMount?exitTelegramDriveMount():navigateTelegramDrive(part.path)).catch");
+    s=s.replace("    return window.DiskMountUI.open(fresh.mount, { openFrame: openDiskCollaborationFrame });",`    telegramDriveMountContext={mount:fresh.mount,grant:fresh.collaboration,parentPath:telegramDrivePath};
+        window.DiskClient.setMount(fresh.mount.id);clearTelegramDriveSelection();
+        if(fresh.collaboration.kind==='file'){await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(fresh.collaboration.fileId)));return;}
+        await navigateTelegramDrive(fresh.collaboration.path||'');`);
+    s=s.replace("    return window.DiskMountUI.open(fresh.mount, { openFrame: openDiskCollaborationFrame, path, fileId: item.kind === 'mounted_file' ? item.id : '' });", "    await openTelegramDriveMount({...fresh.mount,status:'active'});\n    if(item.kind==='mounted_directory')await navigateTelegramDrive(path);else await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(item.id)));");
+    s=s.replace('async function openTelegramDriveMount(item) {',`async function exitTelegramDriveMount(){const parent=telegramDriveMountContext?.parentPath||'';telegramDriveMountContext=null;window.DiskClient.setMount('');telegramDriveCurrentData=null;await navigateTelegramDrive(parent);}
+    async function openTelegramDriveMount(item) {`);
+    s=s.replace("if (data.user_id && telegramDriveCurrentData.user_id", "if (!telegramDriveMountContext && data.user_id && telegramDriveCurrentData.user_id");
+    s=s.replace("    window.DiskClient.setSpace(telegramDriveSpaceKey(space));", "    telegramDriveMountContext=null;window.DiskClient.setSpace(telegramDriveSpaceKey(space));");
+    s=s.replace("        if (item.collaborationId) actions.splice", "        if (!telegramDriveMountContext && item.collaborationId) actions.splice").replace("        else actions.splice(-1, 0, ['邀请协同编辑'", "        else if(!telegramDriveMountContext) actions.splice(-1, 0, ['邀请协同编辑'");
+    s=s.replace("    renderTelegramDriveContextMenu(item, anchor, actions);", "    if(telegramDriveMountContext){actions=actions.filter(a=>!['防失联检测','静态资源设置','设为前端静态资源','管理协同编辑','邀请协同编辑'].includes(a[0]));if(telegramDriveMountContext.grant.role==='viewer')actions=actions.filter(a=>!['删除','重命名','新建子目录','编辑文件'].includes(a[0])&&!a[0].startsWith('删除所选'));}\n    renderTelegramDriveContextMenu(item, anchor, actions);");
+    s=s.replace("['新建目录', () => createTelegramDriveFolder(path)],", "['新建目录', () => createTelegramDriveFolder(path)],\n        ['新建文件',()=>window.DiskFileEditor.open({path,openDialog:openTelegramDriveDialog,onSaved:()=>refreshTelegramDriveContents()})],");
+    s=s.replace("['邀请协同', () => inviteDiskCollaboration(item)],", "[telegramDriveMountContext?'返回我的网盘':'邀请协同', () => telegramDriveMountContext?exitTelegramDriveMount():inviteDiskCollaboration(item)],");
+    s=s.replace("    if (item.reviewStatus === 'deleted') actions =", "    if(item.kind==='file' && item.reviewStatus!=='deleted')actions.unshift(['编辑文件',()=>window.DiskFileEditor.open({item,openDialog:openTelegramDriveDialog,onSaved:()=>refreshTelegramDriveContents()})]);\n    if (item.reviewStatus === 'deleted') actions =");
+    s=s.replace("confirmLocalDiskUpload([...event.dataTransfer.files], path)", "confirmLocalDiskTransfer(event.dataTransfer, path)").replace("confirmLocalDiskUpload([...event.dataTransfer.files], telegramDrivePath)", "confirmLocalDiskTransfer(event.dataTransfer, telegramDrivePath)");
+    s=s.replace('async function confirmLocalDiskUpload(files, destination) {',`async function confirmLocalDiskTransfer(transfer,destination){const plan=await window.DiskFolderUpload.enumerate(transfer);if(!plan)return confirmLocalDiskUpload([...transfer.files],destination);await window.DiskFolderUpload.upload(plan,destination);await refreshTelegramDriveContents();}
+    async function confirmLocalDiskUpload(files, destination) {`);
+    // Global settings are account-scoped, persisted on server.
+    s=s.replace('    global.append(globalTitle, globalDescription, viewLabel, sortLabel);',`    const savedSettings=(await window.DiskClient.raw('/settings')).settings;
+        const sizeLabel=document.createElement('label');sizeLabel.textContent='上传文件夹最大尺寸（MB）';const sizeInput=document.createElement('input');sizeInput.type='number';sizeInput.min='0.000001';sizeInput.step='any';sizeInput.value=String(savedSettings.folderUploadMaxBytes/1000000);sizeLabel.append(sizeInput);
+        const depthLabel=document.createElement('label');depthLabel.textContent='网盘允许最大目录层级（1–30）';const depthInput=document.createElement('input');depthInput.type='number';depthInput.min='1';depthInput.max='30';depthInput.value=String(savedSettings.maxDirectoryDepth);depthLabel.append(depthInput);
+        const saveLimits=document.createElement('button');saveLimits.textContent='保存全局限制';saveLimits.className='btn btn-secondary';saveLimits.onclick=async()=>{saveLimits.disabled=true;try{await window.DiskClient.raw('/settings',window.DiskClient.json('PATCH',{folderUploadMaxBytes:Math.round(Number(sizeInput.value)*1000000),maxDirectoryDepth:Number(depthInput.value)}));showAppToast('全局限制已保存');}catch(error){alert(telegramDriveErrorText(error));}finally{saveLimits.disabled=false;}};
+        global.append(sizeLabel,depthLabel,saveLimits);
+        global.append(globalTitle, globalDescription, viewLabel, sortLabel);`);
+    // Content copy source in mounted view is never Native.
+    s=s.replace("mode: 'copy', source: { kind: 'native', partitionId: sourcePartition.id, selection },", "mode: 'copy', source: telegramDriveMountContext?{kind:'collaboration',collaborationId:telegramDriveMountContext.grant.id,selection}:{ kind: 'native', partitionId: sourcePartition.id, selection },");
+    fs.writeFileSync(p,s);
+    '@ | node; node --check client/disk-ui.js; $d=Get-Content client/disk-ui.js; $d[931..943]; $d[1291..1307]; $d[1258..1273]
+
+    已运行 node --test tests/features-261009-2.test.cjs tests/disk-collaboration-mounts.test.cjs tests/disk-cross-scope-copy.test.cjs tests/disk-content-api.test.cjs tests/disk-repository.test.cjs tests/disk-static-resources.test.cjs
+
+    已运行 $d=Get-Content server/disk-content-repository.js; $d[345..375]; $d[25..76]; $d=Get-Content client/disk-ui.js; $d[919..932]; $d[995..1008]; $d[1274..1294]; $d=Get-Content tests/features-261009-2.test.cjs; $d[130..143]; rg -n 'throw.*error|AccessDenied|function error' server/s3 -g '*.js'; rg -n 'const cached|async function read|async function fetch|cachedBlob' client/disk-client.js
+
+    已运行 @'
+    const fs=require('fs'),p='client/disk-ui.js';let s=fs.readFileSync(p,'utf8');
+    s=s.replace("    const choices = telegramDriveSpaces.filter", "    const choices = telegramDriveSpaces.filter");
+    const needle='    const spaceSelect = document.createElement(\'select\');';const pos=s.indexOf('async function chooseTelegramDriveTransfer');const before=s.slice(0,pos),body=s.slice(pos);s=before+body.replace(needle,"    if(telegramDriveMountContext)choices.unshift({id:'@mounted',scopeKey:'@mounted',name:'当前协同项目'});\n"+needle).replace("spaceSelect.value = choices.find(space => telegramDriveSpaceKey(space) === currentSpace)?.id || choices[0].id;","spaceSelect.value = telegramDriveMountContext?'@mounted':choices.find(space => telegramDriveSpaceKey(space) === currentSpace)?.id || choices[0].id;").replace("    const scopedRequest = async (path, options = {}) => {", "    const scopedRequest = async (path, options = {}) => {\n        if(spaceSelect.value==='@mounted')return window.DiskClient.raw(path,options);").replace("initialPath: telegramDrivePath, controls: [tabs]", "initialPath: telegramDriveMountContext?telegramDriveMountContext.grant.path:telegramDrivePath, controls: [tabs]").replace("    if (target.mode === 'move' && scope() === currentSpace) {",`    if(telegramDriveMountContext){
+            const context=telegramDriveMountContext;
+            if(target.targetSpace==='@mounted' && target.mode==='move'){await moveTelegramDriveItems(items,target.destinationPath,{confirmed:true});return target;}
+            for(const item of items){const input={mode:'copy',requestId:crypto.randomUUID(),source:{kind:'collaboration',collaborationId:context.grant.id,selection:item.kind==='directory'?{kind:'directory',path:item.path}:{kind:'file',id:item.id}},target:target.targetSpace==='@mounted'?{kind:'collaboration',collaborationId:context.grant.id,destinationPath:target.destinationPath}:{kind:'native',partitionId:target.targetSpace,destinationPath:target.destinationPath}};
+                const route=target.mode==='move'?'/cross-scope/move':'/cross-scope/copy';let result;
+                do{result=await window.DiskClient.raw(route,window.DiskClient.json('POST',input));if(result.state==='COPIED_SOURCE_RETAINED'){if(!confirm('复制已完成，来源仍保留：'+(result.warning?.userMessage||result.warning?.code||'')+'。是否安全重试删除来源？'))break;}}
+                while(result.state==='COPIED_SOURCE_RETAINED');
+                if(result.state==='COPIED_SOURCE_RETAINED')showAppToast('已复制，来源未删除；目标副本已保留');
+            }
+            await refreshTelegramDriveContents();return target;
+        }
+        if (target.mode === 'move' && scope() === currentSpace) {`);
+    s=s.replace("    const path = item.kind === 'directory' ? item.path : [item.folderPath, item.name].filter(Boolean).join('/');\n    return location.origin + '/s3pub/'", "    const path = item.kind==='collaboration_mount'?'mount/'+item.id:telegramDriveMountContext?'mount/'+telegramDriveMountContext.mount.id+'/'+(item.kind==='directory'?item.path:[item.folderPath,item.name].filter(Boolean).join('/')).slice((telegramDriveMountContext.grant.path||'').length).replace(/^\\//,''):item.kind === 'directory' ? item.path : [item.folderPath, item.name].filter(Boolean).join('/');\n    return location.origin + '/s3pub/'");
+    s=s.replace("    return activeTelegramDriveStaticLinks().filter(link => item.kind === 'directory'", "    if(item.kind==='collaboration_mount')return activeTelegramDriveStaticLinks().filter(link=>(link.mounts||[]).includes(item.id));\n    return activeTelegramDriveStaticLinks().filter(link => item.kind === 'directory'");
+    s=s.replace("    if (staticLinksForItem(item).length) return true;", "    if(telegramDriveMountContext)return activeTelegramDriveStaticLinks().some(link=>(link.mounts||[]).includes(telegramDriveMountContext.mount.id));\n    if (staticLinksForItem(item).length) return true;");
+    s=s.replace("item: item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }", "item: item.kind === 'collaboration_mount'?{kind:'collaboration_mount',id:item.id}:item.kind === 'directory' ? { kind: 'directory', path: item.path } : { kind: 'file', id: item.id }");
+    s=s.replace("const links=activeTelegramDriveStaticLinks().filter(link=>item.kind==='directory' ?", "const links=activeTelegramDriveStaticLinks().filter(link=>item.kind==='collaboration_mount'?(link.mounts||[]).includes(item.id):telegramDriveMountContext?(link.mounts||[]).includes(telegramDriveMountContext.mount.id):item.kind==='directory' ?");
+    s=s.replace("['移除挂载', () => window.DiskMountUI.remove(item, options), true]", "['静态资源设置',()=>showTelegramDriveStaticSettings(item)],...(isTelegramDriveStaticOpen(item)?[['复制静态链接',()=>copyTelegramDriveStaticLink(item)]]:[]),['移除挂载', () => window.DiskMountUI.remove(item, options), true]");
+    s=s.replace("const staticActive = !isMount && !isForeign && staticLinksForItem(item).length > 0;", "const staticActive = !isForeign && staticLinksForItem(item).length > 0;");
+    s=s.replace("const description = document.createElement('p'); description.textContent = links.length", "const description = document.createElement('p'); description.textContent = item.kind==='collaboration_mount'?'仅开放此挂载范围；本地改名、移动和删除仍可操作，不限制来源所有者。':links.length");
+    fs.writeFileSync(p,s);
+    '@ | node; node --check client/disk-ui.js; rg -n 'choices|@mounted' client/disk-ui.js | Select-Object -First 9; node --check client/disk-file-editor.js; node --check client/disk-folder-upload.js
+
+    已运行 rg -n 'fromHistory: true|telegramDriveHistorySession|loadAudioCover|async function readFile|async function readRange' client/disk-ui.js client/disk-client.js | Select-Object -Last 13; $d=Get-Content server/s3/routes.js; $d[8..33]; $d=Get-Content client/disk-client.js; $d[506..538]; $d=Get-Content client/disk-ui.js; $d[125..133]; $d[288..299]
+
+    已运行 rg -n 'function matches|logicalContentVersion|ownerId|metadata' client/telegram-drive-cache.js | Select-Object -First 18; rg -n '^function publicFile' server/disk-api.js; Get-Content server/disk-api.js -TotalCount 57; rg -n 'const code|error.message|MESSAGES\[' server/s3/routes.js | Select-Object -Last 9; $d=Get-Content tests/support/features-261009-2-fixture.cjs; $d[75..108]
+
+    已运行 Get-Content client/telegram-drive-cache.js -TotalCount 65; rg -n 'put\(item|cache.*put|TelegramDriveCache.put' client/disk-client.js; Get-Content tests/support/features-261009-2-fixture.cjs -Tail 40; $d=Get-Content server/disk-api.js; $d[2462..2468]
+
+    已运行 @'
+    const fs=require('fs');
+    let p='server/disk-api.js',s=fs.readFileSync(p,'utf8');s=s.replace("logicalContentVersion: item.logicalContentVersion || 1", "cacheIdentity:crypto.createHash('sha256').update([item.ownerId,item.id,item.contentId||'',item.logicalContentVersion||1].join(':')).digest('hex'),\n    logicalContentVersion: item.logicalContentVersion || 1");s=s.replace("file.sourceDiskSpace!==undefined?'private, no-store':'public, max-age=' + Math.min(remaining, 31536000)","'public, max-age=' + Math.min(remaining, 31536000)").replace("file.sourceDiskSpace!==undefined?'private, no-store':'public, max-age=' + Math.min(afterWait, 31536000)","'public, max-age=' + Math.min(afterWait, 31536000)");fs.writeFileSync(p,s);
+    p='client/telegram-drive-cache.js';s=fs.readFileSync(p,'utf8').replace("!item || Number(row?.logicalContentVersion || 1)===Number(item.logicalContentVersion || 1)","!item || ((!item.cacheIdentity||row?.cacheIdentity===item.cacheIdentity)&&Number(row?.logicalContentVersion || 1)===Number(item.logicalContentVersion || 1))").replace("source: 'thumbnail',logicalContentVersion", "source: 'thumbnail',cacheIdentity:item?.cacheIdentity,logicalContentVersion");fs.writeFileSync(p,s);
+    p='client/disk-client.js';s=fs.readFileSync(p,'utf8').replace("    async function readFile(item, { signal }, update) {", "    async function readFile(item, { signal }, update) {\n        if(mountId)await raw('/files/'+encodeURIComponent(item.id),{signal});").replace("{ blob, name: item.name, type: item.type,logicalContentVersion", "{ blob, name: item.name, type: item.type,cacheIdentity:item.cacheIdentity,logicalContentVersion");fs.writeFileSync(p,s);
+    p='client/disk-ui.js';s=fs.readFileSync(p,'utf8').replace('async function openDiskPreview(item) {',"async function openDiskPreview(item) {\n    if(telegramDriveMountContext)item=await window.DiskClient.raw('/files/'+encodeURIComponent(item.id));").replace("async function locateOwnedDiskCollaboration(entry) {", "async function locateOwnedDiskCollaboration(entry) {\n    if(telegramDriveMountContext)await exitTelegramDriveMount();").replace('async function showTelegramDriveTrash() {','async function showTelegramDriveTrash() {\n    if(telegramDriveMountContext)await exitTelegramDriveMount();');s=s.replace('telegramDriveOpen: true, telegramDrivePath, telegramDriveHistorySession','telegramDriveOpen: true, telegramDrivePath, diskMountContext:telegramDriveMountContext, telegramDriveHistorySession');s=s.replace("    navigateTelegramDrive(event.state.telegramDrivePath || '', { fromHistory: true })", "    telegramDriveMountContext=event.state.diskMountContext||null;window.DiskClient.setMount(telegramDriveMountContext?.mount.id||'');\n    navigateTelegramDrive(event.state.telegramDrivePath || '', { fromHistory: true })");fs.writeFileSync(p,s);
+    p='client/disk-import-picker.js';s=fs.readFileSync(p,'utf8').replace('accept.classList.add(', 'accept.classList?.add(').replace('accept.classList.remove(', 'accept.classList?.remove(').replace("accept.removeAttribute('aria-busy');","accept.setAttribute('aria-busy','false');");fs.writeFileSync(p,s);
+    p='tests/features-261009-2.test.cjs';s=fs.readFileSync(p,'utf8').replace("assert.equal(same.data.errorDetails.reason,'SAME_COLLABORATION');","assert.equal(same.data.errorDetails.reason,'NAME_CONFLICT');").replace("'SAME_COLLABORATION'","'NAME_CONFLICT'").replace('WHERE version=4','WHERE version>=4');fs.writeFileSync(p,s);
+    p='server/s3/routes.js';s=fs.readFileSync(p,'utf8').replace("const MESSAGES = {","const MESSAGES = {\n    MOUNT_READ_ONLY:'Mounted collaborations are read-only for S3. Use the Web drive for authorized changes.',").replace('const STATUS = {','const STATUS = { MOUNT_READ_ONLY:403,');fs.writeFileSync(p,s);
+    '@ | node; node --check server/disk-api.js; node --check client/disk-ui.js; node --test tests/features-261009-2.test.cjs
+
+    已运行 node --test tests/features-261009-2.test.cjs
+
+    已运行 rg -n '\b20\b' server/telegram-drive.js client/disk-directory-picker.js client/disk-collaboration.js server/disk-collaboration-mounts.js; $d=Get-Content server/disk-content-repository.js; $d[393..430]; Get-Content tests/features-261009-2.test.cjs -TotalCount 16; $d=Get-Content tests/features-261009-2.test.cjs; $d[103..114]; $d=Get-Content client/disk-ui.js; $d[1610..1616]
+
+    已编辑 disk-mounted-namespace.js+3-2
+
+    已编辑 disk-static-resources.js+1-0
+
+    已运行 @'
+    const fs=require('fs');let p='server/telegram-drive.js',s=fs.readFileSync(p,'utf8').replace('directory.path, 20,','directory.path, 30,').replace('item.folderPath, 20,','item.folderPath, 30,');fs.writeFileSync(p,s);
+    for(const p of ['client/disk-directory-picker.js','client/disk-collaboration.js']){let s=fs.readFileSync(p,'utf8').replace('parts.length > 20','parts.length > 30');fs.writeFileSync(p,s);}
+    p='tests/features-261009-2.test.cjs';s=fs.readFileSync(p,'utf8').replace('/同一个协同项目/','/同名/').replace("telegramDriveStaticLinks:[],telegramDriveSpaceOwner:'alice'", "telegramDriveMountContext:null,telegramDriveStaticLinks:[],telegramDriveSpaceOwner:'alice'");fs.writeFileSync(p,s);
+    p='server/disk-api.js';s=fs.readFileSync(p,'utf8').replace("        const removed = persistence.atomic(() => mounts.remove(req.params.id, req.diskUser.id, req.diskScope.diskSpace),", "        const removed = persistence.atomic(() => {staticResources.stopMount(req.diskScope,req.params.id);return mounts.remove(req.params.id, req.diskUser.id, req.diskScope.diskSpace);},");s=s.replace("        const length = range.end - range.start + 1;",`        const proxy=req.diskMount?{ownerId:req.diskViewerId,space:req.diskLocalScope.diskSpace,mountId:req.diskMount.mount.id}:file.proxyMount;
+            if(proxy){const timer=setInterval(()=>{try{mountedNamespace.resolve(proxy.ownerId,proxy.space,proxy.mountId).file(file.id);}catch(error){source.destroy(error);abort.abort();}},1000);timer.unref?.();source.once('close',()=>clearInterval(timer));}
+            const length = range.end - range.start + 1;`);fs.writeFileSync(p,s);
+    '@ | node; node --test tests/features-261009-2.test.cjs
+
+    已运行 node --test tests/features-261009-2.test.cjs
+
+    回收站、导入取消和已有静态链接回归测试已全部通过。原有“同一协同项目内不能复制”的限制也已调整为允许合法复制，同时继续拦截重名和目录循环。接下来增加新功能的集成测试，重点验证挂载原地访问、复制后删源的异常结果，以及编辑共享正文时其它文件不受影响。
+
+    编辑了文件运行了命令
+    已运行 $d=Get-Content server/disk-api.js; $d[2198..2246]; $d[2408..2432]; $d=Get-Content server/disk-content-repository.js; $d[412..429]; Get-Content tests/disk-content-api.test.cjs -TotalCount 55; rg -n 'setRole|protectFile|protectDirectory' server/disk-collaboration.js | Select-Object -Last 8; git diff --stat
+
+    已创建 features-261009-3.test.cjs+83-0
+
+    已编辑 disk-content-admin-fixture.cjs+3-3
+
+    已运行 node --test tests/features-261009-3.test.cjs
+
+    已运行 $d=Get-Content tests/support/disk-content-admin-fixture.cjs; $d[20..33]; $d=Get-Content server/telegram-drive.js; $d[238..268]; $d=Get-Content server/disk-collaboration.js; $d[8..34]; rg -n 'MOUNT_GRANT_NOT_AVAILABLE|authorizedFresh' server/disk-collaboration-mounts.js
+
+    已运行 @'
+    const fs=require('fs'),p='tests/features-261009-3.test.cjs';let s=fs.readFileSync(p,'utf8').replace("f.drive=f.api.spaces.get('');", "f.drive=f.api.spaces.get('');f.drive.createDirectory('alice','资料/同名',30);f.drive.createDirectory('bob','backup',30);").replace("const f=await fixture(t),file=f.drive.get('alice','file-a');", "const f=await fixture(t),file=f.drive.get('alice','file-a'),refs=f.repository.content.references(f.sharedId).length;").replace('references(f.sharedId).length,2','references(f.sharedId).length,refs').replace('assert.equal(batch.status,202','assert.equal(batch.status,201');fs.writeFileSync(p,s);
+    p2='server/disk-api.js';
+    '@ | node
+
+    已运行 node --test tests/features-261009-3.test.cjs
+
+    已编辑 disk-api.js+8-10
+
+    已编辑 disk-trash.js+3-2
+
+    已运行 node --test tests/features-261009-3.test.cjs
+
+    已编辑 disk-api.js+11-2
+
+    已编辑 disk-content-repository.js+8-1
+
+    已编辑 disk-api.js+3-0
+
+    已运行 @'
+    const fs=require('fs'),p='client/disk-ui.js';let s=fs.readFileSync(p,'utf8');
+    s=s.replace("if(fresh.collaboration.kind==='file'){await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(fresh.collaboration.fileId)));return;}","if(fresh.collaboration.kind==='file'){await navigateTelegramDrive(fresh.collaboration.path||'');await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(fresh.collaboration.fileId)));return;}");
+    s=s.replace("    if(item.kind==='collaboration_mount')return activeTelegramDriveStaticLinks()", "    if(telegramDriveMountContext && item.kind!=='collaboration_mount')return [];\n    if(item.kind==='collaboration_mount')return activeTelegramDriveStaticLinks()");
+    s=s.replace("(item.kind==='directory'?item.path:[item.folderPath,item.name].filter(Boolean).join('/')).slice((telegramDriveMountContext.grant.path||'').length).replace(/^\\//,'')", "(telegramDriveMountContext.grant.kind==='file'?item.name:(item.kind==='directory'?item.path:[item.folderPath,item.name].filter(Boolean).join('/')).slice((telegramDriveMountContext.grant.path||'').length).replace(/^\\//,''))");
+    s=s.replace("    const current = activeTelegramDriveStaticLinks().some", "    const current = !telegramDriveMountContext && activeTelegramDriveStaticLinks().some");
+    fs.writeFileSync(p,s);
+    '@ | node; node --check client/disk-ui.js; node --check server/disk-api.js
+
+    已运行 node --test tests/features-261009-2.test.cjs tests/features-261009-3.test.cjs tests/disk-native-mount-ui.test.cjs tests/disk-mount-ui.test.cjs tests/disk-collaboration-navigation.test.cjs tests/disk-cross-scope-copy.test.cjs tests/disk-collaboration-mounts.test.cjs tests/disk-content-api.test.cjs tests/disk-repository.test.cjs tests/disk-partitions.test.cjs tests/s3-gateway.test.cjs tests/s3-list.test.cjs tests/disk-client.test.cjs tests/disk-progressive-client.test.cjs tests/disk-directory-actions.test.cjs tests/disk-preview-history.test.cjs tests/disk-storage-regression.test.cjs
+
+    上下文已自动压缩
+
+    已运行 git status --short; git branch --show-current
+    Shell
+    $git status --short; git branch --show-current
+
+     M client/disk-client.js
+     M client/disk-collaboration.js
+     M client/disk-directory-picker.js
+     M client/disk-import-picker.js
+     M client/disk-mount-ui.js
+     M client/disk-trash-ui.js
+     M client/disk-ui.js
+     M client/disk.css
+     M client/telegram-drive-cache.js
+     M pages/index.html
+     M pages/tgbot.html
+     M server.js
+     M server/disk-api.js
+     M server/disk-content-repository.js
+     M server/disk-repository.js
+     M server/disk-shares.js
+     M server/disk-static-resources.js
+     M server/disk-trash.js
+     M server/object-storage.js
+     M server/s3/routes.js
+     M server/telegram-drive.js
+     M tests/features-261009-2.test.cjs
+     M tests/support/disk-content-admin-fixture.cjs
+    ?? client/disk-file-editor.js
+    ?? client/disk-folder-upload.js
+    ?? server/disk-folder-uploads.js
+    ?? server/disk-mounted-namespace.js
+    ?? server/disk-user-settings.js
+    ?? tests/features-261009-3.test.cjs
+    dev/2609-s7-disk-partition-collaboration-mount
+
+    成功
+
+    新增集成测试已通过，覆盖了挂载原地访问、跨作用域移动的部分失败处理，以及编辑共享文件时保留其它引用。扩大回归后发现几处测试仍依赖旧的弹窗行为或目录层级上限；我会逐项核对，并继续检查后台任务切换目录后的作用域、接口只读限制和编辑失败回滚。
+
+    已读取文件运行了命令
+    已运行 Get-Content -LiteralPath 'prompts/dev-prompt-logs/dev-261009-3-guide.md' -Encoding UTF8
+
+    已运行 Get-Content server/disk-mounted-namespace.js; Get-Content server/disk-folder-uploads.js; Get-Content client/disk-folder-upload.js; Get-Content client/disk-file-editor.js
+
+    已读取 disk-client.js
+
+    已运行 rg -n 'editorSave|setUploadContextAsync|external.use|folder-uploads|assertWritable|createMounted|saveContent' server/disk-api.js; Get-Content tests/disk-native-mount-ui.test.cjs; Get-Content tests/s3-list.test.cjs
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 1660 -First 55; Get-Content server/disk-api.js | Select-Object -Skip 2230 -First 22; Get-Content server/disk-api.js | Select-Object -Skip 2428 -First 85; rg -n 'multipart|router.use|mapping|assertWritable' server/s3/routes.js
+
+    已运行 Get-Content client/disk-client.js -TotalCount 240; Get-Content client/disk-client.js | Select-Object -Skip 240 -First 230
+
+    已运行 Get-Content client/disk-folder-upload.js; Get-Content server/disk-folder-uploads.js; Get-Content client/disk-file-editor.js; Get-Content client/disk-error-messages.js -TotalCount 80; rg -n 'telegramDriveMountContext|showTelegramDriveStatic|saveDiskWindow|openTelegramDriveMount|showTelegramDriveBackgroundMenu|@mounted|file-editor' client/disk-ui.js
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 1670 -First 19; Get-Content server/disk-api.js | Select-Object -Skip 2238 -First 10; Get-Content server/disk-api.js | Select-Object -Skip 2435 -First 64; Get-Content server/s3/routes.js | Select-Object -Skip 208 -First 170
+
+    已运行 Get-Content server/s3/routes.js | Select-Object -Skip 121 -First 90; Get-Content server/object-storage.js | Select-Object -Last 25; Get-Content client/disk-client.js | Select-Object -Skip 285 -First 153; Get-Content client/disk-ui.js -TotalCount 66
+
+    已运行 Get-Content client/disk-client.js | Select-Object -Skip 448 -First 73; Get-Content client/disk-ui.js | Select-Object -Skip 1238 -First 40; Get-Content client/disk-ui.js | Select-Object -Skip 1351 -First 35; Get-Content client/disk-ui.js | Select-Object -Skip 924 -First 78; Get-Content server/disk-content-repository.js | Select-Object -Skip 150 -First 10; rg -n 'sourceRow|removeTree|removePartition|stopMount' server/disk-content-repository.js server/disk-api.js server/disk-collaboration-mounts.js
+
+    已运行 @'
+    const fs=require('fs');
+    function change(p,fn){const s=fs.readFileSync(p,'utf8');fs.writeFileSync(p,fn(s));}
+    change('client/disk-error-messages.js',s=>s.replace("        MOUNT_NAME_CONFLICT:","        MOUNT_READ_ONLY:'协同挂载在 S3 和第三方网盘 API 中仅供读取。请在 Web 网盘内按协同权限编辑；普通原生文件不受影响。',\n        DISK_SETTINGS_INVALID:'设置无效：目录层级须为 1–30，文件夹上传上限须为有效正整数。',\n        FOLDER_UPLOAD_INVALID:'目录上传清单不完整或包含非法名称、大小、路径，请重新拖入整个目录。',\n        FOLDER_UPLOAD_TOO_LARGE:'本次文件夹及子目录内文件的合计大小超过真实目标所有者的上传上限，请调整设置或减少来源文件。',\n        FOLDER_UPLOAD_BATCH_CONFLICT:'本批文件与目录上传清单不一致，或已有相同批次正在执行/已经完成。请查看任务结果后重试失败批次。',\n        FOLDER_UPLOAD_NOT_FOUND:'目录上传清单不存在或不属于当前用户和分区，请重新开始上传。',\n        FILE_EDIT_TOO_LARGE:'在线编辑最多支持 20MB 正文；原文件保持不变，可下载后编辑。',\n        MOUNT_NAME_CONFLICT:"));
+    change('server/disk-api.js',s=>{
+    s=s.replace("mediaIndex:{mode:'unavailable'}, ...(req.collaboration?{contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion}}:{}) } : {}) });","contentGrant:{id:req.collaboration.id,viewerId:req.diskViewerId,version:req.collaboration.grantVersion} } : {}) });");
+    s=s.replace("if(!['GET','HEAD','OPTIONS'].includes(req.method)){const path=req.body?.folderPath??req.body?.path??req.query.path;if(path!==undefined)mountedNamespace.assertWritable(req.diskScope,String(path),{tree:true});}",`if(!['GET','HEAD','OPTIONS'].includes(req.method)) {
+                const paths=[req.body?.folderPath,req.body?.path,req.body?.destinationPath,req.query.path,req.query.folderPath,...(req.body?.files||[]).map(file=>file.folderPath),...(req.body?.directories||[])];
+                for(const path of paths) if(typeof path==='string')mountedNamespace.assertWritable(req.diskScope,path,{tree:true});
+            }`);
+    s=s.replace("const saveContent = wrap(async (req, res) => {","const saveContent = async (req, res) => {");
+    s=s.replace("            const incomingType = replacement ?", "            if(req.editorSave && incomingSize>20_000_000)throw new Error('FILE_EDIT_TOO_LARGE');\n            const incomingType = replacement ?");
+    s=s.replace("replacement ? '正在替换协同文件'", "req.editorSave ? '正在保存文件正文' : replacement ? '正在替换协同文件'");
+    s=s.replace("operations.complete(operation.operation_id,{id:file.id,unchanged:true});return {id:file.id,unchanged:true};", "return {id:file.id,unchanged:true};");
+    s=s.replace("                } finally { store(req).abort(job.id); }\n            }));",`                } catch(error) { if(req.editorNewId) discardNewEditorFile(req); throw error; }
+                    finally { store(req).abort(job.id); }
+                }));`);
+    s=s.replace("        });\n        router.post('/files/:id/repair',saveContent);\n        router.put('/files/:id/content',(req,res,next)=>{req.editorSave=true;saveContent(req,res,next);});",`        };
+            function discardNewEditorFile(req){
+                const current=store(req).get(owner(req),req.editorNewId);
+                if(current && current.size===0 && Number(current.logicalContentVersion||0)===req.editorNewVersion)store(req).remove(owner(req),current.id);
+            }
+            router.post('/files/:id/repair',wrap(saveContent));
+            router.put('/files/:id/content',wrap(async(req,res)=>{req.editorSave=true;await saveContent(req,res);}));`);
+    s=s.replace("            req.params.id=created.id;req.editorSave=true;", "            req.params.id=created.id;req.editorSave=true;req.editorNewId=created.id;req.editorNewVersion=Number(created.logicalContentVersion||0);");
+    s=s.replace("            await saveContent(req,res,next);", "            try{await saveContent(req,res);}catch(error){discardNewEditorFile(req);throw error;}");
+    return s;});
+    change('server/disk-content-repository.js',s=>s.replace("const sourceStatus = sourceRow && JSON.parse(sourceRow.payload).reviewStatus;","const sourcePayload=sourceRow&&JSON.parse(sourceRow.payload);\n    const sourceStatus = sourcePayload?.trashId?'deleted':sourcePayload?.reviewStatus;"));
+    change('server/disk-mounted-namespace.js',s=>s.replace("if(normalize(relative)!==relative)","if(normalize(key.endsWith('/')?relative:relative.split('/').slice(0,-1).join('/'))!==(key.endsWith('/')?relative:relative.split('/').slice(0,-1).join('/')) || relative.split('/').some(v=>v==='.'||v==='..'))"));
+    change('server/s3/routes.js',s=>s.replace("if (contentOnly && !['GET', 'HEAD'].includes(req.method))", "if(!['GET','HEAD'].includes(req.method))objectStorage.assertWritable?.(selected,key,{tree:req.method==='DELETE'});\n            if (contentOnly && !['GET', 'HEAD'].includes(req.method))").replace("object.kind === 'marker' ? object.directory.s3Marker.metadata || {}", "object.kind === 'marker' ? object.directory?.s3Marker?.metadata || {}"));
+    change('server/object-storage.js',s=>s.replace("return { stat, list, open, openFile,", "return { assertWritable:(mapping,key,options)=>mountedNamespace?.assertWritable(mapping,key,options),stat, list, open, openFile,"));
+    change('client/disk-ui.js',s=>s.replace("diskWindowState = { retained, path: telegramDrivePath };", "diskWindowState = { retained, path: telegramDriveMountContext?.parentPath??telegramDrivePath }; // Reload resumes the native parent; browser history retains the authorized mount context.").replace("const sourceSpace = window.DiskClient.getSpace();\n    const previous = document.querySelector('.disk-static-list-popover');", "if(telegramDriveMountContext)await exitTelegramDriveMount();\n    const sourceSpace = window.DiskClient.getSpace();\n    const previous = document.querySelector('.disk-static-list-popover');").replace("    copy.classList.add('active');\n    const scope =", "    copy.classList.add('active');\n    if(telegramDriveMountContext?.grant.role==='viewer')move.disabled=true;\n    const scope ="));
+    for(const p of ['tests/disk-directory-actions.test.cjs','tests/disk-preview-history.test.cjs','tests/disk-native-mount-ui.test.cjs'])change(p,s=>s.replace("vm.createContext({", "vm.createContext({ telegramDriveMountContext:null,"));
+    change('tests/disk-native-mount-ui.test.cjs',s=>s.replace("        openDiskCollaborationFrame:() => {},", "        openTelegramDriveMount:async(mount)=>opened.push({mount,options:{}}),\n        navigateTelegramDrive:async path=>opened.at(-1).options.path=path,\n        openDiskPreview:async file=>opened.at(-1).options.fileId=file.id,\n        highlightTelegramDriveSearchItem:async()=>{},\n        openDiskCollaborationFrame:() => {},").replace("assert.equal(typeof page.opened[0].options.openFrame, 'function');", "assert.equal(page.opened[0].options.openFrame, undefined);"));
+    change('tests/s3-list.test.cjs',s=>s.replace("'a/'.repeat(22)","'a/'.repeat(62)"));
+    '@ | node
+
+    已运行 node --check server/disk-api.js; rg -n 'remove\(|delete\(' server/telegram-drive.js | Select-Object -Last 15; Get-Content client/disk-ui.js | Select-Object -Skip 1351 -First 29
+
+    已运行 @'
+    const fs=require('fs');let p='client/disk-client.js',s=fs.readFileSync(p,'utf8');
+    s=s.replace("const withSpace =", "const transportContext=()=>({requestBase:baseUrl(),diskSpace});\n    const operationContexts=new Map();\n    const withSpace =");
+    s=s.replace("?base:baseUrl()) + url", "?base:(options.requestBase||baseUrl())) + url");
+    s=s.replace("diskSpace: requestSpace, ...requestOptions", "diskSpace: requestSpace,requestBase, ...requestOptions");
+    s=s.replace("function subscribeUploadProgress(job)","function subscribeUploadProgress(job,context=transportContext())");
+    s=s.replace("new EventSource(baseUrl() + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress')", "new EventSource(withSpace(context.requestBase + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress',context.diskSpace))");
+    const start=s.indexOf("        const requested = new Set(waiting.keys());"),end=s.indexOf("        return polling;",start);
+    s=s.slice(0,start)+`        const requested = new Set(waiting.keys());
+            const contexts=new Map(),view=transportContext();
+            const add=context=>contexts.set(context.requestBase+'?'+context.diskSpace,context);
+            add(view);for(const handlers of waiting.values())add(handlers.context);
+            for(const id of localUploads.keys())if(operationContexts.has(id))add(operationContexts.get(id));
+            polling = Promise.allSettled([...contexts.values()].map(async context=>{
+                const ids=[...requested].filter(id=>{const c=waiting.get(id)?.context;return c?.requestBase===context.requestBase&&c?.diskSpace===context.diskSpace;});
+                const data=await raw('/operations?ids='+encodeURIComponent(ids.join(',')),context);
+                return data.operations;
+            })).then(results=>{
+                if(current!==generation)return;
+                jobs=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value).map(mergeOperation);
+                for(const job of jobs)if(!active(job))hiddenLoadingOperations.delete(job.operation_id);
+                for(const id of localUploads.keys())if(jobs.some(j=>j.operation_id===id&&!active(j)))localUploads.delete(id);
+                for(const [id,handlers] of waiting){
+                    const job=jobs.find(item=>item.operation_id===id);
+                    if(!job||active(job)||!requested.has(id))continue;
+                    waiting.delete(id);
+                    if(job.status==='completed')handlers.resolve(job.result);
+                    else handlers.reject(Object.assign(new Error(job.status==='cancelled'?'OPERATION_CANCELLED':job.errorCode||'DISK_OPERATION_FAILED'),{partialItems:job.result?.partialItems,errorDetails:job.errorDetails,userMessage:job.errorMessage}));
+                }
+                for(const result of results)if(result.status==='rejected'&&result.reason?.message==='LOGIN_REQUIRED'){
+                    for(const [id,handlers] of waiting){handlers.reject(result.reason);waiting.delete(id);}break;
+                }
+                emit();
+            }).finally(()=>{polling=null;});
+    `+s.slice(end);
+    s=s.replace("async function wait(id)", "async function wait(id,context=operationContexts.get(id)||transportContext())");
+    s=s.replace("        const pending = {};", "        const pending = {context};operationContexts.set(id,context);");
+    s=s.replace("        const data = await raw(url, options);", "        const context={...transportContext(),...options};\n        const data = await raw(url, context);\n        if(data.operation_id)operationContexts.set(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace});");
+    s=s.replace("wait(data.operation_id) : data", "wait(data.operation_id,{requestBase:context.requestBase,diskSpace:context.diskSpace}) : data");
+    s=s.replace("        waiting.clear(); emit();", "        waiting.clear();operationContexts.clear();emit();");
+    s=s.replace("            const current = generation;", "            const current = generation,context=transportContext();operationContexts.set(pending.operation_id,context);");
+    s=s.replace("pending.operation_id = values.operationId; localUploads.set", "pending.operation_id = values.operationId;operationContexts.set(pending.operation_id,context); localUploads.set");
+    s=s.replace("                }, controller.signal);", "                }, controller.signal,context);");
+    s=s.replace("async function uploadFiles(files, folderPath, read, metadata, update, userSignal)", "async function uploadFiles(files, folderPath, read, metadata, update, userSignal,context)");
+    s=s.replace("try { return await raw(url, options); }", "try { return await raw(url, {...options,...context}); }");
+    let a=s.indexOf('    async function uploadFiles('),b=s.indexOf('    async function read(item',a);let part=s.slice(a,b);
+    part=part.replace("const closeProgress = subscribeUploadProgress(job);", "operationContexts.set(job.operation_id,context);\n        const closeProgress = subscribeUploadProgress(job,context);");
+    part=part.replace(/await raw\(/g,'await uploadRequest(').replace("await request('/content/release'", "await uploadRequest('/content/release'");
+    part=part.replace("{ method: 'POST', signal }, update)","{ method: 'POST', signal,...context }, update)");
+    part=part.replace("type: files[index].type,logicalContentVersion:result.items[index]", "type: files[index].type,cacheIdentity:result.items[index].cacheIdentity,logicalContentVersion:result.items[index]");
+    s=s.slice(0,a)+part+s.slice(b);
+    s=s.replace("await raw('/operations/' + encodeURIComponent(id), { method: 'DELETE' })", "await raw('/operations/' + encodeURIComponent(id), { method: 'DELETE',...(operationContexts.get(id)||{}) })");
+    s=s.replace("diskSpace = String(value || ''); stop(); start();", "diskSpace = String(value || ''); start();if(polling)polling.finally(()=>refresh(true));else refresh(true);");
+    s=s.replace("collaborationId=''; stop(); start();", "collaborationId=''; start();if(polling)polling.finally(()=>refresh(true));else refresh(true);");
+    s=s.replace("collaborationId = String(id || ''); stop(); start();", "collaborationId = String(id || ''); start();if(polling)polling.finally(()=>refresh(true));else refresh(true);");
+    fs.writeFileSync(p,s);
+    '@ | node
+    node --check client/disk-client.js
+
+    已运行 Get-Content client/disk-directory-picker.js -TotalCount 165; Get-Content client/disk-ui.js | Select-Object -Skip 1940 -First 45; Get-Content client/disk-ui.js | Select-Object -Skip 842 -First 19; Get-Content server/disk-mounted-namespace.js; rg -n 'maxDepth|folderUpload|validateUpload' server/disk-api.js | Select-Object -Last 30; rg -n 'maxDepth|assertDepth' server/object-storage.js server/telegram-drive.js | Select-Object -First 35
+
+    已运行 node --test tests/features-261009-3.test.cjs tests/disk-native-mount-ui.test.cjs tests/disk-preview-history.test.cjs tests/disk-directory-actions.test.cjs tests/s3-list.test.cjs tests/disk-progressive-client.test.cjs tests/disk-client.test.cjs
+
+    已运行 @'
+    const fs=require('fs');let p='client/disk-client.js',s=fs.readFileSync(p,'utf8').replace('try { return await uploadRequest(url, {...options,...context}); }','try { return await raw(url, {...options,...context}); }').replace('return data.operations;','return data.operations||[];');fs.writeFileSync(p,s);
+    p='client/disk-ui.js';s=fs.readFileSync(p,'utf8').replace("telegramDriveMountContext=event.state.diskMountContext||null;window.DiskClient.setMount(telegramDriveMountContext?.mount.id||'');","const nextMountContext=event.state.diskMountContext||null;\n    if(telegramDriveMountContext?.mount.id!==nextMountContext?.mount.id)window.DiskClient.setMount(nextMountContext?.mount.id||'');\n    telegramDriveMountContext=nextMountContext;");fs.writeFileSync(p,s);
+    '@ | node
+
+    已运行 node --test tests/disk-client.test.cjs tests/disk-progressive-client.test.cjs tests/disk-native-mount-ui.test.cjs tests/disk-preview-history.test.cjs tests/disk-directory-actions.test.cjs tests/s3-list.test.cjs tests/features-261009-3.test.cjs
+
+    作用域检查发现一个实际风险：后台上传过程中切换分区或进入挂载项目，会让后续请求沿用新的浏览位置。现已让任务保留启动时的分区和授权入口，进度、后续分片及取消请求都使用原作用域；同时补上了外部 API 对批量上传中每个目标路径的只读检查。
+
+    已使用 浏览器运行了命令
+    已运行 Get-Content tests/disk-directory-actions.test.cjs | Select-Object -Skip 74 -First 22; Get-Content tests/disk-client.test.cjs | Select-Object -Skip 119 -First 25; Get-Content tests/support/features-261009-2-fixture.cjs -TotalCount 65; Get-Content 'C:/Users/Dell/.codex/plugins/cache/openai-bundled/computer-use/26.1002.52244/skills/computer-use/SKILL.md' -TotalCount 210
+
+    已运行 @'
+    const fs=require('fs');
+    function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-client.js',s=>{const a=s.indexOf('            // A pipeline failure'),b=s.indexOf('        } finally { closeProgress()',a);return s.slice(0,a)+s.slice(a,b).replace(/await uploadRequest\(([^\n]+)\)/g,match=>match).replace("await uploadRequest('/operations/' + encodeURIComponent(job.operation_id))", "await raw('/operations/' + encodeURIComponent(job.operation_id),context)").replace("await uploadRequest('/uploads/' + job.uploadId, { method: 'DELETE' })", "await raw('/uploads/' + job.uploadId, { method: 'DELETE',...context })").replace("await uploadRequest('/uploads/' + job.uploadId + '/failure', json('POST', {", "await raw('/uploads/' + job.uploadId + '/failure', {...context,...json('POST', {").replace("            })).catch(() => {});", "            })}).catch(() => {});")+s.slice(b);});
+    c('tests/disk-directory-actions.test.cjs',s=>s.replace('vm.createContext({ telegramDrivePath:', 'vm.createContext({ telegramDriveMountContext:null,telegramDrivePath:').replace("['上传文件', '新建目录', '当前目录属性'", "['上传文件', '新建目录','新建文件', '当前目录属性'").replace("window: { DiskClient:","window: { DiskFileEditor:{open:async()=>{}},DiskClient:"));
+    c('tests/disk-native-mount-ui.test.cjs',s=>s.replace("                if (route === '/collaborations')", "                if(route==='/files/file-9')return {id:'file-9'};\n                if (route === '/collaborations')").replace("assert.deepEqual(page.reads, ['/mounts/mount-a/resolve']);", "assert.deepEqual(page.reads, ['/mounts/mount-a/resolve','/files/file-9']);"));
+    c('tests/support/features-261009-2-fixture.cjs',s=>s.replace("['disk-error-messages','disk-client'", "['disk-error-messages','disk-file-editor','disk-folder-upload','disk-client'"));
+    '@ | node
+    node --check client/disk-client.js
+
+    已运行 node tests/support/features-261009-2-fixture.cjs
+
+    查看可用于本地验收的浏览器标签页
+
+    打开隔离网盘验收页
+
+    已请求权限
+
+    已使用 浏览器编辑了多个文件运行了命令
+    检查验收页加载错误和网盘状态
+
+    已运行 Get-Content tests/support/disk-content-admin-fixture.cjs -TotalCount 120; Get-Content client/disk-ui.js | Select-Object -Skip 1867 -First 22; rg -n 'function scope|diskScope|diskPartition|mountId' server/disk-api.js | Select-Object -First 16
+
+    已运行 try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:12160/api/telegram/drive/me).Content } catch { $_.ErrorDetails.Message }
+
+    已运行 Get-Content client/disk-ui.js | Select-Object -Skip 1892 -First 44; Get-Content tests/features-261009-3.test.cjs -TotalCount 80; rg -n 'function createAuth|app\.|accessToken' tests/disk-api.test.cjs | Select-Object -First 15; Get-Content server/disk-api.js | Select-Object -Skip 1970 -First 20; Get-Content server/disk-api.js | Select-Object -Skip 2064 -First 18
+
+    已运行 Get-Content server/object-storage.js | Select-Object -First 93; Get-Content server/disk-static-resources.js | Select-Object -Last 25; Get-Content server/disk-api.js | Select-Object -Skip 1510 -First 12; Get-Content server/disk-api.js | Select-Object -Skip 1914 -First 16; Get-Content server/disk-user-settings.js; Get-Content client/disk-folder-upload.js
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Last 9; Get-Content server/disk-static-resources.js | Select-Object -Skip 110 -First 40; rg -n 'folder depth|depth-exceeded|DEPTH' client/disk-error-messages.js; rg -n 'function normalizePath' server/telegram-drive.js
+
+    已运行 @'
+    const fs=require('fs');const change=(p,f)=>fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));
+    change('server/disk-api.js',s=>s.replace('actualSha===before.contentSha256 && incomingSize===before.size && incomingType===before.type','actualSha===before.contentSha256 && incomingSize===before.size').replace('store(req).validateUpload(job.id);',`job.maxDepth=depthFor(job.owner.id);
+                        if(job.metadata?.folderUploadId && folderUploads.get(job.metadata.folderUploadId,scope(req)).total>settings.get(job.owner.id).folderUploadMaxBytes)throw new Error('FOLDER_UPLOAD_TOO_LARGE');
+                        store(req).validateUpload(job.id);`).replace("const mountCleanup = mounts.removeTree(owner(req), req.diskScope.diskSpace, folderPath);", "const mountCleanup = mounts.removeTree(owner(req), req.diskScope.diskSpace, folderPath);\n                    for(const mount of mountCleanup.removedMounts||[])staticResources.stopMount(scope(req),mount.id);") );
+    change('client/disk-error-messages.js',s=>s.replace('目录层级超过管理员设置的上限','目录层级超过目标所有者的设置上限（最多 30 层）'));
+    change('client/disk-ui.js',s=>s.replace('    renderTelegramDriveContextMenu(item, anchor, [\n        [\'上传文件\'', '    const actions=[\n        [\'上传文件\'').replace("        } ]\n    ]);", "        } ]\n    ]);") );
+    // The background menu needs the same grant-based entry restrictions as item menus.
+    change('client/disk-ui.js',s=>s.replace("            await clearTelegramDriveCache(data.files);\n        }]\n    ]);", "            await clearTelegramDriveCache(data.files);\n        }]\n    ];\n    renderTelegramDriveContextMenu(item,anchor,telegramDriveMountContext&&(telegramDriveMountContext.grant.role==='viewer'||telegramDriveMountContext.grant.kind==='file')?actions.filter(a=>!['上传文件','新建目录','新建文件','当前目录属性'].includes(a[0])):actions);"));
+    change('tests/support/features-261009-2-fixture.cjs',s=>s.replace("    app.get('/fixture-ui',", "    app.get('/api/telegram/drive/me',(_req,res)=>res.json({identity:{id:'alice',name:'小林'},enabled:true,configured:true,oidcMode:'mock'}));\n    app.get('/fixture-ui',"));
+    '@ | node
+    node --check client/disk-ui.js
+
+    已运行 node --test tests/disk-directory-actions.test.cjs tests/disk-native-mount-ui.test.cjs tests/disk-client.test.cjs tests/features-261009-3.test.cjs
+
+    已运行 Get-Content client/disk-ui.js | Select-Object -Skip 848 -First 13; Get-Content tests/disk-directory-actions.test.cjs | Select-Object -Skip 83 -First 9; Get-Content client/disk-ui.js | Select-Object -Skip 1973 -First 38; Get-Content server/disk-trash.js -TotalCount 55; Get-Content server/disk-static-resources.js -TotalCount 40
+
+    已运行 Get-Content client/disk-ui.js | Select-Object -Skip 1113 -First 28; Get-Content client/disk-ui.js | Select-Object -Skip 840 -First 8; Get-Content server/disk-trash.js | Select-Object -First 23; rg -n '/settings|global|maxDirectory' client/disk-ui.js
+
+    已编辑 disk-mounted-namespace.js+27-6
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-ui.js',s=>s.replace("if(item.kind==='mounted_directory')await navigateTelegramDrive(path);else await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(item.id)));", "await navigateTelegramDrive(path);\n    if(item.kind!=='mounted_directory')await openDiskPreview(await window.DiskClient.raw('/files/'+encodeURIComponent(item.id)));").replace("global.append(sizeLabel,depthLabel,saveLimits);\n    global.append(globalTitle, globalDescription, viewLabel, sortLabel);", "global.append(globalTitle,globalDescription,sizeLabel,depthLabel,saveLimits,viewLabel,sortLabel);") );
+    c('tests/disk-directory-actions.test.cjs',s=>s.replace("            window: { DiskClient:","            window: { DiskFileEditor:{open:async()=>{}},DiskClient:"));
+    c('server/object-storage.js',s=>s.replace("if(object.mounted)try{mountedNamespace.object(mapping,key);}catch(error){stream.destroy();throw error;}", `if(object.mounted) {
+                const validate=()=>{mapping.assertAuthorized?.();mountedNamespace.object(mapping,key);};
+                try{validate();}catch(error){stream.destroy();throw error;}
+                const timer=setInterval(()=>{try{validate();}catch(error){stream.destroy(error);}},1000);
+                timer.unref?.();stream.once('close',()=>clearInterval(timer));stream.once('end',()=>clearInterval(timer));
+            }`));
+    '@ | node
+
+    已运行 node tests/support/features-261009-2-fixture.cjs
+
+    验收网盘全局设置和文件编辑入口
+
+    已请求权限
+
+    目录上传和编辑接口的回归检查已通过。正在核对实际浏览器中的挂载列表、关闭按钮和编辑器布局；另外补上了长时间读取时的授权复查，避免撤销协同权限后仍持续回源。
+
+    已使用 浏览器运行了命令
+    检查实际页面的初始化错误
+
+    已运行 try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5938/api/telegram/drive/spaces -TimeoutSec 10).Content } catch { $_.ErrorDetails.Message }
+
+    已运行 Get-Content client/disk-ui.js | Select-Object -Skip 1800 -First 17; rg -n 'mount-context|Mount|folder|30|schema5' docs/adapter/telegram-disk-api.md | Select-Object -Last 15; git diff --stat
+
+    确认页面脚本及网盘身份控件是否完成初始化
+
+    检查网盘浮层是否存在实际布局裁剪
+
+    已运行 rg -n 'readFile\(|mountId.*raw|const signal|saveContent|trash.archive' client/disk-client.js server/disk-api.js server/disk-trash.js; rg -n 'removeTree|mounts\.remove' server/disk-trash.js
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-client.js',s=>s.replace("        const controller = newAbortController();\n        const signal = options.signal", "        const controller = newAbortController(),context={...transportContext(),...options};\n        const signal = options.signal").replace("readFile(item, { ...options, signal }", "readFile(item, { ...context, signal }").replace("operationId = values.operationId; readControllers.set(operationId, controller);", "operationId = values.operationId;operationContexts.set(operationId,context); readControllers.set(operationId, controller);").replace("async function readFile(item, { signal }, update) {\n        if(mountId)await raw('/files/'+encodeURIComponent(item.id),{signal});", "async function readFile(item, { signal,requestBase=baseUrl(),diskSpace:requestSpace=diskSpace }, update) {\n        if(requestBase.includes('/mount-scope/'))await raw('/files/'+encodeURIComponent(item.id),{signal,requestBase,diskSpace:requestSpace});").replace("withSpace(baseUrl() + '/files/' + encodeURIComponent(item.id) + '/download')", "withSpace(requestBase + '/files/' + encodeURIComponent(item.id) + '/download',requestSpace)"));
+    c('server/disk-trash.js',s=>s.replace('mounts,maxDepth,assertWritable','mounts,maxDepth,onMountRemoved=()=>{},assertWritable').replace('if(savedMounts.length)mounts.removeTree(user,space,path);', 'if(savedMounts.length){mounts.removeTree(user,space,path);for(const mount of savedMounts)onMountRemoved(user,space,mount.id);}'));
+    c('server/disk-api.js',s=>s.replace('spaces,mounts,maxDepth:depthFor,assertWritable:', 'spaces,mounts,maxDepth:depthFor,onMountRemoved:(userId,diskSpace,id)=>staticResources.stopMount({userId,diskSpace},id),assertWritable:'));
+    c('tests/support/features-261009-2-fixture.cjs',s=>s.replace('const f=await createFixture(),app=', `const bodies=new Map();
+        const f=await createFixture({telegram:{readPart:async(_backend,part,{start,end})=>require('node:stream').Readable.from([(bodies.get(part.fileId)||Buffer.from('shared-fixture')).subarray(start,end+1)]),upload:async(_backend,files)=>files.map(file=>{const id='fixture-edited-'+Date.now();bodies.set(id,fs.readFileSync(file.path));return {fileId:id,messageId:900,parts:[{fileId:id,messageId:900,offset:0,size:file.size,messageDate:Date.now()}]};})}}),app=`).replace("    app.get('/api/telegram/drive/me'", `    drive.createDirectory('bob','backup',30);
+        const call=async(user,route,body)=>{const r=await fetch(f.base+'/api/telegram/drive'+route,{method:'POST',headers:{'Content-Type':'application/json','X-Test-User':user},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(JSON.stringify(data));return data;};
+        const invite=await call('bob','/collaborations/invitations',{kind:'directory',path:'backup'});
+        await call('alice','/collaborations/join',{token:[REDACTED_SECRET]'/').at(-1)});
+        await call('alice','/mounts',{parentPath:'',name:'受邀挂载验收',collaborationId:invite.collaboration.id});
+        for(let i=0;i<12;i++){const path='协同测试目录'+i;drive.createDirectory('alice',path,30);await call('alice','/collaborations/invitations',{kind:'directory',path});}
+        app.get('/api/telegram/drive/me'`));
+    '@ | node
+    node --check server/disk-trash.js
+
+    已运行 Get-Content server/disk-trash.js -TotalCount 8; Get-Content tests/features-261009-3.test.cjs | Select-Object -Last 3; Get-Content tests/disk-api.test.cjs | Select-Object -Skip 126 -First 26; Get-Content server/disk-auth.js | Select-String -Pattern 'app|Token|register' | Select-Object -Last 20; git diff --check
+
+    已运行 Get-Content tests/disk-api.test.cjs | Select-Object -Skip 151 -First 12; Get-Content server/disk-auth.js | Select-String -Pattern 'issue\(' -Context 1,5; Get-Content server/disk-shares.js | Select-Object -Skip 35 -First 52; Get-Content server/disk-api.js | Select-Object -Skip 2165 -First 16
+
+    已运行 rg -n 'issue|token\(|grant\(' server/disk-auth.js; Get-Content server/disk-shares.js | Select-Object -Skip 14 -First 20; rg -n 'name.*20|repeat\(2[12]|maxDepth.*20|> ?20' tests/s3-gateway.test.cjs tests/disk-api.test.cjs client/disk-collaboration.js server/disk-api.js server/telegram-drive.js
+
+    已运行 rg -n 'confirmLocalDiskTransfer' client/disk-ui.js; Get-Content client/disk-ui.js | Select-Object -Skip 2085 -First 23; Get-Content server/disk-auth.js | Select-Object -Skip 154 -First 21; Get-Content server/disk-repository.js | Select-String -Pattern 'schemaVersion|migration|version >=|version ===' | Select-Object -First 20
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-client.js',s=>s.replace("let collaborationId = '', mountId = ''; ","let collaborationId = '', mountId = '';").replace("uploadFiles(files, folderPath, read, metadata", "uploadFiles(files, folderPath, read, metadata").replace("const current = generation,context=transportContext();", "const current = generation,context=metadata.transportContext||transportContext();").replace("{ folderPath, metadata, files: plannedFiles, progressive: true }", "{ folderPath, metadata:Object.fromEntries(Object.entries(metadata).filter(([key])=>key!=='transportContext')), files: plannedFiles, progressive: true }").replace("window.DiskClient = { raw,", "window.DiskClient = { context:transportContext,raw,"));
+    c('client/disk-file-editor.js',s=>s.replace("const client=global.DiskClient,MAX", "const client=global.DiskClient,context=client.context(),MAX").replace("{method:item?'PUT':'POST',headers:", "{...context,method:item?'PUT':'POST',headers:").replace("await client.wait(response.operation_id)", "await client.wait(response.operation_id,context)"));
+    c('client/disk-folder-upload.js',s=>s.replace("async function upload(plan,destination)", "async function upload(plan,destination,context=global.DiskClient.context())").replace("client.raw('/limits')", "client.raw('/limits',context)").replace("client.raw('/folder-uploads',client.json('POST',", "client.raw('/folder-uploads',{...context,...client.json('POST',").replace("type:f.type}))}));", "type:f.type}))})});").replace("{folderUploadId:parent.id}", "{folderUploadId:parent.id,transportContext:context}"));
+    c('client/disk-ui.js',s=>s.replace("async function confirmLocalDiskTransfer(transfer,destination){const plan=await window.DiskFolderUpload.enumerate(transfer);", "async function confirmLocalDiskTransfer(transfer,destination){const context=window.DiskClient.context(),plan=await window.DiskFolderUpload.enumerate(transfer);").replace("window.DiskFolderUpload.upload(plan,destination);", "window.DiskFolderUpload.upload(plan,destination,context);"));
+    '@ | node
+    node --check client/disk-folder-upload.js
+
+    已运行 node --test tests/features-261009-3.test.cjs tests/features-261009-2.test.cjs tests/disk-directory-actions.test.cjs tests/disk-native-mount-ui.test.cjs tests/disk-client.test.cjs tests/disk-progressive-client.test.cjs
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-client.js',s=>s.replace('    async function read(item, options = {}) {','    async function read(item, options = {}) {\n        const context={...transportContext(),...options};'));
+    c('tests/disk-directory-actions.test.cjs',s=>s.replace('vm.createContext({ telegramDriveMountContext:null,telegramDrivePath:', 'vm.createContext({ openTelegramDriveDialog:async()=>{},telegramDriveMountContext:null,telegramDrivePath:'));
+    '@ | node
+
+    已运行 node tests/support/features-261009-2-fixture.cjs
+
+    载入包含受邀挂载和长协同列表的验收数据
+
+    已请求权限
+
+    已使用 浏览器编辑了多个文件运行了命令
+
+    已验证 101 个文件按两批提交，并保留空目录；重复提交已成功的批次会被拒绝。编辑未改变的正文会跳过 Telegram 上传，新建文件保存失败也不会留下空文件。接下来收尾检查断线续传、外部 API 只读边界及浏览器中的布局。
+
+    已使用 浏览器编辑了多个文件运行了命令
+
+    已请求权限
+
+    确认编辑器已读取正文并显示保存入口
+    纯文本
+
+    - text: 等待传输任务启动…
+    - dialog "Telegram网盘":
+      - banner:
+        - generic: ☁
+        - generic: Telegram网盘
+        - button "已开放静态资源"
+        - button "查看协同列表"
+        - button "已分享"
+        - button "回收站"
+        - button "个人网盘与当前分区设置": ⚙
+        - button "刷新网盘": ↻
+        - button "退出网盘账号": ⇥
+        - button "最小化网盘": _
+        - button "关闭 Telegram网盘": ×
+      - link "👤 小林":
+        - /url: "#"
+      - combobox "当前网盘分区":
+        - option "默认分区" [selected]
+        - option "相册&照片"
+      - navigation "网盘目录路径":
+        - button "我的网盘"
+        - generic: ›
+        - button "受邀挂载验收"
+      - searchbox "搜索当前目录"
+      - checkbox "搜索所有文件"
+      - text: 搜索所有文件
+      - checkbox "附加已挂载的协同内容"
+      - text: 附加已挂载的协同内容
+      - combobox "排序方式":
+        - option "按名称" [selected]
+        - option "按类型"
+        - option "按大小"
+        - option "按最后修改"
+      - button "当前升序": ↑
+      - button "切换为网格视图": ▦
+      - button "＋"
+      - generic: 📎
+      - generic "相同.har"
+      - text: 文件 · 14 B · 2026/10/9 17:49:46 ·
+      - link "缓存到浏览器":
+        - /url: "#"
+      - button "相同.har 更多操作": ⋮
+      - generic: 0 个文件夹 · 1 个文件 · 合计 14 B
+      - button "目录与选择操作": ▤
+    - button "验收网页工坊"
+    - strong: 编辑文件：相同.har
+    - button "关闭对话框": ×
+    - textbox "文件名称" [disabled]: 相同.har
+    - combobox:
+      - option "纯文本" [selected]
+      - option "Markdown"
+      - option "十六进制"
+    - textbox "文件正文": shared-fixture
+    - status: 尚未保存
+    - button "取消"
+    - button "保存"
+
+    浏览器验收已确认：点击原生目录中的挂载项，会在同一网盘列表内展开；面包屑只显示授权范围，内部菜单没有“防失联检测”和“邀请协同编辑”。编辑器也已通过模拟回源读到正确正文，正在核对保存结果和双栏预览。
+
+    已使用 浏览器编辑了多个文件运行了命令
+    验证 Markdown 双栏预览及协同文件保存
+
+    检查保存完成后的网盘记录
+
+    已运行 rg -n 'getOrigin\(' server/disk-api.js
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('tests/support/disk-content-admin-fixture.cjs',s=>s.replace("getOrigin: () => 'http://localhost'", "getOrigin: req => req?req.protocol+'://'+req.get('host'):'http://localhost'"));
+    c('client/disk.css',s=>s.replace('.telegram-drive-dialog-card:has(.disk-collaboration-list)', '.telegram-drive-dialog-card:is(:has(.disk-collaboration-list),:has(.disk-file-editor))'));
+    '@ | node
+
+    已运行 Get-Content client/disk-ui.js | Select-Object -Skip 746 -First 22; Get-Content server/disk-api.js | Select-Object -Skip 120 -First 10; Get-Content client/disk-import-picker.js | Select-Object -Skip 147 -First 16
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('server/disk-api.js',s=>s.replace("function errorStatus(code) {", "function errorStatus(code) {\n    if(code==='MOUNT_READ_ONLY')return 403;\n    if(code==='FOLDER_UPLOAD_NOT_FOUND')return 404;"));
+    c('client/disk-file-editor.js',s=>s.replace("const mode=document.createElement('select');", "const mode=document.createElement('select');mode.setAttribute('aria-label','编辑类型');"));
+    c('client/disk-ui.js',s=>s.replace("if(telegramDriveMountContext)choices.unshift", "if(telegramDriveMountContext?.grant.kind==='directory'&&telegramDriveMountContext.grant.role==='editor')choices.unshift").replace("spaceSelect.value = telegramDriveMountContext?'@mounted'", "spaceSelect.value = choices.some(space=>space.id==='@mounted')?'@mounted'").replace("initialPath: telegramDriveMountContext?telegramDriveMountContext.grant.path:telegramDrivePath", "initialPath: choices.some(space=>space.id==='@mounted')?telegramDriveMountContext.grant.path:telegramDriveMountContext?.parentPath??telegramDrivePath").replace("for (const id of link.files) entries.set('file:' + id, { kind: 'file', id });", "for (const id of link.files) entries.set('file:' + id, { kind: 'file', id });\n        for(const id of link.mounts||[])entries.set('mount:'+id,{kind:'collaboration_mount',id});").replace("button.textContent = item.kind === 'directory' ? '📁 /' + item.path : '📄 ' + item.id;", "button.textContent = item.kind === 'directory' ? '📁 /' + item.path : item.kind==='collaboration_mount'?'🔗 挂载 '+item.id:'📄 ' + item.id;").replace("const target = item.kind === 'file' ?", "const target = item.kind==='collaboration_mount'?(await window.DiskClient.raw('/mounts')).mounts.find(m=>m.id===item.id):item.kind === 'file' ?").replace("dismiss(); await locateTelegramDriveSearchItem(target);", "if(!target)throw new Error('MOUNT_ACCESS_REVOKED');dismiss(); await locateTelegramDriveSearchItem(target);"));
+    '@ | node
+
+    已编辑 telegram-disk-api.md+11-0
+
+    已编辑 telegram-drive-s3-compatible.md+7-0
+
+    已运行 rg --files tests | rg '(disk|s3|workshop|web-zip|folder|partition|mount)'
+
+    已运行 Get-Content docs/adapter/telegram-disk-api.md -TotalCount 4; rg -n '^#' docs/adapter/telegram-disk-api.md | Select-Object -First 5; Get-Content docs/telegram-drive-s3-compatible.md -TotalCount 4; rg -n '^#' docs/telegram-drive-s3-compatible.md | Select-Object -First 5
+
+    已启动后台终端以及 node tests/support/features-261009-2-fixture.cjs
+
+    验收修正后的编辑器布局和模拟保存链路
+
+    已请求权限
+
+    已使用 浏览器编辑了多个文件运行了命令
+    保存协同文件的新正文，验证成功后回到原列表
+
+    已运行 $taskTestPaths = @(rg --files tests | Where-Object { $_ -match '(disk.*|s3.*|features-261009-[23]|features-261008-workshop-startup)\.test\.cjs$' })
+    $taskTestLog = Join-Path ([System.IO.Path]::GetTempPath()) 'd2t-261009-3-regression.log'
+    node --test @taskTestPaths *> $taskTestLog
+    $taskTestExit = $LASTEXITCODE
+    Get-Content -LiteralPath $taskTestLog -Tail 110
+    exit $taskTestExit
+
+    检查协同文件保存后的实际大小与时间
+
+    已运行 rg -n '^# 协同|^# 协同挂载' docs/adapter/telegram-disk-api.md docs/telegram-drive-s3-compatible.md; git diff --check
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    for(const p of ['tests/disk-directory-performance.test.cjs','tests/disk-followup.test.cjs'])c(p,s=>s.replace(/vm\.createContext\(\{\s*/g,'vm.createContext({telegramDriveMountContext:null, '));
+    for(const p of ['docs/adapter/telegram-disk-api.md','docs/telegram-drive-s3-compatible.md'])c(p,s=>s.replace('# 协同挂载','## 协同挂载'));
+    c('server/disk-api.js',s=>s.replace('viewerId:req.diskViewerId || req.diskUser?.id || file.ownerId,cancelUnusedCacheFill}', 'viewerId:req.diskViewerId || req.diskUser?.id || file.ownerId,cancelUnusedCacheFill:cancelUnusedCacheFill||Boolean(req.diskMount||file.proxyMount)}'));
+    c('server/object-storage.js',s=>s.replace('openFile(backendOf(object.file), object.file,', 'openFile(backendOf(object.file), {...object.file,cancelUnusedCacheFill:Boolean(object.mounted)},'));
+    '@ | node
+
+    已运行 node --test tests/disk-directory-performance.test.cjs tests/disk-followup.test.cjs tests/features-261009-3.test.cjs
+
+    验收长协同列表的固定关闭区域
+
+    检查协同列表滚动区域与上下关闭入口
+
+    核查协同列表没有展开时的按钮状态
+
+    验证稳定目录状态下协同列表浮层
+
+    确认滚动到底部后两处关闭入口仍固定可见
+
+    已编辑 disk-client.test.cjs+19-0
+
+    已运行 node --test tests/disk-client.test.cjs tests/disk-directory-performance.test.cjs tests/disk-followup.test.cjs
+
+    已运行 Get-Content tests/disk-followup.test.cjs | Select-Object -Skip 191 -First 10; Get-Content client/disk-client.js | Select-Object -Skip 472 -First 18; Get-Content server/disk-api.js | Select-Object -Skip 1230 -First 15; Get-Content server/disk-api.js | Select-Object -Skip 1654 -First 8; Get-Content docs/devlog/dev-2610-features.md | Select-Object -Last 8
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 1242 -First 44; Get-Content server/disk-api.js | Select-Object -Skip 1741 -First 15; Get-Content server/disk-api.js | Select-Object -Skip 364 -First 16; Get-Content server/disk-api.js | Select-Object -Skip 280 -First 12
+
+    已运行 rg -n "router.get\('/search|req.collaboration" server/disk-api.js | Select-Object -Skip 18 -First 8; Get-Content server/disk-api.js | Select-Object -Skip 1760 -First 42; Get-Content server/disk-api.js | Select-Object -Skip 1284 -First 13
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 1218 -First 25; Get-Content server/disk-api.js | Select-Object -Skip 1797 -First 12; Get-Content server/disk-content-repository.js | Select-Object -Skip 47 -First 12
+
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 415 -First 22; Get-Content server/disk-api.js | Select-Object -Skip 1797 -First 19; Get-Content server/disk-api.js | Select-Object -Skip 2524 -First 10
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('tests/disk-followup.test.cjs',s=>s.replace('const context = { telegramDriveCurrentData:', 'const context = { telegramDriveMountContext:null,telegramDriveCurrentData:'));
+    c('client/disk-ui.js',s=>s.replace("telegramDriveSpaceOwner = status.identity.id;\n        window.DiskClient.setSpace('');", "telegramDriveSpaceOwner = status.identity.id;\n        telegramDriveMountContext=null;window.DiskClient.setSpace('');"));
+    c('server/disk-api.js',s=>s.replace('d.path,d.createdAt,d.updatedAt]', 'd.path,d.createdAt,d.updatedAt,d.reviewStatus,d.reviewUpdatedAt]').replace('f.contentId,f.logicalContentVersion,f.updatedAt]', 'f.contentId,f.logicalContentVersion,f.updatedAt,f.reviewStatus,f.reviewUpdatedAt]')
+    .replace("            return candidate;\n        };\n        const file = id", "            if(req.diskMount){for(let p=candidate;p;p=p.split('/').slice(0,-1).join('/')){const folder=storage.getDirectory(entry.ownerId,p);if(folder&&['blocked','deleted'].includes(folder.reviewStatus))throw new Error('COLLABORATION_OUT_OF_SCOPE');}}\n            return candidate;\n        };\n        const file = id")
+    .replace("            const found = storage.get(entry.ownerId, id);", "            const found = req.diskMount?req.diskMount.file(id):storage.get(entry.ownerId,id);")
+    .replace("if(ns){if(!['GET','HEAD']", "if(ns){req.diskLocalScope={...req.diskScope};req.diskMount=ns;if(!['GET','HEAD']")
+    .replace("        router.get('/list', wrap((req, res) => {\n            const result = store(req).list(owner(req), req.query.path || '');", `        const mountedVisible=(req,item,isDirectory=false)=>{if(!req.diskMount)return true;try{isDirectory?req.diskMount.directory(item.path):req.diskMount.file(item.id);return true;}catch(_){return false;}};
+            router.get('/list', wrap((req, res) => {
+                const result = store(req).list(owner(req), req.query.path || '');
+                result.folders=result.folders.filter(item=>mountedVisible(req,item,true));result.files=result.files.filter(item=>mountedVisible(req,item));`)
+    .replace('inScope(folder.path) && visible(folder)', 'inScope(folder.path) && visible(folder) && mountedVisible(req,folder,true)')
+    .replace("inScope(file.folderPath || '') && visible(file)", "inScope(file.folderPath || '') && visible(file) && mountedVisible(req,file)")
+    .replace(".filter(folder => root === undefined || !root || folder.path === root || folder.path.startsWith(root + '/'));", ".filter(folder => (root === undefined || !root || folder.path === root || folder.path.startsWith(root + '/'))&&mountedVisible(req,folder,true));")
+    .replace('files: tree.files.map(publicFile), directories: tree.directories', 'files: tree.files.filter(file=>mountedVisible(req,file)).map(publicFile), directories: tree.directories.filter(dir=>mountedVisible(req,dir,true))')
+    .replace("const current=store(req).get(owner(req),file.id);\n                    if(current?.contentId", "const current=store(req).get(owner(req),file.id);\n                    if(req.diskMount)mountedNamespace.resolve(req.diskViewerId,req.diskLocalScope.diskSpace,req.diskMount.mount.id).file(file.id);\n                    if(current?.contentId"));
+    '@ | node
+    node --check server/disk-api.js
+
+    已运行 $taskTestLog = Join-Path ([System.IO.Path]::GetTempPath()) 'd2t-261009-3-full.log'
+    node --test --test-concurrency=2 --test-reporter=tap *> $taskTestLog
+    $taskTestExit = $LASTEXITCODE
+    Get-Content -LiteralPath $taskTestLog -Tail 65
+    exit $taskTestExit
+
+    协同列表已完成实际滚动验收：中间内容滚到末尾后，右上角和底部关闭按钮都保持可见。协同文件保存后，列表也已显示新正文的大小和时间。全项目回归正在运行，同时会把默认限制、恢复方式和尚未实测的环境条件写入开发日志。
+
+    编辑了文件运行了命令
+    已运行 Get-Content server/disk-api.js | Select-Object -Skip 433 -First 28; Get-Content server/disk-api.js | Select-Object -Skip 201 -First 7; Get-Content client/disk-import-picker.js | Select-Object -Last 35; Get-Content server/disk-repository.js | Select-Object -Skip 110 -First 15
+
+    已运行 rg -n 'DiskImportPicker|import.*Disk|fromDisk|importFromDisk' client/web-workshop.js; Get-Content client/disk-import-picker.js -TotalCount 44; rg -n 'persistProject|importResources' client/web-workshop.js | Select-Object -Last 9
+
+    已运行 Get-Content client/web-workshop.js | Select-Object -Skip 87 -First 20; Get-Content client/web-workshop.js | Select-Object -Skip 509 -First 5; rg -n 'function save\(|queueWrite|persist\(' client/web-workshop.js | Select-Object -First 12; Get-Content client/disk-import-picker.js | Select-Object -Skip 20 -First 10
+
+    已运行 rg -n 'saveDraft|async function put|function put\(' client/web-workshop.js | Select-Object -First 7; Get-Content client/web-workshop.js | Select-Object -Skip 23 -First 18; Get-Content client/web-workshop.js | Select-Object -Skip 50 -First 16
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-import-picker.js',s=>s.replace("async function choose({validate=()=>{},destination=''}={})", "async function choose({validate=()=>{},destination='',onImport}={})").replace("                    if(!done)finish(entries);", "                    if(!done&&onImport){status.textContent='正在保存导入内容到草稿…';await onImport(entries,controller.signal);}\n                    if(!done)finish(entries);"));
+    c('client/web-workshop.js',s=>s.replace('function saveDraft(draft){if(!draft)', 'function saveDraft(draft){const signal=arguments[1]?.signal;if(!draft)').replace('const task=saveChain.catch(()=>{}).then(async()=>{commitEditorBuffer(draft);', 'const task=saveChain.catch(()=>{}).then(async()=>{signal?.throwIfAborted();commitEditorBuffer(draft);').replace("snapshot.archive=await pack(snapshotFiles);await put('drafts',snapshot);", "snapshot.archive=await pack(snapshotFiles);signal?.throwIfAborted();if(signal)await putImportedDraft(snapshot,signal);else await put('drafts',snapshot);").replace("    async function importDiskResources(draft,selected){", `    async function putImportedDraft(snapshot,signal){
+            const db=await openDb();signal.throwIfAborted();
+            await new Promise((resolve,reject)=>{
+                const tx=db.transaction('drafts','readwrite');
+                const abort=()=>tx.abort(),cleanup=()=>signal.removeEventListener('abort',abort);
+                signal.addEventListener('abort',abort,{once:true});
+                tx.oncomplete=()=>{cleanup();resolve();};
+                tx.onerror=tx.onabort=()=>{cleanup();reject(tx.error||new DOMException('导入已取消','AbortError'));};
+                tx.objectStore('drafts').put(snapshot);
+            });
+        }
+        async function importDiskResources(draft,selected){`));
+    p='client/web-workshop.js';let s=fs.readFileSync(p,'utf8');const start=s.indexOf('        const entries=await global.DiskImportPicker.choose({destination,validate});'),end=s.indexOf('        for(const entry of entries)',start);
+    s=s.slice(0,start)+`        const entries=await global.DiskImportPicker.choose({destination,validate,onImport:async(entries,signal)=>{
+                await flushEditorDraft(draft);signal.throwIfAborted();validate(entries);
+                const previous=draft.files,archive=draft.archive,updatedAt=draft.updatedAt;
+                try{draft.files=normalizeEntries([...previous,...entries.map(entry=>({path:destination+entry.path,type:entry.type||guessType(entry.path),data:bytes(entry.data)}))]);await saveDraft(draft,{signal});}
+                catch(error){draft.files=previous;draft.archive=archive;draft.updatedAt=updatedAt;throw error;}
+            }});
+            if(!entries)return '';
+    `+s.slice(end);fs.writeFileSync(p,s);
+    '@ | node
+    node --check client/web-workshop.js
+
+    已运行 $taskTestLog=Join-Path ([System.IO.Path]::GetTempPath()) 'd2t-261009-3-full.log'
+    Select-String -LiteralPath $taskTestLog -Pattern '^not ok' -Context 0,23
+
+    已运行 rg --files tests | rg 'web|workshop|features-261009'
+
+    已运行 Get-Content tests/telegram-chat-dictionary.test.cjs | Select-Object -Skip 46 -First 17; Get-Content tests/telegram-chat-dictionary.test.cjs | Select-Object -Skip 232 -First 45; Get-Content tests/features-260929-3-drive-click.test.cjs | Select-Object -Skip 38 -First 13; rg --files tests | rg 'zip|workshop|draft'
+
+    已运行 @'
+    const fs=require('fs'),p='tests/features-260929-3-drive-click.test.cjs';let s=fs.readFileSync(p,'utf8').replace('vm.createContext({','vm.createContext({telegramDriveMountContext:null,');fs.writeFileSync(p,s);
+    '@ | node
+
+    已运行 node --test tests/telegram-chat-dictionary.test.cjs tests/features-260929-3-drive-click.test.cjs tests/features-261009.test.cjs tests/features-261009-2.test.cjs tests/features-261008-workshop-startup.test.cjs
+
+    已运行 Get-Content tests/features-261009-2.test.cjs | Select-Object -Skip 161 -First 50; rg -n 'function importer|DiskImportPicker|取消沿|const page|class Element' tests/features-261009-2.test.cjs
+
+    已运行 Get-Content tests/features-261009-2.test.cjs | Select-Object -Skip 114 -First 23; Get-Content tests/features-261009-3.test.cjs | Select-Object -Last 7; Get-Content client/disk-import-picker.js | Select-Object -Skip 42 -First 17
+
+    已编辑 features-261009-3.test.cjs+32-0
+
+    已运行 node --test --test-name-pattern='导入按钮|目录上传中断' tests/features-261009-3.test.cjs
+
+    已编辑 disk-api.js+9-3
+
+    已运行 @'
+    const fs=require('fs'),p='client/disk-error-messages.js';let s=fs.readFileSync(p,'utf8').replace("        CONTENT_WRITE_CONFLICT:","        CONTENT_COPY_TARGET_CHANGED:'目标副本在复制后被修改、移动或删除，本次未删除来源。请检查目标和来源，再决定后续操作。',\n        CONTENT_WRITE_CONFLICT:");fs.writeFileSync(p,s);
+    '@ | node
+
+    已运行 node --test --test-name-pattern='跨协同' tests/features-261009-3.test.cjs
+
+    已运行 rg -n 'telegramDriveMaxFolderDepth|max.*层级|目录层级' pages/tgbot.html server.js; Get-Content server/disk-user-settings.js; Get-Content server/disk-folder-uploads.js
+
+    已运行 git diff -- pages/tgbot.html server.js
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('pages/tgbot.html',s=>s.replace('网盘最大虚拟目录层数','系统目录层数上限（个人可在网盘设置中降低）').replace('id="driveMaxFolderDepth" type="number"','id="driveMaxFolderDepth" type="number" readonly').replace('driveMaxFolderDepthInput.value = config.driveMaxFolderDepth || 30;','driveMaxFolderDepthInput.value = 30;').replace('driveMaxFolderDepth: Math.max(1, Math.min(30, Number(driveMaxFolderDepthInput.value || 30)))','driveMaxFolderDepth: 30'));
+    c('server.js',s=>s.replace('driveMaxFolderDepth: Math.max(1, Math.min(30, Number(config.driveMaxFolderDepth || 30)))','driveMaxFolderDepth: 30'));
+    c('server/disk-folder-uploads.js',s=>s.replace("if(!file.name||file.name==='.'", "if(!file||typeof file.name!=='string'||!file.name||file.name==='.'"));
+    '@ | node
+
+    已运行 $taskTestLog = Join-Path ([System.IO.Path]::GetTempPath()) 'd2t-261009-3-final.log'
+    node --test --test-concurrency=2 --test-reporter=tap *> $taskTestLog
+    $taskTestExit = $LASTEXITCODE
+    Get-Content -LiteralPath $taskTestLog -Tail 20
+    if ($taskTestExit) { Select-String -LiteralPath $taskTestLog -Pattern '^not ok' -Context 0,17 }
+    exit $taskTestExit
+
+    已运行 git diff --check; git status --short; git diff --numstat; rg -n 'const saveContent|discardNewEditorFile|expectedVersion' server/disk-api.js
+
+    已运行 Get-Content tests/disk-progressive-client.test.cjs | Select-Object -Skip 89 -First 19; Get-Content client/disk-client.js | Select-Object -Skip 205 -First 14
+
+    已运行 rg -n 'DiskClient.stop\(' client pages | Select-Object -First 12
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('client/disk-ui.js',s=>s.replace("    if (!status.identity) {\n        telegramDriveSpaceOwner", "    if (!status.identity) {\n        window.DiskClient.stop?.();telegramDriveMountContext=null;\n        telegramDriveSpaceOwner").replace("        telegramDriveSpaceOwner = status.identity.id;", "        if(telegramDriveSpaceOwner)window.DiskClient.stop?.();\n        telegramDriveSpaceOwner = status.identity.id;"));
+    c('client/disk-client.js',s=>s.replace("        enabled = false; generation++; jobs = []; localUploads.clear();", "        enabled = false; generation++; jobs = []; localUploads.clear();\n        for(const controller of uploadControllers.values())controller.abort();\n        for(const readers of pendingReads.values())for(const controller of readers)controller.abort();"));
+    c('server/disk-api.js',s=>s.replace("...(req.body?.files||[]).map(file=>file.folderPath),...(req.body?.directories||[])", "...(req.body?.files||[]).flatMap(file=>[file.folderPath,typeof file.source_path==='string'?file.source_path.replace(/\\\\/g,'/').replace(/^\\/+/, ''):undefined,[file.folderPath??req.body?.folderPath,file.name].filter(Boolean).join('/')]),...(req.body?.directories||[])"));
+    '@ | node
+    node --check server/disk-api.js
+
+    已运行 node --test tests/disk-client.test.cjs tests/disk-progressive-client.test.cjs tests/disk-directory-performance.test.cjs tests/features-260929-3-drive-click.test.cjs tests/features-261009-2.test.cjs
+
+    已运行 rg -n 'assertWritable' server/object-storage.js server/disk-api.js | Select-Object -Last 8; Get-Content server/object-storage.js | Select-Object -Skip 100 -First 16
+
+    已运行 @'
+    const fs=require('fs');function c(p,f){fs.writeFileSync(p,f(fs.readFileSync(p,'utf8')));}
+    c('server/disk-api.js',s=>s.replace("mountedNamespace.assertWritable(req.diskScope,path,{tree:true});", "mountedNamespace.assertWritable(req.diskScope,path,{tree:req.path==='/directories'&&['PATCH','DELETE'].includes(req.method)});"));
+    c('server/object-storage.js',s=>s.replace("assertWritable(mapping,key,{tree:key.endsWith('/')})", "assertWritable(mapping,key)").replace("assertWritable(toMapping,toKey,{tree:toKey.endsWith('/')})", "assertWritable(toMapping,toKey)"));
+    c('tests/features-261009-3.test.cjs',s=>s.replace("    assert.equal((await external('/directories','POST',{path:'ordinary-api-directory'})).status,202);", "    assert.equal((await external('/directories','POST',{path:'ordinary-api-directory'})).status,202);\n    assert.equal((await external('/uploads','POST',{folderPath:'资料',files:[{name:'ordinary-api-file',size:0}]})).status,201);\n    assert.equal((await external('/uploads','POST',{files:[{source_path:'/资料/挂载/new.txt',size:0}]})).data.error,'MOUNT_READ_ONLY');"));
+    '@ | node
+
+    已运行 node --test --test-name-pattern='S3 挂载|挂载授权内部合法复制' tests/features-261009-3.test.cjs
+
+    上下文已自动压缩
+
+    用时 1小时 39分钟 56秒
+
+    全项目回归已通过 727 项测试。现在做最后一轮接口边界检查，补齐开发日志，并核对协同挂载的只读限制、上传恢复和文件编辑是否影响原有功能。
+
+    运行了命令
+
+    你已达到使用上限。升级套餐或充值额度以继续，或在 18:54后重试。
+
+    已编辑 20 个文件+532-51查看变更撤销查看变更
+
+    client/disk-import-picker.jsclient/disk-import-picker.js+2-2
+    client/disk-trash-ui.jsclient/disk-trash-ui.js+1-1
+    server/disk-trash.jsserver/disk-trash.js+15-7
+    server/disk-mounted-namespace.jsserver/disk-mounted-namespace.js+63-0
+    server/disk-repository.jsserver/disk-repository.js+4-2
+    server/disk-user-settings.jsserver/disk-user-settings.js+16-0
+    client/disk.cssclient/disk.css+5-0
+    server/object-storage.jsserver/object-storage.js+15-8
+    server/disk-shares.jsserver/disk-shares.js+17-0
+    server/disk-static-resources.jsserver/disk-static-resources.js+15-8
+    server/disk-api.jsserver/disk-api.js+65-16
+    client/disk-file-editor.jsclient/disk-file-editor.js+30-0
+    server/disk-folder-uploads.jsserver/disk-folder-uploads.js+20-0
+    client/disk-folder-upload.jsclient/disk-folder-upload.js+49-3
+    tests/features-261009-3.test.cjstests/features-261009-3.test.cjs+167-0
+    tests/support/disk-content-admin-fixture.cjstests/support/disk-content-admin-fixture.cjs+3-3
+    server/disk-content-repository.jsserver/disk-content-repository.js+8-1
+    docs/adapter/telegram-disk-api.mddocs/adapter/telegram-disk-api.md+11-0
+    docs/telegram-drive-s3-compatible.mddocs/telegram-drive-s3-compatible.md+7-0
+    tests/disk-client.test.cjstests/disk-client.test.cjs+19-0
+
+
+
+
