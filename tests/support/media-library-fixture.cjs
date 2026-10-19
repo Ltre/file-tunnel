@@ -14,6 +14,7 @@ function createFixture(options = {}) {
             const m = /bytes=(\d+)-(\d*)/.exec(header || ''), start = m ? Number(m[1]) : 0, end = m?.[2] ? Number(m[2]) : record.bytes.length - 1;
             const stream = Readable.from([record.bytes.subarray(start, end + 1)]); signal?.addEventListener('abort', () => stream.destroy(), { once: true });
             return { object: { size: record.bytes.length, type: record.ref.type }, range: { start, end, partial: !!m }, stream }; },
+        async ensureDirectory(loc,relative,authorized,signal){authorized();if(signal?.aborted)throw Error('MEDIA_CANCELLED');return {...loc,path:[loc.path,relative].filter(Boolean).join('/')};},
         async write(loc, localPath, name, producer, authorized, signal) { authorized(); if (signal?.aborted) throw Error('MEDIA_CANCELLED');
             const existing = [...files.values()].find(f => f.producer === producer); if (existing) return existing.ref;
             writes++; const ref = put(fs.readFileSync(localPath), { ...loc, name }); files.get(ref.fileId).producer = producer;

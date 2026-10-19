@@ -67,6 +67,10 @@ test('real drive adapter stores verified content references, preserves others on
     store.createDirectory(owner.id, 'workspace'); const adapter = createMediaDiskAdapter({ dataDir, diskAPI: api, auth, backend: () => ({ token: 'fixture', channelId: '-100123' }) });
     assert.throws(() => adapter.location({ userId: owner.id, path: 'workspace' }, other), /NOT_AUTHORIZED/);
     const loc = adapter.location({ userId: owner.id, path: 'workspace' }, owner), body = path.join(dataDir, 'body.mp4'); fs.writeFileSync(body, 'shared-content');
+    const nested=await adapter.ensureDirectory(loc,'提取会话/clips',()=>{});assert.equal(nested.path,'workspace/提取会话/clips');assert.ok(store.getDirectoryRecord(owner.id,nested.path));
+    assert.equal((await adapter.ensureDirectory(loc,'提取会话/clips',()=>{})).path,nested.path);assert.equal(messages,0,'creating session folders does not upload media');
+    await assert.rejects(adapter.ensureDirectory(loc,'../outside',()=>{}));
+    await assert.rejects(adapter.ensureDirectory(loc,'禁止创建',()=>{throw Error('MEDIA_AUTHORIZATION_REVOKED');}),/REVOKED/);assert.equal(store.getDirectoryRecord(owner.id,'workspace/禁止创建'),null);
     const progress = [], reused = [];
     const a = await adapter.write(loc, body, 'a.mp4', 'producer-a', () => {}, undefined, patch => progress.push(patch)), b = await adapter.write(loc, body, 'b.mp4', 'producer-b', () => {}, undefined, patch => reused.push(patch));
     assert.ok(progress.some(patch => patch.phase === 'hashing')); assert.ok(progress.some(patch => Number.isFinite(patch.telegramBytesSent)), 'the existing Telegram upload pipeline reports real byte progress');

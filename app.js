@@ -1127,12 +1127,33 @@ function replaceSessionDirectoryCache(sessions = []) {
 }
 
 // ==================== 会话管理 ====================
-function savedTunnelGrant(id){try{return localStorage.getItem('tunnel-access:'+id)||'';}catch(_){return '';}}
-function storeTunnelGrant(id,grant){if(id&&grant)localStorage.setItem('tunnel-access:'+id,grant);}
+function savedTunnelGrant(id){return tunnelAuthorization(id).grant||'';}
+function tunnelAuthorization(id){try{return JSON.parse(localStorage.getItem('tunnel-authorization:'+id)||'null')||{deviceId:localStorage.getItem('deviceId')||state.deviceId,grant:localStorage.getItem('tunnel-access:'+id)||''};}catch(_){return {deviceId:state.deviceId,grant:''};}}
+function tunnelDeviceId(id){return tunnelAuthorization(id).deviceId||state.deviceId;}
+function storeTunnelAuthorization(id,data){
+    if(!id||!data?.grant)return;
+    localStorage.setItem('tunnel-authorization:'+id,JSON.stringify({deviceId:data.deviceId||tunnelDeviceId(id),grant:data.grant}));
+    if(id===state.sessionId&&data.deviceId&&data.deviceId!==state.deviceId){state.deviceId=data.deviceId;updateSessionIdentityUi();}
+}
+async function authorizeTunnelSelection(id,shortCode){
+    const grant=savedTunnelGrant(id);let response;
+    try {response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:id,deviceId:tunnelDeviceId(id),grant,shortCode,rejoin:true})});}
+    catch(error){if(grant)return;throw error;}
+    if(response.status>=500&&grant)return;
+    const data=await response.json();
+    if(!response.ok||!data.allowed||!data.grant)throw Error(response.status===429?'短码尝试过于频繁，请稍后再试':'请使用有效短码选择并加入隧道');
+    storeTunnelAuthorization(id,data);
+}
+async function selectTunnelByShortCode(shortCode){
+    const response=await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`,{cache:'no-store'});
+    if(!response.ok)throw Error(response.status===429?'短码尝试过于频繁，请稍后再试':'没有找到该传输隧道，或它已经被删除。');
+    const data=await response.json();if(!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId||''))throw Error('传输隧道响应无效。');
+    await authorizeTunnelSelection(data.sessionId,shortCode);openSession(data.sessionId);
+}
 async function ensureTunnelAccess(){
     let response;try{response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,grant:savedTunnelGrant(state.sessionId),shortCode:state.shortCode,joinToken:state.tunnelJoinToken})});}catch(_){if(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken)return true;}
     if(response?.status>=500&&(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken))return true;
-    const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelGrant(state.sessionId,data.grant);if(data.grant)state.tunnelJoinToken='';return true;}
+    const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelAuthorization(state.sessionId,data);if(data.grant)state.tunnelJoinToken='';return true;}
     state.sessionId=null;state.shortCode='';state.tunnelJoinToken='';state.pendingRecordId='';state.pendingRecordDetails=false;state.pendingTunnelInviteReceipt=null;
     const url=new URL(window.location.href);if(url.pathname.startsWith('/record/'))url.pathname='/';url.hash='';for(const key of ['record','invite','from','tunnel_join'])url.searchParams.delete(key);history.replaceState(null,'',url.pathname+url.search);return false;
 }
@@ -1198,6 +1219,7 @@ async function initSession() {
             state.shortCode = normalizeLocalShortCode(recent.shortCode);
             state.sessionRemark = String(recent.remark || '').trim().slice(0, 60);
             history.replaceState(null, '', tunnelSessionEntryUrl(entryUrl, state.sessionId));
+            state.deviceId=tunnelDeviceId(state.sessionId);
             updateSessionIdentityUi();
             return true;
         }
@@ -1205,6 +1227,7 @@ async function initSession() {
         return false;
     }
 
+    state.deviceId=tunnelDeviceId(state.sessionId);
     updateSessionIdentityUi();
     return true;
 }
@@ -1292,9 +1315,11 @@ function initSessionLanding() {
 
     if (state.recentSessionId) {
         recentButton.hidden = false;
-        recentButton.addEventListener('click', () => {
+        recentButton.addEventListener('click', async () => {
             const selected = sessionSelect?.value || state.recentSessionId;
-            openSession(selected);
+            if(joinInProgress)return;joinInProgress=true;
+            try { await authorizeTunnelSelection(selected,normalizeLocalShortCode(readSessionDirectoryCache().find(value=>value.sessionId===selected)?.shortCode));openSession(selected); }
+            catch(error){note.textContent=error.message;joinInProgress=false;}
         });
     }
 
@@ -1322,12 +1347,7 @@ function initSessionLanding() {
         note.textContent = '正在查找传输隧道...';
         joinInProgress = true;
         try {
-            const response = await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`,{headers:{'X-Tunnel-Device':state.deviceId,'X-Tunnel-Grant':savedTunnelGrant(readSessionDirectoryCache().find(s=>s.shortCode===shortCode)?.sessionId)},cache:'no-store'});
-            if (!response.ok) throw new Error('没有找到该传输隧道，或它已经被删除。');
-            const data = await response.json();
-            if (!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId || '')) throw new Error('传输隧道响应无效。');
-            storeTunnelGrant(data.sessionId,data.grant);
-            openSession(data.sessionId);
+            await selectTunnelByShortCode(shortCode);
         } catch (err) {
             note.textContent = err.message;
             joinInProgress = false;
@@ -1814,7 +1834,6 @@ function applyScannedTunnelCode(rawValue) {
                 return true;
             }
             location.assign(url.href);
-            location.reload();
             return true;
         }
     } catch (_) {}
@@ -1971,14 +1990,11 @@ function initSocket() {
     state.socket.on('permission-denied', data => {
         showAppToast(`操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
-    state.socket.on('tunnel-access-grant',data=>{storeTunnelGrant(data.sessionId,data.grant);sessionStorage.removeItem('tunnel-create:'+data.sessionId);generateQRCode();});
+    state.socket.on('tunnel-access-grant',data=>{const changed=data.sessionId===state.sessionId&&data.deviceId&&data.deviceId!==state.deviceId;storeTunnelAuthorization(data.sessionId,data);state.tunnelJoinToken='';sessionStorage.removeItem('tunnel-create:'+data.sessionId);if(changed){state.socket.disconnect();window.location.reload();return;}generateQRCode();});
     state.socket.on('tunnel-access-required',()=>{const target=new URL(window.location.href);if(target.pathname.startsWith('/record/'))target.pathname='/';target.hash='';for(const key of ['record','invite','from'])target.searchParams.delete(key);target.searchParams.set('leave','1');state.socket.disconnect();window.location.replace(target.href);});
     state.socket.on('short-code-session', (data) => {
-        storeTunnelGrant(data?.sessionId,data?.grant);
-        if (data?.sessionId && data.sessionId !== state.sessionId) {
-            window.location.hash = data.sessionId;
-            window.location.reload();
-        }
+        storeTunnelAuthorization(data?.sessionId,data);
+        if (data?.sessionId) openSession(data.sessionId);
     });
     state.socket.on('short-code-error', (data) => alert(data?.message || '短码无法加入会话'));
     state.socket.on('clipboard-update', (data) => receiveSharedClipboard(data));
@@ -18695,18 +18711,18 @@ async function announceKnownSessionCodes() {
     if (state.sessionId && state.shortCode && !entries.some(entry => entry.sessionId === state.sessionId)) {
         entries.push({ sessionId: state.sessionId, shortCode: state.shortCode });
     }
-    socket.emit('register-session-codes', { deviceId:state.deviceId,entries:entries.map(entry=>({...entry,accessGrant:savedTunnelGrant(entry.sessionId)})) });
+    socket.emit('register-session-codes', { deviceId:state.deviceId,entries:entries.map(entry=>({...entry,deviceId:tunnelDeviceId(entry.sessionId),accessGrant:savedTunnelGrant(entry.sessionId)})) });
     historyLog('session-code-directory-announced', { entryCount: entries.length });
 }
 
-function joinByShortCode() {
+async function joinByShortCode() {
     const input = document.getElementById('shortCodeInput');
     const shortCode = input.value.trim().toUpperCase();
     if (!/^[A-Z0-9]{5}$/.test(shortCode)) {
         alert('请输入 5 位字母或数字组成的隧道暗号。');
         return;
     }
-    state.socket?.emit('join-by-short-code', { shortCode,deviceId:state.deviceId });
+    try { await selectTunnelByShortCode(shortCode); } catch(error) { alert(error.message); }
 }
 
 async function pollClipboard() {

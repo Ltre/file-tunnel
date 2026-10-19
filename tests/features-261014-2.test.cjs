@@ -71,7 +71,7 @@ test('real session initialization retains a disk destination on both hash and re
             getFromStore: async () => ({ shortCode: 'ABCDE' }), countFromStore: async () => 0,
             readSessionDirectoryCache: () => [{ sessionId: 'session-recent', shortCode: 'ABCDE' }],
             history: { replaceState(_a, _b, value) { url = new URL(value, url); } }, updateSessionIdentityUi() {} });
-        vm.runInContext(app.slice(app.indexOf('async function initSession()'), app.indexOf('\nfunction updateSessionIdentityUi()')), context);
+        vm.runInContext(app.slice(app.indexOf('function savedTunnelGrant('), app.indexOf('\nfunction updateSessionIdentityUi()')), context);
         assert.equal(await context.initSession(), true); assert.equal(url.searchParams.get('disk_file'), 'file'); assert.equal(url.searchParams.get('disk_account'), 'alice'); assert.equal(url.searchParams.get('disk_space'), '');
         assert.equal(url.hash, suffix || '#session-recent');
     }

@@ -6,7 +6,7 @@ const { createMediaDatabase } = require('./database');
 const { createMediaCache } = require('./cache');
 const { createLoopbackSource } = require('./disk-adapter');
 const { createMediaProcessing, sampleTimes, durationOf, similarity } = require('./processing');
-const { clipName } = require('./clip-name');
+const { clipName, field } = require('./clip-name');
 const nameOf = value => String(value || '资源').replace(/[\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 145) || '资源';
 function createMediaLibrary({ dataDir, disk, downloads, processing = createMediaProcessing(), now = Date.now, autoStart = true }) {
     const db = createMediaDatabase(dataDir, now), cache = createMediaCache({ dataDir, database: db, now });
@@ -284,6 +284,15 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         } catch (error) { cache.discard(job.scope, allocated.record.id); throw capacityError || error; }
         finally { clearInterval(meter); source?.close(); }
     }
+    function collectionPathFor(result) {
+        const session=item('session',result.sessionId);
+        if(!session.collectionFolderName){
+            const base=field(session.name)||'提取会话';let folder=base,index=0;
+            while(db.matching('session',scope(),'collectionFolderName',folder).some(value=>value.id!==session.id))folder=base+'-'+session.id.slice(0,8)+(index++?'-'+index:'');
+            db.patch('session',session.id,scope(),{collectionFolderName:folder});session.collectionFolderName=folder;
+        }
+        return session.collectionFolderName+'/'+(result.kind==='image'?'shots':'clips');
+    }
     function collect(resultId, input = {}) {
         const resource = item('result', resultId), settings = requireConfig(); grant(settings.collection.grantId, 'collection');
         return db.atomic(() => {
@@ -295,9 +304,9 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                 }
                 return item('collection', existing.id);
             }
-            if (existing) { const value = db.patch('collection', existing.id, scope(), { state: 'queued', location: settings.collection }); queue('collect', { collectionId: value.id }); return value; }
+            if (existing) { const value = db.patch('collection', existing.id, scope(), { state: 'queued', location: settings.collection, collectionPath:collectionPathFor(resource) }); queue('collect', { collectionId: value.id }); return value; }
             const value = db.create('collection', scope(), { resultId, clipNamed:resource.kind==='clip', name: resource.kind==='clip'?clipName(item('session',resource.sessionId),resource):nameOf(input.name || '画面'), kind: resource.kind,
-                importId: resource.importId, state: 'queued', location: settings.collection, entities: [], source: { ...resource } });
+                importId: resource.importId, state: 'queued', location: settings.collection, collectionPath:collectionPathFor(resource), entities: [], source: { ...resource } });
             queue('collect', { collectionId: value.id }); return value;
         });
     }
@@ -331,7 +340,9 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
                     done(received > opened.object.size ? Error('MEDIA_UPLOAD_SIZE_MISMATCH') : null, chunk); } }), fs.createWriteStream(transient.path), { signal });
                 if (received !== opened.object.size) throw Error('MEDIA_UPLOAD_SIZE_MISMATCH'); localPath = transient.path;
             }
-            const file = await disk.write(authorization.location, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, () => grant(record.location.grantId, 'collection'), signal, patch => {
+            const assertAuthorized=()=>grant(record.location.grantId,'collection');
+            const destination=record.collectionPath?await disk.ensureDirectory(authorization.location,record.collectionPath,assertAuthorized,signal):authorization.location;
+            const file = await disk.write(destination, localPath, record.clipNamed ? name : record.id.slice(0, 8) + '-' + name, record.id, assertAuthorized, signal, patch => {
                 const details = {};
                 for (const key of ['phase','detail','processedBytes','totalBytes','telegramBytesSent','telegramBytesConfirmed']) if (patch[key] !== undefined) details[key] = patch[key];
                 progress(Number.isFinite(patch.percent) ? Math.max(0, Math.min(99, patch.percent)) : 0, details);
@@ -372,7 +383,7 @@ function createMediaLibrary({ dataDir, disk, downloads, processing = createMedia
         const existing=db.matching('collection',scope(),'compressionId',id).find(c=>c.state!=='deleted');if(existing){if(['failed','cancelled','interrupted'].includes(existing.state)){const lease=cache.acquire(scope(),variant.cacheId);lease.release();repairConflictedCompressionName(existing);queue('collect',{collectionId:existing.id,cacheId:variant.cacheId});return db.patch('collection',existing.id,scope(),{state:'queued',error:''});}return existing;}
         const lease=cache.acquire(scope(),variant.cacheId);lease.release();
         const name=require('./clip-name').compressionName(item('session',result.sessionId),result,variant);
-        const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,clipOrdinal:result.clipOrdinal,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,entities:[],source:{...variant}});
+        const record=db.create('collection',scope(),{compressionId:id,clipNamed:true,clipOrdinal:result.clipOrdinal,name,kind:'clip',importId:result.importId,state:'queued',location:settings.collection,collectionPath:collectionPathFor(result),entities:[],source:{...variant}});
         queue('collect',{collectionId:record.id,cacheId:variant.cacheId});return record;});}
     function reserveCompressionOrdinals(resultId, tenant) {
         const versions = db.matching('compression', tenant, 'resultId', resultId), jobs = db.matching('job', tenant, 'type', 'transcode').filter(job => job.context.resultId === resultId);

@@ -18,6 +18,15 @@ function createTunnelAccess(dataDir){const key=privateKeyFile(path.join(dataDir,
     const joinRevision=(sessionId,code)=>sign('join-revision\0'+sessionId+'\0'+code);
     function issueJoin(sessionId,code){const payload=Buffer.from(JSON.stringify({purpose:'join',sessionId,revision:joinRevision(sessionId,code)})).toString('base64url');return payload+'.'+sign(payload);}
     function verifyJoin(token,sessionId,code){try{if(!code||typeof token!=='string'||token.length>2048)return false;const [payload,signature,...extra]=token.split('.'),expected=sign(payload);if(extra.length||!signature||signature.length!==expected.length||!crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected)))return false;const value=JSON.parse(Buffer.from(payload,'base64url'));return value.purpose==='join'&&value.sessionId===sessionId&&value.revision===joinRevision(sessionId,code);}catch(_){return false;}}
-    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy,issueJoin,verifyJoin};
+    function authorize(sessionId,deviceId,{grant,joinToken,shortCode,code,rejoin=false}={}){
+        if(verify(grant,sessionId,deviceId))return {deviceId,grant};
+        const registered=enrolled(sessionId,deviceId),current=Boolean(code&&shortCode===code);
+        if(!verifyJoin(joinToken,sessionId,code)&&!(current&&(!registered||rejoin))&&!(!registered&&verifyLegacy(sessionId,deviceId,shortCode)))return null;
+        // A public device ID is not proof of the old identity. Explicit re-entry
+        // restores membership, while its former owner/admin identity stays protected.
+        const admittedId=registered?crypto.randomUUID():deviceId;
+        return {deviceId:admittedId,grant:issue(sessionId,admittedId)};
+    }
+    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy,issueJoin,verifyJoin,authorize};
 }
 module.exports={createTunnelAccess};

@@ -3587,13 +3587,13 @@ app.post('/api/tunnel-join-links',(req,res)=>{res.set('Cache-Control','no-store'
     if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId)||!code||!tunnelAccess.verify(grant,sessionId,deviceId))return res.status(403).json({error:'TUNNEL_ACCESS_REQUIRED'});
     res.json({joinToken:tunnelAccess.issueJoin(sessionId,code)});
 });
-app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode,joinToken}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
+app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant,shortCode,joinToken,rejoin}=req.body||{};if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId))return res.status(400).json({allowed:false});
     const tunnel=infraStore?.getTunnel(sessionId),session=sessions.get(sessionId),code=tunnel?.short_code||session?.shortCode;
     if(!tunnel&&!session)return res.json({allowed:true,creating:true});
     if(tunnelAccess.verify(grant,sessionId,deviceId))return res.json({allowed:true,grant});
     if(!tunnelAccess.attempt(req.ip))return res.status(429).json({allowed:false});
-    if(tunnelAccess.verifyJoin(joinToken,sessionId,code))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
-    if(code&&!tunnelAccess.enrolled(sessionId,deviceId)&&(normalizeShortCode(shortCode)===code||tunnelAccess.verifyLegacy(sessionId,deviceId,normalizeShortCode(shortCode))))return res.json({allowed:true,grant:tunnelAccess.issue(sessionId,deviceId)});
+    const admission=tunnelAccess.authorize(sessionId,deviceId,{grant,joinToken,shortCode:normalizeShortCode(shortCode),code,rejoin:rejoin===true});
+    if(admission)return res.json({allowed:true,...admission});
     res.status(403).json({allowed:false});
 });
 app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');if(!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
@@ -9195,7 +9195,7 @@ io.on('connection', (socket) => {
                 return emitSocketError('error', '无效的数据格式');
             }
             
-            const { sessionId, deviceId, deviceName } = data;
+            const { sessionId, deviceName } = data; let deviceId = data.deviceId;
             const clientType = trustedVClient && data.clientType === 'vclient'
                 ? 'vclient'
                 : (trustedServerShell && data.clientType === 'server-shell' ? 'server-shell' : 'browser');
@@ -9236,9 +9236,10 @@ io.on('connection', (socket) => {
                 }
                 if(!knownTunnel&&!knownSession&&data.createTunnel!==true)return emitSocketError('tunnel-access-required','请选择有效短码或主动创建新隧道');
                 const code=knownTunnel?.short_code||knownSession?.shortCode;
-                const authorized=tunnelAccess.verify(data.accessGrant,sessionId,deviceId)||(data.joinToken&&tunnelAccess.attempt(clientIp)&&tunnelAccess.verifyJoin(data.joinToken,sessionId,code));
-                if((knownTunnel||knownSession)&&!authorized&&(!tunnelAccess.attempt(clientIp)||!code||tunnelAccess.enrolled(sessionId,deviceId)||requestedShortCode!==code&&!tunnelAccess.verifyLegacy(sessionId,deviceId,requestedShortCode)))return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
-                socket.data.magnetAssetId='';socket.data.magnetId='';socket.emit('tunnel-access-grant',{sessionId,grant:tunnelAccess.issue(sessionId,deviceId)});
+                const admission=tunnelAccess.verify(data.accessGrant,sessionId,deviceId)?{deviceId,grant:data.accessGrant}:tunnelAccess.attempt(clientIp)&&tunnelAccess.authorize(sessionId,deviceId,{grant:data.accessGrant,joinToken:data.joinToken,shortCode:requestedShortCode,code});
+                if((knownTunnel||knownSession)&&!admission)return emitSocketError('tunnel-access-required','请使用有效短码选择并加入隧道');
+                deviceId=admission?.deviceId||deviceId;
+                socket.data.magnetAssetId='';socket.data.magnetId='';socket.emit('tunnel-access-grant',{sessionId,deviceId,grant:admission?.grant||tunnelAccess.issue(sessionId,deviceId)});
             }
             // 清理过期会话
             cleanupExpiredSessions();
@@ -9452,8 +9453,9 @@ io.on('connection', (socket) => {
             return emitSocketError('short-code-error', '短码无效或会话已结束');
         }
         const deviceId=data?.deviceId||currentDevice||profileDevice;
-        const canIssue=isValidDeviceId(deviceId)&&(!tunnelAccess.enrolled(sessionId,deviceId)||tunnelAccess.verify(data?.accessGrant,sessionId,deviceId));
-        socket.emit('short-code-session', { sessionId, ...(canIssue?{grant:tunnelAccess.issue(sessionId,deviceId)}:{}) });
+        const admission=isValidDeviceId(deviceId)&&tunnelAccess.authorize(sessionId,deviceId,{grant:data?.accessGrant,shortCode,code:shortCode,rejoin:true});
+        if(!admission)return emitSocketError('short-code-error','短码无法加入会话');
+        socket.emit('short-code-session', { sessionId, ...admission });
     });
 
     socket.on('session-remark-update', data => {
@@ -9562,7 +9564,7 @@ io.on('connection', (socket) => {
                 }
                 const session = sessions.get(sessionId);
                 const storedCode=infraStore?.findShortCodeForSession(sessionId);
-                if (!tunnelAccess.verify(entry.accessGrant,sessionId,data?.deviceId||currentDevice||profileDevice)||(storedCode&&storedCode!==shortCode)||(session?.shortCode && session.shortCode !== shortCode)) {
+                if (!tunnelAccess.verify(entry.accessGrant,sessionId,entry.deviceId||data?.deviceId||currentDevice||profileDevice)||(storedCode&&storedCode!==shortCode)||(session?.shortCode && session.shortCode !== shortCode)) {
                     rejectedCount++;
                     continue;
                 }

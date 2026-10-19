@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs'), http = require('node:http'), crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
+const { Readable } = require('node:stream');
 const { createDiskPartitions } = require('../disk-partitions');
 const { normalizeTelegramDrivePath } = require('../telegram-drive');
 function createMediaDiskAdapter({ dataDir, diskAPI, auth, backend }) {
@@ -54,6 +55,18 @@ function createMediaDiskAdapter({ dataDir, diskAPI, auth, backend }) {
         const opened = await diskAPI.objectStorage.open(mapping, current.key, range, signal);
         return { ...opened, current };
     }
+    async function ensureDirectory(root, relative, assertAuthorized, signal) {
+        const normalized=normalizeTelegramDrivePath(relative);if(!normalized||normalized!==relative)throw Error('MEDIA_LOCATION_INVALID');
+        assertAuthorized();let {store}=checkLocation(root),destination=root;
+        for(const segment of normalized.split('/')){
+            signal?.throwIfAborted();assertAuthorized();checkLocation(destination);
+            const child={...root,path:[destination.path,segment].filter(Boolean).join('/')};
+            diskAPI.objectStorage.assertWritable({userId:root.userId,diskSpace:root.diskSpace},child.path);
+            if(!store.getDirectoryRecord(root.userId,child.path))await diskAPI.objectStorage.put({userId:root.userId,diskSpace:root.diskSpace,sourceAppId:'media-library',assertAuthorized:()=>{assertAuthorized();checkLocation(destination);}},child.path+'/',Readable.from([]),{size:0,signal});
+            checkLocation(child);destination=child;
+        }
+        return destination;
+    }
     async function write(location, localPath, name, producerId, assertAuthorized, signal, onProgress) {
         assertAuthorized(); const { store } = checkLocation(location);
         const key = [location.path, name].filter(Boolean).join('/'), mapping = { userId: location.userId, diskSpace: location.diskSpace, sourceAppId: 'media-library',
@@ -93,7 +106,7 @@ function createMediaDiskAdapter({ dataDir, diskAPI, auth, backend }) {
         if (current.item.metadata?.mediaProducerId !== producerId) throw Error('MEDIA_EXTERNAL_FILE_PROTECTED');
         await diskAPI.objectStorage.remove({ userId: reference.userId, diskSpace: reference.diskSpace }, current.key);
     }
-    return { location, checkLocation, file, open, write, remove,
+    return { location, checkLocation, file, open, ensureDirectory, write, remove,
         directories(userId, space) { const { store } = storeFor({ userId, diskSpace: space }); return store.listDirectories(userId).filter(d => !['blocked', 'deleted'].includes(d.reviewStatus)); },
         partitions: userId => partitions.list(userId) };
 }
