@@ -57,6 +57,7 @@ const SCRIPT_SOURCES = [
   'client/disk-mount-ui.js',
   'client/disk-collaboration.js',
   'client/disk-ui.js',
+  'client/account-ui.js',
   'client/disk-share.js',
   'client/disk-tunnel-adapter.js',
   'client/disk-admin.js',

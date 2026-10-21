@@ -16803,7 +16803,7 @@ function settleCurrentMobileWorkspaceView() {
 
 function isAnyBlockingOverlayOpen() {
     return Boolean(
-        window.StreamingConsole?.ownsHistory() ||
+        window.StreamingConsole?.ownsHistory() || window.AccountUI?.isOpen() ||
         document.querySelector('.modal-overlay.active') ||
         document.getElementById('filePreviewViewer')?.classList.contains('active') ||
         document.getElementById('mediaFullscreenViewer')?.classList.contains('active') ||
@@ -19143,7 +19143,7 @@ function closeRichViewer(options = {}) {
 }
 
 window.addEventListener('popstate', event => {
-    if (window.StreamingConsole?.ownsHistory() || event.state?.streamingConsole || event.state?.streamingDialog) return;
+    if (window.StreamingConsole?.ownsHistory() || window.AccountUI?.isOpen() || event.state?.streamingConsole || event.state?.streamingDialog || event.state?.globalAccountPanel) return;
     if (window.DiskUI?.ownsHistory()) return;
     if (musicPlayer.historyOpen || document.getElementById('musicPlayerOverlay')?.classList.contains('active')) {
         if (event.state?.[MUSIC_QUEUE_HISTORY_KEY]) {

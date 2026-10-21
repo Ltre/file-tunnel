@@ -1,0 +1,67 @@
+(function (global) {
+    'use strict';
+    const t = value => global.TunnelI18n?.t(value) || value;
+    let current;
+    function open(options) {
+        if (current) close();
+        const overlay = document.createElement('div'); overlay.className = 'account-overlay';
+        const panel = document.createElement('section'); panel.className = 'account-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true');
+        const heading = document.createElement('h2'); heading.textContent = t(options.choose ? '选择转存目标账号' : '登录 / 移除账号'); panel.setAttribute('aria-label', heading.textContent);
+        const status = document.createElement('p'); status.setAttribute('role', 'status');
+        const list = document.createElement('div'), signIn = document.createElement('div'), actions = document.createElement('div');
+        let entries = [], selected = options.requiredId || options.currentAccount(), loading = false, generation = 0;
+        const button = (text, run) => {
+            const node = document.createElement('button'); node.type = 'button'; node.textContent = t(text);
+            node.onclick = async () => { if (node.disabled) return; node.disabled = true; try { await run(); } catch (error) { status.textContent = t('账号操作未完成，请重试') + ' [' + error.message + ']'; } finally { node.disabled = false; } }; return node;
+        };
+        const result = new Promise(resolve => {
+            current = { overlay, resolve, options, signIn, reload };
+            actions.append(button(options.choose ? '稍后继续' : '关闭', () => close()));
+            if (options.choose) actions.append(button('选择此账号', async () => {
+                if (loading) throw Error('ACCOUNT_LOADING');
+                const entry = entries.find(item => item.identity?.id === selected);
+                if (!entry || entry.reauthRequired || options.requiredId && selected !== options.requiredId) throw Error('LOGIN_REQUIRED');
+                await options.select(entry.identity.id); if (current?.overlay === overlay) close(entry.identity);
+            }));
+        });
+        panel.append(heading, status, list, signIn, actions); overlay.append(panel); document.body.append(overlay);
+        history.pushState({ ...(history.state || {}), globalAccountPanel: true }, '', location.href);
+        reload(); return result;
+        async function reload() {
+            if (!overlay.isConnected) return; const revision = ++generation; loading = true; status.textContent = t('正在读取账号状态…');
+            try {
+                const data = await options.load(); if (revision !== generation || !overlay.isConnected) return;
+                entries = data.accounts || []; selected ||= data.identity?.id || ''; list.replaceChildren(); signIn.replaceChildren(); status.textContent = '';
+                for (const entry of entries) {
+                    const user = entry.identity; if (!user) continue;
+                    const row = document.createElement('div'); row.className = 'account-row';
+                    const select = button(user.name || user.username || user.id, async () => {
+                        if (entry.reauthRequired || options.requiredId && user.id !== options.requiredId) { status.textContent = t('请先添加或重新登录一个有效的网盘账号'); return; }
+                        if (options.choose) { selected = user.id; list.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === select))); }
+                        else { await options.select(user.id); await reload(); }
+                    }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;
+                    select.setAttribute('aria-pressed', String(user.id === (options.choose ? selected : options.currentAccount())));
+                    const label = document.createElement('small'); label.textContent = t(entry.reauthRequired ? '需要重新登录' : user.id === options.currentAccount() ? '当前账号' : '');
+                    let confirming = false;
+                    const cancel = button('取消', () => { confirming = false; cancel.hidden = true; exit.textContent = t('退出'); status.textContent = ''; }); cancel.hidden = true;
+                    const exit = button('退出', async () => {
+                        if (!confirming) { confirming = true; cancel.hidden = false; exit.textContent = t('确认退出'); status.textContent = t('退出只会清除本浏览器的网盘登录状态，不会删除网盘文件。'); return; }
+                        await options.logout(user.id); await reload();
+                    });
+                    row.append(select, label, exit, cancel); list.append(row);
+                }
+                if (!entries.length) status.textContent = t('尚未登录账号');
+                options.renderSignIn(signIn, data.status);
+            } catch (error) { if (revision === generation && overlay.isConnected) { status.textContent = t('账号操作未完成，请重试') + ' [' + error.message + ']'; list.replaceChildren(button('重新读取账号', reload)); } }
+            finally { if (revision === generation) loading = false; }
+        }
+    }
+    function close(value = null) {
+        if (!current) return; const previous = current; current = null;
+        previous.options.cancelSignIn?.(previous.signIn); previous.overlay.remove(); previous.resolve(value);
+        if (history.state?.globalAccountPanel) { const next = { ...history.state }; delete next.globalAccountPanel; history.replaceState(next, '', location.href); }
+    }
+    global.addEventListener('popstate', event => { if (current) { close(); event.stopImmediatePropagation(); } }, true);
+    document.addEventListener('keydown', event => { if (current && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); } }, true);
+    global.AccountUI = { open, close, isOpen: () => Boolean(current), refresh: () => current?.reload() };
+})(window);

@@ -1,7 +1,13 @@
 (function (global) {
     'use strict';
     const t = value => global.TunnelI18n?.t(value) || value;
-    const uid = () => crypto.randomUUID();
+    const uid = () => {
+        if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+        const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+        return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+    };
     const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
     const userText = value => '<span class="message-content">' + esc(value) + '</span>';
     const kindOf = file => /^video\//.test(file.type) || /\.(mp4|webm|mkv|mov|m4v)$/i.test(file.name) ? 'video'
@@ -10,10 +16,11 @@
                 : /\.(md|markdown)$/i.test(file.name) ? 'markdown' : /\.txt$/i.test(file.name) || file.type === 'text/plain' ? 'text' : '';
     const labelKind = kind => t(({ local: '本机文件', disk: '网盘文件', tunnel: '隧道文件', video: '视频', audio: '音频', image: '图片', markdown: 'Markdown', text: 'TXT' })[kind] || kind);
     const stateLabel = value => t(({ public: '公开', invite: '仅限邀请', offline: '下线', restricted: '访问已结束', playing: '正在播放', stopped: '已停止', paused: '已暂停', waiting: '等待播放', reading: '正在展示', buffering: '缓冲中', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', sent: '已发送，待送达', delivered: '已送达，待接受', accepted: '已接受', rejected: '已拒绝', expired: '已到期', revoked: '已撤销' })[value] || value);
-    let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncBusy = false;
+    let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncFlight;
     let ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }, pending = new Map(), channel = 'local', candidates = [], pickerVersion = 0;
     let diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }, tunnelScope = '', importBusy = false, lastList = [], dialog;
     const localFiles = new Map(), players = new Map(), noticeIds = new Map();
+    const durationJobs = new Map(), durationQueue = [], previewTickets = new Map(); let durationActive = 0, refreshEditorItems, candidateObservers = [];
     const key = name => 'streaming:' + config.deviceId() + ':' + name;
     const account = () => global.DiskClient?.getAccount() || '';
     function saveUi() { if (!config) return; try { ui.importState = { pending: [...pending], channel, diskScope, tunnelScope }; localStorage.setItem(key('ui'), JSON.stringify(ui)); } catch (_) { notice('本机配置保存失败，请检查浏览器存储空间'); } }
@@ -33,27 +40,37 @@
         const headers = { 'X-Stream-Device': config.deviceId(), 'X-Stream-Key': localStorage.getItem(key('key')),
             ...(options.accountId ?? account() ? { 'X-Disk-Account': options.accountId ?? account() } : {}) };
         if (data !== undefined) headers['Content-Type'] = 'application/json';
-        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : JSON.stringify(data), cache: 'no-store', signal: options.signal });
-        const result = await response.json(); if (!response.ok) throw Error(result.error || 'STREAM_REQUEST_FAILED'); return result;
+        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : JSON.stringify(data), cache: 'no-store', signal: options.signal, keepalive: options.keepalive === true });
+        const result = await response.json(); if (!response.ok) { const cause = Error(result.error || 'STREAM_REQUEST_FAILED'); cause.retryAfter = Number(response.headers?.get('Retry-After')) || 0; throw cause; } return result;
+    }
+    async function copyText(value) {
+        if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+        const input = document.createElement('textarea'); input.value = value; document.body.append(input); input.select();
+        try { if (!document.execCommand('copy')) throw Error('STREAM_COPY_FAILED'); } finally { input.remove(); }
     }
     function follow(stationId, accountId, receive, failure) {
-        const controller = new AbortController();
+        const controller = new AbortController(); let retry = 2000;
         (async () => {
             while (!controller.signal.aborted) {
                 try {
                     const response = await fetch('/api/streaming/stations/' + stationId + '/events', { headers: {
                         'X-Stream-Device': config.deviceId(), 'X-Stream-Key': localStorage.getItem(key('key')), ...(accountId ? { 'X-Disk-Account': accountId } : {})
                     }, cache: 'no-store', signal: controller.signal });
-                    if (!response.ok) throw Error((await response.json()).error || 'STREAM_CONNECTION_FAILED');
+                    if (!response.ok) { const cause = Error((await response.json()).error || 'STREAM_CONNECTION_FAILED'); cause.retryAfter = Number(response.headers.get('Retry-After')) || 0; throw cause; }
                     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
                     try {
                         while (!controller.signal.aborted) {
                             const chunk = await reader.read(); if (chunk.done) break; buffer += decoder.decode(chunk.value, { stream: true });
-                            let newline; while ((newline = buffer.indexOf('\n')) >= 0) { const record = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); if (record.error) throw Error(record.error); if (record.station) receive(record.station); }
+                            let newline; while ((newline = buffer.indexOf('\n')) >= 0) { const record = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); if (record.error) throw Error(record.error); if (record.station) { receive(record.station); retry = 2000; } }
                         }
                     } finally { reader.cancel().catch(() => {}); }
-                } catch (cause) { if (!controller.signal.aborted) failure(cause); }
-                if (!controller.signal.aborted) await new Promise(resolve => setTimeout(resolve, 2000));
+                } catch (cause) {
+                    if (!controller.signal.aborted) failure(cause);
+                    if (['STREAM_KICKED', 'STREAM_INVITATION_REQUIRED', 'STREAM_OFFLINE', 'STREAM_NOT_FOUND', 'STREAM_DEVICE_DENIED'].includes(cause.message)) return;
+                    retry = Math.max(retry, (cause.retryAfter || 0) * 1000);
+                }
+                if (!controller.signal.aborted) await new Promise(resolve => { const timer = setTimeout(done, retry); function done() { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); } controller.signal.addEventListener('abort', done, { once: true }); });
+                retry = Math.min(30000, retry * 2);
             }
         })();
         return () => controller.abort();
@@ -86,9 +103,11 @@
         throw Error('missing');
     }
     async function providerLoop() {
+        let retry = 1000;
         while (initialized) {
             try {
                 const work = await request('/provider-work');
+                retry = 1000;
                 await Promise.all((work.requests || []).map(async task => {
                     let blob, failure;
                     try { blob = task.source.kind === 'local' ? (await localBlob(task.source)).slice(task.start, task.end + 1) : await config.readTunnel(task.source, { start: task.start, end: task.end }); }
@@ -97,20 +116,24 @@
                     if (failure) headers['X-Stream-Error'] = failure;
                     await fetch('/api/streaming/provider-work/' + task.requestId, { method: 'POST', headers, body: failure ? new Uint8Array() : blob }).catch(() => {});
                 }));
-            } catch (_) { await new Promise(resolve => setTimeout(resolve, 3000)); }
+            } catch (cause) { await new Promise(resolve => setTimeout(resolve, Math.max(retry, (cause.retryAfter || 0) * 1000))); retry = Math.min(30000, retry * 2); }
         }
     }
-    async function sync() {
-        if (syncBusy || !initialized) return; syncBusy = true;
-        const selected = account();
+    async function sync(force = false) {
+        if (syncFlight) { await syncFlight; if (force === true) return sync(); return; }
+        if (!initialized) return;
+        const selected = account(); syncFlight = syncNow(selected);
+        try { await syncFlight; }
+        finally { syncFlight = null; if (selected !== account()) queueMicrotask(() => sync()); }
+    }
+    async function syncNow(selected) {
         try {
-            const state = await request('/sync', 'POST', { follows: config.devices().filter(item => item.followed).map(item => item.deviceId), tunnels: await config.tunnels() });
+            const state = await request('/sync', 'POST', { follows: config.devices().filter(item => item.followed).map(item => item.deviceId), tunnels: await config.tunnels() }, { accountId: selected });
             if (selected !== account()) return;
             const changed = currentAccount !== selected || currentUser?.id !== state.identity?.id;
             currentAccount = selected; currentUser = state.identity;
-            if (root) root.querySelector('[data-sc-account]').textContent = state.identity ? state.identity.name || state.identity.username || state.identity.id : t('登录 / 管理账号');
-            const inbox = await request('/inbox');
-            for (const invite of inbox.invitations || []) {
+            if (root) root.querySelector('[data-sc-account]').textContent = state.identity ? state.identity.name || state.identity.username || state.identity.id : t('登录 / 移除账号');
+            for (const invite of state.invitations || []) {
                 if (noticeIds.get(invite.id) === invite.status) continue;
                 global.NotificationCenter?.add({ id: 'stream:' + invite.id, type: 'stream-invitation', title: t('串流邀请'),
                     body: invite.stationName + ' · ' + invite.deviceName + ' · ' + stateLabel(invite.status === 'sent' ? 'delivered' : invite.status), createdAt: invite.createdAt,
@@ -120,8 +143,7 @@
             }
             if (changed && isOpen()) render();
             else if (isOpen() && ['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) refreshList();
-        } catch (cause) { if (isOpen()) error(cause); }
-        finally { syncBusy = false; }
+        } catch (cause) { if (selected === account() && isOpen()) error(cause); }
     }
     function ensureUi() {
         if (root) return;
@@ -163,6 +185,7 @@
     function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) parking.append(player.element); }
     async function render() {
         if (!isOpen()) return; const version = ++renderVersion; parkPlayers(); main.replaceChildren(); banner.hidden = true;
+        candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         try {
             if (['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) { title(({ discover: '发现的串流台', local: '我创建的串流台', bookmarks: '我订阅的串流台', creator: '创作者公开台' })[ui.view]); await refreshList(version); }
@@ -177,15 +200,7 @@
         } catch (cause) { if (version === renderVersion) error(cause); }
     }
     async function accountDialog() {
-        const data = await global.DiskClient.raw('/accounts', { accountId: '' });
-        const body = document.createElement('div');
-        for (const entry of data.accounts || []) {
-            const b = button(entry.identity.name || entry.identity.username || entry.identity.id, async () => {
-                if (entry.reauthRequired) { closeDialog(); minimize(); global.DiskUI.open(); return; }
-                await global.DiskUI.switchAccount(entry.identity.id); closeDialog(); await sync();
-            }); b.classList.add('message-content'); body.append(b);
-        }
-        body.append(button('登录 / 管理账号', () => { closeDialog(); minimize(); global.DiskUI.open(); })); showDialog('全局用户', body);
+        await global.DiskUI.manageAccounts(); await sync(true);
     }
     function showDialog(label, body) {
         closeDialog({ keepHistory: true });
@@ -197,6 +212,7 @@
     }
     function closeDialog({ keepHistory = false } = {}) {
         if (!dialog) return;
+        dialog.previewCleanup?.();
         dialog.querySelectorAll('video,audio').forEach(media => { media.pause(); media.removeAttribute('src'); }); dialog.remove(); dialog = null;
         if (!keepHistory && history.state?.streamingDialog) { const next = { ...history.state }; delete next.streamingDialog; history.replaceState(next, '', location.href); }
     }
@@ -237,7 +253,7 @@
         return ui.drafts[ui.stationId];
     }
     function editor() {
-        title('创建与编辑串流台'); const d = draft(), actions = document.createElement('div'); actions.className = 'sc-actions';
+        title('创建与编辑串流台'); const d = draft(), stationId = ui.stationId, actions = document.createElement('div'); actions.className = 'sc-actions';
         const layout = document.createElement('div'); layout.className = 'sc-editor-grid'; const form = document.createElement('section'); form.className = 'sc-card';
         form.innerHTML = `<label>${t('串流台名称')}<input class="sc-name" maxlength="120" value="${esc(d.name)}"></label><label>${t('播放结束')}<select class="sc-loop"><option value="loop">${t('循环节目单')}</option><option value="stop">${t('播完停止')}</option></select></label><label>${t('静态项倒计时')}<select class="sc-countdown-choice">${['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].map((value, i) => '<option value="' + value + '">' + t(['左上', '右上', '左下', '右下', '边缘薄进度条'][i]) + '</option>').join('')}</select></label><p>${t('导入仅保存来源引用，不复制或保护原文件')}</p>`;
         form.querySelector('.sc-loop').value = d.loop ? 'loop' : 'stop'; form.querySelector('.sc-countdown-choice').value = d.countdown;
@@ -249,8 +265,15 @@
             list.replaceChildren();
             d.items.forEach((item, index) => {
                 const row = document.createElement('article'); row.className = 'sc-program'; row.dataset.itemId = item.id;
-                row.innerHTML = `<div class="sc-program-name"><strong>${index + 1}. ${userText(item.name)}</strong><small>${labelKind(item.source?.kind)} · ${labelKind(item.kind)}</small></div><label>${t(item.duration ? '起始时刻（秒）' : '停留时间（秒）')}<input type="number" min="${item.duration ? 0 : .1}" step="0.1" value="${item.duration ? item.start || 0 : item.stay || 10}" aria-label="${t(item.duration ? '起始时刻（秒）' : '停留时间（秒）')}"></label>`;
-                row.querySelector('input').oninput = event => { item[item.duration ? 'start' : 'stay'] = Number(event.target.value); saveUi(); };
+                const av = ['video', 'audio'].includes(item.kind);
+                row.innerHTML = `<div class="sc-program-name"><strong>${index + 1}. ${userText(item.name)}</strong><small>${labelKind(item.source?.kind)} · ${labelKind(item.kind)} · ${formatSize(item.size)}</small></div><label>${t(av ? '起始时刻（秒）' : '停留时间（秒）')}<input type="number" min="${av ? 0 : .1}" step="0.1" value="${av ? item.start || 0 : item.stay || 10}" aria-label="${t(av ? '起始时刻（秒）' : '停留时间（秒）')}"></label>`;
+                row.querySelector('input').oninput = event => { item[av ? 'start' : 'stay'] = Number(event.target.value); saveUi(); };
+                if (av) {
+                    const state = document.createElement('p'); state.className = 'sc-duration-status'; state.setAttribute('role', 'status'); state.hidden = Boolean(item.duration);
+                    state.textContent = t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…');
+                    const retry = button('重试时长检查', () => { durationJobs.delete(account() + ':' + durationKey(item)); ensureDuration(item); refreshEditorItems?.(); }, 'sc-duration-retry'); retry.hidden = !item.durationError;
+                    row.append(state, retry);
+                }
                 const toolbar = document.createElement('div'); toolbar.className = 'sc-actions';
                 const move = delta => { const from = d.items.indexOf(item), to = Math.min(d.items.length - 1, Math.max(0, from + delta)); d.items.splice(from, 1); d.items.splice(to, 0, item); saveUi(); renderItems(); };
                 const handle = button('拖动排序', () => {}); handle.className = 'sc-drag-handle';
@@ -259,17 +282,35 @@
                 handle.onpointermove = event => { if (!start || Math.abs(event.clientY - start.y) < 8) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); target?.classList.add('sc-drop-target'); };
                 handle.onpointerup = event => { if (!start) return; start = null; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); const to = d.items.findIndex(value => value.id === target?.dataset.itemId); if (to >= 0) { const from = d.items.indexOf(item); d.items.splice(from, 1); d.items.splice(to, 0, item); saveUi(); renderItems(); } };
                 handle.onpointercancel = () => { start = null; list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); };
-                toolbar.append(handle, button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { d.items.push({ ...structuredClone(item), id: uid() }); saveUi(); renderItems(); }), button('移除', () => { d.items = d.items.filter(value => value.id !== item.id); saveUi(); renderItems(); }));
+                toolbar.append(handle, button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { const added = { ...structuredClone(item), id: uid(), sourceSaved: false }; d.items.push(added); ensureDuration(added); saveUi(); renderItems(); }), button('移除', () => { d.items = d.items.filter(value => value.id !== item.id); saveUi(); renderItems(); }));
                 if (item.source?.kind === 'local') toolbar.append(button('重新选择文件', () => chooseLocalFile(item)));
                 row.append(toolbar); list.append(row);
             });
         }
+        refreshEditorItems = () => {
+            if (ui.view !== 'edit' || ui.stationId !== stationId || !list.isConnected) return;
+            const items = new Map(d.items.map(item => [item.id, item]));
+            for (const row of list.children) { const item = items.get(row.dataset.itemId), state = row.querySelector('.sc-duration-status'), retry = row.querySelector('.sc-duration-retry');
+                if (!item || !state) continue; state.hidden = Boolean(item.duration); state.textContent = t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…'); retry.hidden = !item.durationError;
+            }
+        };
+        for (const item of d.items) if (!item.durationError) ensureDuration(item);
         renderItems(); layout.append(form, resources); main.append(layout);
         actions.append(button('保存节目单', async () => {
-            const stationId = ui.stationId, submitted = structuredClone(d), actor = account();
-            const result = await request('/stations/' + stationId, 'PUT', submitted, { accountId: actor });
-            submitted.configVersion = result.configVersion; saveConfig(stationId, submitted); delete ui.drafts[stationId]; saveUi();
-            if (ui.stationId === stationId && account() === actor) { navigate('watch', stationId); notice('节目单已保存'); }
+            if (d.items.some(item => ['video', 'audio'].includes(item.kind) && !item.duration)) { notice('媒体时长尚未检查完成，请查看节目项状态后重试'); return; }
+            const stationId = ui.stationId, fingerprint = JSON.stringify(d), submitted = structuredClone(d), actor = account();
+            notice('正在保存节目单…'); actions.setAttribute('aria-busy', 'true');
+            const payload = { ...submitted, items: submitted.items.map(item => { const value = { ...item }; if (value.sourceSaved) delete value.source; delete value.sourceSaved; delete value.durationError; return value; }) };
+            let result;
+            try { result = await request('/stations/' + stationId, 'PUT', payload, { accountId: actor }); }
+            finally { actions.removeAttribute('aria-busy'); }
+            submitted.configVersion = result.configVersion; submitted.items.forEach(item => { item.sourceSaved = true; }); saveConfig(stationId, submitted);
+            // A late save must not erase edits made while this request was running.
+            const unchanged = ui.drafts[stationId] === d && JSON.stringify(d) === fingerprint;
+            if (unchanged) delete ui.drafts[stationId];
+            else { d.configVersion = result.configVersion; for (const item of d.items) if (submitted.items.some(saved => saved.id === item.id && JSON.stringify(saved.source) === JSON.stringify(item.source))) item.sourceSaved = true; }
+            saveUi();
+            if (ui.stationId === stationId && account() === actor) { if (unchanged) navigate('watch', stationId); notice(unchanged ? '节目单已保存' : '节目单已保存，期间的新编辑仍保留在草稿'); }
         }, 'sc-primary'), button('返回列表', () => navigate('local'))); main.append(actions);
     }
     async function chooseLocalFile(replace) {
@@ -279,6 +320,7 @@
                 if (replace && (file.name !== replace.name || file.size !== replace.size)) throw Error('STREAM_FILE_MISMATCH');
                 const fileId = replace?.source.fileId || uid(), source = { kind: 'local', fileId, name: file.name, type: file.type, size: file.size };
                 localFiles.set(fileId, { file, handle: handles[index] });
+                if (replace) { replace.sourceSaved = false; delete replace.duration; replace.durationError = ''; durationJobs.delete(account() + ':' + durationKey(replace)); ensureDuration(replace); }
                 if (handles[index]) await handleStore('put', fileId, handles[index]).catch(() => notice('文件引用仅在本次页面会话有效，重开后请重新选择'));
                 if (!replace) { const candidate = { name: file.name, type: file.type, size: file.size, kind, source }; candidates.push(candidate); pending.set(candidateKey(candidate), candidate); }
             }
@@ -294,33 +336,48 @@
     const candidateKey = item => [item.source.kind, item.source.accountId || '', item.source.diskSpace || '', item.source.sessionId || '', item.source.messageId || '', item.source.fileId].join(':');
     async function importer() {
         if (ui.view !== 'import') return; const version = ++pickerVersion; main.replaceChildren(); title('导入可视资源');
+        candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         const channels = document.createElement('div'); channels.className = 'sc-tabs';
         for (const value of ['local', 'disk', 'tunnel']) channels.append(button(labelKind(value), () => { channel = value; candidates = value === 'local' ? [...pending.values()].filter(item => item.source.kind === 'local') : []; saveUi(); importer(); }, channel === value ? 'selected' : ''));
         main.append(channels); const controls = document.createElement('div'); controls.className = 'sc-source-controls'; const list = document.createElement('div'); list.className = 'sc-candidate-list'; const actions = document.createElement('div'); actions.className = 'sc-actions';
         main.append(controls, list, actions);
         function renderCandidates() {
+            candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
             list.replaceChildren();
             for (const candidate of candidates) {
                 const row = document.createElement('label'); row.className = 'sc-candidate';
                 const check = document.createElement('input'); check.type = 'checkbox'; check.checked = pending.has(candidateKey(candidate));
                 check.onchange = () => { if (check.checked) pending.set(candidateKey(candidate), candidate); else pending.delete(candidateKey(candidate)); saveUi(); count.textContent = t('待导入') + ' · ' + pending.size; };
                 const text = document.createElement('span'); text.className = 'message-content'; text.textContent = candidate.name + ' · ' + labelKind(candidate.kind);
-                row.append(check, text, button('预览', event => { event.preventDefault(); return preview(candidate); })); list.append(row);
+                row.dataset.recordId = candidate.source.messageId || '';
+                const thumbnail = document.createElement('span'); thumbnail.className = 'sc-source-thumbnail'; thumbnail.textContent = ({ video: '▶', audio: '♪', image: '▧', markdown: 'MD', text: 'TXT' })[candidate.kind];
+                if (candidate.thumbnailUrl || candidate.kind === 'image' && candidate.size <= 524288) {
+                    const image = document.createElement('img'); image.alt = ''; image.loading = 'lazy';
+                    const observer = new IntersectionObserver(entries => { if (!entries.some(entry => entry.isIntersecting)) return; observer.disconnect();
+                        if (!row.isConnected || version !== pickerVersion) return;
+                        Promise.resolve(candidate.thumbnailUrl || sourceUrl(candidate)).then(url => { if (row.isConnected && version === pickerVersion) { image.src = url; thumbnail.replaceChildren(image); } }).catch(() => {});
+                    }); observer.observe(row); candidateObservers.push(observer);
+                }
+                text.textContent += ' · ' + formatSize(candidate.size);
+                row.append(check, thumbnail, text, button('预览', event => { event.preventDefault(); return preview(candidate); })); list.append(row);
             }
         }
         const count = document.createElement('strong'); count.textContent = t('待导入') + ' · ' + pending.size; actions.append(count);
         actions.append(button('确认导入', async () => {
-            if (importBusy) return; importBusy = true; const d = draft(), stationId = ui.stationId;
+            if (importBusy) return; importBusy = true; const d = draft(), stationId = ui.stationId, actor = account();
             try {
-                const additions = [];
-                for (const candidate of pending.values()) {
+                if (d.items.length + pending.size > 500) { notice('节目单最多包含 500 项，请减少选择后重试'); return; }
+                notice('正在登记资源引用…');
+                channels.inert = controls.inert = list.inert = true;
+                const selection = [...pending.values()];
+                const additions = [], grants = await config.tunnels();
+                for (const candidate of selection) {
                     const item = structuredClone(candidate); item.id = uid(); item.stay = 10; item.start = 0;
-                    if (['video', 'audio'].includes(item.kind)) item.duration = await duration(candidate);
-                    const grants = await config.tunnels(); item.source.tunnelGrants = Object.fromEntries(grants.map(entry => [entry.sessionId, entry.accessGrant])); additions.push(item);
+                    item.source.tunnelGrants = Object.fromEntries(grants.map(entry => [entry.sessionId, entry.accessGrant])); additions.push(item);
                 }
-                if (ui.stationId !== stationId || ui.view !== 'import') return;
+                if (version !== pickerVersion || ui.stationId !== stationId || ui.view !== 'import' || account() !== actor) return;
                 d.items.push(...additions); pending.clear(); saveUi(); navigate('edit', stationId);
-            } finally { importBusy = false; }
+            } finally { importBusy = false; channels.inert = controls.inert = list.inert = false; }
         }, 'sc-primary'), button('取消导入', () => { pending.clear(); navigate('edit', ui.stationId); }));
         if (channel === 'local') { controls.append(button('选择本机文件', () => chooseLocalFile())); renderCandidates(); return; }
         if (channel === 'disk') {
@@ -340,7 +397,9 @@
             controls.append(button('上级目录', () => { if (!diskScope.path) diskScope.mountId = ''; diskScope.path = diskScope.path.split('/').slice(0, -1).join('/'); importer(); }));
             for (const folder of result.folders || []) controls.append(button('▱ ' + folder.name, () => { diskScope.path = folder.path; importer(); }, 'message-content'));
             for (const mount of result.mounts || []) controls.append(button('▱ ' + mount.name, () => { diskScope.mountId = mount.id; diskScope.path = ''; importer(); }, 'message-content'));
-            candidates = (result.files || []).filter(file => kindOf(file)).map(file => ({ name: file.name, type: file.type, size: file.size, kind: kindOf(file), source: { kind: 'disk', accountId: diskScope.accountId, diskSpace: diskScope.diskSpace, fileId: file.id } }));
+            candidates = (result.files || []).filter(file => kindOf(file)).map(file => ({ name: file.name, type: file.type, size: file.size, kind: kindOf(file),
+                thumbnailUrl: file.thumbnailAvailable ? context.requestBase + '/files/' + encodeURIComponent(file.id) + '/thumbnail?disk_space=' + encodeURIComponent(context.diskSpace) + '&disk_account=' + encodeURIComponent(context.accountId) : '',
+                source: { kind: 'disk', accountId: diskScope.accountId, diskSpace: diskScope.diskSpace, fileId: file.id } }));
         } else {
             const tunnels = await config.tunnels(); if (version !== pickerVersion) return;
             const selector = document.createElement('select'); selector.setAttribute('aria-label', t('来源隧道'));
@@ -351,7 +410,7 @@
             const result = await request('/tunnel-candidates', 'POST', selected); if (version !== pickerVersion) return;
             candidates = result.candidates;
             const records = [...new Set(candidates.map(item => item.source.messageId))];
-            for (const recordId of records) controls.append(button(t('选择记录') + ' ' + recordId.slice(-6), () => { for (const item of candidates.filter(item => item.source.messageId === recordId)) pending.set(candidateKey(item), item); saveUi(); count.textContent = t('待导入') + ' · ' + pending.size; renderCandidates(); }, 'message-content'));
+            for (const recordId of records) controls.append(button(t('选择记录') + ' ' + recordId.slice(-6), () => { for (const item of candidates.filter(item => item.source.messageId === recordId)) pending.set(candidateKey(item), item); saveUi(); count.textContent = t('待导入') + ' · ' + pending.size; renderCandidates(); [...list.children].find(row => row.dataset.recordId === recordId)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 'message-content'));
         }
         const randomCount = document.createElement('input'); randomCount.type = 'number'; randomCount.min = 1; randomCount.max = candidates.length; randomCount.value = Math.min(3, candidates.length); randomCount.setAttribute('aria-label', t('随机导入数量'));
         controls.append(randomCount, button('从当前范围随机选取', () => {
@@ -361,24 +420,66 @@
         }));
         renderCandidates();
     }
-    async function sourceUrl(item) {
-        const source = structuredClone(item.source); source.tunnelGrants = Object.fromEntries((await config.tunnels()).map(entry => [entry.sessionId, entry.accessGrant]));
-        return (await request('/preview', 'POST', { source })).url;
+    function formatSize(size) { if (!Number.isFinite(Number(size))) return t('大小未知'); const n = Number(size); return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+    const durationKey = item => candidateKey(item) + ':' + item.size + ':' + item.name;
+    function ensureDuration(item) {
+        if (!['video', 'audio'].includes(item.kind) || item.duration) return;
+        const identity = durationKey(item), jobKey = account() + ':' + identity; let job = durationJobs.get(jobKey);
+        if (!job) {
+            let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; });
+            job = { item: structuredClone(item), actor: account(), promise, resolve, reject }; durationJobs.set(jobKey, job); durationQueue.push(job);
+        }
+        item.durationError = '';
+        job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; saveUi(); refreshEditorItems?.(); } }, cause => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
+        pumpDurations();
     }
-    async function duration(item) {
-        const url = await sourceUrl(item);
+    function pumpDurations() {
+        while (durationActive < 2 && durationQueue.length) {
+            const job = durationQueue.shift(); durationActive++;
+            duration(job.item, job.actor).then(job.resolve, job.reject).finally(() => { durationActive--; pumpDurations(); });
+        }
+    }
+    async function sourceUrl(item, signal, actor = account()) {
+        const cacheKey = actor + ':' + durationKey(item), cached = previewTickets.get(cacheKey);
+        if (cached?.expiresAt > Date.now() + 30000) return cached.url;
+        const source = structuredClone(item.source); source.tunnelGrants = Object.fromEntries((await config.tunnels()).map(entry => [entry.sessionId, entry.accessGrant]));
+        const ticket = await request('/preview', 'POST', { source }, { signal, accountId: actor }); previewTickets.set(cacheKey, ticket); return ticket.url;
+    }
+    async function duration(item, actor) {
+        const local = item.source.kind === 'local' ? await localBlob(item.source) : null;
+        const url = local ? URL.createObjectURL(local) : await sourceUrl(item, undefined, actor);
         return new Promise((resolve, reject) => {
             const media = document.createElement(item.kind), timer = setTimeout(() => finish(Error('STREAM_DURATION_REQUIRED')), 30000);
-            function finish(cause) { clearTimeout(timer); media.onloadedmetadata = media.onerror = null; const value = media.duration; media.removeAttribute('src'); media.load(); cause ? reject(cause) : resolve(value); }
+            function finish(cause) { clearTimeout(timer); media.onloadedmetadata = media.onerror = null; const value = media.duration; media.removeAttribute('src'); media.load(); if (local) URL.revokeObjectURL(url); cause ? reject(cause) : resolve(value); }
             media.preload = 'metadata'; media.onloadedmetadata = () => finish(Number.isFinite(media.duration) && media.duration > 0 ? null : Error('STREAM_DURATION_REQUIRED')); media.onerror = () => finish(Error('STREAM_DURATION_REQUIRED')); media.src = url;
         });
     }
     async function preview(item) {
-        const url = await sourceUrl(item), body = document.createElement('div'); body.className = 'sc-preview';
-        if (['video', 'audio', 'image'].includes(item.kind)) {
-            const node = document.createElement(item.kind === 'image' ? 'img' : item.kind); node.src = url; if (item.kind !== 'image') node.controls = true; else node.alt = item.name; body.append(node);
-        } else { const response = await fetch(url, { cache: 'no-store' }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE'); const pre = document.createElement('pre'); pre.textContent = await response.text(); body.append(pre); }
-        showDialog('资源预览', body);
+        const body = document.createElement('div'), progress = document.createElement('p'); body.className = 'sc-preview'; progress.setAttribute('role', 'status'); progress.textContent = t('正在准备预览…'); body.append(progress);
+        showDialog('资源预览', body); const current = dialog, controller = new AbortController(); let objectUrl;
+        current.previewCleanup = () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+        try {
+            const url = await sourceUrl(item, controller.signal); if (controller.signal.aborted) return;
+            if (['video', 'audio'].includes(item.kind)) {
+                const media = document.createElement(item.kind); media.controls = true; media.preload = 'metadata'; media.onloadedmetadata = () => { progress.textContent = t('预览已就绪'); }; media.onerror = () => { progress.textContent = t('媒体无法播放，可重新读取或检查源文件'); }; media.src = url; body.append(media); return;
+            }
+            const response = await fetch(url, { cache: 'no-store', signal: controller.signal }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
+            const reader = response.body.getReader(), total = Number(response.headers.get('Content-Length')); let loaded = 0; const chunks = [];
+            try { for (;;) { const part = await reader.read(); if (part.done) break; chunks.push(part.value); loaded += part.value.byteLength;
+                if (loaded > (item.kind === 'image' ? 64 : 2) * 1048576) throw Error('STREAM_PREVIEW_TOO_LARGE');
+                progress.textContent = (total > 0 ? Math.min(100, Math.floor(loaded / total * 100)) + '% · ' : t('已加载') + ' · ') + formatSize(loaded);
+            } } finally { reader.cancel().catch(() => {}); }
+            if (controller.signal.aborted) return;
+            const blob = new Blob(chunks, { type: response.headers.get('Content-Type') || item.type });
+            if (item.kind === 'image') {
+                const image = document.createElement('img'); image.alt = item.name; objectUrl = URL.createObjectURL(blob);
+                image.onload = () => { if (!controller.signal.aborted) progress.textContent = t('预览已就绪') + ' · ' + formatSize(loaded); };
+                image.onerror = () => { if (!controller.signal.aborted) progress.textContent = t('图片无法读取，请检查来源'); };
+                progress.textContent = t('图片已加载，正在解码…') + ' · ' + formatSize(loaded); image.src = objectUrl; body.append(image); return;
+            }
+            else { const pre = document.createElement('pre'); pre.textContent = await blob.text(); body.append(pre); }
+            progress.textContent = t('预览已就绪') + ' · ' + formatSize(loaded);
+        } catch (cause) { if (!controller.signal.aborted) progress.textContent = t(cause.message === 'STREAM_PREVIEW_TOO_LARGE' ? '文件超出预览大小限制，请通过原来源查看' : '预览失败，请重试') + ' [' + cause.message + ']'; }
     }
     async function watcher(version) {
         title('观看串流台'); const s = lastList.find(item => item.id === ui.stationId);
@@ -394,11 +495,18 @@
         const info = document.createElement('div'); info.className = 'sc-watch-info'; info.innerHTML = `<strong>${userText(snapshot.number + ' · ' + snapshot.name)}</strong><p>${t('来源设备')} · ${userText(snapshot.deviceName)}${snapshot.owner ? ' · ' + t(snapshot.owner.id === currentUser?.id ? '创建者为自己' : '归属用户') + ' · ' + userText(snapshot.owner.name) : ' · ' + t('无归属')}</p>`;
         main.append(info); const layout = document.createElement('div'); layout.className = 'sc-watch-grid'; const stage = document.createElement('div'); const aside = document.createElement('aside'); aside.className = 'sc-card'; layout.append(stage, aside); main.append(layout);
         const actions = document.createElement('div'); actions.className = 'sc-actions'; main.append(actions);
-        actions.append(button('订阅书签', async () => { await request('/stations/' + snapshot.id + '/bookmark', 'PUT'); notice('已添加账号书签'); }), button('复制观看链接', async () => { await navigator.clipboard.writeText(location.origin + '/?stream=' + snapshot.id); notice('观看链接已复制'); }), button('返回列表', () => navigate('discover')));
+        const fixedAccount = account();
+        const subscription = button(snapshot.subscribed ? '已订阅' : '订阅', async () => {
+            const result = await request('/stations/' + snapshot.id + '/bookmark', snapshot.subscribed ? 'DELETE' : 'PUT', undefined, { accountId: fixedAccount });
+            if (fixedAccount !== account()) return;
+            snapshot.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? '已订阅' : '订阅'); notice(result.subscribed ? '已添加账号书签' : '已取消订阅');
+        });
+        actions.append(subscription, button('复制观看链接', async () => { await copyText(location.origin + '/?stream=' + snapshot.id); notice('观看链接已复制'); }), button('结束本台观看', () => { player?.close(); players.delete(playerKey); navigate('discover'); }), button('返回列表', () => navigate('discover')));
         if (snapshot.owner) actions.append(button('创作者主页', () => navigate('creator', snapshot.owner.id)));
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
         const fillInfo = value => {
             if (ui.view !== 'watch' || ui.stationId !== value.id || version !== renderVersion) return;
+            snapshot = value; subscription.textContent = t(value.subscribed ? '已订阅' : '订阅');
             aside.replaceChildren(); const heading = document.createElement('h2'); heading.textContent = t('全局状态') + ' · ' + stateLabel(['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.playback.status); aside.append(heading);
             for (const item of value.items) {
                 const row = document.createElement('p'); row.className = 'message-content'; row.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
@@ -413,8 +521,8 @@
             const result = await request('/stations/' + snapshot.id + '/control', 'POST', { action, version: latest.playback.version, ...extra }); player?.apply(result); fillInfo(result);
         }
         if (snapshot.visibility !== 'offline') {
-            if (!player) { const fixedAccount = account(); player = global.StreamingPlayer.create({ stationId: snapshot.id,
-                request: (url, method, data) => request(url, method, data, { accountId: fixedAccount }), subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure), onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); } }); players.set(playerKey, player); }
+            if (!player) { player = global.StreamingPlayer.create({ stationId: snapshot.id, watchId: uid(),
+                request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure), onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); } }); players.set(playerKey, player); }
             player.onView = fillInfo; stage.append(player.element); player.apply(snapshot);
         } else { stage.textContent = t('串流台已下线，书签仍保留'); fillInfo(snapshot); }
         if (snapshot.manageable) {
@@ -444,17 +552,42 @@
         if (s.local && s.ownerId) visibility.append(button('放弃归属', async () => { if (confirm(t('放弃台归属，保留普通观看许可和书签？'))) { await request('/stations/' + stationId + '/ownership', 'POST', { action: 'release' }); navigate('local'); } }));
         main.append(visibility); const inviteForm = document.createElement('section'); inviteForm.className = 'sc-card';
         inviteForm.innerHTML = `<h2>${t('生成与发送邀请')}</h2><label>${t('有效期（小时，留空为不过期）')}<input class="sc-hours" type="number" min="0.017" step="1" value="24"></label><label><input type="checkbox" class="sc-thumbnail">${t('附带当前媒体缩略图（可用时）')}</label><div class="sc-device-choices"></div><div class="sc-actions"></div>`;
-        const choices = inviteForm.querySelector('.sc-device-choices');
-        for (const device of config.devices().filter(device => device.deviceId !== config.deviceId())) { const label = document.createElement('label'); const check = document.createElement('input'); check.type = 'checkbox'; check.value = device.deviceId; label.append(check); const name = document.createElement('span'); name.className = 'message-content'; name.textContent = device.name || device.deviceName || device.deviceId; label.append(name); choices.append(label); }
         const input = () => ({ hours: inviteForm.querySelector('.sc-hours').value === '' ? null : Number(inviteForm.querySelector('.sc-hours').value), thumbnail: inviteForm.querySelector('.sc-thumbnail').checked ? thumbnail(stationId) : null });
-        let generalRequestId = uid(); const directRequests = new Map();
+        let generalRequestId = uid();
         inviteForm.querySelector('.sc-actions').append(button('生成通用邀请', async () => { const result = await request('/stations/' + stationId + '/invitations', 'POST', { ...input(), requestId: generalRequestId }); generalRequestId = uid(); await showInvite(result); }), button('发送定向邀请', async () => {
-            const selected = [...choices.querySelectorAll('input:checked')].map(node => node.value); if (!selected.length) { notice('请选择邀请设备'); return; }
-            for (const deviceId of selected) { if (!directRequests.has(deviceId)) directRequests.set(deviceId, uid());
-                await request('/stations/' + stationId + '/invitations', 'POST', { ...input(), deviceId, requestId: directRequests.get(deviceId) });
-                directRequests.delete(deviceId); choices.querySelector('input[value="' + CSS.escape(deviceId) + '"]').checked = false;
+            const actor = account(), settings = input(), body = document.createElement('div'), status = document.createElement('p');
+            status.setAttribute('role', 'status'); status.textContent = t('正在读取可邀请设备…'); body.append(status); showDialog('选择邀请设备', body);
+            const opened = dialog;
+            let result;
+            try { await sync(true); result = await request('/devices', 'GET', undefined, { accountId: actor }); }
+            catch (cause) { status.textContent = t('设备列表读取失败，请关闭后重试') + ' [' + cause.message + ']'; return; }
+            if (dialog !== opened || account() !== actor) return;
+            if (!result.devices.length) { status.textContent = t('暂无可邀请的其它设备，可先连接或关注设备'); return; }
+            status.textContent = t('已默认选择全部设备，包含已关注的离线设备');
+            const choices = document.createElement('div'); choices.className = 'sc-device-choices'; const rows = [];
+            for (const device of result.devices) {
+                const row = document.createElement('label'), check = document.createElement('input'), name = document.createElement('span'), outcome = document.createElement('span');
+                check.type = 'checkbox'; check.checked = true; name.className = 'message-content'; name.textContent = device.name || device.deviceId; outcome.setAttribute('role', 'status');
+                row.append(check, name, outcome); choices.append(row); rows.push({ deviceId: device.deviceId, check, outcome, requestId: uid(), done: false });
             }
-            notice('邀请已发送，等待对方接收与处理'); await renderInvites();
+            const actions = document.createElement('div'); actions.className = 'sc-actions'; let sending = false;
+            for (const [label, mode] of [['全选', 'all'], ['取消全选', 'none'], ['反选', 'invert']]) actions.append(button(label, () => { if (!sending) for (const row of rows) if (!row.done) row.check.checked = mode === 'all' || mode === 'invert' && !row.check.checked; }));
+            actions.append(button('确认发送', async () => {
+                if (sending) return;
+                if (account() !== actor) { status.textContent = t('账号已切换，请关闭后重新选择邀请设备'); return; }
+                const queue = rows.filter(row => row.check.checked && !row.done);
+                if (!queue.length) { status.textContent = t('请选择邀请设备'); return; }
+                sending = true; rows.forEach(row => { row.check.disabled = true; }); status.textContent = t('正在发送定向邀请…');
+                let successes = 0, failures = 0;
+                const send = async () => { while (queue.length) { const row = queue.shift(); row.outcome.textContent = t('发送中…');
+                    try { await request('/stations/' + stationId + '/invitations', 'POST', { ...settings, deviceId: row.deviceId, requestId: row.requestId }, { accountId: actor }); row.done = true; row.check.checked = false; row.outcome.textContent = t('已发送，待送达'); successes++; }
+                    catch (cause) { row.outcome.textContent = t('发送失败，可重试') + ' [' + cause.message + ']'; failures++; }
+                } };
+                try { await Promise.all([send(), send()]); }
+                finally { sending = false; rows.forEach(row => { row.check.disabled = row.done; }); }
+                status.textContent = t('发送成功') + ' · ' + successes + ' / ' + t('发送失败') + ' · ' + failures;
+                if (version === renderVersion && account() === actor) await renderInvites();
+            }, 'sc-primary')); body.append(actions, choices);
         })); main.append(inviteForm);
         const invitationList = document.createElement('section'); invitationList.className = 'sc-card'; main.append(invitationList);
         async function renderInvites() {
@@ -463,7 +596,7 @@
         }
         async function showInvite(invite) {
             const body = document.createElement('div'), input = document.createElement('textarea'); input.readOnly = true; input.value = location.origin + '/?stream_invite=' + invite.token; input.setAttribute('aria-label', t('邀请链接')); body.append(input);
-            body.append(button('复制邀请链接', async () => { await navigator.clipboard.writeText(input.value); notice('邀请链接已复制'); }), button('复制邀请码', async () => { await navigator.clipboard.writeText(invite.token); notice('邀请码已复制'); }));
+            body.append(button('复制邀请链接', async () => { await copyText(input.value); notice('邀请链接已复制'); }), button('复制邀请码', async () => { await copyText(invite.token); notice('邀请码已复制'); }));
             if (!invite.deviceId) {
                 const selector = document.createElement('select'), tunnels = await config.tunnels(); for (const entry of tunnels) selector.add(new Option(entry.name || entry.sessionId, entry.sessionId)); selector.setAttribute('aria-label', t('目标隧道')); body.append(selector);
                 const submissionId = uid(); body.append(button('转发到隧道', async () => {
@@ -538,7 +671,7 @@
         document.getElementById('streamingConsoleBtn')?.addEventListener('click', () => { document.getElementById('connectionHeaderMenu').hidden = true; open().catch(error); });
         document.getElementById('topbarStreamingBtn')?.addEventListener('click', () => open().catch(error));
         document.getElementById('sendMarkdownBtn')?.addEventListener('click', () => compose().catch(error));
-        global.addEventListener('focus', sync); setInterval(sync, 5000);
+        global.addEventListener('focus', sync); global.addEventListener('global-account-changed', sync); setInterval(sync, 30000);
         global.addEventListener('popstate', event => {
             const restore = () => { if (isOpen() && !history.state?.streamingConsole) history.pushState({ ...(history.state || {}), streamingConsole: true }, '', location.href); };
             if (dialog) { closeDialog(); restore(); return; }

@@ -11,7 +11,7 @@ function fixture(t) {
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
     let time = 1000000;
     const revoked = new Set();
-    const options = { dataDir, now: () => time, user: id => ({ id, name: id }), loginRevoked: hash => revoked.has(hash), visibleDevices: () => ['A', 'B'],
+    const options = { dataDir, viewerLeaseMs: 2000000000, now: () => time, user: id => ({ id, name: id }), loginRevoked: hash => revoked.has(hash), visibleDevices: () => ['A', 'B'],
         sources: { resolve: async source => ({ source, name: source.name || 'image.jpg', type: source.type || 'image/jpeg', size: source.size || 10 }) } };
     const service = createStreamingConsole(options);
     for (const d of ['A', 'B', 'C']) service.register(d, d.repeat(40), d);
@@ -21,7 +21,10 @@ function fixture(t) {
     const edit = async (s, items, extra = {}) => service.edit(s.id, a, { configVersion: service.station(s.id).configVersion,
         items: items || [{ id: 'item1', source: { kind: 'local', fileId: 'f1' } }], ...extra });
     const online = (s, visibility = 'public') => service.visibility(s.id, a, { visibility, confirmReset: true, version: service.station(s.id).playback.version });
-    const command = (s, action, extra = {}) => service.control(s.id, a, { action, version: service.station(s.id).playback.version, ...extra });
+    const command = (s, action, extra = {}) => {
+        if (action === 'play') service.report(s.id, b, { watchId: 'fixture-watch', status: 'waiting' });
+        return service.control(s.id, a, { action, version: service.station(s.id).playback.version, ...extra });
+    };
     return { service, a, b, c, create, edit, online, command, options, revoked, time: n => { time += n; }, dataDir };
 }
 test('device capability rejects impersonation and creation retries keep one identity', t => {
@@ -31,6 +34,23 @@ test('device capability rejects impersonation and creation retries keep one iden
     const first = f.create({ creationId: 'request1' }), second = f.create({ creationId: 'request1' });
     assert.equal(first.id, second.id);
     assert.equal(f.service.list(f.a, 'local').length, 1);
+});
+test('eligible invitation devices deduplicate verified aliases and retain followed offline devices', t => {
+    const f = fixture(t); f.service.syncDevice(f.a, { follows: ['legacy-B', 'offline-D', 'legacy-A'], aliases: ['legacy-A'] });
+    f.service.syncDevice(f.b, { aliases: ['legacy-B'] });
+    const targets = f.service.invitableDevices(f.a).map(value => value.deviceId).sort();
+    assert.deepEqual(targets, ['B', 'offline-D']);
+});
+test('playlist resolves a repeated source once and later arrangement reuses its registered reference', async t => {
+    const f = fixture(t), s = f.create(); let calls = 0;
+    f.options.sources.resolve = async source => { calls++; return { source, name: 'image.png', type: 'image/png', size: 10 }; };
+    const source = { kind: 'local', fileId: 'same' };
+    await f.edit(s, [{ id: 'one', source }, { id: 'two', source }]); assert.equal(calls, 1);
+    await f.edit(s, [{ id: 'two', stay: 7 }, { id: 'one', stay: 3 }]); assert.equal(calls, 1);
+    assert.equal(f.service.station(s.id).items[0].source.fileId, 'same');
+    f.options.sources.stat = () => { throw Error('STREAM_SOURCE_REVOKED'); };
+    await assert.rejects(f.edit(s, [{ id: 'two', stay: 9 }]), /SOURCE_REVOKED/);
+    assert.equal(f.service.station(s.id).items[0].stay, 7, 'reference reuse cannot bypass revocation checks or partially save');
 });
 
 test('verified legacy device aliases preserve one-way discovery and fixed-device offline invitations', async t => {
@@ -80,7 +100,7 @@ test('remote owner has controls but no source editing/deletion/release; viewer c
     const s2 = f.service.create({ ...f.a, userId: null }, {});
     assert.throws(() => f.service.control(s2.id, f.b, { action: 'play', version: 1 }), /OWNER_REQUIRED/);
 });
-test('unwatched clock advances across static and AV items, pause and nonloop stop', async t => {
+test('continuously watched clock advances across static and AV items, pause and nonloop stop', async t => {
     const f = fixture(t), s = f.create();
     await f.edit(s, [{ id: 'img', stay: 10, source: { kind: 'local', fileId: 'image' } },
         { id: 'vid', duration: 30, start: 10, source: { kind: 'local', fileId: 'video', name: 'movie.mp4', type: 'video/mp4' } }]);
@@ -155,9 +175,13 @@ test('discovery is device scoped while creator/public link can expose public sta
     assert.equal(separate.view(s.id, f.c).id, s.id);
     assert.equal(separate.list({ ...f.a, deviceId: 'C' }, 'local').length, 0);
 });
-test('restart resumes elapsed clock without creator and no media bytes; genuine session expiry locks', async t => {
+test('restart preserves paused checkpoint until a viewer joins; genuine session expiry locks', async t => {
     const f = fixture(t), s = f.create(); await f.edit(s); f.online(s); f.command(s, 'play'); f.time(5000);
-    const restored = createStreamingConsole(f.options); assert.equal(restored.view(s.id, f.b).playback.position, 5);
+    f.service.unwatch(s.id, f.b, 'fixture-watch');
+    const restored = createStreamingConsole(f.options); f.time(5000);
+    assert.equal(restored.view(s.id, f.b).playback.position, 5); assert.equal(restored.view(s.id, f.b).playback.status, 'paused');
+    restored.report(s.id, f.b, { watchId: 'restored-watch', status: 'waiting' });
+    assert.equal(restored.view(s.id, f.b).playback.status, 'playing');
     const raw = fs.readFileSync(path.join(f.dataDir, 'streaming-console.json'), 'utf8'); assert.ok(!raw.includes('base64,'));
     f.time(100001); restored.tick(); assert.equal(restored.station(s.id).visibility, 'offline');
     assert.throws(() => restored.control(s.id, f.a, { action: 'play', version: 1 }), /SOURCE_LOGIN_REQUIRED/);

@@ -22,6 +22,10 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         if (req.get('Sec-Fetch-Site') === 'cross-site' || req.get('Origin') && req.get('Origin') !== origin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
         next();
     });
+    // Streaming has long-lived viewers and Range reads. Keep its budget local
+    // to this router so a busy station cannot exhaust the page/tunnel budget.
+    router.use(rateLimit({ windowMs: 60000, max: 1200, standardHeaders: true, legacyHeaders: false,
+        handler: (_req, res) => res.status(429).json({ error: 'STREAM_RATE_LIMIT' }) }));
     router.post('/devices', rateLimit({ windowMs: 60000, max: 120, standardHeaders: true, legacyHeaders: false }), wrap((req, res) => {
         const result = service.register(req.body?.deviceId, req.body?.key, req.body?.name);
         res.cookie('stream_device_' + digest(result.deviceId).slice(0, 20), req.body.key, { httpOnly: true, sameSite: 'strict', secure: origin(req).startsWith('https:'), path: '/', maxAge: 30 * 86400000 });
@@ -84,8 +88,9 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     router.post('/sync', wrap((req, res) => {
         const aliases = (Array.isArray(req.body?.tunnels) ? req.body.tunnels : []).slice(0, 500).flatMap(entry => { try { return [tunnel.alias(entry, req.streamActor)]; } catch (_) { return []; } });
         service.syncDevice(req.streamActor, { follows: Array.isArray(req.body?.follows) ? req.body.follows : [], aliases });
-        res.json({ identity: identity(req), accounts: proofs(req).map(({ hash, ...proof }) => proof) });
+        res.json({ identity: identity(req), accounts: proofs(req).map(({ hash, ...proof }) => proof), invitations: service.inbox(req.streamActor) });
     }));
+    router.get('/devices', wrap((req, res) => res.json({ devices: service.invitableDevices(req.streamActor) })));
     router.get('/stations', wrap((req, res) => res.json({ stations: service.list(req.streamActor, req.query.kind, req.query.ownerId) })));
     router.post('/stations', wrap((req, res) => res.status(201).json(service.create(req.streamActor, req.body || {}))));
     router.get('/stations/:id', wrap((req, res) => res.json(service.view(req.params.id, req.streamActor, { manage: req.query.manage === '1' }))));
@@ -97,8 +102,9 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         res.flushHeaders(); const key = crypto.randomUUID();
         const close = () => { clearInterval(heartbeat); listeners.delete(key); };
         const send = () => {
+            if (res.writableEnded || res.destroyed) { close(); return; }
             try { if (!res.write(JSON.stringify({ station: service.view(req.params.id, actor(req)) }) + '\n')) res.end(); }
-            catch (error) { res.end(JSON.stringify({ error: error.message }) + '\n'); }
+            catch (error) { close(); if (!res.writableEnded && !res.destroyed) res.end(JSON.stringify({ error: error.message }) + '\n'); }
         };
         const heartbeat = setInterval(send, 10000); heartbeat.unref();
         res.once('close', close); res.once('finish', close); listeners.set(key, { deviceId, send, end: () => res.end() }); send();
@@ -119,6 +125,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     router.post('/invitations/:token/delivered', wrap((req, res) => res.json(service.delivered(req.params.token, req.streamActor))));
     router.post('/stations/:id/access', wrap((req, res) => res.json(service.access(req.params.id, req.streamActor, req.body?.deviceId, req.body?.allow === true))));
     router.post('/stations/:id/report', wrap((req, res) => res.json(service.report(req.params.id, req.streamActor, req.body || {}))));
+    router.post('/stations/:id/unwatch', wrap((req, res) => res.json(service.unwatch(req.params.id, req.streamActor, req.body?.watchId))));
     router.post('/stations/:id/ticket', wrap(async (req, res) => {
         const a = req.streamActor, itemId = req.body?.itemId, reference = req.body?.reference;
         const resource = await service.resource(req.params.id, itemId, a, reference);

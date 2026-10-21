@@ -1,13 +1,14 @@
 (function (global) {
     'use strict';
     const t = value => global.TunnelI18n?.t(value) || value;
-    function create({ stationId, request, subscribe, onState, onError }) {
+    function create({ stationId, watchId, request, subscribe, onState, onError }) {
+        const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
         const stage = host.querySelector('.sc-stage'), content = host.querySelector('.sc-media'), countdown = host.querySelector('.sc-countdown');
         const controls = host.querySelector('.sc-local-controls'), statusNode = host.querySelector('.sc-play-status');
         let snapshot, receivedAt = 0, media, currentId = '', generation = 0, paused = false, muted = true, volume = 1, actual = 'waiting', failure = '', alive = true;
-        let timer, pollTimer, polling = false, lastReport = 0, ticketExpires = 0, accessGeneration = 0;
+        let timer, pollTimer, reportTimer, polling = false, reporting = false, ticketExpires = 0, accessGeneration = 0, lastStateAt = 0;
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
         const localPause = button('暂停本机观看', () => { paused = !paused; localPause.textContent = t(paused ? '恢复跟随' : '暂停本机观看'); if (paused) { media?.pause?.(); actual = 'paused'; } else sync(true); update(); });
         const sound = button('取消静音', () => { muted = !muted; if (media) media.muted = muted; sound.textContent = t(muted ? '取消静音' : '静音'); sync(true); });
@@ -27,7 +28,7 @@
         }
         function update() {
             const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', reading: '正在展示' };
-            statusNode.textContent = failure || t(statuses[actual] || '等待播放');
+            statusNode.textContent = failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放');
             statusNode.dataset.status = actual;
             const item = snapshot?.items.find(item => item.id === currentId);
             if (item && !item.duration && !paused) {
@@ -37,14 +38,21 @@
                 stage.style.setProperty('--sc-remaining', String(remaining / item.stay));
                 stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
             } else { countdown.hidden = true; stage.classList.remove('sc-edge-countdown'); }
-            if (snapshot && Date.now() - lastReport > 5000) {
-                lastReport = Date.now();
-                request('/stations/' + stationId + '/report', 'POST', { itemId: currentId, position: media?.currentTime || target(), status: actual }).catch(() => {});
-            }
         }
+        async function report() {
+            if (!alive || reporting) return; reporting = true; const revision = accessGeneration;
+            try {
+                const result = await request('/stations/' + stationId + '/report', 'POST', { watchId, itemId: currentId, position: media?.currentTime || target(), status: actual });
+                if (alive && revision === accessGeneration && result.station) apply(result.station);
+            } catch (error) { if (alive) onError?.(error); }
+            finally { reporting = false; }
+        }
+        function unwatch() { accessGeneration++; request('/stations/' + stationId + '/unwatch', 'POST', { watchId }, { keepalive: true }).catch(() => {}); }
+        const resumePage = event => { if (event.persisted) { watchId = initialWatchId + ':' + (++resumeCount); report(); } };
+        global.addEventListener('pagehide', unwatch); global.addEventListener('pageshow', resumePage);
         async function ticket(itemId, reference) { return request('/stations/' + stationId + '/ticket', 'POST', { itemId, reference }); }
         async function load(item) {
-            const revision = ++generation; currentId = item?.id || ''; failure = ''; actual = 'waiting';
+            const revision = ++generation; currentId = item?.id || ''; failure = ''; actual = 'waiting'; ticketExpires = 0;
             if (media) { media.pause?.(); media.removeAttribute('src'); media.load?.(); } media = null;
             content.replaceChildren(); countdown.hidden = true;
             if (!item) { actual = 'waiting'; update(); return; }
@@ -97,8 +105,8 @@
             }
         }
         function apply(value) {
-            if (snapshot && value.playback.version < snapshot.playback.version) return;
-            snapshot = value; receivedAt = performance.now(); sync(); update(); onState?.(value);
+            if (!alive || snapshot && (value.playback.version < snapshot.playback.version || value.serverTime < snapshot.serverTime)) return;
+            snapshot = value; receivedAt = performance.now(); lastStateAt = Date.now(); sync(); update(); onState?.(value);
         }
         async function poll() {
             if (!alive || polling) return; polling = true; const accessAtRequest = accessGeneration;
@@ -114,9 +122,11 @@
             } finally { polling = false; }
         }
         const unsubscribe = subscribe?.(apply, error => { failure = t('连接中断，正在重新读取台状态') + ' [' + error.message + ']'; poll(); });
-        timer = setInterval(() => { sync(); update(); }, 250); pollTimer = setInterval(poll, 10000);
+        timer = setInterval(() => { sync(); update(); }, 250);
+        pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
+        reportTimer = setInterval(report, 15000); report();
         return { element: host, apply, poll, snapshot: () => snapshot,
-            close() { alive = false; generation++; unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); media?.pause(); media?.removeAttribute('src'); host.remove(); } };
+            close() { alive = false; generation++; unwatch(); global.removeEventListener('pagehide', unwatch); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); media?.pause(); media?.removeAttribute('src'); host.remove(); } };
     }
     global.StreamingPlayer = { create };
 })(window);

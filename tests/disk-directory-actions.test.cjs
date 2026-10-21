@@ -5,15 +5,17 @@ const source = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 const ui = source('client/disk-ui.js');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function uploadFixture({ created = true, destination = '新目录', failed = false } = {}) {
-    const rendered = [], linked = [], uploads = [];
+function uploadFixture({ created = true, destination = '新目录', failed = false, targetSpace = '' } = {}) {
+    const rendered = [], linked = [], uploads = [], timers = [], classes = new Set(), scrolls = [];
+    const row = { dataset: { fileId: 'uploaded-file' }, classList: { add: value => classes.add(value), remove: value => classes.delete(value) }, scrollIntoView: options => scrolls.push(options) };
     const overlay = { hidden: false };
+    let space = '';
     let finish;
     const result = { items: [{ id: 'uploaded-file', name: '新文件.txt' }] };
     const pending = new Promise((resolve, reject) => { finish = () => failed ? reject(Error('TELEGRAM_NETWORK_ERROR')) : resolve(result); });
     const context = vm.createContext({ telegramDriveMountContext:null, rendered, overlay, result,
-        document: { getElementById: () => overlay }, history: { pushState() {} }, location: { href: 'http://localhost/#fixture' },
-        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { context:()=>({accountId:'fixture',diskSpace:'',requestBase:'/api/telegram/drive'}),getSpace:()=>'',getAccount: () => 'fixture', raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
+        document: { getElementById: () => overlay, querySelectorAll: () => [row] }, setTimeout: (run, ms) => { timers.push({ run, ms }); }, history: { pushState() {} }, location: { href: 'http://localhost/#fixture' },
+        window: { DiskFileEditor:{open:async()=>{}},DiskClient: { context:()=>({accountId:'fixture',diskSpace:space,requestBase:'/api/telegram/drive'}),getSpace:()=>space,setSpace:value=>{space=value;},setMount(){},getAccount: () => 'fixture', raw: async () => ({ identity: { id: 'fixture' } }), upload: (...args) => { uploads.push(args); return pending; } } }
     });
     vm.runInContext(`
         let telegramDrivePath='原目录', telegramDriveNavigationVersion=0, telegramDriveHistorySession='fixture';
@@ -26,13 +28,13 @@ function uploadFixture({ created = true, destination = '新目录', failed = fal
             get navigationVersion(){return telegramDriveNavigationVersion}, get path(){return telegramDrivePath}};
         this.drive={navigate:navigateTelegramDrive, reveal:revealTelegramDriveUploadedDirectory,
             get version(){return telegramDriveNavigationVersion},get path(){return telegramDrivePath},get stale(){return telegramDriveContentStale},
-            get savedPath(){return diskWindowState.path},hide(){overlay.hidden=true;telegramDriveHistorySession=''}};
+            get savedPath(){return diskWindowState.path},hide(){overlay.hidden=true;telegramDriveHistorySession=''},restore(){overlay.hidden=false;highlightTelegramDriveUploadedFiles()}};
     `, context);
-    context.window.DiskUI.chooseSaveDestination = async options => { if(destination===null)return null;const transportContext=context.window.DiskClient.context();if (created) options.onCreateDirectory(destination,transportContext); return {path:destination,transportContext}; };
+    context.window.DiskUI.chooseSaveDestination = async options => { if(destination===null)return null;const transportContext={...context.window.DiskClient.context(),diskSpace:targetSpace};if (created) options.onCreateDirectory?.(destination,transportContext); return {path:destination,transportContext}; };
     vm.runInContext(source('client/disk-tunnel-adapter.js'), context);
     context.window.DiskTunnelAdapter.configure({ filesForRecord: () => [{ id: 'source-file', name: '新文件.txt', size: 3, type: 'text/plain' }],
         readFile: async () => new Blob(['abc']), linkBackup: async (...args) => { linked.push(args); } });
-    return { drive: context.drive, rendered, linked, uploads, finish, result,
+    return { drive: context.drive, rendered, linked, uploads, finish, result, timers, classes, scrolls,
         save: () => context.window.DiskTunnelAdapter.save({ id: 'source-record' }) };
 }
 
@@ -56,8 +58,30 @@ test('上传期间切换目录，或切换后回到原目录，都不会被完�
     }
 });
 
-test('选择已有目录、取消保存或上传失败，都不自动跳转到新目录', async () => {
-    for (const options of [{ created: false }, { created: false, destination: null }, { failed: true }]) {
+test('选择已有目录也在上传成功后自动定位', async () => {
+    const f = uploadFixture({ created: false, destination: '已有目录' }), saving = f.save(); await tick();
+    f.finish(); await saving; assert.equal(f.drive.path, '已有目录');
+});
+test('缩小恢复不取消定位，已上传行滚入视口并高亮恰好一秒', async () => {
+    const f = uploadFixture({ created: false }), saving = f.save(); await tick();
+    f.drive.hide(); f.drive.restore(); assert.equal(f.drive.version, 0);
+    f.finish(); await saving; assert.equal(f.drive.path, '新目录');
+    assert.equal(f.scrolls.length, 1); assert.ok(f.classes.has('disk-upload-located'));
+    assert.equal(f.timers[0].ms, 1000); f.timers[0].run(); assert.ok(!f.classes.has('disk-upload-located'));
+});
+test('隐藏时上传结束的高亮保留到再次显示', async () => {
+    const f = uploadFixture(), saving = f.save(); await tick(); f.drive.hide(); f.finish(); await saving;
+    assert.equal(f.scrolls.length, 0); f.drive.restore(); assert.equal(f.scrolls.length, 1);
+    assert.ok(f.classes.has('disk-upload-located'));
+});
+test('选择另一分区保存且没有主动导航，也会定位到该分区的目标目录', async () => {
+    const f = uploadFixture({ targetSpace: 'selected-partition' }), saving = f.save(); await tick(); f.finish(); await saving;
+    assert.equal(f.drive.path, '新目录'); assert.equal(f.uploads[0][3].transportContext.diskSpace, 'selected-partition');
+    assert.ok(f.classes.has('disk-upload-located'));
+});
+
+test('取消保存或上传失败，不自动跳转到新目录', async () => {
+    for (const options of [{ created: false, destination: null }, { failed: true }]) {
         const f = uploadFixture(options), saving = f.save(); await tick(); f.finish();
         if (options.failed) await assert.rejects(saving, /TELEGRAM_NETWORK_ERROR/); else await saving;
         assert.equal(f.drive.path, '原目录'); assert.equal(f.rendered.length, 0);

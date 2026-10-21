@@ -2,12 +2,17 @@
 // Consumer-side adapter over the existing object-storage contract. The drive
 // API and storage implementation do not import or know about stations.
 function createStreamingDisk({ objects, partitions, identity }) {
+    const requestIndexes = new WeakMap();
     const missing = () => { throw new Error('STREAM_SOURCE_DELETED'); };
-    function locate(source) {
+    function locate(source, indexes) {
         const partition = partitions.find(source.userId, source.diskSpace || '');
         const scope = { userId: source.userId, diskSpace: partition.scopeKey };
         let object = source.key && objects.stat?.(scope, source.key);
-        if (!object || object.file?.id !== source.fileId) object = objects.list(scope).find(value => value.kind === 'file' && value.file?.id === source.fileId);
+        if (!object || object.file?.id !== source.fileId) {
+            const scopeKey = JSON.stringify(scope); let index = indexes?.get(scopeKey);
+            if (!index) { index = new Map(objects.list(scope).filter(value => value.kind === 'file').map(value => [value.file?.id, value])); indexes?.set(scopeKey, index); }
+            object = index.get(source.fileId);
+        }
         if (!object || ['blocked', 'deleted'].includes(object.file.reviewStatus)) missing();
         return { scope, object };
     }
@@ -19,7 +24,8 @@ function createStreamingDisk({ objects, partitions, identity }) {
             const user = identity(selected);
             if (!user) throw new Error('LOGIN_REQUIRED');
             const source = { kind: 'disk', userId: user.id, diskSpace: String(input.diskSpace || ''), fileId: String(input.fileId || '') };
-            const { object } = locate(source);
+            let indexes = requestIndexes.get(req); if (!indexes) { indexes = new Map(); requestIndexes.set(req, indexes); }
+            const { object } = locate(source, indexes);
             source.key = object.key;
             return { source, name: object.file.name, type: object.type, size: object.size };
         },

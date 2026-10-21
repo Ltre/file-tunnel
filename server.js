@@ -257,7 +257,7 @@ const RATE_LIMIT = {
     // this generic page limiter makes one legitimate large upload lock every
     // drive route for the rest of the 15-minute window.
     skip(req) {
-        return req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ||
+        return req.path.startsWith('/api/streaming/') || req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ||
             ['/api/telegram/drive/uploads', '/api/telegram/drive/operations', '/api/telegram/drive/list', '/api/telegram/drive/tree', '/api/telegram/drive/directories', '/api/telegram/drive/files'].some(prefix => req.path.startsWith(prefix)) ||
             req.path.startsWith('/api/telegram/disk/v1') ||
             req.path.startsWith('/api/telegram/disk-admin') ||

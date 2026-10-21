@@ -24,14 +24,14 @@ function mediaKind(name, type = '') {
     fail('STREAM_TYPE_UNSUPPORTED');
 }
 function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
-    loginRevoked = () => false, visibleDevices = () => [], sources = {}, onChange = () => {} }) {
+    loginRevoked = () => false, visibleDevices = () => [], sources = {}, onChange = () => {}, viewerLeaseMs = 45000 }) {
     const filename = path.join(dataDir, 'streaming-console.json');
     let db = { version: 1, devices: {}, stations: {}, bookmarks: {} };
     if (fs.existsSync(filename)) {
         db = JSON.parse(fs.readFileSync(filename, 'utf8'));
         if (db.version !== 1 || !db.devices || !db.stations || !db.bookmarks) fail('STREAM_STORE_INVALID');
     }
-    const viewers = new Map();
+    const viewers = new Map(), closedViewers = new Map();
     function persist() {
         fs.mkdirSync(dataDir, { recursive: true });
         const temp = filename + '.' + process.pid + '.tmp';
@@ -100,9 +100,16 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         }
         Object.assign(p, { itemId: items[index].id, position: elapsed, at: time, version: p.version + 1 }); return true;
     }
-    function position(s) {
+    function position(s, time = now()) {
         const p = s.playback, item = s.items.find(item => item.id === p.itemId);
-        return item ? Math.min(length(item), p.position + (p.status === 'playing' && s.visibility !== 'offline' ? Math.max(0, now() - p.at) / 1000 : 0)) : 0;
+        return item ? Math.min(length(item), p.position + (p.status === 'playing' && s.visibility !== 'offline' ? Math.max(0, time - p.at) / 1000 : 0)) : 0;
+    }
+    function audience(s) { return [...viewers.values()].filter(v => v.stationId === s.id && v.expiresAt > now()).length; }
+    function pauseWithoutAudience(s, time) {
+        if (s.playback.status !== 'playing') return false;
+        advance(s, time);
+        Object.assign(s.playback, { position: position(s, time), at: now(), status: s.playback.status === 'stopped' ? 'stopped' : 'paused', version: s.playback.version + 1 });
+        return true;
     }
     function summary(s, actor) {
         const manageable = canManage(s, actor);
@@ -111,6 +118,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             owner: owner ? { id: owner.id, name: owner.name || owner.username || owner.id } : null,
             ownerId: s.ownerId, visibility: s.visibility, locked: !sourceLoggedIn(s), local: s.deviceId === actor.deviceId,
             manageable, configVersion: s.configVersion, itemCount: s.items.length, loop: s.loop, countdown: s.countdown,
+            subscribed: Boolean(actor.userId && db.bookmarks[actor.userId]?.includes(s.id)), viewerCount: audience(s),
             playback: { ...s.playback, position: position(s), at: now() }, serverTime: now(), epoch: s.epoch };
     }
     function view(stationId, actor, { manage = false } = {}) {
@@ -119,7 +127,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return { ...summary(s, actor), items: s.items.map(item => {
             const { source, references, ...publicItem } = item;
             return publicItem;
-        }), viewers: canManage(s, actor) ? [...viewers.values()].filter(v => v.stationId === s.id && now() - v.updatedAt < 15000) : undefined,
+        }), viewers: canManage(s, actor) ? [...viewers.values()].filter(v => v.stationId === s.id && v.expiresAt > now()).map(({ actor: _actor, ...report }) => report) : undefined,
         blocked: canManage(s, actor) ? Object.keys(s.blocked) : undefined };
     }
     function syncDevice(actor, { follows = [], aliases = [] } = {}) {
@@ -152,8 +160,16 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function tick() {
         let dirty = false;
+        for (const [key, expiresAt] of closedViewers) if (expiresAt <= now()) closedViewers.delete(key);
+        const ended = new Map();
+        for (const [key, value] of viewers) {
+            let valid = value.expiresAt > now();
+            try { allowed(station(value.stationId), value.actor); } catch (_) { valid = false; }
+            if (!valid) { viewers.delete(key); ended.set(value.stationId, Math.max(ended.get(value.stationId) || 0, Math.min(now(), value.expiresAt))); }
+        }
         for (const s of Object.values(db.stations)) {
             if (!sourceLoggedIn(s)) dirty = lock(s) || dirty;
+            if (!audience(s)) dirty = pauseWithoutAudience(s, ended.get(s.id) ?? s.playback.at) || dirty;
             dirty = advance(s) || dirty;
         }
         if (dirty) { persist(); onChange(); }
@@ -189,13 +205,16 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         if (expected !== s.configVersion) fail('STREAM_CONFLICT');
         if (!Array.isArray(input.items) || input.items.length > 500) fail('STREAM_PLAYLIST_INVALID');
         const ids = new Set();
-        const items = [];
+        const items = [], resolutions = new Map();
         for (const value of input.items) {
             if (!validId(value.id) || ids.has(value.id)) fail('STREAM_PLAYLIST_INVALID');
             ids.add(value.id);
             const previous = s.items.find(item => item.id === value.id);
-            const resolved = value.source ? await sources.resolve(value.source, actor, req) : previous;
+            const locator = value.source && JSON.stringify(value.source);
+            if (locator && !resolutions.has(locator)) resolutions.set(locator, await sources.resolve(value.source, actor, req));
+            const resolved = locator ? resolutions.get(locator) : previous;
             if (!resolved?.source) fail('STREAM_SOURCE_INVALID');
+            if (!locator) sources.stat?.(resolved.source);
             const kind = mediaKind(resolved.name, resolved.type);
             const duration = ['video', 'audio'].includes(kind) ? number(value.duration ?? previous?.duration, 0.01, 31536000, 'STREAM_DURATION_REQUIRED') : null;
             const start = duration ? number(value.start ?? 0, 0, duration - 0.001, 'STREAM_START_INVALID') : 0;
@@ -239,6 +258,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
                 if (!item) fail('STREAM_ITEM_NOT_FOUND'); p.itemId = item.id; p.position = 0;
             } else if (input.action === 'seek') p.position = number(input.position, 0, length(items[index]));
             else fail('STREAM_COMMAND_INVALID');
+            if (p.status === 'playing' && !audience(s)) p.status = 'paused';
             p.version++; return view(stationId, actor, { manage: true });
         });
     }
@@ -280,6 +300,14 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     function relatedTo(actor) {
         const related = [...(db.devices[actor.deviceId]?.follows || []), ...visibleDevices(actor.deviceId, db.devices[actor.deviceId]?.aliases || [])];
         return new Set([...related, ...rootsForAliases(related)]);
+    }
+    function invitableDevices(actor) {
+        const own = new Set([actor.deviceId, ...(db.devices[actor.deviceId]?.aliases || [])]), targets = new Map();
+        for (const candidate of relatedTo(actor)) {
+            const canonical = rootsForAliases([candidate])[0] || candidate;
+            if (!own.has(candidate) && !own.has(canonical)) targets.set(canonical, { deviceId: canonical, name: db.devices[canonical]?.name || candidate });
+        }
+        return [...targets.values()];
     }
     function inviteTargets(invite, actor) {
         return invite.deviceId && (invite.deviceId === actor.deviceId || !db.devices[invite.deviceId] && db.devices[actor.deviceId]?.aliases?.includes(invite.deviceId));
@@ -390,14 +418,37 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return change(() => { if (allow) delete s.blocked[target]; else s.blocked[target] = now() || 1; return { ok: true }; });
     }
     function report(stationId, actor, input) {
-        const s = station(stationId); allowed(s, actor);
+        tick(); const s = station(stationId); allowed(s, actor);
         const allowedStatus = ['playing', 'paused', 'buffering', 'waiting', 'blocked', 'error', 'reading'];
         if (!allowedStatus.includes(input.status)) fail('STREAM_PARAMETER_INVALID');
-        const report = { stationId, deviceId: actor.deviceId, name: db.devices[actor.deviceId]?.name || actor.deviceId,
+        const watchId = input.watchId || actor.deviceId;
+        if (!validId(watchId)) fail('STREAM_DEVICE_INVALID');
+        const key = stationId + ':' + actor.deviceId + ':' + watchId, empty = !audience(s);
+        if (closedViewers.has(key)) fail('STREAM_WATCH_ENDED');
+        if (!viewers.has(key) && viewers.size >= 1024) fail('STREAM_LIMIT');
+        const report = { stationId, watchId, actor: { deviceId: actor.deviceId, userId: actor.userId }, deviceId: actor.deviceId, name: db.devices[actor.deviceId]?.name || actor.deviceId,
             itemId: s.items.some(v => v.id === input.itemId) ? input.itemId : null,
-            position: number(input.position || 0, 0, 31536000), status: input.status, updatedAt: now() };
-        for (const [key, value] of viewers) if (now() - value.updatedAt > 30000) viewers.delete(key);
-        viewers.set(stationId + ':' + actor.deviceId, report); return { ok: true };
+            position: number(input.position || 0, 0, 31536000), status: input.status, updatedAt: now(), expiresAt: now() + viewerLeaseMs };
+        viewers.set(key, report);
+        if (empty || s.playback.status === 'playing' && now() - s.playback.at >= 15000) change(() => {
+            if (empty && available(s).length) {
+                const items = available(s), p = s.playback;
+                const current = items.find(item => item.id === p.itemId);
+                if (!current || p.position >= length(current)) { p.itemId = items[0].id; p.position = 0; }
+                p.status = 'playing'; p.at = now(); p.version++;
+            } else { advance(s); s.playback.position = position(s); s.playback.at = now(); }
+        });
+        return { ok: true, station: view(stationId, actor) };
+    }
+    function unwatch(stationId, actor, watchId) {
+        if (!validId(watchId)) fail('STREAM_DEVICE_INVALID');
+        const key = stationId + ':' + actor.deviceId + ':' + watchId;
+        closedViewers.set(key, now() + viewerLeaseMs);
+        if (closedViewers.size > 2048) closedViewers.delete(closedViewers.keys().next().value);
+        if (!viewers.has(key)) return { ok: true };
+        viewers.delete(key); const s = db.stations[stationId];
+        if (s && !audience(s)) change(() => pauseWithoutAudience(s, now()));
+        return { ok: true };
     }
     async function resource(stationId, itemId, actor, reference) {
         const s = station(stationId); tick(); allowed(s, actor);
@@ -423,7 +474,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return copy(s.items.find(item => item.id === itemId)?.references || []).map(({ id, url }) => ({ id, url }));
     }
     return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark,
-        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, access, report, resource, unavailable, references,
-        tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, snapshot: () => copy(db) };
+        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, access, report, unwatch, resource, unavailable, references,
+        tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, invitableDevices, snapshot: () => copy(db) };
 }
 module.exports = { createStreamingConsole, mediaKind, digest };

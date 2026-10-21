@@ -14,7 +14,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     const run = args => execute(process.execPath, args, { cwd: ROOT, timeout: 110000, maxBuffer: 8 * 1024 * 1024 });
     await run(['tools/deploy/build.mjs', '--profile', 'txsl', '--out', relative, '--source-branch', 'fixture-261012', '--source-commit', '0123456789abcdef0123456789abcdef01234567']);
     const manifest = JSON.parse(fs.readFileSync(path.join(temporary, 'build-manifest.json')));
-    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save'];
+    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'account-ui', 'streaming-console', 'streaming-player', 'streaming-i18n'];
     const sourcePages = ['index.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
     for (const name of required) {
         const source = 'client/' + name + '.js', asset = manifest.scripts[source];

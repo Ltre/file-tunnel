@@ -42,7 +42,7 @@ test('real HTTP drive adapter delegates only selected bytes without recipient so
     const cookieMedia = await fetch(f.base + ticket.body.url, { headers: { Cookie: f.deviceCookies.get('device-C') } });
     assert.equal(cookieMedia.status, 200); await cookieMedia.arrayBuffer();
     const partial = await fetch(f.base + ticket.body.url, { headers: { ...f.headers('device-C'), Range: 'bytes=0-5' } });
-    assert.equal(partial.status, 206); assert.equal((await partial.arrayBuffer()).byteLength, 6);
+    assert.equal(partial.status, 206, partial.status === 206 ? '' : await partial.clone().text()); assert.equal((await partial.arrayBuffer()).byteLength, 6);
     assert.match(partial.headers.get('cache-control'), /no-store/);
     const suffix = await fetch(f.base + ticket.body.url, { headers: { ...f.headers('device-C'), Range: 'bytes=-6' } }); assert.equal(suffix.status, 206); await suffix.arrayBuffer();
     const invalid = await fetch(f.base + ticket.body.url, { headers: { ...f.headers('device-C'), Range: 'bytes=999999-' } }); assert.equal(invalid.status, 416);
@@ -80,6 +80,7 @@ test('Markdown programme delegates its exact tunnel reference, with no unrelated
 
 test('authenticated state stream broadcasts committed controls and terminates after kick', async t => {
     const f = await setup(t), controller = new AbortController(); t.after(() => controller.abort());
+    await f.call('device-B', '/stations/' + f.s.id + '/report', 'POST', { watchId: 'http-watch', status: 'waiting' });
     const response = await fetch(f.base + '/api/streaming/stations/' + f.s.id + '/events', { headers: f.headers('device-B'), signal: controller.signal });
     assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /ndjson/);
     const reader = response.body.getReader(); let pending = '';
