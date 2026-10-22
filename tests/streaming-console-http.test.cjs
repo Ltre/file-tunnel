@@ -49,6 +49,40 @@ test('real HTTP drive adapter delegates only selected bytes without recipient so
     const stranger = await f.call('device-C', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: 'unselected' }); assert.equal(stranger.status, 422);
     const anonymousBookmark = await f.call('device-C', '/stations/' + f.s.id + '/bookmark', 'PUT'); assert.equal(anonymousBookmark.status, 403);
 });
+
+test('playlist save streams real progress and confirms success only after persistence', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id);
+    const response = await fetch(f.base + '/api/streaming/stations/' + f.s.id, { method: 'PUT',
+        headers: { ...f.headers('device-A', true), Accept: 'application/x-ndjson', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ configVersion: station.configVersion, items: f.items.map(item => ({ id: item.id, stay: 8 })) }) });
+    assert.match(response.headers.get('Content-Type'), /application\/x-ndjson/);
+    const lines = (await response.text()).trim().split('\n').map(value => JSON.parse(value));
+    assert.deepEqual(lines.filter(value => value.progress?.phase === 'checked').map(value => value.progress.completed), [1, 2, 3]);
+    assert.equal(lines.at(-1).result.configVersion, station.configVersion);
+    assert.equal(station.items[0].stay, 8);
+    const failure = await fetch(f.base + '/api/streaming/stations/' + f.s.id, { method: 'PUT',
+        headers: { ...f.headers('device-A', true), Accept: 'application/x-ndjson', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ configVersion: -1, items: [] }) });
+    const error = (await failure.text()).trim().split('\n').map(value => JSON.parse(value));
+    assert.equal(error.at(-1).error, 'STREAM_CONFLICT'); assert.ok(error.every(value => !value.result));
+});
+
+test('account blacklist immediately invalidates issued HTTP media tickets and can be lifted per station', async t => {
+    const f = await setup(t); await f.login('bob');
+    const open = f.api.objectStorage.open; let readClosed = Promise.resolve();
+    f.api.objectStorage.open = async (...args) => { const result = await open(...args); readClosed = new Promise(resolve => result.stream.once('close', resolve)); return result; };
+    const viewerHeaders = { ...f.headers('device-B', true), 'X-Disk-Account': 'bob', 'Content-Type': 'application/json' };
+    const issued = await fetch(f.base + '/api/streaming/stations/' + f.s.id + '/ticket', { method: 'POST', headers: viewerHeaders, body: JSON.stringify({ itemId: f.items[0].id }) });
+    assert.equal(issued.status, 200); const ticket = await issued.json();
+    const blocked = await f.call('device-A', '/stations/' + f.s.id + '/access', 'POST', { userId: 'bob', allow: false }, true); assert.equal(blocked.status, 200);
+    const denied = await fetch(f.base + ticket.url, { headers: viewerHeaders }); assert.equal(denied.status, 403); assert.equal((await denied.json()).error, 'STREAM_KICKED');
+    const list = await f.call('device-A', '/stations/' + f.s.id + '?manage=1', 'GET', undefined, true); assert.deepEqual(list.body.blockedUsers, ['bob']);
+    await f.call('device-A', '/stations/' + f.s.id + '/access', 'POST', { userId: 'bob', allow: true }, true);
+    const allowed = await fetch(f.base + ticket.url, { headers: viewerHeaders }); assert.equal(allowed.status, 200); await allowed.arrayBuffer();
+    // Content-Length may finish the client body before the server's source
+    // emits close and releases its read lease. Keep the fixture DB alive.
+    await readClosed;
+});
 test('HTTP tickets stop after access reset, kick, offline and source deletion; bookmarks survive', async t => {
     const f = await setup(t), station = f.streaming.service.station(f.s.id), item = f.items.find((item, index) => f.files[index].name.endsWith('.png'));
     let ticket = (await f.call('device-B', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: item.id })).body;
@@ -110,6 +144,6 @@ test('HTTP device inbox, general invite account promotion and CSRF rejection use
     assert.equal((await f.call('device-C', '/invitations/' + direct.body.token, 'GET', undefined, true)).status, 403);
     const inbox = await f.call('device-B', '/inbox'); assert.equal(inbox.body.invitations[0].status, 'sent');
     await f.call('device-B', '/invitations/' + direct.body.token + '/delivered', 'POST', {});
-    assert.equal((await f.call('device-B', '/inbox')).body.invitations[0].status, 'delivered');
+    assert.equal((await f.call('device-B', '/inbox')).body.invitations[0].status, 'sent');
     const crossOrigin = await fetch(f.base + '/api/streaming/stations', { method: 'POST', headers: { ...f.headers('device-A', true), Origin: 'https://other.invalid', 'Content-Type': 'application/json' }, body: '{}' }); assert.equal(crossOrigin.status, 403);
 });

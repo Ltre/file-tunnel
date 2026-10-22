@@ -3,6 +3,16 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['当前账号创建的串流台','Stations owned by this account'], ['本机其它串流台','Other stations on this device'],
+        ['媒体时长检查已完成，可以保存节目单','Media duration checks completed; the playlist can now be saved'],
+        ['来源文件不是支持的可预览类型，请重新选择','This source is not a supported preview type; select another file'],
+        ['已生成','Generated'], ['已发送','Sent'], ['已静音','Muted'], ['本机加载延迟（秒）','Local loading delay (seconds)'],
+        ['最小化','Minimize'], ['返回首页','Return home'], ['刷新','Refresh'],
+        ['尚未保存：媒体时长检查未完成','Not saved: media duration checks are incomplete'], ['正在写入节目单…','Writing playlist…'], ['正在校验节目来源…','Checking playlist sources…'],
+        ['节目单未保存，请检查来源后重试','Playlist was not saved; check the sources and retry'], ['保存结果尚未确认，请重新读取串流台状态','Save result is unconfirmed; reload the station state'],
+        ['观看者黑名单','Viewer blacklist'], ['黑名单类型','Blacklist type'], ['黑名单 ID','Blacklist ID'], ['设备 ID','Device ID'], ['用户账号 ID','User account ID'],
+        ['加入黑名单','Add to blacklist'], ['解除限制','Remove restriction'], ['本台暂无黑名单条目','No blacklist entries for this station'], ['请输入需要限制的 ID','Enter the ID to restrict'],
+        ['来源内容已变更，请重新导入该节目项','Source content changed; import this item again'], ['邀请不存在或已被删除，请索取新邀请','Invitation is unavailable or deleted; request a new one'],
         ['订阅','Subscribe'], ['已订阅','Subscribed'], ['已取消订阅','Bookmark removed'], ['结束本台观看','End viewing this station'],
         ['全台已暂停，本机跟随','Following the global pause'],
         ['图片已加载，正在解码…','Image loaded; decoding…'], ['文件超出预览大小限制，请通过原来源查看','File exceeds the preview size limit; open it at its original source'],

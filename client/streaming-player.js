@@ -1,132 +1,164 @@
 (function (global) {
     'use strict';
     const t = value => global.TunnelI18n?.t(value) || value;
+    // Only this device's cursor retains loading time. Explicit global commands
+    // still replace it; station permissions and the server clock are unchanged.
     function create({ stationId, watchId, request, subscribe, onState, onError }) {
         const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
-        host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
+        host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
         const stage = host.querySelector('.sc-stage'), content = host.querySelector('.sc-media'), countdown = host.querySelector('.sc-countdown');
-        const controls = host.querySelector('.sc-local-controls'), statusNode = host.querySelector('.sc-play-status');
-        let snapshot, receivedAt = 0, media, currentId = '', generation = 0, paused = false, muted = true, volume = 1, actual = 'waiting', failure = '', alive = true;
-        let timer, pollTimer, reportTimer, polling = false, reporting = false, ticketExpires = 0, accessGeneration = 0, lastStateAt = 0;
+        const controls = host.querySelector('.sc-local-controls'), statusNode = host.querySelector('.sc-play-status'), muteNode = host.querySelector('.sc-muted');
+        let snapshot, receivedAt = 0, currentId = '', media, active, next, generation = 0, paused = false, muted = false, volume = 1;
+        let actual = 'waiting', failure = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
+        let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
-        const localPause = button('暂停本机观看', () => { paused = !paused; localPause.textContent = t(paused ? '恢复跟随' : '暂停本机观看'); if (paused) { media?.pause?.(); actual = 'paused'; } else sync(true); update(); });
-        const sound = button('取消静音', () => { muted = !muted; if (media) media.muted = muted; sound.textContent = t(muted ? '取消静音' : '静音'); sync(true); });
+        const localPause = button('暂停本机观看', () => { paused = !paused; localPause.textContent = t(paused ? '恢复跟随' : '暂停本机观看'); if (paused) { media?.pause(); actual = 'paused'; } else align(); lastTick = performance.now(); sync(true); update(); });
+        const sound = button('静音', () => { muted = !muted; if (media) media.muted = muted; sync(true); update(); });
         const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
-        slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; }; volumeLabel.append(slider); controls.append(volumeLabel);
-        button('开始观看', () => { paused = false; localPause.textContent = t('暂停本机观看'); sync(true); });
+        slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
+        button('开始观看', () => { paused = false; localPause.textContent = t('暂停本机观看'); if (actual === 'error') align(); lastTick = performance.now(); sync(true); update(); });
         button('媒体全屏', async () => {
             try { if (document.fullscreenElement === host) await document.exitFullscreen(); else if (host.requestFullscreen) await host.requestFullscreen(); else host.classList.toggle('sc-media-fullscreen'); }
             catch (_) { host.classList.toggle('sc-media-fullscreen'); }
         });
         const leaveFullscreen = button('退出全屏', () => { if (document.fullscreenElement === host) document.exitFullscreen(); host.classList.remove('sc-media-fullscreen'); }); leaveFullscreen.className = 'sc-exit-fullscreen';
-        function target() {
-            const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId);
-            const length = item ? item.duration ? item.duration - item.start : item.stay : 0;
-            return Math.min(length, (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0));
-        }
+        const length = item => item?.duration ? item.duration - (item.start || 0) : item?.stay || 0;
+        const itemKey = item => JSON.stringify([snapshot?.configVersion, item?.id, item?.kind, item?.duration, item?.start, item?.stay]);
+        const current = () => snapshot?.items.find(item => item.id === currentId);
+        const running = () => snapshot?.playback.status === 'playing' || tail;
+        function globalPosition() { const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId); return Math.min(length(item), (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0)); }
         function update() {
             const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', reading: '正在展示' };
-            statusNode.textContent = failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放');
+            const silent = muted || volume === 0;
+            sound.textContent = t(muted ? '取消静音' : '静音'); muteNode.hidden = !silent; muteNode.textContent = t('已静音');
+            statusNode.textContent = (failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
-            const item = snapshot?.items.find(item => item.id === currentId);
-            if (item && !item.duration && !paused) {
-                const remaining = Math.max(0, item.stay - target());
-                countdown.hidden = false; countdown.textContent = String(Math.ceil(remaining));
-                countdown.dataset.position = snapshot.countdown || 'bottom-right';
-                stage.style.setProperty('--sc-remaining', String(remaining / item.stay));
-                stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
+            const item = current();
+            if (item && !item.duration && !paused && active?.ready) {
+                const remaining = Math.max(0, item.stay - localPosition);
+                countdown.hidden = false; countdown.textContent = String(Math.ceil(remaining)); countdown.dataset.position = snapshot.countdown || 'bottom-right';
+                stage.style.setProperty('--sc-remaining', String(remaining / item.stay)); stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
             } else { countdown.hidden = true; stage.classList.remove('sc-edge-countdown'); }
         }
-        async function report() {
-            if (!alive || reporting) return; reporting = true; const revision = accessGeneration;
-            try {
-                const result = await request('/stations/' + stationId + '/report', 'POST', { watchId, itemId: currentId, position: media?.currentTime || target(), status: actual });
-                if (alive && revision === accessGeneration && result.station) apply(result.station);
-            } catch (error) { if (alive) onError?.(error); }
-            finally { reporting = false; }
+        function dispose(task) {
+            if (!task || task.disposed) return; task.disposed = true; task.controller.abort();
+            task.media?.pause(); task.element?.querySelectorAll?.('img,audio,video,source').forEach(node => { node.pause?.(); node.removeAttribute('src'); node.load?.(); });
+            task.media?.removeAttribute('src'); task.media?.load(); if (task.element?.tagName === 'IMG') task.element.removeAttribute('src');
+        }
+        function clearNext() { dispose(next); next = null; }
+        function accessError(error) {
+            if (!['STREAM_KICKED', 'STREAM_INVITATION_REQUIRED', 'STREAM_OFFLINE', 'STREAM_NOT_FOUND', 'STREAM_DEVICE_DENIED'].includes(error.message)) return false;
+            denied = true; accessGeneration++; generation++; dispose(active); clearNext(); media = null; active = null; currentId = ''; content.replaceChildren(); tail = false; actual = 'waiting'; failure = t('访问已结束') + ' [' + error.message + ']'; unsubscribe?.();
+            if (snapshot) onState?.({ ...snapshot, visibility: error.message === 'STREAM_OFFLINE' ? 'offline' : 'restricted', items: [], playback: { ...snapshot.playback, status: 'stopped' } });
+            update(); return true;
+        }
+        async function report(resuming = false) {
+            if (!alive || denied || (reporting || pageSuspended) && resuming !== true) return; reporting = true; const revision = accessGeneration, reportRevision = ++reportGeneration;
+            try { const result = await request('/stations/' + stationId + '/report', 'POST', { watchId, itemId: currentId, position: media?.currentTime ?? localPosition, status: actual }); if (alive && revision === accessGeneration && result.station) { if (resuming === true) { pageSuspended = false; lastTick = performance.now(); } apply(result.station); } }
+            catch (error) { if (alive && revision === accessGeneration) { accessError(error); onError?.(error); } } finally { if (reportRevision === reportGeneration) reporting = false; }
         }
         function unwatch() { accessGeneration++; request('/stations/' + stationId + '/unwatch', 'POST', { watchId }, { keepalive: true }).catch(() => {}); }
-        const resumePage = event => { if (event.persisted) { watchId = initialWatchId + ':' + (++resumeCount); report(); } };
-        global.addEventListener('pagehide', unwatch); global.addEventListener('pageshow', resumePage);
-        async function ticket(itemId, reference) { return request('/stations/' + stationId + '/ticket', 'POST', { itemId, reference }); }
-        async function load(item) {
-            const revision = ++generation; currentId = item?.id || ''; failure = ''; actual = 'waiting'; ticketExpires = 0;
-            if (media) { media.pause?.(); media.removeAttribute('src'); media.load?.(); } media = null;
-            content.replaceChildren(); countdown.hidden = true;
-            if (!item) { actual = 'waiting'; update(); return; }
-            try {
-                const access = await ticket(item.id); if (revision !== generation || !alive) return;
-                ticketExpires = access.expiresAt;
-                if (item.kind === 'video' || item.kind === 'audio') {
-                    const element = document.createElement(item.kind); media = element; element.playsInline = true; element.preload = 'metadata'; element.muted = muted; element.volume = volume;
-                    element.addEventListener('loadedmetadata', () => { if (revision === generation) sync(true); });
-                    element.addEventListener('playing', () => { if (revision !== generation) return; actual = 'playing'; failure = ''; update(); });
-                    element.addEventListener('waiting', () => { if (revision !== generation) return; actual = 'buffering'; update(); });
-                    element.addEventListener('error', () => { if (revision !== generation) return; actual = 'error'; failure = t('媒体无法播放，可重新读取或检查源文件'); update(); });
-                    element.addEventListener('ended', () => { if (revision !== generation) return; actual = 'waiting'; update(); poll(); });
-                    element.src = access.url; content.append(element);
-                    if (item.kind === 'audio') { const title = document.createElement('p'); title.className = 'message-content sc-audio-title'; title.textContent = '♪ ' + item.name; content.append(title); }
-                } else if (item.kind === 'image') {
-                    const img = document.createElement('img'); img.alt = item.name; img.onload = () => { if (revision === generation) { actual = paused ? 'paused' : 'reading'; update(); } };
-                    img.onerror = () => { if (revision === generation) { actual = 'error'; failure = t('图片无法读取，请检查来源'); update(); } }; img.src = access.url; content.append(img);
+        const hidePage = () => { pageSuspended = true; media?.pause(); unwatch(); };
+        const resumePage = event => { if (event.persisted) { watchId = initialWatchId + ':' + (++resumeCount); denied = false; report(true); } };
+        global.addEventListener('pagehide', hidePage); global.addEventListener('pageshow', resumePage);
+        function prepare(item) {
+            const task = { item, key: itemKey(item), controller: new AbortController(), ready: false, disposed: false, started: performance.now() };
+            const signal = task.controller.signal;
+            const ticket = reference => request('/stations/' + stationId + '/ticket', 'POST', { itemId: item.id, reference }, { signal });
+            task.promise = (async () => {
+                const access = await ticket(); if (task.disposed) return; task.expiresAt = access.expiresAt;
+                if (['audio', 'video', 'image'].includes(item.kind)) {
+                    const node = document.createElement(item.kind === 'image' ? 'img' : item.kind); task.element = node;
+                    if (item.kind !== 'image') { task.media = node; node.playsInline = true; node.preload = 'auto'; node.muted = muted; node.volume = volume; }
+                    else { node.alt = item.name; node.decoding = 'async'; }
+                    await new Promise((resolve, reject) => {
+                        node.addEventListener(item.kind === 'image' ? 'load' : 'canplay', () => { if (!task.disposed) resolve(); }, { once: true });
+                        node.addEventListener('error', () => reject(Error('STREAM_MEDIA_UNAVAILABLE')), { once: true });
+                        signal.addEventListener('abort', () => reject(Object.assign(Error('Aborted'), { name: 'AbortError' })), { once: true });
+                        node.src = access.url;
+                    });
                 } else {
-                    const response = await fetch(access.url, { cache: 'no-store' }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
-                    const body = await response.text(); if (revision !== generation || !alive) return;
-                    const documentNode = document.createElement('div'); documentNode.className = 'sc-document message-content';
+                    const response = await fetch(access.url, { cache: 'no-store', signal }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
+                    const body = await response.text(); if (task.disposed) return;
+                    const node = document.createElement('div'); node.className = 'sc-document message-content'; task.element = node;
                     if (item.kind === 'markdown') {
-                        const mapping = new Map();
-                        for (const ref of access.references || []) {
-                            try {
-                                const delegated = await ticket(item.id, ref.id); if (revision !== generation || !alive) return;
-                                mapping.set(ref.url, delegated.url);
-                            } catch (_) { /* A missing attachment does not invalidate the readable document. */ }
-                        }
-                        global.TunnelMarkdown.render(documentNode, body, mapping);
-                    } else { const pre = document.createElement('pre'); pre.textContent = body; documentNode.append(pre); }
-                    content.append(documentNode); actual = paused ? 'paused' : 'reading';
+                        const mapping = new Map(), refs = [...(access.references || [])];
+                        const resolve = async () => { while (refs.length && !task.disposed) { const ref = refs.shift(); try { const delegated = await ticket(ref.id); mapping.set(ref.url, delegated.url); } catch (error) { if (signal.aborted) throw error; } } };
+                        await Promise.all([resolve(), resolve()]); if (task.disposed) return; global.TunnelMarkdown.render(node, body, mapping);
+                    } else { const pre = document.createElement('pre'); pre.textContent = body; node.append(pre); }
                 }
-                sync(true); update();
-            } catch (error) { if (revision !== generation || !alive) return; actual = 'error'; failure = t('资源读取失败，请检查台状态与来源') + ' [' + error.message + ']'; update(); onError?.(error); }
+                if (!task.disposed) task.ready = true;
+            })();
+            task.promise.catch(() => {}); return task;
         }
+        async function load(item, position = 0) {
+            const revision = ++generation; dispose(active); media = null; active = null; currentId = item?.id || ''; localPosition = position; failure = ''; actual = item ? 'buffering' : 'waiting';
+            content.replaceChildren(); countdown.hidden = true; const started = performance.now();
+            if (!item) { clearNext(); update(); return; }
+            const task = next?.key === itemKey(item) && (!next.expiresAt || next.expiresAt > Date.now() + 10000) ? next : prepare(item);
+            if (next !== task) clearNext(); else next = null; active = task; update();
+            try {
+                await task.promise; if (revision !== generation || !alive || denied || task.disposed) return;
+                const wait = Math.max(0, performance.now() - started) / 1000;
+                loadCost = Math.max(.25, Math.min(60, Math.max(loadCost * .7, (performance.now() - task.started) / 1000)));
+                if (running() && !pageSuspended) delay += wait;
+                media = task.media; content.replaceChildren(task.element); lastTick = performance.now();
+                if (media) {
+                    media.muted = muted; media.volume = volume; media.currentTime = Math.min((item.start || 0) + localPosition, Math.max(0, media.duration - .05));
+                    media.addEventListener('playing', () => { if (active === task) { actual = 'playing'; failure = ''; lastTick = performance.now(); update(); } });
+                    media.addEventListener('waiting', () => { if (active === task) { actual = 'buffering'; update(); } });
+                    media.addEventListener('error', () => { if (active === task) { actual = 'error'; failure = t('媒体无法播放，可重新读取或检查源文件'); update(); } });
+                    media.addEventListener('ended', () => { if (active === task) { localPosition = length(item); sync(); } });
+                    if (item.kind === 'audio') { const title = document.createElement('p'); title.className = 'message-content sc-audio-title'; title.textContent = '♪ ' + item.name; content.append(title); }
+                } else actual = paused || !running() ? 'paused' : 'reading';
+                sync(true); update();
+            } catch (error) { if (revision !== generation || !alive || task.disposed) return; if (!accessError(error)) { actual = 'error'; failure = t('资源读取失败，请检查台状态与来源') + ' [' + error.message + ']'; update(); onError?.(error); } }
+        }
+        function following() {
+            const items = (snapshot?.items || []).filter(item => !item.unavailable), index = items.findIndex(item => item.id === currentId);
+            return index < 0 || !items.length || index === items.length - 1 && !snapshot.loop ? null : items[(index + 1) % items.length];
+        }
+        function align() { tail = false; delay = 0; const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId && !item.unavailable); load(item, globalPosition()); }
         function sync(force = false) {
-            if (!snapshot || paused) return;
-            const item = snapshot.items.find(item => item.id === snapshot.playback.itemId);
-            if (item?.id !== currentId || force && actual === 'error' || ticketExpires && ticketExpires < Date.now() + 5000) { load(item); return; }
-            if (media && media.readyState >= 1) {
-                const position = (item.start || 0) + target();
-                const difference = position - media.currentTime;
-                if (force || Math.abs(difference) > 2) media.currentTime = Math.min(position, Math.max(0, media.duration - .05));
-                media.playbackRate = Math.abs(difference) > .3 ? difference > 0 ? 1.02 : .98 : 1;
-                if (snapshot.playback.status === 'playing') {
-                    if (media.paused) { const element = media; element.play().catch(error => { if (media !== element || paused || snapshot.playback.status !== 'playing' || error.name === 'AbortError') return; actual = error.name === 'NotAllowedError' ? 'blocked' : 'error'; update(); }); }
-                } else { media.pause(); actual = 'paused'; }
+            if (!alive || denied || pageSuspended || !snapshot) return;
+            const now = performance.now(), elapsed = Math.max(0, now - lastTick) / 1000; lastTick = now;
+            const item = current(); if (!item) return;
+            if (active?.ready && !paused && running()) {
+                if (media) { if (!media.paused && media.readyState >= 2) localPosition = Math.max(0, media.currentTime - (item.start || 0)); else if (actual === 'buffering' || actual === 'blocked') delay += elapsed; }
+                else localPosition += elapsed;
+                if (localPosition >= length(item)) { const followingItem = following(); if (followingItem) { load(followingItem); return; } tail = false; media?.pause(); actual = 'waiting'; update(); return; }
+                const upcoming = following();
+                if (upcoming && length(item) - localPosition <= Math.min(length(item), Math.max(5, loadCost + 2)) && !next) next = prepare(upcoming);
             }
+            if (active?.expiresAt && active.expiresAt < Date.now() + 5000) { load(item, localPosition); return; }
+            if (media && active?.ready) {
+                if (paused || !running()) { media.pause(); actual = 'paused'; }
+                else if (media.paused && (actual !== 'blocked' || force)) { const element = media; element.play().catch(error => { if (media !== element || paused || !running() || error.name === 'AbortError') return; actual = error.name === 'NotAllowedError' ? 'blocked' : 'error'; update(); }); }
+            } else if (active?.ready) actual = paused || !running() ? 'paused' : 'reading';
         }
         function apply(value) {
-            if (!alive || snapshot && (value.playback.version < snapshot.playback.version || value.serverTime < snapshot.serverTime)) return;
-            snapshot = value; receivedAt = performance.now(); lastStateAt = Date.now(); sync(); update(); onState?.(value);
+            if (!alive || denied || pageSuspended || snapshot && (value.playback.version < snapshot.playback.version || value.serverTime < snapshot.serverTime)) return;
+            const previous = snapshot; snapshot = value; receivedAt = performance.now(); lastStateAt = Date.now();
+            if (['offline', 'restricted'].includes(value.visibility)) { accessError(Error(value.visibility === 'offline' ? 'STREAM_OFFLINE' : 'STREAM_INVITATION_REQUIRED')); return; }
+            const explicit = previous && ((value.playback.controlVersion || 0) !== (previous.playback.controlVersion || 0) || value.configVersion !== previous.configVersion || value.epoch !== previous.epoch);
+            if (!previous || explicit || !current() || current()?.unavailable) align();
+            else if (previous.playback.status === 'playing' && value.playback.status === 'stopped') tail = true;
+            else if (value.playback.status === 'playing') tail = false;
+            sync(); update(); onState?.(value);
         }
         async function poll() {
-            if (!alive || polling) return; polling = true; const accessAtRequest = accessGeneration;
-            try { const value = await request('/stations/' + stationId); if (accessAtRequest === accessGeneration && alive) apply(value); }
-            catch (error) {
-                failure = t('连接中断，正在重新读取台状态') + ' [' + error.message + ']';
-                if (['STREAM_KICKED', 'STREAM_INVITATION_REQUIRED', 'STREAM_OFFLINE', 'STREAM_NOT_FOUND'].includes(error.message)) {
-                    accessGeneration++; generation++; currentId = ''; content.replaceChildren(); media?.pause(); media = null; actual = 'waiting';
-                    if (snapshot) onState?.({ ...snapshot, visibility: error.message === 'STREAM_OFFLINE' ? 'offline' : 'restricted', items: [], playback: { ...snapshot.playback, status: 'stopped' } });
-                    onError?.(error);
-                }
-                update();
-            } finally { polling = false; }
+            if (!alive || denied || pageSuspended || polling) return; polling = true; const revision = accessGeneration;
+            try { const value = await request('/stations/' + stationId); if (revision === accessGeneration && alive) apply(value); }
+            catch (error) { if (alive && !accessError(error)) { failure = t('连接中断，正在重新读取台状态') + ' [' + error.message + ']'; update(); } } finally { polling = false; }
         }
-        const unsubscribe = subscribe?.(apply, error => { failure = t('连接中断，正在重新读取台状态') + ' [' + error.message + ']'; poll(); });
-        timer = setInterval(() => { sync(); update(); }, 250);
-        pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
-        reportTimer = setInterval(report, 15000); report();
+        unsubscribe = subscribe?.(apply, error => { if (alive && !accessError(error)) { failure = t('连接中断，正在重新读取台状态') + ' [' + error.message + ']'; poll(); } });
+        const timer = setInterval(() => { sync(); update(); }, 250);
+        const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
+        const reportTimer = setInterval(report, 15000); report();
         return { element: host, apply, poll, snapshot: () => snapshot,
-            close() { alive = false; generation++; unwatch(); global.removeEventListener('pagehide', unwatch); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); media?.pause(); media?.removeAttribute('src'); host.remove(); } };
+            close() { if (!alive) return; alive = false; generation++; unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
     global.StreamingPlayer = { create };
 })(window);

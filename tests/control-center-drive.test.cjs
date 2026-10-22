@@ -8,7 +8,7 @@ test('控制中心排序兼容新增磁贴、重复和失效项目，保留切�
     const normalize = vm.runInNewContext(app.slice(app.indexOf('function normalizeControlCenterOrder('), app.indexOf('function initTunnelControlCenter(')) + ';normalizeControlCenterOrder');
     const result = [...normalize(['theme', 'tunnels', 'disk', 'disk', 'unknown'])];
     assert.equal(result[0], 'theme'); assert.equal(result[1], 'tunnels'); assert.equal(result[2], 'disk');
-    assert.equal(result.length, 13); assert.equal(new Set(result).size, 13); assert.ok(result.includes('workshop')); assert.ok(result.includes('music'));
+    assert.equal(result.length, 14); assert.equal(new Set(result).size, 14); assert.ok(result.includes('workshop')); assert.ok(result.includes('music')); assert.ok(result.includes('streaming'));
 });
 
 test('预览按钮滚动引导只在浮层重新打开时执行，收藏重绘保留滚动位置', () => {

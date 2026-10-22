@@ -16,6 +16,15 @@ const number = (value, min, max, code = 'STREAM_PARAMETER_INVALID') => {
     return parsed;
 };
 function mediaKind(name, type = '') {
+    type = String(type).split(';')[0].trim().toLowerCase();
+    if (type && !['application/octet-stream', 'binary/octet-stream'].includes(type)) {
+        if (/^image\//.test(type) && type !== 'image/svg+xml') return 'image';
+        if (/^video\//.test(type)) return 'video';
+        if (/^audio\//.test(type)) return 'audio';
+        if (/^(text\/markdown|text\/x-markdown)$/.test(type)) return 'markdown';
+        if (type === 'text/plain') return /\.(md|markdown)$/i.test(name) ? 'markdown' : 'text';
+        fail('STREAM_TYPE_UNSUPPORTED');
+    }
     if (/^image\//.test(type) || /\.(png|jpe?g|gif|webp|avif|bmp)$/i.test(name)) return 'image';
     if (/^video\//.test(type) || /\.(mp4|webm|mkv|mov|m4v)$/i.test(name)) return 'video';
     if (/^audio\//.test(type) || /\.(mp3|m4a|ogg|opus|wav|flac|aac)$/i.test(name)) return 'audio';
@@ -69,13 +78,14 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function canManage(s, actor) { try { return authority(s, actor); } catch (_) { return false; } }
     function allowed(s, actor, allowOffline = false) {
-        if (s.blocked[actor.deviceId]) fail('STREAM_KICKED');
+        if (isBlocked(s, actor)) fail('STREAM_KICKED');
         if (s.visibility === 'offline' && !allowOffline) fail('STREAM_OFFLINE');
         if (canManage(s, actor)) return true;
         if (s.visibility === 'public') return true;
         if (s.grants.some(g => g.epoch === s.epoch && (g.deviceId === actor.deviceId || g.userId && g.userId === actor.userId))) return true;
         fail('STREAM_INVITATION_REQUIRED');
     }
+    function isBlocked(s, actor) { return Boolean([actor.deviceId, ...(db.devices[actor.deviceId]?.aliases || [])].some(deviceId => s.blocked[deviceId]) || actor.userId && s.blockedUsers?.[actor.userId]); }
     function length(item) { return ['video', 'audio'].includes(item.kind) ? item.duration - item.start : item.stay; }
     function available(s) { return s.items.filter(item => !item.unavailable); }
     function advance(s, time = now()) {
@@ -128,7 +138,8 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             const { source, references, ...publicItem } = item;
             return publicItem;
         }), viewers: canManage(s, actor) ? [...viewers.values()].filter(v => v.stationId === s.id && v.expiresAt > now()).map(({ actor: _actor, ...report }) => report) : undefined,
-        blocked: canManage(s, actor) ? Object.keys(s.blocked) : undefined };
+        blocked: canManage(s, actor) ? Object.keys(s.blocked) : undefined,
+        blockedUsers: canManage(s, actor) ? Object.keys(s.blockedUsers || {}) : undefined };
     }
     function syncDevice(actor, { follows = [], aliases = [] } = {}) {
         const d = db.devices[actor.deviceId] || fail('STREAM_DEVICE_DENIED');
@@ -147,7 +158,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             }
             if (actor.userId) for (const s of Object.values(db.stations)) {
                 for (const g of s.grants.slice()) if (g.kind === 'general' && g.deviceId === actor.deviceId && g.epoch === s.epoch
-                    && !s.blocked[actor.deviceId] && !s.grants.some(v => v.userId === actor.userId && v.epoch === s.epoch))
+                    && !isBlocked(s, actor) && !s.grants.some(v => v.userId === actor.userId && v.epoch === s.epoch))
                     s.grants.push({ kind: 'general', userId: actor.userId, epoch: s.epoch });
             }
             return { ok: true };
@@ -199,7 +210,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             db.stations[stationId] = s; return summary(s, actor);
         });
     }
-    async function edit(stationId, actor, input, req) {
+    async function edit(stationId, actor, input, req, progress = () => {}) {
         let s = station(stationId); authority(s, actor, 'edit');
         const expected = input.configVersion;
         if (expected !== s.configVersion) fail('STREAM_CONFLICT');
@@ -207,25 +218,35 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const ids = new Set();
         const items = [], resolutions = new Map();
         for (const value of input.items) {
+            progress({ phase: 'checking', completed: items.length, total: input.items.length, name: String(value.name || '').slice(0, 255) });
             if (!validId(value.id) || ids.has(value.id)) fail('STREAM_PLAYLIST_INVALID');
             ids.add(value.id);
             const previous = s.items.find(item => item.id === value.id);
             const locator = value.source && JSON.stringify(value.source);
             if (locator && !resolutions.has(locator)) resolutions.set(locator, await sources.resolve(value.source, actor, req));
-            const resolved = locator ? resolutions.get(locator) : previous;
+            let resolved = locator ? resolutions.get(locator) : previous;
             if (!resolved?.source) fail('STREAM_SOURCE_INVALID');
-            if (!locator) sources.stat?.(resolved.source);
+            if (!locator) {
+                const current = sources.stat?.(resolved.source);
+                if (current) {
+                    const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+                    if (mime(current.type) !== mime(resolved.type) || current.size !== resolved.size || mediaKind(current.name, current.type) !== mediaKind(resolved.name, resolved.type)) fail('STREAM_SOURCE_CHANGED');
+                    resolved = { ...resolved, name: current.name, type: current.type, size: current.size };
+                }
+            }
             const kind = mediaKind(resolved.name, resolved.type);
             const duration = ['video', 'audio'].includes(kind) ? number(value.duration ?? previous?.duration, 0.01, 31536000, 'STREAM_DURATION_REQUIRED') : null;
             const start = duration ? number(value.start ?? 0, 0, duration - 0.001, 'STREAM_START_INVALID') : 0;
             items.push({ id: value.id, name: resolved.name, type: resolved.type, size: resolved.size,
                 source: copy(resolved.source), references: copy(resolved.references || []), kind, duration, start,
                 stay: duration ? null : number(value.stay ?? 10, 0.1, 86400), unavailable: null });
+            progress({ phase: 'checked', completed: items.length, total: input.items.length, name: resolved.name });
         }
         // Source resolution can await network metadata; recheck both authority
         // and configuration revision before committing any of the new list.
         s = station(stationId); authority(s, actor, 'edit');
         if (s.configVersion !== expected) fail('STREAM_CONFLICT');
+        progress({ phase: 'persisting', completed: items.length, total: input.items.length });
         return change(() => {
             advance(s); const oldIndex = s.items.findIndex(item => item.id === s.playback.itemId), oldPosition = position(s), oldStart = s.items[oldIndex]?.start || 0;
             const current = items.find(item => item.id === s.playback.itemId);
@@ -259,7 +280,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             } else if (input.action === 'seek') p.position = number(input.position, 0, length(items[index]));
             else fail('STREAM_COMMAND_INVALID');
             if (p.status === 'playing' && !audience(s)) p.status = 'paused';
-            p.version++; return view(stationId, actor, { manage: true });
+            p.controlVersion = (p.controlVersion || 0) + 1; p.version++; return view(stationId, actor, { manage: true });
         });
     }
     function visibility(stationId, actor, input) {
@@ -320,8 +341,8 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return Object.values(db.stations).filter(s => {
             if (kind === 'local') return s.deviceId === actor.deviceId;
             if (kind === 'bookmarks') return bookmarks.includes(s.id);
-            if (kind === 'creator') return s.ownerId === ownerId && s.visibility === 'public' && !s.blocked[actor.deviceId];
-            if (!visible.has(s.deviceId) || s.visibility === 'offline' || s.blocked[actor.deviceId]) return false;
+            if (kind === 'creator') return s.ownerId === ownerId && s.visibility === 'public' && !isBlocked(s, actor);
+            if (!visible.has(s.deviceId) || s.visibility === 'offline' || isBlocked(s, actor)) return false;
             try { allowed(s, actor); return true; } catch (_) { return false; }
         }).map(s => summary(s, actor));
     }
@@ -335,7 +356,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             return { subscribed: add };
         });
     }
-    function inviteStatus(invite) { return invite.revoked ? 'revoked' : invite.expiresAt && invite.expiresAt <= now() ? 'expired' : invite.response || (invite.deliveredAt ? 'delivered' : 'sent'); }
+    function inviteStatus(invite) { return invite.revoked ? 'revoked' : invite.expiresAt && invite.expiresAt <= now() ? 'expired' : invite.response || (invite.deviceId || invite.sentAt ? 'sent' : 'generated'); }
     function invitation(stationId, actor, input) {
         const s = station(stationId); authority(s, actor);
         if (input.requestId) {
@@ -370,7 +391,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function checkInvite(s, invite, actor) {
         if (invite.deviceId && !inviteTargets(invite, actor)) fail('STREAM_INVITE_DEVICE');
-        if (s.blocked[actor.deviceId]) fail('STREAM_KICKED');
+        if (isBlocked(s, actor)) fail('STREAM_KICKED');
         if (invite.revoked || invite.epoch !== s.epoch) fail('STREAM_INVITE_REVOKED');
         if (invite.expiresAt && invite.expiresAt <= now()) fail('STREAM_INVITE_EXPIRED');
     }
@@ -395,7 +416,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     function revoke(stationId, actor, inviteId) {
         const s = station(stationId); authority(s, actor);
         const invite = s.invites.find(value => value.id === inviteId) || fail('STREAM_INVITE_INVALID');
-        return change(() => { invite.revoked = true; return { ok: true }; });
+        return change(() => { if (invite.deviceId) invite.revoked = true; else s.invites = s.invites.filter(value => value.id !== inviteId); return { ok: true }; });
     }
     function inbox(actor) {
         const result = [];
@@ -410,12 +431,23 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     function delivered(token, actor) {
         const { invite } = findInvite(token);
         if (!inviteTargets(invite, actor)) fail('STREAM_INVITE_DEVICE');
-        return change(() => { invite.deviceId = actor.deviceId; invite.deliveredAt ||= now(); return { ok: true }; });
+        return change(() => { invite.deviceId = actor.deviceId; return { ok: true }; }); // Compatibility only; no delivery state.
     }
-    function access(stationId, actor, target, allow) {
+    function markInviteSent(token, actor) {
+        const { s, invite } = findInvite(token); authority(s, actor); checkInvite(s, invite, actor);
+        return change(() => { invite.sentAt ||= now(); return { ok: true }; });
+    }
+    function access(stationId, actor, target, allow, kind = 'device') {
         const s = station(stationId); authority(s, actor);
-        if (!validId(target) || target === s.deviceId) fail('STREAM_DEVICE_INVALID');
-        return change(() => { if (allow) delete s.blocked[target]; else s.blocked[target] = now() || 1; return { ok: true }; });
+        if (kind === 'device') target = rootsForAliases([target])[0] || target;
+        if (!['device', 'user'].includes(kind) || !validId(target) || kind === 'device' && target === s.deviceId || kind === 'user' && target === s.ownerId) fail('STREAM_DEVICE_INVALID');
+        return change(() => {
+            const blocked = kind === 'user' ? s.blockedUsers ||= {} : s.blocked;
+            if (allow) delete blocked[target]; else blocked[target] = now() || 1;
+            if (!allow) for (const [key, viewer] of viewers) if (viewer.stationId === stationId && (kind === 'user' ? viewer.actor.userId === target : viewer.deviceId === target)) { viewers.delete(key); closedViewers.set(key, now() + viewerLeaseMs); }
+            if (!audience(s)) pauseWithoutAudience(s, now());
+            return { ok: true };
+        });
     }
     function report(stationId, actor, input) {
         tick(); const s = station(stationId); allowed(s, actor);
@@ -474,7 +506,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return copy(s.items.find(item => item.id === itemId)?.references || []).map(({ id, url }) => ({ id, url }));
     }
     return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark,
-        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, access, report, unwatch, resource, unavailable, references,
+        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references,
         tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, invitableDevices, snapshot: () => copy(db) };
 }
 module.exports = { createStreamingConsole, mediaKind, digest };

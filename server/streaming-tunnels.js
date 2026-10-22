@@ -76,15 +76,17 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
         const existing = messages(input.sessionId).find(message => message.id === messageId);
         if (existing) {
             if (existing.sender !== actor.deviceId || existing.markdown !== body) deny('STREAM_CONFLICT');
+            if (input.inviteToken) service.markInviteSent(input.inviteToken, actor);
             return { ok: true, messageId, message: existing, duplicate: true };
         }
         const message = { id: messageId, type: 'markdown', markdown: body, purpose, thumbnail,
             timestamp: Date.now(), sender: actor.deviceId, senderName: String(input.deviceName || actor.deviceId).replace(/[<>]/g, '').slice(0, 100) };
         publish(input.sessionId, current, message, actor.deviceId);
+        if (input.inviteToken) service.markInviteSent(input.inviteToken, actor);
         return { ok: true, messageId, message };
     }
     return { resolve, stat, candidates, resources: (input, actor) => candidates(input, actor, true), send, references, bind(value) { service = value; },
-        alias(input, actor) { authorize(input, actor); return input.tunnelDeviceId || actor.deviceId; },
+        alias(input, actor) { authorize(input, actor); return memberId(input, actor); },
         providers: source => { const values = [...new Set([...(session(source.sessionId)?.fileAssets?.get(source.fileId)?.providers || []),
             ...(session(source.sessionId)?.devices?.keys() || [])])]; return [...new Set([...values, ...mapDevices(values)])]; } };
 }

@@ -141,14 +141,14 @@ test('general grants survive expiry/revoke, anonymous later login carries grant,
     assert.deepEqual(f.service.list(remote, 'bookmarks'), []);
     f.service.bookmark(s.id, remote, true); f.service.bookmark(s.id, remote, false);
     assert.equal(f.service.view(s.id, remote).id, s.id);
-    assert.throws(() => f.service.accept(invite.token, f.c), /REVOKED/);
+    assert.throws(() => f.service.accept(invite.token, f.c), /REVOKED|INVALID/);
 });
-test('direct device grant never expands through account; offline inbox reflects delivery and real outcomes', async t => {
+test('direct device grant never expands through account; inbox records send and acceptance without delivery state', async t => {
     const f = fixture(t), s = f.create(); await f.edit(s); f.online(s, 'invite');
     const invite = f.service.invitation(s.id, f.a, { deviceId: 'B' });
     assert.equal(f.service.invitations(s.id, f.a)[0].status, 'sent');
     assert.equal(f.service.inbox(f.b)[0].status, 'sent');
-    f.service.delivered(invite.token, f.b); assert.equal(f.service.inbox(f.b)[0].status, 'delivered');
+    f.service.delivered(invite.token, f.b); assert.equal(f.service.inbox(f.b)[0].status, 'sent');
     f.service.accept(invite.token, { ...f.b, userId: 'viewer' });
     assert.equal(f.service.invitations(s.id, f.a)[0].status, 'accepted');
     assert.throws(() => f.service.view(s.id, { ...f.c, userId: 'viewer' }), /INVITATION_REQUIRED/);

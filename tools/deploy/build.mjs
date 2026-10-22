@@ -489,6 +489,7 @@ async function buildServiceWorker(outRoot, buildId, assets, styles) {
     '/runtime-config.js',
     '/manifest.webmanifest',
     '/tunnel-icon.svg',
+    '/client/icons/streaming.png',
     ...MARKDOWN_SUPPORT_ASSETS,
     ...assetShell
   ]));
@@ -538,6 +539,7 @@ async function main() {
   await copyFileRelative('client/disk-error-messages.js', outRoot);
   await copyFileRelative('client/disk-operation-order.js', outRoot);
   await copyDirRelative('client/vendor/web-markdown', outRoot);
+  await copyFileRelative('client/icons/streaming.png', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
   await copyFileRelative('docs/telegram-drive-s3-compatible.md', outRoot);
   await copyFileRelative('docs/telegram-drive-content-objects.md', outRoot);

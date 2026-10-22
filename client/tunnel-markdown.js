@@ -64,7 +64,8 @@
         const status = document.createElement('p'); status.className = 'sc-message-status';
         const actions = document.createElement('div'); actions.className = 'sc-actions';
         const expand = document.createElement('button'); expand.type = 'button'; expand.textContent = t('展开 Markdown');
-        let expanded = false;
+        const collapsible = String(message.markdown || '').replace(/\r\n?/g, '\n').trimEnd().split('\n').length > 10;
+        let expanded = false; preview.classList.toggle('collapsible', collapsible); expand.hidden = !collapsible;
         expand.onclick = () => { expanded = !expanded; preview.classList.toggle('expanded', expanded); expand.textContent = t(expanded ? '收起 Markdown' : '展开 Markdown'); };
         actions.append(expand);
         if (message.purpose === 'stream-invitation') {

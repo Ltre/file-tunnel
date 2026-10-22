@@ -14,11 +14,12 @@ const MARKDOWN_SUPPORT_ASSETS = [
   '/client/vendor/web-markdown/THIRD-PARTY-LICENSES.txt'
 ];
 
-function stripBundledMarkdownPaths(source) {
-  // The byte-for-byte ZIP support bundle intentionally keeps fixed URLs.
+const FIXED_SHELL_ASSETS = ['/client/icons/streaming.png'];
+function stripFixedResourcePaths(source) {
+  // The byte-for-byte ZIP support bundle and runtime icons keep fixed URLs.
   // Do not exempt the rest of /client/ from the deployment asset checks.
   let result = source;
-  for (const asset of MARKDOWN_SUPPORT_ASSETS) result = result.split(JSON.stringify(asset)).join('""').split("'"+asset+"'").join("''");
+  for (const asset of [...MARKDOWN_SUPPORT_ASSETS, ...FIXED_SHELL_ASSETS]) result = result.split(JSON.stringify(asset)).join('""').split("'"+asset+"'").join("''");
   return result;
 }
 
@@ -131,7 +132,7 @@ async function main() {
   }
 
   for (const appShellPath of buildManifest.appShell || []) {
-    if (appShellPath.startsWith('/assets/') || appShellPath === '/tunnel-icon.svg') {
+    if (appShellPath.startsWith('/assets/') || appShellPath === '/tunnel-icon.svg' || FIXED_SHELL_ASSETS.includes(appShellPath)) {
       if (!await exists(distRoot, appShellPath)) errors.push(`APP_SHELL missing static asset: ${appShellPath}`);
     }
   }
@@ -150,7 +151,8 @@ async function main() {
 
   const sw = await fs.readFile(path.join(distRoot, 'service-worker.js'), 'utf8');
   if (!sw.includes(`instant-tunnel-${release.buildId}`)) errors.push('service-worker cache name does not include buildId');
-  if (/\/client\/|\/app\.js['"]/.test(stripBundledMarkdownPaths(sw))) errors.push('service-worker still caches source JS paths');
+  if (/\/client\/|\/app\.js['"]/.test(stripFixedResourcePaths(sw))) errors.push('service-worker still caches source JS paths');
+  for (const assetPath of FIXED_SHELL_ASSETS) if (!sw.includes(assetPath) || !await exists(distRoot, assetPath)) errors.push(`missing runtime icon: ${assetPath}`);
   for (const assetPath of MARKDOWN_SUPPORT_ASSETS) {
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing bundled Markdown resource: ${assetPath}`);
     if (!await exists(distRoot, assetPath)) { errors.push(`missing bundled Markdown resource: ${assetPath}`); continue; }

@@ -538,7 +538,7 @@ test('SNS peer-first timeout starts after the asset leaves the local download qu
 
 test('the tunnel short-code inputs use one browser input path', () => {
     const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
-    const start = source.indexOf('function initSessionLanding()');
+    const start = source.indexOf('function initSessionLanding(');
     const end = source.indexOf('\nfunction openSession', start);
     const landingSource = source.slice(start, end);
     const inputStart = landingSource.indexOf("input.addEventListener('input'");

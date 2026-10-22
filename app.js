@@ -687,7 +687,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         initStreamingConsoleIntegration();
         if (!restoredSession || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
             initLandingNearbyPresence();
-            initSessionLanding();
+            initSessionLanding({ hidden: new URLSearchParams(location.search).has('stream') || new URLSearchParams(location.search).has('stream_invite') });
             markStartupShellReady('landing');
             startupTimings.completeMs = Math.round(startupTimestamp());
             return;
@@ -1262,7 +1262,7 @@ function updateSessionIdentityUi() {
     generateQRCode();
 }
 
-function initSessionLanding() {
+function initSessionLanding({ hidden = false } = {}) {
     const landing = document.getElementById('sessionLanding');
     const note = document.getElementById('landingNote');
     const recentButton = document.getElementById('landingRecentBtn');
@@ -1271,7 +1271,8 @@ function initSessionLanding() {
     const sharedFilesNotice = document.getElementById('sharedFilesNotice');
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
     let joinInProgress = false;
-    landing.hidden = false;
+    landing.hidden = hidden;
+    if (hidden) window.addEventListener('streaming-visibility-change', () => { landing.hidden = Boolean(window.StreamingConsole?.isOpen()); });
     document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
     document.getElementById('leaveTunnelBtn').hidden = true;
     document.getElementById('mobileForceRefreshBtn').hidden = true;
@@ -16929,7 +16930,7 @@ function initWorkspaceSwipeNavigation() {
 }
 
 function normalizeControlCenterOrder(saved) {
-    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'tunnels'];
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
 function initTunnelControlCenter(dialog) {
@@ -16945,7 +16946,8 @@ function initTunnelControlCenter(dialog) {
         ['workshop', '🌐', '网页工坊', 'webWorkshopBtn'],
         ['notifications', '🔔', '通知中心', 'notificationCenterBtn'],
         ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn'],
-        ['music', '♪', '全屏音乐播放器', 'topbarMusicBtn']
+        ['music', '♪', '全屏音乐播放器', 'topbarMusicBtn'],
+        ['streaming', '', '串流控制台', 'streamingConsoleBtn']
     ];
     let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
     let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
@@ -16956,6 +16958,7 @@ function initTunnelControlCenter(dialog) {
         const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
         tile.dataset.controlTile = id; tile.title = title; tile.setAttribute('aria-label', title);
         if (id === 'leave') tile.innerHTML = '<span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>';
+        else if (id === 'streaming') { const image = document.createElement('img'); image.src = '/client/icons/streaming.png'; image.alt = ''; image.style.cssText = 'width:32px;height:32px;object-fit:contain'; tile.append(image); }
         else tile.textContent = icon;
         tile.onclick = event => {
             if (Date.now() < suppressUntil) { event.preventDefault(); return; }

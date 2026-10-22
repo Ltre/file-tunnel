@@ -55,6 +55,20 @@ async function createFixture({ media = false } = {}) {
     f.app.get('/app.js', (_req, res) => res.sendFile(path.join(root, 'app.js')));
     f.app.get('/socket.io/socket.io.js', (_req, res) => res.sendFile(path.join(root, 'node_modules/socket.io/client-dist/socket.io.js')));
     f.app.get('/service-worker.js', (_req, res) => res.status(404).end());
+    f.app.get('/streaming-layout-check', (_req, res) => {
+        const appSource = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+        const controls = appSource.slice(appSource.indexOf('function normalizeControlCenterOrder('), appSource.indexOf('function showTunnelRemarkDialog('));
+        const html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
+        res.type('html').send(html.replace('</body>', `<div id="markdown-layout"></div><script src="/client/vendor/web-markdown/marked-18.0.14.umd.js"></script><script src="/client/vendor/web-markdown/purify-3.4.16.min.js"></script>
+            <script src="/client/tunnel-markdown.js"></script><script src="/client/streaming-console.js"></script><script src="/client/streaming-player.js"></script>
+            <script>const state={sessionId:'fixture-tunnel'},getAllFromStore=async()=>[{sessionId:'fixture-tunnel',shortCode:'ABCDE',remark:'隔离隧道'}],escapeHtml=String,normalizeLocalShortCode=String,historyLog=()=>{},hasActiveTransferTasks=()=>false;
+            ${controls}
+            document.getElementById('tunnelStartupLoading').hidden=true;document.getElementById('appShell').hidden=false;document.getElementById('sessionLanding').hidden=true;document.getElementById('connectionHeaderMenu').hidden=true;
+            document.querySelector('.mobile-workspace-button[data-mobile-view="chat"]').onclick=()=>showJoinedSessionSwitcher();
+            StreamingConsole.init({deviceId:()=> 'layout-fixture-device',deviceName:()=> '布局验收',devices:()=>[],tunnels:async()=>[],toast:()=>{},home:()=>{}});
+            for(const n of [10,11]){const row=document.createElement('article');row.dataset.lines=n;document.getElementById('markdown-layout').append(row);TunnelMarkdown.mount(row,{id:'lines-'+n,type:'markdown',markdown:Array.from({length:n},(_,i)=>'第 '+(i+1)+' 行').join('\\n')});}
+            </script></body>`));
+    });
     f.app.get('/fixture-bootstrap.js', (_req, res) => res.type('js').send(`
         window.__fixtureErrors=[];window.addEventListener('error',event=>window.__fixtureErrors.push(event.message));
         window.addEventListener('unhandledrejection',event=>window.__fixtureErrors.push(String(event.reason)));

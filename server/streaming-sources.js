@@ -8,7 +8,7 @@ const sourceError = code => Object.assign(new Error(code), { code });
 
 // Bounded, ephemeral demand relay. Requests exist only while an HTTP reader is
 // waiting. No file data or retention reference is written to the station store.
-function createStreamingBroker({ now = Date.now, timeout = 15000 } = {}) {
+function createStreamingBroker({ now = Date.now, timeout = 15000, hedgeMs = 100 } = {}) {
     const clients = new Map(), pending = new Map();
     function poll(deviceId, signal) {
         let client = clients.get(deviceId);
@@ -30,25 +30,37 @@ function createStreamingBroker({ now = Date.now, timeout = 15000 } = {}) {
         if (end - start + 1 > MAX_CHUNK) throw sourceError('STREAM_RANGE_INVALID');
         const active = [...new Set(devices)].filter(online);
         if (!active.length) throw sourceError('STREAM_PROVIDER_OFFLINE');
-        let last;
-        for (const deviceId of active) {
-            if (signal?.aborted) throw sourceError('STREAM_READ_CANCELLED');
-            if (pending.size >= 32 || [...pending.values()].filter(v => v.deviceId === deviceId).length >= 4) { last = sourceError('STREAM_PROVIDER_BUSY'); continue; }
-            try {
-                return await new Promise((resolve, reject) => {
+        const cancel = new AbortController(), combined = signal ? AbortSignal.any([signal, cancel.signal]) : cancel.signal;
+        let cursor = 0;
+        const ask = deviceId => {
+            if (combined.aborted) throw sourceError('STREAM_READ_CANCELLED');
+            if (pending.size >= 32 || [...pending.values()].filter(v => v.deviceId === deviceId).length >= 4) throw sourceError('STREAM_PROVIDER_BUSY');
+            return new Promise((resolve, reject) => {
                     const requestId = crypto.randomUUID(), client = clients.get(deviceId);
-                    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); pending.delete(requestId); client.queue = client.queue.filter(v => v.requestId !== requestId); };
+                    const cleanup = () => { clearTimeout(timer); combined.removeEventListener('abort', abort); pending.delete(requestId); client.queue = client.queue.filter(v => v.requestId !== requestId); };
                     const finish = (error, value) => { cleanup(); error ? reject(error) : resolve(Readable.from(value)); };
                     const abort = () => finish(sourceError('STREAM_READ_CANCELLED'));
                     const timer = setTimeout(() => finish(sourceError('STREAM_PROVIDER_TIMEOUT')), timeout); timer.unref?.();
                     pending.set(requestId, { deviceId, size: end - start + 1, finish });
                     client.queue.push({ requestId, source, start, end });
-                    signal?.addEventListener('abort', abort, { once: true });
+                    combined.addEventListener('abort', abort, { once: true });
                     if (client.wake) client.wake(client.queue.splice(0, 4));
-                });
-            } catch (error) { last = error; }
-        }
-        throw last || sourceError('STREAM_SOURCE_MISSING');
+            });
+        };
+        // Two bounded candidates avoid waiting 15 seconds for a silent first
+        // provider. Losing requests are cancelled; no media copy is retained.
+        const worker = async (_value, workerIndex) => {
+            if (workerIndex) await new Promise(resolve => {
+                const finish = () => { clearTimeout(timer); combined.removeEventListener('abort', finish); resolve(); };
+                const timer = setTimeout(finish, hedgeMs); timer.unref?.(); combined.addEventListener('abort', finish, { once: true }); if (combined.aborted) finish();
+            });
+            let last;
+            while (cursor < active.length && !combined.aborted) { const deviceId = active[cursor++]; try { return await ask(deviceId); } catch (error) { last = error; } }
+            throw last || sourceError('STREAM_SOURCE_MISSING');
+        };
+        try { return await Promise.any(Array.from({ length: Math.min(2, active.length) }, worker)); }
+        catch (error) { throw error.errors?.find(value => value.message !== 'STREAM_READ_CANCELLED') || sourceError('STREAM_READ_CANCELLED'); }
+        finally { cancel.abort(); }
     }
     function provide(deviceId, requestId, buffer, error) {
         const request = pending.get(requestId);

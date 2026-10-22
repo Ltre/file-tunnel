@@ -6,7 +6,8 @@
         const deviceId = () => localStorage.getItem('deviceId') || deps.state.deviceId;
         async function tunnels() {
             const entries = await deps.listSessions();
-            return entries.map(entry => ({ sessionId: entry.sessionId, name: entry.remark || entry.shortCode || entry.sessionId,
+            if (deps.state.sessionId && !entries.some(entry => entry.sessionId === deps.state.sessionId)) entries.push({ sessionId: deps.state.sessionId, shortCode: deps.state.shortCode, remark: deps.state.sessionRemark });
+            return entries.map(entry => ({ sessionId: entry.sessionId, shortCode: entry.shortCode || '', remark: entry.remark || '', name: [entry.shortCode, entry.remark].filter(Boolean).join(' · ') || entry.sessionId,
                 accessGrant: deps.authorization(entry.sessionId).grant, tunnelDeviceId: deps.authorization(entry.sessionId).deviceId }))
                 .filter(entry => entry.accessGrant);
         }

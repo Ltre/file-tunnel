@@ -16,7 +16,7 @@
         };
         const result = new Promise(resolve => {
             current = { overlay, resolve, options, signIn, reload };
-            actions.append(button(options.choose ? '稍后继续' : '关闭', () => close()));
+            const dismiss = button('×', () => close()); dismiss.className = 'account-close'; dismiss.setAttribute('aria-label', t('关闭')); dismiss.title = t('关闭'); panel.append(dismiss);
             if (options.choose) actions.append(button('选择此账号', async () => {
                 if (loading) throw Error('ACCOUNT_LOADING');
                 const entry = entries.find(item => item.identity?.id === selected);
@@ -38,7 +38,7 @@
                     const select = button(user.name || user.username || user.id, async () => {
                         if (entry.reauthRequired || options.requiredId && user.id !== options.requiredId) { status.textContent = t('请先添加或重新登录一个有效的网盘账号'); return; }
                         if (options.choose) { selected = user.id; list.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === select))); }
-                        else { await options.select(user.id); await reload(); }
+                        else { await options.select(user.id); if (current?.overlay === overlay) close(user); }
                     }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;
                     select.setAttribute('aria-pressed', String(user.id === (options.choose ? selected : options.currentAccount())));
                     const label = document.createElement('small'); label.textContent = t(entry.reauthRequired ? '需要重新登录' : user.id === options.currentAccount() ? '当前账号' : '');

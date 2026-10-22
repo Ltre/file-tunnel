@@ -44,3 +44,8 @@ test('Markdown resources require a local tunnel grant and enforce the remaining 
     assert.equal((await f.markdown.readReference('tunnel-blob:tunnel1/message1/asset1')).size, 1);
     assert.equal(f.markdown.referenceName('tunnel-blob:tunnel1/message1/asset1'), 'a_b.png');
 });
+
+test('current tunnel remains discoverable before its session directory has been persisted', async () => {
+    const f = fixture({ state: { sessionId: 'current-tunnel', devices: new Map(), contacts: new Map() }, listSessions: async () => [] });
+    assert.equal((await f.adapter.tunnels())[0]?.sessionId, 'current-tunnel');
+});

@@ -109,7 +109,15 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         const heartbeat = setInterval(send, 10000); heartbeat.unref();
         res.once('close', close); res.once('finish', close); listeners.set(key, { deviceId, send, end: () => res.end() }); send();
     }));
-    router.put('/stations/:id', wrap(async (req, res) => res.json(await service.edit(req.params.id, req.streamActor, req.body || {}, req))));
+    router.put('/stations/:id', wrap(async (req, res) => {
+        if (!req.get('Accept')?.includes('application/x-ndjson')) return res.json(await service.edit(req.params.id, req.streamActor, req.body || {}, req));
+        // Progress describes real validation work; only the final record confirms persistence.
+        res.type('application/x-ndjson').set('X-Accel-Buffering', 'no'); res.flushHeaders();
+        const send = value => { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify(value) + '\n'); };
+        try { const result = await service.edit(req.params.id, req.streamActor, req.body || {}, req, progress => send({ progress })); send({ result }); }
+        catch (error) { send({ error: /^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE' }); }
+        res.end();
+    }));
     router.delete('/stations/:id', wrap((req, res) => res.json(service.remove(req.params.id, req.streamActor))));
     router.post('/stations/:id/control', wrap((req, res) => res.json(service.control(req.params.id, req.streamActor, req.body || {}))));
     router.post('/stations/:id/visibility', wrap((req, res) => res.json(service.visibility(req.params.id, req.streamActor, req.body || {}))));
@@ -123,7 +131,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     router.post('/invitations/:token', wrap((req, res) => res.json(service.accept(req.params.token, req.streamActor, req.body?.decision))));
     router.get('/inbox', wrap((req, res) => res.json({ invitations: service.inbox(req.streamActor) })));
     router.post('/invitations/:token/delivered', wrap((req, res) => res.json(service.delivered(req.params.token, req.streamActor))));
-    router.post('/stations/:id/access', wrap((req, res) => res.json(service.access(req.params.id, req.streamActor, req.body?.deviceId, req.body?.allow === true))));
+    router.post('/stations/:id/access', wrap((req, res) => res.json(service.access(req.params.id, req.streamActor, req.body?.userId || req.body?.deviceId, req.body?.allow === true, req.body?.userId ? 'user' : 'device'))));
     router.post('/stations/:id/report', wrap((req, res) => res.json(service.report(req.params.id, req.streamActor, req.body || {}))));
     router.post('/stations/:id/unwatch', wrap((req, res) => res.json(service.unwatch(req.params.id, req.streamActor, req.body?.watchId))));
     router.post('/stations/:id/ticket', wrap(async (req, res) => {

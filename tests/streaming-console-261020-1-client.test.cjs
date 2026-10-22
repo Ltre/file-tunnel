@@ -12,12 +12,14 @@ function consoleRuntime(options = {}) {
         crypto: { getRandomValues: array => require('node:crypto').randomFillSync(array) },
         localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         document: { getElementById: () => null, addEventListener() {}, createElement: options.createElement },
-        setInterval: (run, ms) => { intervals.push(ms); return 1; }, setTimeout, clearTimeout, queueMicrotask,
+        setInterval: (run, ms) => { intervals.push(ms); return 1; }, setTimeout: options.setTimeout || setTimeout, clearTimeout, queueMicrotask,
         fetch: async (url, options) => {
             calls.push({ url, options }); if (url.endsWith('/provider-work')) return new Promise(() => {});
+            if (url.endsWith('/preview') && context.delayPreview) return new Promise(() => {});
             return { ok: true, status: 200, json: async () => url.endsWith('/preview') ? { url: '/media/fixture', expiresAt: Date.now() + 600000 } : { identity: null, accounts: [], invitations: [] } };
         } };
-    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, sync }; global.StreamingConsole ='), context);
+    context.delayPreview = options.delayPreview;
+    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, duration, sync, kindOf }; global.StreamingConsole ='), context);
     const start = () => window.StreamingConsole.init({ deviceId: () => 'lan-device', deviceName: () => 'LAN', devices: () => [], tunnels: options.tunnels || (async () => []), toast: message => toasts.push(message) });
     return { window, calls, intervals, storage, toasts, start };
 }
@@ -56,3 +58,17 @@ test('identity changes during an awaited sync keep its original actor and schedu
     assert.deepEqual(requests.map(call => call.options.headers['X-Disk-Account']), ['alice', 'alice', 'bob']);
 });
 module.exports = { consoleRuntime };
+
+test('import uses current MIME before extensions, matching the server classification', () => {
+    const f = consoleRuntime(), kindOf = f.window.__importTest.kindOf;
+    assert.equal(kindOf({ name: 'replaced.m4a', type: 'image/png' }), 'image');
+    assert.equal(kindOf({ name: 'replaced.m4a', type: 'text/plain' }), 'text');
+    assert.equal(kindOf({ name: 'replaced.m4a', type: 'application/pdf' }), '');
+});
+
+test('the duration deadline covers a stalled preview authorization request, not only media metadata', async () => {
+    const timers = []; const f = consoleRuntime({ delayPreview: true, setTimeout: run => { timers.push(run); return 0; } }); await f.start();
+    const job = f.window.__importTest.duration({ name: 'slow.mp4', kind: 'video', source: { kind: 'disk', fileId: 'slow' } }, 'alice');
+    await new Promise(setImmediate); const rejected = assert.rejects(job, /DURATION_REQUIRED/); timers[0](); await rejected;
+    assert.equal(f.calls.find(call => call.url.endsWith('/preview')).options.signal.aborted, true);
+});
