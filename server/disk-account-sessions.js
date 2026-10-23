@@ -84,6 +84,13 @@ function createDiskAccountSessions({ cookieName = 'drop2tunnel_telegram_drive', 
         return value;
     }
     function select(req, res, id) {
+        if (id === '') {
+            const { active } = entries(req, true);
+            if (active) append(req, res, accountCookie(active.identity.id), active.token, 30 * 86400);
+            append(req, res, cookieName, '', 0);
+            delete req.diskSessionCookie; delete req.diskSessionExpiresAt; delete req.diskAccountId;
+            return null;
+        }
         const { byId } = entries(req);
         const entry = byId.get(String(id));
         if (!entry) throw new Error('LOGIN_REQUIRED');
@@ -113,7 +120,7 @@ function createDiskAccountSessions({ cookieName = 'drop2tunnel_telegram_drive', 
         app.get(route + '/accounts', noStore, (req, res) => res.json({ accounts: list(req), identity: identity(req) }));
         app.post(route + '/accounts/select', noStore, csrf, wrap((req, res) => {
             const selected = select(req, res, req.body?.accountId);
-            res.json({ identity: selected, accounts: list(req).map(item => ({ ...item, active: item.identity.id === selected.id })) });
+            res.json({ identity: selected, accounts: list(req).map(item => ({ ...item, active: item.identity.id === selected?.id })) });
         }));
         app.delete(route + '/accounts/:accountId', noStore, csrf, wrap((req, res) => {
             const selected = remove(req, res, req.params.accountId, revoke);

@@ -131,7 +131,7 @@ test('Telegram 网盘保持独立存储、分区、album、修复与来电取消
     assert.match(page, /telegramDriveBreadcrumbs/);
     assert.match(page, /telegramDriveSearch/);
     assert.match(page, /telegramDriveBatchMoveBtn/);
-    assert.match(app, /保存到telegram网盘/);
+    assert.match(app, /保存到网盘/);
     assert.match(app, /logoutTelegramDrive/);
     assert.match(app, /createTelegramDriveFolder/);
     assert.match(app, /moveTelegramDriveItems/);

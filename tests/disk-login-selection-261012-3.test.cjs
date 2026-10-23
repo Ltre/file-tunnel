@@ -5,6 +5,13 @@ const { createDiskOidcReceipt } = require('../server/disk-oidc-receipt');
 const { createFixture } = require('./support/disk-oidc-261012-fixture.cjs');
 const ui = fs.readFileSync(path.join(__dirname, '../client/disk-ui.js'), 'utf8');
 
+test('Mock reauthentication carries the clicked account ID as a prefill without submitting it', async t => {
+    const f = await createFixture(); t.after(() => f.close());
+    const start = await f.call('/api/telegram/drive/oidc/start?attempt=retry-mock-999000001&account_hint=999000001', { redirect: 'manual' }); assert.equal(start.status, 302);
+    const destination = new URL(start.headers.get('location')); const page = await f.call(destination.pathname + destination.search); const html = await page.text();
+    assert.match(html, /name="telegramUserId"[^>]*value="999000001"/); assert.equal((await (await f.call('/api/telegram/drive/me')).json()).identity, null);
+});
+
 test('真实 Mock OIDC 重复登录同一账号：会话不轮换，有本次完成回执且不新增账号', async t => {
     const f = await createFixture(); t.after(() => f.close());
     await f.login('attempt-first-999000002');

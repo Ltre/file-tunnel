@@ -101,6 +101,11 @@
         ['访问已结束','Access ended'], ['重新校验来源','Recheck sources'],
         ['通知操作未完成，请重新核对邀请或申请状态','Notification action failed; check the invitation or request status again']
         ,['文件引用仅在本次页面会话有效，重开后请重新选择','This file reference lasts for this page session; select the file again after reopening']
+        ,['使用离线身份','Use offline identity'], ['已使用离线身份，部分需要登录的功能将无法使用。','Using an offline identity. Features that require sign-in are unavailable.'],
+        ['排序','Sort'], ['修改时间','Modified time'], ['创建时间','Created time'], ['订阅时间','Subscription time'], ['发现时间','Discovery time'], ['名称','Name'],
+        ['由你在其它设备创建','Created by you on another device'], ['的公开台',"public stations"], ['个文件','files'],
+        ['服务端节目单版本已变更，本机草稿已保留，请核对后重试','The server playlist version changed. Your local draft is retained; review it and retry.'],
+        ['Markdown 预览','Markdown preview'], ['暂无可用的隧道媒体','No tunnel media available']
     ];
     const catalog = global.Drop2TunnelI18nCatalog ||= {};
     for (const [source, en] of rows) { const key = source.replace(/\s+/g, ''); if (!catalog[key]) catalog[source] = { en }; }

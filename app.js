@@ -7551,7 +7551,10 @@ async function addMessageToChat(message, isOwn, options = {}) {
         ${contentHtml}
     `;
     syncTransferRecordFavoriteBadge(messageEl, message);
-    if (message.type === 'markdown') window.TunnelMarkdown?.mount(messageEl.querySelector('[data-tunnel-markdown]'), message);
+    if (message.type === 'markdown') {
+        window.TunnelMarkdown?.mount(messageEl.querySelector('[data-tunnel-markdown]'), message); messageEl.classList.add('markdown-record-clickable');
+        messageEl.addEventListener('click', event => { if (event.target.closest('button,a,input,textarea,video,audio,.message-record-actions') || window.getSelection?.()?.toString()) return; window.TunnelMarkdown?.preview(message); });
+    }
     syncTransferRecordSnsBadge(messageEl, message);
     if (fileRecordRemark) {
         const remark = document.createElement('div');
@@ -8055,6 +8058,7 @@ function renderMessageRecordActions(messageEl, message) {
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
     const menuItems = [];
+    if (message.type === 'markdown') menuItems.push(...(window.TunnelMarkdown?.menuActions(message) || []));
     menuItems.push(createRecordActionButton('ℹ', '详情', '查看这条传输记录的完整信息', () => {
         showTransferRecordDetails(message.id).catch(err => showAppToast(`详情加载失败：${err.message}`));
     }));
@@ -8091,7 +8095,7 @@ function renderMessageRecordActions(messageEl, message) {
         });
     }));
     if (message.type === 'file' || message.type === 'collection') {
-        menuItems.push(createRecordActionButton('☁', '保存到telegram网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
+        menuItems.push(createRecordActionButton('☁', '保存到网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
             saveMessageToTelegramDrive(message).catch(error => alert(`保存到 Telegram 网盘失败：${error.message}`));
         }));
     }

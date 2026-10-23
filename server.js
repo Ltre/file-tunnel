@@ -2133,6 +2133,12 @@ function getTelegramPublicOrigin(req) {
 }
 
 function getTelegramOidcRedirectUri(req) {
+    const configured = String(process.env.TELEGRAM_OIDC_REDIRECT_URI || '').trim();
+    if (configured && !isTelegramOidcMockRequest(req)) {
+        const url = new URL(configured);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/api/telegram/drive/oidc/callback') throw Error('telegram-oidc-redirect-uri-invalid');
+        return url.href;
+    }
     return `${getTelegramPublicOrigin(req)}/api/telegram/drive/oidc/callback`;
 }
 
@@ -2365,6 +2371,7 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
             traceId,
             attemptId,
             mode: mockEnabled ? 'mock' : 'telegram',
+            accountHint: mockEnabled ? diskAccountSessions.list(req).find(entry => entry.identity.id === req.query.account_hint)?.identity.telegramId || (/^\d{1,20}$/.test(req.query.account_hint || '') ? req.query.account_hint : undefined) : undefined,
             clientId: mockEnabled ? '' : config.oidcClientId,
             codeVerifier: authorization.codeVerifier,
             nonce: authorization.nonce,
@@ -2372,7 +2379,8 @@ app.get('/api/telegram/drive/oidc/start', (req, res) => {
             openerOrigin: getTelegramPublicOrigin(req),
             expiresAt: Date.now() + TELEGRAM_OIDC_FLOW_TTL_MS
         });
-        if (!mockEnabled) console.info('[网盘 OIDC] 已跳转 Telegram，等待用户确认', { traceId, redirectUri });
+        if (!mockEnabled) console.info('[网盘 OIDC] 已跳转 Telegram，等待用户确认', { traceId, redirectUri,
+            host: String(req.get('host') || '').slice(0, 255), forwardedHost: String(req.get('x-forwarded-host') || '').slice(0, 255), forwardedProto: String(req.get('x-forwarded-proto') || '').slice(0, 32) });
         const secure = isSecurePublicRequest(req);
         res.setHeader('Set-Cookie', `${TELEGRAM_DRIVE_OIDC_STATE_COOKIE}=${authorization.state}; Path=/api/telegram/drive/oidc; HttpOnly; SameSite=Lax; Max-Age=600${secure ? '; Secure' : ''}`);
         res.redirect(302, authorization.url);
@@ -2392,7 +2400,7 @@ app.get('/api/telegram/drive/oidc/mock', (req, res) => {
     if (!flow || flow.mode !== 'mock' || flow.expiresAt <= Date.now() || !constantTimeStringEqual(state, stateCookie)) {
         return res.status(400).type('html').send(telegramOidcMock.renderAuthorizationPage({ state: '', error: 'Mock 登录状态无效或已过期，请关闭窗口后重试。' }));
     }
-    res.type('html').send(telegramOidcMock.renderAuthorizationPage({ state }));
+    res.type('html').send(telegramOidcMock.renderAuthorizationPage({ state, accountHint: flow.accountHint }));
 });
 
 app.post('/api/telegram/drive/oidc/mock/authorize', express.urlencoded({ extended: false, limit: '4kb' }), (req, res) => {

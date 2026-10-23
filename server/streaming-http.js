@@ -2,7 +2,16 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const crypto = require('node:crypto');
-const { once } = require('node:events');
+function waitForDrain(res) {
+    return new Promise((resolve, reject) => {
+        const cleanup = () => { res.removeListener('drain', drained); res.removeListener('close', closed); res.removeListener('error', failed); };
+        const drained = () => { cleanup(); resolve(); };
+        const failed = error => { cleanup(); reject(error); };
+        const closed = () => failed(new Error('STREAM_READ_CANCELLED'));
+        res.once('drain', drained); res.once('close', closed); res.once('error', failed);
+        if (res.destroyed || res.writableEnded) closed();
+    });
+}
 const { createStreamingConsole, digest } = require('./streaming-console');
 const { parseByteRange } = require('./object-storage');
 const { Readable } = require('node:stream');
@@ -80,10 +89,16 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
                     const buffered = []; let bufferedSize = 0;
                     for await (const chunk of stream) {
                         await get();
-                        if (warming && !cached) { bufferedSize += chunk.length; if (bufferedSize > sources.MAX_CHUNK) throw Error('STREAM_READ_INVALID'); buffered.push(Buffer.from(chunk)); }
-                        if (!res.write(chunk)) await Promise.race([once(res, 'drain'), once(res, 'close').then(() => { throw new Error('STREAM_READ_CANCELLED'); })]);
+                        if (warming && !cached) { bufferedSize += chunk.length; if (bufferedSize > sources.MAX_CHUNK) throw Error('STREAM_READ_INVALID'); buffered.push(Buffer.from(chunk)); continue; }
+                        if (!res.write(chunk)) await waitForDrain(res);
                     }
-                    if (warming && !cached && !controller.signal.aborted && bufferedSize === end - start + 1) readAhead.put(req.params.ticket, start, Buffer.concat(buffered));
+                    if (warming && !cached) {
+                        if (controller.signal.aborted || bufferedSize !== end - start + 1) throw Error('STREAM_READ_INVALID');
+                        await get(); const bytes = Buffer.concat(buffered); readAhead.put(req.params.ticket, start, bytes);
+                        // Publish the bounded warm chunk before its HTTP body can
+                        // complete; the next native read may start immediately.
+                        if (!res.write(bytes)) await waitForDrain(res);
+                    }
                 } finally { stream.destroy(); }
                 start = end + 1;
             }
@@ -103,6 +118,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     router.get('/stations', wrap((req, res) => res.json({ stations: service.list(req.streamActor, req.query.kind, req.query.ownerId) })));
     router.post('/stations', wrap((req, res) => res.status(201).json(service.create(req.streamActor, req.body || {}))));
     router.get('/stations/:id', wrap((req, res) => res.json(service.view(req.params.id, req.streamActor, { manage: req.query.manage === '1' }))));
+    router.post('/stations/:id/revision', wrap((req, res) => res.json(service.revision(req.params.id, req.streamActor, req.body))));
     router.get('/stations/:id/events', wrap((req, res) => {
         const deviceId = req.streamActor.deviceId;
         if (listeners.size >= 128 || [...listeners.values()].filter(value => value.deviceId === deviceId).length >= 16) throw new Error('STREAM_LIMIT');
@@ -124,7 +140,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         res.type('application/x-ndjson').set('X-Accel-Buffering', 'no'); res.flushHeaders();
         const send = value => { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify(value) + '\n'); };
         try { const result = await service.edit(req.params.id, req.streamActor, req.body || {}, req, progress => send({ progress })); send({ result }); }
-        catch (error) { send({ error: /^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE' }); }
+        catch (error) { send({ error: /^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE', ...(error.message === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) }); }
         res.end();
     }));
     router.delete('/stations/:id', wrap((req, res) => res.json(service.remove(req.params.id, req.streamActor))));
@@ -165,7 +181,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     }));
     router.get('/provider-work', wrap(async (req, res) => {
         const controller = new AbortController(); res.once('close', () => controller.abort());
-        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal) });
+        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal, req.get('X-Stream-Provider') || 'legacy') });
     }));
     router.post('/provider-work/:requestId', express.raw({ type: 'application/octet-stream', limit: sources.MAX_CHUNK }), wrap((req, res) => {
         sources.broker.provide(req.streamActor.deviceId, req.params.requestId, req.body, req.get('X-Stream-Error'));
@@ -180,10 +196,10 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         if (res.headersSent) { res.destroy(); return; }
         const code = String(error.message || 'STREAM_FAILED');
         const publicCode = /^(STREAM_[A-Z_]+|LOGIN_REQUIRED|ORIGIN_MISMATCH)$/.test(code) ? code : 'STREAM_SOURCE_UNAVAILABLE';
-        res.status(code === 'STREAM_CONFLICT' ? 409 : code === 'STREAM_NOT_FOUND' ? 404 : /REQUIRED|DENIED|KICKED|LOCAL_ONLY|DEVICE$|REVOKED|EXPIRED/.test(code) ? 403 : 422).json({ error: publicCode });
+        res.status(code === 'STREAM_CONFLICT' ? 409 : code === 'STREAM_NOT_FOUND' ? 404 : /REQUIRED|DENIED|KICKED|LOCAL_ONLY|DEVICE$|REVOKED|EXPIRED/.test(code) ? 403 : 422).json({ error: publicCode, ...(code === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) });
     });
     app.use('/api/streaming', router);
     const timer = setInterval(() => { try { service.tick(); } catch (error) { console.warn('streaming clock persistence failed:', error.code || error.message); } }, 1000); timer.unref();
     return { service, close() { clearInterval(timer); sources.broker.close(); tickets.clear(); readAhead.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
 }
-module.exports = { registerStreamingConsole };
+module.exports = { registerStreamingConsole, waitForDrain };

@@ -23,15 +23,17 @@
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
         const localPause = button('暂停本机观看', () => { paused = !paused; localPause.textContent = t(paused ? '恢复跟随' : '暂停本机观看'); if (paused) { media?.pause(); actual = 'paused'; } else align(); lastTick = performance.now(); sync(true); update(); });
         const sound = button('静音', () => { muted = !muted; if (media) media.muted = muted; sync(true); update(); });
+        localPause.dataset.icon = '❚❚'; sound.dataset.icon = '🔇';
         const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
         slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
-        button('开始观看', () => { paused = false; localPause.textContent = t('暂停本机观看'); if (actual === 'error') align(); lastTick = performance.now(); sync(true); update(); });
-        button('媒体全屏', async () => {
+        const startWatching = button('开始观看', () => { paused = false; localPause.textContent = t('暂停本机观看'); if (actual === 'error') align(); lastTick = performance.now(); sync(true); update(); }); startWatching.className = 'sc-window-only';
+        const enterFullscreen = button('媒体全屏', async () => {
             try { if (document.fullscreenElement === host) await document.exitFullscreen(); else if (host.requestFullscreen) await host.requestFullscreen(); else host.classList.toggle('sc-media-fullscreen'); }
             catch (_) { host.classList.toggle('sc-media-fullscreen'); }
-        });
+        }); enterFullscreen.className = 'sc-window-only';
         const leaveFullscreen = button('退出全屏', () => { if (document.fullscreenElement === host) document.exitFullscreen(); host.classList.remove('sc-media-fullscreen'); }); leaveFullscreen.className = 'sc-exit-fullscreen';
+        leaveFullscreen.dataset.icon = '⤡'; leaveFullscreen.title = t('退出全屏'); leaveFullscreen.setAttribute('aria-label', t('退出全屏'));
         const length = item => item?.duration ? item.duration - (item.start || 0) : item?.stay || 0;
         const itemKey = item => JSON.stringify([snapshot?.configVersion, item?.id, item?.kind, item?.duration, item?.start, item?.stay]);
         const current = () => snapshot?.items.find(item => item.id === currentId);
@@ -43,6 +45,8 @@
             const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', reading: '正在展示' };
             const silent = muted || volume === 0;
             sound.textContent = t(muted ? '取消静音' : '静音'); muteNode.hidden = !silent; muteNode.textContent = t('已静音');
+            localPause.dataset.icon = paused ? '▶' : '❚❚'; sound.dataset.icon = muted ? '🔊' : '🔇';
+            for (const control of [localPause, sound]) { control.title = control.textContent; control.setAttribute('aria-label', control.textContent); }
             statusNode.textContent = (failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
             const item = current();
@@ -105,12 +109,12 @@
             })();
             task.promise.catch(() => {}); return task;
         }
-        async function load(item, position = 0) {
+        async function load(item, position = 0, retries = 0) {
             const revision = ++generation; dispose(active); media = null; active = null; currentId = item?.id || ''; localPosition = position; failure = ''; actual = item ? 'buffering' : 'waiting';
             content.replaceChildren(); countdown.hidden = true; const started = performance.now();
             if (!item) { clearNext(); update(); return; }
             const task = next?.key === itemKey(item) && (!next.expiresAt || next.expiresAt > Date.now() + 10000) ? next : prepare(item);
-            if (next !== task) clearNext(); else next = null; active = task; update();
+            if (next !== task) clearNext(); else next = null; active = task; task.retries = retries; update();
             try {
                 await task.promise; if (revision !== generation || !alive || denied || task.disposed) return;
                 const wait = Math.max(0, performance.now() - started) / 1000;
@@ -126,7 +130,7 @@
                     if (item.kind === 'audio') { const title = document.createElement('p'); title.className = 'message-content sc-audio-title'; title.textContent = '♪ ' + item.name; content.append(title); }
                 } else actual = paused || !running() ? 'paused' : 'reading';
                 sync(true); update();
-            } catch (error) { if (revision !== generation || !alive || task.disposed) return; if (!accessError(error)) { actual = 'error'; failure = t('资源读取失败，请检查台状态与来源') + ' [' + error.message + ']'; update(); onError?.(error); } }
+            } catch (error) { if (revision !== generation || !alive || task.disposed) return; if (!accessError(error)) { actual = 'error'; task.retryAt = performance.now() + 2000 * 2 ** retries; failure = t('资源读取失败，请检查台状态与来源') + ' [' + error.message + ']'; update(); onError?.(error); } }
         }
         function following() {
             const items = (snapshot?.items || []).filter(item => !item.unavailable), index = items.findIndex(item => item.id === currentId);
@@ -169,6 +173,7 @@
             if (!alive || denied || pageSuspended || !snapshot) return;
             const now = performance.now(), elapsed = Math.max(0, now - lastTick) / 1000; lastTick = now;
             const item = current(); if (!item) return;
+            if (actual === 'error' && active?.retryAt && active.retries < 3 && now >= active.retryAt && running() && !paused && !item.unavailable) { load(item, localPosition, active.retries + 1); return; }
             if (active?.ready && !paused && running()) {
                 if (media) { if (!media.paused && media.readyState >= 2) localPosition = Math.max(0, media.currentTime - (item.start || 0)); else if (actual === 'buffering' || actual === 'blocked') delay += elapsed; }
                 else localPosition += elapsed;

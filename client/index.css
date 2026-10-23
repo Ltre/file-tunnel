@@ -1344,9 +1344,9 @@ body[data-theme="atelier"] .main-layout {
 }
 
 .btn {
-    padding: 12px 24px;
+    padding: 8px 12px;
     border: none;
-    border-radius: 25px;
+    border-radius: 10px;
     font-size: 1rem;
     cursor: pointer;
     transition: all 0.2s;

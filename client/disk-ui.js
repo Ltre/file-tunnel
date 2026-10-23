@@ -132,11 +132,12 @@ function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}
 async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
     if (window.AccountUI) return window.AccountUI.open({ choose, requiredId, currentAccount: () => window.DiskClient.getAccount(),
         load: async () => { const [accounts, status] = await Promise.all([window.DiskClient.raw('/accounts', { accountId: '' }), window.DiskClient.raw('/me', { accountId: '' })]); return { ...accounts, status }; },
-        select: switchTelegramDriveAccount, logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
+        select: switchTelegramDriveAccount, offline: () => switchTelegramDriveAccount(''), logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
         renderSignIn: (target, status) => appendTelegramDriveAddAccount(target, status, { embedded: true }),
         reauthenticate: (user, target, status) => {
-            if (status.oidcConfigured) startTelegramDriveLogin(target);
-            else { target.replaceChildren(); appendPasskeyControls(target, null, { addAccount: true, embedded: true }); const username = target.querySelector('input'); if (username && user.username) username.value = user.username; target.querySelector('button')?.click(); }
+            if (status.oidcMode === 'mock') startTelegramDriveLogin(target, user.id);
+            else if (user.username && (!user.telegramId || user.passkeyCount > 0)) { target.replaceChildren(); appendPasskeyControls(target, null, { addAccount: true, embedded: true }); const username = target.querySelector('input'); if (username) username.value = user.username; username?.focus(); }
+            else startTelegramDriveLogin(target);
         },
         cancelSignIn: target => { if (telegramDriveOidcPopup && target.contains(telegramDriveLoginTarget)) cancelTelegramDriveLogin(); } });
     const body = document.createElement('div'); body.className = 'disk-account-list';
@@ -2537,14 +2538,14 @@ function prepareTelegramDrivePicker() {
     const dialog = document.getElementById('telegramDriveDialog');
     if (dialog.parentElement !== document.body) document.body.append(dialog);
 }
-function startTelegramDriveLogin(targetOverride) {
+function startTelegramDriveLogin(targetOverride, accountHint = '') {
     const target = targetOverride?.append ? targetOverride : document.getElementById('telegramDriveAuth');
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) {
         telegramDriveOidcPopup.focus();
         return;
     }
     telegramDriveLoginAttempt = window.crypto?.randomUUID?.() || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
-    const popup = window.open('/api/telegram/drive/oidc/start?attempt=' + encodeURIComponent(telegramDriveLoginAttempt), 'telegramDriveOidc', 'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes');
+    const popup = window.open('/api/telegram/drive/oidc/start?attempt=' + encodeURIComponent(telegramDriveLoginAttempt) + (accountHint ? '&account_hint=' + encodeURIComponent(accountHint) : ''), 'telegramDriveOidc', 'popup=yes,width=520,height=720,resizable=yes,scrollbars=yes');
     if (!popup) {
         alert('浏览器阻止了 Telegram 登录弹窗。请允许本站弹出窗口后重试；系统不会改用整页跳转。');
         return;

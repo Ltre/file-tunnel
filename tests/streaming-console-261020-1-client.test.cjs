@@ -13,13 +13,13 @@ function consoleRuntime(options = {}) {
         localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
         document: { getElementById: () => null, addEventListener() {}, createElement: options.createElement },
         setInterval: (run, ms) => { intervals.push(ms); return 1; }, setTimeout: options.setTimeout || setTimeout, clearTimeout, queueMicrotask,
-        fetch: async (url, options) => {
-            calls.push({ url, options }); if (url.endsWith('/provider-work')) return new Promise(() => {});
+        fetch: async (url, requestOptions) => {
+            calls.push({ url, options: requestOptions }); if (url.endsWith('/provider-work')) return new Promise(() => {});
             if (url.endsWith('/preview') && context.delayPreview) return new Promise(() => {});
-            return { ok: true, status: 200, json: async () => url.endsWith('/preview') ? { url: '/media/fixture', expiresAt: Date.now() + 600000 } : { identity: null, accounts: [], invitations: [] } };
+            return { ok: true, status: 200, json: async () => options.respond ? options.respond(url, requestOptions) : url.endsWith('/preview') ? { url: '/media/fixture', expiresAt: Date.now() + 600000 } : { identity: null, accounts: [], invitations: [] } };
         } };
     context.delayPreview = options.delayPreview;
-    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, duration, sync, kindOf }; global.StreamingConsole ='), context);
+    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, duration, sync, kindOf, navigate, returnToList, getUi: () => ui }; global.StreamingConsole ='), context);
     const start = () => window.StreamingConsole.init({ deviceId: () => 'lan-device', deviceName: () => 'LAN', devices: () => [], tunnels: options.tunnels || (async () => []), toast: message => toasts.push(message) });
     return { window, calls, intervals, storage, toasts, start };
 }
@@ -58,6 +58,22 @@ test('identity changes during an awaited sync keep its original actor and schedu
     assert.deepEqual(requests.map(call => call.options.headers['X-Disk-Account']), ['alice', 'alice', 'bob']);
 });
 module.exports = { consoleRuntime };
+
+test('station returns retain the originating list and direct invitations explicitly return to discovery', async () => {
+    const f = consoleRuntime(); await f.start(); const runtime = f.window.__importTest;
+    for (const origin of ['discover', 'local', 'bookmarks']) {
+        runtime.navigate(origin); runtime.navigate('watch', 'station-' + origin); runtime.navigate('access', 'station-' + origin); runtime.returnToList(); assert.equal(runtime.getUi().view, origin);
+    }
+    runtime.navigate('local'); runtime.navigate('watch', 'linked-station', false, 'discover'); runtime.returnToList(); assert.equal(runtime.getUi().view, 'discover');
+});
+
+test('a failed metadata probe invalidates its preview ticket before a user retry', async () => {
+    const probes = []; const f = consoleRuntime({ createElement: () => ({ duration: 12, removeAttribute() {}, load() {}, set src(value) { probes.push(this); } }) }); await f.start();
+    const item = { name: 'song.m4a', kind: 'audio', size: 100, source: { kind: 'disk', fileId: 'song', accountId: 'alice' } };
+    const first = f.window.__importTest.duration(item, 'alice'); const rejected = assert.rejects(first); await new Promise(setImmediate); probes[0].onerror(); await rejected;
+    const second = f.window.__importTest.duration(item, 'alice'); await new Promise(setImmediate); probes[1].onloadedmetadata(); await second;
+    assert.equal(f.calls.filter(call => call.url.endsWith('/preview')).length, 2);
+});
 
 test('import uses current MIME before extensions, matching the server classification', () => {
     const f = consoleRuntime(), kindOf = f.window.__importTest.kindOf;

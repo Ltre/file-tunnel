@@ -137,7 +137,7 @@
                 <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
                 <button class="tunnel-topbar-action" id="topbarDiskBtn" type="button" title="恢复 Telegram 网盘" aria-label="恢复 Telegram 网盘" hidden>▤</button>
                 <button class="tunnel-topbar-action" id="topbarWorkshopBtn" type="button" title="恢复网页工坊" aria-label="恢复网页工坊" hidden>🌐</button>
-                <button class="tunnel-topbar-action" id="topbarStreamingBtn" type="button" title="恢复串流控制台" aria-label="恢复串流控制台" hidden>▣</button>
+                <button class="tunnel-topbar-action" id="topbarStreamingBtn" type="button" title="恢复串流控制台" aria-label="恢复串流控制台" hidden><img src="/client/icons/streaming.png" alt="" width="24" height="24"></button>
                 <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
             </div>
         </div>
@@ -245,13 +245,13 @@
                         <div class="connection-header-menu-wrap">
                             <button class="connection-header-menu-btn" id="connectionHeaderMenuBtn" type="button" title="更多" aria-label="连接设备菜单">☰</button>
                             <div class="connection-header-menu" id="connectionHeaderMenu" hidden>
-                                <button type="button" id="scanTunnelCodeBtn">扫描隧道码</button>
-                                <button type="button" id="receiveLightBtn">接收光媒</button>
-                                <button type="button" id="connectionResourceBrowserBtn">资源浏览器</button>
-                                <button type="button" id="webWorkshopBtn">网页工坊</button>
-                                <button type="button" id="streamingConsoleBtn">串流控制台</button>
-                                <button type="button" id="notificationCenterBtn">通知中心 <span data-notification-count hidden></span></button>
-                                <button type="button" id="telegramDriveBtn">Telegram网盘</button>
+                                <button type="button" id="scanTunnelCodeBtn"><span aria-hidden="true">▩</span><span>扫描隧道码</span></button>
+                                <button type="button" id="receiveLightBtn"><span aria-hidden="true">✴↗</span><span>接收光媒</span></button>
+                                <button type="button" id="connectionResourceBrowserBtn"><span aria-hidden="true">ꕡ</span><span>资源浏览器</span></button>
+                                <button type="button" id="webWorkshopBtn"><span aria-hidden="true">🌐</span><span>网页工坊</span></button>
+                                <button type="button" id="streamingConsoleBtn"><img src="/client/icons/streaming.png" alt="" width="22" height="22"><span>串流控制台</span></button>
+                                <button type="button" id="notificationCenterBtn"><span aria-hidden="true">🔔</span><span>通知中心</span> <span data-notification-count hidden></span></button>
+                                <button type="button" id="telegramDriveBtn"><span aria-hidden="true">▤</span><span>Telegram网盘</span></button>
                             </div>
                         </div>
                     </div>
@@ -393,10 +393,10 @@
                                 <span>清空</span>
                             </button>
                             <button class="btn btn-secondary" id="sendEditorMarkdownBtn" type="button">
-                                <span>MD</span><span>发送 Markdown</span>
+                                <span>发送 Markdown</span>
                             </button>
                             <button class="btn btn-primary" id="sendRichBtn">
-                                <span>📨</span>
+                                <!-- <span>📨</span> -->
                                 <span>发送富文本</span>
                             </button>
                         </div>

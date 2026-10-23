@@ -61,6 +61,11 @@
             return response.blob();
         }
         global.TunnelMarkdown.init({ readReference, record: deps.message, edit: deps.editMarkdown,
+            media: async message => {
+                await global.StreamingConsole.whenReady(); const context = (await tunnels()).find(entry => entry.sessionId === (message.sessionId || deps.state.sessionId));
+                if (!context) throw Error('STREAM_TUNNEL_DENIED');
+                const result = await global.StreamingConsole.request('/tunnel-resources', 'POST', context); return result.candidates.filter(item => item.source.fileId !== 'record');
+            },
             referenceName: value => referenceNames.get(value) || value.split('/').at(-1),
             upload: async file => {
                 const user = await global.DiskUI.chooseAccount();

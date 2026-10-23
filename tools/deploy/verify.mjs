@@ -142,7 +142,7 @@ async function main() {
   for (const page of pages) {
     const html = await fs.readFile(path.join(pagesDir, page), 'utf8');
     for (const ref of collectHtmlRefs(html)) {
-      if (ref.startsWith('/client/') || /^\/app\.js(?:[?]|$)/.test(ref)) errors.push(`page still references source asset: pages/${page}: ${ref}`);
+      if (ref.startsWith('/client/') && !FIXED_SHELL_ASSETS.includes(ref) || /^\/app\.js(?:[?]|$)/.test(ref)) errors.push(`page still references source asset: pages/${page}: ${ref}`);
       if (shouldExistAsStaticFile(ref) && !await exists(distRoot, ref)) {
         errors.push(`pages/${page} references missing file: ${ref}`);
       }

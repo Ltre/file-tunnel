@@ -72,12 +72,12 @@ function createTelegramOidcMock(options = {}) {
         return { id, name: `本地 Mock 用户 ${id}`, username: `mock_${id}` };
     }
 
-    function renderAuthorizationPage({ state, error = '' } = {}) {
+    function renderAuthorizationPage({ state, error = '', accountHint = defaultUserId } = {}) {
         return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram OIDC 本地 Mock</title>
 <style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#26324d}main{box-sizing:border-box;width:min(420px,calc(100% - 32px));padding:28px;border:1px solid #dce3f0;border-radius:16px;background:white;box-shadow:0 16px 42px #1d31551f}h1{font-size:1.3rem;margin-top:0}.notice{padding:12px;border-radius:10px;background:#fff5d7;color:#704f00}.error{color:#b42318}label,input,button{display:block;width:100%;box-sizing:border-box}label{margin:18px 0 7px;font-weight:650}input{padding:11px;border:1px solid #abb8cc;border-radius:8px;font:inherit}button{margin-top:14px;padding:11px;border:0;border-radius:8px;background:#2979ff;color:white;font:inherit;font-weight:700;cursor:pointer}.secondary{background:#e9eef7;color:#26324d}</style></head>
 <body><main><h1>Telegram OIDC 本地 Mock</h1><p class="notice">此页面只模拟本机开发登录，不会连接 Telegram，也不应把 localhost 登记到 BotFather。</p>${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
-<form method="post" action="/api/telegram/drive/oidc/mock/authorize"><input type="hidden" name="state" value="${escapeHtml(state)}"><label for="telegramUserId">Telegram User ID</label><input id="telegramUserId" name="telegramUserId" inputmode="numeric" pattern="[0-9]{1,20}" maxlength="20" value="${escapeHtml(defaultUserId)}" required autofocus><button type="submit">使用此 Mock 身份登录</button></form>
+<form method="post" action="/api/telegram/drive/oidc/mock/authorize"><input type="hidden" name="state" value="${escapeHtml(state)}"><label for="telegramUserId">Telegram User ID</label><input id="telegramUserId" name="telegramUserId" inputmode="numeric" pattern="[0-9]{1,20}" maxlength="20" value="${escapeHtml(accountHint)}" required autofocus><button type="submit">使用此 Mock 身份登录</button></form>
 <button type="button" class="secondary" onclick="window.close()">取消并关闭</button></main></body></html>`;
     }
 

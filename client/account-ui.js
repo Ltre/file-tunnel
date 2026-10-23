@@ -53,6 +53,15 @@
                 }
                 if (!entries.length) status.textContent = t('尚未登录账号');
                 options.renderSignIn(signIn, data.status);
+                if (!options.choose && entries.length && options.offline) {
+                    const offline = button('使用离线身份', async () => {
+                        await options.offline(); close();
+                        const message = t('已使用离线身份，部分需要登录的功能将无法使用。');
+                        if (global.showAppToast) global.showAppToast(message); else global.alert(message);
+                    });
+                    const add = signIn.querySelector('button');
+                    if (add) { const row = document.createElement('div'); row.className = 'account-sign-actions'; add.before(row); row.append(add, offline); } else signIn.append(offline);
+                }
             } catch (error) { if (revision === generation && overlay.isConnected) { status.textContent = t('账号操作未完成，请重试') + ' [' + error.message + ']'; list.replaceChildren(button('重新读取账号', reload)); } }
             finally { if (revision === generation) loading = false; }
         }

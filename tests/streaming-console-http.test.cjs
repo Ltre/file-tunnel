@@ -50,6 +50,43 @@ test('real HTTP drive adapter delegates only selected bytes without recipient so
     const anonymousBookmark = await f.call('device-C', '/stations/' + f.s.id + '/bookmark', 'PUT'); assert.equal(anonymousBookmark.status, 403);
 });
 
+test('switching accounts and choosing offline keeps retained drive source proofs playable', async t => {
+    const f = await setup(t), item = f.items[0]; await f.login('bob');
+    const open = f.api.objectStorage.open; let readClosed = Promise.resolve();
+    f.api.objectStorage.open = async (...args) => { const result = await open(...args); readClosed = new Promise(resolve => result.stream.once('close', resolve)); return result; };
+    const headers = { ...f.headers('device-A', true), 'X-Disk-Account': 'bob', 'Content-Type': 'application/json' };
+    const switched = await fetch(f.base + '/api/streaming/sync', { method: 'POST', headers, body: '{}' }); assert.equal(switched.status, 200);
+    assert.equal((await switched.json()).identity.id, 'bob'); assert.equal(f.streaming.service.station(f.s.id).visibility, 'public');
+    const jar = new Map(headers.Cookie.split('; ').map(pair => { const i = pair.indexOf('='); return [pair.slice(0,i),pair.slice(i+1)]; }));
+    const offline = await fetch(f.base + '/api/telegram/drive/accounts/select', { method: 'POST', headers: { Cookie: headers.Cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ accountId: '' }) });
+    assert.equal(offline.status, 200); assert.equal((await offline.json()).identity, null);
+    for (const value of offline.headers.getSetCookie()) { const [pair] = value.split(';'); const i = pair.indexOf('='); if (/Max-Age=0(?:;|$)/.test(value)) jar.delete(pair.slice(0,i)); else jar.set(pair.slice(0,i),pair.slice(i+1)); }
+    const sync = await fetch(f.base + '/api/streaming/sync', { method: 'POST', headers: { ...f.headers('device-A'), Cookie: [...jar].map(([k,v]) => k+'='+v).join('; '), 'Content-Type': 'application/json' }, body: '{}' });
+    const state = await sync.json(); assert.equal(state.identity, null); assert.ok(state.accounts.some(entry => entry.id === 'alice'));
+    assert.equal(f.streaming.service.station(f.s.id).visibility, 'public');
+    const ticket = await f.call('device-C', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: item.id }); assert.equal(ticket.status, 200);
+    const media = await fetch(f.base + ticket.body.url, { headers: f.headers('device-C') }); assert.equal(media.status, 200); assert.ok((await media.arrayBuffer()).byteLength > 0); await readClosed;
+});
+
+test('consecutive complete and Range reads remain available after each response completes', async t => {
+    const f = await setup(t), item = f.items.find((entry, index) => f.files[index].name.endsWith('.txt'));
+    const ticket = await f.call('device-C', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: item.id });
+    for (let cycle = 0; cycle < 24; cycle++) for (const range of ['', 'bytes=0-5']) {
+        const response = await fetch(f.base + ticket.body.url, { headers: { ...f.headers('device-C'), ...(range ? { Range: range } : {}) } });
+        assert.equal(response.status, range ? 206 : 200, response.ok ? '' : await response.clone().text()); await response.arrayBuffer();
+    }
+});
+
+test('drive playlist revisions reconcile accountId locators after release and reclaim without reading media', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id);
+    const baseline = { name: station.name, loop: station.loop, countdown: station.countdown, items: station.items.map((item, index) => ({ ...item, source: f.items[index].source })) };
+    assert.equal((await f.call('device-A', '/stations/' + f.s.id + '/ownership', 'POST', { action: 'release' }, true)).status, 200);
+    assert.equal((await f.call('device-A', '/stations/' + f.s.id + '/ownership', 'POST', { action: 'claim' }, true)).status, 200);
+    const revision = await f.call('device-A', '/stations/' + f.s.id + '/revision', 'POST', baseline, true);
+    assert.equal(revision.status, 200); assert.equal(revision.body.matches, true); assert.equal(revision.body.configVersion, station.configVersion);
+    assert.equal((await f.call('device-B', '/stations/' + f.s.id + '/revision', 'POST', baseline, true)).status, 403);
+});
+
 test('playlist save streams real progress and confirms success only after persistence', async t => {
     const f = await setup(t), station = f.streaming.service.station(f.s.id);
     const response = await fetch(f.base + '/api/streaming/stations/' + f.s.id, { method: 'PUT',
@@ -151,10 +188,11 @@ test('HTTP device inbox, general invite account promotion and CSRF rejection use
 test('read-ahead serves later media reads from the same ticket but still rejects revoked access', async t => {
     const f = await setup(t), item = f.items.find((entry, index) => f.files[index].name.endsWith('.png'));
     const ticket = await f.call('device-C', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: item.id });
-    let reads = 0; const originalRead = f.sources.read; f.sources.read = (...args) => { reads++; return originalRead(...args); };
+    let reads = 0; const originalRead = f.sources.read; f.sources.read = async (...args) => { reads++; const stream = await originalRead(...args);
+        return require('node:stream').Readable.from((async function* () { for await (const chunk of stream) yield chunk; await new Promise(resolve => setTimeout(resolve, 20)); })()); };
     const headers = { ...f.headers('device-C'), Range: 'bytes=0-31' };
-    const warm = await fetch(f.base + ticket.body.url, { headers: { ...headers, 'X-Stream-Buffer': '1' } }); assert.equal(warm.status, 206); const bytes = Buffer.from(await warm.arrayBuffer());
-    const afterWarm = reads, next = await fetch(f.base + ticket.body.url, { headers }); assert.equal(next.status, 206); assert.deepEqual(Buffer.from(await next.arrayBuffer()), bytes); assert.equal(reads, afterWarm);
+    const warm = await fetch(f.base + ticket.body.url, { headers: { ...headers, 'X-Stream-Buffer': '1' } }); assert.equal(warm.status, 206, warm.status === 206 ? '' : await warm.clone().text()); const bytes = Buffer.from(await warm.arrayBuffer());
+    const afterWarm = reads, next = await fetch(f.base + ticket.body.url, { headers }); assert.equal(next.status, 206, next.status === 206 ? '' : await next.clone().text()); assert.deepEqual(Buffer.from(await next.arrayBuffer()), bytes); assert.equal(reads, afterWarm);
     await f.call('device-A', '/stations/' + f.s.id + '/access', 'POST', { deviceId: 'device-C', allow: false }, true);
     const denied = await fetch(f.base + ticket.body.url, { headers }); assert.equal(denied.status, 403); await denied.text();
 });

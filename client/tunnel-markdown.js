@@ -46,7 +46,7 @@
         panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); heading.textContent = t(editing ? '编辑 Markdown' : 'Markdown 修改历史');
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; return b; };
         const close = () => { layer.remove(); document.removeEventListener('keydown', escape, true); };
-        const escape = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
+        const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         document.addEventListener('keydown', escape, true);
         header.append(heading, button('关闭', close)); panel.append(header); layer.append(panel); document.body.append(layer);
         if (!editing) {
@@ -83,7 +83,33 @@
             } catch (error) { status.textContent = t('修改未保存，请检查连接或权限后重试') + ' [' + error.message + ']'; }
             finally { save.disabled = false; }
         });
-        panel.append(input, status, save, button('修改历史', () => recordDialog(message, false))); input.focus();
+        const actions = document.createElement('footer'); actions.className = 'sc-markdown-edit-actions';
+        actions.append(save, button('修改历史', () => recordDialog(message, false)), button('插入隧道媒体', async event => {
+            const control = event.currentTarget; control.disabled = true; status.textContent = t('正在加载资源列表…');
+            try {
+                const candidates = await options.media(message); if (!layer.isConnected) return;
+                panel.querySelector('.sc-markdown-media-list')?.remove(); const list = document.createElement('div'); list.className = 'sc-markdown-media-list';
+                for (const item of candidates) list.append(button(item.name, () => {
+                    const source = item.source, reference = 'tunnel-blob:' + source.sessionId + '/' + source.messageId + '/' + source.fileId;
+                    const text = ['audio', 'video'].includes(item.kind) ? '<' + item.kind + ' controls src="' + reference + '"></' + item.kind + '>' : (item.kind === 'image' ? '!' : '') + '[' + item.name.replace(/[\[\]]/g, '') + '](' + reference + ')';
+                    input.setRangeText('\n' + text + '\n', input.selectionStart, input.selectionEnd, 'end'); input.focus(); list.remove();
+                }));
+                if (!candidates.length) list.textContent = t('暂无可用的隧道媒体'); list.append(button('收起', () => list.remove())); actions.before(list); status.textContent = '';
+            } catch (error) { status.textContent = t('资源列表加载失败，请重试') + ' [' + error.message + ']'; } finally { control.disabled = false; }
+        }), button('预览', () => previewRecord({ ...message, markdown: input.value })));
+        panel.append(input, status, actions); input.focus();
+    }
+    async function previewRecord(message) {
+        const layer = document.createElement('div'); layer.className = 'sc-dialog sc-markdown-dialog sc-markdown-reader';
+        const panel = document.createElement('section'), header = document.createElement('header'), title = document.createElement('strong'), content = document.createElement('div'), status = document.createElement('p');
+        title.textContent = t('Markdown 预览'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); content.className = 'sc-document message-content';
+        let resolved; const close = () => { resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
+        const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
+        const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = t('关闭'); dismiss.onclick = close;
+        header.append(title, dismiss); panel.append(header, content, status); layer.append(panel); document.body.append(layer); document.addEventListener('keydown', escape, true);
+        render(content, message.markdown);
+        if (refs(message.markdown).length) try { status.textContent = t('正在加载资源列表…'); resolved = await resolve(message.markdown); if (!layer.isConnected) { resolved.close(); return; } render(content, message.markdown, resolved.mapping); status.textContent = ''; }
+        catch (error) { if (layer.isConnected) status.textContent = t('部分引用资源不可读取，可检查来源后重试') + ' [' + error.message + ']'; }
     }
     function render(target, body, mapping = new Map()) {
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
@@ -155,35 +181,14 @@
         const preview = document.createElement('div'); preview.className = 'tunnel-markdown-preview message-content'; render(preview, message.markdown);
         const status = document.createElement('p'); status.className = 'sc-message-status';
         const actions = document.createElement('div'); actions.className = 'sc-actions';
-        const expand = document.createElement('button'); expand.type = 'button'; expand.textContent = t('展开 Markdown');
+        const expand = document.createElement('button'); expand.type = 'button'; expand.className = 'sc-markdown-expand'; expand.textContent = t('展开');
         const collapsible = String(message.markdown || '').replace(/\r\n?/g, '\n').trimEnd().split('\n').length > 10;
         let expanded = false; preview.classList.toggle('collapsible', collapsible); expand.hidden = !collapsible;
-        expand.onclick = () => { expanded = !expanded; preview.classList.toggle('expanded', expanded); expand.textContent = t(expanded ? '收起 Markdown' : '展开 Markdown'); };
+        expand.onclick = event => { event.stopPropagation(); expanded = !expanded; preview.classList.toggle('expanded', expanded); expand.textContent = t(expanded ? '收起' : '展开'); };
         actions.append(expand);
-        if (options.edit) {
-            for (const [label, editing] of [['编辑 Markdown', true], ['修改历史', false]]) {
-                const action = document.createElement('button'); action.type = 'button'; action.textContent = t(label);
-                action.onclick = () => recordDialog(message, editing); actions.append(action);
-            }
-        }
         if (message.purpose === 'stream-invitation') {
             const purpose = document.createElement('strong'); purpose.textContent = t('串流邀请'); wrapper.append(purpose);
             if (/^data:image\/(?:png|jpeg|webp);base64,/.test(message.thumbnail || '') && message.thumbnail.length <= 90000) { const image = document.createElement('img'); image.className = 'sc-invite-thumbnail'; image.alt = t('邀请缩略图'); image.src = message.thumbnail; wrapper.append(image); }
-        } else {
-            for (const [label, upload] of [['下载', false], ['上传到网盘', true]]) {
-                const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label);
-                b.onclick = async () => {
-                    b.disabled = true; status.textContent = upload ? '' : t('正在准备 Markdown 下载'); let prepared = false;
-                    try {
-                        const zip = await archive(message);
-                        prepared = true;
-                        if (upload) { await options.upload(zip); status.textContent = ''; }
-                        else { const url = URL.createObjectURL(zip), link = document.createElement('a'); link.href = url; link.download = zip.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
-                        if (!upload) status.textContent = t('已发起下载');
-                    } catch (error) { status.textContent = upload && prepared ? '' : t(upload ? '资源准备失败，请检查引用资源后重试' : '下载准备失败，请检查引用资源后重试') + ' [' + error.message + ']'; }
-                    finally { b.disabled = false; }
-                }; actions.append(b);
-            }
         }
         wrapper.append(preview, actions, status); target.append(wrapper);
         if (refs(message.markdown).length) resolve(message.markdown).then(result => {
@@ -192,6 +197,17 @@
             const observer = new MutationObserver(() => { if (!target.isConnected) { result.close(); observer.disconnect(); } }); observer.observe(document.body, { childList: true, subtree: true });
         }).catch(() => { status.textContent = t('部分引用资源不可读取，可检查来源后重试'); });
     }
+    function menuActions(message) {
+        const actions = [];
+        const add = (label, run) => { const action = document.createElement('button'); action.type = 'button'; action.textContent = t(label); action.onclick = async event => { event.stopPropagation(); action.disabled = true; try { await run(); } catch (error) { global.alert(t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'); } finally { action.disabled = false; } }; actions.push(action); };
+        if (options.edit) { add('编辑 Markdown', () => recordDialog(message, true)); add('修改历史', () => recordDialog(message, false)); }
+        for (const [label, upload] of [['下载', false], ['上传到网盘', true]]) add(label, async () => {
+            const file = await archive(message);
+            if (upload) { try { await options.upload(file); } catch (_) { /* The drive owns task outcomes, including cancellation. */ } }
+            else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+        });
+        return actions;
+    }
     function init(config) { options = config; }
-    global.TunnelMarkdown = { init, render, refs, archive, mount, fromHtml };
+    global.TunnelMarkdown = { init, render, refs, archive, mount, fromHtml, menuActions, preview: previewRecord };
 })(window);

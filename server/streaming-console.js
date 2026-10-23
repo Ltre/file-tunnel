@@ -87,7 +87,8 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function isBlocked(s, actor) { return Boolean([actor.deviceId, ...(db.devices[actor.deviceId]?.aliases || [])].some(deviceId => s.blocked[deviceId]) || actor.userId && s.blockedUsers?.[actor.userId]); }
     function length(item) { return ['video', 'audio'].includes(item.kind) ? item.duration - item.start : item.stay; }
-    function available(s) { return s.items.filter(item => !item.unavailable); }
+    const transientSourceError = reason => ['STREAM_PROVIDER_OFFLINE', 'STREAM_PROVIDER_TIMEOUT', 'STREAM_SOURCE_MISSING'].includes(reason);
+    function available(s) { return s.items.filter(item => !item.unavailable || transientSourceError(item.unavailable)); }
     function advance(s, time = now()) {
         const p = s.playback;
         if (s.visibility === 'offline' || p.status !== 'playing') return false;
@@ -128,6 +129,8 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             owner: owner ? { id: owner.id, name: owner.name || owner.username || owner.id } : null,
             ownerId: s.ownerId, visibility: s.visibility, locked: !sourceLoggedIn(s), local: s.deviceId === actor.deviceId,
             manageable, configVersion: s.configVersion, itemCount: s.items.length, loop: s.loop, countdown: s.countdown,
+            createdAt: s.createdAt || 0, updatedAt: s.updatedAt || s.createdAt || 0,
+            subscribedAt: actor.userId ? db.bookmarkTimes?.[actor.userId]?.[s.id] || 0 : 0,
             subscribed: Boolean(actor.userId && db.bookmarks[actor.userId]?.includes(s.id)), viewerCount: audience(s),
             playback: { ...s.playback, position: position(s), at: now() }, serverTime: now(), epoch: s.epoch };
     }
@@ -136,7 +139,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         if (manage) authority(s, actor); else allowed(s, actor);
         return { ...summary(s, actor), items: s.items.map(item => {
             const { source, references, ...publicItem } = item;
-            return { ...publicItem, sourceKind: source.kind };
+            return { ...publicItem, unavailable: transientSourceError(item.unavailable) ? null : item.unavailable, sourceKind: source.kind };
         }), viewers: canManage(s, actor) ? [...viewers.values()].filter(v => v.stationId === s.id && v.expiresAt > now()).map(({ actor: _actor, ...report }) => report) : undefined,
         blocked: canManage(s, actor) ? Object.keys(s.blocked) : undefined,
         blockedUsers: canManage(s, actor) ? Object.keys(s.blockedUsers || {}) : undefined };
@@ -204,7 +207,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             let index = 1; while (used.has(String(index).padStart(2, '0'))) index++;
             const s = { id: stationId, creationId: input.creationId || null, deviceId: actor.deviceId, ownerId, login: copy(login), number: String(index).padStart(2, '0'),
                 name: String(input.name || '').trim().slice(0, 120) || String(index).padStart(2, '0'),
-                visibility: 'offline', lastVisibility: 'public', items: [], loop: true, countdown: 'bottom-right', configVersion: 1,
+                visibility: 'offline', lastVisibility: 'public', items: [], loop: true, countdown: 'bottom-right', configVersion: 1, createdAt: now(), updatedAt: now(),
                 epoch: 1, grants: [], invites: [], blocked: {},
                 playback: { itemId: null, position: 0, status: 'stopped', at: now(), version: 1 } };
             db.stations[stationId] = s; return summary(s, actor);
@@ -213,7 +216,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     async function edit(stationId, actor, input, req, progress = () => {}) {
         let s = station(stationId); authority(s, actor, 'edit');
         const expected = input.configVersion;
-        if (expected !== s.configVersion) fail('STREAM_CONFLICT');
+        if (expected !== s.configVersion) throw Object.assign(Error('STREAM_CONFLICT'), { expectedVersion: expected, currentVersion: s.configVersion });
         if (!Array.isArray(input.items) || input.items.length > 500) fail('STREAM_PLAYLIST_INVALID');
         const ids = new Set();
         const items = [], resolutions = new Map();
@@ -245,7 +248,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         // Source resolution can await network metadata; recheck both authority
         // and configuration revision before committing any of the new list.
         s = station(stationId); authority(s, actor, 'edit');
-        if (s.configVersion !== expected) fail('STREAM_CONFLICT');
+        if (s.configVersion !== expected) throw Object.assign(Error('STREAM_CONFLICT'), { expectedVersion: expected, currentVersion: s.configVersion });
         progress({ phase: 'persisting', completed: items.length, total: input.items.length });
         return change(() => {
             advance(s); const oldIndex = s.items.findIndex(item => item.id === s.playback.itemId), oldPosition = position(s), oldStart = s.items[oldIndex]?.start || 0;
@@ -253,12 +256,20 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             s.items = items; s.loop = input.loop !== false;
             s.name = String(input.name || s.name).trim().slice(0, 120);
             if (!['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].includes(input.countdown || s.countdown)) fail('STREAM_PARAMETER_INVALID');
-            s.countdown = input.countdown || s.countdown; s.configVersion++;
+            s.countdown = input.countdown || s.countdown; s.configVersion++; s.updatedAt = now();
             const selected = current || items[Math.min(Math.max(oldIndex, 0), items.length - 1)];
             Object.assign(s.playback, { itemId: selected?.id || null, position: current ? Math.max(0, Math.min(oldPosition + oldStart - current.start, length(current))) : 0,
                 at: now(), version: s.playback.version + 1, status: items.length ? s.playback.status : 'stopped' });
             return view(stationId, actor, { manage: true });
         });
+    }
+    function revision(stationId, actor, baseline) {
+        const s = station(stationId); authority(s, actor, 'edit');
+        const shape = value => ({ name: value.name, loop: value.loop !== false, countdown: value.countdown || 'bottom-right', items: (value.items || []).map(item => ({
+            id: item.id, name: item.name, kind: item.kind, size: item.size, type: item.type, duration: item.duration || null, start: item.start || 0, stay: item.stay || null,
+            source: { ...Object.fromEntries(['kind', 'fileId', 'diskSpace', 'sessionId', 'messageId'].map(key => [key, item.source?.[key] || ''])), accountId: item.source?.accountId || item.source?.userId || '' }
+        })) });
+        return { configVersion: s.configVersion, matches: JSON.stringify(shape(s)) === JSON.stringify(shape(baseline || {})) };
     }
     function control(stationId, actor, input) {
         const s = station(stationId); tick(); authority(s, actor);
@@ -294,6 +305,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             if (privateReset) { s.epoch++; s.grants = []; s.invites.forEach(invite => { invite.revoked = true; }); }
             if (s.visibility !== 'offline') s.lastVisibility = s.visibility;
             s.visibility = input.visibility;
+            s.updatedAt = now();
             if (s.visibility !== 'offline') s.lastVisibility = s.visibility;
             s.playback.version++; return summary(s, actor);
         });
@@ -308,7 +320,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             s.ownerId = action === 'claim' ? actor.userId : null;
             s.login = s.ownerId ? copy(actor.logins?.find(proof => proof.id === s.ownerId)) : null;
             if (s.ownerId && !s.login) fail('STREAM_SOURCE_LOGIN_REQUIRED');
-            s.configVersion++; return summary(s, actor);
+            s.configVersion++; s.updatedAt = now(); return summary(s, actor);
         });
     }
     function remove(stationId, actor) {
@@ -338,21 +350,24 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const visible = relatedTo(actor); visible.add(actor.deviceId);
         const bookmarks = db.bookmarks[actor.userId] || [];
         if (kind === 'bookmarks' && !actor.userId) fail('LOGIN_REQUIRED');
-        return Object.values(db.stations).filter(s => {
+        const listed = Object.values(db.stations).filter(s => {
             if (kind === 'local') return s.deviceId === actor.deviceId;
             if (kind === 'bookmarks') return bookmarks.includes(s.id);
             if (kind === 'creator') return s.ownerId === ownerId && s.visibility === 'public' && !isBlocked(s, actor);
             if (!visible.has(s.deviceId) || s.visibility === 'offline' || isBlocked(s, actor)) return false;
             try { allowed(s, actor); return true; } catch (_) { return false; }
         }).map(s => summary(s, actor));
+        if (kind === 'bookmarks') { const byId = new Map(listed.map(s => [s.id, s])); return bookmarks.slice().reverse().map(id => byId.get(id)).filter(Boolean); }
+        return listed;
     }
     function bookmark(stationId, actor, add) {
         if (!actor.userId) fail('LOGIN_REQUIRED');
         if (add) allowed(station(stationId), actor);
         return change(() => {
             const entries = db.bookmarks[actor.userId] ||= [];
-            if (add && !entries.includes(stationId)) { if (entries.length >= 1000) fail('STREAM_LIMIT'); entries.push(stationId); }
-            if (!add) db.bookmarks[actor.userId] = entries.filter(value => value !== stationId);
+            const times = (db.bookmarkTimes ||= {})[actor.userId] ||= {};
+            if (add && !entries.includes(stationId)) { if (entries.length >= 1000) fail('STREAM_LIMIT'); entries.push(stationId); times[stationId] = now(); }
+            if (!add) { db.bookmarks[actor.userId] = entries.filter(value => value !== stationId); delete times[stationId]; }
             return { subscribed: add };
         });
     }
@@ -490,12 +505,13 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return { source: copy(source), item: copy(item), deviceId: s.deviceId, epoch: s.epoch, sourceVersion: digest(JSON.stringify(source)) };
     }
     function unavailable(stationId, itemId, reason) {
+        if (transientSourceError(reason)) return;
         const s = station(stationId), item = s.items.find(value => value.id === itemId);
-        if (!item || item.unavailable) return;
+        if (!item || item.unavailable && !transientSourceError(item.unavailable)) return;
         change(() => {
             item.unavailable = String(reason).slice(0, 100);
             if (s.playback.itemId === item.id) {
-                const oldIndex = s.items.indexOf(item), next = [...s.items.slice(oldIndex + 1), ...(s.loop ? s.items.slice(0, oldIndex) : [])].find(value => !value.unavailable);
+                const oldIndex = s.items.indexOf(item), next = [...s.items.slice(oldIndex + 1), ...(s.loop ? s.items.slice(0, oldIndex) : [])].find(value => !value.unavailable || transientSourceError(value.unavailable));
                 Object.assign(s.playback, { itemId: next?.id || null, position: 0, at: now(), version: s.playback.version + 1,
                     status: next ? s.playback.status : 'stopped' });
             }
@@ -506,7 +522,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return copy(s.items.find(item => item.id === itemId)?.references || []).map(({ id, url }) => ({ id, url }));
     }
     return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark,
-        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references,
+        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references, revision,
         tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, invitableDevices, snapshot: () => copy(db) };
 }
 module.exports = { createStreamingConsole, mediaKind, digest };

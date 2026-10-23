@@ -10,33 +10,40 @@ const sourceError = code => Object.assign(new Error(code), { code });
 // waiting. No file data or retention reference is written to the station store.
 function createStreamingBroker({ now = Date.now, timeout = 15000, hedgeMs = 100 } = {}) {
     const clients = new Map(), pending = new Map();
-    function poll(deviceId, signal) {
-        let client = clients.get(deviceId);
-        if (!client) { client = { seenAt: now(), queue: [], wake: null }; clients.set(deviceId, client); }
+    function poll(deviceId, signal, providerId = 'legacy') {
+        if (!/^[\w-]{1,128}$/.test(providerId)) throw sourceError('STREAM_PROVIDER_INVALID');
+        for (const [key, value] of clients) if (now() - value.seenAt >= 45000) { value.wake?.([]); clients.delete(key); }
+        const key = deviceId + ':' + providerId; let client = clients.get(key);
+        if (!client) {
+            if (clients.size >= 10000 || [...clients.values()].filter(value => value.deviceId === deviceId).length >= 8) throw sourceError('STREAM_PROVIDER_BUSY');
+            client = { deviceId, seenAt: now(), queue: [], wake: null }; clients.set(key, client);
+        }
         client.seenAt = now();
         if (client.queue.length) return Promise.resolve(client.queue.splice(0, 4));
         // A reconnected provider replaces its previous long poll.
         client.wake?.([]);
         return new Promise(resolve => {
             const finish = result => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); if (client.wake === finish) client.wake = null; resolve(result); };
-            const aborted = () => finish([]);
+            const aborted = () => { const current = client.wake === finish; finish([]); if (current) clients.delete(key); };
             const timer = setTimeout(() => finish([]), 20000); timer.unref?.();
             client.wake = finish; signal?.addEventListener('abort', aborted, { once: true });
             if (signal?.aborted) finish([]);
         });
     }
-    function online(deviceId) { return now() - (clients.get(deviceId)?.seenAt || 0) < 45000; }
+    function online(deviceId) { return [...clients.values()].some(client => client.deviceId === deviceId && now() - client.seenAt < 45000); }
     async function read(source, devices, start, end, signal) {
         if (end - start + 1 > MAX_CHUNK) throw sourceError('STREAM_RANGE_INVALID');
-        const active = [...new Set(devices)].filter(online);
+        const permitted = new Set(devices), active = [...clients.entries()].filter(([, client]) => permitted.has(client.deviceId) && now() - client.seenAt < 45000).map(([key]) => key);
         if (!active.length) throw sourceError('STREAM_PROVIDER_OFFLINE');
         const cancel = new AbortController(), combined = signal ? AbortSignal.any([signal, cancel.signal]) : cancel.signal;
         let cursor = 0;
-        const ask = deviceId => {
+        const ask = providerKey => {
+            const client = clients.get(providerKey), deviceId = client?.deviceId;
+            if (!client) throw sourceError('STREAM_PROVIDER_OFFLINE');
             if (combined.aborted) throw sourceError('STREAM_READ_CANCELLED');
             if (pending.size >= 32 || [...pending.values()].filter(v => v.deviceId === deviceId).length >= 4) throw sourceError('STREAM_PROVIDER_BUSY');
             return new Promise((resolve, reject) => {
-                    const requestId = crypto.randomUUID(), client = clients.get(deviceId);
+                    const requestId = crypto.randomUUID();
                     const cleanup = () => { clearTimeout(timer); combined.removeEventListener('abort', abort); pending.delete(requestId); client.queue = client.queue.filter(v => v.requestId !== requestId); };
                     const finish = (error, value) => { cleanup(); error ? reject(error) : resolve(Readable.from(value)); };
                     const abort = () => finish(sourceError('STREAM_READ_CANCELLED'));
