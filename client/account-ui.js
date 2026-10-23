@@ -36,7 +36,8 @@
                     const user = entry.identity; if (!user) continue;
                     const row = document.createElement('div'); row.className = 'account-row';
                     const select = button(user.name || user.username || user.id, async () => {
-                        if (entry.reauthRequired || options.requiredId && user.id !== options.requiredId) { status.textContent = t('请先添加或重新登录一个有效的网盘账号'); return; }
+                        if (entry.reauthRequired) { await options.reauthenticate?.(user, signIn, data.status); return; }
+                        if (options.requiredId && user.id !== options.requiredId) { status.textContent = t('请先添加或重新登录一个有效的网盘账号'); return; }
                         if (options.choose) { selected = user.id; list.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === select))); }
                         else { await options.select(user.id); if (current?.overlay === overlay) close(user); }
                     }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;

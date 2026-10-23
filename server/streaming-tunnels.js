@@ -19,6 +19,11 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
     function stat(source) {
         if (source.authorizedDeviceId && !capability(session(source.sessionId), source.authorizedDeviceId, 'read')) deny('STREAM_SOURCE_REVOKED');
         const entry = messages(source.sessionId).find(message => message.id === source.messageId);
+        if (source.messageId === 'editor-assets') {
+            const metadata = session(source.sessionId)?.editorAssets?.get(source.fileId)?.metadata;
+            if (!metadata) deny('STREAM_SOURCE_DELETED');
+            return { name: metadata.name, type: metadata.type, size: Number(metadata.size) };
+        }
         if (source.fileId === 'record' && entry && ['markdown', 'text'].includes(entry.type)) {
             const inline = Buffer.from(entry.type === 'markdown' ? entry.markdown : entry.text || '', 'utf8');
             return { name: (entry.type === 'markdown' ? 'message.md' : 'message.txt'), type: entry.type === 'markdown' ? 'text/markdown' : 'text/plain', size: inline.length, inline };
@@ -54,6 +59,8 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
                 } catch (_) { /* Non-preview files stay outside the station list. */ }
             }
         }
+        if (allFiles) for (const [fileId, record] of session(input.sessionId)?.editorAssets || []) result.push({ ...record.metadata, kind: 'image',
+            source: { kind: 'tunnel', sessionId: input.sessionId, messageId: 'editor-assets', fileId, accessGrant: input.accessGrant } });
         return { candidates: result.slice(-1000) };
     }
     let service;
@@ -87,7 +94,7 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
     }
     return { resolve, stat, candidates, resources: (input, actor) => candidates(input, actor, true), send, references, bind(value) { service = value; },
         alias(input, actor) { authorize(input, actor); return memberId(input, actor); },
-        providers: source => { const values = [...new Set([...(session(source.sessionId)?.fileAssets?.get(source.fileId)?.providers || []),
+        providers: source => { const values = [...new Set([...(session(source.sessionId)?.editorAssets?.get(source.fileId)?.providers || []), ...(session(source.sessionId)?.fileAssets?.get(source.fileId)?.providers || []),
             ...(session(source.sessionId)?.devices?.keys() || [])])]; return [...new Set([...values, ...mapDevices(values)])]; } };
 }
 module.exports = { createStreamingTunnels };

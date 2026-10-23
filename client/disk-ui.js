@@ -134,6 +134,10 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
         load: async () => { const [accounts, status] = await Promise.all([window.DiskClient.raw('/accounts', { accountId: '' }), window.DiskClient.raw('/me', { accountId: '' })]); return { ...accounts, status }; },
         select: switchTelegramDriveAccount, logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
         renderSignIn: (target, status) => appendTelegramDriveAddAccount(target, status, { embedded: true }),
+        reauthenticate: (user, target, status) => {
+            if (status.oidcConfigured) startTelegramDriveLogin(target);
+            else { target.replaceChildren(); appendPasskeyControls(target, null, { addAccount: true, embedded: true }); const username = target.querySelector('input'); if (username && user.username) username.value = user.username; target.querySelector('button')?.click(); }
+        },
         cancelSignIn: target => { if (telegramDriveOidcPopup && target.contains(telegramDriveLoginTarget)) cancelTelegramDriveLogin(); } });
     const body = document.createElement('div'); body.className = 'disk-account-list';
     body.textContent = '正在读取账号状态…'; body.setAttribute('aria-busy', 'true');

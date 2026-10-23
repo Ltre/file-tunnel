@@ -136,7 +136,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         if (manage) authority(s, actor); else allowed(s, actor);
         return { ...summary(s, actor), items: s.items.map(item => {
             const { source, references, ...publicItem } = item;
-            return publicItem;
+            return { ...publicItem, sourceKind: source.kind };
         }), viewers: canManage(s, actor) ? [...viewers.values()].filter(v => v.stationId === s.id && v.expiresAt > now()).map(({ actor: _actor, ...report }) => report) : undefined,
         blocked: canManage(s, actor) ? Object.keys(s.blocked) : undefined,
         blockedUsers: canManage(s, actor) ? Object.keys(s.blockedUsers || {}) : undefined };

@@ -3,6 +3,17 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['关闭串流控制台','Close streaming console'],
+        ['尚未加入隧道','No tunnel joined'],
+        ['上线','Go online'], ['打开串流控制台','Open streaming console'], ['收起','Collapse'], ['重试','Retry'],
+        ['正在保存节目单，请等待完成后再离开','Playlist saving is in progress; wait before leaving'], ['资源准备失败，请检查引用资源后重试','Resource preparation failed; check references and retry'],
+        ['编辑 Markdown','Edit Markdown'], ['Markdown 修改历史','Markdown revision history'], ['修改历史','Revision history'], ['保存修改','Save changes'], ['版本','Version'], ['对比旧版本','Compare earlier version'], ['对比新版本','Compare later version'],
+        ['正在保存修改…','Saving changes…'], ['记录已被更新，本地内容仍保留。请对照最新版本后再次保存。','The record changed. Your local text is retained; compare the latest revision before saving again.'], ['修改未保存，请检查连接或权限后重试','Changes were not saved; check connection and permission, then retry'],
+        ['正在准备 Markdown 下载','Preparing Markdown download'], ['下载准备失败，请检查引用资源后重试','Download preparation failed; check the referenced resources and retry'], ['Markdown 发送失败，请重试','Markdown could not be sent; retry'],
+        ['有尚未保存的更改，请保存后离开或放弃更改。','There are unsaved changes. Save before leaving or discard them.'], ['保存后离开','Save and leave'], ['放弃更改','Discard changes'], ['继续编辑','Continue editing'], ['尚未保存','Unsaved changes'],
+        ['已选择','Selected'], ['已选择的资源','Selected resources'], ['此分类尚未选择文件','No files selected in this category'], ['正在加载资源列表…','Loading resources…'], ['资源列表加载失败，请重试','Resources could not be loaded; retry'], ['当前路径','Current path'],
+        ['调整全台播放进度','Seek station playback'], ['暂无已订阅的串流台','No subscribed stations'], ['串流台已下线','Station is offline'],
+        ['改为仅邀请会退出旧观看端、撤销旧观看资格及此前所有邀请，保留订阅。继续？','Invitation-only mode ends current viewing, revokes existing access and invitations, and retains subscriptions. Continue?'], ['下线将停止服务并保留订阅，继续？','Taking the station offline stops service and retains subscriptions. Continue?'], ['放弃台归属，保留普通观看许可和订阅？','Release ownership and retain ordinary viewing access and subscriptions?'],
         ['当前账号创建的串流台','Stations owned by this account'], ['本机其它串流台','Other stations on this device'],
         ['媒体时长检查已完成，可以保存节目单','Media duration checks completed; the playlist can now be saved'],
         ['来源文件不是支持的可预览类型，请重新选择','This source is not a supported preview type; select another file'],
@@ -13,7 +24,7 @@
         ['观看者黑名单','Viewer blacklist'], ['黑名单类型','Blacklist type'], ['黑名单 ID','Blacklist ID'], ['设备 ID','Device ID'], ['用户账号 ID','User account ID'],
         ['加入黑名单','Add to blacklist'], ['解除限制','Remove restriction'], ['本台暂无黑名单条目','No blacklist entries for this station'], ['请输入需要限制的 ID','Enter the ID to restrict'],
         ['来源内容已变更，请重新导入该节目项','Source content changed; import this item again'], ['邀请不存在或已被删除，请索取新邀请','Invitation is unavailable or deleted; request a new one'],
-        ['订阅','Subscribe'], ['已订阅','Subscribed'], ['已取消订阅','Bookmark removed'], ['结束本台观看','End viewing this station'],
+        ['订阅','Subscribe'], ['已订阅','Subscribed'], ['已取消订阅','Unsubscribed'], ['结束本台观看','End viewing this station'],
         ['全台已暂停，本机跟随','Following the global pause'],
         ['图片已加载，正在解码…','Image loaded; decoding…'], ['文件超出预览大小限制，请通过原来源查看','File exceeds the preview size limit; open it at its original source'],
         ['节目单最多包含 500 项，请减少选择后重试','A playlist supports up to 500 items; select fewer items and retry'],

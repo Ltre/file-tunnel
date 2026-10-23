@@ -5,13 +5,15 @@ const crypto = require('node:crypto');
 const { once } = require('node:events');
 const { createStreamingConsole, digest } = require('./streaming-console');
 const { parseByteRange } = require('./object-storage');
+const { Readable } = require('node:stream');
+const { createStreamingBuffer } = require('./streaming-buffer');
 
 function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginRevoked, origin,
     visibleDevices, sources, tunnel, now = Date.now }) {
     const listeners = new Map(); let scheduled = false;
     const publish = () => { if (scheduled) return; scheduled = true; queueMicrotask(() => { scheduled = false; for (const listener of listeners.values()) listener.send(); }); };
     const service = createStreamingConsole({ dataDir, user, loginRevoked, visibleDevices, sources, now, onChange: publish });
-    const router = express.Router(), tickets = new Map();
+    const router = express.Router(), tickets = new Map(), readAhead = createStreamingBuffer({ now });
     const wrap = action => async (req, res, next) => { try { await action(req, res, next); } catch (error) { next(error); } };
     const actor = req => {
         const deviceId = service.authenticate(req.get('X-Stream-Device'), req.get('X-Stream-Key'));
@@ -57,6 +59,8 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         try { range = size ? parseByteRange(req.get('Range'), size) : { start: 0, end: -1, partial: false }; }
         catch (_) { res.status(416).set('Content-Range', 'bytes */' + size).end(); return; }
         if (!range || size && (range.start < 0 || range.end >= size)) { res.status(416).set('Content-Range', 'bytes */' + size).end(); return; }
+        const warming = req.get('X-Stream-Buffer') === '1';
+        if (warming && (!range.partial || range.end - range.start + 1 > 4 * 1024 * 1024)) { res.status(416).end(); return; }
         const controller = new AbortController(); res.once('close', () => { if (!res.writableEnded) controller.abort(); });
         const mime = /^(video|audio|image)\//.test(metadata.type || '') && metadata.type !== 'image/svg+xml' ? metadata.type : 'text/plain; charset=utf-8';
         const headers = () => {
@@ -66,17 +70,22 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         };
         if (req.method === 'HEAD' || !size) { headers(); res.end(); return; }
         try {
-            for (let start = range.start; start <= range.end && !controller.signal.aborted; start += sources.MAX_CHUNK) {
+            for (let start = range.start; start <= range.end && !controller.signal.aborted;) {
                 await get();
-                const stream = await sources.read(resource.source, start, Math.min(range.end, start + sources.MAX_CHUNK - 1), controller.signal, resource.deviceId);
+                const end = Math.min(range.end, (Math.floor(start / sources.MAX_CHUNK) + 1) * sources.MAX_CHUNK - 1), cached = readAhead.get(req.params.ticket, start, end);
+                const stream = cached ? Readable.from([cached]) : await sources.read(resource.source, start, end, controller.signal, resource.deviceId);
                 try {
                     await get(); // Access may have changed while the provider was reading.
                     if (!res.headersSent) headers();
+                    const buffered = []; let bufferedSize = 0;
                     for await (const chunk of stream) {
                         await get();
+                        if (warming && !cached) { bufferedSize += chunk.length; if (bufferedSize > sources.MAX_CHUNK) throw Error('STREAM_READ_INVALID'); buffered.push(Buffer.from(chunk)); }
                         if (!res.write(chunk)) await Promise.race([once(res, 'drain'), once(res, 'close').then(() => { throw new Error('STREAM_READ_CANCELLED'); })]);
                     }
+                    if (warming && !cached && !controller.signal.aborted && bufferedSize === end - start + 1) readAhead.put(req.params.ticket, start, Buffer.concat(buffered));
                 } finally { stream.destroy(); }
+                start = end + 1;
             }
             res.end();
         } catch (error) {
@@ -141,7 +150,8 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         if (tickets.size >= 4096) throw new Error('STREAM_LIMIT');
         const token = crypto.randomBytes(24).toString('base64url'), expiresAt = now() + 3600000;
         tickets.set(token, { stationId: req.params.id, itemId, reference, epoch: resource.epoch, sourceVersion: resource.sourceVersion, deviceId: a.deviceId, userId: a.userId, expiresAt });
-        res.json({ url: '/api/streaming/media/' + token, expiresAt, references: service.references(req.params.id, itemId, a) });
+        const metadata = sources.stat(resource.source);
+        res.json({ url: '/api/streaming/media/' + token, expiresAt, size: metadata.size, type: metadata.type, references: service.references(req.params.id, itemId, a) });
     }));
     router.post(['/preview', '/blob-preview'], wrap(async (req, res) => {
         const allFiles = req.path === '/blob-preview';
@@ -174,6 +184,6 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     });
     app.use('/api/streaming', router);
     const timer = setInterval(() => { try { service.tick(); } catch (error) { console.warn('streaming clock persistence failed:', error.code || error.message); } }, 1000); timer.unref();
-    return { service, close() { clearInterval(timer); sources.broker.close(); tickets.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
+    return { service, close() { clearInterval(timer); sources.broker.close(); tickets.clear(); readAhead.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
 }
 module.exports = { registerStreamingConsole };

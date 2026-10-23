@@ -23,20 +23,39 @@ async function createFixture({ media = false } = {}) {
         user: id => f.auth.user(id), loginRevoked: hash => f.repository.content.sessionRevoked(hash),
         origin: req => req.protocol + '://' + req.get('host'), visibleDevices: () => ['device-A', 'device-B'], sources, tunnel });
     tunnel.bind(streaming.service);
+    const fixtureOwner = { deviceId: 'fixture-inviter', userId: null, logins: [] };
+    streaming.service.register(fixtureOwner.deviceId, 'fixture-inviter-key'.repeat(3), '隔离邀请设备');
+    const invitedStation = streaming.service.create(fixtureOwner, { name: '原地邀请验收台', creationId: 'fixture-invite-station' });
+    await streaming.service.edit(invitedStation.id, fixtureOwner, { configVersion: invitedStation.configVersion, loop: true, countdown: 'edge',
+        items: [{ id: 'fixture-invite-image', stay: 10, source: { kind: 'tunnel', sessionId: 'fixture-tunnel', messageId: 'image-record', fileId: 'image-asset', accessGrant: 'fixture-proof' } }] });
+    streaming.service.visibility(invitedStation.id, fixtureOwner, { visibility: 'public', version: streaming.service.station(invitedStation.id).playback.version });
+    const fixtureInvite = streaming.service.invitation(invitedStation.id, fixtureOwner, {});
+    records.push({ id: 'fixture-newlines', type: 'markdown', markdown: '第一行\n第二行\n第三行', timestamp: Date.now(), sender: 'device-A', sessionId: 'fixture-tunnel' });
+    f.app.post('/fixture-markdown-edit/:id', require('express').json(), (req, res) => {
+        const index = records.findIndex(item => item.id === req.params.id);
+        if (index < 0) return res.status(404).json({ ok: false });
+        const result = require('../../server/markdown-records').editMarkdownRecord(records[index], { ...req.body, deviceId: 'markdown-browser-device', deviceName: 'Markdown 验收设备', maxBytes: 200000 });
+        if (result.ok) records[index] = result.message; res.json(result);
+    });
     f.app.get('/fixture-account/:id', (req, res) => { f.sessions.set(req, res, f.auth.user(req.params.id)); res.redirect('/console'); });
     f.app.post('/fixture-logout/:id', (req, res) => { f.sessions.remove(req, res, req.params.id, request => f.api.revokeContentSession(request)); res.json({ ok: true }); });
     f.app.get('/api/stream-fixture', (_req, res) => res.json({ records }));
     // Targeted UI harness: real Markdown/console adapters with an explicit,
     // isolated tunnel grant. It never joins a production tunnel or reads data.
     f.app.get('/markdown-check', (_req, res) => res.type('html').send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-        <link rel="stylesheet" href="/client/streaming-console.css"></head><body><button id="sendMarkdownBtn">编写 Markdown 消息</button><div id="records"></div><p id="fixture-status"></p>
+        <link rel="stylesheet" href="/client/streaming-console.css"></head><body><button id="sendMarkdownBtn">编写 Markdown 消息</button><label>原页面未保存输入<input id="fixture-preserved-input" value="仍在编辑"></label><div id="fixture-rich" contenteditable="true"><h2>转换标题</h2><p>原始<strong>加粗</strong><br>第二行</p><ul><li>列表项</li></ul></div><button id="fixture-convert">转换副本并发送 Markdown</button><div id="records"></div><p id="fixture-status"></p>
         <script src="/client/vendor/web-markdown/marked-18.0.14.umd.js"></script><script src="/client/vendor/web-markdown/purify-3.4.16.min.js"></script>
-        <script src="/client/folder-archive.js"></script><script src="/client/tunnel-markdown.js"></script><script src="/client/streaming-console.js"></script><script src="/client/streaming-app-adapter.js"></script>
+        <script src="/client/folder-archive.js"></script><script src="/client/tunnel-markdown.js"></script><script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script><script src="/client/streaming-app-adapter.js"></script>
         <script>const fixtureDevice='markdown-browser-device';localStorage.setItem('deviceId',fixtureDevice);
         window.DiskClient={getAccount:()=>''};
         StreamingConsole.init(StreamingAppAdapter.create({state:{deviceId:fixtureDevice,deviceName:'Markdown 验收设备',sessionId:'fixture-tunnel',devices:new Map(),contacts:new Map()},
-            listSessions:async()=>[{sessionId:'fixture-tunnel'}],authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),home:()=>{},toast:text=>document.getElementById('fixture-status').textContent=text,
-            receiveMessage:message=>{const article=document.createElement('article');document.getElementById('records').append(article);TunnelMarkdown.mount(article,message);}}));</script></body></html>`));
+            listSessions:async()=>[{sessionId:'fixture-tunnel',shortCode:'ABCDE',remark:'隔离隧道'}],authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),home:()=>{},toast:text=>document.getElementById('fixture-status').textContent=text,
+            message:async id=>(await (await fetch('/api/stream-fixture')).json()).records.find(item=>item.id===id),
+            editMarkdown:async(message,content,baseVersion)=>{const result=await (await fetch('/fixture-markdown-edit/'+message.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,baseVersion})})).json();if(result.ok){const article=document.getElementById('record-'+message.id);article.replaceChildren();TunnelMarkdown.mount(article,result.message);}return result;},
+            receiveMessage:message=>{const article=document.createElement('article');document.getElementById('records').append(article);TunnelMarkdown.mount(article,message);}}));
+        for(const message of [${JSON.stringify(records.find(item => item.id === 'fixture-newlines'))},{id:'fixture-link',type:'markdown',purpose:'stream-invitation',markdown:'[打开邀请](/?stream_invite=${fixtureInvite.token})'}]){const article=document.createElement('article');article.id='record-'+message.id;document.getElementById('records').append(article);TunnelMarkdown.mount(article,message);}
+        document.getElementById('fixture-convert').onclick=async()=>{const editor=document.getElementById('fixture-rich'),before=editor.innerHTML;await StreamingConsole.sendMarkdown(TunnelMarkdown.fromHtml(before,'fixture-tunnel'));document.getElementById('fixture-status').textContent=editor.innerHTML===before?'原富文本未改变':'原富文本被改变';};
+        </script></body></html>`));
     const png = Buffer.from(records[0].fileInfo.data.split(',')[1], 'base64'); records[0].fileInfo.size = png.length;
     const sourceFiles = [ { name: '网盘图片.png', type: 'image/png', body: png }, { name: '说明.txt', type: 'text/plain', body: Buffer.from('网盘文件放送\n离线续播测试。') },
         { name: '说明.md', type: 'text/markdown', body: Buffer.from('# Markdown 节目\n\n![隧道图片](tunnel-blob:fixture-tunnel/image-record/image-asset)\n\n<script>alert("unsafe")</script>') } ];
@@ -69,6 +88,7 @@ async function createFixture({ media = false } = {}) {
             for(const n of [10,11]){const row=document.createElement('article');row.dataset.lines=n;document.getElementById('markdown-layout').append(row);TunnelMarkdown.mount(row,{id:'lines-'+n,type:'markdown',markdown:Array.from({length:n},(_,i)=>'第 '+(i+1)+' 行').join('\\n')});}
             </script></body>`));
     });
+    f.app.get('/mobile-check', (_req, res) => res.type('html').send('<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#ddd"><iframe title="390像素串流布局验收" src="/fixture-account/alice" style="width:390px;height:844px;border:0;background:white"></iframe></body></html>'));
     f.app.get('/fixture-bootstrap.js', (_req, res) => res.type('js').send(`
         window.__fixtureErrors=[];window.addEventListener('error',event=>window.__fixtureErrors.push(event.message));
         window.addEventListener('unhandledrejection',event=>window.__fixtureErrors.push(String(event.reason)));

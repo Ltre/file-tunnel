@@ -76,6 +76,7 @@ const { createTelegramForwardJobs } = require('./server/telegram-forward-jobs');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskAccountSessions } = require('./server/disk-account-sessions');
+const { editMarkdownRecord, recoverMarkdownRecord } = require('./server/markdown-records');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
@@ -10153,6 +10154,26 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('markdown-message-edit', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const session = sessions.get(currentSession);
+            if (data?.sessionId !== currentSession || !session?.devices.has(currentDevice)) return respond({ ok: false, error: 'invalid-session' });
+            if (!canUseTunnelCapability(session, currentDevice, 'read') || !canUseTunnelCapability(session, currentDevice, 'sendText')) return respond({ ok: false, error: 'permission-denied' });
+            const index = session.history.findIndex(entry => entry.message.id === data.messageId && entry.message.type === 'markdown');
+            if (index < 0) return respond({ ok: false, error: 'message-not-found' });
+            const previous = session.history[index], result = editMarkdownRecord(previous.message, { content: data.content, baseVersion: data.baseVersion,
+                deviceId: currentDevice, deviceName: session.devices.get(currentDevice)?.deviceName || '', maxBytes: MAX_EDITOR_CONTENT_SIZE });
+            if (!result.ok || result.message === previous.message) return respond(result);
+            const updated = createHistoryMessage(result.message), size = Buffer.byteLength(JSON.stringify(updated), 'utf8');
+            if (size > MAX_MESSAGE_SIZE || session.historySize - previous.size + size > MAX_HISTORY_SIZE) return respond({ ok: false, error: 'history-too-large' });
+            session.history[index] = { message: updated, size }; session.historySize += size - previous.size; session.lastActivity = Date.now();
+            persistHistoryAudit(currentSession, session, updated, 'markdown-message-edited');
+            emitToReadableSessionDevices(session, 'message-updated', { message: updated }); scheduleSessionHistoryBroadcast(currentSession, 'markdown-message-edited');
+            respond({ ok: true, message: updated });
+        } catch (err) { console.error('markdown-message-edit error:', err); respond({ ok: false, error: 'internal-error' }); }
+    });
+
     socket.on('history-reconcile', data => {
         try {
             const { sessionId, messages } = data || {};
@@ -10183,7 +10204,8 @@ io.on('connection', (socket) => {
 
             for (const message of candidates) {
                 if (!message || !isValidDeviceId(message.id) ||
-                    !['text', 'rich', 'file', 'collection'].includes(message.type) ||
+                    !['text', 'rich', 'markdown', 'file', 'collection'].includes(message.type) ||
+                    message.type === 'markdown' && typeof message.markdown !== 'string' ||
                     deletedMessageIds.has(message.id)) {
                     rejectedCount++;
                     continue;
@@ -10192,6 +10214,17 @@ io.on('connection', (socket) => {
                 if (encoded.length > MAX_MESSAGE_SIZE) {
                     rejectedCount++;
                     continue;
+                }
+                if (message.type === 'markdown' && canUseTunnelCapability(session, currentDevice, 'read') && canUseTunnelCapability(session, currentDevice, 'sendText')) {
+                    const index = session.history.findIndex(entry => entry.message.id === message.id);
+                    const previous = session.history[index], recovered = previous && recoverMarkdownRecord(previous.message, message);
+                    if (recovered) {
+                        const size = Buffer.byteLength(JSON.stringify(recovered), 'utf8');
+                        if (size <= MAX_MESSAGE_SIZE && session.historySize - previous.size + size <= MAX_HISTORY_SIZE) {
+                            session.history[index] = { message: recovered, size }; session.historySize += size - previous.size;
+                            persistHistoryAudit(sessionId, session, recovered, 'markdown-history-recovered'); mergedCount++; continue;
+                        }
+                    }
                 }
                 const result = addToSessionHistory(sessionId, session, message, {
                     fromDeviceId: currentDevice,

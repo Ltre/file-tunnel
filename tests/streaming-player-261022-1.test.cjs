@@ -22,21 +22,21 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', reportStarts = false } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', reportStarts = false, onSeek, size = 0, fetchBytes } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [];
     const events = new Map(), window = { addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
     vm.runInNewContext(fs.readFileSync(require.resolve('../client/streaming-player.js'), 'utf8'), {
         window, document: { createElement(tag) { const el = new Element(tag); elements.push(el); return el; } },
-        performance: { now: () => time }, Date, AbortController, URL, fetch: async () => ({ ok: true, text: async () => 'text' }),
+        performance: { now: () => time }, Date, AbortController, URL, Blob, fetch: fetchBytes || (async () => ({ ok: true, text: async () => 'text' })),
         setInterval: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearInterval() {}, setTimeout, clearTimeout
     });
-    const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1,
+    const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
         items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? 120 : undefined, stay: 10 }, { id: 'b', name: 'b', kind: 'image', stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
-    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch',
+    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek,
         request: async (route, method, body) => { calls.push({ route, body }); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
-            return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000 };
+            return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
     return { player, state, calls, elements, flush: async () => { await new Promise(setImmediate); },
@@ -95,4 +95,18 @@ test('a page in the back-forward cache does not advance its cursor before joinin
     f.page('pagehide'); f.tick(60000);
     assert.equal(f.player.element.querySelector('.sc-countdown').textContent, '8');
     assert.equal(f.calls.filter(call => call.route.endsWith('/ticket') && call.body.itemId === 'b').length, 0); f.player.close();
+});
+test('only a controller gets the draggable station progress and seek targets the displayed item', async () => {
+    const seeks = [], f = fixture({ kind: 'audio', onSeek: async (...args) => seeks.push(args) }); await f.flush();
+    const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();
+    const bar = f.player.element.querySelector('.sc-seek'), slider = bar.children[0]; assert.equal(bar.hidden, false);
+    slider.value = 33; slider.oninput(); await slider.onchange(); assert.deepEqual(seeks, [['a', 33]]);
+    f.player.apply({ ...f.state, manageable: false, serverTime: 2 }); assert.equal(bar.hidden, true); f.player.close();
+});
+test('current audio is buffered on this device and switches to its retained bytes only when needed', async () => {
+    const requests = [], f = fixture({ kind: 'audio', size: 12, fetchBytes: async (url, options) => { requests.push({ url, options }); return { status: 206, arrayBuffer: async () => new Uint8Array(12).buffer }; } });
+    await f.flush(); const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();
+    f.tick(250); await f.flush(); assert.equal(requests.length, 1); assert.equal(requests[0].options.headers.Range, 'bytes=0-11'); assert.equal(audio.src, '/media/a');
+    audio.currentTime = 4; audio.emit('waiting'); assert.match(audio.src, /^blob:/); audio.emit('loadedmetadata'); assert.equal(audio.currentTime, 4);
+    audio.emit('canplay'); await f.flush(); f.tick(6000); assert.equal(requests.length, 1); f.player.close(); assert.equal(requests[0].options.signal.aborted, true);
 });

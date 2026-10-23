@@ -12,6 +12,16 @@
         localStorage.setItem(storageKey(), JSON.stringify(items.slice(0, 300)));
         updateBadges(items);
     }
+    const fingerprint = item => JSON.stringify([item.type, item.title, item.body, item.resolved || '']);
+    function dismissals() {
+        try { return JSON.parse(localStorage.getItem(storageKey() + ':dismissed') || '{}'); } catch (_) { return {}; }
+    }
+    function clearRead() {
+        const items = read(), dismissed = dismissals();
+        for (const item of items) if (item.read) dismissed[item.id] = fingerprint(item);
+        localStorage.setItem(storageKey() + ':dismissed', JSON.stringify(Object.fromEntries(Object.entries(dismissed).slice(-1000))));
+        write(items.filter(item => !item.read));
+    }
     function escapeHtml(value) {
         const div = document.createElement('div'); div.textContent = String(value || ''); return div.innerHTML;
     }
@@ -30,7 +40,7 @@
         document.body.append(overlay); list = overlay.querySelector('.notification-center-list'); count = overlay.querySelector('[data-notification-count]');
         overlay.querySelector('[data-notification-close]').onclick = () => close();
         overlay.querySelector('[data-notification-clear]').onclick = () => {
-            write(read().filter(item => !item.read)); render();
+            clearRead(); render();
         };
         overlay.addEventListener('click', async event => {
             const action = event.target.closest('[data-notification-action]');
@@ -80,7 +90,9 @@
         const items = read();
         const id = String(notification?.id || `notification-${Date.now()}-${Math.random().toString(36).slice(2)}`);
         const next = { ...notification, id, createdAt: Number(notification?.createdAt) || Date.now(), read: false };
+        if (dismissals()[id] === fingerprint(next)) return null;
         const index = items.findIndex(item => item.id === id);
+        next.read = Boolean(overlay && !overlay.hidden || index >= 0 && fingerprint(items[index]) === fingerprint(next) && items[index].read);
         if (index >= 0) items[index] = { ...items[index], ...next }; else items.unshift(next);
         write(items); if (overlay && !overlay.hidden) render(); return next;
     }
@@ -90,5 +102,5 @@
         document.addEventListener('keydown', event => { if (event.key === 'Escape' && overlay && !overlay.hidden) { event.preventDefault(); close(); } });
         if (location.pathname === '/notification') setTimeout(open, 0);
     }
-    global.NotificationCenter = { init, open, close, add, list: read };
+    global.NotificationCenter = { init, open, close, add, list: read, clearRead };
 })(window);

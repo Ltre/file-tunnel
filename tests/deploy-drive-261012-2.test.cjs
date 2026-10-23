@@ -48,6 +48,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     assert.ok(fs.readFileSync(path.join(temporary, 'pages/media-library.html'), 'utf8').includes(manifest.scripts['client/media-library.js']));
     assert.ok(fs.readFileSync(path.join(temporary, 'pages/admin-layout.html'), 'utf8').includes(manifest.scripts['client/admin-layout.js']));
     assert.ok(fs.existsSync(path.join(temporary, 'server/admin-layout.js')));
+    for (const name of ['markdown-records', 'streaming-buffer']) assert.ok(fs.existsSync(path.join(temporary, 'server/' + name + '.js')));
     assert.ok(fs.existsSync(path.join(temporary, 'server/telegram-forward-jobs.js')));
     await run(['-e', 'const api=require(process.argv[1]); if(typeof api.registerMediaLibrary!=="function")process.exit(1);', path.join(temporary, 'server/media-library/index.js')]);
     // A manifest entry alone must not conceal a missing runtime helper.

@@ -6,7 +6,11 @@
         const deviceId = () => localStorage.getItem('deviceId') || deps.state.deviceId;
         async function tunnels() {
             const entries = await deps.listSessions();
-            if (deps.state.sessionId && !entries.some(entry => entry.sessionId === deps.state.sessionId)) entries.push({ sessionId: deps.state.sessionId, shortCode: deps.state.shortCode, remark: deps.state.sessionRemark });
+            if (deps.state.sessionId) {
+                const current = entries.find(entry => entry.sessionId === deps.state.sessionId);
+                if (current) { current.shortCode = deps.state.shortCode || current.shortCode; current.remark = deps.state.sessionRemark || current.remark; }
+                else entries.push({ sessionId: deps.state.sessionId, shortCode: deps.state.shortCode, remark: deps.state.sessionRemark });
+            }
             return entries.map(entry => ({ sessionId: entry.sessionId, shortCode: entry.shortCode || '', remark: entry.remark || '', name: [entry.shortCode, entry.remark].filter(Boolean).join(' · ') || entry.sessionId,
                 accessGrant: deps.authorization(entry.sessionId).grant, tunnelDeviceId: deps.authorization(entry.sessionId).deviceId }))
                 .filter(entry => entry.accessGrant);
@@ -56,7 +60,7 @@
             if (Number(response.headers.get('Content-Length')) > maxBytes) { await response.body?.cancel(); throw Error('STREAM_REFERENCE_LIMIT'); }
             return response.blob();
         }
-        global.TunnelMarkdown.init({ readReference,
+        global.TunnelMarkdown.init({ readReference, record: deps.message, edit: deps.editMarkdown,
             referenceName: value => referenceNames.get(value) || value.split('/').at(-1),
             upload: async file => {
                 const user = await global.DiskUI.chooseAccount();

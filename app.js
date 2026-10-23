@@ -686,6 +686,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const restoredSession = await runStartupStage('session-restore', initSession);
         initStreamingConsoleIntegration();
         if (!restoredSession || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
+            const entry = new URL(window.location.href);
+            if (entry.searchParams.has('stream') || entry.searchParams.has('stream_invite')) {
+                await startTunnelApplication({ joined: false }); startupTimings.completeMs = Math.round(startupTimestamp()); return;
+            }
             initLandingNearbyPresence();
             initSessionLanding({ hidden: new URLSearchParams(location.search).has('stream') || new URLSearchParams(location.search).has('stream_invite') });
             markStartupShellReady('landing');
@@ -727,10 +731,11 @@ function initLandingNearbyPresence() {
     });
 }
 
-async function startTunnelApplication() {
+async function startTunnelApplication({ joined = true } = {}) {
+    document.getElementById('sessionLanding').hidden = true;
     document.getElementById('appShell').hidden = false;
     document.getElementById('tunnelTopbar')?.removeAttribute('hidden');
-    document.getElementById('leaveTunnelBtn').hidden = false;
+    document.getElementById('leaveTunnelBtn').hidden = !joined;
     document.getElementById('mobileForceRefreshBtn').hidden = false;
     initFileAssetTransfer();
     initMediaController();
@@ -738,9 +743,16 @@ async function startTunnelApplication() {
     initEditor();
     initDragDrop();
     initClipboardImagePaste();
-    markStartupShellReady('tunnel');
-    await runStartupStage('music-player-restore', restoreMusicPlayerState);
+    markStartupShellReady(joined ? 'tunnel' : 'home');
+    if (joined) await runStartupStage('music-player-restore', restoreMusicPlayerState);
     await runStartupStage('contacts-restore', loadContacts);
+    if (!joined) {
+        for (const id of ['leaveTunnelPanelBtn', 'exitTunnelBtn']) { const node = document.getElementById(id); if (node) node.hidden = true; }
+        const online = document.getElementById('onlineCount'); if (online) online.textContent = '0';
+        const device = document.getElementById('deviceId'); if (device) device.textContent = state.deviceId.slice(0, 8) + '...';
+        const status = document.getElementById('collabStatus'); if (status) status.textContent = window.TunnelI18n?.t('尚未加入隧道') || '尚未加入隧道';
+        initLandingNearbyPresence(); applyTunnelPermissionUi(); return;
+    }
     await runStartupStage('session-data-restore', loadSessionData);
     initSocket();
     initAssetPresenceRefresh();
@@ -1173,9 +1185,8 @@ async function initSession() {
     // A shared hash always wins. A plain home page resumes the most recent local
     // session, unless it was opened as a PWA share target and needs a destination.
     const entryUrl = new URL(window.location.href);
-    // Public station / invitation links are independent entry points. They do
-    // not resume a tunnel or discard the station query during tunnel routing.
-    if (entryUrl.searchParams.has('stream') || entryUrl.searchParams.has('stream_invite')) return false;
+    // The streaming destination opens above the normal home workspace. Restore
+    // its existing tunnel normally and preserve the independent destination.
     state.tunnelJoinToken = entryUrl.searchParams.get('tunnel_join') || '';
     const recordRouteMatch = entryUrl.pathname.match(/^\/record\/([^/]+)\/([^/]+)\/?$/);
     const routeSessionId = recordRouteMatch ? decodeURIComponent(recordRouteMatch[1]) : '';
@@ -1238,7 +1249,7 @@ async function initSession() {
 }
 
 function tunnelSessionEntryUrl(entryUrl, sessionId) {
-    const keepDiskDestination = entryUrl.pathname === '/disk' || entryUrl.searchParams.get('disk') === '1';
+    const keepDiskDestination = entryUrl.pathname === '/disk' || entryUrl.searchParams.get('disk') === '1' || entryUrl.searchParams.has('stream') || entryUrl.searchParams.has('stream_invite');
     const destination=new URL(entryUrl);destination.searchParams.delete('tunnel_join');
     return destination.pathname + (keepDiskDestination ? destination.search : '') + '#' + sessionId;
 }
@@ -1272,7 +1283,6 @@ function initSessionLanding({ hidden = false } = {}) {
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
     let joinInProgress = false;
     landing.hidden = hidden;
-    if (hidden) window.addEventListener('streaming-visibility-change', () => { landing.hidden = Boolean(window.StreamingConsole?.isOpen()); });
     document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
     document.getElementById('leaveTunnelBtn').hidden = true;
     document.getElementById('mobileForceRefreshBtn').hidden = true;
@@ -13218,6 +13228,7 @@ async function deleteHistoryMessage(messageId) {
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
     const previous = await getFromStore('messages', message.id).catch(() => null);
+    if (message.type === 'markdown' && previous?.type === 'markdown' && (Number(message.markdownVersion) || 1) < (Number(previous.markdownVersion) || 1)) return;
     if (previous) {
         const files = entry => entry.type === 'collection' ? getCollectionFiles(entry) : entry.fileInfo ? [entry.fileInfo] : [];
         const known = new Map(files(previous).map(file => [file.id, file]));
@@ -15537,6 +15548,16 @@ function initEditor() {
     // 内容变化同步 + 本地持久化
     editor.addEventListener('input', queueEditorSync);
 
+    document.getElementById('sendEditorMarkdownBtn')?.addEventListener('click', async event => {
+        if (!requireTunnelPermission('sendText')) return;
+        const button = event.currentTarget; button.disabled = true;
+        try {
+            const markdown = window.TunnelMarkdown.fromHtml(serializeEditorContent(editor.innerHTML), state.sessionId);
+            if (!markdown.trim()) { showAppToast('请输入内容'); return; }
+            await window.StreamingConsole.sendMarkdown(markdown);
+        } catch (error) { showAppToast((window.TunnelI18n?.t('Markdown 发送失败，请重试') || 'Markdown 发送失败，请重试') + ' [' + error.message + ']'); }
+        finally { button.disabled = false; }
+    });
     // 发送富文本
     document.getElementById('sendRichBtn').addEventListener('click', async () => {
         if (!requireTunnelPermission('sendRich')) return;
@@ -17522,6 +17543,7 @@ function canManageTunnelSettings() {
 }
 
 function hasTunnelPermission(capability) {
+    if (state.sessionId === null) return false;
     if (isTunnelOwner()) return true;
     if (state.sessionSelfAdminPermissions) return state.sessionSelfAdminPermissions?.[capability] !== false;
     return state.sessionPermissions?.[capability] !== false;
@@ -17675,6 +17697,8 @@ function applyTunnelPermissionUi() {
         folderUploadBtn: 'sendFile',
         directorySyncBtn: 'sendFile',
         sendRichBtn: 'sendRich',
+        sendEditorMarkdownBtn: 'sendText',
+        sendMarkdownBtn: 'sendText',
         editor: 'collaborativeEdit',
         clearEditorBtn: 'collaborativeEdit',
         insertImageBtn: 'collaborativeEdit',
@@ -17693,8 +17717,8 @@ function applyTunnelPermissionUi() {
     });
     const chatMessages = document.getElementById('chatMessages');
     const canRead = hasTunnelPermission('read');
-    chatMessages?.classList.toggle('permission-read-blocked', !canRead);
-    if (chatMessages) chatMessages.inert = !canRead;
+    chatMessages?.classList.toggle('permission-read-blocked', !canRead && state.sessionId !== null);
+    if (chatMessages) chatMessages.inert = !canRead && state.sessionId !== null;
     ['resourceBrowserBtn', 'connectionResourceBrowserBtn', 'historyBackupBtn'].forEach(id => {
         const element = document.getElementById(id);
         if (element) element.disabled = !canRead;
@@ -17910,7 +17934,19 @@ function initStreamingConsoleIntegration() {
             });
         }
     });
-    const adapter = window.StreamingAppAdapter?.create({ state, listSessions: () => getAllFromStore('sessions'), authorization: tunnelAuthorization,
+    const adapter = window.StreamingAppAdapter?.create({ state, listSessions: async () => {
+        const known = new Map(readSessionDirectoryCache().map(item => [item.sessionId, item]));
+        for (const item of await getAllFromStore('sessions')) { const cached = known.get(item.sessionId); known.set(item.sessionId, { ...cached, ...item, shortCode: item.shortCode || cached?.shortCode || '', remark: item.remark || cached?.remark || '' }); }
+        return [...known.values()];
+    }, authorization: tunnelAuthorization,
+        editMarkdown: (message, content, baseVersion) => new Promise((resolve, reject) => {
+            if (!requireTunnelPermission('sendText')) return reject(new Error('permission-denied'));
+            if (!state.socket?.connected || message.sessionId !== state.sessionId) return reject(new Error('invalid-session'));
+            state.socket.timeout(10000).emit('markdown-message-edit', { sessionId: message.sessionId, messageId: message.id, content, baseVersion }, async (err, result) => {
+                if (err) return reject(err);
+                try { if (result?.message) { if (state.sessionId === message.sessionId) await applyHistoryMessageUpdate(result.message, { remote: true }); else await saveToStore('messages', { ...result.message, sessionId: message.sessionId }); } resolve(result); } catch (error) { reject(error); }
+            });
+        }),
         file: fileId => getFromStore('files', fileId), message: messageId => getFromStore('messages', messageId),
         materialize: file => materializeExternalFileRecord(file, { requestPermission: false }), complete: hasCompleteFileCache,
         receiveMessage: async (message, sessionId) => { if (!message) return; await saveToStore('messages', { ...message, sessionId }); if (state.sessionId === sessionId) await addMessageToChat(message, true, { autoRequestAsset: false }); },

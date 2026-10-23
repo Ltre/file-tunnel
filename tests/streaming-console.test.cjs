@@ -27,6 +27,12 @@ function fixture(t) {
     };
     return { service, a, b, c, create, edit, online, command, options, revoked, time: n => { time += n; }, dataDir };
 }
+
+test('subscribed stations remain listed after going offline', async t => {
+    const f = fixture(t), station = f.create(); await f.edit(station); f.online(station); f.service.bookmark(station.id, f.a, true);
+    f.online(station, 'offline'); const subscribed = f.service.list(f.a, 'bookmarks');
+    assert.equal(subscribed.length, 1); assert.equal(subscribed[0].id, station.id); assert.equal(subscribed[0].visibility, 'offline'); assert.equal(subscribed[0].subscribed, true);
+});
 test('device capability rejects impersonation and creation retries keep one identity', t => {
     const f = fixture(t);
     assert.throws(() => f.service.authenticate('A', 'B'.repeat(40)), /DEVICE_DENIED/);

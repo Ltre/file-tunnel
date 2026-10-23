@@ -147,3 +147,14 @@ test('HTTP device inbox, general invite account promotion and CSRF rejection use
     assert.equal((await f.call('device-B', '/inbox')).body.invitations[0].status, 'sent');
     const crossOrigin = await fetch(f.base + '/api/streaming/stations', { method: 'POST', headers: { ...f.headers('device-A', true), Origin: 'https://other.invalid', 'Content-Type': 'application/json' }, body: '{}' }); assert.equal(crossOrigin.status, 403);
 });
+
+test('read-ahead serves later media reads from the same ticket but still rejects revoked access', async t => {
+    const f = await setup(t), item = f.items.find((entry, index) => f.files[index].name.endsWith('.png'));
+    const ticket = await f.call('device-C', '/stations/' + f.s.id + '/ticket', 'POST', { itemId: item.id });
+    let reads = 0; const originalRead = f.sources.read; f.sources.read = (...args) => { reads++; return originalRead(...args); };
+    const headers = { ...f.headers('device-C'), Range: 'bytes=0-31' };
+    const warm = await fetch(f.base + ticket.body.url, { headers: { ...headers, 'X-Stream-Buffer': '1' } }); assert.equal(warm.status, 206); const bytes = Buffer.from(await warm.arrayBuffer());
+    const afterWarm = reads, next = await fetch(f.base + ticket.body.url, { headers }); assert.equal(next.status, 206); assert.deepEqual(Buffer.from(await next.arrayBuffer()), bytes); assert.equal(reads, afterWarm);
+    await f.call('device-A', '/stations/' + f.s.id + '/access', 'POST', { deviceId: 'device-C', allow: false }, true);
+    const denied = await fetch(f.base + ticket.body.url, { headers }); assert.equal(denied.status, 403); await denied.text();
+});
