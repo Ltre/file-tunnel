@@ -5,6 +5,26 @@ const { createMediaRoutes } = require('../server/media-library/routes');
 const { createMediaDiskAdapter, createLoopbackSource } = require('../server/media-library/disk-adapter');
 const { createDiskAuth } = require('../server/disk-auth'), { createDiskOperations } = require('../server/disk-operations'), { createTelegramDriveStore } = require('../server/telegram-drive'), { createDiskAPI } = require('../server/disk-api');
 
+test('state delivers usable source media metadata without internal probe locations or unlisted fields', async t => {
+    const f = createFixture(), app = express();
+    app.use('/media', createMediaRoutes({ service: f.service, disk: f.disk, downloads: f.downloads, identity: () => ({ id: 'alice' }), requireAuth: (_req, _res, next) => next(), origin: () => 'http://localhost' }));
+    const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+    t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await f.close(); });
+    f.service.processing.probe = async () => ({
+        format: { filename: 'http://internal.test/private?token=secret', format_name: 'mov,mp4,m4a,3gp,3g2,mj2', duration: '4', bit_rate: '1200000', tags: { encoder: 'Lavf', private_url: 'secret' } },
+        streams: [{ index: 0, codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080, avg_frame_rate: '25/1', disposition: { attached_pic: 0 }, tags: { language: 'eng', private_path: 'secret' }, source: '/private/source' },
+            { index: 1, codec_type: 'audio', codec_name: 'aac', sample_rate: '48000', channels: 2, bit_rate: '128000' }], private: 'secret'
+    });
+    const resource = f.service.createImport({ kind: 'disk', ...f.put('video') }, { id: 'alice' }); await f.service.pump();
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/media/state`); assert.equal(response.status, 200);
+    const actual = (await response.json()).imports.find(value => value.id === resource.id);
+    assert.equal(actual.available, true); assert.equal(actual.probe?.format?.bit_rate, '1200000');
+    assert.equal(actual.probe.streams[0].width, 1920); assert.equal(actual.probe.streams[0].height, 1080);
+    assert.equal(actual.probe.streams[1].sample_rate, '48000'); assert.equal(actual.probe.streams[1].channels, 2);
+    assert.equal(actual.probe.streams[0].tags.language, 'eng'); assert.equal(actual.probe.format.tags.encoder, 'Lavf');
+    assert.doesNotMatch(JSON.stringify(actual.probe), /internal\.test|private|secret/); assert.equal(actual.bindToken, undefined);
+});
+
 test('frame neighbors step relative to the displayed frame and provide an interior seek point; invalid times and revoked reads remain blocked', async t => {
     const f=createFixture(),app=express();app.use(express.json());
     app.use('/media',createMediaRoutes({service:f.service,disk:f.disk,downloads:f.downloads,identity:()=>({id:'alice'}),requireAuth:(_req,_res,next)=>next(),origin:()=> 'http://localhost'}));

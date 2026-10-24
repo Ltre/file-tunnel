@@ -9,7 +9,7 @@ const { createDiskOidcReceipt } = require('../../server/disk-oidc-receipt');
 const { createDiskOperations } = require('../../server/disk-operations');
 const { createDiskAPI } = require('../../server/disk-api');
 const { createTelegramDriveStore } = require('../../server/telegram-drive');
-async function createFixture({ serverTransfers = false } = {}) {
+async function createFixture({ serverTransfers = false, listDelayMs = 0 } = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-save-ui-'));
     const repository = openDiskRepository(dataDir);
     repository.replace('users', [{ id: 'alice', username: 'alice', name: '验收甲账号' }, { id: 'bob', username: 'bob', name: '验收乙账号' }], user => user.id);
@@ -37,6 +37,7 @@ async function createFixture({ serverTransfers = false } = {}) {
     app.get('/api/telegram/drive/me', (req, res) => res.json({ identity: sessions.identity(req), accounts: sessions.list(req), loginAttempt: receipts.get(req, req.query.oidc_attempt), enabled: true, configured: true, oidcConfigured: true, oidcMode: 'mock' }));
     app.get('/api/telegram/drive/oidc/start', (req, res) => { browserLoginAttempt = String(req.query.attempt || browserLoginAttempt).replace(/[^a-zA-Z0-9-]/g, ''); res.type('html').send('<!doctype html><meta charset="utf-8"><h1>隔离 Mock 登录</h1><p>仅使用测试账号，不连接 Telegram。</p><form method="post" action="/fixture-login"><input type="hidden" name="attempt" value="' + browserLoginAttempt + '"><button name="id" value="alice">登录验收甲账号</button><button name="id" value="bob">登录验收乙账号</button></form>'); });
     app.post('/fixture-login', (req, res) => { sessions.set(req, res, auth.user(req.body.id)); const message = { type: 'telegram-drive-oidc-result', result: 'success', attemptId: req.body.attempt, accountId: req.body.id }; receipts.record(req, res, { ...message, attemptId: req.body.attempt }); res.type('html').send('<!doctype html><meta charset="utf-8"><p>Mock 登录成功</p><script>window.opener?.postMessage(' + JSON.stringify(message) + ',location.origin);window.close();</script>'); });
+    if (listDelayMs) app.get('/api/telegram/drive/list', (_req, _res, next) => setTimeout(next, listDelayMs));
     app.use('/api/telegram/drive', api.browser);
     const body = Buffer.from('后台缓存转存验收正文\n'.repeat(350));
     const tasks = ['sns', 'youtube'].map(source => ({ id: source + '-fixture', title: source === 'sns' ? 'SNS 转存验收' : 'YouTube 转存验收', outputFileName: source + '-后台成品.txt',
@@ -61,7 +62,7 @@ async function createFixture({ serverTransfers = false } = {}) {
     });
     app.get('/fixture-before.css', (_req,res) => res.sendFile(path.join(root,'.npm-cache/261019-2-before.css')));
     app.get('/disk', (_req, res) => {
-        const scripts = ['cache-store', 'sns-download-cache', 'youtube-premium-cache', 'disk-pending-save', 'disk-error-messages', 'disk-file-editor', 'disk-folder-upload', 'disk-operation-order', 'disk-client', 'disk-directory-picker', 'disk-mount-ui', 'disk-trash-ui', 'disk-import-picker', 'disk-ui'];
+        const scripts = ['cache-store', 'sns-download-cache', 'youtube-premium-cache', 'disk-pending-save', 'disk-error-messages', 'disk-file-editor', 'disk-folder-upload', 'disk-operation-order', 'disk-client', 'disk-directory-picker', 'disk-mount-ui', 'disk-trash-ui', 'disk-import-picker', 'account-ui', 'disk-ui'];
         let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
         html = html.replace('</body>', '<output id="fixtureStatus" style="position:fixed;bottom:0;left:0;z-index:10000;background:white;color:black"></output>' + scripts.map(name => '<script src="/client/' + name + '.js"></script>').join('') + '<script src="/fixture-ui.js"></script></body>');
         res.type('html').send(html);

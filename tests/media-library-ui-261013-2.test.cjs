@@ -316,3 +316,28 @@ test('range preview starts playback on the first click and stops at the selected
     const action=panel.querySelectorAll('button').find(n=>n.textContent==='预览选定范围');await action.onclick();assert.equal(player.playCalls,1);assert.equal(player.paused,false);
     const feedback=descendants(panel).find(n=>n.className==='ml-preview-feedback ml-segment-feedback');assert.equal(feedback.hidden,true);assert.equal(feedback.textContent,'');player.currentTime=10;player.emit('timeupdate');assert.equal(player.paused,true);
 });
+
+test('range preview keeps the selected start paused until scrolling to the player has settled', async () => {
+    const state = snapshot(); state.sessions[0].importId = 'video'; const f = fixture(); f.set(state); f.setSession('old'); f.setTab('sessions');
+    const panel = f.renderSessions(), player = panel.querySelector('video'); player.readyState = 1; player.duration = 10;
+    panel.querySelectorAll('label').find(node => node.textContent === '起点（秒或时间）').querySelector('input').value = '2.5';
+    let top = 900, scrollOptions;
+    player.getBoundingClientRect = () => ({ top, left: 0, width: 320, height: 180 });
+    player.scrollIntoView = options => { scrollOptions = options; };
+    const action = panel.querySelectorAll('button').find(node => node.textContent === '预览选定范围');
+    const preview = action.onclick(); await turn();
+    assert.equal(scrollOptions.behavior, 'smooth'); assert.equal(scrollOptions.block, 'center');
+    assert.equal(player.paused, true); assert.equal(player.playCalls || 0, 0); assert.equal(player.currentTime, 2.5);
+    // A long smooth scroll may still be moving after its first frames.
+    for (const position of [600, 400, 180]) { await new Promise(resolve => setTimeout(resolve, 90)); top = position; assert.equal(player.playCalls || 0, 0); }
+    await preview; assert.equal(player.playCalls, 1); assert.equal(player.currentTime, 2.5);
+});
+
+test('leaving the extraction session during scrolling cancels deferred preview playback', async () => {
+    const state = snapshot(); state.sessions[0].importId = 'video'; const f = fixture(); f.set(state); f.setSession('old'); f.setTab('sessions');
+    const panel = f.renderSessions(), player = panel.querySelector('video'); player.readyState = 1; player.duration = 10;
+    player.getBoundingClientRect = () => ({ top: 900, left: 0, width: 320, height: 180 }); player.scrollIntoView = () => {};
+    const preview = panel.querySelectorAll('button').find(node => node.textContent === '预览选定范围').onclick();
+    await turn(); f.changeTab('imports'); await preview;
+    assert.equal(player.playCalls || 0, 0); assert.equal(player.paused, true); assert.equal(player.listeners.progress.size, 0);
+});

@@ -3,6 +3,16 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['正在读取待转存记录…','Loading pending transfer…'], ['此文件此前已转存完成，正在定位结果…','This file was already saved; locating the result…'],
+        ['正在核验上次转存结果，不会重复提交…','Checking the previous transfer without resubmitting…'], ['正在核验旧待转存记录的服务端成品…','Checking the server output for the previous pending transfer…'],
+        ['正在核验原转存账号…','Checking the original transfer account…'], ['请选择转存目标账号','Choose a destination account'], ['正在复用原目标目录…','Reusing the original destination…'], ['正在读取转存目标分区和目录…','Loading destination partitions and folders…'],
+        ['正在核验目标目录和来源版本…','Checking the destination and source version…'], ['请确认转存目标','Confirm the transfer destination'], ['请选择转存目标目录','Choose a destination folder'], ['正在转存，详细进度请查看网盘任务','Saving; see drive tasks for detailed progress'],
+        ['此待转存正在另一个页面中处理或等待选择，请回到该页面继续；关闭该页面后可在此重试。','This pending transfer is active or awaiting selection in another page. Continue there, or close that page and retry here.'],
+        ['尚未开始转存，可点击继续转存重新选择','Transfer has not started; select Continue transfer to choose again'], ['转存流程未完成：{0}','Transfer could not be completed: {0}'], ['读取转存信息超时，未重复发起转存，请点击继续转存重试','Transfer information timed out; no duplicate transfer was started. Select Continue transfer to retry'], ['来源任务核验超时，待转存记录已保留，请重试','Source verification timed out; the pending transfer is retained. Retry'],
+        ['发现','Discover'], ['我创建的','My stations'], ['我订阅的','My subscriptions'], ['+ 创建','+ Create'],
+        ['切换横屏','Switch to landscape'], ['切换竖屏','Switch to portrait'],
+        ['{0}秒后放送','Broadcasts in {0} seconds'], ['{0}分后放送','Broadcasts in {0} minutes'], ['{0}小时{1}分后放送','Broadcasts in {0} hours {1} minutes'],
+        ['全台已暂停','Station playback is paused'], ['等待全台播放','Waiting for station playback'], ['等待时长确认','Waiting for duration confirmation'], ['正在同步放送状态','Synchronizing broadcast state'], ['本轮已放送','Already broadcast this round'], ['暂无放送安排','No broadcast scheduled'],
         ['服务端读取成品','Reading server output'], ['已读取','Read'], ['正在读取','Reading'],
         ['操控串流台','Control station'], ['返回操控','Back to controls'], ['串流台','Station'], ['节目单','Playlist'], ['来源','Source'], ['退订','Unsubscribe'], ['已被管理员暂停','Paused by an administrator'], ['恢复播放','Resume playback'], ['全屏','Fullscreen'], ['浏览器限制播放，请点击恢复播放','Autoplay blocked; select Resume playback'],
         ['正在加载 Markdown…','Loading Markdown…'], ['正在缓冲','Buffering'], ['置顶','Move to top'], ['置底','Move to bottom'], ['导入','Import'], ['历史','History'], ['存到网盘','Save to drive'], ['发送到其他隧道','Send to another tunnel'],

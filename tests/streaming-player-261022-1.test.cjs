@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm');
 
 class Element {
-    constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = { setProperty() {} }; this.events = {}; this.paused = true; this.currentTime = 0; this.duration = 120; this.readyState = 0; this.className = ''; this.hidden = false; }
+    constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = { setProperty(name, value) { this[name] = value; } }; this.events = {}; this.paused = true; this.currentTime = 0; this.duration = 120; this.readyState = 0; this.className = ''; this.hidden = false; }
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
     set innerHTML(value) {
@@ -24,7 +24,7 @@ class Element {
 }
 function fixture({ deferredTicket = false, kind = 'image', reportStarts = false, onSeek, size = 0, fetchBytes } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [];
-    const events = new Map(), window = { addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
+    const events = new Map(), window = { innerWidth:390, innerHeight:800, addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
     vm.runInNewContext(fs.readFileSync(require.resolve('../client/streaming-player.js'), 'utf8'), {
         window, document: { createElement(tag) { const el = new Element(tag); elements.push(el); return el; } },
         performance: { now: () => time }, Date, AbortController, URL, Blob, fetch: fetchBytes || (async () => ({ ok: true, text: async () => 'text' })),
@@ -41,6 +41,8 @@ function fixture({ deferredTicket = false, kind = 'image', reportStarts = false,
     player.apply(state);
     return { player, state, calls, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
         tick(ms) { time += ms; for (const timer of timers) if (timer.ms === 250) timer.run(); },
+        resize(width, height) { window.innerWidth = width; window.innerHeight = height; events.get('resize')?.(); },
+        hasEvent(name) { return events.has(name); },
         page(name, event = {}) { events.get(name)?.(event); },
         release() { resolveTicket({ url: '/media/a', expiresAt: Date.now() + 600000 }); } };
 }
@@ -49,6 +51,27 @@ test('audio starts audible and mute is visibly reported', async () => {
     assert.equal(audio.muted, false);
     const mute = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '静音'); mute.onclick();
     assert.match(f.player.element.querySelector('.sc-play-status').textContent, /已静音/); f.player.close();
+});
+
+test('page fullscreen rotates without native APIs, retains playback controls, and cleans up on exit', async () => {
+    const f = fixture({ kind:'audio' }); await f.flush(); const host = f.player.element;
+    let nativeCalls = 0; host.requestFullscreen = () => { nativeCalls++; throw Error('native fullscreen must not be called'); };
+    const enter = host.querySelector('.sc-window-only'), rotate = host.querySelector('.sc-rotate-fullscreen'), exit = host.querySelector('.sc-exit-fullscreen');
+    const media = f.elements.find(el => el.tagName === 'AUDIO'); media.readyState = 4; media.emit('canplay'); await f.flush();
+    enter.onclick(); assert.equal(nativeCalls, 0); assert.equal(host.classList.contains('sc-media-fullscreen'), true); assert.equal(f.hasEvent('resize'), true);
+    assert.equal(host.style['--sc-fullscreen-width'], '390px'); assert.equal(host.style['--sc-fullscreen-height'], '800px');
+    assert.equal(rotate['aria-label'], '切换横屏'); rotate.onclick();
+    assert.equal(host.classList.contains('sc-fullscreen-rotated'), true); assert.equal(host.style['--sc-fullscreen-width'], '800px'); assert.equal(rotate['aria-label'], '切换竖屏');
+    const controls = host.querySelector('.sc-local-controls');
+    assert.ok(controls.children.some(node => node.dataset.icon === '❚❚')); assert.ok(controls.children.some(node => node.dataset.icon === '🔇'));
+    assert.ok(controls.children.some(node => node.tagName === 'LABEL' && node.children.some(child => child.type === 'range')));
+    assert.equal(exit.children[0].src, '/client/icons/quit-fullscreen.png'); assert.ok(host.querySelector('.sc-play-status')); assert.ok(host.querySelector('.sc-buffering'));
+    assert.equal(media.paused, false, 'presentation changes must not restart or pause playback');
+    f.resize(900, 400); assert.equal(host.classList.contains('sc-fullscreen-rotated'), false); assert.equal(host.style['--sc-fullscreen-width'], '900px');
+    exit.onclick(); assert.equal(host.classList.contains('sc-media-fullscreen'), false); assert.equal(f.hasEvent('resize'), false);
+    enter.onclick(); rotate.onclick(); assert.equal(host.classList.contains('sc-fullscreen-rotated'), true);
+    f.player.exitFullscreen(); assert.equal(host.classList.contains('sc-fullscreen-rotated'), false); assert.equal(f.hasEvent('resize'), false);
+    enter.onclick(); f.player.close(); assert.equal(host.classList.contains('sc-media-fullscreen'), false); assert.equal(f.hasEvent('resize'), false);
 });
 
 test('an administrator pause overrides buffering while a media ticket is still loading', async () => {

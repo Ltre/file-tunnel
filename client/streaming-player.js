@@ -29,11 +29,36 @@
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
         slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
         // Resume is also the user gesture for browsers that block audible autoplay.
-        const enterFullscreen = button('媒体全屏', async () => {
-            try { if (document.fullscreenElement === host) await document.exitFullscreen(); else if (host.requestFullscreen) await host.requestFullscreen(); else host.classList.toggle('sc-media-fullscreen'); }
-            catch (_) { host.classList.toggle('sc-media-fullscreen'); }
+        let fullscreen = false, landscape = false;
+        function resizeFullscreen() {
+            if (!fullscreen) return;
+            const viewport = global.visualViewport;
+            const width = viewport?.width || global.innerWidth, height = viewport?.height || global.innerHeight;
+            const rotated = landscape !== (width >= height);
+            host.style.setProperty('--sc-fullscreen-width', (rotated ? height : width) + 'px');
+            host.style.setProperty('--sc-fullscreen-height', (rotated ? width : height) + 'px');
+            host.classList.toggle('sc-fullscreen-rotated', rotated);
+            rotateFullscreen.title = t(landscape ? '切换竖屏' : '切换横屏');
+            rotateFullscreen.setAttribute('aria-label', rotateFullscreen.title);
+            rotateFullscreen.setAttribute('aria-pressed', String(landscape));
+        }
+        function exitFullscreen() {
+            fullscreen = false;
+            host.classList.remove('sc-media-fullscreen'); host.classList.remove('sc-fullscreen-rotated');
+            global.removeEventListener('resize', resizeFullscreen);
+            global.visualViewport?.removeEventListener('resize', resizeFullscreen);
+        }
+        const enterFullscreen = button('媒体全屏', () => {
+            if (fullscreen) { exitFullscreen(); return; }
+            fullscreen = true;
+            landscape = (global.visualViewport?.width || global.innerWidth) >= (global.visualViewport?.height || global.innerHeight);
+            host.classList.toggle('sc-media-fullscreen', true);
+            global.addEventListener('resize', resizeFullscreen);
+            global.visualViewport?.addEventListener('resize', resizeFullscreen);
+            resizeFullscreen();
         }); enterFullscreen.className = 'sc-window-only';
-        const leaveFullscreen = button('退出全屏', () => { if (document.fullscreenElement === host) document.exitFullscreen(); host.classList.remove('sc-media-fullscreen'); }); leaveFullscreen.className = 'sc-exit-fullscreen';
+        const rotateFullscreen = button('切换横屏', () => { landscape = !landscape; resizeFullscreen(); }); rotateFullscreen.className = 'sc-rotate-fullscreen'; rotateFullscreen.textContent = '↻';
+        const leaveFullscreen = button('退出全屏', exitFullscreen); leaveFullscreen.className = 'sc-exit-fullscreen';
         leaveFullscreen.textContent = ''; const exitIcon = document.createElement('img'); exitIcon.src = '/client/icons/quit-fullscreen.png'; exitIcon.alt = ''; exitIcon.setAttribute('aria-hidden', 'true'); leaveFullscreen.append(exitIcon); leaveFullscreen.title = t('退出全屏'); leaveFullscreen.setAttribute('aria-label', t('退出全屏'));
         const length = item => item?.duration ? item.duration - (item.start || 0) : item?.stay || 0;
         const itemKey = item => JSON.stringify([snapshot?.configVersion, item?.id, item?.kind, item?.duration, item?.start, item?.stay]);
@@ -213,9 +238,9 @@
         const timer = setInterval(() => { sync(); update(); warmCurrent(); }, 250);
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
-        return { element: host, apply, poll, snapshot: () => snapshot,
+        return { element: host, apply, poll, snapshot: () => snapshot, exitFullscreen,
             setController(handler) { onSeek = handler; update(); },
-            close() { if (!alive) return; alive = false; generation++; unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
+            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
     global.StreamingPlayer = { create };
 })(window);

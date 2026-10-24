@@ -386,8 +386,8 @@
         if (task.error) card.append(element('div','task-error',task.error));
         const cacheLabel=element('div','subtle',cacheStateText(task)); cacheLabel.dataset.cacheState=''; card.append(cacheLabel);
         const actions=element('div','actions');
-        actions.append(makeAction(task.handled ? '✔已处理' : '✔标记为已处理', async () => {
-            await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({handled:true}) });
+        actions.append(makeAction(task.handled ? '标记为·待处理' : '✔标记为已处理', async () => {
+            await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({handled:!task.handled}) });
             await loadTasks({force:true});
         }));
         if (task.hasFile) {

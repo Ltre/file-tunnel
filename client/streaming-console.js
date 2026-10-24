@@ -28,6 +28,7 @@
     const labelKind = kind => t(({ local: '本机文件', disk: '网盘文件', tunnel: '隧道文件', video: '视频', audio: '音频', image: '图片', markdown: 'Markdown', text: 'TXT' })[kind] || kind);
     const stateLabel = value => t(({ public: '公开', invite: '仅限邀请', offline: '下线', restricted: '访问已结束', playing: '正在播放', stopped: '已停止', paused: '已暂停', waiting: '等待播放', reading: '正在展示', buffering: '缓冲中', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', generated: '已生成', sent: '已发送', delivered: '已发送', accepted: '已接受', rejected: '已拒绝', expired: '已到期', revoked: '已撤销' })[value] || value);
     let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncFlight;
+    let stopWatchSchedule = () => {};
     let ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }, pending = new Map(), channel = 'local', candidates = [], pickerVersion = 0;
     let diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }, tunnelScope = '', importBusy = false, lastList = [], dialog, discoveryTimes = {};
     const localFiles = new Map(), players = new Map(), noticeIds = new Map();
@@ -178,10 +179,10 @@
         root.querySelector('[data-sc-minimize]').onclick = () => minimize();
         root.querySelector('[data-sc-account]').onclick = () => accountDialog();
         const nav = root.querySelector('.sc-nav');
-        for (const [view, label] of [['discover', '发现的串流台'], ['local', '我创建的串流台'], ['bookmarks', '我订阅的串流台'], ['invitation', '通过邀请进入']]) {
+        for (const [view, label] of [['discover', '发现'], ['local', '我创建的'], ['bookmarks', '我订阅的'], ['invitation', '通过邀请进入']]) {
             const b = button(label, () => navigate(view)); b.dataset.scView = view; nav.append(b);
         }
-        nav.append(button('＋ 创建串流台', createStation, 'sc-primary'));
+        nav.append(button('+ 创建', createStation, 'sc-primary'));
         root.addEventListener('pointerdown', event => event.stopPropagation());
         root.addEventListener('touchstart', event => event.stopPropagation(), { passive: true });
         root.addEventListener('wheel', event => event.stopPropagation(), { passive: true });
@@ -198,6 +199,7 @@
     }
     function minimize(fromHistory = false) {
         if (!root || root.hidden) return;
+        clearWatchSchedule();
         root.hidden = true; saveUi(); global.dispatchEvent(new Event('streaming-visibility-change'));
         if (!fromHistory && history.state?.streamingConsole) { const next = { ...history.state }; delete next.streamingConsole; history.replaceState(next, '', location.href); }
     }
@@ -238,13 +240,14 @@
     function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) parking.append(player.element); }
     async function render() {
         if (!isOpen()) return; const version = ++renderVersion;
+        clearWatchSchedule();
         for (const [key, player] of players) if (!['watch', 'control'].includes(ui.view) || key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
         parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page'); banner.hidden = true;
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         try {
             if (['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) {
-                const heading = title(({ discover: '发现的串流台', local: '我创建的串流台', bookmarks: '我订阅的串流台', creator: '创作者公开台' })[ui.view]);
+                const heading = title(({ discover: '发现', local: '我创建的', bookmarks: '我订阅的', creator: '创作者公开台' })[ui.view]);
                 heading.className = 'sc-list-heading'; const tools = document.createElement('span'); tools.className = 'sc-list-tools';
                 if (ui.view !== 'creator') {
                     const label = document.createElement('label'), selector = document.createElement('select'); label.className = 'sc-list-sort'; label.append(document.createTextNode(t('排序')));
@@ -651,6 +654,46 @@
             progress.textContent = t('预览已就绪') + ' · ' + formatSize(loaded);
         } catch (cause) { if (!controller.signal.aborted) progress.textContent = t(cause.message === 'STREAM_PREVIEW_TOO_LARGE' ? '文件超出预览大小限制，请通过原来源查看' : '预览失败，请重试') + ' [' + cause.message + ']'; }
     }
+    function programWaits(value, elapsed = 0) {
+        const result = new Map(), currentId = value.playback?.itemId;
+        const items = value.items || [], pending = items.filter(item => item.id !== currentId);
+        const state = ['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.locked ? 'locked' : value.playback?.status !== 'playing' ? value.playback?.status || 'stopped' : '';
+        for (const item of pending) result.set(item.id, { state: item.unavailable ? 'unavailable' : state || 'unscheduled' });
+        if (state) return result;
+        const available = items.filter(item => !item.unavailable), currentIndex = available.findIndex(item => item.id === currentId);
+        if (currentIndex < 0) return result;
+        const length = item => {
+            const seconds = ['video', 'audio'].includes(item.kind) ? Number(item.duration) - Number(item.start || 0) : Number(item.stay);
+            return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+        };
+        let wait = length(available[currentIndex]);
+        if (wait !== null) wait -= Math.max(0, Number(value.playback.position) || 0) + Math.max(0, elapsed);
+        const ordered = [...available.slice(currentIndex + 1), ...(value.loop ? available.slice(0, currentIndex) : [])];
+        for (const item of ordered) {
+            result.set(item.id, wait === null ? { state: 'duration' } : wait <= 0 ? { state: 'syncing' } : { state: 'scheduled', seconds: wait });
+            const seconds = length(item); wait = wait === null || seconds === null ? null : wait + seconds;
+        }
+        if (!value.loop) for (const item of available.slice(0, currentIndex)) result.set(item.id, { state: 'finished' });
+        return result;
+    }
+    function programWaitText(wait) {
+        if (wait.state !== 'scheduled') return t(({ offline: '串流台已下线', restricted: '访问已结束', locked: '需要源设备登录', paused: '全台已暂停', stopped: '等待全台播放', unavailable: '来源不可用', duration: '等待时长确认', syncing: '正在同步放送状态', finished: '本轮已放送', unscheduled: '暂无放送安排' })[wait.state] || '暂无放送安排');
+        const seconds = Math.ceil(wait.seconds);
+        if (wait.seconds < 60) return t('{0}秒后放送').replace('{0}', seconds);
+        const minutes = Math.floor(seconds / 60);
+        return minutes < 60 ? t('{0}分后放送').replace('{0}', minutes) : t('{0}小时{1}分后放送').replace('{0}', Math.floor(minutes / 60)).replace('{1}', minutes % 60);
+    }
+    function clearWatchSchedule() { stopWatchSchedule(); stopWatchSchedule = () => {}; }
+    function watchSchedule(rows, state, active) {
+        let timer;
+        const update = () => {
+            if (!active()) { clearInterval(timer); return; }
+            const waits = programWaits(state.value, Math.max(0, performance.now() - state.receivedAt) / 1000);
+            for (const [id, node] of rows) node.textContent = programWaitText(waits.get(id) || { state: 'unscheduled' });
+        };
+        timer = setInterval(update, 1000); update();
+        return () => clearInterval(timer);
+    }
     async function watcher(version) {
         const requestedAccount = account(), get = url => request(url, 'GET', undefined, { accountId: requestedAccount });
         const controlling = ui.view === 'control', heading = title(controlling ? '操控串流台' : '观看串流台');
@@ -690,17 +733,21 @@
         if (controlling && snapshot.owner) actions.append(button('创作者主页', () => { ui.creatorName = snapshot.owner.name; navigate('creator', snapshot.owner.id); }));
         if (!controlling) { main.insertBefore(actions, info); if (snapshot.manageable) actions.append(button('操控串流台', () => navigate('control', snapshot.id))); }
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
+        const waitRows = new Map(), scheduleState = { value: snapshot, receivedAt: performance.now() };
         const fillInfo = value => {
             if (!['watch', 'control'].includes(ui.view) || ui.stationId !== value.id || version !== renderVersion) return;
-            snapshot = value; subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
+            snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); waitRows.clear(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
             aside.replaceChildren(); const heading = document.createElement('h2'); heading.textContent = controlling ? t('全局状态') + ' · ' + stateLabel(['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.playback.status) : t('节目单'); aside.append(heading);
             if (!controlling && value.visibility === 'offline') { const state = document.createElement('p'); state.textContent = t('串流台已下线'); stage.replaceChildren(state); }
+            const waits = controlling ? null : programWaits(value);
             for (const item of value.items) {
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
                 if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
                 row.classList.toggle('sc-now-playing', item.id === value.playback.itemId);
                 const name = document.createElement('span'); name.className = 'message-content';
-                name.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : ''); row.append(name); aside.append(row);
+                name.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
+                if (!controlling && item.id !== value.playback.itemId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id)); waitRows.set(item.id, wait); name.append(wait); }
+                row.append(name); aside.append(row);
             }
             if (controlling && value.manageable && value.viewers?.length) { const h = document.createElement('h3'); h.textContent = t('实际观看设备'); aside.append(h);
                 for (const viewer of value.viewers) { const p = document.createElement('p'); p.className = 'message-content'; p.textContent = viewer.name + ' · ' + stateLabel(viewer.status) + ' · ' + viewer.position.toFixed(1) + 's'; if (viewer.deviceId !== value.deviceId) p.append(button('踢出', () => kick(value.id, viewer.deviceId))); aside.append(p); }
@@ -719,6 +766,7 @@
             player.onView = fillInfo; player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
+        if (!controlling) stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => isOpen() && ui.view === 'watch' && ui.stationId === snapshot.id && version === renderVersion);
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }
@@ -904,13 +952,13 @@
             const restore = () => { if (isOpen() && !history.state?.streamingConsole) history.pushState({ ...(history.state || {}), streamingConsole: true }, '', location.href); };
             if (dialog) { closeDialog(); restore(); return; }
             const fullscreen = document.querySelector('.sc-media-fullscreen');
-            if (fullscreen) { fullscreen.classList.remove('sc-media-fullscreen'); restore(); return; }
+            if (fullscreen) { for (const player of players.values()) if (player.element === fullscreen) player.exitFullscreen(); restore(); return; }
             if (!isOpen()) return;
             const parent = { import: 'edit', edit: ui.returnList || 'discover', access: 'control', blacklist: ui.returnList || 'discover', watch: ui.returnList || 'discover', control: ui.returnList || 'discover', creator: 'discover', invitation: 'discover' }[ui.view];
             if (parent) { navigate(parent, ['edit', 'watch', 'control'].includes(parent) ? ui.stationId : ''); restore(); }
             else minimize(true);
         });
-        document.addEventListener('keydown', event => { if (event.key !== 'Escape' || document.querySelector('.sc-markdown-dialog')) return; if (dialog) { event.preventDefault(); event.stopImmediatePropagation(); closeDialog(); } else if (document.fullscreenElement?.classList.contains('sc-player')) { event.stopImmediatePropagation(); } else if (document.querySelector('.sc-media-fullscreen')) { document.querySelector('.sc-media-fullscreen').classList.remove('sc-media-fullscreen'); } else if (isOpen()) { event.preventDefault(); minimize(); } }, true);
+        document.addEventListener('keydown', event => { if (event.key !== 'Escape' || document.querySelector('.sc-markdown-dialog')) return; if (dialog) { event.preventDefault(); event.stopImmediatePropagation(); closeDialog(); } else if (document.querySelector('.sc-media-fullscreen')) { event.preventDefault(); event.stopImmediatePropagation(); for (const player of players.values()) player.exitFullscreen(); } else if (isOpen()) { event.preventDefault(); minimize(); } }, true);
         ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } if (url.searchParams.has('stream_invite')) { await open(); await inspectInvitation(url.searchParams.get('stream_invite')); } }).catch(error);
         return ready;
     }

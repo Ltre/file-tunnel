@@ -31,6 +31,20 @@ const messages = {
     MEDIA_UPLOAD_INTERRUPTED: '本地文件尚未完整到达服务器时服务中断，请重新上传。', MEDIA_TIMESTAMP_DISCONTINUITY: '媒体解码时间戳发生倒退，未接受此成果，请检查来源或使用精确重编码裁切。'
 };
 function readable(code) { return messages[code] || '操作未完成，请查看系统状态中的任务详情，核对资源、授权和媒体工具。'; }
+function publicProbe(probe) {
+    if (!probe || typeof probe !== 'object') return undefined;
+    const pick = (value, fields) => Object.fromEntries(fields.filter(key => ['string', 'number', 'boolean'].includes(typeof value?.[key])).map(key => [key, value[key]]));
+    // FFprobe's filename and arbitrary tags can contain internal paths or a
+    // signed loopback URL. Only send fields consumed by the metadata view.
+    const format = pick(probe.format, ['format_name','format_long_name','duration','size','bit_rate','start_time','nb_streams','nb_programs','probe_score']);
+    format.tags = pick(probe.format?.tags, ['title','artist','encoder','creation_time','major_brand','compatible_brands']);
+    const streams = (Array.isArray(probe.streams) ? probe.streams : []).map(stream => ({
+        ...pick(stream, ['index','codec_type','codec_name','codec_long_name','profile','level','codec_tag_string','width','height','coded_width','coded_height','sample_aspect_ratio','display_aspect_ratio','pix_fmt','r_frame_rate','avg_frame_rate','bit_rate','nb_frames','duration','time_base','start_time','color_range','color_space','color_transfer','color_primaries','field_order','bits_per_raw_sample','sample_fmt','sample_rate','channels','channel_layout','bits_per_sample']),
+        disposition: pick(stream.disposition, ['attached_pic']),
+        tags: pick(stream.tags, ['language','title','encoder','creation_time','rotate'])
+    }));
+    return { format, streams };
+}
 function createMediaRoutes({ service, disk, downloads, identity, requireAuth, origin }) {
     const router = express.Router(); router.use(requireAuth);
     router.use((req, res, next) => {
@@ -55,7 +69,7 @@ function createMediaRoutes({ service, disk, downloads, identity, requireAuth, or
         const snapshot = new Map();
         const present = (record, kind) => { try { service.authorizeRead(record, kind, snapshot); disk.file(record.file, snapshot); return true; } catch (_) { return false; } };
         const results = service.list('result').map(r => { const { pixels, ...out } = r; const c = service.db.get('cache', r.cacheId, scope); return { ...out, cacheReady: c?.status === 'ready' && fs.existsSync(service.cache.filename(c)) }; });
-        res.json({ config, imports: service.list('import').map(r => { const { bindToken, probe, ...out } = r; return { ...out, message: r.error ? readable(r.error) : '', available: r.file ? present(r) : false }; }), sessions: service.list('session'), batches: service.list('batch'), results,
+        res.json({ config, imports: service.list('import').map(r => { const { bindToken, probe, ...out } = r; return { ...out, probe: publicProbe(probe), message: r.error ? readable(r.error) : '', available: r.file ? present(r) : false }; }), sessions: service.list('session'), batches: service.list('batch'), results,
             compressions:service.list('compression').map(r=>({...service.compressionDetails(r),cacheReady:service.db.get('cache',r.cacheId,scope)?.status==='ready'&&fs.existsSync(service.cache.filename(service.db.get('cache',r.cacheId,scope)))})),
             collections: service.list('collection').map(r => ({ ...r, available: r.state === 'ready' && present(r, 'collection') })), entities: service.list('entity'), relations: service.list('relation'),
             jobs: service.list('job').map(j => ({ ...j, message: j.error ? readable(j.error) : '' })), caches: service.list('cache'), events: service.list('event').slice(0, 200) });

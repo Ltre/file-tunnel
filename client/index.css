@@ -726,6 +726,17 @@ body[data-theme="atelier"] .main-layout {
     animation: fadeIn 0.3s ease;
 }
 
+/* Preserve text selection and gestures while suppressing the browser tap flash. */
+#chatMessages .message,
+#chatMessages .message a,
+#chatMessages .message button {
+    -webkit-tap-highlight-color: transparent;
+}
+
+.disk-pending-save-feedback { margin: 6px 14px; padding: 8px 10px; border-radius: 6px; background: #edf4ff; color: #23456c; font-size: .85rem; overflow-wrap: anywhere; }
+.disk-pending-save-feedback[aria-busy="true"]::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 7px; border: 2px solid #b7cce6; border-top-color: #376caa; border-radius: 50%; vertical-align: -2px; animation: disk-pending-spin .8s linear infinite; }
+@keyframes disk-pending-spin { to { transform: rotate(360deg); } }
+
 .chat-messages.history-loading .message {
     animation: none;
 }

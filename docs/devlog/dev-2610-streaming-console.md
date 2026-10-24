@@ -456,3 +456,49 @@ node --test --test-concurrency=2 --test-reporter=spec --test-reporter-destinatio
 
 - 最终同组 **219项通过、0失败、0取消、0跳过，exit 0**，约15.9秒；包括最后新增的观看／操控导航会话复用回归及真实发布构建，不与此前检查点累加。11个修改JS文件语法检查、三个HTML内联脚本编译及 `git diff --check` 通过。
 - 末次额度5小时剩余67%、周剩余93%，刷新时间仍为2026-10-24 21:23:03（新加坡时间），未触发暂停。分支及HEAD未变，暂存区为空；用户需求文件改动保留，全部本轮实现未暂存。完整报告及两张截图保留供验收。
+
+## 编号261024-2：串流观看与媒体库修正、后台转存等待排查（2026-10-24）
+
+### 执行基线与安排
+
+- 完整阅读本轮【新】稿1～8项及后续补充后实施。只读确认分支为 `dev/2610-s3-BUGBUGBUG`，HEAD为 `55b29065b4ec9399b19d26a927da32929302e168`；开工时仅 `prompts/dev-prompt-logs/dev-2610.md` 有用户未提交修改，暂存区为空。未编辑该文件，未执行任何Git写操作。
+- 先用 diagnosing-bugs 建立转存及元数据接口的失败证据；媒体库、页面内全屏、任务分类和节目等待时间分工并行，最后统一复核账号上下文、资源缓存、回归和日志。以当前实际代码和工作区为基线，没有按旧日志机械续接或重新实现历史功能。
+- 转存重点对照 `81029b5c736ddfcff9bed0680bfdf8f371423f3d..HEAD`：上一轮在 `server/disk-api.js` 中新增的是既有 download-task 转存分支的服务端读取进度，发生在账号、目录选择之后；没有证据证明它导致选择器不出现。本轮没有修改该文件、认证服务端、隧道传输链路、供源策略或原浏览器上传流程。
+
+### 逐项修改及证据
+
+| 条目 | 实际修改及结果 |
+| --- | --- |
+| 1 | `media-library` 的预览按钮保留元数据读取、定位及缓冲反馈；定位并暂停后平滑滚动播放器，几何位置与滚动事件连续200ms稳定才调用播放，并在播放前重新锁定所选起点。切来源或离开会话沿用AbortController取消等待；持续滚动超过4秒提示停稳后重试，不提前播放。按钮流程测试覆盖2.5秒非零起点、滚动中不推进和离开取消。 |
+| 2 | 串流导航与列表标题改为“发现”“我创建的”“我订阅的”，创建入口改为“+ 创建”。内部视图ID和入口行为不变，补齐现有国际化目录。 |
+| 3 | 新观看页非当前节目增加小字放送等待时间，按全台快照、当前剩余时长、媒体起点、静态停留时长和循环顺序计算；不足1分钟按秒显示，较长按分／小时显示。仅每秒更新现有small文字，无额外网络请求；重绘、最小化或离开时释放计时器。不可用来源不算入可放送队列，非循环已过项、暂停／停止／下线、未知时长显示各自真实状态，不伪造继续倒计时。操控页原节目单布局保持。 |
+| 4 | 记录区域原来没有覆盖浏览器默认点击高亮。本轮只对 `#chatMessages .message` 及其中链接／按钮设置透明的WebKit点击高亮；未禁用文字选择、触摸滚动、长按或键盘焦点，未改全局.btn。用户物理手机出现的浅蓝闪块尚未逐机复现，故不能认定所有可能的选区／应用高亮来源已排除；需原设备复测视觉结果。 |
+| 5 | 观看／操控共享播放器统一使用页面内CSS全屏，移除原生Fullscreen API调用。新增横／竖屏按钮，按可见视口尺寸计算旋转后的宽高；保留本机播放、静音、音量、退出PNG、状态与错误。退出、Escape、返回及关闭清理旋转和resize监听。浏览器390×800 iframe实测进入、旋转、暂停／静音和退出正常；不声称页面CSS能隐藏浏览器地址栏或操作系统界面。 |
+| 6 | 建立真实Express `/state` + service导入测试，修复前ready且available的记录仍缺probe，前端无法得到bit_rate等字段。接口现返回前端已使用的format／streams／tags白名单，包含宽高、编码、比特率、帧率、音轨、采样率等；排除ffprobe filename、任意来源字段和未列举标签，不追加探测或正文读取。修复前失败、修复后通过；不再以仅有前端渲染代码认定功能已实现。 |
+| 7 | 修复可复现的主目录加载串行阻塞和跨页锁静默等待，增加恢复阶段与错误反馈，详见下节。保留服务端转存、详细进度、固定目标作用域、版本核验和结果未知时先查结果的去重约束。 |
+| 8 | SNS／YouTube已处理任务显示“标记为·待处理”，提交现有PATCH handled:false；成功刷新当前分类，失败保持可重试。服务端分类、执行状态及文件均不变，测试覆盖真实服务持久化后仍为原下载状态。 |
+
+### 第7项：已确认根因与尚未确认的现场
+
+- 两项启动阻塞已通过实际函数和完整共享AccountUI流程建立红灯：① `/disk?pendingSave=...` 原先等完整网盘目录渲染后才resume；②选择目标账号原先等主网盘目录重载结束才关闭账号选择并继续目录选择。现待转存先打开壳和恢复流程；确认账号仍等待真实 `/accounts/select` 成功，但主目录内容在后台静默刷新，不再遮住或阻塞选择器。普通网盘打开和普通账号切换仍保持原等待行为。
+- 由于后台刷新可并发，另修复一处迟到分区结果竞态：`/spaces` 结果先存局部，通过render generation校验后才写入全局分区列表，避免A账号旧请求覆盖B账号当前分区。
+- 隔离浏览器另复现：旧页面停在同一记录的账号选择时，再打开该记录，新页目录和分区完成后仍没有选择器。原因是Web Lock覆盖整个交互期，新页无提示排队。resume现用ifAvailable立即检测占用，显示“另一个页面中处理或等待选择”，不抢锁、不改记录或重复提交；原页关闭释放后可点击继续转存重试。同页运行标记和跨页活动标记在finally释放。
+- **用户两次补充必须保留**：目录已经加载完仍可能没有选择器；用户记得此前重试页面早已关闭。上述持锁场景只能解释其中一种缺陷，不能据此认定用户全部原现场就是旧页持锁。隔离环境在旧页面关闭释放后可正常重弹选择器，尚未完整复现用户“旧页均已关闭”的偶发现象；未将该未知现场写成已查明或已彻底消除。
+- 原恢复规则会复用已绑定的账号／目录，已完成的同一文件也不会重新弹选择器或重复保存。现在显示持续可见的恢复阶段：读取记录、原账号核验、目标选择、复用原目录、旧结果核验、来源校验、确认、转存及已完成；已有完成记录再次打开明确提示完成并定位结果，避免仅有短暂toast而让用户误以为没启动。
+- 待转存信息GET及来源任务核验增加20秒AbortController截止，正文JSON读取阶段也检查abort，避免底层json catch吞取消后变成{}再报TypeError。只读失败／超时保留pending，不提交/task-saves，显示可重试信息。**该截止仅覆盖列出的只读信息请求**，不覆盖/accounts/select写请求、IndexedDB等待或文件转存POST；没有给正文转存套20秒自动重试或撤销。
+- 原测试浏览器夹具没有加载生产实际使用的account-ui.js，本轮补齐该模块，并新增完整共享选择器执行和跨页面锁回归；没有通过只测旧备用对话框掩盖生产入口。
+- 完整隔离浏览器路径通过：后台SNS任务→目标账号→甲目录→确认→纯后端保存→结果目录。统计为 `serverTransfersStarted=1, sends=1, browserReads=0, browserUploads=0`；刷新已完成记录仍没有重复保存。只使用合成文本与假Telegram实现，不连接真实Telegram或修改用户网盘。
+
+### 验证与交付边界
+
+```powershell
+node --test --test-concurrency=2 --test-reporter=spec --test-reporter-destination=C:/Users/Dell/AppData/Local/Temp/streaming-261024-2-final.log tests/disk-pending-bootstrap-261024-2.test.cjs tests/features-261019-2-client.test.cjs tests/disk-pending-save-261012-1.test.cjs tests/disk-pending-save-api-261012-1.test.cjs tests/features-261019-2.test.cjs tests/disk-accounts-261012-1.test.cjs tests/download-task-handled-261024-2.test.cjs tests/streaming-schedule-261024-2.test.cjs tests/streaming-player-261022-1.test.cjs tests/streaming-console-261020-1-client.test.cjs tests/streaming-client-adapter.test.cjs tests/streaming-followup-261023-1.test.cjs tests/backend-followup-261024-1.test.cjs tests/media-library-ui-261013-2.test.cjs tests/media-library-api.test.cjs tests/media-library.test.cjs tests/history-startup-regression.test.cjs tests/p2p-connection-regression.test.cjs tests/deploy-drive-261012-2.test.cjs
+```
+
+- 最终同组实际 **190项通过、0失败、0取消、0跳过，exit 0**，约10.9秒。不累计各检查点的重复测试数。包括真实媒体库接口、转存HTTP与作用域、跨页锁、共享账号选择、超时及清理、全屏及播放、节目等待时间、任务分类、原历史/P2P和实际发布构建。9个JS脚本、两个后台HTML内联脚本语法编译及差异空白检查通过。
+- 建立失败测试时，跨页锁用例曾实际出现silently-waiting，媒体库probe用例曾实际返回undefined；修复后通过。Node测试初次因沙箱spawn EPERM无法启动，按授权在沙箱外运行隔离测试，没有把执行失败算成通过。
+- 沿既有机制更新SW资源版本为 `instant-tunnel-v81-content-v8-streaming-261024-2`，不清空业务存储。没有调整API限流、数据策略或认证系统。
+- 截图目录：`C:/Users/Dell/.codex/visualizations/2026/10/19/01a154d6-47ad-7dd2-b80d-3b5120f2cea5/`，保留 `261024-2-transfer-completed.png`、`261024-2-fullscreen-portrait.png`、`261024-2-fullscreen-landscape.png`。390px iframe属于真实浏览器窄屏布局验证，不冒充物理手机／电视验证。
+- 两个本轮临时服务端口9778／14144和浏览器标签已停止／关闭；仅清理创建记录对应的 `pending-save-ui-KLJ2l0`、`pending-save-ui-ii2Dap` 临时目录。删除前核对绝对路径处于系统Temp且不是重解析点，保留测试报告和截图。没有操作用户服务或真实业务数据。
+- 待人工复测：第4项原手机点击闪块、第7项用户旧页面均关闭后的原始偶发等待、不同手机／电视浏览器的手动旋转体验。没有扩展复杂物理多设备、真实Telegram或大型压力测试。
+- 额度检查实际5小时剩余62%（刷新2026-10-24 21:23:03）→新窗口93%→末次67%（刷新2026-10-25 02:23:07，新加坡时间）；末次周剩余84%。未触发11%且距刷新超过10分钟的暂停条件，没有使用重置券。分支和HEAD保持开工基线，全部修改未暂存，暂存区为空；建议提交说明仅以文本交付。

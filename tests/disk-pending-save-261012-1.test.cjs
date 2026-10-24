@@ -54,9 +54,13 @@ function browser(source = 'sns', shared) {
     const bytes = Uint8Array.from([1, 2, 3, 4, 5, 6]);
     const downloads = [], opens = [], lockTails = new Map();
     const context = vm.createContext({ console, setTimeout, clearTimeout, queueMicrotask, URL, Blob, ArrayBuffer, Uint8Array, crypto: crypto.webcrypto,
-        navigator: { locks: { request(name, callback) {
-            const result = (lockTails.get(name) || Promise.resolve()).catch(() => {}).then(callback);
-            lockTails.set(name, result); return result;
+        navigator: { locks: { request(name, options, callback) {
+            if (typeof options === 'function') { callback = options; options = {}; }
+            if (options.ifAvailable && lockTails.has(name)) return Promise.resolve().then(() => callback(null));
+            const result = (lockTails.get(name) || Promise.resolve()).catch(() => {}).then(() => callback({ name }));
+            lockTails.set(name, result);
+            result.finally(() => { if (lockTails.get(name) === result) lockTails.delete(name); }).catch(() => {});
+            return result;
         } } },
         indexedDB: idb, open: (url, ...options) => { opens.push({ url, options }); return {}; }, confirm: () => true,
         fetch: async url => {

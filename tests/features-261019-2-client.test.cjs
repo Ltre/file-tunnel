@@ -17,11 +17,22 @@ function indexedDatabase() {
         }); return request;
     } };
 }
-function browser(shared = indexedDatabase()) {
+function webLocks() {
+    const held = new Map();
+    return { request(name, options, action) {
+        if (typeof options === 'function') { action = options; options = {}; }
+        if (options.ifAvailable && held.has(name)) return Promise.resolve().then(() => action(null));
+        const next = (held.get(name) || Promise.resolve()).catch(() => {}).then(() => action({ name }));
+        held.set(name, next);
+        next.finally(() => { if (held.get(name) === next) held.delete(name); }).catch(() => {});
+        return next;
+    } };
+}
+function browser(shared = indexedDatabase(), sharedLocks = webLocks()) {
     const task = { id: 'task', completedAt: 1000, outputFileSize: 3, outputFileName: '视频.mp4', status: 'completed', hasFile: true };
-    let source = task; const urls = [], locks = new Map();
+    let source = task; const urls = [];
     const context = { URL, crypto: crypto.webcrypto, indexedDB: shared,
-        navigator: { locks: { request(name, action) { const next = (locks.get(name) || Promise.resolve()).catch(() => {}).then(action); locks.set(name, next); return next; } } },
+        navigator: { locks: sharedLocks },
         createSnsDownloadBrowserCache() { throw Error('browser cache must not be used'); },
         createYoutubePremiumBrowserCache() { throw Error('browser cache must not be used'); },
         fetch: async url => { urls.push(url); return { ok: true, status: 200, json: async () => source }; }
@@ -31,6 +42,22 @@ function browser(shared = indexedDatabase()) {
 }
 const hooks = changes => ({ chooseAccount: async () => ({ id: 'account' }), chooseTarget: async () => ({ accountId: 'account', partitionId: 'part', diskSpace: '', path: '' }), confirm: async () => true,
     transferServer: async () => ({ items: [{ id: 'file' }] }), upload: async () => { throw Error('browser upload must not be used'); }, ...changes });
+
+test('reopening the same pending transfer does not silently queue behind another page waiting for account selection', async () => {
+    const locks = webLocks(), first = browser(undefined, locks), second = browser(first.idb, locks);
+    const record = await first.api.prepareServer({ source: 'sns', task: first.task });
+    let release, entered; const choosing = new Promise(resolve => { entered = resolve; });
+    const active = first.api.resume(record.id, hooks({ chooseAccount: () => { entered(); return new Promise(resolve => { release = resolve; }); } }));
+    await choosing;
+    const statuses = [];
+    const reopened = second.api.resume(record.id, hooks({ onStatus: message => statuses.push(message), transferServer: () => { throw Error('must not submit from another tab'); } }));
+    try {
+        const outcome = await Promise.race([reopened.then(() => 'returned'), new Promise(resolve => setTimeout(() => resolve('silently-waiting'), 100))]);
+        assert.equal(outcome, 'returned');
+        assert.match(statuses.join('\n'), /另一个页面/);
+        assert.equal((await second.api.get(record.id)).status, 'pending');
+    } finally { release(null); await active; await reopened.catch(() => {}); }
+});
 
 test('new pending transfers persist metadata, survive reload and submit no browser file/cache operations', async () => {
     for (const source of ['sns', 'youtube']) {
@@ -80,6 +107,7 @@ test('drive UI submits and queries the migrated server identity while keeping it
         DiskPendingSave:{resume:async(id,hooks)=>{assert.equal(id,record.id);await hooks.lookup(record);await hooks.transferServer(record,record.target);}},
         DiskClient:{raw:async(url,options)=>{calls.push({url,options});return url==='/accounts'?{accounts:[{identity:{id:'account'}}]}:{found:false};},json:(method,body)=>({method,body:JSON.stringify(body)}),request:async(url,options)=>calls.push({url,options})}
     }};
+    context.pendingSaveRead=(url,options)=>context.window.DiskClient.raw(url,options); context.pendingSaveFeedback=()=>{};
     const run=vm.runInNewContext(source.slice(source.indexOf('async function resumeTelegramDrivePendingSave('),source.indexOf('function telegramDriveErrorText('))+';resumeTelegramDrivePendingSave',context);
     await run(record.id);
     assert.equal(calls[1].url,'/pending-saves/server-retry');assert.equal(calls[1].options.accountId,'account');assert.equal(calls[1].options.diskSpace,'space');

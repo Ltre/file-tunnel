@@ -1969,8 +1969,8 @@
         }
         const actions = document.createElement('div');
         actions.className = 'task-actions';
-        const handled = document.createElement('button'); handled.type = 'button'; handled.textContent = task.handled ? '✔已处理' : '✔标记为已处理'; handled.disabled = task.handled === true;
-        handled.onclick = async () => { handled.disabled = true; try { await saveTaskDetails(task, { handled: true }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
+        const handled = document.createElement('button'); handled.type = 'button'; handled.textContent = task.handled ? '标记为·待处理' : '✔标记为已处理';
+        handled.onclick = async () => { handled.disabled = true; try { await saveTaskDetails(task, { handled: !task.handled }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
         const running = ['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status);
         const thumbnail = document.createElement('button');
         thumbnail.type = 'button';

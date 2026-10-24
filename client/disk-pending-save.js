@@ -105,13 +105,19 @@
     }
     async function verifySource(record) {
         const root = record.source === 'sns' ? '/api/sns-dl' : '/api/youtube-premium';
-        const response = await global.fetch(root + '/tasks/' + encodeURIComponent(record.task.id), { cache: 'no-store', credentials: 'same-origin' });
-        if ([401, 403].includes(response.status)) throw new Error('后台登录已失效，请登录后台后继续转存；待转存记录及缓存已保留');
-        if (response.status === 404) throw new Error('来源任务已删除，无法确认当前版本；待转存缓存已保留，请检查来源任务');
-        if (!response.ok) throw new Error('无法核验来源任务版本：HTTP ' + response.status + '；待转存记录已保留');
-        const data = await response.json().catch(() => null), task = data?.task || data;
-        if (!task?.id || String(task.id) !== record.task.id || versionOf(task) !== record.version) throw new Error('来源任务版本已变化，不会用新正文替换旧缓存；请取消旧待转存记录，再从后台重新发起');
-        return task;
+        const controller = global.AbortController ? new global.AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+        try {
+            const response = await global.fetch(root + '/tasks/' + encodeURIComponent(record.task.id), { cache: 'no-store', credentials: 'same-origin', ...(controller ? { signal: controller.signal } : {}) });
+            if ([401, 403].includes(response.status)) throw new Error('后台登录已失效，请登录后台后继续转存；待转存记录及缓存已保留');
+            if (response.status === 404) throw new Error('来源任务已删除，无法确认当前版本；待转存缓存已保留，请检查来源任务');
+            if (!response.ok) throw new Error('无法核验来源任务版本：HTTP ' + response.status + '；待转存记录已保留');
+            const data = await response.json().catch(() => null), task = data?.task || data;
+            if (controller?.signal.aborted) throw new Error('SOURCE_CHECK_TIMEOUT');
+            if (!task?.id || String(task.id) !== record.task.id || versionOf(task) !== record.version) throw new Error('来源任务版本已变化，不会用新正文替换旧缓存；请取消旧待转存记录，再从后台重新发起');
+            return task;
+        } catch (error) { if (controller?.signal.aborted) throw new Error('来源任务核验超时，待转存记录已保留，请重试'); throw error; }
+        finally { if (timer !== null) clearTimeout(timer); }
     }
     async function prepare({ source, task, cache, ensureCache, onStatus = () => {} }) {
         if (!sourceTypes.has(source) || !task?.id || !Number(task.completedAt) || !Number.isSafeInteger(Number(task.outputFileSize)) || Number(task.outputFileSize) <= 0) {
@@ -237,13 +243,16 @@
     }
     async function resume(id, hooks) {
         if (active.has(id)) return active.get(id);
+        const stage = message => { try { Promise.resolve(hooks.onStage?.(message)).catch(() => {}); } catch (_) {} };
+        stage('正在读取待转存记录…');
         const execute = async () => {
             let record = await get(id);
             if (!record) throw new Error('待转存记录不在此浏览器中，请在原浏览器打开网盘');
-            if (record.status === 'completed') { if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id); await hooks.onCompleted?.(record); return record; }
+            if (record.status === 'completed') { stage('此文件此前已转存完成，正在定位结果…'); if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id); await hooks.onCompleted?.(record); return record; }
             if (record.status === 'cancelled') throw new Error('这条待转存记录已取消，请回后台重新发起');
             if (record.status === 'preparing' && !hooks.transferServer) throw new Error('上次缓存引用准备未完成，请在后台重新发起转存');
             if (['uploading', 'verification-required'].includes(record.status)) {
+                stage('正在核验上次转存结果，不会重复提交…');
                 if (!hooks.lookup) throw new Error('上次上传结果尚未确认，请核验网盘任务后继续，未重复上传');
                 const found = await hooks.lookup(record);
                 if (found?.status === 'completed') { record = await complete(id, found.result); await hooks.onCompleted?.(record); return record; }
@@ -254,6 +263,7 @@
             }
             // Migrate old metadata only after any previous upload outcome is known.
             if (record.transferMode !== 'server' && hooks.transferServer) {
+                stage('正在核验旧待转存记录的服务端成品…');
                 const current = await verifySource(record);
                 if (!current.hasFile || current.status !== 'completed') throw new Error('服务端成品已清理或不可用，请重新抓取后转存');
                 const upgraded = { ...record, transferMode: 'server', serverTransferId: uuid(), legacyCachePin: true, status: 'pending', updatedAt: Date.now() };
@@ -262,15 +272,20 @@
                 record = upgraded;
             }
             const blob = record.transferMode === 'server' ? null : await getBlob(record);
+            stage(record.target ? '正在核验原转存账号…' : '请选择转存目标账号');
             const account = await hooks.chooseAccount(record);
             if (!account) return record;
+            stage(record.target ? '正在复用原目标目录…' : '正在读取转存目标分区和目录…');
             const target = await hooks.chooseTarget(record, account);
             if (!target) return record;
             if (!target.accountId || !target.partitionId || typeof target.path !== 'string') throw new Error('请选择有效的账号、分区和目标目录');
+            stage('正在核验目标目录和来源版本…');
             await hooks.verifyTarget?.(record, target);
             await verifySource(record);
+            stage('请确认转存目标');
             if (!await hooks.confirm(record, target)) return record;
             record = await update(id, { status: 'uploading', target, attemptedAt: Date.now(), error: '' });
+            stage('正在转存，详细进度请查看网盘任务');
             try {
                 // UI refresh is auxiliary; it must not prevent the transfer itself.
                 try { await hooks.onStarted?.(record); } catch (_) {}
@@ -285,7 +300,16 @@
             await hooks.onCompleted?.(record);
             return record;
         };
-        const promise = lockRecord(id, execute).finally(() => active.delete(id));
+        // A page can hold the lock while its account/directory dialog is open.
+        // Reopening the same ID must not wait invisibly behind that page.
+        const attempt = global.navigator?.locks
+            ? global.navigator.locks.request('disk-pending-resume:' + id, { ifAvailable: true }, async lock => {
+                if (lock) return execute();
+                await hooks.onStatus?.('此待转存正在另一个页面中处理或等待选择，请回到该页面继续；关闭该页面后可在此重试。');
+                return get(id);
+            })
+            : lockRecord(id, execute);
+        const promise = attempt.finally(() => active.delete(id));
         active.set(id, promise);
         return promise;
     }

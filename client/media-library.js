@@ -182,6 +182,31 @@
         dialog('选择已完成且仍有服务端成品的任务', body); await load();
     }
     function currentSession() { return data.sessions.find(s => s.id === sessionId && s.state === 'active'); }
+    function scrollToPlayer(player, signal) {
+        if (signal?.aborted) return Promise.reject(new DOMException('预览已取消', 'AbortError'));
+        if (!player.scrollIntoView || !player.getBoundingClientRect) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+            let timer, previous = '', stableSince = Date.now();
+            const started = stableSince;
+            const finish = error => { clearTimeout(timer); signal?.removeEventListener('abort', cancelled); document.removeEventListener?.('scroll', moved, true); error ? reject(error) : resolve(); };
+            const cancelled = () => finish(new DOMException('预览已取消', 'AbortError'));
+            const moved = () => { stableSince = Date.now(); };
+            const check = () => {
+                if (signal?.aborted) return cancelled();
+                if (!player.isConnected) return finish(new DOMException('预览已取消', 'AbortError'));
+                const rect = player.getBoundingClientRect(), position = [rect.top, rect.left, rect.width, rect.height].map(value => Math.round(value * 10) / 10).join(',');
+                const now = Date.now();
+                if (position !== previous) { previous = position; stableSince = now; }
+                if (now - stableSince >= 200) return finish();
+                if (now - started > 4000) return finish(Error('页面仍在滚动，请停稳后重新预览'));
+                timer = setTimeout(check, 40);
+            };
+            signal?.addEventListener('abort', cancelled, { once: true });
+            document.addEventListener?.('scroll', moved, true);
+            try { player.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center', inline: 'nearest' }); check(); }
+            catch (error) { finish(error); }
+        });
+    }
     function sourceMetadata(resource) {
         const details = el('details', undefined, 'ml-source-metadata'), probe = resource.probe || {};
         const video = (probe.streams || []).find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
@@ -304,7 +329,8 @@
             player.pause();player.currentTime=target;
             reportBuffer=()=>{let loaded=0;for(let i=0;i<(player.buffered?.length||0);i++)loaded+=Math.max(0,Math.min(player.buffered.end(i),finish-playerOffset+playerOrigin)-Math.max(player.buffered.start(i),target));previewFeedback.textContent='正在定位、缓冲并开始播放…'+(loaded?' · 选定范围已缓冲 '+Math.min(100,Math.floor(loaded/(finish-begin)*100))+'%':'');};
             player.addEventListener('progress',reportBuffer);reportBuffer();if(previewStop)player.removeEventListener('timeupdate',previewStop);
-            const playback=player.play();abort.signal.addEventListener('abort',()=>player.pause(),{once:true});await playback;
+            await scrollToPlayer(player,abort.signal);if(abort.signal.aborted||version!==sourceVersion)return;
+            player.currentTime=target;const playback=player.play();abort.signal.addEventListener('abort',()=>player.pause(),{once:true});await playback;
             if(abort.signal.aborted||version!==sourceVersion)return;previewFeedback.textContent='';previewFeedback.hidden=true;
             const stop = previewStop = () => { if (version !== sourceVersion || playerTime() >= finish) { if (version === sourceVersion) player.pause(); player.removeEventListener('timeupdate', stop); } }; player.addEventListener('timeupdate', stop); }catch(error){previewFeedback.textContent=abort.signal.aborted?'预览已取消':'预览未开始：'+error.message;if(!abort.signal.aborted)throw error;}finally{if(reportBuffer)player.removeEventListener('progress',reportBuffer);previewing=false;} }), previewFeedback,
             button('生成候选 Clip', async () => { const job = await api('/sessions/' + session.id + '/clip', json('POST', clipInput()));

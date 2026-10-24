@@ -79,7 +79,7 @@ function rememberTelegramDriveActiveAccount(accountId) {
     accountUrl.searchParams.delete('collaboration');
     history.replaceState({ ...(history.state || {}), telegramDrivePath: '', diskMountContext: null, diskAccountId: accountId }, '', accountUrl.href);
 }
-async function switchTelegramDriveAccount(accountId) {
+async function switchTelegramDriveAccount(accountId, { deferContents = false } = {}) {
     rememberTelegramDriveAccountView();
     await window.DiskClient.raw('/accounts/select', { accountId: '', ...window.DiskClient.json('POST', { accountId }) });
     cancelTelegramDrivePendingMount(); telegramDriveNavigationVersion++; telegramDriveRenderGeneration++;
@@ -89,8 +89,9 @@ async function switchTelegramDriveAccount(accountId) {
     window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setAccount(accountId);
     // Old history entries must not replay a different account's mount/path.
     rememberTelegramDriveActiveAccount(accountId);
-    await renderTelegramDrive();
-    await resumeTelegramDriveEntry();
+    const refresh = async () => { await renderTelegramDrive({ silentContents: deferContents }); await resumeTelegramDriveEntry(); };
+    if (deferContents) refresh().catch(error => historyLog('telegram-drive-account-render-failed', { error: error.message }));
+    else await refresh();
     window.AccountUI?.refresh();
     if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed'));
 }
@@ -131,8 +132,8 @@ function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}
 }
 async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
     if (window.AccountUI) return window.AccountUI.open({ choose, requiredId, currentAccount: () => window.DiskClient.getAccount(),
-        load: async () => { const status = await window.DiskClient.raw('/me', { accountId: '' }); return { accounts: status.accounts || [], status }; },
-        select: switchTelegramDriveAccount, offline: () => switchTelegramDriveAccount(''), logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
+        load: async () => { const status = await (choose ? pendingSaveRead('/me', { accountId: '' }) : window.DiskClient.raw('/me', { accountId: '' })); return { accounts: status.accounts || [], status }; },
+        select: id => switchTelegramDriveAccount(id, { deferContents: choose }), offline: () => switchTelegramDriveAccount(''), logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
         renderSignIn: (target, status) => appendTelegramDriveAddAccount(target, status, { embedded: true }),
         reauthenticate: (user, target, status) => {
             if (status.oidcMode === 'mock') startTelegramDriveLogin(target, user.id);
@@ -208,9 +209,23 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
     load();
     const result = await resultPromise; controller.abort();
     if (!result || !choose) return null;
-    await switchTelegramDriveAccount(result.id); return result;
+    await switchTelegramDriveAccount(result.id, { deferContents: true }); return result;
 }
 function pendingSaveTransferId(record) { return record.serverTransferId || record.id; }
+function pendingSaveFeedback(message, busy = true, detail = '') {
+    let feedback = document.getElementById('diskPendingSaveFeedback');
+    const auth = document.getElementById('telegramDriveAuth'); if (!auth) return;
+    if (!feedback) { feedback = document.createElement('p'); feedback.id = 'diskPendingSaveFeedback'; feedback.className = 'disk-pending-save-feedback'; feedback.setAttribute('role', 'status'); auth.before(feedback); }
+    feedback.textContent = (window.TunnelI18n?.t(message) || message).replace('{0}', detail);
+    feedback.setAttribute('aria-busy', String(busy));
+}
+async function pendingSaveRead(url, context = {}) {
+    if (!window.AbortController) return window.DiskClient.raw(url, context);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+    try { const result = await window.DiskClient.raw(url, { ...context, signal: controller.signal }); if (controller.signal.aborted) throw new Error('PENDING_READ_TIMEOUT'); return result; }
+    catch (error) { if (controller.signal.aborted) throw new Error('读取转存信息超时，未重复发起转存，请点击继续转存重试'); throw error; }
+    finally { clearTimeout(timer); }
+}
 async function showTelegramDrivePendingSaveBanner() {
     if (!window.DiskPendingSave) return;
     const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status)
@@ -246,7 +261,7 @@ async function showTelegramDrivePendingSaveBanner() {
 async function choosePendingSaveTarget(record, account) {
     if (record.target) return record.target;
     const baseContext = { accountId: account.id, requestBase: '/api/telegram/drive', diskSpace: '' };
-    const spaces = (await window.DiskClient.raw('/spaces', baseContext)).spaces.filter(space => !space.state || space.state === 'ACTIVE');
+    const spaces = (await pendingSaveRead('/spaces', baseContext)).spaces.filter(space => !space.state || space.state === 'ACTIVE');
     if (!spaces.length) throw new Error('此账号没有可用分区，请先恢复分区');
     const selector = document.createElement('select'); selector.setAttribute('aria-label', '转存目标分区');
     for (const space of spaces) selector.add(new Option(space.name, space.id));
@@ -256,9 +271,9 @@ async function choosePendingSaveTarget(record, account) {
     let reloadTree; selector.onchange = () => reloadTree?.().catch(error => alert(telegramDriveErrorText(error)));
     return window.DiskDirectoryPicker.choose({ title: `转存 ${record.file.name}`, confirmText: '选择目标目录', controls: [label],
         initialPath: rememberedTelegramDrivePath(account.id, transport().diskSpace),
-        loadDirectories: () => window.DiskClient.raw('/directories', transport()),
+        loadDirectories: () => pendingSaveRead('/directories', transport()),
         createDirectory: path => window.DiskClient.request('/directories', { ...transport(), ...window.DiskClient.json('POST', { path }) }),
-        onReady: reload => { reloadTree = reload; }, installContextGesture,
+        onReady: reload => { reloadTree = reload; pendingSaveFeedback('请选择转存目标目录', false); }, installContextGesture,
         openDialog: options => openTelegramDriveDialog({ ...options, validate: async () => {
             const path = await options.validate(), space = spaces.find(space => space.id === selector.value);
             return { accountId: account.id, partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
@@ -269,18 +284,19 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
     telegramDrivePendingSaveRunning = true;
     const transport = target => ({ accountId: target.accountId, requestBase: '/api/telegram/drive', diskSpace: target.diskSpace });
     const ensureAccount = async accountId => {
-        const accounts = (await window.DiskClient.raw('/accounts', { accountId: '' })).accounts || [];
+        const accounts = (await pendingSaveRead('/accounts', { accountId: '' })).accounts || [];
         const entry = accounts.find(item => item.identity?.id === accountId && !item.reauthRequired);
         if (!entry) return manageTelegramDriveAccounts({ choose: true, requiredId: accountId });
         return entry.identity;
     };
     try {
-        await window.DiskPendingSave.resume(id, {
+        let statusReported = false;
+        const result = await window.DiskPendingSave.resume(id, {
             chooseAccount: record => record.target ? ensureAccount(record.target.accountId) : manageTelegramDriveAccounts({ choose: true }),
             chooseTarget: choosePendingSaveTarget,
             lookup: async record => {
                 if (!record.target || !await ensureAccount(record.target.accountId)) return { status: 'waiting-login' };
-                const result = await window.DiskClient.raw('/pending-saves/' + encodeURIComponent(pendingSaveTransferId(record)), transport(record.target));
+                const result = await pendingSaveRead('/pending-saves/' + encodeURIComponent(pendingSaveTransferId(record)), transport(record.target));
                 if (!result.found) return { status: 'missing' };
                 if (result.state === 'completed') return { status: 'completed', result: result.result };
                 if (result.safeRetry) return { status: 'failed', retryable: true };
@@ -288,18 +304,20 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
             },
             verifyTarget: async (_record, target) => {
                 const ctx = transport(target);
-                const spaces = (await window.DiskClient.raw('/spaces', ctx)).spaces;
+                const spaces = (await pendingSaveRead('/spaces', ctx)).spaces;
                 if (!spaces.some(space => space.id === target.partitionId && telegramDriveSpaceKey(space) === target.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw new Error('原目标分区已删除或不可用，请取消待转存后重新发起');
-                await window.DiskClient.raw('/list?path=' + encodeURIComponent(target.path), ctx);
+                await pendingSaveRead('/list?path=' + encodeURIComponent(target.path), ctx);
             },
             confirm: (record, target) => confirmTelegramDriveAction('确认转存到网盘', `将“${record.file.name}”（${formatFileSize(record.file.size)}）转存到“${target.partitionName || '目标分区'}”的 ${telegramDriveDisplayPath(target.path)}？`, '转存'),
             upload: (record, blob, target, metadata) => window.DiskClient.upload([{ name: record.file.name, size: blob.size, type: record.file.type }], target.path,
                 () => blob, { ...metadata, source: record.source, sourceTaskVersion: record.version, transportContext: transport(target) }),
             transferServer: (record, target) => window.DiskClient.request('/task-saves', { ...transport(target),
                 ...window.DiskClient.json('POST', { pendingSaveId: pendingSaveTransferId(record), source: record.source, taskId: record.task.id, version: record.version, partitionId: target.partitionId, folderPath: target.path }) }),
-            onStatus: showAppToast,
+            onStage: message => pendingSaveFeedback(message, !/^(请选择|请确认)/.test(message)),
+            onStatus: message => { statusReported = true; pendingSaveFeedback(message, false); showAppToast(message); },
             onStarted: showTelegramDrivePendingSaveBanner,
             onCompleted: async record => {
+                pendingSaveFeedback('转存已完成；再次打开不会重复上传', false);
                 showAppToast('转存已完成；再次打开不会重复上传');
                 const target = record.target;
                 if (target && window.DiskClient.getAccount() === target.accountId) {
@@ -310,6 +328,10 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
                 await showTelegramDrivePendingSaveBanner();
             }
         });
+        if (result?.status === 'completed') pendingSaveFeedback('转存已完成；再次打开不会重复上传', false);
+        else if (!statusReported) pendingSaveFeedback('尚未开始转存，可点击继续转存重新选择', false);
+    } catch (error) {
+        pendingSaveFeedback('转存流程未完成：{0}', false, telegramDriveErrorText(error)); throw error;
     } finally { telegramDrivePendingSaveRunning = false; await showTelegramDrivePendingSaveBanner(); }
 }
 function telegramDriveErrorText(error) {
@@ -2333,7 +2355,7 @@ async function manageTelegramDriveSpaces() {
     body.replaceChildren();
 }
 
-async function renderTelegramDrive({ silentIdentity = false, contentsOnly = false } = {}) {
+async function renderTelegramDrive({ silentIdentity = false, contentsOnly = false, silentContents = false } = {}) {
     if (telegramDrivePendingMount) return;
     // A directory listing already authenticates the request on the server. Do
     // not serialize every navigation behind another /me request and login UI.
@@ -2392,8 +2414,9 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
         telegramDriveSpaceOwner = status.identity.id;
         window.DiskClient.setAccount(status.identity.id);
         telegramDriveMountContext=null;window.DiskClient.setSpace('');
-        telegramDriveSpaces = (await window.DiskClient.raw('/spaces')).spaces;
+        const spaces = (await window.DiskClient.raw('/spaces')).spaces;
         if (generation !== telegramDriveRenderGeneration) return;
+        telegramDriveSpaces = spaces;
         let remembered = '';
         try { remembered = localStorage.getItem('telegram-drive-space-' + status.identity.id) || ''; } catch (_) {}
         const restored = telegramDriveSpaces.find(space => (space.id === remembered || telegramDriveSpaceKey(space) === remembered) && (!space.state || space.state === 'ACTIVE'));
@@ -2440,7 +2463,7 @@ async function renderTelegramDrive({ silentIdentity = false, contentsOnly = fals
     workspace.hidden = false;
     window.DiskClient.start();
     const listUrl = `/api/telegram/drive/list?path=${encodeURIComponent(requestedPath)}`;
-    const data = backgroundTasksHidden ? await window.DiskClient.raw(listUrl) : await telegramDriveRequest(listUrl);
+    const data = backgroundTasksHidden || silentContents ? await window.DiskClient.raw(listUrl) : await telegramDriveRequest(listUrl);
     if (generation !== telegramDriveRenderGeneration) return;
     telegramDriveCurrentData = data;
     telegramDriveContentStale = false;
@@ -2516,7 +2539,7 @@ async function revealTelegramDriveUploadedDirectory(path, navigationVersion, ite
     return true;
 }
 
-async function openTelegramDrive() {
+async function openTelegramDrive({ deferContents = false } = {}) {
     const overlay = document.getElementById('telegramDriveOverlay');
     const reuse = overlay.hidden && Boolean(diskWindowState.retained && telegramDriveCurrentData && !telegramDriveContentStale);
     if (overlay.hidden) { const tasks = document.getElementById('diskTasks'); if (tasks) tasks.open = false; }
@@ -2527,7 +2550,7 @@ async function openTelegramDrive() {
     overlay.hidden = false; overlay.classList.add('active');
     document.body.classList.add('telegram-drive-open');
     if (reuse) { renderTelegramDriveBreadcrumbs(telegramDriveCurrentData); renderTelegramDriveItems(); updateDiskCacheLabels(); }
-    else await renderTelegramDrive();
+    else if (!deferContents) await renderTelegramDrive();
     highlightTelegramDriveUploadedFiles();
 }
 function closeTelegramDrive({ forget = false } = {}) {
@@ -2598,7 +2621,7 @@ async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') 
     if (result === 'success') {
         const status = await window.DiskClient.raw('/me', { accountId });
         if (!status.identity) throw new Error('登录凭据尚未确认，请重新登录；待转存记录仍保留');
-        if (status.identity) await switchTelegramDriveAccount(status.identity.id);
+        if (status.identity) await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning });
         else await renderTelegramDrive();
         window.AccountUI?.completeSignIn?.(loginTarget, status.identity);
     } else { window.AccountUI?.refresh(); await renderTelegramDrive(); }
@@ -2672,7 +2695,7 @@ function appendPasskeyControls(target, user, { addAccount = !user, embedded = fa
                 const verified = await window.DiskClient.raw('/passkeys/verify', { ...loginContext, ...window.DiskClient.json('POST', { flow_id: flow.flow_id, response, addAccount }) });
                 if (!embedded) closeTelegramDriveDialog(null);
                 const status = verified.identity ? verified : await window.DiskClient.raw('/me', { accountId: '' });
-                if (status.identity) await switchTelegramDriveAccount(status.identity.id); else await renderTelegramDrive();
+                if (status.identity) await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning }); else await renderTelegramDrive();
                 if (status.identity && embedded) window.AccountUI?.completeSignIn?.(target, status.identity);
                 if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error)));
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { button.disabled = false; button.textContent = idleLabel; }
@@ -3968,8 +3991,12 @@ function init(options = {}) {
     initDiskEnhancements();
     const entryQuery = telegramDriveEntryQuery;
     if (telegramDriveEntryUrl.pathname === '/disk' || entryQuery.get('disk') === '1') {
-        openTelegramDrive().then(async () => {
-            if (telegramDrivePendingSaveId) { await resumeTelegramDrivePendingSave(); return; }
+        openTelegramDrive({ deferContents: Boolean(telegramDrivePendingSaveId) }).then(async () => {
+            if (telegramDrivePendingSaveId) {
+                try { await resumeTelegramDrivePendingSave(); }
+                finally { renderTelegramDrive({ silentContents: true }).catch(error => historyLog('telegram-drive-entry-render-failed', { error: error.message })); }
+                return;
+            }
             // Account selection and history updates may rewrite the URL while
             // opening. Use the explicit destination supplied at initialization.
             const query = entryQuery;
