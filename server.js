@@ -1626,7 +1626,7 @@ app.post('/api/sns-dl/formats', adminAuth.requireAuth, snsDownloadRateLimit, asy
 
 app.get('/api/sns-dl/tasks', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json(snsDownloadService.list(req.query.page, req.query.pageSize));
+    res.json(snsDownloadService.list(req.query.page, req.query.pageSize, req.query.category));
 });
 
 app.get('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
@@ -1638,7 +1638,9 @@ app.get('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
 
 app.patch('/api/sns-dl/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const task = snsDownloadService.updateDetails(req.params.taskId, req.body);
+    let task;
+    try { task = snsDownloadService.updateDetails(req.params.taskId, req.body); }
+    catch (error) { return res.status(422).json({ error: error.message }); }
     if (!task) return res.status(404).json({ error: 'sns-download-task-not-found' });
     if(task.autoCacheEnabled===false)taskAutoCache.stop('sns:'+task.id);
     res.json(task);
@@ -1826,7 +1828,7 @@ app.post('/api/youtube-premium/formats', adminAuth.requireAuth, youtubePremiumRa
 
 app.get('/api/youtube-premium/tasks', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json(youtubePremiumService.list(req.query.page, req.query.pageSize));
+    res.json(youtubePremiumService.list(req.query.page, req.query.pageSize, req.query.category));
 });
 
 app.get('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
@@ -1838,7 +1840,9 @@ app.get('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) 
 
 app.patch('/api/youtube-premium/tasks/:taskId', adminAuth.requireAuth, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const task = youtubePremiumService.updateDetails(req.params.taskId, req.body);
+    let task;
+    try { task = youtubePremiumService.updateDetails(req.params.taskId, req.body); }
+    catch (error) { return res.status(422).json({ error: error.message }); }
     if (!task) return res.status(404).json({ error: 'youtube-premium-task-not-found' });
     if(task.autoCacheEnabled===false)taskAutoCache.stop('youtube:'+task.id);
     res.json(task);
@@ -3643,6 +3647,15 @@ function rotateTunnelShortCode(sessionId,value){
     if(session)session.shortCode=code;io.to(sessionId).emit('session-short-code',{shortCode:code});return code;
 }
 app.post('/api/sessions/:sessionId/short-code',adminAuth.requireAuth,(req,res)=>{try{res.json({shortCode:rotateTunnelShortCode(req.params.sessionId,req.body?.shortCode)});}catch(error){res.status(422).json({error:error.message});}});
+app.get('/api/sessions/:sessionId/enter', adminAuth.requireAuth, (req, res) => {
+    res.set('Cache-Control', 'no-store'); res.set('Referrer-Policy', 'no-referrer');
+    const id = req.params.sessionId;
+    if (!isValidSessionId(id)) return res.status(400).send('隧道 ID 无效');
+    const code = infraStore?.findShortCodeForSession(id) || sessions.get(id)?.shortCode;
+    if (!code) return res.status(404).send('隧道不存在或已删除');
+    // The destination obtains its own device-bound grant through normal admission.
+    res.redirect('/?tunnel_join=' + encodeURIComponent(tunnelAccess.issueJoin(id, code)) + '#' + id);
+});
 app.post('/api/tunnel-join-links',(req,res)=>{res.set('Cache-Control','no-store');const {sessionId,deviceId,grant}=req.body||{},code=infraStore?.findShortCodeForSession(sessionId)||sessions.get(sessionId)?.shortCode;
     if(!isValidSessionId(sessionId)||!isValidDeviceId(deviceId)||!code||!tunnelAccess.verify(grant,sessionId,deviceId))return res.status(403).json({error:'TUNNEL_ACCESS_REQUIRED'});
     res.json({joinToken:tunnelAccess.issueJoin(sessionId,code)});

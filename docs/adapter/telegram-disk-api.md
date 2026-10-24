@@ -2,7 +2,9 @@
 
 面向 MusicoletWeb 等可信服务端应用。基地址：`/api/telegram/disk/v1`；使用应用 Bearer Token。
 
-实现核对日期：2026-10-03。除另行写出完整地址外，本文接口路径均相对于上述基地址。
+实现核对日期：2026-10-24。除另行写出完整地址外，本文接口路径均相对于上述基地址。
+
+本文面向第三方 Bearer 接口；前台账号会话、分区管理、回收站及后台抓取任务转存使用 `/api/telegram/drive`，不能将其路径或 Cookie 登录方式直接套用到第三方接口。共同注册的路由也可能限制调用入口，例如 `/task-saves`、`/pending-saves/{id}` 仅允许前台接口。
 
 本文接口是本系统的 HTTP JSON / 文件流协议，不属于 S3 协议。要求 S3 协议的客户端应使用独立的 [S3 对接文档](../telegram-drive-s3-compatible.md)。两套接口复用网盘存储核心、Telegram 上传流水线和按需分片读取能力；S3 网关直接调用这些内部能力，不通过 HTTP 调用本文接口，不能互换鉴权凭据或响应格式。
 
@@ -161,6 +163,8 @@ GET `/uploads/{uploadId}/progress` 提供可选的 Server-Sent Events（SSE）�
 
 ## 4. 目录操作
 
+后台抓取任务的服务端转存仍属于网盘 `upload` 任务。此类任务可带 `transferMode: "server"`、`sourceFileName`、`sourceBytesRead/sourceTotalBytes`、`sourceBytesPerSecond`、`sourcePartIndex/sourcePartCount`、`sourceReadStatus`，表示服务端读取成品的进度，不是浏览器上传量。Telegram 发送和最终索引处理继续使用原有任务字段；读取达到 100% 不等于保存成功。`POST /task-saves` 和 `GET /pending-saves/{id}` 只供前台会话接口使用，转存源还必须通过后台管理员校验，第三方 Bearer 接口不能据此读取后台任务。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | /list?path=音乐/日本 | 当前目录、面包屑、文件/目录和统计 |
@@ -171,14 +175,18 @@ GET `/uploads/{uploadId}/progress` 提供可选的 Server-Sent Events（SSE）�
 | POST | /directories | 逐层创建目录 |
 | PATCH | /directories | 重命名/移动目录树 |
 | DELETE | /directories?path=音乐&recursive=true | 递归删除，禁止删除根目录 |
+| POST | /folder-uploads | 预检并创建目录上传清单，返回 HTTP 201 及清单 |
+| GET | /folder-uploads/{id} | 查询本用户、分区的目录上传清单及批次状态 |
 
 创建请求：{"path":"音乐/日本/2026/专辑"}。
+
+目录上传清单请求为 `{ "directories": ["导入目录"], "files": [{ "folderPath": "导入目录", "name": "片段.mp4", "size": 1234 }] }`。路径必须已经归一，文件与目录合计最多 10000 项，目录数组不能为空；总字节受 `/limits` 中的 `folderUploadMaxBytes` 约束。清单会建立虚拟目录，不代表正文已上传；随后创建 `/uploads` 时携带 `metadata.folderUploadId`，按清单分批提交。仍在执行或已经完成的批次不能重复占用同一文件。
 
 重命名请求：{"path":"音乐/日本","name":"J-Pop"}。
 
 移动请求：{"path":"音乐/J-Pop","destinationPath":"归档","name":"日本音乐"}，name 可省略。
 
-/ 和反斜杠均为分隔符，重复分隔符与单点归一；双点、非法字符、超深路径、移入自己或子目录、同名文件冲突均拒绝。目录段最长 100 字符，深度按后台设置且最多 20 层。不会静默覆盖。上传中的目标有预留保护；目标同空间繁忙时返回冲突，请稍后重试。
+/ 和反斜杠均为分隔符，重复分隔符与单点归一；双点、非法字符、超深路径、移入自己或子目录、同名文件冲突均拒绝。目录段最长 100 字符，深度按用户网盘设置，范围为 1–30 层，默认 30 层。`GET /limits` 返回 `{ "settings": { "folderUploadMaxBytes": 500000000, "maxDirectoryDepth": 30 } }`，以上数值为默认值，应读取实际设置。不会静默覆盖。上传中的目标有预留保护；目标同空间繁忙时返回冲突，请稍后重试。
 
 ## 5. 文件操作
 
@@ -192,8 +200,12 @@ GET `/uploads/{uploadId}/progress` 提供可选的 Server-Sent Events（SSE）�
 | GET | /files/{id}/thumbnail | 已保存的封面图流；无封面时 FILE_THUMBNAIL_NOT_FOUND |
 | GET | /files/{id}/check | 异步检查，任务 result.valid 表示可用性 |
 | POST | /files/{id}/repair | 完整缓存副本修复，见下文 |
+| PUT | /files/{id}/content | 按预期版本替换正文，见下文 |
+| POST | /files/content?folderPath=目录&name=新文件.txt | 新建文件并写入正文，见下文 |
 
-文件名最多 180 字符。文件公共字段：id、kind、name、type、size、folderPath、createdAt、updatedAt、lastCheckedAt、repairedAt、metadata、reviewStatus、reviewUpdatedAt、partCount、mediaIndex、thumbnailAvailable。列表 / 搜索还附带 collaborationId，空值表示该项自身未开启协同。
+文件名最多 180 字符。文件公共字段：id、kind、name、type、size、folderPath、createdAt、updatedAt、lastCheckedAt、repairedAt、metadata、reviewStatus、reviewUpdatedAt、partCount、mediaIndex、thumbnailAvailable、logicalContentVersion。列表 / 搜索还附带 collaborationId，空值表示该项自身未开启协同。
+
+正文编辑使用二进制请求体，`Content-Type: application/octet-stream`，以 `X-Disk-File-Size` 声明实际正文大小，可用 `X-Disk-File-Type` 指定保存后的 MIME。单次编辑最多 20,000,000 字节。替换已有文件必须携带当前 `logicalContentVersion` 对应的 `X-Disk-Expected-Version`，版本不符返回 `CONTENT_WRITE_CONFLICT`，不覆盖其它修改。新建路由内部设置初始预期版本；名称冲突不会覆盖旧文件。返回 HTTP 202 和 `operation_id`，最终成功以任务终态为准。两者与 `/repair` 的“相同大小缓存副本修复”语义不同；协同或静态开放保护及原账号、分区权限仍生效。
 
 `download` 与 `stream` 对非空文件均支持单段 `Range: bytes=START-END`、`bytes=START-` 或 `bytes=-SUFFIX`，返回 206 / Content-Range；无 Range 返回 200，非法或多段 Range 返回 416。只读取涉及的 Telegram 分片，不要求先拉取整个文件。`download` 使用 attachment，`stream` 使用 inline；需继续携带原鉴权。第三方应拼接本 API 的 stream 路径，不能把浏览器会话保护的地址直接当作 Bearer 读取地址。
 
@@ -405,6 +417,6 @@ Content-Type: application/json
 - 未授权、撤权、已移出协同范围或已删除的来源不能继续读取。写入挂载范围（包含不存在的子路径和批量目标）返回 `MOUNT_READ_ONLY`；普通原生资源仍保持原有 API 写入能力。
 - 文件公共输出增加不透明 `cacheIdentity`。缓存应同时检查它与 `logicalContentVersion`，避免文件写时复制后继续使用旧正文；此字段不是公开内容哈希。
 
-浏览器专用功能（不属于第三方 API 的挂载写入口）：`GET/PATCH /api/telegram/drive/settings` 管理跨分区个人限制，默认 `folderUploadMaxBytes=500000000`（十进制 500MB）、`maxDirectoryDepth=30`；`POST /folder-uploads` 保存完整目录上传清单并创建空目录，后续 `/uploads` 通过 `metadata.folderUploadId` 按最多 100 文件一批提交，`GET /folder-uploads/{id}` 查询分批结果。目录整体不承诺原子回滚，已成功批次保留，中断可重新选择同批来源继续未完成文件。
+浏览器专用的 `GET/PATCH /api/telegram/drive/settings` 管理跨分区个人限制，默认 `folderUploadMaxBytes=500000000`（十进制 500MB）、`maxDirectoryDepth=30`。`GET /limits` 及 `/folder-uploads` 则在前台和第三方接口共同注册，并非挂载写入口。目录整体不承诺原子回滚，已成功批次保留；中断后仍需提供相同来源并核对已完成批次，不能重复提交已占用的文件。
 
 浏览器编辑接口 `POST /files/content?folderPath=…&name=…`、`PUT /files/{id}/content` 接收原始正文，头部使用 `X-Disk-File-Size`、`X-Disk-File-Type`；编辑现有文件还必须提交 `X-Disk-Expected-Version`。在线编辑最大 20MB，返回任务 ID 后等待完成；新正文按写时复制切换当前逻辑文件引用，不修改其它引用的正文，并拒绝并发版本冲突。

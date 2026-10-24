@@ -29,3 +29,4 @@ html:has(dialog[open]),body:has(dialog[open]){overflow:hidden;overscroll-behavio
 #ml-frame-grid label{display:flex;width:100%}
 .ml-frames-actions{flex-wrap:wrap}#ml-frame-action-status{flex-basis:100%;font-size:13px;overflow-wrap:anywhere}.ml-preview-action-status{font-size:13px;overflow-wrap:anywhere}
 .ml-image-dialog #ml-dialog-actions{flex-wrap:wrap;gap:8px}.ml-preview-action-status:not(:empty){flex-basis:100%}
+.ml-source-metadata{margin:12px 0;padding:12px 16px;border:1px solid var(--line,#9994);border-radius:8px}.ml-source-metadata>summary{cursor:pointer;font-weight:600}.ml-source-metadata dl{display:grid;grid-template-columns:minmax(100px,180px) minmax(0,1fr);gap:6px 14px;font-size:13px}.ml-source-metadata dt{opacity:.7}.ml-source-metadata dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.ml-source-metadata h3{font-size:14px;margin-top:16px}

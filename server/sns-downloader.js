@@ -114,6 +114,8 @@ function createSnsDownloadService({
         return {
             id: task.id,
             autoCacheEnabled: task.autoCacheEnabled !== false,
+            handled: task.handled === true,
+            handledAt: Number(task.handledAt) || 0,
             url: task.url,
             platform: task.platform || '',
             title: task.title || '',
@@ -277,7 +279,7 @@ function createSnsDownloadService({
                 downloadSections: String(input.downloadSections || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 500),
                 selectedFormatIds, formatSummary: null, mediaType: '', referenceInfo: null,
                 status: 'queued', progress: { percent: 0 }, outputPath: '', coverPath: '',
-                outputFileName: '', outputFileSize: 0, error: '', remark: '', tags: [],
+                outputFileName: '', outputFileSize: 0, error: '', remark: String(input.remark || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 4000), tags: [],
                 createdAt: now, updatedAt: now, completedAt: 0
             };
             tasks.set(task.id, task);
@@ -287,14 +289,15 @@ function createSnsDownloadService({
             pump();
             return publicTask(task);
         },
-        list(page = 1, pageSize = 10) {
+        list(page = 1, pageSize = 10, category = 'all') {
             const size = Math.max(1, Math.min(50, Math.trunc(Number(pageSize) || 10)));
-            const sorted = [...tasks.values()].sort((left, right) => Number(right.createdAt) - Number(left.createdAt));
+            const all = [...tasks.values()].sort((left, right) => Number(right.createdAt) - Number(left.createdAt));
+            const sorted = all.filter(task => category === 'handled' ? task.handled === true : category === 'pending' ? task.handled !== true : true);
             const total = sorted.length;
             const pages = Math.max(1, Math.ceil(total / size));
             const current = Math.max(1, Math.min(pages, Math.trunc(Number(page) || 1)));
             return {
-                page: current, pageSize: size, pages, total, ids: sorted.map(task => task.id),
+                page: current, pageSize: size, pages, total, ids: all.map(task => task.id),
                 tasks: sorted.slice((current - 1) * size, current * size).map(publicTask)
             };
         },
@@ -346,7 +349,9 @@ function createSnsDownloadService({
             const tags = [...new Set((Array.isArray(input.tags) ? input.tags : task.tags || [])
                 .map(tag => String(tag || '').trim().slice(0, 80)).filter(Boolean))].slice(0, 100);
             if (input.autoCacheEnabled !== undefined && typeof input.autoCacheEnabled !== 'boolean') throw Error('自动缓存设置必须为布尔值');
-            return publicTask(update(task, { remark, tags, autoCacheEnabled: input.autoCacheEnabled ?? task.autoCacheEnabled ?? true }));
+            if (input.handled !== undefined && typeof input.handled !== 'boolean') throw Error('手动处理标记必须为布尔值');
+            return publicTask(update(task, { remark, tags, autoCacheEnabled: input.autoCacheEnabled ?? task.autoCacheEnabled ?? true,
+                ...(input.handled !== undefined ? { handled: input.handled, handledAt: input.handled ? task.handledAt || Date.now() : 0 } : {}) }));
         },
         setCoverPath(id, coverPath) {
             const task = getTask(id);

@@ -283,8 +283,8 @@ test('触屏长按会打开菜单并吞掉后续单击，滑动或多点触摸�
 test('隧道适配器传递普通 File 与目录相对路径，选定目标后不再二次确认', async () => {
     let exporter, sent, closed = false, uploadArgs, confirmations = 0;
     const window = {
-        DiskUI: { setExporter: fn => { exporter = fn; }, close: () => { closed = true; }, open: async () => {}, chooseSaveDestination: async () => ({path:'目标目录',transportContext:{accountId:'user',diskSpace:'目标分区',requestBase:'/api/telegram/drive'}}), path: '' },
-        DiskClient: { context:()=>({accountId:'user'}),raw: async () => ({ identity: { id: 'user' } }), read: async () => new Blob(['abc']), upload: async (...args) => { uploadArgs = args; } }
+        DiskUI: { setExporter: fn => { exporter = fn; }, close: () => { closed = true; }, open: async () => {}, revealUploadedDirectory:async () => {}, chooseSaveDestination: async () => ({path:'目标目录',transportContext:{accountId:'user',diskSpace:'目标分区',requestBase:'/api/telegram/drive'}}), path: '' },
+        DiskClient: { context:()=>({accountId:'user'}),getAccount:()=> 'user',raw: async () => ({ identity: { id: 'user' } }), read: async () => new Blob(['abc']), upload: async (...args) => { uploadArgs = args; } }
     };
     vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: () => { confirmations++; return true; } });
     window.DiskTunnelAdapter.configure({ target: () => 'ABCDE', send: files => { sent = files; }, readFile: () => {}, filesForRecord: () => [{ name: 'a.txt', size: 3 }] });

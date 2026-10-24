@@ -2785,6 +2785,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : sourceAppId === 'download-task' ? '抓取任务转存' : '媒体收藏转存'}：${info.key}`, size);
             job.operationId = operation.operation_id;
             await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId, operationScope: req.diskScope });
+            if (sourceAppId === 'download-task') operations.update(job.operationId, { transferMode: 'server', folderPath: info.folderPath || '', sourceFileName: info.name,
+                sourceBytesRead: 0, sourceTotalBytes: size, sourceReadStatus: 'reading', sourcePartCount: job.files[0].parts.length, telegramFileCount: 1 }, true);
             mapping.onCreated?.(job);
         } catch (error) {
             try { await diskStore.abortAsync(job.id); }
@@ -2805,6 +2807,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         // incoming network chunk plus one part on disk while Telegram consumes it.
         const iterator = input[Symbol.asyncIterator]();
         let carry = Buffer.alloc(0), received = 0;
+        const readStarted = Date.now(); let lastReadReport = 0;
+        const reportSource = (done = false) => {
+            if (sourceAppId !== 'download-task' || !done && Date.now() - lastReadReport < 150) return;
+            lastReadReport = Date.now();
+            operations.update(job.operationId, { sourceBytesRead: received, sourceTotalBytes: size, sourceReadStatus: done ? 'completed' : 'reading',
+                sourceBytesPerSecond: Math.round(received * 1000 / Math.max(1, Date.now() - readStarted)) });
+        };
         const md5 = crypto.createHash('md5'), sha = crypto.createHash('sha256');
         async function* bytesForPart(wanted) {
             let left = wanted;
@@ -2818,11 +2827,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 }
                 const take = Math.min(left, carry.length), chunk = carry.subarray(0, take);
                 carry = carry.subarray(take); left -= take; received += take;
-                md5.update(chunk); sha.update(chunk); yield chunk;
+                md5.update(chunk); sha.update(chunk); reportSource(); yield chunk;
             }
         }
         try {
-            for (const part of job.files[0].parts) {
+            for (const [sourcePartIndex, part] of job.files[0].parts.entries()) {
                 while (true) {
                     control.throwIfCancelled();
                     if (job.pipelineError) throw job.pipelineFailure || new Error(job.pipelineError);
@@ -2832,10 +2841,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     await coreUpload.pipelineWait(job);
                 }
                 await diskStore.receivePart(job.id, 0, Readable.from(bytesForPart(part.size)), `bytes ${part.byteStart}-${part.byteEnd}/${size}`);
+                if (sourceAppId === 'download-task') operations.update(job.operationId, { sourcePartIndex: sourcePartIndex + 1 });
                 coreUpload.pipelineWake(job);
             }
             if (carry.length || !(await iterator.next()).done) throw new Error('EntityTooLarge');
             if (received !== size) throw new Error('IncompleteBody');
+            reportSource(true);
             const actualSha = sha.digest('hex');
             if (expectedSha256 && expectedSha256 !== 'UNSIGNED-PAYLOAD' && actualSha !== expectedSha256.toLowerCase()) throw new Error('XAmzContentSHA256Mismatch');
             const s3ETag = md5.digest('hex');

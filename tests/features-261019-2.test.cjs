@@ -65,6 +65,9 @@ test('SNS and Premium task files reach the disk through the server without brows
         const body = f.body(source), accepted = await f.request('/task-saves', body);
         assert.equal(accepted.status, 202, JSON.stringify(accepted.data)); assert.ok(accepted.data.operation_id);
         const result = await f.completed(body.pendingSaveId); assert.equal(result.state, 'completed'); assert.equal(result.result.items.length, 1);
+        const progress = f.operations.get(accepted.data.operation_id, { userId:f.user.id, diskSpace:'' });
+        assert.equal(progress.transferMode, 'server'); assert.equal(progress.sourceBytesRead, source.length); assert.equal(progress.sourceReadStatus, 'completed');
+        assert.equal(progress.sourcePartIndex, 1); assert.equal(progress.sourceFileName, source + '.mp4'); assert.equal(progress.clientTotalBytes, undefined);
         assert.equal((await f.request('/task-saves', body)).status, 409);
         assert.equal((await f.request('/pending-saves/' + body.pendingSaveId, null, { 'test-user': 'other' })).data.found, false);
     }

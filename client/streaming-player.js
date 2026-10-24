@@ -22,13 +22,13 @@
         let actual = 'waiting', failure = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
         let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
-        const localPause = button('暂停本机观看', () => { paused = !paused; localPause.textContent = t(paused ? '恢复跟随' : '暂停本机观看'); if (paused) { media?.pause(); actual = 'paused'; } else align(); lastTick = performance.now(); sync(true); update(); });
+        const localPause = button('暂停本机观看', () => { const retry = actual === 'blocked' || actual === 'error'; paused = retry ? false : !paused; if (paused) { media?.pause(); actual = 'paused'; } else if (actual !== 'blocked') align(); lastTick = performance.now(); sync(true); update(); });
         const sound = button('静音', () => { muted = !muted; if (media) media.muted = muted; sync(true); update(); });
         localPause.dataset.icon = '❚❚'; sound.dataset.icon = '🔇';
         const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
         slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
-        const startWatching = button('开始观看', () => { paused = false; localPause.textContent = t('暂停本机观看'); if (actual === 'error') align(); lastTick = performance.now(); sync(true); update(); }); startWatching.className = 'sc-window-only';
+        // Resume is also the user gesture for browsers that block audible autoplay.
         const enterFullscreen = button('媒体全屏', async () => {
             try { if (document.fullscreenElement === host) await document.exitFullscreen(); else if (host.requestFullscreen) await host.requestFullscreen(); else host.classList.toggle('sc-media-fullscreen'); }
             catch (_) { host.classList.toggle('sc-media-fullscreen'); }
@@ -41,15 +41,20 @@
         const running = () => snapshot?.playback.status === 'playing' || tail;
         function globalPosition() { const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId); return Math.min(length(item), (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0)); }
         function update() {
-            buffering.hidden = actual !== 'buffering';
+            const adminPaused = snapshot?.playback.status === 'paused';
+            const pauseLabel = adminPaused ? '已被管理员暂停' : paused ? '本机已暂停' : '';
+            buffering.hidden = !pauseLabel && actual !== 'buffering';
+            buffering.textContent = t(pauseLabel || '正在缓冲');
+            buffering.classList.toggle('sc-paused', Boolean(pauseLabel));
             const selected = current(); seekBar.hidden = !snapshot?.manageable || !selected || !onSeek;
             if (selected && !dragging) { seek.max = length(selected); seek.value = Math.min(localPosition, length(selected)); seekLabel.textContent = localPosition.toFixed(1) + ' / ' + length(selected).toFixed(1) + ' s'; }
-            const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', reading: '正在展示' };
+            const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击恢复播放', error: '播放失败，请重试', reading: '正在展示' };
             const silent = muted || volume === 0;
             sound.textContent = t(muted ? '取消静音' : '静音'); muteNode.hidden = !silent; muteNode.textContent = t('已静音');
-            localPause.dataset.icon = paused ? '▶' : '❚❚'; sound.dataset.icon = muted ? '🔊' : '🔇';
+            localPause.dataset.icon = paused || actual === 'blocked' || actual === 'error' ? '▶' : '❚❚'; sound.dataset.icon = muted ? '🔊' : '🔇';
+            localPause.textContent = t(actual === 'blocked' || actual === 'error' ? '恢复播放' : paused ? '恢复跟随' : '暂停本机观看');
             for (const control of [localPause, sound]) { control.title = control.textContent; control.setAttribute('aria-label', control.textContent); }
-            statusNode.textContent = (failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
+            statusNode.textContent = (pauseLabel ? t(pauseLabel) : failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
             const item = current();
             if (item && !item.duration && !paused && active?.ready) {
@@ -209,6 +214,7 @@
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
         return { element: host, apply, poll, snapshot: () => snapshot,
+            setController(handler) { onSeek = handler; update(); },
             close() { if (!alive) return; alive = false; generation++; unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
     global.StreamingPlayer = { create };

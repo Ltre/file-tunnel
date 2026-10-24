@@ -147,6 +147,15 @@ test('concurrent resume calls share one upload, with fixed target and metadata i
     assert.equal(uploads, 1); assert.equal((await f.api.get(record.id)).status, 'completed');
 });
 
+test('starting a transfer publishes its persisted running state before sending any content', async () => {
+    const f = browser(), record = await prepare(f); const events = [];
+    await f.api.resume(record.id, hooks({
+        onStarted: async current => { events.push('started'); assert.equal((await f.api.get(current.id)).status, 'uploading'); },
+        upload: async () => { events.push('content'); return { items: [{ id: 'done' }] }; }
+    }));
+    assert.deepEqual(events, ['started', 'content']);
+});
+
 test('a post-commit navigation error never changes completed outcome or triggers reupload', async () => {
     const f = browser(), record = await prepare(f); let uploads = 0;
     await assert.rejects(() => f.api.resume(record.id, hooks({ upload: async () => { uploads++; return { items: [{ id: 'done' }] }; },

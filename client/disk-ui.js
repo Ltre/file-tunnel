@@ -213,7 +213,8 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
 function pendingSaveTransferId(record) { return record.serverTransferId || record.id; }
 async function showTelegramDrivePendingSaveBanner() {
     if (!window.DiskPendingSave) return;
-    const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status));
+    const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status)
+        && !(record.status === 'uploading' && window.DiskPendingSave.isActive?.(record.id)));
     const target = document.getElementById('telegramDriveAuth');
     if (!target) return;
     target.querySelector('.disk-pending-save-list')?.remove();
@@ -297,6 +298,7 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
             transferServer: (record, target) => window.DiskClient.request('/task-saves', { ...transport(target),
                 ...window.DiskClient.json('POST', { pendingSaveId: pendingSaveTransferId(record), source: record.source, taskId: record.task.id, version: record.version, partitionId: target.partitionId, folderPath: target.path }) }),
             onStatus: showAppToast,
+            onStarted: showTelegramDrivePendingSaveBanner,
             onCompleted: async record => {
                 showAppToast('转存已完成；再次打开不会重复上传');
                 const target = record.target;
@@ -3491,9 +3493,16 @@ function diskUploadProgressLines(job) {
         const sent = Math.max(0, Math.min(total, bytes)), percent = total ? sent / total * 100 : 100;
         lines.push(`${label} · ${formatFileSize(sent)}/${formatFileSize(total)} · ${percent.toFixed(2)}%` + (Number.isFinite(speed) && speed > 0 ? ` · ${formatFileSize(speed)}/s` : ''));
     };
-    progressLine('浏览器 → 服务器', job.clientBytesReceived, job.clientTotalBytes, job.clientBytesPerSecond);
-    if (job.clientFileName) lines.push(`  ${job.clientBytesReceived >= job.clientTotalBytes ? '已上传' : '正在上传'}第 ${job.clientFileIndex || 1}/${job.clientFileCount || 1} 个文件：${job.clientFileName}`);
-    if (job.clientPartCount) lines.push(`  第 ${job.clientPartIndex || 1}/${job.clientPartCount} 个分片`);
+    if (job.transferMode === 'server') {
+        const text = value => window.TunnelI18n?.t(value) || value;
+        progressLine(text('服务端读取成品'), job.sourceBytesRead, job.sourceTotalBytes, job.sourceBytesPerSecond);
+        if (job.sourceFileName) lines.push(`  ${text(job.sourceReadStatus === 'completed' ? '已读取' : '正在读取')}：${job.sourceFileName}`);
+        if (job.sourcePartCount) lines.push(`  第 ${job.sourcePartIndex || 0}/${job.sourcePartCount} 个分片`);
+    } else {
+        progressLine('浏览器 → 服务器', job.clientBytesReceived, job.clientTotalBytes, job.clientBytesPerSecond);
+        if (job.clientFileName) lines.push(`  ${job.clientBytesReceived >= job.clientTotalBytes ? '已上传' : '正在上传'}第 ${job.clientFileIndex || 1}/${job.clientFileCount || 1} 个文件：${job.clientFileName}`);
+        if (job.clientPartCount) lines.push(`  第 ${job.clientPartIndex || 1}/${job.clientPartCount} 个分片`);
+    }
     progressLine('服务器 → Telegram', job.telegramBytesSent, job.telegramTotalBytes, job.telegramBytesPerSecond);
     if (job.telegramFileName) lines.push(`  ${job.telegramBytesSent >= job.telegramTotalBytes ? '已推送' : '正在推送'}第 ${job.telegramFileIndex || 1}/${job.telegramFileCount || job.clientFileCount || 1} 个文件：${job.telegramFileName}`);
     if (job.telegramPartCount) lines.push(`  第 ${job.telegramPartIndex || 1}/${job.telegramPartCount} 个分片`);

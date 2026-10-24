@@ -158,6 +158,10 @@
         }
     </style>
     <link rel="stylesheet" href="/client/telegram-target-forward.css">
+    <style>
+        .task-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}.task-filters [aria-pressed=true]{background:var(--accent,#4767d4);color:#fff}.page>hr{border:0;border-top:1px solid var(--line);margin:12px 0 18px}.task-submit-remark{display:flex;align-items:center;gap:10px;min-width:0;padding-right:4px}.task-submit-remark>label{flex:none}.task-submit-remark>input{flex:1;width:100%;min-width:0;box-sizing:border-box}
+        @media(max-width:600px){.task-submit-remark{flex-direction:column;align-items:stretch}}
+    </style>
 </head>
 <body>
 <main class="page">
@@ -172,6 +176,8 @@
         </div>
     </header>
 
+    <nav class="task-filters" aria-label="任务手动分类"><button type="button" data-task-category="pending" aria-pressed="true">待处理</button><button type="button" data-task-category="handled" aria-pressed="false">✔已处理</button><button type="button" data-task-category="all" aria-pressed="false">▦全部任务</button></nav>
+    <hr>
     <section class="panel">
         <div class="form-grid">
             <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=...">
@@ -191,7 +197,7 @@
             <input id="downloadSectionsInput" type="text" autocomplete="off" spellcheck="false" placeholder="例如：*00:01:30-00:03:15">
             <div class="subtle">留空则下载完整内容；这里只填写参数值，不要重复填写 <code>--download-sections</code>。</div>
         </div>
-        <div class="download-sections-row">
+        <div class="download-sections-row task-submit-remark">
             <label for="preDownloadRemarkInput">任务备注（可选）</label>
             <input id="preDownloadRemarkInput" type="text" autocomplete="off" maxlength="4000" placeholder="可在开始下载前填写任务备注">
         </div>
@@ -1963,6 +1969,8 @@
         }
         const actions = document.createElement('div');
         actions.className = 'task-actions';
+        const handled = document.createElement('button'); handled.type = 'button'; handled.textContent = task.handled ? '✔已处理' : '✔标记为已处理'; handled.disabled = task.handled === true;
+        handled.onclick = async () => { handled.disabled = true; try { await saveTaskDetails(task, { handled: true }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
         const running = ['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status);
         const thumbnail = document.createElement('button');
         thumbnail.type = 'button';
@@ -2103,13 +2111,23 @@
 
     function isPremiumRemarkEditing() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || Boolean(document.activeElement?.closest?.('.task-remark')); }
 
+    let taskCategory = 'pending', taskListRevision = 0;
+    document.querySelectorAll('[data-task-category]').forEach(button => button.onclick = () => {
+        taskCategory = button.dataset.taskCategory; page = 1;
+        document.querySelectorAll('[data-task-category]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        loadTasks({ force: true }).catch(error => { notice.textContent = error.message; });
+    });
+
     async function loadTasks({ force = false } = {}) {
         if (!force && isPremiumRemarkEditing()) return;
-        const data = await api(`/api/youtube-premium/tasks?page=${page}&pageSize=10`);
+        const revision = ++taskListRevision;
+        const data = await api(`/api/youtube-premium/tasks?page=${page}&pageSize=10&category=${taskCategory}`);
+        if (revision !== taskListRevision) return;
         page = data.page;
         pages = data.pages;
         currentTasks = data.tasks;
         await hydrateBrowserCacheStates(currentTasks);
+        if (revision !== taskListRevision) return;
         if (!force && isPremiumRemarkEditing()) return;
         taskCount.textContent = `共 ${data.total} 条任务`;
         taskList.replaceChildren();

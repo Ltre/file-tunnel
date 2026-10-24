@@ -92,7 +92,7 @@ test('SNS 与 YouTube Premium 任务备注编辑期间不会被轮询结果覆�
     assert.match(sns, /if \(!force && isTaskRefreshPaused\(\)\) return;/);
     assert.match(sns, /媒体编号.*selectedFormatIds/);
     assert.match(premium, /function isPremiumRemarkEditing\(\)/);
-    assert.match(premium, /await hydrateBrowserCacheStates\(currentTasks\);\s*if \(!force && isPremiumRemarkEditing\(\)\) return;/);
+    assert.match(premium, /await hydrateBrowserCacheStates\(currentTasks\);\s*if \(revision !== taskListRevision\) return;\s*if \(!force && isPremiumRemarkEditing\(\)\) return;/);
 });
 
 test('contact voice has ring tones, speech capture processing and ICE recovery', () => {

@@ -88,6 +88,10 @@
         }
     </style>
     <link rel="stylesheet" href="/client/telegram-target-forward.css">
+    <style>
+        .task-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}.task-filters [aria-pressed=true]{background:var(--accent,#4767d4);color:#fff}.shell>hr{border:0;border-top:1px solid var(--line);margin:12px 0 18px}.task-submit-remark{display:flex;align-items:center;gap:10px;min-width:0;padding-right:4px}.task-submit-remark>label{flex:none}.task-submit-remark>input{flex:1;width:100%;min-width:0;box-sizing:border-box}
+        @media(max-width:600px){.task-submit-remark{flex-direction:column;align-items:stretch}}
+    </style>
 </head>
 <body>
 <main class="shell">
@@ -96,6 +100,8 @@
         <nav class="links"><a class="button" href="/sns-cookies">配置普通 SNS Cookie</a><a class="button" href="/admin">返回后台</a></nav>
     </header>
 
+    <nav class="task-filters" aria-label="任务手动分类"><button type="button" data-task-category="pending" aria-pressed="true">待处理</button><button type="button" data-task-category="handled" aria-pressed="false">✔已处理</button><button type="button" data-task-category="all" aria-pressed="false">▦全部任务</button></nav>
+    <hr>
     <section class="panel">
         <div class="url-row">
             <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 TikTok / Facebook / Instagram / Twitter / Threads / LINE / B站链接">
@@ -107,6 +113,7 @@
             <label><input id="cacheFilesInput" type="checkbox" checked>完成后缓存到浏览器</label>
         </div>
         <div class="sections"><label for="downloadSectionsInput">截取媒体区间（可选）</label><input id="downloadSectionsInput" type="text" placeholder="例如：*00:00:15-00:00:45"></div>
+        <div class="sections task-submit-remark"><label for="preDownloadRemarkInput">任务备注（可选）</label><input id="preDownloadRemarkInput" type="text" maxlength="4000" placeholder="可在开始下载前填写任务备注"></div>
         <div class="notice" id="notice">本页仅使用 /sns-cookies 中对应平台的普通 Cookie；公开页面未配置 Cookie 时也会直接尝试。解析不到的字段会保持为空。</div>
         <div class="custom" id="customPanel" hidden>
             <div class="section-head"><div><strong>媒体编号</strong><div class="subtle" id="formatStatus">输入 URL 后将自动解析。</div></div><button id="analyzeBtn" type="button">重新解析（忽略缓存）</button></div>
@@ -172,6 +179,12 @@
     let analysisRequest = 0;
     let analyzeTimer = 0;
     let page = 1;
+    let taskCategory = 'pending', taskListRevision = 0;
+    document.querySelectorAll('[data-task-category]').forEach(button => button.onclick = () => {
+        taskCategory = button.dataset.taskCategory; page = 1;
+        document.querySelectorAll('[data-task-category]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        loadTasks({ force: true });
+    });
     let pages = 1;
     let currentTasks = [];
     let editingTask = null;
@@ -296,7 +309,7 @@
         startBtn.disabled = true; showNotice('正在创建独立 SNS 下载任务…');
         try {
             const task = await api(`${API_ROOT}/tasks`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-                url, mode:mode(), selectedFormatIds:mode() === 'custom' ? selectedFormats().map(item => item.id) : [], downloadSections:downloadSectionsInput.value.trim()
+                url, mode:mode(), selectedFormatIds:mode() === 'custom' ? selectedFormats().map(item => item.id) : [], downloadSections:downloadSectionsInput.value.trim(), remark:$('preDownloadRemarkInput').value.trim()
             }) });
             window.MediaTaskLink?.created(task);
             showNotice(`任务 ${task.id.slice(0,8)} 已进入 ${platformLabels[task.platform] || 'SNS'} 队列。`); page = 1; await loadTasks();
@@ -373,6 +386,10 @@
         if (task.error) card.append(element('div','task-error',task.error));
         const cacheLabel=element('div','subtle',cacheStateText(task)); cacheLabel.dataset.cacheState=''; card.append(cacheLabel);
         const actions=element('div','actions');
+        actions.append(makeAction(task.handled ? '✔已处理' : '✔标记为已处理', async () => {
+            await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({handled:true}) });
+            await loadTasks({force:true});
+        }));
         if (task.hasFile) {
             actions.append(makeAction('预览',()=>showPreview(task)),makeAction('文件信息',()=>showInfo(task)));
             const download=document.createElement('a');download.className='button';download.href=task.downloadUrl;download.textContent='下载';actions.append(download);
@@ -407,9 +424,12 @@
     function isTaskRefreshPaused() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
     async function loadTasks({force=false}={}) {
         if (!force && isTaskRefreshPaused()) return;
+        const revision = ++taskListRevision;
         const expandedReferences = new Set([...taskList.querySelectorAll('[data-reference-details][open]')].map(details => details.closest('[data-task-id]')?.dataset.taskId).filter(Boolean));
         try {
-            const data=await api(`${API_ROOT}/tasks?page=${page}&pageSize=10`); page=data.page; pages=data.pages; currentTasks=data.tasks||[];
+            const data=await api(`${API_ROOT}/tasks?page=${page}&pageSize=10&category=${taskCategory}`);
+            if (revision !== taskListRevision) return;
+            page=data.page; pages=data.pages; currentTasks=data.tasks||[];
             if (!force && isTaskRefreshPaused()) return;
             taskList.replaceChildren(...currentTasks.map(renderTask)); taskCount.textContent=`共 ${data.total} 个任务`; pager.hidden=pages<=1; pageLabel.textContent=`${page} / ${pages}`; $('prevBtn').disabled=page<=1; $('nextBtn').disabled=page>=pages;
             for (const taskId of expandedReferences) taskList.querySelector(`[data-task-id="${CSS.escape(taskId)}"] [data-reference-details]`)?.setAttribute('open', '');

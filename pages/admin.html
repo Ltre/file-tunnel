@@ -849,7 +849,7 @@
                             </div>
                         </div>
                         <div class="session-actions">
-                            ${isDeleted ? '' : `<a href="/#${safeId}" target="_blank" class="btn btn-primary">
+                            ${isDeleted ? '' : `<a href="/api/sessions/${safeId}/enter" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
                                 <span>🔗</span>
                                 <span>进入隧道</span>
                             </a>`}

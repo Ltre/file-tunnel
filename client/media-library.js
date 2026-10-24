@@ -7,6 +7,7 @@
     let data = { imports: [], sessions: [], batches: [], results: [], collections: [], entities: [], jobs: [], caches: [], events: [] }, tab = 'infra', sessionId = '', playerOffset = 0, selection = new Set(), polling = null, activeUpload, stateRevision = 0;
     let lastView = '', collectionQuery = '', collectionEntity = '', disposePlayer = () => {};
     let resultView='grid',compressionViewing=null,compressionSelection='';
+    const sourceMetadataOpen = new Set();
     let framesViewing = '', frameKnownIds = new Set(), frameNewIds = new Set();
     let disposeFramePreview = () => {}, refreshFramePreview = () => {}, deletingCandidates = false;
     const frameSelection = new Set(), frameBatchHighlights = new Map(), frameSubmissions = new Set(), frameSubmitErrors = new Map();
@@ -181,6 +182,34 @@
         dialog('选择已完成且仍有服务端成品的任务', body); await load();
     }
     function currentSession() { return data.sessions.find(s => s.id === sessionId && s.state === 'active'); }
+    function sourceMetadata(resource) {
+        const details = el('details', undefined, 'ml-source-metadata'), probe = resource.probe || {};
+        const video = (probe.streams || []).find(stream => stream.codec_type === 'video' && !stream.disposition?.attached_pic);
+        details.append(el('summary', ['源视频多媒体元数据', video?.width && video?.height ? video.width + ' × ' + video.height : '', video?.codec_name].filter(Boolean).join(' · ')));
+        details.open = sourceMetadataOpen.has(resource.id);
+        details.ontoggle = () => { if (details.open) sourceMetadataOpen.add(resource.id); else sourceMetadataOpen.delete(resource.id); };
+        const appendFields = (title, value, fields) => {
+            const list = el('dl');
+            for (const [key, name] of fields) if (value?.[key] !== undefined && value[key] !== null && value[key] !== '') {
+                list.append(el('dt', name), el('dd', String(value[key])));
+            }
+            if (list.children.length) details.append(el('h3', title), list);
+        };
+        appendFields('容器', probe.format, [['format_name','格式'],['format_long_name','格式名称'],['duration','时长（秒）'],['size','大小（字节）'],['bit_rate','总比特率（bit/s）'],['start_time','起始时刻（秒）'],['nb_streams','流数量'],['nb_programs','节目数量'],['probe_score','探测评分']]);
+        const streams = probe.streams || [];
+        streams.forEach((stream, index) => {
+            appendFields(`流 ${index + 1} · ${stream.codec_type || '未知'}`, stream, [
+                ['index','流索引'],['codec_type','媒体类型'],['codec_name','编码'],['codec_long_name','编码名称'],['profile','编码配置'],['level','编码级别'],['codec_tag_string','编码标记'],
+                ['width','宽度'],['height','高度'],['coded_width','编码宽度'],['coded_height','编码高度'],['sample_aspect_ratio','像素宽高比'],['display_aspect_ratio','显示宽高比'],
+                ['pix_fmt','像素格式'],['r_frame_rate','标称帧率'],['avg_frame_rate','平均帧率'],['bit_rate','比特率（bit/s）'],['nb_frames','帧数'],['duration','时长（秒）'],['time_base','时间基准'],['start_time','起始时刻（秒）'],
+                ['color_range','色彩范围'],['color_space','色彩空间'],['color_transfer','色彩传递'],['color_primaries','基色'],['field_order','场序'],['bits_per_raw_sample','原始采样位深'],
+                ['sample_fmt','采样格式'],['sample_rate','采样率（Hz）'],['channels','声道数'],['channel_layout','声道布局'],['bits_per_sample','采样位深']
+            ]);
+            appendFields('流标签', stream.tags, [['language','语言'],['title','标题'],['encoder','编码器'],['creation_time','创建时间'],['rotate','旋转角度']]);
+        });
+        appendFields('容器标签', probe.format?.tags, [['title','标题'],['artist','作者'],['encoder','编码器'],['creation_time','创建时间'],['major_brand','主品牌'],['compatible_brands','兼容品牌']]);
+        return details;
+    }
     function renderSessions() {
         if (!currentSession()) sessionId = data.sessions.find(s => s.state === 'active')?.id || '';
         const session = currentSession(), panel = card('提取会话'), chooser = select(data.sessions.filter(s => s.state === 'active').map(s => [s.id, s.name]), sessionId);
@@ -189,6 +218,7 @@
         if (!session) { panel.append(el('p', '请在“资源导入”中选择一个就绪视频，新建提取会话。')); return panel; }
         const resource = data.imports.find(r => r.id === session.importId); if (!resource) { panel.append(el('p', '源记录不存在')); return panel; }
         panel.append(el('p', `${resource.name} · 时长 ${time(resource.duration * 1000)} · ${resource.available ? '来源可读' : '来源当前失效'}`));
+        panel.append(sourceMetadata(resource));
         const layout = el('div', undefined, 'ml-session-layout'), parameters = card('取帧方式'), center = el('section'), right = card('手动 Clip'); layout.append(parameters, center, right); panel.append(layout);
         const mode = select([['random', '范围内随机取帧'], ['interval', '等间隔取帧']]), ranges = input(''), count = input(24, 'number'), interval = input('', 'number'); ranges.placeholder = '全视频或 12:34-56:01,01:02:10-01:05:30';
         parameters.append(label('模式', mode), label('时间范围', ranges), label('随机数量', count), label('间隔（毫秒）', interval), el('p', '随机模式不填间隔时直接抽取指定数量；等间隔模式必须填写间隔。每批最多 500 张。'));

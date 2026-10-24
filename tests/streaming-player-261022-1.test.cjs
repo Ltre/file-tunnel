@@ -50,6 +50,23 @@ test('audio starts audible and mute is visibly reported', async () => {
     const mute = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '静音'); mute.onclick();
     assert.match(f.player.element.querySelector('.sc-play-status').textContent, /已静音/); f.player.close();
 });
+
+test('an administrator pause overrides buffering while a media ticket is still loading', async () => {
+    const f = fixture({ deferredTicket: true });
+    f.player.apply({ ...f.state, serverTime: 2, playback: { ...f.state.playback, status: 'paused', version: 2, controlVersion: 1 } });
+    assert.equal(f.player.element.querySelector('.sc-buffering').textContent, '已被管理员暂停');
+    assert.doesNotMatch(f.player.element.querySelector('.sc-play-status').textContent, /缓冲/);
+    f.player.close();
+});
+
+test('changing local control presentation retains the player and its viewing membership', async () => {
+    const f = fixture({ onSeek:async () => {} }); await f.flush();
+    const element = f.player.element, ticketCount = f.calls.filter(call => call.route.endsWith('/ticket')).length;
+    f.player.setController(undefined); assert.equal(element.querySelector('.sc-seek').hidden, true);
+    f.player.setController(async () => {}); assert.equal(element.querySelector('.sc-seek').hidden, false);
+    assert.equal(f.player.element, element); assert.equal(f.calls.filter(call => call.route.endsWith('/ticket')).length, ticketCount);
+    assert.equal(f.calls.filter(call => call.route.endsWith('/unwatch')).length, 0); f.player.close();
+});
 test('the first viewer starts from the report response without clicking Start watching', async () => {
     const f = fixture({ kind: 'audio', reportStarts: true }); await f.flush();
     const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();

@@ -272,6 +272,8 @@
             if (!await hooks.confirm(record, target)) return record;
             record = await update(id, { status: 'uploading', target, attemptedAt: Date.now(), error: '' });
             try {
+                // UI refresh is auxiliary; it must not prevent the transfer itself.
+                try { await hooks.onStarted?.(record); } catch (_) {}
                 const result = record.transferMode === 'server'
                     ? await hooks.transferServer(record, target)
                     : await hooks.upload(record, blob, target, { pendingSaveId: id, sourceInfo: record.sourceInfo });
@@ -287,5 +289,5 @@
         active.set(id, promise);
         return promise;
     }
-    global.DiskPendingSave = { prepare, prepareServer, open, get, list, update, getBlob, complete, cancel, resume, verifySource, _test: { versionOf, safeSource, cacheFor } };
+    global.DiskPendingSave = { prepare, prepareServer, open, get, list, update, getBlob, complete, cancel, resume, verifySource, isActive: id => active.has(id), _test: { versionOf, safeSource, cacheFor } };
 })(window);
