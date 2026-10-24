@@ -8058,7 +8058,6 @@ function renderMessageRecordActions(messageEl, message) {
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
     const menuItems = [];
-    if (message.type === 'markdown') menuItems.push(...(window.TunnelMarkdown?.menuActions(message) || []));
     menuItems.push(createRecordActionButton('ℹ', '详情', '查看这条传输记录的完整信息', () => {
         showTransferRecordDetails(message.id).catch(err => showAppToast(`详情加载失败：${err.message}`));
     }));
@@ -8088,13 +8087,17 @@ function renderMessageRecordActions(messageEl, message) {
             });
         }));
     }
-    if (message.type !== 'markdown') menuItems.push(createRecordActionButton('⎇', '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+    menuItems.push(createRecordActionButton('⎇', message.type === 'markdown' ? '发送到其他隧道' : '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
-    if (message.type === 'file' || message.type === 'collection') {
+    if (message.type === 'markdown') {
+        menuItems.push(createRecordActionButton('☁', '保存到网盘', '将 Markdown 保存到自己的 Telegram 网盘', () => {
+            window.TunnelMarkdown.save(message).catch(error => alert(`资源准备失败：${error.message}`));
+        }));
+    } else if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
             saveMessageToTelegramDrive(message).catch(error => alert(`保存到 Telegram 网盘失败：${error.message}`));
         }));
@@ -8409,6 +8412,10 @@ async function forwardHistoryMessage(messageId) {
         senderName: state.deviceName,
         forwardedFrom: { sessionId: state.sessionId, messageId: source.id }
     };
+    if (source.type === 'markdown') {
+        message.markdownVersion = 1;
+        delete message.markdownHistory; delete message.updatedAt; delete message.updatedBy;
+    }
     if (source.type === 'file' && source.fileInfo?.id) {
         message.fileInfo = await cloneForwardFileInfo(source.fileInfo, targetSessionId);
     } else if (source.type === 'collection') {

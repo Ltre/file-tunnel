@@ -5406,6 +5406,10 @@ body[data-theme="graphite"] .control-center-tile{background:#283445;border-color
         min-width: 74px;
     }
 
+    .input-area #sendTextBtn {
+        justify-content: center;
+    }
+
     .mobile-workspace-nav {
         position: fixed;
         right: 0;

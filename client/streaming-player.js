@@ -9,6 +9,7 @@
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
         const stage = host.querySelector('.sc-stage'), content = host.querySelector('.sc-media'), countdown = host.querySelector('.sc-countdown');
         const controls = host.querySelector('.sc-local-controls'), statusNode = host.querySelector('.sc-play-status'), muteNode = host.querySelector('.sc-muted');
+        const buffering = document.createElement('div'); buffering.className = 'sc-buffering'; buffering.hidden = true; buffering.setAttribute('role', 'status'); buffering.setAttribute('aria-live', 'polite'); buffering.textContent = t('正在缓冲'); stage.append(buffering);
         const seekBar = document.createElement('div'); seekBar.className = 'sc-seek'; seekBar.hidden = true;
         const seek = document.createElement('input'); seek.type = 'range'; seek.min = 0; seek.step = .1; seek.setAttribute('aria-label', t('调整全台播放进度'));
         const seekLabel = document.createElement('span'); seekLabel.className = 'sc-seek-label'; seekBar.append(seek, seekLabel); host.append(seekBar);
@@ -33,13 +34,14 @@
             catch (_) { host.classList.toggle('sc-media-fullscreen'); }
         }); enterFullscreen.className = 'sc-window-only';
         const leaveFullscreen = button('退出全屏', () => { if (document.fullscreenElement === host) document.exitFullscreen(); host.classList.remove('sc-media-fullscreen'); }); leaveFullscreen.className = 'sc-exit-fullscreen';
-        leaveFullscreen.dataset.icon = '⤡'; leaveFullscreen.title = t('退出全屏'); leaveFullscreen.setAttribute('aria-label', t('退出全屏'));
+        leaveFullscreen.textContent = ''; const exitIcon = document.createElement('img'); exitIcon.src = '/client/icons/quit-fullscreen.png'; exitIcon.alt = ''; exitIcon.setAttribute('aria-hidden', 'true'); leaveFullscreen.append(exitIcon); leaveFullscreen.title = t('退出全屏'); leaveFullscreen.setAttribute('aria-label', t('退出全屏'));
         const length = item => item?.duration ? item.duration - (item.start || 0) : item?.stay || 0;
         const itemKey = item => JSON.stringify([snapshot?.configVersion, item?.id, item?.kind, item?.duration, item?.start, item?.stay]);
         const current = () => snapshot?.items.find(item => item.id === currentId);
         const running = () => snapshot?.playback.status === 'playing' || tail;
         function globalPosition() { const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId); return Math.min(length(item), (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0)); }
         function update() {
+            buffering.hidden = actual !== 'buffering';
             const selected = current(); seekBar.hidden = !snapshot?.manageable || !selected || !onSeek;
             if (selected && !dragging) { seek.max = length(selected); seek.value = Math.min(localPosition, length(selected)); seekLabel.textContent = localPosition.toFixed(1) + ' / ' + length(selected).toFixed(1) + ' s'; }
             const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', reading: '正在展示' };

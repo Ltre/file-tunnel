@@ -79,6 +79,7 @@
 .telegram-drive-space-dialog.disk-settings-dialog{max-height:none;overflow:visible}
 .disk-drop-target{outline:3px solid #249e75!important;background:#e3f6ed!important}
 .telegram-drive-item{touch-action:none;-webkit-user-select:none;user-select:none}
+.telegram-drive-item.disk-mount-item,.telegram-drive-item.disk-mounted-search-item{touch-action:pan-y}
 .telegram-drive-items{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .telegram-drive-item *{-webkit-user-select:none;user-select:none}
 .telegram-drive-item-name,.telegram-drive-item-meta{-webkit-user-drag:none}

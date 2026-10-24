@@ -170,7 +170,7 @@
         if (root) return;
         root = document.createElement('section'); root.id = 'streamingConsole'; root.className = 'sc-overlay'; root.hidden = true;
         root.setAttribute('aria-label', t('串流控制台'));
-        root.innerHTML = '<header class="sc-header"><strong>串流控制台</strong><button type="button" data-sc-account></button><span class="sc-running"></span><button type="button" data-sc-minimize>_</button><button type="button" data-sc-home class="sc-close">×</button></header><div class="sc-workspace"><nav class="sc-nav"></nav><main class="sc-main"><div class="sc-banner" role="status" hidden></div><div class="sc-page"></div></main></div><footer class="sc-home-shortcuts"></footer>';
+        root.innerHTML = '<header class="sc-header"><strong>串流控制台</strong><button type="button" data-sc-account></button><span class="sc-running"></span><button type="button" data-sc-minimize>_</button><button type="button" data-sc-home class="sc-close">×</button></header><div class="sc-workspace"><nav class="sc-nav"></nav><main class="sc-main"><div class="sc-banner" role="status" hidden></div><div class="sc-page"></div></main></div>';
         document.body.append(root); main = root.querySelector('.sc-page'); banner = root.querySelector('.sc-banner');
         root.querySelector('[data-sc-home]').onclick = () => closeConsole();
         root.querySelector('[data-sc-home]').setAttribute('aria-label', t('关闭串流控制台'));
@@ -182,7 +182,6 @@
             const b = button(label, () => navigate(view)); b.dataset.scView = view; nav.append(b);
         }
         nav.append(button('＋ 创建串流台', createStation, 'sc-primary'));
-        for (const [view, label] of [['devices', '连接设备'], ['chat', '传输记录'], ['editor', '协同编辑']]) root.querySelector('footer').append(button(label, () => { minimize(); config.home(view); }));
         root.addEventListener('pointerdown', event => event.stopPropagation());
         root.addEventListener('touchstart', event => event.stopPropagation(), { passive: true });
         root.addEventListener('wheel', event => event.stopPropagation(), { passive: true });
@@ -294,7 +293,7 @@
             if (view === 'discover') { let changed = false; for (const station of result.stations) { const identity = (currentUser?.id || selected) + ':' + station.id; if (!discoveryTimes[identity]) { discoveryTimes[identity] = Date.now(); changed = true; } } if (changed) try { localStorage.setItem(key('discoveries'), JSON.stringify(discoveryTimes)); } catch (_) { notice('本机配置保存失败，请检查浏览器存储空间'); } }
             const sort = ui.sort?.[view] || ({ local: 'updatedAt', bookmarks: 'subscribedAt', discover: 'discoveredAt' })[view];
             result.stations.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name) : (sort === 'discoveredAt' ? (discoveryTimes[(currentUser?.id || selected) + ':' + b.id] || 0) - (discoveryTimes[(currentUser?.id || selected) + ':' + a.id] || 0) : (b[sort] || 0) - (a[sort] || 0)));
-            if (view === 'creator') { const heading = main.querySelector('h1'); if (heading) { const tools = heading.querySelector('.sc-list-tools'), name = document.createElement('span'); name.className = 'message-content'; name.textContent = result.stations[0]?.owner?.name || ui.creatorName || ui.stationId; heading.replaceChildren(name, document.createTextNode(' ' + t('的公开台'))); if (tools) heading.append(tools); } }
+            if (view === 'creator') { const heading = main.querySelector('h1'); if (heading) { const tools = heading.querySelector('.sc-list-tools'), title = document.createElement('span'), name = document.createElement('span'); title.className = 'sc-list-title'; name.className = 'message-content'; name.textContent = result.stations[0]?.owner?.name || ui.creatorName || ui.stationId; title.append(name, document.createTextNode(' ' + t('的公开台'))); heading.replaceChildren(title); if (tools) heading.append(tools); } }
             lastList = result.stations; let list = main.querySelector('.sc-station-list');
             if (!list) { list = document.createElement('div'); list.className = 'sc-station-list'; main.append(list); }
             list.replaceChildren();
@@ -380,8 +379,13 @@
         form.querySelector('.sc-loop').value = d.loop ? 'loop' : 'stop'; form.querySelector('.sc-countdown-choice').value = d.countdown;
         form.oninput = () => { d.name = form.querySelector('.sc-name').value; d.loop = form.querySelector('.sc-loop').value === 'loop'; d.countdown = form.querySelector('.sc-countdown-choice').value; saveUi(); };
         const resources = document.createElement('section'); resources.className = 'sc-card sc-editor-resources';
-        const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); resources.append(heading, button('导入可视资源', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); }));
+        const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
+        function focusProgram(id, duration = 1000) {
+            const target = [...list.children].find(node => node.dataset.itemId === id); if (!target) return;
+            target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            target.style.setProperty('--sc-focus-duration', duration + 'ms'); target.classList.add('sc-record-focus'); setTimeout(() => target.classList.remove('sc-record-focus'), duration);
+        }
         function renderItems() {
             list.replaceChildren();
             d.items.forEach((item, index) => {
@@ -396,14 +400,15 @@
                     row.append(state, retry);
                 }
                 const toolbar = document.createElement('div'); toolbar.className = 'sc-actions';
-                const move = delta => { const from = d.items.indexOf(item), to = Math.min(d.items.length - 1, Math.max(0, from + delta)); d.items.splice(from, 1); d.items.splice(to, 0, item); saveUi(); renderItems(); };
+                const moveTo = (to, duration) => { const from = d.items.indexOf(item); d.items.splice(from, 1); d.items.splice(Math.min(d.items.length, Math.max(0, to)), 0, item); saveUi(); renderItems(); focusProgram(item.id, duration); };
+                const move = delta => moveTo(d.items.indexOf(item) + delta, 250);
                 const handle = button('拖动排序', () => {}); handle.className = 'sc-drag-handle';
                 let start = null;
                 handle.onpointerdown = event => { start = { y: event.clientY }; handle.setPointerCapture(event.pointerId); event.preventDefault(); };
                 handle.onpointermove = event => { if (!start || Math.abs(event.clientY - start.y) < 8) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); target?.classList.add('sc-drop-target'); };
                 handle.onpointerup = event => { if (!start) return; start = null; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); const to = d.items.findIndex(value => value.id === target?.dataset.itemId); if (to >= 0) { const from = d.items.indexOf(item); d.items.splice(from, 1); d.items.splice(to, 0, item); saveUi(); renderItems(); } };
                 handle.onpointercancel = () => { start = null; list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); };
-                toolbar.append(handle, button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { const added = { ...structuredClone(item), id: uid(), sourceSaved: false }; d.items.push(added); ensureDuration(added); saveUi(); renderItems(); const target = [...list.children].find(node => node.dataset.itemId === added.id); target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); target?.classList.add('sc-record-focus'); setTimeout(() => target?.classList.remove('sc-record-focus'), 1000); }), button('移除', () => { d.items = d.items.filter(value => value.id !== item.id); saveUi(); renderItems(); }));
+                toolbar.append(handle, button('置顶', () => moveTo(0, 1000)), button('置底', () => moveTo(d.items.length - 1, 1000)), button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { const added = { ...structuredClone(item), id: uid(), sourceSaved: false }; d.items.splice(d.items.indexOf(item) + 1, 0, added); ensureDuration(added); saveUi(); renderItems(); focusProgram(added.id); }), button('移除', () => { d.items = d.items.filter(value => value.id !== item.id); saveUi(); renderItems(); }));
                 if (item.source?.kind === 'local') toolbar.append(button('重新选择文件', () => chooseLocalFile(item)));
                 row.append(toolbar); list.append(row);
             });
@@ -830,7 +835,7 @@
         if (response.accepted) { await open(); navigate('watch', response.stationId); } await sync();
     }
     async function openInvitation(token) {
-        try { await open(); await inspectInvitation(token); } catch (cause) { error(cause); }
+        try { await open(); await inspectInvitation(token); return true; } catch (cause) { error(cause); return false; }
     }
     async function sendMarkdown(body, messageId = uid()) {
         await ready;

@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['正在加载 Markdown…','Loading Markdown…'], ['正在缓冲','Buffering'], ['置顶','Move to top'], ['置底','Move to bottom'], ['导入','Import'], ['历史','History'], ['存到网盘','Save to drive'], ['发送到其他隧道','Send to another tunnel'],
+        ['将 Markdown 保存到自己的 Telegram 网盘','Save Markdown to your Telegram drive'], ['资源准备失败：{0}','Resource preparation failed: {0}'],
+        ['已知情，但坚持删除','I understand and still want to delete'], ['坚持删除','Delete anyway'], ['确认删除开放范围内的内容','Confirm deletion of shared content'], ['请先勾选“已知情，但坚持删除”','Select “I understand and still want to delete” first'],
+        ['所选内容位于协同编辑或静态资源开放范围内。删除后，相关使用者或公开链接将无法读取被删除的内容。','The selected content is shared for collaboration or static access. After deletion, collaborators and public links cannot read the deleted content.'],
         ['关闭串流控制台','Close streaming console'],
         ['尚未加入隧道','No tunnel joined'],
         ['上线','Go online'], ['打开串流控制台','Open streaming console'], ['收起','Collapse'], ['重试','Retry'],

@@ -131,7 +131,7 @@ function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}
 }
 async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
     if (window.AccountUI) return window.AccountUI.open({ choose, requiredId, currentAccount: () => window.DiskClient.getAccount(),
-        load: async () => { const [accounts, status] = await Promise.all([window.DiskClient.raw('/accounts', { accountId: '' }), window.DiskClient.raw('/me', { accountId: '' })]); return { ...accounts, status }; },
+        load: async () => { const status = await window.DiskClient.raw('/me', { accountId: '' }); return { accounts: status.accounts || [], status }; },
         select: switchTelegramDriveAccount, offline: () => switchTelegramDriveAccount(''), logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
         renderSignIn: (target, status) => appendTelegramDriveAddAccount(target, status, { embedded: true }),
         reauthenticate: (user, target, status) => {
@@ -934,29 +934,47 @@ async function moveTelegramDriveItems(items, targetPath, { confirmed = false } =
 
 async function deleteTelegramDriveItems(items) {
     if (!items.length) return;
+    const context = window.DiskClient.context();
     const hasDirectory = items.some(item => item.kind === 'directory');
     const message = (telegramDriveMountContext?'这会删除原所有者的真实协同内容，回收站也属于原所有者；不是移除本地挂载。':'')+`将所选 ${items.length} 项${hasDirectory ? '及目录中的全部内容' : ''}移入当前分区回收站，可在回收站顶级列表还原。管理员已删除的占位节点只会移除，不能还原正文。`;
     if (!await confirmTelegramDriveAction('移入回收站', message, '移入回收站')) return;
-    let completed=0;
+    let completed=0, exposureConfirmed=false;
+    const refreshDeleted = async () => {
+        if (JSON.stringify(context) !== JSON.stringify(window.DiskClient.context())) return;
+        for (const item of items.slice(0,completed)) telegramDriveSelected.delete(telegramDriveItemKey(item));
+        await renderTelegramDrive();
+    };
+    const remove = async url => {
+        const run = () => telegramDriveRequest(url + (url.includes('?') ? '&' : '?') + 'confirm_exposed_delete=' + exposureConfirmed, { ...context, method:'DELETE' });
+        try { return await run(); }
+        catch (error) {
+            if (exposureConfirmed || !['STATIC_RESOURCE_ACTIVE','COLLABORATION_DISABLE_BEFORE_DELETE'].includes(error.message)) throw error;
+            const body = document.createElement('div'), warning = document.createElement('p'), label = document.createElement('label'), check = document.createElement('input');
+            warning.textContent = '所选内容位于协同编辑或静态资源开放范围内。删除后，相关使用者或公开链接将无法读取被删除的内容。';
+            check.type = 'checkbox'; label.append(check, document.createTextNode('已知情，但坚持删除')); body.append(warning,label);
+            const accepted = await openTelegramDriveDialog({ title:'确认删除开放范围内的内容', body, confirmText:'坚持删除', validate:()=>{ if(!check.checked)throw new Error('请先勾选“已知情，但坚持删除”'); return true; } });
+            if (!accepted) return false;
+            exposureConfirmed = true; await run(); return true;
+        }
+    };
     for (const [index,item] of items.entries()) {
         try {
         if (item.kind === 'directory') {
-            const tree = await telegramDriveRequest('/api/telegram/drive/tree?path=' + encodeURIComponent(item.path));
-            await telegramDriveRequest(`/api/telegram/drive/directories?path=${encodeURIComponent(item.path)}&recursive=true`, { method: 'DELETE' });
+            const tree = await telegramDriveRequest('/api/telegram/drive/tree?path=' + encodeURIComponent(item.path), context);
+            if (await remove(`/api/telegram/drive/directories?path=${encodeURIComponent(item.path)}&recursive=true`) === false) { if (completed) await refreshDeleted(); return; }
             completed++;
             pruneTelegramDriveSearchResults([item]);
             await window.TelegramDriveCache?.remove(tree.files.map(file => file.id));
         } else {
-            await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+            if (await remove(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`) === false) { if (completed) await refreshDeleted(); return; }
             completed++;
             pruneTelegramDriveSearchResults([item]);
             await window.TelegramDriveCache?.remove([item.id]);
         }
         } catch (error) {error.batchProgress={item:item.name,completed,total:items.length,remaining:items.length-index-1};throw error;}
     }
-    clearTelegramDriveSelection();
     showAppToast(`已删除 ${items.length} 项`);
-    await renderTelegramDrive();
+    await refreshDeleted();
 }
 
 async function copyTelegramDriveItemPath(item) {
@@ -2571,6 +2589,7 @@ function cancelTelegramDriveLogin() {
 }
 
 async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') {
+    const loginTarget = telegramDriveLoginTarget;
     telegramDriveOidcPollGeneration += 1;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
@@ -2579,6 +2598,7 @@ async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') 
         if (!status.identity) throw new Error('登录凭据尚未确认，请重新登录；待转存记录仍保留');
         if (status.identity) await switchTelegramDriveAccount(status.identity.id);
         else await renderTelegramDrive();
+        window.AccountUI?.completeSignIn?.(loginTarget, status.identity);
     } else { window.AccountUI?.refresh(); await renderTelegramDrive(); }
     if (result === 'success') { showAppToast('Telegram 登录成功'); if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error))); }
     else alert(`Telegram 登录失败${error ? `：${error}` : '，请重试'}`);
@@ -2651,6 +2671,7 @@ function appendPasskeyControls(target, user, { addAccount = !user, embedded = fa
                 if (!embedded) closeTelegramDriveDialog(null);
                 const status = verified.identity ? verified : await window.DiskClient.raw('/me', { accountId: '' });
                 if (status.identity) await switchTelegramDriveAccount(status.identity.id); else await renderTelegramDrive();
+                if (status.identity && embedded) window.AccountUI?.completeSignIn?.(target, status.identity);
                 if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error)));
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { button.disabled = false; button.textContent = idleLabel; }
         };

@@ -14,9 +14,9 @@ function checkedPath(value) {
     return path;
 }
 
-function checkedName(value) {
+function checkedName(value, maxLength = 100) {
     if (typeof value !== 'string' || value !== value.trim() || !value || value === '.' || value === '..'
-        || value.length > 100 || /[\\/:*?"<>|\u0000-\u001f]/.test(value)) throw new Error('MOUNT_NAME_INVALID');
+        || value.length > maxLength || /[\\/:*?"<>|\u0000-\u001f]/.test(value)) throw new Error('MOUNT_NAME_INVALID');
     return value;
 }
 
@@ -97,7 +97,9 @@ function createDiskCollaborationMountStore(dataDir, { collaborations, isTargetAv
         },
         assertNameFree(ownerId, diskSpace, parentPath, name, exceptId = '') {
             reloadPersistence();
-            assertMountNameFree(ownerId, diskSpace, checkedPath(parentPath), checkedName(name), exceptId);
+            // Native files allow 180 characters; the 100-character mount-title
+            // limit applies only when creating or renaming a mount itself.
+            assertMountNameFree(ownerId, diskSpace, checkedPath(parentPath), checkedName(name, 180), exceptId);
         },
         assertCanEnableDirectory(ownerId, diskSpace, directoryPath) {
             reloadPersistence();

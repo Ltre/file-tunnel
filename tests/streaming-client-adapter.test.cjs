@@ -49,3 +49,11 @@ test('current tunnel remains discoverable before its session directory has been 
     const f = fixture({ state: { sessionId: 'current-tunnel', devices: new Map(), contacts: new Map() }, listSessions: async () => [] });
     assert.equal((await f.adapter.tunnels())[0]?.sessionId, 'current-tunnel');
 });
+
+test('simultaneous inline and reader references share one read but completed blobs are not an authorization cache', async () => {
+    const f = fixture(); let release, reads = 0;
+    f.runtime.fetch = async () => { reads++; return new Promise(resolve => { release = () => resolve({ ok: true, headers: new Map(), blob: async () => new Blob(['image']) }); }); };
+    const url = 'tunnel-blob:tunnel1/message1/asset1', a = f.markdown.readReference(url), b = f.markdown.readReference(url);
+    await new Promise(setImmediate); assert.equal(reads, 1); release(); assert.equal((await a).size, 5); assert.equal((await b).size, 5);
+    const again = f.markdown.readReference(url); await new Promise(setImmediate); assert.equal(reads, 2); release(); await again;
+});

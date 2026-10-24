@@ -14,7 +14,7 @@ const MARKDOWN_SUPPORT_ASSETS = [
   '/client/vendor/web-markdown/THIRD-PARTY-LICENSES.txt'
 ];
 
-const FIXED_SHELL_ASSETS = ['/client/icons/streaming.png'];
+const FIXED_SHELL_ASSETS = ['/client/icons/streaming.png', '/client/icons/quit-fullscreen.png'];
 function stripFixedResourcePaths(source) {
   // The byte-for-byte ZIP support bundle and runtime icons keep fixed URLs.
   // Do not exempt the rest of /client/ from the deployment asset checks.

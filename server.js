@@ -9882,7 +9882,7 @@ io.on('connection', (socket) => {
                 targetSessionId,
                 infraStore.findShortCodeForSession(targetSessionId)
             );
-            const forwardCapability = message.type === 'text' ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
+            const forwardCapability = ['text', 'markdown'].includes(message.type) ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
             if (!canUseTunnelCapability(targetSession, currentDevice, forwardCapability)) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
             }

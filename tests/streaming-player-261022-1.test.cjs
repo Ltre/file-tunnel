@@ -39,7 +39,7 @@ function fixture({ deferredTicket = false, kind = 'image', reportStarts = false,
             return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
-    return { player, state, calls, elements, flush: async () => { await new Promise(setImmediate); },
+    return { player, state, calls, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
         tick(ms) { time += ms; for (const timer of timers) if (timer.ms === 250) timer.run(); },
         page(name, event = {}) { events.get(name)?.(event); },
         release() { resolveTicket({ url: '/media/a', expiresAt: Date.now() + 600000 }); } };
@@ -57,9 +57,10 @@ test('the first viewer starts from the report response without clicking Start wa
 });
 test('a delayed current ticket is requested once rather than restarted by each clock tick', async () => {
     const f = fixture({ deferredTicket: true });
+    assert.equal(f.player.element.querySelector('.sc-buffering').hidden, false);
     for (let i = 0; i < 8; i++) f.tick(250);
     assert.equal(f.calls.filter(call => call.route.endsWith('/ticket') && call.body.itemId === 'a').length, 1);
-    f.release(); await f.flush(); f.player.close();
+    f.release(); await f.flush(); f.elements.find(el => el.tagName === 'IMG').emit('load'); await f.flush(); assert.equal(f.player.element.querySelector('.sc-buffering').hidden, true); f.player.close();
 });
 test('an image gets its full dwell after thirty seconds of loading and the next item is prefetched', async () => {
     const f = fixture(); await f.flush(); f.tick(30000);

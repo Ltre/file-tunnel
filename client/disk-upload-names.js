@@ -22,7 +22,7 @@
         }
         return changes;
     }
-    async function prepare(files, destination, confirmRename) {
+    async function prepare(files, destination, confirmRename, rename) {
         const changes = plan(files, destination);
         if (!changes.length) return files;
         const detail = changes.slice(0, 8).map(item => `/${[item.path, item.originalName].filter(Boolean).join('/')} → ${item.name}`).join('\n');
@@ -31,6 +31,7 @@
         const names = new Map(changes.map(item => [item.index, item.name]));
         return files.map((file, index) => {
             if (!names.has(index)) return file;
+            if (rename) return rename(file, names.get(index));
             const copy = new File([file], names.get(index), { type: file.type, lastModified: file.lastModified });
             if (file.diskFolderPath !== undefined) copy.diskFolderPath = file.diskFolderPath;
             return copy;

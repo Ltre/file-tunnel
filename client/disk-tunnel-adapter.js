@@ -20,6 +20,10 @@
         const target = await window.DiskUI.chooseSaveDestination({ userId: status.identity.id });
         if (target === null) return;
         const folderPath = target.path, transportContext = target.transportContext;
+        if (window.DiskUploadNames) {
+            files = await window.DiskUploadNames.prepare(files, folderPath, text => confirm(text), (file, name) => ({ ...file, name }));
+            if (!files) return;
+        }
         const navigationVersion = window.DiskUI.navigationVersion;
         const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId, transportContext });
         await host.linkBackup?.(recordId, files, result?.items || []);

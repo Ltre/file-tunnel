@@ -51,7 +51,7 @@ function loginUI(raw) {
     const errors = [], successes = [], selected = [], timers = [], popup = { closed: false, close() { this.closed = true; }, focus() {} };
     const context = vm.createContext({ window: { location: { origin: 'https://fixture.test' }, DiskClient: { raw } },
         document: { querySelector: () => null }, telegramDriveOidcPopup: popup, telegramDriveOidcPollGeneration: 1,
-        telegramDriveLoginAttempt: 'current-attempt-001', telegramDriveLoginBaseline: [{ id: 'account', expiresAt: 500 }], telegramDrivePendingSaveId: '',
+        telegramDriveLoginAttempt: 'current-attempt-001', telegramDriveLoginTarget: null, telegramDriveLoginBaseline: [{ id: 'account', expiresAt: 500 }], telegramDrivePendingSaveId: '',
         switchTelegramDriveAccount: async id => selected.push(id), renderTelegramDrive: async () => {},
         showAppToast: message => successes.push(message), alert: message => errors.push(message), historyLog() {},
         setTimeout: (callback, delay) => { timers.push({ callback, delay }); }, Date, encodeURIComponent });

@@ -73,5 +73,8 @@
     }
     global.addEventListener('popstate', event => { if (current) { close(); event.stopImmediatePropagation(); } }, true);
     document.addEventListener('keydown', event => { if (current && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); } }, true);
-    global.AccountUI = { open, close, isOpen: () => Boolean(current), refresh: () => current?.reload() };
+    function completeSignIn(target, identity) {
+        if (identity && target && current?.signIn === target) close(identity);
+    }
+    global.AccountUI = { open, close, completeSignIn, isOpen: () => Boolean(current), refresh: () => current?.reload() };
 })(window);

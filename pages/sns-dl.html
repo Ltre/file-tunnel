@@ -61,7 +61,8 @@
         .details strong { color:var(--text); }
         .tags { display:flex; flex-wrap:wrap; gap:6px; margin:7px 0; }
         .tag { background:color-mix(in srgb,var(--accent) 10%,transparent); border-radius:999px; padding:3px 8px; }
-        .remark-editor { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; margin:9px 0; }
+        .remark-editor { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; width:100%; min-width:0; padding-right:4px; margin:9px 0; }
+        .remark-editor textarea { display:block; width:100%; min-width:0; box-sizing:border-box; }
         .task-error { color:var(--danger); white-space:pre-wrap; overflow-wrap:anywhere; }
         .pager { justify-content:center; margin-top:14px; }
         dialog { width:min(780px,calc(100% - 24px)); max-height:86vh; padding:0; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--text); box-shadow:0 28px 90px rgba(0,0,0,.3); }

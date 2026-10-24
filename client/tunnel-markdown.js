@@ -103,15 +103,47 @@
         const layer = document.createElement('div'); layer.className = 'sc-dialog sc-markdown-dialog sc-markdown-reader';
         const panel = document.createElement('section'), header = document.createElement('header'), title = document.createElement('strong'), content = document.createElement('div'), status = document.createElement('p');
         title.textContent = t('Markdown 预览'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); content.className = 'sc-document message-content';
-        let resolved; const close = () => { resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
+        let resolved; const controller = new AbortController();
+        const close = () => { controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
         const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = t('关闭'); dismiss.onclick = close;
-        header.append(title, dismiss); panel.append(header, content, status); layer.append(panel); document.body.append(layer); document.addEventListener('keydown', escape, true);
-        render(content, message.markdown);
-        if (refs(message.markdown).length) try { status.textContent = t('正在加载资源列表…'); resolved = await resolve(message.markdown); if (!layer.isConnected) { resolved.close(); return; } render(content, message.markdown, resolved.mapping); status.textContent = ''; }
-        catch (error) { if (layer.isConnected) status.textContent = t('部分引用资源不可读取，可检查来源后重试') + ' [' + error.message + ']'; }
+        const loading = document.createElement('div'); loading.className = 'sc-markdown-loading'; loading.textContent = t('正在加载 Markdown…'); loading.setAttribute('role', 'status');
+        const actions = document.createElement('footer'); actions.className = 'sc-markdown-reader-actions';
+        const action = (label, run) => { const node = document.createElement('button'); node.type = 'button'; node.textContent = t(label); node.onclick = async () => { node.disabled = true; try { await run(); } catch (error) { if (layer.isConnected) status.textContent = t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'; } finally { node.disabled = false; } }; return node; };
+        if (options.edit) actions.append(action('编辑', async () => { await recordDialog(message, true); close(); }));
+        actions.append(action('历史', async () => { await recordDialog(message, false); close(); }), action('下载', () => exportRecord(message, false)), action('存到网盘', () => exportRecord(message, true)));
+        const retry = action('重试', () => load()); retry.hidden = true;
+        header.append(title, dismiss); panel.append(header, loading, content, status, retry, actions); layer.append(panel); document.body.append(layer); document.addEventListener('keydown', escape, true);
+        layer.addEventListener('click', event => { if (event.target === layer) close(); });
+        async function load() {
+            content.hidden = true; content.replaceChildren(); loading.hidden = false; content.setAttribute('aria-busy', 'true'); status.textContent = ''; retry.hidden = true;
+            resolved?.close(); resolved = undefined;
+            try {
+                if (refs(message.markdown).length) resolved = await resolve(message.markdown);
+                if (!layer.isConnected) { resolved?.close(); return; }
+                render(content, message.markdown, resolved?.mapping, { onInvitation: close });
+                await waitForImages(content, controller.signal);
+            } catch (error) {
+                if (!layer.isConnected) return;
+                if (!content.childNodes.length) render(content, message.markdown, undefined, { onInvitation: close });
+                status.textContent = t('部分引用资源不可读取，可检查来源后重试') + ' [' + error.message + ']'; retry.hidden = false;
+            } finally {
+                if (layer.isConnected) { content.hidden = false; loading.hidden = true; content.setAttribute('aria-busy', 'false'); }
+            }
+        }
+        await load();
     }
-    function render(target, body, mapping = new Map()) {
+    function waitForImages(target, signal) {
+        return Promise.all([...target.querySelectorAll('img[src]')].map(image => new Promise((resolve, reject) => {
+            if (image.complete) return image.naturalWidth ? resolve() : reject(Error('STREAM_IMAGE_UNAVAILABLE'));
+            const finish = error => { clearTimeout(timer); image.removeEventListener('load', loaded); image.removeEventListener('error', failed); signal.removeEventListener('abort', aborted); error ? reject(error) : resolve(); };
+            const loaded = () => finish(), failed = () => finish(Error('STREAM_IMAGE_UNAVAILABLE')), aborted = () => finish(Error('STREAM_PREVIEW_CANCELLED'));
+            const timer = setTimeout(() => finish(Error('STREAM_IMAGE_TIMEOUT')), 15000);
+            image.addEventListener('load', loaded, { once: true }); image.addEventListener('error', failed, { once: true }); signal.addEventListener('abort', aborted, { once: true });
+            if (signal.aborted) aborted();
+        })));
+    }
+    function render(target, body, mapping = new Map(), { onInvitation } = {}) {
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
         let source = String(body); const placeholders = new Map();
@@ -145,7 +177,8 @@
                 let url; try { url = new URL(href, location.href); } catch (_) { return; }
                 if (url.origin !== location.origin || !url.searchParams.has('stream_invite')) return;
                 event.preventDefault();
-                global.StreamingConsole?.openInvitation(url.searchParams.get('stream_invite'));
+                if (!global.StreamingConsole?.openInvitation) return;
+                Promise.resolve(global.StreamingConsole.openInvitation(url.searchParams.get('stream_invite'))).then(opened => { if (opened !== false) onInvitation?.(); });
             });
         });
     }
@@ -200,14 +233,14 @@
     function menuActions(message) {
         const actions = [];
         const add = (label, run) => { const action = document.createElement('button'); action.type = 'button'; action.textContent = t(label); action.onclick = async event => { event.stopPropagation(); action.disabled = true; try { await run(); } catch (error) { global.alert(t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'); } finally { action.disabled = false; } }; actions.push(action); };
-        if (options.edit) { add('编辑 Markdown', () => recordDialog(message, true)); add('修改历史', () => recordDialog(message, false)); }
-        for (const [label, upload] of [['下载', false], ['上传到网盘', true]]) add(label, async () => {
-            const file = await archive(message);
-            if (upload) { try { await options.upload(file); } catch (_) { /* The drive owns task outcomes, including cancellation. */ } }
-            else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
-        });
+        add('保存到网盘', () => exportRecord(message, true));
         return actions;
     }
+    async function exportRecord(message, upload) {
+        const file = await archive(message);
+        if (upload) { try { await options.upload(file); } catch (_) { /* Drive task UI owns upload outcomes, including cancellation. */ } }
+        else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    }
     function init(config) { options = config; }
-    global.TunnelMarkdown = { init, render, refs, archive, mount, fromHtml, menuActions, preview: previewRecord };
+    global.TunnelMarkdown = { init, render, refs, archive, mount, fromHtml, menuActions, save: message => exportRecord(message, true), preview: previewRecord };
 })(window);

@@ -214,11 +214,22 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const mountedNamespace = require('./disk-mounted-namespace').createMountedNamespace({mounts,collaborations,partitions,spaces});
     shares.setMountedNamespace(mountedNamespace); staticResources.setMountedNamespace(mountedNamespace);
     spaces.installExternalNameGuard((ownerId, diskSpace, parentPath, name) => mounts.assertNameFree(ownerId, diskSpace, parentPath, name));
+    const assertDeleteProtection = (target, drive, selection) => {
+        if (selection.exposureConfirmed === true) return;
+        const file = selection.kind === 'file' ? drive.get(target.userId, selection.id) : null;
+        if (selection.kind === 'file') { if (!file) throw new Error('FILE_NOT_FOUND'); assertStaticFileWritable(target, file); }
+        else assertStaticDirectoryWritable(target, drive, selection.path);
+        collaborations.reloadPersistence();
+        const inside = (path, root) => !root || path === root || path.startsWith(root + '/');
+        const protectedByCollaboration = collaborations.forOwner(target.userId, target.diskSpace).some(grant => selection.kind === 'file'
+            ? grant.kind === 'file' ? grant.fileId === file.id : inside(file.folderPath || '', grant.path || '')
+            : inside(grant.path || '', selection.path) || grant.kind === 'directory' && inside(selection.path, grant.path || ''));
+        if (protectedByCollaboration) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+    };
     const trash = createDiskTrash({repository:persistence,spaces,mounts,maxDepth:depthFor,onMountRemoved:(userId,diskSpace,id)=>staticResources.stopMount({userId,diskSpace},id),assertWritable:(userId,diskSpace,selection,drive)=>{
         partitions.find(userId,diskSpace);collaborations.reloadPersistence();
-        if(selection.kind==='file'){const file=drive.get(userId,selection.id);if(!file)throw new Error('FILE_NOT_FOUND');assertStaticFileWritable({userId,diskSpace},file);if(collaborations.protectFile(userId,diskSpace,file.id))throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');}
-        else if(selection.kind==='restore'){for(const file of selection.snapshot.files)assertStaticFileWritable({userId,diskSpace},file);for(const directory of selection.snapshot.directories)assertStaticDirectoryWritable({userId,diskSpace},drive,directory.path);}
-        else {assertStaticDirectoryWritable({userId,diskSpace},drive,selection.path);if(collaborations.protectDirectory(userId,diskSpace,selection.path))throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');}
+        if(selection.kind==='restore'){for(const file of selection.snapshot.files)assertStaticFileWritable({userId,diskSpace},file);for(const directory of selection.snapshot.directories)assertStaticDirectoryWritable({userId,diskSpace},drive,directory.path);}
+        else assertDeleteProtection({userId,diskSpace},drive,selection);
     }});
     const shared = express.Router();
     const publicStatic = express.Router();
@@ -1998,15 +2009,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.delete('/files/:id', wrap((req, res) => {
             const file = getFile(req);
-            assertStaticFileWritable(scope(req), file);
-            if (collaborations.protectFile(owner(req), req.diskScope.diskSpace, file.id)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+            const selection = {kind:'file',id:file.id,exposureConfirmed:!req.diskApp && req.query.confirm_exposed_delete === 'true'};
+            assertDeleteProtection(scope(req), store(req), selection);
             jobResponse(req, res, 'delete-file', '正在删除 ' + file.name, async update => {
-                assertStaticFileWritable(scope(req), store(req).get(owner(req), file.id));
-                if (collaborations.protectFile(owner(req), req.diskScope.diskSpace, file.id)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+                assertDeleteProtection(scope(req), store(req), selection);
                 if (file.reviewStatus === 'deleted') { store(req).remove(owner(req), file.id); return { ok: true, removedPlaceholder: true }; }
                 if (!req.diskApp) {
                     update({phase:'recycle',message:'正在移入当前分区回收站：'+file.name});
-                    return {ok:true,trashed:trash.archive(owner(req),req.diskScope.diskSpace,{kind:'file',id:file.id})};
+                    return {ok:true,trashed:trash.archive(owner(req),req.diskScope.diskSpace,selection)};
                 }
                 update({ phase: 'telegram-delete', message: '正在删除文件并清理不再共享的 Telegram 消息：' + file.name });
                 const remoteCleanup=await objectStorage.deleteFile(scope(req), file);
@@ -2017,20 +2027,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.delete('/directories', wrap((req, res) => {
             const folderPath = normalizeTelegramDrivePath(req.query.path);
             if (!folderPath) throw new Error('ROOT_DELETE_FORBIDDEN');
-            assertStaticDirectoryWritable(scope(req), store(req), folderPath);
-            if (collaborations.protectDirectory(owner(req), req.diskScope.diskSpace, folderPath)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+            const selection = {kind:'directory',path:folderPath,exposureConfirmed:!req.diskApp && req.query.confirm_exposed_delete === 'true'};
+            assertDeleteProtection(scope(req), store(req), selection);
             const tree = store(req).getDirectoryTree(owner(req), folderPath);
             if (!tree) throw new Error('DIRECTORY_NOT_FOUND');
             if (req.query.recursive !== 'true' && (tree.files.length || tree.directories.length > 1 || mounts.countTree(owner(req), req.diskScope.diskSpace, folderPath))) throw new Error('DIRECTORY_NOT_EMPTY');
             jobResponse(req, res, 'delete-directory', '正在删除目录', async update => {
-                assertStaticDirectoryWritable(scope(req), store(req), folderPath);
-                if (collaborations.protectDirectory(owner(req), req.diskScope.diskSpace, folderPath)) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+                assertDeleteProtection(scope(req), store(req), selection);
                 store(req).assertDirectoryWritable(owner(req), folderPath);
                 const currentTree = store(req).getDirectoryTree(owner(req), folderPath);
                 if (!currentTree) throw new Error('DIRECTORY_NOT_FOUND');
                 if (!req.diskApp && currentTree.reviewStatus !== 'deleted') {
                     update({phase:'recycle',message:'正在将整个目录移入当前分区回收站'});
-                    return {trashed:trash.archive(owner(req),req.diskScope.diskSpace,{kind:'directory',path:folderPath}),removedFiles:currentTree.files.length,removedDirectories:currentTree.directories.length};
+                    return {trashed:trash.archive(owner(req),req.diskScope.diskSpace,selection),removedFiles:currentTree.files.length,removedDirectories:currentTree.directories.length};
                 }
                 let count = 0, cleanupPending = false; const failures = [];
                 for (const file of currentTree.files) {

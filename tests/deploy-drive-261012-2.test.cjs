@@ -54,7 +54,8 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     // A manifest entry alone must not conceal a missing runtime helper.
     fs.unlinkSync(path.join(temporary, 'client/disk-operation-order.js'));
     fs.unlinkSync(path.join(temporary, 'client/icons/streaming.png'));
+    fs.unlinkSync(path.join(temporary, 'client/icons/quit-fullscreen.png'));
     await assert.rejects(run(['tools/deploy/verify.mjs', '--dist', relative, '--profile', 'txsl']), error => {
-        assert.match(error.stderr, /missing shared server module: client\/disk-operation-order\.js/); assert.match(error.stderr, /missing.*client\/icons\/streaming\.png/); return true;
+        assert.match(error.stderr, /missing shared server module: client\/disk-operation-order\.js/); assert.match(error.stderr, /missing.*client\/icons\/streaming\.png/); assert.match(error.stderr, /missing.*client\/icons\/quit-fullscreen\.png/); return true;
     });
 });
