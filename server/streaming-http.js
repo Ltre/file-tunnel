@@ -181,7 +181,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     }));
     router.get('/provider-work', wrap(async (req, res) => {
         const controller = new AbortController(); res.once('close', () => controller.abort());
-        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal, req.get('X-Stream-Provider') || 'legacy') });
+        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal, req.get('X-Stream-Provider') || 'legacy', req.get('X-Stream-Wait')) });
     }));
     router.post('/provider-work/:requestId', express.raw({ type: 'application/octet-stream', limit: sources.MAX_CHUNK }), wrap((req, res) => {
         sources.broker.provide(req.streamActor.deviceId, req.params.requestId, req.body, req.get('X-Stream-Error'));

@@ -25,7 +25,7 @@ function fixture({ pendingSave = '' } = {}) {
         json: (method, value) => ({ method, body: JSON.stringify(value) }),
         raw: async (route, options) => { calls.push(route); if (route === '/me') return { accounts: users }; if (route === '/accounts/select') return { identity: { id: JSON.parse(options.body).accountId } }; throw Error('unexpected ' + route); }
     } };
-    const context = vm.createContext({ window, document, history, location: { href: 'http://localhost/disk', origin: 'http://localhost' }, URL, URLSearchParams, Date, Math,
+    const context = vm.createContext({ window, document, history, AbortController, setTimeout, clearTimeout, location: { href: 'http://localhost/disk', origin: 'http://localhost' }, URL, URLSearchParams, Date, Math,
         telegramDriveEntryQuery: new URLSearchParams(pendingSave ? 'pendingSave=' + pendingSave : ''), telegramDriveEntryUrl: { pathname: '/disk' }, telegramDrivePendingSaveId: pendingSave,
         telegramDriveHistorySession: '', telegramDriveCurrentData: null, telegramDriveContentStale: true, diskWindowState: { retained: false }, telegramDrivePath: '',
         telegramDriveNavigationVersion: 0, telegramDriveRenderGeneration: 0, telegramDriveMountContext: null, telegramDriveStaticLinks: [], telegramDriveSpaceOwner: '', telegramDriveOidcPopup: null,

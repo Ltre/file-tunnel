@@ -5192,7 +5192,7 @@ function askFileCollectionMode(files) {
 async function sendSelectedFiles(files, options = {}) {
     const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null }).filter(item => item.file);
     if (!entries.length) return;
-    const { processingProgress: suppliedProgress, ...sendOptions } = options;
+    const { processingProgress: suppliedProgress, selection, ...sendOptions } = options;
     const progress = suppliedProgress || showFileSendProcessingPlaceholder(entries.length);
     const ownsProgress = !suppliedProgress;
     try {
@@ -5209,7 +5209,7 @@ async function sendSelectedFiles(files, options = {}) {
         }
 
         progress.update('等待选择发送方式', 0, entries.length, `共 ${entries.length} 个文件`);
-        const { mode, remark } = await askFileCollectionMode(entries.map(entry => entry.file));
+        const { mode, remark } = selection || await askFileCollectionMode(entries.map(entry => entry.file));
         if (mode === 'collection') {
             progress.update('生成合辑记录', 0, entries.length, `正在整理 ${entries.length} 个文件`);
             await sendFileCollection(entries, { ...sendOptions, remark });
@@ -5231,7 +5231,7 @@ async function sendSelectedFiles(files, options = {}) {
     }
 }
 
-async function sendDiskFilesToTunnel(files, target) {
+async function sendDiskFilesToTunnel(files, target, prepared) {
     const sourceSessionId = state.sessionId, socket = state.socket, sender = state.deviceId;
     if (!socket?.connected || !sourceSessionId) throw new Error('隧道连接尚未建立，请稍后重试');
     const entries = Array.from(files || []);
@@ -5241,7 +5241,8 @@ async function sendDiskFilesToTunnel(files, target) {
     try {
         progress.update('检查文件', 0, entries.length, entries[0].name);
         await authorizeTunnelSelection(target.id, target.shortCode);
-        const selected = entries.length > 1 ? await askFileCollectionMode(entries) : { mode:'split', remark:'' };
+        const selected = prepared?.selection || (entries.length > 1 ? await askFileCollectionMode(entries) : { mode:'split', remark:'' });
+        if (prepared && prepared.sessionId !== sourceSessionId) throw new Error('当前隧道已变化，请重新选择转发目标');
         if (!selected) return;
         if (socket !== state.socket || sourceSessionId !== state.sessionId || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标');
         const fileInfos = [];
@@ -18128,8 +18129,16 @@ function initUI() {
             if (state.sessionId) known.set(state.sessionId, { ...known.get(state.sessionId), sessionId: state.sessionId, shortCode: state.shortCode, remark: state.sessionRemark });
             return [...known.values()].filter(item => /^[a-zA-Z0-9_-]{8,64}$/.test(item?.sessionId || '')).map(item => ({ id: item.sessionId, shortCode: normalizeLocalShortCode(item.shortCode), remark: String(item.remark || '').trim().slice(0, 60), current: item.sessionId === state.sessionId }));
         },
-        send: files => sendSelectedFiles(files),
-        sendTo: (files, target) => sendDiskFilesToTunnel(files, target)
+        prepareSend: async items => {
+            const sessionId = state.sessionId;
+            const selection = items.length > 1 ? await askFileCollectionMode(items) : { mode:'split', remark:'' };
+            return selection ? { sessionId, selection } : null;
+        },
+        send: async (files, prepared) => {
+            if (prepared && prepared.sessionId !== state.sessionId) throw new Error('当前隧道已变化，请重新选择转发目标');
+            await sendSelectedFiles(files, { selection:prepared?.selection }); showAppToast('文件已加入当前隧道发送队列');
+        },
+        sendTo: (files, target, prepared) => sendDiskFilesToTunnel(files, target, prepared)
     });
     document.getElementById('telegramDriveBtn')?.addEventListener('click', () => {
         document.getElementById('connectionHeaderMenu').hidden = true;

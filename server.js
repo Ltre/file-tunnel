@@ -3882,7 +3882,7 @@ function canUseTunnelCapability(session, deviceId, capability) {
 
 function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId) {
     const target = sessions.get(targetSessionId);
-    if (!target?.devices?.has(deviceId) || !canUseTunnelCapability(target, deviceId, 'read') || !sessions.get(sourceSessionId)?.fileAssets?.has(fileId)) return false;
+    if (!target?.devices?.has(deviceId) || !canUseTunnelCapability(target, deviceId, 'read')) return false;
     return target.history?.some(entry => {
         const message = entry.message;
         if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
@@ -8954,7 +8954,14 @@ io.on('connection', (socket) => {
         message: socketText(message)
     });
     socket.use(([event,data],next)=>{
-        if(['file-asset-request','file-asset-discovery'].includes(event)&&data?.sourceSessionId&&data.sourceSessionId!==currentSession&&!trustedInternalClient&&!tunnelAccess.verify(data.sourceAccessGrant,data.sourceSessionId,currentDevice)&&!canReadForwardedFile(currentSession,currentDevice,data.sourceSessionId,data.assetId||data.fileId))return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+        if (['file-asset-request','file-asset-discovery'].includes(event) && data?.sourceSessionId && data.sourceSessionId !== currentSession && !trustedInternalClient) {
+            const fileId = data.assetId || data.fileId;
+            const forwarded = canReadForwardedFile(currentSession, currentDevice, data.sourceSessionId, fileId);
+            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, currentDevice)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            // A forwarded record grants this file, independently of volatile
+            // provider announcements. Prefer caches already in the destination.
+            if (forwarded && sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) data.sourceSessionId = currentSession;
+        }
         if(!socket.data.magnetAssetId||event==='join-session')return next();
         const allowed=['file-asset-request','file-asset-discovery','file-asset-transfer-status'],magnet=infraStore?.getMagnet(socket.data.magnetId)||magnets.get(socket.data.magnetId);
         if(allowed.includes(event)&&(data?.assetId||data?.fileId)===socket.data.magnetAssetId&&(!data.sessionId||data.sessionId===currentSession)&&!data.sourceSessionId&&magnet&&!magnet.revoked)return next();

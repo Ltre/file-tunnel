@@ -57,6 +57,18 @@ async function client(f, device, member, {beforeSync = async () => {}, delayedSo
     }, authorize() { authorization={grant:f.grants.get(member),deviceId:member}; }};
 }
 
+test('opening another page without restored tunnel credentials does not erase verified device aliases', async t => {
+    const f = await fixture(t); await f.enroll('viewer-B','member-B');
+    await f.call('viewer-B','/sync','POST',{tunnels:[{sessionId:f.tunnelId,tunnelDeviceId:'member-B',accessGrant:f.grants.get('member-B')}]});
+    assert.equal((await f.call('viewer-B','/stations?kind=discover')).stations.length,1);
+    await f.call('viewer-B','/sync','POST',{tunnels:[]});
+    assert.equal((await f.call('viewer-B','/stations?kind=discover')).stations.length,1,'another page must not erase a verified alias');
+    await f.call('source-A','/sync','POST',{tunnels:[]});
+    assert.equal((await f.call('viewer-B','/stations?kind=discover')).stations.length,1,'source page startup must not hide its station');
+    f.current.devices.delete('member-B');
+    assert.equal((await f.call('viewer-B','/stations?kind=discover')).stations.length,0,'aliases do not grant tunnel presence');
+});
+
 test('a tunnel grant arriving after streaming startup refreshes discovery on both viewing devices without account toggles', async t => {
     const f = await fixture(t); await f.enroll('viewer-B','member-B'); await f.enroll('viewer-C','member-C');
     const b = await client(f,'viewer-B','member-B',{delayedSocket:true}), c = await client(f,'viewer-C','member-C',{delayedSocket:true});
@@ -101,7 +113,7 @@ test('a source page restoring admission after startup restores its existing stat
     const f = await fixture(t); await f.enroll('viewer-B','member-B');
     const source = await client(f,'source-A','member-A'), b = await client(f,'viewer-B','member-B');
     b.authorize(); await b.window.__discoveryTest.sync(true);
-    assert.deepEqual((await f.call('viewer-B','/stations?kind=discover')).stations,[],'source startup has not verified its tunnel alias yet');
+    assert.deepEqual((await f.call('viewer-B','/stations?kind=discover')).stations.map(value=>value.id),[f.station.id],'source startup retains its previously verified alias');
     assert.equal(f.streaming.service.station(f.station.id).visibility,'public','the persisted station was neither deleted nor taken offline');
     source.authorize(); source.socket.emit('tunnel-access-grant'); source.socket.emit('session-devices');
     await new Promise(resolve => setTimeout(resolve,250));

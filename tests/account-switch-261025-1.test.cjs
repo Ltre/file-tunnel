@@ -124,7 +124,7 @@ class Element {
 test('shared account chooser and offline action stay open when the switch was cancelled',async()=>{
     for(const mode of ['choose','normal','offline']){
         const body=new Element('body'),window={addEventListener(){},alert(){throw Error('cancel is not an error');}};
-        vm.runInNewContext(read('account-ui.js'),{window,document:{body,createElement:tag=>new Element(tag),addEventListener(){}},location:{href:'http://fixture'},history:{state:{},pushState(value){this.state=value;},replaceState(value){this.state=value;}}});
+        vm.runInNewContext(read('account-ui.js'),{window,AbortController,setTimeout,clearTimeout,document:{body,createElement:tag=>new Element(tag),addEventListener(){}},location:{href:'http://fixture'},history:{state:{},pushState(value){this.state=value;},replaceState(value){this.state=value;}}});
         const result=window.AccountUI.open({choose:mode==='choose',currentAccount:()=> 'alice',load:async()=>({accounts:[{identity:{id:'bob',name:'Bob'}}],status:{}}),select:async()=>false,offline:async()=>false,renderSignIn(){}});
         await turn();const button=text=>body.querySelectorAll('button').find(node=>node.textContent===text);
         if(mode==='choose'){await button('Bob').onclick();await button('选择此账号').onclick();}

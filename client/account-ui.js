@@ -9,13 +9,13 @@
         const heading = document.createElement('h2'); heading.textContent = t(options.choose ? '选择转存目标账号' : '登录 / 移除账号'); panel.setAttribute('aria-label', heading.textContent);
         const status = document.createElement('p'); status.setAttribute('role', 'status');
         const list = document.createElement('div'), signIn = document.createElement('div'), actions = document.createElement('div');
-        let entries = [], selected = options.requiredId || options.currentAccount(), loading = false, generation = 0;
+        let entries = [], selected = options.requiredId || options.currentAccount(), loading = false, generation = 0, loadController;
         const button = (text, run) => {
             const node = document.createElement('button'); node.type = 'button'; node.textContent = t(text);
             node.onclick = async () => { if (node.disabled) return; node.disabled = true; try { await run(); } catch (error) { status.textContent = t('账号操作未完成，请重试') + ' [' + error.message + ']'; } finally { node.disabled = false; } }; return node;
         };
         const result = new Promise(resolve => {
-            current = { overlay, resolve, options, signIn, reload };
+            current = { overlay, resolve, options, signIn, reload, cancelLoad: () => loadController?.abort() };
             const dismiss = button('×', () => close()); dismiss.className = 'account-close'; dismiss.setAttribute('aria-label', t('关闭')); dismiss.title = t('关闭'); panel.append(dismiss);
             if (options.choose) actions.append(button('选择此账号', async () => {
                 if (loading) throw Error('ACCOUNT_LOADING');
@@ -29,9 +29,12 @@
         reload(); return result;
         async function reload() {
             if (!overlay.isConnected) return; const revision = ++generation; loading = true; status.textContent = t('正在读取账号状态…');
+            loadController?.abort(); const controller = loadController = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 20000);
             try {
-                const data = await options.load(); if (revision !== generation || !overlay.isConnected) return;
-                entries = data.accounts || []; selected ||= data.identity?.id || ''; list.replaceChildren(); signIn.replaceChildren(); status.textContent = '';
+                const data = await options.load(controller.signal); if (revision !== generation || !overlay.isConnected) return;
+                if (controller.signal.aborted) throw Error('ACCOUNT_LOAD_TIMEOUT');
+                entries = data.accounts || []; selected ||= data.identity?.id || ''; list.replaceChildren(); signIn.replaceChildren(); status.textContent = options.prompt || '';
                 for (const entry of entries) {
                     const user = entry.identity; if (!user) continue;
                     const row = document.createElement('div'); row.className = 'account-row';
@@ -51,7 +54,7 @@
                     });
                     row.append(select, label, exit, cancel); list.append(row);
                 }
-                if (!entries.length) status.textContent = t('尚未登录账号');
+                if (!entries.length && !options.prompt) status.textContent = t('尚未登录账号');
                 options.renderSignIn(signIn, data.status);
                 if (!options.choose && entries.length && options.offline) {
                     const offline = button('使用离线身份', async () => {
@@ -62,13 +65,13 @@
                     const add = signIn.querySelector('button');
                     if (add) { const row = document.createElement('div'); row.className = 'account-sign-actions'; add.before(row); row.append(add, offline); } else signIn.append(offline);
                 }
-            } catch (error) { if (revision === generation && overlay.isConnected) { status.textContent = t('账号操作未完成，请重试') + ' [' + error.message + ']'; list.replaceChildren(button('重新读取账号', reload)); } }
-            finally { if (revision === generation) loading = false; }
+            } catch (error) { if (revision === generation && overlay.isConnected) { status.textContent = (options.prompt ? options.prompt + '\n' : '') + t(controller.signal.aborted ? '读取账号状态超时，请检查连接后重试' : '账号操作未完成，请重试') + ' [' + error.message + ']'; list.replaceChildren(button('重新读取账号', reload)); } }
+            finally { clearTimeout(timer); if (revision === generation) loading = false; }
         }
     }
     function close(value = null) {
         if (!current) return; const previous = current; current = null;
-        previous.options.cancelSignIn?.(previous.signIn); previous.overlay.remove(); previous.resolve(value);
+        previous.cancelLoad(); previous.options.cancelSignIn?.(previous.signIn); previous.overlay.remove(); previous.resolve(value);
         if (history.state?.globalAccountPanel) { const next = { ...history.state }; delete next.globalAccountPanel; history.replaceState(next, '', location.href); }
     }
     global.addEventListener('popstate', event => { if (current) { close(); event.stopImmediatePropagation(); } }, true);

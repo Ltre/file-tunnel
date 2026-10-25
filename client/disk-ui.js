@@ -165,9 +165,9 @@ function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}
     }
     if (status.oidcMode !== 'mock') appendPasskeyControls(target, null, { addAccount: true, embedded });
 }
-async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } = {}) {
-    if (window.AccountUI) return window.AccountUI.open({ choose, requiredId, currentAccount: () => window.DiskClient.getAccount(),
-        load: async () => { const status = await (choose ? pendingSaveRead('/me', { accountId: '' }) : window.DiskClient.raw('/me', { accountId: '' })); return { accounts: status.accounts || [], status }; },
+async function manageTelegramDriveAccounts({ choose = false, requiredId = '', prompt = '' } = {}) {
+    if (window.AccountUI) return window.AccountUI.open({ choose, requiredId, prompt, currentAccount: () => window.DiskClient.getAccount(),
+        load: async signal => { const status = await window.DiskClient.raw('/me', { accountId: '', diskSpace:'', signal }); return { accounts: status.accounts || [], status }; },
         select: id => switchTelegramDriveAccount(id, { deferContents: choose }), offline: () => switchTelegramDriveAccount(''), logout: async id => { await logoutTelegramDrive(id, { confirmed: true }); if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed')); },
         renderSignIn: (target, status) => appendTelegramDriveAddAccount(target, status, { embedded: true }),
         reauthenticate: (user, target, status) => {
@@ -312,17 +312,22 @@ async function choosePendingSaveTarget(record, account) {
         onReady: reload => { reloadTree = reload; pendingSaveFeedback('请选择转存目标目录', false); }, installContextGesture,
         openDialog: options => openTelegramDriveDialog({ ...options, validate: async () => {
             const path = await options.validate(), space = spaces.find(space => space.id === selector.value);
-            return { accountId: account.id, partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
+            return { accountId: account.id, accountName:account.name || account.username || account.id, partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
         } }), showError: error => alert(telegramDriveErrorText(error)) });
 }
 async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
     if (!id || !window.DiskPendingSave || telegramDrivePendingSaveRunning) return;
     telegramDrivePendingSaveRunning = true;
     const transport = target => ({ accountId: target.accountId, requestBase: '/api/telegram/drive', diskSpace: target.diskSpace });
-    const ensureAccount = async accountId => {
+    const ensureAccount = async (accountId, record) => {
         const accounts = (await pendingSaveRead('/accounts', { accountId: '' })).accounts || [];
         const entry = accounts.find(item => item.identity?.id === accountId && !item.reauthRequired);
-        if (!entry) return manageTelegramDriveAccounts({ choose: true, requiredId: accountId });
+        if (!entry) {
+            const name = record?.target?.accountName || accounts.find(item => item.identity?.id === accountId)?.identity?.name || accountId;
+            const message = '请登录账号（账号名 {0} / ID {1}）后，继续查看该文件。';
+            const prompt = record?.status === 'completed' ? (window.TunnelI18n?.t(message, name, accountId) || message.replace('{0}', name).replace('{1}', accountId)) : '';
+            return manageTelegramDriveAccounts({ choose: true, requiredId: accountId, prompt });
+        }
         return entry.identity;
     };
     try {
@@ -345,7 +350,7 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
                 await pendingSaveRead('/list?path=' + encodeURIComponent(target.path), ctx);
             },
             verifySaved: async record => {
-                if (!record.target || !await ensureAccount(record.target.accountId)) {
+                if (!record.target || !await ensureAccount(record.target.accountId, record)) {
                     statusReported = true; pendingSaveFeedback('尚未核验已保存文件，原记录仍保留', false); return { state:'cancelled' };
                 }
                 return window.DiskPendingSave.inspectSaved(record, { force:true });
@@ -3015,7 +3020,8 @@ async function exportDiskItems(items) {
     }
     if (!files.size) throw new Error('所选项目没有文件');
     if ([...files.values()].some(file => ['blocked', 'deleted'].includes(file.reviewStatus))) throw new Error('管理员屏蔽或删除的文件不可转发');
-    await diskExporter([...files.values()]);
+    try { await diskExporter([...files.values()]); }
+    catch (error) { showAppToast(telegramDriveErrorText(error)); }
 }
 const diskThumbnailQueue = [];
 let diskThumbnailWorkers = 0;

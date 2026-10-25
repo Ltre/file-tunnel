@@ -150,7 +150,10 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         let dirty = JSON.stringify(d.follows) !== JSON.stringify(next);
         return change(() => {
             if (dirty) d.follows = next;
-            d.aliases = [...new Set([actor.deviceId, ...aliases.filter(validId)])].slice(0, 500);
+            // Verified device identities are shared by pages. An uninitialised
+            // /disk page must not erase aliases learned by the tunnel page.
+            // Visibility still requires live membership and read permission.
+            d.aliases = [...new Set([actor.deviceId, ...aliases.filter(validId), ...(d.aliases || [])])].slice(0, 500);
             for (const s of Object.values(db.stations)) {
                 if (s.deviceId !== actor.deviceId || !s.ownerId) continue;
                 const proof = actor.logins?.find(proof => proof.id === s.ownerId);

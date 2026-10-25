@@ -1,0 +1,20 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {registerStreamingConsole}=require('../server/streaming-http');
+const {createStreamingSources,createStreamingBroker}=require('../server/streaming-sources');
+test('idle provider tabs release HTTP/1 connections for account and discovery requests',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'stream-idle-'));
+    const app=require('express')();app.use(require('express').json());
+    const broker=createStreamingBroker(),sources=createStreamingSources({broker,disk:{},tunnel:{}});
+    const api=registerStreamingConsole(app,{dataDir:dir,identity:()=>null,proofs:()=>[],user:()=>null,visibleDevices:()=>[],origin:req=>'http://'+req.get('host'),sources,tunnel:{}});
+    api.service.register('device-id','x'.repeat(40),'fixture');
+    app.get('/api/telegram/drive/me',(_req,res)=>res.json({accounts:[]}));
+    const server=await require('./support/listen-http.cjs').listenHttp(app),agent=new http.Agent({keepAlive:true,maxSockets:6});
+    t.after(async()=>{agent.destroy();api.close();server.closeAllConnections();await new Promise(r=>server.close(r));fs.rmSync(dir,{recursive:true,force:true});});
+    const get=route=>new Promise((resolve,reject)=>{const req=http.get({host:'127.0.0.1',port:server.address().port,path:route,agent,headers:{'X-Stream-Device':'device-id','X-Stream-Key':'x'.repeat(40),'X-Stream-Provider':Math.random().toString(36).slice(2),'X-Stream-Wait':'1000'}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);});
+    const idle=Array.from({length:6},()=>get('/api/streaming/provider-work').catch(()=>0));
+    await new Promise(r=>setTimeout(r,100));
+    let timer;const outcome=await Promise.race([Promise.all([get('/api/telegram/drive/me'),get('/api/streaming/stations?kind=discover')]).then(()=> 'responsive').catch(()=> 'failed'),new Promise(r=>{timer=setTimeout(()=>r('blocked'),2200);})]);clearTimeout(timer);
+    broker.close();await Promise.all(idle);
+    assert.equal(outcome,'responsive','idle provider long polls must not stall the account picker and discovery');
+});

@@ -10,7 +10,7 @@ const sourceError = code => Object.assign(new Error(code), { code });
 // waiting. No file data or retention reference is written to the station store.
 function createStreamingBroker({ now = Date.now, timeout = 15000, hedgeMs = 100 } = {}) {
     const clients = new Map(), pending = new Map();
-    function poll(deviceId, signal, providerId = 'legacy') {
+    function poll(deviceId, signal, providerId = 'legacy', waitMs = 20000) {
         if (!/^[\w-]{1,128}$/.test(providerId)) throw sourceError('STREAM_PROVIDER_INVALID');
         for (const [key, value] of clients) if (now() - value.seenAt >= 45000) { value.wake?.([]); clients.delete(key); }
         const key = deviceId + ':' + providerId; let client = clients.get(key);
@@ -25,7 +25,7 @@ function createStreamingBroker({ now = Date.now, timeout = 15000, hedgeMs = 100 
         return new Promise(resolve => {
             const finish = result => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); if (client.wake === finish) client.wake = null; resolve(result); };
             const aborted = () => { const current = client.wake === finish; finish([]); if (current) clients.delete(key); };
-            const timer = setTimeout(() => finish([]), 20000); timer.unref?.();
+            const timer = setTimeout(() => finish([]), Math.max(250, Math.min(20000, Number(waitMs) || 20000))); timer.unref?.();
             client.wake = finish; signal?.addEventListener('abort', aborted, { once: true });
             if (signal?.aborted) finish([]);
         });

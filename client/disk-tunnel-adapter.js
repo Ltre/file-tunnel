@@ -67,6 +67,8 @@
         // Closing the picker is an ordinary cancellation.  Do not turn it into
         // an unrelated connectivity error after the dialog has disappeared.
         if (!target) return;
+        const prepared = host.prepareSend ? await host.prepareSend(items, target) : undefined;
+        if (prepared === null) return;
         const files = [], context = window.DiskClient.context?.();
         for (const item of items) {
             const blob = await window.DiskClient.read(item, context);
@@ -78,10 +80,9 @@
         const currentId = String(current?.id || current || '');
         if (target.id !== currentId) {
             if (!host.sendTo) throw new Error('当前页面暂不支持跨隧道发送，请刷新后重试');
-            window.DiskUI.close(); return host.sendTo(files, target);
+            return host.sendTo(files, target, prepared);
         }
-        window.DiskUI.close();
-        return host.send(files);
+        return host.send(files, prepared);
     }
     async function resumePendingForward() {
         if (typeof sessionStorage === 'undefined' || !host?.send) return;

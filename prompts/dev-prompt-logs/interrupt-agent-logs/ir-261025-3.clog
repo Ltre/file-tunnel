@@ -1,0 +1,181 @@
+
+
+【旧】[编号261025-3]问：
+
+
+   1、网盘界面中转发文件到隧道，不管目标是当前隧道还是别的隧道，都不要关闭当前网盘的界面，只用底部toast提示就行了。对于多选文件发送到别的隧道的情况，可以在下载网盘文件到缓存区之前就先要求填写合辑的备注，这样就不必等切换到目标隧道才能填写备注（注意：这里不是说以后还要切换到隧道。以后转发到别的隧道就别切换了，把需要的信息提前准备好，避免依赖需要切换隧道才可填写合辑备注的操作。能看懂吗？？？）。甚至就连发送多个网盘文件到当前隧道，也可以提前要求填写合辑的备注，这样就不必关闭网盘的浮层界面了。
+
+   2、功能首页的底部通用toast提示可以再做得稍微大一点点，轮廓再醒目一些，同时要保持美观、现代、年轻化。让用户一眼就能及时看到提示信息。
+
+   3、前台网盘界面有时在弹出`登录 / 移除账号`对话框加载其内组件非常慢，这个很难复现，有时就很快，都他妈的局域网还是MOCK账号，都不知道资源消耗在什么地方！操你妈的！
+
+   4、后台sns-dl/youtube-premium-dl页点击`已转存到网盘`时，再加一条拦截询问逻辑：如果检测到已转存到网盘账号与前台当前登录的账号不一致，则需要提示用户，并告诉用户当前前台到底有没有正在执行中的网盘任务，有和没有都要说清楚，让用户自己判断要不要继续切换网盘账号去查看所保存的文件。如果用户同意，则继续前往前台网盘并切换账号并导航到对应网盘分区的对应目录中并短暂醒目高亮显示所保存的文件；如果用户不同意，则取消打开前台网盘页面。
+
+   5、后台sns-dl/youtube-premium-dl页中，看到个别任务的`转存到网盘`按钮的文案变成了`登录后核验转存`。点击后确实会到前台网盘界面选择账号登录，但是又忘了到底是保存在哪个账号的。我觉得应该结合第4条的问题，在遇到文件已转存到网盘的情况时，这样处理：
+      5.1、统一将按钮文案显示为`已转存到网盘`，不要再针对未登录账号的情况显示`登录后核验转存`这种奇怪的文案。
+      5.2、点击`已转存到网盘`后，先弹出一个小浮层显示“正在查询已转存的网盘位置”，随后显示文件所属的账号名称ID、网盘分区名(含分区ID)、带多级目录及文件名的全路径名称，并在浮层中另起一行显示按钮`前往查看`，点击`前往查看`按钮，就要带着账号信息透传参数以及网盘文件位置透传参数以及其它必要透传参数到前台网盘，在前台选择账号时，如果遇到目标账号未登录，则要在`登录 / 移除账号`对话框中已经约定俗成的位置显示提示信息，提示信息大致例如“请登录账号（账号名 xxxxx / ID yyyyyyy）后，继续查看该文件”。
+
+   6、设备H加入了A/B两个隧道，并且在处于A或B隧道时都从网盘向不同隧道转发了文件F1/F2/F3，即在A时就像B转发文件、在B时就向A转发文件。可以看到设备H在A和B两个隧道所转发的这几个文件F1/F2/F3都具有缓存。设备K只加入了A隧道，但是设备K却看到A隧道中的文件F1/F2/F3都没有缓存，点击还原文件，提示“来源隧道尚未获得访问权”。这不应该，既然F1/F2/F3已经从B隧道同步到了A隧道，那么同处于A隧道的其他设备，不管有没有加入B隧道，都必须正常获取F1/F2/F3的内容！操你妈的！谁他妈让你拦截的？文件都同步进来A了，就他妈的必须让A隧道内的别的设备可访问！你他妈的还多事儿了！我日你妹的臭逼！
+   我他妈的刚骂完，大概过了5分钟，看到K设备中的A隧道中的F1/F2/F3自动拿到缓存了！他妈的到底什么逻辑？不是刚才还提示“来源隧道尚未获得访问权”吗？你他妈精神分裂吗？快把这破逼拦截逻辑干掉！能从别的隧道同步文件到A隧道，那就必须直接能让A隧道内的别的设备访问这些文件！
+
+   7、我操你全家年轻女人！串流控制台的`发现`列表，有时是空的，怎么也刷新不出来数据，有时突然有了数据。有时空的列表还有提示"操作未完成，请检查状态后重试 [Failed to fetch]"。有时空的列表没有任何提示。而且还是登录同一个账号的情况下，有的设备有数据，有的设备是空的列表！我他妈到底得日你全家年轻女人几次，你才能彻底解决这个狗逼问题？
+
+
+
+
+
+---
+
+目前处于分支：
+
+```text
+dev/2610-s3-BUGBUGBUG
+```
+要读取完毕所有需求条目后，再科学地安排每个需求的实现先后顺序。
+请直接在该分支当前代码基础上修改。
+
+当前使用 GPT Plus，模型为 6.1 Sol / 极高 / 未加速；5 小时额度剩余 100%，周额度剩余 78%。长任务执行期间，在阶段检查点查询 5 小时额度及刷新时间；若额度剩余不高于 15%，且距下次刷新时间超过 10 分钟，暂停并按任务指定位置记录进度、中断点和恢复说明。无法查询时不要估算，明确说明无法判断是否触发。
+
+
+**不要提交，不要暂存（不要执行 `git commit`、`git add`）。**
+
+推理结论、问题根因、实际修改内容、测试情况及开发记录保存到：
+
+```text
+docs/devlog/dev-2610-streaming-console.md
+```
+
+最后请另外给出建议使用的 Git 提交日志，但不要实际提交。
+
+Git 提交日志要求：
+
+- `title` 以中文为主，简洁概括本次改动；
+- `description` 以中文为主；
+- `description` 按功能分成若干简短小节；
+- 每个小节使用几行列表概括主要修改；
+- 内容有条理但不要写得过于冗长。
+- 将git日志的title和description分开显示，并分别使用代码模式以便于一键复制。
+
+
+
+
+
+答：
+
+
+
+  我会按这次全部 7 项执行，先核对分支和现有改动，再查清账号加载、跨隧道取源、发现列表反复失败的实际路径。排障采用 diagnosing-bugs 技能，先建立可核验的证据，再修改和验证；开发记录追加到指定日志，不暂存、不提交。
+
+  加载了工具读取文件运行了命令已检查用量
+
+  分支已核对，工作区干净，当前 HEAD 为 38a5bb5。实际查询的 5 小时额度剩余 87%，未触发暂停条件。实现顺序先处理第 6、7、3 项反复失败的链路，再完成转发交互、转存位置浮层与账号确认，最后统一验证和记录；前轮测试结果不会作为本轮已修复的依据。
+
+  编辑了文件运行了命令
+
+  两个新回归已经复现失败：同一设备另一个页面上报空隧道列表，会抹掉此前核验过的设备关联，导致“发现”突然为空；已签名的转发记录，在来源端暂时没有供源索引时，也会被错误当作“没有访问权”。
+  接下来分别验证三个因素：页面间同步覆盖、授权与临时供源状态混用、长连接占用导致普通请求等待。它们能否解释全部现场还需要进一步验证，尤其是 Failed to fetch 和约五分钟后恢复，暂不归因。
+
+  编辑了文件运行了命令
+
+  连接占用的隔离测试也出现了同类等待：多个空闲串流页面的供源长轮询占满 HTTP/1 连接后，账号和发现请求排队。将空闲等待缩短并留出间隔后，这个测试已通过；实际文件读取流程未改。这个结果证明了一种可复现原因，尚不能证明用户每次慢加载都由它造成。
+  三个新增失败场景目前已转绿。接下来补上账号加载的取消／超时反馈，并完成网盘不关闭、转存位置详情和打开前确认。
+
+  编辑了文件运行了命令已检查用量
+
+  本轮的交互代码已落地：转发前先选方式和填备注，网盘保持打开；后台增加保存位置浮层和跨账号查看确认，目标账号未登录时显示指定账号提示。正在跑相关回归。
+  额度检查点此前已降到 22%。我会再查询一次；如果触发暂停条件，会把尚未完成的验证明确记入日志，避免把代码落地等同于验收通过。
+
+  运行了命令已检查用量
+
+  用时 16分钟 20秒
+
+  最新查询：5 小时额度只剩 5%，距刷新仍超过 10 分钟，已触发你设定的暂停条件。99 项相关自动回归已通过，但完整浏览器交互、移动端视觉和原设备现场尚未验证，不能宣布全部完成。我现在记录修改、证据、未完成项和恢复步骤后暂停。
+
+  编辑了文件运行了命令
+  已运行 @'
+  const fs=require('fs'),vm=require('vm');
+  const files=['app.js','server.js','client/account-ui.js','client/disk-pending-save.js','client/disk-tunnel-adapter.js','client/disk-ui.js','client/streaming-console.js','client/streaming-i18n.js','client/disk-saved-location.js','server/streaming-console.js','server/streaming-http.js','server/streaming-sources.js','service-worker.js'];
+  for(const f of files)new vm.Script(fs.readFileSync(f,'utf8'),{filename:f});
+  for(const f of ['pages/sns-dl.html','pages/youtube-premium-dl.html'])for(const m of fs.readFileSync(f,'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))if(m[1].trim())new vm.Script(m[1],{filename:f});
+  console.log('13 JS files and both HTML inline scripts parse successfully');
+  '@ | node
+
+  已运行 @'
+  const fs=require('fs'),vm=require('vm'),Module=require('module');
+  const files=['app.js','server.js','client/account-ui.js','client/disk-pending-save.js','client/disk-tunnel-adapter.js','client/disk-ui.js','client/streaming-console.js','client/streaming-i18n.js','client/disk-saved-location.js','server/streaming-console.js','server/streaming-http.js','server/streaming-sources.js','service-worker.js'];
+  for(const f of files)new vm.Script(Module.wrap(fs.readFileSync(f,'utf8')),{filename:f});
+  for(const f of ['pages/sns-dl.html','pages/youtube-premium-dl.html'])for(const m of fs.readFileSync(f,'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))if(m[1].trim())new vm.Script(m[1],{filename:f});
+  console.log('13 JS files and both HTML inline scripts parse successfully');
+  '@ | node
+
+  已编辑 dev-2610-streaming-console.md
+
+  已运行 @'
+
+  ## 编号261024-3：转发交互、保存位置与重复故障排查（2026-10-25，额度暂停）
+
+  ### 基线、状态与暂停点
+
+  - 通读本轮新旧稿7项；按取源／发现／账号加载排障、转发交互、转存详情及跨账号确认的顺序实施。只读确认分支 dev/2610-s3-BUGBUGBUG，HEAD 38a5bb5c9dfbef84e89b37b2c98cc86c81aa7be9，开工工作区干净。以实际代码为基线，未执行Git写操作。
+  - 本轮使用 diagnosing-bugs 技能，未使用子代理。当前代码已修改，但尚未完成全部验证，不能宣称全部需求已完成或原设备现场已修复。
+  - 额度工具实际返回5小时剩余87%→22%→5%，末次查询时间2026-10-25 15:09:58（新加坡时间），刷新时间19:14:02，周剩余85%。触发本轮“剩余不高于15%且刷新超过10分钟”的暂停条件；仍有完整浏览器验证和排障边界复核，未套用“即将完成”的例外。仅完成收尾记录后暂停，未使用重置券。
+
+  ### 已建立证据及修改
+
+  1. 网盘转发：DiskTunnelAdapter 在读取文件正文前调用宿主 prepareSend，提前选择多文件发送方式和合辑备注；两个分支均移除 DiskUI.close。当前隧道发送复用 sendSelectedFiles 的 selection 参数，跨隧道复用原地转发；检查准备期间隧道是否变化。发送方式浮层提升到网盘之上，失败用 toast。回归已断言先准备后读取、无导航、网盘不关闭；实际页面层叠及同隧道完整发送仍待浏览器验证。
+  2. Toast：.device-details-toast 增大宽度、字号、padding和边框／阴影，提升到网盘之上。未改全局.btn。尚未验证物理手机及 showAppToast 优先调用的其它 showToast 实现是否也使用此类，恢复时必须核对实际共用入口，不能仅凭CSS宣称第2项完成。
+  3. 账号加载：实际 /me 路由为同步元数据读取，没有发现本轮需要改认证或协同API的依据。新增HTTP/1连接池测试，用6个真实串流供源长轮询占用连接，随后账号和发现请求均被阻塞；修正前测试失败。供源接口新增有界等待参数，新前端空闲等待1秒、空闲轮次之间让出1秒；原正文供源、Range及授权保持。修正后普通请求约1秒可完成。该测试证明一种真实代码路径，不证明每次现场慢加载都出于此原因。AccountUI 的账号读取增加20秒截止和关闭取消，防迟到内容写入；仍需完整页面验证。
+  4. 后台打开前确认：新增 client/disk-saved-location.js/.css 作为后台UI适配，复用 DiskClient.accountOperations；读取当前账号，有任务列明任务及切换影响，无任务也明确提示，未知不得冒充没有任务。拒绝不打开前台。未重新引入协同来源扫描，未修改 server/disk-api.js 或 client/disk-client.js。
+  5. 已转存位置：有完成记录且未确认删除／移动时按钮统一显示“已转存到网盘”；两个后台入口改用位置浮层，显示账号名/ID、分区名/ID、完整文件路径及“前往查看”。确认后仍通过原 pendingSave ID 恢复已绑定账号/分区/目录/文件，复用原核验、导航和1秒高亮；未增加浏览器正文上传。新增转存目标保存 accountName，旧记录可从账号列表补充。未登录目标时 AccountUI 既有状态区域显示指定账号提示。尚未做完整后台→登录→定位浏览器验收；目前URL使用既有pendingSave引用传递目标信息，未另加独立账号/位置参数，需恢复时结合第5项明确要求复核是否补充且避免启动时提前切换账号绕过确认。
+  6. 跨隧道取源：红灯证明 canReadForwardedFile 把“来源隧道临时fileAssets索引存在”作为授权前提，签名正确的目标记录也被拒绝。移除此临时索引条件，仍要求目标实时成员/read、目标未删除记录、绑定来源/目标/记录/文件的有效签名；不授予来源一般访问权。已有目标隧道缓存provider时，将这次请求路由到目标隧道缓存。签名伪造、非成员、删除目标记录仍拒绝。尚未在真实Socket.IO多页面环境验证H切换A/B后K取得缓存；约5分钟后自动恢复的现场原因未完整证实，旧无签名记录也未自动迁移，恢复时需继续检查。
+  7. 发现列表：真实HTTP红灯证明同设备另一页面 /sync tunnels:[] 会覆盖已核验 aliases，来源页或观看页均可导致列表消失。改为合并服务端已验证设备别名，实际可见性仍检查在线隧道成员/read，不把同账号当作权限。修正后空同步不再抹掉发现关系、移除成员仍看不到台。增加/sync及发现列表请求20秒截止和明确的连接失败提示，避免请求无限占用syncFlight；未修改全局限流。用户原设备的Failed to fetch具体网络原因尚未确认，不能将此写成全部现场已解决。
+
+  ### 验证结果及限制
+
+  - 三个新增失败信号先红后绿：跨页空同步抹别名、临时供源索引缺失误拒绝、HTTP/1空闲供源连接占用。命令分别在本轮新增/扩展测试中运行；首次Node因沙箱spawn EPERM失败后申请并获准重跑，不把执行失败算作业务红灯。
+  - 有限综合回归11个文件共99项通过、0失败/取消/跳过，exit 0，约17.4秒。报告 C:/Users/Dell/AppData/Local/Temp/261024-3-check.log。包含 disk-cross-tunnel-261025-2、streaming-discovery-261025-1、streaming-idle-connections-261024-3、disk-pending-bootstrap-261024-2、pending-save-receipt-261025-1、pending-save-location-261025-1、account-switch-261025-1、disk-saved-location-261024-3、streaming-console-http、streaming-console、streaming-supply-261022-1。
+  - 更新两处旧断言：曾要求临时fileAssets消失就撤销读取授权、曾要求空同步抹掉来源别名，这两条正是本轮纠正的行为。账号UI替身补齐浏览器已有AbortController及定时器；没有为通过测试放开非成员访问。
+  - 13个修改JS及两后台HTML内联脚本编译通过；首次直接vm.Script解析CommonJS server.js遇到顶层return，改用Module.wrap后通过。git diff --check通过。SW沿既有机制更新为v84；新增动态文案加入streaming-i18n目录，尚待完整页面检查后台国际化实际加载路径。
+  - 未启动浏览器、未做完整UI或手机视觉验证，未用真实Telegram、真实用户文件或账号测试。没有停止用户服务，没有清理用户数据。测试临时HTTP服务由夹具关闭，测试进程已退出。
+
+  ### 恢复步骤（不能直接认定已完成）
+
+  - 先只读核对分支/HEAD/工作区与以上基线；保留全部本轮未暂存修改。新文件 disk-saved-location.js/.css、两个261024-3测试也属于本轮产物。
+  - 优先检查真实后台位置浮层：已登录/未登录目标、空/活动/未知任务、拒绝不打开、同意后原账号分区目录高亮、删除/移动后允许新转存、弹窗阻止与异步关闭；核对缺失的显式透传参数要求。位置浮层关闭期间尚有prepareServer请求可能继续执行，需检查是否会产生不必要的待转存记录，不能把DOM单元测试当作完整证明。
+  - 检查账号对话框取消/超时/登录完成收起及原有离线身份；检查当前/其它隧道发送备注前置、网盘保持打开、toast实际入口及移动布局。
+  - 为目标隧道已有缓存provider优先路由补实际处理器/浏览器验证；检查持久历史和旧记录，确保授权与供源可用性分离，同时不放宽来源其它文件权限。
+  - 检查多个页面/重连/切账号下发现列表和失败恢复，以及新的短等待供源对多页面请求量、退避和已有传输的影响。需要时补原场景可核验证据，不以本轮99项通过宣称真实现场已解决。
+  - 收尾按范围跑相关回归、发布资源检查并追加最终结果；当前仅为暂停检查点，不是最终交付。
+  '@ | Add-Content -LiteralPath docs/devlog/dev-2610-streaming-console.md -Encoding utf8
+
+  git diff --check
+  git diff --cached --stat
+
+  你已达到使用上限。升级套餐或充值额度以继续，或在 19:14后重试。
+
+    已编辑 24 个文件+267-57查看变更撤销查看变更
+
+  tests/disk-cross-tunnel-261025-2.test.cjstests/disk-cross-tunnel-261025-2.test.cjs+12-3
+  tests/streaming-discovery-261025-1.test.cjstests/streaming-discovery-261025-1.test.cjs+13-1
+  tests/streaming-idle-connections-261024-3.test.cjstests/streaming-idle-connections-261024-3.test.cjs+20-0
+  client/streaming-console.jsclient/streaming-console.js+15-3
+  server.jsserver.js+9-2
+  server/streaming-console.jsserver/streaming-console.js+4-1
+  server/streaming-http.jsserver/streaming-http.js+1-1
+  server/streaming-sources.jsserver/streaming-sources.js+2-2
+  app.jsapp.js+15-6
+  client/disk-tunnel-adapter.jsclient/disk-tunnel-adapter.js+4-3
+  client/index.cssclient/index.css+8-8
+  client/account-ui.jsclient/account-ui.js+11-8
+  client/disk-pending-save.jsclient/disk-pending-save.js+3-2
+  client/disk-ui.jsclient/disk-ui.js+14-8
+  client/disk-saved-location.cssclient/disk-saved-location.css+3-0
+  client/disk-saved-location.jsclient/disk-saved-location.js+77-0
+  pages/sns-dl.htmlpages/sns-dl.html+6-3
+  pages/youtube-premium-dl.htmlpages/youtube-premium-dl.html+6-3
+  tests/account-switch-261025-1.test.cjstests/account-switch-261025-1.test.cjs+1-1
+  tests/disk-pending-bootstrap-261024-2.test.cjstests/disk-pending-bootstrap-261024-2.test.cjs+1-1
+  client/streaming-i18n.jsclient/streaming-i18n.js+14-0
+  service-worker.jsservice-worker.js+3-1
+  tests/disk-saved-location-261024-3.test.cjstests/disk-saved-location-261024-3.test.cjs+25-0
+  docs/devlog/dev-2610-streaming-console.mddocs/devlog/dev-2610-streaming-console.md+0-0

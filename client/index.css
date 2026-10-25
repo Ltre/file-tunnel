@@ -628,15 +628,15 @@ body[data-theme="atelier"] .main-layout {
 
 .device-details-toast {
     position: fixed;
-    z-index: 3500;
-    max-width: min(290px, calc(100vw - 24px));
-    padding: 9px 11px;
-    border: 1px solid #d7dce8;
-    border-radius: 6px;
+    z-index: 24500;
+    max-width: min(360px, calc(100vw - 32px));
+    padding: 12px 16px;
+    border: 1.5px solid #94a8cc;
+    border-radius: 10px;
     background: #fff;
     color: #36415a;
-    box-shadow: 0 8px 24px rgba(25, 35, 60, 0.18);
-    font-size: 0.78rem;
+    box-shadow: 0 10px 30px rgba(25, 35, 60, 0.22);
+    font-size: 0.9rem;
     line-height: 1.55;
 }
 
@@ -4137,7 +4137,7 @@ body[data-theme="atelier"] .main-layout {
 .send-mode-overlay {
     position: fixed;
     inset: 0;
-    z-index: 2600;
+    z-index: 4300;
     display: grid;
     place-items: center;
     padding: 20px;

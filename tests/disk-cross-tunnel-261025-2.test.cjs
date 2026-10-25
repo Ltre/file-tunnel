@@ -10,14 +10,16 @@ class Element {
 }
 test('disk forwarding keeps the original page and socket while passing the selected target to its bridge',async()=>{
     const calls=[],memory=new Map(),current={id:'source-tunnel-A'},socket={id:'original-socket'};
+    let prepared=false;
     const context={File,Blob,queueMicrotask,document:{createElement:tag=>new Element(tag),body:new Element('body')},
         localStorage:{getItem:key=>memory.get(key),setItem:(key,value)=>memory.set(key,value)},sessionStorage:{getItem:()=>null,setItem:(...args)=>calls.push(['queued',...args])},
-        window:{DiskUI:{setExporter:run=>calls.push(['exporter',run]),close:()=>calls.push(['close'])},DiskClient:{context:()=>({accountId:'fixed-account'}),read:async()=>new Blob(['hello'])}},alert:assert.fail};
+        window:{DiskUI:{setExporter:run=>calls.push(['exporter',run]),close:()=>calls.push(['close'])},DiskClient:{context:()=>({accountId:'fixed-account'}),read:async()=>{assert.ok(prepared,'send details precede disk content reads');return new Blob(['hello']);}}},alert:assert.fail};
     vm.runInNewContext(fs.readFileSync('client/disk-tunnel-adapter.js','utf8'),context);
     context.window.DiskTunnelAdapter.configure({deferPendingForward:true,target:()=>current,tunnels:async()=>[current,{id:'target-tunnel-B',shortCode:'BBBBB'}],
-        navigate:id=>calls.push(['navigate',id]),send:()=>calls.push(['send-current']),sendTo:(files,target)=>calls.push(['send-target',files,target,socket])});
+        prepareSend:async()=>{prepared=true;return{selection:{mode:'collection',remark:'remark'}};},navigate:id=>calls.push(['navigate',id]),send:()=>calls.push(['send-current']),sendTo:(files,target)=>calls.push(['send-target',files,target,socket])});
     await calls.find(c=>c[0]==='exporter')[1]([{id:'disk-id',name:'hello.txt',type:'text/plain',relativePath:'folder/hello.txt'}]);
     assert.equal(calls.some(c=>c[0]==='navigate'),false,'must not navigate or replace the active tunnel');
+    assert.equal(calls.some(c=>c[0]==='close'),false,'disk view stays open');
     assert.equal(calls.some(c=>c[0]==='queued'),false,'must not create a navigation-dependent pending forward');
     const sent=calls.find(c=>c[0]==='send-target');assert.ok(sent);assert.equal(sent[2].id,'target-tunnel-B');assert.equal(sent[3],socket);
     assert.equal(await sent[1][0].text(),'hello');assert.equal(sent[1][0].relativePath,'folder/hello.txt');assert.equal(current.id,'source-tunnel-A');
@@ -44,6 +46,13 @@ test('a target-only viewer can request exactly its forwarded file without acquir
     assert.equal(f.tunnelAccess.verify('',f.source,f.viewer),false,'target receipt is not general source membership');
     file.forwardedSourceGrant+='x';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false);
 });
+test('signed forwarded record remains authorized while its volatile source provider index is absent',t=>{
+    const f=permissionsFixture(t),file={id:'forwarded-file',backupSourceSessionId:f.source,forwardedSourceGrant:f.tunnelAccess.issueFileForward(f.source,f.target,'record-id','forwarded-file')};
+    f.sessions.get(f.target).history.push({message:{id:'record-id',type:'file',fileInfo:file}});
+    f.sessions.get(f.source).fileAssets.clear();
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'provider discovery must not be blocked as an authorization failure');
+});
+
 test('removing a target record or refusing read permission removes its forwarded-file access',t=>{
     const f=permissionsFixture(t),file={id:'forwarded-file',backupSourceSessionId:f.source,forwardedSourceGrant:f.tunnelAccess.issueFileForward(f.source,f.target,'record-id','forwarded-file')};
     f.sessions.get(f.target).history.push({message:{id:'record-id',type:'collection',collection:{files:[file]}}});
@@ -65,7 +74,7 @@ test('forwarded-file signatures cannot be replayed in another record, source, de
     f.sessions.get(f.target).history=[{message:{id:'record-2',type:'file',fileInfo:{id:'forwarded-file',backupSourceSessionId:f.source,forwardedSourceGrant:token}}}];
     assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'forwarded-file'),false);
     f.sessions.get(f.target).history[0].message.id='record-1';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'forwarded-file'),true);
-    f.sessions.get(f.source).fileAssets.delete('forwarded-file');assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'forwarded-file'),false);
+    f.sessions.get(f.source).fileAssets.delete('forwarded-file');assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'forwarded-file'),true,'volatile supply is separate from the signed file permission');
 });
 
 function forwardingFixture(t,{mode='collection',failAfter=Infinity}={}) {

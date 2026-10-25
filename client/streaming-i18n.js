@@ -3,6 +3,20 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['文件已加入当前隧道发送队列','Files added to the current tunnel send queue'],
+        ['读取账号状态超时，请检查连接后重试','Reading account status timed out. Check the connection and retry'],
+        ['请登录账号（账号名 {0} / ID {1}）后，继续查看该文件。','Sign in to account {0} / ID {1} to view this file.'],
+        ['串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。','Could not read streaming status. Check the connection and refresh; station visibility is unconfirmed.'],
+        ['当前账号没有正在执行的网盘任务。','The current account has no active drive tasks.'],
+        ['当前前台账号：{0}\n文件所属账号：{1}','Current frontend account: {0}\nFile owner account: {1}'],
+        ['继续切换账号并前往查看？','Switch accounts and view the file?'],
+        ['已转存的网盘位置','Saved drive location'],['正在查询已转存的网盘位置','Looking up the saved drive location'],
+        ['网盘分区','Drive partition'],['完整路径','Full path'],['名称未记录','Name not recorded'],['未记录','Not recorded'],['离线身份','Offline identity'],
+        ['已核验文件仍在原保存位置','Verified the file is still at its saved location'],
+        ['显示上次保存位置；登录目标账号后继续核验文件。','Showing the last saved location; sign in to the destination account to verify the file.'],
+        ['前往查看','View file'],['正在检查当前账号及网盘任务…','Checking the current account and drive tasks…'],
+        ['已取消前往查看，未切换账号。','Viewing cancelled; the account was not switched.'],['打开网盘查看文件','Open the drive to view the file'],
+        ['未打开网盘，请重试','The drive was not opened. Retry'],['网盘位置查询未完成，请关闭后重试','Drive location lookup did not finish. Close and retry'],
         ['已转发到所选隧道','Forwarded to the selected tunnel'], ['服务器拒绝转发','The server refused forwarding'],
         ['文件会发送到所选隧道，当前页面和隧道保持不变。','Files will be sent to the selected tunnel without changing this page or tunnel.'],
         ['当前页面暂不支持跨隧道发送，请刷新后重试','This page cannot send to another tunnel yet. Refresh and retry'], ['当前隧道已变化，请重新选择转发目标','The current tunnel changed. Select the destination again'],

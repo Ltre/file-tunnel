@@ -81,8 +81,9 @@
         const t = value => global.TunnelI18n?.t(value) || value;
         taskStatus({ source, task }).then(result => {
             if (button.isConnected === false) return;
-            button.textContent = t(result.state === 'saved' ? '已转存到网盘' : result.state === 'login-required' ? '登录后核验转存' : result.state === 'unknown' ? '核验转存结果' : '转存到网盘');
-            button.title = result.state === 'saved' ? describeTarget(result.record) : result.error || '';
+            const completed = result.record?.status === 'completed' && !['missing','moved'].includes(result.state);
+            button.textContent = t(completed ? '已转存到网盘' : '转存到网盘');
+            button.title = completed ? describeTarget(result.record) : result.error || '';
         }).catch(() => { if (button.isConnected !== false) button.title = t('转存记录读取失败，请点击重试'); });
     }
 

@@ -40,6 +40,7 @@
     function localConfig(stationId) { try { return JSON.parse(localStorage.getItem(key('station:' + stationId)) || 'null'); } catch (_) { return null; } }
     function notice(text, code = '') { if (banner) { banner.textContent = t(text) + (code ? ' [' + code + ']' : ''); banner.hidden = false; } }
     function error(cause) {
+        if (cause.message === 'STREAM_CONTROL_TIMEOUT' || cause.message === 'Failed to fetch') { notice('串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_SOURCE_CHANGED') { notice('来源内容已变更，请重新导入该节目项', cause.message); return; }
         if (cause.message === 'STREAM_TYPE_UNSUPPORTED') { notice('来源文件不是支持的可预览类型，请重新选择', cause.message); return; }
         if (cause.message === 'STREAM_INVITE_INVALID') { notice('邀请不存在或已被删除，请索取新邀请', cause.message); return; }
@@ -52,11 +53,17 @@
         return node;
     }
     async function request(url, method = 'GET', data, options = {}) {
+        const bounded = url === '/sync' || method === 'GET' && url.startsWith('/stations?');
+        const controller = bounded ? new AbortController() : null;
+        const cancelled = () => controller?.abort();
+        options.signal?.addEventListener('abort', cancelled, {once:true});
+        const deadline = controller ? setTimeout(cancelled, 20000) : null;
+        try {
         const headers = { ...options.headers, 'X-Stream-Device': config.deviceId(), 'X-Stream-Key': localStorage.getItem(key('key')),
             ...(options.accountId ?? account() ? { 'X-Disk-Account': options.accountId ?? account() } : {}) };
         if (data !== undefined) headers['Content-Type'] = 'application/json';
         if (options.onProgress) headers.Accept = 'application/x-ndjson';
-        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : JSON.stringify(data), cache: 'no-store', signal: options.signal, keepalive: options.keepalive === true });
+        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : JSON.stringify(data), cache: 'no-store', signal: controller?.signal || options.signal, keepalive: options.keepalive === true });
         if (response.ok && options.onProgress && response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
             const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '', result, finished = false;
             const consume = line => { if (!line.trim()) return; const value = JSON.parse(line); if (value.error) throw Object.assign(Error(value.error), value, { confirmedFailure: true }); if (value.progress) options.onProgress(value.progress); if (value.result) { result = value.result; finished = true; } };
@@ -65,6 +72,8 @@
             if (!finished) throw Error('STREAM_SAVE_UNCONFIRMED'); return result;
         }
         const result = await response.json(); if (!response.ok) { const cause = Object.assign(Error(result.error || 'STREAM_REQUEST_FAILED'), result); cause.confirmedFailure = true; cause.retryAfter = Number(response.headers?.get('Retry-After')) || 0; throw cause; } return result;
+        } catch (cause) { if (controller?.signal.aborted && !options.signal?.aborted) throw Error('STREAM_CONTROL_TIMEOUT'); throw cause; }
+        finally { if(deadline!==null)clearTimeout(deadline); options.signal?.removeEventListener('abort',cancelled); }
     }
     async function copyText(value) {
         if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
@@ -129,7 +138,9 @@
         let retry = 1000; const providerId = uid();
         while (initialized) {
             try {
-                const work = await request('/provider-work', 'GET', undefined, { headers: { 'X-Stream-Provider': providerId } });
+                // LAN HTTP/1 shares a small connection pool across tabs. Idle
+                // supply polling must yield it to account/discovery requests.
+                const work = await request('/provider-work', 'GET', undefined, { headers: { 'X-Stream-Provider': providerId, 'X-Stream-Wait': '1000' } });
                 retry = 1000;
                 await Promise.all((work.requests || []).map(async task => {
                     let blob, failure;
@@ -139,6 +150,7 @@
                     if (failure) headers['X-Stream-Error'] = failure;
                     await fetch('/api/streaming/provider-work/' + task.requestId, { method: 'POST', headers, body: failure ? new Uint8Array() : blob }).catch(() => {});
                 }));
+                if (!work.requests?.length) await new Promise(resolve => setTimeout(resolve, 1000));
             } catch (cause) { await new Promise(resolve => setTimeout(resolve, Math.max(retry, (cause.retryAfter || 0) * 1000))); retry = Math.min(30000, retry * 2); }
         }
     }
@@ -163,7 +175,7 @@
                     resolved: ['accepted', 'rejected', 'expired', 'revoked'].includes(invite.status) ? invite.status : '', data: invite });
                 noticeIds.set(invite.id, invite.status);
             }
-            if (changed && isOpen()) render();
+            if (changed && isOpen()) await render();
             else if (isOpen() && ['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) await refreshList();
         } catch (cause) { if (selected === account() && isOpen()) error(cause); }
     }

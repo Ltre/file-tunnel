@@ -138,6 +138,9 @@
 <script src="/client/cache-store.js"></script>
 <script src="/client/sns-download-cache.js"></script>
 <script src="/client/disk-pending-save.js"></script>
+<script src="/client/disk-client.js"></script>
+<link rel="stylesheet" href="/client/disk-saved-location.css">
+<script src="/client/disk-saved-location.js"></script>
 <script src="/client/audio-track-repair.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
 <script>
@@ -404,9 +407,9 @@
         actions.append(makeAction('抓取标签',()=>showTags(task)));
         if (task.hasFile && Number(task.completedAt) && Number(task.outputFileSize) > 0 && task.status === 'completed') {
             const saveToDisk = makeAction('转存到网盘', async () => {
-                const record = await window.DiskPendingSave.prepareServer({ source: 'sns', task });
-                if (!record) return;
-                const opened = window.DiskPendingSave.open(record);
+                const result = await window.DiskSavedLocation.openTask({ source: 'sns', task });
+                if (!result) return;
+                const {record, opened} = result;
                 const link = document.createElement('a'); link.href = opened.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = '打开网盘继续转存';
                 notice.replaceChildren(document.createTextNode(record.status === 'completed' ? '正在核验已保存文件，请在网盘页面查看核验结果。' : '待转存记录已保存，登录取消或失败后可继续。'), link);
             });

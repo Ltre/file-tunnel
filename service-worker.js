@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v83-content-v8-streaming-261025-2';
+const CACHE_NAME = 'instant-tunnel-v84-content-v8-streaming-261024-3';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -16,6 +16,8 @@ const APP_SHELL = [
     '/client/disk-client.js',
     '/client/disk-operation-order.js',
     '/client/disk-pending-save.js',
+    '/client/disk-saved-location.js',
+    '/client/disk-saved-location.css',
     '/client/sns-download-cache.js',
     '/client/youtube-premium-cache.js',
     '/client/disk-error-messages.js',
