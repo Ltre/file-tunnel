@@ -5,7 +5,8 @@
     const LAST_TARGET = 'telegram-drive-last-tunnel';
     const PENDING = 'telegram-drive-pending-forward';
     window.DiskTunnelAdapter = {
-        configure(value) { host = value; window.DiskUI.setExporter(exportFiles); resumePendingForward(); },
+        configure(value) { host = value; window.DiskUI.setExporter(exportFiles); if (!host.deferPendingForward) resumePendingForward(); },
+        resumePendingForward,
         async save(record) {
             const files = host.filesForRecord(record);
             if (!files.length) throw new Error('此记录没有文件');
@@ -38,7 +39,7 @@
         if (!tunnels.length) throw new Error('没有可用的本机隧道记录');
         const dialog = document.createElement('dialog'); dialog.className = 'disk-tunnel-picker';
         const title = document.createElement('strong'); title.textContent = '选择转发目标隧道';
-        const hint = document.createElement('p'); hint.textContent = '若选择其它隧道，将先完整缓存文件，再切换隧道继续原有发送和备注流程。';
+        const hint = document.createElement('p'); hint.textContent = '文件会发送到所选隧道，当前页面和隧道保持不变。';
         const select = document.createElement('select'); select.setAttribute('aria-label', '目标隧道');
         const remembered = localStorage.getItem(LAST_TARGET) || current?.id || current;
         for (const tunnel of tunnels) {
@@ -66,9 +67,9 @@
         // Closing the picker is an ordinary cancellation.  Do not turn it into
         // an unrelated connectivity error after the dialog has disappeared.
         if (!target) return;
-        const files = [];
+        const files = [], context = window.DiskClient.context?.();
         for (const item of items) {
-            const blob = await window.DiskClient.read(item);
+            const blob = await window.DiskClient.read(item, context);
             const file = new File([blob], item.name, { type: item.type });
             if (item.relativePath) Object.defineProperty(file, 'relativePath', { value: item.relativePath });
             files.push(file);
@@ -76,8 +77,8 @@
         const current = host.target();
         const currentId = String(current?.id || current || '');
         if (target.id !== currentId) {
-            sessionStorage.setItem(PENDING, JSON.stringify({ targetId: target.id, files: items.map(item => ({ id: item.id, name: item.name, type: item.type, relativePath: item.relativePath || '' })) }));
-            window.DiskUI.close(); host.navigate(target.id); return;
+            if (!host.sendTo) throw new Error('当前页面暂不支持跨隧道发送，请刷新后重试');
+            window.DiskUI.close(); return host.sendTo(files, target);
         }
         window.DiskUI.close();
         return host.send(files);

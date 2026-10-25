@@ -5,6 +5,7 @@
     const adapters = new Map();
     const active = new Map();
     const recordLocks = new Map();
+    const receiptChecks = new Map();
     let database;
     const versionOf = task => `${Number(task?.completedAt) || 0}-${Number(task?.outputFileSize) || 0}`;
     const sourceTypes = new Set(['sns', 'youtube']);
@@ -18,6 +19,72 @@
         return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
     };
     const validId = id => /^[-a-zA-Z0-9_]{8,100}$/.test(String(id || ''));
+    const liveRecord = record => !['cancelled', 'superseded'].includes(record.status);
+
+    async function receiptInfo(record, route) {
+        const target = record.target;
+        if (!target?.accountId || typeof target.diskSpace !== 'string') throw new Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');
+        const query = target.diskSpace ? (route.includes('?') ? '&' : '?') + 'disk_space=' + encodeURIComponent(target.diskSpace) : '';
+        const controller = global.AbortController ? new global.AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+        try {
+            const response = await global.fetch('/api/telegram/drive' + route + query, { cache:'no-store', credentials:'same-origin',
+                headers:{ 'X-Disk-Account':target.accountId }, ...(controller ? { signal:controller.signal } : {}) });
+            const data = await response.json().catch(() => null);
+            if (controller?.signal.aborted) throw Error('PENDING_SAVE_LOOKUP_TIMEOUT');
+            if (!response.ok) throw Object.assign(Error(data?.error || 'PENDING_SAVE_RECEIPT_UNCONFIRMED'), { status:response.status });
+            return data;
+        } catch (error) { if (controller?.signal.aborted) throw Error('PENDING_SAVE_LOOKUP_TIMEOUT'); throw error; }
+        finally { if (timer !== null) clearTimeout(timer); }
+    }
+    async function inspectSaved(record, { force = false } = {}) {
+        const key = JSON.stringify([record.id, record.updatedAt, record.target, record.result]);
+        const cached = receiptChecks.get(key);
+        if (cached?.promise || !force && cached && Date.now() - cached.at < 15000) return cached.promise || cached.value;
+        const entry = { at:Date.now() };
+        entry.promise = (async () => {
+            try {
+                let ids = (record.result?.items || []).map(item => item?.id).filter(Boolean);
+                if (!ids.length) {
+                    const found = await receiptInfo(record, '/pending-saves/' + encodeURIComponent(record.serverTransferId || record.id));
+                    ids = (found.result?.items || []).map(item => item?.id).filter(Boolean);
+                    if (!ids.length) throw Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');
+                }
+                const files = [];
+                for (const id of ids) {
+                    const data = await receiptInfo(record, '/files/' + encodeURIComponent(id)), file = data?.file || data;
+                    if (!file || file.id !== id || typeof file.folderPath !== 'string') throw Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');
+                    if (file.folderPath !== record.target.path) return { state:'moved', files:[file] };
+                    files.push(file);
+                }
+                return { state:'saved', files };
+            } catch (error) {
+                const state = ['FILE_NOT_FOUND','DISK_SPACE_NOT_FOUND'].includes(error.message) ? 'missing'
+                    : error.status === 401 || error.message === 'LOGIN_REQUIRED' ? 'login-required' : 'unknown';
+                return { state, error:error.message };
+            }
+        })().then(value => { entry.value=value; entry.at=Date.now(); delete entry.promise; return value; });
+        receiptChecks.set(key, entry);
+        if (receiptChecks.size > 200) receiptChecks.delete(receiptChecks.keys().next().value);
+        return entry.promise;
+    }
+    async function taskStatus({ source, task, force = false }) {
+        const record = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === versionOf(task) && liveRecord(record));
+        return record?.status === 'completed' ? { record, ...await inspectSaved(record, { force }) } : { record, state:record?.status || 'new' };
+    }
+    function describeTarget(record) {
+        const target = record.target || {};
+        return [target.accountName ? target.accountName + ' (' + target.accountId + ')' : target.accountId,
+            target.partitionName || target.diskSpace || target.partitionId, '/' + (target.path || '')].filter(Boolean).join(' · ');
+    }
+    function decorateButton(button, { source, task }) {
+        const t = value => global.TunnelI18n?.t(value) || value;
+        taskStatus({ source, task }).then(result => {
+            if (button.isConnected === false) return;
+            button.textContent = t(result.state === 'saved' ? '已转存到网盘' : result.state === 'login-required' ? '登录后核验转存' : result.state === 'unknown' ? '核验转存结果' : '转存到网盘');
+            button.title = result.state === 'saved' ? describeTarget(result.record) : result.error || '';
+        }).catch(() => { if (button.isConnected !== false) button.title = t('转存记录读取失败，请点击重试'); });
+    }
 
     function lockRecord(id, operation) {
         if (global.navigator?.locks) return global.navigator.locks.request('disk-pending-resume:' + id, operation);
@@ -64,6 +131,19 @@
             transaction.objectStore(STORE).put(record);
             transaction.oncomplete = () => resolve(record);
             transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error('待转存记录保存失败'));
+        });
+    }
+    async function putPending(record) {
+        const db = await openDatabase();
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction(STORE, 'readwrite'), store = transaction.objectStore(STORE), request = store.getAll();
+            let selected;
+            request.onsuccess = () => {
+                selected = request.result.find(item => item.source === record.source && item.task.id === record.task.id && item.version === record.version && liveRecord(item));
+                if (!selected) { selected = record; store.put(record); }
+            };
+            transaction.oncomplete = () => resolve(selected);
+            transaction.onerror = transaction.onabort = () => reject(transaction.error || Error('待转存记录保存失败'));
         });
     }
     async function update(id, changes) {
@@ -125,7 +205,7 @@
         }
         const prepareOne = async () => {
             const version = versionOf(task);
-            const existing = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === version && record.status !== 'cancelled');
+            const existing = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === version && liveRecord(record));
             cache ||= cacheFor(source);
             adapters.set(source, cache);
             if (existing) {
@@ -180,7 +260,11 @@
         }
         const operation = async () => {
             const version = versionOf(task);
-            const existing = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === version && record.status !== 'cancelled');
+            let existing = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === version && liveRecord(record));
+            if (existing?.status === 'completed') {
+                const verified = await inspectSaved(existing, { force:true });
+                if (['missing','moved'].includes(verified.state)) { await update(existing.id, { status:'superseded', error:verified.state }); existing=null; }
+            }
             if (existing && (existing.transferMode === 'server' || ['completed', 'uploading', 'verification-required'].includes(existing.status))) return existing;
             const current = await verifySource({ source, task: { ...task, id: String(task.id) }, version });
             if (!current.hasFile || current.status !== 'completed') throw new Error('服务端成品已清理或不可用，请重新抓取后转存');
@@ -192,7 +276,7 @@
                 await put(upgraded);
                 return upgraded;
             });
-            return put({ id: uuid(), source, version, transferMode: 'server',
+            return putPending({ id: uuid(), source, version, transferMode: 'server',
                 task: { id: String(task.id), completedAt: Number(task.completedAt), outputFileSize: Number(task.outputFileSize), outputFileName: String(task.outputFileName || task.title || 'downloaded-file') },
                 sourceInfo: safeSource(task), file: { name: String(task.outputFileName || 'downloaded-file'), size: Number(task.outputFileSize), type: 'application/octet-stream' },
                 status: 'pending', target: null, createdAt: Date.now(), updatedAt: Date.now() });
@@ -248,14 +332,27 @@
         const execute = async () => {
             let record = await get(id);
             if (!record) throw new Error('待转存记录不在此浏览器中，请在原浏览器打开网盘');
-            if (record.status === 'completed') { stage('此文件此前已转存完成，正在定位结果…'); if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id); await hooks.onCompleted?.(record); return record; }
+            if (record.status === 'superseded') return resume((await prepareServer({ source:record.source, task:record.task })).id, hooks);
+            if (record.status === 'completed') {
+                stage('正在核验已保存的网盘文件…');
+                const verified = await (hooks.verifySaved ? hooks.verifySaved(record) : inspectSaved(record, { force:true }));
+                if (verified.state === 'cancelled') return record;
+                if (['missing','moved'].includes(verified.state)) {
+                    await update(record.id, { status:'superseded', error:verified.state });
+                    return resume((await prepareServer({ source:record.source, task:record.task })).id, hooks);
+                }
+                if (verified.state !== 'saved') throw Error(verified.error || 'PENDING_SAVE_RECEIPT_UNCONFIRMED');
+                record = await update(record.id, { result:{ ...record.result, items:verified.files } });
+                if (record.transferMode !== 'server' || record.legacyCachePin) await cacheFor(record.source).unpin(record.task.id, record.id);
+                await hooks.onCompleted?.(record); return record;
+            }
             if (record.status === 'cancelled') throw new Error('这条待转存记录已取消，请回后台重新发起');
             if (record.status === 'preparing' && !hooks.transferServer) throw new Error('上次缓存引用准备未完成，请在后台重新发起转存');
             if (['uploading', 'verification-required'].includes(record.status)) {
                 stage('正在核验上次转存结果，不会重复提交…');
                 if (!hooks.lookup) throw new Error('上次上传结果尚未确认，请核验网盘任务后继续，未重复上传');
                 const found = await hooks.lookup(record);
-                if (found?.status === 'completed') { record = await complete(id, found.result); await hooks.onCompleted?.(record); return record; }
+                if (found?.status === 'completed') { await complete(id, found.result); return execute(); }
                 if (found?.status !== 'missing' && !(found?.status === 'failed' && found.retryable === true)) {
                     await hooks.onStatus?.('上次转存仍在处理，请等待或在任务列表查看结果'); return record;
                 }
@@ -276,8 +373,9 @@
             const account = await hooks.chooseAccount(record);
             if (!account) return record;
             stage(record.target ? '正在复用原目标目录…' : '正在读取转存目标分区和目录…');
-            const target = await hooks.chooseTarget(record, account);
+            let target = await hooks.chooseTarget(record, account);
             if (!target) return record;
+            target = { ...target, accountName:target.accountName || account.name || account.username || account.id };
             if (!target.accountId || !target.partitionId || typeof target.path !== 'string') throw new Error('请选择有效的账号、分区和目标目录');
             stage('正在核验目标目录和来源版本…');
             await hooks.verifyTarget?.(record, target);
@@ -292,6 +390,7 @@
                 const result = record.transferMode === 'server'
                     ? await hooks.transferServer(record, target)
                     : await hooks.upload(record, blob, target, { pendingSaveId: id, sourceInfo: record.sourceInfo });
+                if (!result?.items?.length || result.items.some(item => !item?.id)) throw Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');
                 record = await complete(id, result);
             } catch (error) {
                 if ((await get(id))?.status !== 'completed') await update(id, { status: 'verification-required', error: String(error.message || error).slice(0, 1000) });
@@ -313,5 +412,5 @@
         active.set(id, promise);
         return promise;
     }
-    global.DiskPendingSave = { prepare, prepareServer, open, get, list, update, getBlob, complete, cancel, resume, verifySource, isActive: id => active.has(id), _test: { versionOf, safeSource, cacheFor } };
+    global.DiskPendingSave = { prepare, prepareServer, open, get, list, update, getBlob, complete, cancel, resume, verifySource, inspectSaved, taskStatus, describeTarget, decorateButton, isActive: id => active.has(id), _test: { versionOf, safeSource, cacheFor } };
 })(window);

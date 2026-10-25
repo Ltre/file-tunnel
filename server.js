@@ -3880,6 +3880,18 @@ function canUseTunnelCapability(session, deviceId, capability) {
     return session.permissions?.[capability] !== false;
 }
 
+function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId) {
+    const target = sessions.get(targetSessionId);
+    if (!target?.devices?.has(deviceId) || !canUseTunnelCapability(target, deviceId, 'read') || !sessions.get(sourceSessionId)?.fileAssets?.has(fileId)) return false;
+    return target.history?.some(entry => {
+        const message = entry.message;
+        if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
+        const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
+        return files.some(file => file?.id === fileId && file.backupSourceSessionId === sourceSessionId &&
+            tunnelAccess.verifyFileForward(file.forwardedSourceGrant, sourceSessionId, targetSessionId, message.id, fileId));
+    }) || false;
+}
+
 function getSessionPermissionPayload(session, deviceId = '') {
     const admins = normalizeTunnelAdminRecords(session?.admins || {});
     return {
@@ -8942,7 +8954,7 @@ io.on('connection', (socket) => {
         message: socketText(message)
     });
     socket.use(([event,data],next)=>{
-        if(['file-asset-request','file-asset-discovery'].includes(event)&&data?.sourceSessionId&&data.sourceSessionId!==currentSession&&!trustedInternalClient&&!tunnelAccess.verify(data.sourceAccessGrant,data.sourceSessionId,currentDevice))return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+        if(['file-asset-request','file-asset-discovery'].includes(event)&&data?.sourceSessionId&&data.sourceSessionId!==currentSession&&!trustedInternalClient&&!tunnelAccess.verify(data.sourceAccessGrant,data.sourceSessionId,currentDevice)&&!canReadForwardedFile(currentSession,currentDevice,data.sourceSessionId,data.assetId||data.fileId))return emitSocketError('permission-denied','来源隧道尚未获得访问权');
         if(!socket.data.magnetAssetId||event==='join-session')return next();
         const allowed=['file-asset-request','file-asset-discovery','file-asset-transfer-status'],magnet=infraStore?.getMagnet(socket.data.magnetId)||magnets.get(socket.data.magnetId);
         if(allowed.includes(event)&&(data?.assetId||data?.fileId)===socket.data.magnetAssetId&&(!data.sessionId||data.sessionId===currentSession)&&!data.sourceSessionId&&magnet&&!magnet.revoked)return next();
@@ -9895,8 +9907,22 @@ io.on('connection', (socket) => {
                 targetSessionId,
                 infraStore.findShortCodeForSession(targetSessionId)
             );
+            let targetSenderId = currentDevice;
+            if (data.fileSource === 'disk-cache') {
+                const targetDeviceId = sanitizeString(data.targetDeviceId, 80);
+                if (!tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId)) return typeof ack === 'function' && ack({ ok:false, error:'target-tunnel-access-required' });
+                targetSenderId = targetDeviceId;
+                if (!canUseTunnelCapability(sourceSession,currentDevice,'read') || !canUseTunnelCapability(targetSession,targetDeviceId,'sendFile')) return typeof ack === 'function' && ack({ ok:false,error:'permission-denied' });
+                const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? message.collection?.files || [] : [];
+                if (!isValidDeviceId(message.id) || !files.length || files.some(file => !sourceSession.fileAssets?.get(file?.id)?.providers?.has(currentDevice))) return typeof ack === 'function' && ack({ok:false,error:'forward-file-cache-required'});
+                for (const file of files) {
+                    file.backupSourceSessionId = currentSession;
+                    file.forwardedToSessionId = targetSessionId;
+                    file.forwardedSourceGrant = tunnelAccess.issueFileForward(currentSession,targetSessionId,message.id,file.id);
+                }
+            }
             const forwardCapability = ['text', 'markdown'].includes(message.type) ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
-            if (!canUseTunnelCapability(targetSession, currentDevice, forwardCapability)) {
+            if (!canUseTunnelCapability(targetSession, targetSenderId, forwardCapability)) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
             }
             const historyResult = addToSessionHistory(targetSessionId, targetSession, message, {
@@ -9906,9 +9932,10 @@ io.on('connection', (socket) => {
                 source: 'cross-tunnel-forward',
                 auditFileAssets: getSessionAuditFileAssets(sourceSession)
             });
+            if (data.fileSource === 'disk-cache' && !historyResult.stored && !['duplicate','duplicate-file'].includes(historyResult.reason)) return typeof ack === 'function' && ack({ok:false,error:'forward-record-not-stored',reason:historyResult.reason || ''});
             emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
-            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored) });
+            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(data.fileSource === 'disk-cache' ? {message} : {}) });
         } catch (err) {
             console.error('forward-message error:', err);
             if (typeof ack === 'function') ack({ ok: false, error: 'forward-failed' });

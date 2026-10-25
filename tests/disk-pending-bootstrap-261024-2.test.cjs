@@ -21,6 +21,7 @@ function fixture({ pendingSave = '' } = {}) {
     const history = { state: {}, pushState(state) { this.state = state; }, replaceState(state) { this.state = state; } };
     const window = { addEventListener() {}, dispatchEvent() {}, DiskClient: {
         getAccount: () => account, setAccount: value => { account = value; }, setMount() {}, setCollaboration() {},
+        accountOperations: async id => ({ accountId:id,operations:[] }),
         json: (method, value) => ({ method, body: JSON.stringify(value) }),
         raw: async (route, options) => { calls.push(route); if (route === '/me') return { accounts: users }; if (route === '/accounts/select') return { identity: { id: JSON.parse(options.body).accountId } }; throw Error('unexpected ' + route); }
     } };
@@ -102,7 +103,8 @@ function transferFixture({ stall = '', fail = '', bodyStall = '' } = {}) {
         confirmTelegramDriveAction: async () => true, formatFileSize: String, telegramDriveDisplayPath: value => '/' + value,
         manageTelegramDriveAccounts: () => { throw Error('original account remains authenticated'); }
     });
-    vm.runInContext(fromPending('    async function verifySource(', '    async function prepare(') + fromPending('    async function resume(', '    global.DiskPendingSave =') + ';global.DiskPendingSave={resume,verifySource};', context);
+    vm.runInContext(fromPending('    function describeTarget(', '    function decorateButton(') + fromPending('    async function verifySource(', '    async function prepare(') + fromPending('    async function resume(', '    global.DiskPendingSave =') + ';global.DiskPendingSave={resume,verifySource,describeTarget};', context);
+    context.switchTelegramDriveAccount=async()=>true; context.revealTelegramDriveUploadedDirectory=async()=>true; context.telegramDriveNavigationVersion=1;
     vm.runInContext(section('function pendingSaveTransferId(', 'function pendingSaveFeedback(') + section('async function pendingSaveRead(', 'async function showTelegramDrivePendingSaveBanner(') + section('async function choosePendingSaveTarget(', 'function telegramDriveErrorText('), context);
     return { calls, stages, timers, record: () => record, run: () => context.resumeTelegramDrivePendingSave(), fire: () => { const entry = [...timers.values()][0]; assert.equal(entry.ms, 20000); entry.run(); } };
 }

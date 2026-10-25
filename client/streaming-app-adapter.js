@@ -44,6 +44,31 @@
             for (const [id, device] of deps.state.contacts) known.set(device.deviceId || id, { ...known.get(device.deviceId || id), ...device, deviceId: device.deviceId || id, name: device.remark || device.deviceName || device.name || id, followed: true });
             return [...known.values()];
         }
+        function subscribeVisibilityChanges(listener) {
+            let socket;
+            const events = ['session-devices', 'device-joined', 'device-left', 'tunnel-access-grant', 'session-permissions', 'connect', 'disconnect'];
+            const changed = () => listener();
+            const attach = () => {
+                if (socket === deps.state.socket) return;
+                for (const event of events) socket?.off?.(event, changed);
+                socket = deps.state.socket;
+                for (const event of events) socket?.on?.(event, changed);
+            };
+            // The console starts before tunnel admission and Socket.IO setup.
+            // Observe the existing lifecycle without changing its transport.
+            const shellReady = () => { attach(); changed(); };
+            const stored = event => { if (/^(tunnel-authorization:|tunnel-access:)/.test(event.key || '')) changed(); };
+            global.document?.addEventListener('tunnel-shell-ready', shellReady);
+            global.document?.addEventListener('tunnel-socket-ready', shellReady);
+            global.addEventListener?.('storage', stored);
+            attach();
+            return () => {
+                for (const event of events) socket?.off?.(event, changed);
+                global.document?.removeEventListener('tunnel-shell-ready', shellReady);
+                global.document?.removeEventListener('tunnel-socket-ready', shellReady);
+                global.removeEventListener?.('storage', stored);
+            };
+        }
         const referenceNames = new Map(), referenceFlights = new Map();
         async function readReference(value, { maxBytes = 256 * 1024 * 1024 } = {}) {
             await global.StreamingConsole.whenReady();
@@ -86,7 +111,7 @@
                 if (!selected) throw Error('STREAM_SAVE_CANCELLED');
                 await global.DiskClient.upload([file], selected.path ?? '', undefined, { transportContext: selected.transportContext || selected.context || global.DiskClient.context() });
             } });
-        return { deviceId, deviceName: () => deps.state.deviceName || deviceId(), tunnels, devices, readTunnel,
+        return { deviceId, deviceName: () => deps.state.deviceName || deviceId(), tunnels, devices, readTunnel, subscribeVisibilityChanges,
             currentTunnel: () => deps.state.sessionId, home: deps.home, toast: deps.toast, onMessage: deps.receiveMessage };
     }
     global.StreamingAppAdapter = { create };

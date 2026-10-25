@@ -42,7 +42,7 @@ function landingAndDisk(search) {
         document: { body, addEventListener() {}, getElementById: get, createElement: tag => new Element(tag), querySelectorAll: () => [], querySelector: () => null },
         localStorage: { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) }, URL, URLSearchParams, setTimeout, clearTimeout, requestAnimationFrame: fn => fn(),
         state: {}, readSessionDirectoryCache: () => [], getAllFromStore: async () => [], replaceSessionDirectoryCache: () => [], historyLog() {}, alert: message => { throw Error(message); } });
-    const app = source('app.js'); vm.runInContext(app.slice(app.indexOf('function initSessionLanding()'), app.indexOf('\nfunction openSession(')), context);
+    const app = source('app.js'); vm.runInContext(app.slice(app.indexOf('function initSessionLanding('), app.indexOf('\nfunction openSession(')), context);
     context.initSessionLanding(); // Execute the real shell initialization, not just DiskUI in isolation.
     const hook = `
         initDiskEnhancements=()=>{};initDiskBreadcrumbScroll=()=>{};saveDiskWindow=()=>{};
@@ -93,7 +93,7 @@ test('tunnel save picker switches native partitions, creates a nested target and
     const target = await context.chooseTelegramDriveSaveDestination({ userId: 'alice', onCreateDirectory: (path, actor) => { created = { path, actor }; } });
     assert.equal(target.path, '目标/子'); assert.equal(target.transportContext.diskSpace, 'target'); assert.equal(created.actor.diskSpace, 'target');
     assert.equal(memory.get('telegramDriveSaveDirectory:alice:second'), '目标/子');
-    const uploads = []; window.DiskUI = { setExporter() {}, chooseSaveDestination: async () => target, navigationVersion: 0 };
+    const uploads = []; window.DiskUI = { setExporter() {}, chooseSaveDestination: async () => target, navigationVersion: 0, revealUploadedDirectory: async () => {} };
     client.context = () => ({ accountId: 'bob', requestBase: '/api/telegram/drive/mount-scope/foreign', diskSpace: 'other' });
     client.raw = async () => ({ identity: { id: 'alice' } }); client.upload = async (...args) => { uploads.push(args); return { items: [] }; };
     vm.runInContext(source('client/disk-tunnel-adapter.js'), context);

@@ -403,13 +403,14 @@
         }
         actions.append(makeAction('抓取标签',()=>showTags(task)));
         if (task.hasFile && Number(task.completedAt) && Number(task.outputFileSize) > 0 && task.status === 'completed') {
-            actions.append(makeAction('转存到网盘', async () => {
+            const saveToDisk = makeAction('转存到网盘', async () => {
                 const record = await window.DiskPendingSave.prepareServer({ source: 'sns', task });
                 if (!record) return;
                 const opened = window.DiskPendingSave.open(record);
                 const link = document.createElement('a'); link.href = opened.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = '打开网盘继续转存';
-                notice.replaceChildren(document.createTextNode(record.status === 'completed' ? '此资源已转存。' : '待转存记录已保存，登录取消或失败后可继续。'), link);
-            }));
+                notice.replaceChildren(document.createTextNode(record.status === 'completed' ? '正在核验已保存文件，请在网盘页面查看核验结果。' : '待转存记录已保存，登录取消或失败后可继续。'), link);
+            });
+            window.DiskPendingSave.decorateButton(saveToDisk, { source:'sns', task }); actions.append(saveToDisk);
         }
         if (['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('取消',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/cancel`,{method:'POST'});await loadTasks();}));
         if (['failed','cancelled','cleared'].includes(task.status)) actions.append(makeAction('重新抓取',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/retry`,{method:'POST'});await loadTasks();}));

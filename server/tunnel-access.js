@@ -27,6 +27,10 @@ function createTunnelAccess(dataDir){const key=privateKeyFile(path.join(dataDir,
         const admittedId=registered?crypto.randomUUID():deviceId;
         return {deviceId:admittedId,grant:issue(sessionId,admittedId)};
     }
-    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy,issueJoin,verifyJoin,authorize};
+    // A forwarded file is readable through its destination record, without
+    // granting membership or access to any other file in the source tunnel.
+    const issueFileForward=(source,target,messageId,fileId)=>'f1.'+sign('file-forward\0'+source+'\0'+target+'\0'+messageId+'\0'+fileId);
+    function verifyFileForward(token,source,target,messageId,fileId){if(typeof token!=='string'||!/^f1\.[a-zA-Z0-9_-]{43}$/.test(token))return false;const expected=issueFileForward(source,target,messageId,fileId);return crypto.timingSafeEqual(Buffer.from(token),Buffer.from(expected));}
+    return {issue,verify,enrolled,attempt,preserveLegacy,verifyLegacy,issueJoin,verifyJoin,authorize,issueFileForward,verifyFileForward};
 }
 module.exports={createTunnelAccess};

@@ -27,7 +27,7 @@
     };
     const labelKind = kind => t(({ local: '本机文件', disk: '网盘文件', tunnel: '隧道文件', video: '视频', audio: '音频', image: '图片', markdown: 'Markdown', text: 'TXT' })[kind] || kind);
     const stateLabel = value => t(({ public: '公开', invite: '仅限邀请', offline: '下线', restricted: '访问已结束', playing: '正在播放', stopped: '已停止', paused: '已暂停', waiting: '等待播放', reading: '正在展示', buffering: '缓冲中', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', generated: '已生成', sent: '已发送', delivered: '已发送', accepted: '已接受', rejected: '已拒绝', expired: '已到期', revoked: '已撤销' })[value] || value);
-    let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncFlight;
+    let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncFlight, visibilityUnsubscribe, visibilitySyncTimer;
     let stopWatchSchedule = () => {};
     let ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }, pending = new Map(), channel = 'local', candidates = [], pickerVersion = 0;
     let diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }, tunnelScope = '', importBusy = false, lastList = [], dialog, discoveryTimes = {};
@@ -932,6 +932,7 @@
     }
     function init(options) {
         if (initialized) return ready; config = options; initialized = true;
+        visibilityUnsubscribe?.(); clearTimeout(visibilitySyncTimer);
         const entryUrl = new URL(location.href);
         try { ui = { ...ui, ...JSON.parse(localStorage.getItem(key('ui')) || '{}') }; } catch (_) {}
         try { discoveryTimes = JSON.parse(localStorage.getItem(key('discoveries')) || '{}') || {}; } catch (_) {}
@@ -943,6 +944,10 @@
             providerLoop(); await sync();
         })();
         ready.catch(cause => { initialized = false; config.toast(t('串流模块初始化失败') + ' [' + cause.message + ']'); });
+        visibilityUnsubscribe = config.subscribeVisibilityChanges?.(() => {
+            clearTimeout(visibilitySyncTimer);
+            visibilitySyncTimer = setTimeout(() => { ready.then(() => sync(true)).catch(() => {}); }, 100);
+        });
         document.getElementById('streamingConsoleBtn')?.addEventListener('click', () => { document.getElementById('connectionHeaderMenu').hidden = true; open().catch(error); });
         document.getElementById('topbarStreamingBtn')?.addEventListener('click', () => open().catch(error));
         document.getElementById('sendMarkdownBtn')?.addEventListener('click', () => compose().catch(error));

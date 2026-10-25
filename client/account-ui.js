@@ -21,7 +21,7 @@
                 if (loading) throw Error('ACCOUNT_LOADING');
                 const entry = entries.find(item => item.identity?.id === selected);
                 if (!entry || entry.reauthRequired || options.requiredId && selected !== options.requiredId) throw Error('LOGIN_REQUIRED');
-                await options.select(entry.identity.id); if (current?.overlay === overlay) close(entry.identity);
+                if (await options.select(entry.identity.id) === false) return; if (current?.overlay === overlay) close(entry.identity);
             }));
         });
         panel.append(heading, status, list, signIn, actions); overlay.append(panel); document.body.append(overlay);
@@ -39,7 +39,7 @@
                         if (entry.reauthRequired) { await options.reauthenticate?.(user, signIn, data.status); return; }
                         if (options.requiredId && user.id !== options.requiredId) { status.textContent = t('请先添加或重新登录一个有效的网盘账号'); return; }
                         if (options.choose) { selected = user.id; list.querySelectorAll('[aria-pressed]').forEach(node => node.setAttribute('aria-pressed', String(node === select))); }
-                        else { await options.select(user.id); if (current?.overlay === overlay) close(user); }
+                        else { if (await options.select(user.id) === false) return; if (current?.overlay === overlay) close(user); }
                     }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;
                     select.setAttribute('aria-pressed', String(user.id === (options.choose ? selected : options.currentAccount())));
                     const label = document.createElement('small'); label.textContent = t(entry.reauthRequired ? '需要重新登录' : user.id === options.currentAccount() ? '当前账号' : '');
@@ -55,7 +55,7 @@
                 options.renderSignIn(signIn, data.status);
                 if (!options.choose && entries.length && options.offline) {
                     const offline = button('使用离线身份', async () => {
-                        await options.offline(); close();
+                        if (await options.offline() === false) return; close();
                         const message = t('已使用离线身份，部分需要登录的功能将无法使用。');
                         if (global.showAppToast) global.showAppToast(message); else global.alert(message);
                     });

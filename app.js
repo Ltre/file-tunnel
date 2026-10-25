@@ -2003,9 +2003,12 @@ function initSocket() {
                 permissions: { ...DEFAULT_TUNNEL_PERMISSIONS, ...(record.permissions || {}) }
             }]));
         applyTunnelPermissionUi();
+        // Pending disk forwards survive a full tunnel navigation. Resume only
+        // after this socket has joined and received the target's permissions.
+        window.DiskTunnelAdapter?.resumePendingForward?.();
     });
     state.socket.on('permission-denied', data => {
-        showAppToast(`操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
+        showAppToast(data?.message || `操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
     state.socket.on('tunnel-access-grant',data=>{const changed=data.sessionId===state.sessionId&&data.deviceId&&data.deviceId!==state.deviceId;storeTunnelAuthorization(data.sessionId,data);state.tunnelJoinToken='';sessionStorage.removeItem('tunnel-create:'+data.sessionId);if(changed){state.socket.disconnect();window.location.reload();return;}generateQRCode();});
     state.socket.on('tunnel-access-required',()=>{const target=new URL(window.location.href);if(target.pathname.startsWith('/record/'))target.pathname='/';target.hash='';for(const key of ['record','invite','from'])target.searchParams.delete(key);target.searchParams.set('leave','1');state.socket.disconnect();window.location.replace(target.href);});
@@ -2228,6 +2231,8 @@ function initSocket() {
         console.log('Socket disconnected');
         historyLog('socket-disconnected');
     });
+    // Observers attach after core handlers, so they see the applied tunnel state.
+    document.dispatchEvent(new Event('tunnel-socket-ready'));
 }
 
 function requestSessionHistory(reason = 'manual') {
@@ -5224,6 +5229,60 @@ async function sendSelectedFiles(files, options = {}) {
     } finally {
         if (ownsProgress) progress.close();
     }
+}
+
+async function sendDiskFilesToTunnel(files, target) {
+    const sourceSessionId = state.sessionId, socket = state.socket, sender = state.deviceId;
+    if (!socket?.connected || !sourceSessionId) throw new Error('隧道连接尚未建立，请稍后重试');
+    const entries = Array.from(files || []);
+    if (!entries.length) return;
+    const progress = showFileSendProcessingPlaceholder(entries.length);
+    const confirmed = [];
+    try {
+        progress.update('检查文件', 0, entries.length, entries[0].name);
+        await authorizeTunnelSelection(target.id, target.shortCode);
+        const selected = entries.length > 1 ? await askFileCollectionMode(entries) : { mode:'split', remark:'' };
+        if (!selected) return;
+        if (socket !== state.socket || sourceSessionId !== state.sessionId || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标');
+        const fileInfos = [];
+        for (let index = 0; index < entries.length; index++) {
+            if (socket !== state.socket || sourceSessionId !== state.sessionId || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标');
+            progress.update('读取文件并准备记录', index, entries.length, entries[index].name);
+            const info = createFileInfoFromFile(entries[index]);
+            const data = await fileToArrayBuffer(entries[index]);
+            await saveToStore('files', { ...info, sessionId:sourceSessionId, ownerDeviceId:sender, isFileAsset:true, data });
+            if (!socket.connected) throw new Error('隧道连接尚未建立，请稍后重试');
+            socket.emit('file-asset-available', {sessionId:sourceSessionId,asset:info});
+            enqueueMediaPosterCache(info.id, info);
+            fileInfos.push(info);
+        }
+        const collection = selected.mode === 'collection' && fileInfos.length > 1;
+        const groups = collection ? [fileInfos] : fileInfos.map(info => [info]);
+        for (const group of groups) {
+            if (socket !== state.socket || sourceSessionId !== state.sessionId) throw new Error('当前隧道已变化，请重新选择转发目标');
+            const message = { id:generateId(),sessionId:target.id,type:collection ? 'collection' : 'file',timestamp:nextHistoryTimestamp(),sender,senderName:state.deviceName,remark:selected.remark || '' };
+            if (collection) message.collection = {id:message.id,files:group,count:group.length,totalSize:group.reduce((total,file)=>total+Number(file.size || 0),0),remark:message.remark};
+            else message.fileInfo = group[0];
+            const result = await new Promise((resolve,reject) => socket.timeout(10000).emit('forward-message', {
+                targetSessionId:target.id,targetDeviceId:tunnelDeviceId(target.id),targetAccessGrant:savedTunnelGrant(target.id),fileSource:'disk-cache',message
+            }, (error,response) => {
+                if (error) return reject(new Error('服务器响应超时，转发结果尚未确认，请检查目标隧道记录'));
+                const failures = {'target-tunnel-access-required':'目标隧道访问凭据无效，请重新加入后再试','permission-denied':'当前设备没有转发所需的隧道权限','forward-file-cache-required':'转发文件缓存尚未准备完成，请重试','target-tunnel-not-found':'目标隧道已不存在，请重新选择','forward-record-not-stored':'转发记录未保存，请检查目标隧道后重试'};
+                return !response?.ok ? reject(new Error(failures[response?.error] || response?.error || '服务器拒绝转发')) : resolve(response);
+            }));
+            if (!result.stored && !['duplicate','duplicate-file'].includes(result.reason)) throw new Error('转发记录未保存，请检查目标隧道后重试');
+            confirmed.push(...group.map(file => file.name));
+            await saveToStore('messages', result.message || message);
+        }
+        showAppToast('已转发到所选隧道');
+    } catch (error) {
+        if (confirmed.length) {
+            const message = '部分文件已转发：{0}。本次操作未全部完成，请先检查目标隧道，避免重复发送。 [{1}]';
+            const details = [confirmed.join('、'), error.message];
+            throw new Error(window.TunnelI18n?.t(message, ...details) || message.replace(/\{(\d+)\}/g, (_match,index) => details[index]));
+        }
+        throw error;
+    } finally { progress.close(); }
 }
 
 async function maybeImportTransferHistoryBackupFile(file) {
@@ -18059,6 +18118,7 @@ function initUI() {
         audioCover: (blob, item) => extractAudioPosterFromStoredFile({ data:blob, name:item.name, type:item.type })
     });
     window.DiskTunnelAdapter.configure({
+        deferPendingForward: true,
         filesForRecord: telegramDriveFilesForMessage, readFile: getTelegramDriveBlob,
         linkBackup: associateTelegramDriveBackup,
         target: () => state.sessionId ? { id: state.sessionId, shortCode: state.shortCode || '', remark: state.sessionRemark || '' } : null,
@@ -18068,8 +18128,8 @@ function initUI() {
             if (state.sessionId) known.set(state.sessionId, { ...known.get(state.sessionId), sessionId: state.sessionId, shortCode: state.shortCode, remark: state.sessionRemark });
             return [...known.values()].filter(item => /^[a-zA-Z0-9_-]{8,64}$/.test(item?.sessionId || '')).map(item => ({ id: item.sessionId, shortCode: normalizeLocalShortCode(item.shortCode), remark: String(item.remark || '').trim().slice(0, 60), current: item.sessionId === state.sessionId }));
         },
-        navigate: sessionId => openSession(sessionId),
-        send: files => sendSelectedFiles(files)
+        send: files => sendSelectedFiles(files),
+        sendTo: (files, target) => sendDiskFilesToTunnel(files, target)
     });
     document.getElementById('telegramDriveBtn')?.addEventListener('click', () => {
         document.getElementById('connectionHeaderMenu').hidden = true;

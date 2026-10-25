@@ -280,6 +280,7 @@ function accountUiFixture(remaining = { identity: { id: 'bob' }, accounts: [{ id
     const history = { state: { retained: true, diskAccountId: 'alice', telegramDrivePath: '甲目录', diskMountContext: { id: 'old-mount' } },
         replaceState(state, _title, target) { this.state = state; const address = new URL(target, location.href); location.href = address.href; location.pathname = address.pathname; location.search = address.search; records.push({ state, url: address.href }); } };
     const client = { raw: async (route, options) => { requested.push({ route, options }); return route === '/accounts' ? remaining : { identity: { id: 'bob' } }; },
+        accountOperations: async id => ({ accountId:id,operations:[] }),
         json: (method, body) => ({ method, body: JSON.stringify(body) }), setAccount: value => { accountId = value; }, getAccount: () => accountId,
         setMount() {}, setCollaboration() {}, setSpace() {}, stopAccount: value => stopped.push(value) };
     const context = vm.createContext({ window: { DiskClient: client }, location, history, URL, URLSearchParams,

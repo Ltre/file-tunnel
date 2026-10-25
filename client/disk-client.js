@@ -64,6 +64,43 @@
         finally { activities.delete(activity); emitActivities(); }
     }
     const active = job => ['queued', 'running'].includes(job.status);
+    function localAccountOperations(identity) {
+        const found=new Map(); let index=0;
+        for(const job of [...jobs,...localUploads.values()]) if(active(job)&&(job.userId===identity || operationContexts.get(job.operation_id)?.accountId===identity)) found.set(job.operation_id,job.accountSwitchTitle?{...job,title:job.accountSwitchTitle}:job);
+        for(const activity of activities) if(activity.accountId===identity&&!found.has(activity.operationId)) { const id=activity.operationId||uploadSession+':activity-'+(++index); found.set(id,{operation_id:id,type:'read',status:'running',title:activity.message}); }
+        return [...found.values()];
+    }
+    const accountActivityQueries=new Map();let accountActivityChannel,accountActivitySequence=0;
+    function connectAccountActivityChannel() {
+        if(accountActivityChannel || typeof BroadcastChannel!=='function')return;
+        try {
+            accountActivityChannel=new BroadcastChannel('drop2tunnel-disk-account-activity');
+            accountActivityChannel.onmessage=event=>{
+                const data=event.data;if(!data||typeof data.requestId!=='string'||typeof data.accountId!=='string')return;
+                if(data.type==='query') {
+                    const operations=localAccountOperations(data.accountId).map(job=>({operation_id:job.operation_id,type:job.type,status:job.status,title:job.title||job.message||'',historyMirrorId:job.historyMirrorId}));
+                    accountActivityChannel?.postMessage({type:'reply',requestId:data.requestId,accountId:data.accountId,operations});
+                } else if(data.type==='reply') {
+                    const query=accountActivityQueries.get(data.requestId);
+                    if(query?.accountId===data.accountId&&Array.isArray(data.operations))query.operations.push(...data.operations.filter(job=>job&&typeof job.operation_id==='string'&&active(job)));
+                }
+            };
+        } catch(_) { accountActivityChannel=null; }
+    }
+    connectAccountActivityChannel();
+    window.addEventListener?.('pagehide',()=>{accountActivityChannel?.close();accountActivityChannel=null;});
+    window.addEventListener?.('pageshow',connectAccountActivityChannel);
+    function peerAccountOperations(identity) {
+        if(!accountActivityChannel)return Promise.resolve([]);
+        return new Promise(resolve=>{
+            const requestId=uploadSession+':'+(++accountActivitySequence),query={accountId:identity,operations:[]};
+            accountActivityQueries.set(requestId,query);
+            const finish=()=>{accountActivityQueries.delete(requestId);resolve(query.operations);};
+            const timer=setTimeout(finish,150);
+            try { accountActivityChannel.postMessage({type:'query',requestId,accountId:identity}); }
+            catch(_) { clearTimeout(timer);finish(); }
+        });
+    }
     const clientProgressFields = ['clientBytesReceived', 'clientTotalBytes', 'clientBytesPerSecond', 'clientFileIndex', 'clientFileCount', 'clientFileName', 'clientFileSize', 'clientPartIndex', 'clientPartCount'];
     const visibleJobs = () => sortJobs([...localUploads.values()].filter(job => belongsToView(job) && !jobs.some(remote => remote.operation_id === job.operation_id && (job.status !== 'failed' || !active(remote))))
         .concat(jobs.filter(job => belongsToView(job) && (localUploads.get(job.operation_id)?.status !== 'failed' || !active(job))).map(job => {
@@ -283,6 +320,7 @@
             // Also keep failures before the server can create a task (offline/HTTP errors).
             const createdAt = Date.now();
             const pending = { operation_id: 'local-upload-' + uploadSession + '-' + ++uploadSequence, type: 'upload', status: 'queued', phase: 'preparing', message: '正在准备上传', title: '上传 ' + files.length + ' 个文件', folderPath: String(folderPath || ''), percent: null, createdAt, startedAt: createdAt, updatedAt: createdAt };
+            pending.accountSwitchTitle = pending.title + '：' + files[0]?.name;
             const controller = newAbortController();
             const current = generation,context=uploadContext;operationContexts.set(pending.operation_id,context);
             localUploads.set(pending.operation_id, pending); uploadControllers.set(pending.operation_id, controller); emit(); update({ operationId: pending.operation_id });
@@ -672,7 +710,41 @@
         if(previous!==contextKey(transportContext())){viewOperationIds.clear();emit();}
         start();if(polling)polling.finally(()=>refresh(true));else refresh(true);
     }
-    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, stopAccount, refresh, withActivity, cancelOperation, cancelRead, streamUrl,
+    async function accountOperations(selectedAccount = accountId) {
+        // Read this account's task history, including other pages. A readable
+        // collaboration lists its owner's tasks; opening every grant here
+        // would both misattribute those tasks and depend on source availability.
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+        const read = async (url, context) => { const value = await raw(url, { ...context, ...(controller ? { signal:controller.signal } : {}) }); if (controller?.signal.aborted) throw abortError(); return value; };
+        try {
+            const identity = selectedAccount || (await read('/me', {accountId:'',diskSpace:'',requestBase:base})).identity?.id || '';
+            if (!identity) return {accountId:'',operations:[]};
+            const peers=peerAccountOperations(identity);
+            const context = {accountId:identity,diskSpace:'',requestBase:base};
+            const partitions = await read('/spaces', context);
+            const contexts = new Map(), add = scope => contexts.set(contextKey(scope),scope);
+            for (const space of partitions.spaces || []) add({...context,diskSpace:String(space.scopeKey ?? space.diskSpace ?? '')});
+            if (!contexts.size) add(context);
+            const found = new Map(localAccountOperations(identity).map(job=>[job.operation_id,job]));
+            const queue=[...contexts.values()];
+            const inspect = async () => { while(queue.length) { const scope=queue.shift(), data=await read('/operations',scope); for(const job of data.operations || []) found.set(job.operation_id,job); } };
+            await Promise.all(Array.from({length:Math.min(4,queue.length)},inspect));
+            for(const job of await peers)if(!found.has(job.operation_id))found.set(job.operation_id,job);
+            const operations=sortJobs([...found.values()].filter(active).filter(job=>!(job.type==='transfer-history'&&[...found.values()].some(other=>other.historyMirrorId===job.operation_id&&active(other)))));
+            return {accountId:identity,operations};
+        } catch(error) {
+            const timedOut=controller?.signal.aborted; controller?.abort();
+            if(timedOut) { const message='当前账号活动任务检查超时，请重试后再切换账号'; throw new Error(window.TunnelI18n?.t(message)||message); }
+            if(selectedAccount && (error.status===401 || error.message==='LOGIN_REQUIRED')) {
+                const operations=sortJobs(localAccountOperations(selectedAccount));
+                return {accountId:selectedAccount,operations,unverified:true};
+            }
+            throw error;
+        }
+        finally { if(timer!==null)clearTimeout(timer); }
+    }
+    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, stopAccount, refresh, withActivity, cancelOperation, cancelRead, streamUrl, accountOperations,
         setAccount(value) { const selected=String(value||''); if(selected===accountId)return; changeTaskView(()=>{accountId=selected;mountId='';collaborationId='';diskSpace='';}); emitActivities(); },
         getAccount() { return accountId; },
         setSpace(value) { changeTaskView(()=>{mountId='';collaborationId='';diskSpace=String(value||'');}); },

@@ -9,10 +9,11 @@ const { createDiskOidcReceipt } = require('../../server/disk-oidc-receipt');
 const { createDiskOperations } = require('../../server/disk-operations');
 const { createDiskAPI } = require('../../server/disk-api');
 const { createTelegramDriveStore } = require('../../server/telegram-drive');
-async function createFixture({ serverTransfers = false, listDelayMs = 0 } = {}) {
+async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUsers = [] } = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-save-ui-'));
     const repository = openDiskRepository(dataDir);
-    repository.replace('users', [{ id: 'alice', username: 'alice', name: '验收甲账号' }, { id: 'bob', username: 'bob', name: '验收乙账号' }], user => user.id);
+    const fixtureUsers = [{ id: 'alice', username: 'alice', name: '验收甲账号' }, { id: 'bob', username: 'bob', name: '验收乙账号' }, ...extraUsers];
+    repository.replace('users', fixtureUsers, user => user.id);
     const auth = createDiskAuth({ dataDir }), store = createTelegramDriveStore({ dataDir }), operations = createDiskOperations({ dataDir });
     store.createDirectory('alice', '甲目录/子目录', 30); store.createDirectory('bob', '乙目录/子目录', 30);
     store.putMetadataObject(auth.user('alice'), '甲目录', '甲账号.txt', 'text/plain', {}, 30);
@@ -35,7 +36,8 @@ async function createFixture({ serverTransfers = false, listDelayMs = 0 } = {}) 
     app.use((req, _res, next) => { if (req.method === 'PUT' && /\/uploads\/[^/]+\/files\//.test(req.path)) browserUploads++; if (req.method === 'POST' && req.path.endsWith('/task-saves')) serverTransfersStarted++; next(); });
     sessions.registerRoutes(app, { origin: req => req.protocol + '://' + req.get('host'), revoke: req => api.revokeContentSession(req) });
     app.get('/api/telegram/drive/me', (req, res) => res.json({ identity: sessions.identity(req), accounts: sessions.list(req), loginAttempt: receipts.get(req, req.query.oidc_attempt), enabled: true, configured: true, oidcConfigured: true, oidcMode: 'mock' }));
-    app.get('/api/telegram/drive/oidc/start', (req, res) => { browserLoginAttempt = String(req.query.attempt || browserLoginAttempt).replace(/[^a-zA-Z0-9-]/g, ''); res.type('html').send('<!doctype html><meta charset="utf-8"><h1>隔离 Mock 登录</h1><p>仅使用测试账号，不连接 Telegram。</p><form method="post" action="/fixture-login"><input type="hidden" name="attempt" value="' + browserLoginAttempt + '"><button name="id" value="alice">登录验收甲账号</button><button name="id" value="bob">登录验收乙账号</button></form>'); });
+    app.get('/api/telegram/drive/oidc/start', (req, res) => { browserLoginAttempt = String(req.query.attempt || browserLoginAttempt).replace(/[^a-zA-Z0-9-]/g, ''); res.type('html').send('<!doctype html><meta charset="utf-8"><h1>隔离 Mock 登录</h1><p>仅使用测试账号，不连接 Telegram。</p><form method="post" action="/fixture-login"><input type="hidden" name="attempt" value="' + browserLoginAttempt + '">' + fixtureUsers.map(user => '<button name="id" value="' + user.id + '">登录' + user.name + '</button>').join('') + '</form>'); });
+    app.get('/fixture-mock-login', (_req,res) => res.redirect('/api/telegram/drive/oidc/start?attempt='+encodeURIComponent(browserLoginAttempt)));
     app.post('/fixture-login', (req, res) => { sessions.set(req, res, auth.user(req.body.id)); const message = { type: 'telegram-drive-oidc-result', result: 'success', attemptId: req.body.attempt, accountId: req.body.id }; receipts.record(req, res, { ...message, attemptId: req.body.attempt }); res.type('html').send('<!doctype html><meta charset="utf-8"><p>Mock 登录成功</p><script>window.opener?.postMessage(' + JSON.stringify(message) + ',location.origin);window.close();</script>'); });
     if (listDelayMs) app.get('/api/telegram/drive/list', (_req, _res, next) => setTimeout(next, listDelayMs));
     app.use('/api/telegram/drive', api.browser);

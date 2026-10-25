@@ -64,6 +64,7 @@ function browser(source = 'sns', shared) {
         } } },
         indexedDB: idb, open: (url, ...options) => { opens.push({ url, options }); return {}; }, confirm: () => true,
         fetch: async url => {
+            if (String(url).startsWith('/api/telegram/drive/files/')) return new Response(JSON.stringify({ id:decodeURIComponent(String(url).split('?')[0].split('/').pop()), folderPath:'资料' }), { status:200 });
             if (String(url).includes('/api/')) {
                 const id = String(url).split('/').pop(), task = tasks.get(id);
                 return new Response(task ? JSON.stringify(task) : '{}', { status: task ? 200 : 404, headers: { 'Content-Type': 'application/json' } });

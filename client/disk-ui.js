@@ -79,21 +79,56 @@ function rememberTelegramDriveActiveAccount(accountId) {
     accountUrl.searchParams.delete('collaboration');
     history.replaceState({ ...(history.state || {}), telegramDrivePath: '', diskMountContext: null, diskAccountId: accountId }, '', accountUrl.href);
 }
-async function switchTelegramDriveAccount(accountId, { deferContents = false } = {}) {
+async function switchTelegramDriveAccount(accountId, { deferContents = false, restoreOnCancel = false } = {}) {
+    if (switchTelegramDriveAccount.busy) return false;
+    switchTelegramDriveAccount.busy = true;
+    const originalAccount = window.DiskClient.getAccount(), targetAccount = String(accountId || '');
+    let committed = false;
+    const t = value => window.TunnelI18n?.t(value) || value;
+    try {
+    if (!originalAccount || targetAccount !== originalAccount) {
+        const state = await window.DiskClient.accountOperations(originalAccount);
+        if (originalAccount !== window.DiskClient.getAccount()) return false;
+        if (state.accountId !== targetAccount && (state.operations.length || state.unverified)) {
+            const types = {upload:'上传',copy:'复制',move:'移动',read:'读取',delete:'删除','transfer-history':'传输'};
+            const tasks = state.operations.map(job => '• ' + t(types[job.type] || '网盘任务') + ' · ' + (job.title || job.message || job.operation_id)).join('\n');
+            const heading = state.unverified ? t('无法核验当前账号的活动网盘任务，登录状态可能已失效。') : t('当前账号仍有以下活动网盘任务：');
+            const approved = window.confirm(heading + ' (' + state.accountId + ')\n' + tasks + '\n\n' + t('切换后任务仍归原账号，当前界面将显示新账号的任务；查看原任务需切回原账号。浏览器上传请保持发起页面打开。') + '\n\n' + t('仍要切换账号？'));
+            if (!approved) {
+                if (restoreOnCancel && state.accountId) {
+                    try { await window.DiskClient.raw('/accounts/select',{accountId:'',...window.DiskClient.json('POST',{accountId:state.accountId})}); }
+                    catch(error) { if(typeof historyLog==='function')historyLog('telegram-drive-restore-account-failed',{error:error.message}); }
+                }
+                return false;
+            }
+        }
+    }
     rememberTelegramDriveAccountView();
-    await window.DiskClient.raw('/accounts/select', { accountId: '', ...window.DiskClient.json('POST', { accountId }) });
+    await window.DiskClient.raw('/accounts/select', { accountId: '', ...window.DiskClient.json('POST', { accountId:targetAccount }) });
     cancelTelegramDrivePendingMount(); telegramDriveNavigationVersion++; telegramDriveRenderGeneration++;
     closeDiskCollaborationFrame(); closeDiskPreview({ replaceHistory: true });
     clearTelegramDriveSearch(); clearTelegramDriveSelection();
     telegramDriveMountContext = null; telegramDriveCurrentData = null; telegramDriveStaticLinks = []; telegramDriveSpaceOwner = '';
-    window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setAccount(accountId);
+    window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setAccount(targetAccount);
+    committed = true;
     // Old history entries must not replay a different account's mount/path.
-    rememberTelegramDriveActiveAccount(accountId);
+    rememberTelegramDriveActiveAccount(targetAccount);
     const refresh = async () => { await renderTelegramDrive({ silentContents: deferContents }); await resumeTelegramDriveEntry(); };
     if (deferContents) refresh().catch(error => historyLog('telegram-drive-account-render-failed', { error: error.message }));
     else await refresh();
     window.AccountUI?.refresh();
     if (typeof CustomEvent !== 'undefined') window.dispatchEvent?.(new CustomEvent('global-account-changed'));
+    return true;
+    } catch (error) {
+        // Sign-in may already have changed the default cookie. Restore only
+        // our still-uncommitted selection, never a newer account or a UI error
+        // after the new identity has been committed.
+        if (restoreOnCancel && !committed && window.DiskClient.getAccount() === originalAccount) {
+            try { await window.DiskClient.raw('/accounts/select', {accountId:'',...window.DiskClient.json('POST',{accountId:originalAccount})}); }
+            catch (restoreError) { if(typeof historyLog==='function')historyLog('telegram-drive-restore-account-failed',{error:restoreError.message}); }
+        }
+        throw error;
+    } finally { switchTelegramDriveAccount.busy = false; }
 }
 async function resumeTelegramDriveEntry() {
     if (!telegramDriveEntryPending) return false;
@@ -145,11 +180,12 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
     body.textContent = '正在读取账号状态…'; body.setAttribute('aria-busy', 'true');
     let selected = requiredId || window.DiskClient.getAccount() || '', entries = null;
     const resultPromise = openTelegramDriveDialog({ title: choose ? '选择转存目标账号' : '切换 / 管理网盘账号', body,
-        confirmText: choose ? '选择此账号' : '关闭', cancelText: choose ? '稍后继续' : '', validate: choose ? () => {
+        confirmText: choose ? '选择此账号' : '关闭', cancelText: choose ? '稍后继续' : '', validate: choose ? async () => {
             if (!entries) throw new Error('账号状态仍在加载，请稍后选择');
             const entry = entries.find(item => item.identity?.id === selected);
             if (!entry || entry.reauthRequired) throw new Error('请先添加或重新登录一个有效的网盘账号');
             if (requiredId && selected !== requiredId) throw new Error('请重新登录原转存账号后继续');
+            if (await switchTelegramDriveAccount(entry.identity.id, { deferContents:true }) === false) return false;
             return entry.identity;
         } : undefined });
     const dialogBody = document.getElementById('telegramDriveDialogBody');
@@ -188,7 +224,7 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
                     if (entry.reauthRequired) { showAppToast('请使用下方登录入口重新验证该账号，原转存记录会保留'); return; }
                     if (requiredId && user.id !== requiredId) { showAppToast('这项未确认的转存仍绑定原账号，请重新验证原账号后继续'); return; }
                     if (choose) selectCandidate(user, button);
-                    else { closeTelegramDriveDialog(null); try { await switchTelegramDriveAccount(user.id); } catch (error) { alert(telegramDriveErrorText(error)); } }
+                    else { try { if (await switchTelegramDriveAccount(user.id) !== false) closeTelegramDriveDialog(null); } catch (error) { alert(telegramDriveErrorText(error)); } }
                 };
                 const exit = document.createElement('button'); exit.type = 'button'; exit.className = 'btn disk-account-exit'; exit.textContent = '退出';
                 exit.onclick = async () => {
@@ -209,7 +245,7 @@ async function manageTelegramDriveAccounts({ choose = false, requiredId = '' } =
     load();
     const result = await resultPromise; controller.abort();
     if (!result || !choose) return null;
-    await switchTelegramDriveAccount(result.id, { deferContents: true }); return result;
+    return result;
 }
 function pendingSaveTransferId(record) { return record.serverTransferId || record.id; }
 function pendingSaveFeedback(message, busy = true, detail = '') {
@@ -228,7 +264,7 @@ async function pendingSaveRead(url, context = {}) {
 }
 async function showTelegramDrivePendingSaveBanner() {
     if (!window.DiskPendingSave) return;
-    const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled'].includes(record.status)
+    const records = (await window.DiskPendingSave.list()).filter(record => !['completed', 'cancelled', 'superseded'].includes(record.status)
         && !(record.status === 'uploading' && window.DiskPendingSave.isActive?.(record.id)));
     const target = document.getElementById('telegramDriveAuth');
     if (!target) return;
@@ -290,7 +326,7 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
         return entry.identity;
     };
     try {
-        let statusReported = false;
+        let statusReported = false, completionConfirmed = false, startedNavigation;
         const result = await window.DiskPendingSave.resume(id, {
             chooseAccount: record => record.target ? ensureAccount(record.target.accountId) : manageTelegramDriveAccounts({ choose: true }),
             chooseTarget: choosePendingSaveTarget,
@@ -308,6 +344,12 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
                 if (!spaces.some(space => space.id === target.partitionId && telegramDriveSpaceKey(space) === target.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw new Error('原目标分区已删除或不可用，请取消待转存后重新发起');
                 await pendingSaveRead('/list?path=' + encodeURIComponent(target.path), ctx);
             },
+            verifySaved: async record => {
+                if (!record.target || !await ensureAccount(record.target.accountId)) {
+                    statusReported = true; pendingSaveFeedback('尚未核验已保存文件，原记录仍保留', false); return { state:'cancelled' };
+                }
+                return window.DiskPendingSave.inspectSaved(record, { force:true });
+            },
             confirm: (record, target) => confirmTelegramDriveAction('确认转存到网盘', `将“${record.file.name}”（${formatFileSize(record.file.size)}）转存到“${target.partitionName || '目标分区'}”的 ${telegramDriveDisplayPath(target.path)}？`, '转存'),
             upload: (record, blob, target, metadata) => window.DiskClient.upload([{ name: record.file.name, size: blob.size, type: record.file.type }], target.path,
                 () => blob, { ...metadata, source: record.source, sourceTaskVersion: record.version, transportContext: transport(target) }),
@@ -315,20 +357,26 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
                 ...window.DiskClient.json('POST', { pendingSaveId: pendingSaveTransferId(record), source: record.source, taskId: record.task.id, version: record.version, partitionId: target.partitionId, folderPath: target.path }) }),
             onStage: message => pendingSaveFeedback(message, !/^(请选择|请确认)/.test(message)),
             onStatus: message => { statusReported = true; pendingSaveFeedback(message, false); showAppToast(message); },
-            onStarted: showTelegramDrivePendingSaveBanner,
+            onStarted: async () => {
+                startedNavigation = { version:telegramDriveNavigationVersion, accountId:window.DiskClient.getAccount() };
+                await showTelegramDrivePendingSaveBanner();
+            },
             onCompleted: async record => {
-                pendingSaveFeedback('转存已完成；再次打开不会重复上传', false);
-                showAppToast('转存已完成；再次打开不会重复上传');
+                completionConfirmed = true;
+                pendingSaveFeedback('已转存到：{0}', false, window.DiskPendingSave.describeTarget(record));
+                if (startedNavigation && (startedNavigation.version !== telegramDriveNavigationVersion || startedNavigation.accountId !== window.DiskClient.getAccount())) return;
                 const target = record.target;
-                if (target && window.DiskClient.getAccount() === target.accountId) {
-                    if (window.DiskClient.getSpace() !== target.diskSpace) await switchTelegramDrivePartition(target.partitionId);
-                    await navigateTelegramDrive(target.path);
-                    const item = record.result?.items?.[0]; if (item) highlightTelegramDriveRow({ kind: 'file', id: item.id });
+                if (target) {
+                    if (window.DiskClient.getAccount() !== target.accountId) {
+                        if (!await ensureAccount(target.accountId)) return;
+                        if (await switchTelegramDriveAccount(target.accountId, { deferContents:true }) === false) return;
+                    }
+                    await revealTelegramDriveUploadedDirectory(target.path, telegramDriveNavigationVersion, record.result.items, transport(target));
                 }
                 await showTelegramDrivePendingSaveBanner();
             }
         });
-        if (result?.status === 'completed') pendingSaveFeedback('转存已完成；再次打开不会重复上传', false);
+        if (result?.status === 'completed' && completionConfirmed) pendingSaveFeedback('已转存到：{0}', false, window.DiskPendingSave.describeTarget(result));
         else if (!statusReported) pendingSaveFeedback('尚未开始转存，可点击继续转存重新选择', false);
     } catch (error) {
         pendingSaveFeedback('转存流程未完成：{0}', false, telegramDriveErrorText(error)); throw error;
@@ -339,6 +387,8 @@ function telegramDriveErrorText(error) {
     if (typeof window!=='undefined' && window.DiskErrorMessages?.codes[error?.message] && !error?.errorDetails?.requestOutcomeUnknown && !(error?.message==='TELEGRAM_NETWORK_ERROR'&&error?.errorDetails?.causeCode==='UND_ERR_HEADERS_TIMEOUT')) return window.DiskErrorMessages.format(error);
     const code = String(error?.message || error || '');
     const messages = {
+        'PENDING_SAVE_RECEIPT_UNCONFIRMED': '转存结果尚未确认，未重复上传；请核验目标账号、分区和文件状态后重试',
+        'PENDING_SAVE_LOOKUP_TIMEOUT': '已保存文件核验超时，原记录仍保留；请检查连接后重试',
         'DISK_NAME_INVALID': '名称不合法：不能包含路径分隔符、.. 或系统保留字符',
         'DISK_NAME_CONFLICT': '目标位置已存在或正在上传同名文件/目录，不会覆盖',
         'DISK_BUSY': '当前网盘正在完成另一项操作，请稍后再试',
@@ -2618,15 +2668,27 @@ async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') 
     telegramDriveOidcPollGeneration += 1;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
+    let verifiedAccount = '';
+    try {
     if (result === 'success') {
         const status = await window.DiskClient.raw('/me', { accountId });
         if (!status.identity) throw new Error('登录凭据尚未确认，请重新登录；待转存记录仍保留');
-        if (status.identity) await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning });
-        else await renderTelegramDrive();
+        verifiedAccount = status.identity.id;
+        if (status.identity && await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning, restoreOnCancel:true }) === false) { window.AccountUI?.refresh(); return false; }
         window.AccountUI?.completeSignIn?.(loginTarget, status.identity);
     } else { window.AccountUI?.refresh(); await renderTelegramDrive(); }
     if (result === 'success') { showAppToast('Telegram 登录成功'); if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error))); }
     else alert(`Telegram 登录失败${error ? `：${error}` : '，请重试'}`);
+    } catch (cause) {
+        // A valid login cookie must not leave an already-closed popup shown as
+        // still running when the following account switch or refresh fails.
+        window.AccountUI?.refresh();
+        if (!window.AccountUI?.isOpen?.()) await renderTelegramDrive().catch(refreshError => historyLog('telegram-drive-login-recovery-failed', { error:refreshError.message }));
+        const message = verifiedAccount && window.DiskClient.getAccount() === verifiedAccount ? '账号已切换，但网盘界面刷新未完成；请刷新网盘后继续。'
+            : verifiedAccount ? '账号验证已完成，但切换账号未完成；登录记录已保留，请重新选择账号。' : '登录结果尚未确认，请检查连接后重新验证账号。';
+        alert((window.TunnelI18n?.t(message) || message) + ' [' + cause.message + ']');
+        return false;
+    }
 }
 
 async function pollTelegramDriveOidcLogin(popup, generation, startedAt, closedRechecked = false) {
@@ -2695,7 +2757,7 @@ function appendPasskeyControls(target, user, { addAccount = !user, embedded = fa
                 const verified = await window.DiskClient.raw('/passkeys/verify', { ...loginContext, ...window.DiskClient.json('POST', { flow_id: flow.flow_id, response, addAccount }) });
                 if (!embedded) closeTelegramDriveDialog(null);
                 const status = verified.identity ? verified : await window.DiskClient.raw('/me', { accountId: '' });
-                if (status.identity) await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning }); else await renderTelegramDrive();
+                if (status.identity) { if (await switchTelegramDriveAccount(status.identity.id, { deferContents: telegramDrivePendingSaveRunning, restoreOnCancel:true }) === false) { window.AccountUI?.refresh(); return; } } else await renderTelegramDrive();
                 if (status.identity && embedded) window.AccountUI?.completeSignIn?.(target, status.identity);
                 if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => alert(telegramDriveErrorText(error)));
             } catch (error) { alert(telegramDriveErrorText(error)); } finally { button.disabled = false; button.textContent = idleLabel; }
