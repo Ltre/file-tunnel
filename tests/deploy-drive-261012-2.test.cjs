@@ -16,7 +16,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     const manifest = JSON.parse(fs.readFileSync(path.join(temporary, 'build-manifest.json')));
     assert.deepEqual(fs.readFileSync(path.join(temporary, 'client/icons/streaming.png')), fs.readFileSync(path.join(ROOT, 'prompts/resources/icons/streaming.png')));
     assert.ok(manifest.appShell.includes('/client/icons/streaming.png'));
-    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'account-ui', 'streaming-console', 'streaming-player', 'streaming-i18n'];
+    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-player', 'streaming-i18n'];
     const sourcePages = ['index.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
     for (const name of required) {
         const source = 'client/' + name + '.js', asset = manifest.scripts[source];
@@ -48,7 +48,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     assert.ok(fs.readFileSync(path.join(temporary, 'pages/media-library.html'), 'utf8').includes(manifest.scripts['client/media-library.js']));
     assert.ok(fs.readFileSync(path.join(temporary, 'pages/admin-layout.html'), 'utf8').includes(manifest.scripts['client/admin-layout.js']));
     assert.ok(fs.existsSync(path.join(temporary, 'server/admin-layout.js')));
-    for (const name of ['markdown-records', 'streaming-buffer']) assert.ok(fs.existsSync(path.join(temporary, 'server/' + name + '.js')));
+    for (const name of ['markdown-records', 'streaming-buffer', 'streaming-covers']) assert.ok(fs.existsSync(path.join(temporary, 'server/' + name + '.js')));
     assert.ok(fs.existsSync(path.join(temporary, 'server/telegram-forward-jobs.js')));
     await run(['-e', 'const api=require(process.argv[1]); if(typeof api.registerMediaLibrary!=="function")process.exit(1);', path.join(temporary, 'server/media-library/index.js')]);
     // A manifest entry alone must not conceal a missing runtime helper.

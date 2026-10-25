@@ -53,7 +53,7 @@ function browser(source = 'sns', shared) {
     const tasks = new Map();
     const bytes = Uint8Array.from([1, 2, 3, 4, 5, 6]);
     const downloads = [], opens = [], lockTails = new Map();
-    const context = vm.createContext({ console, setTimeout, clearTimeout, queueMicrotask, URL, Blob, ArrayBuffer, Uint8Array, crypto: crypto.webcrypto,
+    const context = vm.createContext({ console, setTimeout, clearTimeout, queueMicrotask, URL, URLSearchParams, Blob, ArrayBuffer, Uint8Array, crypto: crypto.webcrypto,
         navigator: { locks: { request(name, options, callback) {
             if (typeof options === 'function') { callback = options; options = {}; }
             if (options.ifAvailable && lockTails.has(name)) return Promise.resolve().then(() => callback(null));

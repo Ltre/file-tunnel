@@ -17,6 +17,7 @@ const number = (value, min, max, code = 'STREAM_PARAMETER_INVALID') => {
 };
 function mediaKind(name, type = '') {
     type = String(type).split(';')[0].trim().toLowerCase();
+    if (type === 'application/x-drop2tunnel-rich') return 'rich';
     if (type && !['application/octet-stream', 'binary/octet-stream'].includes(type)) {
         if (/^image\//.test(type) && type !== 'image/svg+xml') return 'image';
         if (/^video\//.test(type)) return 'video';
@@ -33,7 +34,7 @@ function mediaKind(name, type = '') {
     fail('STREAM_TYPE_UNSUPPORTED');
 }
 function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
-    loginRevoked = () => false, visibleDevices = () => [], sources = {}, onChange = () => {}, viewerLeaseMs = 45000 }) {
+    loginRevoked = () => false, visibleDevices = () => [], sources = {}, covers, onChange = () => {}, viewerLeaseMs = 45000 }) {
     const filename = path.join(dataDir, 'streaming-console.json');
     let db = { version: 1, devices: {}, stations: {}, bookmarks: {} };
     if (fs.existsSync(filename)) {
@@ -125,7 +126,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     function summary(s, actor) {
         const manageable = canManage(s, actor);
         const owner = s.ownerId && user(s.ownerId);
-        return { id: s.id, number: s.number, name: s.name, deviceId: s.deviceId, deviceName: db.devices[s.deviceId]?.name || s.deviceId,
+        return { id: s.id, number: s.number, name: s.name, coverId:s.coverId || '', deviceId: s.deviceId, deviceName: db.devices[s.deviceId]?.name || s.deviceId,
             owner: owner ? { id: owner.id, name: owner.name || owner.username || owner.id } : null,
             ownerId: s.ownerId, visibility: s.visibility, locked: !sourceLoggedIn(s), local: s.deviceId === actor.deviceId,
             manageable, configVersion: s.configVersion, itemCount: s.items.length, loop: s.loop, countdown: s.countdown,
@@ -221,6 +222,8 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const expected = input.configVersion;
         if (expected !== s.configVersion) throw Object.assign(Error('STREAM_CONFLICT'), { expectedVersion: expected, currentVersion: s.configVersion });
         if (!Array.isArray(input.items) || input.items.length > 500) fail('STREAM_PLAYLIST_INVALID');
+        const coverId = input.coverId === undefined ? s.coverId || '' : String(input.coverId);
+        if (coverId && !covers?.has(stationId,coverId)) fail('STREAM_COVER_INVALID');
         const ids = new Set();
         const items = [], resolutions = new Map();
         for (const value of input.items) {
@@ -258,6 +261,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             const current = items.find(item => item.id === s.playback.itemId);
             s.items = items; s.loop = input.loop !== false;
             s.name = String(input.name || s.name).trim().slice(0, 120);
+            s.coverId = coverId;
             if (!['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].includes(input.countdown || s.countdown)) fail('STREAM_PARAMETER_INVALID');
             s.countdown = input.countdown || s.countdown; s.configVersion++; s.updatedAt = now();
             const selected = current || items[Math.min(Math.max(oldIndex, 0), items.length - 1)];
@@ -268,7 +272,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function revision(stationId, actor, baseline) {
         const s = station(stationId); authority(s, actor, 'edit');
-        const shape = value => ({ name: value.name, loop: value.loop !== false, countdown: value.countdown || 'bottom-right', items: (value.items || []).map(item => ({
+        const shape = value => ({ name: value.name, coverId:value.coverId || '', loop: value.loop !== false, countdown: value.countdown || 'bottom-right', items: (value.items || []).map(item => ({
             id: item.id, name: item.name, kind: item.kind, size: item.size, type: item.type, duration: item.duration || null, start: item.start || 0, stay: item.stay || null,
             source: { ...Object.fromEntries(['kind', 'fileId', 'diskSpace', 'sessionId', 'messageId'].map(key => [key, item.source?.[key] || ''])), accountId: item.source?.accountId || item.source?.userId || '' }
         })) });
@@ -524,7 +528,16 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const s = station(stationId); allowed(s, actor);
         return copy(s.items.find(item => item.id === itemId)?.references || []).map(({ id, url }) => ({ id, url }));
     }
-    return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark,
+    function cover(stationId,actor,editing=false) {
+        const s=station(stationId);
+        if(editing)authority(s,actor,'edit');
+        // A cover is station metadata, as already shown in the local and
+        // subscribed lists. This never delegates access to playlist sources.
+        else if(!isBlocked(s,actor) && (s.deviceId===actor.deviceId || db.bookmarks[actor.userId]?.includes(s.id))) return s.coverId || '';
+        else allowed(s,actor,true);
+        return s.coverId || '';
+    }
+    return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark, cover,
         invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references, revision,
         tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, invitableDevices, snapshot: () => copy(db) };
 }

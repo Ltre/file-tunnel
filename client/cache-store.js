@@ -1,5 +1,9 @@
 (function attachDrop2TunnelCacheStore(global) {
     const OPFS_MIN_SIZE = 16 * 1024 * 1024;
+    // 历史停用决定（261025-4再次确认）：OPFS接收写入因当时实测
+    // 存在较多问题而停用；旧实现未验证适配后续复杂业务。
+    // 保留worker探测和旧引用读取仅用于兼容，不能据此认定当前启用OPFS。
+    // 未有新的明确启用要求与独立验证前，保持false，不顺带恢复或改造。
     const OPFS_RECEIVE_WRITE_ENABLED = false;
     const CACHE_WORKER_TIMEOUT_MS = 12000;
     const CACHE_WORKER_WRITE_TIMEOUT_MS = 5000;
@@ -195,6 +199,7 @@
         }
 
         shouldUseOpfs(file) {
+            // 新接收内容仍走现有非OPFS路径；workerReady不代表写入已启用。
             if (!OPFS_RECEIVE_WRITE_ENABLED) {
                 if (!this.opfsReceiveWriteLogged) {
                     this.opfsReceiveWriteLogged = true;

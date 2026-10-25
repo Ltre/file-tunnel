@@ -24,9 +24,9 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
             if (!metadata) deny('STREAM_SOURCE_DELETED');
             return { name: metadata.name, type: metadata.type, size: Number(metadata.size) };
         }
-        if (source.fileId === 'record' && entry && ['markdown', 'text'].includes(entry.type)) {
-            const inline = Buffer.from(entry.type === 'markdown' ? entry.markdown : entry.text || '', 'utf8');
-            return { name: (entry.type === 'markdown' ? 'message.md' : 'message.txt'), type: entry.type === 'markdown' ? 'text/markdown' : 'text/plain', size: inline.length, inline };
+        if (source.fileId === 'record' && entry && ['markdown', 'text', 'rich'].includes(entry.type)) {
+            const inline = Buffer.from(entry.type === 'rich' ? entry.content || '' : entry.type === 'markdown' ? entry.markdown : entry.text || '', 'utf8');
+            return { name: entry.type === 'rich' ? 'message.rich' : entry.type === 'markdown' ? 'message.md' : 'message.txt', type: entry.type === 'rich' ? 'application/x-drop2tunnel-rich' : entry.type === 'markdown' ? 'text/markdown' : 'text/plain', size: inline.length, inline };
         }
         const file = entry?.type === 'file' ? entry.fileInfo?.id === source.fileId && entry.fileInfo
             : entry?.collection?.files?.find(file => file.id === source.fileId);
@@ -45,17 +45,25 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
         authorize(input, actor);
         const result = [];
         for (const message of messages(input.sessionId)) {
-            if (['markdown', 'text'].includes(message.type)) {
+            if(input.messageId && message.id!==input.messageId)continue;
+            if (['markdown', 'text', 'rich'].includes(message.type)) {
                 const metadata = stat({ sessionId: input.sessionId, messageId: message.id, fileId: 'record' });
-                result.push({ name: metadata.name, type: metadata.type, size: metadata.size, kind: message.type === 'markdown' ? 'markdown' : 'text', recordName: message.id,
+                result.push({ name: metadata.name, type: metadata.type, size: metadata.size, kind: message.type, recordName: message.id,
                     source: { kind: 'tunnel', sessionId: input.sessionId, messageId: message.id, fileId: 'record', accessGrant: input.accessGrant } });
             }
-            for (const file of message.type === 'file' ? [message.fileInfo] : message.collection?.files || []) {
+            const files = (message.type === 'file' ? [message.fileInfo] : message.collection?.files || []).map(file => ({file,messageId:message.id}));
+            if (message.type === 'rich') for (const id of new Set([...String(message.content || '').matchAll(/data-tunnel-file-ref-id=["']([\w.-]+)["']/g)].map(match => match[1]))) {
+                for (const record of messages(input.sessionId)) {
+                    const file = (record.type === 'file' ? [record.fileInfo] : record.collection?.files || []).find(file => file?.id === id);
+                    if (file) { files.push({file,messageId:record.id}); break; }
+                }
+            }
+            for (const {file,messageId} of files) {
                 if (!file?.id) continue;
                 try {
                     let kind; try { kind = mediaKind(file.name, file.type); } catch (error) { if (!allFiles) throw error; kind = 'file'; }
                     result.push({ name: file.name, type: file.type, size: Number(file.size), kind, recordName: message.remark || message.id,
-                        source: { kind: 'tunnel', sessionId: input.sessionId, messageId: message.id, fileId: file.id, accessGrant: input.accessGrant } });
+                        source: { kind: 'tunnel', sessionId: input.sessionId, messageId, fileId: file.id, accessGrant: input.accessGrant } });
                 } catch (_) { /* Non-preview files stay outside the station list. */ }
             }
         }

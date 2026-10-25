@@ -47,6 +47,7 @@ const SCRIPT_SOURCES = [
   'client/disk-client.js',
   'client/disk-operation-order.js',
   'client/disk-pending-save.js',
+  'client/disk-saved-location.js',
   'client/disk-directory-picker.js',
   'client/disk-copy-picker.js',
   'client/disk-trash-ui.js',

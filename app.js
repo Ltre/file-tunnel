@@ -430,6 +430,8 @@ function hasCompleteFileCache(storedFile, fileInfo = null) {
 }
 
 async function initFileCacheStore() {
+    // OPFS新接收写入因历史实测问题停用；这里的探测/旧引用兼容不是启用。
+    // 261025-4明确要求保留停用决定，本轮缓存修复不恢复或改造OPFS路径。
     if (!window.createDrop2TunnelCacheStore) return;
     const probeStartedAt = startupTimestamp();
     fileCacheStore = await window.createDrop2TunnelCacheStore({ log: historyLog, initializeInBackground: true })
@@ -8153,6 +8155,9 @@ function renderMessageRecordActions(messageEl, message) {
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
+    if (window.StreamingConsole?.canImportRecord(message)) {
+        for (const [label,create] of [['创建串流台',true],['添加到串流台',false]]) menuItems.push(createRecordActionButton('▣',label,label,()=>window.StreamingConsole.importRecord(message,create).catch(error=>showAppToast(error.message))));
+    }
     if (message.type === 'markdown') {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将 Markdown 保存到自己的 Telegram 网盘', () => {
             window.TunnelMarkdown.save(message).catch(error => alert(`资源准备失败：${error.message}`));
@@ -13926,6 +13931,15 @@ async function getSessionResourceInventory() {
         addReference(fileId, { kind: 'editor', targetAssetId: fileId });
     });
 
+    // Forwarded records can reference a cache stored under another tunnel.
+    const unresolved = [...resources.values()].filter(resource => !resource.file);
+    const resolveCache = async () => {
+        while (unresolved.length) {
+            const resource = unresolved.shift(), stored = await getFromStore('files', resource.id);
+            if (stored) resource.file = createFileInventoryRecord(stored);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, unresolved.length) }, resolveCache));
     Array.from(resources.values()).forEach(resource => {
         if (!resource.sourceFileId || resource.references.length === 0) return;
         const source = resources.get(resource.sourceFileId);

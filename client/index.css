@@ -4158,6 +4158,9 @@ body[data-theme="atelier"] .main-layout {
     margin: 0 0 8px;
     font-size: 18px;
 }
+.send-mode-dialog:has(.forward-session-select){width:min(460px,94vw);border:1px solid #b9c7df;border-radius:16px;padding:24px;background:var(--panel-bg,#fff);color:var(--text-color,#24364a)}
+.send-mode-dialog .forward-session-select{display:block;box-sizing:border-box;width:100%;min-height:48px;margin-top:18px;padding:10px 40px 10px 14px;border:1px solid #aebbd1;border-radius:9px;background:var(--panel-bg,#f8faff);color:inherit;font:inherit;outline-offset:3px;cursor:pointer}
+.send-mode-dialog:has(.forward-session-select) .send-mode-actions .btn{min-width:88px;min-height:40px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center}
 
 .send-mode-dialog p {
     margin: 0;

@@ -12,6 +12,7 @@
     const userText = value => '<span class="message-content">' + esc(value) + '</span>';
     const kindOf = file => {
         const type = String(file.type || '').split(';')[0].trim().toLowerCase();
+        if (type === 'application/x-drop2tunnel-rich') return 'rich';
         if (type && !['application/octet-stream', 'binary/octet-stream'].includes(type)) {
             if (/^image\//.test(type) && type !== 'image/svg+xml') return 'image';
             if (/^video\//.test(type)) return 'video';
@@ -25,13 +26,14 @@
             : /^image\//.test(file.type) || /\.(png|jpe?g|gif|webp|avif|bmp)$/i.test(file.name) ? 'image'
                 : /\.(md|markdown)$/i.test(file.name) ? 'markdown' : /\.txt$/i.test(file.name) || file.type === 'text/plain' ? 'text' : '';
     };
-    const labelKind = kind => t(({ local: '本机文件', disk: '网盘文件', tunnel: '隧道文件', video: '视频', audio: '音频', image: '图片', markdown: 'Markdown', text: 'TXT' })[kind] || kind);
+    const labelKind = kind => t(({ local: '本机文件', disk: '网盘文件', tunnel: '隧道文件', video: '视频', audio: '音频', image: '图片', markdown: 'Markdown', rich: '富文本', text: 'TXT' })[kind] || kind);
     const stateLabel = value => t(({ public: '公开', invite: '仅限邀请', offline: '下线', restricted: '访问已结束', playing: '正在播放', stopped: '已停止', paused: '已暂停', waiting: '等待播放', reading: '正在展示', buffering: '缓冲中', blocked: '浏览器限制播放，请点击开始观看', error: '播放失败，请重试', generated: '已生成', sent: '已发送', delivered: '已发送', accepted: '已接受', rejected: '已拒绝', expired: '已到期', revoked: '已撤销' })[value] || value);
     let config, root, main, banner, initialized = false, ready, currentAccount = '', currentUser, renderVersion = 0, syncFlight, visibilityUnsubscribe, visibilitySyncTimer;
     let stopWatchSchedule = () => {};
     let ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }, pending = new Map(), channel = 'local', candidates = [], pickerVersion = 0;
     let diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }, tunnelScope = '', importBusy = false, lastList = [], dialog, discoveryTimes = {};
     const localFiles = new Map(), players = new Map(), noticeIds = new Map();
+    const pendingCovers = new Map();
     const durationJobs = new Map(), durationQueue = [], previewTickets = new Map(); let durationActive = 0, refreshEditorItems, candidateObservers = [];
     const key = name => 'streaming:' + config.deviceId() + ':' + name;
     const account = () => global.DiskClient?.getAccount() || '';
@@ -40,6 +42,7 @@
     function localConfig(stationId) { try { return JSON.parse(localStorage.getItem(key('station:' + stationId)) || 'null'); } catch (_) { return null; } }
     function notice(text, code = '') { if (banner) { banner.textContent = t(text) + (code ? ' [' + code + ']' : ''); banner.hidden = false; } }
     function error(cause) {
+        if (cause.message === 'STREAM_TUNNEL_CONTEXT_TIMEOUT') { notice('读取本机隧道授权超时，请检查浏览器存储后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_CONTROL_TIMEOUT' || cause.message === 'Failed to fetch') { notice('串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_SOURCE_CHANGED') { notice('来源内容已变更，请重新导入该节目项', cause.message); return; }
         if (cause.message === 'STREAM_TYPE_UNSUPPORTED') { notice('来源文件不是支持的可预览类型，请重新选择', cause.message); return; }
@@ -61,9 +64,10 @@
         try {
         const headers = { ...options.headers, 'X-Stream-Device': config.deviceId(), 'X-Stream-Key': localStorage.getItem(key('key')),
             ...(options.accountId ?? account() ? { 'X-Disk-Account': options.accountId ?? account() } : {}) };
-        if (data !== undefined) headers['Content-Type'] = 'application/json';
+        const binary = typeof Blob !== 'undefined' && data instanceof Blob;
+        if (data !== undefined) headers['Content-Type'] = binary ? 'image/png' : 'application/json';
         if (options.onProgress) headers.Accept = 'application/x-ndjson';
-        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : JSON.stringify(data), cache: 'no-store', signal: controller?.signal || options.signal, keepalive: options.keepalive === true });
+        const response = await fetch('/api/streaming' + url, { method, headers, body: data === undefined ? undefined : binary ? data : JSON.stringify(data), cache: 'no-store', signal: controller?.signal || options.signal, keepalive: options.keepalive === true });
         if (response.ok && options.onProgress && response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
             const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '', result, finished = false;
             const consume = line => { if (!line.trim()) return; const value = JSON.parse(line); if (value.error) throw Object.assign(Error(value.error), value, { confirmedFailure: true }); if (value.progress) options.onProgress(value.progress); if (value.result) { result = value.result; finished = true; } };
@@ -162,8 +166,14 @@
         finally { syncFlight = null; if (selected !== account()) queueMicrotask(() => sync()); }
     }
     async function syncNow(selected) {
+        let contextDeadline;
         try {
-            const state = await request('/sync', 'POST', { follows: config.devices().filter(item => item.followed).map(item => item.deviceId), tunnels: await config.tunnels() }, { accountId: selected });
+            // The HTTP timeout cannot cover the local IndexedDB lookup that
+            // precedes it. Release syncFlight on that failure too, so refresh
+            // remains usable and late results cannot submit stale context.
+            const tunnels = await Promise.race([config.tunnels(), new Promise((_resolve, reject) => { contextDeadline = setTimeout(() => reject(Error('STREAM_TUNNEL_CONTEXT_TIMEOUT')), 10000); })]);
+            clearTimeout(contextDeadline);
+            const state = await request('/sync', 'POST', { follows: config.devices().filter(item => item.followed).map(item => item.deviceId), tunnels }, { accountId: selected });
             if (selected !== account()) return;
             const changed = currentAccount !== selected || currentUser?.id !== state.identity?.id;
             currentAccount = selected; currentUser = state.identity;
@@ -178,6 +188,7 @@
             if (changed && isOpen()) await render();
             else if (isOpen() && ['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) await refreshList();
         } catch (cause) { if (selected === account() && isOpen()) error(cause); }
+        finally { clearTimeout(contextDeadline); }
     }
     function ensureUi() {
         if (root) return;
@@ -217,7 +228,7 @@
     }
     function dirty() {
         const d = ui.drafts[ui.stationId], saved = localConfig(ui.stationId);
-        const comparable = value => JSON.stringify(value && { name: value.name, loop: value.loop, countdown: value.countdown,
+        const comparable = value => JSON.stringify(value && { name: value.name, coverId:value.coverId || '', coverPending:value.coverPending || '', loop: value.loop, countdown: value.countdown,
             items: value.items.map(({ sourceSaved, durationError, ...item }) => item) });
         return Boolean(['edit', 'import'].includes(ui.view) && d && comparable(d) !== comparable(saved));
     }
@@ -228,7 +239,7 @@
         body.append(button('保存后离开', async () => {
             try { if (!await persistDraft(stationId, value => { status.textContent = value; })) return; closeDialog(); leave(); }
             catch (cause) { status.textContent = t('节目单未保存，请检查来源后重试') + ' [' + cause.message + ']'; }
-        }, 'sc-primary'), button('放弃更改', () => { delete ui.drafts[stationId]; pending.clear(); saveUi(); closeDialog(); leave(); }), button('继续编辑', closeDialog));
+        }, 'sc-primary'), button('放弃更改', () => { delete ui.drafts[stationId]; discardCover(stationId); pending.clear(); saveUi(); closeDialog(); leave(); }), button('继续编辑', closeDialog));
         showDialog('尚未保存', body);
     }
     function closeConsole(force = false) {
@@ -236,6 +247,7 @@
         closeDialog(); for (const player of players.values()) player.close(); players.clear();
         minimize(); ++renderVersion; ++pickerVersion; candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }; pending.clear(); channel = 'local'; candidates = [];
+        for (const stationId of pendingCovers.keys()) discardCover(stationId);
         diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }; tunnelScope = '';
         localStorage.removeItem(key('ui')); if (main) main.replaceChildren();
         const entry = document.getElementById('topbarStreamingBtn'); if (entry) entry.hidden = true;
@@ -248,13 +260,44 @@
         ui.view = view; ui.stationId = stationId; saveUi(); render();
     }
     function returnToList() { navigate(['discover', 'local', 'bookmarks'].includes(ui.returnList) ? ui.returnList : 'discover'); }
+    function coverUrl(s) { return s.coverId ? '/api/streaming/stations/' + encodeURIComponent(s.id) + '/covers/' + s.coverId + '?device=' + encodeURIComponent(config.deviceId()) + '&account=' + encodeURIComponent(account()) : ''; }
+    function discardCover(stationId) { const cover = pendingCovers.get(stationId); if (cover) URL.revokeObjectURL(cover.url); pendingCovers.delete(stationId); }
+    function coverImage(s,className) {
+        const image=document.createElement('img'); image.className='sc-cover '+className; image.alt=t('串流台封面');image.loading='lazy';
+        image.src=coverUrl(s)||'/client/icons/streaming.png';image.onerror=()=>{image.onerror=null;image.src='/client/icons/streaming.png';};return image;
+    }
+    function coverEditor(form,d,stationId) {
+        const field=document.createElement('div');field.className='sc-cover-field';
+        const label=document.createElement('label');label.textContent=t('封面');
+        const input=document.createElement('input');input.type='file';input.accept='image/png,image/jpeg,image/webp';input.setAttribute('aria-label',t('上传封面'));
+        const preview=coverImage({id:stationId,coverId:d.coverId},'sc-cover-preview');if(pendingCovers.has(stationId))preview.src=pendingCovers.get(stationId).url;
+        const status=document.createElement('small');status.setAttribute('role','status');let version=0;
+        input.onchange=async()=>{
+            const file=input.files?.[0],revision=++version;if(!file)return;status.textContent=t('正在裁剪封面…');
+            try {
+                if(!/^image\/(png|jpeg|webp)$/.test(file.type)||file.size>20*1024*1024)throw Error('STREAM_COVER_INVALID');
+                const url=URL.createObjectURL(file),image=new Image();
+                try {image.src=url;await image.decode();const side=Math.min(image.naturalWidth,image.naturalHeight);if(!side||image.naturalWidth*image.naturalHeight>40000000)throw Error('STREAM_COVER_INVALID');
+                    const canvas=document.createElement('canvas');canvas.width=canvas.height=512;canvas.getContext('2d').drawImage(image,(image.naturalWidth-side)/2,(image.naturalHeight-side)/2,side,side,0,0,512,512);
+                    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('STREAM_COVER_INVALID');
+                    if(revision!==version || ui.stationId!==stationId || !field.isConnected)return;
+                    const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);
+                    const cover={blob,url:URL.createObjectURL(blob),token:uid()};pendingCovers.set(stationId,cover);d.coverPending=cover.token;preview.src=cover.url;saveUi();status.textContent=t('封面已裁剪为正方形，点击保存后生效');
+                } finally {URL.revokeObjectURL(url);}
+            }catch(cause){status.textContent=t('封面处理失败，请选择有效图片')+' ['+cause.message+']';}
+        };
+        label.append(input);field.append(label,preview,status,button('移除封面',()=>{version++;const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);pendingCovers.delete(stationId);d.coverId='';delete d.coverPending;preview.src='/client/icons/streaming.png';saveUi();}));
+        form.children[0].after(field);
+        const expand=button('展开基本信息',()=>{form.classList.add('sc-basic-expanded');main.classList.add('sc-basic-open');});expand.className='sc-expand-basic';
+        const collapse=button('收起',()=>{form.classList.remove('sc-basic-expanded');main.classList.remove('sc-basic-open');});collapse.className='sc-collapse-basic';form.prepend(expand);form.append(collapse);
+    }
     function title(text) { const heading = document.createElement('h1'); heading.textContent = t(text); main.append(heading); return heading; }
     function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) parking.append(player.element); }
     async function render() {
         if (!isOpen()) return; const version = ++renderVersion;
         clearWatchSchedule();
         for (const [key, player] of players) if (!['watch', 'control'].includes(ui.view) || key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
-        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page'); banner.hidden = true;
+        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         try {
@@ -302,6 +345,7 @@
     async function refreshList(version = renderVersion) {
         const revision = ++listRequest;
         const view = ui.view, selected = account();
+        const loading = document.createElement('p'); loading.className = 'sc-list-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在读取串流台列表…'); main.append(loading);
         try {
             const result = await request('/stations?kind=' + (view === 'creator' ? 'creator&ownerId=' + encodeURIComponent(ui.stationId) : view));
             if (revision !== listRequest || version !== renderVersion || view !== ui.view || selected !== account()) return;
@@ -314,6 +358,7 @@
             list.replaceChildren();
             if (!result.stations.length) { const p = document.createElement('p'); p.textContent = t(view === 'bookmarks' ? '暂无已订阅的串流台' : '暂无可见串流台'); list.append(p); }
             const own = s => Boolean((currentUser?.id || selected) && s.ownerId === (currentUser?.id || selected));
+            if (view === 'local' && (currentUser?.id || selected) && !result.stations.some(own)) { const empty = document.createElement('p'); empty.textContent = t('该账号尚未在本机创建串流台。'); list.append(empty); }
             const stations = view === 'local' ? [...result.stations.filter(own), ...result.stations.filter(s => !own(s))] : result.stations;
             let group;
             for (const s of stations) {
@@ -322,7 +367,9 @@
                     group = own(s); const heading = document.createElement('h2'); heading.textContent = t(group ? '当前账号创建的串流台' : '本机其它串流台'); list.append(heading);
                 }
                 const row = document.createElement('article'); row.className = 'sc-station-row'; row.dataset.stationId = s.id;
-                row.innerHTML = `<div class="sc-device"><span class="sc-device-icon">▣</span><div>${userText(s.deviceName)}<small>${t('来源设备')}</small></div></div><div class="sc-number"><small>${t('台号')}</small>${userText(s.number)}</div><div class="sc-station-title"><strong>${userText(s.name)}</strong><small>${s.owner ? t('归属用户') + ' · ' + userText(s.owner.name) : t('无归属')}</small></div><div><small>${t('文件节目单')}</small>${s.itemCount}</div><div><small>${t('可见性')}</small>${stateLabel(s.visibility)}</div><div><small>${t('全局状态')}</small>${stateLabel(s.playback.status)}${s.locked ? '<small>' + t('需要源设备登录') + '</small>' : ''}</div>`;
+                row.innerHTML = `<div class="sc-device"><div>${userText(s.deviceName)}<small>${t('来源设备')}</small></div></div><div class="sc-number"><small>${t('台号')}</small>${userText(s.number)}</div><div class="sc-station-title"><strong>${userText(s.name)}</strong><small>${s.owner ? t('归属用户') + ' · ' + userText(s.owner.name) : t('无归属')}</small></div><div><small>${t('文件节目单')}</small>${s.itemCount}</div><div><small>${t('可见性')}</small>${stateLabel(s.visibility)}</div><div><small>${t('全局状态')}</small>${stateLabel(s.playback.status)}${s.locked ? '<small>' + t('需要源设备登录') + '</small>' : ''}</div>`;
+                row.children[3].classList.add('sc-row-count');row.children[4].classList.add('sc-row-visibility');row.children[5].classList.add('sc-row-playback');
+                row.prepend(coverImage(s, 'sc-list-cover'));
                 const actions = document.createElement('div'); actions.className = 'sc-row-actions';
                 if (own(s) && !s.local) { const origin = document.createElement('small'); origin.className = 'sc-own-remote message-content'; origin.textContent = t('由你在其它设备创建') + ' · ' + t('设备 ID') + ' ' + s.deviceId; row.querySelector('.sc-station-title').append(origin); }
                 actions.append(button(s.visibility === 'offline' ? '查看状态' : '打开观看', () => navigate('watch', s.id), 'sc-primary'));
@@ -337,6 +384,7 @@
                 row.append(actions); list.append(row);
             }
         } catch (cause) { if (revision === listRequest && version === renderVersion && selected === account()) throw cause; }
+        finally { loading.remove(); }
     }
     async function createStation(force = false) {
         if (force !== true && dirty()) { confirmLeave(() => createStation(true)); return; }
@@ -352,7 +400,7 @@
     const saveFlights = new Map();
     async function reconcileRevision(stationId) {
         const base = localConfig(stationId), actor = account(); if (!base) return;
-        const baseline = { name: base.name, loop: base.loop, countdown: base.countdown, items: base.items.map(item => ({
+        const baseline = { name: base.name, coverId:base.coverId || '', loop: base.loop, countdown: base.countdown, items: base.items.map(item => ({
             ...Object.fromEntries(['id','name','kind','size','type','duration','start','stay'].map(key => [key, item[key]])),
             source: Object.fromEntries(['kind','fileId','accountId','userId','diskSpace','sessionId','messageId'].map(key => [key, item.source?.[key]]))
         })) };
@@ -365,6 +413,7 @@
         }
     }
     function saveFailure(cause) {
+        if (cause.message === 'STREAM_COVER_RESELECT') return t('封面临时文件已不可用，请重新选择封面后保存');
         return cause.message === 'STREAM_CONFLICT' ? t('服务端节目单版本已变更，本机草稿已保留，请核对后重试') + ' · ' + (cause.expectedVersion ?? '?') + ' → ' + (cause.currentVersion ?? '?') + ' [STREAM_CONFLICT]'
             : t(!cause.confirmedFailure ? '保存结果尚未确认，请重新读取串流台状态' : '节目单未保存，请检查来源后重试') + ' [' + cause.message + ']';
     }
@@ -373,14 +422,25 @@
         const d = ui.drafts[stationId] || localConfig(stationId), actor = account();
         const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
         if (unchecked.length) { saving(t('尚未保存：媒体时长检查未完成') + '\n' + unchecked.map(item => item.name).join('\n')); return false; }
-        const fingerprint = JSON.stringify({ ...d, configVersion: 0 }), submitted = structuredClone(d);
+        const fingerprint = JSON.stringify({ ...d, configVersion: 0 }), submitted = structuredClone(d), coverToken = d.coverPending;
         const payload = { ...submitted, items: submitted.items.map(item => { const value = { ...item }; if (value.sourceSaved) delete value.source; delete value.sourceSaved; delete value.durationError; return value; }) };
         const flight = (async () => {
             saving(t('正在保存节目单…'));
+            if (submitted.coverPending) {
+                const cover = pendingCovers.get(stationId);
+                if (!cover || cover.token !== submitted.coverPending) throw Error('STREAM_COVER_RESELECT');
+                saving(t('正在保存封面…'));
+                const uploaded = await request('/stations/' + stationId + '/cover','POST',cover.blob,{accountId:actor});
+                payload.coverId=submitted.coverId=uploaded.coverId; delete payload.coverPending; delete submitted.coverPending;
+            }
             await reconcileRevision(stationId); payload.configVersion = d.configVersion; submitted.configVersion = d.configVersion;
             const result = await request('/stations/' + stationId, 'PUT', payload, { accountId: actor, onProgress: value => saving(t(value.phase === 'persisting' ? '正在写入节目单…' : '正在校验节目来源…') + ' ' + value.completed + ' / ' + value.total + (value.name ? '\n' + value.name : '')) });
             submitted.configVersion = result.configVersion; submitted.items.forEach(item => { item.sourceSaved = true; }); saveConfig(stationId, submitted);
             const unchanged = ui.drafts[stationId] === d && JSON.stringify({ ...d, configVersion: 0 }) === fingerprint;
+            if (ui.drafts[stationId] === d && coverToken && d.coverPending === coverToken && pendingCovers.get(stationId)?.token === coverToken) {
+                d.coverId=submitted.coverId; delete d.coverPending;
+                URL.revokeObjectURL(pendingCovers.get(stationId).url); pendingCovers.delete(stationId);
+            }
             if (unchanged) delete ui.drafts[stationId];
             else if (ui.drafts[stationId] === d) { d.configVersion = result.configVersion; for (const item of d.items) if (submitted.items.some(saved => saved.id === item.id && JSON.stringify(saved.source) === JSON.stringify(item.source))) item.sourceSaved = true; }
             saveUi(); return unchanged;
@@ -394,6 +454,7 @@
         form.innerHTML = `<label>${t('串流台名称')}<input class="sc-name" maxlength="120" value="${esc(d.name)}"></label><label>${t('播放结束')}<select class="sc-loop"><option value="loop">${t('循环节目单')}</option><option value="stop">${t('播完停止')}</option></select></label><label>${t('静态项倒计时')}<select class="sc-countdown-choice">${['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].map((value, i) => '<option value="' + value + '">' + t(['左上', '右上', '左下', '右下', '边缘薄进度条'][i]) + '</option>').join('')}</select></label><p>${t('导入仅保存来源引用，不复制或保护原文件')}</p>`;
         form.querySelector('.sc-loop').value = d.loop ? 'loop' : 'stop'; form.querySelector('.sc-countdown-choice').value = d.countdown;
         form.oninput = () => { d.name = form.querySelector('.sc-name').value; d.loop = form.querySelector('.sc-loop').value === 'loop'; d.countdown = form.querySelector('.sc-countdown-choice').value; saveUi(); };
+        coverEditor(form,d,stationId);
         const resources = document.createElement('section'); resources.className = 'sc-card sc-editor-resources';
         const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
@@ -445,14 +506,14 @@
             const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
             saving(unchecked.length ? t('尚未保存：媒体时长检查未完成') + ' · ' + unchecked.length + '\n' + unchecked.map(item => item.name + ' · ' + t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…') + (item.durationError ? ' [' + item.durationError + ']' : '')).join('\n') : t('媒体时长检查已完成，可以保存节目单'));
         }
-        actions.append(button('保存节目单', async () => {
+        actions.append(button('保存', async () => {
             const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
             if (unchecked.length) { saveBlocked = true; showDurationBlock(); return; } saveBlocked = false;
             const stationId = ui.stationId, actor = account(); actions.setAttribute('aria-busy', 'true'); let unchanged;
             try { unchanged = await persistDraft(stationId, saving); }
             catch (cause) { saving(saveFailure(cause)); if (cause.message !== 'STREAM_CONFLICT') throw cause; return; }
             finally { actions.removeAttribute('aria-busy'); }
-            if (ui.stationId === stationId && account() === actor) { if (unchanged) navigate('watch', stationId); notice(unchanged ? '节目单已保存' : '节目单已保存，期间的新编辑仍保留在草稿'); }
+            if (ui.stationId === stationId && account() === actor) { if (unchanged) navigate('control', stationId); notice(unchanged ? '串流台已保存' : '串流台已保存，期间的新编辑仍保留在草稿'); }
         }, 'sc-primary'), button('返回列表', returnToList)); main.append(saveStatus, actions);
     }
     async function chooseLocalFile(replace) {
@@ -662,6 +723,17 @@
                 image.onerror = () => { if (!controller.signal.aborted) progress.textContent = t('图片无法读取，请检查来源'); };
                 progress.textContent = t('图片已加载，正在解码…') + ' · ' + formatSize(loaded); image.src = objectUrl; body.append(image); return;
             }
+            else if (item.kind === 'rich') {
+                const html = await blob.text(), node = document.createElement('div'), mapping = new Map(), references = [];
+                node.className = 'sc-document message-content';
+                for (const asset of new Set([...html.matchAll(/data-tunnel-asset-id=["']([\w.-]+)["']/g)].map(value => value[1]))) {
+                    const source = {kind:'tunnel',sessionId:item.source.sessionId,messageId:'editor-assets',fileId:asset};
+                    const ref = {url:'tunnel-blob:'+source.sessionId+'/editor-assets/'+asset}; references.push(ref);
+                    try { mapping.set(ref.url,await sourceUrl({source},controller.signal)); } catch (cause) { if(controller.signal.aborted)throw cause; }
+                }
+                if (controller.signal.aborted) return;
+                global.StreamingPlayer.renderRich(node, html, references, mapping); body.append(node);
+            }
             else { const pre = document.createElement('pre'); pre.textContent = await blob.text(); body.append(pre); }
             progress.textContent = t('预览已就绪') + ' · ' + formatSize(loaded);
         } catch (cause) { if (!controller.signal.aborted) progress.textContent = t(cause.message === 'STREAM_PREVIEW_TOO_LARGE' ? '文件超出预览大小限制，请通过原来源查看' : '预览失败，请重试') + ' [' + cause.message + ']'; }
@@ -733,6 +805,7 @@
             } else info.append(document.createTextNode(t('无归属')));
         }
         main.append(info); const layout = document.createElement('div'); layout.className = 'sc-watch-grid'; const stage = document.createElement('div'); const aside = document.createElement('aside'); aside.className = 'sc-card'; layout.append(stage, aside); main.append(layout);
+        if (!controlling) { main.insertBefore(coverImage(snapshot,'sc-viewer-cover'),layout);heading.prepend(coverImage(snapshot,'sc-viewer-cover-small')); }
         const actions = document.createElement('div'); actions.className = 'sc-actions'; main.append(actions);
         const fixedAccount = account();
         const subscribedLabel = controlling ? '已订阅' : '退订';
@@ -751,14 +824,14 @@
             snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); waitRows.clear(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
             aside.replaceChildren(); const heading = document.createElement('h2'); heading.textContent = controlling ? t('全局状态') + ' · ' + stateLabel(['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.playback.status) : t('节目单'); aside.append(heading);
             if (!controlling && value.visibility === 'offline') { const state = document.createElement('p'); state.textContent = t('串流台已下线'); stage.replaceChildren(state); }
-            const waits = controlling ? null : programWaits(value);
+            const waits = programWaits(value);
             for (const item of value.items) {
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
                 if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
                 row.classList.toggle('sc-now-playing', item.id === value.playback.itemId);
                 const name = document.createElement('span'); name.className = 'message-content';
                 name.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
-                if (!controlling && item.id !== value.playback.itemId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id)); waitRows.set(item.id, wait); name.append(wait); }
+                if (item.id !== value.playback.itemId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id)); waitRows.set(item.id, wait); name.append(wait); }
                 row.append(name); aside.append(row);
             }
             if (controlling && value.manageable && value.viewers?.length) { const h = document.createElement('h3'); h.textContent = t('实际观看设备'); aside.append(h);
@@ -778,7 +851,7 @@
             player.onView = fillInfo; player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
-        if (!controlling) stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => isOpen() && ui.view === 'watch' && ui.stationId === snapshot.id && version === renderVersion);
+        stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => isOpen() && ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }
@@ -914,8 +987,44 @@
         const response = await request('/invitations/' + encodeURIComponent(invite.token), 'POST', { decision: action === 'accept' ? 'accept' : 'reject' });
         if (response.accepted) { await open(); navigate('watch', response.stationId); } await sync();
     }
-    async function openInvitation(token) {
-        try { await open(); await inspectInvitation(token); return true; } catch (cause) { error(cause); return false; }
+    async function openInvitation(token, { onOpen } = {}) {
+        try { await open(); onOpen?.(); await inspectInvitation(token); return true; } catch (cause) { error(cause); return false; }
+    }
+    function canImportRecord(message) {
+        if (['markdown','text','rich'].includes(message.type)) return Boolean(String(message.markdown || message.text || message.content || '').trim());
+        return (message.type === 'file' ? [message.fileInfo] : message.collection?.files || []).some(file => file && kindOf(file));
+    }
+    async function importRecord(message, createNew=false, force=false) {
+        await ready;
+        if(!force&&dirty()){confirmLeave(()=>importRecord(message,createNew,true).catch(error));return;}
+        await open();const actor=account();
+        const grants=await config.tunnels(),context=grants.find(entry=>entry.sessionId===(message.sessionId||config.currentTunnel()));
+        if(!context)throw Error('STREAM_TUNNEL_DENIED');
+        const result=await request('/tunnel-candidates','POST',{...context,messageId:message.id});
+        if(!result.candidates.length){notice('这条记录没有可导入的可视内容');return;}
+        const prepare=stationId=>result.candidates.map(candidate=>{const item=structuredClone(candidate);item.id=uid();item.stay=10;item.start=0;item.source.tunnelGrants=Object.fromEntries(grants.map(entry=>[entry.sessionId,entry.accessGrant]));return item;});
+        const enter=(station,d,position)=>{
+            if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
+            const additions=prepare(station.id);if(d.items.length+additions.length>500)throw Error('STREAM_PLAYLIST_INVALID');
+            d.items.splice(position,0,...additions);ui.drafts[station.id]=d;saveUi();closeDialog();navigate('edit',station.id);
+        };
+        if(createNew){
+            if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
+            const station=await request('/stations','POST',{name:t('新串流台'),creationId:uid()},{accountId:actor});
+            const d={name:station.name,configVersion:station.configVersion,items:[],loop:true,countdown:'bottom-right',coverId:''};saveConfig(station.id,d);enter(station,d,0);return;
+        }
+        const stations=(await request('/stations?kind=local')).stations.filter(s=>s.local&&s.manageable);
+        if(!stations.length){notice('本设备没有当前身份可编辑的串流台');return;}
+        const body=document.createElement('div'),select=document.createElement('select'),items=document.createElement('select'),position=document.createElement('div'),status=document.createElement('p');
+        select.setAttribute('aria-label',t('目标串流台'));items.setAttribute('aria-label',t('参照节目'));items.size=6;
+        for(const s of stations)select.add(new Option(s.number+' · '+s.name,s.id));
+        const before=document.createElement('input'),after=document.createElement('input');before.type=after.type='radio';before.name=after.name='sc-insert-position';after.checked=true;
+        for(const [input,label] of [[before,'插入该节目之前'],[after,'插入该节目之后']]){const field=document.createElement('label');field.append(input,t(label));position.append(field);}
+        let d,revision=0;const load=async()=>{const ticket=++revision;d=null;items.replaceChildren();status.textContent=t('正在读取节目单…');
+            try{const current=ui.drafts[select.value]||localConfig(select.value)||await request('/stations/'+select.value+'/edit-config','GET',undefined,{accountId:actor});if(ticket!==revision)return;d=structuredClone(current);if(!localConfig(select.value))saveConfig(select.value,current);for(const item of d.items)items.add(new Option(item.name,item.id));if(d.items.length)items.selectedIndex=0;status.textContent=d.items.length?'':t('节目单为空，将插入开头');}
+            catch(cause){if(ticket===revision)status.textContent=t('节目单读取失败，请重新选择')+' ['+cause.message+']';}};
+        select.onchange=()=>load();body.append(select,status,items,position,button('添加并编辑',()=>{if(!d)throw Error('STREAM_REQUEST_FAILED');const index=d.items.findIndex(item=>item.id===items.value);enter(stations.find(s=>s.id===select.value),d,index<0?d.items.length:index+(after.checked?1:0));},'sc-primary'));
+        showDialog('添加到串流台',body);await load();
     }
     async function sendMarkdown(body, messageId = uid()) {
         await ready;
@@ -979,5 +1088,5 @@
         ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } if (url.searchParams.has('stream_invite')) { await open(); await inspectInvitation(url.searchParams.get('stream_invite')); } }).catch(error);
         return ready;
     }
-    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, request, inspectInvitation, whenReady: () => ready };
+    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, request, inspectInvitation, whenReady: () => ready };
 })(window);

@@ -114,10 +114,12 @@ function createStreamingSources({ disk, tunnel, broker = createStreamingBroker()
                 name: input.name, type: input.type, size: input.size };
         } else throw sourceError('STREAM_SOURCE_INVALID');
         let kind; try { kind = mediaKind(resolved.name, resolved.type); } catch (error) { if (!allowAnyFile) throw error; kind = 'file'; }
-        if (kind === 'markdown') {
+        if (kind === 'markdown' || kind === 'rich') {
             const body = await text(resolved.source, actor.deviceId);
             const references = [];
-            for (const match of body.matchAll(REF)) {
+            const matches = [...body.matchAll(REF)];
+            if (kind === 'rich') for (const match of body.matchAll(/data-tunnel-asset-id=["']([\w.-]+)["']/g)) matches.push(['tunnel-blob:'+resolved.source.sessionId+'/editor-assets/'+match[1],resolved.source.sessionId,'editor-assets',match[1]]);
+            for (const match of matches) {
                 if (references.some(ref => ref.url === match[0])) continue;
                 if (references.length >= 100) throw sourceError('STREAM_REFERENCE_LIMIT');
                 try {

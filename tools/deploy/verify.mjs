@@ -115,7 +115,7 @@ async function main() {
   if (!buildManifest.scripts?.['client/disk-share.js']) errors.push('missing public disk-share script');
   if (!buildManifest.scripts?.['client/cache-store-worker.js']) errors.push('missing OPFS cache worker');
   if (!buildManifest.scripts?.['client/s3-management.js']) errors.push('missing S3 management script');
-  for (const source of ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save']) {
+  for (const source of ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location']) {
     if (!buildManifest.scripts?.[`client/${source}.js`]) errors.push(`missing drive module in release manifest: ${source}`);
   }
   for (const source of ['client/disk-error-messages.js', 'client/disk-operation-order.js']) {

@@ -1,6 +1,16 @@
 (function (global) {
     'use strict';
     const t = value => global.TunnelI18n?.t(value) || value;
+    function renderRich(node, body, references, mapping) {
+        if (!global.DOMPurify) throw Error('STREAM_RENDER_UNAVAILABLE');
+        node.innerHTML = global.DOMPurify.sanitize(body, { FORBID_TAGS: ['script','style','iframe','object','embed','form','input','button','audio','video','source'], FORBID_ATTR: ['style','srcset'] });
+        for (const image of node.querySelectorAll('img[data-tunnel-asset-id]')) {
+            const ref = references.find(value => value.url.endsWith('/editor-assets/' + image.dataset.tunnelAssetId));
+            const url = ref && mapping.get(ref.url);
+            if (url) image.src = url; else image.removeAttribute('src');
+        }
+        for (const link of node.querySelectorAll('a')) { link.rel = 'noopener noreferrer'; link.target = '_blank'; }
+    }
     // Only this device's cursor retains loading time. Explicit global commands
     // still replace it; station permissions and the server clock are unchanged.
     function create({ stationId, watchId, request, subscribe, onState, onError, onSeek }) {
@@ -131,10 +141,12 @@
                     const response = await fetch(access.url, { cache: 'no-store', signal }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
                     const body = await response.text(); if (task.disposed) return;
                     const node = document.createElement('div'); node.className = 'sc-document message-content'; task.element = node;
-                    if (item.kind === 'markdown') {
+                    if (item.kind === 'markdown' || item.kind === 'rich') {
                         const mapping = new Map(), refs = [...(access.references || [])];
                         const resolve = async () => { while (refs.length && !task.disposed) { const ref = refs.shift(); try { const delegated = await ticket(ref.id); mapping.set(ref.url, delegated.url); } catch (error) { if (signal.aborted) throw error; } } };
-                        await Promise.all([resolve(), resolve()]); if (task.disposed) return; global.TunnelMarkdown.render(node, body, mapping);
+                        await Promise.all([resolve(), resolve()]); if (task.disposed) return;
+                        if(item.kind==='markdown')global.TunnelMarkdown.render(node, body, mapping);
+                        else renderRich(node, body, access.references || [], mapping);
                     } else { const pre = document.createElement('pre'); pre.textContent = body; node.append(pre); }
                 }
                 if (!task.disposed) task.ready = true;
@@ -242,5 +254,5 @@
             setController(handler) { onSeek = handler; update(); },
             close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
-    global.StreamingPlayer = { create };
+    global.StreamingPlayer = { create, renderRich };
 })(window);

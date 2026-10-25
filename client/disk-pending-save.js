@@ -286,7 +286,12 @@
     }
     function open(record) {
         if (!validId(record?.id)) throw new Error('待转存记录标识无效');
-        const url = '/disk?pendingSave=' + encodeURIComponent(record.id);
+        const query = new URLSearchParams({pendingSave:record.id});
+        if (record.status === 'completed' && record.target) {
+            query.set('disk_account',record.target.accountId); query.set('disk_space',record.target.diskSpace || ''); query.set('disk_path',record.target.path || '');
+            const fileId = record.result?.items?.[0]?.id; if (fileId) query.set('disk_file',fileId);
+        }
+        const url = '/disk?' + query;
         const tab = global.open?.(url, '_blank', 'noopener');
         // Some browsers return null with noopener even when the tab did open;
         // expose a regular link to the caller rather than creating a second tab.

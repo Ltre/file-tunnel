@@ -4,7 +4,9 @@
 // Capture the destination before asynchronous tunnel startup/history restore.
 const telegramDriveEntryUrl = new URL(location.href, location.origin);
 const telegramDriveEntryQuery = new URLSearchParams(telegramDriveEntryUrl.search);
-let telegramDriveEntryPending = telegramDriveEntryQuery.has('disk_file') || telegramDriveEntryQuery.has('disk_path');
+// A pending-save receipt owns account confirmation and file verification.
+// Its location parameters describe the destination; they must not bypass it.
+let telegramDriveEntryPending = !telegramDriveEntryQuery.has('pendingSave') && (telegramDriveEntryQuery.has('disk_file') || telegramDriveEntryQuery.has('disk_path'));
 let telegramDriveEntryFlight = null;
 let formatFileSize = value => value + ' B', showAppToast = message => alert(message), historyLog = () => {}, loadAudioCover = null;
 let telegramDrivePath = '';
@@ -312,7 +314,7 @@ async function choosePendingSaveTarget(record, account) {
         onReady: reload => { reloadTree = reload; pendingSaveFeedback('请选择转存目标目录', false); }, installContextGesture,
         openDialog: options => openTelegramDriveDialog({ ...options, validate: async () => {
             const path = await options.validate(), space = spaces.find(space => space.id === selector.value);
-            return { accountId: account.id, accountName:account.name || account.username || account.id, partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
+            return { accountId: account.id, accountName:account.name || account.username || account.id, accountTelegramId:account.telegramId || '',accountProvider:account.provider || '', partitionId: space.id, diskSpace: telegramDriveSpaceKey(space), path, partitionName: space.name };
         } }), showError: error => alert(telegramDriveErrorText(error)) });
 }
 async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
@@ -325,7 +327,8 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
         if (!entry) {
             const name = record?.target?.accountName || accounts.find(item => item.identity?.id === accountId)?.identity?.name || accountId;
             const message = '请登录账号（账号名 {0} / ID {1}）后，继续查看该文件。';
-            const prompt = record?.status === 'completed' ? (window.TunnelI18n?.t(message, name, accountId) || message.replace('{0}', name).replace('{1}', accountId)) : '';
+            const visibleId = record?.target?.accountTelegramId || accountId;
+            const prompt = record?.status === 'completed' ? (window.TunnelI18n?.t(message) || message).replace('{0}', name).replace('{1}', visibleId) : '';
             return manageTelegramDriveAccounts({ choose: true, requiredId: accountId, prompt });
         }
         return entry.identity;
@@ -3951,7 +3954,7 @@ function init(options = {}) {
     window.DiskClient?.setAudioCoverExtractor?.(loadAudioCover);
     if (telegramDriveInitialized) return;
     telegramDriveInitialized = true;
-    try { const saved = telegramDriveEntryQuery.get('disk_account') || localStorage.getItem('telegram-drive-active-account'); if (saved) window.DiskClient.setAccount(saved); } catch (_) {}
+    try { const saved = (!telegramDriveEntryQuery.has('pendingSave') && telegramDriveEntryQuery.get('disk_account')) || localStorage.getItem('telegram-drive-active-account'); if (saved) window.DiskClient.setAccount(saved); } catch (_) {}
     const driveDialog = document.getElementById('telegramDriveDialog');
     if (driveDialog && driveDialog.parentElement !== document.body) document.body.append(driveDialog);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);

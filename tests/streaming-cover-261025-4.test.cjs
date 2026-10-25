@@ -1,0 +1,28 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {registerStreamingConsole}=require('../server/streaming-http');
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVioAAAAASUVORK5CYII=','base64');
+test('station covers use owner-authorized uploads, saved revisions and a virtual cached image route',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'stream-cover-261025-4-')),app=require('express')();app.use(require('express').json());
+    const api=registerStreamingConsole(app,{dataDir:dir,identity:req=>({id:req.get('X-Disk-Account')||'owner'}),proofs:()=>[{id:'owner',hash:'proof',expiresAt:Date.now()+86400000}],user:id=>({id,name:id}),origin:req=>'http://'+req.get('host'),visibleDevices:()=>[],sources:{broker:{close(){}}},tunnel:{}});
+    const server=await require('./support/listen-http.cjs').listenHttp(app),base='http://127.0.0.1:'+server.address().port;
+    t.after(async()=>{api.close();server.closeAllConnections();await new Promise(r=>server.close(r));assert.equal(path.dirname(dir),path.resolve(os.tmpdir()));fs.rmSync(dir,{recursive:true,force:true});});
+    const call=(route,method='GET',body,device='device-A',account='owner')=>fetch(base+'/api/streaming'+route,{method,headers:{'Content-Type':Buffer.isBuffer(body)?'image/png':'application/json','X-Stream-Device':device,'X-Stream-Key':device.repeat(8),'X-Disk-Account':account},body:body===undefined?undefined:Buffer.isBuffer(body)?body:JSON.stringify(body)});
+    for(const device of ['device-A','device-B'])assert.equal((await call('/devices','POST',{deviceId:device,key:device.repeat(8),name:device},device)).status,200);
+    const s=await(await call('/stations','POST',{name:'Cover station',creationId:'cover-creation'})).json();
+    assert.equal((await call('/stations/'+s.id+'/cover','POST',png,'device-B')).status,403);
+    const upload=await call('/stations/'+s.id+'/cover','POST',png);assert.equal(upload.status,200);const {coverId}=await upload.json();assert.match(coverId,/^[a-f0-9]{64}$/);
+    assert.equal(fs.readFileSync(path.join(dir,'streaming-console','covers',s.id+'-'+coverId+'.png')).equals(png),true);
+    const before=await(await call('/stations/'+s.id+'?manage=1')).json();assert.equal(before.coverId,'','staging a cover does not silently save station settings');
+    const saved=await call('/stations/'+s.id,'PUT',{name:'Cover station',configVersion:1,items:[],coverId});assert.equal(saved.status,200);assert.equal((await saved.json()).coverId,coverId);
+    const image=await call('/stations/'+s.id+'/covers/'+coverId+'?device=device-A&account=owner');assert.equal(image.status,200);assert.match(image.headers.get('cache-control'),/private.*max-age/);assert.equal(image.headers.get('content-type'),'image/png');assert.equal(Buffer.from(await image.arrayBuffer()).equals(png),true);
+    assert.equal((await call('/stations/'+s.id+'/covers/'+coverId+'?device=device-B&account=other','GET',undefined,'device-B','other')).status,403);
+    const invalid=Buffer.from(png);invalid.writeUInt32BE(2,20);assert.equal((await call('/stations/'+s.id+'/cover','POST',invalid)).status,422);
+    const config=await(await call('/stations/'+s.id+'/edit-config')).json();assert.equal(config.coverId,coverId);assert.equal(config.configVersion,2);
+    assert.equal((await call('/stations/'+s.id+'/edit-config','GET',undefined,'device-B')).status,403);
+    let state=api.service.station(s.id);assert.equal((await call('/stations/'+s.id+'/visibility','POST',{visibility:'public',version:state.playback.version})).status,200);
+    assert.equal((await call('/stations/'+s.id+'/bookmark','PUT',undefined,'device-B','other')).status,200);
+    state=api.service.station(s.id);assert.equal((await call('/stations/'+s.id+'/visibility','POST',{visibility:'offline',version:state.playback.version})).status,200);
+    assert.equal((await call('/stations/'+s.id+'/covers/'+coverId+'?device=device-B&account=other','GET',undefined,'device-B','other')).status,200,'a retained subscription can still show its offline station cover');
+    const offline=await call('/stations/'+s.id,'GET',undefined,'device-B','other');assert.equal(offline.status,422);assert.equal((await offline.json()).error,'STREAM_OFFLINE','cover metadata never grants playback access');
+});

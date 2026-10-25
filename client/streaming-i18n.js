@@ -3,6 +3,18 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['串流台封面','Station cover'],['封面','Cover'],['上传封面','Upload cover'],['移除封面','Remove cover'],
+        ['正在裁剪封面…','Cropping the cover…'],['封面已裁剪为正方形，点击保存后生效','The cover is square. Save to apply it'],
+        ['封面处理失败，请选择有效图片','Could not process the cover. Choose a valid image'],['展开基本信息','Expand basic information'],
+        ['正在保存封面…','Saving cover…'],['封面临时文件已不可用，请重新选择封面后保存','The temporary cover is unavailable. Select it again and save'],
+        ['该账号尚未在本机创建串流台。','This account has not created any stations on this device.'],
+        ['正在读取串流台列表…','Loading stations…'],
+        ['读取本机隧道授权超时，请检查浏览器存储后点击刷新；未确认当前是否有可见串流台。','Reading local tunnel access timed out. Check browser storage and refresh; station visibility is unconfirmed.'],
+        ['这条记录没有可导入的可视内容','This record has no supported visual content'],['本设备没有当前身份可编辑的串流台','There are no stations this identity can edit on this device'],
+        ['目标串流台','Destination station'],['参照节目','Reference program'],['插入该节目之前','Insert before this program'],['插入该节目之后','Insert after this program'],
+        ['正在读取节目单…','Loading playlist…'],['节目单为空，将插入开头','The playlist is empty; insert at the beginning'],['节目单读取失败，请重新选择','Could not read the playlist. Select again'],
+        ['添加并编辑','Add and edit'],['添加到串流台','Add to station'],['创建串流台','Create station'],['串流台已保存','Station saved'],['富文本','Rich text'],
+        ['网盘内部 ID','Internal drive ID'],['所选文件中存在 0 B 空文件，请取消勾选后重试：','The selection contains empty (0 B) files. Deselect them and retry:'],
         ['文件已加入当前隧道发送队列','Files added to the current tunnel send queue'],
         ['读取账号状态超时，请检查连接后重试','Reading account status timed out. Check the connection and retry'],
         ['请登录账号（账号名 {0} / ID {1}）后，继续查看该文件。','Sign in to account {0} / ID {1} to view this file.'],

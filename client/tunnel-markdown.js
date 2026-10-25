@@ -178,7 +178,7 @@
                 if (url.origin !== location.origin || !url.searchParams.has('stream_invite')) return;
                 event.preventDefault();
                 if (!global.StreamingConsole?.openInvitation) return;
-                Promise.resolve(global.StreamingConsole.openInvitation(url.searchParams.get('stream_invite'))).then(opened => { if (opened !== false) onInvitation?.(); });
+                Promise.resolve(global.StreamingConsole.openInvitation(url.searchParams.get('stream_invite'), { onOpen: onInvitation })).catch(() => {});
             });
         });
     }

@@ -4,6 +4,12 @@
     const $ = id => document.getElementById(id);
     const state = { overview: null, selected: null, path: '', cleanupOffset: 0, cleanupGeneration: 0, lookupGeneration: 0, detailGeneration: 0, detailId: '' };
     const initialLocation = new URLSearchParams(location.search);
+    const groupingButton=document.getElementById('storageGroupingInfo'),groupingHelp=document.getElementById('storageGroupingHelp');
+    if(groupingButton&&groupingHelp){
+        groupingHelp.textContent='这里按业务来源、用户和网盘分区组织视图。download-task 表示抓取任务转存，media-library 表示媒体收藏转存；同一用户或分区可能出现在多个来源下。分组来自业务使用记录及文件的来源标记，生成这个视图不会复制文件，也不代表增加物理存储。分组中的文件数量和字节数是逻辑统计，不能相加当作去重后的物理占用。实际文件仍属于原用户和分区；独立保存产生的文件与底层内容复用，请通过内容对象和引用信息核对。';
+        groupingButton.onclick=()=>{groupingHelp.hidden=!groupingHelp.hidden;groupingButton.setAttribute('aria-expanded',String(!groupingHelp.hidden));};
+        document.addEventListener('pointerdown',event=>{if(!groupingHelp.hidden&&!groupingHelp.contains(event.target)&&!groupingButton.contains(event.target)){groupingHelp.hidden=true;groupingButton.setAttribute('aria-expanded','false');}});
+    }
     const text = value => String(value ?? '');
     const bytes = value => {
         let size = Number(value) || 0; const units = ['B', 'KB', 'MB', 'GB', 'TB']; let index = 0;

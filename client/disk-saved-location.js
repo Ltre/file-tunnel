@@ -1,6 +1,22 @@
 (function (global) {
     'use strict';
-    const t = (value, ...args) => global.TunnelI18n?.t(value, ...args) || value.replace(/\{(\d+)\}/g, (_m, i) => args[i] ?? _m);
+    const t = (value, ...args) => (global.TunnelI18n?.t(value) || value).replace(/\{(\d+)\}/g, (_m, i) => args[i] ?? _m);
+    const accountLabel = (identity={}, internalId='') => {
+        const name=identity.name || identity.username || internalId;
+        const loginId=identity.telegramId || identity.accountTelegramId;
+        return loginId ? `${name} / ${identity.provider==='mock' || identity.accountProvider==='mock' ? 'Mock' : 'Telegram'} ID ${loginId} · ${t('网盘内部 ID')} ${internalId}` : `${name} / ID ${internalId}`;
+    };
+    async function targetIdentity(record,accounts,signal) {
+        const existing=accounts.accounts?.find(entry=>entry.identity?.id===record.target.accountId)?.identity;
+        if(existing)return existing;
+        // This module runs on the authenticated backend pages. Use their
+        // existing read-only overview when the destination login is absent.
+        if(global.fetch)try {
+            const response=await global.fetch('/api/telegram/disk-admin/storage-overview',{cache:'no-store',signal});
+            if(response.ok){const data=await response.json();for(const system of data.systems||[]){const user=system.users?.find(user=>(user.userId||user.id)===record.target.accountId);if(user)return user;}}
+        }catch(error){if(signal?.aborted)throw error;}
+        return null;
+    }
     async function read(route, accountId = '', signal) {
         return global.DiskClient.raw(route, { accountId, diskSpace:'', requestBase:'/api/telegram/drive', signal });
     }
@@ -13,8 +29,8 @@
         const state = await global.DiskClient.accountOperations(selected);
         if (signal?.aborted) return false;
         const user = status.accounts?.find(entry => entry.identity?.id === state.accountId)?.identity;
-        const current = state.accountId ? `${user?.name || user?.username || state.accountId} / ID ${state.accountId}` : t('离线身份');
-        const target = `${record.target.accountName || record.target.accountId} / ID ${record.target.accountId}`;
+        const current = state.accountId ? accountLabel(user,state.accountId) : t('离线身份');
+        const target = accountLabel({name:record.target.accountName,accountTelegramId:record.target.accountTelegramId,accountProvider:record.target.accountProvider},record.target.accountId);
         const kinds = {upload:'上传',copy:'复制',move:'移动',read:'读取',delete:'删除','transfer-history':'传输'};
         const tasks = state.operations.map(job => '• ' + t(kinds[job.type] || '网盘任务') + ' · ' + (job.title || job.message || job.operation_id)).join('\n');
         const activity = state.unverified ? t('无法核验当前账号的活动网盘任务，登录状态可能已失效。')
@@ -41,13 +57,14 @@
             const checked = await global.DiskPendingSave.inspectSaved(record);
             if (closed) return;
             const accounts = await read('/accounts', '', controller.signal);
-            const user = accounts.accounts?.find(entry => entry.identity?.id === record.target.accountId)?.identity;
-            const target = { ...record.target, accountName:user?.name || user?.username || record.target.accountName || record.target.accountId };
+            const user = await targetIdentity(record,accounts,controller.signal);
+            const target = { ...record.target, accountName:user?.name || user?.username || record.target.accountName || record.target.accountId,
+                accountTelegramId:user?.telegramId || record.target.accountTelegramId || '',accountProvider:user?.provider || record.target.accountProvider || '' };
             // Persist display metadata with the receipt, never change its identity.
-            if (target.accountName !== record.target.accountName) record = await global.DiskPendingSave.update(record.id,{target});
+            if (JSON.stringify(target) !== JSON.stringify(record.target)) record = await global.DiskPendingSave.update(record.id,{target});
             if (closed) return;
             const add = (label, value) => { const line = document.createElement('p'), title = document.createElement('strong'), text = document.createElement('span'); title.textContent=t(label)+': ';text.textContent=value;line.append(title,text);details.append(line); };
-            add('账号', `${target.accountName} / ID ${target.accountId}`);
+            add('账号', accountLabel({name:target.accountName,accountTelegramId:target.accountTelegramId,accountProvider:target.accountProvider},target.accountId));
             add('网盘分区', `${target.partitionName || t('名称未记录')} / ID ${target.partitionId || target.diskSpace || t('未记录')}`);
             const files = checked.files?.length ? checked.files : record.result?.items?.length ? record.result.items : [record.file];
             for (const file of files) add('完整路径', '/' + [target.path, file.name || record.file.name].filter(Boolean).join('/').replace(/^\/+/,''));
@@ -73,5 +90,5 @@
         } catch(error) { if(!closed)status.textContent=t('网盘位置查询未完成，请关闭后重试')+' ['+error.message+']'; }
         finally { clearTimeout(timeout); }
     }
-    global.DiskSavedLocation = { openTask, confirmView };
+    global.DiskSavedLocation = { openTask, confirmView, accountLabel };
 })(window);

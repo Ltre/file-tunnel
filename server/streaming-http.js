@@ -16,12 +16,14 @@ const { createStreamingConsole, digest } = require('./streaming-console');
 const { parseByteRange } = require('./object-storage');
 const { Readable } = require('node:stream');
 const { createStreamingBuffer } = require('./streaming-buffer');
+const { createStreamingCovers } = require('./streaming-covers');
 
 function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginRevoked, origin,
     visibleDevices, sources, tunnel, now = Date.now }) {
     const listeners = new Map(); let scheduled = false;
     const publish = () => { if (scheduled) return; scheduled = true; queueMicrotask(() => { scheduled = false; for (const listener of listeners.values()) listener.send(); }); };
-    const service = createStreamingConsole({ dataDir, user, loginRevoked, visibleDevices, sources, now, onChange: publish });
+    const covers=createStreamingCovers(dataDir);
+    const service = createStreamingConsole({ dataDir, user, loginRevoked, visibleDevices, sources, covers, now, onChange: publish });
     const router = express.Router(), tickets = new Map(), readAhead = createStreamingBuffer({ now });
     const wrap = action => async (req, res, next) => { try { await action(req, res, next); } catch (error) { next(error); } };
     const actor = req => {
@@ -108,7 +110,21 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
             throw error;
         }
     }));
+    router.get('/stations/:id/covers/:hash',wrap((req,res)=>{
+        const deviceId=String(req.query.device || req.get('X-Stream-Device') || '');
+        const cookies=new Map(String(req.headers.cookie||'').split(';').map(part=>part.trim().split('=')));
+        service.authenticate(deviceId,req.get('X-Stream-Key')||cookies.get('stream_device_'+digest(deviceId).slice(0,20)));
+        const selected=Object.create(req);selected.headers={...req.headers,'x-disk-account':String(req.query.account || '')};selected.query={...req.query};delete selected.query.disk_account;
+        const hash=service.cover(req.params.id,{deviceId,userId:identity(selected)?.id||null});
+        if(!hash || hash!==req.params.hash)throw Error('STREAM_COVER_INVALID');
+        const body=covers.read(req.params.id,hash),etag='"'+hash+'"';
+        res.set({'Content-Type':'image/png','Cache-Control':'private, max-age=86400, immutable',ETag:etag,'Content-Security-Policy':"sandbox; default-src 'none'"});
+        if(req.get('If-None-Match')===etag)return res.status(304).end();res.send(body);
+    }));
     router.use((req, _res, next) => { try { req.streamActor = actor(req); next(); } catch (error) { next(error); } });
+    router.post('/stations/:id/cover',express.raw({type:'image/png',limit:'2mb'}),wrap((req,res)=>{
+        service.cover(req.params.id,req.streamActor,true);res.json({coverId:covers.put(req.params.id,req.body)});
+    }));
     router.post('/sync', wrap((req, res) => {
         const aliases = (Array.isArray(req.body?.tunnels) ? req.body.tunnels : []).slice(0, 500).flatMap(entry => { try { return [tunnel.alias(entry, req.streamActor)]; } catch (_) { return []; } });
         service.syncDevice(req.streamActor, { follows: Array.isArray(req.body?.follows) ? req.body.follows : [], aliases });
@@ -118,6 +134,11 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     router.get('/stations', wrap((req, res) => res.json({ stations: service.list(req.streamActor, req.query.kind, req.query.ownerId) })));
     router.post('/stations', wrap((req, res) => res.status(201).json(service.create(req.streamActor, req.body || {}))));
     router.get('/stations/:id', wrap((req, res) => res.json(service.view(req.params.id, req.streamActor, { manage: req.query.manage === '1' }))));
+    router.get('/stations/:id/edit-config',wrap((req,res)=>{
+        const s=service.station(req.params.id);service.authority(s,req.streamActor,'edit');
+        const items=s.items.map(item=>{const source=Object.fromEntries(['kind','fileId','name','type','size','diskSpace','sessionId','messageId'].filter(key=>item.source[key]!==undefined).map(key=>[key,item.source[key]]));if(item.source.kind==='disk')source.accountId=item.source.userId;return {...item,source,references:undefined,sourceSaved:true};});
+        res.json({name:s.name,coverId:s.coverId || '',configVersion:s.configVersion,loop:s.loop,countdown:s.countdown,items});
+    }));
     router.post('/stations/:id/revision', wrap((req, res) => res.json(service.revision(req.params.id, req.streamActor, req.body))));
     router.get('/stations/:id/events', wrap((req, res) => {
         const deviceId = req.streamActor.deviceId;

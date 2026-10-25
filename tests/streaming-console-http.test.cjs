@@ -196,3 +196,18 @@ test('read-ahead serves later media reads from the same ticket but still rejects
     await f.call('device-A', '/stations/' + f.s.id + '/access', 'POST', { deviceId: 'device-C', allow: false }, true);
     const denied = await fetch(f.base + ticket.body.url, { headers }); assert.equal(denied.status, 403); await denied.text();
 });
+
+test('single-record import filters other history, includes rich visual references, and retains tunnel authorization',async t=>{
+    const f=await setup(t);f.records.push({id:'rich-record',type:'rich',content:'<p>正文</p><span data-tunnel-file-ref-id="image-asset">图片</span>'});
+    const input={sessionId:'fixture-tunnel',accessGrant:'fixture-proof',messageId:'rich-record'};
+    const result=await f.call('device-A','/tunnel-candidates','POST',input,true);assert.equal(result.status,200);
+    assert.deepEqual(result.body.candidates.map(value=>value.kind),['rich','image']);
+    assert.equal(result.body.candidates[0].source.messageId,'rich-record');assert.equal(result.body.candidates[1].source.messageId,'image-record');
+    assert.equal((await f.call('device-A','/tunnel-candidates','POST',{...input,accessGrant:'invalid'},true)).status,403);
+    const current=(await f.call('device-A','/stations/'+f.s.id+'?manage=1','GET',undefined,true)).body;
+    const saved=await f.call('device-A','/stations/'+f.s.id,'PUT',{configVersion:current.configVersion,items:result.body.candidates.map((value,i)=>({id:'record-'+i,stay:10,source:value.source}))},true);assert.equal(saved.status,200,JSON.stringify(saved.body));
+    const ticket=await f.call('device-C','/stations/'+f.s.id+'/ticket','POST',{itemId:'record-0'});assert.equal(ticket.status,200);
+    const response=await fetch(f.base+ticket.body.url,{headers:f.headers('device-C')});assert.equal(response.status,200);assert.match(await response.text(),/正文/);
+    const edit=(await f.call('device-A','/stations/'+f.s.id+'/edit-config','GET',undefined,true)).body;
+    assert.equal(edit.items[0].sourceSaved,true);assert.doesNotMatch(JSON.stringify(edit),/accessGrant|proof|sourceProof|sourceDeviceId|\.tunnel-data/);
+});

@@ -63,6 +63,12 @@
         return tunnels.find(item => item.id === id) || null;
     }
     async function exportFiles(items) {
+        const empty = items.filter(item => Number(item.size) === 0);
+        if (empty.length) {
+            const message = '所选文件中存在 0 B 空文件，请取消勾选后重试：';
+            alert((window.TunnelI18n?.t(message) || message) + '\n' + empty.map(item => item.name).join('\n'));
+            return;
+        }
         const target = await chooseTarget();
         // Closing the picker is an ordinary cancellation.  Do not turn it into
         // an unrelated connectivity error after the dialog has disappeared.

@@ -19,7 +19,7 @@
             if (source.fileId === 'record') {
                 const message = await deps.message(source.messageId);
                 if (!message || message.sessionId !== source.sessionId) throw Error('missing');
-                return new Blob([message.type === 'markdown' ? message.markdown : message.text || ''], { type: message.type === 'markdown' ? 'text/markdown' : 'text/plain' }).slice(start, end === undefined ? undefined : end + 1);
+                return new Blob([message.type === 'rich' ? message.content || '' : message.type === 'markdown' ? message.markdown : message.text || ''], { type: message.type === 'rich' ? 'application/x-drop2tunnel-rich' : message.type === 'markdown' ? 'text/markdown' : 'text/plain' }).slice(start, end === undefined ? undefined : end + 1);
             }
             let file = await deps.file(source.fileId);
             if (file?.externalFileHandle) file = await deps.materialize(file);

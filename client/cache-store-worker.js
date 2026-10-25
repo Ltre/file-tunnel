@@ -1,4 +1,7 @@
 (function () {
+    // 历史OPFS实现保留用于旧引用兼容；新接收写入已在cache-store.js停用。
+    // 当时实测存在问题，且未验证适配当前业务。此文件存在/探测成功不代表
+    // 正在使用OPFS接收文件；不要绕过OPFS_RECEIVE_WRITE_ENABLED恢复调用。
     const sessions = new Map();
     let rootPromise = null;
 

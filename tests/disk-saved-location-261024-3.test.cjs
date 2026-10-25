@@ -23,3 +23,14 @@ test('accepting the pre-open confirmation opens the original receipt without upl
 test('unknown activity is never described as no active tasks',async()=>{
     const f=fixture({unverified:true});await f.context.DiskSavedLocation.confirmView(f.record);assert.match(f.messages[0],/无法核验/);assert.doesNotMatch(f.messages[0],/没有正在执行/);
 });
+
+test('a logged-out Mock destination resolves its login ID from the existing admin overview and formats translated placeholders',async()=>{
+    const f=fixture();f.record.target.accountName='saved';
+    f.context.TunnelI18n={t:(source,language)=>{assert.equal(language,undefined,'the second translation argument is a language, not a placeholder value');return source;}};
+    f.context.DiskClient.raw=async route=>route==='/me'?{identity:{id:'current'},accounts:[]}:{accounts:[]};
+    f.context.fetch=async url=>{assert.equal(url,'/api/telegram/disk-admin/storage-overview');return{ok:true,json:async()=>({systems:[{users:[{userId:'saved',name:'本地 Mock 用户 999000003',telegramId:'999000003',provider:'mock'}]}]})};};
+    await f.context.DiskSavedLocation.openTask({});
+    const text=f.body.all().map(n=>n.textContent).join('\n');assert.match(text,/Mock ID 999000003/);assert.match(text,/网盘内部 ID saved/);
+    assert.equal(f.record.target.accountTelegramId,'999000003');assert.equal(f.record.target.accountId,'saved','display information must not replace the authorization identity');
+    await f.body.all().find(n=>n.textContent==='前往查看').onclick();assert.match(f.messages[0],/文件所属账号：本地 Mock 用户 999000003/);assert.doesNotMatch(f.messages[0],/\{[01]\}/);
+});

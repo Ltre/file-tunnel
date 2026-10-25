@@ -83,8 +83,8 @@ test('import uses current MIME before extensions, matching the server classifica
 });
 
 test('the duration deadline covers a stalled preview authorization request, not only media metadata', async () => {
-    const timers = []; const f = consoleRuntime({ delayPreview: true, setTimeout: run => { timers.push(run); return 0; } }); await f.start();
+    const timers = []; const f = consoleRuntime({ delayPreview: true, setTimeout: (run,ms) => { timers.push({run,ms}); return 0; } }); await f.start();
     const job = f.window.__importTest.duration({ name: 'slow.mp4', kind: 'video', source: { kind: 'disk', fileId: 'slow' } }, 'alice');
-    await new Promise(setImmediate); const rejected = assert.rejects(job, /DURATION_REQUIRED/); timers[0](); await rejected;
+    await new Promise(setImmediate); const rejected = assert.rejects(job, /DURATION_REQUIRED/); timers.find(timer=>timer.ms===30000).run(); await rejected;
     assert.equal(f.calls.find(call => call.url.endsWith('/preview')).options.signal.aborted, true);
 });
