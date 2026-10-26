@@ -42,8 +42,8 @@ for(const before of [true,false])test('adding a record keeps existing program id
     class Node{constructor(tag){this.tag=tag;this.children=[];this.value='';}append(...nodes){this.children.push(...nodes);}add(option){this.children.push(option);if(!this.value)this.value=option.value;}setAttribute(){}replaceChildren(){this.children=[];this.value='';}set selectedIndex(i){this.value=this.children[i]?.value||'';}}
     let body,navigation,actor='owner';const original={name:'station',configVersion:3,items:[{id:'first',name:'First'},{id:'second',name:'Second'}]},drafts={};
     const context={ready:Promise.resolve(),dirty:()=>false,open:async()=>{},account:()=>actor,config:{tunnels:async()=>[{sessionId:'tunnel',accessGrant:'grant'}],currentTunnel:()=> 'tunnel'},
-        structuredClone,uid:()=> 'new-item',ui:{drafts},localConfig:()=>original,saveConfig(){},saveUi(){},closeDialog(){},navigate:(...args)=>navigation=args,
-        request:async route=>route==='/tunnel-candidates'?{candidates:[{name:'Record text',kind:'text',source:{kind:'tunnel',sessionId:'tunnel',messageId:'record',fileId:'record'}}]}:{stations:[{id:'station',number:'01',name:'Station',local:true,manageable:true}]},
+        structuredClone,uid:()=> 'new-item',ui:{drafts},localConfig:()=>original,saveConfig(){},saveUi(){},closeDialog(){},navigate:(...args)=>navigation=args,reconcileRevision:async()=>{},
+        request:async route=>route==='/tunnel-candidates'?{candidates:[{name:'Record text',kind:'text',source:{kind:'tunnel',sessionId:'tunnel',messageId:'record',fileId:'record'}}]}:route.endsWith('/edit-config')?original:{stations:[{id:'station',number:'01',name:'Station',local:true,manageable:true}]},
         document:{createElement:tag=>new Node(tag)},Option:class{constructor(text,value){this.text=text;this.value=value;}},t:value=>value,showDialog:(_title,node)=>body=node,
         button:(_title,run)=>({tag:'button',run})};
     vm.runInNewContext(section(read('client/streaming-console.js'),'    async function importRecord(', '    async function sendMarkdown('),context);

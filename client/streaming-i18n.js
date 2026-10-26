@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['目标隧道','Target tunnel'],
+        ['放弃旧草稿，读取最新节目单','Discard the old draft and load the latest playlist'],
+        ['服务端节目单已更新，本机未保存的草稿仍保留。可关闭此窗口继续编辑草稿，或放弃旧草稿后读取最新节目单。','The server playlist has changed. Your unsaved local draft is retained. Close this dialog to keep editing it, or discard it and load the latest playlist.'],
+        ['选择参照节目及插入位置，添加后继续编辑。','Choose a reference item and insertion position, then continue editing.'],
         ['串流台封面','Station cover'],['封面','Cover'],['上传封面','Upload cover'],['移除封面','Remove cover'],
         ['正在裁剪封面…','Cropping the cover…'],['封面已裁剪为正方形，点击保存后生效','The cover is square. Save to apply it'],
         ['封面处理失败，请选择有效图片','Could not process the cover. Choose a valid image'],['展开基本信息','Expand basic information'],

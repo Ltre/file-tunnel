@@ -66,4 +66,28 @@
 
 .sc-station-row>.sc-row-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;align-content:center}.sc-station-row>.sc-row-actions button{min-width:0;padding:6px;font-size:12px}
 @media(max-width:700px){.sc-station-row>div.sc-number{white-space:nowrap;border:0;padding:0;font-size:18px}}
-@media(max-width:700px){.sc-station-row{--sc-list-cover-size:clamp(100px,38vw,160px);grid-template-columns:var(--sc-list-cover-size) 26px minmax(0,1fr);gap:6px;padding:12px}.sc-list-cover{width:var(--sc-list-cover-size);height:var(--sc-list-cover-size);grid-row:1/5}.sc-station-row>div.sc-device{grid-column:2/4;grid-row:1}.sc-station-row>div.sc-number{grid-column:2;grid-row:2}.sc-station-row>div.sc-station-title{grid-column:3;grid-row:2}.sc-station-row>div.sc-row-visibility{grid-column:2/4;grid-row:3}.sc-station-row>div.sc-row-actions{grid-column:2/4;grid-row:4;gap:4px}.sc-station-row>.sc-row-actions button{font-size:11px;padding:5px 4px;line-height:1.25}}
+@media(max-width:767px){
+    .sc-station-row{grid-template-columns:84px minmax(0,1fr);grid-template-areas:"cover title" "cover number" "device device" "visibility visibility" "actions actions";gap:8px 12px;padding:12px;align-items:start}
+    .sc-station-row>div{min-width:0;border:0!important;padding:0!important}
+    .sc-station-row>.sc-list-cover{grid-area:cover;width:84px;height:84px;align-self:start}
+    .sc-station-row>div.sc-device{grid-area:device;display:flex;font-size:12px;line-height:1.5}
+    .sc-station-row>div.sc-station-title{grid-area:title;display:block;line-height:1.45;overflow-wrap:anywhere}
+    .sc-station-title>strong{font-size:16px}.sc-station-title small{line-height:1.5}
+    .sc-station-row>div.sc-number{grid-area:number;font-size:15px;white-space:normal;line-height:1.4}
+    .sc-station-row>div.sc-number small{display:inline;margin-right:6px;font-size:12px}
+    .sc-station-row>div.sc-row-visibility{grid-area:visibility;display:flex;align-items:center;gap:6px;font-size:12px;line-height:1.5}
+    .sc-station-row>div.sc-row-visibility small{display:inline;margin:0}
+    .sc-station-row>div.sc-row-count,.sc-station-row>div.sc-row-playback{display:none}
+    .sc-station-row>div.sc-row-actions{grid-area:actions;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:2px}
+    .sc-station-row>.sc-row-actions button{min-height:36px;font-size:12px;padding:7px 8px;line-height:1.4}
+    .sc-list-heading{flex-wrap:wrap;align-items:flex-start}.sc-list-tools{flex-wrap:wrap;max-width:100%}
+}
+.sc-dialog:has(.sc-insert-dialog)>section{max-width:600px;border:1px solid #aebbd155;border-radius:16px;box-shadow:0 20px 64px #14213b33}
+.sc-insert-dialog{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0}
+.sc-insert-dialog>select{box-sizing:border-box;width:100%;border-radius:8px;padding:10px 12px}
+.sc-insert-dialog>select[size]{min-height:150px;max-height:32dvh;line-height:1.6}
+.sc-insert-dialog>select option{padding:8px;white-space:normal;overflow-wrap:anywhere}
+.sc-insert-status{margin:0;padding:10px 12px;border-radius:8px;background:#7f9bb414;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.sc-insert-position{display:flex;flex-wrap:wrap;gap:8px 18px}
+.sc-insert-position label{display:flex;gap:7px;align-items:center;margin:0;padding:8px 0;cursor:pointer}
+.sc-insert-dialog>button{min-height:40px;margin:0!important;border-radius:8px}

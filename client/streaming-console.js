@@ -34,6 +34,7 @@
     let diskScope = { accountId: '', diskSpace: '', path: '', mountId: '' }, tunnelScope = '', importBusy = false, lastList = [], dialog, discoveryTimes = {};
     const localFiles = new Map(), players = new Map(), noticeIds = new Map();
     const pendingCovers = new Map();
+    let pendingEditorFocus = null;
     const durationJobs = new Map(), durationQueue = [], previewTickets = new Map(); let durationActive = 0, refreshEditorItems, candidateObservers = [];
     const key = name => 'streaming:' + config.deviceId() + ':' + name;
     const account = () => global.DiskClient?.getAccount() || '';
@@ -244,7 +245,7 @@
     }
     function closeConsole(force = false) {
         if (!force && dirty()) { confirmLeave(() => closeConsole(true)); return; }
-        closeDialog(); for (const player of players.values()) player.close(); players.clear();
+        closeDialog(); pendingEditorFocus = null; for (const player of players.values()) player.close(); players.clear();
         minimize(); ++renderVersion; ++pickerVersion; candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }; pending.clear(); channel = 'local'; candidates = [];
         for (const stationId of pendingCovers.keys()) discardCover(stationId);
@@ -277,14 +278,22 @@
             try {
                 if(!/^image\/(png|jpeg|webp)$/.test(file.type)||file.size>20*1024*1024)throw Error('STREAM_COVER_INVALID');
                 const url=URL.createObjectURL(file),image=new Image();
-                try {image.src=url;await image.decode();const side=Math.min(image.naturalWidth,image.naturalHeight);if(!side||image.naturalWidth*image.naturalHeight>40000000)throw Error('STREAM_COVER_INVALID');
+                try {
+                    // Use load/error as readiness signals. A decode() rejection
+                    // alone does not prove that the selected file is unreadable.
+                    await new Promise((resolve,reject)=>{
+                        const finish=cause=>{clearTimeout(timer);image.onload=image.onerror=null;cause?reject(cause):resolve();};
+                        const timer=setTimeout(()=>finish(Error('STREAM_COVER_DECODE_TIMEOUT')),15000);
+                        image.onload=()=>finish();image.onerror=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));image.src=url;
+                    });
+                    const side=Math.min(image.naturalWidth,image.naturalHeight);if(!side||image.naturalWidth*image.naturalHeight>40000000)throw Error('STREAM_COVER_INVALID');
                     const canvas=document.createElement('canvas');canvas.width=canvas.height=512;canvas.getContext('2d').drawImage(image,(image.naturalWidth-side)/2,(image.naturalHeight-side)/2,side,side,0,0,512,512);
                     const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('STREAM_COVER_INVALID');
                     if(revision!==version || ui.stationId!==stationId || !field.isConnected)return;
                     const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);
                     const cover={blob,url:URL.createObjectURL(blob),token:uid()};pendingCovers.set(stationId,cover);d.coverPending=cover.token;preview.src=cover.url;saveUi();status.textContent=t('封面已裁剪为正方形，点击保存后生效');
                 } finally {URL.revokeObjectURL(url);}
-            }catch(cause){status.textContent=t('封面处理失败，请选择有效图片')+' ['+cause.message+']';}
+            }catch(cause){if(revision===version&&ui.stationId===stationId&&field.isConnected)status.textContent=t('封面处理失败，请选择有效图片')+' ['+cause.message+']';}
         };
         label.append(input);field.append(label,preview,status,button('移除封面',()=>{version++;const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);pendingCovers.delete(stationId);d.coverId='';delete d.coverPending;preview.src='/client/icons/streaming.png';saveUi();}));
         form.children[0].after(field);
@@ -458,10 +467,12 @@
         const resources = document.createElement('section'); resources.className = 'sc-card sc-editor-resources';
         const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
-        function focusProgram(id, duration = 1000) {
+        function focusProgram(id, duration = 1000, highlightIds = [id]) {
             const target = [...list.children].find(node => node.dataset.itemId === id); if (!target) return;
             target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-            target.style.setProperty('--sc-focus-duration', duration + 'ms'); target.classList.add('sc-record-focus'); setTimeout(() => target.classList.remove('sc-record-focus'), duration);
+            for (const row of list.children) if (highlightIds.includes(row.dataset.itemId)) {
+                row.style.setProperty('--sc-focus-duration', duration + 'ms'); row.classList.add('sc-record-focus'); setTimeout(() => row.classList.remove('sc-record-focus'), duration);
+            }
         }
         function renderItems() {
             list.replaceChildren();
@@ -515,6 +526,11 @@
             finally { actions.removeAttribute('aria-busy'); }
             if (ui.stationId === stationId && account() === actor) { if (unchanged) navigate('control', stationId); notice(unchanged ? '串流台已保存' : '串流台已保存，期间的新编辑仍保留在草稿'); }
         }, 'sc-primary'), button('返回列表', returnToList)); main.append(saveStatus, actions);
+        if (pendingEditorFocus?.stationId === stationId) {
+            const focus = pendingEditorFocus; pendingEditorFocus = null;
+            // Run after render() restores the page's saved scroll position.
+            requestAnimationFrame(() => { if (ui.view === 'edit' && ui.stationId === stationId && list.isConnected) focusProgram(focus.ids[0],1000,focus.ids); });
+        }
     }
     async function chooseLocalFile(replace) {
         const remember = async (files, handles = []) => {
@@ -1003,10 +1019,13 @@
         const result=await request('/tunnel-candidates','POST',{...context,messageId:message.id});
         if(!result.candidates.length){notice('这条记录没有可导入的可视内容');return;}
         const prepare=stationId=>result.candidates.map(candidate=>{const item=structuredClone(candidate);item.id=uid();item.stay=10;item.start=0;item.source.tunnelGrants=Object.fromEntries(grants.map(entry=>[entry.sessionId,entry.accessGrant]));return item;});
-        const enter=(station,d,position)=>{
+        const enter=(station,d,position,baseline)=>{
             if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
             const additions=prepare(station.id);if(d.items.length+additions.length>500)throw Error('STREAM_PLAYLIST_INVALID');
-            d.items.splice(position,0,...additions);ui.drafts[station.id]=d;saveUi();closeDialog();navigate('edit',station.id);
+            if(baseline)saveConfig(station.id,baseline);
+            d.items.splice(position,0,...additions);ui.drafts[station.id]=d;
+            pendingEditorFocus={stationId:station.id,ids:additions.map(item=>item.id)};
+            saveUi();closeDialog();navigate('edit',station.id);
         };
         if(createNew){
             if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
@@ -1016,14 +1035,41 @@
         const stations=(await request('/stations?kind=local')).stations.filter(s=>s.local&&s.manageable);
         if(!stations.length){notice('本设备没有当前身份可编辑的串流台');return;}
         const body=document.createElement('div'),select=document.createElement('select'),items=document.createElement('select'),position=document.createElement('div'),status=document.createElement('p');
+        body.className='sc-insert-dialog';position.className='sc-insert-position';status.className='sc-insert-status';status.setAttribute('role','status');
         select.setAttribute('aria-label',t('目标串流台'));items.setAttribute('aria-label',t('参照节目'));items.size=6;
         for(const s of stations)select.add(new Option(s.number+' · '+s.name,s.id));
         const before=document.createElement('input'),after=document.createElement('input');before.type=after.type='radio';before.name=after.name='sc-insert-position';after.checked=true;
         for(const [input,label] of [[before,'插入该节目之前'],[after,'插入该节目之后']]){const field=document.createElement('label');field.append(input,t(label));position.append(field);}
-        let d,revision=0;const load=async()=>{const ticket=++revision;d=null;items.replaceChildren();status.textContent=t('正在读取节目单…');
-            try{const current=ui.drafts[select.value]||localConfig(select.value)||await request('/stations/'+select.value+'/edit-config','GET',undefined,{accountId:actor});if(ticket!==revision)return;d=structuredClone(current);if(!localConfig(select.value))saveConfig(select.value,current);for(const item of d.items)items.add(new Option(item.name,item.id));if(d.items.length)items.selectedIndex=0;status.textContent=d.items.length?'':t('节目单为空，将插入开头');}
-            catch(cause){if(ticket===revision)status.textContent=t('节目单读取失败，请重新选择')+' ['+cause.message+']';}};
-        select.onchange=()=>load();body.append(select,status,items,position,button('添加并编辑',()=>{if(!d)throw Error('STREAM_REQUEST_FAILED');const index=d.items.findIndex(item=>item.id===items.value);enter(stations.find(s=>s.id===select.value),d,index<0?d.items.length:index+(after.checked?1:0));},'sc-primary'));
+        const add=button('添加并编辑',()=>{if(!d)throw Error('STREAM_REQUEST_FAILED');const index=d.items.findIndex(item=>item.id===items.value);enter(stations.find(s=>s.id===select.value),d,index<0?d.items.length:index+(after.checked?1:0),baseline);},'sc-primary');
+        let d,baseline,revision=0;
+        const comparable=value=>JSON.stringify(value&&{...value,configVersion:0,items:value.items.map(({sourceSaved,durationError,...item})=>item)});
+        const reload=button('放弃旧草稿，读取最新节目单',()=>load(true));reload.hidden=true;
+        const load=async(discard=false)=>{
+            const ticket=++revision,id=select.value;d=null;baseline=null;add.disabled=true;reload.hidden=true;items.replaceChildren();status.textContent=t('正在读取节目单…');
+            try {
+                // Always read the authorized current baseline before adding.
+                // A cached configuration can be older than the server even if
+                // the user has not edited anything in this page.
+                await reconcileRevision(id);
+                const latest=await request('/stations/'+id+'/edit-config','GET',undefined,{accountId:actor});
+                if(ticket!==revision||body.isConnected===false)return;if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
+                const saved=localConfig(id),existing=ui.drafts[id];
+                const modified=existing&&comparable(existing)!==comparable(saved);
+                if(modified&&!discard&&existing.configVersion!==latest.configVersion){
+                    status.textContent=t('服务端节目单已更新，本机未保存的草稿仍保留。可关闭此窗口继续编辑草稿，或放弃旧草稿后读取最新节目单。')+' · '+existing.configVersion+' → '+latest.configVersion;
+                    reload.hidden=false;return;
+                }
+                const current=modified&&!discard?existing:latest;d=structuredClone(current);baseline=latest;
+                // Merely opening/cancelling this picker must not change the
+                // baseline underneath an already-rendered editor.
+                if(discard){saveConfig(id,latest);delete ui.drafts[id];discardCover(id);saveUi();if(ui.view==='edit'&&ui.stationId===id)render();}
+                for(const item of d.items)items.add(new Option(item.name,item.id));if(d.items.length)items.selectedIndex=0;
+                status.textContent=d.items.length?t('选择参照节目及插入位置，添加后继续编辑。'):t('节目单为空，将插入开头');add.disabled=false;
+            }catch(cause){if(ticket===revision&&body.isConnected!==false)status.textContent=t('节目单读取失败，请重新选择')+' ['+cause.message+']';}
+        };
+        const stationLabel=document.createElement('strong');stationLabel.textContent=t('目标串流台');
+        const itemLabel=document.createElement('strong');itemLabel.textContent=t('参照节目');
+        select.onchange=()=>load();body.append(stationLabel,select,status,itemLabel,items,position,add,reload);
         showDialog('添加到串流台',body);await load();
     }
     async function sendMarkdown(body, messageId = uid()) {

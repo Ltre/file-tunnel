@@ -8112,7 +8112,11 @@ async function copyTransferRecordText(messageId) {
 }
 function createRecordActionButton(glyph, text, title, run) {
     const button = createFileActionButton(text, title, run), icon = document.createElement('span'), label = document.createElement('span');
-    icon.className = 'record-action-icon'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = glyph; label.textContent = text;
+    icon.className = 'record-action-icon'; icon.setAttribute('aria-hidden', 'true');
+    if (glyph === '/client/icons/streaming.png') {
+        const image = document.createElement('img'); image.src = glyph; image.alt = ''; icon.append(image);
+    } else icon.textContent = glyph;
+    label.textContent = text;
     button.replaceChildren(icon, label); return button;
 }
 function renderMessageRecordActions(messageEl, message) {
@@ -8156,7 +8160,7 @@ function renderMessageRecordActions(messageEl, message) {
         });
     }));
     if (window.StreamingConsole?.canImportRecord(message)) {
-        for (const [label,create] of [['创建串流台',true],['添加到串流台',false]]) menuItems.push(createRecordActionButton('▣',label,label,()=>window.StreamingConsole.importRecord(message,create).catch(error=>showAppToast(error.message))));
+        for (const [label,create] of [['创建串流台',true],['添加到串流台',false]]) menuItems.push(createRecordActionButton('/client/icons/streaming.png',label,label,()=>window.StreamingConsole.importRecord(message,create).catch(error=>showAppToast(error.message))));
     }
     if (message.type === 'markdown') {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将 Markdown 保存到自己的 Telegram 网盘', () => {
@@ -8410,14 +8414,14 @@ async function chooseForwardTargetSession() {
     if (!sessions.length) throw new Error('本机没有可转发的其他隧道');
     return new Promise(resolve => {
         const overlay = document.createElement('div');
-        overlay.className = 'send-mode-overlay';
+        overlay.className = 'send-mode-overlay forward-session-overlay';
         const options = sessions.map(session => {
             const label = String(session.remark || session.shortCode || session.sessionId).trim();
             return `<option value="${escapeHtml(session.sessionId)}">${escapeHtml(label)} · ${escapeHtml(session.shortCode || session.sessionId.slice(0, 8))}</option>`;
         }).join('');
         overlay.innerHTML = `<div class="send-mode-dialog" role="dialog" aria-modal="true">
             <h3>发到其他隧道</h3>
-            <select class="forward-session-select">${options}</select>
+            <select class="forward-session-select" aria-label="目标隧道">${options}</select>
             <div class="send-mode-actions">
                 <button class="btn btn-secondary" type="button" data-forward-cancel>取消</button>
                 <button class="btn btn-primary" type="button" data-forward-confirm>转发</button>
@@ -8433,6 +8437,42 @@ async function chooseForwardTargetSession() {
         if (select && sessions.some(session => session.sessionId === lastTargetSessionId)) {
             select.value = lastTargetSessionId;
         }
+        // Keep the mobile OS picker. Desktop options stay inside this dialog,
+        // avoiding a native popup over a full-screen filtered backdrop.
+        const picker = document.createElement('div'); picker.className = 'forward-session-picker';
+        const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'forward-session-toggle';
+        toggle.setAttribute('aria-haspopup', 'listbox'); toggle.setAttribute('aria-expanded', 'false');
+        const list = document.createElement('div'); list.className = 'forward-session-options'; list.hidden = true;
+        list.id = 'forward-options-' + generateId(); list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', window.TunnelI18n?.t('目标隧道') || '目标隧道');
+        toggle.setAttribute('aria-controls', list.id);
+        const choices = [...select.options].map(option => {
+            const entry = document.createElement('button'); entry.type = 'button'; entry.className = 'forward-session-option'; entry.tabIndex = -1;
+            entry.textContent = option.textContent; entry.dataset.value = option.value; entry.setAttribute('role', 'option');
+            entry.onclick = () => { select.value = option.value; update(); expand(false); toggle.focus(); };
+            list.append(entry); return entry;
+        });
+        const update = () => {
+            const current = [...select.options].find(option => option.value === select.value);
+            toggle.textContent = (current?.textContent || '') + ' ▾';
+            for (const entry of choices) entry.setAttribute('aria-selected', String(entry.dataset.value === select.value));
+        };
+        const expand = value => {
+            list.hidden = !value; toggle.setAttribute('aria-expanded', String(value));
+            if (value) { const selected = choices.find(entry => entry.dataset.value === select.value); selected?.focus({ preventScroll: true }); selected?.scrollIntoView({ block: 'nearest' }); }
+        };
+        toggle.onclick = () => expand(list.hidden);
+        picker.onkeydown = event => {
+            if (event.key === 'Escape' && !list.hidden) { event.preventDefault(); event.stopPropagation(); expand(false); toggle.focus(); return; }
+            const current = choices.indexOf(document.activeElement);
+            let next;
+            if (event.key === 'ArrowDown') next = current < 0 ? Math.max(0, choices.findIndex(entry => entry.dataset.value === select.value)) : Math.min(choices.length - 1, current + 1);
+            else if (event.key === 'ArrowUp') next = current < 0 ? Math.max(0, choices.findIndex(entry => entry.dataset.value === select.value)) : Math.max(0, current - 1);
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = choices.length - 1;
+            if (next !== undefined) { event.preventDefault(); expand(true); choices[next]?.focus({ preventScroll: true }); choices[next]?.scrollIntoView({ block: 'nearest' }); }
+        };
+        picker.addEventListener('focusout', event => { if (!picker.contains(event.relatedTarget)) expand(false); });
+        select.onchange = update; picker.append(toggle, list); select.after(picker); update();
     });
 }
 

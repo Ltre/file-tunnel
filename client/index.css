@@ -929,6 +929,7 @@ body[data-theme="atelier"] .main-layout {
     text-align: left;
 }
 .message-record-action-menu .record-action-icon { flex: 0 0 24px; text-align: center; }
+.message-record-action-menu .record-action-icon img { display: block; width: 21px; height: 21px; margin: auto; object-fit: contain; }
 
 .message-record-action-menu .history-action:hover {
     background: #f2f5fa;
@@ -1925,7 +1926,9 @@ body[data-theme="atelier"] .main-layout {
         width: 100%;
         max-height: min(62dvh, 520px);
         overflow-y: auto;
-        gap: 5px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 8px;
+        box-sizing: border-box;
         padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
         border: 0;
         border-radius: 14px 14px 0 0;
@@ -1934,6 +1937,7 @@ body[data-theme="atelier"] .main-layout {
 
     .message-record-action-menu-handle {
         display: block;
+        grid-column: 1 / -1;
         width: 38px;
         height: 4px;
         margin: 0 auto 7px;
@@ -1945,10 +1949,15 @@ body[data-theme="atelier"] .main-layout {
 
     .message-record-action-menu .history-action {
         min-height: 46px;
-        padding: 0 14px;
+        min-width: 0;
+        box-sizing: border-box;
+        padding: 8px;
+        gap: 6px;
         border-radius: 6px;
         background: #f5f7fb;
         font-size: .92rem;
+        white-space: normal;
+        overflow-wrap: anywhere;
     }
 }
 
@@ -4161,6 +4170,14 @@ body[data-theme="atelier"] .main-layout {
 .send-mode-dialog:has(.forward-session-select){width:min(460px,94vw);border:1px solid #b9c7df;border-radius:16px;padding:24px;background:var(--panel-bg,#fff);color:var(--text-color,#24364a)}
 .send-mode-dialog .forward-session-select{display:block;box-sizing:border-box;width:100%;min-height:48px;margin-top:18px;padding:10px 40px 10px 14px;border:1px solid #aebbd1;border-radius:9px;background:var(--panel-bg,#f8faff);color:inherit;font:inherit;outline-offset:3px;cursor:pointer}
 .send-mode-dialog:has(.forward-session-select) .send-mode-actions .btn{min-width:88px;min-height:40px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center}
+.forward-session-picker{display:none;position:relative;margin-top:18px;min-width:0}
+.forward-session-toggle{width:100%;min-height:48px;padding:10px 14px;border:1px solid #aebbd1;border-radius:9px;background:var(--panel-bg,#f8faff);color:inherit;font:inherit;text-align:left;overflow-wrap:anywhere;cursor:pointer}
+.forward-session-options{position:absolute;z-index:1;top:calc(100% + 5px);left:0;right:0;max-height:min(300px,calc(50dvh - 40px));overflow-y:auto;overscroll-behavior:contain;padding:5px;border:1px solid #b9c7df;border-radius:9px;background:var(--panel-bg,#fff);box-shadow:0 10px 24px #14213b33}
+.forward-session-options[hidden]{display:none}
+.forward-session-option{display:block;width:100%;padding:10px 12px;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:left;overflow-wrap:anywhere;cursor:pointer}
+.forward-session-option:hover,.forward-session-option:focus{background:#e8eef8;outline:0;color:#24364a}
+.forward-session-option[aria-selected=true]{background:#dce7f7;color:#203c65}
+@media(min-width:768px){.forward-session-overlay{backdrop-filter:none}.forward-session-overlay .forward-session-select{display:none}.forward-session-picker{display:block}}
 
 .send-mode-dialog p {
     margin: 0;
