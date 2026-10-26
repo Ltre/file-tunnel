@@ -1,0 +1,20 @@
+{
+  "checkedAt": "2026-10-26T13:44:49.185Z",
+  "errors": [],
+  "missingImages": [],
+  "missingFiles": [],
+  "mobileMenu": {
+    "visible": true,
+    "rect": [
+      181,
+      97,
+      190,
+      588
+    ],
+    "viewport": [
+      390,
+      844
+    ]
+  },
+  "originalUnthemed": true
+}

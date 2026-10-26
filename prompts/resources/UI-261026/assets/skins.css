@@ -1,0 +1,148 @@
+/* Three visual-only skins. No display, order, position, size, padding, gap,
+   font metrics, overflow, transform, breakpoint or interaction overrides. */
+html[data-skin="lumen"] {
+  --ui-bg:#f5f7fc; --ui-panel:#fff; --ui-soft:#f5f7ff; --ui-line:#e1e5f2;
+  --ui-ink:#252943; --ui-muted:#6a728a; --ui-accent:#5347e8; --ui-second:#089eae;
+  --ui-tint:#eeedff; --ui-on:#fff; --ui-radius:12px;
+  --ui-header:linear-gradient(112deg,#fff 76%,#f2f2ff);
+  --ui-page:radial-gradient(ellipse at 95% 0,#e9eaff 0,transparent 35%),radial-gradient(ellipse at 0 100%,#e4f7f6 0,transparent 40%),#f6f8fc;
+  --ui-shadow:0 12px 34px #3f44840b,0 1px 3px #3f448408;
+  --ui-menu:0 24px 70px #30367c22,0 1px 5px #30367c0d;
+  --ui-primary:linear-gradient(112deg,#5347e8,#6d60ef); --ui-primary-shadow:0 3px 10px #5347e821;
+}
+html[data-skin="offset"] {
+  --ui-bg:#f1f4f1; --ui-panel:#fff; --ui-soft:#eff4f0; --ui-line:#cbd7ce;
+  --ui-ink:#192b24; --ui-muted:#617268; --ui-accent:#1c4e38; --ui-second:#158669;
+  --ui-tint:#d9f5e4; --ui-on:#e8ffef; --ui-radius:3px;
+  --ui-header:#f9fcf9;
+  --ui-page:linear-gradient(#1c4e3805 1px,transparent 1px),linear-gradient(90deg,#1c4e3805 1px,transparent 1px),#f3f6f2;
+  --ui-shadow:3px 3px 0 #1c4e3811; --ui-menu:5px 5px 0 #233c2e24,0 10px 30px #183b2514;
+  --ui-primary:#193f2e; --ui-primary-shadow:2px 2px 0 #9dd8b5;
+}
+html[data-skin="orbit"] {
+  color-scheme:dark;
+  --ui-bg:#11141d; --ui-panel:#1a1f2d; --ui-soft:#202739; --ui-line:#343d56;
+  --ui-ink:#e8ebfa; --ui-muted:#a4aec9; --ui-accent:#b3a6ff; --ui-second:#57decd;
+  --ui-tint:#302b4c; --ui-on:#141327; --ui-radius:9px;
+  --ui-header:linear-gradient(112deg,#202537,#20243a);
+  --ui-page:radial-gradient(ellipse at 12% -10%,#39315c77 0,transparent 45%),radial-gradient(ellipse at 100% 100%,#16414835 0,transparent 40%),#11141d;
+  --ui-shadow:0 12px 32px #0002,inset 0 1px 0 #fff03; --ui-menu:0 25px 65px #0007,0 0 0 1px #aa9ff317;
+  --ui-primary:linear-gradient(110deg,#b8a7ff,#8dd5ef); --ui-primary-shadow:0 0 15px #b8a7ff16;
+}
+html[data-skin] body {
+  --page-bg:var(--ui-page); --panel-bg:var(--ui-panel); --panel-border:var(--ui-line);
+  --panel-shadow:var(--ui-shadow); --panel-radius:var(--ui-radius); --header-bg:var(--ui-header);
+  --accent:var(--ui-accent); --accent-2:var(--ui-second); --text-main:var(--ui-ink);
+  --text-muted:var(--ui-muted); --surface-soft:var(--ui-soft); --text-color:var(--ui-ink);
+  --bg-color:var(--ui-bg); --primary-color:var(--ui-accent); --accent-color:var(--ui-accent);
+  color:var(--ui-ink); background:var(--ui-page); caret-color:var(--ui-accent);
+}
+html[data-skin="offset"] body, html[data-skin="offset"] .tunnel-landing {background-size:24px 24px,24px 24px,auto;}
+html[data-skin] :is(.panel,.telegram-drive-manager,.web-draft-grid article,.sc-card,.sc-station-row,.sc-program) {
+  background:var(--ui-panel); border-color:var(--ui-line); border-radius:var(--ui-radius); box-shadow:var(--ui-shadow);
+}
+html[data-skin] :is(.panel-header,.tunnel-topbar,.telegram-drive-header,.web-workshop>header,.sc-header,.tunnel-landing-topbar) {
+  background:var(--ui-header); color:var(--ui-ink); border-color:var(--ui-line); box-shadow:inset 0 -1px 0 var(--ui-line);
+}
+html[data-skin="lumen"] .panel-header {box-shadow:inset 3px 0 0 var(--ui-accent),inset 0 -1px 0 var(--ui-line);}
+html[data-skin="offset"] .panel-header {background:#193f2e;color:#e9fff0;box-shadow:inset 0 -3px 0 #a5e6bf;}
+html[data-skin="orbit"] .panel-header {box-shadow:inset 3px 0 0 #a395f6,inset 0 -1px 0 #3b4160;}
+html[data-skin] :is(.panel-content,.sc-overlay,.sc-main,.web-workshop,.web-workshop-content,.telegram-drive-workspace) {color:var(--ui-ink);background:var(--ui-panel);}
+html[data-skin] :is(.sc-main,.web-workshop-content,.telegram-drive-items) {background:var(--ui-bg);}
+html[data-skin] :is(.btn-secondary,.session-tool,.toolbar-btn,.icon-action,.tunnel-topbar-action,.connection-header-menu-btn,.message-record-menu-trigger,.history-action,.telegram-drive-icon-btn,.telegram-drive-create-menu button,.telegram-drive-item-more,.sc-overlay button,.sc-dialog button,.web-workshop button,.web-workshop-import,.telegram-drive-dialog button,.telegram-drive-context-menu button,.mobile-workspace-button) {
+  background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:none;
+}
+html[data-skin] :is(.btn-primary,.sc-overlay .sc-primary,.sc-dialog .sc-primary,.web-workshop button.primary,.web-workshop-guide-link,.telegram-drive-create-wrap>.btn-primary) {
+  background:var(--ui-primary);color:var(--ui-on);border-color:transparent;box-shadow:var(--ui-primary-shadow);
+}
+html[data-skin] :is(button,a,input,select,textarea):focus-visible {outline-color:var(--ui-accent);}
+html[data-skin] :is(input:not([type=checkbox]):not([type=range]):not([type=radio]):not([type=file]),select,textarea,.telegram-drive-search,.telegram-drive-space-picker) {background-color:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 2px #17244203;}
+html[data-skin] :is(input[type=checkbox],input[type=range],input[type=radio]) {accent-color:var(--ui-accent);}
+html[data-skin] :is(input,textarea)::placeholder {color:var(--ui-muted);opacity:.8;}
+html[data-skin] :is(.device-item,.contact-item,.contacts-panel,.short-code-switch,.session-info,.file-upload-area,.file-message,.rich-preview,.editor-toolbar,.sc-source-thumbnail,.sc-import-folders button) {background:var(--ui-soft);border-color:var(--ui-line);color:var(--ui-ink);border-radius:var(--ui-radius);}
+html[data-skin] :is(.device-item .status,.session-info,.contacts-panel-header,.message-header,.file-size,.collection-meta,.telegram-drive-bottom-summary,.telegram-drive-item-meta,.telegram-drive-status,.sc-play-status,.landing-session-picker label) {color:var(--ui-muted);}
+html[data-skin] :is(.short-code-switch-button,.short-code-display,.online-indicator,.sc-edge-countdown .sc-countdown) {background:var(--ui-accent);color:var(--ui-on);border-color:var(--ui-accent);}
+html[data-skin] .short-code-switch-button {box-shadow:0 3px 10px color-mix(in srgb,var(--ui-accent) 12%,transparent);}
+html[data-skin] :is(.message-bubble,.rich-preview,.tunnel-markdown) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:0 2px 8px #1e304805;}
+html[data-skin] .message.own .message-bubble {background:var(--ui-tint);color:var(--ui-ink);border-color:color-mix(in srgb,var(--ui-accent) 25%,var(--ui-line));box-shadow:inset 2px 0 0 color-mix(in srgb,var(--ui-accent) 48%,transparent);}
+html[data-skin="offset"] .message.own .message-bubble {box-shadow:3px 3px 0 #1c4e3815;}
+html[data-skin] .file-upload-area {border-color:color-mix(in srgb,var(--ui-accent) 44%,var(--ui-line));background:color-mix(in srgb,var(--ui-tint) 45%,var(--ui-panel));color:var(--ui-muted);}
+html[data-skin] :is(.input-area,.editor-actions,.telegram-drive-toolbar,.telegram-drive-bottom,.telegram-drive-auth,.sc-home-shortcuts,.sc-editor-actions,.sc-import-actions,.web-editor-toolbar,.web-preview-toolbar,.web-workshop-package-name) {background:var(--ui-panel);border-color:var(--ui-line);color:var(--ui-ink);}
+html[data-skin] .editor-content {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
+html[data-skin] :is(.device-item .icon,.panel-header>span:first-child,.toolbar-btn,.media-control-btn,.file-icon) {filter:grayscale(1);}
+html[data-skin] :is(.connection-header-menu,.short-code-switch-menu,.telegram-drive-create-menu,.telegram-drive-item-menu,.telegram-drive-context-menu,.telegram-drive-header-overflow-menu,.web-import-menu,.web-tree-context-menu,.theme-quick-menu) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-menu);}
+html[data-skin] :is(.connection-header-menu button,.short-code-switch-menu button,.telegram-drive-item-menu button,.telegram-drive-header-overflow-menu button,.web-import-menu button,.web-tree-context-menu button) {background:transparent;color:var(--ui-ink);border-color:var(--ui-line);}
+html[data-skin] :is(.connection-header-menu button:hover,.telegram-drive-item:hover,.sc-overlay button:hover,.web-workshop button:hover) {background:var(--ui-tint);color:var(--ui-ink);}
+html[data-skin] .telegram-drive-item {background:var(--ui-panel);border-color:var(--ui-line);color:var(--ui-ink);border-radius:var(--ui-radius);box-shadow:0 1px 0 #14234003;}
+html[data-skin] :is(.telegram-drive-item.selected,.telegram-drive-item.is-selected,.sc-overlay button.selected,.web-tree-row.active,.sc-now-playing) {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);box-shadow:inset 2px 0 0 var(--ui-accent);}
+html[data-skin] :is(.telegram-drive-item-name,.telegram-drive-breadcrumbs button,.disk-static-copy-link,.disk-path-edit-button,.telegram-drive-name,.sc-row-visibility) {color:var(--ui-ink);}
+html[data-skin] :is(.telegram-drive-dialog-card,.telegram-drive-dialog,.sc-dialog>section,.web-zip-edit-dialog>section,.sc-selected-overlay) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-menu);}
+html[data-skin] :is(.sc-dialog,.telegram-drive-dialog-overlay,.web-zip-edit-dialog) {background:color-mix(in srgb,var(--ui-ink) 35%,transparent);}
+html[data-skin] :is(.web-editor aside,.sc-nav) {background:var(--ui-soft);border-color:var(--ui-line);}
+html[data-skin] :is(.web-tree-row,.web-editor section>label,.sc-device-icon,.sc-station-row>div,.sc-program,.sc-program-list,.sc-tabs,.sc-selected-row) {border-color:var(--ui-line);color:var(--ui-ink);}
+html[data-skin] .web-editor textarea {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 0 0 1px #fff02;}
+html[data-skin="offset"] .web-editor textarea {background-image:linear-gradient(90deg,transparent 39px,#193f2e04 40px);background-size:40px 100%;}
+html[data-skin] .web-workshop-save-status[data-state=saved] {background:var(--ui-tint);color:var(--ui-second);}
+html[data-skin] .sc-nav>button.selected {background:var(--ui-primary);color:var(--ui-on);box-shadow:var(--ui-primary-shadow);}
+html[data-skin] :is(.sc-watch-grid>aside,.sc-viewer-rail>aside,.sc-global-controls,.sc-viewer-page .sc-watch-grid>aside) {background:var(--ui-panel);border-color:var(--ui-line);color:var(--ui-ink);border-radius:var(--ui-radius);}
+html[data-skin] .sc-global-controls {background:var(--ui-tint);box-shadow:inset 3px 0 0 var(--ui-accent);}
+html[data-skin] :is(.sc-banner,.sc-save-status) {background:var(--ui-tint);color:var(--ui-ink);border-color:var(--ui-accent);}
+html[data-skin] :is(.sc-cover,.sc-source-thumbnail,.sc-device-icon) {background-color:var(--ui-tint);color:var(--ui-accent);}
+html[data-skin] .sc-stage {background:#101723;border-radius:var(--ui-radius);box-shadow:var(--ui-shadow);}
+html[data-skin] .sc-overlay .sc-program .sc-drag-handle {background:var(--ui-soft);color:var(--ui-muted);}
+html[data-skin] :is(.sc-seek input,.sc-local-controls input[type=range]) {accent-color:var(--ui-accent);}
+html[data-skin] :is(.mobile-workspace-nav,.tunnel-landing-topbar) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 0 var(--ui-line);}
+html[data-skin] .mobile-workspace-button.active {background:var(--ui-tint);color:var(--ui-accent);box-shadow:inset 0 2px 0 var(--ui-accent);}
+html[data-skin] .tunnel-landing {background:var(--ui-page);color:var(--ui-ink);}
+html[data-skin] .tunnel-landing h1 {color:var(--ui-ink);}
+html[data-skin] .tunnel-landing p {color:var(--ui-muted);}
+html[data-skin] .tunnel-code-inputs input {background:var(--ui-panel)!important;color:var(--ui-accent)!important;border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-shadow)!important;}
+html[data-skin] #landingRecentBtn {background:var(--ui-primary);color:var(--ui-on);border-color:transparent;box-shadow:var(--ui-primary-shadow);}
+html[data-skin] #landingCreateBtn {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:none;}
+html[data-skin="orbit"] .tunnel-code-inputs input {box-shadow:inset 0 -2px 0 #8e80e7,0 0 24px #8e80e715!important;}
+html[data-skin="offset"] .tunnel-code-inputs input {box-shadow:3px 3px 0 #b4d6c2!important;}
+html[data-skin] .leave-tunnel-btn {background:var(--ui-soft);border-color:var(--ui-line);color:var(--ui-muted);}
+html[data-skin] ::selection {background:var(--ui-tint);color:var(--ui-accent);}
+html[data-skin] * {scrollbar-color:var(--ui-line) transparent;}
+/* Secondary surfaces from recursive interaction review. Geometry stays native. */
+html[data-skin] :is(.modal,.control-center,.notification-center-panel,.notification-center-item,.resource-browser-card,.resource-browser-modal,.resource-browser-toolbar,.resource-browser-item,.disk-tasks,.disk-task-row,.disk-account-switcher,.disk-partition-settings,.telegram-drive-subdialog,.telegram-drive-dialog-header,.telegram-drive-dialog-actions,.account-ui-card,.account-ui-panel,.sc-selected-list,.sc-selected-row) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
+html[data-skin] .modal {box-shadow:var(--ui-menu);}
+html[data-skin] :is(.modal-overlay.active,.resource-browser-layer,.telegram-drive-menu-backdrop,.notification-center-overlay) {background:color-mix(in srgb,var(--ui-bg) 62%,#18263a66);}
+html[data-skin="orbit"] :is(.modal-overlay.active,.resource-browser-layer,.telegram-drive-menu-backdrop) {background:#080b16b5;}
+html[data-skin] :is(.modal h3,.modal p,.modal li,.resource-browser-title,.profile-fields,.notification-center-header,.disk-tasks summary) {color:var(--ui-ink);}
+html[data-skin] :is(.modal small,.resource-browser-meta,.profile-field-label) {color:var(--ui-muted);}
+html[data-skin] .modal ul li {border-color:var(--ui-line);}
+html[data-skin] #confirmGarbageCleanup {background:var(--ui-primary);color:var(--ui-on);box-shadow:var(--ui-primary-shadow);}
+html[data-skin="lumen"] #confirmGarbageCleanup {background:linear-gradient(112deg,#5751e9,#7c58dc);}
+html[data-skin] :is(.control-center-tile,.control-center-drag-label,.session-switch-item,.resource-browser-filters button,.resource-browser-row,.notification-center-actions button,.disk-account-switcher) {background:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
+html[data-skin] .disk-cache-link {color:var(--ui-second);}
+html[data-skin] :is(.telegram-drive-item-menu button.danger,.disk-task-cancel,.account-ui-danger) {background:color-mix(in srgb,#eb5367 9%,var(--ui-panel));color:#d9425b;border-color:#d9425b44;}
+html[data-skin="orbit"] :is(.telegram-drive-item-menu button.danger,.disk-task-cancel,.account-ui-danger) {color:#ff9db0;}
+html[data-skin] .sc-overlay button:disabled {color:var(--ui-muted);background:var(--ui-soft);}
+html[data-skin] .modal-overlay.active {backdrop-filter:blur(7px);}
+html[data-skin] .modal:has(#confirmGarbageCleanup) {background-image:radial-gradient(ellipse at 100% 0,color-mix(in srgb,var(--ui-accent) 7%,transparent),transparent 65%);box-shadow:var(--ui-menu),inset 0 1px 0 color-mix(in srgb,var(--ui-accent) 20%,transparent);}
+html[data-skin] .modal:has(#confirmGarbageCleanup) h3 {color:var(--ui-ink);}
+html[data-skin] .modal:has(#confirmGarbageCleanup) p {color:var(--ui-muted);}
+html[data-skin] .modal:has(#confirmGarbageCleanup) ul {background:var(--ui-soft);border-radius:8px;box-shadow:inset 2px 0 0 color-mix(in srgb,var(--ui-accent) 40%,transparent);}
+html[data-skin] :is(.transfer-record-details-panel,.transfer-record-details-header,.transfer-record-details-actions,.transfer-record-detail-file,.sns-media-item,.sns-media-source) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
+html[data-skin] .transfer-record-details-layer {background:color-mix(in srgb,var(--ui-bg) 58%,#18263a77);backdrop-filter:blur(7px);}
+html[data-skin] .transfer-record-details-header {background:var(--ui-header);}
+html[data-skin] :is(.transfer-record-details-header h2,.transfer-record-details-content h3,.transfer-record-details-files h3,.transfer-record-details-sns h3,.sns-media-main strong,.sns-media-source summary) {color:var(--ui-ink);}
+html[data-skin] .transfer-record-details-summary {border-color:var(--ui-line);background:var(--ui-soft);border-radius:var(--ui-radius);}
+html[data-skin] .transfer-record-details-summary>div {border-color:var(--ui-line);}
+html[data-skin] :is(.transfer-record-details-summary dt,.transfer-record-details-kicker,.transfer-record-detail-file span,.sns-media-main span) {color:var(--ui-muted);}
+html[data-skin] .transfer-record-details-summary dd {color:var(--ui-ink);}
+html[data-skin] .transfer-record-details-summary>div:first-child {background:color-mix(in srgb,var(--ui-tint) 55%,var(--ui-panel));}
+html[data-skin] :is(.transfer-record-details-content p,.transfer-record-detail-file) {background:var(--ui-soft);color:var(--ui-ink);}
+html[data-skin] :is(.transfer-record-details-actions button,.transfer-record-details-close,.sns-media-actions button) {background:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
+html[data-skin] .transfer-record-details-actions [data-record-locate] {background:var(--ui-primary);color:var(--ui-on);border-color:transparent;}
+html[data-skin] :is(.sns-media-main a,.sns-media-main .sns-media-client-state) {color:var(--ui-second);}
+html[data-skin] .transfer-record-raw-details {color:var(--ui-muted);}
+html[data-skin] .transfer-record-raw-details pre {background:var(--ui-soft);color:var(--ui-ink);border-radius:var(--ui-radius);}
+html[data-skin] :is(.account-panel,.account-row,.send-mode-dialog,.notification-card,.resource-browser-filter-row,.resource-browser-sort,.file-preview-modal,.rich-viewer-modal,.remote-preview-device-layer) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-shadow);}
+html[data-skin] :is(.account-panel button,.send-mode-dialog button,.notification-card-actions button,.resource-browser-header button,.resource-browser-toolbar button,.file-preview-header button,.remote-preview-device-layer button) {background:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
+html[data-skin] .account-row button[aria-pressed=true] {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);}
+html[data-skin] :is(.account-overlay,.send-mode-overlay) {background:color-mix(in srgb,var(--ui-bg) 55%,#18263a88);backdrop-filter:blur(7px);}
+html[data-skin] .chat-messages {background:var(--ui-bg);color:var(--ui-ink);}
+html[data-skin] :is(.message-content,.tunnel-markdown-preview,.transfer-progress,.transfer-progress-toggle) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
+html[data-skin] :is(.rich-preview-content,.rich-preview-empty) {color:var(--ui-muted);}

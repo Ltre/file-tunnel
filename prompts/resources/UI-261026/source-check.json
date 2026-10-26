@@ -1,0 +1,45 @@
+{
+  "checkedAt": "2026-10-26T13:44:44.902Z",
+  "files": [
+    {
+      "file": "pages/index.html",
+      "unchanged": true
+    },
+    {
+      "file": "client/index.css",
+      "unchanged": true
+    },
+    {
+      "file": "client/disk.css",
+      "unchanged": true
+    },
+    {
+      "file": "client/disk-ui.js",
+      "unchanged": true
+    },
+    {
+      "file": "client/web-workshop.js",
+      "unchanged": true
+    },
+    {
+      "file": "client/web-workshop.css",
+      "unchanged": true
+    },
+    {
+      "file": "client/streaming-console.js",
+      "unchanged": true
+    },
+    {
+      "file": "client/streaming-console.css",
+      "unchanged": true
+    },
+    {
+      "file": "client/streaming-player.js",
+      "unchanged": true
+    },
+    {
+      "file": "app.js",
+      "unchanged": true
+    }
+  ]
+}

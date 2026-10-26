@@ -1,0 +1,45 @@
+{
+  "capturedAt": "2026-10-26T13:29:24.895Z",
+  "files": [
+    {
+      "file": "pages/index.html",
+      "sha256": "a0e902553158301199a78f0b06f1b25ebbf22d48c4f74397e2b78d8ee59f1373"
+    },
+    {
+      "file": "client/index.css",
+      "sha256": "787c108ab2b1e20be9daeeffe375cc1dd312cdccf41ccac5d7bf9361969e66a0"
+    },
+    {
+      "file": "client/disk.css",
+      "sha256": "aafeda9ceb2687589fdf5baa950b62e2aa9f1602a0d26e1ebe7d4a1136be2bb1"
+    },
+    {
+      "file": "client/disk-ui.js",
+      "sha256": "d37e7c193dee9fee9015bc6c5e44fa9d64602f3cab416c79cffdf355388ca1f0"
+    },
+    {
+      "file": "client/web-workshop.js",
+      "sha256": "1772a6c9b68e3a00bd8d1d901172d8138ba4b931395b967f282cb9b04f113478"
+    },
+    {
+      "file": "client/web-workshop.css",
+      "sha256": "731a4a441289f855658ad755e9080648fb549b6b9f9f04e57d030f9616c5a38b"
+    },
+    {
+      "file": "client/streaming-console.js",
+      "sha256": "31c4d1ddb0b9c9237a9ec3baf4f09b7575069679df5e7e5c7c12b3edc9281f8f"
+    },
+    {
+      "file": "client/streaming-console.css",
+      "sha256": "abe07c9f182c7e90a6a3a37ae5770c9ebc5f38e38c4702f1d796839bad147fd3"
+    },
+    {
+      "file": "client/streaming-player.js",
+      "sha256": "1c908e41c9ed5fd9dad740cee79997083e6c8c63904f1842386793dbd22a3412"
+    },
+    {
+      "file": "app.js",
+      "sha256": "c4395b340aacf49aef12d9023d254a02cd042c455e4693e79117dc573ea82058"
+    }
+  ]
+}

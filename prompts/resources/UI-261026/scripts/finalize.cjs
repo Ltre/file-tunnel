@@ -1,0 +1,14 @@
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const base=path.resolve(__dirname,'..'),root=path.resolve(base,'../../..');
+const read=n=>fs.readFileSync(path.join(base,n),'utf8');
+const write=(n,s)=>{const p=path.resolve(base,n);if(!p.startsWith(base+path.sep))throw Error('SCOPE');fs.writeFileSync(p,s);};
+const manifest=JSON.parse(read('screens.json'));
+manifest.mobileSnapshots=fs.readdirSync(path.join(base,'snapshots')).filter(f=>f.startsWith('mobile-')&&f.endsWith('.html')).map(f=>f.slice(7,-5));
+write('screens.json',JSON.stringify(manifest,null,2));
+write('assets/prototype.js',read('assets/prototype.js').replace("file=['home-devices','home-editor'].includes(screen)?'home':screen", "file=size==='mobile'&&D.mobileSnapshots.includes(screen)?'mobile-'+screen:['home-devices','home-editor'].includes(screen)?'home':screen"));
+const baseline=JSON.parse(read('source-baseline.json'));
+const checks=baseline.files.map(f=>({...f,currentSha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(root,f.file))).digest('hex')}));
+write('source-check.json',JSON.stringify({checkedAt:new Date().toISOString(),files:checks.map(f=>({file:f.file,unchanged:f.sha256===f.currentSha256}))},null,2));
+const report=JSON.parse(read('render-report.json'));
+write('README.md',read('README.md').split('\n## 本次出图范围')[0]+`\n## 本次出图范围\n\n两套方案各有 ${report.desktopScreens.length} 个桌面状态、${report.mobileScreens.length} 个窄屏状态，共 ${report.pngCount} 张独立界面图。渲染对照中的控件位置差异：${report.geometryDifferences.length} 处；可见图片加载问题：${report.imageIssues.length} 处。此核对仅适用于保存的界面状态，不等同于动态交互与全部业务回归。\n`);
+console.log(JSON.stringify({desktop:report.desktopScreens.length,mobile:report.mobileScreens.length,differences:report.geometryDifferences.length,images:report.imageIssues.length,sourceChanged:checks.filter(f=>f.sha256!==f.currentSha256).map(f=>f.file)}));
