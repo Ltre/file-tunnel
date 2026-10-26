@@ -1,0 +1,977 @@
+{
+  "checkedAt": "2026-10-26T16:01:10.966Z",
+  "method": "Computed text color vs composited flat ancestor surfaces; focus on reported labels and copy, excluding disabled text, icons and media.",
+  "cases": [
+    {
+      "id": "01",
+      "screen": "home-resources",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "挂载本机目录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "关联本机文件",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "Telegram 文件防失联检测及修复",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "共 3 项资源，本机缓存 152.42 KB，当前显示 3 项。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "本机资源挂载 · 0",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "蓝调时刻.png",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "152.42 KB · image/png",
+          "color": "rgb(164, 174, 201)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 7.42
+        },
+        {
+          "text": "合辑文件 21:05",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "聊天文件 21:02",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "下载",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "清除缓存",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "山间的风.png",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "152.42 KB · image/png",
+          "color": "rgb(164, 174, 201)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 7.42
+        },
+        {
+          "text": "合辑文件 21:05",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "周末拍摄花絮-未完成缓存.mp4",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "1.07 MB · video/mp4",
+          "color": "rgb(164, 174, 201)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 7.42
+        },
+        {
+          "text": "移除资源",
+          "color": "rgb(255, 180, 194)",
+          "background": [
+            68,
+            41,
+            52
+          ],
+          "ratio": 7.79
+        }
+      ]
+    },
+    {
+      "id": "02",
+      "screen": "home-settings",
+      "width": 390,
+      "rows": [
+        {
+          "text": "工具与权限",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "启用粘贴板共享",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "清理垃圾",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "AndroidChrome与VPN并用时，授予摄像头和麦克风权限可提高局域网直连成功率。媒体设备仅短暂启动并立即停止，不上传音视频。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "主叫在接通前播放等待音；被叫使用下方铃声。自定义音频只保存在当前设备浏览器，不上传服务器。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "设置新加入设备的全局默认权限。隧道创建者始终保留管理权限。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "读取传输记录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送文本",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送富文本",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送文件",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "删除记录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "协同编辑",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "全局对讲机发声",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "群语音通话",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "在这里添加某台设备为管理员，并为它分配独立权限；未添加的设备继续使用上方默认权限。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        }
+      ]
+    },
+    {
+      "id": "03",
+      "screen": "disk-transfer",
+      "width": 390,
+      "rows": [
+        {
+          "text": "📁 根目录",
+          "color": "rgb(229, 220, 255)",
+          "background": [
+            54,
+            48,
+            79
+          ],
+          "ratio": 9.46
+        },
+        {
+          "text": "📁 共享文档",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 甲目录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 子目录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 网页作品",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 项目资料",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 影像素材",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        }
+      ]
+    },
+    {
+      "id": "04",
+      "screen": "home-settings",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "工具与权限",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "启用粘贴板共享",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "清理垃圾",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            41,
+            50,
+            72
+          ],
+          "ratio": 10.76
+        },
+        {
+          "text": "AndroidChrome与VPN并用时，授予摄像头和麦克风权限可提高局域网直连成功率。媒体设备仅短暂启动并立即停止，不上传音视频。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "主叫在接通前播放等待音；被叫使用下方铃声。自定义音频只保存在当前设备浏览器，不上传服务器。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "设置新加入设备的全局默认权限。隧道创建者始终保留管理权限。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        },
+        {
+          "text": "读取传输记录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送文本",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送富文本",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "发送文件",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "删除记录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "协同编辑",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "全局对讲机发声",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "群语音通话",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "在这里添加某台设备为管理员，并为它分配独立权限；未添加的设备继续使用上方默认权限。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        }
+      ]
+    },
+    {
+      "id": "05",
+      "screen": "home-rich",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "下一次出发",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "整理蓝调时刻的照片、声音和一些还没完成的想法。",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "海边咖啡馆集合",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "周六 16:30",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        }
+      ]
+    },
+    {
+      "id": "06",
+      "screen": "home-record-menu",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "ℹ详情",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "🔗复制此锚点",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "⧉复制文本",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "☆收藏",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "⎇发到其他隧道",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "创建串流台",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "添加到串流台",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        },
+        {
+          "text": "🗑删除",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            42,
+            51,
+            71
+          ],
+          "ratio": 10.64
+        }
+      ]
+    },
+    {
+      "id": "07",
+      "screen": "home-device",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "iPhone 16",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        }
+      ]
+    },
+    {
+      "id": "08",
+      "screen": "home-control-center",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "⌃",
+          "color": "rgb(217, 209, 255)",
+          "background": [
+            48,
+            57,
+            78
+          ],
+          "ratio": 7.97
+        },
+        {
+          "text": "K7M2P · 灵感工作室2026/10/26 21:07:11",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "N8Q4T · 周末放映室2026/10/26 21:07:11",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "A3B8K · 设计资料2026/10/26 20:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "D9J4N · 家庭分享2026/10/26 19:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "F7M2R · 工作备忘2026/10/26 18:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "H6P9S · 影像剪辑2026/10/26 17:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "J4T8V · 周末出行2026/10/26 16:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "L2W6X · 声音收集2026/10/26 15:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "P8Y3Z · 网页作品2026/10/26 14:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "R5C7D · 团队讨论2026/10/26 13:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "T3F9G · 阅读清单2026/10/26 12:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "V7H2J · 素材备份2026/10/26 11:00",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            32,
+            39,
+            57
+          ],
+          "ratio": 12.54
+        },
+        {
+          "text": "⌄",
+          "color": "rgb(217, 209, 255)",
+          "background": [
+            48,
+            57,
+            78
+          ],
+          "ratio": 7.97
+        }
+      ]
+    },
+    {
+      "id": "09",
+      "screen": "home-backup",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "传输记录备份",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 13.85
+        },
+        {
+          "text": "元信息备份体积小，完整备份会包含本机现有的全部文件数据。",
+          "color": "rgb(178, 189, 213)",
+          "background": [
+            26,
+            31,
+            45
+          ],
+          "ratio": 8.71
+        }
+      ]
+    },
+    {
+      "id": "10",
+      "screen": "disk-transfer",
+      "width": 1440,
+      "rows": [
+        {
+          "text": "📁 根目录",
+          "color": "rgb(229, 220, 255)",
+          "background": [
+            54,
+            48,
+            79
+          ],
+          "ratio": 9.46
+        },
+        {
+          "text": "📁 共享文档",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 甲目录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 子目录",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 网页作品",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 项目资料",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        },
+        {
+          "text": "📁 影像素材",
+          "color": "rgb(232, 235, 250)",
+          "background": [
+            21,
+            27,
+            40
+          ],
+          "ratio": 14.51
+        }
+      ]
+    }
+  ],
+  "issues": []
+}

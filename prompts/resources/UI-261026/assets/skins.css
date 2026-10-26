@@ -146,3 +146,51 @@ html[data-skin] :is(.account-overlay,.send-mode-overlay) {background:color-mix(i
 html[data-skin] .chat-messages {background:var(--ui-bg);color:var(--ui-ink);}
 html[data-skin] :is(.message-content,.tunnel-markdown-preview,.transfer-progress,.transfer-progress-toggle) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
 html[data-skin] :is(.rich-preview-content,.rich-preview-empty) {color:var(--ui-muted);}
+
+/* Review feedback 1–10: cover the actual nested component surfaces in ORBIT. */
+html[data-skin="orbit"] :is(.tunnel-settings-panel,.tunnel-settings-body,.tunnel-settings-header,.tunnel-admin-card,.lan-p2p-guide) {
+  background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);
+}
+html[data-skin="orbit"] :is(.tunnel-settings-header h2,.tunnel-settings-section h3,.tunnel-admin-card-title strong,.language-settings-row label) {color:var(--ui-ink);}
+html[data-skin="orbit"] :is(.tunnel-settings-header span,.tunnel-settings-section>p,.tunnel-permission-heading span,.call-ringtone-file-status,.lan-p2p-status,.tunnel-admin-card-title span,.lan-p2p-guide p) {color:#b2bdd5;}
+html[data-skin="orbit"] :is(.tunnel-permission-option,.tunnel-admin-empty) {background:var(--ui-soft);color:var(--ui-ink);border-color:#ffffff12;}
+html[data-skin="orbit"] :is(.tunnel-settings-panel button,.tunnel-settings-panel .session-tool,.lan-p2p-guide button,.tunnel-settings-header button) {
+  background:#293248;color:#e8ebfa;border-color:#ffffff17;box-shadow:inset 0 1px 0 #ffffff06;
+}
+html[data-skin="orbit"] .tunnel-settings-panel button:disabled {background:#252c3c;color:#a9b3c9;border-color:#ffffff0a;}
+html[data-skin="orbit"] .tunnel-settings-panel .btn-primary {background:var(--ui-primary);color:var(--ui-on);border-color:transparent;}
+html[data-skin="orbit"] .tunnel-settings-panel :is(button,select):hover:enabled {background-color:#35405a;border-color:#b3a6ff55;}
+@media(max-width:767px){html[data-skin="orbit"] .tunnel-settings-layer {background:var(--ui-panel);}}
+
+html[data-skin="orbit"] :is(.resource-browser-name,.resource-browser-header h3,.resource-browser-mounts strong) {color:var(--ui-ink);}
+html[data-skin="orbit"] :is(.resource-browser-summary,.resource-browser-meta,.resource-reference-title,.resource-browser-empty,.resource-browser-mount-row) {color:#b2bdd5;}
+html[data-skin="orbit"] :is(.resource-browser-controls,.resource-browser-list,.resource-browser-mounts) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
+html[data-skin="orbit"] .resource-browser-mounts {background:var(--ui-soft);}
+html[data-skin="orbit"] .resource-browser-references {border-color:#ffffff12;}
+html[data-skin="orbit"] :is(.resource-action,.resource-reference-button,.resource-browser-refresh,.resource-browser-minimize,.resource-browser-close) {background:#293248;color:#e8ebfa;border-color:#ffffff17;box-shadow:inset 0 1px 0 #ffffff06;}
+html[data-skin="orbit"] :is(.resource-action,.resource-reference-button):hover {background:#35405a;color:#e8e1ff;border-color:#b3a6ff55;}
+html[data-skin="orbit"] .resource-action.danger {background:#442934;color:#ffb4c2;border-color:#ff8ba52b;}
+html[data-skin="orbit"] .resource-tag {background:#30394e;color:#d6def0;}
+html[data-skin="orbit"] .resource-tag.warning {background:#473a24;color:#f1cc87;}
+html[data-skin="orbit"] .resource-tag.protected {background:#233e38;color:#9ce5cd;}
+
+html[data-skin="orbit"] .disk-destination-tree {background:#151b28;color:#e8ebfa;border-color:var(--ui-line);}
+html[data-skin="orbit"] .disk-destination-tree .disk-folder-target {background:transparent;color:#e8ebfa;border-color:transparent;}
+html[data-skin="orbit"] .disk-destination-tree .disk-folder-target:is(.selected,:hover) {background:#36304f;color:#e5dcff;box-shadow:inset 2px 0 0 #b3a6ff;}
+html[data-skin="orbit"] .disk-folder-branch>summary {color:#acb8d0;}
+html[data-skin="orbit"] .disk-tree-menu {background:#252d40;color:#e8ebfa;border-color:var(--ui-line);box-shadow:var(--ui-menu);}
+html[data-skin="orbit"] .telegram-drive-dialog-body .btn:disabled {background:#252d40;color:#aeb8ce;border-color:#ffffff12;}
+
+html[data-skin="orbit"] :is(.rich-viewer,.rich-viewer-content,.rich-history-panel) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
+html[data-skin="orbit"] .rich-viewer-header {background:var(--ui-header);color:var(--ui-ink);box-shadow:inset 0 -1px 0 var(--ui-line);}
+html[data-skin="orbit"] .rich-viewer-header button {background:#30394e;color:#e8ebfa;border-color:#ffffff17;}
+html[data-skin="orbit"] .message-record-action-menu {background:#1d2433;color:var(--ui-ink);border-color:#ffffff17;box-shadow:var(--ui-menu);}
+html[data-skin="orbit"] .message-record-action-menu .history-action {background:#2a3347;color:#e8ebfa;border-color:#ffffff0d;box-shadow:inset 0 1px 0 #ffffff04;}
+html[data-skin="orbit"] .message-record-action-menu .history-action:hover {background:#3a3555;color:#f1edff;border-color:#b3a6ff30;}
+html[data-skin="orbit"] .message-record-action-menu-handle {background:#77829c;}
+html[data-skin="orbit"] .record-action-icon img {filter:brightness(0) invert(.9);}
+html[data-skin="orbit"] .control-center-tile[data-control-tile="streaming"] img {filter:brightness(0) invert(.9);}
+html[data-skin="orbit"] .profile-qr {background:#fff;border-color:#fff;box-shadow:0 0 0 6px #fff,0 0 0 7px #ffffff18,0 9px 24px #0004;}
+html[data-skin="orbit"] .session-switch-scroll {background:#30394e;color:#d9d1ff;box-shadow:inset 0 1px 0 #ffffff06;}
+html[data-skin="orbit"] .session-switcher-close {background:#30394e;color:#e8ebfa;}
+html[data-skin="orbit"] .send-mode-dialog>p {color:#b2bdd5;}

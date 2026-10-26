@@ -1,0 +1,237 @@
+{
+  "checkedAt": "2026-10-26T15:53:28.894Z",
+  "surfaces": [
+    {
+      "screen": "home-resources",
+      "width": 1440,
+      "selector": ".resource-browser-name",
+      "text": "蓝调时刻.png",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgba(0, 0, 0, 0)",
+      "border": "rgb(232, 235, 250)",
+      "shadow": "none",
+      "rect": [
+        191,
+        301,
+        124.3125,
+        21
+      ]
+    },
+    {
+      "screen": "home-settings",
+      "width": 1440,
+      "selector": ".tunnel-settings-panel",
+      "text": "隧道设置工具与权限\n                ×\n            \n            \n                \n         ",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(26, 31, 45)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "rgba(17, 25, 45, 0.34) 0px 24px 72px 0px",
+      "rect": [
+        310,
+        120,
+        820,
+        760
+      ]
+    },
+    {
+      "screen": "disk-transfer",
+      "width": 1440,
+      "selector": ".disk-destination-tree",
+      "text": "📁 根目录📁 共享文档📁 甲目录📁 子目录📁 网页作品📁 项目资料📁 影像素材",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(21, 27, 40)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "none",
+      "rect": [
+        476,
+        347.5,
+        488,
+        222
+      ]
+    },
+    {
+      "screen": "home-rich",
+      "width": 1440,
+      "selector": ".rich-viewer-content",
+      "text": "下一次出发整理蓝调时刻的照片、声音和一些还没完成的想法。海边咖啡馆集合周六 16:30",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(26, 31, 45)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "none",
+      "rect": [
+        320,
+        461,
+        800,
+        155
+      ]
+    },
+    {
+      "screen": "home-record-menu",
+      "width": 1440,
+      "selector": ".message-record-action-menu",
+      "text": "ℹ详情🔗复制此锚点⧉复制文本☆收藏⎇发到其他隧道创建串流台添加到串流台🗑删除",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(29, 36, 51)",
+      "border": "rgba(255, 255, 255, 0.09)",
+      "shadow": "rgba(0, 0, 0, 0.467) 0px 25px 65px 0px, rgba(170, 159, 243, 0.09) 0px 0px 0px 1px",
+      "rect": [
+        190,
+        152,
+        240,
+        341
+      ]
+    },
+    {
+      "screen": "home-device",
+      "width": 1440,
+      "selector": ".profile-qr",
+      "text": "",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(255, 255, 255)",
+      "border": "rgb(255, 255, 255)",
+      "shadow": "rgb(255, 255, 255) 0px 0px 0px 6px, rgba(255, 255, 255, 0.094) 0px 0px 0px 7px, rgba(0, 0, 0, 0.267) 0px 9px 24px 0px",
+      "rect": [
+        550,
+        195,
+        116,
+        116
+      ]
+    },
+    {
+      "screen": "home-backup",
+      "width": 1440,
+      "selector": ".send-mode-dialog>p",
+      "text": "元信息备份体积小，完整备份会包含本机现有的全部文件数据。",
+      "color": "rgb(178, 189, 213)",
+      "background": "rgba(0, 0, 0, 0)",
+      "border": "rgb(178, 189, 213)",
+      "shadow": "none",
+      "rect": [
+        532,
+        462.90625,
+        376,
+        51.1875
+      ]
+    },
+    {
+      "screen": "home-resources",
+      "width": 390,
+      "selector": ".resource-browser-name",
+      "text": "蓝调时刻.png",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgba(0, 0, 0, 0)",
+      "border": "rgb(232, 235, 250)",
+      "shadow": "none",
+      "rect": [
+        31,
+        341,
+        328,
+        21
+      ]
+    },
+    {
+      "screen": "home-settings",
+      "width": 390,
+      "selector": ".tunnel-settings-panel",
+      "text": "隧道设置工具与权限\n                ×\n            \n            \n                \n         ",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(26, 31, 45)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "rgba(17, 25, 45, 0.34) 0px 24px 72px 0px",
+      "rect": [
+        0,
+        0,
+        390,
+        844
+      ]
+    },
+    {
+      "screen": "disk-transfer",
+      "width": 390,
+      "selector": ".disk-destination-tree",
+      "text": "📁 根目录📁 共享文档📁 甲目录📁 子目录📁 网页作品📁 项目资料📁 影像素材",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(21, 27, 40)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "none",
+      "rect": [
+        32,
+        327.84375,
+        326,
+        180
+      ]
+    },
+    {
+      "screen": "home-rich",
+      "width": 390,
+      "selector": ".rich-viewer-content",
+      "text": "下一次出发整理蓝调时刻的照片、声音和一些还没完成的想法。海边咖啡馆集合周六 16:30",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(26, 31, 45)",
+      "border": "rgb(52, 61, 86)",
+      "shadow": "none",
+      "rect": [
+        19.5,
+        395,
+        351,
+        176
+      ]
+    },
+    {
+      "screen": "home-record-menu",
+      "width": 390,
+      "selector": ".message-record-action-menu",
+      "text": "ℹ详情🔗复制此锚点⧉复制文本☆收藏⎇发到其他隧道创建串流台添加到串流台🗑删除",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(29, 36, 51)",
+      "border": "rgba(255, 255, 255, 0.09)",
+      "shadow": "rgba(0, 0, 0, 0.467) 0px 25px 65px 0px, rgba(170, 159, 243, 0.09) 0px 0px 0px 1px",
+      "rect": [
+        0,
+        597,
+        390,
+        247
+      ]
+    },
+    {
+      "screen": "home-device",
+      "width": 390,
+      "selector": ".profile-qr",
+      "text": "",
+      "color": "rgb(232, 235, 250)",
+      "background": "rgb(255, 255, 255)",
+      "border": "rgb(255, 255, 255)",
+      "shadow": "rgb(255, 255, 255) 0px 0px 0px 6px, rgba(255, 255, 255, 0.094) 0px 0px 0px 7px, rgba(0, 0, 0, 0.267) 0px 9px 24px 0px",
+      "rect": [
+        49.5,
+        98,
+        96,
+        114
+      ]
+    },
+    {
+      "screen": "home-backup",
+      "width": 390,
+      "selector": ".send-mode-dialog>p",
+      "text": "元信息备份体积小，完整备份会包含本机现有的全部文件数据。",
+      "color": "rgb(178, 189, 213)",
+      "background": "rgba(0, 0, 0, 0)",
+      "border": "rgb(178, 189, 213)",
+      "shadow": "none",
+      "rect": [
+        42,
+        374.40625,
+        314.796875,
+        51.1875
+      ]
+    }
+  ],
+  "scroll": {
+    "scrollHeight": 704,
+    "clientHeight": 434,
+    "top": 0,
+    "down": 270,
+    "up": 0,
+    "buttonsVisible": 2
+  }
+}

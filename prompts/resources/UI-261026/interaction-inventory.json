@@ -19417,7 +19417,7 @@
       "disabled": false,
       "rect": [
         554.86,
-        298.2,
+        105.2,
         50.77,
         48.8
       ]
@@ -19431,7 +19431,7 @@
       "disabled": false,
       "rect": [
         615.63,
-        298.2,
+        105.2,
         79.2,
         48.8
       ]
@@ -19445,7 +19445,7 @@
       "disabled": false,
       "rect": [
         704.83,
-        298.2,
+        105.2,
         52.06,
         48.8
       ]
@@ -19459,7 +19459,7 @@
       "disabled": false,
       "rect": [
         766.89,
-        298.2,
+        105.2,
         52.23,
         48.8
       ]
@@ -19473,7 +19473,7 @@
       "disabled": false,
       "rect": [
         829.13,
-        299.59,
+        106.59,
         56,
         46
       ]
@@ -19487,7 +19487,7 @@
       "disabled": false,
       "rect": [
         542.19,
-        357,
+        164,
         52.06,
         48.8
       ]
@@ -19501,7 +19501,7 @@
       "disabled": false,
       "rect": [
         604.25,
-        357,
+        164,
         77.33,
         48.8
       ]
@@ -19515,7 +19515,7 @@
       "disabled": false,
       "rect": [
         691.58,
-        357,
+        164,
         56.33,
         48.8
       ]
@@ -19529,7 +19529,7 @@
       "disabled": false,
       "rect": [
         757.91,
-        357,
+        164,
         64.95,
         48.8
       ]
@@ -19543,7 +19543,7 @@
       "disabled": false,
       "rect": [
         832.86,
-        357,
+        164,
         64.95,
         48.8
       ]
@@ -19557,7 +19557,7 @@
       "disabled": false,
       "rect": [
         627.97,
-        417.39,
+        224.39,
         52.06,
         48.8
       ]
@@ -19571,7 +19571,7 @@
       "disabled": false,
       "rect": [
         690.03,
-        417.39,
+        224.39,
         48,
         48.8
       ]
@@ -19585,7 +19585,7 @@
       "disabled": false,
       "rect": [
         748.03,
-        415.8,
+        222.8,
         64,
         52
       ]
@@ -19599,7 +19599,7 @@
       "disabled": false,
       "rect": [
         876,
-        497.8,
+        304.8,
         34,
         34
       ]
@@ -19608,18 +19608,32 @@
       "index": 57,
       "tag": "BUTTON",
       "id": "",
+      "cl": "session-switch-scroll",
+      "label": "向上滚动",
+      "disabled": false,
+      "rect": [
+        540,
+        364.8,
+        360,
+        28
+      ]
+    },
+    {
+      "index": 58,
+      "tag": "BUTTON",
+      "id": "",
       "cl": "session-tool session-switch-item is-current",
       "label": "K7M2P · 灵感工作室2026/10/26 21:07:11",
       "disabled": false,
       "rect": [
         542,
-        567.8,
+        412.8,
         356,
         46
       ]
     },
     {
-      "index": 58,
+      "index": 59,
       "tag": "BUTTON",
       "id": "",
       "cl": "session-tool session-switch-item",
@@ -19627,9 +19641,163 @@
       "disabled": false,
       "rect": [
         542,
-        625.8,
+        470.8,
         356,
         46
+      ]
+    },
+    {
+      "index": 60,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "A3B8K · 设计资料2026/10/26 20:00",
+      "disabled": false,
+      "rect": [
+        542,
+        528.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 61,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "D9J4N · 家庭分享2026/10/26 19:00",
+      "disabled": false,
+      "rect": [
+        542,
+        586.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 62,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "F7M2R · 工作备忘2026/10/26 18:00",
+      "disabled": false,
+      "rect": [
+        542,
+        644.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 63,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "H6P9S · 影像剪辑2026/10/26 17:00",
+      "disabled": false,
+      "rect": [
+        542,
+        702.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 64,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "J4T8V · 周末出行2026/10/26 16:00",
+      "disabled": false,
+      "rect": [
+        542,
+        760.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 65,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "L2W6X · 声音收集2026/10/26 15:00",
+      "disabled": false,
+      "rect": [
+        542,
+        818.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 66,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "P8Y3Z · 网页作品2026/10/26 14:00",
+      "disabled": false,
+      "rect": [
+        542,
+        876.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 67,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "R5C7D · 团队讨论2026/10/26 13:00",
+      "disabled": false,
+      "rect": [
+        542,
+        934.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 68,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "T3F9G · 阅读清单2026/10/26 12:00",
+      "disabled": false,
+      "rect": [
+        542,
+        992.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 69,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "V7H2J · 素材备份2026/10/26 11:00",
+      "disabled": false,
+      "rect": [
+        542,
+        1050.8,
+        356,
+        46
+      ]
+    },
+    {
+      "index": 70,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-switch-scroll",
+      "label": "向下滚动",
+      "disabled": false,
+      "rect": [
+        540,
+        846.8,
+        360,
+        28
       ]
     }
   ],
@@ -54105,7 +54273,7 @@
       "disabled": false,
       "rect": [
         29.86,
-        220.2,
+        74,
         50.77,
         48.8
       ]
@@ -54119,7 +54287,7 @@
       "disabled": false,
       "rect": [
         90.63,
-        220.2,
+        74,
         79.2,
         48.8
       ]
@@ -54133,7 +54301,7 @@
       "disabled": false,
       "rect": [
         179.83,
-        220.2,
+        74,
         52.06,
         48.8
       ]
@@ -54147,7 +54315,7 @@
       "disabled": false,
       "rect": [
         241.89,
-        220.2,
+        74,
         52.23,
         48.8
       ]
@@ -54161,7 +54329,7 @@
       "disabled": false,
       "rect": [
         304.13,
-        221.59,
+        75.39,
         56,
         46
       ]
@@ -54175,7 +54343,7 @@
       "disabled": false,
       "rect": [
         54.66,
-        279,
+        132.8,
         52.06,
         48.8
       ]
@@ -54189,7 +54357,7 @@
       "disabled": false,
       "rect": [
         116.72,
-        279,
+        132.8,
         77.33,
         48.8
       ]
@@ -54203,7 +54371,7 @@
       "disabled": false,
       "rect": [
         204.05,
-        279,
+        132.8,
         56.33,
         48.8
       ]
@@ -54217,7 +54385,7 @@
       "disabled": false,
       "rect": [
         270.38,
-        279,
+        132.8,
         64.95,
         48.8
       ]
@@ -54231,7 +54399,7 @@
       "disabled": false,
       "rect": [
         65.48,
-        339.39,
+        193.19,
         64.95,
         48.8
       ]
@@ -54245,7 +54413,7 @@
       "disabled": false,
       "rect": [
         140.44,
-        339.39,
+        193.19,
         52.06,
         48.8
       ]
@@ -54259,7 +54427,7 @@
       "disabled": false,
       "rect": [
         202.5,
-        339.39,
+        193.19,
         48,
         48.8
       ]
@@ -54273,7 +54441,7 @@
       "disabled": false,
       "rect": [
         260.5,
-        337.8,
+        191.59,
         64,
         52
       ]
@@ -54287,7 +54455,7 @@
       "disabled": false,
       "rect": [
         330.39,
-        419.8,
+        273.59,
         34,
         34
       ]
@@ -54296,18 +54464,32 @@
       "index": 60,
       "tag": "BUTTON",
       "id": "",
+      "cl": "session-switch-scroll",
+      "label": "向上滚动",
+      "disabled": false,
+      "rect": [
+        35.59,
+        333.59,
+        318.8,
+        28
+      ]
+    },
+    {
+      "index": 61,
+      "tag": "BUTTON",
+      "id": "",
       "cl": "session-tool session-switch-item is-current",
       "label": "K7M2P · 灵感工作室2026/10/26 21:07:11",
       "disabled": false,
       "rect": [
         37.59,
-        489.8,
+        381.59,
         314.8,
         46
       ]
     },
     {
-      "index": 61,
+      "index": 62,
       "tag": "BUTTON",
       "id": "",
       "cl": "session-tool session-switch-item",
@@ -54315,9 +54497,163 @@
       "disabled": false,
       "rect": [
         37.59,
-        547.8,
+        439.59,
         314.8,
         46
+      ]
+    },
+    {
+      "index": 63,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "A3B8K · 设计资料2026/10/26 20:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        497.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 64,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "D9J4N · 家庭分享2026/10/26 19:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        555.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 65,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "F7M2R · 工作备忘2026/10/26 18:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        613.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 66,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "H6P9S · 影像剪辑2026/10/26 17:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        671.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 67,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "J4T8V · 周末出行2026/10/26 16:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        729.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 68,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "L2W6X · 声音收集2026/10/26 15:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        787.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 69,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "P8Y3Z · 网页作品2026/10/26 14:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        845.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 70,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "R5C7D · 团队讨论2026/10/26 13:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        903.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 71,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "T3F9G · 阅读清单2026/10/26 12:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        961.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 72,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-tool session-switch-item",
+      "label": "V7H2J · 素材备份2026/10/26 11:00",
+      "disabled": false,
+      "rect": [
+        37.59,
+        1019.59,
+        314.8,
+        46
+      ]
+    },
+    {
+      "index": 73,
+      "tag": "BUTTON",
+      "id": "",
+      "cl": "session-switch-scroll",
+      "label": "向下滚动",
+      "disabled": false,
+      "rect": [
+        35.59,
+        721.98,
+        318.8,
+        28
       ]
     }
   ],

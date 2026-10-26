@@ -45,6 +45,7 @@ async function freeze(page, name) {
   clone.querySelectorAll('*').forEach(el=>{for(const attr of [...el.attributes])if(attr.name.startsWith('on'))el.removeAttribute(attr.name);});
   clone.querySelector('head').insertAdjacentHTML('beforeend','<link rel="stylesheet" href="../assets/source.css"><link rel="stylesheet" href="../assets/skins.css"><script>const skin=new URLSearchParams(location.search).get("variant")||"lumen";if(skin==="source")delete document.documentElement.dataset.skin;else document.documentElement.dataset.skin=skin;<\/script>');
   clone.querySelector('body').insertAdjacentHTML('beforeend','<script>const v=new URLSearchParams(location.search).get("workspace");if(["devices","editor","chat"].includes(v)){document.getElementById("appShell").dataset.mobileView=v;document.querySelector(".main-layout").style.setProperty("--workspace-index",({devices:0,chat:1,editor:2})[v]);document.querySelectorAll(".mobile-workspace-button").forEach(b=>b.classList.toggle("active",b.dataset.mobileView===v));}<\/script>');
+  clone.querySelector('body').insertAdjacentHTML('beforeend','<script src="../assets/snapshot-preview.js"><\/script>');
   clone.querySelector('body').removeAttribute('data-skin');
   return '<!doctype html>\n'+clone.outerHTML;
  });

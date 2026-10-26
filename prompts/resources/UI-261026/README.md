@@ -30,6 +30,8 @@
 
 ## 验证说明
 
+本轮 ORBIT 十项反馈修订可打开 `orbit-review.html` 按图号查看；具体处理见 `review-feedback.md`。重点文字、表面颜色和控制中心滚动的核对分别保存在 `contrast-check.json` 与 `feedback-check.json`。控制中心改用 12 条隔离示例隧道，展示现有列表溢出时的上下滚动按钮，未修改产品实现。
+
 `source-baseline.json` 记录本轮读取的源码哈希；`render-report.json` 记录图稿尺寸、生成范围及几何核对。`layout-geometry.json` 是各方案控件位置的核对数据。
 
 原型中的产品画面为静态只读 DOM；外层方案切换、选择界面和尺寸控制属于设计评审器。它没有接入正式账号、真实设备或正式 Telegram。交互树的条件分支明确标记；本轮不宣称完成业务、真实网络或硬件回归。

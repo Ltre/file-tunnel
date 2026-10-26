@@ -7,6 +7,7 @@
  state.contacts=new Map([['design-friend',{deviceId:'design-friend',name:'小陈的笔记本',model:'Windows 11'}]]);
  await saveToStore('sessions',{sessionId:state.sessionId,shortCode:state.shortCode,remark:state.sessionRemark,createdAt:Date.now()});
  await saveToStore('sessions',{sessionId:'design-session-002',shortCode:'N8Q4T',remark:'周末放映室',createdAt:Date.now()});
+ for(let i=3;i<=12;i++)await saveToStore('sessions',{sessionId:'design-session-'+String(i).padStart(3,'0'),shortCode:['A3B8K','D9J4N','F7M2R','H6P9S','J4T8V','L2W6X','P8Y3Z','R5C7D','T3F9G','V7H2J'][i-3],remark:['设计资料','家庭分享','工作备忘','影像剪辑','周末出行','声音收集','网页作品','团队讨论','阅读清单','素材备份'][i-3],createdAt:Date.now()-i*3600000});
  document.getElementById('leaveTunnelBtn').hidden=false;for(const id of ['leaveTunnelPanelBtn','exitTunnelBtn'])document.getElementById(id).hidden=false;
  for(const [id,value] of Object.entries({sessionId:state.sessionId,deviceId:state.deviceId.slice(0,12)+'…',sessionRemark:state.sessionRemark,shortCode:state.shortCode}))document.getElementById(id).textContent=value;
  document.getElementById('sessionRemarkRow').hidden=false;updateDeviceList();
