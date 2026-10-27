@@ -3277,7 +3277,7 @@ app.post('/api/magnets', (req, res) => {
     try {
         cleanupExpiredMagnets();
         const { sessionId, fileId, deviceId, asset } = req.body || {};
-        if (!isValidSessionId(sessionId) || !isValidDeviceId(fileId)) {
+        if (!isValidSessionId(sessionId) || !isValidServerAssetId(fileId)) {
             return res.status(400).json({ error: 'Invalid magnet payload' });
         }
 
@@ -8197,7 +8197,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
 function isValidMagnetAssetPayload(asset, fileId) {
     return asset &&
         asset.id === fileId &&
-        isValidDeviceId(asset.id) &&
+        isValidServerAssetId(asset.id) &&
         typeof asset.name === 'string' && asset.name.length > 0 && asset.name.length <= 255 &&
         typeof asset.type === 'string' && asset.type.length > 0 && asset.type.length <= 100 &&
         typeof asset.size === 'number' && asset.size > 0 && asset.size <= MAX_MAGNET_FILE_ASSET_SIZE;

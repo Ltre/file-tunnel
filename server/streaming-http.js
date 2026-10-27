@@ -83,7 +83,13 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         try {
             for (let start = range.start; start <= range.end && !controller.signal.aborted;) {
                 await get();
-                const end = Math.min(range.end, (Math.floor(start / sources.MAX_CHUNK) + 1) * sources.MAX_CHUNK - 1), cached = readAhead.get(req.params.ticket, start, end);
+                // A broker supplies a whole requested block before returning a
+                // stream. Deliver a small first block for prompt startup/seek;
+                // subsequent blocks retain the existing 1 MiB/cache boundaries.
+                // Warming keeps full blocks so native reads can reuse them.
+                const end = Math.min(range.end, (Math.floor(start / sources.MAX_CHUNK) + 1) * sources.MAX_CHUNK - 1,
+                    start === range.start && !warming ? start + 64 * 1024 - 1 : Infinity);
+                const cached = readAhead.get(req.params.ticket, start, end);
                 const stream = cached ? Readable.from([cached]) : await sources.read(resource.source, start, end, controller.signal, resource.deviceId);
                 try {
                     await get(); // Access may have changed while the provider was reading.

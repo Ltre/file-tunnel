@@ -13,7 +13,7 @@
     }
     // Only this device's cursor retains loading time. Explicit global commands
     // still replace it; station permissions and the server clock are unchanged.
-    function create({ stationId, watchId, request, subscribe, onState, onError, onSeek }) {
+    function create({ stationId, watchId, request, subscribe, onState, onError, onRecovery, onSeek }) {
         const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
@@ -29,7 +29,7 @@
             try { if (snapshot?.manageable && onSeek) await onSeek(id, position); } catch (error) { onError?.(error); }
             finally { dragging = false; seek.disabled = false; update(); } };
         let snapshot, receivedAt = 0, currentId = '', media, active, next, generation = 0, paused = false, muted = false, volume = 1;
-        let actual = 'waiting', failure = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
+        let actual = 'waiting', failure = '', lastMediaError = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
         let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
         const localPause = button('暂停本机观看', () => { const retry = actual === 'blocked' || actual === 'error'; paused = retry ? false : !paused; if (paused) { media?.pause(); actual = 'paused'; } else if (actual !== 'blocked') align(); lastTick = performance.now(); sync(true); update(); });
@@ -120,6 +120,38 @@
         const hidePage = () => { pageSuspended = true; media?.pause(); unwatch(); };
         const resumePage = event => { if (event.persisted) { watchId = initialWatchId + ':' + (++resumeCount); denied = false; report(true); } };
         global.addEventListener('pagehide', hidePage); global.addEventListener('pageshow', resumePage);
+        async function mediaFailure(task, node) {
+            const code = Number(node.error?.code) || 0;
+            if (code === 3) return Error('STREAM_MEDIA_DECODE_FAILED');
+            let cause = Error(code === 2 ? 'STREAM_MEDIA_NETWORK_FAILED' : 'STREAM_MEDIA_UNAVAILABLE');
+            // Native media elements hide HTTP error bodies. Only on failure,
+            // inspect a single byte through the same authorized ticket; never
+            // download the whole file or expose the source account to viewers.
+            const timeout = new AbortController(), timer = setTimeout(() => timeout.abort(), 5000);
+            const cancel = () => timeout.abort();
+            task.controller.signal.addEventListener('abort', cancel, { once: true });
+            if (task.controller.signal.aborted) cancel();
+            try {
+                const response = await fetch(task.url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: timeout.signal });
+                if (!response.ok && (response.headers?.get('Content-Type') || '').includes('application/json')) {
+                    const result = await response.json();
+                    if (/^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(result.error || '')) cause = Error(result.error);
+                } else await response.body?.cancel();
+            } catch (_) { /* Keep the original media error when diagnosis is unavailable. */ }
+            finally { clearTimeout(timer); task.controller.signal.removeEventListener('abort', cancel); }
+            return cause;
+        }
+        function failMedia(task, error) {
+            if (active !== task || task.disposed || !alive || accessError(error)) return;
+            actual = 'error';
+            task.retryAt = ['STREAM_MEDIA_DECODE_FAILED', 'STREAM_TYPE_UNSUPPORTED', 'STREAM_SOURCE_DELETED', 'STREAM_SOURCE_REVOKED'].includes(error.message) ? 0 : performance.now() + 2000 * 2 ** task.retries;
+            const message = error.message === 'STREAM_MEDIA_DECODE_FAILED' ? '浏览器无法解码该媒体，请检查格式与编码' : '资源读取失败，请检查台状态与来源';
+            lastMediaError = error.message; failure = t(message) + ' [' + error.message + ']'; update(); onError?.(error);
+        }
+        function recovered() {
+            if (!lastMediaError) return;
+            const code = lastMediaError; lastMediaError = ''; onRecovery?.(code);
+        }
         function prepare(item) {
             const task = { item, key: itemKey(item), controller: new AbortController(), ready: false, disposed: false, started: performance.now() };
             const signal = task.controller.signal;
@@ -133,7 +165,7 @@
                     else { node.alt = item.name; node.decoding = 'async'; }
                     await new Promise((resolve, reject) => {
                         node.addEventListener(item.kind === 'image' ? 'load' : 'canplay', () => { if (!task.disposed) resolve(); }, { once: true });
-                        node.addEventListener('error', () => reject(Error('STREAM_MEDIA_UNAVAILABLE')), { once: true });
+                        node.addEventListener('error', () => { if (!task.disposed && !task.ready) mediaFailure(task, node).then(reject); }, { once: true });
                         signal.addEventListener('abort', () => reject(Object.assign(Error('Aborted'), { name: 'AbortError' })), { once: true });
                         node.src = access.url;
                     });
@@ -167,14 +199,18 @@
                 media = task.media; content.replaceChildren(task.element); lastTick = performance.now();
                 if (media) {
                     media.muted = muted; media.volume = volume; media.currentTime = Math.min((item.start || 0) + localPosition, Math.max(0, media.duration - .05));
-                    media.addEventListener('playing', () => { if (active === task) { actual = 'playing'; failure = ''; lastTick = performance.now(); update(); } });
+                    media.addEventListener('playing', () => { if (active === task) { actual = 'playing'; failure = ''; recovered(); lastTick = performance.now(); update(); } });
                     media.addEventListener('waiting', () => { if (active === task) { actual = 'buffering'; recoverBuffered(task); update(); } });
-                    media.addEventListener('error', () => { if (active === task) { if (recoverBuffered(task)) return; actual = 'error'; failure = t('媒体无法播放，可重新读取或检查源文件'); update(); } });
+                    media.addEventListener('error', () => { if (active === task && !task.diagnosing) {
+                        if (recoverBuffered(task)) return;
+                        task.diagnosing = true; actual = 'error'; update();
+                        mediaFailure(task, media).then(error => failMedia(task, error)).finally(() => { task.diagnosing = false; });
+                    } });
                     media.addEventListener('ended', () => { if (active === task) { localPosition = length(item); sync(); } });
                     if (item.kind === 'audio') { const title = document.createElement('p'); title.className = 'message-content sc-audio-title'; title.textContent = '♪ ' + item.name; content.append(title); }
                 } else actual = paused || !running() ? 'paused' : 'reading';
-                sync(true); update();
-            } catch (error) { if (revision !== generation || !alive || task.disposed) return; if (!accessError(error)) { actual = 'error'; task.retryAt = performance.now() + 2000 * 2 ** retries; failure = t('资源读取失败，请检查台状态与来源') + ' [' + error.message + ']'; update(); onError?.(error); } }
+                recovered(); sync(true); update();
+            } catch (error) { if (revision !== generation || !alive || task.disposed) return; failMedia(task, error); }
         }
         function following() {
             const items = (snapshot?.items || []).filter(item => !item.unavailable), index = items.findIndex(item => item.id === currentId);
@@ -189,7 +225,7 @@
         }
         async function warmCurrent() {
             const task = active;
-            if (!alive || denied || pageSuspended || paused || !running() || !task?.ready || !task.media || !task.size || task.clientUrl || task.warming || performance.now() < (task.warmAt || 0)) return;
+            if (!alive || denied || pageSuspended || paused || !running() || !task?.ready || !media || media !== task.media || !task.size || task.clientUrl || task.warming || performance.now() < (task.warmAt || 0)) return;
             const unit = 1024 * 1024, item = current();
             // Time-to-byte conversion is only a read-ahead hint; media decoding
             // and seeking stay with the browser's native Range implementation.
@@ -217,7 +253,10 @@
             if (!alive || denied || pageSuspended || !snapshot) return;
             const now = performance.now(), elapsed = Math.max(0, now - lastTick) / 1000; lastTick = now;
             const item = current(); if (!item) return;
-            if (actual === 'error' && active?.retryAt && active.retries < 3 && now >= active.retryAt && running() && !paused && !item.unavailable) { load(item, localPosition, active.retries + 1); return; }
+            if (actual === 'error') {
+                if (active?.retryAt && active.retries < 3 && now >= active.retryAt && running() && !paused && !item.unavailable) load(item, localPosition, active.retries + 1);
+                return;
+            }
             if (active?.ready && !paused && running()) {
                 if (media) { if (!media.paused && media.readyState >= 2) localPosition = Math.max(0, media.currentTime - (item.start || 0)); else if (actual === 'buffering' || actual === 'blocked') delay += elapsed; }
                 else localPosition += elapsed;

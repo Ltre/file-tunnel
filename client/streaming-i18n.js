@@ -64,6 +64,8 @@
         ['全台已暂停','Station playback is paused'], ['等待全台播放','Waiting for station playback'], ['等待时长确认','Waiting for duration confirmation'], ['正在同步放送状态','Synchronizing broadcast state'], ['本轮已放送','Already broadcast this round'], ['暂无放送安排','No broadcast scheduled'],
         ['服务端读取成品','Reading server output'], ['已读取','Read'], ['正在读取','Reading'],
         ['操控串流台','Control station'], ['返回操控','Back to controls'], ['串流台','Station'], ['节目单','Playlist'], ['来源','Source'], ['退订','Unsubscribe'], ['已被管理员暂停','Paused by an administrator'], ['恢复播放','Resume playback'], ['全屏','Fullscreen'], ['浏览器限制播放，请点击恢复播放','Autoplay blocked; select Resume playback'],
+        ['浏览器无法解码该媒体，请检查格式与编码','The browser cannot decode this media; check its format and codec'],
+        ['媒体连接中断，可重试读取或检查网络与来源','The media connection was interrupted; retry loading or check the network and source'],
         ['正在加载 Markdown…','Loading Markdown…'], ['正在缓冲','Buffering'], ['置顶','Move to top'], ['置底','Move to bottom'], ['导入','Import'], ['历史','History'], ['存到网盘','Save to drive'], ['发送到其他隧道','Send to another tunnel'],
         ['将 Markdown 保存到自己的 Telegram 网盘','Save Markdown to your Telegram drive'], ['资源准备失败：{0}','Resource preparation failed: {0}'],
         ['已知情，但坚持删除','I understand and still want to delete'], ['坚持删除','Delete anyway'], ['确认删除开放范围内的内容','Confirm deletion of shared content'], ['请先勾选“已知情，但坚持删除”','Select “I understand and still want to delete” first'],

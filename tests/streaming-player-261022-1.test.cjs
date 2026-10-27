@@ -22,8 +22,8 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', reportStarts = false, onSeek, size = 0, fetchBytes } = {}) {
-    let time = 0, resolveTicket; const calls = [], timers = [], elements = [];
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, onSeek, size = 0, fetchBytes } = {}) {
+    let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
     const events = new Map(), window = { innerWidth:390, innerHeight:800, addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
     vm.runInNewContext(fs.readFileSync(require.resolve('../client/streaming-player.js'), 'utf8'), {
         window, document: { createElement(tag) { const el = new Element(tag); elements.push(el); return el; } },
@@ -31,15 +31,15 @@ function fixture({ deferredTicket = false, kind = 'image', reportStarts = false,
         setInterval: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearInterval() {}, setTimeout, clearTimeout
     });
     const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
-        items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? 120 : undefined, stay: 10 }, { id: 'b', name: 'b', kind: 'image', stay: 10 }],
+        items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? 120 : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? 120 : undefined, stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
-    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek,
+    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onRecovery:code=>recoveries.push(code),
         request: async (route, method, body) => { calls.push({ route, body }); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
             return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
-    return { player, state, calls, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
+    return { player, state, calls, recoveries, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
         tick(ms) { time += ms; for (const timer of timers) if (timer.ms === 250) timer.run(); },
         resize(width, height) { window.innerWidth = width; window.innerHeight = height; events.get('resize')?.(); },
         hasEvent(name) { return events.has(name); },
@@ -150,4 +150,45 @@ test('current audio is buffered on this device and switches to its retained byte
     f.tick(250); await f.flush(); assert.equal(requests.length, 1); assert.equal(requests[0].options.headers.Range, 'bytes=0-11'); assert.equal(audio.src, '/media/a');
     audio.currentTime = 4; audio.emit('waiting'); assert.match(audio.src, /^blob:/); audio.emit('loadedmetadata'); assert.equal(audio.currentTime, 4);
     audio.emit('canplay'); await f.flush(); f.tick(6000); assert.equal(requests.length, 1); f.player.close(); assert.equal(requests[0].options.signal.aborted, true);
+});
+
+test('a network error after playback started renews the media ticket and retains the local cursor', async () => {
+    const f = fixture({ kind: 'audio' }); await f.flush();
+    const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();
+    audio.currentTime = 8; f.tick(250); audio.error = {code:2}; audio.emit('error');
+    await f.flush(); f.tick(3000); await f.flush();
+    assert.equal(f.calls.filter(call => call.route.endsWith('/ticket') && call.body.itemId === 'a').length, 2, 'an interrupted native request must not leave the viewer stuck until refresh');
+    const replacement = f.elements.filter(el => el.tagName === 'AUDIO').at(-1); replacement.readyState=4; replacement.emit('canplay'); await f.flush();
+    assert.equal(replacement.currentTime,8); assert.deepEqual(f.recoveries,['STREAM_MEDIA_NETWORK_FAILED']); f.player.close();
+});
+
+test('a codec failure is distinguished from source/network failures and does not retry automatically', async () => {
+    const f = fixture({ kind:'audio' }); await f.flush();
+    const audio=f.elements.find(el=>el.tagName==='AUDIO');audio.error={code:3};audio.emit('error');await f.flush();
+    assert.match(f.player.element.querySelector('.sc-play-status').textContent,/STREAM_MEDIA_DECODE_FAILED/);
+    f.tick(3000);await f.flush();assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,1);f.player.close();
+});
+
+test('an HTTP access denial hidden by a native media error stops viewing instead of retrying',async()=>{
+    let probes=0;const f=fixture({kind:'audio',fetchBytes:async(_url,options)=>{probes++;assert.equal(options.headers.Range,'bytes=0-0');return {ok:false,headers:new Map([['Content-Type','application/json']]),json:async()=>({error:'STREAM_KICKED'})};}});
+    await f.flush();const audio=f.elements.find(el=>el.tagName==='AUDIO');audio.readyState=4;audio.emit('canplay');await f.flush();audio.error={code:2};audio.emit('error');await f.flush();
+    assert.equal(probes,1,'the initial readiness listener must not diagnose a later failure twice');assert.match(f.player.element.querySelector('.sc-play-status').textContent,/STREAM_KICKED/);
+    f.tick(10000);await f.flush();assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,1);assert.equal(audio.paused,true);f.player.close();
+});
+
+test('repeated transient media failures have bounded retries and late diagnosis cannot revive a closed player',async()=>{
+    const f=fixture({kind:'audio',fetchBytes:async()=>({ok:false,headers:new Map([['Content-Type','application/json']]),json:async()=>({error:'STREAM_PROVIDER_TIMEOUT'})})});await f.flush();
+    for(let attempt=0;attempt<4;attempt++){const audio=f.elements.filter(el=>el.tagName==='AUDIO').at(-1);audio.error={code:2};audio.emit('error');await f.flush();f.tick(2000*2**attempt);await f.flush();}
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,4);f.player.close();
+    let release;const closed=fixture({kind:'audio',fetchBytes:()=>new Promise(resolve=>{release=()=>resolve({ok:false,headers:new Map([['Content-Type','application/json']]),json:async()=>({error:'STREAM_PROVIDER_TIMEOUT'})});})});
+    await closed.flush();closed.elements.find(el=>el.tagName==='AUDIO').emit('error');closed.player.close();release();await closed.flush();closed.tick(10000);await closed.flush();
+    assert.equal(closed.calls.filter(call=>call.route.endsWith('/ticket')).length,1);
+});
+
+test('handover to a ready prefetched audio does not read the temporarily detached media cursor',async()=>{
+    let reads=0;const f=fixture({kind:'audio',nextKind:'audio',size:12,fetchBytes:async()=>{reads++;return {status:206,arrayBuffer:async()=>new Uint8Array(12).buffer};}});await f.flush();
+    const first=f.elements.find(el=>el.tagName==='AUDIO');first.readyState=4;first.emit('canplay');await f.flush();f.tick(250);await f.flush();
+    first.currentTime=119;f.tick(250);await f.flush();const next=f.elements.filter(el=>el.tagName==='AUDIO').at(-1);next.readyState=4;next.emit('canplay');await f.flush();
+    first.currentTime=120;f.tick(250);await f.flush();f.tick(250);await f.flush();
+    assert.equal(f.player.element.querySelector('.sc-media').children[0],next);assert.equal(reads,2);f.player.close();
 });

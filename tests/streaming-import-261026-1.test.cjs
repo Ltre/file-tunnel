@@ -32,9 +32,9 @@ async function fixture(t) {
         const s = service.station(station.id);
         return structuredClone({ name: s.name, configVersion: s.configVersion, items: s.items, loop: s.loop, countdown: s.countdown, coverId: '' });
     };
-    let baseline = snapshot(), body, focus, navigation;
+    let baseline = snapshot(), body, focus, navigation, openings = 0;
     const calls = [], ui = { drafts: {}, stationId: station.id };
-    const context = { ready: Promise.resolve(), dirty: () => false, open: async () => {}, account: () => '', structuredClone,
+    const context = { ready: Promise.resolve(), dirty: () => false, open: async () => { openings++; }, account: () => '', structuredClone,
         config: { tunnels: async () => [{ sessionId: 'tunnel', accessGrant: 'grant' }], currentTunnel: () => 'tunnel' },
         uid: () => 'inserted', ui, localConfig: () => structuredClone(baseline), saveConfig: (_id, value) => { baseline = structuredClone(value); }, saveUi() {}, closeDialog() {},
         navigate: (...args) => { navigation = args; }, pendingCovers: new Map(), saveFlights: new Map(), discardCover() {},
@@ -51,7 +51,7 @@ async function fixture(t) {
     vm.runInNewContext(section('    async function reconcileRevision(', '    function editor(') + section('    async function importRecord(', '    async function sendMarkdown('), context);
     return { context, ui, service, actor, station, snapshot, calls,
         baseline: value => { baseline = structuredClone(value); }, getBaseline: () => structuredClone(baseline), body: () => body,
-        navigation: () => navigation,
+        navigation: () => navigation, openings: () => openings,
         async choose() { await context.importRecord({ id: 'record', sessionId: 'tunnel' }); },
         async add() { await this.choose(); await body.children.find(node => node.tag === 'button').run(); },
         async changeServer() { await service.edit(station.id, actor, { ...snapshot(), name: '服务端新名称' }); } };
@@ -129,4 +129,12 @@ test('reading a newer playlist does not replace the clean draft or its baseline 
     await f.body().children.find(node => node.tag === 'button').run();
     assert.equal(f.getBaseline().configVersion, 4); assert.equal(f.ui.drafts[f.station.id].configVersion, 4);
     await assert.doesNotReject(f.context.persistDraft(f.station.id, () => {}));
+});
+
+test('the add-to-station picker keeps the original page underneath until insertion is confirmed', async t => {
+    const f = await fixture(t); await f.choose();
+    assert.equal(f.openings(), 0, 'choosing a target must not open the unrelated last console page');
+    assert.equal(f.navigation(), undefined);
+    await f.body().children.find(node => node.tag === 'button').run();
+    assert.equal(f.openings(), 1); assert.equal(f.navigation()[0], 'edit');
 });

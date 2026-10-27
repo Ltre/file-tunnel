@@ -41,11 +41,13 @@
     function saveUi() { if (!config) return; try { ui.importState = { pending: [...pending], channel, diskScope, tunnelScope }; localStorage.setItem(key('ui'), JSON.stringify(ui)); } catch (_) { notice('本机配置保存失败，请检查浏览器存储空间'); } }
     function saveConfig(stationId, value) { localStorage.setItem(key('station:' + stationId), JSON.stringify(value)); }
     function localConfig(stationId) { try { return JSON.parse(localStorage.getItem(key('station:' + stationId)) || 'null'); } catch (_) { return null; } }
-    function notice(text, code = '') { if (banner) { banner.textContent = t(text) + (code ? ' [' + code + ']' : ''); banner.hidden = false; } }
+    function notice(text, code = '') { if (banner) { banner.textContent = t(text) + (code ? ' [' + code + ']' : ''); banner.dataset.errorCode = code; banner.hidden = false; } }
     function error(cause) {
         if (cause.message === 'STREAM_TUNNEL_CONTEXT_TIMEOUT') { notice('读取本机隧道授权超时，请检查浏览器存储后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_CONTROL_TIMEOUT' || cause.message === 'Failed to fetch') { notice('串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_SOURCE_CHANGED') { notice('来源内容已变更，请重新导入该节目项', cause.message); return; }
+        if (cause.message === 'STREAM_MEDIA_DECODE_FAILED') { notice('浏览器无法解码该媒体，请检查格式与编码', cause.message); return; }
+        if (cause.message === 'STREAM_MEDIA_NETWORK_FAILED') { notice('媒体连接中断，可重试读取或检查网络与来源', cause.message); return; }
         if (cause.message === 'STREAM_TYPE_UNSUPPORTED') { notice('来源文件不是支持的可预览类型，请重新选择', cause.message); return; }
         if (cause.message === 'STREAM_INVITE_INVALID') { notice('邀请不存在或已被删除，请索取新邀请', cause.message); return; }
         const messages = { LOGIN_REQUIRED: '此操作需要登录账号', STREAM_OWNER_REQUIRED: '请切换或登录台的归属账号后管理', STREAM_SOURCE_LOGIN_REQUIRED: '请在创建设备重新登录归属账号，之后手动上线', STREAM_LOCAL_ONLY: '此操作只能在创建设备执行', STREAM_CONFLICT: '状态已更新，本次操作未应用，请刷新后重试', STREAM_KICKED: '此设备已被踢出，请联系创建者重新允许', STREAM_INVITATION_REQUIRED: '此台需要有效观看许可，请接受新邀请', STREAM_OFFLINE: '串流台已下线', STREAM_START_INVALID: '播放起点超出可播范围，请检查节目参数', STREAM_DURATION_REQUIRED: '无法确定媒体时长，请预览并检查浏览器是否支持', STREAM_SOURCE_DELETED: '来源已删除，请移除或重新选择节目', STREAM_SOURCE_MISSING: '来源不可读取，请在供源设备重新选择文件', STREAM_PROVIDER_OFFLINE: '供源设备不在线或文件授权不可用', STREAM_DEVICE_DENIED: '设备身份校验失败，请检查本机存储与服务端记录', STREAM_INVITE_DEVICE: '这是发给其它设备的定向邀请', STREAM_INVITE_REVOKED: '邀请已撤销，请索取新邀请', STREAM_INVITE_EXPIRED: '邀请已到期，请索取新邀请', STREAM_MESSAGE_NOT_SAVED: '消息未保存，请检查隧道状态后重试' };
@@ -382,6 +384,15 @@
                 const actions = document.createElement('div'); actions.className = 'sc-row-actions';
                 if (own(s) && !s.local) { const origin = document.createElement('small'); origin.className = 'sc-own-remote message-content'; origin.textContent = t('由你在其它设备创建') + ' · ' + t('设备 ID') + ' ' + s.deviceId; row.querySelector('.sc-station-title').append(origin); }
                 actions.append(button(s.visibility === 'offline' ? '查看状态' : '打开观看', () => navigate('watch', s.id), 'sc-primary'));
+                if (view === 'discover') {
+                    const subscription = button(s.subscribed ? '退订' : '订阅', async () => {
+                        const result = await request('/stations/' + s.id + '/bookmark', s.subscribed ? 'DELETE' : 'PUT', undefined, { accountId: selected });
+                        if (selected !== account() || revision !== listRequest || version !== renderVersion) return;
+                        s.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? '退订' : '订阅');
+                        notice(result.subscribed ? '已订阅' : '已取消订阅');
+                    });
+                    actions.append(subscription);
+                }
                 if (s.manageable) actions.append(button('操控串流台', () => navigate('control', s.id)));
                 if (view === 'local') {
                     actions.append(button(s.manageable ? '编辑节目单' : '切换归属账号', () => s.manageable ? navigate('edit', s.id) : accountDialog()));
@@ -863,7 +874,8 @@
             if (!player) { player = global.StreamingPlayer.create({ stationId: snapshot.id, watchId: uid(),
                 request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
                 onSeek: controlling ? seekControl : undefined,
-                onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); } }); players.set(playerKey, player); }
+                onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
+                onRecovery: code => { if (ui.stationId === snapshot.id && banner?.dataset.errorCode === code) { banner.hidden = true; banner.textContent = ''; banner.dataset.errorCode = ''; } } }); players.set(playerKey, player); }
             player.onView = fillInfo; player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
@@ -1013,34 +1025,36 @@
     async function importRecord(message, createNew=false, force=false) {
         await ready;
         if(!force&&dirty()){confirmLeave(()=>importRecord(message,createNew,true).catch(error));return;}
-        await open();const actor=account();
+        const actor=account();
         const grants=await config.tunnels(),context=grants.find(entry=>entry.sessionId===(message.sessionId||config.currentTunnel()));
         if(!context)throw Error('STREAM_TUNNEL_DENIED');
         const result=await request('/tunnel-candidates','POST',{...context,messageId:message.id});
-        if(!result.candidates.length){notice('这条记录没有可导入的可视内容');return;}
+        if(!result.candidates.length){if(isOpen())notice('这条记录没有可导入的可视内容');else config.toast(t('这条记录没有可导入的可视内容'));return;}
         const prepare=stationId=>result.candidates.map(candidate=>{const item=structuredClone(candidate);item.id=uid();item.stay=10;item.start=0;item.source.tunnelGrants=Object.fromEntries(grants.map(entry=>[entry.sessionId,entry.accessGrant]));return item;});
-        const enter=(station,d,position,baseline)=>{
+        const enter=async(station,d,position,baseline)=>{
             if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
             const additions=prepare(station.id);if(d.items.length+additions.length>500)throw Error('STREAM_PLAYLIST_INVALID');
             if(baseline)saveConfig(station.id,baseline);
             d.items.splice(position,0,...additions);ui.drafts[station.id]=d;
             pendingEditorFocus={stationId:station.id,ids:additions.map(item=>item.id)};
-            saveUi();closeDialog();navigate('edit',station.id);
+            saveUi();closeDialog();await open();
+            if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
+            navigate('edit',station.id);
         };
         if(createNew){
             if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
             const station=await request('/stations','POST',{name:t('新串流台'),creationId:uid()},{accountId:actor});
-            const d={name:station.name,configVersion:station.configVersion,items:[],loop:true,countdown:'bottom-right',coverId:''};saveConfig(station.id,d);enter(station,d,0);return;
+            const d={name:station.name,configVersion:station.configVersion,items:[],loop:true,countdown:'bottom-right',coverId:''};saveConfig(station.id,d);return enter(station,d,0);
         }
         const stations=(await request('/stations?kind=local')).stations.filter(s=>s.local&&s.manageable);
-        if(!stations.length){notice('本设备没有当前身份可编辑的串流台');return;}
+        if(!stations.length){if(isOpen())notice('本设备没有当前身份可编辑的串流台');else config.toast(t('本设备没有当前身份可编辑的串流台'));return;}
         const body=document.createElement('div'),select=document.createElement('select'),items=document.createElement('select'),position=document.createElement('div'),status=document.createElement('p');
         body.className='sc-insert-dialog';position.className='sc-insert-position';status.className='sc-insert-status';status.setAttribute('role','status');
         select.setAttribute('aria-label',t('目标串流台'));items.setAttribute('aria-label',t('参照节目'));items.size=6;
         for(const s of stations)select.add(new Option(s.number+' · '+s.name,s.id));
         const before=document.createElement('input'),after=document.createElement('input');before.type=after.type='radio';before.name=after.name='sc-insert-position';after.checked=true;
         for(const [input,label] of [[before,'插入该节目之前'],[after,'插入该节目之后']]){const field=document.createElement('label');field.append(input,t(label));position.append(field);}
-        const add=button('添加并编辑',()=>{if(!d)throw Error('STREAM_REQUEST_FAILED');const index=d.items.findIndex(item=>item.id===items.value);enter(stations.find(s=>s.id===select.value),d,index<0?d.items.length:index+(after.checked?1:0),baseline);},'sc-primary');
+        const add=button('添加并编辑',()=>{if(!d)throw Error('STREAM_REQUEST_FAILED');const index=d.items.findIndex(item=>item.id===items.value);return enter(stations.find(s=>s.id===select.value),d,index<0?d.items.length:index+(after.checked?1:0),baseline);},'sc-primary');
         let d,baseline,revision=0;
         const comparable=value=>JSON.stringify(value&&{...value,configVersion:0,items:value.items.map(({sourceSaved,durationError,...item})=>item)});
         const reload=button('放弃旧草稿，读取最新节目单',()=>load(true));reload.hidden=true;

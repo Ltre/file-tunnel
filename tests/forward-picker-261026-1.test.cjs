@@ -23,7 +23,7 @@ function fixture() {
     document = { activeElement: null, createElement: tag => new Node(tag), body: { appendChild: node => { overlay = node; } } };
     const context = { document, state: { sessionId: 'current' }, generateId: () => 'picker-fixture', window: {},
         LAST_FORWARD_SESSION_STORAGE_KEY: 'last-forward', localStorage: { getItem: () => 'target-b' }, escapeHtml: String,
-        getAllFromStore: async () => [{ sessionId: 'current', shortCode: '00000' }, { sessionId: 'target-a', shortCode: '11111', remark: '甲' }, { sessionId: 'target-b', shortCode: '22222', remark: '乙' }] };
+        getAllFromStore: async () => [{ sessionId: 'current', shortCode: '00000' }, { sessionId: 'target-a', shortCode: '11111', remark: '' }, { sessionId: 'target-b', shortCode: '22222', remark: '乙' }] };
     vm.runInNewContext(source.slice(source.indexOf('async function chooseForwardTargetSession()'), source.indexOf('async function cloneForwardFileInfo(')), context);
     return { context, get overlay() { return overlay; }, get document() { return document; } };
 }
@@ -31,10 +31,10 @@ test('desktop choice and mobile native selection share one destination, only con
     const f = fixture(); let completed = false;
     const selection = f.context.chooseForwardTargetSession().then(value => { completed = true; return value; }); await new Promise(setImmediate);
     const overlay = f.overlay, select = overlay.select, picker = overlay.children[1], [toggle, list] = picker.children;
-    assert.equal(select.options.length, 2); assert.equal(select.value, 'target-b'); assert.match(toggle.textContent, /乙.*22222/);
+    assert.equal(select.options.length, 2); assert.equal(select.options[0].textContent, '11111'); assert.equal(select.value, 'target-b'); assert.equal(toggle.textContent, '22222 · 乙 ▾');
     toggle.onclick(); assert.equal(list.hidden, false); assert.equal(f.document.activeElement.dataset.value, 'target-b');
     list.children[0].onclick(); assert.equal(select.value, 'target-a'); assert.equal(list.hidden, true); assert.equal(completed, false);
-    select.value = 'target-b'; select.onchange(); assert.match(toggle.textContent, /乙.*22222/);
+    select.value = 'target-b'; select.onchange(); assert.equal(toggle.textContent, '22222 · 乙 ▾');
     overlay.listeners.click({ target: { closest: selector => selector === '[data-forward-confirm]' } });
     assert.equal(await selection, 'target-b'); assert.equal(overlay.removed, true);
 });

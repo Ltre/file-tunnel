@@ -8416,8 +8416,9 @@ async function chooseForwardTargetSession() {
         const overlay = document.createElement('div');
         overlay.className = 'send-mode-overlay forward-session-overlay';
         const options = sessions.map(session => {
-            const label = String(session.remark || session.shortCode || session.sessionId).trim();
-            return `<option value="${escapeHtml(session.sessionId)}">${escapeHtml(label)} · ${escapeHtml(session.shortCode || session.sessionId.slice(0, 8))}</option>`;
+            const shortCode = String(session.shortCode || session.sessionId.slice(0, 8)).trim();
+            const remark = String(session.remark || '').trim();
+            return `<option value="${escapeHtml(session.sessionId)}">${escapeHtml(shortCode + (remark ? ' · ' + remark : ''))}</option>`;
         }).join('');
         overlay.innerHTML = `<div class="send-mode-dialog" role="dialog" aria-modal="true">
             <h3>发到其他隧道</h3>

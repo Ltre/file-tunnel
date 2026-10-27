@@ -77,6 +77,24 @@ test('consecutive complete and Range reads remain available after each response 
     }
 });
 
+test('a drive Range reader can open while a cache fill is renamed to its completed file',{timeout:15000},async t=>{
+    const f=await setup(t),item=f.items.find((entry,index)=>f.files[index].name.endsWith('.txt'));
+    const fsp=require('node:fs/promises'),path=require('node:path'),originalOpen=fsp.open,originalRename=fsp.rename,errors=[];
+    const completed=new Set(),waiting=new Map();let intercepted=0;
+    const root=path.join(f.dataDir,'telegram-part-cache')+path.sep;
+    fsp.rename=async(from,to)=>{const result=await originalRename(from,to);completed.add(String(from));waiting.get(String(from))?.();return result;};
+    fsp.open=async(filename,...args)=>{
+        if(String(filename).startsWith(root)&&String(filename).endsWith('.tmp')){intercepted++;if(!completed.has(String(filename)))await new Promise(resolve=>waiting.set(String(filename),resolve));}
+        return originalOpen(filename,...args);
+    };
+    t.after(()=>{fsp.open=originalOpen;fsp.rename=originalRename;for(const resolve of waiting.values())resolve();});
+    const read=f.sources.read;f.sources.read=async(...args)=>{const stream=await read(...args);stream.on('error',error=>errors.push(error.code||error.message));return stream;};
+    const ticket=(await f.call('device-C','/stations/'+f.s.id+'/ticket','POST',{itemId:item.id})).body;
+    const response=await fetch(f.base+ticket.url,{headers:{...f.headers('device-C'),Range:'bytes=0-5'}});
+    const bytes=await response.arrayBuffer();t.diagnostic('underlying cache read errors: '+JSON.stringify(errors));
+    assert.ok(intercepted>0,'the test must cross the temporary-file open boundary');assert.equal(response.status,206,Buffer.from(bytes).toString());assert.equal(bytes.byteLength,6);
+});
+
 test('drive playlist revisions reconcile accountId locators after release and reclaim without reading media', async t => {
     const f = await setup(t), station = f.streaming.service.station(f.s.id);
     const baseline = { name: station.name, loop: station.loop, countdown: station.countdown, items: station.items.map((item, index) => ({ ...item, source: f.items[index].source })) };

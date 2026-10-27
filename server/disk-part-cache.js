@@ -234,7 +234,19 @@ function createDiskPartCache({ dataDir, maxBytes = Number(process.env.TELEGRAM_P
         await entry.opened;
         signal?.throwIfAborted();
         async function* growingFile() {
-            const handle = await fsp.open(filename, 'r'); let position = start;
+            let handle;
+            try { handle = await fsp.open(filename, 'r'); }
+            catch (error) {
+                // The producer can finish and rename .tmp after this reader
+                // selected it but before open() reaches the filesystem. Keep
+                // the same entry/generation and wait for its validation before
+                // opening the completed file. Other errors are not cache hits.
+                if (error.code !== 'ENOENT' || filename !== entry.temporary) throw error;
+                await entry.ready;
+                signal?.throwIfAborted();
+                handle = await fsp.open(entry.target, 'r');
+            }
+            let position = start;
             try {
                 while (position <= end) {
                     if (signal?.aborted) throw new Error('OPERATION_CANCELLED');

@@ -49,10 +49,10 @@ for(const before of [true,false])test('adding a record keeps existing program id
     vm.runInNewContext(section(read('client/streaming-console.js'),'    async function importRecord(', '    async function sendMarkdown('),context);
     await context.importRecord({id:'record',sessionId:'tunnel'});
     body.children.find(n=>n.tag==='select'&&n.size===6).value='second';const radios=body.children.find(n=>n.tag==='div').children.map(label=>label.children[0]);radios[0].checked=before;radios[1].checked=!before;
-    body.children.find(n=>n.tag==='button').run();
+    await body.children.find(n=>n.tag==='button').run();
     assert.deepEqual(Array.from(drafts.station.items,item=>item.id),before?['first','new-item','second']:['first','second','new-item']);
     assert.deepEqual(navigation,['edit','station']);assert.equal(original.items.length,2,'the saved baseline is not mutated before saving');
-    actor='other';assert.throws(()=>body.children.find(n=>n.tag==='button').run(),/STREAM_OWNER_REQUIRED/);
+    actor='other';await assert.rejects(body.children.find(n=>n.tag==='button').run(),/STREAM_OWNER_REQUIRED/);
 });
 
 test('saving a cover does not discard a newer selection made while saving',async()=>{
