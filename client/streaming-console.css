@@ -105,15 +105,17 @@
 .sc-player.sc-media-fullscreen .sc-local-controls>label{width:100%;max-width:180px}
 .sc-player.sc-media-fullscreen .sc-local-controls input[type=range]{max-width:180px}
 .sc-mini-window[hidden]{display:none!important}
-.sc-mini-window{position:fixed;right:16px;bottom:16px;z-index:18010;width:min(420px,calc(100vw - 24px));background:#111;color:#fff;box-shadow:0 12px 48px #0005;border-radius:10px;overflow:hidden}
-.sc-mini-bar{display:flex;gap:6px;justify-content:flex-end;padding:5px 8px;cursor:move;touch-action:none}
-.sc-mini-bar button{font:inherit;font-size:12px;padding:5px 8px;color:#eee;border:0;border-radius:5px;background:#333;cursor:pointer}
+.sc-mini-window{position:fixed;right:16px;bottom:16px;z-index:18010;width:min(320px,calc(100vw - 24px));background:#111;color:#fff;box-shadow:0 12px 48px #0005;border-radius:10px;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab}
+.sc-mini-window:active{cursor:grabbing}
+.sc-mini-window .sc-mini-close{position:absolute;right:5px;top:5px;z-index:5;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;padding:0;background:#1117;color:#fff;font:26px/1 system-ui;cursor:pointer;text-shadow:0 1px 4px #000}
+.sc-mini-window .sc-mini-close:hover{background:#111c}
 .sc-mini-window .sc-stage{min-height:0;border-radius:0;aspect-ratio:16/9}
-.sc-mini-window .sc-local-controls{display:flex;flex-wrap:wrap;gap:5px;margin:6px 8px}
-.sc-mini-window .sc-local-controls button{font-size:12px;padding:5px 7px;background:#333;color:#fff}
-.sc-mini-window .sc-local-controls button[data-icon]{font-size:0}
-.sc-mini-window .sc-local-controls button[data-icon]:before{content:attr(data-icon);font-size:20px}
-.sc-mini-window .sc-local-controls label{display:flex;max-width:110px;font-size:0}
-.sc-mini-window input[type=range]{max-width:100px}
-.sc-mini-window .sc-play-status,.sc-mini-window .sc-background-toggle{margin:0;padding:4px 8px;color:#eee;font-size:11px}
-.sc-mini-window .sc-seek{display:none}
+.sc-mini-window .sc-media{pointer-events:none}
+.sc-mini-window .sc-media>audio{display:none}
+.sc-mini-window .sc-local-controls{position:absolute;left:8px;bottom:8px;z-index:4;display:flex;gap:6px;margin:0}
+.sc-mini-window .sc-local-controls>:not(.sc-local-pause):not(.sc-sound-toggle){display:none!important}
+.sc-mini-window .sc-local-controls>button{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:50%;padding:0;background:#1119;color:#fff;font-size:0;cursor:pointer}
+.sc-mini-window .sc-local-controls>button:before{content:attr(data-icon);font-size:20px;line-height:1}
+.sc-mini-window .sc-play-status,.sc-mini-window .sc-background-toggle,.sc-mini-window .sc-seek,.sc-mini-window .sc-muted,.sc-mini-window .sc-buffering{display:none!important}
+.sc-viewer-page .sc-watch-grid>aside{overflow-anchor:none}
+@media(max-width:767px){.sc-viewer-page .sc-watch-grid>aside{max-height:60dvh;overflow:auto}}

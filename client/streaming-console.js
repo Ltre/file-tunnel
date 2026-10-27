@@ -234,12 +234,33 @@
     function showSmallWindow(player) {
         if (!smallWindow) {
             smallWindow = document.createElement('section'); smallWindow.className = 'sc-mini-window'; smallWindow.setAttribute('aria-label', t('串流台小窗'));
-            const bar = document.createElement('div'); bar.className = 'sc-mini-bar'; bar.append(button('恢复串流台', () => open()), button('关闭小窗', () => { hideSmallWindow(); parkPlayers(); presentPlayers(); }));
-            let drag;
-            bar.onpointerdown = event => { if (event.target.closest('button')) return; const rect = smallWindow.getBoundingClientRect(); drag = { x:event.clientX, y:event.clientY, left:rect.left, top:rect.top }; bar.setPointerCapture(event.pointerId); };
-            bar.onpointermove = event => { if (!drag) return; smallWindow.style.left = Math.max(0,Math.min(innerWidth-smallWindow.offsetWidth,drag.left+event.clientX-drag.x))+'px'; smallWindow.style.top = Math.max(0,Math.min(innerHeight-smallWindow.offsetHeight,drag.top+event.clientY-drag.y))+'px'; smallWindow.style.right = smallWindow.style.bottom = 'auto'; };
-            bar.onpointerup = bar.onpointercancel = () => { drag = null; };
-            smallWindow.append(bar); document.body.append(smallWindow);
+            const close = button('关闭小窗', () => { hideSmallWindow(); parkPlayers(); presentPlayers(); }, 'sc-mini-close');
+            close.setAttribute('aria-label', t('关闭小窗')); close.title = t('关闭小窗'); close.textContent = '×';
+            let drag, suppressClick = false;
+            smallWindow.onpointerdown = event => {
+                if (event.button > 0 || event.isPrimary === false) return;
+                const rect = smallWindow.getBoundingClientRect(); suppressClick = false;
+                drag = { id:event.pointerId, x:event.clientX, y:event.clientY, left:rect.left, top:rect.top, moved:false };
+            };
+            smallWindow.onpointermove = event => {
+                if (!drag || drag.id !== event.pointerId) return;
+                const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+                if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+                if (!drag.moved) { drag.moved = true; smallWindow.setPointerCapture(event.pointerId); }
+                smallWindow.style.left = Math.max(0,Math.min(innerWidth-smallWindow.offsetWidth,drag.left+dx))+'px';
+                smallWindow.style.top = Math.max(0,Math.min(innerHeight-smallWindow.offsetHeight,drag.top+dy))+'px';
+                smallWindow.style.right = smallWindow.style.bottom = 'auto';
+            };
+            const endDrag = event => {
+                if (!drag || drag.id !== event.pointerId) return;
+                suppressClick = drag.moved || event.type === 'pointercancel'; drag = null;
+            };
+            smallWindow.onpointerup = smallWindow.onpointercancel = endDrag;
+            smallWindow.addEventListener('click', event => {
+                if (suppressClick) { suppressClick = false; event.preventDefault(); event.stopImmediatePropagation(); return; }
+                if (!event.target.closest('button')) { event.preventDefault(); open(); }
+            }, true);
+            smallWindow.append(close); document.body.append(smallWindow);
         }
         player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; minimize(); presentPlayers();
     }
@@ -883,9 +904,17 @@
         if (!controlling) { main.insertBefore(actions, info); if (snapshot.manageable) actions.append(button('操控串流台', () => navigate('control', snapshot.id))); }
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
         const waitRows = new Map(), scheduleState = { value: snapshot, receivedAt: performance.now() };
+        let playlistSignature = '', focusedProgram = '';
         const fillInfo = value => {
             if (!['watch', 'control'].includes(ui.view) || ui.stationId !== value.id || version !== renderVersion) return;
-            snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); waitRows.clear(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
+            snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
+            const signature = JSON.stringify([value.configVersion, value.visibility, value.playback.itemId, value.items.map(item => [item.id, item.name, item.sourceKind, item.unavailable])]);
+            // Reports must not rebuild an unchanged viewer playlist and reset
+            // manual scrolling (or interrupt a program-change smooth scroll).
+            if (!controlling && signature === playlistSignature) return;
+            playlistSignature = signature;
+            const previousScroll = aside.scrollTop; let playingRow;
+            waitRows.clear();
             aside.replaceChildren(); const heading = document.createElement('h2'); heading.textContent = controlling ? t('全局状态') + ' · ' + stateLabel(['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.playback.status) : t('节目单'); aside.append(heading);
             if (!controlling && value.visibility === 'offline') { const state = document.createElement('p'); state.textContent = t('串流台已下线'); stage.replaceChildren(state); }
             const waits = programWaits(value);
@@ -893,10 +922,21 @@
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
                 if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
                 row.classList.toggle('sc-now-playing', item.id === value.playback.itemId);
+                if (item.id === value.playback.itemId) playingRow = row;
                 const name = document.createElement('span'); name.className = 'message-content';
                 name.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
                 if (item.id !== value.playback.itemId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id)); waitRows.set(item.id, wait); name.append(wait); }
                 row.append(name); aside.append(row);
+            }
+            aside.scrollTop = previousScroll;
+            if (!controlling && playingRow && focusedProgram !== value.playback.itemId) {
+                focusedProgram = value.playback.itemId;
+                requestAnimationFrame(() => {
+                    if (version !== renderVersion || !playingRow.isConnected) return;
+                    const row = playingRow.getBoundingClientRect(), box = aside.getBoundingClientRect();
+                    aside.scrollTo({ top: Math.max(0, aside.scrollTop + row.top - box.top - aside.clientTop + (row.height - aside.clientHeight) / 2),
+                        behavior: global.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+                });
             }
             if (controlling && value.manageable && value.viewers?.length) { const h = document.createElement('h3'); h.textContent = t('实际观看设备'); aside.append(h);
                 for (const viewer of value.viewers) { const p = document.createElement('p'); p.className = 'message-content'; p.textContent = viewer.name + ' · ' + stateLabel(viewer.status) + ' · ' + viewer.position.toFixed(1) + 's'; if (viewer.deviceId !== value.deviceId) p.append(button('踢出', () => kick(value.id, viewer.deviceId))); aside.append(p); }

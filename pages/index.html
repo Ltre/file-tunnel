@@ -337,6 +337,7 @@
                         <span>💬</span>
                         <span>传输记录</span>
                         <span class="online-indicator"></span>
+                        <button class="workspace-collab-trigger" id="workspaceCollabOpen" type="button" aria-controls="workspaceCollabPanel" aria-expanded="false"><span>📝</span><span>协同编辑</span></button>
                     </div>
                     <div class="panel-content">
                         <div class="chat-messages-shell" id="chatMessagesShell">
@@ -371,12 +372,13 @@
             </div>
             
             <!-- 右侧：协同编辑 -->
-            <div class="right-panel">
+            <div class="right-panel" id="workspaceCollabPanel">
                 <div class="panel">
                     <div class="panel-header">
                         <span>📝</span>
                         <span>协同编辑</span>
                         <span id="collabStatus" style="font-size: 0.8rem; opacity: 0.8;">同步中...</span>
+                        <button class="workspace-collab-close" id="workspaceCollabClose" type="button" aria-label="关闭" title="关闭">×</button>
                     </div>
                     <div class="panel-content collab-editor">
                         <div class="editor-toolbar">

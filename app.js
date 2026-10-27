@@ -16806,6 +16806,33 @@ function updateDeviceList() {
 }
 
 // ==================== UI 初始化 ====================
+function initAdaptiveWorkspaceLayout() {
+    const shell = document.getElementById('appShell');
+    const panel = document.getElementById('workspaceCollabPanel');
+    const trigger = document.getElementById('workspaceCollabOpen');
+    const close = document.getElementById('workspaceCollabClose');
+    if (!shell || !panel || !trigger || !close) return;
+    const compact = window.matchMedia('(min-width: 768px) and (max-width: 1099px)');
+    const setOpen = (open, restoreFocus = false) => {
+        const visible = open && compact.matches;
+        shell.classList.toggle('workspace-collab-open', visible);
+        trigger.setAttribute('aria-expanded', String(visible));
+        if (visible) close.focus({ preventScroll: true });
+        else if (restoreFocus && compact.matches) trigger.focus({ preventScroll: true });
+    };
+    trigger.addEventListener('click', () => setOpen(true));
+    close.addEventListener('click', () => setOpen(false, true));
+    panel.addEventListener('click', event => { if (event.target === panel) setOpen(false, true); });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && panel.contains(event.target) && shell.classList.contains('workspace-collab-open')) {
+            event.preventDefault(); event.stopImmediatePropagation(); setOpen(false, true);
+        }
+    }, true);
+    const syncLayout = () => { if (!compact.matches) setOpen(false); };
+    if (compact.addEventListener) compact.addEventListener('change', syncLayout);
+    else compact.addListener(syncLayout);
+}
+
 function setMobileWorkspaceView(view, options = {}) {
     if (!['chat', 'devices', 'editor'].includes(view)) return;
     const appShell = document.getElementById('appShell');
@@ -18119,6 +18146,7 @@ function initUI() {
         validateVisibleExternalFileSources().catch(err => historyLog('external-file-focus-validation-failed', { error: err.message }));
     });
     initMobileWorkspace();
+    initAdaptiveWorkspaceLayout();
     initProgressDrawer();
     initChatScrollAnchorTracking();
     initChatJumpButtons();

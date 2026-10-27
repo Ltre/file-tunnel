@@ -103,7 +103,7 @@ body[data-theme="atelier"] .main-layout {
     min-width: 0;
 }
 
-@media (min-width: 1201px) {
+@media (min-width: 768px) {
     .main-layout { height: clamp(480px, calc(100dvh - 140px), 800px); align-items: stretch; }
     .main-layout > :is(.left-panel, .center-panel, .right-panel) { min-height: 0; }
     .main-layout > :is(.left-panel, .center-panel, .right-panel) > .panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
@@ -4837,7 +4837,7 @@ body[data-theme="graphite"] .control-center-tile{background:#283445;border-color
     padding-top: calc(20px + var(--tunnel-topbar-height));
 }
 
-@media (min-width: 1201px) {
+@media (min-width: 768px) {
     .tunnel-topbar {
         padding-left: max(20px, calc((100vw - 1400px) / 2 + 20px));
         padding-right: max(20px, calc((100vw - 1400px) / 2 + 20px));
@@ -5565,4 +5565,23 @@ body[data-theme="graphite"] .control-center-tile{background:#283445;border-color
 
     .file-preview-nav-prev { left: 2px; }
     .file-preview-nav-next { right: 2px; }
+}
+
+/* Workspace A (three columns), D (two columns + the same editor as an
+   overlay), B (existing mobile tabs). Breakpoints use CSS viewport pixels,
+   not hardware resolution, device models or a DPI capability test. */
+.workspace-collab-trigger,.workspace-collab-close { display: none; }
+@media (min-width: 1100px) and (max-width: 1200px) {
+    #appShell > .main-layout { grid-template-columns: 260px minmax(0,1fr) 320px; gap: 14px; }
+}
+@media (min-width: 768px) and (max-width: 1099px) {
+    #appShell.container { padding-left: 12px; padding-right: 12px; }
+    #appShell > .main-layout { grid-template-columns: 250px minmax(0,1fr); gap: 14px; }
+    #appShell .right-panel { display: none; }
+    .center-panel > .panel > .panel-header { flex: none; }
+    .workspace-collab-trigger { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; border: 1px solid var(--panel-border); border-radius: 8px; padding: 6px 10px; background: var(--panel-bg); color: var(--text-main); font: inherit; font-size: 13px; cursor: pointer; }
+    #appShell.workspace-collab-open .right-panel { position: fixed; inset: var(--tunnel-topbar-height) 0 0; z-index: 3500; display: flex; padding: 12px; background: #14213d80; }
+    #appShell.workspace-collab-open .right-panel > .panel { flex: 1; min-height: 0; }
+    #appShell.workspace-collab-open .right-panel .collab-editor { min-height: 0; }
+    .workspace-collab-close { display: grid; place-items: center; margin-left: auto; width: 32px; height: 32px; border: 0; border-radius: 6px; padding: 0; background: var(--surface-soft); color: var(--text-main); font: 25px/1 system-ui; cursor: pointer; }
 }

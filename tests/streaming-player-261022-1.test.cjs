@@ -58,6 +58,20 @@ test('audio starts audible and mute is visibly reported', async () => {
     assert.match(f.player.element.querySelector('.sc-play-status').textContent, /已静音/); f.player.close();
 });
 
+test('steady playback updates preserve pause and mute button children until their labels change', async () => {
+    const f = fixture({ kind: 'audio' }); await f.flush();
+    const sound = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '静音');
+    const pause = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '暂停本机观看');
+    let replacements = 0;
+    for (const node of [sound, pause]) {
+        let text = node.textContent;
+        Object.defineProperty(node, 'textContent', { get: () => text, set: value => { replacements++; text = value; } });
+    }
+    f.tick(250); f.tick(250); assert.equal(replacements, 0);
+    sound.onclick(); assert.equal(sound.textContent, '取消静音'); assert.equal(replacements, 1);
+    f.tick(250); assert.equal(replacements, 1); f.player.close();
+});
+
 test('media countdown starts at 99 seconds and respects local/global pause', async () => {
     const f = fixture({ kind:'audio' }); await f.flush(); const audio = f.elements.find(el=>el.tagName==='AUDIO');
     audio.readyState=4; audio.emit('canplay'); await f.flush(); audio.currentTime=20; f.tick(250);

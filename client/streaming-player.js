@@ -46,6 +46,7 @@
         const localPause = button('暂停本机观看', () => { const retry = actual === 'blocked' || actual === 'error'; paused = retry ? false : !paused; if (paused) { media?.pause(); actual = 'paused'; } else if (actual !== 'blocked') align(); lastTick = performance.now(); sync(true); update(); });
         function applyAudioPolicy() { for(const node of new Set([media,active?.media,next?.media]))if(node){node.muted=muted;node.defaultMuted=muted;node.volume=muted?0:volume;} }
         const sound = button('静音', () => { muted = !muted; applyAudioPolicy(); sync(true); update(); });
+        localPause.className = 'sc-local-pause'; sound.className = 'sc-sound-toggle';
         localPause.dataset.icon = '❚❚'; sound.dataset.icon = '🔇';
         const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
@@ -97,9 +98,14 @@
             if (selected && !dragging) { seek.max = length(selected); seek.value = Math.min(localPosition, length(selected)); seekLabel.textContent = localPosition.toFixed(1) + ' / ' + length(selected).toFixed(1) + ' s'; }
             const statuses = { playing: '正在播放', paused: '本机已暂停', buffering: '缓冲中', waiting: '等待播放', blocked: '浏览器限制播放，请点击恢复播放', error: '播放失败，请重试', reading: '正在展示' };
             const silent = muted || volume === 0;
-            sound.textContent = t(muted ? '取消静音' : '静音'); muteNode.hidden = !silent; muteNode.textContent = t('已静音');
+            // Replacing unchanged button children during a mouse press can
+            // cancel Chromium's click on the full-screen icon/pseudo-element.
+            const soundLabel = t(muted ? '取消静音' : '静音');
+            if (sound.textContent !== soundLabel) sound.textContent = soundLabel;
+            muteNode.hidden = !silent; muteNode.textContent = t('已静音');
             localPause.dataset.icon = paused || actual === 'blocked' || actual === 'error' ? '▶' : '❚❚'; sound.dataset.icon = muted ? '🔊' : '🔇';
-            localPause.textContent = t(actual === 'blocked' || actual === 'error' ? '恢复播放' : paused ? '恢复跟随' : '暂停本机观看');
+            const pauseText = t(actual === 'blocked' || actual === 'error' ? '恢复播放' : paused ? '恢复跟随' : '暂停本机观看');
+            if (localPause.textContent !== pauseText) localPause.textContent = pauseText;
             for (const control of [localPause, sound]) { control.title = control.textContent; control.setAttribute('aria-label', control.textContent); }
             statusNode.textContent = (pauseLabel ? t(pauseLabel) : failure || t(!paused && actual === 'paused' ? '等待全台播放' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
