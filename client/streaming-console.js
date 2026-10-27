@@ -863,6 +863,47 @@
         timer = setInterval(update, 1000); update();
         return () => clearInterval(timer);
     }
+    function followPlaylist(aside, active) {
+        const viewport = root.querySelector('.sc-main');
+        const leading = document.createElement('div'), trailing = document.createElement('div');
+        for (const spacer of [leading, trailing]) { spacer.className = 'sc-playlist-space'; spacer.setAttribute('aria-hidden', 'true'); }
+        let currentId = '', pendingId = '', frame = 0;
+        const schedule = () => {
+            if (!pendingId || frame) return;
+            frame = requestAnimationFrame(() => {
+                frame = 0;
+                if (!active() || !isOpen()) return;
+                const row = aside.querySelector('.sc-now-playing');
+                if (!row || row.dataset.itemId !== pendingId) return;
+                // Leave scroll range at both ends so the first/last item can
+                // also reach the middle instead of being clamped to an edge.
+                const height = parseFloat(getComputedStyle(aside).maxHeight);
+                leading.style.height = trailing.style.height = (Number.isFinite(height) ? height : viewport.clientHeight) / 2 + 'px';
+                const scroll = aside.scrollTop;
+                aside.insertBefore(leading, aside.querySelector('.sc-watch-item')); aside.append(trailing);
+                aside.scrollTop = scroll;
+                const item = row.getBoundingClientRect(), box = aside.getBoundingClientRect(), clip = viewport.getBoundingClientRect();
+                const visual = global.visualViewport;
+                const top = Math.max(box.top + aside.clientTop, clip.top + viewport.clientTop, visual?.offsetTop || 0);
+                const bottom = Math.min(box.top + aside.clientTop + aside.clientHeight, clip.top + viewport.clientTop + viewport.clientHeight, (visual?.offsetTop || 0) + (visual?.height || innerHeight));
+                // A hidden/minimized/offscreen playlist cannot be positioned yet.
+                // Keep the pending item until it has a visible scrolling area.
+                if (bottom <= top) return;
+                aside.scrollTo({ top: Math.max(0, aside.scrollTop + item.top + item.height / 2 - (top + bottom) / 2),
+                    behavior: global.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+                pendingId = '';
+            });
+        };
+        const observer = global.IntersectionObserver && new global.IntersectionObserver(schedule, { root: viewport });
+        observer?.observe(aside);
+        viewport.addEventListener('scroll', schedule, { passive: true });
+        global.addEventListener('streaming-visibility-change', schedule);
+        global.addEventListener('resize', schedule);
+        return {
+            focus(id) { if (id !== currentId) { currentId = id; pendingId = id; } schedule(); },
+            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', schedule); global.removeEventListener('streaming-visibility-change', schedule); global.removeEventListener('resize', schedule); }
+        };
+    }
     async function watcher(version) {
         const requestedAccount = account(), get = url => request(url, 'GET', undefined, { accountId: requestedAccount });
         const controlling = ui.view === 'control', heading = title(controlling ? '操控串流台' : '观看串流台');
@@ -904,40 +945,34 @@
         if (!controlling) { main.insertBefore(actions, info); if (snapshot.manageable) actions.append(button('操控串流台', () => navigate('control', snapshot.id))); }
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
         const waitRows = new Map(), scheduleState = { value: snapshot, receivedAt: performance.now() };
-        let playlistSignature = '', focusedProgram = '';
+        let playlistSignature = '';
+        const playlistFollow = !controlling && followPlaylist(aside, () => version === renderVersion && ui.view === 'watch' && ui.stationId === snapshot.id);
         const fillInfo = value => {
             if (!['watch', 'control'].includes(ui.view) || ui.stationId !== value.id || version !== renderVersion) return;
             snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');
-            const signature = JSON.stringify([value.configVersion, value.visibility, value.playback.itemId, value.items.map(item => [item.id, item.name, item.sourceKind, item.unavailable])]);
+            const playingId = !controlling && player?.currentItemId?.() || value.playback.itemId;
+            const signature = JSON.stringify([value.configVersion, value.visibility, playingId, value.items.map(item => [item.id, item.name, item.sourceKind, item.unavailable])]);
             // Reports must not rebuild an unchanged viewer playlist and reset
             // manual scrolling (or interrupt a program-change smooth scroll).
-            if (!controlling && signature === playlistSignature) return;
+            if (!controlling && signature === playlistSignature) { playlistFollow.focus(playingId); return; }
             playlistSignature = signature;
-            const previousScroll = aside.scrollTop; let playingRow;
+            const previousScroll = aside.scrollTop;
             waitRows.clear();
             aside.replaceChildren(); const heading = document.createElement('h2'); heading.textContent = controlling ? t('全局状态') + ' · ' + stateLabel(['offline', 'restricted'].includes(value.visibility) ? value.visibility : value.playback.status) : t('节目单'); aside.append(heading);
             if (!controlling && value.visibility === 'offline') { const state = document.createElement('p'); state.textContent = t('串流台已下线'); stage.replaceChildren(state); }
             const waits = programWaits(value);
             for (const item of value.items) {
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
+                row.dataset.itemId = item.id;
                 if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
-                row.classList.toggle('sc-now-playing', item.id === value.playback.itemId);
-                if (item.id === value.playback.itemId) playingRow = row;
+                row.classList.toggle('sc-now-playing', item.id === playingId);
                 const name = document.createElement('span'); name.className = 'message-content';
-                name.textContent = (item.id === value.playback.itemId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
-                if (item.id !== value.playback.itemId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id)); waitRows.set(item.id, wait); name.append(wait); }
+                name.textContent = (item.id === playingId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
+                if (item.id !== playingId) { const wait = document.createElement('small'); wait.className = 'sc-program-wait'; wait.textContent = programWaitText(waits.get(item.id) || { state: 'syncing' }); waitRows.set(item.id, wait); name.append(wait); }
                 row.append(name); aside.append(row);
             }
             aside.scrollTop = previousScroll;
-            if (!controlling && playingRow && focusedProgram !== value.playback.itemId) {
-                focusedProgram = value.playback.itemId;
-                requestAnimationFrame(() => {
-                    if (version !== renderVersion || !playingRow.isConnected) return;
-                    const row = playingRow.getBoundingClientRect(), box = aside.getBoundingClientRect();
-                    aside.scrollTo({ top: Math.max(0, aside.scrollTop + row.top - box.top - aside.clientTop + (row.height - aside.clientHeight) / 2),
-                        behavior: global.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-                });
-            }
+            playlistFollow?.focus(playingId);
             if (controlling && value.manageable && value.viewers?.length) { const h = document.createElement('h3'); h.textContent = t('实际观看设备'); aside.append(h);
                 for (const viewer of value.viewers) { const p = document.createElement('p'); p.className = 'message-content'; p.textContent = viewer.name + ' · ' + stateLabel(viewer.status) + ' · ' + viewer.position.toFixed(1) + 's'; if (viewer.deviceId !== value.deviceId) p.append(button('踢出', () => kick(value.id, viewer.deviceId))); aside.append(p); }
             }
@@ -952,13 +987,15 @@
                 request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), mediaUrl: (access,signal) => peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:fixedAccount}),signal) || access.url,
                 subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
                 onSeek: controlling ? seekControl : undefined,
+                onItemChange: () => { player?.onItemView?.(); },
                 onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
                 onRecovery: code => { if (ui.stationId === snapshot.id && banner?.dataset.errorCode === code) { banner.hidden = true; banner.textContent = ''; banner.dataset.errorCode = ''; } } }); players.set(playerKey, player); }
-            player.onView = fillInfo; player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
+            player.onView = fillInfo; player.onItemView = () => fillInfo(player.snapshot() || snapshot); player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
             actions.append(button('小窗播', () => showSmallWindow(player)));
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
-        stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
+        const stopSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
+        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); };
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }

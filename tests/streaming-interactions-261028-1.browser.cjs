@@ -123,7 +123,9 @@ async function run() {
         await page.waitForFunction(() => [...document.querySelectorAll('.sc-watch-item')].indexOf(document.querySelector('.sc-now-playing')) === 12);
         await page.waitForFunction(() => {
             const row = document.querySelector('.sc-now-playing'), panel = row.parentElement;
-            return Math.abs(row.getBoundingClientRect().y + row.clientHeight / 2 - panel.getBoundingClientRect().y - panel.clientHeight / 2) < 5;
+            const clip = document.querySelector('.sc-main').getBoundingClientRect(), box = panel.getBoundingClientRect();
+            const top = Math.max(box.top + panel.clientTop, clip.top, 0), bottom = Math.min(box.top + panel.clientTop + panel.clientHeight, clip.bottom, innerHeight);
+            return Math.abs(row.getBoundingClientRect().y + row.clientHeight / 2 - (top + bottom) / 2) < 5;
         });
         await page.evaluate(() => { window.currentRow = document.querySelector('.sc-now-playing'); window.playerBefore = document.querySelector('.sc-player'); });
         control('pause');
@@ -161,7 +163,10 @@ async function run() {
         control('select', { itemId: 'program-18' });
         await phone.waitForFunction(() => {
             const row = document.querySelectorAll('.sc-watch-item')[18], panel = row?.parentElement;
-            return row?.classList.contains('sc-now-playing') && Math.abs(row.getBoundingClientRect().y + row.clientHeight / 2 - panel.getBoundingClientRect().y - panel.clientHeight / 2) < 5;
+            if (!row?.classList.contains('sc-now-playing')) return false;
+            const clip = document.querySelector('.sc-main').getBoundingClientRect(), box = panel.getBoundingClientRect();
+            const top = Math.max(box.top + panel.clientTop, clip.top, 0), bottom = Math.min(box.top + panel.clientTop + panel.clientHeight, clip.bottom, innerHeight);
+            return Math.abs(row.getBoundingClientRect().y + row.clientHeight / 2 - (top + bottom) / 2) < 5;
         });
         assert.equal(await phone.locator('.sc-main').evaluate(el => el.scrollTop), mainScroll, 'playlist positioning must not scroll the mobile playback page');
         await phone.getByRole('button', { name: '小窗播' }).tap();

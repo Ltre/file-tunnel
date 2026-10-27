@@ -13,7 +13,7 @@
     }
     // Only this device's cursor retains loading time. Explicit global commands
     // still replace it; station permissions and the server clock are unchanged.
-    function create({ stationId, watchId, request, subscribe, onState, onError, onRecovery, onSeek, mediaUrl = access => access.url }) {
+    function create({ stationId, watchId, request, subscribe, onState, onItemChange, onError, onRecovery, onSeek, mediaUrl = access => access.url }) {
         const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
@@ -224,8 +224,10 @@
             task.promise.catch(() => {}); return task;
         }
         async function load(item, position = 0, retries = 0) {
+            const previousId = currentId;
             const revision = ++generation; dispose(active); media = null; active = null; currentId = item?.id || ''; localPosition = position; failure = ''; actual = item ? 'buffering' : 'waiting';
             content.replaceChildren(); countdown.hidden = true; const started = performance.now();
+            if (currentId !== previousId) onItemChange?.(currentId);
             if (!item) { clearNext(); update(); return; }
             const task = next?.key === itemKey(item) && (!next.expiresAt || next.expiresAt > Date.now() + 10000) ? next : prepare(item);
             if (next !== task) clearNext(); else next = null; active = task; task.retries = retries; update();
@@ -336,7 +338,7 @@
         const timer = setInterval(() => { sync(); update(); warmCurrent(); }, 250);
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
-        return { element: host, apply, poll, snapshot: () => snapshot, exitFullscreen, setBackground,
+        return { element: host, apply, poll, snapshot: () => snapshot, currentItemId: () => currentId, exitFullscreen, setBackground,
             setForeground(value) { foreground = Boolean(value); lastTick = performance.now(); sync(); update(); },
             setController(handler) { onSeek = handler; update(); },
             close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); document.removeEventListener?.('visibilitychange',visibilityChanged); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
