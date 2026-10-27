@@ -9,7 +9,7 @@ const { Transform, Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { DatabaseSync, backup } = require('node:sqlite');
 const express = require('express');
-const { readJson, writeJson } = require('./disk-data');
+const { readJson, writeJsonAsync } = require('./disk-data');
 const { createDiskPartitions } = require('./disk-partitions');
 const { objectKey } = require('./object-storage');
 
@@ -77,15 +77,24 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
     state.config ||= { full: null, core: null }; state.jobs ||= [];
     for (const job of state.jobs) if (ACTIVE.has(job.status)) { job.status = 'interrupted'; job.error = 'BACKUP_PROCESS_INTERRUPTED'; }
     let running = null, closed = false, starting = false;
-    const persist = () => writeJson(stateFile, state);
+    // Serialize atomic replacements: Windows indexers may briefly lock the
+    // destination. Never treat a state-write error as an unreadable source.
+    let stateWrites = Promise.resolve();
+    const persist = () => {
+        const value = structuredClone(state);
+        const write = stateWrites.catch(() => {}).then(() => writeJsonAsync(stateFile, value));
+        stateWrites = write;
+        return write.catch(error => { throw new Error('BACKUP_STATE_WRITE_FAILED [' + (error.code || error.message) + ']', { cause: error }); });
+    };
     const publicJob = job => ({ id: job.id, mode: job.mode, status: job.status, stage: job.stage, target: job.target, folder: job.folder,
         createdAt: job.createdAt, updatedAt: job.updatedAt, completedAt: job.completedAt || 0, totalFiles: job.files.length,
         completedFiles: job.files.filter(file => file.done).length, totalBytes: job.totalBytes || 0,
         completedBytes: job.files.filter(file => file.done).reduce((n, file) => n + file.size, 0), currentFile: job.currentFile || '',
         currentProgress: job.currentProgress || null, error: job.error || '', excluded: job.excluded || [],
-        cleanupWarning: job.cleanupWarning || '',
+        cleanupWarning: job.cleanupWarning || '', skipped: job.skipped || [],
         consistency: 'online-per-file', snapshotStartedAt: job.snapshotStartedAt || 0, snapshotCompletedAt: job.snapshotCompletedAt || 0 });
-    const changed = job => { job.updatedAt = now(); persist(); };
+    const changed = async job => { job.updatedAt = now(); await persist(); };
+    const permissionError = error => ['EACCES', 'EPERM'].includes(error.code);
     const validateTarget = async value => {
         if (!value || typeof value.userId !== 'string' || typeof value.partitionId !== 'string') fail('BACKUP_TARGET_REQUIRED');
         const folderPath = relativePath(value.folderPath || '');
@@ -93,14 +102,20 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         return { ...resolved, userId: value.userId, partitionId: value.partitionId, folderPath };
     };
     async function collect(mode, signal) {
-        const entries = [], omitted = [], realRoot = await fsp.realpath(sourceRoot);
+        const entries = [], omitted = [], skipped = [], realRoot = await fsp.realpath(sourceRoot);
         async function walk(folder, relative) {
-            for (const entry of (await fsp.readdir(folder, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+            let children;
+            try { children = await fsp.readdir(folder, { withFileTypes: true }); }
+            catch (error) { if (!relative || !permissionError(error)) throw error; skipped.push({ name: relative, code: error.code, stage: 'read-directory' }); return; }
+            for (const entry of children.sort((a, b) => a.name.localeCompare(b.name))) {
                 cancelled(signal);
                 const name = join(relative, entry.name), absolute = path.join(folder, entry.name);
+                if(!relative&&/^\.system-backup-state\.json\.[\w-]+\.tmp$/.test(entry.name)){omitted.push(name+' (temporary state write)');continue;}
                 if (!relative && entry.isDirectory() && (mode === 'full' ? EXCLUDED.includes(entry.name) : !CORE.includes(entry.name))) { omitted.push(name); continue; }
                 if (entry.isSymbolicLink()) throw new Error('BACKUP_SYMBOLIC_LINK: ' + name);
-                const resolved = await fsp.realpath(absolute);
+                let resolved;
+                try { resolved = await fsp.realpath(absolute); }
+                catch (error) { if (!permissionError(error)) throw error; skipped.push({ name, code: error.code, stage: 'read-source' }); continue; }
                 if (!resolved.startsWith(realRoot + path.sep)) throw new Error('BACKUP_SOURCE_OUTSIDE_ROOT: ' + name);
                 if (entry.isDirectory()) { entries.push({ name, source: absolute, directory: true }); await walk(absolute, name); }
                 else if (entry.isFile()) entries.push({ name, source: absolute });
@@ -109,32 +124,44 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         }
         await walk(sourceRoot, '');
         const sqliteFiles = new Set();
-        for (const entry of entries) if (!entry.directory && await isSQLite(entry.source)) sqliteFiles.add(entry.name);
+        for (const entry of entries) if (!entry.directory) {
+            try { if (await isSQLite(entry.source)) sqliteFiles.add(entry.name); }
+            catch (error) { if (!permissionError(error)) throw error; entry.denied = true; skipped.push({ name: entry.name, code: error.code, stage: 'read-source' }); }
+        }
         return { entries: entries.filter(entry => {
+            if (entry.denied) return false;
             if (/-(wal|shm)$/.test(entry.name) && sqliteFiles.has(entry.name.replace(/-(wal|shm)$/, ''))) { omitted.push(entry.name + ' (SQLite online backup includes committed WAL)'); return false; }
             entry.sqlite = sqliteFiles.has(entry.name); return true;
-        }), omitted };
+        }), omitted, skipped };
     }
     async function snapshot(job, signal) {
-        job.stage = 'snapshot'; job.status = 'snapshotting'; job.snapshotStartedAt = now(); changed(job);
+        job.stage = 'snapshot'; job.status = 'snapshotting'; job.snapshotStartedAt = now(); await changed(job);
         await beforeSnapshot();
         job.staging = await fsp.mkdtemp(path.join(tempDir, 'dr2t-system-backup-'));
         await fsp.chmod(job.staging, 0o700);
-        const { entries, omitted } = await collect(job.mode, signal); job.excluded = omitted;
+        const { entries, omitted, skipped } = await collect(job.mode, signal); job.excluded = omitted; job.skipped = skipped;
         const realRoot = await fsp.realpath(sourceRoot);
         job.files = []; job.directories = []; job.totalBytes = 0;
         for (const entry of entries) {
             cancelled(signal);
-            const resolved = await fsp.realpath(entry.source), entryStat = await fsp.lstat(entry.source);
+            let resolved,entryStat;
+            try { resolved = await fsp.realpath(entry.source); entryStat = await fsp.lstat(entry.source); }
+            catch(error){if(!permissionError(error))throw error;job.skipped.push({name:entry.name,code:error.code,stage:'snapshot-source'});continue;}
             if (!resolved.startsWith(realRoot + path.sep) || entryStat.isSymbolicLink()) throw new Error('BACKUP_SOURCE_OUTSIDE_ROOT: ' + entry.name);
-            if (entry.directory) { const info = await fsp.stat(entry.source); job.directories.push({ name: entry.name, key: join('.tunnel-data', remoteName(entry.name)), mode: info.mode & 0o777, mtime: info.mtimeMs }); continue; }
-            job.currentFile = entry.name; changed(job);
+            if (entry.directory) { job.directories.push({ name: entry.name, key: join('.tunnel-data', remoteName(entry.name)), mode: entryStat.mode & 0o777, mtime: entryStat.mtimeMs }); continue; }
+            job.currentFile = entry.name; await changed(job);
             const destination = path.join(job.staging, 'file-' + job.files.length);
             let size, sha256;
             try {
                 if (entry.sqlite) { await sqliteSnapshot(entry.source, destination, signal); await fsp.chmod(destination, 0o600); size = (await fsp.stat(destination)).size; sha256 = await hashFile(destination, 0, undefined, signal); }
                 else ({ size, sha256 } = await copyStable(entry.source, destination, signal));
-            } catch (error) { throw new Error(`${error.message} · ${entry.name}`, { cause: error }); }
+            } catch (error) {
+                if (permissionError(error) && (!error.path || path.resolve(error.path) === path.resolve(entry.source))) {
+                    job.skipped.push({ name: entry.name, code: error.code, stage: 'snapshot-source' });
+                    await fsp.rm(destination, { force: true }); continue;
+                }
+                throw new Error(`${error.message} · ${entry.name}`, { cause: error });
+            }
             const segments = [];
             for (let start = 0; start < Math.max(size, 1); start += partBytes) {
                 const bytes = Math.min(partBytes, size - start), split = size > partBytes;
@@ -142,11 +169,11 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
                 const digest = split ? await hashFile(destination, start, start + bytes - 1, signal) : sha256;
                 segments.push({ key, start, size: bytes, sha256: digest, done: false });
             }
-            const original = await fsp.stat(entry.source);
+            const original = entryStat;
             job.files.push({ name: entry.name, snapshot: destination, size, sha256, mode: original.mode & 0o777, mtime: original.mtimeMs, sqlite: Boolean(entry.sqlite), segments, done: false });
-            job.totalBytes += size; changed(job);
+            job.totalBytes += size; await changed(job);
         }
-        job.snapshotCompletedAt = now(); job.currentFile = ''; changed(job);
+        job.snapshotCompletedAt = now(); job.currentFile = ''; await changed(job);
     }
     async function send(job, key, input, size, sha256, signal, fileName) {
         try {
@@ -163,12 +190,12 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         } finally { input.destroy?.(); }
     }
     async function upload(job, signal) {
-        job.status = 'uploading'; job.stage = 'upload'; changed(job);
+        job.status = 'uploading'; job.stage = 'upload'; await changed(job);
         const target = await validateTarget(job.target);
         await storage.mkdir(target, job.folder);
         for (const folder of job.directories) { cancelled(signal); await storage.mkdir(target, join(job.folder, typeof folder === 'string' ? folder : folder.key)); }
         for (const file of job.files) {
-            cancelled(signal); job.currentFile = file.name; job.currentProgress = null; changed(job);
+            cancelled(signal); job.currentFile = file.name; job.currentProgress = null; await changed(job);
             const staging = path.resolve(job.staging || ''), resolved = await fsp.realpath(file.snapshot), snapshotInfo = await fsp.lstat(file.snapshot);
             if (path.dirname(staging) !== path.resolve(tempDir) || !path.basename(staging).startsWith('dr2t-system-backup-')
                 || path.dirname(resolved) !== await fsp.realpath(staging) || !snapshotInfo.isFile() || snapshotInfo.isSymbolicLink()) fail('BACKUP_STAGING_INVALID');
@@ -176,25 +203,25 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
                 cancelled(signal);
                 const stream = segment.size ? Readable.from((async function* () { yield* fs.createReadStream(file.snapshot, { start: segment.start, end: segment.start + segment.size - 1 }); })()) : Readable.from([]);
                 const result = await send(job, segment.key, stream, segment.size, segment.sha256, signal, file.name);
-                segment.done = true; segment.fileId = result.file.id; changed(job);
+                segment.done = true; segment.fileId = result.file.id; await changed(job);
             }
-            file.done = true; changed(job);
+            file.done = true; await changed(job);
         }
         const manifest = { format: 'drop2tunnel-system-backup', version: 1, id: job.id, mode: job.mode, createdAt: job.createdAt,
             target: job.target, folder: job.folder, consistency: 'online-per-file', snapshotStartedAt: job.snapshotStartedAt,
             snapshotCompletedAt: job.snapshotCompletedAt, status: 'completed', note: 'Each SQLite database is an online backup including committed WAL; WAL/SHM sidecars are not restored. Ordinary files are stable copies. Different files/databases are not one global transaction. Stop application writers before restoring. Concatenate split segments in start order and verify SHA-256. The disk.sqlite snapshot predates this backup upload and cannot index its newly saved files; obtain backup contents using the target account/partition/path and this manifest, not by restoring the old index alone.',
-            excluded: job.excluded, directories: job.directories, files: job.files.map(({ name, size, sha256, mode, mtime, sqlite, segments }) => ({ name, size, sha256, mode, mtime, sqlite, segments })) };
+            excluded: job.excluded, skipped: job.skipped || [], directories: job.directories, files: job.files.map(({ name, size, sha256, mode, mtime, sqlite, segments }) => ({ name, size, sha256, mode, mtime, sqlite, segments })) };
         const bytes = Buffer.from(JSON.stringify(manifest, null, 2));
         await send(job, 'backup-manifest.json', Readable.from([bytes]), bytes.length, crypto.createHash('sha256').update(bytes).digest('hex'), signal, 'backup-manifest.json');
-        job.status = 'completed'; job.stage = 'completed'; job.completedAt = now(); job.error = ''; job.currentFile = ''; job.currentProgress = null; changed(job);
+        job.status = 'completed'; job.stage = 'completed'; job.completedAt = now(); job.error = ''; job.currentFile = ''; job.currentProgress = null; await changed(job);
         try { await cleanup(job); }
-        catch (error) { job.cleanupWarning = error.message; changed(job); }
+        catch (error) { job.cleanupWarning = error.message; await changed(job); }
     }
     async function cleanup(job) {
         if (!job.staging) return;
         const resolved = path.resolve(job.staging), parent = path.resolve(tempDir);
         if (path.dirname(resolved) !== parent || !path.basename(resolved).startsWith('dr2t-system-backup-')) fail('BACKUP_STAGING_INVALID');
-        await fsp.rm(resolved, { recursive: true, force: true }); job.staging = ''; changed(job);
+        await fsp.rm(resolved, { recursive: true, force: true }); job.staging = ''; await changed(job);
     }
     function launch(job) {
         const controller = new AbortController();
@@ -202,14 +229,15 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         work.promise = Promise.resolve().then(async () => {
             if (!job.snapshotCompletedAt) { if (job.staging) await cleanup(job); await snapshot(job, controller.signal); }
             await upload(job, controller.signal);
-        }).catch(error => {
-            job.status = controller.signal.aborted ? 'cancelled' : 'failed'; job.error = controller.signal.aborted ? 'BACKUP_CANCELLED' : error.message; job.currentProgress = null; changed(job);
+        }).catch(async error => {
+            job.status = controller.signal.aborted ? 'cancelled' : 'failed'; job.error = controller.signal.aborted ? 'BACKUP_CANCELLED' : error.message; job.currentProgress = null;
+            try { await changed(job); } catch (stateError) { job.error += ' · ' + stateError.message; }
         }).finally(() => { if (running === work) running = null; });
         return publicJob(job);
     }
     return {
         state() { return { config: structuredClone(state.config), jobs: state.jobs.map(publicJob), coreDirectories: CORE, fullExcluded: EXCLUDED, active: running?.job.id || '' }; },
-        async configure(mode, value) { if (!['full', 'core'].includes(mode)) fail('BACKUP_MODE_INVALID'); state.config[mode] = await validateTarget(value); persist(); return this.state(); },
+        async configure(mode, value) { if (!['full', 'core'].includes(mode)) fail('BACKUP_MODE_INVALID'); state.config[mode] = await validateTarget(value); await persist(); return this.state(); },
         async start({ mode, requestId }) {
             if (closed) fail('BACKUP_CLOSED');
             if (!['full', 'core'].includes(mode)) fail('BACKUP_MODE_INVALID');
@@ -226,12 +254,14 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
                 const sequence = Math.max(0, ...used, ...state.jobs.filter(job => job.target.userId === target.userId && job.target.partitionId === target.partitionId && job.target.folderPath === target.folderPath).map(job => job.sequence || 0)) + 1;
                 const date = new Date(now()), stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
                 const job = { id: crypto.randomUUID(), requestId, mode, target, sequence, folder: join(target.folderPath, `${sequence}-${stamp}`), status: 'snapshotting', stage: 'snapshot', createdAt: now(), updatedAt: now(), files: [], directories: [], excluded: [] };
-                state.jobs.push(job); persist(); return launch(job);
+                state.jobs.push(job);
+                try { await persist(); } catch (error) { job.status = 'failed'; job.error = error.message; throw error; }
+                return launch(job);
             } finally { starting = false; }
         },
         async retry(id) { if (closed || running || starting) fail('BACKUP_ALREADY_RUNNING'); starting = true; try { const job = state.jobs.find(item => item.id === id); if (!job || !['failed', 'interrupted', 'cancelled'].includes(job.status)) fail('BACKUP_RETRY_INVALID'); await validateTarget(job.target); job.error = ''; return launch(job); } finally { starting = false; } },
-        cancel(id) { if (!running || running.job.id !== id) fail('BACKUP_NOT_RUNNING'); running.job.status = 'cancelling'; changed(running.job); running.controller.abort(); return publicJob(running.job); },
-        async discard(id) { const job = state.jobs.find(item => item.id === id); if (!job || ACTIVE.has(job.status) || running?.job.id === id) fail('BACKUP_DISCARD_INVALID'); await cleanup(job); job.snapshotCompletedAt = 0; job.files = []; job.totalBytes = 0; job.status = 'discarded'; changed(job); return publicJob(job); },
+        async cancel(id) { if (!running || running.job.id !== id) fail('BACKUP_NOT_RUNNING'); const work = running; work.job.status = 'cancelling'; work.controller.abort(); await changed(work.job); return publicJob(work.job); },
+        async discard(id) { const job = state.jobs.find(item => item.id === id); if (!job || ACTIVE.has(job.status) || running?.job.id === id) fail('BACKUP_DISCARD_INVALID'); await cleanup(job); job.snapshotCompletedAt = 0; job.files = []; job.totalBytes = 0; job.status = 'discarded'; await changed(job); return publicJob(job); },
         async wait() { await running?.promise; },
         close() { closed = true; running?.controller.abort(); }
     };
@@ -279,7 +309,7 @@ function registerDataBackup(app, { dataDir, root, diskAPI, auth, requireAuth, or
     router.put('/config/:mode', wrap(async (req, res) => res.json(await service.configure(req.params.mode, req.body))));
     router.post('/jobs', wrap(async (req, res) => res.status(202).json(await service.start(req.body))));
     router.post('/jobs/:id/retry', wrap(async (req, res) => res.status(202).json(await service.retry(req.params.id))));
-    router.post('/jobs/:id/cancel', wrap((req, res) => res.json(service.cancel(req.params.id))));
+    router.post('/jobs/:id/cancel', wrap(async (req, res) => res.json(await service.cancel(req.params.id))));
     router.post('/jobs/:id/discard', wrap(async (req, res) => res.json(await service.discard(req.params.id))));
     router.use((error, _req, res, _next) => res.status(/NOT_FOUND/.test(error.message) ? 404 : /RUNNING|CONFLICT/.test(error.message) ? 409 : 422).json({ error: error.message }));
     app.use('/api/system-backup', router);

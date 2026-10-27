@@ -91,3 +91,29 @@
 .sc-insert-position{display:flex;flex-wrap:wrap;gap:8px 18px}
 .sc-insert-position label{display:flex;gap:7px;align-items:center;margin:0;padding:8px 0;cursor:pointer}
 .sc-insert-dialog>button{min-height:40px;margin:0!important;border-radius:8px}
+
+/* The action row participates in layout so its actual wrapped height is reserved. */
+.sc-main:has(>.sc-import-page){padding-bottom:0}
+.sc-import-page{padding-bottom:0!important;margin:0 auto;overflow:hidden}
+.sc-import-page>.sc-candidate-list{min-height:0}
+.sc-import-page>.sc-import-actions{position:static;flex:none;margin:6px 0 0;padding:8px 0 max(4px,env(safe-area-inset-bottom))}
+.sc-page-loading{display:flex;align-items:center;gap:10px;min-height:64px;padding:12px;color:inherit}
+.sc-page-loading:before{content:'';width:20px;height:20px;flex:none;border:2px solid #9994;border-top-color:#7951b0;border-radius:50%;animation:sc-spin .8s linear infinite}
+.sc-background-toggle{display:flex;align-items:center;gap:8px;font-size:12px;margin:8px 0;color:inherit}
+.sc-media-fullscreen .sc-background-toggle{flex:none;margin:4px 0;color:#eee}
+.sc-player.sc-media-fullscreen .sc-local-controls{grid-template-columns:44px 44px minmax(80px,180px) 44px 44px;justify-content:center}
+.sc-player.sc-media-fullscreen .sc-local-controls>label{width:100%;max-width:180px}
+.sc-player.sc-media-fullscreen .sc-local-controls input[type=range]{max-width:180px}
+.sc-mini-window[hidden]{display:none!important}
+.sc-mini-window{position:fixed;right:16px;bottom:16px;z-index:18010;width:min(420px,calc(100vw - 24px));background:#111;color:#fff;box-shadow:0 12px 48px #0005;border-radius:10px;overflow:hidden}
+.sc-mini-bar{display:flex;gap:6px;justify-content:flex-end;padding:5px 8px;cursor:move;touch-action:none}
+.sc-mini-bar button{font:inherit;font-size:12px;padding:5px 8px;color:#eee;border:0;border-radius:5px;background:#333;cursor:pointer}
+.sc-mini-window .sc-stage{min-height:0;border-radius:0;aspect-ratio:16/9}
+.sc-mini-window .sc-local-controls{display:flex;flex-wrap:wrap;gap:5px;margin:6px 8px}
+.sc-mini-window .sc-local-controls button{font-size:12px;padding:5px 7px;background:#333;color:#fff}
+.sc-mini-window .sc-local-controls button[data-icon]{font-size:0}
+.sc-mini-window .sc-local-controls button[data-icon]:before{content:attr(data-icon);font-size:20px}
+.sc-mini-window .sc-local-controls label{display:flex;max-width:110px;font-size:0}
+.sc-mini-window input[type=range]{max-width:100px}
+.sc-mini-window .sc-play-status,.sc-mini-window .sc-background-toggle{margin:0;padding:4px 8px;color:#eee;font-size:11px}
+.sc-mini-window .sc-seek{display:none}

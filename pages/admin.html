@@ -62,7 +62,9 @@
 
         .panel-header > span:first-child { margin-right: auto; }
 
-        .admin-extension-links { display: contents; }
+        .panel-header-extensions { display:block; }
+        .admin-extension-links { display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:14px;width:100%; }
+        .admin-extension-links .btn { width:100%;margin:0;text-align:center;white-space:normal;line-height:1.5; }
         
         .panel-content {
             padding: 20px;
@@ -381,6 +383,9 @@
                     <a class="btn btn-secondary" href="/s3-management">S3 API 第三方接入</a>
                     <a class="btn btn-secondary" href="/data-usage">数据目录空间占用</a>
                     <a class="btn btn-secondary" href="/telegram-content">Telegram Bot 内容管理</a>
+                    <a class="btn btn-secondary" href="/system-backup">系统备份程序</a>
+                    <a class="btn btn-secondary" href="/admin/devices">所有访问设备</a>
+                    <a class="btn btn-secondary" href="/admin/magnets">已分享磁链</a>
                 </nav>
             </div>
         </div>

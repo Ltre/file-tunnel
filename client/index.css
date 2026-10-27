@@ -4852,6 +4852,10 @@ body[data-theme="graphite"] .control-center-tile{background:#283445;border-color
         overflow: hidden;
     }
     #appShell > .main-layout { flex: 1; height: auto; min-height: 0; margin-top: 1px; }
+    /* The workspace owns its panel scrollers. A focused editor or restored
+       page scroll must not move the whole tablet workspace off the viewport. */
+    html:has(#appShell:not([hidden])),body:has(#appShell:not([hidden])){height:100%;overflow:clip;overscroll-behavior:none}
+    #appShell.container:not([hidden]){position:fixed;inset:0;width:100%;margin:0 auto}
     #appShell .left-panel .panel-content.qr-section {
         scrollbar-width: thin;
         scrollbar-color: rgba(170, 181, 194, .4) transparent;

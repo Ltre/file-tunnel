@@ -141,13 +141,15 @@
         if (!handle && saved?.file) return saved.file;
         throw Error('missing');
     }
+    let peerMedia;
     async function providerLoop() {
         let retry = 1000; const providerId = uid();
         while (initialized) {
             try {
                 // LAN HTTP/1 shares a small connection pool across tabs. Idle
                 // supply polling must yield it to account/discovery requests.
-                const work = await request('/provider-work', 'GET', undefined, { headers: { 'X-Stream-Provider': providerId, 'X-Stream-Wait': '1000' } });
+                const work = await request('/provider-work', 'GET', undefined, { headers: { 'X-Stream-Provider': providerId, 'X-Stream-Wait': '1000', ...peerMedia?.headers() } });
+                peerMedia?.accept(work.offers);
                 retry = 1000;
                 await Promise.all((work.requests || []).map(async task => {
                     let blob, failure;
@@ -218,15 +220,43 @@
         const parking = document.createElement('div'); parking.id = 'streamingParking'; parking.hidden = true; document.body.append(parking);
     }
     function isOpen() { return Boolean(root && !root.hidden); }
+    let renderedIdentity = '', smallWindow = null;
+    const viewIdentity = () => [ui.view, ui.stationId, account()].join(':');
+    function presentPlayers() {
+        for (const player of players.values()) player.setForeground?.(isOpen() && main.contains(player.element) || Boolean(smallWindow && !smallWindow.hidden));
+    }
+    function hideSmallWindow() {
+        if (!smallWindow) return;
+        const player = [...players.values()][0], slot = main.querySelector('.sc-player-slot');
+        if (player && slot && renderedIdentity === viewIdentity()) slot.append(player.element);
+        smallWindow.hidden = true; presentPlayers();
+    }
+    function showSmallWindow(player) {
+        if (!smallWindow) {
+            smallWindow = document.createElement('section'); smallWindow.className = 'sc-mini-window'; smallWindow.setAttribute('aria-label', t('串流台小窗'));
+            const bar = document.createElement('div'); bar.className = 'sc-mini-bar'; bar.append(button('恢复串流台', () => open()), button('关闭小窗', () => { hideSmallWindow(); parkPlayers(); presentPlayers(); }));
+            let drag;
+            bar.onpointerdown = event => { if (event.target.closest('button')) return; const rect = smallWindow.getBoundingClientRect(); drag = { x:event.clientX, y:event.clientY, left:rect.left, top:rect.top }; bar.setPointerCapture(event.pointerId); };
+            bar.onpointermove = event => { if (!drag) return; smallWindow.style.left = Math.max(0,Math.min(innerWidth-smallWindow.offsetWidth,drag.left+event.clientX-drag.x))+'px'; smallWindow.style.top = Math.max(0,Math.min(innerHeight-smallWindow.offsetHeight,drag.top+event.clientY-drag.y))+'px'; smallWindow.style.right = smallWindow.style.bottom = 'auto'; };
+            bar.onpointerup = bar.onpointercancel = () => { drag = null; };
+            smallWindow.append(bar); document.body.append(smallWindow);
+        }
+        player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; minimize(); presentPlayers();
+    }
     async function open() {
         await ready; ensureUi();
         if (!isOpen()) { root.hidden = false; global.dispatchEvent(new Event('streaming-visibility-change')); history.pushState({ ...(history.state || {}), streamingConsole: true }, '', location.href); }
-            const entry = document.getElementById('topbarStreamingBtn'); if (entry) entry.hidden = false; render(); sync();
+        hideSmallWindow();
+        const entry = document.getElementById('topbarStreamingBtn'); if (entry) entry.hidden = false;
+        // Minimize only changes presentation. Reuse the existing form/player;
+        // a restore must not clear it and repeat its asynchronous construction.
+        if (!main.children.length || renderedIdentity !== viewIdentity()) render();
+        presentPlayers(); sync();
     }
     function minimize(fromHistory = false) {
         if (!root || root.hidden) return;
-        clearWatchSchedule();
         root.hidden = true; saveUi(); global.dispatchEvent(new Event('streaming-visibility-change'));
+        presentPlayers();
         if (!fromHistory && history.state?.streamingConsole) { const next = { ...history.state }; delete next.streamingConsole; history.replaceState(next, '', location.href); }
     }
     function dirty() {
@@ -247,7 +277,7 @@
     }
     function closeConsole(force = false) {
         if (!force && dirty()) { confirmLeave(() => closeConsole(true)); return; }
-        closeDialog(); pendingEditorFocus = null; for (const player of players.values()) player.close(); players.clear();
+        closeDialog(); pendingEditorFocus = null; for (const player of players.values()) player.close(); players.clear(); if (smallWindow) smallWindow.hidden = true;
         minimize(); ++renderVersion; ++pickerVersion; candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         ui = { view: 'discover', stationId: '', scroll: {}, drafts: {} }; pending.clear(); channel = 'local'; candidates = [];
         for (const stationId of pendingCovers.keys()) discardCover(stationId);
@@ -257,7 +287,10 @@
     }
     function navigate(view, stationId = '', force = false, originList) {
         if (!force && dirty() && !(stationId === ui.stationId && ['edit', 'import'].includes(view))) { confirmLeave(() => navigate(view, stationId, true, originList)); return; }
-        for (const [key, player] of players) if (!['watch', 'control'].includes(view) || key !== stationId + ':' + account()) { player.close(); players.delete(key); }
+        // A list/editor is a presentation change; selecting another station
+        // replaces the sole playback owner, including a background/small player.
+        if(['watch','control'].includes(view)&&smallWindow)smallWindow.hidden=true;
+        for (const [key, player] of players) if (['watch', 'control'].includes(view) && key !== stationId + ':' + account()) { player.close(); players.delete(key); }
         if (stationId && stationId !== ui.stationId) ui.returnList = ['discover', 'local', 'bookmarks'].includes(ui.view) ? ui.view : 'discover';
         if (originList) ui.returnList = originList;
         ui.view = view; ui.stationId = stationId; saveUi(); render();
@@ -303,14 +336,16 @@
         const collapse=button('收起',()=>{form.classList.remove('sc-basic-expanded');main.classList.remove('sc-basic-open');});collapse.className='sc-collapse-basic';form.prepend(expand);form.append(collapse);
     }
     function title(text) { const heading = document.createElement('h1'); heading.textContent = t(text); main.append(heading); return heading; }
-    function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) parking.append(player.element); }
+    function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) if (!smallWindow || smallWindow.hidden) parking.append(player.element); presentPlayers(); }
     async function render() {
         if (!isOpen()) return; const version = ++renderVersion;
         clearWatchSchedule();
-        for (const [key, player] of players) if (!['watch', 'control'].includes(ui.view) || key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
+        renderedIdentity = viewIdentity();
+        for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
         parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
+        const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
             if (['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) {
                 const heading = title(({ discover: '发现', local: '我创建的', bookmarks: '我订阅的', creator: '创作者公开台' })[ui.view]);
@@ -333,6 +368,7 @@
             root.querySelector('.sc-main').scrollTop = ui.scroll[ui.view + ':' + ui.stationId] || 0;
             global.TunnelI18n?.translate(root);
         } catch (cause) { if (version === renderVersion) error(cause); }
+        finally { loading.remove(); if (version === renderVersion) { main.setAttribute('aria-busy','false'); presentPlayers(); } }
     }
     async function accountDialog(force = false) {
         if (force !== true && dirty()) { confirmLeave(() => accountDialog(true)); return; }
@@ -832,7 +868,7 @@
                 creator.onclick = event => { event.preventDefault(); ui.creatorName = snapshot.owner.name; navigate('creator', snapshot.owner.id); }; info.append(creator);
             } else info.append(document.createTextNode(t('无归属')));
         }
-        main.append(info); const layout = document.createElement('div'); layout.className = 'sc-watch-grid'; const stage = document.createElement('div'); const aside = document.createElement('aside'); aside.className = 'sc-card'; layout.append(stage, aside); main.append(layout);
+        main.append(info); const layout = document.createElement('div'); layout.className = 'sc-watch-grid'; const stage = document.createElement('div'); stage.className = 'sc-player-slot'; const aside = document.createElement('aside'); aside.className = 'sc-card'; layout.append(stage, aside); main.append(layout);
         if (!controlling) { main.insertBefore(coverImage(snapshot,'sc-viewer-cover'),layout);heading.prepend(coverImage(snapshot,'sc-viewer-cover-small')); }
         const actions = document.createElement('div'); actions.className = 'sc-actions'; main.append(actions);
         const fixedAccount = account();
@@ -873,14 +909,16 @@
         const seekControl = async (itemId, position) => { if (itemId !== (player?.snapshot() || snapshot).playback.itemId) await command('select', { itemId }); await command('seek', { position }); };
         if (snapshot.visibility !== 'offline') {
             if (!player) { player = global.StreamingPlayer.create({ stationId: snapshot.id, watchId: uid(),
-                request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
+                request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), mediaUrl: (access,signal) => peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:fixedAccount}),signal) || access.url,
+                subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
                 onSeek: controlling ? seekControl : undefined,
                 onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
                 onRecovery: code => { if (ui.stationId === snapshot.id && banner?.dataset.errorCode === code) { banner.hidden = true; banner.textContent = ''; banner.dataset.errorCode = ''; } } }); players.set(playerKey, player); }
             player.onView = fillInfo; player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
+            actions.append(button('小窗播', () => showSmallWindow(player)));
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
-        stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => isOpen() && ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
+        stopWatchSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }
@@ -1129,6 +1167,7 @@
             let secret = localStorage.getItem(key('key')); if (!secret) { secret = uid().replace(/-/g, '') + uid().replace(/-/g, ''); localStorage.setItem(key('key'), secret); }
             const response = await fetch('/api/streaming/devices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: config.deviceId(), key: secret, name: config.deviceName() }) });
             if (!response.ok) throw Error('STREAM_DEVICE_DENIED');
+            peerMedia = global.StreamingPeers?.create({ request, readSource: (source,range) => source.kind === 'local' ? localBlob(source).then(blob=>blob.slice(range.start,range.end+1)) : config.readTunnel(source,range) });
             providerLoop(); await sync();
         })();
         ready.catch(cause => { initialized = false; config.toast(t('串流模块初始化失败') + ' [' + cause.message + ']'); });

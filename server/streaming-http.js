@@ -17,6 +17,7 @@ const { parseByteRange } = require('./object-storage');
 const { Readable } = require('node:stream');
 const { createStreamingBuffer } = require('./streaming-buffer');
 const { createStreamingCovers } = require('./streaming-covers');
+const { createStreamingPeers } = require('./streaming-peers');
 
 function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginRevoked, origin,
     visibleDevices, sources, tunnel, now = Date.now }) {
@@ -30,6 +31,19 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         const deviceId = service.authenticate(req.get('X-Stream-Device'), req.get('X-Stream-Key'));
         return { deviceId, userId: identity(req)?.id || null, logins: proofs(req) };
     };
+    async function peerResource(token, viewer) {
+        const ticket = tickets.get(token);
+        if (!ticket || ticket.preview || ticket.expiresAt <= now() || ticket.deviceId !== viewer.deviceId || ticket.userId !== viewer.userId) throw Error('STREAM_TICKET_EXPIRED');
+        const resource = await service.resource(ticket.stationId,ticket.itemId,viewer,ticket.reference);
+        if(resource.epoch !== ticket.epoch || resource.sourceVersion !== ticket.sourceVersion)throw Error('STREAM_TICKET_EXPIRED');
+        const metadata = sources.stat(resource.source);
+        const key = crypto.createHash('sha256').update(JSON.stringify([ticket.stationId,ticket.itemId,ticket.reference,ticket.epoch,ticket.sourceVersion])).digest('hex');
+        // Do not send disk cookies, login proofs or tunnel grants to peers.
+        const fields=resource.source.kind==='disk'?['kind']:['kind','sessionId','messageId','fileId','deviceId','size','name','type'];
+        const source = Object.fromEntries(fields.filter(name=>resource.source[name]!==undefined).map(name=>[name,resource.source[name]]));
+        return { key, source, deviceId:resource.deviceId, size:metadata.size, type:metadata.type };
+    }
+    const peers = createStreamingPeers({ authorize:peerResource, providers:resource=>sources.peerProviders?.(resource)||[], now });
     router.use((_req, res, next) => { res.set({ 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' }); next(); });
     router.use((req, res, next) => {
         if (req.get('Sec-Fetch-Site') === 'cross-site' || req.get('Origin') && req.get('Origin') !== origin(req)) return res.status(403).json({ error: 'ORIGIN_MISMATCH' });
@@ -208,8 +222,15 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     }));
     router.get('/provider-work', wrap(async (req, res) => {
         const controller = new AbortController(); res.once('close', () => controller.abort());
-        res.json({ requests: await sources.broker.poll(req.streamActor.deviceId, controller.signal, req.get('X-Stream-Provider') || 'legacy', req.get('X-Stream-Wait')) });
+        const requests=await sources.broker.poll(req.streamActor.deviceId,controller.signal,req.get('X-Stream-Provider')||'legacy',req.get('X-Stream-Wait'));
+        const offers=req.get('X-Stream-Peer')?peers.poll(req.streamActor,req.ip,req.get('X-Stream-Peer'),req.get('X-Stream-Cache')):[];
+        res.json({requests,offers});
     }));
+    router.post('/peers/candidates',wrap(async(req,res)=>res.json({providers:await peers.candidates(req.streamActor,req.ip,req.body||{})})));
+    router.post('/peers/validate',wrap(async(req,res)=>{const {key,size,type}=await peerResource(req.body?.ticket,req.streamActor);res.json({key,size,type});}));
+    router.post('/peers/offers',wrap(async(req,res)=>res.json(await peers.offer(req.streamActor,req.ip,req.body||{},()=>actor(req)))));
+    router.post('/peers/:id/check',wrap(async(req,res)=>res.json(await peers.check(req.streamActor,req.get('X-Stream-Peer'),req.params.id))));
+    router.post('/peers/:id/answer',wrap(async(req,res)=>res.json(await peers.answer(req.streamActor,req.get('X-Stream-Peer'),req.params.id,req.body?.sdp))));
     router.post('/provider-work/:requestId', express.raw({ type: 'application/octet-stream', limit: sources.MAX_CHUNK }), wrap((req, res) => {
         sources.broker.provide(req.streamActor.deviceId, req.params.requestId, req.body, req.get('X-Stream-Error'));
         res.json({ ok: true });
@@ -227,6 +248,6 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
     });
     app.use('/api/streaming', router);
     const timer = setInterval(() => { try { service.tick(); } catch (error) { console.warn('streaming clock persistence failed:', error.code || error.message); } }, 1000); timer.unref();
-    return { service, close() { clearInterval(timer); sources.broker.close(); tickets.clear(); readAhead.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
+    return { service, close() { clearInterval(timer); peers.close(); sources.broker.close(); tickets.clear(); readAhead.clear(); for (const listener of listeners.values()) listener.end(); listeners.clear(); } };
 }
 module.exports = { registerStreamingConsole, waitForDrain };

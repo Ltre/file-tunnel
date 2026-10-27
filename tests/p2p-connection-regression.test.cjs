@@ -27,7 +27,7 @@ test('SNS collection downloads keep the selected media item', () => {
     assert.match(source, /args\.push\(options\.noPlaylist === false \? '--yes-playlist' : '--no-playlist'\)/);
     assert.match(source, /playlistItem: Math\.max\(1, Math\.trunc\(Number\(meta\?\.playlist_index\) \|\| mediaIndex \+ 1\)\)/);
     assert.match(source, /taskRecord\.playlistItem \? item\.sourceUrl : \(item\.mediaUrl \|\| item\.sourceUrl\)/);
-    assert.match(source, /runYtDlpDownload\(task\.sourceUrl, asset\.id, undefined, task\.playlistItem\)/);
+    assert.match(source, /runYtDlpDownload\(task\.sourceUrl, asset\.id, undefined, task\.playlistItem(?:,|\))/);
 });
 
 test('Telegram continuity repair excludes SNS and generic server assets', () => {

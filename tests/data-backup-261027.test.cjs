@@ -53,6 +53,37 @@ test('CORE includes every root file and the four specified directories, not unre
     await f.put('other-business/out.txt'); await f.service.start({ mode: 'core', requestId: 'core-request-1234' }); await f.service.wait();
     const names = f.manifest().files.map(file => file.name); assert.ok(names.includes('.private-key')); assert.ok(names.includes('new-unlisted-file.dat')); assert.ok(names.includes('sns-downloads/content.dat')); assert.equal(names.includes('other-business/out.txt'), false);
 });
+
+test('Windows state replacement retries transient locks without interrupting the backup', async t => {
+    const f = await fixture(t); await f.put('readable.txt');
+    const rename = fs.rename; let locks = 2;
+    fs.rename = async (from, to) => { if (to === path.join(f.dataDir, '.system-backup-state.json') && locks-- > 0) throw Object.assign(Error('state locked'), { code: 'EPERM' }); return rename(from, to); };
+    try { await f.service.start({ mode: 'core', requestId: 'locked-state-261027' }); await f.service.wait(); }
+    finally { fs.rename = rename; }
+    assert.ok(locks < 0, 'the backup must use the retrying asynchronous state writer');
+    assert.equal(f.service.state().jobs[0].status, 'completed');
+});
+
+test('unreadable source files are skipped with a manifest report, readable files still save', async t => {
+    const f = await fixture(t); await f.put('denied.bin'); await f.put('readable.txt');
+    const open = fs.open;
+    fs.open = async (file, ...args) => { if (file === path.join(f.dataDir, 'denied.bin')) throw Object.assign(Error('source denied'), { code: 'EACCES' }); return open(file, ...args); };
+    try { await f.service.start({ mode: 'core', requestId: 'source-denied-261027' }); await f.service.wait(); }
+    finally { fs.open = open; }
+    const job = f.service.state().jobs[0]; assert.equal(job.status, 'completed', job.error);
+    assert.ok(f.manifest().files.some(file => file.name === 'readable.txt'));
+    assert.deepEqual(f.manifest().skipped.map(item => [item.name, item.code]), [['denied.bin', 'EACCES']]);
+    assert.equal(job.skipped.length, 1);
+});
+
+test('persistent state write failure is reported separately and leaves a retryable job',async t=>{
+    const f=await fixture(t);await f.put('readable.txt');const rename=fs.rename;
+    fs.rename=async(from,to)=>{if(to===path.join(f.dataDir,'.system-backup-state.json'))throw Object.assign(Error('state denied'),{code:'EPERM'});return rename(from,to);};
+    try{await assert.rejects(f.service.start({mode:'core',requestId:'permanent-state-261027'}),/BACKUP_STATE_WRITE_FAILED/);await f.service.wait();}
+    finally{fs.rename=rename;}
+    const job=f.service.state().jobs[0];assert.equal(job.status,'failed');assert.equal(job.currentFile,'');assert.equal(job.skipped.length,0);assert.equal(f.objects.size,0);
+    await f.service.retry(job.id);await f.service.wait();assert.equal(f.service.state().jobs[0].status,'completed');
+});
 test('SQLite online snapshot includes committed WAL and omits sidecars rather than copying an inconsistent triple', async t => {
     const f = await fixture(t), dbPath = path.join(f.dataDir, 'live.sqlite'), db = new DatabaseSync(dbPath);
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT); INSERT INTO records VALUES (\'latest committed WAL value\')');

@@ -26,12 +26,13 @@
                 for (const name of ['heading', 'target', 'count', 'current', 'detail', 'error']) { const row = text('div', '', name === 'heading' ? 'sb-job-title' : name === 'error' ? 'sb-job-details sb-error' : 'sb-job-details'); row.dataset.row = name; card.append(row); }
                 card.append(document.createElement('progress'), text('div', '', 'sb-actions')); jobs.prepend(card); }
             const row = name => card.querySelector(`[data-row="${name}"]`);
-            row('heading').replaceChildren(text('span', `${t(job.mode === 'full' ? '全量' : '核心')} · /${job.folder}`), text('span', t(labels[job.status] || job.status), 'sb-status'));
+            row('heading').replaceChildren(text('span', `${t(job.mode === 'full' ? '全量' : '核心')} · /${job.folder}`), text('span', t(job.status==='completed'&&job.skipped?.length?'备份完成（有跳过项）':labels[job.status] || job.status), 'sb-status'));
             row('target').textContent = targetText(job.target);
             row('count').textContent = t('{0} · {1} / {2} 个文件 · {3} / {4}', new Date(job.createdAt).toLocaleString(), job.completedFiles, job.totalFiles, bytes(job.completedBytes), bytes(job.totalBytes));
             const progress = card.querySelector('progress'); progress.max = Math.max(1, job.totalBytes); progress.value = job.completedBytes; if (job.status === 'snapshotting') progress.removeAttribute('value');
             row('current').textContent = job.currentFile ? t('当前文件：{0}', job.currentFile) : '';
-            row('detail').textContent = job.currentProgress ? `${job.currentProgress.percent}% · ${job.currentProgress.detail || job.currentProgress.phase}` : '';
+            row('detail').textContent = (job.currentProgress ? `${job.currentProgress.percent}% · ${job.currentProgress.detail || job.currentProgress.phase}` : '') +
+                (job.skipped?.length ? '\n' + t('已跳过 {0} 项（读取权限受限）：', job.skipped.length) + '\n' + job.skipped.map(item => `${item.name} [${item.code}]`).join('\n') : '');
             row('error').textContent = job.error ? t('未完成：{0}。已完成的文件不会重复保存。', job.error) : job.cleanupWarning ? t('网盘备份已完成，本机快照清理失败：{0}', job.cleanupWarning) : '';
             const actions = card.querySelector('.sb-actions'), signature = `${state.active === job.id}:${job.status}`;
             if (actions.dataset.signature === signature || actionCount) continue; actions.dataset.signature = signature; actions.replaceChildren();

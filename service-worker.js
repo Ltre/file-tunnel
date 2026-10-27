@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v88-content-v8-streaming-261027-1';
+const CACHE_NAME = 'instant-tunnel-v89-content-v8-streaming-261027-2';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -47,6 +47,7 @@ const APP_SHELL = [
     '/client/account-ui.css',
     '/client/streaming-console.css',
     '/client/streaming-player.js',
+    '/client/streaming-peers.js',
     '/client/icons/streaming.png',
     '/client/icons/quit-fullscreen.png',
     '/client/streaming-app-adapter.js',
@@ -100,6 +101,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('message', event => {
+    if(event.data?.type==='streaming-peer-ping'){event.ports?.[0]?.postMessage({streamingPeer:1});return;}
     if (event.data?.type === 'web-zip-runtime-ping') {
         event.ports?.[0]?.postMessage({ webZipRuntime:2, externalScriptMime:true });
         return;
@@ -180,8 +182,38 @@ async function loadAppNavigation(event) {
     } finally { clearTimeout(timer); }
 }
 
+async function streamingPeerMedia(event,url){
+    const ticket=url.pathname.split('/').pop(),fallback=()=>fetch(new Request(new URL('/api/streaming/media/'+ticket,self.location.origin),event.request));
+    if(!/^[\w-]{20,80}$/.test(ticket))return new Response('',{status:404});
+    const client=event.clientId&&await self.clients.get(event.clientId);if(!client)return fallback();
+    const ask=(op,extra={})=>new Promise((resolve,reject)=>{
+        const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();reject(Error('STREAM_PEER_TIMEOUT'));},30000);
+        channel.port1.onmessage=event=>{clearTimeout(timer);channel.port1.close();event.data?.error?reject(Error(event.data.error)):resolve(event.data);};
+        client.postMessage({type:'streaming-peer-read',op,ticket,...extra},[channel.port2]);
+    });
+    let meta;try{meta=await ask('open');}catch(_){return fallback();}
+    const size=Number(meta.size);if(!Number.isSafeInteger(size)||size<=0)return fallback();
+    const raw=event.request.headers.get('Range'),match=raw&&/^bytes=(\d*)-(\d*)$/.exec(raw);
+    if(raw&&!match)return new Response('',{status:416,headers:{'Content-Range':'bytes */'+size}});
+    let start=match?(match[1]?Number(match[1]):Math.max(0,size-Number(match[2]))):0;
+    const end=match?(match[1]?(match[2]?Math.min(size-1,Number(match[2])):size-1):size-1):size-1;
+    if(start>end||start>=size)return new Response('',{status:416,headers:{'Content-Range':'bytes */'+size}});
+    const first=start;let cancelled=false;
+    const body=new ReadableStream({async pull(controller){
+        if(cancelled)return;
+        if(start>end){controller.close();return;}
+        const last=Math.min(end,start+(start===first?64*1024:1024*1024)-1);
+        try{const result=await ask('read',{start,end:last});if(cancelled)return;if(!(result.body instanceof ArrayBuffer)||result.body.byteLength!==last-start+1)throw Error('STREAM_READ_INVALID');controller.enqueue(new Uint8Array(result.body));start=last+1;}
+        catch(error){if(!cancelled)controller.error(error);}
+    },cancel(){cancelled=true;}});
+    const headers={'Content-Type':/^(video|audio|image)\//.test(meta.type||'')?meta.type:'text/plain; charset=utf-8','Content-Length':String(end-first+1),'Accept-Ranges':'bytes','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"};
+    if(match)headers['Content-Range']=`bytes ${first}-${end}/${size}`;
+    return new Response(body,{status:match?206:200,headers});
+}
+
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);
+    if(event.request.method==='GET'&&url.origin===self.location.origin&&url.pathname.startsWith('/streaming-peer-media/')){event.respondWith(streamingPeerMedia(event,url));return;}
     if (event.request.method === 'GET' && url.origin === self.location.origin && url.pathname.startsWith('/web-zip-runtime/')) {
         event.respondWith(handleWebZipRuntime(event.request, url));
         return;

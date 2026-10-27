@@ -50,6 +50,16 @@ test('real HTTP drive adapter delegates only selected bytes without recipient so
     const anonymousBookmark = await f.call('device-C', '/stations/' + f.s.id + '/bookmark', 'PUT'); assert.equal(anonymousBookmark.status, 403);
 });
 
+test('peer Range validation is device-bound, hides disk source credentials and immediately honors viewer revocation',async t=>{
+    const f=await setup(t),ticket=await f.call('device-C','/stations/'+f.s.id+'/ticket','POST',{itemId:f.items[0].id});
+    const token=ticket.body.url.split('/').pop(),validated=await f.call('device-C','/peers/validate','POST',{ticket:token});
+    assert.equal(validated.status,200);assert.match(validated.body.key,/^[a-f0-9]{64}$/);assert.equal(validated.body.source,undefined);
+    assert.equal(JSON.stringify(validated.body).includes('fileId'),false);assert.equal(JSON.stringify(validated.body).includes('alice'),false);
+    assert.equal((await f.call('device-B','/peers/validate','POST',{ticket:token})).status,403);
+    await f.call('device-A','/stations/'+f.s.id+'/access','POST',{deviceId:'device-C',allow:false},true);
+    assert.equal((await f.call('device-C','/peers/validate','POST',{ticket:token})).status,403);
+});
+
 test('switching accounts and choosing offline keeps retained drive source proofs playable', async t => {
     const f = await setup(t), item = f.items[0]; await f.login('bob');
     const open = f.api.objectStorage.open; let readClosed = Promise.resolve();

@@ -13,7 +13,7 @@
     }
     // Only this device's cursor retains loading time. Explicit global commands
     // still replace it; station permissions and the server clock are unchanged.
-    function create({ stationId, watchId, request, subscribe, onState, onError, onRecovery, onSeek }) {
+    function create({ stationId, watchId, request, subscribe, onState, onError, onRecovery, onSeek, mediaUrl = access => access.url }) {
         const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
@@ -32,13 +32,24 @@
         let actual = 'waiting', failure = '', lastMediaError = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
         let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
         let reportController, reportRetryTimer, reportRetries = 0, lastReportError = '';
+        let foreground = true, background = global.localStorage?.getItem('streaming-background-playback') !== 'off';
+        const backgroundPaused = () => !background && (!foreground || document.hidden);
+        const locallyPaused = () => paused || backgroundPaused();
+        const backgroundLabel = document.createElement('label'); backgroundLabel.className = 'sc-background-toggle';
+        const backgroundToggle = document.createElement('input'); backgroundToggle.type = 'checkbox'; backgroundToggle.checked = background;
+        backgroundLabel.textContent = t('后台播放'); backgroundLabel.append(backgroundToggle); host.append(backgroundLabel);
+        function setBackground(enabled) { background = Boolean(enabled); backgroundToggle.checked = background; try { global.localStorage?.setItem('streaming-background-playback', background ? 'on' : 'off'); } catch (_) {} sync(); update(); }
+        backgroundToggle.onchange = () => setBackground(backgroundToggle.checked);
+        const visibilityChanged = () => { lastTick = performance.now(); sync(); update(); };
+        document.addEventListener?.('visibilitychange', visibilityChanged);
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
         const localPause = button('暂停本机观看', () => { const retry = actual === 'blocked' || actual === 'error'; paused = retry ? false : !paused; if (paused) { media?.pause(); actual = 'paused'; } else if (actual !== 'blocked') align(); lastTick = performance.now(); sync(true); update(); });
-        const sound = button('静音', () => { muted = !muted; if (media) media.muted = muted; sync(true); update(); });
+        function applyAudioPolicy() { for(const node of new Set([media,active?.media,next?.media]))if(node){node.muted=muted;node.defaultMuted=muted;node.volume=muted?0:volume;} }
+        const sound = button('静音', () => { muted = !muted; applyAudioPolicy(); sync(true); update(); });
         localPause.dataset.icon = '❚❚'; sound.dataset.icon = '🔇';
         const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
-        slider.oninput = () => { volume = Number(slider.value); if (media) media.volume = volume; update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
+        slider.oninput = () => { volume = Number(slider.value); applyAudioPolicy(); update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
         // Resume is also the user gesture for browsers that block audible autoplay.
         let fullscreen = false, landscape = false;
         function resizeFullscreen() {
@@ -78,7 +89,7 @@
         function globalPosition() { const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId); return Math.min(length(item), (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0)); }
         function update() {
             const adminPaused = snapshot?.playback.status === 'paused';
-            const pauseLabel = adminPaused ? '已被管理员暂停' : paused ? '本机已暂停' : '';
+            const pauseLabel = adminPaused ? '已被管理员暂停' : backgroundPaused() ? '后台播放已关闭' : paused ? '本机已暂停' : '';
             buffering.hidden = !pauseLabel && actual !== 'buffering';
             buffering.textContent = t(pauseLabel || '正在缓冲');
             buffering.classList.toggle('sc-paused', Boolean(pauseLabel));
@@ -93,17 +104,18 @@
             statusNode.textContent = (pauseLabel ? t(pauseLabel) : failure || t(!paused && actual === 'paused' ? '等待全台播放' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
             const item = current();
-            if (item && !item.duration && !paused && active?.ready) {
-                const remaining = Math.max(0, item.stay - localPosition);
+            const remaining = Math.max(0, length(item) - localPosition);
+            if (item && remaining <= 99 && remaining > 0 && !locallyPaused() && running() && active?.ready) {
                 countdown.hidden = false; countdown.textContent = String(Math.ceil(remaining)); countdown.dataset.position = snapshot.countdown || 'bottom-right';
-                stage.style.setProperty('--sc-remaining', String(remaining / item.stay)); stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
+                stage.style.setProperty('--sc-remaining', String(remaining / Math.min(99,length(item)))); stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
             } else { countdown.hidden = true; stage.classList.remove('sc-edge-countdown'); }
         }
         function dispose(task) {
-            if (!task || task.disposed) return; task.disposed = true; task.controller.abort();
+            if (!task || task.disposed) return; task.disposed = true; clearTimeout(task.loadTimer); task.controller.abort();
             task.media?.pause(); task.element?.querySelectorAll?.('img,audio,video,source').forEach(node => { node.pause?.(); node.removeAttribute('src'); node.load?.(); });
             task.media?.removeAttribute('src'); task.media?.load(); if (task.element?.tagName === 'IMG') task.element.removeAttribute('src');
             if (task.clientUrl) URL.revokeObjectURL(task.clientUrl); task.clientChunks = null;
+            if(task.url?.startsWith('blob:'))URL.revokeObjectURL(task.url);
         }
         function clearNext() { dispose(next); next = null; }
         function accessError(error) {
@@ -164,7 +176,7 @@
             if (active !== task || task.disposed || !alive || accessError(error)) return;
             actual = 'error';
             task.retryAt = ['STREAM_MEDIA_DECODE_FAILED', 'STREAM_TYPE_UNSUPPORTED', 'STREAM_SOURCE_DELETED', 'STREAM_SOURCE_REVOKED'].includes(error.message) ? 0 : performance.now() + 2000 * 2 ** task.retries;
-            const message = error.message === 'STREAM_MEDIA_DECODE_FAILED' ? '浏览器无法解码该媒体，请检查格式与编码' : '资源读取失败，请检查台状态与来源';
+            const message = error.message === 'STREAM_MEDIA_DECODE_FAILED' ? '浏览器无法解码该媒体，请检查格式与编码' : error.message === 'STREAM_MEDIA_STALLED' ? '播放持续没有进展，已重试，请点击恢复播放' : '资源读取失败，请检查台状态与来源';
             lastMediaError = error.message; failure = t(message) + ' [' + error.message + ']'; update(); onError?.(error);
         }
         function recovered() {
@@ -174,9 +186,10 @@
         function prepare(item) {
             const task = { item, key: itemKey(item), controller: new AbortController(), ready: false, disposed: false, started: performance.now() };
             const signal = task.controller.signal;
+            const deadline = task.loadTimer = setTimeout(() => { task.timedOut = true; task.controller.abort(); }, 30000);
             const ticket = reference => request('/stations/' + stationId + '/ticket', 'POST', { itemId: item.id, reference }, { signal });
             task.promise = (async () => {
-                const access = await ticket(); if (task.disposed) return; task.expiresAt = access.expiresAt; task.url = access.url; task.size = Number(access.size) || 0; task.warmCursor = 0; task.type = access.type;
+                const access = await ticket(); if (task.disposed) return; task.expiresAt = access.expiresAt; task.url = await mediaUrl(access,signal); if(task.disposed){if(task.url.startsWith('blob:'))URL.revokeObjectURL(task.url);return;} if(signal.aborted)throw Error('STREAM_MEDIA_TIMEOUT');task.size = Number(access.size) || 0; task.warmCursor = 0; task.type = access.type;
                 if (task.size > 0 && task.size <= 16 * 1024 * 1024) task.clientChunks = [];
                 if (['audio', 'video', 'image'].includes(item.kind)) {
                     const node = document.createElement(item.kind === 'image' ? 'img' : item.kind); task.element = node;
@@ -186,10 +199,10 @@
                         node.addEventListener(item.kind === 'image' ? 'load' : 'canplay', () => { if (!task.disposed) resolve(); }, { once: true });
                         node.addEventListener('error', () => { if (!task.disposed && !task.ready) mediaFailure(task, node).then(reject); }, { once: true });
                         signal.addEventListener('abort', () => reject(Object.assign(Error('Aborted'), { name: 'AbortError' })), { once: true });
-                        node.src = access.url;
+                        node.src = task.url;
                     });
                 } else {
-                    const response = await fetch(access.url, { cache: 'no-store', signal }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
+                    const response = await fetch(task.url, { cache: 'no-store', signal }); if (!response.ok) throw Error('STREAM_SOURCE_UNAVAILABLE');
                     const body = await response.text(); if (task.disposed) return;
                     const node = document.createElement('div'); node.className = 'sc-document message-content'; task.element = node;
                     if (item.kind === 'markdown' || item.kind === 'rich') {
@@ -201,7 +214,7 @@
                     } else { const pre = document.createElement('pre'); pre.textContent = body; node.append(pre); }
                 }
                 if (!task.disposed) task.ready = true;
-            })();
+            })().catch(error => { throw task.timedOut ? Error('STREAM_MEDIA_TIMEOUT') : error; }).finally(() => clearTimeout(deadline));
             task.promise.catch(() => {}); return task;
         }
         async function load(item, position = 0, retries = 0) {
@@ -215,9 +228,9 @@
                 const wait = Math.max(0, performance.now() - started) / 1000;
                 loadCost = Math.max(.25, Math.min(60, Math.max(loadCost * .7, (performance.now() - task.started) / 1000)));
                 if (running() && !pageSuspended) delay += wait;
-                media = task.media; content.replaceChildren(task.element); lastTick = performance.now();
+                media = task.media; content.replaceChildren(task.element); lastTick = performance.now(); task.progressAt = lastTick; task.lastPosition = position;
                 if (media) {
-                    media.muted = muted; media.volume = volume; media.currentTime = Math.min((item.start || 0) + localPosition, Math.max(0, media.duration - .05));
+                    applyAudioPolicy(); media.currentTime = Math.min((item.start || 0) + localPosition, Math.max(0, media.duration - .05));
                     media.addEventListener('playing', () => { if (active === task) { actual = 'playing'; failure = ''; recovered(); lastTick = performance.now(); update(); } });
                     media.addEventListener('waiting', () => { if (active === task) { actual = 'buffering'; recoverBuffered(task); update(); } });
                     media.addEventListener('error', () => { if (active === task && !task.diagnosing) {
@@ -244,7 +257,7 @@
         }
         async function warmCurrent() {
             const task = active;
-            if (!alive || denied || pageSuspended || paused || !running() || !task?.ready || !media || media !== task.media || !task.size || task.clientUrl || task.warming || performance.now() < (task.warmAt || 0)) return;
+            if (!alive || denied || pageSuspended || locallyPaused() || !running() || !task?.ready || !media || media !== task.media || !task.size || task.clientUrl || task.url?.startsWith('blob:') || task.warming || performance.now() < (task.warmAt || 0)) return;
             const unit = 1024 * 1024, item = current();
             // Time-to-byte conversion is only a read-ahead hint; media decoding
             // and seeking stay with the browser's native Range implementation.
@@ -255,8 +268,10 @@
             const start = task.warmCursor, end = Math.min(task.size - 1, start + 4 * unit - 1);
             if (!task.clientChunks && start >= approximate + 16 * unit) return;
             if (start > end) return; task.warming = true; task.warmAt = performance.now() + 5000;
+            const controller = new AbortController(), cancel = () => controller.abort(), deadline = setTimeout(cancel,15000);
+            task.controller.signal.addEventListener('abort',cancel,{once:true});
             try {
-                const response = await fetch(task.url, { headers: { Range: 'bytes=' + start + '-' + end, 'X-Stream-Buffer': '1' }, cache: 'no-store', signal: task.controller.signal });
+                const response = await fetch(task.url, { headers: { Range: 'bytes=' + start + '-' + end, 'X-Stream-Buffer': '1' }, cache: 'no-store', signal: controller.signal });
                 if (response.status !== 206) { await response.body?.cancel(); return; }
                 const bytes = await response.arrayBuffer(); if (task.disposed || bytes.byteLength !== end - start + 1) return; task.warmCursor = end + 1;
                 if (task.clientChunks) {
@@ -265,7 +280,7 @@
                         if (['buffering', 'error'].includes(actual)) recoverBuffered(task); }
                 }
             } catch (_) { /* Auxiliary buffering must not interrupt playback. */ }
-            finally { task.warming = false; }
+            finally { clearTimeout(deadline); controller.abort(); task.controller.signal.removeEventListener('abort',cancel); task.warming = false; }
         }
         function align() { tail = false; delay = 0; const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId && !item.unavailable); load(item, globalPosition()); }
         function sync(force = false) {
@@ -276,21 +291,25 @@
                 if (active?.retryAt && active.retries < 3 && now >= active.retryAt && running() && !paused && !item.unavailable) load(item, localPosition, active.retries + 1);
                 return;
             }
-            if (active?.ready && !paused && running()) {
+            if (active?.ready && !locallyPaused() && running()) {
                 if (media) { if (!media.paused && media.readyState >= 2) localPosition = Math.max(0, media.currentTime - (item.start || 0)); else if (actual === 'buffering' || actual === 'blocked') delay += elapsed; }
                 else localPosition += elapsed;
+                if (media && actual !== 'blocked') {
+                    if (localPosition > active.lastPosition + .05) { active.progressAt = now; active.lastPosition = localPosition; active.retries = 0; }
+                    else if (now - active.progressAt >= 30000) { if(active.retries<3)load(item,localPosition,active.retries+1);else failMedia(active,Error('STREAM_MEDIA_STALLED')); return; }
+                }
                 if (localPosition >= length(item)) { const followingItem = following(); if (followingItem) { load(followingItem); return; } tail = false; media?.pause(); actual = 'waiting'; update(); return; }
                 const upcoming = following();
                 if (upcoming && length(item) - localPosition <= Math.min(length(item), Math.max(5, loadCost + 2)) && !next) next = prepare(upcoming);
             }
             if (active?.expiresAt && active.expiresAt < Date.now() + 5000) { load(item, localPosition); return; }
             if (media && active?.ready) {
-                if (paused || !running()) { media.pause(); actual = 'paused'; }
+                if (locallyPaused() || !running()) { media.pause(); actual = 'paused'; }
                 else if (media.paused && !active.playPending && (actual !== 'blocked' || force)) {
                     const element = media, task = active; task.playPending = true; actual = 'buffering';
                     element.play().catch(error => { if (media !== element || paused || !running() || error.name === 'AbortError') return; actual = error.name === 'NotAllowedError' ? 'blocked' : 'error'; update(); }).finally(() => { task.playPending = false; });
                 }
-            } else if (active?.ready) actual = paused || !running() ? 'paused' : 'reading';
+            } else if (active?.ready) actual = locallyPaused() || !running() ? 'paused' : 'reading';
         }
         function apply(value) {
             if (!alive || denied || pageSuspended || snapshot && (value.playback.version < snapshot.playback.version || value.serverTime < snapshot.serverTime)) return;
@@ -311,9 +330,10 @@
         const timer = setInterval(() => { sync(); update(); warmCurrent(); }, 250);
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
-        return { element: host, apply, poll, snapshot: () => snapshot, exitFullscreen,
+        return { element: host, apply, poll, snapshot: () => snapshot, exitFullscreen, setBackground,
+            setForeground(value) { foreground = Boolean(value); lastTick = performance.now(); sync(); update(); },
             setController(handler) { onSeek = handler; update(); },
-            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
+            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); document.removeEventListener?.('visibilitychange',visibilityChanged); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
     global.StreamingPlayer = { create, renderRich };
 })(window);

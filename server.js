@@ -6635,6 +6635,12 @@ function isYtDlpRequestedFormatUnavailable(error) {
     return /requested format is not available|only images are available/i.test(String(error?.message || error || ''));
 }
 
+function getYtDlpMergeArgs(format = 'mp4') {
+    // Audio-only downloads keep their original container. mp3/m4a are not
+    // accepted by yt-dlp's video stream merge option.
+    return ['avi', 'flv', 'mkv', 'mov', 'mp4', 'webm', 'mka'].includes(format) ? ['--merge-output-format', format] : [];
+}
+
 async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistItem = 0, options = {}) {
     fs.mkdirSync(SNS_MEDIA_WORK_DIR, { recursive: true });
     cleanupSnsWorkFiles(`${assetId}.`);
@@ -6656,7 +6662,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
                 attempt: attempt + 1,
                 attempts: uniqueSelectors.length,
                 formatSelector: selector,
-                mergeOutputFormat: options.mergeOutputFormat || 'mp4',
+                mergeOutputFormat: getYtDlpMergeArgs(options.mergeOutputFormat || 'mp4')[1] || null,
                 downloadSections: options.downloadSections || '完整媒体'
             }
         });
@@ -6666,7 +6672,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
             ...getYtDlpRemoteComponentArgs(url),
             ...getYtDlpFfmpegArgs(),
             '-f', selector,
-            '--merge-output-format', options.mergeOutputFormat || 'mp4',
+            ...getYtDlpMergeArgs(options.mergeOutputFormat || 'mp4'),
             '-o', path.join(SNS_MEDIA_WORK_DIR, `${assetId}.%(ext)s`),
             ...getYtDlpCookieArgs(url, options.cookiePath),
             url

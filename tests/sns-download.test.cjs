@@ -10,6 +10,15 @@ const { createSnsDownloadService, normalizeSnsDownloadUrl } = require('../server
 const ROOT = path.join(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(ROOT, relative), 'utf8');
 
+test('audio downloads omit unsupported merge containers while video stream merge remains enabled', () => {
+    const source = read('server.js'), start = source.indexOf('function getYtDlpMergeArgs(');
+    const build = require('node:vm').runInNewContext('(' + source.slice(start, source.indexOf('\nasync function runYtDlpDownload', start)) + ')');
+    assert.equal(JSON.stringify(build('mp3')), '[]'); assert.equal(JSON.stringify(build('m4a')), '[]');
+    assert.equal(JSON.stringify(build('mp4')), '["--merge-output-format","mp4"]');
+    assert.equal(JSON.stringify(build('webm')), '["--merge-output-format","webm"]');
+    assert.match(source, /\.\.\.getYtDlpMergeArgs\(options.mergeOutputFormat/);
+});
+
 function waitFor(check, timeoutMs = 3000) {
     const startedAt = Date.now();
     return new Promise((resolve, reject) => {

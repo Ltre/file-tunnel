@@ -1,6 +1,8 @@
 (function (global) {
     'use strict';
     const rows = [
+        ['已跳过 {0} 项（读取权限受限）：','Skipped {0} items (read access denied):'],
+        ['备份完成（有跳过项）','Backup completed with skipped items'],
         ['系统备份程序', 'System Backup'],
         ['将服务器 .tunnel-data 保存到专用 Telegram 网盘位置。', 'Back up server .tunnel-data to a dedicated Telegram drive location.'],
         ['备份模式', 'Backup mode'], ['全量备份', 'Full backup'], ['核心备份', 'Core backup'], ['全量', 'Full'], ['核心', 'Core'],

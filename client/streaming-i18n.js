@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['正在加载串流台界面…','Loading the station interface…'],
+        ['后台播放','Background playback'],['后台播放已关闭','Background playback is disabled'],
+        ['播放持续没有进展，已重试，请点击恢复播放','Playback is still stalled after retries. Select Resume playback'],
+        ['小窗播','Mini player'],['串流台小窗','Station mini player'],['恢复串流台','Restore station'],['关闭小窗','Close mini player'],
         ['目标隧道','Target tunnel'],
         ['放弃旧草稿，读取最新节目单','Discard the old draft and load the latest playlist'],
         ['服务端节目单已更新，本机未保存的草稿仍保留。可关闭此窗口继续编辑草稿，或放弃旧草稿后读取最新节目单。','The server playlist has changed. Your unsaved local draft is retained. Close this dialog to keep editing it, or discard it and load the latest playlist.'],

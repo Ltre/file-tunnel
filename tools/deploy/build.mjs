@@ -33,6 +33,7 @@ const SCRIPT_SOURCES = [
   'client/notification-center.js',
   'client/streaming-console.js',
   'client/streaming-player.js',
+  'client/streaming-peers.js',
   'client/streaming-app-adapter.js',
   'client/tunnel-markdown.js',
   'client/streaming-i18n.js',

@@ -132,6 +132,8 @@ function createStreamingSources({ disk, tunnel, broker = createStreamingBroker()
         }
         return resolved;
     }
-    return { resolve, stat, read, text, broker, MAX_CHUNK };
+    const peerProviders = resource => resource.source.kind === 'tunnel' ? [resource.deviceId, ...tunnel.providers(resource.source)].filter(Boolean)
+        : resource.source.kind === 'local' ? [resource.deviceId || resource.source.deviceId] : [];
+    return { resolve, stat, read, text, broker, MAX_CHUNK, peerProviders };
 }
 module.exports = { createStreamingSources, createStreamingBroker, MAX_CHUNK };

@@ -22,24 +22,25 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, size = 0, fetchBytes } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
+    const epoch=Date.now(),clockNow=()=>clockDate?epoch+time:Date.now();
     const timeouts = new Map(); let timeoutId = 0, reportAttempt = 0;
     const events = new Map(), window = { innerWidth:390, innerHeight:800, addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
     vm.runInNewContext(fs.readFileSync(require.resolve('../client/streaming-player.js'), 'utf8'), {
         window, document: { createElement(tag) { const el = new Element(tag); if (pendingPlayback && ['audio','video'].includes(tag)) el.play = () => new Promise(() => {}); elements.push(el); return el; } },
-        performance: { now: () => time }, Date, AbortController, URL, Blob, fetch: fetchBytes || (async () => ({ ok: true, text: async () => 'text' })),
+        performance: { now: () => time }, Date:clockDate?{now:clockNow}:Date, AbortController, URL, Blob, fetch: fetchBytes || (async () => ({ ok: true, text: async () => 'text' })),
         setInterval: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearInterval() {},
         setTimeout: controlledTimeouts ? (run, ms) => { timeouts.set(++timeoutId, {run, ms}); return timeoutId; } : setTimeout,
         clearTimeout: controlledTimeouts ? id => timeouts.delete(id) : clearTimeout
     });
     const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
-        items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? 120 : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? 120 : undefined, stay: 10 }],
+        items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? duration : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? duration : undefined, stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
     const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onRecovery:code=>recoveries.push(code),
         request: async (route, method, body, options) => { calls.push({ route, body }); if (onReport && route.endsWith('/report')) return onReport({attempt:++reportAttempt, state, options}); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
-            return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000, size, type: 'audio/wav' };
+            return { url: '/media/' + body.itemId, expiresAt: clockNow() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
     return { player, state, calls, recoveries, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
@@ -55,6 +56,53 @@ test('audio starts audible and mute is visibly reported', async () => {
     assert.equal(audio.muted, false);
     const mute = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '静音'); mute.onclick();
     assert.match(f.player.element.querySelector('.sc-play-status').textContent, /已静音/); f.player.close();
+});
+
+test('media countdown starts at 99 seconds and respects local/global pause', async () => {
+    const f = fixture({ kind:'audio' }); await f.flush(); const audio = f.elements.find(el=>el.tagName==='AUDIO');
+    audio.readyState=4; audio.emit('canplay'); await f.flush(); audio.currentTime=20; f.tick(250);
+    const countdown=f.player.element.querySelector('.sc-countdown'); assert.equal(countdown.hidden,true);
+    audio.currentTime=21; f.tick(250); assert.equal(countdown.hidden,false); assert.equal(countdown.textContent,'99');
+    f.player.apply({...f.state,serverTime:2,playback:{...f.state.playback,status:'paused',version:2}});
+    assert.equal(countdown.hidden,true); f.player.close();
+});
+
+test('background playback can be disabled and restored without losing the media position', async () => {
+    const f=fixture({kind:'audio'}); await f.flush(); const audio=f.elements.find(el=>el.tagName==='AUDIO'); audio.readyState=4;audio.emit('canplay');await f.flush();
+    audio.currentTime=8; f.tick(250); f.player.setForeground(false); assert.equal(audio.paused,false);
+    f.player.setBackground(false); assert.equal(audio.paused,true);assert.equal(audio.currentTime,8);
+    f.player.setForeground(true); await f.flush(); assert.equal(audio.paused,false); assert.equal(audio.currentTime,8);f.player.close();
+});
+
+test('a media stall without an error event renews the ticket after bounded waiting', async()=>{
+    const f=fixture({kind:'audio'});await f.flush();let audio=f.elements.find(el=>el.tagName==='AUDIO');audio.readyState=4;audio.emit('canplay');await f.flush();
+    audio.currentTime=4;f.tick(250);audio.readyState=1;audio.emit('waiting');const count=f.calls.filter(call=>call.route.endsWith('/ticket')).length;
+    f.tick(31000);await f.flush();assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,count+1);f.player.close();
+});
+
+test('persistent stalls stop retrying and show an actionable error instead of buffering forever',async()=>{
+    const f=fixture({kind:'audio'});await f.flush();
+    for(let attempt=0;attempt<4;attempt++){
+        const node=f.elements.filter(el=>el.tagName==='AUDIO').at(-1);node.readyState=4;node.emit('canplay');await f.flush();node.readyState=1;node.emit('waiting');f.tick(31000);await f.flush();
+    }
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,4);
+    assert.match(f.player.element.querySelector('.sc-play-status').textContent,/STREAM_MEDIA_STALLED/);
+    assert.equal(f.player.element.querySelector('.sc-buffering').hidden,true);f.player.close();
+});
+
+test('two virtual hours renew expired tickets and retain the local cursor without accumulating playback instances',async()=>{
+    const f=fixture({kind:'audio',clockDate:true,duration:10000});await f.flush();let node=f.elements.find(el=>el.tagName==='AUDIO');node.duration=10000;node.readyState=4;node.emit('canplay');await f.flush();
+    for(let minutes=10;minutes<=120;minutes+=10){node.currentTime=minutes*60;f.tick(600000);await f.flush();node=f.elements.filter(el=>el.tagName==='AUDIO').at(-1);node.duration=10000;node.readyState=4;node.emit('canplay');await f.flush();assert.equal(node.currentTime,minutes*60);assert.equal(node.paused,false);}
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/ticket')).length,13);f.player.close();assert.ok(f.elements.filter(el=>el.tagName==='AUDIO').every(el=>el.paused));
+});
+
+test('fullscreen mute applies to active and prefetched media and restores the selected volume after handover',async()=>{
+    const f=fixture({kind:'audio',nextKind:'audio'});await f.flush();const first=f.elements.find(el=>el.tagName==='AUDIO');first.readyState=4;first.emit('canplay');await f.flush();
+    first.currentTime=116;f.tick(250);await f.flush();const next=f.elements.filter(el=>el.tagName==='AUDIO').at(-1);
+    const controls=f.player.element.querySelector('.sc-local-controls'),volume=controls.children.find(el=>el.tagName==='LABEL').children[0],mute=controls.children.find(el=>el.dataset.icon==='🔇');
+    volume.value=.25;volume.oninput();f.player.element.querySelector('.sc-window-only').onclick();mute.onclick();
+    for(const node of [first,next]){assert.equal(node.muted,true);assert.equal(node.defaultMuted,true);assert.equal(node.volume,0);}
+    next.readyState=4;next.emit('canplay');await f.flush();first.currentTime=120;f.tick(250);await f.flush();mute.onclick();assert.equal(next.volume,.25);assert.equal(next.muted,false);f.player.close();
 });
 
 test('page fullscreen rotates without native APIs, retains playback controls, and cleans up on exit', async () => {

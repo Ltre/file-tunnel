@@ -7,7 +7,7 @@ const { createStreamingSources } = require('../../server/streaming-sources');
 const { createStreamingTunnels } = require('../../server/streaming-tunnels');
 const { registerStreamingConsole } = require('../../server/streaming-http');
 const { createDiskPartitions } = require('../../server/disk-partitions');
-async function createFixture({ media = false } = {}) {
+async function createFixture({ media = false, serviceWorker = false } = {}) {
     const f = await driveFixture(), root = path.resolve(__dirname, '../..');
     const records = [ { id: 'image-record', type: 'file', fileInfo: { id: 'image-asset', name: '隧道图片.png', type: 'image/png',
         size: 68, data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVioAAAAASUVORK5CYII=' } },
@@ -76,7 +76,7 @@ async function createFixture({ media = false } = {}) {
     f.app.get('/runtime-config.js', (_req, res) => res.type('js').send('window.TUNNEL_CONFIG={};'));
     f.app.get('/app.js', (_req, res) => res.sendFile(path.join(root, 'app.js')));
     f.app.get('/socket.io/socket.io.js', (_req, res) => res.sendFile(path.join(root, 'node_modules/socket.io/client-dist/socket.io.js')));
-    f.app.get('/service-worker.js', (_req, res) => res.status(404).end());
+    f.app.get('/service-worker.js', (_req, res) => serviceWorker ? res.type('js').sendFile(path.join(root,'service-worker.js')) : res.status(404).end());
     f.app.get('/streaming-layout-check', (_req, res) => {
         const appSource = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
         const controls = appSource.slice(appSource.indexOf('function normalizeControlCenterOrder('), appSource.indexOf('function showTunnelRemarkDialog('));
