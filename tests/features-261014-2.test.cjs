@@ -53,10 +53,13 @@ test('admin routes wrap top-level entries, preserve existing inner pages, and en
     const express = require('express'), app = express();
     registerAdminLayout(app, { root: path.resolve('.'), requireAuth: (req, res, next) => req.headers['x-admin'] === '1' ? next() : res.sendStatus(401) });
     app.get('/sns-dl', (_req, res) => res.send('original SNS page'));
+    app.get('/system-backup', (_req, res) => res.send('system backup page'));
     const server = app.listen(0, '127.0.0.1'); await new Promise(done => server.once('listening', done));
     t.after(() => new Promise(done => { server.close(done); server.closeAllConnections(); }));
     const base = 'http://127.0.0.1:' + server.address().port, headers = { 'x-admin': '1' };
-    for (const route of ['/admin', '/admin/home', '/sns-dl', '/sns-dl?admin_frame=1']) assert.equal((await fetch(base + route)).status, 401);
+    for (const route of ['/admin', '/admin/home', '/sns-dl', '/sns-dl?admin_frame=1', '/system-backup', '/system-backup?admin_frame=1']) assert.equal((await fetch(base + route)).status, 401);
+    assert.match(await (await fetch(base + '/system-backup', { headers })).text(), /id="admin-content"/);
+    assert.equal(await (await fetch(base + '/system-backup?admin_frame=1', { headers })).text(), 'system backup page');
     assert.match(await (await fetch(base + '/sns-dl?media_import=abc&media_bind=signed', { headers })).text(), /id="admin-content"/);
     assert.equal(await (await fetch(base + '/sns-dl?admin_frame=1', { headers })).text(), 'original SNS page');
     assert.equal(await (await fetch(base + '/sns-dl', { headers: { ...headers, 'Sec-Fetch-Dest': 'iframe' } })).text(), 'original SNS page');

@@ -56,3 +56,14 @@ test('a nonloop ended station stays stopped with viewers and restarts on the nex
     f.service.unwatch(f.station.id, f.viewer, 'existing'); f.service.unwatch(f.station.id, f.viewer, 'newcomer');
     f.report('fresh'); assert.equal(f.view().playback.status, 'playing'); assert.equal(f.view().playback.position, 0);
 });
+
+test('closing the creator does not pause a viewer that is buffering, and a delayed first join starts without an admin command', async t => {
+    const f=await fixture(t);f.report('creator-view',f.owner);
+    f.service.report(f.station.id,f.viewer,{watchId:'buffering-view',status:'buffering',itemId:'image',position:0});
+    f.service.unwatch(f.station.id,f.owner,'creator-view');
+    assert.equal(f.view().viewerCount,1);assert.equal(f.view().playback.status,'playing');
+    f.service.unwatch(f.station.id,f.viewer,'buffering-view');
+    assert.equal(f.view().playback.status,'paused');f.time(2000);
+    f.service.report(f.station.id,f.viewer,{watchId:'delayed-join',status:'buffering',itemId:'image',position:0});
+    assert.equal(f.view().playback.status,'playing','a successful retried join must start the station without 全台播放');
+});

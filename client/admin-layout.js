@@ -12,6 +12,7 @@
         ['', '/s3-management', 'S₃', 'S3 API 第三方接入'],
         ['', '/telegram-content', '✈', 'Telegram Bot 内容管理'],
         ['', '/data-usage', '◴', '数据目录空间占用'],
+        ['', '/system-backup', '⛁', '系统备份程序'],
         ['配置', '/tgbot', '⚙', 'Telegram Bot 配置'],
         ['', '/sns-cookies', '◉', 'SNS Cookies 配置']
     ];

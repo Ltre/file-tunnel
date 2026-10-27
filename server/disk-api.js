@@ -2732,7 +2732,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     browser.use('/collaboration-scope/:collaborationId', collaborationContent);
     contents(browser); contents(external);
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal, onProgress }) {
-        const sourceAppId = ['media-library', 'download-task'].includes(mapping.sourceAppId) ? mapping.sourceAppId : 's3';
+        const sourceAppId = ['media-library', 'download-task', 'system-backup'].includes(mapping.sourceAppId) ? mapping.sourceAppId : 's3';
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
         if (replaceId) assertStaticFileWritable({ userId: owner.id, diskSpace }, diskStore.get(owner.id, replaceId));
@@ -2782,7 +2782,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         job.storage = storage;
         job.assertAuthorized = mapping.assertAuthorized;
         try {
-            const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : sourceAppId === 'download-task' ? '抓取任务转存' : '媒体收藏转存'}：${info.key}`, size);
+            const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : sourceAppId === 'download-task' ? '抓取任务转存' : sourceAppId === 'system-backup' ? '系统备份' : '媒体收藏转存'}：${info.key}`, size);
             job.operationId = operation.operation_id;
             await diskStore.setUploadContextAsync(job.id, { operationId: job.operationId, channelId: storage.channelId, operationScope: req.diskScope });
             if (sourceAppId === 'download-task') operations.update(job.operationId, { transferMode: 'server', folderPath: info.folderPath || '', sourceFileName: info.name,
@@ -2830,6 +2830,11 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 md5.update(chunk); sha.update(chunk); reportSource(); yield chunk;
             }
         }
+        const abortSystemBackup = () => {
+            job.pipelineFailure ||= new Error('OPERATION_CANCELLED');
+            job.pipelineAbort?.abort(); coreUpload.pipelineWake(job);
+        };
+        if (sourceAppId === 'system-backup') signal?.addEventListener('abort', abortSystemBackup, { once: true });
         try {
             for (const [sourcePartIndex, part] of job.files[0].parts.entries()) {
                 while (true) {
@@ -2867,6 +2872,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const original = job.pipelineFailure || error;
             recordUploadFailure(job, original);
             throw original;
+        } finally {
+            if (sourceAppId === 'system-backup') signal?.removeEventListener('abort', abortSystemBackup);
         }
     }
     objectStorage = createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange: readRemote,

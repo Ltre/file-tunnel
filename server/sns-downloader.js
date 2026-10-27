@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ACTIVE_STATUSES = new Set(['queued', 'parsing', 'downloading', 'merging']);
-const ALLOWED_PLATFORMS = new Set(['tiktok', 'facebook', 'instagram', 'threads', 'line', 'twitter', 'x', 'bilibili']);
+const ALLOWED_PLATFORMS = new Set(['tiktok', 'facebook', 'instagram', 'threads', 'line', 'twitter', 'x', 'bilibili', 'netease']);
 const HOST_PLATFORMS = Object.freeze({
     'tiktok.com': 'tiktok',
     'www.tiktok.com': 'tiktok',
@@ -33,7 +33,11 @@ const HOST_PLATFORMS = Object.freeze({
     'bilibili.com': 'bilibili',
     'www.bilibili.com': 'bilibili',
     'm.bilibili.com': 'bilibili',
-    'b23.tv': 'bilibili'
+    'b23.tv': 'bilibili',
+    'music.163.com': 'netease',
+    'y.music.163.com': 'netease',
+    '163cn.tv': 'netease',
+    '163cn.link': 'netease'
 });
 
 function writeJsonAtomic(filePath, value) {
@@ -56,6 +60,17 @@ function normalizeSnsDownloadUrl(rawValue) {
     const platform = HOST_PLATFORMS[hostname];
     if (!['http:', 'https:'].includes(parsed.protocol) || !ALLOWED_PLATFORMS.has(platform)) {
         throw new Error('sns-download-url-required');
+    }
+    // NetEase's desktop links keep the actual route and song ID in the hash.
+    // Removing it as ordinary tracking would turn a song link into the home page.
+    if (platform === 'netease' && /^(?:y\.)?music\.163\.com$/.test(hostname)) {
+        const route = parsed.hash.startsWith('#/') ? parsed.hash.slice(1) : parsed.pathname + parsed.search;
+        const canonical = new URL(route, 'https://music.163.com');
+        const kind = canonical.pathname.replace(/^\/m\//, '/');
+        if (!/^\/(?:song|mv|program|dj)$/.test(kind) || !/^\d+$/.test(canonical.searchParams.get('id') || '')) {
+            throw new Error('sns-download-single-media-required');
+        }
+        parsed = new URL('https://music.163.com' + kind + '?id=' + canonical.searchParams.get('id'));
     }
     for (const key of [...parsed.searchParams.keys()]) {
         if (key === 'fbclid' || key === 'igshid' || key === 's' || key === 't' || key.startsWith('utm_')) {

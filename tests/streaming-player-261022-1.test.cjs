@@ -22,25 +22,29 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, onSeek, size = 0, fetchBytes } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, size = 0, fetchBytes } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
+    const timeouts = new Map(); let timeoutId = 0, reportAttempt = 0;
     const events = new Map(), window = { innerWidth:390, innerHeight:800, addEventListener(name, run) { events.set(name, run); }, removeEventListener(name) { events.delete(name); } };
     vm.runInNewContext(fs.readFileSync(require.resolve('../client/streaming-player.js'), 'utf8'), {
-        window, document: { createElement(tag) { const el = new Element(tag); elements.push(el); return el; } },
+        window, document: { createElement(tag) { const el = new Element(tag); if (pendingPlayback && ['audio','video'].includes(tag)) el.play = () => new Promise(() => {}); elements.push(el); return el; } },
         performance: { now: () => time }, Date, AbortController, URL, Blob, fetch: fetchBytes || (async () => ({ ok: true, text: async () => 'text' })),
-        setInterval: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearInterval() {}, setTimeout, clearTimeout
+        setInterval: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearInterval() {},
+        setTimeout: controlledTimeouts ? (run, ms) => { timeouts.set(++timeoutId, {run, ms}); return timeoutId; } : setTimeout,
+        clearTimeout: controlledTimeouts ? id => timeouts.delete(id) : clearTimeout
     });
     const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
         items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? 120 : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? 120 : undefined, stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
     const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onRecovery:code=>recoveries.push(code),
-        request: async (route, method, body) => { calls.push({ route, body }); if (route.endsWith('/ticket')) {
+        request: async (route, method, body, options) => { calls.push({ route, body }); if (onReport && route.endsWith('/report')) return onReport({attempt:++reportAttempt, state, options}); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
             return { url: '/media/' + body.itemId, expiresAt: Date.now() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
     return { player, state, calls, recoveries, get elements() { return elements.filter(el => !el.src?.startsWith('/client/icons/')); }, flush: async () => { await new Promise(setImmediate); },
         tick(ms) { time += ms; for (const timer of timers) if (timer.ms === 250) timer.run(); },
+        timeout(ms) { for (const [id, entry] of [...timeouts]) if (entry.ms === ms) { timeouts.delete(id); entry.run(); } },
         resize(width, height) { window.innerWidth = width; window.innerHeight = height; events.get('resize')?.(); },
         hasEvent(name) { return events.has(name); },
         page(name, event = {}) { events.get(name)?.(event); },
@@ -94,6 +98,35 @@ test('the first viewer starts from the report response without clicking Start wa
     const f = fixture({ kind: 'audio', reportStarts: true }); await f.flush();
     const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();
     assert.equal(audio.paused, false); assert.equal(audio.muted, false); f.player.close();
+});
+
+test('resuming global playback waits visibly for media rather than falsely reporting a global pause', async () => {
+    const f = fixture({ kind: 'audio', pendingPlayback: true }); await f.flush();
+    f.player.apply({ ...f.state, serverTime: 2, playback: { ...f.state.playback, status: 'paused', version: 2 } });
+    const audio = f.elements.find(el => el.tagName === 'AUDIO'); audio.readyState = 4; audio.emit('canplay'); await f.flush();
+    f.player.apply({ ...f.state, serverTime: 3, playback: { ...f.state.playback, status: 'playing', version: 3 } });
+    assert.doesNotMatch(f.player.element.querySelector('.sc-play-status').textContent, /全台已暂停|已被管理员暂停/);
+    assert.equal(f.player.element.querySelector('.sc-buffering').hidden, false);
+    assert.equal(f.player.element.querySelector('.sc-buffering').textContent, '正在缓冲'); f.player.close();
+});
+
+test('a failed initial viewing report retries before the normal fifteen second heartbeat', async () => {
+    const f = fixture({ reportStarts:true, controlledTimeouts:true, onReport:({attempt,state}) => {
+        if(attempt===1)throw Error('NETWORK_FAILURE');
+        return {station:{...state,serverTime:2,playback:{...state.playback,status:'playing',version:2}}};
+    }}); await f.flush(); f.timeout(2000); await f.flush();
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/report')).length,2);
+    assert.equal(f.player.snapshot().playback.status,'playing');f.player.close();
+});
+
+test('a hung viewing report is aborted and cannot block joining forever or retry after close', async () => {
+    let signal;const f=fixture({controlledTimeouts:true,onReport:({options})=>new Promise((_resolve,reject)=>{
+        signal=options?.signal;signal?.addEventListener('abort',()=>reject(Object.assign(Error('Aborted'),{name:'AbortError'})),{once:true});
+    })});await f.flush();f.timeout(10000);await f.flush();
+    assert.equal(signal?.aborted,true);f.timeout(2000);await f.flush();
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/report')).length,2);f.player.close();
+    assert.equal(signal.aborted,true);f.timeout(10000);f.timeout(4000);await f.flush();
+    assert.equal(f.calls.filter(call=>call.route.endsWith('/report')).length,2);
 });
 test('a delayed current ticket is requested once rather than restarted by each clock tick', async () => {
     const f = fixture({ deferredTicket: true });

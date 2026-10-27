@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>SNS 媒体下载</title>
+    <script defer src="/client/i18n-catalog.js?v=20260812-1"></script>
+    <script defer src="/client/sns-post-i18n.js"></script>
+    <script defer src="/client/i18n.js?v=20260812-1"></script>
     <link rel="stylesheet" href="/client/audio-track-repair.css">
     <style>
         :root { color-scheme:light dark; --bg:#eef2f7; --panel:#fff; --text:#162033; --muted:#69758a; --line:#d9e0ea; --accent:#3567d6; --danger:#c83c4a; --ok:#15805f; --warn:#a76a08; --shadow:0 14px 42px rgba(34,48,80,.09); }
@@ -96,7 +99,7 @@
 <body>
 <main class="shell">
     <header class="topbar">
-        <div><h1>其它 SNS 媒体下载</h1><div class="subtle">TikTok · Facebook · Instagram · Twitter / X · Threads · LINE · Bilibili</div></div>
+        <div><h1>其它 SNS 媒体下载</h1><div class="subtle">TikTok · Facebook · Instagram · Twitter / X · Threads · LINE · Bilibili · 网易云音乐</div></div>
         <nav class="links"><a class="button" href="/sns-cookies">配置普通 SNS Cookie</a><a class="button" href="/admin">返回后台</a></nav>
     </header>
 
@@ -104,7 +107,7 @@
     <hr>
     <section class="panel">
         <div class="url-row">
-            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 TikTok / Facebook / Instagram / Twitter / Threads / LINE / B站链接">
+            <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 SNS / B站 / 网易云音乐单曲、MV 或电台节目链接">
             <button class="primary" id="startBtn" type="button">开始下载</button>
         </div>
         <div class="options">
@@ -114,7 +117,7 @@
         </div>
         <div class="sections"><label for="downloadSectionsInput">截取媒体区间（可选）</label><input id="downloadSectionsInput" type="text" placeholder="例如：*00:00:15-00:00:45"></div>
         <div class="sections task-submit-remark"><label for="preDownloadRemarkInput">任务备注（可选）</label><input id="preDownloadRemarkInput" type="text" maxlength="4000" placeholder="可在开始下载前填写任务备注"></div>
-        <div class="notice" id="notice">本页仅使用 /sns-cookies 中对应平台的普通 Cookie；公开页面未配置 Cookie 时也会直接尝试。解析不到的字段会保持为空。</div>
+        <div class="notice" id="notice">本页仅使用 /sns-cookies 中对应平台的普通 Cookie；公开页面未配置 Cookie 时也会直接尝试。网易云音乐建议使用小号 Cookie；可下载音质和完整内容以该账号实际权限为准。解析不到的字段会保持为空。</div>
         <div class="custom" id="customPanel" hidden>
             <div class="section-head"><div><strong>媒体编号</strong><div class="subtle" id="formatStatus">输入 URL 后将自动解析。</div></div><button id="analyzeBtn" type="button">重新解析（忽略缓存）</button></div>
             <div class="analysis-fields" id="analysisFields"></div>
@@ -201,7 +204,7 @@
     cacheFilesInput.checked = localStorage.getItem('snsDownloadCacheFiles') !== '0';
 
     const statusLabels = { queued:'等待中', parsing:'解析中', downloading:'下载中', merging:'合并中', completed:'已完成', failed:'失败', cancelled:'已取消', cleared:'缓存已清除' };
-    const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE', bilibili:'Bilibili / B站' };
+    const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE', bilibili:'Bilibili / B站', netease:'网易云音乐' };
     const kindLabels = { video:'视频', audio:'音频', video_audio:'视频+音频', other:'其它' };
     const fieldLabels = {
         extractor:'提取器', id:'媒体 ID', webpageUrl:'页面地址', title:'标题', description:'描述', uploader:'发布者', uploaderId:'发布者 ID',

@@ -87,7 +87,7 @@
 .sc-insert-dialog>select{box-sizing:border-box;width:100%;border-radius:8px;padding:10px 12px}
 .sc-insert-dialog>select[size]{min-height:150px;max-height:32dvh;line-height:1.6}
 .sc-insert-dialog>select option{padding:8px;white-space:normal;overflow-wrap:anywhere}
-.sc-insert-status{margin:0;padding:10px 12px;border-radius:8px;background:#7f9bb414;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.sc-insert-status{box-sizing:border-box;min-height:calc(2 * 1.6em + 20px);margin:0;padding:10px 12px;border-radius:8px;background:#7f9bb414;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
 .sc-insert-position{display:flex;flex-wrap:wrap;gap:8px 18px}
 .sc-insert-position label{display:flex;gap:7px;align-items:center;margin:0;padding:8px 0;cursor:pointer}
 .sc-insert-dialog>button{min-height:40px;margin:0!important;border-radius:8px}

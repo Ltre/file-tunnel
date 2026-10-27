@@ -1,6 +1,6 @@
 'use strict';
 const path = require('node:path');
-const ADMIN_PAGES = ['/admin', '/admin/home', '/admin/devices', '/admin/magnets', '/tgbot', '/sns-cookies', '/sns-dl', '/youtube-premium-dl', '/media-library', '/video-transcode', '/disk-management', '/s3-management', '/data-usage', '/telegram-content', '/vclient', '/video-transcode-guide.html'];
+const ADMIN_PAGES = ['/admin', '/admin/home', '/admin/devices', '/admin/magnets', '/tgbot', '/sns-cookies', '/sns-dl', '/youtube-premium-dl', '/media-library', '/video-transcode', '/disk-management', '/s3-management', '/data-usage', '/system-backup', '/telegram-content', '/vclient', '/video-transcode-guide.html'];
 
 function registerAdminLayout(app, { requireAuth, root }) {
     app.get('/admin/home', requireAuth, (_req, res) => {

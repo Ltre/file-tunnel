@@ -9,7 +9,7 @@ class Node {
     append(...children) { this.children.push(...children); }
     add(option) { this.children.push(option); if (!this.value) this.value = option.value; }
     setAttribute() {}
-    replaceChildren() { this.children = []; this.value = ''; }
+    replaceChildren(...children) { this.children = children; this.value = children[0]?.value || ''; }
     set selectedIndex(index) { this.value = this.children[index]?.value || ''; }
 }
 async function fixture(t) {
@@ -137,4 +137,34 @@ test('the add-to-station picker keeps the original page underneath until inserti
     assert.equal(f.navigation(), undefined);
     await f.body().children.find(node => node.tag === 'button').run();
     assert.equal(f.openings(), 1); assert.equal(f.navigation()[0], 'edit');
+});
+
+test('a clean insertion picker reads one authorized snapshot without a serialized revision preflight', async t => {
+    const f = await fixture(t); await f.choose();
+    assert.equal(f.calls.filter(route => route.endsWith('/revision')).length, 0);
+    assert.equal(f.calls.filter(route => route.endsWith('/edit-config')).length, 1);
+});
+
+test('the reference list shows a disabled loading option from the moment the picker opens', async t => {
+    const f = await fixture(t), request = f.context.request; let release, visibleOptions;
+    const show = f.context.showDialog;
+    f.context.showDialog = (title, body) => { visibleOptions = body.children.find(node => node.tag === 'select' && node.size === 6).children.map(option => option.text); show(title, body); };
+    f.context.request = async (...args) => {
+        if (args[0].endsWith('/edit-config')) await new Promise(resolve => { release = resolve; });
+        return request(...args);
+    };
+    const loading = f.choose(); await new Promise(setImmediate);
+    const select = f.body().children.find(node => node.tag === 'select' && node.size === 6);
+    assert.equal(select.disabled, true); assert.deepEqual(visibleOptions, ['正在读取节目单…']);
+    release(); await loading;
+    assert.equal(select.disabled, false); assert.deepEqual(select.children.map(option => option.text), ['first.txt']);
+});
+
+test('a version-only reconciliation in the chooser leaves an existing modified draft unchanged until confirmation', async t => {
+    const f=await fixture(t),draft=f.snapshot();draft.name='未保存的名称';f.ui.drafts[f.station.id]=draft;
+    f.service.station(f.station.id).configVersion++;await f.choose();
+    assert.equal(f.getBaseline().configVersion,3);assert.equal(f.ui.drafts[f.station.id].configVersion,3);
+    await f.body().children.find(node=>node.tag==='button').run();
+    assert.equal(f.ui.drafts[f.station.id].configVersion,4);assert.equal(f.ui.drafts[f.station.id].name,'未保存的名称');
+    await assert.doesNotReject(f.context.persistDraft(f.station.id,()=>{}));
 });

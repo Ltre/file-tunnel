@@ -7829,6 +7829,9 @@ async function showTransferRecordDetails(messageId) {
         closeTransferRecordDetails();
         await focusTransferRecordById(message.id, { timeoutMs: 5000 });
     });
+    window.SnsPostMarkdown?.bind(overlay, message, {
+        request: emitSocketWithAck, sessionId: state.sessionId, socket: state.socket, toast: showAppToast
+    });
     overlay.querySelectorAll('[data-sns-fetch]').forEach(button => {
         button.addEventListener('click', async event => {
             event.preventDefault();
@@ -7902,7 +7905,7 @@ function renderSnsMediaItemHtml(item = {}) {
             ${item.coverUrl ? `<img class="sns-media-cover" src="${escapeHtml(item.coverUrl)}" alt="">` : '<div class="sns-media-cover sns-media-cover-empty">SNS</div>'}
             <div class="sns-media-main">
                 <strong>${escapeHtml(item.title || 'SNS 媒体文件')}</strong>
-                ${item.mediaKind ? `<span>${escapeHtml(item.mediaKind === 'song' ? '歌曲' : item.mediaKind === 'video' ? '视频' : '暂不支持')}</span>` : ''}
+                ${item.mediaKind ? `<span>${escapeHtml(item.mediaKind === 'song' ? '歌曲' : item.mediaKind === 'video' ? '视频' : item.mediaKind === 'audio' ? (window.TunnelI18n?.t('音频') || '音频') : '暂不支持')}</span>` : ''}
                 <a href="${escapeHtml(item.mediaUrl || item.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(item.mediaUrl || item.sourceUrl || '')}</a>
                 <span>${escapeHtml(getSnsMediaStatusLabel(item))}</span>
                 ${item.generatedMessageId ? `<span class="sns-media-client-state"><span aria-hidden="true">💻</span><span data-sns-client-state="${escapeHtml(item.id || '')}">本机无缓存</span></span>` : ''}
@@ -7959,6 +7962,7 @@ function refreshOpenSnsMediaClientStates() {
 function renderSnsAcquisitionSection(message = {}) {
     const acquisition = message.snsAcquisition;
     if (!acquisition?.sourceMessageId) return '';
+    const mediaLabel = acquisition.source === 'sns-post-markdown' ? '帖子 Markdown' : acquisition.source === 'sns-post-image' ? '图片文件' : acquisition.mediaKind === 'song' ? '歌曲合辑' : acquisition.mediaKind === 'audio' ? '音频文件' : '视频文件';
     const sourceLabel = acquisition.source === 'ytmusic'
         ? 'YouTube Music'
         : acquisition.source === 'youtube'
@@ -7969,7 +7973,7 @@ function renderSnsAcquisitionSection(message = {}) {
             <h3>来源为 ${escapeHtml(sourceLabel)} 获取</h3>
             <div class="sns-media-main">
                 <a href="${escapeHtml(acquisition.sourceUrl || '#')}" target="_blank" rel="noopener">${escapeHtml(acquisition.sourceUrl || '')}</a>
-                <span>${escapeHtml(acquisition.mediaKind === 'song' ? '歌曲合辑' : '视频文件')}</span>
+                <span>${escapeHtml(window.TunnelI18n?.t(mediaLabel) || mediaLabel)}</span>
                 <div class="sns-media-actions">
                     <button type="button" data-sns-source-locate="${escapeHtml(acquisition.sourceMessageId)}">定位原始链接记录</button>
                 </div>
@@ -7991,8 +7995,8 @@ function renderSnsMediaSection(message = {}) {
     const renderedSources = sources.map(source => {
         const sourceItems = itemsBySource.get(source.id) || [];
         const isCollection = source.sourceType === 'collection' || sourceItems.length > 1;
-        const body = sourceItems.map(renderSnsMediaItemHtml).join('') ||
-            `<p class="sns-media-empty">${source.parseStatus === 'failed' ? `解析失败：${escapeHtml(source.parseError || '')}` : '正在识别媒体文件...'}</p>`;
+        const body = (sourceItems.map(renderSnsMediaItemHtml).join('') ||
+            `<p class="sns-media-empty">${source.parseStatus === 'failed' ? `解析失败：${escapeHtml(source.parseError || '')}` : '正在识别媒体文件...'}</p>`) + (window.SnsPostMarkdown?.action(source) || '');
         if (!isCollection) return body;
         return `
             <details class="sns-media-source" open>

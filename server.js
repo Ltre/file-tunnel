@@ -137,7 +137,8 @@ const SNS_COOKIE_FILES = Object.freeze({
     line: 'line-cookies.txt',
     twitter: 'twitter-cookies.txt',
     x: 'x-cookies.txt',
-    bilibili: 'bilibili-cookies.txt'
+    bilibili: 'bilibili-cookies.txt',
+    netease: 'netease-cookies.txt'
 });
 const SNS_COOKIE_DOMAINS = Object.freeze({
     youtube: ['youtube.com'],
@@ -148,7 +149,8 @@ const SNS_COOKIE_DOMAINS = Object.freeze({
     line: ['line.me'],
     twitter: ['twitter.com', 'x.com'],
     x: ['x.com', 'twitter.com'],
-    bilibili: ['bilibili.com']
+    bilibili: ['bilibili.com'],
+    netease: ['music.163.com']
 });
 const SNS_COOKIE_LOGIN_NAMES = Object.freeze({
     youtube: /^(?:LOGIN_INFO|SID|HSID|SSID|APISID|SAPISID|__Secure-[13]P(?:SID|APISID)(?:TS|CC)?)$/,
@@ -158,7 +160,8 @@ const SNS_COOKIE_LOGIN_NAMES = Object.freeze({
     thread: /^(?:sessionid|ds_user_id)$/i,
     twitter: /^auth_token$/i,
     x: /^auth_token$/i,
-    bilibili: /^(?:SESSDATA|bili_jct|DedeUserID|DedeUserID__ckMd5)$/i
+    bilibili: /^(?:SESSDATA|bili_jct|DedeUserID|DedeUserID__ckMd5)$/i,
+    netease: /^(?:MUSIC_U|__csrf)$/i
 });
 const LEGACY_SHORT_CODE_STORE_PATH = path.join(SERVER_DATA_DIR, 'short-codes.json');
 const projectConfig = loadProjectConfig();
@@ -645,6 +648,9 @@ function getSnsCookiePath(platform) {
 
 function getSnsCookieFileForUrl(url) {
     const raw = String(url || '');
+    try {
+        if (['music.163.com', 'y.music.163.com', '163cn.tv', '163cn.link'].includes(new URL(raw).hostname.toLowerCase())) return getSnsCookiePath('netease');
+    } catch (_) {}
     if (/music\.youtube\.com/i.test(raw)) return getSnsCookiePath('youtube');
     if (/(?:youtube\.com|youtu\.be)/i.test(raw)) return getSnsCookiePath('youtube');
     if (/tiktok\.com/i.test(raw)) return getSnsCookiePath('tiktok');
@@ -1322,6 +1328,7 @@ app.use([
     '/pages/disk-management.html',
     '/pages/s3-management.html',
     '/pages/data-usage.html',
+    '/pages/system-backup.html',
     '/pages/telegram-content.html',
     '/pages/video-transcode.html',
     '/pages/video-transcode-guide.html'
@@ -2510,6 +2517,14 @@ const diskAPI = createDiskAPI({
     }
 });
 diskAccountSessions.registerRoutes(app, { origin: getTelegramPublicOrigin, revoke: revokeGlobalAccountSession });
+const systemBackup = require('./server/data-backup').registerDataBackup(app, {
+    dataDir: SERVER_DATA_DIR, root: __dirname, diskAPI, auth: diskAuth,
+    requireAuth: adminAuth.requireAuth, origin: getTelegramPublicOrigin,
+    beforeSnapshot: () => {
+        if (!flushInfraAuditQueue()) throw new Error('BACKUP_INFRA_FLUSH_FAILED');
+        diskOperations.flush();
+    }
+});
 const streamingTunnels = require('./server/streaming-tunnels').createStreamingTunnels({
     mapDevices: values => streamingConsole.service.rootsForAliases(values),
     session: sessionId => {
@@ -4404,9 +4419,10 @@ async function restoreSnsServerAssetFile(asset) {
                 resetRestoredServerAsset(target);
             }
         } else {
-            const downloadedPath = await runYtDlpDownload(task.sourceUrl, asset.id, undefined, task.playlistItem);
+            const downloadedPath = await runYtDlpDownload(task.sourceUrl, asset.id, undefined, task.playlistItem, task.mediaKind === 'audio' ? { formatSelector: 'bestaudio/best' } : {});
             const probe = await probeMediaFile(downloadedPath);
-            if (!probe.streams?.some(stream => stream.codec_type === 'video')) throw new Error('sns-restored-video-invalid');
+            const streamType = task.mediaKind === 'audio' ? 'audio' : 'video';
+            if (!probe.streams?.some(stream => stream.codec_type === streamType)) throw new Error(`sns-restored-${streamType}-invalid`);
             moveSnsFileToAsset(downloadedPath, asset.id);
             asset.size = fs.statSync(asset.path).size;
             resetRestoredServerAsset(asset);
@@ -4560,7 +4576,14 @@ const SUPPORTED_SOCIAL_HOSTS = Object.freeze({
     'twitter.com': 'twitter',
     'www.twitter.com': 'twitter',
     'x.com': 'x',
-    'www.x.com': 'x'
+    'www.x.com': 'x',
+    'bilibili.com': 'bilibili',
+    'www.bilibili.com': 'bilibili',
+    'b23.tv': 'bilibili',
+    'music.163.com': 'netease',
+    'y.music.163.com': 'netease',
+    '163cn.tv': 'netease',
+    '163cn.link': 'netease'
 });
 
 function normalizeSocialUrl(url = '') {
@@ -7024,7 +7047,7 @@ function buildSnsDefaultSelection(formats = [], mediaType = 'video') {
     return {
         ids,
         formats: selected,
-        formatSelector: ids.length ? 'bv*+ba/best' : '',
+        formatSelector: ids.length ? (mediaType === 'audio' ? 'bestaudio/best' : 'bv*+ba/best') : '',
         outputContainer: mediaType === 'audio' && selected.length === 1
             ? (selected[0].ext || 'm4a')
             : 'mp4',
@@ -7223,7 +7246,8 @@ function sanitizeSnsDownloadError(error) {
     }
     message = message.replaceAll(SERVER_DATA_DIR, '[server-data]').replace(/--cookies\s+\S+/gi, '--cookies [sns-cookie]').trim();
     const labels = {
-        'sns-download-url-required': '请输入有效的 TikTok、Facebook、Instagram、Threads、LINE、Twitter、X 或 B 站链接',
+        'sns-download-url-required': '请输入有效的 TikTok、Facebook、Instagram、Threads、LINE、Twitter、X、B 站或网易云音乐链接',
+        'sns-download-single-media-required': '请使用网易云音乐单曲、MV 或单个电台节目链接；整张专辑或歌单请逐项下载',
         'sns-download-media-unavailable': '页面信息可以读取，但没有发现可下载的音频或视频格式',
         'sns-download-task-not-found': 'SNS 下载任务不存在',
         'sns-download-file-not-found': 'SNS 下载成品不存在或已清理',
@@ -8134,16 +8158,18 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                                 serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
                             }, 'sns-media-progress');
                         },
-                        taskRecord.playlistItem
+                        taskRecord.playlistItem,
+                        item.mediaKind === 'audio' ? { formatSelector: 'bestaudio/best' } : {}
                     );
                     if (fs.statSync(downloadedPath).size > getTelegramMaxFileSize()) {
                         cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
                         throw new Error('sns-media-file-too-large');
                     }
                     const downloadedProbe = await probeMediaFile(downloadedPath);
-                    if (!downloadedProbe.streams?.some(stream => stream.codec_type === 'video')) {
+                    const requiredStream = item.mediaKind === 'audio' ? 'audio' : 'video';
+                    if (!downloadedProbe.streams?.some(stream => stream.codec_type === requiredStream)) {
                         cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
-                        throw new Error('未获取到有效视频流，请检查 cookies、代理或 yt-dlp 格式可用性');
+                        throw new Error(requiredStream === 'audio' ? '未获取到有效音频流，请检查 cookies、代理或 yt-dlp 格式可用性' : '未获取到有效视频流，请检查 cookies、代理或 yt-dlp 格式可用性');
                     }
                     const ext = path.extname(downloadedPath) || '.mp4';
                     const fileName = `${sanitizeMediaFilePart(item.title, 'sns-media')}${ext}`;
@@ -8152,7 +8178,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                         id: taskRecord.videoAssetId, path: assetPath, name: fileName, type: getMimeTypeFromFileName(fileName),
                         size: fs.statSync(assetPath).size, sessionId, createdAt: Date.now(), source: 'sns',
                         sourceUrl: item.mediaUrl || item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
-                        snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: 'video'
+                        snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: requiredStream
                     };
                     persistTelegramServerAsset(asset);
                     const remark = String(item.sourceUrl || item.mediaUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
@@ -8160,7 +8186,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                         id: taskRecord.generatedMessageId, type: 'file',
                         fileInfo: createServerAssetFileInfo(asset, { remark, sourceMessageId: messageId, snsMediaItemId: mediaItemId, snsSourceUrl: item.sourceUrl, snsTaskId: taskId }),
                         timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件', sessionId, remark,
-                        snsAcquisition: { source: item.platform || 'sns', mediaKind: 'video', taskId, sourceMessageId: messageId, sourceRecordId: messageId, mediaItemId, sourceUrl: item.sourceUrl, youtubeVideoId: item.youtubeVideoId, videoAssetId: asset.id }
+                        snsAcquisition: { source: item.platform || 'sns', mediaKind: requiredStream, taskId, sourceMessageId: messageId, sourceRecordId: messageId, mediaItemId, sourceUrl: item.sourceUrl, youtubeVideoId: item.youtubeVideoId, videoAssetId: asset.id }
                     };
                 }
                 updateTask({ status: 'processed', generatedMessage: taskRecord.generatedMessage });
@@ -8936,6 +8962,28 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 }
 
 // ==================== Socket.io 连接处理 ====================
+
+const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPostPublisher({
+    assetDir: TELEGRAM_ASSET_DIR,
+    session: id => sessions.get(id),
+    record: (sessionId, id) => getHistoryMessageEntry(sessions.get(sessionId), id)?.message,
+    authorize: (sessionId, deviceId) => {
+        const session = sessions.get(sessionId);
+        if (!session || !['read', 'sendText', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
+    },
+    metadata: runYtDlpJson, cookieFileForUrl: getSnsCookieFileForUrl, buildItem: buildSnsMediaItemFromMeta,
+    update: (sessionId, message) => replaceHistoryMessage(sessionId, sessions.get(sessionId), message, 'sns-post-metadata'),
+    acquire: fetchSnsMediaIntoTunnel, registerAsset: persistTelegramServerAsset, fileInfo: createServerAssetFileInfo,
+    sender: () => ({ sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件' }),
+    publish: (sessionId, message, deviceId) => {
+        const session = sessions.get(sessionId);
+        if (!session || !['read', 'sendText', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
+        const result = addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'sns-post-markdown' });
+        if (!result.stored) throw Error('SNS_POST_MESSAGE_NOT_SAVED');
+        emitToReadableSessionDevices(session, 'message', { message });
+        scheduleSessionHistoryBroadcast(sessionId, 'sns-post-markdown', 300);
+    }
+});
 
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
@@ -10110,6 +10158,20 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('sns-post-markdown', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            if (!checkMessageRate()) return respond({ ok: false, error: 'rate-limited' });
+            const { sessionId, messageId, sourceId } = data || {};
+            if (sessionId !== currentSession || !sessions.get(sessionId)?.devices.has(currentDevice)) return respond({ ok: false, error: 'invalid-session' });
+            if (!isValidDeviceId(messageId) || typeof sourceId !== 'string' || sourceId.length > 80) return respond({ ok: false, error: 'SNS_POST_SOURCE_MISSING' });
+            const job = snsPostPublisher.start({ sessionId, messageId, sourceId, deviceId: currentDevice });
+            respond({ ok: true, started: job.started, messageId: job.id });
+            job.promise.then(message => socket.emit('sns-post-markdown-result', { ok: true, messageId: message.id, sessionId }),
+                error => socket.emit('sns-post-markdown-result', { ok: false, error: sanitizeString(sanitizeSnsDownloadError(error), 240), sessionId }));
+        } catch (error) { respond({ ok: false, error: sanitizeString(sanitizeSnsDownloadError(error), 240) }); }
+    });
+
     socket.on('sns-media-fetch', async (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
@@ -11147,6 +11209,7 @@ async function shutdown(signal) {
     shutdownStarted = true;
     telegramForwardJobs.close();
     streamingConsole.close();
+    await systemBackup.close();
     console.log(`${signal} received, shutting down gracefully`);
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();

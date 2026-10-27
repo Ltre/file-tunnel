@@ -44,7 +44,7 @@
     function notice(text, code = '') { if (banner) { banner.textContent = t(text) + (code ? ' [' + code + ']' : ''); banner.dataset.errorCode = code; banner.hidden = false; } }
     function error(cause) {
         if (cause.message === 'STREAM_TUNNEL_CONTEXT_TIMEOUT') { notice('读取本机隧道授权超时，请检查浏览器存储后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
-        if (cause.message === 'STREAM_CONTROL_TIMEOUT' || cause.message === 'Failed to fetch') { notice('串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
+        if (cause.message === 'STREAM_CONTROL_TIMEOUT' || cause.message === 'Failed to fetch') { notice(['watch','control'].includes(ui.view) ? '连接中断，正在重新读取台状态' : '串流状态读取失败，请检查连接后点击刷新；未确认当前是否有可见串流台。', cause.message); return; }
         if (cause.message === 'STREAM_SOURCE_CHANGED') { notice('来源内容已变更，请重新导入该节目项', cause.message); return; }
         if (cause.message === 'STREAM_MEDIA_DECODE_FAILED') { notice('浏览器无法解码该媒体，请检查格式与编码', cause.message); return; }
         if (cause.message === 'STREAM_MEDIA_NETWORK_FAILED') { notice('媒体连接中断，可重试读取或检查网络与来源', cause.message); return; }
@@ -418,7 +418,7 @@
         return ui.drafts[ui.stationId];
     }
     const saveFlights = new Map();
-    async function reconcileRevision(stationId) {
+    async function reconcileRevision(stationId, { apply = true } = {}) {
         const base = localConfig(stationId), actor = account(); if (!base) return;
         const baseline = { name: base.name, coverId:base.coverId || '', loop: base.loop, countdown: base.countdown, items: base.items.map(item => ({
             ...Object.fromEntries(['id','name','kind','size','type','duration','start','stay'].map(key => [key, item[key]])),
@@ -426,11 +426,12 @@
         })) };
         const revision = await request('/stations/' + stationId + '/revision', 'POST', baseline, { accountId: actor });
         if (actor !== account()) return;
-        if (revision.matches && revision.configVersion !== base.configVersion) {
+        if (apply && revision.matches && revision.configVersion !== base.configVersion) {
             const oldVersion = base.configVersion; base.configVersion = revision.configVersion; saveConfig(stationId, base);
             if (ui.drafts[stationId]?.configVersion === oldVersion) ui.drafts[stationId].configVersion = revision.configVersion;
             saveUi();
         }
+        return revision;
     }
     function saveFailure(cause) {
         if (cause.message === 'STREAM_COVER_RESELECT') return t('封面临时文件已不可用，请重新选择封面后保存');
@@ -1059,17 +1060,22 @@
         const comparable=value=>JSON.stringify(value&&{...value,configVersion:0,items:value.items.map(({sourceSaved,durationError,...item})=>item)});
         const reload=button('放弃旧草稿，读取最新节目单',()=>load(true));reload.hidden=true;
         const load=async(discard=false)=>{
-            const ticket=++revision,id=select.value;d=null;baseline=null;add.disabled=true;reload.hidden=true;items.replaceChildren();status.textContent=t('正在读取节目单…');
+            const ticket=++revision,id=select.value;d=null;baseline=null;add.disabled=true;reload.hidden=true;items.disabled=true;items.setAttribute('aria-busy','true');items.replaceChildren(new Option(t('正在读取节目单…'),''));status.textContent=t('正在读取节目单…');
             try {
-                // Always read the authorized current baseline before adding.
-                // A cached configuration can be older than the server even if
-                // the user has not edited anything in this page.
-                await reconcileRevision(id);
+                // One authorized snapshot is enough for a clean draft. Only
+                // reconcile a modified older draft when its version differs;
+                // the former unconditional preflight doubled the wait here.
                 const latest=await request('/stations/'+id+'/edit-config','GET',undefined,{accountId:actor});
                 if(ticket!==revision||body.isConnected===false)return;if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
-                const saved=localConfig(id),existing=ui.drafts[id];
+                const saved=localConfig(id);let existing=ui.drafts[id];
                 const modified=existing&&comparable(existing)!==comparable(saved);
                 if(modified&&!discard&&existing.configVersion!==latest.configVersion){
+                    const reconciled=await reconcileRevision(id,{apply:false});
+                    if(ticket!==revision||body.isConnected===false)return;if(actor!==account())throw Error('STREAM_OWNER_REQUIRED');
+                    if(reconciled?.matches&&reconciled.configVersion===latest.configVersion)existing={...existing,configVersion:latest.configVersion};
+                }
+                if(modified&&!discard&&existing.configVersion!==latest.configVersion){
+                    items.replaceChildren();
                     status.textContent=t('服务端节目单已更新，本机未保存的草稿仍保留。可关闭此窗口继续编辑草稿，或放弃旧草稿后读取最新节目单。')+' · '+existing.configVersion+' → '+latest.configVersion;
                     reload.hidden=false;return;
                 }
@@ -1077,14 +1083,15 @@
                 // Merely opening/cancelling this picker must not change the
                 // baseline underneath an already-rendered editor.
                 if(discard){saveConfig(id,latest);delete ui.drafts[id];discardCover(id);saveUi();if(ui.view==='edit'&&ui.stationId===id)render();}
+                items.replaceChildren();items.disabled=!d.items.length;items.setAttribute('aria-busy','false');
                 for(const item of d.items)items.add(new Option(item.name,item.id));if(d.items.length)items.selectedIndex=0;
                 status.textContent=d.items.length?t('选择参照节目及插入位置，添加后继续编辑。'):t('节目单为空，将插入开头');add.disabled=false;
-            }catch(cause){if(ticket===revision&&body.isConnected!==false)status.textContent=t('节目单读取失败，请重新选择')+' ['+cause.message+']';}
+            }catch(cause){if(ticket===revision&&body.isConnected!==false){items.replaceChildren();items.setAttribute('aria-busy','false');status.textContent=t('节目单读取失败，请重新选择')+' ['+cause.message+']';}}
         };
         const stationLabel=document.createElement('strong');stationLabel.textContent=t('目标串流台');
         const itemLabel=document.createElement('strong');itemLabel.textContent=t('参照节目');
         select.onchange=()=>load();body.append(stationLabel,select,status,itemLabel,items,position,add,reload);
-        showDialog('添加到串流台',body);await load();
+        const loading=load();showDialog('添加到串流台',body);await loading;
     }
     async function sendMarkdown(body, messageId = uid()) {
         await ready;

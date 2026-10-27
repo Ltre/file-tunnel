@@ -31,6 +31,7 @@
         let snapshot, receivedAt = 0, currentId = '', media, active, next, generation = 0, paused = false, muted = false, volume = 1;
         let actual = 'waiting', failure = '', lastMediaError = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
         let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
+        let reportController, reportRetryTimer, reportRetries = 0, lastReportError = '';
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; controls.append(b); return b; };
         const localPause = button('暂停本机观看', () => { const retry = actual === 'blocked' || actual === 'error'; paused = retry ? false : !paused; if (paused) { media?.pause(); actual = 'paused'; } else if (actual !== 'blocked') align(); lastTick = performance.now(); sync(true); update(); });
         const sound = button('静音', () => { muted = !muted; if (media) media.muted = muted; sync(true); update(); });
@@ -89,7 +90,7 @@
             localPause.dataset.icon = paused || actual === 'blocked' || actual === 'error' ? '▶' : '❚❚'; sound.dataset.icon = muted ? '🔊' : '🔇';
             localPause.textContent = t(actual === 'blocked' || actual === 'error' ? '恢复播放' : paused ? '恢复跟随' : '暂停本机观看');
             for (const control of [localPause, sound]) { control.title = control.textContent; control.setAttribute('aria-label', control.textContent); }
-            statusNode.textContent = (pauseLabel ? t(pauseLabel) : failure || t(!paused && actual === 'paused' ? '全台已暂停，本机跟随' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
+            statusNode.textContent = (pauseLabel ? t(pauseLabel) : failure || t(!paused && actual === 'paused' ? '等待全台播放' : statuses[actual] || '等待播放')) + (silent ? ' · ' + t('已静音') : '') + (delay >= 1 ? ' · ' + t('本机加载延迟（秒）') + ' ' + delay.toFixed(1) : '');
             statusNode.dataset.status = actual;
             const item = current();
             if (item && !item.duration && !paused && active?.ready) {
@@ -113,11 +114,29 @@
         }
         async function report(resuming = false) {
             if (!alive || denied || (reporting || pageSuspended) && resuming !== true) return; reporting = true; const revision = accessGeneration, reportRevision = ++reportGeneration;
-            try { const result = await request('/stations/' + stationId + '/report', 'POST', { watchId, itemId: currentId, position: media?.currentTime ?? localPosition, status: actual }); if (alive && revision === accessGeneration && result.station) { if (resuming === true) { pageSuspended = false; lastTick = performance.now(); } apply(result.station); } }
-            catch (error) { if (alive && revision === accessGeneration) { accessError(error); onError?.(error); } } finally { if (reportRevision === reportGeneration) reporting = false; }
+            clearTimeout(reportRetryTimer); reportController?.abort();
+            const controller = reportController = new AbortController(), deadline = setTimeout(() => controller.abort(), 10000);
+            try {
+                const result = await request('/stations/' + stationId + '/report', 'POST', { watchId, itemId: currentId, position: media?.currentTime ?? localPosition, status: actual }, { signal: controller.signal });
+                if (alive && revision === accessGeneration && reportRevision === reportGeneration && result.station) {
+                    reportRetries = 0;
+                    if (lastReportError) { const code = lastReportError; lastReportError = ''; onRecovery?.(code); }
+                    if (resuming === true) { pageSuspended = false; lastTick = performance.now(); } apply(result.station);
+                }
+            }
+            catch (cause) {
+                if (alive && revision === accessGeneration && reportRevision === reportGeneration) {
+                    const error = controller.signal.aborted ? Error('STREAM_CONTROL_TIMEOUT') : cause;
+                    lastReportError = error.message;
+                    accessError(error); onError?.(error);
+                    // A failed first join must not wait for the next normal
+                    // heartbeat. Steady-state reports remain every 15 seconds.
+                    if (!denied && reportRetries < 3) reportRetryTimer = setTimeout(() => report(resuming), 2000 * 2 ** reportRetries++);
+                }
+            } finally { clearTimeout(deadline); if (reportRevision === reportGeneration) { reporting = false; reportController = null; } }
         }
         function unwatch() { accessGeneration++; request('/stations/' + stationId + '/unwatch', 'POST', { watchId }, { keepalive: true }).catch(() => {}); }
-        const hidePage = () => { pageSuspended = true; media?.pause(); unwatch(); };
+        const hidePage = () => { pageSuspended = true; media?.pause(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); };
         const resumePage = event => { if (event.persisted) { watchId = initialWatchId + ':' + (++resumeCount); denied = false; report(true); } };
         global.addEventListener('pagehide', hidePage); global.addEventListener('pageshow', resumePage);
         async function mediaFailure(task, node) {
@@ -267,7 +286,10 @@
             if (active?.expiresAt && active.expiresAt < Date.now() + 5000) { load(item, localPosition); return; }
             if (media && active?.ready) {
                 if (paused || !running()) { media.pause(); actual = 'paused'; }
-                else if (media.paused && (actual !== 'blocked' || force)) { const element = media; element.play().catch(error => { if (media !== element || paused || !running() || error.name === 'AbortError') return; actual = error.name === 'NotAllowedError' ? 'blocked' : 'error'; update(); }); }
+                else if (media.paused && !active.playPending && (actual !== 'blocked' || force)) {
+                    const element = media, task = active; task.playPending = true; actual = 'buffering';
+                    element.play().catch(error => { if (media !== element || paused || !running() || error.name === 'AbortError') return; actual = error.name === 'NotAllowedError' ? 'blocked' : 'error'; update(); }).finally(() => { task.playPending = false; });
+                }
             } else if (active?.ready) actual = paused || !running() ? 'paused' : 'reading';
         }
         function apply(value) {
@@ -291,7 +313,7 @@
         const reportTimer = setInterval(report, 15000); report();
         return { element: host, apply, poll, snapshot: () => snapshot, exitFullscreen,
             setController(handler) { onSeek = handler; update(); },
-            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
+            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
     }
     global.StreamingPlayer = { create, renderRich };
 })(window);
