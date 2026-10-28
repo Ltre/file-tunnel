@@ -1,0 +1,45 @@
+已运行 git branch --show-current; Get-Content -LiteralPath pages/downloadList.html -TotalCount 115; Get-Content -LiteralPath pages/downloader.html -TotalCount 95; Get-Content -LiteralPath pages/light-file-parts.html -TotalCount 95; Get-Content -LiteralPath pages/device.html -TotalCount 100; rg -n '<body|</head>|stylesheet|script|iframe|localStorage|theme' pages/downloadList.html pages/downloader.html pages/light-file-parts.html pages/device.html client/device-camera.js tools/deploy/build.mjs service-worker.js
+
+已向父代理发送消息
+
+编辑了文件运行了命令
+已拒绝 theme-preference.js+21-0
+
+已拒绝 downloadList.html+3-1
+
+已拒绝 downloader.html+3-1
+
+已拒绝 light-file-parts.html+3-1
+
+已拒绝 service-worker.js+1-0
+
+已拒绝 build.mjs+1-0
+
+已运行 git status --short; $files = @('pages/downloadList.html','pages/downloader.html','pages/light-file-parts.html','pages/device.html','pages/index.html'); foreach ($file in $files) { Write-Output $file; Select-String -LiteralPath $file -Pattern 'theme-preference|themes.css|data-theme-page|<body' }; Test-Path -LiteralPath client/theme-preference.js; if (Test-Path -LiteralPath client/theme-preference.js) { Get-Content -LiteralPath client/theme-preference.js }; Get-Content -LiteralPath tests/themes-261028-2.test.cjs -Tail 90
+
+已运行 rg -n 'theme-preference' service-worker.js tools/deploy/build.mjs; git diff -- pages/downloadList.html pages/downloader.html pages/light-file-parts.html
+
+已编辑 theme-preference.js+8-5
+
+已编辑 device.html+3-1
+
+已编辑 index.html+1-0
+
+已编辑 service-worker.js+1-0
+
+已编辑 build.mjs+1-0
+
+已编辑 themes-261028-2.test.cjs+72-0
+
+已运行 node --test tests/themes-261028-2.test.cjs tests/control-center-drive.test.cjs
+
+已运行 node --check client/theme-preference.js; node --check service-worker.js; node --check tools/deploy/build.mjs; git diff --check
+
+已向父代理发送消息
+
+运行了命令
+已运行 $files = @('downloadList','downloader','light-file-parts','device'); foreach ($name in $files) { $relative = 'pages/' + $name + '.html'; $beforePage = (git show ('HEAD:' + $relative)) -join [Environment]::NewLine; $afterPage = [IO.File]::ReadAllText($relative); $withoutBridge = $afterPage -replace '(?m)^\s*<link rel="stylesheet" href="/client/themes.css">\r?\n', '' -replace '(?m)^\s*<script defer src="/client/theme-preference.js"></script>\r?\n', '' -replace '<body data-theme-page="[^"]+">', '<body>'; if (($beforePage -replace '\s+', '') -cne ($withoutBridge -replace '\s+', '')) { throw ('Unexpected page change: ' + $relative) }; Write-Output ($relative + ': original content and scripts preserved') }
+
+已运行 $source = Get-Content -LiteralPath tools/deploy/build.mjs; $source[270..335]; $source[375..445]; rg -n 'function replaceScriptReferences|SCRIPT_SOURCES|for \(const source|buildScripts' tools/deploy/build.mjs; Select-String -LiteralPath pages/index.html -Pattern 'theme-preference|src="/app.js'
+
+已向父代理发送消息

@@ -13,8 +13,10 @@
         .task{cursor:pointer}.task:hover{border-color:#818cf8}.title{font-weight:700;overflow-wrap:anywhere}.meta{font-size:.84rem;color:#64748b;margin-top:7px;display:flex;gap:10px;flex-wrap:wrap}.progress{height:7px;background:#e2e8f0;border-radius:999px;overflow:hidden;margin-top:11px}.progress>i{display:block;height:100%;background:#4f46e5}.hash{font:11px ui-monospace,monospace;color:#94a3b8;overflow-wrap:anywhere;margin-top:7px}.empty{padding:22px;text-align:center;color:#94a3b8;border:1px dashed #cbd5e1;border-radius:14px}.link{display:inline-block;margin-top:9px;color:#4f46e5;text-decoration:none}
         @media(prefers-color-scheme:dark){:root,body{background:#111827;color:#e5e7eb}.page{background:#111827}header{background:rgba(17,24,39,.94)}.card{background:#1f2937;border-color:#374151}.note,.meta{color:#9ca3af}.progress{background:#374151}.empty{border-color:#4b5563;color:#9ca3af}}
     </style>
+    <link rel="stylesheet" href="/client/themes.css">
+    <script defer src="/client/theme-preference.js"></script>
 </head>
-<body>
+<body data-theme-page="light-parts">
 <main class="page">
     <header><h1>继续光媒接收</h1><button class="close" id="closeBtn" type="button" aria-label="关闭">×</button></header>
     <p class="note">未完成任务、实际数据残片和简易接收记录仅保存在当前设备，不通过 Node.js、Socket.IO 或隧道同步。</p>

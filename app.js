@@ -17623,8 +17623,7 @@ function initTopbarOverflowScroll() {
 }
 
 function applyTheme(theme) {
-    const themes = ['classic', 'graphite', 'atelier', 'social'];
-    const selected = themes.includes(theme) ? theme : 'classic';
+    const selected = resolveTheme(theme);
     document.body.dataset.theme = selected;
     localStorage.setItem('uiTheme', selected);
     document.querySelectorAll('.theme-option[data-theme],.theme-quick-option[data-theme]').forEach(button => {
@@ -17633,16 +17632,25 @@ function applyTheme(theme) {
     return selected;
 }
 
+// Shared by every theme entry point. Keep the first two entries in design order;
+// removing a legacy entry must not leave an unusable stored preference behind.
+const UI_THEME_IDS = Object.freeze(['lumen', 'orbit', 'classic', 'graphite', 'atelier', 'social']);
+const UI_DEFAULT_THEME = 'classic';
+
+function resolveTheme(theme) {
+    if (UI_THEME_IDS.includes(theme)) return theme;
+    return UI_THEME_IDS.includes(UI_DEFAULT_THEME) ? UI_DEFAULT_THEME : UI_THEME_IDS[0];
+}
+
 function cycleTheme(source = 'topbar') {
-    const themes = ['classic', 'graphite', 'atelier', 'social'];
-    const current = themes.includes(document.body.dataset.theme) ? document.body.dataset.theme : 'classic';
-    const selected = applyTheme(themes[(themes.indexOf(current) + 1) % themes.length]);
+    const current = resolveTheme(document.body.dataset.theme);
+    const selected = applyTheme(UI_THEME_IDS[(UI_THEME_IDS.indexOf(current) + 1) % UI_THEME_IDS.length]);
     historyLog('theme-changed', { theme: selected, source });
     return selected;
 }
 
 function initThemeSwitcher() {
-    applyTheme(localStorage.getItem('uiTheme') || 'classic');
+    applyTheme(localStorage.getItem('uiTheme') || UI_DEFAULT_THEME);
     const switcher = document.getElementById('themeSwitcher');
     const quickMenu = document.getElementById('themeQuickMenu');
     const cycleButton = document.getElementById('cycleThemeBtn');

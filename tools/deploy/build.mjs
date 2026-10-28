@@ -26,6 +26,7 @@ const SCRIPT_SOURCES = [
   'client/sns-post-i18n.js',
   'client/sns-post-markdown.js',
   'app.js',
+  'client/theme-preference.js',
   'client/cache-store.js',
   'client/file-assets.js',
   'client/folder-archive.js',

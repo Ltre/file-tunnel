@@ -93,11 +93,14 @@
     <script defer src="/client/i18n.js?v=20260812-1"></script>
 
     <!-- 手动试着将此处原有的5000多行CSS代码转移到 /client/index.css 中，如有错误，就再迁移回来 -->
+    <link rel="stylesheet" href="/client/themes-legacy.css">
     <link rel="stylesheet" href="/client/index.css">
 
     <link rel="stylesheet" href="/client/disk.css">
     <link rel="stylesheet" href="/client/account-ui.css">
     <link rel="stylesheet" href="/client/disk-directory-picker.css">
+    <link rel="stylesheet" href="/client/themes.css">
+    <script defer src="/client/theme-preference.js"></script>
 </head>
 <body>
     <div id="tunnelStartupLoading" role="status" aria-live="polite">
@@ -146,6 +149,8 @@
         <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
     </header>
     <div class="theme-quick-menu" id="themeQuickMenu" role="menu" aria-label="快速选择主题" hidden>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="lumen">Lumen</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="orbit">Orbit</button>
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="classic">Classic</button>
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="graphite">Graphite</button>
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="atelier">Atelier</button>
@@ -219,6 +224,8 @@
                 <section class="tunnel-settings-section theme-settings">
                     <h3>界面主题</h3>
                     <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
+                        <button class="theme-option" type="button" data-theme="lumen">Lumen</button>
+                        <button class="theme-option" type="button" data-theme="orbit">Orbit</button>
                         <button class="theme-option" type="button" data-theme="classic">Classic</button>
                         <button class="theme-option" type="button" data-theme="graphite">Graphite</button>
                         <button class="theme-option" type="button" data-theme="atelier">Atelier</button>

@@ -37,6 +37,7 @@ async function run() {
         });
         fixture.app.get('/interaction-261028', (req, res) => res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
             <link rel="stylesheet" href="/client/streaming-console.css">
+            <link rel="stylesheet" href="/client/themes.css">
             <script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script>
             <body><h1>隔离功能首页</h1><script>StreamingConsole.init({deviceId:()=> '${req.query.device === 'phone' ? 'interaction-phone' : 'interaction-viewer'}',deviceName:()=> '隔离观看者',devices:()=>[],tunnels:async()=>[],toast:()=>{},home:()=>{}});StreamingConsole.open();</script>`));
 
@@ -49,7 +50,7 @@ async function run() {
         const matrix = [];
         for (const width of [1440, 1201, 1200, 1100, 1099, 1024, 800, 768, 767, 390]) {
             await page.setViewportSize({ width, height: 900 });
-            for (const theme of ['', 'graphite', 'atelier']) {
+            for (const theme of ['', 'graphite', 'atelier', 'lumen', 'orbit']) {
                 await page.evaluate(value => { document.body.dataset.theme = value; }, theme);
                 const layout = await page.evaluate(() => {
                     const shell = document.getElementById('appShell'), grid = shell.querySelector('.main-layout');
@@ -96,7 +97,7 @@ async function run() {
 
         // Minimal red-capable mute repro: hold across the real 250ms update.
         await page.goto(fixture.base + '/api/stream-fixture');
-        await page.setContent('<style>' + read('client/streaming-console.css') + '</style><div class="sc-overlay"><main class="sc-viewer-page"></main></div>');
+        await page.setContent('<style>' + read('client/streaming-console.css') + read('client/themes.css') + '</style><div class="sc-overlay"><main class="sc-viewer-page"></main></div>');
         await page.addScriptTag({ content: read('client/streaming-player.js') });
         await page.evaluate(() => {
             const player = StreamingPlayer.create({ stationId: 'minimal', watchId: 'watch', subscribe: () => () => {}, request: async () => ({
@@ -108,6 +109,7 @@ async function run() {
         await page.getByRole('button', { name: '媒体全屏', exact: true }).click();
         const mute = page.locator('.sc-sound-toggle');
         for (let i = 0; i < 16; i++) {
+            await page.evaluate(theme => { document.body.dataset.theme = theme; }, i < 8 ? 'lumen' : 'orbit');
             const label = await mute.getAttribute('aria-label'), box = await mute.boundingBox();
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
             await page.waitForTimeout([80, 180, 280, 380][i % 4]); await page.mouse.up();
@@ -117,6 +119,7 @@ async function run() {
         console.log('held full-screen mute clicks: 16/16');
 
         await page.goto(fixture.base + '/interaction-261028');
+        await page.evaluate(() => { document.body.dataset.theme = 'orbit'; });
         await page.locator('article').filter({ hasText: '长节目单交互验收' }).getByRole('button', { name: '打开观看', exact: true }).click();
         await page.locator('.sc-now-playing').waitFor();
         control('select', { itemId: 'program-12' });
@@ -157,6 +160,7 @@ async function run() {
         const phone = await mobile.newPage();
         phone.setDefaultTimeout(10000);
         await phone.goto(fixture.base + '/interaction-261028?device=phone');
+        await phone.evaluate(() => { document.body.dataset.theme = 'lumen'; });
         await phone.locator('article').filter({ hasText: '长节目单交互验收' }).getByRole('button', { name: '打开观看', exact: true }).tap();
         await phone.locator('.sc-now-playing').waitFor();
         const mainScroll = await phone.locator('.sc-main').evaluate(el => el.scrollTop);
