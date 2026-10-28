@@ -50,7 +50,7 @@ async function run() {
         const matrix = [];
         for (const width of [1440, 1201, 1200, 1100, 1099, 1024, 800, 768, 767, 390]) {
             await page.setViewportSize({ width, height: 900 });
-            for (const theme of ['', 'graphite', 'atelier', 'lumen', 'orbit']) {
+            for (const theme of ['', 'social', 'atelier', 'lumen', 'orbit']) {
                 await page.evaluate(value => { document.body.dataset.theme = value; }, theme);
                 const layout = await page.evaluate(() => {
                     const shell = document.getElementById('appShell'), grid = shell.querySelector('.main-layout');

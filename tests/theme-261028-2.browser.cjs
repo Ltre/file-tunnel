@@ -13,22 +13,32 @@ const { chromium } = require(process.argv[2] || 'playwright');
 const { createFixture } = require('./support/streaming-console-fixture.cjs');
 const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
-const themes = ['lumen', 'orbit', 'classic', 'graphite', 'atelier', 'social'];
+const themes = ['lumen', 'orbit', 'classic', 'atelier', 'social'];
 const output = path.join(root, '.npm-cache', 'theme-261028-2');
 const geometryKeys = ['x', 'y', 'width', 'height'];
 
 async function geometry(page, selector = 'body *') {
-    return page.evaluate(selector => Array.from(document.querySelectorAll(selector), (node, index) => {
+    return page.evaluate(selector => {
+        return Array.from(document.querySelectorAll(selector), (node, index) => {
         const style = getComputedStyle(node), rect = node.getBoundingClientRect();
         if (!rect.width || !rect.height || ['SCRIPT', 'STYLE', 'LINK', 'META'].includes(node.tagName)) return null;
+        const typed = node.computedStyleMap();
+        const metric = key => {
+            // Chromium exposes auto flex margins as either their used pixel
+            // value or 0px after paint-only invalidation. Compare the actual
+            // auto declaration here; x/y/width/height still check its layout.
+            if (key.startsWith('margin') && typed.get(key.replace(/[A-Z]/g, c => '-' + c.toLowerCase()))?.value === 'auto') return 'auto';
+            return style[key];
+        };
         return {
             key: index + ':' + node.tagName + '#' + node.id + '.' + (typeof node.className === 'string' ? node.className : ''),
             x: rect.x, y: rect.y, width: rect.width, height: rect.height,
             metrics: ['display', 'position', 'visibility', 'overflowX', 'overflowY', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
                 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight',
-                'borderTopWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderRightWidth'].map(key => style[key]).join('|')
+                'borderTopWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderRightWidth'].map(metric).join('|')
         };
-    }).filter(Boolean), selector);
+        }).filter(Boolean);
+    }, selector);
 }
 
 function sameGeometry(before, after, label) {
@@ -146,9 +156,17 @@ async function run() {
         await page.waitForFunction(() => typeof startupTimings !== 'undefined' && startupTimings.completeMs !== null);
         await page.evaluate(() => startTunnelApplication({ joined: false }));
         assert.equal(await page.evaluate(() => document.body.dataset.theme), 'atelier', 'saved legacy preference is retained');
+        await page.evaluate(() => localStorage.setItem('uiTheme','graphite'));
+        // The synthetic joined state may add a hash; do not perform a real
+        // tunnel authorization handshake merely to test a stored theme.
+        await page.goto(fixture.base + '/theme-live?leave=1');
+        await page.waitForFunction(() => typeof startupTimings !== 'undefined' && startupTimings.completeMs !== null);
+        await page.evaluate(() => startTunnelApplication({ joined:false }));
+        assert.equal(await page.evaluate(() => document.body.dataset.theme),'classic','removed Graphite preference falls back on real startup');
+        assert.equal(await page.evaluate(() => localStorage.getItem('uiTheme')),'classic');
         await page.evaluate(() => applyTheme('removed-theme'));
         assert.equal(await page.evaluate(() => document.body.dataset.theme), 'classic', 'invalid preference has usable fallback');
-        report.interactions.push('two theme menus and full cycle order; original default; saved old preference; invalid preference fallback');
+        report.interactions.push('two theme menus and full cycle order; original default; saved old preference; removed Graphite startup and invalid preference fallback');
         // Restore the current app shell after the intentional refresh.
         await page.evaluate(async () => {
             state.sessionId = 'theme-isolated-session';
@@ -352,12 +370,32 @@ async function run() {
                     assert.deepEqual(await page.evaluate(() => ['--panel-bg', '--text-main', '--text-color', '--accent', '--primary-color'].map(name => getComputedStyle(document.body).getPropertyValue(name).trim())), values);
                 }
             }
-            if (['home', 'home-control-center', 'disk-dialog', 'stream-watch', 'home-editor'].includes(screen)) {
+            if (process.argv.includes('--visual-review') || ['home', 'home-control-center', 'disk-dialog', 'stream-watch', 'home-editor'].includes(screen)) {
                 for (const theme of themes.slice(0, 2)) { await skin(page, theme); await page.screenshot({ path: path.join(output, theme + '-' + (mobile ? 'mobile-' : '') + screen + '.png') }); }
             }
             report.snapshots.push({ screen, file, viewport: mobile ? '390x844' : '1440x1000', nodes: before.length });
         }
         assert.equal(errors.length, 0, 'live JS errors: ' + errors.join('\n'));
+        if (process.argv.includes('--visual-review')) {
+            fixture.app.use('/theme-review-images', express.static(output));
+            const groups = [
+                ['home-settings','home-resources','home-record-menu','home-rich','home-backup','home-cleanup'],
+                ['disk-accounts','disk-collaboration','disk-menu','disk-properties','disk-transfer','disk-trash'],
+                ['stream-editor','stream-import','stream-control','stream-selected','stream-access','workshop-editor'],
+                ['standalone-downloadList','standalone-downloader','standalone-light-file-parts','standalone-device','mobile-home-editor','mobile-stream-watch']
+            ];
+            fixture.app.get('/theme-review-board', (req,res) => {
+                const theme=String(req.query.theme), names=groups[Number(req.query.group)];
+                if (!themes.slice(0,2).includes(theme)||!names) return res.sendStatus(400);
+                res.type('html').send('<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#e3e5eb;font:14px sans-serif}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}figure{margin:0;background:#fff}figcaption{padding:6px}img{width:100%;height:330px;object-fit:contain;background:#dedfe6}</style><div class="grid">'+names.map(name=>'<figure><figcaption>'+theme+' · '+name+'</figcaption><img src="/theme-review-images/'+theme+'-'+name+'.png"></figure>').join('')+'</div>');
+            });
+            await page.setViewportSize({width:1440,height:1120});
+            for (const theme of themes.slice(0,2)) for (let group=0;group<groups.length;group++) {
+                await page.goto(fixture.base+'/theme-review-board?theme='+theme+'&group='+group);
+                await page.evaluate(()=>Promise.all([...document.images].map(img=>img.decode())));
+                await page.screenshot({path:path.join(output,'review-'+theme+'-'+group+'.png'),fullPage:true});
+            }
+        }
         report.status = 'PASS';
         fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report, null, 2));

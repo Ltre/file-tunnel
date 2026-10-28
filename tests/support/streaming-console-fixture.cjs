@@ -76,7 +76,11 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
     f.app.get('/runtime-config.js', (_req, res) => res.type('js').send('window.TUNNEL_CONFIG={};'));
     f.app.get('/app.js', (_req, res) => res.sendFile(path.join(root, 'app.js')));
     f.app.get('/socket.io/socket.io.js', (_req, res) => res.sendFile(path.join(root, 'node_modules/socket.io/client-dist/socket.io.js')));
-    f.app.get('/service-worker.js', (_req, res) => serviceWorker ? res.type('js').sendFile(path.join(root,'service-worker.js')) : res.status(404).end());
+    f.app.get('/service-worker.js', (_req, res) => {
+        if (!serviceWorker) return res.status(404).end();
+        res.set('Cache-Control', 'no-store');
+        return typeof serviceWorker === 'function' ? res.type('js').send(serviceWorker()) : res.type('js').sendFile(path.join(root,'service-worker.js'));
+    });
     f.app.get('/streaming-layout-check', (_req, res) => {
         const appSource = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
         const controls = appSource.slice(appSource.indexOf('function normalizeControlCenterOrder('), appSource.indexOf('function showTunnelRemarkDialog('));

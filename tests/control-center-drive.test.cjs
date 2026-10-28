@@ -108,7 +108,7 @@ test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白�
     const switcher = { addEventListener: (name, fn) => { handlers.switcher = fn; } };
     const quick = { hidden: true, style: {}, offsetWidth: 132, contains: () => false, addEventListener: (name, fn) => { handlers.quick = fn; } };
     const cycle = { getBoundingClientRect: () => ({ left: 40, bottom: 50 }), addEventListener: (name, fn) => { handlers.cycle = fn; } };
-    const buttons = ['classic','graphite','atelier','social'].flatMap(theme => [{ dataset:{ theme }, classList:classes() }, { dataset:{ theme }, classList:classes() }]);
+    const buttons = ['lumen','orbit','classic','atelier','social'].flatMap(theme => [{ dataset:{ theme }, classList:classes() }, { dataset:{ theme }, classList:classes() }]);
     const context = vm.createContext({
         localStorage: { getItem: () => 'classic', setItem() {} }, historyLog: (...args) => logged.push(args),
         document: { body:{ dataset:{} }, documentElement:{ clientWidth:390 }, querySelectorAll: () => buttons,
@@ -119,7 +119,7 @@ test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白�
     vm.runInContext(app.slice(app.indexOf('function applyTheme('), app.indexOf('function isTunnelOwner(')) + ';this.init=initThemeSwitcher;', context);
     context.init(); assert.equal(context.document.body.dataset.theme, 'classic');
     handlers.cycle({ stopPropagation() {} });
-    assert.equal(context.document.body.dataset.theme, 'graphite'); assert.equal(quick.hidden, false); assert.equal(quick.style.top, '50px');
+    assert.equal(context.document.body.dataset.theme, 'atelier'); assert.equal(quick.hidden, false); assert.equal(quick.style.top, '50px');
     handlers.switcher({ target: { closest: () => ({ dataset: { theme: 'atelier' } }) } }); assert.equal(context.document.body.dataset.theme, 'atelier');
     handlers['document-click']({ target: {} }); assert.equal(quick.hidden, true);
     assert.match(source('pages/index.html'), /tunnel-settings-section theme-settings[\s\S]*id="themeSwitcher"/);

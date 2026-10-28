@@ -9,7 +9,7 @@ const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('app.js');
 const html = read('pages/index.html');
 const themeSource = app.slice(app.indexOf('function applyTheme('), app.indexOf('function isTunnelOwner('));
-const expected = ['lumen', 'orbit', 'classic', 'graphite', 'atelier', 'social'];
+const expected = ['lumen', 'orbit', 'classic', 'atelier', 'social'];
 
 function fixture({ stored = null, remove = [] } = {}) {
     const writes = [], logs = [], handlers = {};
@@ -32,7 +32,7 @@ function fixture({ stored = null, remove = [] } = {}) {
         localStorage: { getItem: () => stored, setItem(key, value) { writes.push([key, value]); } },
         historyLog: (...args) => logs.push(args)
     });
-    const source = themeSource.replace(/Object\.freeze\(\['lumen', 'orbit', 'classic', 'graphite', 'atelier', 'social'\]\)/,
+    const source = themeSource.replace(/Object\.freeze\(\['lumen', 'orbit', 'classic', 'atelier', 'social'\]\)/,
         `Object.freeze(${JSON.stringify(names)})`);
     vm.runInContext(source + ';this.api={apply:applyTheme,cycle:cycleTheme,init:initThemeSwitcher};', context);
     return { ...context.api, body, buttons, writes, logs, unrelatedState };
@@ -55,15 +55,18 @@ test('保留已有主题偏好，循环越过末项后按 Lumen、Orbit、Classi
         assert.equal(f.buttons.filter(button => button.classes.has('active')).length, 2);
     }
     const f = fixture({ stored: 'social' }); f.init();
-    const actual = Array.from({ length: 7 }, () => f.cycle('control-center'));
+    const actual = Array.from({ length: expected.length + 1 }, () => f.cycle('control-center'));
     assert.deepEqual(actual, [...expected, 'lumen']);
-    assert.equal(f.logs.length, 7);
+    assert.equal(f.logs.length, expected.length + 1);
     assert.ok(f.logs.every(([, info]) => info.source === 'control-center'));
 });
 
 test('失效主题回退；移除全部旧主题登记后仍可恢复旧偏好并循环新主题', () => {
     const unknown = fixture({ stored: 'removed-theme' }); unknown.init();
     assert.equal(unknown.body.dataset.theme, 'classic');
+    const graphite = fixture({ stored: 'graphite' }); graphite.init();
+    assert.equal(graphite.body.dataset.theme, 'classic');
+    assert.deepEqual(graphite.writes, [['uiTheme', 'classic']]);
     const removed = fixture({ stored: 'graphite', remove: ['classic', 'graphite', 'atelier', 'social'] }); removed.init();
     assert.equal(removed.body.dataset.theme, 'lumen');
     assert.deepEqual(removed.writes, [['uiTheme', 'lumen']]);
@@ -90,9 +93,9 @@ test('旧主题文件仅保留专属规则，共享布局基础独立且新皮�
     assert.match(base, /\.main-layout\s*\{\s*display: grid;/);
     assert.match(base, /\.control-center-tile\{/);
     const selectors = [...legacy.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{/g)].map(match => match[1].trim());
-    assert.equal(selectors.length, 6);
-    assert.ok(selectors.every(selector => /^body\[data-theme="(?:graphite|atelier|social)"\]/.test(selector)));
-    assert.match(legacy, /body\[data-theme="graphite"\] \.main-layout\s*\{\s*grid-template-columns: 320px minmax\(0, 1fr\) 420px;/);
+    assert.equal(selectors.length, 3);
+    assert.ok(selectors.every(selector => /^body\[data-theme="(?:atelier|social)"\]/.test(selector)));
+    assert.doesNotMatch(legacy, /graphite/);
     assert.match(legacy, /body\[data-theme="atelier"\] \.main-layout\s*\{\s*grid-template-columns: 340px minmax\(0, 1fr\) 360px;/);
     const styles = [...html.matchAll(/<link\s+rel="stylesheet"\s+href="([^"]+)"/g)].map(match => match[1]);
     assert.ok(styles.indexOf('/client/themes-legacy.css') < styles.indexOf('/client/index.css'));
@@ -104,7 +107,7 @@ test('两份主题资源加入现有 Service Worker 壳资源，业务缓存内�
     for (const file of ['/client/themes.css', '/client/themes-legacy.css']) {
         assert.equal(sw.split(`'${file}'`).length - 1, 1);
     }
-    assert.match(sw, /CACHE_NAME = 'instant-tunnel-v\d+-content-v8-themes-261028-2'/);
+    assert.match(sw, /CACHE_NAME = 'instant-tunnel-v\d+-content-v8-themes-261028-followup'/);
 });
 
 function preferenceFixture(stored, { unavailable = false, page = 'downloads', current } = {}) {

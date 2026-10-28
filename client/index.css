@@ -339,7 +339,7 @@ body {
 .contacts-panel {
     margin-top: 12px;
     border-top: 1px solid var(--panel-border);
-    padding-top: 12px;
+    padding: 12px;
 }
 
 .contacts-panel-header {
@@ -1287,7 +1287,7 @@ body {
     min-width: 0;
     padding: 7px 12px;
     border: 2px solid #e0e0e0;
-    border-radius: 25px;
+    border-radius: 12px;
     font-size: 1rem;
     font-family: inherit;
     line-height: 1.5;
@@ -1402,6 +1402,15 @@ body {
     justify-content: flex-end;
     gap: 10px;
     margin-top: 15px;
+}
+
+.editor-actions > .btn,
+.editor-actions > .btn > span { white-space: nowrap; }
+/* Keep the three existing actions on one line when the A layout uses a
+   compact editor column; no change to the global button metrics. */
+@media (min-width: 1100px) and (max-width: 1350px), (max-width: 360px) {
+    .editor-actions { gap: 6px; }
+    .editor-actions > .btn { padding-inline: 7px; gap: 4px; font-size: 13px; }
 }
 
 /* 文件上传 */
@@ -2956,6 +2965,12 @@ body {
 
 #filePreviewViewer {
     z-index: 5000;
+}
+
+/* Preview entry is immediate; removing .active retains the existing exit flow. */
+#filePreviewViewer.active,
+.rich-viewer-overlay.active {
+    transition: none;
 }
 
 #fileDetailsViewer {

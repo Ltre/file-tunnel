@@ -17634,7 +17634,7 @@ function applyTheme(theme) {
 
 // Shared by every theme entry point. Keep the first two entries in design order;
 // removing a legacy entry must not leave an unusable stored preference behind.
-const UI_THEME_IDS = Object.freeze(['lumen', 'orbit', 'classic', 'graphite', 'atelier', 'social']);
+const UI_THEME_IDS = Object.freeze(['lumen', 'orbit', 'classic', 'atelier', 'social']);
 const UI_DEFAULT_THEME = 'classic';
 
 function resolveTheme(theme) {

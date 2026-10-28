@@ -73,6 +73,7 @@
     let applyingTranslations = false;
     const DYNAMIC_LANGUAGES = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
     const DYNAMIC_TEMPLATES = [
+        [/^(\d+)个节目$/, ['{1}個節目', '{1} programs', '{1}番組', '{1} programmes', 'Программ: {1}', '{1} programas', '{1} programmi', '프로그램 {1}개', '{1} rancangan', '{1} program', '{1} chương trình', '{1} รายการ', '{1} برنامه', '{1} កម្មវិធី', '{1} အစီအစဉ်']],
         [/^(抓取任务转存)：(.+)$/, DYNAMIC_LANGUAGES.map(() => '{1}: {raw2}')],
         [/^(.+) \[(TASK_SAVE_[A-Z_]+)\](.*)$/, DYNAMIC_LANGUAGES.map(() => '{1} [{raw2}]{raw3}')],
         [/^(\d+)\s*个任务$/, ['{n} 個工作','{n} tasks','タスク {n} 件','{n} tâches','Задач: {n}','{n} tareas','{n} attività','작업 {n}개','{n} tugas','{n} tugas','{n} tác vụ','{n} งาน']],
@@ -188,7 +189,9 @@
     function translateTextNode(node, lang) {
         if (shouldSkipTextNode(node)) return;
         const source = rememberTextSource(node);
-        if (!resolveCatalogKey(source)) return;
+        // Dynamic system labels retain their source across language switches,
+        // just as catalog entries do. Authored content is still skipped above.
+        if (!resolveCatalogKey(source) && !DYNAMIC_TEMPLATES.some(([pattern]) => pattern.test(String(source).trim()))) return;
         const leading = node.nodeValue.match(/^\s*/)?.[0] || '';
         const trailing = node.nodeValue.match(/\s*$/)?.[0] || '';
         const next = `${leading}${translateText(source.trim(), lang)}${trailing}`;
