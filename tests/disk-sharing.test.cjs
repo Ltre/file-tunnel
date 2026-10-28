@@ -55,7 +55,7 @@ test('Telegram 定位备注失败不丢失已上传结果，长路径符合 capt
     const file = { path: filename, name: '文件.txt', folderPath: '目录/'.repeat(300), size: 3 };
     const caption = diskCaption(file, backend, { userId: 'user-uuid', diskSpace: 'music' }, { fileId: 'file-id', messageId: 123, mediaGroupId: 'album-id' });
     assert.ok(caption.length <= 1024); assert.match(caption, /user_id: user-uuid/); assert.match(caption, /album_id: album-id/);
-    const telegram = createDiskTelegram({ fetchImpl: async (url, options) => {
+    const telegram = createDiskTelegram({ dataDir: root, fetchImpl: async (url, options) => {
         if (url.endsWith('/editMessageCaption')) throw new Error('offline');
         const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
         assert.match(Buffer.concat(chunks).toString(), /user_id: user-uuid/);
@@ -72,7 +72,7 @@ test('超过 20 MB 的逻辑文件按分片 album 上传、统一索引、顺序
     const backend = { token: 'secret', channelId: '-1001', baseUrl: 'https://api.telegram.org' };
     const partBuffers = [original.subarray(0, MAX_TELEGRAM_PART_SIZE), original.subarray(MAX_TELEGRAM_PART_SIZE)];
     let uploadMethods = [], deleted = [];
-    const telegram = createDiskTelegram({ fetchImpl: async (url, options = {}) => {
+    const telegram = createDiskTelegram({ dataDir: root, fetchImpl: async (url, options = {}) => {
         const method = url.split('/').at(-1);
         if (method === 'sendMediaGroup' || method === 'sendDocument') {
             uploadMethods.push(method); const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
@@ -101,9 +101,9 @@ test('超过 20 MB 的逻辑文件按分片 album 上传、统一索引、顺序
     assert.deepEqual(deleted, [100, 101]);
 });
 
-test('逻辑文件删除对已经丢失的 Telegram 分片幂等，并继续清理其余分片', async () => {
+test('逻辑文件删除对已经丢失的 Telegram 分片幂等，并继续清理其余分片', async t => {
     const singles = [];
-    const telegram = createDiskTelegram({ fetchImpl: async (url, options = {}) => {
+    const telegram = createDiskTelegram({ dataDir: temp(t), fetchImpl: async (url, options = {}) => {
         const method = url.split('/').at(-1), payload = JSON.parse(options.body);
         if (method === 'deleteMessages') return { ok: false, status: 400, json: async () => ({ ok: false, error_code: 400, description: 'Bad Request: message to delete not found' }) };
         if (method === 'deleteMessage') {

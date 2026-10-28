@@ -32,6 +32,7 @@ async function geometry(page, selector = 'body *') {
         };
         return {
             key: index + ':' + node.tagName + '#' + node.id + '.' + (typeof node.className === 'string' ? node.className : ''),
+            shortCodeRegion: Boolean(node.closest('.short-code-switch')),
             x: rect.x, y: rect.y, width: rect.width, height: rect.height,
             metrics: ['display', 'position', 'visibility', 'overflowX', 'overflowY', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
                 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'marginTop', 'marginBottom', 'marginLeft', 'marginRight',
@@ -46,7 +47,11 @@ function sameGeometry(before, after, label) {
     const failures = [];
     for (let i = 0; i < before.length; i++) {
         const a = before[i], b = after[i];
-        if (a.key !== b.key || a.metrics !== b.metrics || geometryKeys.some(key => Math.abs(a[key] - b[key]) > .25)) {
+        // 261028-3 explicitly expands the two new themes' tunnel-code surface.
+        // Its horizontal geometry may differ; vertical geometry and every
+        // other component remain under the original strict comparison.
+        const keys=a.shortCodeRegion?['y','height']:geometryKeys;
+        if (a.key !== b.key || a.metrics !== b.metrics || keys.some(key => Math.abs(a[key] - b[key]) > .25)) {
             failures.push({ node: a.key, before: a, after: b });
         }
     }

@@ -19,7 +19,7 @@ body[data-theme="lumen"] {
 
 body[data-theme="orbit"] {
   color-scheme:dark;
-  --ui-bg:#11141d; --ui-panel:#1a1f2d; --ui-soft:#202739; --ui-line:#343d56;
+  --ui-bg:#11141d; --ui-panel:#1a1f2d; --ui-soft:#202739; --ui-line:#2c3348;
   --ui-ink:#e8ebfa; --ui-muted:#a4aec9; --ui-accent:#b3a6ff; --ui-second:#57decd;
   --ui-tint:#302b4c; --ui-on:#141327; --ui-radius:9px;
   --ui-danger:#ff9db0; --ui-danger-soft:#442934; --ui-success:#9ce5cd; --ui-success-soft:#233e38;
@@ -50,7 +50,9 @@ body[data-theme="orbit"] .panel-header {box-shadow:inset 3px 0 0 #a395f6,inset 0
 /* Homepage surfaces separate through fill rather than hard rules. Keep focus
  * outlines and state indicators intact, including those inside these surfaces. */
 body[data-theme="lumen"] #appShell :is(.panel,.contacts-panel,.device-item,.contact-item,.session-info,.short-code-switch,.message-bubble,.file-message,.rich-preview,.tunnel-markdown,.input-area,.editor-toolbar,.editor-content,.editor-actions) {border-color:transparent;}
-body[data-theme="lumen"] #appShell .file-upload-area {border-color:transparent;background:#f0f2fa;}
+body[data-theme="lumen"] #appShell .file-upload-area {border-color:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-line));background:#fafbff;}
+body[data-theme="lumen"] #appShell .file-upload-area:is(:hover,.dragover) {border-color:var(--ui-accent);background:var(--ui-tint);}
+body[data-theme="lumen"] #textInput {background:#fafbff;}
 body[data-theme="lumen"] #appShell :is(.btn-secondary,.session-tool,.toolbar-btn):not(.active):not(.selected):not([aria-pressed="true"]) {background:#f0f2f9;border-color:transparent;box-shadow:none;}
 body[data-theme="lumen"] #appShell :is(.btn-secondary,.session-tool,.toolbar-btn):not(.active):not(.selected):not([aria-pressed="true"]):not(:disabled):hover {background:#e7eaf5;}
 body[data-theme="lumen"] #tunnelTopbar {border-color:transparent;box-shadow:0 2px 14px #3f448408;}

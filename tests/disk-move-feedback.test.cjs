@@ -7,26 +7,27 @@ const turn = () => new Promise(setImmediate);
 const ui = source('client/disk-ui.js');
 
 function fixture(options = {}) {
-    const requests = [], refreshes = [], toasts = [], jobs = new Map();
+    const requests = [], refreshes = [], toasts = [], jobs = new Map(), operationAccounts = [];
     const elements = {};
-    const element = () => ({ hidden: true, disabled: false, isConnected: true,
+    const element = () => ({ hidden: true, disabled: false, isConnected: true, children: [], append(...nodes) { this.children.push(...nodes); },
         setAttribute() {}, removeAttribute() {}, contains: () => false, focus() {} });
     for (const id of ['diskLoadingTitle', 'diskLoadingDetail', 'diskLoadingProgress', 'diskLoadingBackground', 'diskLoadingPrev', 'diskLoadingNext', 'diskLoadingPosition']) elements[id] = element();
     const overlay = { ...element(), firstElementChild: { addEventListener() {} } };
-    let cleared = 0;
+    let cleared = 0, created = 0;
     const context = vm.createContext({
         window: {}, setInterval() {}, encodeURIComponent,
         telegramDriveContentStale: false,
-        document: { createElement: () => overlay, body: { append() {} }, addEventListener() {} },
+        document: { createElement: () => created++ === 0 ? overlay : element(), createTextNode: text => ({ textContent: text }), body: { append() {} }, addEventListener() {} },
+        openTelegramDriveDialog: options.exposure,
         $disk: id => elements[id], formatFileSize: n => n + ' B', telegramDriveDisplayPath: value => '/' + value,
         chooseTelegramDriveTransfer: async () => options.cancelPicker ? null : 'target',
         confirmTelegramDriveAction: async () => !options.cancelConfirmation,
         clearTelegramDriveSelection: () => { cleared++; }, showAppToast: message => toasts.push(message),
         renderTelegramDrive: async value => { refreshes.push({ ...value }); if (options.refreshPending) await options.refreshPending; },
         fetch: async (url, init = {}) => {
-            if (url.includes('/operations?')) return { ok: true, json: async () => ({ operations: [...jobs.values()].map(job => ({ ...job })) }) };
+            if (url.includes('/operations?')) { operationAccounts.push(init.headers['X-Disk-Account']); return { ok: true, json: async () => ({ operations: [...jobs.values()].map(job => ({ ...job })) }) }; }
             assert.equal(init.method, 'PATCH');
-            return new Promise(resolve => requests.push({ url, body: JSON.parse(init.body), resolve }));
+            return new Promise(resolve => requests.push({ url, body: JSON.parse(init.body), headers: init.headers, resolve }));
         }
     });
     vm.runInContext(source('client/disk-client.js'), context);
@@ -42,7 +43,7 @@ function fixture(options = {}) {
         Object.assign(jobs.get(id), { status: 'completed', result: {} });
         await client.refresh(true); await turn();
     };
-    return { ...context, client, elements, overlay, requests, refreshes, toasts, accept, complete, cleared: () => cleared, stale: () => context.telegramDriveContentStale };
+    return { ...context, client, elements, overlay, requests, refreshes, toasts, operationAccounts, accept, complete, cleared: () => cleared, stale: () => context.telegramDriveContentStale };
 }
 const file = { id: 'first', kind: 'file', name: 'first.txt', folderPath: 'source' };
 const folder = { kind: 'directory', name: 'nested', path: 'source/nested' };
@@ -139,4 +140,35 @@ test('两批移动在服务器响应前也可左右切换，后台执行后独�
     await f.complete('second-batch'); await second;
     assert.equal(f.overlay.hidden, true);
     assert.equal(f.toasts.length, 2);
+});
+
+test('取消开放范围移动确认时保留原选择，不重试或提示成功', async () => {
+    const f=fixture({exposure:async dialog=>{
+        assert.match(dialog.title,/移出开放范围/);
+        assert.throws(()=>dialog.validate(),/请先勾选/);
+        return false;
+    }});
+    const pending=f.move([file],'target');await turn();
+    f.requests[0].resolve({ok:false,status:409,json:async()=>({error:'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED'})});
+    await pending;
+    assert.equal(f.requests.length,1);assert.equal(f.cleared(),0);assert.equal(f.overlay.hidden,true);
+    assert.deepEqual(f.toasts,[]);assert.deepEqual(f.refreshes,[]);
+});
+
+test('确认开放范围移动复用请求身份，跨账号切换不串用请求和任务轮询', async () => {
+    let acknowledge;
+    const f=fixture({exposure:dialog=>new Promise(resolve=>{
+        assert.throws(()=>dialog.validate(),/请先勾选/);
+        acknowledge=()=>{dialog.body.children[1].children[0].checked=true;assert.equal(dialog.validate(),true);resolve(true);};
+    })});
+    f.client.setAccount('alice');const pending=f.move([file],'target');await turn();
+    f.requests[0].resolve({ok:false,status:409,json:async()=>({error:'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED'})});await turn();
+    f.client.setAccount('bob');acknowledge();await turn();
+    assert.equal(f.requests.length,2);assert.equal(f.requests[1].body.requestId,f.requests[0].body.requestId);
+    assert.equal(f.requests[1].body.confirm_exposed_move,true);
+    assert.equal(f.requests[1].headers['X-Disk-Account'],'alice');
+    await f.accept(1,'acknowledged-move');await f.complete('acknowledged-move');await pending;
+    assert.ok(f.operationAccounts.includes('alice'),'任务等待仍归属原账号');
+    assert.equal(f.cleared(),0,'不能清空切换后账号的选中项');assert.deepEqual(f.refreshes,[]);
+    assert.deepEqual(f.toasts,['已移动 1 项']);
 });

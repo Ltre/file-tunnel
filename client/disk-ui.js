@@ -984,6 +984,8 @@ async function chooseTelegramDriveSaveDestination({ userId, onCreateDirectory } 
 
 async function moveTelegramDriveItems(items, targetPath, { confirmed = false } = {}) {
     if (!items.length) return;
+    const context=window.DiskClient.context();
+    const sameContext=()=>JSON.stringify(context)===JSON.stringify(window.DiskClient.context());
     const destinationPath = targetPath === undefined ? await chooseTelegramDriveTransfer(items) : targetPath;
     if (destinationPath === null) return;
     if (targetPath === undefined) return destinationPath;
@@ -991,25 +993,38 @@ async function moveTelegramDriveItems(items, targetPath, { confirmed = false } =
         const subject = items.length === 1 ? `“${items[0].name}”` : `${items.length} 个选中项目`;
         if (!await confirmTelegramDriveAction('确认移动', `确定要把 ${subject} 移动到 ${telegramDriveDisplayPath(destinationPath)} 吗？`, '移动')) return;
     }
-    return window.DiskClient.withActivity({ message: `正在移动 ${items.length} 项`, folderPath: destinationPath }, async update => {
+    return window.DiskClient.withActivity({ message: `正在移动 ${items.length} 项`, folderPath: destinationPath, accountId:context.accountId }, async update => {
         const batchId=globalThis.crypto?.randomUUID?.()||('move-'+Date.now()+'-'+Math.random().toString(36).slice(2));
-        let selectionCleared = false;
+        let selectionCleared = false, exposureConfirmed=false;
         for (const [index, item] of items.entries()) {
             try {
             update({ operationId: '', message: `正在移动 ${index + 1}/${items.length} 项：${item.name}` });
             const url = item.kind === 'directory' ? '/api/telegram/drive/directories' : `/api/telegram/drive/files/${encodeURIComponent(item.id)}`;
             const body = {...(item.kind === 'directory' ? { path: item.path, destinationPath } : { folderPath: destinationPath }), requestId:batchId+'-'+index, transferBatch:{id:batchId,index,total:items.length}};
-            const response = await window.DiskClient.raw(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const submit=()=>window.DiskClient.raw(url, { ...context, method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({...body,confirm_exposed_move:exposureConfirmed}) });
+            let response;
+            try { response=await submit(); }
+            catch(error) {
+                if(error.message!=='EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED'||exposureConfirmed)throw error;
+                const warning=document.createElement('div'),text=document.createElement('p'),label=document.createElement('label'),check=document.createElement('input');
+                text.textContent='所选内容位于协同编辑或静态资源开放范围内。移出后，相关使用者或原公开链接可能无法继续读取这些内容。';
+                label.className='disk-exposure-acknowledgement';check.type='checkbox';label.append(check,document.createTextNode('已知情，但坚持移动'));warning.append(text,label);
+                if(!await openTelegramDriveDialog({title:'确认移出开放范围内的内容',body:warning,confirmText:'坚持移动',validate:()=>{if(!check.checked)throw new Error('请先勾选“已知情，但坚持移动”');return true;}})) {
+                    if(selectionCleared&&sameContext())await renderTelegramDrive({contentsOnly:true});
+                    return;
+                }
+                exposureConfirmed=true;response=await submit();
+            }
             if(response.historyWarning)showAppToast(response.historyWarning);
             // Keep the selection until the server accepts the first move.
-            if (!selectionCleared) { clearTelegramDriveSelection(); selectionCleared = true; }
+            if (!selectionCleared&&sameContext()) { clearTelegramDriveSelection(); selectionCleared = true; }
             update({ operationId: response.operation_id || '' });
-            if (response.operation_id) await window.DiskClient.wait(response.operation_id);
+            if (response.operation_id) await window.DiskClient.wait(response.operation_id, context);
             telegramDriveContentStale = true;
             } catch (error) { error.batchProgress={item:item.name,completed:index,total:items.length,remaining:items.length-index-1};throw error; }
         }
         update({ operationId: '', message: `已移动 ${items.length} 项，正在刷新目录` });
-        await renderTelegramDrive({ contentsOnly: true });
+        if(sameContext())await renderTelegramDrive({ contentsOnly: true });
         showAppToast(`已移动 ${items.length} 项`);
     });
 }
@@ -1033,7 +1048,7 @@ async function deleteTelegramDriveItems(items) {
             if (exposureConfirmed || !['STATIC_RESOURCE_ACTIVE','COLLABORATION_DISABLE_BEFORE_DELETE'].includes(error.message)) throw error;
             const body = document.createElement('div'), warning = document.createElement('p'), label = document.createElement('label'), check = document.createElement('input');
             warning.textContent = '所选内容位于协同编辑或静态资源开放范围内。删除后，相关使用者或公开链接将无法读取被删除的内容。';
-            check.type = 'checkbox'; label.append(check, document.createTextNode('已知情，但坚持删除')); body.append(warning,label);
+            label.className='disk-exposure-acknowledgement';check.type = 'checkbox'; label.append(check, document.createTextNode('已知情，但坚持删除')); body.append(warning,label);
             const accepted = await openTelegramDriveDialog({ title:'确认删除开放范围内的内容', body, confirmText:'坚持删除', validate:()=>{ if(!check.checked)throw new Error('请先勾选“已知情，但坚持删除”'); return true; } });
             if (!accepted) return false;
             exposureConfirmed = true; await run(); return true;

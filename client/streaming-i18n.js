@@ -169,6 +169,9 @@
         ['终止此设备的观看并阻止旧入口重新进入？','End viewing on this device and block reentry through old links?'], ['已终止该设备对本台的访问','This device’s access to the station has ended'],
         ['改为仅邀请会退出旧观看端、撤销旧观看资格及此前所有邀请，保留书签。继续？','Invitation-only mode removes existing viewers and access grants, invalidates all prior invitations, and retains bookmarks. Continue?'],
         ['下线将停止服务并保留书签，继续？','Going offline stops service and retains bookmarks. Continue?'], ['放弃台归属，保留普通观看许可和书签？','Release station ownership while retaining ordinary viewing access and bookmarks?'],
+        ['已知情，但坚持移动','I understand and still want to move'],['坚持移动','Move anyway'],['确认移出开放范围内的内容','Confirm moving content out of shared scope'],['请先勾选“已知情，但坚持移动”','Select “I understand and still want to move” first'],
+        ['所选内容位于协同编辑或静态资源开放范围内。移出后，相关使用者或原公开链接可能无法继续读取这些内容。','The selected content is shared for collaboration or static access. Moving it out may prevent collaborators or existing public links from reading it.'],
+        ['所选内容位于协同或静态资源开放范围内。请确认移动影响后重试。','The selected content is shared for collaboration or static access. Confirm the move impact before retrying.'],
         ['访问已结束','Access ended'], ['重新校验来源','Recheck sources'],
         ['通知操作未完成，请重新核对邀请或申请状态','Notification action failed; check the invitation or request status again']
         ,['文件引用仅在本次页面会话有效，重开后请重新选择','This file reference lasts for this page session; select the file again after reopening']

@@ -10,7 +10,7 @@ const { createFixture } = require('./support/streaming-console-fixture.cjs');
 const root = path.resolve(__dirname, '..');
 const sw = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
 const current = sw.match(/const CACHE_NAME = '([^']+)'/)[1];
-const previous = 'instant-tunnel-v92-content-v8-themes-261028-2';
+const previous = 'instant-tunnel-v93-content-v8-themes-261028-followup';
 const assets = ['/client/themes.css', '/client/themes-legacy.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
 async function run() {
     let upgraded = false, browser;
@@ -37,7 +37,7 @@ async function run() {
             await r.update();
             if (navigator.serviceWorker.controller===previous) await changed;
         });
-        await page.waitForFunction(async name => (await caches.keys()).includes(name) && !(await caches.keys()).some(key => key.includes('v92-content')), current);
+        await page.waitForFunction(async ({current,previous}) => (await caches.keys()).includes(current) && !(await caches.keys()).includes(previous), {current,previous});
         await page.reload({ waitUntil:'load' });
         await page.waitForFunction(() => typeof startupTimings !== 'undefined' && startupTimings.completeMs !== null);
         await warm();

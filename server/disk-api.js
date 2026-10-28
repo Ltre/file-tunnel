@@ -128,7 +128,7 @@ function errorStatus(code) {
     if (code === 'FILE_REMOVED_BY_REVIEW') return 410;
     if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID|TASK_SAVE_ADMIN_AUTH_REQUIRED/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
-    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|PENDING_SAVE_ALREADY_STARTED|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE/.test(code)) return 409;
+    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|PENDING_SAVE_ALREADY_STARTED|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE|EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED/.test(code)) return 409;
     if (/TELEGRAM_|STORAGE_/.test(code)) return 502;
     return 422;
 }
@@ -225,6 +225,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             ? grant.kind === 'file' ? grant.fileId === file.id : inside(file.folderPath || '', grant.path || '')
             : inside(grant.path || '', selection.path) || grant.kind === 'directory' && inside(selection.path, grant.path || ''));
         if (protectedByCollaboration) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
+    };
+    // A move can remove content from an exposed directory just like deletion.
+    // Only the browser owner can acknowledge this impact; API apps and mounted
+    // collaborators keep their existing write restrictions.
+    const assertMoveProtection = (req, target, drive, selection, destinationPath) => {
+        const file=selection.kind==='file'?drive.get(target.userId,selection.id):null;
+        const source=normalizeTelegramDrivePath(file?file.folderPath:selection.path);
+        const parent=normalizeTelegramDrivePath(destinationPath||'');
+        const next=selection.kind==='file'?parent:[parent,source.split('/').at(-1)].filter(Boolean).join('/');
+        if(source===next)return false;
+        const inside=(path,root)=>!root||path===root||path.startsWith(root+'/');
+        const affected=root=>selection.kind==='directory'&&inside(root,source)||inside(source,root)&&!inside(next,root);
+        const includesFile=id=>selection.kind==='file'?id===selection.id:inside(drive.get(target.userId,id)?.folderPath||'',source);
+        const exposed=staticResources.list(target).some(item=>!item.revokedAt&&(!item.expiresAt||item.expiresAt>Date.now())&&
+            (item.directories.some(affected)||item.files.some(includesFile)));
+        collaborations.reloadPersistence();
+        const collaborative=collaborations.forOwner(target.userId,target.diskSpace).some(grant=>grant.kind==='directory'?affected(grant.path||''):includesFile(grant.fileId));
+        if(!exposed&&!collaborative)return false;
+        if(req.diskApp||req.collaboration||req.diskUser.id!==target.userId)return false;
+        if(req.body?.confirm_exposed_move!==true)throw new Error('EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
+        return true;
     };
     const trash = createDiskTrash({repository:persistence,spaces,mounts,maxDepth:depthFor,onMountRemoved:(userId,diskSpace,id)=>staticResources.stopMount({userId,diskSpace},id),assertWritable:(userId,diskSpace,selection,drive)=>{
         partitions.find(userId,diskSpace);collaborations.reloadPersistence();
@@ -1953,9 +1974,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }, { immediateResult: true });
         }));
         router.patch('/directories', wrap((req, res) => {
-            assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
+            const checkMove=()=>Object.hasOwn(req.body||{},'destinationPath')&&assertMoveProtection(req,scope(req),store(req),{kind:'directory',path:req.body.path},req.body.destinationPath);
+            if(!checkMove())assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
             jobResponse(req, res, 'move-directory', '正在修改目录', async update => {
-                assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
+                if(!checkMove())assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
                 update({ phase: 'index-write', message: '正在校验目录树并更新索引' });
                 const drive = store(req);
                 const result = persistence.atomic(() => {
@@ -1991,13 +2013,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
-            if (Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath')) assertStaticFileWritable(scope(req), file);
+            const checkMove=()=>Object.hasOwn(req.body||{},'folderPath')&&assertMoveProtection(req,scope(req),store(req),{kind:'file',id:file.id},req.body.folderPath);
+            if (!checkMove()&&(Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath'))) assertStaticFileWritable(scope(req), file);
             const originalName = file.name;
             const originalPath = file.folderPath;
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
                 const drive = store(req);
-                if (Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath')) assertStaticFileWritable(scope(req), drive.get(owner(req), file.id));
+                if (!checkMove()&&(Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath'))) assertStaticFileWritable(scope(req), drive.get(owner(req), file.id));
                 const modified = persistence.atomic(() => {
                     const changed = drive.modifyFile(owner(req), file.id, req.body || {}, depthFor(req.diskUser.id));
                     if (changed.folderPath !== originalPath || changed.name !== originalName) collaborations.relocateFile(owner(req), req.diskScope.diskSpace, file.id, changed.folderPath, changed.name);

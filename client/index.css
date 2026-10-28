@@ -197,6 +197,11 @@ body {
     font-size: 0.9rem;
 }
 
+body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
+    width: 100%;
+    justify-content: center;
+}
+
 .short-code-switch-button {
     display: inline-flex;
     align-items: center;
@@ -2795,7 +2800,7 @@ body {
     padding: 16px;
 }
 
-.telegram-drive-dialog-body input,
+.telegram-drive-dialog-body input:not([type="checkbox"]):not([type="radio"]),
 .telegram-drive-dialog-body select {
     width: 100%;
     padding: 11px 12px;

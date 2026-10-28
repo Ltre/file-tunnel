@@ -209,14 +209,17 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
         if (pendingFiles(ownerId, exceptUpload).some(file => (file.folderPath === folderPath && file.name === name) || file.folderPath === target || file.folderPath.startsWith(target + '/'))) throw diskOperationError('DISK_NAME_CONFLICT','NAME_PENDING_UPLOAD',{targetPath:target});
         if (ownerRecords(ownerId).some(item => item.id !== exceptId && (item.folderPath || '') === folderPath && item.name === name) || directories.has(String(ownerId) + ':' + target)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_CONFLICT',{targetPath:target});
     };
-    const ensureDirectoryRecords = (ownerId, folderPath, maxDepth, now = Date.now(), exceptUpload = '') => {
+    const ensureDirectoryRecords = (ownerId, folderPath, maxDepth, now = Date.now(), exceptUpload = '', startupFilePaths = null) => {
         const safe = normalizePath(folderPath); assertDepth(safe, maxDepth);
         const segments = safe.split('/').filter(Boolean);
         segments.forEach((segment, index) => {
             const parent = segments.slice(0, index).join('/');
             externalNameGuard?.(ownerId, parent, segment);
             if (pendingFiles(ownerId, exceptUpload).some(file => file.folderPath === parent && file.name === segment)) throw diskOperationError('DISK_NAME_CONFLICT','NAME_PENDING_UPLOAD',{targetPath:[parent,segment].filter(Boolean).join('/')});
-            if (ownerRecords(ownerId).some(file => (file.folderPath || '') === parent && file.name === segment)) throw diskOperationError('DISK_NAME_CONFLICT','PATH_BLOCKED_BY_FILE',{targetPath:[parent,segment].filter(Boolean).join('/')});
+            const blocked = startupFilePaths
+                ? startupFilePaths.has(JSON.stringify([String(ownerId), parent, segment]))
+                : ownerRecords(ownerId).some(file => (file.folderPath || '') === parent && file.name === segment);
+            if (blocked) throw diskOperationError('DISK_NAME_CONFLICT','PATH_BLOCKED_BY_FILE',{targetPath:[parent,segment].filter(Boolean).join('/')});
         });
         let current = '';
         for (const segment of safe.split('/').filter(Boolean)) {
@@ -260,8 +263,11 @@ function createTelegramDriveStore({ dataDir, repositoryDir = dataDir, diskSpace 
 
     // Older indexes may only contain the deepest explicit path. Materialize every
     // ancestor once so directory CRUD has a stable object to operate on.
-    for (const directory of [...directories.values()]) ensureDirectoryRecords(directory.ownerId, directory.path, 30, Number(directory.createdAt) || Date.now());
-    for (const item of records.values()) if (item.folderPath) ensureDirectoryRecords(item.ownerId, item.folderPath, 30, Number(item.createdAt) || Date.now());
+    // Namespace validation only needs logical names, not physical Content
+    // projections. Re-projecting all owner files for each ancestor was O(N²).
+    const startupFilePaths = new Set([...records.values()].filter(file => !file.trashId).map(file => JSON.stringify([String(file.ownerId), file.folderPath || '', file.name])));
+    for (const directory of [...directories.values()]) ensureDirectoryRecords(directory.ownerId, directory.path, 30, Number(directory.createdAt) || Date.now(), '', startupFilePaths);
+    for (const item of records.values()) if (item.folderPath) ensureDirectoryRecords(item.ownerId, item.folderPath, 30, Number(item.createdAt) || Date.now(), '', startupFilePaths);
 
     const store = {
         reloadPersistence,
