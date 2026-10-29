@@ -107,7 +107,7 @@ test('两份主题资源加入现有 Service Worker 壳资源，业务缓存内�
     for (const file of ['/client/themes.css', '/client/themes-legacy.css']) {
         assert.equal(sw.split(`'${file}'`).length - 1, 1);
     }
-    assert.match(sw, /CACHE_NAME = 'instant-tunnel-v\d+-content-v8-disk-261028-3'/);
+    assert.match(sw, /CACHE_NAME = 'instant-tunnel-v\d+-content-v8-feedback-261029-1'/);
 });
 
 function preferenceFixture(stored, { unavailable = false, page = 'downloads', current } = {}) {

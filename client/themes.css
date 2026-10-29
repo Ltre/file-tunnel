@@ -49,13 +49,13 @@ body[data-theme="lumen"] #appShell .panel-header {background:#edf0f9;border-colo
 body[data-theme="orbit"] .panel-header {box-shadow:inset 3px 0 0 #a395f6,inset 0 -1px 0 #3b4160;}
 /* Homepage surfaces separate through fill rather than hard rules. Keep focus
  * outlines and state indicators intact, including those inside these surfaces. */
-body[data-theme="lumen"] #appShell :is(.panel,.contacts-panel,.device-item,.contact-item,.session-info,.short-code-switch,.message-bubble,.file-message,.rich-preview,.tunnel-markdown,.input-area,.editor-toolbar,.editor-content,.editor-actions) {border-color:transparent;}
+body[data-theme="lumen"] #appShell :is(.panel,.contacts-panel,.device-item,.contact-item,.session-info,.short-code-switch,.message-bubble,.file-message,.rich-preview,.tunnel-markdown,.input-area,.editor-toolbar,.editor-actions) {border-color:transparent;}
 body[data-theme="lumen"] #appShell .file-upload-area {border-color:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-line));background:#fafbff;}
 body[data-theme="lumen"] #appShell .file-upload-area:is(:hover,.dragover) {border-color:var(--ui-accent);background:var(--ui-tint);}
 body[data-theme="lumen"] #textInput {background:#fafbff;}
 body[data-theme="lumen"] #appShell :is(.btn-secondary,.session-tool,.toolbar-btn):not(.active):not(.selected):not([aria-pressed="true"]) {background:#f0f2f9;border-color:transparent;box-shadow:none;}
 body[data-theme="lumen"] #appShell :is(.btn-secondary,.session-tool,.toolbar-btn):not(.active):not(.selected):not([aria-pressed="true"]):not(:disabled):hover {background:#e7eaf5;}
-body[data-theme="lumen"] #tunnelTopbar {border-color:transparent;box-shadow:0 2px 14px #3f448408;}
+body[data-theme="lumen"] #tunnelTopbar {background:linear-gradient(112deg,#f1f3fa 76%,#eceefa);border-color:transparent;box-shadow:inset 0 -1px 0 #dfe4f0,0 2px 14px #3f448408;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) #connectionHeaderMenuBtn {background:transparent;box-shadow:none;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) #textInput {border-radius:var(--ui-radius);}
 body[data-theme="lumen"] #appShell .media-control-btn {background:#edf0f7;color:#4b536f;border-color:transparent;box-shadow:none;}
@@ -92,6 +92,8 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.connection-header-menu,.
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.connection-header-menu button,.short-code-switch-menu button,.telegram-drive-item-menu button,.telegram-drive-header-overflow-menu button,.web-import-menu button,.web-tree-context-menu button) {background:transparent;color:var(--ui-ink);border-color:var(--ui-line);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.connection-header-menu button:hover,.telegram-drive-item:hover,.sc-overlay button:not(.sc-primary):not(.selected):not(:disabled):hover,.web-workshop button:not(.primary):not(:disabled):hover) {background:var(--ui-tint);color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .telegram-drive-item {background:var(--ui-panel);border-color:var(--ui-line);color:var(--ui-ink);border-radius:var(--ui-radius);box-shadow:0 1px 0 #14234003;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .telegram-drive-items[data-view="list"] .telegram-drive-item {border-color:transparent;border-radius:0;box-shadow:none;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .telegram-drive-items[data-view="list"] .telegram-drive-item + .telegram-drive-item {border-top-color:var(--ui-line);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.telegram-drive-item.selected,.telegram-drive-item.is-selected,.sc-overlay button.selected,.web-tree-row.active) {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);box-shadow:inset 2px 0 0 var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-now-playing {background:var(--ui-tint);color:var(--ui-accent);box-shadow:inset 2px 0 0 var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.telegram-drive-item-name,.telegram-drive-breadcrumbs button,.disk-static-copy-link,.disk-path-edit-button,.telegram-drive-name,.sc-row-visibility) {color:var(--ui-ink);}
@@ -110,7 +112,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-stage {background:#101723
 body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-overlay .sc-program .sc-drag-handle {background:var(--ui-soft);color:var(--ui-muted);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.sc-seek input,.sc-local-controls input[type=range]) {accent-color:var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.mobile-workspace-nav,.tunnel-landing-topbar) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 0 var(--ui-line);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) .mobile-workspace-button.active {background:var(--ui-tint);color:var(--ui-accent);box-shadow:inset 0 2px 0 var(--ui-accent);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .mobile-workspace-button.active {background:radial-gradient(ellipse at center,var(--ui-tint) 0%,color-mix(in srgb,var(--ui-tint) 65%,var(--ui-panel)) 40%,var(--ui-panel) 85%);color:var(--ui-accent);box-shadow:none;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing {background:var(--ui-page);color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing h1 {color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing p {color:var(--ui-muted);}
@@ -305,6 +307,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .telegram-drive-sort-option.active,.telegram-drive-view-toggle.active,
   .theme-option.active,.theme-quick-option.active
 ) {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) #themeSwitcher .theme-option.active {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .message-record-action-menu .history-action,.message-record-actions .history-action
 ) {background:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);}

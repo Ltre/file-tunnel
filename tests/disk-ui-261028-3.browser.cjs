@@ -36,6 +36,20 @@ async function run(){
         check('acknowledgement checkbox aligns beside its label',alignment.checkboxWidth<25&&alignment.centerDelta<4&&alignment.textX>alignment.checkboxX,alignment);
         await page.screenshot({path:path.join(out,'delete-lumen.png')});
         await dialog.getByRole('button',{name:'取消',exact:true}).click();
+        const patches=[];page.on('request',request=>{if(request.method()==='PATCH')patches.push(request.url());});
+        await page.getByRole('button',{name:'保护测试.txt 更多操作',exact:true}).click();
+        await page.locator('#telegramDriveItemMenu').getByRole('button',{name:'复制/移动',exact:true}).click();
+        const moveDialog=page.locator('.telegram-drive-dialog-card').filter({hasText:'目标分区'});
+        await moveDialog.getByRole('button',{name:'移动到',exact:true}).click();
+        await moveDialog.getByRole('textbox',{name:'目标目录全路径',exact:true}).fill('甲目录');
+        await moveDialog.getByRole('button',{name:'移动',exact:true}).click();
+        const exposedMove=page.locator('.telegram-drive-dialog-card').filter({hasText:'确认移出开放范围内的内容'});await exposedMove.waitFor();
+        check('moving waits for acknowledgement before execution/loading',patches.length===0&&await page.locator('#diskLoading').evaluate(n=>n.hidden),{patches:patches.length});
+        await exposedMove.getByRole('button',{name:'坚持移动',exact:true}).click();
+        check('moving requires explicit checkbox acknowledgement',await exposedMove.isVisible()&&patches.length===0,{patches:patches.length});
+        await exposedMove.getByRole('checkbox').check();await exposedMove.getByRole('button',{name:'坚持移动',exact:true}).click();
+        await page.waitForFunction(()=>document.getElementById('diskLoading').hidden);
+        check('acknowledged move finishes through full API middleware',patches.length===1&&f.store.get('alice',file.id).folderPath==='甲目录',{patches:patches.length,path:f.store.get('alice',file.id).folderPath});
         await page.evaluate(()=>DiskUI.close());
         await page.evaluate(()=>{document.getElementById('sessionLanding').hidden=true;document.getElementById('appShell').hidden=false;document.getElementById('tunnelTopbar').hidden=false;});
         for(const theme of ['lumen','orbit']){

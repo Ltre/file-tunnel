@@ -163,6 +163,7 @@ let mediaFullscreenHistoryOpen = false;
 let suppressNextFilePreviewPopstate = false;
 let mediaFullscreenItems = [];
 let mediaFullscreenIndex = 0;
+let mediaFullscreenLoadVersion = 0;
 let mediaFullscreenPointerStart = null;
 let mediaFullscreenZoom = { scale:1, x:0, y:0 };
 let mediaFullscreenGesture = { pointers:new Map(), pinch:false };
@@ -12016,26 +12017,37 @@ async function openFileRecord(messageId) {
     });
 }
 
-async function getFullscreenPreviewItems() {
+async function getFullscreenPreviewItems(options = {}) {
     const items = [];
+    const isCurrent = options.isCurrent || (() => true);
     const addFileInfo = async (fileInfo, messageId = '') => {
-        if (!fileInfo?.id) return;
+        if (!fileInfo?.id || !isCurrent()) return;
+        const declaredType = String(fileInfo.type || '').toLowerCase();
+        if (declaredType && !isFullscreenPreviewableType(declaredType)) return;
+        if (fileInfo.id === options.currentItem?.fileInfo.id) {
+            items.push({ ...options.currentItem, fileInfo, messageId });
+            return;
+        }
         const persistedFile = await getFromStore('files', fileInfo.id).catch(() => null);
+        if (!isCurrent()) return;
         const storedFile = persistedFile?.externalFileHandle
             ? await materializeExternalFileRecord(persistedFile, { requestPermission: false })
             : persistedFile;
+        if (!isCurrent()) return;
         if (!hasCompleteFileCache(storedFile, fileInfo)) return;
         const type = String(fileInfo.type || storedFile.type || '').toLowerCase();
         if (!isFullscreenPreviewableType(type)) return;
-        items.push({ fileInfo, storedFile, type, url: getStoredFileUrl(fileInfo.id, storedFile), messageId });
+        items.push({ fileInfo, storedFile, type, messageId });
     };
 
     const messages = (await getCurrentSessionMessages().catch(() => []))
         .filter(message => message?.id)
         .sort(compareHistoryMessages);
     for (const message of messages) {
+        if (!isCurrent()) return [];
         if (message.type === 'collection') {
             for (const fileInfo of getCollectionFiles(message)) {
+                if (!isCurrent()) return [];
                 await addFileInfo(fileInfo, message.id);
             }
         } else if (message.type === 'file' && message.fileInfo?.id) {
@@ -12043,6 +12055,10 @@ async function getFullscreenPreviewItems() {
         }
     }
 
+    if (!isCurrent()) return [];
+    if (!items.some(item => item.fileInfo.id === options.currentItem?.fileInfo.id) && options.currentItem) {
+        items.push(options.currentItem);
+    }
     if (!items.length && activeCollectionPreviewMessageId) {
         const message = await getFromStore('messages', activeCollectionPreviewMessageId).catch(() => null);
         for (const fileInfo of getCollectionFiles(message)) {
@@ -12156,6 +12172,16 @@ function getMediaFullscreenGroupCounter() {
     return `${groupIndex >= 0 ? groupIndex + 1 : 1} / ${group.length}`;
 }
 
+function updateMediaFullscreenNavigationControls() {
+    const counter = document.getElementById('mediaFullscreenCounter');
+    if (counter) counter.textContent = getMediaFullscreenGroupCounter();
+    const single = mediaFullscreenItems.length <= 1;
+    const previous = document.getElementById('mediaFullscreenPrevBtn');
+    const next = document.getElementById('mediaFullscreenNextBtn');
+    if (previous) previous.hidden = single;
+    if (next) next.hidden = single;
+}
+
 function applyMediaFullscreenZoom() {
     const image = document.getElementById('mediaFullscreenContent')?.querySelector('img');
     const controls = document.getElementById('mediaFullscreenZoomControls');
@@ -12247,6 +12273,7 @@ function renderMediaFullscreenItem() {
     } else {
         restoreMovedFullscreenMedia({ pause: true });
         content.replaceChildren();
+        item.url ||= getStoredFileUrl(item.fileInfo.id, item.storedFile);
         const media = createFullscreenMediaElement(item);
         if (media) {
             content.appendChild(media);
@@ -12414,29 +12441,25 @@ async function locateMediaFullscreenRecord() {
 
 async function openActivePreviewFullscreen(options = {}) {
     if (!activeFilePreviewCanFullscreen || !activeFilePreviewFileId) return false;
-    if (options.focusedOnly) {
-        const storedFile = activeFilePreviewStoredFile;
-        const fileInfo = {
-            ...(options.focusedFileInfo || {}),
-            id:activeFilePreviewFileId,
-            name:options.focusedFileInfo?.name || storedFile?.name || '文件预览',
-            type:options.focusedFileInfo?.type || activeFilePreviewMediaType || storedFile?.type || ''
-        };
-        const type = String(fileInfo.type || '').toLowerCase();
-        mediaFullscreenItems = storedFile && hasCompleteFileCache(storedFile, fileInfo) && isFullscreenPreviewableType(type)
-            ? [{ fileInfo, storedFile, type, url:getStoredFileUrl(fileInfo.id, storedFile), messageId:activeFilePreviewMessageId }]
-            : [];
-    } else {
-        mediaFullscreenItems = await getFullscreenPreviewItems();
-    }
-    const activeIndex = mediaFullscreenItems.findIndex(item => item.fileInfo.id === activeFilePreviewFileId);
-    if (!mediaFullscreenItems.length || activeIndex < 0) {
+    const storedFile = activeFilePreviewStoredFile;
+    const fileInfo = {
+        ...(options.focusedFileInfo || {}),
+        id:activeFilePreviewFileId,
+        name:options.focusedFileInfo?.name || storedFile?.name || '文件预览',
+        type:options.focusedFileInfo?.type || activeFilePreviewMediaType || storedFile?.type || ''
+    };
+    const type = String(fileInfo.type || '').toLowerCase();
+    if (!storedFile || !hasCompleteFileCache(storedFile, fileInfo) || !isFullscreenPreviewableType(type)) {
         if (!options.focusedOnly) alert('当前文件尚未缓存到本机，不能全屏预览。');
         return false;
     }
-    mediaFullscreenIndex = activeIndex;
     const overlay = document.getElementById('mediaFullscreenViewer');
     if (!overlay) return false;
+    const version = ++mediaFullscreenLoadVersion;
+    const sessionId = state.sessionId;
+    const currentItem = { fileInfo, storedFile, type, url:activeFilePreviewObjectUrl || getStoredFileUrl(fileInfo.id, storedFile), messageId:activeFilePreviewMessageId };
+    mediaFullscreenItems = [currentItem];
+    mediaFullscreenIndex = 0;
     overlay.classList.add('active');
     renderMediaFullscreenItem();
     if (!mediaFullscreenHistoryOpen) {
@@ -12444,12 +12467,30 @@ async function openActivePreviewFullscreen(options = {}) {
         history.pushState({ ...baseState, [MEDIA_FULLSCREEN_HISTORY_KEY]: true }, '', window.location.href);
         mediaFullscreenHistoryOpen = true;
     }
+    // Show the already-open media first; unrelated cache reads only populate navigation.
+    if (!options.focusedOnly) requestAnimationFrame(() => setTimeout(async () => {
+        const isCurrent = () => version === mediaFullscreenLoadVersion && state.sessionId === sessionId && overlay.classList.contains('active');
+        if (!isCurrent()) return;
+        try {
+            const items = await getFullscreenPreviewItems({ currentItem, isCurrent });
+            if (!isCurrent()) return;
+            const currentId = mediaFullscreenItems[mediaFullscreenIndex]?.fileInfo.id;
+            const index = items.findIndex(item => item.fileInfo.id === currentId);
+            if (index < 0) return;
+            mediaFullscreenItems = items;
+            mediaFullscreenIndex = index;
+            updateMediaFullscreenNavigationControls();
+        } catch (error) {
+            historyLog('media-fullscreen-navigation-load-failed', { error:error.message });
+        }
+    }, 0));
     return true;
 }
 
 function closeMediaFullscreen(options = {}) {
     const overlay = document.getElementById('mediaFullscreenViewer');
     if (!overlay?.classList.contains('active') && !mediaFullscreenHistoryOpen) return;
+    mediaFullscreenLoadVersion++;
     const shouldGoBack = mediaFullscreenHistoryOpen && !options.fromHistory && !options.forceClose &&
         history.state?.[MEDIA_FULLSCREEN_HISTORY_KEY] === true;
     mediaFullscreenHistoryOpen = false;
@@ -17398,6 +17439,8 @@ async function toggleShortCodeSwitchMenu(event) {
         return;
     }
     await renderShortCodeSwitchMenu();
+    const panel = button.closest('.panel');
+    if (panel) menu.style.setProperty('--short-code-menu-width', `${Math.max(0, panel.clientWidth - 20)}px`);
     menu.hidden = false;
     button.setAttribute('aria-expanded', 'true');
 }
@@ -18424,14 +18467,23 @@ function initUI() {
     document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
         if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
         if (event.pointerType !== 'touch') return;
+        if (event.isPrimary === false) { filePreviewPointerStart = null; return; }
         if (shouldIgnorePreviewGestureTarget(event.target)) return;
-        try {
-            event.currentTarget.setPointerCapture?.(event.pointerId);
-        } catch (_) {}
-        filePreviewPointerStart = { x: event.clientX, y: event.clientY, target: event.target, pointerType: event.pointerType };
+        filePreviewPointerStart = { id:event.pointerId, x:event.clientX, y:event.clientY, target:event.target, pointerType:event.pointerType };
+    }, true);
+    document.getElementById('filePreviewViewer')?.addEventListener('pointermove', event => {
+        const start = filePreviewPointerStart;
+        if (!start || event.pointerId !== start.id) return;
+        const dx = event.clientX - start.x;
+        const dy = event.clientY - start.y;
+        if (dy >= -32 || Math.abs(dy) <= Math.abs(dx) * 1.15) return;
+        if (!activeFilePreviewCanFullscreen || !isPreviewMediaTarget(start.target)) return;
+        filePreviewPointerStart = null;
+        event.preventDefault();
+        openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error:err.message }));
     }, true);
     document.getElementById('filePreviewViewer')?.addEventListener('pointerup', event => {
-        if (!filePreviewPointerStart) return;
+        if (!filePreviewPointerStart || event.pointerId !== filePreviewPointerStart.id) return;
         const dx = event.clientX - filePreviewPointerStart.x;
         const dy = event.clientY - filePreviewPointerStart.y;
         const startTarget = filePreviewPointerStart.target;
@@ -18443,7 +18495,7 @@ function initUI() {
             navigateFilePreview(dx < 0 ? 1 : -1).catch(err => historyLog('file-preview-swipe-navigate-failed', { error: err.message }));
             return;
         }
-        if (pointerType === 'touch' && Math.abs(dy) > 46 && Math.abs(dy) > Math.abs(dx) * 1.22) {
+        if (pointerType === 'touch' && Math.abs(dy) > (dy < 0 ? 32 : 46) && Math.abs(dy) > Math.abs(dx) * 1.15) {
             event.preventDefault();
             if (dy < 0 && activeFilePreviewCanFullscreen && isPreviewMediaTarget(startTarget)) {
                 openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
@@ -18451,6 +18503,9 @@ function initUI() {
                 closeFilePreview();
             }
         }
+    }, true);
+    document.getElementById('filePreviewViewer')?.addEventListener('pointercancel', event => {
+        if (filePreviewPointerStart?.id === event.pointerId) filePreviewPointerStart = null;
     }, true);
     document.getElementById('mediaFullscreenCloseBtn')?.addEventListener('click', () => closeMediaFullscreen());
     document.getElementById('mediaFullscreenLocateBtn')?.addEventListener('click', () => {

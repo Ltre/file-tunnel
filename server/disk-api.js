@@ -229,7 +229,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     // A move can remove content from an exposed directory just like deletion.
     // Only the browser owner can acknowledge this impact; API apps and mounted
     // collaborators keep their existing write restrictions.
-    const assertMoveProtection = (req, target, drive, selection, destinationPath) => {
+    const assertMoveProtection = (req, target, drive, selection, destinationPath, checkOnly = false) => {
         const file=selection.kind==='file'?drive.get(target.userId,selection.id):null;
         const source=normalizeTelegramDrivePath(file?file.folderPath:selection.path);
         const parent=normalizeTelegramDrivePath(destinationPath||'');
@@ -244,7 +244,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const collaborative=collaborations.forOwner(target.userId,target.diskSpace).some(grant=>grant.kind==='directory'?affected(grant.path||''):includesFile(grant.fileId));
         if(!exposed&&!collaborative)return false;
         if(req.diskApp||req.collaboration||req.diskUser.id!==target.userId)return false;
-        if(req.body?.confirm_exposed_move!==true)throw new Error('EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
+        if(!checkOnly&&req.body?.confirm_exposed_move!==true)throw new Error('EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
         return true;
     };
     const trash = createDiskTrash({repository:persistence,spaces,mounts,maxDepth:depthFor,onMountRemoved:(userId,diskSpace,id)=>staticResources.stopMount({userId,diskSpace},id),assertWritable:(userId,diskSpace,selection,drive)=>{
@@ -1054,6 +1054,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         });
         res.status(202).json({operation_id:operation.operation_id});
     }));
+    admin.post('/task-save-receipts/lookup',wrap((req,res)=>res.set('Cache-Control','no-store').json(
+        require('./disk-task-save-receipts').taskSaveReceipts({spaces,partitions,auth,pendingSaves,
+            inspectTask:input=>{if(!resolveTaskSource?.inspectTask)throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');return resolveTaskSource.inspectTask(req,input);}},req.body?.tasks))));
     admin.get('/apps', (req, res) => res.json({ apps: auth.apps() }));
     admin.post('/apps', wrap(async (req, res) => res.json(await auth.saveApp(req.body || {}))));
     admin.delete('/apps/:id', (req, res) => { auth.deleteApp(req.params.id); res.json({ ok: true }); });
@@ -1426,7 +1429,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         spaces.track('system', user.id, selected.scopeKey);
         next();
     }));
-    browser.use(require('./disk-transfer-history').transferHistory({ operations, describe(req, route) {
+    browser.use(require('./disk-transfer-history').transferHistory({ operations, beforeStart(req, route) {
+        // Mounted routes retain their existing owner/grant checks in contents().
+        if(req.path!==route||req.method!=='PATCH')return;
+        if(route==='/directories'&&Object.hasOwn(req.body||{},'destinationPath'))
+            assertMoveProtection(req,req.diskScope,req.diskStore,{kind:'directory',path:req.body.path},req.body.destinationPath);
+        else if(/^\/files\/[^/]+$/.test(route)&&Object.hasOwn(req.body||{},'folderPath'))
+            assertMoveProtection(req,req.diskScope,req.diskStore,{kind:'file',id:decodeURIComponent(route.split('/')[2])},req.body.folderPath);
+    }, describe(req, route) {
         const actor = req.diskUser;
         const namespace = value => {
             if (value?.kind === 'collaboration') {
@@ -1827,6 +1837,21 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         res.json({ok:true,remoteCleanup:{status:pending?'pending':'completed'},...(pending?{warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']}:{})});
     }));
     function contents(router) {
+        if(router===browser)router.post('/moves/preflight',wrap((req,res)=>{
+            const items=req.body?.items;
+            if(!Array.isArray(items)||!items.length||items.length>100||typeof req.body.destinationPath!=='string')throw new Error('DISK_SELECTION_INVALID');
+            const drive=store(req),destination=normalizeTelegramDrivePath(req.body.destinationPath);
+            let requiresConfirmation=false;
+            for(const item of items){
+                if(item?.kind==='file'){
+                    if(!drive.get(owner(req),item.id))throw new Error('FILE_NOT_FOUND');
+                }else if(item?.kind==='directory'&&typeof item.path==='string'){
+                    if(!drive.getDirectory(owner(req),item.path))throw new Error('DIRECTORY_NOT_FOUND');
+                }else throw new Error('DISK_SELECTION_INVALID');
+                requiresConfirmation=assertMoveProtection(req,scope(req),drive,item,destination,true)||requiresConfirmation;
+            }
+            res.set('Cache-Control','no-store').json({requiresConfirmation});
+        }));
         const scope = req => ({ ...req.diskScope, deviceId: /^[a-zA-Z0-9_-]{8,120}$/.test(req.get('X-Disk-Device-Id') || '') ? req.get('X-Disk-Device-Id') : '' });
         const owner = req => req.diskUser.id;
         const uploadJob = req => {

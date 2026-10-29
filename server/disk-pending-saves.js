@@ -45,6 +45,7 @@ function createDiskPendingSaves(repository) {
                 if (old && old.signature !== signature) throw new Error('PENDING_SAVE_TARGET_CONFLICT');
                 if (old && !old.safeRetry) throw new Error('PENDING_SAVE_ALREADY_STARTED');
                 const item = { id, ownerId: userId, diskSpace, folderPath, signature,
+                    ...(taskSource?{taskSource:{...taskSource}}:{}),
                     state: 'reserved', safeRetry: false, attemptId: crypto.randomUUID(), bootId: processBootId, processId: process.pid,
                     createdAt: old?.createdAt || Date.now(), updatedAt: Date.now() };
                 write(userId, item); return item;

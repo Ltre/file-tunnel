@@ -9,7 +9,7 @@ const { createDiskOidcReceipt } = require('../../server/disk-oidc-receipt');
 const { createDiskOperations } = require('../../server/disk-operations');
 const { createDiskAPI } = require('../../server/disk-api');
 const { createTelegramDriveStore } = require('../../server/telegram-drive');
-async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUsers = [] } = {}) {
+async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUsers = [], adminAuthorized = () => true } = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-save-ui-'));
     const repository = openDiskRepository(dataDir);
     const fixtureUsers = [{ id: 'alice', username: 'alice', name: '验收甲账号' }, { id: 'bob', username: 'bob', name: '验收乙账号' }, ...extraUsers];
@@ -41,6 +41,7 @@ async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUs
     app.post('/fixture-login', (req, res) => { sessions.set(req, res, auth.user(req.body.id)); const message = { type: 'telegram-drive-oidc-result', result: 'success', attemptId: req.body.attempt, accountId: req.body.id }; receipts.record(req, res, { ...message, attemptId: req.body.attempt }); res.type('html').send('<!doctype html><meta charset="utf-8"><p>Mock 登录成功</p><script>window.opener?.postMessage(' + JSON.stringify(message) + ',location.origin);window.close();</script>'); });
     if (listDelayMs) app.get('/api/telegram/drive/list', (_req, _res, next) => setTimeout(next, listDelayMs));
     app.use('/api/telegram/drive', api.browser);
+    app.use('/api/telegram/disk-admin',(req,res,next)=>adminAuthorized(req)?next():res.status(401).json({error:'ADMIN_AUTH_REQUIRED'}),api.admin);
     const body = Buffer.from('后台缓存转存验收正文\n'.repeat(350));
     const tasks = ['sns', 'youtube'].map(source => ({ id: source + '-fixture', title: source === 'sns' ? 'SNS 转存验收' : 'YouTube 转存验收', outputFileName: source + '-后台成品.txt',
         completedAt: 1791830400000, createdAt: 1791830300000, outputFileSize: body.length, status: 'completed', hasFile: true, downloadUrl: '/fixture-source/' + source,
@@ -77,7 +78,7 @@ async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUs
         catch (_) { await new Promise(resolve => server.close(resolve)); server = null; }
     }
     if (!server) throw new Error('TEST_HTTP_PORT_UNAVAILABLE');
-    return { dataDir, repository, api, app, sessions, auth, store, base: 'http://127.0.0.1:' + server.address().port,
+    return { dataDir, repository, api, app, sessions, auth, store, tasks, base: 'http://127.0.0.1:' + server.address().port,
         async close() { api.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); repository.close(); fs.rmSync(dataDir, { recursive: true, force: true }); } };
 }
 module.exports = { createFixture };

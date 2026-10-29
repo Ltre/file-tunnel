@@ -93,7 +93,7 @@ test('拖放移动先显示目标确认，服务端接受首个任务后立即�
         window: { DiskClient: {
             context: () => ({accountId:'alice',diskSpace:''}),
             withActivity: async (_message, run) => run(() => {}),
-            raw: async (url, options) => { calls.push(['raw', url, JSON.parse(options.body)]); return { operation_id: 'move-1' }; },
+            raw: async (url, options) => { calls.push([options.method==='PATCH'?'raw':'preflight', url, JSON.parse(options.body)]); return options.method==='PATCH'?{ operation_id: 'move-1' }:{requiresConfirmation:false}; },
             wait: async id => { waitStartedAfterClear = cleared; calls.push(['wait', id]); }
         } }, encodeURIComponent
     });
@@ -102,6 +102,7 @@ test('拖放移动先显示目标确认，服务端接受首个任务后立即�
     assert.match(calls[0][2], /2 个选中项目.*\/面包屑\/父目录/);
     assert.equal(waitStartedAfterClear, true); assert.equal(selection.size, 0);
     assert.equal(calls.filter(call => call[0] === 'raw').length, 2);
+    assert.equal(calls.filter(call=>call[0]==='preflight').length,1);
 });
 
 test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白关闭互不挤占首页', () => {

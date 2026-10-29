@@ -35,7 +35,7 @@ function browser(shared = indexedDatabase(), sharedLocks = webLocks()) {
         navigator: { locks: sharedLocks },
         createSnsDownloadBrowserCache() { throw Error('browser cache must not be used'); },
         createYoutubePremiumBrowserCache() { throw Error('browser cache must not be used'); },
-        fetch: async url => { urls.push(url); return { ok: true, status: 200, json: async () => String(url).startsWith('/api/telegram/drive/files/') ? { id:String(url).split('?')[0].split('/').pop(), folderPath:'' } : source }; }
+        fetch: async (url,options={}) => { urls.push(url); return { ok: true, status: 200, json: async () => String(url).includes('/disk-admin/task-save-receipts/lookup')?{results:JSON.parse(options.body).tasks.map(task=>({...task,record:null}))}:String(url).startsWith('/api/telegram/drive/files/') ? { id:String(url).split('?')[0].split('/').pop(), folderPath:'' } : source }; }
     };
     context.window = context; vm.runInNewContext(fs.readFileSync('client/disk-pending-save.js', 'utf8'), context);
     return { api: context.DiskPendingSave, task, urls, idb: shared, changeSource: next => source = next };
@@ -68,7 +68,7 @@ test('new pending transfers persist metadata, survive reload and submit no brows
         await restored.api.resume(record.id, hooks({ transferServer: async (value, target) => { transfers++; assert.equal(value.version, '1000-3'); assert.equal(target.accountId, 'account'); return { items: [{ id: 'done' }] }; } }));
         await restored.api.resume(record.id, hooks({ transferServer: async () => { throw Error('duplicate server transfer'); } }));
         assert.equal(transfers, 1); assert.equal((await restored.api.get(record.id)).status, 'completed');
-        assert.ok([...f.urls, ...restored.urls].every(url => /\/tasks\/task$|^\/api\/telegram\/drive\/files\//.test(url)));
+        assert.ok([...f.urls, ...restored.urls].every(url => /\/tasks\/task$|^\/api\/telegram\/drive\/files\/|^\/api\/telegram\/disk-admin\/task-save-receipts\/lookup$/.test(url)));
         assert.equal(f.idb.databases.size, 1, 'only the pending metadata database may be created');
     }
 });

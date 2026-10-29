@@ -2,16 +2,21 @@
 const mime = require('mime-types');
 
 function createDownloadTaskSource({ services, isAdmin }) {
-    return (req, input = {}) => {
+    const inspectTask = (req, input = {}) => {
         if (!isAdmin(req)) throw new Error('TASK_SAVE_ADMIN_AUTH_REQUIRED');
         const service = ['sns', 'youtube'].includes(input.source) && services[input.source];
         if (!service || typeof input.taskId !== 'string' || input.taskId.length > 100) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
         const task = service.get(input.taskId);
-        if (!task || task.status !== 'completed' || !task.hasFile) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
+        if (!task || task.status !== 'completed') throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
         const version = `${Number(task.completedAt) || 0}-${Number(task.outputFileSize) || 0}`;
         if (!Number(task.completedAt) || !Number.isSafeInteger(task.outputFileSize) || task.outputFileSize <= 0 || input.version !== version) {
             throw new Error('TASK_SAVE_VERSION_CONFLICT');
         }
+        return {task,service,version};
+    };
+    const resolve = (req, input = {}) => {
+        const {task,service,version}=inspectTask(req,input);
+        if(!task.hasFile)throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
         const file = service.getFile(input.taskId);
         if (!file) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
         let url = '';
@@ -25,5 +30,7 @@ function createDownloadTaskSource({ services, isAdmin }) {
         return { path: file.path, name: file.name, size: task.outputFileSize, version, type: mime.lookup(file.name) || 'application/octet-stream',
             sourceInfo: { title: String(task.title || '').slice(0, 1000), url, platform: String(task.platform || '').slice(0, 40), remark: String(task.remark || '').slice(0, 5000) } };
     };
+    resolve.inspectTask=(req,input)=>{inspectTask(req,input);return true;};
+    return resolve;
 }
 module.exports = { createDownloadTaskSource };

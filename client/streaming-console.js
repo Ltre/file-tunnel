@@ -333,15 +333,31 @@
             const file=input.files?.[0],revision=++version;if(!file)return;status.textContent=t('正在裁剪封面…');
             try {
                 if(!/^image\/(png|jpeg|webp)$/.test(file.type)||file.size>20*1024*1024)throw Error('STREAM_COVER_INVALID');
-                const url=URL.createObjectURL(file),image=new Image();
+                const loadImage=src=>new Promise((resolve,reject)=>{
+                    const image=new Image();
+                    const finish=cause=>{clearTimeout(timer);image.onload=image.onerror=null;cause?reject(cause):resolve(image);};
+                    const timer=setTimeout(()=>finish(Error('STREAM_COVER_DECODE_TIMEOUT')),15000);
+                    image.onload=()=>finish();image.onerror=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));
+                    try{image.src=src;}catch(cause){finish(cause);}
+                });
+                const url=URL.createObjectURL(file);let image;
                 try {
-                    // Use load/error as readiness signals. A decode() rejection
-                    // alone does not prove that the selected file is unreadable.
-                    await new Promise((resolve,reject)=>{
-                        const finish=cause=>{clearTimeout(timer);image.onload=image.onerror=null;cause?reject(cause):resolve();};
-                        const timer=setTimeout(()=>finish(Error('STREAM_COVER_DECODE_TIMEOUT')),15000);
-                        image.onload=()=>finish();image.onerror=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));image.src=url;
-                    });
+                    try { image=await loadImage(url); }
+                    catch(cause) {
+                        if(cause.message!=='STREAM_COVER_DECODE_FAILED')throw cause;
+                        if(revision!==version||ui.stationId!==stationId||!field.isConnected)return;
+                        // On mobile file-provider blob URL failures, retry the
+                        // selected bytes once through an independent read path,
+                        // with the same decode, dimension and crop validation.
+                        const data=await new Promise((resolve,reject)=>{
+                            const reader=new FileReader();
+                            const finish=(cause,value)=>{clearTimeout(timer);reader.onload=reader.onerror=reader.onabort=null;cause?reject(cause):resolve(value);};
+                            const timer=setTimeout(()=>{finish(Error('STREAM_COVER_DECODE_TIMEOUT'));reader.abort();},15000);
+                            reader.onload=()=>finish(null,reader.result);reader.onerror=reader.onabort=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));
+                            try{reader.readAsDataURL(file);}catch(cause){finish(cause);}
+                        });
+                        image=await loadImage(data);
+                    }
                     const side=Math.min(image.naturalWidth,image.naturalHeight);if(!side||image.naturalWidth*image.naturalHeight>40000000)throw Error('STREAM_COVER_INVALID');
                     const canvas=document.createElement('canvas');canvas.width=canvas.height=512;canvas.getContext('2d').drawImage(image,(image.naturalWidth-side)/2,(image.naturalHeight-side)/2,side,side,0,0,512,512);
                     const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('STREAM_COVER_INVALID');
@@ -875,20 +891,26 @@
                 if (!active() || !isOpen()) return;
                 const row = aside.querySelector('.sc-now-playing');
                 if (!row || row.dataset.itemId !== pendingId) return;
-                // Leave scroll range at both ends so the first/last item can
-                // also reach the middle instead of being clamped to an edge.
-                const height = parseFloat(getComputedStyle(aside).maxHeight);
-                leading.style.height = trailing.style.height = (Number.isFinite(height) ? height : viewport.clientHeight) / 2 + 'px';
-                const scroll = aside.scrollTop;
+                const scroll = aside.scrollTop, limit = parseFloat(getComputedStyle(aside).maxHeight);
+                // Establish the final scrollport even for a very short list,
+                // then measure its actually visible part before positioning.
+                leading.style.height = trailing.style.height = (Number.isFinite(limit) ? limit : viewport.clientHeight) + 'px';
                 aside.insertBefore(leading, aside.querySelector('.sc-watch-item')); aside.append(trailing);
                 aside.scrollTop = scroll;
-                const item = row.getBoundingClientRect(), box = aside.getBoundingClientRect(), clip = viewport.getBoundingClientRect();
+                const box = aside.getBoundingClientRect(), clip = viewport.getBoundingClientRect();
                 const visual = global.visualViewport;
                 const top = Math.max(box.top + aside.clientTop, clip.top + viewport.clientTop, visual?.offsetTop || 0);
                 const bottom = Math.min(box.top + aside.clientTop + aside.clientHeight, clip.top + viewport.clientTop + viewport.clientHeight, (visual?.offsetTop || 0) + (visual?.height || innerHeight));
                 // A hidden/minimized/offscreen playlist cannot be positioned yet.
                 // Keep the pending item until it has a visible scrolling area.
                 if (bottom <= top) return;
+                const middle = (top + bottom) / 2;
+                // Add end room only when following a program change. Size it
+                // against the clipped visible area, not half the CSS max-height.
+                leading.style.height = Math.max(0, middle - box.top + row.clientHeight / 2) + 'px';
+                trailing.style.height = Math.max(0, box.top + aside.clientTop + aside.clientHeight - middle + row.clientHeight / 2) + 'px';
+                aside.scrollTop = scroll;
+                const item = row.getBoundingClientRect();
                 aside.scrollTo({ top: Math.max(0, aside.scrollTop + item.top + item.height / 2 - (top + bottom) / 2),
                     behavior: global.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
                 pendingId = '';
@@ -900,7 +922,16 @@
         global.addEventListener('streaming-visibility-change', schedule);
         global.addEventListener('resize', schedule);
         return {
-            focus(id) { if (id !== currentId) { currentId = id; pendingId = id; } schedule(); },
+            focus(id) {
+                if (id !== currentId) {
+                    const initialFirst = !currentId && aside.querySelector('.sc-watch-item')?.dataset.itemId === id && aside.scrollTop === 0;
+                    currentId = id;
+                    // Opening at the first program keeps title and rows together.
+                    // Later program changes (including looping to first) center.
+                    if (!initialFirst) pendingId = id;
+                }
+                schedule();
+            },
             close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', schedule); global.removeEventListener('streaming-visibility-change', schedule); global.removeEventListener('resize', schedule); }
         };
     }
@@ -946,7 +977,7 @@
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
         const waitRows = new Map(), scheduleState = { value: snapshot, receivedAt: performance.now() };
         let playlistSignature = '';
-        const playlistFollow = !controlling && followPlaylist(aside, () => version === renderVersion && ui.view === 'watch' && ui.stationId === snapshot.id);
+        const playlistFollow = controlling ? null : followPlaylist(aside, () => version === renderVersion && ui.view === 'watch' && ui.stationId === snapshot.id);
         const fillInfo = value => {
             if (!['watch', 'control'].includes(ui.view) || ui.stationId !== value.id || version !== renderVersion) return;
             snapshot = value; scheduleState.value = value; scheduleState.receivedAt = performance.now(); subscription.textContent = t(value.subscribed ? subscribedLabel : '订阅');

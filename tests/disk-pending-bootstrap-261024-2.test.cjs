@@ -99,7 +99,7 @@ function transferFixture({ stall = '', fail = '', bodyStall = '' } = {}) {
         versionOf: value => `${value.completedAt}-${value.outputFileSize}`, getBlob: () => { throw Error('must not read file body'); },
         telegramDrivePendingSaveId: record.id, telegramDrivePendingSaveRunning: false,
         telegramDriveSpaceKey: space => String(space.scopeKey), pendingSaveFeedback: value => stages.push(value),
-        showTelegramDrivePendingSaveBanner: async () => {}, showAppToast() {}, telegramDriveErrorText: error => error.message,
+        showTelegramDrivePendingSaveBanner: async () => {}, finishPendingSaveFeedback() {}, showAppToast() {}, telegramDriveErrorText: error => error.message,
         confirmTelegramDriveAction: async () => true, formatFileSize: String, telegramDriveDisplayPath: value => '/' + value,
         manageTelegramDriveAccounts: () => { throw Error('original account remains authenticated'); }
     });

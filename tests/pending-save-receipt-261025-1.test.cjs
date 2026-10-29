@@ -13,10 +13,11 @@ function database() {
 }
 function browser() {
     const files = new Map(), calls = [], task = { id:'task', completedAt:1000, outputFileSize:5, outputFileName:'片段.mp4', hasFile:true, status:'completed' };
-    let failure = null;
+    let failure = null,receiptFailure=null;
     const context = { URL, URLSearchParams, crypto:crypto.webcrypto, indexedDB:database(), setTimeout, clearTimeout, AbortController,
         fetch: async (url, options = {}) => {
             calls.push({url,options}); const path = String(url).split('?')[0];
+            if(path.includes('/disk-admin/task-save-receipts/lookup'))return receiptFailure?new Response(JSON.stringify({error:receiptFailure}),{status:503}):new Response(JSON.stringify({results:JSON.parse(options.body).tasks.map(task=>({...task,record:null}))}));
             if (path.startsWith('/api/telegram/drive/')) {
                 if (failure) return new Response(JSON.stringify({error:failure}),{status:failure==='LOGIN_REQUIRED'?401:503});
                 const file = files.get(decodeURIComponent(path.split('/').pop()));
@@ -30,8 +31,20 @@ function browser() {
     const target={accountId:'saved-account',accountName:'原保存账号',partitionId:'partition',partitionName:'原分区',diskSpace:'space-key',path:'保存目录'};
     const hooks={ chooseAccount:async()=>({id:target.accountId}), chooseTarget:async()=>target, confirm:async()=>true, transferServer:async()=>({items:[{id:'saved-file'}]}) };
     async function completed() { const record=await api.prepareServer({source:'sns',task}); await api.update(record.id,{target}); files.set('saved-file',{id:'saved-file',name:task.outputFileName,folderPath:target.path}); await api.complete(record.id,{items:[{id:'saved-file'}]}); return record; }
-    return {api,files,calls,task,target,hooks,completed,fail:value=>{failure=value;}};
+    return {api,files,calls,task,target,hooks,completed,fail:value=>{failure=value;},failReceipt:value=>{receiptFailure=value;}};
 }
+test('server receipt lookup failure preserves an already verified local completion and cannot make an empty browser re-upload',async()=>{
+    const f=browser(),old=await f.completed();f.failReceipt('TELEGRAM_NETWORK_ERROR');
+    const status=await f.api.taskStatus({source:'sns',task:f.task,force:true});assert.equal(status.state,'saved');assert.equal(status.record.id,old.id);
+    assert.equal((await f.api.prepareServer({source:'sns',task:f.task})).id,old.id);
+    const empty=browser();empty.failReceipt('TELEGRAM_NETWORK_ERROR');
+    await assert.rejects(empty.api.prepareServer({source:'sns',task:empty.task}),/TELEGRAM_NETWORK_ERROR/);assert.equal((await empty.api.list()).length,0);
+});
+test('one synchronous task list batches receipt lookup instead of scanning the server for every row',async()=>{
+    const f=browser();await Promise.all(Array.from({length:60},(_,index)=>f.api.taskStatus({source:'sns',task:{...f.task,id:'task-'+index}})));
+    const lookups=f.calls.filter(call=>call.url.includes('/disk-admin/task-save-receipts/lookup'));
+    assert.equal(lookups.length,1);assert.equal(JSON.parse(lookups[0].options.body).tasks.length,60);
+});
 test('deleted saved files do not reuse a completed local receipt as proof of an existing destination',async()=>{
     const f=browser(), old=await f.completed(); f.files.delete('saved-file');
     const next=await f.api.prepareServer({source:'sns',task:f.task});
@@ -154,6 +167,8 @@ test('real authenticated drive metadata invalidates deleted or moved receipts an
         });
         assert.equal(submissions, 1); assert.equal((await api.get(next.id)).status, 'completed');
         assert.equal((await api.inspectSaved(await api.get(next.id), { force:true })).state, 'saved');
+        const replacement=await api.get(next.id);
+        await request('/files/'+replacement.result.items[0].id+scope,{method:'DELETE',headers});
     }
     const api = runtime(), saved = drive.putMetadataObject(fixture.auth.user('alice'), '权限核验', '权限.txt', 'text/plain');
     const record = await api.prepareServer({ source:'sns', task });

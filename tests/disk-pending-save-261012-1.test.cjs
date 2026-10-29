@@ -63,7 +63,8 @@ function browser(source = 'sns', shared) {
             return result;
         } } },
         indexedDB: idb, open: (url, ...options) => { opens.push({ url, options }); return {}; }, confirm: () => true,
-        fetch: async url => {
+        fetch: async (url,options={}) => {
+            if(String(url).includes('/disk-admin/task-save-receipts/lookup'))return new Response(JSON.stringify({results:JSON.parse(options.body).tasks.map(task=>({...task,record:null}))}));
             if (String(url).startsWith('/api/telegram/drive/files/')) return new Response(JSON.stringify({ id:decodeURIComponent(String(url).split('?')[0].split('/').pop()), folderPath:'资料' }), { status:200 });
             if (String(url).includes('/api/')) {
                 const id = String(url).split('/').pop(), task = tasks.get(id);

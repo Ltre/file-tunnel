@@ -16,7 +16,7 @@ function originOf(details, fallbackScope) {
 }
 
 // Observe browser transfers without changing the underlying mutation/recovery protocol.
-function transferHistory({ operations, describe }) {
+function transferHistory({ operations, describe, beforeStart = () => {} }) {
     return (req, res, next) => {
         const local = req.path.replace(/^\/(?:mount-scope|collaboration-scope)\/[^/]+/, '');
         const transfer = req.method === 'POST' && ['/cross-scope/copy','/cross-scope/move','/spaces/transfer'].includes(local)
@@ -37,6 +37,9 @@ function transferHistory({ operations, describe }) {
         if (previous?.response && previous.phase !== 'source-retained') return res.status(previous.responseStatus || 200).json(previous.response);
         let details;
         try { details = describe(req, local); } catch (_) { return next(); } // Original route remains the authority for errors.
+        // A declined prerequisite is not a started transfer. Keep successful
+        // replays above this check, including moves whose source no longer exists.
+        try { beforeStart(req, local); } catch (error) { return next(error); }
         details=normalizedDetails(previous?.transferDetails || details);
         const origin=originOf(details,previous || actorScope);
         const scope=origin.kind==='native'?{...actorScope,diskSpace:origin.diskSpace}:actorScope;

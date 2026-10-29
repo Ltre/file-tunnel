@@ -9,11 +9,23 @@ test('moving owner content outside a collaboration directory requires acknowledg
     const cookie=login.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
     const call=async(route,method='GET',body)=>{const response=await fetch(f.base+'/api/telegram/drive'+route,{method,headers:{'Content-Type':'application/json',Cookie:cookie},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,data:await response.json()};};
     const grant=await call('/collaborations/invitations','POST',{kind:'directory',path:'公开'});assert.equal(grant.status,201,JSON.stringify(grant.data));
-    const denied=await call('/files/'+file.id,'PATCH',{folderPath:'甲目录'});
-    assert.equal(denied.data.error,'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED',JSON.stringify(denied));
+    const preflight=await call('/moves/preflight','POST',{destinationPath:'甲目录',items:[{kind:'file',id:file.id}]});
+    assert.equal(preflight.status,200);assert.equal(preflight.data.requiresConfirmation,true);
     assert.equal(drive.get('alice',file.id).folderPath,'公开/子目录');
-    const accepted=await call('/files/'+file.id,'PATCH',{folderPath:'甲目录',confirm_exposed_move:true});assert.equal(accepted.status,202,JSON.stringify(accepted));
-    for(let n=0;n<50;n++){const job=await call('/operations/'+accepted.data.operation_id);if(job.data.status==='completed'){assert.equal(drive.get('alice',file.id).folderPath,'甲目录');return;}assert.notEqual(job.data.status,'failed',JSON.stringify(job));await new Promise(r=>setTimeout(r,10));}
+    const outsider=await fetch(f.base+'/api/telegram/drive/moves/preflight',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({destinationPath:'甲目录',items:[{kind:'file',id:file.id}]})});
+    assert.equal(outsider.status,401,'preflight cannot expose another account without authentication');
+    const move={folderPath:'甲目录',requestId:'exposed-move-confirmation-261029'};
+    const denied=await call('/files/'+file.id,'PATCH',move);
+    assert.equal(denied.data.error,'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED',JSON.stringify(denied));
+    assert.equal((await call('/operations')).data.operations.filter(job=>job.requestId===move.requestId).length,0,'declined prerequisite must not start transfer history');
+    assert.equal(drive.get('alice',file.id).folderPath,'公开/子目录');
+    const accepted=await call('/files/'+file.id,'PATCH',{...move,confirm_exposed_move:true});assert.equal(accepted.status,202,JSON.stringify(accepted));
+    for(let n=0;n<50;n++){const job=await call('/operations/'+accepted.data.operation_id);if(job.data.status==='completed'){
+        assert.equal(drive.get('alice',file.id).folderPath,'甲目录');
+        const repeated=await call('/files/'+file.id,'PATCH',{...move,confirm_exposed_move:true});assert.deepEqual(repeated,accepted);
+        const changed=await call('/files/'+file.id,'PATCH',{...move,folderPath:'乙目录',confirm_exposed_move:true});assert.equal(changed.data.error,'CONTENT_WRITE_CONFLICT');
+        return;
+    }assert.notEqual(job.data.status,'failed',JSON.stringify(job));await new Promise(r=>setTimeout(r,10));}
     assert.fail('acknowledged move did not finish');
 });
 for(const kind of ['file','directory'])for(const exposure of ['collaboration','static'])test(exposure+' '+kind+' moves keep source intact until acknowledged',async t=>{

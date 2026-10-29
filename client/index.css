@@ -232,6 +232,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     left: 50%;
     z-index: 45;
     width: min(300px, 88vw);
+    max-width: var(--short-code-menu-width, min(300px, 88vw));
     max-height: 260px;
     overflow: auto;
     padding: 6px;

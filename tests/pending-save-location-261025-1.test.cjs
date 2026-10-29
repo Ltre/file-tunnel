@@ -12,7 +12,7 @@ function fixture({ allowSwitch = true, fresh = false, afterStart } = {}) {
         result:{items:[{id:'saved-file-a'},{id:'saved-file-b'}]},file:{name:'任务成品.mp4',size:123} };
     const baseline = structuredClone(record), calls = {switches:[],reveals:[],feedback:[],verified:0,banners:0};
     const context = { telegramDrivePendingSaveId:record.id,telegramDrivePendingSaveRunning:false,telegramDriveNavigationVersion:7,
-        pendingSaveFeedback:(...args) => calls.feedback.push(args),showAppToast(){},
+        pendingSaveFeedback:(...args) => calls.feedback.push(args),finishPendingSaveFeedback:()=>{},showAppToast:message=>calls.feedback.push(['toast',false,message]),
         pendingSaveRead:async route => { assert.equal(route,'/accounts'); return {accounts:[{identity:{id:'saved-account'}}]}; },
         choosePendingSaveTarget(){ throw Error('completed receipt must not choose another destination'); },
         pendingSaveTransferId:value => value.id,confirmTelegramDriveAction:async () => true,formatFileSize:String,telegramDriveDisplayPath:String,telegramDriveSpaceKey:value => value.diskSpace,

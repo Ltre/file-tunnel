@@ -6,6 +6,9 @@
     const active = new Map();
     const recordLocks = new Map();
     const receiptChecks = new Map();
+    const serverReceiptChecks = new Map(), receiptQueue = new Map();
+    let receiptFlushQueued=false;
+    let taskRecordsFlight;
     let database;
     const versionOf = task => `${Number(task?.completedAt) || 0}-${Number(task?.outputFileSize) || 0}`;
     const sourceTypes = new Set(['sns', 'youtube']);
@@ -20,6 +23,38 @@
     };
     const validId = id => /^[-a-zA-Z0-9_]{8,100}$/.test(String(id || ''));
     const liveRecord = record => !['cancelled', 'superseded'].includes(record.status);
+
+    function serverReceipt(source,task,{force=false}={}) {
+        const input={source,taskId:String(task.id),version:versionOf(task)},key=JSON.stringify(input),cached=serverReceiptChecks.get(key);
+        if(cached&&(!force||cached.pending)&&Date.now()-cached.at<15000)return cached.promise;
+        let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
+        const entry={at:Date.now(),promise,pending:true};serverReceiptChecks.set(key,entry);receiptQueue.set(key,{input,resolve,reject,entry});
+        if(serverReceiptChecks.size>200)serverReceiptChecks.delete(serverReceiptChecks.keys().next().value);
+        if(!receiptFlushQueued){receiptFlushQueued=true;Promise.resolve().then(async()=>{
+            receiptFlushQueued=false;const queued=[...receiptQueue.values()];receiptQueue.clear();
+            for(let start=0;start<queued.length;start+=100){
+                const batch=queued.slice(start,start+100),controller=global.AbortController?new global.AbortController():null;
+                const timer=controller?setTimeout(()=>controller.abort(),20000):null;
+                try{
+                    const response=await global.fetch('/api/telegram/disk-admin/task-save-receipts/lookup',{method:'POST',credentials:'same-origin',cache:'no-store',
+                        headers:{'Content-Type':'application/json'},body:JSON.stringify({tasks:batch.map(item=>item.input)}),...(controller?{signal:controller.signal}:{})});
+                    const data=await response.json();
+                    if(!response.ok||!Array.isArray(data?.results))throw Error(data?.error||'PENDING_SAVE_RECEIPT_UNCONFIRMED');
+                    for(const item of batch){const found=data.results.find(value=>value.source===item.input.source&&value.taskId===item.input.taskId&&value.version===item.input.version);
+                        if(!found)throw Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');item.entry.pending=false;item.entry.at=Date.now();item.resolve(found.record||null);}
+                }catch(error){for(const item of batch){serverReceiptChecks.delete(JSON.stringify(item.input));item.reject(controller?.signal.aborted?Error('PENDING_SAVE_LOOKUP_TIMEOUT'):error);}}
+                finally{if(timer!==null)clearTimeout(timer);}
+            }
+        });}
+        return promise;
+    }
+    async function recoverServerReceipt({source,task,force=false}) {
+        const found=await serverReceipt(source,task,{force});
+        if(!found)return null;
+        if(!validId(found.id)||found.status!=='completed'||found.source!==source||found.version!==versionOf(task)||!found.target?.accountId||!found.result?.items?.length)throw Error('PENDING_SAVE_RECEIPT_UNCONFIRMED');
+        const record={...found,task:{id:String(task.id),completedAt:Number(task.completedAt),outputFileSize:Number(task.outputFileSize),outputFileName:String(task.outputFileName||task.title||found.file.name)},sourceInfo:safeSource(task)};
+        await put(record);return record;
+    }
 
     async function receiptInfo(record, route) {
         const target = record.target;
@@ -69,7 +104,16 @@
         return entry.promise;
     }
     async function taskStatus({ source, task, force = false }) {
-        const record = (await list()).find(record => record.source === source && record.task.id === String(task.id) && record.version === versionOf(task) && liveRecord(record));
+        taskRecordsFlight ||= list().finally(()=>{taskRecordsFlight=null;});
+        const records=await taskRecordsFlight;
+        const local = records.find(record => record.source === source && record.task.id === String(task.id) && record.version === versionOf(task) && liveRecord(record));
+        if(local?.status==='completed'){
+            const checked=await inspectSaved(local,{force});
+            if(!['missing','moved'].includes(checked.state))return {record:local,...checked};
+        }
+        const recovered=await recoverServerReceipt({source,task,force}).catch(error=>({lookupError:error}));
+        if(recovered?.lookupError&&!local)throw recovered.lookupError;
+        const record=recovered?.lookupError?local:recovered||local;
         return record?.status === 'completed' ? { record, ...await inspectSaved(record, { force }) } : { record, state:record?.status || 'new' };
     }
     function describeTarget(record) {
@@ -265,7 +309,9 @@
             if (existing?.status === 'completed') {
                 const verified = await inspectSaved(existing, { force:true });
                 if (['missing','moved'].includes(verified.state)) { await update(existing.id, { status:'superseded', error:verified.state }); existing=null; }
+                else return existing;
             }
+            if(!existing||!['uploading','verification-required'].includes(existing.status))existing=await recoverServerReceipt({source,task,force:true}).catch(error=>{if(existing)return null;throw error;})||existing;
             if (existing && (existing.transferMode === 'server' || ['completed', 'uploading', 'verification-required'].includes(existing.status))) return existing;
             const current = await verifySource({ source, task: { ...task, id: String(task.id) }, version });
             if (!current.hasFile || current.status !== 'completed') throw new Error('服务端成品已清理或不可用，请重新抓取后转存');

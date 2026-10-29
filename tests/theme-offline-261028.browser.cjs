@@ -10,7 +10,7 @@ const { createFixture } = require('./support/streaming-console-fixture.cjs');
 const root = path.resolve(__dirname, '..');
 const sw = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
 const current = sw.match(/const CACHE_NAME = '([^']+)'/)[1];
-const previous = 'instant-tunnel-v93-content-v8-themes-261028-followup';
+const previous = 'instant-tunnel-v94-content-v8-disk-261028-3';
 const assets = ['/client/themes.css', '/client/themes-legacy.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
 async function run() {
     let upgraded = false, browser;
