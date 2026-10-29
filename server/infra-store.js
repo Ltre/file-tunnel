@@ -327,8 +327,21 @@ class InfraStore {
     }
 
     run(sql, params = []) {
-        this.ensurePendingTransaction();
         const command = sql.trim().toUpperCase();
+        if (command === 'ROLLBACK' && !this.db.isTransaction) {
+            // SQLite may already have rolled back the whole batch after an I/O
+            // error. Discard this failed operation before retrying earlier work;
+            // replaying it here can fail again and strand operationDepth forever.
+            const start = this.pendingStatements.findLastIndex(entry =>
+                entry.sql === `SAVEPOINT infra_operation_${this.operationDepth}`);
+            if (!this.operationDepth || start < 0) throw new Error('INFRA_TRANSACTION_MISSING');
+            this.pendingStatements.length = start;
+            this.operationDepth--;
+            this.saveDirty = this.pendingStatements.length > 0;
+            if (this.saveDirty) this.scheduleSaveRetry();
+            return;
+        }
+        this.ensurePendingTransaction();
         if (command === 'BEGIN') {
             sql = `SAVEPOINT infra_operation_${this.operationDepth + 1}`;
             this.execute(sql);

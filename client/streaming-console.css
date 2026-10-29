@@ -97,6 +97,18 @@
 .sc-import-page{padding-bottom:0!important;margin:0 auto;overflow:hidden}
 .sc-import-page>.sc-candidate-list{min-height:0}
 .sc-import-page>.sc-import-actions{position:static;flex:none;margin:6px 0 0;padding:8px 0 max(4px,env(safe-area-inset-bottom))}
+/* Both source panes share the available height; footer rows stay in flow. */
+@media(min-width:768px){
+ .sc-import-page.sc-split-import{display:grid;grid-template-columns:minmax(200px,.8fr) minmax(0,2fr);grid-template-rows:auto auto minmax(0,1fr) auto auto;column-gap:18px}
+ .sc-split-import>h1{grid-area:1/1/2/-1}.sc-split-import>.sc-tabs{grid-area:2/1/3/-1}
+ .sc-split-import>.sc-source-controls{grid-area:3/1/4/2;display:flex;flex-direction:column;align-items:stretch;flex-wrap:nowrap;min-height:0;min-width:0;overflow:hidden;margin:0;border-bottom:0;padding-bottom:0}
+ .sc-split-import>.sc-source-controls>select{flex:none;width:100%}
+ .sc-split-import .sc-import-path{flex:none}
+ .sc-split-import :is(.sc-import-folders,.sc-import-records){flex:1;min-height:0;max-height:none;align-content:flex-start;overflow:auto;overscroll-behavior:contain}
+ .sc-split-import :is(.sc-import-folders,.sc-import-records)>button{max-width:100%;overflow-wrap:anywhere}
+ .sc-split-import>.sc-candidate-list{grid-area:3/2/4/3;min-width:0}
+ .sc-split-import>.sc-import-random{grid-area:4/1/5/-1}.sc-split-import>.sc-import-actions{grid-area:5/1/6/-1}
+}
 .sc-page-loading{display:flex;align-items:center;gap:10px;min-height:64px;padding:12px;color:inherit}
 .sc-page-loading:before{content:'';width:20px;height:20px;flex:none;border:2px solid #9994;border-top-color:#7951b0;border-radius:50%;animation:sc-spin .8s linear infinite}
 .sc-background-toggle{display:flex;align-items:center;gap:8px;font-size:12px;margin:8px 0;color:inherit}

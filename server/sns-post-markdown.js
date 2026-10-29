@@ -279,6 +279,51 @@ async function readWebPost(value, { cookieFileForUrl = () => '', request = readP
     throw Error('SNS_POST_REDIRECT_LIMIT');
 }
 
+function twitterPostId(value) {
+    const url = new URL(sourceUrl(value));
+    if (!/^(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com$/i.test(url.hostname)) return '';
+    return url.pathname.match(/^\/(?:[^/]+\/status|i\/web\/status|statuses)\/(\d{1,24})(?:\/|$)/)?.[1] || '';
+}
+
+async function readTwitterPost(value, { request = readPublicUrl } = {}) {
+    const id = twitterPostId(value);
+    if (!id) return null;
+    // X's public embed response retains photo entities which the video extractor
+    // intentionally omits. Same endpoint/token as yt-dlp's Twitter syndication adapter:
+    // https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/twitter.py
+    const url = new URL('https://cdn.syndication.twimg.com/tweet-result');
+    url.searchParams.set('id', id);
+    url.searchParams.set('token', ((Number(id) / 1e15) * Math.PI).toString(36).replace(/[0.]/g, ''));
+    const response = await request(url.href, { maxBytes: 1024 * 1024, timeoutMs: 8000 });
+    if (response.redirect || response.type && !/^application\/json$/.test(response.type)) throw Error('SNS_POST_PAGE_INVALID');
+    let post;
+    try { post = JSON.parse(response.data.toString('utf8')); } catch (_) { throw Error('SNS_POST_PAGE_INVALID'); }
+    if (!post || typeof post !== 'object' || String(post.id_str || '') !== id) throw Error('SNS_POST_CONTENT_UNAVAILABLE');
+    const photos = (Array.isArray(post.mediaDetails) ? post.mediaDetails.filter(item => item?.type === 'photo') : [])
+        .concat(Array.isArray(post.photos) ? post.photos : []);
+    const images = [...new Set(photos.map(item => safeHttpUrl(item?.media_url_https || item?.url)).filter(value => {
+        if (!value) return false;
+        const image = new URL(value);
+        return value.length <= 4096 && image.protocol === 'https:' && image.hostname === 'pbs.twimg.com' && image.pathname.startsWith('/media/');
+    }))];
+    if (images.length > MAX_IMAGES) throw Error('SNS_POST_IMAGE_LIMIT');
+    const text = typeof post.text === 'string' ? post.text.trim().slice(0, 100000) : '';
+    return { title: text.slice(0, 1000), body: text,
+        author: typeof post.user?.name === 'string' ? post.user.name.slice(0, 1000) : '',
+        publishedAt: typeof post.created_at === 'string' ? post.created_at.slice(0, 100) : '',
+        images, structuredBody: Boolean(text), url: value };
+}
+
+async function readSnsPostContent(value, options = {}) {
+    const [page, embedded] = await Promise.allSettled([readWebPost(value, options), readTwitterPost(value, options)]);
+    let webpage = page.status === 'fulfilled' ? page.value : {};
+    if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody) webpage = {};
+    const twitter = embedded.status === 'fulfilled' ? embedded.value : null;
+    if (twitter?.body || twitter?.images.length) return { ...webpage, ...twitter, images: twitter.images.length ? twitter.images : webpage.images || [] };
+    if (page.status === 'fulfilled') return webpage;
+    throw page.reason;
+}
+
 async function readPostImage(value, { request = readPublicUrl } = {}) {
     let url = safeHttpUrl(value);
     for (let redirects = 0; redirects <= 4; redirects++) {
@@ -332,7 +377,7 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request }
     const [parsed, page] = await Promise.allSettled([
         runMetadata(sourceUrl(source.sourceUrl), { noPlaylist: true, flatPlaylist: false, ignoreNoFormats: true,
             allowIgnoreNoFormatsFallback: false, timeoutMs: 45000, operation: 'sns-post-markdown-metadata' }),
-        readWebPost(source.sourceUrl, { cookieFileForUrl, request })
+        readSnsPostContent(source.sourceUrl, { cookieFileForUrl, request })
     ]);
     const metadata = parsed.status === 'fulfilled' ? parsed.value || {} : {};
     let webpage = page.status === 'fulfilled' ? page.value : {};
@@ -450,10 +495,11 @@ function createTunnelSnsPostPublisher(options) {
                 message.snsAcquisition.sourceMessageId === messageId && message.snsAcquisition.sourceId === sourceId),
         inspect: source => inspectSnsPost(source, { runMetadata: options.metadata, cookieFileForUrl: options.cookieFileForUrl, request: options.request }),
         prepare(sessionId, messageId, source, metadata) {
-            if (!metadata.mediaParsed) return;
+            if (!metadata.mediaParsed && !metadata.images?.length) return;
             const message = record(sessionId, messageId);
-            if (!message) throw Error('SNS_POST_SOURCE_MISSING');
-            const fresh = metadata.mediaMetas.flatMap((entry, index) => {
+            const currentSource = message?.snsSources?.find(item => item.id === source.id);
+            if (!currentSource) throw Error('SNS_POST_SOURCE_MISSING');
+            const fresh = metadata.mediaParsed ? metadata.mediaMetas.flatMap((entry, index) => {
                 const formats = Array.isArray(entry.formats) ? entry.formats : [];
                 const video = formats.some(format => format.vcodec && format.vcodec !== 'none' || Number(format.width) > 0 || Number(format.height) > 0);
                 const audio = formats.some(format => format.acodec && format.acodec !== 'none');
@@ -465,8 +511,12 @@ function createTunnelSnsPostPublisher(options) {
                 // Preserve an existing acquisition identity and completed assets.
                 const previous = (message.snsMediaItems || []).find(old => old.id === item.id);
                 return [{ ...item, ...(previous?.serverState === 'ready' ? previous : {}) }];
-            });
+            }) : (message.snsMediaItems || []).filter(item => item.sourceId === source.id);
             message.snsMediaItems = (message.snsMediaItems || []).filter(item => item.sourceId !== source.id).concat(fresh);
+            Object.assign(currentSource, { parseStatus: 'ready', parseError: '', imageUrls: metadata.images || [], mediaItemIds: fresh.map(item => item.id) });
+            if (metadata.title) currentSource.title = metadata.title.slice(0, 240);
+            if (metadata.images?.length) currentSource.coverUrl = metadata.images[0];
+            delete currentSource.parseRetryCount; delete currentSource.parseRetryAfter;
             options.update(sessionId, message);
         },
         acquire: async (sessionId, messageId, mediaItemId) => {
@@ -481,5 +531,5 @@ function createTunnelSnsPostPublisher(options) {
     });
 }
 
-module.exports = { sourceUrl, publicAddress, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
+module.exports = { sourceUrl, publicAddress, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readTwitterPost, readSnsPostContent, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
     buildPostMarkdown, createSnsPostPublisher, createTunnelSnsPostPublisher };

@@ -103,6 +103,13 @@
     <script defer src="/client/theme-preference.js"></script>
 </head>
 <body>
+    <script>
+        // Apply only the saved visual preference before the loading layer can paint.
+        try {
+            const startupTheme = localStorage.getItem('uiTheme');
+            if (startupTheme === 'lumen' || startupTheme === 'orbit') document.body.dataset.theme = startupTheme;
+        } catch (_) {}
+    </script>
     <div id="tunnelStartupLoading" role="status" aria-live="polite">
         <section><h1>Drop2Tunnel</h1><p>正在准备应用</p><strong data-startup-count>正在读取资源清单…</strong><progress max="1" value="0" aria-label="静态资源加载数量"></progress><strong data-startup-current>正在启动…</strong><small data-startup-warning></small><details><summary>查看加载明细</summary><ul data-startup-list></ul></details><div class="startup-actions" hidden><button type="button" data-startup-retry>刷新重试</button><button type="button" data-startup-dismiss>关闭提示</button></div></section>
     </div>

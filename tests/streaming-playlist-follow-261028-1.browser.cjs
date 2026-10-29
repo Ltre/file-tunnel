@@ -38,7 +38,13 @@ const geometry = () => {
         await page.locator('.sc-now-playing').waitFor();
         control('select', { itemId: 'program-10' });
         await page.waitForFunction(() => [...document.querySelectorAll('.sc-watch-item')].indexOf(document.querySelector('.sc-now-playing')) === 10);
-        await page.waitForTimeout(600);
+        await page.waitForFunction(() => {
+            const row = document.querySelector('.sc-now-playing'), panel = row?.parentElement, main = document.querySelector('.sc-main');
+            if (!row || !main) return false;
+            const box = panel.getBoundingClientRect(), clip = main.getBoundingClientRect(), r = row.getBoundingClientRect();
+            const top = Math.max(box.top + panel.clientTop, clip.top + main.clientTop, 0), bottom = Math.min(box.top + panel.clientTop + panel.clientHeight, clip.top + main.clientTop + main.clientHeight, innerHeight);
+            return Math.abs(r.top + r.height / 2 - (top + bottom) / 2) < 5;
+        });
         const measured = await page.evaluate(geometry); console.log('visible center', measured);
         const failures = [];
         if (Math.abs(measured.row - measured.middle) >= 5) failures.push('current row is not in the actually visible center');
@@ -89,7 +95,11 @@ const geometry = () => {
             await phone.waitForFunction(i => document.querySelector('.sc-now-playing')?.dataset.itemId === 'program-' + i, index);
             await phone.waitForTimeout(600);
             const narrow = await phone.evaluate(geometry); console.log('narrow item', narrow);
-            if (Math.abs(narrow.row - narrow.middle) >= 5) failures.push('narrow item ' + index + ' did not center');
+            // Compact endpoints stay against natural scroll boundaries; no
+            // half-screen spacers are inserted just to center the first/last.
+            if (![23, 0].includes(index) && Math.abs(narrow.row - narrow.middle) >= 5) failures.push('narrow item ' + index + ' did not center');
+            if (index === 0 && narrow.scroll > 3) failures.push('first narrow item did not reach the natural start');
+            if (index === 23 && !await phone.locator('.sc-watch-grid>aside').evaluate(el => Math.abs(el.scrollTop - (el.scrollHeight - el.clientHeight)) < 3)) failures.push('last narrow item did not reach the natural end');
             assert.equal(narrow.mainScroll, mainScroll, 'automatic positioning must only scroll the playlist');
         }
         assert.deepEqual(failures, []);

@@ -5394,7 +5394,7 @@ function canResumeSnsSource(source, now = Date.now()) {
     if (source.parseStatus === 'pending') return true;
     return source.parseStatus === 'failed' && Number(source.parseRetryCount || 0) < 3 &&
         Number(source.parseRetryAfter || 0) <= now &&
-        /timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|HTTP Error (?:429|5\d\d)|challenge solver|signature solving failed|requested format is not available|only images are available|sign in to confirm|YouTube 要求登录验证/i.test(String(source.parseError || ''));
+        /timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|HTTP Error (?:429|5\d\d)|challenge solver|signature solving failed|requested format is not available|only images are available|no video could be found in this tweet|sign in to confirm|YouTube 要求登录验证/i.test(String(source.parseError || ''));
 }
 
 function withSnsMetadataRetry(source, previous = {}) {
@@ -5458,6 +5458,18 @@ async function buildSnsMetadata(rawText, messageId, previous = null) {
         } catch (err) {
             source.parseStatus = 'failed';
             source.parseError = sanitizeString(err.message || 'sns-parse-failed', 240);
+            if (/^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(sourceUrl) &&
+                /no video could be found in this tweet|only images are available/i.test(source.parseError)) {
+                try {
+                    const post = await require('./server/sns-post-markdown').readSnsPostContent(sourceUrl, { cookieFileForUrl: getSnsCookieFileForUrl });
+                    if (!post.images?.length) throw Error('SNS_POST_CONTENT_UNAVAILABLE');
+                    source.title = sanitizeString(post.title || sourceUrl, 240);
+                    source.coverUrl = sanitizeString(post.images[0], 1000);
+                    source.imageUrls = post.images;
+                    source.parseStatus = 'ready';
+                    source.parseError = '';
+                } catch (_) { /* Keep the extractor failure when no verified image metadata is available. */ }
+            }
         }
         sources.push(source.parseStatus === 'failed' ? withSnsMetadataRetry(source, prior) : source);
     }
@@ -11235,6 +11247,15 @@ async function startServer() {
     });
 }
 
+// Observe exits without replacing Node's fatal-error handling or keeping it alive.
+let shutdownSignal = '';
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+    console.error(`[server-fatal] pid=${process.pid} origin=${origin}`, error);
+});
+process.on('exit', code => {
+    console.error(`[server-exit] pid=${process.pid} code=${code} signal=${shutdownSignal || 'none'} uptime=${Math.floor(process.uptime())}s`);
+});
+
 startServer().catch(err => {
     if (err?.code === 'EADDRINUSE') {
         console.error(`[启动失败] 端口 ${WEB_PORT} 已被其他进程占用，本次 npm start 没有启动成功。`);
@@ -11251,10 +11272,11 @@ let shutdownStarted = false;
 async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    shutdownSignal = signal;
+    console.log(`[server-shutdown] pid=${process.pid} signal=${signal} uptime=${Math.floor(process.uptime())}s`);
     telegramForwardJobs.close();
     streamingConsole.close();
     await systemBackup.close();
-    console.log(`${signal} received, shutting down gracefully`);
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();
     clearTimeout(mediaStopDeadline);

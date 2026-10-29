@@ -142,7 +142,7 @@ test('shell readiness is reached with a stalled OPFS probe while local restorati
     const app = read('app.js');
     const helpers = app.slice(app.indexOf('const startupTimings ='), app.indexOf('document.addEventListener(\'DOMContentLoaded\', async () =>'));
     const cacheInit = app.slice(app.indexOf('async function initFileCacheStore()'), app.indexOf('async function materializeCachedFileRecord('));
-    const startApp = app.slice(app.indexOf('async function startTunnelApplication()'), app.indexOf('function registerServiceWorker()'));
+    const startApp = app.slice(app.indexOf('async function startTunnelApplication('), app.indexOf('function registerServiceWorker()'));
     let resolveProbe, resolveHistory;
     const probe = new Promise(resolve => { resolveProbe = resolve; });
     const history = new Promise(resolve => { resolveHistory = resolve; });

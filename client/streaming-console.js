@@ -423,7 +423,7 @@
         renderedIdentity = viewIdentity();
         for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
-        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
+        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-split-import', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
@@ -685,6 +685,7 @@
     async function importer() {
         if (ui.view !== 'import') return; const version = ++pickerVersion; main.replaceChildren(); title('导入可视资源');
         main.classList.add('sc-import-page');
+        main.classList.toggle('sc-split-import', channel !== 'local');
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         const channels = document.createElement('div'); channels.className = 'sc-tabs';
         for (const value of ['local', 'disk', 'tunnel']) channels.append(button(labelKind(value), () => { channel = value; candidates = value === 'local' ? [...pending.values()].filter(item => item.source.kind === 'local') : []; saveUi(); importer(); }, channel === value ? 'selected' : ''));
@@ -946,10 +947,16 @@
                 const row = aside.querySelector('.sc-now-playing');
                 if (!row || row.dataset.itemId !== pendingId) return;
                 const scroll = aside.scrollTop, limit = parseFloat(getComputedStyle(aside).maxHeight);
+                const compact = global.matchMedia('(max-width:767px)').matches;
                 // Establish the final scrollport even for a very short list,
                 // then measure its actually visible part before positioning.
-                leading.style.height = trailing.style.height = (Number.isFinite(limit) ? limit : viewport.clientHeight) + 'px';
-                aside.insertBefore(leading, aside.querySelector('.sc-watch-item')); aside.append(trailing);
+                // Compact lists keep natural endpoints rather than blank rows
+                // solely for centering the first/last program.
+                if (compact) { leading.remove(); trailing.remove(); }
+                else {
+                    leading.style.height = trailing.style.height = (Number.isFinite(limit) ? limit : viewport.clientHeight) + 'px';
+                    aside.insertBefore(leading, aside.querySelector('.sc-watch-item')); aside.append(trailing);
+                }
                 aside.scrollTop = scroll;
                 const box = aside.getBoundingClientRect(), clip = viewport.getBoundingClientRect();
                 const visual = global.visualViewport;
@@ -961,8 +968,10 @@
                 const middle = (top + bottom) / 2;
                 // Add end room only when following a program change. Size it
                 // against the clipped visible area, not half the CSS max-height.
-                leading.style.height = Math.max(0, middle - box.top + row.clientHeight / 2) + 'px';
-                trailing.style.height = Math.max(0, box.top + aside.clientTop + aside.clientHeight - middle + row.clientHeight / 2) + 'px';
+                if (!compact) {
+                    leading.style.height = Math.max(0, middle - box.top + row.clientHeight / 2) + 'px';
+                    trailing.style.height = Math.max(0, box.top + aside.clientTop + aside.clientHeight - middle + row.clientHeight / 2) + 'px';
+                }
                 aside.scrollTop = scroll;
                 const item = row.getBoundingClientRect();
                 aside.scrollTo({ top: Math.max(0, aside.scrollTop + item.top + item.height / 2 - (top + bottom) / 2),
@@ -971,10 +980,11 @@
             });
         };
         const observer = global.IntersectionObserver && new global.IntersectionObserver(schedule, { root: viewport });
+        const resized = () => { if (currentId) pendingId = currentId; schedule(); };
         observer?.observe(aside);
         viewport.addEventListener('scroll', schedule, { passive: true });
         global.addEventListener('streaming-visibility-change', schedule);
-        global.addEventListener('resize', schedule);
+        global.addEventListener('resize', resized);
         return {
             focus(id) {
                 if (id !== currentId) {
@@ -986,7 +996,7 @@
                 }
                 schedule();
             },
-            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', schedule); global.removeEventListener('streaming-visibility-change', schedule); global.removeEventListener('resize', schedule); }
+            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', schedule); global.removeEventListener('streaming-visibility-change', schedule); global.removeEventListener('resize', resized); }
         };
     }
     async function watcher(version) {
