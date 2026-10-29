@@ -423,7 +423,7 @@
         renderedIdentity = viewIdentity();
         for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
-        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-split-import', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
+        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-split-import', 'sc-disk-import', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
@@ -593,7 +593,12 @@
         form.oninput = () => { d.name = form.querySelector('.sc-name').value; d.loop = form.querySelector('.sc-loop').value === 'loop'; d.countdown = form.querySelector('.sc-countdown-choice').value; saveUi(); };
         coverEditor(form,d,stationId);
         const resources = document.createElement('section'); resources.className = 'sc-card sc-editor-resources';
-        const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
+        const reorder = reverse => {
+            if (reverse) d.items.reverse();
+            else for (let i = d.items.length - 1; i > 0; i--) { const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1); [d.items[i], d.items[j]] = [d.items[j], d.items[i]]; }
+            saveUi(); renderItems();
+        };
+        const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('打乱', () => reorder(false)), button('逆转', () => reorder(true)), button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
         function focusProgram(id, duration = 1000, highlightIds = [id]) {
             const target = [...list.children].find(node => node.dataset.itemId === id); if (!target) return;
@@ -637,7 +642,7 @@
             }
             if (saveBlocked) showDurationBlock();
         };
-        for (const item of d.items) if (!item.durationError) ensureDuration(item);
+        for (const item of d.items) ensureDuration(item);
         renderItems(); layout.append(form, resources); main.append(layout);
         const saveStatus = document.createElement('p'); saveStatus.className = 'sc-save-status'; saveStatus.setAttribute('role', 'status'); saveStatus.hidden = true;
         const saving = text => { saveStatus.hidden = false; saveStatus.textContent = text; };
@@ -686,6 +691,7 @@
         if (ui.view !== 'import') return; const version = ++pickerVersion; main.replaceChildren(); title('导入可视资源');
         main.classList.add('sc-import-page');
         main.classList.toggle('sc-split-import', channel !== 'local');
+        main.classList.toggle('sc-disk-import', channel === 'disk');
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = [];
         const channels = document.createElement('div'); channels.className = 'sc-tabs';
         for (const value of ['local', 'disk', 'tunnel']) channels.append(button(labelKind(value), () => { channel = value; candidates = value === 'local' ? [...pending.values()].filter(item => item.source.kind === 'local') : []; saveUi(); importer(); }, channel === value ? 'selected' : ''));
@@ -711,7 +717,7 @@
             for (const candidate of candidates) {
                 const row = document.createElement('label'); row.className = 'sc-candidate';
                 const check = document.createElement('input'); check.type = 'checkbox'; check.checked = pending.has(candidateKey(candidate));
-                check.onchange = () => { if (check.checked) pending.set(candidateKey(candidate), candidate); else pending.delete(candidateKey(candidate)); saveUi(); count.textContent = t('已选择') + ' · ' + pending.size; };
+                check.onchange = () => { if (check.checked) pending.set(candidateKey(candidate), candidate); else pending.delete(candidateKey(candidate)); saveUi(); count.textContent = t('已选') + ' · ' + pending.size; };
                 const text = document.createElement('span'); text.className = 'message-content'; text.textContent = candidate.name + ' · ' + labelKind(candidate.kind);
                 row.dataset.recordId = candidate.source.messageId || '';
                 const thumbnail = document.createElement('span'); thumbnail.className = 'sc-source-thumbnail'; thumbnail.textContent = ({ video: '▶', audio: '♪', image: '▧', markdown: 'MD', text: 'TXT' })[candidate.kind];
@@ -734,8 +740,8 @@
                 row.append(check, thumbnail, text, button('预览', event => { event.preventDefault(); return preview(candidate); })); list.append(row);
             }
         }
-        const count = button(t('已选择') + ' · ' + pending.size, showSelected); actions.append(count);
-        actions.append(button('确认导入', async () => {
+        const count = button(t('已选') + ' · ' + pending.size, showSelected, 'sc-import-selected'); actions.append(count);
+        const confirmImport = button('导入', async () => {
             if (importBusy) return; importBusy = true; const d = draft(), stationId = ui.stationId, actor = account();
             try {
                 if (d.items.length + pending.size > 500) { notice('节目单最多包含 500 项，请减少选择后重试'); return; }
@@ -750,7 +756,8 @@
                 if (version !== pickerVersion || ui.stationId !== stationId || ui.view !== 'import' || account() !== actor) return;
                 d.items.push(...additions); pending.clear(); saveUi(); navigate('edit', stationId);
             } finally { importBusy = false; channels.inert = controls.inert = list.inert = false; }
-        }, 'sc-primary'), button('取消', () => { pending.clear(); navigate('edit', ui.stationId); }));
+        }, 'sc-primary');
+        actions.append(button('取消', () => { pending.clear(); navigate('edit', ui.stationId); }), confirmImport);
         if (channel === 'local') { controls.append(button('选择本机文件', () => chooseLocalFile())); renderCandidates(); return; }
         const loading = document.createElement('p'); loading.className = 'sc-import-loading'; loading.setAttribute('role', 'status'); loading.textContent = t('正在加载资源列表…'); list.append(loading); list.setAttribute('aria-busy', 'true');
         try {
@@ -792,19 +799,19 @@
             const recordList = document.createElement('div'); recordList.className = 'sc-import-records'; controls.append(recordList);
             for (const recordId of records) recordList.append(button(t('选择记录') + ' ' + recordId.slice(-6), () => {
                 for (const item of candidates.filter(item => item.source.messageId === recordId)) pending.set(candidateKey(item), item);
-                saveUi(); count.textContent = t('已选择') + ' · ' + pending.size; renderCandidates();
+                saveUi(); count.textContent = t('已选') + ' · ' + pending.size; renderCandidates();
                 const rows = [...list.children].filter(row => row.dataset.recordId === recordId); rows[0]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
                 rows.forEach(row => { row.classList.add('sc-record-focus'); setTimeout(() => row.classList.remove('sc-record-focus'), 1200); });
             }, 'message-content'));
         }
         const randomCount = document.createElement('input'); randomCount.type = 'number'; randomCount.min = 1; randomCount.max = candidates.length; randomCount.value = Math.min(3, candidates.length); randomCount.setAttribute('aria-label', t('随机导入数量'));
-        const random = document.createElement('div'); random.className = 'sc-import-random';
-        main.insertBefore(random, channel === 'tunnel' ? list : actions);
-        random.append(randomCount, button('从当前范围随机选取', () => {
+        randomCount.className = 'sc-import-random-count';
+        const selectRandom = button('从当前范围随机选', () => {
             const amount = Number(randomCount.value); if (!Number.isInteger(amount) || amount < 1 || amount > candidates.length) throw Error('STREAM_PARAMETER_INVALID');
             const pool = candidates.slice(); for (let index = pool.length - 1; index > 0; index--) { const other = crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1); [pool[index], pool[other]] = [pool[other], pool[index]]; }
-            for (const candidate of pool.slice(0, amount)) pending.set(candidateKey(candidate), candidate); saveUi(); count.textContent = t('已选择') + ' · ' + pending.size; renderCandidates();
-        }));
+            for (const candidate of pool.slice(0, amount)) pending.set(candidateKey(candidate), candidate); saveUi(); count.textContent = t('已选') + ' · ' + pending.size; renderCandidates();
+        });
+        actions.prepend(selectRandom, randomCount);
         renderCandidates();
         } catch (cause) { if (version === pickerVersion) { loading.textContent = t('资源列表加载失败，请重试') + ' [' + cause.message + ']'; loading.classList.add('sc-load-failed'); list.append(button('重试', () => importer())); } }
         finally { if (version === pickerVersion) { list.removeAttribute('aria-busy'); if (!loading.classList.contains('sc-load-failed')) loading.remove(); } }
@@ -814,12 +821,12 @@
     function ensureDuration(item) {
         if (!['video', 'audio'].includes(item.kind) || item.duration) return;
         const identity = durationKey(item), jobKey = account() + ':' + identity; let job = durationJobs.get(jobKey);
-        if (!job) {
+        if (!job || job.failed) {
             let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; });
             job = { item: structuredClone(item), actor: account(), promise, resolve, reject }; durationJobs.set(jobKey, job); durationQueue.push(job);
         }
         item.durationError = '';
-        job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; saveUi(); refreshEditorItems?.(); } }, cause => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
+        job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; saveUi(); refreshEditorItems?.(); } }, cause => { job.failed = true; if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
         pumpDurations();
     }
     function pumpDurations() {
@@ -841,14 +848,14 @@
             function finish(cause) {
                 if (done) return; done = true; clearTimeout(timer); controller.abort(); const value = media?.duration;
                 if (cause) previewTickets.delete(actor + ':' + durationKey(item));
-                if (media) { media.onloadedmetadata = media.onerror = null; media.removeAttribute('src'); media.load(); }
+                if (media) { media.onloadedmetadata = media.ondurationchange = media.onerror = null; media.removeAttribute('src'); media.load(); }
                 if (local && url) URL.revokeObjectURL(url); cause ? reject(cause) : resolve(value);
             }
             (async () => {
                 local = item.source.kind === 'local' ? await localBlob(item.source) : null; if (done) return;
                 url = local ? URL.createObjectURL(local) : await sourceUrl(item, controller.signal, actor); if (done) { if (local) URL.revokeObjectURL(url); return; }
                 media = document.createElement(item.kind); media.preload = 'metadata';
-                media.onloadedmetadata = () => finish(Number.isFinite(media.duration) && media.duration > 0 ? null : Error('STREAM_DURATION_REQUIRED'));
+                media.onloadedmetadata = media.ondurationchange = () => { if (Number.isFinite(media.duration) && media.duration > 0) finish(); };
                 media.onerror = () => finish(Error('STREAM_MEDIA_METADATA_ERROR')); media.src = url;
             })().catch(finish);
         });

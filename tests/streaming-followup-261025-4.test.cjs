@@ -79,7 +79,7 @@ test('saved file links carry the destination while the pending receipt retains c
 
 test('the real completed-receipt login prompt uses the login ID and replaces both translated placeholders',async()=>{
     const source=read('client/disk-ui.js'),start=source.indexOf('    const ensureAccount = async (accountId, record) =>');let options;
-    const context={pendingSaveRead:async()=>({accounts:[]}),manageTelegramDriveAccounts:async value=>{options=value;return null;},window:{TunnelI18n:{t:(message,language)=>{assert.equal(language,undefined);return message;}}}};
+    const context={viewingSavedFile:true,navigationCurrent:()=>true,pendingSaveRead:async()=>({accounts:[]}),manageTelegramDriveAccounts:async value=>{options=value;return null;},window:{TunnelI18n:{t:(message,language)=>{assert.equal(language,undefined);return message;}}}};
     vm.runInNewContext(source.slice(start,source.indexOf('    try {',start))+'this.check=ensureAccount;',context);
     await context.check('internal-id',{status:'completed',target:{accountName:'本地 Mock 用户 999000003',accountTelegramId:'999000003'}});
     assert.equal(options.requiredId,'internal-id');assert.match(options.prompt,/ID 999000003/);assert.doesNotMatch(options.prompt,/\{[01]\}/);

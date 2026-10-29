@@ -3,6 +3,7 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['打乱','Shuffle order'], ['逆转','Reverse order'], ['已选','Selected'], ['从当前范围随机选','Pick randomly from scope'],
         ['正在定位已保存的网盘文件…','Locating the saved drive file…'],
         ['文件位置读取失败，转存完成记录仍保留：{0}','The file location could not be read. The completed transfer record is retained: {0}'],
         ['重试查看','Retry viewing'],

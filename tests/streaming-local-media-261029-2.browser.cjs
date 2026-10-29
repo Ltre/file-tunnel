@@ -60,7 +60,7 @@ async function run() {
         const previewUrl=await page.locator('.sc-preview img').getAttribute('src');
         await page.locator('.sc-dialog').getByRole('button',{name:'关闭',exact:true}).click();
         check('closing the local preview releases its object URL',await page.evaluate(url=>!window.fixtureLiveUrls.has(url),previewUrl));
-        await page.getByRole('button',{name:'确认导入',exact:true}).click(); await page.locator('.sc-editor-page').waitFor();
+        await page.locator('.sc-import-actions').getByRole('button',{name:'导入',exact:true}).click(); await page.locator('.sc-editor-page').waitFor();
         check('leaving import releases all thumbnail object URLs',await page.evaluate(urls=>urls.every(url=>!window.fixtureLiveUrls.has(url)),thumbnails.map(v=>v.src)));
         await page.getByRole('button',{name:'保存',exact:true}).click(); await page.getByRole('button',{name:'上线',exact:true}).click();
         await page.getByRole('button',{name:'公开',exact:true}).click();
