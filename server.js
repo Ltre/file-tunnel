@@ -5389,7 +5389,21 @@ function buildSnsMediaItemFromMeta(messageId, source, meta, mediaIndex = 0) {
     };
 }
 
-async function buildSnsMetadata(rawText, messageId) {
+function canResumeSnsSource(source, now = Date.now()) {
+    if (!source || source.sourceType === 'unsupported') return false;
+    if (source.parseStatus === 'pending') return true;
+    return source.parseStatus === 'failed' && Number(source.parseRetryCount || 0) < 3 &&
+        Number(source.parseRetryAfter || 0) <= now &&
+        /timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|fetch failed|HTTP Error (?:429|5\d\d)|challenge solver|signature solving failed|requested format is not available|only images are available|sign in to confirm|YouTube 要求登录验证/i.test(String(source.parseError || ''));
+}
+
+function withSnsMetadataRetry(source, previous = {}) {
+    if (!canResumeSnsSource({ ...source, parseRetryAfter: 0, parseRetryCount: 0 })) return source;
+    const parseRetryCount = Math.min(3, Math.max(0, Number(previous.parseRetryCount) || 0) + 1);
+    return { ...source, parseRetryCount, parseRetryAfter: Date.now() + 60000 * 2 ** (parseRetryCount - 1) };
+}
+
+async function buildSnsMetadata(rawText, messageId, previous = null) {
     const urls = extractSupportedSocialUrls(rawText);
     if (!urls.length) return { sources: [], items: [] };
     const sources = [];
@@ -5408,6 +5422,13 @@ async function buildSnsMetadata(rawText, messageId) {
             parseError: '',
             mediaItemIds: []
         };
+        const prior = previous?.sources?.find(item => item.id === source.id && item.sourceUrl === sourceUrl);
+        const priorItems = (previous?.items || []).filter(item => item.sourceId === source.id);
+        if (prior && !canResumeSnsSource(prior)) {
+            sources.push(prior);
+            items.push(...priorItems);
+            continue;
+        }
         try {
             if (isYouTubePlaylistOnly(sourceUrl)) {
                 source.sourceType = 'unsupported';
@@ -5430,14 +5451,15 @@ async function buildSnsMetadata(rawText, messageId) {
                 const item = buildSnsMediaItemFromMeta(messageId, source, entry, mediaIndex);
                 item.sourceType = source.sourceType;
                 source.mediaItemIds.push(item.id);
-                items.push(item);
+                const completed = priorItems.find(old => old.id === item.id && old.serverState === 'ready');
+                items.push(completed ? { ...item, ...completed } : item);
             });
             source.parseStatus = 'ready';
         } catch (err) {
             source.parseStatus = 'failed';
             source.parseError = sanitizeString(err.message || 'sns-parse-failed', 240);
         }
-        sources.push(source);
+        sources.push(source.parseStatus === 'failed' ? withSnsMetadataRetry(source, prior) : source);
     }
     return { sources, items };
 }
@@ -5479,20 +5501,28 @@ function queueSnsMetadataScan(sessionId, messageId, rawText) {
                 }
                 return;
             }
-            const metadata = await buildSnsMetadata(rawText, messageId);
-            entry.message.snsSources = metadata.sources;
-            entry.message.snsMediaItems = metadata.items;
-            replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parsed');
+            const metadata = await buildSnsMetadata(rawText, messageId, {
+                sources: entry.message.snsSources || [], items: entry.message.snsMediaItems || []
+            });
+            const current = getHistoryMessageEntry(session, messageId)?.message;
+            if (!current || current.snsAcquisition || getMessageSnsText(current) !== rawText) return;
+            current.snsSources = metadata.sources;
+            current.snsMediaItems = metadata.items.map(item => {
+                const completed = current.snsMediaItems?.find(old => old.id === item.id && old.serverState === 'ready');
+                return completed ? { ...item, ...completed } : item;
+            });
+            replaceHistoryMessage(sessionId, session, current, 'sns-media-parsed');
         } catch (err) {
             console.warn('sns metadata scan failed:', err.message);
             const session = sessions.get(sessionId);
             const entry = getHistoryMessageEntry(session, messageId);
-            if (!session || !entry?.message || !Array.isArray(entry.message.snsSources)) return;
-            entry.message.snsSources = entry.message.snsSources.map(source => ({
+            if (!session || !entry?.message || entry.message.snsAcquisition ||
+                getMessageSnsText(entry.message) !== rawText || !Array.isArray(entry.message.snsSources)) return;
+            entry.message.snsSources = entry.message.snsSources.map(source => !canResumeSnsSource(source) ? source : withSnsMetadataRetry({
                 ...source,
                 parseStatus: 'failed',
                 parseError: sanitizeString(err.message || 'sns-parse-failed', 240)
-            }));
+            }, source));
             replaceHistoryMessage(sessionId, session, entry.message, 'sns-media-parse-failed');
         } finally {
             snsMetadataScans.delete(scanKey);
@@ -5514,10 +5544,10 @@ function resumePendingSnsMetadataScans(sessionId, messages = []) {
         const rawText = getMessageSnsText(message);
         if (!extractSupportedSocialUrls(rawText).length) return;
         const sources = Array.isArray(message.snsSources) ? message.snsSources : [];
-        if (sources.length && !sources.some(source =>
-            source?.parseStatus === 'pending' ||
-            (source?.parseStatus === 'failed' && /challenge solver|signature solving failed|requested format is not available|only images are available|sign in to confirm|YouTube 要求登录验证/i.test(String(source.parseError || '')))
-        )) return;
+        if (sources.length && !sources.some(source => canResumeSnsSource(source))) return;
+        // History reconciliation can repeat often. Recover a small batch only;
+        // each failure also carries a persisted backoff and a finite retry count.
+        if (snsMetadataScans.size >= 2) return;
         queueSnsMetadataScan(sessionId, message.id, rawText);
     });
 }
@@ -8391,7 +8421,15 @@ function touchAccessDevice(key, patch = {}) {
     };
     accessDevices.set(key, record);
     if (record.deviceId) {
-        infraStore?.upsertDevice(record);
+        try {
+            infraStore?.upsertDevice(record);
+        } catch (error) {
+            console.error('[infra-audit] device presence write failed; queued for retry:', error);
+            enqueueInfraAudit(() => {
+                const latest = accessDevices.get(key);
+                if (latest?.deviceId === record.deviceId) infraStore?.upsertDevice(latest);
+            }, `device-presence:${record.deviceId}`);
+        }
     }
     pruneAccessDevices();
     return record;

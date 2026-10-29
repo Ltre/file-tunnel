@@ -31,7 +31,7 @@ async function run(){
             let mediaFullscreenZoom={scale:1,x:0,y:0},mediaFullscreenPointerStart=null,mediaFullscreenGesture={pointers:new Map(),pinch:false},mediaFullscreenMousePan=null,mediaFullscreenSuppressClickUntil=0,filePreviewPointerStart=null;
             let activeRemotePreviewControl=null,suppressNextFilePreviewPopstate=false;
             const MEDIA_FULLSCREEN_HISTORY_KEY='fixture-fullscreen';
-            const historyLog=()=>{},getCachedMediaPosterOrQueue=()=>'',isFullscreenPreviewableType=type=>/^(video|audio|image)\\//.test(type);
+            const historyLog=()=>{},scheduleFileObjectUrlCleanup=()=>{},getCachedMediaPosterOrQueue=()=>'',isFullscreenPreviewableType=type=>/^(video|audio|image)\\//.test(type);
             const hasCompleteFileCache=file=>Boolean(file?.data),getStoredFileUrl=()=>'/preview-video-261029';
             const compareHistoryMessages=(a,b)=>a.timestamp-b.timestamp,getCollectionFiles=message=>message?.collection?.files||[];
             const navigateFilePreview=async delta=>window.navigated=delta,closeFilePreview=()=>window.closed=true;

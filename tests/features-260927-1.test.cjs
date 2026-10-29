@@ -102,10 +102,12 @@ test('迟到的已删除消息不会重新写入或广播', () => {
 test('先删除后到达的记录在服务重启后仍有持久删除标记', async () => {
     const { createInfraStore } = require('../server/infra-store');
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tunnel-delete-race-'));
+    const stores = [];
     const sessionId = 'race-session';
     const messageId = '11111111-1111-4111-8111-111111111111';
     try {
         const store = await createInfraStore({ dataDir });
+        stores.push(store);
         assert.equal(store.markHistoryDeleted(sessionId, messageId, Date.now(), { allowMissing:true }), true);
         assert.deepEqual(store.listDeletedHistoryIds(sessionId), [messageId]);
         const late = store.recordHistoryMessage(sessionId, { id:messageId, type:'file', fileInfo:{ id:'late-file', size:2 } });
@@ -113,9 +115,11 @@ test('先删除后到达的记录在服务重启后仍有持久删除标记', as
         assert.equal(store.listHistoryRecords(sessionId).length, 0);
         store.flush();
         const reopened = await createInfraStore({ dataDir });
+        stores.push(reopened);
         assert.deepEqual(reopened.listDeletedHistoryIds(sessionId), [messageId]);
         assert.equal(reopened.listHistoryRecords(sessionId).length, 0);
     } finally {
+        for (const store of stores) store.close();
         fs.rmSync(dataDir, { recursive:true, force:true });
     }
 });

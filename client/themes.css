@@ -126,8 +126,8 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) * {scrollbar-color:var(--ui-l
 /* Secondary surfaces from recursive interaction review. Geometry stays native. */
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.modal,.control-center,.notification-center-panel,.notification-center-item,.resource-browser-card,.resource-browser-modal,.resource-browser-toolbar,.resource-browser-item,.disk-tasks,.disk-task-row,.disk-account-switcher,.disk-partition-settings,.telegram-drive-subdialog,.telegram-drive-dialog-header,.telegram-drive-dialog-actions,.account-ui-card,.account-ui-panel,.sc-selected-list,.sc-selected-row) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);border-radius:var(--ui-radius);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .modal {box-shadow:var(--ui-menu);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.modal-overlay.active,.resource-browser-layer,.telegram-drive-menu-backdrop,.notification-center-overlay) {background:color-mix(in srgb,var(--ui-bg) 62%,#18263a66);}
-body[data-theme="orbit"] :is(.modal-overlay.active,.resource-browser-layer,.telegram-drive-menu-backdrop) {background:#080b16b5;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.modal-overlay.active,.resource-browser-layer:not(.is-minimized),.telegram-drive-menu-backdrop,.notification-center-overlay) {background:color-mix(in srgb,var(--ui-bg) 62%,#18263a66);}
+body[data-theme="orbit"] :is(.modal-overlay.active,.resource-browser-layer:not(.is-minimized),.telegram-drive-menu-backdrop) {background:#080b16b5;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.modal h3,.modal p,.modal li,.resource-browser-title,.profile-fields,.notification-center-header,.disk-tasks summary) {color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.modal small,.resource-browser-meta,.profile-field-label) {color:var(--ui-muted);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .modal ul li {border-color:var(--ui-line);}

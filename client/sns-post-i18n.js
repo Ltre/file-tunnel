@@ -8,6 +8,7 @@
         ['本页仅使用 /sns-cookies 中对应平台的普通 Cookie；公开页面未配置 Cookie 时也会直接尝试。网易云音乐建议使用小号 Cookie；可下载音质和完整内容以该账号实际权限为准。解析不到的字段会保持为空。', 'This page uses ordinary platform cookies from /sns-cookies and also tries public pages without cookies. Use a secondary NetEase account cookie. Available quality and full content depend on the account permissions. Unavailable fields remain empty.'],
         ['建议使用网易云音乐小号的 Cookie；下载权限、音质及是否仅能获取试听片段，以该账号和平台实际返回为准。', 'Use a secondary NetEase account cookie. Download permissions, quality and possible preview-only access depend on the account and platform response.'],
         ['帖子转为 Markdown', 'Forward post as Markdown'],
+        ['此记录包含 SNS 链接，媒体解析尚未完成', 'This record contains an SNS link. Media identification has not completed.'],
         ['正在启动帖子转发…', 'Starting post transfer…'],
         ['正在获取帖子及媒体，完成后将显示在传输记录中', 'Fetching the post and media. The result will appear in transfer history when complete.'],
         ['帖子 Markdown 已保存到隧道', 'Post Markdown saved to the tunnel'],

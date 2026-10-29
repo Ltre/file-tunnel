@@ -94,6 +94,7 @@ function transferFixture({ stall = '', fail = '', bodyStall = '' } = {}) {
         }
     };
     const context = vm.createContext({ window, global: window, AbortController, Date, Promise, Map, DOMException, encodeURIComponent,
+        document: { getElementById: () => null },
         setTimeout: (run, ms) => { const id = ++nextTimer; timers.set(id, { run, ms }); return id; }, clearTimeout: id => timers.delete(id),
         active: new Map(), get: async () => structuredClone(record), update: async (_id, patch) => record = { ...record, ...patch }, complete: async (_id, result) => record = { ...record, result, status: 'completed' },
         versionOf: value => `${value.completedAt}-${value.outputFileSize}`, getBlob: () => { throw Error('must not read file body'); },

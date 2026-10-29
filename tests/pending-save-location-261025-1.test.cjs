@@ -10,9 +10,10 @@ function fixture({ allowSwitch = true, fresh = false, afterStart } = {}) {
     let account = fresh ? 'saved-account' : 'other-account';
     const record = { id:'pending-save-original', status:'completed', target:{accountId:'saved-account',accountName:'保存账号',partitionId:'original-partition-id',partitionName:'保存分区',diskSpace:'original-space',path:'原保存目录/子目录'},
         result:{items:[{id:'saved-file-a'},{id:'saved-file-b'}]},file:{name:'任务成品.mp4',size:123} };
-    const baseline = structuredClone(record), calls = {switches:[],reveals:[],feedback:[],verified:0,banners:0};
+    const baseline = structuredClone(record), calls = {switches:[],reveals:[],feedback:[],verified:0,banners:0,finished:0};
     const context = { telegramDrivePendingSaveId:record.id,telegramDrivePendingSaveRunning:false,telegramDriveNavigationVersion:7,
-        pendingSaveFeedback:(...args) => calls.feedback.push(args),finishPendingSaveFeedback:()=>{},showAppToast:message=>calls.feedback.push(['toast',false,message]),
+        document:{getElementById:()=>null},
+        pendingSaveFeedback:(...args) => calls.feedback.push(args),finishPendingSaveFeedback:()=>{calls.finished++;},showAppToast:message=>calls.feedback.push(['toast',false,message]),
         pendingSaveRead:async route => { assert.equal(route,'/accounts'); return {accounts:[{identity:{id:'saved-account'}}]}; },
         choosePendingSaveTarget(){ throw Error('completed receipt must not choose another destination'); },
         pendingSaveTransferId:value => value.id,confirmTelegramDriveAction:async () => true,formatFileSize:String,telegramDriveDisplayPath:String,telegramDriveSpaceKey:value => value.diskSpace,
@@ -57,12 +58,14 @@ test('fresh transfer completion does not take over after the user navigates to a
     const f = fixture({fresh:true,afterStart:context => {context.telegramDriveNavigationVersion++;}}); await f.run();
     assert.equal(f.calls.reveals.length,0); assert.equal(f.calls.switches.length,0);
     assert.deepEqual(f.record,f.baseline); assert.equal(f.record.status,'completed');
+    assert.equal(f.calls.finished,1,'completed transfer progress ends without redirecting the newer view');
 });
 
 test('fresh transfer completion does not switch back after the user changes the selected account', async () => {
     const f = fixture({fresh:true,afterStart:(_context,setAccount) => setAccount('other-account')}); await f.run();
     assert.equal(f.calls.reveals.length,0); assert.equal(f.calls.switches.length,0); assert.equal(f.getAccount(),'other-account');
     assert.deepEqual(f.record,f.baseline);
+    assert.equal(f.calls.finished,1,'completed transfer progress ends without switching accounts');
 });
 
 test('fresh completion still locates saved files when no user navigation occurred', async () => {

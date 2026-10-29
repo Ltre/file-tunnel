@@ -195,7 +195,7 @@
             const deadline = task.loadTimer = setTimeout(() => { task.timedOut = true; task.controller.abort(); }, 30000);
             const ticket = reference => request('/stations/' + stationId + '/ticket', 'POST', { itemId: item.id, reference }, { signal });
             task.promise = (async () => {
-                const access = await ticket(); if (task.disposed) return; task.expiresAt = access.expiresAt; task.url = await mediaUrl(access,signal); if(task.disposed){if(task.url.startsWith('blob:'))URL.revokeObjectURL(task.url);return;} if(signal.aborted)throw Error('STREAM_MEDIA_TIMEOUT');task.size = Number(access.size) || 0; task.warmCursor = 0; task.type = access.type;
+                const access = await ticket(); if (task.disposed) return; task.expiresAt = access.expiresAt; task.url = await mediaUrl(access,signal,item); if(task.disposed){if(task.url.startsWith('blob:'))URL.revokeObjectURL(task.url);return;} if(signal.aborted)throw Error('STREAM_MEDIA_TIMEOUT');task.size = Number(access.size) || 0; task.warmCursor = 0; task.type = access.type;
                 if (task.size > 0 && task.size <= 16 * 1024 * 1024) task.clientChunks = [];
                 if (['audio', 'video', 'image'].includes(item.kind)) {
                     const node = document.createElement(item.kind === 'image' ? 'img' : item.kind); task.element = node;

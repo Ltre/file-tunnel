@@ -198,6 +198,9 @@ const MUSIC_PLAYER_HISTORY_KEY = 'tunnelMusicPlayer';
 const MUSIC_QUEUE_HISTORY_KEY = 'tunnelMusicQueue';
 const HOME_GUARD_HISTORY_KEY = 'tunnelHomeGuard';
 const fileObjectUrls = new Map();
+const retiredFileObjectUrls = new Map();
+let fileObjectUrlCleanupObserver = null;
+let fileObjectUrlCleanupFrame = 0;
 const pendingHistoryMessageIds = new Set();
 const pendingFileCacheCleanupIds = new Set();
 let fileCacheCleanupTimer = null;
@@ -329,9 +332,20 @@ const directoryMirror = {
     busy: false
 };
 
-window.addEventListener('beforeunload', () => {
+window.addEventListener('pagehide', event => {
+    // A cancelled navigation keeps this document alive; bfcache restores it too.
+    // Release its media URLs only once the document is actually being discarded.
+    if (event.persisted) return;
     editorAssetUrls.forEach(url => URL.revokeObjectURL(url));
     fileObjectUrls.forEach(url => URL.revokeObjectURL(url));
+    retiredFileObjectUrls.forEach((_fileId, url) => URL.revokeObjectURL(url));
+    editorAssetUrls.clear();
+    fileObjectUrls.clear();
+    retiredFileObjectUrls.clear();
+    fileObjectUrlCleanupObserver?.disconnect();
+    fileObjectUrlCleanupObserver = null;
+    if (fileObjectUrlCleanupFrame) cancelAnimationFrame(fileObjectUrlCleanupFrame);
+    fileObjectUrlCleanupFrame = 0;
 });
 
 function getFileProgressKey(fileId, transport = '') {
@@ -516,9 +530,7 @@ async function syncExternalFileSourceUi(fileId, storedFile, readableFile, fileIn
         }).catch(err => historyLog('external-file-safety-copy-promote-failed', { fileId, error: err.message }));
     }
     if (storedFile?.externalFileHandle && !sourceState.handleSourceOnly && !sourceState.hasBrowserCache) {
-        const objectUrl = fileObjectUrls.get(fileId);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        fileObjectUrls.delete(fileId);
+        releaseStoredFileUrl(fileId);
         showFileMessagePlaceholder(
             fileId,
             readableFile?.externalFilePermissionRequired ? '需要重新授权本机原文件' : '本机原文件无法读取',
@@ -3552,9 +3564,7 @@ function initFileAssetTransfer() {
                 await saveToStore('files', storedFile);
             }
             clearFileMessageAvailability(asset.id);
-            const staleUrl = fileObjectUrls.get(asset.id);
-            if (staleUrl) URL.revokeObjectURL(staleUrl);
-            fileObjectUrls.delete(asset.id);
+            releaseStoredFileUrl(asset.id, { preserveInUse: true });
             clearServerAssetRecoveryStage(asset.id);
             if (asset.isDirectoryMirror) await applyDirectoryMirrorAsset(asset);
             else await refreshFileMessage(asset.id);
@@ -6593,7 +6603,7 @@ async function fetchServerAssetCacheOnce(fileInfo, reason = '') {
     serverAssetRecoveries.metadata.delete(fileInfo.id);
     clearServerAssetRecoveryStage(fileInfo.id);
     enqueueMediaPosterCache(fileInfo.id, fileInfo);
-    fileObjectUrls.delete(fileInfo.id);
+    releaseStoredFileUrl(fileInfo.id, { preserveInUse: true });
     await refreshFileMessage(fileInfo.id);
     refreshOpenSnsMediaClientStates();
     historyLog('server-asset-cache-fetched', {
@@ -8226,15 +8236,18 @@ function syncTransferRecordSnsBadge(messageEl, message) {
     if (!messageEl) return;
     messageEl.querySelector('.message-record-sns-badge')?.remove();
     const mediaItems = Array.isArray(message?.snsMediaItems) ? message.snsMediaItems : [];
-    const hasSnsMedia = !message?.snsAcquisition && mediaItems.some(item => item?.id && item?.mediaKind !== 'unsupported');
-    messageEl.classList.toggle('message-record-sns', hasSnsMedia);
-    if (!hasSnsMedia) return;
+    const sources = Array.isArray(message?.snsSources) ? message.snsSources : [];
+    const hasSnsMedia = mediaItems.some(item => item?.id && item?.mediaKind !== 'unsupported');
+    const hasSnsSource = sources.some(source => source?.id && source.sourceUrl && source.sourceType !== 'unsupported');
+    const visible = !message?.snsAcquisition && (hasSnsMedia || hasSnsSource);
+    messageEl.classList.toggle('message-record-sns', visible);
+    if (!visible) return;
     const header = messageEl.querySelector('.message-header');
     if (!header) return;
     const badge = document.createElement('span');
     badge.className = 'message-record-sns-badge';
     badge.textContent = '◉ SNS';
-    badge.title = '此记录包含可获取的 SNS 媒体';
+    badge.title = hasSnsMedia ? '此记录包含可获取的 SNS 媒体' : (window.TunnelI18n?.t('此记录包含 SNS 链接，媒体解析尚未完成') || '此记录包含 SNS 链接，媒体解析尚未完成');
     header.appendChild(badge);
 }
 
@@ -8695,6 +8708,7 @@ let activeFilePreviewCanFullscreen = false;
 let activeFilePreviewMediaType = '';
 let activeFilePreviewStoredFile = null;
 let activeFilePreviewObjectUrl = '';
+let filePreviewLoadVersion = 0;
 let filePreviewOpenTask = null;
 let remotePreviewSelection = null;
 let remotePreviewControl = null;
@@ -8769,6 +8783,7 @@ function closeFileDetails() {
 }
 
 function closeFilePreview(options = {}) {
+    filePreviewLoadVersion++;
     if (mediaFullscreenHistoryOpen || document.getElementById('mediaFullscreenViewer')?.classList.contains('active')) {
         closeMediaFullscreen({ fromHistory: true, forceClose: true });
     }
@@ -8819,6 +8834,7 @@ function closeFilePreview(options = {}) {
     content?.replaceChildren();
     resetFilePreviewContentStage(content);
     document.getElementById('filePreviewActions')?.replaceChildren();
+    scheduleFileObjectUrlCleanup();
     if (shouldGoBack) history.back();
 }
 
@@ -8859,6 +8875,7 @@ function captureCollectionPreviewReturnState(collectionMessageId, anchorFileId =
 function restoreCollectionPreviewReturnState(collectionMessageId) {
     const stateToRestore = collectionPreviewReturnState;
     if (!stateToRestore || stateToRestore.messageId !== collectionMessageId || !stateToRestore.contentFragment) return false;
+    filePreviewLoadVersion++;
     const title = document.getElementById('filePreviewTitle');
     const content = document.getElementById('filePreviewContent');
     const actions = document.getElementById('filePreviewActions');
@@ -8868,6 +8885,7 @@ function restoreCollectionPreviewReturnState(collectionMessageId) {
     activeFilePreviewMode = 'collection';
     activeCollectionPreviewMessageId = collectionMessageId;
     activeFilePreviewFileId = '';
+    activeFilePreviewObjectUrl = '';
     activeFilePreviewMessageId = '';
     activeFilePreviewOwnerDeviceId = '';
     activeFilePreviewCanFullscreen = false;
@@ -9775,8 +9793,9 @@ async function applyCollectionPreviewIncrementalUpdate(previousMessage, nextMess
 
 async function refreshActiveFilePreviewForFile(fileId) {
     if (activeFilePreviewMode !== 'file' || activeFilePreviewFileId !== fileId) return;
+    const version = filePreviewLoadVersion, sessionId = state.sessionId;
     const fileInfo = await getActivePreviewFileInfo(fileId);
-    if (!fileInfo?.id) return;
+    if (!fileInfo?.id || version !== filePreviewLoadVersion || sessionId !== state.sessionId) return;
     await openFilePreviewForInfo(fileInfo, {
         messageId: activeFilePreviewMessageId || activeCollectionPreviewMessageId || '',
         collectionMessageId: activeCollectionPreviewMessageId || '',
@@ -9961,9 +9980,7 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
         cacheCleared: true,
         restoreRequested: false
     });
-    const objectUrl = fileObjectUrls.get(fileInfo.id);
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    fileObjectUrls.delete(fileInfo.id);
+    releaseStoredFileUrl(fileInfo.id);
     showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true, false);
     await refreshCollectionMessagesForFile(fileInfo.id);
     await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
@@ -10029,9 +10046,10 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
     return result;
 }
 
-async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false, handleSourceOnly = false, handleReadable = false }) {
+async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId = '', hasLocalData = true, cacheCleared = false, restoreRequested = false, handleSourceOnly = false, handleReadable = false, isCurrent = () => true }) {
     const isCollectionFile = Boolean(collectionMessageId);
     const fileFavorite = await isFileFavorite(fileInfo);
+    if (!isCurrent()) return;
     const deleteTitle = isCollectionFile ? '仅从合辑中删除此文件，并清理其缓存' : '从会话中删除此记录及所有设备的文件缓存';
     const cacheAction = handleReadable || handleSourceOnly
         ? null
@@ -10049,7 +10067,7 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
     setFilePreviewActions([
         createFileActionButton(fileFavorite ? '★' : '☆', fileFavorite ? '取消收藏' : '收藏', () => {
             toggleSingleFileFavorite(fileInfo)
-                .then(() => renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId, hasLocalData, cacheCleared, restoreRequested, handleSourceOnly, handleReadable }))
+                .then(() => renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId, hasLocalData, cacheCleared, restoreRequested, handleSourceOnly, handleReadable, isCurrent }))
                 .catch(err => {
                     alert(`收藏状态保存失败: ${err.message}`);
                     historyLog('file-favorite-toggle-failed', { messageId, collectionMessageId, fileId: fileInfo.id, error: err.message });
@@ -10094,6 +10112,57 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
             }));
         })
     ].filter(Boolean));
+}
+
+function isStoredFileUrlInUse(url) {
+    if (document.querySelector(`[src="${cssEscape(url)}"]`)) return true;
+    if (activeFilePreviewObjectUrl === url && document.getElementById('filePreviewViewer')?.classList.contains('active')) return true;
+    if (document.getElementById('mediaFullscreenViewer')?.classList.contains('active') && mediaFullscreenItems.some(item => item.url === url)) return true;
+    return musicPlayer.queue.some(track => track.url === url) || musicPlayer.audio?.src === url || musicPlayer.tempAudio?.src === url;
+}
+
+function releaseUnusedFileObjectUrls() {
+    for (const [url] of retiredFileObjectUrls) {
+        if (isStoredFileUrlInUse(url)) continue;
+        URL.revokeObjectURL(url);
+        retiredFileObjectUrls.delete(url);
+    }
+    if (!retiredFileObjectUrls.size) {
+        fileObjectUrlCleanupObserver?.disconnect();
+        fileObjectUrlCleanupObserver = null;
+    }
+}
+
+function scheduleFileObjectUrlCleanup() {
+    if (!retiredFileObjectUrls.size || fileObjectUrlCleanupFrame) return;
+    fileObjectUrlCleanupFrame = requestAnimationFrame(() => {
+        fileObjectUrlCleanupFrame = 0;
+        releaseUnusedFileObjectUrls();
+    });
+}
+
+function releaseStoredFileUrl(fileId, { preserveInUse = false } = {}) {
+    const url = fileObjectUrls.get(fileId);
+    fileObjectUrls.delete(fileId);
+    if (url) {
+        if (preserveInUse) retiredFileObjectUrls.set(url, fileId);
+        else URL.revokeObjectURL(url);
+    }
+    if (!preserveInUse) {
+        for (const [retired, id] of retiredFileObjectUrls) if (id === fileId) {
+            URL.revokeObjectURL(retired);
+            retiredFileObjectUrls.delete(retired);
+        }
+    }
+    if (retiredFileObjectUrls.size && !fileObjectUrlCleanupObserver && typeof MutationObserver === 'function') {
+        fileObjectUrlCleanupObserver = new MutationObserver(scheduleFileObjectUrlCleanup);
+        for (const element of [document.getElementById('filePreviewViewer'), document.getElementById('mediaFullscreenViewer'),
+            document.getElementById('chatMessages'), document.getElementById('editor'), musicPlayer.overlay].filter(Boolean)) {
+            fileObjectUrlCleanupObserver.observe(element, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class'] });
+        }
+    }
+    if (retiredFileObjectUrls.size) scheduleFileObjectUrlCleanup();
+    else { fileObjectUrlCleanupObserver?.disconnect(); fileObjectUrlCleanupObserver = null; }
 }
 
 function getStoredFileUrl(fileId, storedFile) {
@@ -11201,6 +11270,7 @@ function initMusicPlayerCoverGestures(overlay) {
 }
 
 function renderMusicPlayer() {
+    scheduleFileObjectUrlCleanup();
     const overlay = ensureMusicPlayerOverlay();
     const track = getCurrentMusicTrack();
     const cover = overlay.querySelector('#musicPlayerCover');
@@ -11383,6 +11453,7 @@ function initMusicQueueDrawer(overlay) {
 }
 
 function renderMusicQueueList(options = {}) {
+    scheduleFileObjectUrlCleanup();
     const list = musicPlayer.overlay?.querySelector('#musicPlayerQueueList');
     if (!list) return;
     getCurrentMusicTrack();
@@ -11839,6 +11910,8 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
 
 async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (!fileInfo?.id) return false;
+    const version = ++filePreviewLoadVersion, sessionId = state.sessionId;
+    const isCurrent = () => version === filePreviewLoadVersion && sessionId === state.sessionId;
     if (/\.html\.zip$/i.test(String(fileInfo.name || ''))) return openWebZipStandalone(fileInfo, options);
     const title = document.getElementById('filePreviewTitle');
     const content = setFilePreviewContentStage('preview-loading-stage');
@@ -11870,13 +11943,18 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     });
     filePreviewReturnCollectionMessageId = returnCollectionMessageId;
 
-    const persistedFile = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
+    const cachedFile = await getFromStore('files', fileInfo.id);
+    if (!isCurrent()) return false;
+    const persistedFile = await materializeCachedFileRecord(cachedFile);
+    if (!isCurrent()) return false;
     let storedFile = persistedFile;
     if (persistedFile?.externalFileHandle) {
         storedFile = await materializeExternalFileRecord(persistedFile, { requestPermission: true });
+        if (!isCurrent()) return false;
     }
     const beforeExternalSourceState = getExternalFileSourceState(persistedFile, persistedFile, fileInfo);
     const externalSourceState = await syncExternalFileSourceUi(fileInfo.id, persistedFile, storedFile, fileInfo);
+    if (!isCurrent()) return false;
     setFilePreviewTitle(fileInfo.name, {
         handleSourceOnly: externalSourceState.handleSourceOnly,
         handleReadable: externalSourceState.handleReadable
@@ -11886,7 +11964,9 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         persistedFile?.externalFileMissing !== storedFile?.externalFileMissing ||
         persistedFile?.externalFilePermissionRequired !== storedFile?.externalFilePermissionRequired) {
         await refreshCollectionMessagesForFile(fileInfo.id);
+        if (!isCurrent()) return false;
         await refreshCollectionPreviewCardForFile(fileInfo.id, collectionContextId);
+        if (!isCurrent()) return false;
     }
     if (!hasCompleteFileCache(storedFile, fileInfo)) {
         if (options.requestMissing === true && fileInfo.isServerAsset && fileInfo.serverAssetUrl) {
@@ -11907,8 +11987,10 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
                 error: err.message
             }));
         }
+        if (!isCurrent()) return false;
         renderFileMetadataPreview(content, fileInfo, getMissingFileStateLabel(storedFile || fileInfo));
         await renderSingleFilePreviewActions({
+            isCurrent,
             messageId: options.messageId || '',
             fileInfo,
             ownerDeviceId,
@@ -11918,6 +12000,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             restoreRequested: Boolean(storedFile?.restoreRequested),
             handleReadable: externalSourceState.handleReadable
         });
+        if (!isCurrent()) return false;
         historyLog('file-preview-opened-without-cache', {
             messageId: options.messageId,
             collectionMessageId: collectionContextId,
@@ -11932,6 +12015,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (!isPreviewableFileType(type)) {
         renderFileMetadataPreview(content, fileInfo, '不可直接预览');
         await renderSingleFilePreviewActions({
+            isCurrent,
             messageId: options.messageId || '',
             fileInfo,
             ownerDeviceId,
@@ -11940,6 +12024,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
             handleSourceOnly: externalSourceState.handleSourceOnly,
             handleReadable: externalSourceState.handleReadable
         });
+        if (!isCurrent()) return false;
         historyLog('file-preview-opened-as-metadata', {
             messageId: options.messageId,
             collectionMessageId: collectionContextId,
@@ -11987,6 +12072,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
     setFilePreviewMusicButton(type.startsWith('audio/'));
     setFilePreviewRemoteButton(true);
     await renderSingleFilePreviewActions({
+        isCurrent,
         messageId: options.messageId || '',
         fileInfo,
         ownerDeviceId,
@@ -11995,6 +12081,7 @@ async function openFilePreviewForInfo(fileInfo, options = {}) {
         handleSourceOnly: externalSourceState.handleSourceOnly,
         handleReadable: externalSourceState.handleReadable
     });
+    if (!isCurrent()) return false;
     historyLog('file-preview-opened', {
         messageId: options.messageId,
         collectionMessageId: collectionContextId,
@@ -12502,6 +12589,7 @@ function closeMediaFullscreen(options = {}) {
         try { media.pause(); } catch (_) {}
     });
     content?.replaceChildren();
+    scheduleFileObjectUrlCleanup();
     mediaFullscreenPointerStart = null;
     const remoteControl = activeRemotePreviewControl;
     activeRemotePreviewControl = null;
@@ -12994,11 +13082,14 @@ async function downloadCollectionFiles(files, collectionMessageId = '') {
 }
 
 async function openCollectionRecord(messageId, options = {}) {
+    const version = ++filePreviewLoadVersion, sessionId = state.sessionId;
+    const isCurrent = () => version === filePreviewLoadVersion && sessionId === state.sessionId;
     setFilePreviewFullscreenButton(false);
     setFilePreviewLightShareButton(false);
     activeFilePreviewCanFullscreen = false;
     activeFilePreviewMediaType = '';
     const message = await getFromStore('messages', messageId);
+    if (!isCurrent()) return;
     const files = getCollectionFiles(message);
     if (!files.length) return;
     filePreviewReturnCollectionMessageId = '';
@@ -13007,6 +13098,7 @@ async function openCollectionRecord(messageId, options = {}) {
     activeFilePreviewFileId = '';
     activeFilePreviewMessageId = '';
     activeFilePreviewOwnerDeviceId = '';
+    activeFilePreviewObjectUrl = '';
     updateFilePreviewNavigationControls().catch(err => historyLog('file-preview-nav-update-failed', { error: err.message }));
 
     const title = document.getElementById('filePreviewTitle');
@@ -13016,10 +13108,13 @@ async function openCollectionRecord(messageId, options = {}) {
     const grid = document.createElement('div');
     grid.className = 'collection-file-grid';
     for (const fileInfo of files) {
-        grid.appendChild(await createCollectionFileCard(fileInfo, messageId));
+        const card = await createCollectionFileCard(fileInfo, messageId);
+        if (!isCurrent()) return;
+        grid.appendChild(card);
     }
     content.appendChild(grid);
     requestAnimationFrame(() => {
+        if (!isCurrent()) return;
         const anchorFileId = options.anchorFileId || '';
         const anchor = anchorFileId ? grid.querySelector(`.collection-file-card[data-file-id="${CSS.escape(anchorFileId)}"]`) : null;
         if (anchor) {
@@ -13296,9 +13391,7 @@ async function clearFileCache(messageId) {
         delete fileInfo.data;
         await saveToStore('messages', message);
     }
-    const objectUrl = fileObjectUrls.get(fileInfo.id);
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
-    fileObjectUrls.delete(fileInfo.id);
+    releaseStoredFileUrl(fileInfo.id);
     showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true, false);
     historyLog('file-cache-cleared', { messageId, fileId: fileInfo.id });
 }
@@ -13515,9 +13608,7 @@ async function processPendingFileCacheCleanup() {
             await deleteCacheStoreReference(storedFile, 'pending-file-cleanup');
             await deleteFromStore('files', fileId);
             removeMusicTrackFromQueue(fileId);
-            const objectUrl = fileObjectUrls.get(fileId);
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
-            fileObjectUrls.delete(fileId);
+            releaseStoredFileUrl(fileId);
             deletedCount += 1;
             if (index % 4 === 3 || navigator.scheduling?.isInputPending?.()) await sleep(0);
         }
@@ -13743,9 +13834,7 @@ async function clearGarbageFileCaches(files) {
         fileAssetTransfer?.cancel(file.id);
         await deleteCacheStoreReference(file, 'garbage-cleanup');
         await deleteFromStore('files', file.id);
-        const objectUrl = fileObjectUrls.get(file.id);
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
-        fileObjectUrls.delete(file.id);
+        releaseStoredFileUrl(file.id);
     }
     historyLog('garbage-file-caches-cleared', { count: files.length, fileIds: files.map(file => file.id) });
 }
@@ -14309,9 +14398,7 @@ async function clearResourceCache(resource) {
         transferInterrupted: false
     });
 
-    const fileUrl = fileObjectUrls.get(resource.id);
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
-    fileObjectUrls.delete(resource.id);
+    releaseStoredFileUrl(resource.id);
     const editorUrl = editorAssetUrls.get(resource.id);
     if (editorUrl) URL.revokeObjectURL(editorUrl);
     editorAssetUrls.delete(resource.id);
@@ -14392,9 +14479,7 @@ async function deleteUnreferencedResource(resource) {
 
     fileAssetTransfer?.cancel(resource.id);
     await deleteFromStore('files', resource.id);
-    const fileUrl = fileObjectUrls.get(resource.id);
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
-    fileObjectUrls.delete(resource.id);
+    releaseStoredFileUrl(resource.id);
     const editorUrl = editorAssetUrls.get(resource.id);
     if (editorUrl) URL.revokeObjectURL(editorUrl);
     editorAssetUrls.delete(resource.id);

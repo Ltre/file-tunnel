@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['正在定位已保存的网盘文件…','Locating the saved drive file…'],
+        ['文件位置读取失败，转存完成记录仍保留：{0}','The file location could not be read. The completed transfer record is retained: {0}'],
+        ['重试查看','Retry viewing'],
+        ['文件定位已取消，转存完成记录仍保留','File navigation was cancelled. The completed transfer record is retained'],
         ['正在加载串流台界面…','Loading the station interface…'],
         ['后台播放','Background playback'],['后台播放已关闭','Background playback is disabled'],
         ['播放持续没有进展，已重试，请点击恢复播放','Playback is still stalled after retries. Select Resume playback'],

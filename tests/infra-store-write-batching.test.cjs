@@ -7,16 +7,18 @@ const path = require('node:path');
 const test = require('node:test');
 const { createInfraStore } = require('../server/infra-store');
 
-test('audit bursts are persisted by one explicit flush instead of one full database rewrite per record', async t => {
+test('audit bursts commit once at flush without exporting or rewriting the entire database', async t => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-tunnel-infra-batch-'));
-    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const stores = [];
+    t.after(() => { for (const store of stores) store.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
 
     const store = await createInfraStore({ dataDir });
-    const originalWriteDatabaseFile = store.writeDatabaseFile.bind(store);
-    let physicalWriteCount = 0;
-    store.writeDatabaseFile = bytes => {
-        physicalWriteCount++;
-        return originalWriteDatabaseFile(bytes);
+    stores.push(store);
+    const originalExec = store.db.exec.bind(store.db);
+    let commitCount = 0;
+    store.db.exec = sql => {
+        if (sql === 'COMMIT') commitCount++;
+        return originalExec(sql);
     };
 
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -32,11 +34,12 @@ test('audit bursts are persisted by one explicit flush instead of one full datab
     }
 
     assert.equal(store.listTunnelsWithStats()[0].transfer_record_count, 200);
-    assert.equal(physicalWriteCount, 0, 'hot audit mutations must not export and rewrite the full database');
+    assert.equal(commitCount, 0, 'hot audit mutations must not commit separately for every record');
     assert.equal(store.flush(), true);
-    assert.equal(physicalWriteCount, 1, 'one flush persists the whole queued burst');
+    assert.equal(commitCount, 1, 'one flush commits the whole queued burst');
 
     const reopened = await createInfraStore({ dataDir });
+    stores.push(reopened);
     assert.equal(reopened.listTunnelsWithStats()[0].transfer_record_count, 200);
     assert.equal(reopened.listHistoryRecords(sessionId, { limit: 500 }).length, 200);
 });

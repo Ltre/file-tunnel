@@ -132,6 +132,7 @@
     }
     async function localBlob(source) {
         const saved = localFiles.get(source.fileId);
+        if (saved?.file && !saved.handle) return saved.file;
         const handle = saved?.handle || await handleStore('get', source.fileId).catch(() => null);
         if (handle && await handle.queryPermission({ mode: 'read' }) === 'granted') {
             const file = await handle.getFile();
@@ -142,6 +143,21 @@
         throw Error('missing');
     }
     let peerMedia;
+    async function playbackUrl(access, signal, item, state, actor) {
+        // A ticket still authorizes each program. Only an exact saved version
+        // on its source device can replace transport with its own local bytes.
+        const saved = state.local && localConfig(state.id);
+        const candidate = saved?.configVersion === state.configVersion && saved.items?.find(value => value.id === item.id);
+        if (candidate?.source?.kind === 'local' && item.sourceKind === 'local' && candidate.name === item.name && candidate.size === item.size && candidate.kind === item.kind) {
+            try {
+                const blob = await localBlob(candidate.source);
+                if (signal.aborted) throw Error('STREAM_READ_CANCELLED');
+                if (blob.size !== item.size) throw Error('STREAM_SOURCE_CHANGED');
+                return URL.createObjectURL(blob);
+            } catch (cause) { if (signal.aborted) throw cause; }
+        }
+        return peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:actor}),signal) || access.url;
+    }
     async function providerLoop() {
         let retry = 1000; const providerId = uid();
         while (initialized) {
@@ -323,6 +339,54 @@
         const image=document.createElement('img'); image.className='sc-cover '+className; image.alt=t('串流台封面');image.loading='lazy';
         image.src=coverUrl(s)||'/client/icons/streaming.png';image.onerror=()=>{image.onerror=null;image.src='/client/icons/streaming.png';};return image;
     }
+    async function decodeCover(file) {
+        // Materialize the selected file before decoding. A gallery provider's
+        // File URL and an owned byte buffer are different browser read paths.
+        const blob = await new Promise((resolve,reject) => {
+            const reader = new FileReader(); let done = false;
+            const finish = cause => {
+                if (done) return; done = true; clearTimeout(timer);
+                reader.onload=reader.onerror=reader.onabort=null;
+                if (cause) reject(cause);
+                else if (!(reader.result instanceof ArrayBuffer) || reader.result.byteLength !== file.size) reject(Error('STREAM_COVER_READ_FAILED'));
+                else resolve(new Blob([reader.result],{type:file.type}));
+            };
+            const timer=setTimeout(()=>{finish(Error('STREAM_COVER_DECODE_TIMEOUT'));reader.abort();},15000);
+            reader.onload=()=>finish();reader.onerror=reader.onabort=()=>finish(Error('STREAM_COVER_READ_FAILED'));
+            try {reader.readAsArrayBuffer(file);} catch(cause) {finish(cause);}
+        });
+        if (typeof global.createImageBitmap === 'function') {
+            try {
+                const image = await new Promise((resolve,reject) => {
+                    let done=false; const timer=setTimeout(()=>{done=true;reject(Error('STREAM_COVER_DECODE_TIMEOUT'));},15000);
+                    Promise.resolve().then(()=>global.createImageBitmap(blob)).then(value=>{if(done){value.close();return;}done=true;clearTimeout(timer);resolve(value);},cause=>{if(done)return;done=true;clearTimeout(timer);reject(cause);});
+                });
+                return {image,close:()=>image.close()};
+            } catch (_) { /* Keep the HTML decoder for browsers without bitmap support for this image. */ }
+        }
+        const load = src => new Promise((resolve,reject) => {
+            const image=new Image();
+            const finish=cause=>{clearTimeout(timer);image.onload=image.onerror=null;cause?reject(cause):resolve(image);};
+            const timer=setTimeout(()=>finish(Error('STREAM_COVER_DECODE_TIMEOUT')),15000);
+            image.onload=()=>finish();image.onerror=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));
+            try {image.src=src;} catch(cause) {finish(cause);}
+        });
+        const url=URL.createObjectURL(blob);
+        try {
+            try {return {image:await load(url),close:()=>{}};}
+            catch(cause) {
+                if(cause.message!=='STREAM_COVER_DECODE_FAILED')throw cause;
+                const data=await new Promise((resolve,reject)=>{
+                    const reader=new FileReader();
+                    const finish=cause=>{clearTimeout(timer);reader.onload=reader.onerror=reader.onabort=null;cause?reject(cause):resolve(reader.result);};
+                    const timer=setTimeout(()=>{finish(Error('STREAM_COVER_DECODE_TIMEOUT'));reader.abort();},15000);
+                    reader.onload=()=>finish();reader.onerror=reader.onabort=()=>finish(Error('STREAM_COVER_READ_FAILED'));
+                    try{reader.readAsDataURL(blob);}catch(cause){finish(cause);}
+                });
+                return {image:await load(data),close:()=>{}};
+            }
+        } finally {URL.revokeObjectURL(url);}
+    }
     function coverEditor(form,d,stationId) {
         const field=document.createElement('div');field.className='sc-cover-field';
         const label=document.createElement('label');label.textContent=t('封面');
@@ -333,39 +397,18 @@
             const file=input.files?.[0],revision=++version;if(!file)return;status.textContent=t('正在裁剪封面…');
             try {
                 if(!/^image\/(png|jpeg|webp)$/.test(file.type)||file.size>20*1024*1024)throw Error('STREAM_COVER_INVALID');
-                const loadImage=src=>new Promise((resolve,reject)=>{
-                    const image=new Image();
-                    const finish=cause=>{clearTimeout(timer);image.onload=image.onerror=null;cause?reject(cause):resolve(image);};
-                    const timer=setTimeout(()=>finish(Error('STREAM_COVER_DECODE_TIMEOUT')),15000);
-                    image.onload=()=>finish();image.onerror=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));
-                    try{image.src=src;}catch(cause){finish(cause);}
-                });
-                const url=URL.createObjectURL(file);let image;
+                const decoded=await decodeCover(file),image=decoded.image;
                 try {
-                    try { image=await loadImage(url); }
-                    catch(cause) {
-                        if(cause.message!=='STREAM_COVER_DECODE_FAILED')throw cause;
-                        if(revision!==version||ui.stationId!==stationId||!field.isConnected)return;
-                        // On mobile file-provider blob URL failures, retry the
-                        // selected bytes once through an independent read path,
-                        // with the same decode, dimension and crop validation.
-                        const data=await new Promise((resolve,reject)=>{
-                            const reader=new FileReader();
-                            const finish=(cause,value)=>{clearTimeout(timer);reader.onload=reader.onerror=reader.onabort=null;cause?reject(cause):resolve(value);};
-                            const timer=setTimeout(()=>{finish(Error('STREAM_COVER_DECODE_TIMEOUT'));reader.abort();},15000);
-                            reader.onload=()=>finish(null,reader.result);reader.onerror=reader.onabort=()=>finish(Error('STREAM_COVER_DECODE_FAILED'));
-                            try{reader.readAsDataURL(file);}catch(cause){finish(cause);}
-                        });
-                        image=await loadImage(data);
-                    }
-                    const side=Math.min(image.naturalWidth,image.naturalHeight);if(!side||image.naturalWidth*image.naturalHeight>40000000)throw Error('STREAM_COVER_INVALID');
-                    const canvas=document.createElement('canvas');canvas.width=canvas.height=512;canvas.getContext('2d').drawImage(image,(image.naturalWidth-side)/2,(image.naturalHeight-side)/2,side,side,0,0,512,512);
+                    if(revision!==version||ui.stationId!==stationId||!field.isConnected)return;
+                    const width=image.naturalWidth||image.width,height=image.naturalHeight||image.height,side=Math.min(width,height);if(!side||width*height>40000000)throw Error('STREAM_COVER_INVALID');
+                    const canvas=document.createElement('canvas');canvas.width=canvas.height=512;canvas.getContext('2d').drawImage(image,(width-side)/2,(height-side)/2,side,side,0,0,512,512);
                     const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw Error('STREAM_COVER_INVALID');
                     if(revision!==version || ui.stationId!==stationId || !field.isConnected)return;
                     const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);
                     const cover={blob,url:URL.createObjectURL(blob),token:uid()};pendingCovers.set(stationId,cover);d.coverPending=cover.token;preview.src=cover.url;saveUi();status.textContent=t('封面已裁剪为正方形，点击保存后生效');
-                } finally {URL.revokeObjectURL(url);}
+                } finally {decoded.close();}
             }catch(cause){if(revision===version&&ui.stationId===stationId&&field.isConnected)status.textContent=t('封面处理失败，请选择有效图片')+' ['+cause.message+']';}
+            finally {if(revision===version)input.value='';}
         };
         label.append(input);field.append(label,preview,status,button('移除封面',()=>{version++;const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);pendingCovers.delete(stationId);d.coverId='';delete d.coverPending;preview.src='/client/icons/streaming.png';saveUi();}));
         form.children[0].after(field);
@@ -379,8 +422,8 @@
         clearWatchSchedule();
         renderedIdentity = viewIdentity();
         for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
-        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
+        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
@@ -671,11 +714,19 @@
                 const text = document.createElement('span'); text.className = 'message-content'; text.textContent = candidate.name + ' · ' + labelKind(candidate.kind);
                 row.dataset.recordId = candidate.source.messageId || '';
                 const thumbnail = document.createElement('span'); thumbnail.className = 'sc-source-thumbnail'; thumbnail.textContent = ({ video: '▶', audio: '♪', image: '▧', markdown: 'MD', text: 'TXT' })[candidate.kind];
-                if (candidate.thumbnailUrl || candidate.kind === 'image' && candidate.size <= 524288) {
+                if (candidate.thumbnailUrl || candidate.kind === 'image' && candidate.size <= (candidate.source.kind === 'local' ? 20 * 1048576 : 524288)) {
                     const image = document.createElement('img'); image.alt = ''; image.loading = 'lazy';
+                    let localUrl;
+                    candidateObservers.push({ disconnect() { if (localUrl) { URL.revokeObjectURL(localUrl); localUrl = null; } } });
                     const observer = new IntersectionObserver(entries => { if (!entries.some(entry => entry.isIntersecting)) return; observer.disconnect();
                         if (!row.isConnected || version !== pickerVersion) return;
-                        Promise.resolve(candidate.thumbnailUrl || sourceUrl(candidate)).then(url => { if (row.isConnected && version === pickerVersion) { image.src = url; thumbnail.replaceChildren(image); } }).catch(() => {});
+                        (async () => {
+                            const blob = candidate.source.kind === 'local' ? await localBlob(candidate.source) : null;
+                            const url = blob ? URL.createObjectURL(blob) : candidate.thumbnailUrl || await sourceUrl(candidate);
+                            if (!row.isConnected || version !== pickerVersion) { if (blob) URL.revokeObjectURL(url); return; }
+                            if (blob) localUrl = url;
+                            image.src = url; thumbnail.replaceChildren(image);
+                        })().catch(() => {});
                     }); observer.observe(row); candidateObservers.push(observer);
                 }
                 text.textContent += ' · ' + formatSize(candidate.size);
@@ -806,7 +857,10 @@
         showDialog('资源预览', body); const current = dialog, controller = new AbortController(); let objectUrl;
         current.previewCleanup = () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
         try {
-            const url = await sourceUrl(item, controller.signal); if (controller.signal.aborted) return;
+            const local = item.source.kind === 'local' ? await localBlob(item.source) : null;
+            if (controller.signal.aborted) return;
+            const url = local ? (objectUrl = URL.createObjectURL(local)) : await sourceUrl(item, controller.signal);
+            if (controller.signal.aborted) { if (objectUrl) URL.revokeObjectURL(objectUrl); return; }
             if (['video', 'audio'].includes(item.kind)) {
                 const media = document.createElement(item.kind); media.controls = true; media.preload = 'metadata'; media.onloadedmetadata = () => { progress.textContent = t('预览已就绪'); }; media.onerror = () => { progress.textContent = t('媒体无法播放，可重新读取或检查源文件'); }; media.src = url; body.append(media); return;
             }
@@ -819,7 +873,7 @@
             if (controller.signal.aborted) return;
             const blob = new Blob(chunks, { type: response.headers.get('Content-Type') || item.type });
             if (item.kind === 'image') {
-                const image = document.createElement('img'); image.alt = item.name; objectUrl = URL.createObjectURL(blob);
+                const image = document.createElement('img'); image.alt = item.name; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = URL.createObjectURL(blob);
                 image.onload = () => { if (!controller.signal.aborted) progress.textContent = t('预览已就绪') + ' · ' + formatSize(loaded); };
                 image.onerror = () => { if (!controller.signal.aborted) progress.textContent = t('图片无法读取，请检查来源'); };
                 progress.textContent = t('图片已加载，正在解码…') + ' · ' + formatSize(loaded); image.src = objectUrl; body.append(image); return;
@@ -1015,7 +1069,8 @@
         const seekControl = async (itemId, position) => { if (itemId !== (player?.snapshot() || snapshot).playback.itemId) await command('select', { itemId }); await command('seek', { position }); };
         if (snapshot.visibility !== 'offline') {
             if (!player) { player = global.StreamingPlayer.create({ stationId: snapshot.id, watchId: uid(),
-                request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }), mediaUrl: (access,signal) => peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:fixedAccount}),signal) || access.url,
+                request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }),
+                mediaUrl: (access,signal,item) => playbackUrl(access,signal,item,player?.snapshot() || snapshot,fixedAccount),
                 subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
                 onSeek: controlling ? seekControl : undefined,
                 onItemChange: () => { player?.onItemView?.(); },
@@ -1287,7 +1342,10 @@
         document.getElementById('topbarStreamingBtn')?.addEventListener('click', () => open().catch(error));
         document.getElementById('sendMarkdownBtn')?.addEventListener('click', () => compose().catch(error));
         global.addEventListener('focus', sync); global.addEventListener('global-account-changed', sync); setInterval(sync, 30000);
-        global.addEventListener('beforeunload', event => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } });
+        // Drafts are stored locally as they change. A hidden editor must not
+        // block homepage refresh with the browser's unspecified warning.
+        // Leaving the editor itself still uses the explicit save/discard dialog.
+        global.addEventListener('pagehide', saveUi);
         global.addEventListener('popstate', event => {
             const restore = () => { if (isOpen() && !history.state?.streamingConsole) history.pushState({ ...(history.state || {}), streamingConsole: true }, '', location.href); };
             if (dialog) { closeDialog(); restore(); return; }

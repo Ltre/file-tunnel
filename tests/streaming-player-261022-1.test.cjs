@@ -22,7 +22,7 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, mediaUrl, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
     const epoch=Date.now(),clockNow=()=>clockDate?epoch+time:Date.now();
     const timeouts = new Map(); let timeoutId = 0, reportAttempt = 0;
@@ -37,7 +37,7 @@ function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', r
     const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
         items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? duration : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? duration : undefined, stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
-    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onItemChange, onRecovery:code=>recoveries.push(code),
+    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onItemChange, mediaUrl, onRecovery:code=>recoveries.push(code),
         request: async (route, method, body, options) => { calls.push({ route, body }); if (onReport && route.endsWith('/report')) return onReport({attempt:++reportAttempt, state, options}); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
             return { url: '/media/' + body.itemId, expiresAt: clockNow() + 600000, size, type: 'audio/wav' };
@@ -56,6 +56,11 @@ test('audio starts audible and mute is visibly reported', async () => {
     assert.equal(audio.muted, false);
     const mute = f.elements.find(el => el.tagName === 'BUTTON' && el.textContent === '静音'); mute.onclick();
     assert.match(f.player.element.querySelector('.sc-play-status').textContent, /已静音/); f.player.close();
+});
+test('the local-media resolver receives the exact item only after its ticket is authorized',async()=>{
+    const resolved=[],f=fixture({deferredTicket:true,mediaUrl:async(access,signal,item)=>{resolved.push({access,signal,item});return 'blob:authorized-local';}});
+    try {await f.flush();assert.equal(resolved.length,0);f.release();await f.flush();assert.equal(resolved.length,1);assert.equal(resolved[0].item.id,'a');assert.equal(resolved[0].access.url,'/media/a');}
+    finally {f.player.close();}
 });
 
 test('local natural transitions notify the view without waiting for a server snapshot', async t => {

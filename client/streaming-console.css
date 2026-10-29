@@ -118,4 +118,6 @@
 .sc-mini-window .sc-local-controls>button:before{content:attr(data-icon);font-size:20px;line-height:1}
 .sc-mini-window .sc-play-status,.sc-mini-window .sc-background-toggle,.sc-mini-window .sc-seek,.sc-mini-window .sc-muted,.sc-mini-window .sc-buffering{display:none!important}
 .sc-viewer-page .sc-watch-grid>aside{overflow-anchor:none}
+.sc-candidate>.sc-source-thumbnail{flex:0 0 64px;width:64px;height:48px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.sc-source-thumbnail>img{display:block;width:100%;height:100%;object-fit:contain}
 @media(max-width:767px){.sc-viewer-page .sc-watch-grid>aside{max-height:60dvh;overflow:auto}}

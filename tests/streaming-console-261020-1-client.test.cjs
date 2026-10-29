@@ -6,7 +6,8 @@ const source = fs.readFileSync(path.join(__dirname, '../client/streaming-console
 function consoleRuntime(options = {}) {
     const storage = new Map(), calls = [], intervals = [], toasts = [];
     const location = { href: 'http://10.0.0.9/', origin: 'http://10.0.0.9' };
-    const window = { location, addEventListener() {} };
+    const events = new Map();
+    const window = { location, addEventListener(name, run) { const list=events.get(name)||[];list.push(run);events.set(name,list); } };
     if (options.getAccount) window.DiskClient = { getAccount: options.getAccount };
     const context = { window, location, URL, Uint8Array, Uint32Array, structuredClone, AbortController, TextDecoder,
         crypto: { getRandomValues: array => require('node:crypto').randomFillSync(array) },
@@ -19,10 +20,22 @@ function consoleRuntime(options = {}) {
             return { ok: true, status: 200, json: async () => options.respond ? options.respond(url, requestOptions) : url.endsWith('/preview') ? { url: '/media/fixture', expiresAt: Date.now() + 600000 } : { identity: null, accounts: [], invitations: [] } };
         } };
     context.delayPreview = options.delayPreview;
-    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, duration, sync, kindOf, navigate, returnToList, getUi: () => ui }; global.StreamingConsole ='), context);
+    vm.runInNewContext(source.replace('global.StreamingConsole =', 'global.__importTest = { ensureDuration, duration, sync, kindOf, navigate, returnToList, saveUi, getUi: () => ui }; global.StreamingConsole ='), context);
     const start = () => window.StreamingConsole.init({ deviceId: () => 'lan-device', deviceName: () => 'LAN', devices: () => [], tunnels: options.tunnels || (async () => []), toast: message => toasts.push(message) });
-    return { window, calls, intervals, storage, toasts, start };
+    return { window, calls, intervals, storage, toasts, events, start };
 }
+
+test('persisted streaming drafts in a closed console do not block homepage refresh with an unexplained warning', async () => {
+    const f=consoleRuntime();await f.start();
+    const ui=f.window.__importTest.getUi();ui.view='edit';ui.stationId='draft-station';
+    ui.drafts[ui.stationId]={name:'尚未发布的串流草稿',loop:true,countdown:'bottom-right',items:[]};
+    f.window.__importTest.saveUi();
+    let prevented=false;const event={preventDefault(){prevented=true;}};
+    for(const run of f.events.get('beforeunload')||[])run(event);
+    assert.equal(prevented,false);assert.equal(event.returnValue,undefined);
+    for(const run of f.events.get('pagehide')||[])run({persisted:false});
+    assert.ok([...f.storage.values()].some(value=>value.includes('尚未发布的串流草稿')),'the local draft remains persisted');
+});
 test('LAN HTTP initializes with secure getRandomValues when randomUUID is unavailable', async () => {
     const f = consoleRuntime(); await f.start();
     const device = f.calls.find(call => call.url.endsWith('/devices')); assert.ok(device);

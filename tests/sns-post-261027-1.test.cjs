@@ -215,7 +215,8 @@ test('图片响应不接受HTML/SVG伪装，也不转发任何Cookie到媒体CDN
 test('帖子适配器从旧的解析失败记录恢复视频与图片，所有引用都指向同一目标隧道的已发布文件', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sns-post-integration-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-    const source = { id: 'source', messageId: 'post', sourceUrl: 'https://x.com/u/status/1' };
+    const source = { id: 'source', messageId: 'post', sourceUrl: 'https://x.com/u/status/1', parseStatus: 'failed',
+        parseError: 'yt-dlp-timeout-90000ms', parseRetryCount: 3, parseRetryAfter: Date.now() + 3600000 };
     const original = { id: 'post', snsSources: [source], snsMediaItems: [] };
     const current = { history: [{ message: original }] };
     const find = (_sid, id) => current.history.find(entry => entry.message.id === id)?.message;
@@ -242,4 +243,14 @@ test('帖子适配器从旧的解析失败记录恢复视频与图片，所有�
         assert.equal(find(match[1], match[2]).fileInfo.id, match[3]);
     }
     assert.equal(current.history.filter(entry => entry.message.type === 'markdown').length, 1);
+});
+
+test('自动解析退避不拦截用户手动转发纯图片帖子，Markdown引用已获取的隧道媒体', async () => {
+    const f = publisherFixture({ inspect: async () => ({ title:'图文帖', body:'图文正文', images:['https://cdn.example/photo.jpg'] }),
+        image: async (sessionId, _source, _url, index) => ({ id:'picture-'+index, type:'file', fileInfo:{ id:'photo',name:'照片.jpg',type:'image/jpeg' } }) });
+    const original = f.messages.get('record');original.snsMediaItems=[];
+    Object.assign(original.snsSources[0], { parseStatus:'failed',parseError:'yt-dlp-timeout-90000ms',parseRetryCount:3,parseRetryAfter:Date.now()+3600000 });
+    const message=await f.publisher.start(args).promise;
+    assert.match(message.markdown,/图文正文/);assert.match(message.markdown,/tunnel-blob:tunnel\/picture-0\/photo/);
+    assert.doesNotMatch(message.markdown,/cdn\.example/);assert.equal(f.acquisitions(),0);assert.equal(f.published.length,1);
 });

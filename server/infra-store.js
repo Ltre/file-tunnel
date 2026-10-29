@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const initSqlJs = require('sql.js');
+const { DatabaseSync } = require('node:sqlite');
 
 const INFRA_SAVE_DEBOUNCE_MS = Math.max(100, Number(process.env.INFRA_SAVE_DEBOUNCE_MS) || 1500);
 const INFRA_SAVE_MAX_WAIT_MS = Math.max(
@@ -12,17 +12,22 @@ const INFRA_SAVE_MAX_WAIT_MS = Math.max(
 async function createInfraStore({ dataDir }) {
     fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, 'infra.sqlite');
-    const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
-    const SQL = await initSqlJs({
-        locateFile: file => file === 'sql-wasm.wasm' ? wasmPath : file
-    });
-    const db = fs.existsSync(dbPath)
-        ? new SQL.Database(fs.readFileSync(dbPath))
-        : new SQL.Database();
+    // The existing file already is SQLite; opening it natively does not copy or
+    // replace its tables. Never export a live WASM database: export closes its
+    // handle before allocating the complete snapshot and can strand it closed.
+    const db = new DatabaseSync(dbPath);
     const store = new InfraStore(db, dbPath);
-    store.migrate();
-    store.save();
-    return store;
+    try {
+        db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA cache_size = -8192');
+        db.exec('BEGIN IMMEDIATE');
+        store.migrate();
+        db.exec('COMMIT');
+        return store;
+    } catch (error) {
+        if (db.isTransaction) db.exec('ROLLBACK');
+        db.close();
+        throw error;
+    }
 }
 
 class InfraStore {
@@ -34,10 +39,13 @@ class InfraStore {
         this.saveScheduledAt = 0;
         this.saveRetryTimer = null;
         this.lastSaveError = null;
+        this.operationDepth = 0;
+        this.pendingStatements = [];
+        this.lastChanges = 0;
     }
 
     migrate() {
-        this.db.run(`
+        this.db.exec(`
             CREATE TABLE IF NOT EXISTS magnets(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, asset_id TEXT NOT NULL, created_at INTEGER NOT NULL, payload_json TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_magnets_asset ON magnets(session_id,asset_id);
             CREATE TABLE IF NOT EXISTS magnet_shares(event_id TEXT PRIMARY KEY, magnet_id TEXT NOT NULL, shared_at INTEGER NOT NULL, payload_json TEXT NOT NULL);
@@ -177,35 +185,18 @@ class InfraStore {
             CREATE INDEX IF NOT EXISTS idx_vclient_tunnels_desired ON vclient_tunnels(desired_enabled, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_vclient_assets_session_state ON vclient_asset_states(session_id, state, updated_at DESC);
         `);
-        try {
-            this.db.run('ALTER TABLE tunnels ADD COLUMN remark TEXT');
-        } catch (_) {
-            // Existing databases already have this column after the first migration.
-        }
-        try {
-            this.db.run('ALTER TABLE tunnels ADD COLUMN owner_device_id TEXT');
-        } catch (_) {
-            // Existing databases already have this column after the first migration.
-        }
-        try {
-            this.db.run('ALTER TABLE tunnels ADD COLUMN permissions_json TEXT');
-        } catch (_) {
-            // Existing databases already have this column after the first migration.
-        }
-        for (const column of [
-            'cached_files INTEGER NOT NULL DEFAULT 0',
-            'cached_bytes INTEGER NOT NULL DEFAULT 0',
-            'last_sync_at INTEGER'
+        for (const [table, columns] of [
+            ['tunnels', ['remark TEXT', 'owner_device_id TEXT', 'permissions_json TEXT']],
+            ['vclient_tunnels', ['cached_files INTEGER NOT NULL DEFAULT 0', 'cached_bytes INTEGER NOT NULL DEFAULT 0', 'last_sync_at INTEGER']]
         ]) {
-            try {
-                this.db.run(`ALTER TABLE vclient_tunnels ADD COLUMN ${column}`);
-            } catch (_) {
-                // The additive VClient migration may already include this column.
+            const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
+            for (const column of columns) {
+                if (!existing.has(column.split(' ')[0])) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
             }
         }
         // Older versions only tracked the most recently joined tunnel on devices.
         // Preserve every usable legacy row as the initial historical-member baseline.
-        this.db.run(`
+        this.db.exec(`
             INSERT OR IGNORE INTO tunnel_members (
                 session_id, device_id, device_name, device_type, first_seen, last_seen
             )
@@ -217,7 +208,7 @@ class InfraStore {
         `);
         // A persisted "online" bit cannot survive a server restart. New joins will
         // mark the currently connected devices online again.
-        this.db.run('UPDATE devices SET online = 0, active = 0 WHERE online <> 0 OR active <> 0');
+        this.db.exec('UPDATE devices SET online = 0, active = 0 WHERE online <> 0 OR active <> 0');
     }
 
     getMagnet(id) {
@@ -267,8 +258,10 @@ class InfraStore {
         this.saveDirty = false;
         this.saveScheduledAt = 0;
         try {
-            const bytes = Buffer.from(this.db.export());
-            this.writeDatabaseFile(bytes);
+            if (this.operationDepth) throw new Error('INFRA_TRANSACTION_IN_PROGRESS');
+            this.ensurePendingTransaction(false);
+            if (this.db.isTransaction) this.db.exec('COMMIT');
+            this.pendingStatements = [];
             this.lastSaveError = null;
             return true;
         } catch (err) {
@@ -301,38 +294,27 @@ class InfraStore {
         return this.save();
     }
 
-    writeDatabaseFile(bytes) {
-        const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
-        const tempPath = `${this.dbPath}.${suffix}.tmp`;
-        fs.writeFileSync(tempPath, bytes);
+    close() {
+        if (!this.flush()) throw this.lastSaveError;
+        this.db.close();
+    }
+
+    ensurePendingTransaction(create = true) {
+        if (this.db.isTransaction || (!create && !this.pendingStatements.length)) return;
+        this.db.exec('BEGIN IMMEDIATE');
         try {
-            fs.renameSync(tempPath, this.dbPath);
-        } catch (err) {
-            if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) {
-                try {
-                    fs.copyFileSync(tempPath, this.dbPath);
-                    try {
-                        fs.unlinkSync(tempPath);
-                    } catch {
-                        // Windows may keep the temp handle briefly; the persisted copy is already valid.
-                    }
-                    return;
-                } catch (copyErr) {
-                    try {
-                        fs.unlinkSync(tempPath);
-                    } catch {
-                        // Ignore cleanup errors; the next successful save writes a fresh temp file.
-                    }
-                    throw copyErr;
-                }
-            }
-            try {
-                fs.unlinkSync(tempPath);
-            } catch {
-                // Ignore cleanup errors; the next successful save writes a fresh temp file.
-            }
-            throw err;
+            // Some SQLite I/O errors roll back the outer transaction. Keep its
+            // unflushed batch statements so retry never silently drops them.
+            for (const { sql, params } of this.pendingStatements) this.execute(sql, params);
+        } catch (error) {
+            if (this.db.isTransaction) this.db.exec('ROLLBACK');
+            throw error;
         }
+    }
+
+    execute(sql, params = []) {
+        if (/^(?:SAVEPOINT|RELEASE|ROLLBACK)\b/i.test(sql.trim())) this.db.exec(sql);
+        else this.lastChanges = Number(this.db.prepare(sql).run(...params).changes);
     }
 
     scheduleSaveRetry() {
@@ -345,18 +327,30 @@ class InfraStore {
     }
 
     run(sql, params = []) {
-        this.db.run(sql, params);
+        this.ensurePendingTransaction();
+        const command = sql.trim().toUpperCase();
+        if (command === 'BEGIN') {
+            sql = `SAVEPOINT infra_operation_${this.operationDepth + 1}`;
+            this.execute(sql);
+            this.operationDepth++;
+        } else if (command === 'COMMIT' || command === 'ROLLBACK') {
+            if (!this.operationDepth) throw new Error('INFRA_TRANSACTION_MISSING');
+            if (command === 'ROLLBACK') {
+                const rollback = `ROLLBACK TO SAVEPOINT infra_operation_${this.operationDepth}`;
+                this.execute(rollback);
+                this.pendingStatements.push({ sql: rollback, params: [] });
+            }
+            sql = `RELEASE SAVEPOINT infra_operation_${this.operationDepth}`;
+            this.execute(sql);
+            this.operationDepth--;
+        } else this.execute(sql, params);
+        this.pendingStatements.push({ sql, params: [...params] });
+        this.saveDirty = true;
     }
 
     query(sql, params = []) {
-        const statement = this.db.prepare(sql, params);
-        const rows = [];
-        try {
-            while (statement.step()) rows.push(statement.getAsObject());
-        } finally {
-            statement.free();
-        }
-        return rows;
+        this.ensurePendingTransaction(false);
+        return this.db.prepare(sql).all(...params).map(row => ({ ...row }));
     }
 
     get(sql, params = []) {
@@ -1076,7 +1070,7 @@ class InfraStore {
             SET removed_at = COALESCE(removed_at, ?), last_seen = MAX(last_seen, ?)
             WHERE session_id = ? AND file_id = ?
         `, [removedAt, removedAt, sessionId, fileId]);
-        const changed = this.db.getRowsModified() > 0;
+        const changed = this.lastChanges > 0;
         this.scheduleSave();
         return changed;
     }

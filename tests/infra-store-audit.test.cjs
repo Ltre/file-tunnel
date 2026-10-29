@@ -7,8 +7,10 @@ const { createInfraStore } = require('../server/infra-store');
 
 async function run() {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-tunnel-infra-audit-'));
+    const stores = [];
     try {
         const store = await createInfraStore({ dataDir });
+        stores.push(store);
         const sessionId = '11111111-1111-4111-8111-111111111111';
         const deviceId = '22222222-2222-4222-8222-222222222222';
         const firstSeen = 1_700_000_000_000;
@@ -172,6 +174,7 @@ async function run() {
         // idempotent audit data. Runtime-only device presence intentionally resets.
         assert.strictEqual(store.flush(), true, 'queued audit writes must flush before reopen');
         const reopened = await createInfraStore({ dataDir });
+        stores.push(reopened);
         stats = reopened.listTunnelsWithStats()[0];
         assert.strictEqual(stats.active_device_count, 0);
         assert.strictEqual(stats.transfer_record_count, 4);
@@ -226,12 +229,14 @@ async function run() {
         fs.writeFileSync(path.join(legacyDir, 'infra.sqlite'), Buffer.from(legacyDb.export()));
         legacyDb.close();
         const migratedLegacy = await createInfraStore({ dataDir: legacyDir });
+        stores.push(migratedLegacy);
         assert.strictEqual(migratedLegacy.getTunnel('legacy-session').short_code, 'legacy');
         assert.strictEqual(migratedLegacy.listTunnelsWithStats()[0].historical_device_count, 1);
         assert.strictEqual(migratedLegacy.listVClientTunnels().length, 0);
 
         console.log('infra-store audit persistence tests passed');
     } finally {
+        for (const store of stores) store.close();
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
 }
