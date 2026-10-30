@@ -548,9 +548,20 @@
         const current = dialog, controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
         current.dataset.programSource = station.id;
         current.addEventListener('selectstart', event => event.preventDefault());
+        let backdropPressed = false;
+        current.addEventListener('pointerdown', event => { backdropPressed = event.target === current; });
+        current.addEventListener('click', event => { if (backdropPressed && event.target === current) closeDialog(); backdropPressed = false; });
         current.previewCleanup = () => { clearTimeout(timer); controller.abort(); };
         const valid = () => dialog === current && isCurrent() && actor === account() && device === config.deviceId();
         const field = (label, value) => { const p = document.createElement('p'), strong = document.createElement('strong'), text = document.createElement('span'); strong.textContent = t(label) + ' · '; text.className = 'message-content'; text.textContent = value; p.append(strong,text); body.append(p); };
+        const sourceAction = (label, run) => {
+            let node;
+            node = button(label, async () => {
+                const spinner = document.createElement('span'); spinner.className = 'sc-source-spinner'; spinner.setAttribute('aria-hidden','true'); node.append(spinner);
+                try { await run(); } finally { spinner.remove(); }
+            });
+            return node;
+        };
         try {
             const result = await request('/stations/' + station.id + '/items/' + encodeURIComponent(item.id) + '/source-location?configVersion=' + station.configVersion, 'GET', undefined, { accountId:actor, signal:controller.signal });
             if (!valid()) return;
@@ -560,22 +571,24 @@
                 const entries = await config.tunnels(); if (!valid()) return;
                 const entry = entries.find(value => value.sessionId === source.sessionId);
                 field('来源隧道', [entry?.shortCode || source.shortCode, entry?.remark || source.remark].filter(Boolean).join(' · ') || source.sessionId);
-                if (entry && config.focusRecord) body.append(button('前往该隧道锚点查看', async () => {
+                if (entry && config.focusRecord) body.append(sourceAction('前往该隧道锚点查看', async () => {
                     if (!valid()) return;
                     if (!(await config.tunnels()).some(value => value.sessionId === source.sessionId)) throw Error('STREAM_TUNNEL_DENIED');
                     if (!valid()) return;
-                    if (await config.focusRecord(source.messageId, source) !== false) { closeDialog(); minimize(); }
+                    if (await config.focusRecord(source.messageId, source, { isCurrent:valid }) !== false && valid()) { closeDialog(); minimize(); }
                 }));
             } else {
                 field('账号', source.accountName + (source.accountLoginId ? ' / ID ' + source.accountLoginId : ''));
                 field('网盘分区', source.partitionName || t('默认分区')); field('目录', '/' + String(source.path || '').replace(/^\/+/,''));
-                body.append(button('前往网盘查看', async () => {
+                body.append(sourceAction('前往网盘查看', async () => {
                     if (!valid()) return;
-                    // The drive owns account confirmation, login and file access.
-                    // Close this dialog before opening its account picker.
-                    closeDialog(); minimize();
-                    try { await global.DiskUI.revealSourceFile(source); }
+                    current.sourceNavigating = true;
+                    try { await global.DiskUI.revealSourceFile(source, {
+                        isCurrent: () => dialog === current && device === config.deviceId(),
+                        beforeReveal: () => { if (dialog !== current) return false; closeDialog(); minimize(); return true; }
+                    }); }
                     catch (cause) { config.toast?.(t('无法定位网盘文件，请检查账号、权限或网络后重试') + ' [' + cause.message + ']'); }
+                    finally { current.sourceNavigating = false; }
                 }));
             }
         } catch (cause) {
@@ -1316,7 +1329,7 @@
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
         const stopSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
-        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); closeSourceEvents(); if (dialog?.dataset.programSource === snapshot.id) closeDialog(); };
+        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); closeSourceEvents(); if (dialog?.dataset.programSource === snapshot.id && !dialog.sourceNavigating) closeDialog(); };
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }

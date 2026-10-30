@@ -1296,8 +1296,16 @@ app.get('/record/:sessionId/:messageId', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 
-// 根路径 - 提供 pages/index.html
-app.get(['/', '/disk', '/notification'], (req, res) => {
+// A plain root visit starts with the small tunnel chooser. Deep links and
+// explicit tunnel entries retain the complete application shell.
+app.get('/', (req, res) => {
+    const keys = Object.keys(req.query || {});
+    const light = keys.every(key => key === 'leave' || key === 'pwa');
+    res.sendFile(path.join(__dirname, 'pages', light ? 'tunnel-entry.html' : 'index.html'));
+});
+app.get('/tunnel-entry.html', (req, res) => res.sendFile(path.join(__dirname, 'pages', 'tunnel-entry.html')));
+app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'pages', 'index.html')));
+app.get(['/disk', '/notification'], (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'index.html'));
 });
 

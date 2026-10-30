@@ -2912,9 +2912,17 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 }
 
 .download-cache-panel iframe {
+    grid-area: 2 / 1;
     width: 100%;
     height: 100%;
     border: 0;
+    background: #f4f6fb;
+}
+.download-cache-panel[data-loading="true"]::after {
+    content: "";
+    grid-area: 2 / 1;
+    z-index: 1;
+    pointer-events: none;
     background: #f4f6fb;
 }
 
@@ -4734,6 +4742,20 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     padding: 82px 24px 24px;
     background: #f4f6fb;
     color: #26324d;
+}
+
+/* Keep the running home intact while the tunnel chooser is in front. */
+body.tunnel-route-active { overflow: hidden; }
+body.tunnel-route-active > :not(#sessionLanding):not(script):not(style):not(template),
+body.tunnel-route-active > :not(#sessionLanding):not(script):not(style):not(template) * {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+body.tunnel-route-active > #sessionLanding {
+    position: fixed;
+    inset: 0;
+    z-index: 30000;
+    overflow: auto;
 }
 
 .tunnel-landing-topbar {

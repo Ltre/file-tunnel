@@ -5,11 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function worker(fetchResponse, cached) {
+function worker(fetchResponse, cached, expectedKey = '/index.html') {
     const handlers = {}, timers = new Map(), puts = [], waits = [];
     let nextTimer = 0;
     const cache = {
-        async match(key) { assert.equal(key, '/index.html'); return cached?.clone(); },
+        async match(key) { assert.equal(key, expectedKey); return cached?.clone(); },
         async put(key, response) { puts.push({ key, text:await response.text() }); }
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../service-worker.js'), 'utf8'), {
@@ -37,7 +37,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 test('warm PWA returns cached shell after one second and saves the eventual fresh shell', async () => {
     let resolveFetch;
-    const fixture = worker(() => new Promise(resolve => { resolveFetch = resolve; }), html('cached shell'));
+    const fixture = worker(() => new Promise(resolve => { resolveFetch = resolve; }), html('cached shell'), '/tunnel-entry.html');
     const navigation = fixture.dispatch('/?pwa=1');
     await settle();
     assert.equal(fixture.timers.size, 1);
@@ -47,7 +47,7 @@ test('warm PWA returns cached shell after one second and saves the eventual fres
     assert.equal(await (await navigation).text(), 'cached shell');
     resolveFetch(html('updated shell'));
     await Promise.all(fixture.waits);
-    assert.deepEqual(fixture.puts, [{ key:'/index.html', text:'updated shell' }]);
+    assert.deepEqual(fixture.puts, [{ key:'/tunnel-entry.html', text:'updated shell' }]);
     assert.equal(fixture.timers.size, 0);
 });
 
@@ -80,7 +80,7 @@ test('admin, API, runtime config and explicit refresh bypass the bounded shell c
 
 test('temporary network and 5xx failures use a warm shell without poisoning it', async () => {
     for (const fetchResponse of [async () => { throw new Error('offline'); }, async () => new Response('upstream failure', { status:503 })]) {
-        const fixture = worker(fetchResponse, html('cached shell'));
+        const fixture = worker(fetchResponse, html('cached shell'), '/tunnel-entry.html');
         assert.equal(await (await fixture.dispatch('/')).text(), 'cached shell');
         await Promise.all(fixture.waits);
         assert.equal(fixture.puts.length, 0);

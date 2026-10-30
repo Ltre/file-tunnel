@@ -18,9 +18,13 @@ const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(roo
    await context.addInitScript(theme=>{localStorage.setItem('uiTheme',theme);window.paintSamples=[];function sample(){if(document.body){const style=getComputedStyle(document.body);paintSamples.push({theme:document.body.dataset.theme||'',color:style.backgroundColor});}if(paintSamples.length<100)requestAnimationFrame(sample);}requestAnimationFrame(sample);},theme);
    const page=await context.newPage();await page.goto('http://127.0.0.1:'+server.address().port+'/check');
    for(let cycle=0;cycle<2;cycle++){
-    await page.locator('#magnetCacheBtn').click();const background=await page.locator('#downloadCacheFrame').evaluate(n=>({background:getComputedStyle(n).backgroundColor,scheme:getComputedStyle(n).colorScheme}));
+    await page.locator('#magnetCacheBtn').click();
+    const pending=await page.locator('.download-cache-panel').evaluate(n=>({loading:n.dataset.loading,cover:getComputedStyle(n,'::after').content}));
+    assert.equal(pending.loading,'true','the iframe must be covered during navigation');assert.notEqual(pending.cover,'none','the pending frame must have a visual cover');
+    const background=await page.locator('#downloadCacheFrame').evaluate(n=>({background:getComputedStyle(n).backgroundColor,scheme:getComputedStyle(n).colorScheme}));
     const frame=await page.locator('#downloadCacheFrame').contentFrame();await frame.locator('main').waitFor();await frame.locator('body').evaluate(()=>new Promise(resolve=>setTimeout(resolve,650)));
     const samples=await frame.locator('body').evaluate(()=>window.paintSamples.filter(s=>s.color!=='rgba(0, 0, 0, 0)'));
+    await page.waitForFunction(()=>document.querySelector('.download-cache-panel').dataset.loading !== 'true');
     results.push({theme,cycle,background,first:samples[0],count:samples.length});
     if(theme==='orbit'){
      assert.equal(background.background,'rgb(17, 20, 29)',JSON.stringify(results.at(-1)));

@@ -1288,7 +1288,7 @@ function updateSessionIdentityUi() {
     generateQRCode();
 }
 
-function initSessionLanding({ hidden = false } = {}) {
+function initSessionLanding({ hidden = false, overlay = false } = {}) {
     const landing = document.getElementById('sessionLanding');
     const note = document.getElementById('landingNote');
     const recentButton = document.getElementById('landingRecentBtn');
@@ -1298,15 +1298,20 @@ function initSessionLanding({ hidden = false } = {}) {
     const inputs = Array.from(document.querySelectorAll('#tunnelCodeInputs input'));
     let joinInProgress = false;
     landing.hidden = hidden;
-    document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
-    document.getElementById('leaveTunnelBtn').hidden = true;
-    document.getElementById('mobileForceRefreshBtn').hidden = true;
-    // Disk entry parameters are consumed later by DiskUI.init(), after the
-    // tunnel landing page has initialized. Keep that destination intact.
-    if (!window.location.hash && window.location.search && window.location.pathname !== '/disk'
-        && new URLSearchParams(window.location.search).get('disk') !== '1'
-        && !new URLSearchParams(window.location.search).has('stream') && !new URLSearchParams(window.location.search).has('stream_invite')) {
-        history.replaceState(null, '', window.location.pathname);
+    if (initSessionLanding.refresh) {
+        initSessionLanding.refresh();
+        return;
+    }
+    if (!overlay) {
+        document.getElementById('tunnelTopbar')?.setAttribute('hidden', '');
+        document.getElementById('leaveTunnelBtn').hidden = true;
+        document.getElementById('mobileForceRefreshBtn').hidden = true;
+        // Disk entry parameters are consumed later by DiskUI.init().
+        if (!window.location.hash && window.location.search && window.location.pathname !== '/disk'
+            && new URLSearchParams(window.location.search).get('disk') !== '1'
+            && !new URLSearchParams(window.location.search).has('stream') && !new URLSearchParams(window.location.search).has('stream_invite')) {
+            history.replaceState(null, '', window.location.pathname);
+        }
     }
 
     if (state.pendingSharedFileCount > 0) {
@@ -1316,11 +1321,17 @@ function initSessionLanding({ hidden = false } = {}) {
         sharedFilesNotice.hidden = false;
         sharedFilesNotice.textContent = '已打开系统分享入口，但没有收到文件内容。请先强制刷新或重新安装 PWA 后再试；部分软件会走 /share 或 /share/，本版本已兼容这两种入口。';
     }
+    let selectionTouched = false;
+    sessionSelect?.addEventListener('change', () => { selectionTouched = true; });
     const renderSessionPicker = sessions => {
         const validSessions = sessions
             .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId) && normalizeLocalShortCode(session.shortCode))
             .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true, sensitivity: 'base' }));
+        if (state.sessionId && document.body.classList.contains('tunnel-route-active') && !validSessions.some(session => session.sessionId === state.sessionId)) {
+            validSessions.unshift({ sessionId:state.sessionId, shortCode:state.shortCode, remark:state.sessionRemark });
+        }
         if (!validSessions.length || !sessionPicker || !sessionSelect) return;
+        const selectedId = selectionTouched ? sessionSelect.value : '';
         sessionSelect.replaceChildren();
         const recentId = state.recentSessionId || validSessions.slice().sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0]?.sessionId || '';
         validSessions.forEach(session => {
@@ -1329,7 +1340,7 @@ function initSessionLanding({ hidden = false } = {}) {
             const code = normalizeLocalShortCode(session.shortCode);
             const remark = String(session.remark || '').trim();
             option.textContent = `${code || session.sessionId.slice(0, 8)}${remark ? ` · ${remark}` : ''}${session.sessionId === recentId ? ' · 最近使用' : ''}`;
-            if (session.sessionId === recentId) option.selected = true;
+            if (session.sessionId === (selectedId || recentId)) option.selected = true;
             sessionSelect.appendChild(option);
         });
         sessionPicker.hidden = false;
@@ -1339,16 +1350,26 @@ function initSessionLanding({ hidden = false } = {}) {
             recentButton.textContent = '进入所选隧道';
         }
     };
-    renderSessionPicker(readSessionDirectoryCache());
-    getAllFromStore('sessions').then(sessions => {
-        const entries = replaceSessionDirectoryCache(sessions);
-        renderSessionPicker(entries);
-    }).catch(err => historyLog('landing-session-picker-load-failed', { error: err.message }));
+    const refreshPicker = () => {
+        selectionTouched = false;
+        renderSessionPicker(readSessionDirectoryCache());
+        getAllFromStore('sessions').then(sessions => {
+            const entries = replaceSessionDirectoryCache(sessions);
+            renderSessionPicker(entries);
+        }).catch(err => historyLog('landing-session-picker-load-failed', { error: err.message }));
+    };
+    initSessionLanding.refresh = refreshPicker;
+    refreshPicker();
 
-    if (state.recentSessionId) {
-        recentButton.hidden = false;
+    if (recentButton) {
+        recentButton.hidden = !state.recentSessionId;
         recentButton.addEventListener('click', async () => {
             const selected = sessionSelect?.value || state.recentSessionId;
+            if (document.body.classList.contains('tunnel-route-active') && selected === state.sessionId) {
+                landing.hidden = true;
+                document.body.classList.remove('tunnel-route-active');
+                return;
+            }
             if(joinInProgress)return;joinInProgress=true;
             try { await authorizeTunnelSelection(selected,normalizeLocalShortCode(readSessionDirectoryCache().find(value=>value.sessionId===selected)?.shortCode));openSession(selected); }
             catch(error){note.textContent=error.message;joinInProgress=false;}
@@ -1425,18 +1446,9 @@ function openSession(sessionId) {
 }
 
 async function leaveTunnel() {
-    const existing = await getFromStore('sessions', state.sessionId).catch(() => null);
-    await saveToStore('sessions', {
-        ...(existing || {}),
-        sessionId: state.sessionId,
-        deviceId: state.deviceId,
-        entryState: 'left',
-        lastLeftAt: Date.now()
-    }).catch(err => historyLog('session-leave-state-failed', { error: err.message }));
-    state.socket?.disconnect();
-    const target = new URL(`${window.location.origin}${window.location.pathname}`);
-    target.searchParams.set('leave', '1');
-    window.location.assign(target.href);
+    state.recentSessionId = state.sessionId;
+    document.body.classList.add('tunnel-route-active');
+    initSessionLanding({ overlay: true });
 }
 
 function generateId() {
@@ -17010,9 +17022,11 @@ function setMobileWorkspaceView(view, options = {}) {
 }
 
 async function focusTransferRecordById(messageId, options = {}) {
-    if (!messageId) return false;
+    const current = () => !options.isCurrent || options.isCurrent();
+    if (!messageId || !current()) return false;
     if (options.allowTunnelSwitch) {
         const record = await getFromStore('messages', messageId).catch(() => null);
+        if (!current()) return false;
         const sessionId = record?.sessionId || options.sessionId;
         if (!sessionId || !/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId)) {
             showAppToast('无法确认原记录所属隧道；原记录可能已被清理。'); return false;
@@ -17028,6 +17042,7 @@ async function focusTransferRecordById(messageId, options = {}) {
     let historyRequested = false;
     settleMobileWorkspaceView('chat');
     while (Date.now() < deadline) {
+        if (!current()) return false;
         let messageEl = getMessageElement(messageId);
         if (!messageEl) {
             const storedMessage = await getFromStore('messages', messageId).catch(() => null);
@@ -17036,6 +17051,7 @@ async function focusTransferRecordById(messageId, options = {}) {
                     scroll: false,
                     autoRequestAsset: false
                 });
+                if (!current()) return false;
                 messageEl = getMessageElement(messageId);
             }
         }
@@ -17695,13 +17711,27 @@ function openDownloadCacheOverlay() {
         window.open('/downloadList', '_blank', 'noopener');
         return;
     }
-    frame.src = `/downloadList?embedded=1&_=${Date.now().toString(36)}`;
+    const panel = frame.closest('.download-cache-panel');
+    frame._downloadCacheLoadCleanup?.();
+    if (panel) panel.dataset.loading = 'true';
+    const url = `/downloadList?embedded=1&_=${Date.now().toString(36)}`;
+    let active = true;
+    const cleanup = () => { active = false; frame.removeEventListener('load', loaded); frame._downloadCacheLoadCleanup = null; };
+    const loaded = () => {
+        try { if (frame.contentWindow.location.pathname !== '/downloadList') return; } catch (_) { return; }
+        frame.removeEventListener('load', loaded);
+        requestAnimationFrame(() => requestAnimationFrame(() => { if (active && !overlay.hidden) { if (panel) delete panel.dataset.loading; cleanup(); } }));
+    };
+    frame._downloadCacheLoadCleanup = cleanup;
+    frame.addEventListener('load', loaded);
+    frame.src = url;
     overlay.hidden = false;
 }
 
 function closeDownloadCacheOverlay() {
     const overlay = document.getElementById('downloadCacheOverlay');
     const frame = document.getElementById('downloadCacheFrame');
+    frame?._downloadCacheLoadCleanup?.();
     if (overlay) overlay.hidden = true;
     if (frame) frame.src = 'about:blank';
 }
@@ -18269,7 +18299,7 @@ function initStreamingConsoleIntegration() {
         }),
         file: fileId => getFromStore('files', fileId), message: messageId => getFromStore('messages', messageId),
         materialize: file => materializeExternalFileRecord(file, { requestPermission: false }), complete: hasCompleteFileCache,
-        focusRecord: (messageId, source) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId }),
+        focusRecord: (messageId, source, options = {}) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId, ...options }),
         receiveMessage: async (message, sessionId) => { if (!message) return; await saveToStore('messages', { ...message, sessionId }); if (state.sessionId === sessionId) await addMessageToChat(message, true, { autoRequestAsset: false }); },
         home: view => setMobileWorkspaceView(view), toast: showAppToast });
     if (adapter) window.StreamingConsole?.init(adapter);

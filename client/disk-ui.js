@@ -162,10 +162,10 @@ async function resumeTelegramDriveEntry() {
     try { return await flight; } finally { if (telegramDriveEntryFlight === flight) telegramDriveEntryFlight = null; }
 }
 let telegramDriveSourceLocation = 0;
-async function revealTelegramDriveSourceFile(target) {
+async function revealTelegramDriveSourceFile(target, { isCurrent = () => true, beforeReveal = () => true } = {}) {
     const request = ++telegramDriveSourceLocation, originalAccount = window.DiskClient.getAccount(), originalNavigation = telegramDriveNavigationVersion;
     const context = { accountId:target.accountId, diskSpace:target.diskSpace || '', requestBase:'/api/telegram/drive' };
-    const current = () => request === telegramDriveSourceLocation;
+    const current = () => request === telegramDriveSourceLocation && isCurrent();
     const accounts = await window.DiskClient.raw('/accounts', { accountId:'', diskSpace:'' });
     if (!current() || originalAccount !== window.DiskClient.getAccount() || originalNavigation !== telegramDriveNavigationVersion) return false;
     if (!(accounts.accounts || []).some(entry => entry.identity?.id === target.accountId)) {
@@ -182,13 +182,17 @@ async function revealTelegramDriveSourceFile(target) {
     if (!(spaces.spaces || []).some(space => telegramDriveSpaceKey(space) === context.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw Error('目标分区不存在或无权访问');
     const file = result.file || result;
     if (file.id !== target.fileId) throw Error('目标文件不存在或无法访问，请刷新文件状态');
+    await window.DiskClient.raw('/list?path=' + encodeURIComponent(file.folderPath ?? file.path ?? ''), context);
+    if (!valid()) return false;
     if ((telegramDriveMountContext || context.diskSpace !== window.DiskClient.getSpace()) && window.DiskClient.hasActiveOperations()) throw Error('当前分区仍有任务执行，请等待任务完成后切换');
+    if (!current() || window.DiskClient.getAccount() !== target.accountId || beforeReveal() === false) return false;
+    const committedNavigation = telegramDriveNavigationVersion;
     cancelTelegramDrivePendingMount(); closeDiskCollaborationFrame(); closeDiskPreview({ replaceHistory:true });
     telegramDriveMountContext = null; window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setSpace(context.diskSpace);
     telegramDriveCurrentData = null; telegramDriveContentStale = true;
     await openTelegramDrive({ deferContents:true });
     await navigateTelegramDrive(file.folderPath ?? file.path ?? '');
-    if (!current() || telegramDriveNavigationVersion !== navigation + 1 || window.DiskClient.getAccount() !== target.accountId || window.DiskClient.getSpace() !== context.diskSpace) return false;
+    if (telegramDriveNavigationVersion !== committedNavigation + 1 || window.DiskClient.getAccount() !== target.accountId || window.DiskClient.getSpace() !== context.diskSpace) return false;
     highlightTelegramDriveRow({ kind:'file', id:file.id });
     return true;
 }

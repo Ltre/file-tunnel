@@ -1,7 +1,10 @@
-const CACHE_NAME = 'instant-tunnel-v103-content-v8-preview-followup-261030-final';
+const CACHE_NAME = 'instant-tunnel-v104-content-v8-tunnel-entry-261030';
 const APP_SHELL = [
     '/',
     '/index.html',
+    '/tunnel-entry.html',
+    '/client/tunnel-entry.js',
+    '/client/tunnel-entry.css',
     '/admin',
     '/admin.html',
     '/downloader',
@@ -79,7 +82,7 @@ const APP_SHELL = [
     '/tunnel-icon.svg',
     '/prompts/resources/icons/fileview.png'
 ];
-const PRECACHE_CORE = ['/index.html', '/manifest.webmanifest', '/tunnel-icon.svg'];
+const PRECACHE_CORE = ['/index.html', '/tunnel-entry.html', '/client/tunnel-entry.css', '/client/tunnel-entry.js', '/client/i18n-catalog.js', '/client/i18n.js', '/manifest.webmanifest', '/tunnel-icon.svg'];
 
 async function precacheAppShell() {
     const cache = await caches.open(CACHE_NAME);
@@ -166,16 +169,19 @@ function getWebZipRuntimeReferrer(request) {
 
 // Bound a warm PWA's shell wait without caching API/auth responses or runtime config.
 async function loadAppNavigation(event) {
+    const url = new URL(event.request.url);
+    const key = url.pathname === '/' && [...url.searchParams.keys()].every(name => name === 'leave' || name === 'pwa')
+        ? '/tunnel-entry.html' : '/index.html';
     const cachePromise = caches.open(CACHE_NAME);
     const network = fetch(event.request);
     event.waitUntil(network.then(async response => {
         if (response.ok && !response.redirected && response.headers.get('Content-Type')?.includes('text/html')) {
             const cache = await cachePromise;
-            await cache.put('/index.html', response.clone());
+            await cache.put(key, response.clone());
         }
     }).catch(() => undefined));
     const cache = await cachePromise;
-    const cached = await cache.match('/index.html');
+    const cached = await cache.match(key);
     if (!cached) return network;
     let timer;
     try {

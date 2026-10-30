@@ -25,6 +25,7 @@ const SCRIPT_SOURCES = [
   'client/qrcode-1.0.0.min.js',
   'client/sns-post-i18n.js',
   'client/sns-post-markdown.js',
+  'client/tunnel-entry.js',
   'app.js',
   'client/theme-preference.js',
   'client/cache-store.js',
@@ -86,6 +87,7 @@ const SCRIPT_SOURCES = [
 ];
 const PAGE_ROUTES = {
   'index.html': ['/', '/index.html', '/disk'],
+  'tunnel-entry.html': ['/tunnel-entry.html'],
   'admin-layout.html': ['/admin'],
   'admin.html': ['/admin/home'],
   'admin-devices.html': ['/admin/devices'],
@@ -505,6 +507,7 @@ async function buildServiceWorker(outRoot, buildId, assets, styles) {
   ]));
   let built = replaceScriptReferences(raw, assets).replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'instant-tunnel-${buildId}';`);
   built = built.replace(/const APP_SHELL = \[[\s\S]*?\];/, `const APP_SHELL = ${JSON.stringify(appShell, null, 4)};`);
+  built = built.replace("'/client/tunnel-entry.css'", JSON.stringify(styles['tunnel-entry']));
   await fs.writeFile(path.join(outRoot, 'service-worker.js'), built);
   return { appShell, stat: sizeStat('service-worker.js', 'service-worker.js', raw, built) };
 }
