@@ -62,7 +62,7 @@ test('move acknowledgement cannot grant ownership or bypass protected rename',as
         const cookie=login.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
         const response=await fetch(f.base+'/api/telegram/drive/files/'+file.id,{method:'PATCH',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify(id==='bob'?{folderPath:'乙目录',confirm_exposed_move:true}:{name:'越过保护.txt',confirm_exposed_move:true})});
         const data=await response.json();assert.ok(response.status>=400,JSON.stringify(data));
-        if(id==='alice')assert.equal(data.error,'STATIC_RESOURCE_ACTIVE');
+        if(id==='alice')assert.equal(data.error,'EXPOSED_CONTENT_RENAME_CONFIRMATION_REQUIRED');
         assert.equal(drive.get('alice',file.id).folderPath,'公开');assert.equal(drive.get('alice',file.id).name,'不可越权.txt');
     }
 });

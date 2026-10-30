@@ -60,7 +60,8 @@ const geometry = () => {
             await page.waitForFunction(i => document.querySelector('.sc-now-playing')?.dataset.itemId === 'program-' + i, index);
             await page.waitForTimeout(600);
             const edge = await page.evaluate(geometry); console.log('edge item', edge);
-            if (Math.abs(edge.row - edge.middle) >= 5) failures.push('edge item ' + index + ' did not center');
+            if (index === 0 && edge.scroll > 3) failures.push('first wide item did not reach the natural start');
+            if (index === 23 && !await page.locator('.sc-watch-grid>aside').evaluate(el => Math.abs(el.scrollTop - (el.scrollHeight - el.clientHeight)) < 3)) failures.push('last wide item did not reach the natural end');
         }
         const file = path.resolve('.npm-cache/261028-1-playlist-follow.png'); await page.screenshot({ path: file });
         await page.close();

@@ -109,11 +109,15 @@
             if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<start||end-start>=BLOCK||end>=entry.meta.size)throw Error('STREAM_RANGE_INVALID');
             const meta=entry.meta;let body=cached(meta.key,start,end);
             if(body)return body;
+            const saved=await global.StreamingCache?.viewer(entry.relation?.actor,meta,start,end).catch(()=>null);
+            if(saved)return saved.arrayBuffer();
             if((entry.peerRetryAt||0)<Date.now())try{const peer=await connect(meta,ticket,entry.call);body=await peer.read(start,end);}catch(_){connections.get(meta.key)?.pc.close();connections.delete(meta.key);entry.peerRetryAt=Date.now()+15000;}
             if(!body){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
                 try{const response=await fetch(entry.url,{headers:{Range:'bytes='+start+'-'+end},cache:'no-store',signal:controller.signal});if(response.status!==206)throw Error('STREAM_MEDIA_NETWORK_FAILED');body=await response.arrayBuffer();}finally{clearTimeout(timer);}
             }
-            if(body.byteLength!==end-start+1)throw Error('STREAM_READ_INVALID');retain(meta.key,start,body);return body;
+            if(body.byteLength!==end-start+1)throw Error('STREAM_READ_INVALID');retain(meta.key,start,body);
+            if(entry.relation)await global.StreamingCache?.retainViewer(entry.relation.actor,meta,entry.relation,start,body).catch(()=>{});
+            return body;
         }
         const worker=global.navigator?.serviceWorker;
         async function ping(){workerReady=false;if(!worker?.controller)return;const channel=new MessageChannel(),timer=setTimeout(()=>channel.port1.close(),700);channel.port1.onmessage=event=>{clearTimeout(timer);workerReady=event.data?.streamingPeer===1;channel.port1.close();};worker.controller.postMessage({type:'streaming-peer-ping'},[channel.port2]);}
@@ -124,21 +128,22 @@
             Promise.resolve().then(()=>data.op==='open'?open(data.ticket):read(data.ticket,data.start,data.end)).then(value=>{if(value instanceof ArrayBuffer)port.postMessage({body:value},[value]);else port.postMessage(value);},()=>port.postMessage({error:'STREAM_MEDIA_NETWORK_FAILED'})).finally(()=>port.close());
         });
         return {headers,accept:offers=>{for(const offer of offers||[])accept(offer).catch(()=>{});},
-            async url(access,call,signal){
+            async url(access,call,signal,relation){
                 const originalCall=call;call=(...args)=>bounded(originalCall,...args);
-                const ticket=access.url.split('/').pop();for(const [key,value]of tickets)if(value.expiresAt<=Date.now())tickets.delete(key);if(tickets.size>=128)return access.url;tickets.set(ticket,{...access,call});
+                const ticket=access.url.split('/').pop();for(const [key,value]of tickets)if(value.expiresAt<=Date.now())tickets.delete(key);if(tickets.size>=128)return access.url;tickets.set(ticket,{...access,call,relation});
                 for(const [key,value]of connections)if(value.expiresAt<=Date.now()){value.pc.close();connections.delete(key);}
                 signal?.addEventListener('abort',()=>tickets.delete(ticket),{once:true});
                 if(workerReady)return '/streaming-peer-media/'+ticket;
                 // LAN HTTP has no Service Worker. Small assets can still use
                 // direct cached bytes; large media retain native HTTP Range.
                 if(access.size>0&&access.size<=16*BLOCK)try{
-                    const meta=await call('/peers/validate','POST',{ticket}),peer=await connect(meta,ticket,call),parts=[];
-                    for(let start=0;start<access.size;start+=BLOCK){if(signal?.aborted)throw Error('STREAM_READ_CANCELLED');const end=Math.min(access.size-1,start+BLOCK-1),part=await peer.read(start,end);retain(meta.key,start,part);parts.push(part);}
+                    await open(ticket);const parts=[];
+                    for(let start=0;start<access.size;start+=BLOCK){if(signal?.aborted)throw Error('STREAM_READ_CANCELLED');const end=Math.min(access.size-1,start+BLOCK-1),part=await read(ticket,start,end);parts.push(part);}
                     return URL.createObjectURL(new Blob(parts,{type:access.type}));
                 }catch(_){}
                 return access.url;
             },
+            clearCache(){cache.clear();bytes=0;},
             close(){for(const link of connections.values())link.pc.close();for(const pc of serving)pc.close();cache.clear();tickets.clear();}
         };
     }

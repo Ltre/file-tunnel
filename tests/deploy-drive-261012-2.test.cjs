@@ -16,7 +16,7 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     const manifest = JSON.parse(fs.readFileSync(path.join(temporary, 'build-manifest.json')));
     assert.deepEqual(fs.readFileSync(path.join(temporary, 'client/icons/streaming.png')), fs.readFileSync(path.join(ROOT, 'prompts/resources/icons/streaming.png')));
     assert.ok(manifest.appShell.includes('/client/icons/streaming.png'));
-    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-player', 'streaming-peers', 'streaming-i18n', 'sns-post-i18n', 'sns-post-markdown'];
+    const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-cache', 'streaming-player', 'streaming-peers', 'streaming-i18n', 'sns-post-i18n', 'sns-post-markdown'];
     const sourcePages = ['index.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
     for (const name of required) {
         const source = 'client/' + name + '.js', asset = manifest.scripts[source];

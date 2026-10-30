@@ -33,6 +33,7 @@ const SCRIPT_SOURCES = [
   'client/web-zip-runtime.js',
   'client/notification-center.js',
   'client/streaming-console.js',
+  'client/streaming-cache.js',
   'client/streaming-player.js',
   'client/streaming-peers.js',
   'client/streaming-app-adapter.js',

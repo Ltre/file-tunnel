@@ -5,6 +5,17 @@
     let collaborationId = '', mountId = '';
     let diskSpace = '';
     let accountId = '';
+    // Display metadata only. Actual account selection and login verification
+    // always go through raw(), so this never acts as proof of authentication.
+    let accountStatusSnapshot = null, accountStatusRevision = 0;
+    const invalidateAccountStatus = () => { accountStatusSnapshot = null; accountStatusRevision++; };
+    window.addEventListener?.('focus', invalidateAccountStatus);
+    window.addEventListener?.('global-account-changed', invalidateAccountStatus);
+    async function accountStatus({ signal } = {}) {
+        if (signal?.aborted) throw abortError();
+        if (accountStatusSnapshot && Date.now() < accountStatusSnapshot.until) return accountStatusSnapshot.value;
+        return raw('/me', { accountId: '', diskSpace: '', signal });
+    }
     const baseUrl = () => mountId ? base + '/mount-scope/' + encodeURIComponent(mountId) : collaborationId ? base + '/collaboration-scope/' + encodeURIComponent(collaborationId) : base;
     const transportContext=()=>({requestBase:baseUrl(),diskSpace,accountId});
     const operationContexts=new Map();
@@ -155,6 +166,8 @@
         // Legacy UI callers pass full drive API paths. Treat them exactly as
         // relative paths, so mounted edits cannot silently use the native drive.
         if (url.startsWith(base + '/')) url = url.slice(base.length);
+        if (method !== 'GET' && /^\/(?:accounts(?:\/|$)|logout(?:\?|$)|passkeys\/verify(?:\?|$))/.test(url)) invalidateAccountStatus();
+        const statusRevision = accountStatusRevision;
         const globalRoute = /^\/(?:me|accounts|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
             || method !== 'POST' && /^\/shares(?:[/?]|$)/.test(url);
         const target = withSpace(url.startsWith('/api/') ? url : (globalRoute ? base : (options.requestBase || baseUrl())) + url, options.diskSpace ?? diskSpace);
@@ -173,6 +186,10 @@
             (polling ? polling.then(updateHistory, updateHistory) : updateHistory()).catch(() => {});
         }
         if (!response.ok) { const error = new Error(data.error || 'DISK_REQUEST_FAILED'); Object.assign(error, data); error.status = response.status; throw error; }
+        if (method === 'GET' && url === '/me' && Array.isArray(data.accounts) && statusRevision === accountStatusRevision) {
+            const now = Date.now(), expiries = data.accounts.filter(entry => !entry.reauthRequired).map(entry => Number(entry.expiresAt)).filter(value => value > now);
+            accountStatusSnapshot = { value: data, until: Math.min(now + 15000, ...expiries) };
+        }
         onUploadProgress?.(Number(options.body?.size) || 0);
         return data;
     }
@@ -744,8 +761,8 @@
         }
         finally { if(timer!==null)clearTimeout(timer); }
     }
-    window.DiskClient = { context:transportContext,raw, request, json, upload, read, readRange, wait, start, stop, stopAccount, refresh, withActivity, cancelOperation, cancelRead, streamUrl, accountOperations,
-        setAccount(value) { const selected=String(value||''); if(selected===accountId)return; changeTaskView(()=>{accountId=selected;mountId='';collaborationId='';diskSpace='';}); emitActivities(); },
+    window.DiskClient = { context:transportContext,raw, accountStatus, invalidateAccountStatus, request, json, upload, read, readRange, wait, start, stop, stopAccount, refresh, withActivity, cancelOperation, cancelRead, streamUrl, accountOperations,
+        setAccount(value) { const selected=String(value||''); if(selected===accountId)return; invalidateAccountStatus(); changeTaskView(()=>{accountId=selected;mountId='';collaborationId='';diskSpace='';}); emitActivities(); },
         getAccount() { return accountId; },
         setSpace(value) { changeTaskView(()=>{mountId='';collaborationId='';diskSpace=String(value||'');}); },
         getSpace() { return diskSpace; },

@@ -15,7 +15,7 @@
                 accessGrant: deps.authorization(entry.sessionId).grant, tunnelDeviceId: deps.authorization(entry.sessionId).deviceId }))
                 .filter(entry => entry.accessGrant);
         }
-        async function readTunnel(source, { start = 0, end } = {}) {
+        async function readTunnel(source, { start = 0, end, localOnly = false } = {}) {
             if (source.fileId === 'record') {
                 const message = await deps.message(source.messageId);
                 if (!message || message.sessionId !== source.sessionId) throw Error('missing');
@@ -27,6 +27,7 @@
                 const blob = file.data instanceof Blob ? file.data : new Blob([file.data], { type: file.type || 'application/octet-stream' });
                 return blob.slice(start, end === undefined ? undefined : end + 1);
             }
+            if (localOnly) return null;
             // Consume the existing server-asset Range endpoint. No P2P request,
             // cache backfill, retention or transfer scheduling is introduced.
             const message = await deps.message(source.messageId);

@@ -49,6 +49,7 @@
         if (cause.message === 'STREAM_MEDIA_DECODE_FAILED') { notice('浏览器无法解码该媒体，请检查格式与编码', cause.message); return; }
         if (cause.message === 'STREAM_MEDIA_NETWORK_FAILED') { notice('媒体连接中断，可重试读取或检查网络与来源', cause.message); return; }
         if (cause.message === 'STREAM_TYPE_UNSUPPORTED') { notice('来源文件不是支持的可预览类型，请重新选择', cause.message); return; }
+        if (cause.message === 'STREAM_LOCAL_CACHE_FAILED') { notice('本地文件未缓存，尚未完成选择，请检查浏览器存储空间后重新选择', cause.message); return; }
         if (cause.message === 'STREAM_INVITE_INVALID') { notice('邀请不存在或已被删除，请索取新邀请', cause.message); return; }
         const messages = { LOGIN_REQUIRED: '此操作需要登录账号', STREAM_OWNER_REQUIRED: '请切换或登录台的归属账号后管理', STREAM_SOURCE_LOGIN_REQUIRED: '请在创建设备重新登录归属账号，之后手动上线', STREAM_LOCAL_ONLY: '此操作只能在创建设备执行', STREAM_CONFLICT: '状态已更新，本次操作未应用，请刷新后重试', STREAM_KICKED: '此设备已被踢出，请联系创建者重新允许', STREAM_INVITATION_REQUIRED: '此台需要有效观看许可，请接受新邀请', STREAM_OFFLINE: '串流台已下线', STREAM_START_INVALID: '播放起点超出可播范围，请检查节目参数', STREAM_DURATION_REQUIRED: '无法确定媒体时长，请预览并检查浏览器是否支持', STREAM_SOURCE_DELETED: '来源已删除，请移除或重新选择节目', STREAM_SOURCE_MISSING: '来源不可读取，请在供源设备重新选择文件', STREAM_PROVIDER_OFFLINE: '供源设备不在线或文件授权不可用', STREAM_DEVICE_DENIED: '设备身份校验失败，请检查本机存储与服务端记录', STREAM_INVITE_DEVICE: '这是发给其它设备的定向邀请', STREAM_INVITE_REVOKED: '邀请已撤销，请索取新邀请', STREAM_INVITE_EXPIRED: '邀请已到期，请索取新邀请', STREAM_MESSAGE_NOT_SAVED: '消息未保存，请检查隧道状态后重试' };
         notice(messages[cause.message] || '操作未完成，请检查状态后重试', cause.message);
@@ -130,17 +131,41 @@
             };
         });
     }
-    async function localBlob(source) {
+    async function localBlob(source, range) {
+        const snapshot = await global.StreamingCache?.local(config.deviceId(), source, range).catch(() => null);
+        if (snapshot) return snapshot;
+        const slice = file => range ? file.slice(range.start ?? 0, range.end === undefined ? undefined : range.end + 1) : file;
         const saved = localFiles.get(source.fileId);
-        if (saved?.file && !saved.handle) return saved.file;
+        if (saved?.file && !saved.handle) { await snapshotExistingSource(source, saved.file); return slice(saved.file); }
         const handle = saved?.handle || await handleStore('get', source.fileId).catch(() => null);
         if (handle && await handle.queryPermission({ mode: 'read' }) === 'granted') {
             const file = await handle.getFile();
             if (file.name !== source.name || file.size !== source.size) throw Error('missing');
-            localFiles.set(source.fileId, { handle, file }); return file;
+            localFiles.set(source.fileId, { handle, file }); await snapshotExistingSource(source, file); return slice(file);
         }
-        if (!handle && saved?.file) return saved.file;
+        if (!handle && saved?.file) return slice(saved.file);
         throw Error('missing');
+    }
+    const sourceSnapshots = new Map();
+    async function snapshotExistingSource(source, file) {
+        if (!global.StreamingCache) return;
+        let job = sourceSnapshots.get(source.fileId);
+        if (!job) {
+            job = (async () => {
+                const stations = new Set();
+                for (let i = 0; i < localStorage.length; i++) {
+                    const entry = localStorage.key(i), prefix = key('station:');
+                    if (entry?.startsWith(prefix) && localConfig(entry.slice(prefix.length))?.items?.some(item => item.source?.kind === 'local' && item.source.fileId === source.fileId)) stations.add(entry.slice(prefix.length));
+                }
+                for (const [id, value] of Object.entries(ui.drafts)) if (value.items.some(item => item.source?.kind === 'local' && item.source.fileId === source.fileId)) stations.add(id);
+                if (!stations.size) return;
+                await global.StreamingCache.source(config.deviceId(), source.fileId, file, [...stations][0]);
+                for (const id of stations) await syncSourceCache(id);
+            })();
+            sourceSnapshots.set(source.fileId, job);
+            job.catch(() => { if (sourceSnapshots.get(source.fileId) === job) sourceSnapshots.delete(source.fileId); });
+        }
+        try { await job; } catch (_) { notice('本地文件持久缓存未完成，请检查浏览器存储空间'); }
     }
     let peerMedia;
     async function playbackUrl(access, signal, item, state, actor) {
@@ -148,15 +173,17 @@
         // on its source device can replace transport with its own local bytes.
         const saved = state.local && localConfig(state.id);
         const candidate = saved?.configVersion === state.configVersion && saved.items?.find(value => value.id === item.id);
-        if (candidate?.source?.kind === 'local' && item.sourceKind === 'local' && candidate.name === item.name && candidate.size === item.size && candidate.kind === item.kind) {
+        if (candidate?.source?.kind === item.sourceKind && ['local','tunnel'].includes(item.sourceKind) && candidate.name === item.name && candidate.size === item.size && candidate.kind === item.kind) {
             try {
-                const blob = await localBlob(candidate.source);
+                const blob = item.sourceKind === 'local' ? await localBlob(candidate.source) : await config.readTunnel(candidate.source, { localOnly: true });
+                if (!blob) throw Error('missing');
                 if (signal.aborted) throw Error('STREAM_READ_CANCELLED');
                 if (blob.size !== item.size) throw Error('STREAM_SOURCE_CHANGED');
                 return URL.createObjectURL(blob);
             } catch (cause) { if (signal.aborted) throw cause; }
         }
-        return peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:actor}),signal) || access.url;
+        return peerMedia?.url(access,(url,method,data,options)=>request(url,method,data,{...options,accountId:actor}),signal,
+            { actor: config.deviceId() + ':' + actor, stationId: state.id, itemId: item.id, name: item.name, sourceKind: item.sourceKind }) || access.url;
     }
     async function providerLoop() {
         let retry = 1000; const providerId = uid();
@@ -169,7 +196,7 @@
                 retry = 1000;
                 await Promise.all((work.requests || []).map(async task => {
                     let blob, failure;
-                    try { blob = task.source.kind === 'local' ? (await localBlob(task.source)).slice(task.start, task.end + 1) : await config.readTunnel(task.source, { start: task.start, end: task.end }); }
+                    try { blob = task.source.kind === 'local' ? await localBlob(task.source,{start:task.start,end:task.end}) : await config.readTunnel(task.source, { start: task.start, end: task.end }); }
                     catch (cause) { failure = cause.message === 'missing' ? 'missing' : 'unavailable'; }
                     const headers = { 'X-Stream-Device': config.deviceId(), 'X-Stream-Key': localStorage.getItem(key('key')), 'Content-Type': 'application/octet-stream' };
                     if (failure) headers['X-Stream-Error'] = failure;
@@ -243,6 +270,7 @@
     }
     function hideSmallWindow() {
         if (!smallWindow) return;
+        smallWindow.cancelInteraction?.();
         const player = [...players.values()][0], slot = main.querySelector('.sc-player-slot');
         if (player && slot && renderedIdentity === viewIdentity()) slot.append(player.element);
         smallWindow.hidden = true; presentPlayers();
@@ -252,33 +280,77 @@
             smallWindow = document.createElement('section'); smallWindow.className = 'sc-mini-window'; smallWindow.setAttribute('aria-label', t('串流台小窗'));
             const close = button('关闭小窗', () => { hideSmallWindow(); parkPlayers(); presentPlayers(); }, 'sc-mini-close');
             close.setAttribute('aria-label', t('关闭小窗')); close.title = t('关闭小窗'); close.textContent = '×';
-            let drag, suppressClick = false;
+            let drag, pinch, suppressClick = false, clickTimer, width, sizeStep = 1;
+            const pointers = new Map(), ratio = 16 / 9;
+            const maxWidth = () => Math.max(1, Math.min(innerWidth - 16, innerHeight * .5 * ratio));
+            const sizes = () => { const max = Math.min(480, maxWidth()); return [max / 2, max * 2 / 3, max]; };
+            const fit = (requested, center) => {
+                const rect = smallWindow.getBoundingClientRect(), max = maxWidth();
+                width = Math.max(Math.min(160, max), Math.min(max, requested));
+                smallWindow.style.width = width + 'px';
+                smallWindow.style.left = Math.max(0, Math.min(innerWidth - width, (center?.x ?? rect.left + rect.width / 2) - width / 2)) + 'px';
+                smallWindow.style.top = Math.max(0, Math.min(innerHeight - width / ratio, (center?.y ?? rect.top + rect.height / 2) - width / ratio / 2)) + 'px';
+                smallWindow.style.right = smallWindow.style.bottom = 'auto';
+            };
+            smallWindow.cancelInteraction = () => { clearTimeout(clickTimer); pointers.clear(); drag = pinch = null; suppressClick = false; };
+            smallWindow.fit = () => fit(width || sizes()[sizeStep]);
+            global.addEventListener('resize', () => { if (!smallWindow.hidden) smallWindow.fit(); });
             smallWindow.onpointerdown = event => {
-                if (event.button > 0 || event.isPrimary === false) return;
-                const rect = smallWindow.getBoundingClientRect(); suppressClick = false;
+                if (event.button > 0) return;
+                if (!pointers.size) suppressClick = false;
+                if (event.target.closest('button') && !pointers.size) return;
+                pointers.set(event.pointerId, { x:event.clientX, y:event.clientY });
+                if (pointers.size === 2) {
+                    clearTimeout(clickTimer); const points = [...pointers.values()], rect = smallWindow.getBoundingClientRect();
+                    pinch = { distance:Math.max(1,Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y)), width:rect.width, center:{ x:rect.left+rect.width/2, y:rect.top+rect.height/2 } };
+                    drag = null; suppressClick = true;
+                    for (const id of pointers.keys()) try { smallWindow.setPointerCapture(id); } catch (_) {}
+                    return;
+                }
+                if (pointers.size > 2) return;
+                const rect = smallWindow.getBoundingClientRect();
                 drag = { id:event.pointerId, x:event.clientX, y:event.clientY, left:rect.left, top:rect.top, moved:false };
             };
             smallWindow.onpointermove = event => {
+                if (!pointers.has(event.pointerId)) return;
+                pointers.set(event.pointerId, { x:event.clientX, y:event.clientY });
+                if (pinch && pointers.size >= 2) {
+                    const points = [...pointers.values()];
+                    fit(pinch.width * Math.hypot(points[0].x-points[1].x,points[0].y-points[1].y) / pinch.distance, pinch.center);
+                    return;
+                }
                 if (!drag || drag.id !== event.pointerId) return;
                 const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
                 if (!drag.moved && Math.hypot(dx, dy) < 6) return;
-                if (!drag.moved) { drag.moved = true; smallWindow.setPointerCapture(event.pointerId); }
+                if (!drag.moved) { drag.moved = true; clearTimeout(clickTimer); try { smallWindow.setPointerCapture(event.pointerId); } catch (_) {} }
                 smallWindow.style.left = Math.max(0,Math.min(innerWidth-smallWindow.offsetWidth,drag.left+dx))+'px';
                 smallWindow.style.top = Math.max(0,Math.min(innerHeight-smallWindow.offsetHeight,drag.top+dy))+'px';
                 smallWindow.style.right = smallWindow.style.bottom = 'auto';
             };
             const endDrag = event => {
-                if (!drag || drag.id !== event.pointerId) return;
-                suppressClick = drag.moved || event.type === 'pointercancel'; drag = null;
+                if (!pointers.has(event.pointerId)) return;
+                pointers.delete(event.pointerId);
+                if (pinch) { if (!pointers.size) pinch = null; suppressClick = true; return; }
+                if (drag?.id === event.pointerId) { suppressClick = drag.moved || event.type === 'pointercancel'; drag = null; }
             };
             smallWindow.onpointerup = smallWindow.onpointercancel = endDrag;
             smallWindow.addEventListener('click', event => {
                 if (suppressClick) { suppressClick = false; event.preventDefault(); event.stopImmediatePropagation(); return; }
-                if (!event.target.closest('button')) { event.preventDefault(); open(); }
+                if (!event.target.closest('button')) {
+                    event.preventDefault(); clearTimeout(clickTimer);
+                    // Reserve the double-click interval for resizing. Touch
+                    // taps restore immediately; pinch/drag clicks are consumed.
+                    if (event.pointerType === 'touch') open();
+                    else if (event.detail < 2) clickTimer = setTimeout(() => open(), 350);
+                }
             }, true);
+            smallWindow.ondblclick = event => {
+                if (event.target.closest('button')) return;
+                event.preventDefault(); clearTimeout(clickTimer); sizeStep = (sizeStep + 1) % 3; fit(sizes()[sizeStep]);
+            };
             smallWindow.append(close); document.body.append(smallWindow);
         }
-        player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; minimize(); presentPlayers();
+        player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; smallWindow.fit(); minimize(); presentPlayers();
     }
     async function open() {
         await ready; ensureUi();
@@ -309,7 +381,7 @@
         body.append(button('保存后离开', async () => {
             try { if (!await persistDraft(stationId, value => { status.textContent = value; })) return; closeDialog(); leave(); }
             catch (cause) { status.textContent = t('节目单未保存，请检查来源后重试') + ' [' + cause.message + ']'; }
-        }, 'sc-primary'), button('放弃更改', () => { delete ui.drafts[stationId]; discardCover(stationId); pending.clear(); saveUi(); closeDialog(); leave(); }), button('继续编辑', closeDialog));
+        }, 'sc-primary'), button('放弃更改', async () => { delete ui.drafts[stationId]; discardCover(stationId); pending.clear(); saveUi(); await syncSourceCache(stationId); closeDialog(); leave(); }), button('继续编辑', closeDialog));
         showDialog('尚未保存', body);
     }
     function closeConsole(force = false) {
@@ -514,7 +586,7 @@
                     actions.append(button(s.manageable ? '编辑节目单' : '切换归属账号', () => s.manageable ? navigate('edit', s.id) : accountDialog()));
                     if (own(s) || !s.ownerId) actions.append(button('邀请与可见性', () => s.manageable ? navigate('access', s.id) : accountDialog()), button('观看者黑名单', () => s.manageable ? navigate('blacklist', s.id) : accountDialog()));
                     if (!s.ownerId && currentUser) actions.append(button('认领', async () => { await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
-                    if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!confirm(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
+                    if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!confirm(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); await global.StreamingCache?.updateStation(config.deviceId(),s.id,[]); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
                 } else if (view === 'bookmarks') actions.append(button('取消订阅', async () => { await request('/stations/' + s.id + '/bookmark', 'DELETE'); await refreshList(); }));
                 if (s.owner) actions.append(button('创作者主页', () => { ui.creatorName = s.owner.name; navigate('creator', s.owner.id); }));
                 row.append(actions); list.append(row);
@@ -534,12 +606,13 @@
         return ui.drafts[ui.stationId];
     }
     const saveFlights = new Map();
+    const revisionInput = base => ({ name: base.name, coverId:base.coverId || '', loop:base.loop, countdown:base.countdown, items:base.items.map(item => ({
+        ...Object.fromEntries(['id','name','kind','size','type','duration','start','stay'].map(key => [key,item[key]])),
+        source:Object.fromEntries(['kind','fileId','accountId','userId','diskSpace','sessionId','messageId'].map(key => [key,item.source?.[key]]))
+    })) });
     async function reconcileRevision(stationId, { apply = true } = {}) {
         const base = localConfig(stationId), actor = account(); if (!base) return;
-        const baseline = { name: base.name, coverId:base.coverId || '', loop: base.loop, countdown: base.countdown, items: base.items.map(item => ({
-            ...Object.fromEntries(['id','name','kind','size','type','duration','start','stay'].map(key => [key, item[key]])),
-            source: Object.fromEntries(['kind','fileId','accountId','userId','diskSpace','sessionId','messageId'].map(key => [key, item.source?.[key]]))
-        })) };
+        const baseline = revisionInput(base);
         const revision = await request('/stations/' + stationId + '/revision', 'POST', baseline, { accountId: actor });
         if (actor !== account()) return;
         if (apply && revision.matches && revision.configVersion !== base.configVersion) {
@@ -557,8 +630,8 @@
     async function persistDraft(stationId, saving) {
         if (saveFlights.has(stationId)) return saveFlights.get(stationId);
         const d = ui.drafts[stationId] || localConfig(stationId), actor = account();
-        const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
-        if (unchecked.length) { saving(t('尚未保存：媒体时长检查未完成') + '\n' + unchecked.map(item => item.name).join('\n')); return false; }
+        await checkSaveDurations(d,saving,()=>account()===actor&&ui.stationId===stationId);
+        if (saveFlights.has(stationId)) return saveFlights.get(stationId);
         const fingerprint = JSON.stringify({ ...d, configVersion: 0 }), submitted = structuredClone(d), coverToken = d.coverPending;
         const payload = { ...submitted, items: submitted.items.map(item => { const value = { ...item }; if (value.sourceSaved) delete value.source; delete value.sourceSaved; delete value.durationError; return value; }) };
         const flight = (async () => {
@@ -571,7 +644,26 @@
                 payload.coverId=submitted.coverId=uploaded.coverId; delete payload.coverPending; delete submitted.coverPending;
             }
             await reconcileRevision(stationId); payload.configVersion = d.configVersion; submitted.configVersion = d.configVersion;
-            const result = await request('/stations/' + stationId, 'PUT', payload, { accountId: actor, onProgress: value => saving(t(value.phase === 'persisting' ? '正在写入节目单…' : '正在校验节目来源…') + ' ' + value.completed + ' / ' + value.total + (value.name ? '\n' + value.name : '')) });
+            let result;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
+                try {
+                    result = await request('/stations/' + stationId, 'PUT', payload, { accountId: actor, onProgress: value => saving(t(value.phase === 'persisting' ? '正在写入节目单…' : '正在校验节目来源…') + ' ' + value.completed + ' / ' + value.total + (value.name ? '\n' + value.name : '')) });
+                    break;
+                } catch (cause) {
+                    if (!cause.confirmedFailure) {
+                        // An interrupted reply may follow a committed write. Verify
+                        // that exact submission before any retry; never overwrite
+                        // someone else's newer configuration to make a retry pass.
+                        const revision = await request('/stations/' + stationId + '/revision', 'POST', revisionInput(submitted), { accountId: actor });
+                        if (revision.matches && revision.configVersion !== payload.configVersion) { result = revision; break; }
+                        if (revision.configVersion !== payload.configVersion) throw Object.assign(Error('STREAM_CONFLICT'), { confirmedFailure:true, expectedVersion:payload.configVersion, currentVersion:revision.configVersion });
+                    }
+                    if (attempt === 2 || /CONFLICT|OWNER_REQUIRED|LOGIN_REQUIRED|DEVICE_DENIED|LOCAL_ONLY/.test(cause.message)) throw cause;
+                    saving(t('保存未完成，正在重试…') + ' ' + (attempt + 2) + ' / 3');
+                    await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+                }
+            }
             submitted.configVersion = result.configVersion; submitted.items.forEach(item => { item.sourceSaved = true; }); saveConfig(stationId, submitted);
             const unchanged = ui.drafts[stationId] === d && JSON.stringify({ ...d, configVersion: 0 }) === fingerprint;
             if (ui.drafts[stationId] === d && coverToken && d.coverPending === coverToken && pendingCovers.get(stationId)?.token === coverToken) {
@@ -580,15 +672,16 @@
             }
             if (unchanged) delete ui.drafts[stationId];
             else if (ui.drafts[stationId] === d) { d.configVersion = result.configVersion; for (const item of d.items) if (submitted.items.some(saved => saved.id === item.id && JSON.stringify(saved.source) === JSON.stringify(item.source))) item.sourceSaved = true; }
-            saveUi(); return unchanged;
+            saveUi();
+            await syncSourceCache(stationId).catch(() => notice('节目单已保存，但本地缓存清理未完成，请稍后重试'));
+            return unchanged;
         })();
         saveFlights.set(stationId, flight); try { return await flight; } finally { if (saveFlights.get(stationId) === flight) saveFlights.delete(stationId); }
     }
     function editor() {
         title('创建与编辑串流台'); main.classList.add('sc-editor-page'); const d = draft(), stationId = ui.stationId, actions = document.createElement('div'); actions.className = 'sc-actions sc-editor-actions';
-        let saveBlocked = false;
         const layout = document.createElement('div'); layout.className = 'sc-editor-grid'; const form = document.createElement('section'); form.className = 'sc-card';
-        form.innerHTML = `<label>${t('串流台名称')}<input class="sc-name" maxlength="120" value="${esc(d.name)}"></label><label>${t('播放结束')}<select class="sc-loop"><option value="loop">${t('循环节目单')}</option><option value="stop">${t('播完停止')}</option></select></label><label>${t('静态项倒计时')}<select class="sc-countdown-choice">${['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].map((value, i) => '<option value="' + value + '">' + t(['左上', '右上', '左下', '右下', '边缘薄进度条'][i]) + '</option>').join('')}</select></label><p>${t('导入仅保存来源引用，不复制或保护原文件')}</p>`;
+        form.innerHTML = `<label>${t('串流台名称')}<input class="sc-name" maxlength="120" value="${esc(d.name)}"></label><label>${t('播放结束')}<select class="sc-loop"><option value="loop">${t('循环节目单')}</option><option value="stop">${t('播完停止')}</option></select></label><label>${t('静态项倒计时')}<select class="sc-countdown-choice">${['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].map((value, i) => '<option value="' + value + '">' + t(['左上', '右上', '左下', '右下', '边缘薄进度条'][i]) + '</option>').join('')}</select></label><p>${t('本机文件会持久缓存在供源设备；网盘与隧道节目保留来源引用。')}</p>`;
         form.querySelector('.sc-loop').value = d.loop ? 'loop' : 'stop'; form.querySelector('.sc-countdown-choice').value = d.countdown;
         form.oninput = () => { d.name = form.querySelector('.sc-name').value; d.loop = form.querySelector('.sc-loop').value === 'loop'; d.countdown = form.querySelector('.sc-countdown-choice').value; saveUi(); };
         coverEditor(form,d,stationId);
@@ -640,22 +733,24 @@
             for (const row of list.children) { const item = items.get(row.dataset.itemId), state = row.querySelector('.sc-duration-status'), retry = row.querySelector('.sc-duration-retry');
                 if (!item || !state) continue; state.hidden = Boolean(item.duration); state.textContent = t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…') + (item.durationError ? ' [' + item.durationError + ']' : ''); retry.hidden = !item.durationError;
             }
-            if (saveBlocked) showDurationBlock();
         };
         for (const item of d.items) ensureDuration(item);
         renderItems(); layout.append(form, resources); main.append(layout);
         const saveStatus = document.createElement('p'); saveStatus.className = 'sc-save-status'; saveStatus.setAttribute('role', 'status'); saveStatus.hidden = true;
         const saving = text => { saveStatus.hidden = false; saveStatus.textContent = text; };
-        function showDurationBlock() {
-            const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
-            saving(unchecked.length ? t('尚未保存：媒体时长检查未完成') + ' · ' + unchecked.length + '\n' + unchecked.map(item => item.name + ' · ' + t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…') + (item.durationError ? ' [' + item.durationError + ']' : '')).join('\n') : t('媒体时长检查已完成，可以保存节目单'));
-        }
         actions.append(button('保存', async () => {
-            const unchecked = d.items.filter(item => ['video', 'audio'].includes(item.kind) && !item.duration);
-            if (unchecked.length) { saveBlocked = true; showDurationBlock(); return; } saveBlocked = false;
             const stationId = ui.stationId, actor = account(); actions.setAttribute('aria-busy', 'true'); let unchanged;
-            try { unchanged = await persistDraft(stationId, saving); }
-            catch (cause) { saving(saveFailure(cause)); if (cause.message !== 'STREAM_CONFLICT') throw cause; return; }
+            try {
+                await checkSaveDurations(d, saving, () => account() === actor && ui.stationId === stationId && ui.view === 'edit');
+                unchanged = await persistDraft(stationId, saving);
+            }
+            catch (cause) {
+                saving(cause.details || saveFailure(cause));
+                if (account() === actor && ui.stationId === stationId && ui.view === 'edit') {
+                    const body = document.createElement('div'), detail = document.createElement('p'); detail.textContent = cause.details || saveFailure(cause); detail.style.whiteSpace = 'pre-wrap'; body.append(detail, button('关闭', closeDialog)); showDialog('无法完成保存', body);
+                }
+                return;
+            }
             finally { actions.removeAttribute('aria-busy'); }
             if (ui.stationId === stationId && account() === actor) { if (unchanged) navigate('control', stationId); notice(unchanged ? '串流台已保存' : '串流台已保存，期间的新编辑仍保留在草稿'); }
         }, 'sc-primary'), button('返回列表', returnToList)); main.append(saveStatus, actions);
@@ -671,10 +766,13 @@
                 const file = files[index], kind = kindOf(file); if (!kind) { notice('已忽略不支持的文件类型'); continue; }
                 if (replace && (file.name !== replace.name || file.size !== replace.size)) throw Error('STREAM_FILE_MISMATCH');
                 const fileId = replace?.source.fileId || uid(), source = { kind: 'local', fileId, name: file.name, type: file.type, size: file.size };
+                if (global.StreamingCache) {
+                    try { await global.StreamingCache.source(config.deviceId(), fileId, file, ui.stationId); }
+                    catch(cause) { throw Object.assign(Error('STREAM_LOCAL_CACHE_FAILED'),{cause}); }
+                } else if (!handles[index]) notice('文件引用仅在本次页面会话有效，重开后请重新选择');
                 localFiles.set(fileId, { file, handle: handles[index] });
                 if (replace) { replace.sourceSaved = false; delete replace.duration; replace.durationError = ''; durationJobs.delete(account() + ':' + durationKey(replace)); ensureDuration(replace); }
-                if (handles[index]) await handleStore('put', fileId, handles[index]).catch(() => notice('文件引用仅在本次页面会话有效，重开后请重新选择'));
-                else notice('文件引用仅在本次页面会话有效，重开后请重新选择');
+                if (handles[index]) await handleStore('put', fileId, handles[index]).catch(() => { if (!global.StreamingCache) notice('文件引用仅在本次页面会话有效，重开后请重新选择'); });
                 if (!replace) { const candidate = { name: file.name, type: file.type, size: file.size, kind, source }; candidates.push(candidate); pending.set(candidateKey(candidate), candidate); }
             }
             saveUi(); if (!replace && ui.view === 'import') importer(); else notice('文件引用已恢复');
@@ -687,6 +785,34 @@
         }
     }
     const candidateKey = item => [item.source.kind, item.source.accountId || '', item.source.diskSpace || '', item.source.sessionId || '', item.source.messageId || '', item.source.fileId].join(':');
+    async function syncSourceCache(stationId) {
+        if (!global.StreamingCache) return;
+        const sources = [...(localConfig(stationId)?.items || []), ...(ui.drafts[stationId]?.items || []), ...(ui.stationId === stationId ? [...pending.values()] : [])];
+        await global.StreamingCache.updateStation(config.deviceId(), stationId, sources.filter(item => item.source?.kind === 'local').map(item => item.source.fileId));
+    }
+    function selectedThumbnail(candidate, row, cleanups) {
+        const holder = document.createElement('span'); holder.className = 'sc-source-thumbnail';
+        holder.textContent = ({ video: '▶', audio: '♪', image: '▧', markdown: 'MD', text: 'TXT', rich: '▤' })[candidate.kind] || '▧';
+        holder.setAttribute('aria-label', labelKind(candidate.kind));
+        if (!candidate.thumbnailUrl && !(candidate.kind === 'image' && candidate.size <= (candidate.source.kind === 'local' ? 20 * 1048576 : 524288))) return holder;
+        const image = document.createElement('img'); image.alt = '';
+        const controller = new AbortController(); let url, disposed = false;
+        const observer = new IntersectionObserver(entries => {
+            if (!entries.some(entry => entry.isIntersecting)) return; observer.disconnect();
+            (async () => {
+                const blob = candidate.source.kind === 'local' ? await localBlob(candidate.source) : null;
+                if (disposed || !row.isConnected) return;
+                const address = blob ? URL.createObjectURL(blob) : candidate.thumbnailUrl || await sourceUrl(candidate, controller.signal);
+                if (disposed || !row.isConnected) { if (blob) URL.revokeObjectURL(address); return; }
+                if (blob) url = address;
+                image.onload = () => { if (!disposed && row.isConnected) holder.replaceChildren(image); };
+                image.src = address;
+            })().catch(() => {});
+        });
+        observer.observe(row);
+        cleanups.push(() => { disposed = true; controller.abort(); observer.disconnect(); image.onload = null; image.removeAttribute('src'); if (url) URL.revokeObjectURL(url); });
+        return holder;
+    }
     async function importer() {
         if (ui.view !== 'import') return; const version = ++pickerVersion; main.replaceChildren(); title('导入可视资源');
         main.classList.add('sc-import-page');
@@ -700,13 +826,26 @@
         function showSelected() {
             const overlay = document.createElement('section'); overlay.className = 'sc-selected-overlay'; overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-label', t('已选择的资源'));
             const tabs = document.createElement('div'), content = document.createElement('div'), footer = document.createElement('footer'); tabs.className = 'sc-tabs'; content.className = 'sc-selected-list';
-            const close = () => overlay.remove(); footer.append(button('收起', close)); overlay.append(tabs, content, footer); main.append(overlay);
+            let cleanups = [];
+            const disposeThumbnails = () => { cleanups.forEach(dispose => dispose()); cleanups = []; };
+            const close = () => { disposeThumbnails(); overlay.remove(); candidateObservers = candidateObservers.filter(entry => entry !== cleanup); };
+            const cleanup = { disconnect: close }; candidateObservers.push(cleanup);
+            footer.append(button('收起', close)); overlay.append(tabs, content, footer); main.append(overlay);
             const render = kind => {
-                content.replaceChildren(); for (const tab of tabs.children) tab.classList.toggle('selected', tab.dataset.kind === kind);
+                disposeThumbnails(); content.replaceChildren(); for (const tab of tabs.children) tab.classList.toggle('selected', tab.dataset.kind === kind);
                 const selected = [...pending.values()].filter(item => item.source.kind === kind);
                 if (!selected.length) { const empty = document.createElement('p'); empty.textContent = t('此分类尚未选择文件'); content.append(empty); }
-                for (const item of selected) { const row = document.createElement('article'); row.className = 'sc-selected-row message-content'; const name = document.createElement('strong'); name.textContent = item.name + ' · ' + formatSize(item.size); row.append(name);
-                    if (item.location) { const path = document.createElement('p'); path.textContent = item.location; row.append(path); } content.append(row); }
+                for (const item of selected) {
+                    const row = document.createElement('article'); row.className = 'sc-selected-row';
+                    const details = document.createElement('div'); details.className = 'sc-selected-info message-content';
+                    const name = document.createElement('strong'); name.textContent = item.name + ' · ' + formatSize(item.size); details.append(name);
+                    if (item.location) { const path = document.createElement('p'); path.textContent = item.location; details.append(path); }
+                    row.append(selectedThumbnail(item, row, cleanups), details, button('删除', () => {
+                        pending.delete(candidateKey(item)); saveUi(); count.textContent = t('已选') + ' · ' + pending.size;
+                        for (const check of list.querySelectorAll('input[type=checkbox]')) if (check.dataset.candidateKey === candidateKey(item)) check.checked = false;
+                        render(kind);
+                    })); content.append(row);
+                }
             };
             for (const kind of ['local', 'disk', 'tunnel']) { const tab = button(labelKind(kind), () => render(kind)); tab.dataset.kind = kind; tabs.append(tab); }
             render(channel); footer.querySelector('button').focus();
@@ -717,6 +856,7 @@
             for (const candidate of candidates) {
                 const row = document.createElement('label'); row.className = 'sc-candidate';
                 const check = document.createElement('input'); check.type = 'checkbox'; check.checked = pending.has(candidateKey(candidate));
+                check.dataset.candidateKey = candidateKey(candidate);
                 check.onchange = () => { if (check.checked) pending.set(candidateKey(candidate), candidate); else pending.delete(candidateKey(candidate)); saveUi(); count.textContent = t('已选') + ' · ' + pending.size; };
                 const text = document.createElement('span'); text.className = 'message-content'; text.textContent = candidate.name + ' · ' + labelKind(candidate.kind);
                 row.dataset.recordId = candidate.source.messageId || '';
@@ -757,7 +897,7 @@
                 d.items.push(...additions); pending.clear(); saveUi(); navigate('edit', stationId);
             } finally { importBusy = false; channels.inert = controls.inert = list.inert = false; }
         }, 'sc-primary');
-        actions.append(button('取消', () => { pending.clear(); navigate('edit', ui.stationId); }), confirmImport);
+        actions.append(button('取消', async () => { const stationId=ui.stationId;pending.clear();saveUi();await syncSourceCache(stationId);navigate('edit',stationId); }), confirmImport);
         if (channel === 'local') { controls.append(button('选择本机文件', () => chooseLocalFile())); renderCandidates(); return; }
         const loading = document.createElement('p'); loading.className = 'sc-import-loading'; loading.setAttribute('role', 'status'); loading.textContent = t('正在加载资源列表…'); list.append(loading); list.setAttribute('aria-busy', 'true');
         try {
@@ -766,12 +906,13 @@
             const selector = document.createElement('select'); selector.setAttribute('aria-label', t('来源账号'));
             for (const entry of accounts.accounts || []) if (!entry.reauthRequired) selector.add(new Option(entry.identity.name || entry.identity.username || entry.identity.id, entry.identity.id));
             diskScope.accountId ||= account() || selector.options[0]?.value || ''; selector.value = diskScope.accountId;
-            controls.append(selector); selector.onchange = () => { diskScope = { accountId: selector.value, diskSpace: '', path: '', mountId: '' }; importer(); };
+            const identityControls = document.createElement('div'); identityControls.className = 'sc-disk-scope'; controls.append(identityControls);
+            identityControls.append(selector); selector.onchange = () => { diskScope = { accountId: selector.value, diskSpace: '', path: '', mountId: '' }; importer(); };
             if (!selector.value) { notice('导入网盘资源需要登录来源账号'); return; }
             const spaces = await global.DiskClient.raw('/spaces', { accountId: diskScope.accountId, diskSpace: '' }); if (version !== pickerVersion) return;
             const partition = document.createElement('select'); partition.setAttribute('aria-label', t('来源分区'));
             for (const space of spaces.spaces || []) partition.add(new Option(space.name, space.scopeKey ?? space.diskSpace ?? ''));
-            partition.value = diskScope.diskSpace; controls.append(partition); partition.onchange = () => { diskScope.diskSpace = partition.value; diskScope.path = ''; diskScope.mountId = ''; importer(); };
+            partition.value = diskScope.diskSpace; identityControls.append(partition); partition.onchange = () => { diskScope.diskSpace = partition.value; diskScope.path = ''; diskScope.mountId = ''; importer(); };
             const context = { accountId: diskScope.accountId, diskSpace: diskScope.diskSpace, requestBase: '/api/telegram/drive' + (diskScope.mountId ? '/mount-scope/' + encodeURIComponent(diskScope.mountId) : '') };
             const result = await global.DiskClient.raw('/list?path=' + encodeURIComponent(diskScope.path), context); if (version !== pickerVersion) return;
             const breadcrumb = document.createElement('nav'); breadcrumb.className = 'sc-import-path'; breadcrumb.setAttribute('aria-label', t('当前路径'));
@@ -818,6 +959,18 @@
     }
     function formatSize(size) { if (!Number.isFinite(Number(size))) return t('大小未知'); const n = Number(size); return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
     const durationKey = item => candidateKey(item) + ':' + item.size + ':' + item.name;
+    async function checkSaveDurations(value, saving, current) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (!current()) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
+            const unchecked = value.items.filter(item => ['audio','video'].includes(item.kind) && !item.duration);
+            if (!unchecked.length) return;
+            saving(t('正在检查媒体时长，完成后自动保存…') + ' ' + (attempt + 1) + ' / 3\n' + unchecked.map(item => item.name).join('\n'));
+            await Promise.allSettled(unchecked.map(item => ensureDuration(item)));
+        }
+        if (!current()) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
+        const unchecked = value.items.filter(item => ['audio','video'].includes(item.kind) && !item.duration);
+        if (unchecked.length) throw Object.assign(Error('STREAM_DURATION_REQUIRED'), { details:t('媒体时长检查多次失败，以下节目阻碍了保存：') + '\n' + unchecked.map(item => item.name + ' [' + (item.durationError || 'STREAM_DURATION_REQUIRED') + ']').join('\n') });
+    }
     function ensureDuration(item) {
         if (!['video', 'audio'].includes(item.kind) || item.duration) return;
         const identity = durationKey(item), jobKey = account() + ':' + identity; let job = durationJobs.get(jobKey);
@@ -828,6 +981,7 @@
         item.durationError = '';
         job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; saveUi(); refreshEditorItems?.(); } }, cause => { job.failed = true; if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
         pumpDurations();
+        return job.promise;
     }
     function pumpDurations() {
         while (durationActive < 2 && durationQueue.length) {
@@ -943,54 +1097,43 @@
     }
     function followPlaylist(aside, active) {
         const viewport = root.querySelector('.sc-main');
-        const leading = document.createElement('div'), trailing = document.createElement('div');
-        for (const spacer of [leading, trailing]) { spacer.className = 'sc-playlist-space'; spacer.setAttribute('aria-hidden', 'true'); }
-        let currentId = '', pendingId = '', frame = 0;
+        let currentId = '', pendingId = '', frame = 0, needsLayout = true;
         const schedule = () => {
-            if (!pendingId || frame) return;
+            if ((!pendingId && !needsLayout) || frame) return;
             frame = requestAnimationFrame(() => {
                 frame = 0;
                 if (!active() || !isOpen()) return;
+                const clip = viewport.getBoundingClientRect(), visual = global.visualViewport;
+                const visibleTop = Math.max(clip.top + viewport.clientTop, visual?.offsetTop || 0);
+                const visibleBottom = Math.min(clip.top + viewport.clientTop + viewport.clientHeight, (visual?.offsetTop || 0) + (visual?.height || innerHeight));
+                const available = visibleBottom - Math.max(aside.getBoundingClientRect().top, visibleTop);
+                if (available <= 0) return;
+                if (needsLayout) {
+                    aside.style.setProperty('--sc-playlist-height', available + 'px'); needsLayout = false;
+                }
+                if (!pendingId) return;
                 const row = aside.querySelector('.sc-now-playing');
                 if (!row || row.dataset.itemId !== pendingId) return;
-                const scroll = aside.scrollTop, limit = parseFloat(getComputedStyle(aside).maxHeight);
-                const compact = global.matchMedia('(max-width:767px)').matches;
-                // Establish the final scrollport even for a very short list,
-                // then measure its actually visible part before positioning.
-                // Compact lists keep natural endpoints rather than blank rows
-                // solely for centering the first/last program.
-                if (compact) { leading.remove(); trailing.remove(); }
-                else {
-                    leading.style.height = trailing.style.height = (Number.isFinite(limit) ? limit : viewport.clientHeight) + 'px';
-                    aside.insertBefore(leading, aside.querySelector('.sc-watch-item')); aside.append(trailing);
-                }
-                aside.scrollTop = scroll;
-                const box = aside.getBoundingClientRect(), clip = viewport.getBoundingClientRect();
-                const visual = global.visualViewport;
-                const top = Math.max(box.top + aside.clientTop, clip.top + viewport.clientTop, visual?.offsetTop || 0);
-                const bottom = Math.min(box.top + aside.clientTop + aside.clientHeight, clip.top + viewport.clientTop + viewport.clientHeight, (visual?.offsetTop || 0) + (visual?.height || innerHeight));
+                const box = aside.getBoundingClientRect();
+                const top = Math.max(box.top + aside.clientTop, visibleTop);
+                const bottom = Math.min(box.top + aside.clientTop + aside.clientHeight, visibleBottom);
                 // A hidden/minimized/offscreen playlist cannot be positioned yet.
                 // Keep the pending item until it has a visible scrolling area.
                 if (bottom <= top) return;
-                const middle = (top + bottom) / 2;
-                // Add end room only when following a program change. Size it
-                // against the clipped visible area, not half the CSS max-height.
-                if (!compact) {
-                    leading.style.height = Math.max(0, middle - box.top + row.clientHeight / 2) + 'px';
-                    trailing.style.height = Math.max(0, box.top + aside.clientTop + aside.clientHeight - middle + row.clientHeight / 2) + 'px';
-                }
-                aside.scrollTop = scroll;
                 const item = row.getBoundingClientRect();
+                // Center within the natural scroll range. Do not manufacture
+                // blank rows just to push the first or last program inward.
                 aside.scrollTo({ top: Math.max(0, aside.scrollTop + item.top + item.height / 2 - (top + bottom) / 2),
                     behavior: global.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
                 pendingId = '';
             });
         };
-        const observer = global.IntersectionObserver && new global.IntersectionObserver(schedule, { root: viewport });
-        const resized = () => { if (currentId) pendingId = currentId; schedule(); };
+        const relayout = () => { needsLayout = true; schedule(); };
+        const observer = global.IntersectionObserver && new global.IntersectionObserver(relayout, { root: viewport });
+        const resized = () => { needsLayout = true; if (currentId) pendingId = currentId; schedule(); };
         observer?.observe(aside);
-        viewport.addEventListener('scroll', schedule, { passive: true });
-        global.addEventListener('streaming-visibility-change', schedule);
+        viewport.addEventListener('scroll', relayout, { passive: true });
+        global.addEventListener('streaming-visibility-change', relayout);
         global.addEventListener('resize', resized);
         return {
             focus(id) {
@@ -1003,7 +1146,7 @@
                 }
                 schedule();
             },
-            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', schedule); global.removeEventListener('streaming-visibility-change', schedule); global.removeEventListener('resize', resized); }
+            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', relayout); global.removeEventListener('streaming-visibility-change', relayout); global.removeEventListener('resize', resized); }
         };
     }
     async function watcher(version) {
@@ -1347,7 +1490,7 @@
             let secret = localStorage.getItem(key('key')); if (!secret) { secret = uid().replace(/-/g, '') + uid().replace(/-/g, ''); localStorage.setItem(key('key'), secret); }
             const response = await fetch('/api/streaming/devices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: config.deviceId(), key: secret, name: config.deviceName() }) });
             if (!response.ok) throw Error('STREAM_DEVICE_DENIED');
-            peerMedia = global.StreamingPeers?.create({ request, readSource: (source,range) => source.kind === 'local' ? localBlob(source).then(blob=>blob.slice(range.start,range.end+1)) : config.readTunnel(source,range) });
+            peerMedia = global.StreamingPeers?.create({ request, readSource: (source,range) => source.kind === 'local' ? localBlob(source,range) : config.readTunnel(source,range) });
             providerLoop(); await sync();
         })();
         ready.catch(cause => { initialized = false; config.toast(t('串流模块初始化失败') + ' [' + cause.message + ']'); });
@@ -1377,5 +1520,5 @@
         ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } if (url.searchParams.has('stream_invite')) { await open(); await inspectInvitation(url.searchParams.get('stream_invite')); } }).catch(error);
         return ready;
     }
-    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, request, inspectInvitation, whenReady: () => ready };
+    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, request, inspectInvitation, whenReady: () => ready, clearViewerCache:()=>peerMedia?.clearCache() };
 })(window);

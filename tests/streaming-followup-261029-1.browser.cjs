@@ -44,9 +44,11 @@ async function run() {
                     const row = document.querySelector('.sc-now-playing'), panel = row?.parentElement, clip = document.querySelector('.sc-main')?.getBoundingClientRect();
                     if (!row || row.dataset.itemId !== 'program-' + id) return false;
                     const box = panel.getBoundingClientRect(), top = Math.max(box.top + panel.clientTop, clip.top, 0), bottom = Math.min(box.top + panel.clientTop + panel.clientHeight, clip.bottom, innerHeight);
+                    if (id === 0) return panel.scrollTop < 3;
+                    if (id === 23) return Math.abs(panel.scrollTop - (panel.scrollHeight - panel.clientHeight)) < 3;
                     return Math.abs(row.getBoundingClientRect().top + row.clientHeight / 2 - (top + bottom) / 2) < 5;
-                }, next, { timeout: 5000 }); check('switched program ' + next + ' centers in visible playlist', true);
-            } catch (cause) { check('switched program ' + next + ' centers in visible playlist', false, await page.locator('.sc-watch-grid>aside').evaluate(el => ({scroll:el.scrollTop,max:el.scrollHeight-el.clientHeight,box:el.getBoundingClientRect().toJSON(),row:el.querySelector('.sc-now-playing').getBoundingClientRect().toJSON(),clip:document.querySelector('.sc-main').getBoundingClientRect().toJSON()}))); }
+                }, next, { timeout: 5000 }); check('switched program ' + next + ' follows within the natural playlist boundaries', true);
+            } catch (cause) { check('switched program ' + next + ' follows within the natural playlist boundaries', false, await page.locator('.sc-watch-grid>aside').evaluate(el => ({scroll:el.scrollTop,max:el.scrollHeight-el.clientHeight,box:el.getBoundingClientRect().toJSON(),row:el.querySelector('.sc-now-playing').getBoundingClientRect().toJSON(),clip:document.querySelector('.sc-main').getBoundingClientRect().toJSON()}))); }
         }
         await page.waitForTimeout(400);
         await page.locator('.sc-watch-grid>aside').evaluate(el => { el.scrollTop = 0; window.retainedRow = el.querySelector('.sc-now-playing'); });
@@ -63,9 +65,9 @@ async function run() {
         const shortCenter = await page.locator('.sc-watch-grid>aside').evaluate(panel => {
             const row = panel.querySelector('.sc-now-playing'), clip = document.querySelector('.sc-main').getBoundingClientRect(), box = panel.getBoundingClientRect();
             const top = Math.max(box.top + panel.clientTop, clip.top, 0), bottom = Math.min(box.top + panel.clientTop + panel.clientHeight, clip.bottom, innerHeight);
-            return { item: row.dataset.itemId, delta: row.getBoundingClientRect().top + row.clientHeight / 2 - (top + bottom) / 2 };
+            return { item: row.dataset.itemId, delta: row.getBoundingClientRect().top + row.clientHeight / 2 - (top + bottom) / 2, scroll:panel.scrollTop, max:panel.scrollHeight-panel.clientHeight, spacers:panel.querySelectorAll('.sc-playlist-space').length };
         });
-        check('short playlist switch centers in its final visible area', shortCenter.item === 'program-1' && Math.abs(shortCenter.delta) < 5, shortCenter);
+        check('short playlist switch stays visible without artificial gaps', shortCenter.item === 'program-1' && shortCenter.spacers === 0 && shortCenter.scroll === 0 && shortCenter.max === 0, shortCenter);
         await page.goto(f.base + '/streaming-261029-1?view=edit');
         await page.locator('.sc-cover-field input[type=file]').waitFor();
         const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVioAAAAASUVORK5CYII=', 'base64');

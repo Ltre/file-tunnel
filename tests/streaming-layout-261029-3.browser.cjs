@@ -142,7 +142,8 @@ test('mobile playlist has no artificial end gaps and follows changes within its 
             if (index === 0) assert.ok(g.scroll < 3, JSON.stringify(g));
         }
         await page.setViewportSize({ width: 1366, height: 900 });
-        await page.waitForFunction(() => document.querySelector('.sc-playlist-space'));
+        await page.waitForTimeout(100);
+        assert.equal(await page.locator('.sc-playlist-space').count(), 0, 'wide playlists also retain natural endpoints');
         await page.setViewportSize({ width: 390, height: 844 });
         await page.waitForFunction(() => !document.querySelector('.sc-playlist-space'));
         await page.screenshot({ path: path.join(output, 'playlist-mobile.png') });

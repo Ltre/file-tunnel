@@ -10,8 +10,8 @@ const { createFixture } = require('./support/streaming-console-fixture.cjs');
 const root = path.resolve(__dirname, '..');
 const sw = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
 const current = sw.match(/const CACHE_NAME = '([^']+)'/)[1];
-const previous = 'instant-tunnel-v99-content-v8-layout-261029-3';
-const assets = ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/client/streaming-player.js', '/client/streaming-i18n.js', '/client/sns-post-i18n.js', '/client/themes.css', '/client/themes-legacy.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
+const previous = 'instant-tunnel-v100-content-v8-import-261029-4';
+const assets = ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/client/streaming-cache.js', '/client/streaming-peers.js', '/client/streaming-player.js', '/client/streaming-i18n.js', '/client/sns-post-i18n.js', '/client/themes.css', '/client/themes-legacy.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
 async function run() {
     let upgraded = false, browser;
     const f = await createFixture({ serviceWorker: () => upgraded ? sw : sw.replace(current, previous) });

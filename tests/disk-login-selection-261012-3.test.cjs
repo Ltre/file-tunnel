@@ -94,7 +94,8 @@ test('旧回执与旧窗口消息不确认本次登录，成功完成仍需有�
     f.context.handleTelegramDriveOidcPopupMessage({ origin: 'https://fixture.test', source: f.popup, data: { type: 'telegram-drive-oidc-result', result: 'success', attemptId: 'old-attempt-0001' } });
     await f.poll(); assert.equal(f.successes.length, 0); assert.equal(f.timers[0].delay, 2000);
     const expired = loginUI(async () => ({ identity: null }));
-    await assert.rejects(expired.context.finishTelegramDriveOidcLogin('success'), /凭据尚未确认/); assert.equal(expired.successes.length, 0);
+    assert.equal(await expired.context.finishTelegramDriveOidcLogin('success'), false);
+    assert.ok(expired.errors.some(message => message.includes('凭据尚未确认'))); assert.equal(expired.successes.length, 0);
 });
 
 test('转存候选账号鼠标按下即选中，无额外请求；触摸滚动、键盘确认及失效账号保持正确', async () => {

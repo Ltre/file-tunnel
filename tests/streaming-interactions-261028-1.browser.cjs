@@ -149,7 +149,7 @@ async function run() {
         assert.equal(await page.locator('#streamingConsole').isVisible(), false, 'a drag must not restore the station');
         const box = await mini.boundingBox();
         await page.mouse.click(box.x + box.width / 2, box.y + 60);
-        assert.equal(await page.locator('#streamingConsole').isVisible(), true);
+        await page.locator('#streamingConsole').waitFor({ state: 'visible' });
         assert.equal(await page.evaluate(() => window.playerBefore === document.querySelector('.sc-player')), true);
         await page.getByRole('button', { name: '小窗播' }).click();
         await page.screenshot({ path: path.join(output, '261028-1-mini.png') });
@@ -192,7 +192,15 @@ async function run() {
         catch (error) { console.log('touch trace', await phone.evaluate(() => window.touchTrace)); throw error; }
         assert.notEqual(await mobileMute.getAttribute('aria-label'), oldLabel);
         assert.equal(await phone.locator('#streamingConsole').isVisible(), false);
-        await phone.touchscreen.tap(moved.x + 150, moved.y + 60);
+        const beforePinch = await phoneMini.boundingBox(), y = beforePinch.y + 50;
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{x:beforePinch.x+45,y},{x:beforePinch.x+145,y}] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{x:beforePinch.x+25,y},{x:beforePinch.x+180,y}] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        const afterPinch = await phoneMini.boundingBox();
+        assert.ok(afterPinch.width > beforePinch.width && afterPinch.height <= 844 * .5, JSON.stringify({beforePinch,afterPinch}));
+        assert.ok(Math.abs(afterPinch.width/afterPinch.height - 16/9) < .02);
+        assert.equal(await phone.locator('#streamingConsole').isVisible(), false, 'pinching must not restore the station');
+        await phone.touchscreen.tap(afterPinch.x + 150, afterPinch.y + 60);
         await phone.locator('#streamingConsole').waitFor({ state: 'visible' });
         await mobile.close();
         assert.deepEqual(errors, []);

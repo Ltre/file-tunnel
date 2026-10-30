@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v100-content-v8-import-261029-4';
+const CACHE_NAME = 'instant-tunnel-v101-content-v8-streaming-261030-1-final';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -51,6 +51,7 @@ const APP_SHELL = [
     '/client/streaming-console.css',
     '/client/streaming-player.js',
     '/client/streaming-peers.js',
+    '/client/streaming-cache.js',
     '/client/icons/streaming.png',
     '/client/icons/quit-fullscreen.png',
     '/client/streaming-app-adapter.js',

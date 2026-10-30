@@ -85,6 +85,9 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.online-indicator,.sc-edg
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.short-code-switch-button,.short-code-display) {background:var(--ui-soft);color:var(--ui-ink);border-color:transparent;box-shadow:none;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.message-bubble,.rich-preview,.tunnel-markdown) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:0 2px 8px #1e304805;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .message.own .message-bubble {background:var(--ui-tint);color:var(--ui-ink);border-color:transparent;box-shadow:0 2px 12px color-mix(in srgb,var(--ui-tint) 55%,transparent);}
+body[data-theme="lumen"] #appShell .rich-preview {background:var(--ui-panel);border-color:var(--ui-line);border-left-color:color-mix(in srgb,var(--ui-accent) 48%,var(--ui-line));box-shadow:0 2px 8px #1e30480a;}
+body[data-theme="orbit"] #appShell .message .file-name {color:var(--ui-ink);}
+body[data-theme="orbit"] :is(.file-preview-content.collection-stage,.collection-file-grid) {background:var(--ui-panel);color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .file-upload-area {border-color:color-mix(in srgb,var(--ui-accent) 44%,var(--ui-line));background:color-mix(in srgb,var(--ui-tint) 45%,var(--ui-panel));color:var(--ui-muted);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.input-area,.editor-actions,.telegram-drive-toolbar,.telegram-drive-bottom,.telegram-drive-auth,.sc-home-shortcuts,.sc-editor-actions,.sc-import-actions,.web-editor-toolbar,.web-preview-toolbar,.web-workshop-package-name) {background:var(--ui-panel);border-color:var(--ui-line);color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .editor-content {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}

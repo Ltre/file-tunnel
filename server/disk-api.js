@@ -128,7 +128,7 @@ function errorStatus(code) {
     if (code === 'FILE_REMOVED_BY_REVIEW') return 410;
     if (/ACCESS_TOKEN_|APP_AUTH_|LOGIN_REQUIRED|PASSKEY_FLOW_INVALID|TASK_SAVE_ADMIN_AUTH_REQUIRED/.test(code)) return 401;
     if (/NOT_FOUND|not-found/.test(code)) return 404;
-    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|PENDING_SAVE_ALREADY_STARTED|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE|EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED/.test(code)) return 409;
+    if (/CONFLICT|EXISTS|exists|not-empty|BUSY|IN_PROGRESS|PENDING_SAVE_ALREADY_STARTED|STATIC_RESOURCE_ACTIVE|STATIC_OR_COLLABORATION_ACTIVE|DISK_SPACE_COLLABORATION_ACTIVE|EXPOSED_CONTENT_(?:MOVE|RENAME)_CONFIRMATION_REQUIRED/.test(code)) return 409;
     if (/TELEGRAM_|STORAGE_/.test(code)) return 502;
     return 422;
 }
@@ -245,6 +245,15 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if(!exposed&&!collaborative)return false;
         if(req.diskApp||req.collaboration||req.diskUser.id!==target.userId)return false;
         if(!checkOnly&&req.body?.confirm_exposed_move!==true)throw new Error('EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
+        return true;
+    };
+    const assertRenameProtection = (req, target, drive, selection, checkOnly = false) => {
+        if (req.diskApp || req.collaboration || (req.diskViewerId || req.diskUser.id) !== target.userId) return false;
+        const name = selection.kind === 'file' ? drive.get(target.userId, selection.id)?.name : normalizeTelegramDrivePath(selection.path).split('/').at(-1);
+        if (req.body?.name === name) return false;
+        try { assertDeleteProtection(target, drive, selection); return false; }
+        catch (error) { if (!['STATIC_RESOURCE_ACTIVE', 'COLLABORATION_DISABLE_BEFORE_DELETE'].includes(error.message)) throw error; }
+        if (!checkOnly && req.body?.confirm_exposed_rename !== true) throw new Error('EXPOSED_CONTENT_RENAME_CONFIRMATION_REQUIRED');
         return true;
     };
     const trash = createDiskTrash({repository:persistence,spaces,mounts,maxDepth:depthFor,onMountRemoved:(userId,diskSpace,id)=>staticResources.stopMount({userId,diskSpace},id),assertWritable:(userId,diskSpace,selection,drive)=>{
@@ -1837,6 +1846,17 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         res.json({ok:true,remoteCleanup:{status:pending?'pending':'completed'},...(pending?{warnings:['TELEGRAM_CONTENT_CLEANUP_PENDING']}:{})});
     }));
     function contents(router) {
+        if(router===browser)router.post('/renames/preflight',wrap((req,res)=>{
+            const selection=req.body,drive=store(req);
+            if(typeof selection?.name!=='string'||!selection.name.trim())throw new Error('DISK_NAME_INVALID');
+            if(selection.kind==='file'){
+                if(!drive.get(owner(req),selection.id))throw new Error('FILE_NOT_FOUND');
+            }else if(selection.kind==='directory'&&typeof selection.path==='string'){
+                if(!drive.getDirectory(owner(req),selection.path))throw new Error('DIRECTORY_NOT_FOUND');
+            }else throw new Error('DISK_SELECTION_INVALID');
+            const target=selection.kind==='file'?{kind:'file',id:selection.id}:{kind:'directory',path:selection.path};
+            res.set('Cache-Control','no-store').json({requiresConfirmation:assertRenameProtection(req,scope(req),drive,target,true)});
+        }));
         if(router===browser)router.post('/moves/preflight',wrap((req,res)=>{
             const items=req.body?.items;
             if(!Array.isArray(items)||!items.length||items.length>100||typeof req.body.destinationPath!=='string')throw new Error('DISK_SELECTION_INVALID');
@@ -1999,10 +2019,15 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             }, { immediateResult: true });
         }));
         router.patch('/directories', wrap((req, res) => {
-            const checkMove=()=>Object.hasOwn(req.body||{},'destinationPath')&&assertMoveProtection(req,scope(req),store(req),{kind:'directory',path:req.body.path},req.body.destinationPath);
-            if(!checkMove())assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
+            const checkWritable=()=>{
+                const selection={kind:'directory',path:req.body?.path};
+                const moving=Object.hasOwn(req.body||{},'destinationPath')&&assertMoveProtection(req,scope(req),store(req),selection,req.body.destinationPath);
+                const renaming=Object.hasOwn(req.body||{},'name')&&assertRenameProtection(req,scope(req),store(req),selection);
+                if(!moving&&!renaming)assertStaticDirectoryWritable(scope(req),store(req),req.body?.path);
+            };
+            checkWritable();
             jobResponse(req, res, 'move-directory', '正在修改目录', async update => {
-                if(!checkMove())assertStaticDirectoryWritable(scope(req), store(req), req.body?.path);
+                checkWritable();
                 update({ phase: 'index-write', message: '正在校验目录树并更新索引' });
                 const drive = store(req);
                 const result = persistence.atomic(() => {
@@ -2038,14 +2063,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
-            const checkMove=()=>Object.hasOwn(req.body||{},'folderPath')&&assertMoveProtection(req,scope(req),store(req),{kind:'file',id:file.id},req.body.folderPath);
-            if (!checkMove()&&(Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath'))) assertStaticFileWritable(scope(req), file);
+            const checkWritable=()=>{
+                const selection={kind:'file',id:file.id};
+                const moving=Object.hasOwn(req.body||{},'folderPath')&&assertMoveProtection(req,scope(req),store(req),selection,req.body.folderPath);
+                const renaming=Object.hasOwn(req.body||{},'name')&&assertRenameProtection(req,scope(req),store(req),selection);
+                if(!moving&&!renaming&&(Object.hasOwn(req.body||{},'name')||Object.hasOwn(req.body||{},'folderPath')))assertStaticFileWritable(scope(req),store(req).get(owner(req),file.id));
+            };
+            checkWritable();
             const originalName = file.name;
             const originalPath = file.folderPath;
             jobResponse(req, res, 'modify-file', '正在修改文件', async update => {
                 update({ phase: 'index-write', message: '正在校验文件名称和目标目录' });
                 const drive = store(req);
-                if (!checkMove()&&(Object.hasOwn(req.body || {}, 'name') || Object.hasOwn(req.body || {}, 'folderPath'))) assertStaticFileWritable(scope(req), drive.get(owner(req), file.id));
+                checkWritable();
                 const modified = persistence.atomic(() => {
                     const changed = drive.modifyFile(owner(req), file.id, req.body || {}, depthFor(req.diskUser.id));
                     if (changed.folderPath !== originalPath || changed.name !== originalName) collaborations.relocateFile(owner(req), req.diskScope.diskSpace, file.id, changed.folderPath, changed.name);

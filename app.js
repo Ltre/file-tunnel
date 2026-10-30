@@ -3994,21 +3994,43 @@ function updateMediaButtons(stateUpdate = {}) {
     }
 }
 
+let storedFileAssetAnnounceFlight;
 async function announceStoredFileAssets(options = {}) {
     if (!fileAssetTransfer) return;
+    if (storedFileAssetAnnounceFlight) {
+        await storedFileAssetAnnounceFlight;
+        if (options.resumePending) fileAssetTransfer?.resumePending();
+        return;
+    }
+    const sessionId = state.sessionId;
+    const flight = (async () => {
     try {
-        const files = typeof IDBKeyRange !== 'undefined'
-            ? await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
-            : (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
-        for (const storedFile of files) {
-            const file = await materializeExternalFileRecord(storedFile);
-            const isCachedChatAsset = hasCompleteFileCache(file, file) && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
+        // Presence needs metadata, not every cached video's complete body.
+        const files = await getCurrentSessionFileInventory();
+        for (const file of files) {
+            if (state.sessionId !== sessionId) return;
+            let complete = hasCompleteFileInventoryCache(file, file);
+            if (!complete && file.externalFileHandle) {
+                try {
+                    const handle = file.externalFileHandle;
+                    if (await handle.queryPermission({ mode: 'read' }) === 'granted') {
+                        const original = await handle.getFile();
+                        complete = original.name === file.name && original.size === file.size;
+                    }
+                } catch (_) { /* An unavailable external reference is not advertised. */ }
+            }
+            if (state.sessionId !== sessionId) return;
+            const isCachedChatAsset = complete && (file.isFileAsset || (!file.isEditorAsset && file.ownerDeviceId));
             if (!isCachedChatAsset) continue;
             if (!file.isFileAsset) {
+                // Preserve the actual body when migrating this legacy marker.
+                const stored = await getFromStore('files', file.id);
+                if (!stored || state.sessionId !== sessionId) continue;
+                await saveToStore('files', { ...stored, isFileAsset: true });
                 file.isFileAsset = true;
-                await saveToStore('files', file);
                 historyLog('file-asset-cache-migrated', { fileId: file.id });
             }
+            if (state.sessionId !== sessionId) return;
             await fileAssetTransfer.announce(file);
             if (file.isServerAsset) confirmServerAssetCache(file, file);
         }
@@ -4016,6 +4038,9 @@ async function announceStoredFileAssets(options = {}) {
     } catch (err) {
         historyLog('file-asset-announce-failed', { error: err.message });
     }
+    })();
+    storedFileAssetAnnounceFlight = flight;
+    try { await flight; } finally { if (storedFileAssetAnnounceFlight === flight) storedFileAssetAnnounceFlight = null; }
 }
 
 async function handleFileAssetDiscovery(data) {
@@ -4727,7 +4752,8 @@ function shouldGenerateMediaPoster(fileInfo = {}) {
 function enqueueMediaPosterCache(fileId, fileInfo = {}) {
     if (!fileId || !shouldGenerateMediaPoster(fileInfo) || mediaPosterQueuedIds.has(fileId)) return;
     mediaPosterQueuedIds.add(fileId);
-    mediaPosterQueue.push({ fileId, fileInfo: { ...fileInfo } });
+    const metadata = Object.fromEntries(['id','name','type','size','ownerDeviceId','sessionId'].map(key => [key, fileInfo[key]]));
+    mediaPosterQueue.push({ fileId, fileInfo: metadata });
     if (!mediaPosterQueueRunning) {
         mediaPosterQueueRunning = true;
         setTimeout(processMediaPosterQueue, 0);
@@ -13262,12 +13288,6 @@ async function refreshFileMessage(fileId) {
     hideCompletedFileReceiveProgress(fileId);
     const externalSourceState = getExternalFileSourceState(persistedFile, storedFile, storedFile);
 
-    let url = fileObjectUrls.get(fileId);
-    if (!url) {
-        url = URL.createObjectURL(new Blob([storedFile.data], { type: storedFile.type }));
-        fileObjectUrls.set(fileId, url);
-    }
-
     const poster = getCachedMediaPosterOrQueue(storedFile, storedFile);
 
     const renderedMessages = Array.from(document.querySelectorAll(`.message[data-file-id="${fileId}"]`));
@@ -13280,6 +13300,7 @@ async function refreshFileMessage(fileId) {
         if (!bubble) return;
 
         if (type.startsWith('image/')) {
+            const url = getStoredFileUrl(fileId, storedFile);
             bubble.innerHTML = `<div class="media-preview"><img src="${url}" alt="${name}" loading="lazy" decoding="async"></div><div class="file-size media-file-size">${formatFileSize(storedFile.size)}</div>`;
             bubble.classList.remove('file-message');
             bubble.style.opacity = '';
@@ -13830,7 +13851,12 @@ async function findGarbageFileCaches() {
 }
 
 async function clearGarbageFileCaches(files) {
-    for (const file of files) {
+    const streaming = files.filter(file => file.streamingCacheKey);
+    if (streaming.length) {
+        await window.StreamingCache?.clearViewer(streaming.map(file => file.streamingCacheKey));
+        window.StreamingConsole?.clearViewerCache?.();
+    }
+    for (const file of files.filter(file => !file.streamingCacheKey)) {
         fileAssetTransfer?.cancel(file.id);
         await deleteCacheStoreReference(file, 'garbage-cleanup');
         await deleteFromStore('files', file.id);
@@ -13855,7 +13881,8 @@ async function showGarbageCleanupDialog() {
     dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
 
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const files = await findGarbageFileCaches();
+    const [regular, streaming] = await Promise.all([findGarbageFileCaches(), window.StreamingCache?.garbage() || []]);
+    const files = [...regular, ...streaming.map(entry => ({ id:entry.key, name:entry.name || entry.itemId || entry.stationId, size:entry.cachedBytes || 0, streamingCacheKey:entry.key }))];
     if (!files.length) {
         dialog.querySelector('.modal').innerHTML = `
             <h3>清理垃圾缓存</h3>
@@ -13875,7 +13902,8 @@ async function showGarbageCleanupDialog() {
     dialog.innerHTML = `
         <div class="modal">
             <h3>清理垃圾缓存</h3>
-            <p>发现 ${files.length} 项未被聊天记录、富文本或当前协同编辑引用的缓存，共 ${formatFileSize(totalSize)}。</p>
+            <p>${escapeHtml((window.TunnelI18n?.t('可清理游离缓存和串流台观看缓存，仍被引用的供源文件缓存会保留。') || '可清理游离缓存和串流台观看缓存，仍被引用的供源文件缓存会保留。'))}</p>
+            <p>${files.length} · ${formatFileSize(totalSize)}</p>
             <ul style="max-height: 200px; overflow: auto; padding-left: 20px; text-align: left;">${preview}</ul>
             ${remaining}
             <div class="modal-actions">

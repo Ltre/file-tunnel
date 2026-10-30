@@ -3,6 +3,14 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['本地文件未缓存，尚未完成选择，请检查浏览器存储空间后重新选择','The local file was not cached and selection did not finish. Check browser storage and select it again'],
+        ['本机文件会持久缓存在供源设备；网盘与隧道节目保留来源引用。','Local imports are persistently cached on the source device. Drive and tunnel programs retain source references.'],
+        ['正在检查媒体时长，完成后自动保存…','Checking media durations; saving will continue automatically…'],
+        ['媒体时长检查多次失败，以下节目阻碍了保存：','Media duration checks failed after retries. These programs prevent saving:'],
+        ['保存未完成，正在重试…','Save is incomplete; retrying…'],['无法完成保存','Unable to complete the save'],
+        ['节目单已保存，但本地缓存清理未完成，请稍后重试','The playlist was saved, but local cache cleanup did not finish. Please retry later'],
+        ['本地文件持久缓存未完成，请检查浏览器存储空间','The local file snapshot could not be saved. Check browser storage'],
+        ['可清理游离缓存和串流台观看缓存，仍被引用的供源文件缓存会保留。','Orphaned and station viewing caches can be cleared. Referenced source files will be retained.'],
         ['打乱','Shuffle order'], ['逆转','Reverse order'], ['已选','Selected'], ['从当前范围随机选','Pick randomly from scope'],
         ['正在定位已保存的网盘文件…','Locating the saved drive file…'],
         ['文件位置读取失败，转存完成记录仍保留：{0}','The file location could not be read. The completed transfer record is retained: {0}'],
@@ -177,6 +185,9 @@
         ['已知情，但坚持移动','I understand and still want to move'],['坚持移动','Move anyway'],['确认移出开放范围内的内容','Confirm moving content out of shared scope'],['请先勾选“已知情，但坚持移动”','Select “I understand and still want to move” first'],
         ['所选内容位于协同编辑或静态资源开放范围内。移出后，相关使用者或原公开链接可能无法继续读取这些内容。','The selected content is shared for collaboration or static access. Moving it out may prevent collaborators or existing public links from reading it.'],
         ['所选内容位于协同或静态资源开放范围内。请确认移动影响后重试。','The selected content is shared for collaboration or static access. Confirm the move impact before retrying.'],
+        ['已知情，但坚持重命名','I understand and still want to rename'],['坚持重命名','Rename anyway'],['确认重命名开放范围内的内容','Confirm renaming shared content'],['请先勾选“已知情，但坚持重命名”','Select “I understand and still want to rename” first'],
+        ['所选内容位于协同编辑或静态资源开放范围内。相关使用者或公开链接可能无法正常读取重命名后的内容。','The selected content is shared for collaboration or static access. Renaming it may prevent collaborators or public links from reading it.'],
+        ['所选内容位于协同或静态资源开放范围内。请确认重命名影响后重试。','The selected content is shared for collaboration or static access. Confirm the rename impact before retrying.'],
         ['访问已结束','Access ended'], ['重新校验来源','Recheck sources'],
         ['通知操作未完成，请重新核对邀请或申请状态','Notification action failed; check the invitation or request status again']
         ,['文件引用仅在本次页面会话有效，重开后请重新选择','This file reference lasts for this page session; select the file again after reopening']
