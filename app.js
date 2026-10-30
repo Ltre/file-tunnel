@@ -12214,7 +12214,8 @@ function getActivePreviewMediaElement(fileId = activeFilePreviewFileId) {
     if (!fileId) return null;
     const content = document.getElementById('filePreviewContent');
     if (!content) return null;
-    return content.querySelector(`img[data-preview-file-id="${CSS.escape(fileId)}"], video[data-preview-file-id="${CSS.escape(fileId)}"]`);
+    return content.querySelector(`img[data-preview-file-id="${CSS.escape(fileId)}"], video[data-preview-file-id="${CSS.escape(fileId)}"]`)
+        || getAudioForPreviewControls(fileId);
 }
 
 function restoreMovedFullscreenMedia(options = {}) {
@@ -12233,7 +12234,12 @@ function restoreMovedFullscreenMedia(options = {}) {
         } else {
             mediaFullscreenMovedParent.appendChild(media);
         }
+    } else if (media.tagName === 'AUDIO') {
+        // The compact audio preview owns a detached Audio element. Return that
+        // same owner instead of leaving it inside the fullscreen card.
+        media.remove();
     }
+    if (media.tagName === 'AUDIO') media.controls = false;
     mediaFullscreenMovedMedia = null;
     mediaFullscreenMovedParent = null;
     mediaFullscreenMovedNextSibling = null;
@@ -12243,7 +12249,7 @@ function restoreMovedFullscreenMedia(options = {}) {
     }
 }
 
-function createFullscreenMediaElement(item) {
+function createFullscreenMediaElement(item, previewAudio = null) {
     if (item.type.startsWith('image/')) {
         const image = document.createElement('img');
         image.src = item.url;
@@ -12276,13 +12282,15 @@ function createFullscreenMediaElement(item) {
         } else {
             cover.textContent = '♪';
         }
-        const audio = document.createElement('audio');
-        audio.src = item.url;
+        const audio = previewAudio || document.createElement('audio');
+        if (!previewAudio) {
+            audio.src = item.url;
+            audio.autoplay = true;
+            audio.preload = 'metadata';
+            audio.addEventListener('canplay', () => audio.play().catch(() => {}), { once:true });
+        }
         audio.controls = true;
-        audio.autoplay = true;
-        audio.preload = 'metadata';
         card.append(cover, audio);
-        audio.addEventListener('canplay', () => audio.play().catch(() => {}), { once:true });
         return card;
     }
     return null;
@@ -12358,6 +12366,7 @@ function renderMediaFullscreenItem() {
     const item = mediaFullscreenItems[mediaFullscreenIndex];
     if (!item) {
         restoreMovedFullscreenMedia({ pause: true });
+        content.querySelectorAll('video, audio').forEach(media => media.pause());
         content.replaceChildren();
         title.textContent = '没有可预览文件';
         counter.textContent = '';
@@ -12374,27 +12383,32 @@ function renderMediaFullscreenItem() {
     const reusableMedia = canReuseActiveMedia
         ? (mediaFullscreenMovedMedia || getActivePreviewMediaElement(item.fileInfo.id))
         : null;
+    content.querySelectorAll('video, audio').forEach(media => {
+        if (media !== reusableMedia) media.pause();
+    });
 
     if (reusableMedia) {
         if (mediaFullscreenMovedMedia && mediaFullscreenMovedMedia !== reusableMedia) {
             restoreMovedFullscreenMedia({ pause: true });
         }
-        if (reusableMedia.parentNode !== content) {
+        if (!content.contains(reusableMedia)) {
             mediaFullscreenMovedParent = reusableMedia.parentNode;
             mediaFullscreenMovedNextSibling = reusableMedia.nextSibling;
             mediaFullscreenMovedPlaceholder = document.createElement('div');
             mediaFullscreenMovedPlaceholder.className = 'media-fullscreen-return-placeholder';
             mediaFullscreenMovedParent?.insertBefore(mediaFullscreenMovedPlaceholder, reusableMedia);
             content.replaceChildren();
-            content.appendChild(reusableMedia);
+            content.appendChild(reusableMedia.tagName === 'AUDIO' ? createFullscreenMediaElement(item, reusableMedia) : reusableMedia);
             mediaFullscreenMovedMedia = reusableMedia;
         } else {
             Array.from(content.childNodes).forEach(node => {
-                if (node !== reusableMedia) node.remove();
+                if (node !== reusableMedia && !node.contains(reusableMedia)) node.remove();
             });
         }
-        reusableMedia.classList.add('media-fullscreen-active-item');
-        fitPreviewMediaElement(reusableMedia, content);
+        if (['IMG', 'VIDEO'].includes(reusableMedia.tagName)) {
+            reusableMedia.classList.add('media-fullscreen-active-item');
+            fitPreviewMediaElement(reusableMedia, content);
+        }
     } else {
         restoreMovedFullscreenMedia({ pause: true });
         content.replaceChildren();

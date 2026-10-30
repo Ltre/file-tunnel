@@ -21,7 +21,7 @@ const root = path.resolve(__dirname, '..'), read = file => fs.readFileSync(path.
         if (req.query.open) return res.type('html').send('<title>完整首页</title><main id="full">完整首页</main>');
         const source = read('app.js'), functions = source.slice(source.indexOf('function initSessionLanding('), source.indexOf('function generateId('));
         const index = read('pages/index.html'), landing = index.slice(index.indexOf('    <div class="tunnel-landing"'), index.indexOf('    <header class="tunnel-topbar"'));
-        res.type('html').send(`<!doctype html><link rel="stylesheet" href="/client/index.css"><body>${landing}<div id="appShell"><input id="draft" value="keep this"><div id="modal">original dialog</div></div><script>
+        res.type('html').send(`<!doctype html><link rel="stylesheet" href="/client/index.css"><link rel="stylesheet" href="/client/tunnel-landing.css"><body>${landing}<div id="appShell"><input id="draft" value="keep this"><div id="modal">original dialog</div></div><script>
         const state={sessionId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',deviceId:'test',recentSessionId:null,pendingSharedFileCount:0};
         const list=[{sessionId:state.sessionId,shortCode:'ABCDE',lastActive:20},{sessionId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',shortCode:'FGHIJ',lastActive:10}];
         const readSessionDirectoryCache=()=>list,replaceSessionDirectoryCache=x=>x,getAllFromStore=async()=>list,normalizeLocalShortCode=x=>x,historyLog=()=>{},authorizeTunnelSelection=async()=>{},selectTunnelByShortCode=async()=>{},generateId=()=>state.sessionId;
@@ -35,7 +35,7 @@ const root = path.resolve(__dirname, '..'), read = file => fs.readFileSync(path.
         const context = await browser.newContext(), page = await context.newPage(), requests = [];
         page.on('request', request => requests.push(new URL(request.url()).pathname));
         await page.goto(base + '/'); await page.locator('#sessionLanding').waitFor({state:'visible'});
-        assert.ok(!requests.some(url => ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/socket.io/socket.io.js'].includes(url)));
+        assert.ok(!requests.some(url => ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/socket.io/socket.io.js', '/client/index.css', '/client/themes.css', '/client/themes-legacy.css'].includes(url)));
         await page.evaluate(() => localStorage.setItem('tunnelSessionDirectory:v1', JSON.stringify([{sessionId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',shortCode:'ABCDE',lastActive:10}])));
         await page.goto(base + '/'); await page.locator('#full').waitFor(); assert.match(page.url(), /open=1#aaaaaaaa/);
         await page.goto(base + '/?leave=1'); await page.locator('#landingSessionSelect').waitFor({state:'visible'}); assert.equal(await page.locator('#landingSessionSelect').inputValue(), 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');

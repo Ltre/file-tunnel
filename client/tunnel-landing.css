@@ -1,0 +1,160 @@
+/* Shared route layout: used by the minimal entry and the running home. */
+.tunnel-landing {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 82px 24px 24px;
+    background: #f4f6fb;
+    color: #26324d;
+}
+
+.tunnel-landing-topbar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 2;
+    display: flex;
+    height: 58px;
+    align-items: center;
+    justify-content: center;
+    padding: max(8px, env(safe-area-inset-top)) 16px 8px;
+    border-bottom: 1px solid rgba(201, 208, 223, .82);
+    background: rgba(244, 246, 251, .88);
+    box-shadow: 0 4px 18px rgba(38, 50, 77, .08);
+    backdrop-filter: blur(14px);
+}
+
+.tunnel-landing-topbar strong {
+    overflow: hidden;
+    font-size: clamp(1rem, 3.8vw, 1.35rem);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tunnel-landing-main {
+    width: min(100%, 420px);
+    text-align: center;
+}
+
+.tunnel-landing h1 {
+    margin: 0;
+    font-size: 1.45rem;
+    letter-spacing: 0;
+}
+
+.tunnel-landing p {
+    margin: 10px 0 22px;
+    color: #64708a;
+    line-height: 1.55;
+}
+
+.tunnel-code-inputs {
+    display: flex;
+    justify-content: center;
+    gap: 9px;
+    margin-bottom: 16px;
+}
+
+.tunnel-code-inputs input {
+    width: 48px;
+    height: 52px;
+    border: 1px solid #c9d0df;
+    border-radius: 6px;
+    background: #fff;
+    color: #26324d;
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.tunnel-code-inputs input:focus {
+    outline: 2px solid #667eea;
+    outline-offset: 1px;
+}
+
+.tunnel-landing-actions {
+    display: grid;
+    gap: 9px;
+    margin-top: 12px;
+}
+
+.tunnel-landing-actions .btn {
+    justify-content: center;
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 10px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+#landingRecentBtn {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 10px 22px rgba(37, 99, 235, .22);
+}
+
+#landingCreateBtn {
+    background: #eef4ff;
+    border-color: #c7d8ff;
+    color: #1f3a68;
+}
+
+.tunnel-landing-note {
+    min-height: 1.2em;
+    margin-top: 12px;
+    color: #a13f3f;
+    font-size: 0.82rem;
+}
+
+.landing-session-picker {
+    display: grid;
+    gap: 8px;
+    margin: 14px 0 10px;
+    text-align: left;
+}
+
+.landing-session-picker[hidden] {
+    display: none;
+}
+
+.landing-session-picker label {
+    color: #52617e;
+    font-size: .82rem;
+}
+
+.landing-session-picker select {
+    width: 100%;
+    max-height: 220px;
+    min-height: 42px;
+    border: 1px solid #c9d0df;
+    border-radius: 8px;
+    background: #fff;
+    color: #26324d;
+    padding: 0 10px;
+}
+
+@media (max-width: 420px) {
+    .tunnel-code-inputs { gap: 6px; }
+    .tunnel-code-inputs input { width: 43px; height: 48px; }
+}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing-topbar {background:var(--ui-header);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 -1px 0 var(--ui-line);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing-actions .btn {border-radius:var(--ui-radius);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing :is(button,input,select):focus-visible {outline-color:var(--ui-accent);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .landing-session-picker label {color:var(--ui-muted);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .landing-session-picker select {background-color:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 2px #17244203;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing {background:var(--ui-page);color:var(--ui-ink);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing h1 {color:var(--ui-ink);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing p {color:var(--ui-muted);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-code-inputs input {background:var(--ui-panel)!important;color:var(--ui-accent)!important;border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-shadow)!important;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) #landingRecentBtn {background:var(--ui-primary);color:var(--ui-on);border-color:transparent;box-shadow:var(--ui-primary-shadow);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) #landingCreateBtn {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:none;}
+body[data-theme="orbit"] .tunnel-code-inputs input {box-shadow:inset 0 -2px 0 #8e80e7,0 0 24px #8e80e715!important;}

@@ -507,7 +507,11 @@ async function buildServiceWorker(outRoot, buildId, assets, styles) {
   ]));
   let built = replaceScriptReferences(raw, assets).replace(/const CACHE_NAME = ['"][^'"]+['"];/, `const CACHE_NAME = 'instant-tunnel-${buildId}';`);
   built = built.replace(/const APP_SHELL = \[[\s\S]*?\];/, `const APP_SHELL = ${JSON.stringify(appShell, null, 4)};`);
-  built = built.replace("'/client/tunnel-entry.css'", JSON.stringify(styles['tunnel-entry']));
+  // Both route styles are folded into the entry page's hashed stylesheet.
+  // Keep precaching the actual release asset rather than its source paths.
+  const routeStyle = JSON.stringify(styles['tunnel-entry']);
+  built = built.replace(/'\/client\/tunnel-(?:entry|landing)\.css'/g, routeStyle)
+    .replace(`${routeStyle}, ${routeStyle}`, routeStyle);
   await fs.writeFile(path.join(outRoot, 'service-worker.js'), built);
   return { appShell, stat: sizeStat('service-worker.js', 'service-worker.js', raw, built) };
 }

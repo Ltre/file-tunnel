@@ -21,7 +21,7 @@
         ['重试查看','Retry viewing'],
         ['文件定位已取消，转存完成记录仍保留','File navigation was cancelled. The completed transfer record is retained'],
         ['正在加载串流台界面…','Loading the station interface…'],
-        ['后台播放','Background playback'],['后台播放已关闭','Background playback is disabled'],
+        ['后台播放','Background playback'],['后台播放已关闭','Background playback is disabled'],['在播','On air'],
         ['播放持续没有进展，已重试，请点击恢复播放','Playback is still stalled after retries. Select Resume playback'],
         ['小窗播','Mini player'],['串流台小窗','Station mini player'],['恢复串流台','Restore station'],['关闭小窗','Close mini player'],
         ['目标隧道','Target tunnel'],

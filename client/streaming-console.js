@@ -242,7 +242,8 @@
         if (root) return;
         root = document.createElement('section'); root.id = 'streamingConsole'; root.className = 'sc-overlay'; root.hidden = true;
         root.setAttribute('aria-label', t('串流控制台'));
-        root.innerHTML = '<header class="sc-header"><strong>串流控制台</strong><button type="button" data-sc-account></button><span class="sc-running"></span><button type="button" data-sc-minimize>_</button><button type="button" data-sc-home class="sc-close">×</button></header><div class="sc-workspace"><nav class="sc-nav"></nav><main class="sc-main"><div class="sc-banner" role="status" hidden></div><div class="sc-page"></div></main></div>';
+        root.innerHTML = '<header class="sc-header"><div class="sc-header-brand"><img class="sc-header-logo" src="/client/icons/streaming.png"></div><button type="button" data-sc-account></button><span class="sc-running"></span><button type="button" data-sc-minimize>_</button><button type="button" data-sc-home class="sc-close">×</button></header><div class="sc-workspace"><nav class="sc-nav"></nav><main class="sc-main"><div class="sc-banner" role="status" hidden></div><div class="sc-page"></div></main></div>';
+        root.querySelector('.sc-header-logo').alt = t('串流控制台');
         document.body.append(root); main = root.querySelector('.sc-page'); banner = root.querySelector('.sc-banner');
         root.querySelector('[data-sc-home]').onclick = () => closeConsole();
         root.querySelector('[data-sc-home]').setAttribute('aria-label', t('关闭串流控制台'));
@@ -265,8 +266,24 @@
     function isOpen() { return Boolean(root && !root.hidden); }
     let renderedIdentity = '', smallWindow = null;
     const viewIdentity = () => [ui.view, ui.stationId, account()].join(':');
+    function refreshBackgroundPlayback() {
+        const brand = root?.querySelector('.sc-header-brand'); if (!brand) return;
+        const owner = [...players.values()].find(player => !main.contains(player.element) && player.isPlaying?.());
+        let ticker = brand.querySelector('.sc-background-now');
+        if (!owner || smallWindow && !smallWindow.hidden) { ticker?.remove(); return; }
+        const snapshot = owner.snapshot(); if (!snapshot) { ticker?.remove(); return; }
+        if (!ticker) {
+            ticker = button('', () => navigate('watch', ticker.dataset.stationId), 'sc-background-now');
+            const track = document.createElement('span'); track.className = 'sc-background-track';
+            const text = document.createElement('span'), repeat = document.createElement('span'); repeat.setAttribute('aria-hidden', 'true'); track.append(text, repeat); ticker.append(track); brand.append(ticker);
+        }
+        const label = t('在播') + '·' + snapshot.number + '·' + snapshot.name;
+        ticker.dataset.stationId = snapshot.id; ticker.setAttribute('aria-label', label); ticker.title = label;
+        for (const text of ticker.firstChild.children) if (text.textContent !== label) text.textContent = label;
+    }
     function presentPlayers() {
         for (const player of players.values()) player.setForeground?.(isOpen() && main.contains(player.element) || Boolean(smallWindow && !smallWindow.hidden));
+        refreshBackgroundPlayback();
     }
     function hideSmallWindow() {
         if (!smallWindow) return;
@@ -1297,7 +1314,10 @@
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
                 row.dataset.itemId = item.id;
                 if (controlling && value.manageable && ['tunnel','disk'].includes(item.sourceKind)) row.classList.add('sc-source-item');
-                if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
+                if (controlling && value.manageable) row.append(button('切换节目', async () => {
+                    await command('select', { itemId: item.id });
+                    if (version === renderVersion && ui.view === 'control' && ui.stationId === snapshot.id && global.matchMedia('(max-width: 767px), (pointer: coarse)').matches) stage.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }));
                 row.classList.toggle('sc-now-playing', item.id === playingId);
                 const name = document.createElement('span'); name.className = 'message-content';
                 name.textContent = (item.id === playingId ? '▶ ' : '') + (({ disk: '▤', tunnel: '⇄', local: '🗃️' })[item.sourceKind] || '') + ' ' + item.name + (item.unavailable ? ' · ' + t('来源不可用') : '');
@@ -1322,7 +1342,8 @@
                 subscribe: (receive, failure) => follow(snapshot.id, fixedAccount, receive, failure),
                 onSeek: controlling ? seekControl : undefined,
                 onItemChange: () => { player?.onItemView?.(); },
-                onState: value => { player.onView?.(value); }, onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
+                onState: value => { player.onView?.(value); refreshBackgroundPlayback(); }, onPlaybackChange: refreshBackgroundPlayback,
+                onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
                 onRecovery: code => { if (ui.stationId === snapshot.id && banner?.dataset.errorCode === code) { banner.hidden = true; banner.textContent = ''; banner.dataset.errorCode = ''; } } }); players.set(playerKey, player); }
             player.onView = fillInfo; player.onItemView = () => fillInfo(player.snapshot() || snapshot); player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
             actions.append(button('小窗播', () => showSmallWindow(player)));

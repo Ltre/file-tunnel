@@ -42,7 +42,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) {
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.panel,.telegram-drive-manager,.web-draft-grid article,.sc-card,.sc-station-row,.sc-program) {
   background:var(--ui-panel); border-color:var(--ui-line); border-radius:var(--ui-radius); box-shadow:var(--ui-shadow);
 }
-body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.panel-header,.tunnel-topbar,.telegram-drive-header,.web-workshop>header,.sc-header,.tunnel-landing-topbar) {
+body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.panel-header,.tunnel-topbar,.telegram-drive-header,.web-workshop>header,.sc-header) {
   background:var(--ui-header); color:var(--ui-ink); border-color:var(--ui-line); box-shadow:inset 0 -1px 0 var(--ui-line);
 }
 body[data-theme="lumen"] #appShell .panel-header {background:#edf0f9;border-color:transparent;box-shadow:none;}
@@ -114,15 +114,8 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.sc-cover,.sc-source-thum
 body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-stage {background:#101723;border-radius:var(--ui-radius);box-shadow:var(--ui-shadow);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-overlay .sc-program .sc-drag-handle {background:var(--ui-soft);color:var(--ui-muted);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.sc-seek input,.sc-local-controls input[type=range]) {accent-color:var(--ui-accent);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.mobile-workspace-nav,.tunnel-landing-topbar) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 0 var(--ui-line);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .mobile-workspace-nav {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:inset 0 1px 0 var(--ui-line);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .mobile-workspace-button.active {background:radial-gradient(ellipse at center,var(--ui-tint) 0%,color-mix(in srgb,var(--ui-tint) 65%,var(--ui-panel)) 40%,var(--ui-panel) 85%);color:var(--ui-accent);box-shadow:none;}
-body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing {background:var(--ui-page);color:var(--ui-ink);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing h1 {color:var(--ui-ink);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-landing p {color:var(--ui-muted);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) .tunnel-code-inputs input {background:var(--ui-panel)!important;color:var(--ui-accent)!important;border-color:var(--ui-line);border-radius:var(--ui-radius);box-shadow:var(--ui-shadow)!important;}
-body:is([data-theme="lumen"],[data-theme="orbit"]) #landingRecentBtn {background:var(--ui-primary);color:var(--ui-on);border-color:transparent;box-shadow:var(--ui-primary-shadow);}
-body:is([data-theme="lumen"],[data-theme="orbit"]) #landingCreateBtn {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);box-shadow:none;}
-body[data-theme="orbit"] .tunnel-code-inputs input {box-shadow:inset 0 -2px 0 #8e80e7,0 0 24px #8e80e715!important;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .leave-tunnel-btn {background:var(--ui-soft);border-color:var(--ui-line);color:var(--ui-muted);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) ::selection {background:var(--ui-tint);color:var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) * {scrollbar-color:var(--ui-line) transparent;}
@@ -401,9 +394,15 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .light-transfer-layer,.light-receiver-main,.music-player-overlay
 ) {background:var(--ui-page);color:var(--ui-ink);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
-  .light-transfer-topbar,.light-info-panel,.device-camera-topbar,
-  .music-player-topbar,.music-player-queue-drawer
+  .light-transfer-topbar,.light-info-panel,.device-camera-topbar
 ) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .music-player-topbar {
+  background:transparent;color:var(--ui-ink);border-color:transparent;box-shadow:none;
+}
+body:is([data-theme="lumen"],[data-theme="orbit"]) .music-player-queue-drawer {
+  background:linear-gradient(to bottom,transparent 24%,color-mix(in srgb,var(--ui-bg) 90%,transparent));
+  color:var(--ui-ink);border-color:transparent;border-radius:0;box-shadow:none;backdrop-filter:none;
+}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .light-info-item,.light-preview,.music-player-queue-item
 ) {background:var(--ui-soft);color:var(--ui-ink);border-color:var(--ui-line);}

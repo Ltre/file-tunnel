@@ -6,7 +6,7 @@ const part=(from,to)=>code.slice(code.indexOf(from),code.indexOf(to,code.indexOf
 test('minimize/restore keeps the constructed view and does not schedule another render',async()=>{
     const original={name:'existing view'},main={children:[original],querySelector:()=>null,contains:()=>true};let renders=0,foreground;
     const context={ui:{view:'watch',stationId:'station'},account:()=>'',main,players:new Map([['station:',{element:{},setForeground:v=>foreground=v}]]),
-        ready:Promise.resolve(),root:{hidden:false},isOpen(){return !context.root.hidden;},ensureUi(){},render(){renders++;},sync(){},saveUi(){},global:{dispatchEvent(){}},Event:class{},
+        ready:Promise.resolve(),root:{hidden:false,querySelector:()=>null},isOpen(){return !context.root.hidden;},ensureUi(){},render(){renders++;},sync(){},saveUi(){},global:{dispatchEvent(){}},Event:class{},
         history:{state:{streamingConsole:true},pushState(){this.state={streamingConsole:true};},replaceState(value){this.state=value;}},location:{href:'http://fixture.invalid'},document:{getElementById:()=>null}};
     vm.createContext(context);vm.runInContext(part("    let renderedIdentity =",'    function dirty()')+'renderedIdentity=viewIdentity();global.openView=open;global.minimizeView=minimize;',context);
     context.global.minimizeView();assert.equal(foreground,false);await context.global.openView();assert.equal(foreground,true);

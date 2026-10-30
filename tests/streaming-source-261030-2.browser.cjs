@@ -39,7 +39,7 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
   await page.evaluate(()=>{DiskUI.close();StreamingConsole.open();});
   await page.setViewportSize({width:390,height:844});await tunnel().scrollIntoViewIfNeeded();
   const box=await tunnel().boundingBox(),cdp=await context.newCDPSession(page);await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+box.height/2,id:1}]});
-  await page.locator('.sc-header>strong').evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);getSelection().removeAllRanges();getSelection().addRange(range);});
+  await tunnel().evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);getSelection().removeAllRanges();getSelection().addRange(range);});
   await page.locator('.sc-source-location').waitFor();await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});assert.equal(await page.locator('.sc-source-location').count(),1,'long press opens one source dialog');
   assert.equal(await page.evaluate(()=>getSelection().toString()),'','opening a source dialog must clear the long-press text selection underneath');
   assert.equal(await tunnel().evaluate(node=>getComputedStyle(node).userSelect),'none','source rows suppress native text selection');

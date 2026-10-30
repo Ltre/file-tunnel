@@ -1,10 +1,11 @@
-const CACHE_NAME = 'instant-tunnel-v104-content-v8-tunnel-entry-261030';
+const CACHE_NAME = 'instant-tunnel-v106-content-v8-audio-controls-261031';
 const APP_SHELL = [
     '/',
     '/index.html',
     '/tunnel-entry.html',
     '/client/tunnel-entry.js',
     '/client/tunnel-entry.css',
+    '/client/tunnel-landing.css',
     '/admin',
     '/admin.html',
     '/downloader',
@@ -82,7 +83,7 @@ const APP_SHELL = [
     '/tunnel-icon.svg',
     '/prompts/resources/icons/fileview.png'
 ];
-const PRECACHE_CORE = ['/index.html', '/tunnel-entry.html', '/client/tunnel-entry.css', '/client/tunnel-entry.js', '/client/i18n-catalog.js', '/client/i18n.js', '/manifest.webmanifest', '/tunnel-icon.svg'];
+const PRECACHE_CORE = ['/index.html', '/tunnel-entry.html', '/client/tunnel-entry.css', '/client/tunnel-landing.css', '/client/tunnel-entry.js', '/client/i18n-catalog.js', '/client/i18n.js', '/manifest.webmanifest', '/tunnel-icon.svg'];
 
 async function precacheAppShell() {
     const cache = await caches.open(CACHE_NAME);

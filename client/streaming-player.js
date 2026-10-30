@@ -13,7 +13,7 @@
     }
     // Only this device's cursor retains loading time. Explicit global commands
     // still replace it; station permissions and the server clock are unchanged.
-    function create({ stationId, watchId, request, subscribe, onState, onItemChange, onError, onRecovery, onSeek, mediaUrl = access => access.url }) {
+    function create({ stationId, watchId, request, subscribe, onState, onItemChange, onPlaybackChange, onError, onRecovery, onSeek, mediaUrl = access => access.url }) {
         const initialWatchId = watchId; let resumeCount = 0;
         const host = document.createElement('section'); host.className = 'sc-player';
         host.innerHTML = '<div class="sc-stage"><div class="sc-media"></div><span class="sc-countdown"></span><span class="sc-muted" hidden></span></div><div class="sc-local-controls"></div><p class="sc-play-status" role="status"></p>';
@@ -87,6 +87,9 @@
         const itemKey = item => JSON.stringify([snapshot?.configVersion, item?.id, item?.kind, item?.duration, item?.start, item?.stay]);
         const current = () => snapshot?.items.find(item => item.id === currentId);
         const running = () => snapshot?.playback.status === 'playing' || tail;
+        const isPlaying = () => Boolean(alive && !denied && !pageSuspended && !locallyPaused() && running() && ['playing', 'reading', 'buffering'].includes(actual));
+        let lastPlaying;
+        function notifyPlayback() { const value = isPlaying(); if (value !== lastPlaying) { lastPlaying = value; onPlaybackChange?.(value); } }
         function globalPosition() { const item = snapshot?.items.find(item => item.id === snapshot.playback.itemId); return Math.min(length(item), (snapshot?.playback.position || 0) + (snapshot?.playback.status === 'playing' ? Math.max(0, performance.now() - receivedAt) / 1000 : 0)); }
         function update() {
             const adminPaused = snapshot?.playback.status === 'paused';
@@ -115,6 +118,7 @@
                 countdown.hidden = false; countdown.textContent = String(Math.ceil(remaining)); countdown.dataset.position = snapshot.countdown || 'bottom-right';
                 stage.style.setProperty('--sc-remaining', String(remaining / Math.min(99,length(item)))); stage.classList.toggle('sc-edge-countdown', snapshot.countdown === 'edge');
             } else { countdown.hidden = true; stage.classList.remove('sc-edge-countdown'); }
+            notifyPlayback();
         }
         function dispose(task) {
             if (!task || task.disposed) return; task.disposed = true; clearTimeout(task.loadTimer); task.controller.abort();
@@ -338,10 +342,10 @@
         const timer = setInterval(() => { sync(); update(); warmCurrent(); }, 250);
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
-        return { element: host, apply, poll, snapshot: () => snapshot, currentItemId: () => currentId, exitFullscreen, setBackground,
+        return { element: host, apply, poll, snapshot: () => snapshot, currentItemId: () => currentId, isPlaying, exitFullscreen, setBackground,
             setForeground(value) { foreground = Boolean(value); lastTick = performance.now(); sync(); update(); },
             setController(handler) { onSeek = handler; update(); },
-            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); document.removeEventListener?.('visibilitychange',visibilityChanged); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); } };
+            close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); document.removeEventListener?.('visibilitychange',visibilityChanged); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); notifyPlayback(); } };
     }
     global.StreamingPlayer = { create, renderRich };
 })(window);

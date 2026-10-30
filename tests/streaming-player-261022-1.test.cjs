@@ -22,7 +22,7 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, mediaUrl, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, onPlaybackChange, mediaUrl, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
     const epoch=Date.now(),clockNow=()=>clockDate?epoch+time:Date.now();
     const timeouts = new Map(); let timeoutId = 0, reportAttempt = 0;
@@ -37,7 +37,7 @@ function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', r
     const state = { id: 'station', visibility: 'public', loop: true, configVersion: 1, serverTime: 1, manageable: Boolean(onSeek),
         items: [{ id: 'a', name: 'a', kind, start: 0, duration: kind === 'audio' ? duration : undefined, stay: 10 }, { id: 'b', name: 'b', kind: nextKind, duration: nextKind === 'audio' ? duration : undefined, stay: 10 }],
         playback: { itemId: 'a', position: 0, status: reportStarts ? 'stopped' : 'playing', version: 1 } };
-    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onItemChange, mediaUrl, onRecovery:code=>recoveries.push(code),
+    const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onItemChange, onPlaybackChange, mediaUrl, onRecovery:code=>recoveries.push(code),
         request: async (route, method, body, options) => { calls.push({ route, body }); if (onReport && route.endsWith('/report')) return onReport({attempt:++reportAttempt, state, options}); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
             return { url: '/media/' + body.itemId, expiresAt: clockNow() + 600000, size, type: 'audio/wav' };
@@ -103,6 +103,19 @@ test('background playback can be disabled and restored without losing the media 
     audio.currentTime=8; f.tick(250); f.player.setForeground(false); assert.equal(audio.paused,false);
     f.player.setBackground(false); assert.equal(audio.paused,true);assert.equal(audio.currentTime,8);
     f.player.setForeground(true); await f.flush(); assert.equal(audio.paused,false); assert.equal(audio.currentTime,8);f.player.close();
+});
+
+test('playback notifications follow local/global pause, background policy and close without ticking unchanged state', async () => {
+    const changes = [], f = fixture({ onPlaybackChange: playing => changes.push(playing) });
+    await f.flush(); f.elements.find(el => el.tagName === 'IMG').emit('load'); await f.flush();
+    assert.equal(f.player.isPlaying(), true); const stable = changes.length; f.tick(250); f.tick(250); assert.equal(changes.length, stable);
+    const pause = f.player.element.querySelector('.sc-local-pause'); pause.onclick(); assert.equal(changes.at(-1), false);
+    pause.onclick(); assert.equal(changes.at(-1), true);
+    f.player.setForeground(false); f.player.setBackground(false); assert.equal(changes.at(-1), false);
+    f.player.setBackground(true); assert.equal(changes.at(-1), true);
+    f.player.apply({ ...f.state, serverTime: 2, playback: { ...f.state.playback, status: 'paused', version: 2, controlVersion: 1 } }); assert.equal(changes.at(-1), false);
+    f.player.apply({ ...f.state, serverTime: 3, playback: { ...f.state.playback, status: 'playing', version: 3, controlVersion: 2 } }); assert.equal(changes.at(-1), true);
+    f.player.close(); assert.equal(changes.at(-1), false); assert.equal(f.player.isPlaying(), false);
 });
 
 test('a media stall without an error event renews the ticket after bounded waiting', async()=>{
