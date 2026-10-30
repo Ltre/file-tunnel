@@ -1,0 +1,53 @@
+'use strict';
+const assert=require('node:assert/strict'),path=require('node:path'),os=require('node:os');
+const {chromium}=require(process.argv[2]||path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
+const {createFixture}=require('./support/streaming-console-fixture.cjs');
+(async()=>{
+ const f=await createFixture();let browser;
+ try{
+  browser=await chromium.launch({channel:'chrome',headless:true});const context=await browser.newContext({viewport:{width:1366,height:900},hasTouch:true});
+  await context.request.get(f.base+'/fixture-account/alice');
+  const device='device-A',secret=device.repeat(8),headers={'X-Stream-Device':device,'X-Stream-Key':secret,'X-Disk-Account':'alice'};
+  await context.request.post(f.base+'/api/streaming/devices',{data:{deviceId:device,key:secret,name:'Source test'}});
+  const station=await (await context.request.post(f.base+'/api/streaming/stations',{headers,data:{name:'Source dialogs',creationId:'source-dialogs'}})).json();
+  const file=f.store.list('alice','').files.find(file=>file.name.endsWith('.png'));
+  const source={kind:'tunnel',sessionId:'fixture-tunnel',messageId:'image-record',fileId:'image-asset',accessGrant:'fixture-proof'};
+  const saved=await context.request.put(f.base+'/api/streaming/stations/'+station.id,{headers,data:{configVersion:1,items:[{id:'tunnel-program',source,stay:10},{id:'disk-program',source:{kind:'disk',accountId:'alice',fileId:file.id},stay:10}]}});assert.equal(saved.ok(),true,await saved.text());
+  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(12000);
+  await page.goto(f.base+'/disk');await page.waitForFunction(()=>!!window.DiskUI);
+  for(const script of ['streaming-cache','streaming-player','streaming-console'])await page.addScriptTag({url:f.base+'/client/'+script+'.js'});
+  const editorConfig=await (await context.request.get(f.base+'/api/streaming/stations/'+station.id+'/edit-config',{headers})).json();
+  await page.evaluate(async({device,secret,id,editorConfig})=>{
+   DiskClient.setAccount('alice');window.joined=true;window.recordFocus=null;
+   localStorage.setItem('streaming:'+device+':key',secret);localStorage.setItem('streaming:'+device+':ui',JSON.stringify({view:'control',stationId:id,scroll:{},drafts:{}}));
+   localStorage.setItem('streaming:'+device+':station:'+id,JSON.stringify(editorConfig));
+   StreamingConsole.init({deviceId:()=>device,deviceName:()=> 'Source test',tunnels:async()=>window.joined?[{sessionId:'fixture-tunnel',shortCode:'ABCDE',remark:'source tunnel',accessGrant:'fixture-proof'}]:[],devices:()=>[],home:()=>{},toast:()=>{},focusRecord:async(messageId,source)=>{window.recordFocus={messageId,sessionId:source.sessionId};return true;}});await StreamingConsole.whenReady();StreamingConsole.open();
+  },{device,secret,id:station.id,editorConfig});
+  const tunnel=()=>page.locator('.sc-watch-item[data-item-id="tunnel-program"] .message-content');
+  await tunnel().waitFor();await tunnel().hover();await page.waitForTimeout(650);assert.equal(await page.locator('.sc-source-location').count(),0,'hover must not open a source dialog');
+  await tunnel().click({button:'right'});await page.getByRole('button',{name:'前往该隧道锚点查看',exact:true}).waitFor();assert.match(await page.locator('.sc-source-location').innerText(),/ABCDE.*source tunnel/);
+  await page.getByRole('button',{name:'前往该隧道锚点查看',exact:true}).click();assert.deepEqual(await page.evaluate(()=>recordFocus),{messageId:'image-record',sessionId:'fixture-tunnel'});
+  await page.evaluate(()=>{window.joined=false;StreamingConsole.open();});await tunnel().click({button:'right'});await page.locator('.sc-source-location').getByText('来源隧道',{exact:false}).waitFor();assert.equal(await page.getByRole('button',{name:'前往该隧道锚点查看',exact:true}).count(),0);
+  await page.locator('.sc-dialog header').getByRole('button',{name:'关闭',exact:true}).click();
+  const disk=page.locator('.sc-watch-item[data-item-id="disk-program"] .message-content');await disk.click({button:'right'});await page.getByRole('button',{name:'前往网盘查看',exact:true}).waitFor();assert.match(await page.locator('.sc-source-location').innerText(),/验收甲账号/);
+  await page.getByRole('button',{name:'前往网盘查看',exact:true}).click();await page.waitForFunction(id=>document.querySelector('#telegramDriveList [data-file-id="'+id+'"]')?.classList.contains('disk-search-located'),file.id).catch(async error=>{console.log(await page.locator('body').innerText());console.log(errors);throw error;});
+  assert.equal(await page.locator('#telegramDriveOverlay').evaluate(n=>n.hidden),false);assert.equal(await page.evaluate(()=>DiskClient.getAccount()),'alice');
+  await page.evaluate(()=>{DiskUI.close();StreamingConsole.open();});
+  await page.setViewportSize({width:390,height:844});await tunnel().scrollIntoViewIfNeeded();
+  const box=await tunnel().boundingBox(),cdp=await context.newCDPSession(page);await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:box.x+box.width/2,y:box.y+box.height/2,id:1}]});
+  await page.locator('.sc-header>strong').evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);getSelection().removeAllRanges();getSelection().addRange(range);});
+  await page.locator('.sc-source-location').waitFor();await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});assert.equal(await page.locator('.sc-source-location').count(),1,'long press opens one source dialog');
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'','opening a source dialog must clear the long-press text selection underneath');
+  assert.equal(await tunnel().evaluate(node=>getComputedStyle(node).userSelect),'none','source rows suppress native text selection');
+  assert.equal(await page.locator('.sc-source-location .message-content').first().evaluate(node=>getComputedStyle(node).userSelect),'none','source dialog text also suppresses selection');
+  await page.locator('.sc-source-location .message-content').first().dblclick();assert.equal(await page.evaluate(()=>getSelection().toString()),'','double clicking source dialog text cannot create a new selection');
+  await page.locator('.sc-dialog header').getByRole('button',{name:'关闭',exact:true}).click();
+  let writes=0;page.on('request',request=>{if(new URL(request.url()).pathname==='/api/streaming/stations/'+station.id&&request.method()==='PUT')writes++;});
+  const version=f.streaming.service.station(station.id).configVersion;
+  await page.evaluate(()=>window.joined=true);
+  await page.getByRole('button',{name:'编辑节目单',exact:true}).click();await page.getByRole('button',{name:'保存',exact:true}).click().catch(async e=>{console.log(await page.locator('body').innerText());console.log(errors);throw e;});await page.getByRole('button',{name:'编辑节目单',exact:true}).waitFor();
+  assert.equal(writes,0,'saving an unchanged verified editor must not send another full playlist validation/write');assert.equal(f.streaming.service.station(station.id).configVersion,version);
+  await page.getByRole('button',{name:'编辑节目单',exact:true}).click();await page.locator('.sc-name').fill('Changed title');await page.getByRole('button',{name:'保存',exact:true}).click();await page.getByRole('button',{name:'编辑节目单',exact:true}).waitFor();assert.equal(writes,1);assert.equal(f.streaming.service.station(station.id).name,'Changed title');
+  assert.deepEqual(errors,[]);console.log('PASS mouse hover does nothing; right click and touch long press show source without text selection; joined-only tunnel navigation; real drive account/path/file highlight; unchanged editor saves without a PUT while changes still persist');
+ }finally{await browser?.close();await f.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

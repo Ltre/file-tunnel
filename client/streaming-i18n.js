@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['节目来源','Program source'],['正在读取节目来源…','Reading program source…'],
+        ['节目来源读取失败，请关闭后重试','Could not read the program source. Close this dialog and retry'],
+        ['来源隧道','Source tunnel'],['前往该隧道锚点查看','View the source tunnel record'],['前往网盘查看','View in drive'],
+        ['无法定位网盘文件，请检查账号、权限或网络后重试','Could not locate the drive file. Check the account, permissions or network and retry'],
         ['本地文件未缓存，尚未完成选择，请检查浏览器存储空间后重新选择','The local file was not cached and selection did not finish. Check browser storage and select it again'],
         ['本机文件会持久缓存在供源设备；网盘与隧道节目保留来源引用。','Local imports are persistently cached on the source device. Drive and tunnel programs retain source references.'],
         ['正在检查媒体时长，完成后自动保存…','Checking media durations; saving will continue automatically…'],

@@ -166,6 +166,10 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.account-panel button,.se
 body:is([data-theme="lumen"],[data-theme="orbit"]) .account-row button[aria-pressed=true] {background:var(--ui-tint);color:var(--ui-accent);border-color:var(--ui-accent);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.account-overlay,.send-mode-overlay) {background:color-mix(in srgb,var(--ui-bg) 55%,#18263a88);backdrop-filter:blur(7px);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .chat-messages {background:var(--ui-bg);color:var(--ui-ink);}
+body[data-theme="orbit"] .collection-remark {color:var(--ui-ink);}
+body[data-theme="orbit"] .download-cache-header {background:var(--ui-header);color:var(--ui-ink);border-color:var(--ui-line);}
+body[data-theme="orbit"] .download-cache-header h3 {color:inherit;}
+body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.download-cache-panel,#downloadCacheFrame) {background:var(--ui-bg);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.tunnel-markdown-preview,.transfer-progress,.transfer-progress-toggle) {background:var(--ui-panel);color:var(--ui-ink);border-color:var(--ui-line);}
 body:is([data-theme="lumen"],[data-theme="orbit"]) .sc-audio-title {background:transparent;color:#eef2fc;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(.rich-preview-content,.rich-preview-empty) {color:var(--ui-muted);}

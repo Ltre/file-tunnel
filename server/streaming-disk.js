@@ -33,6 +33,13 @@ function createStreamingDisk({ objects, partitions, identity }) {
             const { object } = locate(source);
             return { name: object.file.name, type: object.type, size: object.size };
         },
+        describe(source) {
+            const { scope, object } = locate(source);
+            const partition = partitions.find(source.userId, scope.diskSpace);
+            return { kind:'disk', accountId:source.userId, diskSpace:scope.diskSpace,
+                partitionId:partition.id, partitionName:partition.displayName || partition.name || '',
+                fileId:source.fileId, path:object.file.folderPath || '', name:object.file.name };
+        },
         async read(source, start, end, signal) {
             const { scope, object } = locate(source);
             const result = await objects.open(scope, object.key, `bytes=${start}-${end}`, signal);

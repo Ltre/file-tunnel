@@ -227,12 +227,14 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const ids = new Set();
         const items = [], resolutions = new Map();
         for (const value of input.items) {
-            progress({ phase: 'checking', completed: items.length, total: input.items.length, name: String(value.name || '').slice(0, 255) });
             if (!validId(value.id) || ids.has(value.id)) fail('STREAM_PLAYLIST_INVALID');
             ids.add(value.id);
             const previous = s.items.find(item => item.id === value.id);
             const locator = value.source && JSON.stringify(value.source);
-            if (locator && !resolutions.has(locator)) resolutions.set(locator, await sources.resolve(value.source, actor, req));
+            if (locator && !resolutions.has(locator)) {
+                progress({phase:'checking',completed:items.length,total:input.items.length,name:String(value.name || '').slice(0,255)});
+                resolutions.set(locator, await sources.resolve(value.source, actor, req));
+            }
             let resolved = locator ? resolutions.get(locator) : previous;
             if (!resolved?.source) fail('STREAM_SOURCE_INVALID');
             if (!locator) {
@@ -249,7 +251,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             items.push({ id: value.id, name: resolved.name, type: resolved.type, size: resolved.size,
                 source: copy(resolved.source), references: copy(resolved.references || []), kind, duration, start,
                 stay: duration ? null : number(value.stay ?? 10, 0.1, 86400), unavailable: null });
-            progress({ phase: 'checked', completed: items.length, total: input.items.length, name: resolved.name });
+            if (locator) progress({ phase: 'checked', completed: items.length, total: input.items.length, name: resolved.name });
         }
         // Source resolution can await network metadata; recheck both authority
         // and configuration revision before committing any of the new list.

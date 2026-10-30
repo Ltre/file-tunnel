@@ -17839,7 +17839,6 @@ function initThemeSwitcher() {
     });
     cycleButton?.addEventListener('click', event => {
         event.stopPropagation();
-        cycleTheme('topbar');
         openQuickMenu();
     });
     document.addEventListener('click', event => {
@@ -18270,6 +18269,7 @@ function initStreamingConsoleIntegration() {
         }),
         file: fileId => getFromStore('files', fileId), message: messageId => getFromStore('messages', messageId),
         materialize: file => materializeExternalFileRecord(file, { requestPermission: false }), complete: hasCompleteFileCache,
+        focusRecord: (messageId, source) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId }),
         receiveMessage: async (message, sessionId) => { if (!message) return; await saveToStore('messages', { ...message, sessionId }); if (state.sessionId === sessionId) await addMessageToChat(message, true, { autoRequestAsset: false }); },
         home: view => setMobileWorkspaceView(view), toast: showAppToast });
     if (adapter) window.StreamingConsole?.init(adapter);
@@ -18572,11 +18572,18 @@ function initUI() {
     document.getElementById('filePreviewViewer').addEventListener('click', event => {
         if (event.target === event.currentTarget) closeFilePreview();
     });
+    document.getElementById('filePreviewContent')?.addEventListener('mousedown', event => {
+        if (event.button !== 0 || event.detail !== 2 || !activeFilePreviewCanFullscreen || !isPreviewMediaTarget(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
+    }, true);
     document.getElementById('filePreviewContent')?.addEventListener('dblclick', event => {
         if (!activeFilePreviewCanFullscreen || !isPreviewMediaTarget(event.target)) return;
         event.preventDefault();
+        event.stopPropagation();
         openActivePreviewFullscreen().catch(err => historyLog('media-fullscreen-open-failed', { error: err.message }));
-    });
+    }, true);
     document.getElementById('filePreviewViewer')?.addEventListener('pointerdown', event => {
         if (!document.getElementById('filePreviewViewer')?.classList.contains('active')) return;
         if (event.pointerType !== 'touch') return;

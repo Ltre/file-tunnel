@@ -160,6 +160,21 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         res.json({name:s.name,coverId:s.coverId || '',configVersion:s.configVersion,loop:s.loop,countdown:s.countdown,items});
     }));
     router.post('/stations/:id/revision', wrap((req, res) => res.json(service.revision(req.params.id, req.streamActor, req.body))));
+    router.get('/stations/:id/items/:itemId/source-location', wrap((req, res) => {
+        const station = service.station(req.params.id);
+        service.authority(station, req.streamActor);
+        if (Number(req.query.configVersion) !== station.configVersion) throw Error('STREAM_CONFLICT');
+        const item = station.items.find(value => value.id === req.params.itemId);
+        if (!item) throw Error('STREAM_SOURCE_DELETED');
+        const location = sources.describe(item.source);
+        if (!location) throw Error('STREAM_SOURCE_INVALID');
+        if (location.kind === 'disk') {
+            const owner = user(location.accountId);
+            location.accountName = owner?.name || owner?.username || location.accountId;
+            location.accountLoginId = owner?.telegramId || owner?.username || '';
+        }
+        res.set('Cache-Control','private, no-store').json({ location, configVersion:station.configVersion });
+    }));
     router.get('/stations/:id/events', wrap((req, res) => {
         const deviceId = req.streamActor.deviceId;
         if (listeners.size >= 128 || [...listeners.values()].filter(value => value.deviceId === deviceId).length >= 16) throw new Error('STREAM_LIMIT');

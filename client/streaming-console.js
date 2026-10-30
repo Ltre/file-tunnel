@@ -540,6 +540,77 @@
         dialog.querySelectorAll('video,audio').forEach(media => { media.pause(); media.removeAttribute('src'); }); dialog.remove(); dialog = null;
         if (!keepHistory && history.state?.streamingDialog) { const next = { ...history.state }; delete next.streamingDialog; history.replaceState(next, '', location.href); }
     }
+    async function programSource(item, station, isCurrent) {
+        global.getSelection()?.removeAllRanges();
+        const actor = account(), device = config.deviceId(), body = document.createElement('div'), status = document.createElement('p');
+        body.className = 'sc-source-location'; status.setAttribute('role','status'); status.textContent = t('正在读取节目来源…'); body.append(status);
+        showDialog('节目来源', body);
+        const current = dialog, controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+        current.dataset.programSource = station.id;
+        current.addEventListener('selectstart', event => event.preventDefault());
+        current.previewCleanup = () => { clearTimeout(timer); controller.abort(); };
+        const valid = () => dialog === current && isCurrent() && actor === account() && device === config.deviceId();
+        const field = (label, value) => { const p = document.createElement('p'), strong = document.createElement('strong'), text = document.createElement('span'); strong.textContent = t(label) + ' · '; text.className = 'message-content'; text.textContent = value; p.append(strong,text); body.append(p); };
+        try {
+            const result = await request('/stations/' + station.id + '/items/' + encodeURIComponent(item.id) + '/source-location?configVersion=' + station.configVersion, 'GET', undefined, { accountId:actor, signal:controller.signal });
+            if (!valid()) return;
+            const source = result.location;
+            status.remove(); field('节目', item.name);
+            if (source.kind === 'tunnel') {
+                const entries = await config.tunnels(); if (!valid()) return;
+                const entry = entries.find(value => value.sessionId === source.sessionId);
+                field('来源隧道', [entry?.shortCode || source.shortCode, entry?.remark || source.remark].filter(Boolean).join(' · ') || source.sessionId);
+                if (entry && config.focusRecord) body.append(button('前往该隧道锚点查看', async () => {
+                    if (!valid()) return;
+                    if (!(await config.tunnels()).some(value => value.sessionId === source.sessionId)) throw Error('STREAM_TUNNEL_DENIED');
+                    if (!valid()) return;
+                    if (await config.focusRecord(source.messageId, source) !== false) { closeDialog(); minimize(); }
+                }));
+            } else {
+                field('账号', source.accountName + (source.accountLoginId ? ' / ID ' + source.accountLoginId : ''));
+                field('网盘分区', source.partitionName || t('默认分区')); field('目录', '/' + String(source.path || '').replace(/^\/+/,''));
+                body.append(button('前往网盘查看', async () => {
+                    if (!valid()) return;
+                    // The drive owns account confirmation, login and file access.
+                    // Close this dialog before opening its account picker.
+                    closeDialog(); minimize();
+                    try { await global.DiskUI.revealSourceFile(source); }
+                    catch (cause) { config.toast?.(t('无法定位网盘文件，请检查账号、权限或网络后重试') + ' [' + cause.message + ']'); }
+                }));
+            }
+        } catch (cause) {
+            if (valid()) { status.textContent = t('节目来源读取失败，请关闭后重试') + ' [' + (controller.signal.aborted ? 'STREAM_CONTROL_TIMEOUT' : cause.message) + ']'; if (!status.isConnected) body.prepend(status); }
+        } finally { clearTimeout(timer); if (dialog === current && !valid()) closeDialog(); }
+    }
+    function bindProgramSources(container, getStation, isCurrent) {
+        let timer, start, pressed = false, suppressUntil = 0;
+        const events = new AbortController(), options = { signal:events.signal };
+        const cancel = () => { clearTimeout(timer); start = null; };
+        const target = event => {
+            if (event.target.closest('button,input,select,a')) return null;
+            const station = getStation(), row = event.target.closest('.sc-watch-item');
+            const item = station.items.find(value => value.id === row?.dataset.itemId);
+            return item && ['disk','tunnel'].includes(item.sourceKind) ? {item,station} : null;
+        };
+        const show = value => { cancel(); if (!value) return; const {item,station} = value; const valid = () => isCurrent() && getStation().configVersion === station.configVersion; if (valid()) programSource(item,station,valid).catch(error); };
+        container.addEventListener('contextmenu', event => {
+            const value = target(event); if (!value) return;
+            event.preventDefault(); event.stopPropagation();
+            if (!pressed) show(value);
+        }, options);
+        container.addEventListener('selectstart', event => { if (target(event)) event.preventDefault(); }, options);
+        container.addEventListener('pointerdown', event => {
+            pressed = false;
+            const value = target(event); if (event.pointerType === 'mouse' || !value) return;
+            cancel(); start = { x:event.clientX, y:event.clientY };
+            container.setPointerCapture?.(event.pointerId);
+            timer = setTimeout(() => { pressed = true; suppressUntil = Date.now() + 1000; show(value); }, 550);
+        }, options);
+        container.addEventListener('pointermove', event => { if (start && Math.hypot(event.clientX-start.x,event.clientY-start.y)>10) cancel(); }, options);
+        container.addEventListener('pointerup', cancel, options); container.addEventListener('pointercancel', cancel, options);
+        container.addEventListener('click', event => { if (Date.now()<suppressUntil) { event.preventDefault(); event.stopPropagation(); } }, { ...options, capture:true });
+        return () => { cancel(); events.abort(); };
+    }
     let listRequest = 0;
     async function refreshList(version = renderVersion) {
         const revision = ++listRequest;
@@ -643,9 +714,11 @@
                 const uploaded = await request('/stations/' + stationId + '/cover','POST',cover.blob,{accountId:actor});
                 payload.coverId=submitted.coverId=uploaded.coverId; delete payload.coverPending; delete submitted.coverPending;
             }
-            await reconcileRevision(stationId); payload.configVersion = d.configVersion; submitted.configVersion = d.configVersion;
-            let result;
-            for (let attempt = 0; attempt < 3; attempt++) {
+            const revision=await reconcileRevision(stationId); payload.configVersion = d.configVersion; submitted.configVersion = d.configVersion;
+            if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
+            const same=revision?.matches && !submitted.coverPending && submitted.items.every(item => item.sourceSaved) && JSON.stringify(revisionInput(submitted))===JSON.stringify(revisionInput(localConfig(stationId)));
+            let result=same ? revision : null;
+            for (let attempt = 0; !result && attempt < 3; attempt++) {
                 if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
                 try {
                     result = await request('/stations/' + stationId, 'PUT', payload, { accountId: actor, onProgress: value => saving(t(value.phase === 'persisting' ? '正在写入节目单…' : '正在校验节目来源…') + ' ' + value.completed + ' / ' + value.total + (value.name ? '\n' + value.name : '')) });
@@ -1190,6 +1263,7 @@
         if (!controlling) { main.insertBefore(actions, info); if (snapshot.manageable) actions.append(button('操控串流台', () => navigate('control', snapshot.id))); }
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
         const waitRows = new Map(), scheduleState = { value: snapshot, receivedAt: performance.now() };
+        const closeSourceEvents = controlling && snapshot.manageable ? bindProgramSources(aside,() => snapshot,() => version === renderVersion && ui.view === 'control' && ui.stationId === snapshot.id) : () => {};
         let playlistSignature = '';
         const playlistFollow = controlling ? null : followPlaylist(aside, () => version === renderVersion && ui.view === 'watch' && ui.stationId === snapshot.id);
         const fillInfo = value => {
@@ -1209,6 +1283,7 @@
             for (const item of value.items) {
                 const row = document.createElement('p'); row.className = 'sc-watch-item';
                 row.dataset.itemId = item.id;
+                if (controlling && value.manageable && ['tunnel','disk'].includes(item.sourceKind)) row.classList.add('sc-source-item');
                 if (controlling && value.manageable) row.append(button('切换节目', () => command('select', { itemId: item.id })));
                 row.classList.toggle('sc-now-playing', item.id === playingId);
                 const name = document.createElement('span'); name.className = 'message-content';
@@ -1241,7 +1316,7 @@
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
         const stopSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
-        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); };
+        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); closeSourceEvents(); if (dialog?.dataset.programSource === snapshot.id) closeDialog(); };
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }

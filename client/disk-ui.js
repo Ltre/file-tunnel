@@ -161,6 +161,37 @@ async function resumeTelegramDriveEntry() {
     telegramDriveEntryFlight = flight;
     try { return await flight; } finally { if (telegramDriveEntryFlight === flight) telegramDriveEntryFlight = null; }
 }
+let telegramDriveSourceLocation = 0;
+async function revealTelegramDriveSourceFile(target) {
+    const request = ++telegramDriveSourceLocation, originalAccount = window.DiskClient.getAccount(), originalNavigation = telegramDriveNavigationVersion;
+    const context = { accountId:target.accountId, diskSpace:target.diskSpace || '', requestBase:'/api/telegram/drive' };
+    const current = () => request === telegramDriveSourceLocation;
+    const accounts = await window.DiskClient.raw('/accounts', { accountId:'', diskSpace:'' });
+    if (!current() || originalAccount !== window.DiskClient.getAccount() || originalNavigation !== telegramDriveNavigationVersion) return false;
+    if (!(accounts.accounts || []).some(entry => entry.identity?.id === target.accountId)) {
+        const t = value => window.TunnelI18n?.t(value) || value;
+        const prompt = t('请登录账号（账号名 {0} / ID {1}）后，继续查看该文件。').replace('{0}',target.accountName || target.accountId).replace('{1}',target.accountLoginId || target.accountId);
+        const selected = await manageTelegramDriveAccounts({ choose:true, requiredId:target.accountId, prompt });
+        if (!selected || selected.id !== target.accountId || !current()) return false;
+    }
+    if (window.DiskClient.getAccount() !== target.accountId && await switchTelegramDriveAccount(target.accountId) === false) return false;
+    const navigation = telegramDriveNavigationVersion;
+    const valid = () => current() && navigation === telegramDriveNavigationVersion && window.DiskClient.getAccount() === target.accountId;
+    const [result, spaces] = await Promise.all([window.DiskClient.raw('/files/' + encodeURIComponent(target.fileId),context), window.DiskClient.raw('/spaces',context)]);
+    if (!valid()) return false;
+    if (!(spaces.spaces || []).some(space => telegramDriveSpaceKey(space) === context.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw Error('目标分区不存在或无权访问');
+    const file = result.file || result;
+    if (file.id !== target.fileId) throw Error('目标文件不存在或无法访问，请刷新文件状态');
+    if ((telegramDriveMountContext || context.diskSpace !== window.DiskClient.getSpace()) && window.DiskClient.hasActiveOperations()) throw Error('当前分区仍有任务执行，请等待任务完成后切换');
+    cancelTelegramDrivePendingMount(); closeDiskCollaborationFrame(); closeDiskPreview({ replaceHistory:true });
+    telegramDriveMountContext = null; window.DiskClient.setMount(''); window.DiskClient.setCollaboration?.(''); window.DiskClient.setSpace(context.diskSpace);
+    telegramDriveCurrentData = null; telegramDriveContentStale = true;
+    await openTelegramDrive({ deferContents:true });
+    await navigateTelegramDrive(file.folderPath ?? file.path ?? '');
+    if (!current() || telegramDriveNavigationVersion !== navigation + 1 || window.DiskClient.getAccount() !== target.accountId || window.DiskClient.getSpace() !== context.diskSpace) return false;
+    highlightTelegramDriveRow({ kind:'file', id:file.id });
+    return true;
+}
 function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}) {
     const description = document.createElement('p'); description.textContent = '添加账号后保留现有账号的登录状态；需要重新验证的账号可单独登录。'; target.append(description);
     if (status.oidcConfigured) {
@@ -4168,6 +4199,7 @@ function init(options = {}) {
 }
 window.addEventListener('popstate', handleTelegramDrivePopstate, { capture: true });
 window.DiskUI = { init, open: openTelegramDrive, close: closeTelegramDrive, ownsHistory: ownsTelegramDriveHistory, upload: uploadFilesToTelegramDrive, render: renderTelegramDrive, prompt: promptTelegramDriveText,
+    revealSourceFile: revealTelegramDriveSourceFile,
     manageAccounts: manageTelegramDriveAccounts,
     chooseSaveDestination: chooseTelegramDriveSaveDestination,
     chooseAccount: () => manageTelegramDriveAccounts({ choose: true }), switchAccount: switchTelegramDriveAccount, resumePendingSave: resumeTelegramDrivePendingSave,

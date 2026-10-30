@@ -19,7 +19,7 @@ async function run(){
             block('async function getFullscreenPreviewItems(', '\nfunction getRemotePreviewFullscreenState('),
             block('async function openActivePreviewFullscreen(', '\nasync function getCollectionPreviewNavigationFiles('),
             block('function navigateMediaFullscreen(', '\nasync function locateMediaFullscreenRecord('),
-            block("    document.getElementById('filePreviewViewer')?.addEventListener('pointerdown'", "    document.getElementById('mediaFullscreenCloseBtn')")
+            block("    document.getElementById('filePreviewContent')?.addEventListener('mousedown'", "    document.getElementById('mediaFullscreenCloseBtn')")
         ].join('\n');
         const html=fs.readFileSync(path.join(root,'pages/index.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
         f.app.get('/preview-check-261029',(_req,res)=>res.type('html').send(html.replace('</body>',`<script>
@@ -62,6 +62,12 @@ async function run(){
             await page.waitForFunction(()=>mediaFullscreenItems.length===101);
             await page.evaluate(()=>{navigateMediaFullscreen(1);window.nextId=mediaFullscreenItems[mediaFullscreenIndex].fileInfo.id;});
             assert.equal(await page.evaluate(()=>window.nextId),'other-0');
+            await page.locator('#mediaFullscreenCloseBtn').click();
+            await page.evaluate(()=>{window.nativeDoubleClickReached=false;window.previewMedia.addEventListener('dblclick',event=>{if(!event.defaultPrevented)window.nativeDoubleClickReached=true;},{once:true});});
+            await page.locator('#filePreviewContent video').dblclick({position:{x:100,y:80}});
+            await page.waitForFunction(()=>document.getElementById('mediaFullscreenViewer').classList.contains('active'));
+            assert.equal(await page.evaluate(()=>window.nativeDoubleClickReached),false,'native media target must not receive an unprevented double click');
+            assert.equal(await page.evaluate(()=>document.fullscreenElement?.tagName || null),null,'double click uses the app overlay');
             await page.locator('#mediaFullscreenCloseBtn').click();
             const box=await page.locator('#filePreviewContent video').boundingBox(),cdp=await context.newCDPSession(page);
             const x=box.x+box.width/2,y=box.y+Math.min(box.height/2,150);

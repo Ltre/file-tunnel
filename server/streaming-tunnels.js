@@ -101,6 +101,7 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
         return { ok: true, messageId, message };
     }
     return { resolve, stat, candidates, resources: (input, actor) => candidates(input, actor, true), send, references, bind(value) { service = value; },
+        describe(source) { const current = session(source.sessionId); return { kind:'tunnel', sessionId:source.sessionId, messageId:source.messageId, fileId:source.fileId, shortCode:current?.shortCode || '', remark:current?.remark || '' }; },
         alias(input, actor) { authorize(input, actor); return memberId(input, actor); },
         providers: source => { const values = [...new Set([...(session(source.sessionId)?.editorAssets?.get(source.fileId)?.providers || []), ...(session(source.sessionId)?.fileAssets?.get(source.fileId)?.providers || []),
             ...(session(source.sessionId)?.devices?.keys() || [])])]; return [...new Set([...values, ...mapDevices(values)])]; } };

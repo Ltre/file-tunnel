@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v101-content-v8-streaming-261030-1-final';
+const CACHE_NAME = 'instant-tunnel-v103-content-v8-preview-followup-261030-final';
 const APP_SHELL = [
     '/',
     '/index.html',

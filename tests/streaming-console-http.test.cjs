@@ -29,6 +29,24 @@ async function setup(t) {
     const activated = await call('device-A', '/stations/' + s.id + '/visibility', 'POST', { visibility: 'public', version: saved.body.playback.version }, true); assert.equal(activated.status, 200);
     return { ...f, headers, call, login, s, items, files, deviceCookies };
 }
+test('program source location requires station management and current playlist version, without source secrets', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id);
+    const route = '/stations/' + f.s.id + '/items/' + f.items[0].id + '/source-location?configVersion=' + station.configVersion;
+    assert.equal((await f.call('device-C', route)).status,403);
+    const result = await f.call('device-A',route,'GET',undefined,true);
+    assert.equal(result.status,200,JSON.stringify(result.body));
+    assert.equal(result.body.location.accountId,'alice'); assert.equal(result.body.location.fileId,f.files[0].id);
+    assert.equal(result.body.location.name,f.files[0].name); assert.ok(result.body.location.partitionId);
+    assert.equal('key' in result.body.location,false); assert.equal('source' in result.body,false);
+    assert.equal((await f.call('device-B',route,'GET',undefined,true)).status,200,'same-account control devices may inspect source');
+    assert.equal((await f.call('device-A',route.replace('configVersion='+station.configVersion,'configVersion=0'),'GET',undefined,true)).status,409);
+    const tunnelSource={kind:'tunnel',sessionId:'fixture-tunnel',messageId:'image-record',fileId:'image-asset',accessGrant:'fixture-proof'};
+    await f.call('device-A','/stations/'+f.s.id,'PUT',{configVersion:station.configVersion,items:[{id:'tunnel-item',source:tunnelSource,stay:10}]},true);
+    const tunnel=await f.call('device-A','/stations/'+f.s.id+'/items/tunnel-item/source-location?configVersion='+station.configVersion,'GET',undefined,true);
+    assert.equal(tunnel.status,200); assert.equal(tunnel.body.location.sessionId,'fixture-tunnel');assert.equal(tunnel.body.location.messageId,'image-record');
+    assert.equal(tunnel.body.location.accessGrant,undefined);assert.equal(tunnel.body.location.authorizedDeviceId,undefined);
+});
+
 test('real HTTP drive adapter delegates only selected bytes without recipient source credentials', async t => {
     const f = await setup(t), item = f.items.find((item, index) => f.files[index].name.endsWith('.txt'));
     const view = await f.call('device-C', '/stations/' + f.s.id);
@@ -122,7 +140,8 @@ test('playlist save streams real progress and confirms success only after persis
         body: JSON.stringify({ configVersion: station.configVersion, items: f.items.map(item => ({ id: item.id, stay: 8 })) }) });
     assert.match(response.headers.get('Content-Type'), /application\/x-ndjson/);
     const lines = (await response.text()).trim().split('\n').map(value => JSON.parse(value));
-    assert.deepEqual(lines.filter(value => value.progress?.phase === 'checked').map(value => value.progress.completed), [1, 2, 3]);
+    assert.deepEqual(lines.filter(value => ['checking','checked'].includes(value.progress?.phase)), [], 'unchanged sources must not claim to be rechecked');
+    assert.ok(lines.some(value => value.progress?.phase === 'persisting'));
     assert.equal(lines.at(-1).result.configVersion, station.configVersion);
     assert.equal(station.items[0].stay, 8);
     const failure = await fetch(f.base + '/api/streaming/stations/' + f.s.id, { method: 'PUT',

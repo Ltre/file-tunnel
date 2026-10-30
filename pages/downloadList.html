@@ -168,6 +168,14 @@
     <script defer src="/client/theme-preference.js"></script>
 </head>
 <body data-theme-page="downloads">
+<script>
+    // Apply the saved skin before the first content paint; the deferred bridge
+    // still owns later cross-document preference updates.
+    try {
+        const theme = localStorage.getItem('uiTheme');
+        if (theme === 'lumen' || theme === 'orbit') document.body.dataset.theme = theme;
+    } catch (_) {}
+</script>
 <main>
     <header>
         <h1>磁链缓存列表</h1>

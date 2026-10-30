@@ -9,14 +9,16 @@ async function run(){
     const app=express(),source=read('app.js');app.use('/client',express.static(path.join(root,'client')));
     const themes=source.slice(source.indexOf('function applyTheme('),source.indexOf('function isTunnelOwner('));
     const menus=source.slice(source.indexOf('async function renderShortCodeSwitchMenu('),source.indexOf('function initMobileWorkspace('));
+    const controls=source.slice(source.indexOf('function normalizeControlCenterOrder('),source.indexOf('async function showJoinedSessionSwitcher('));
     app.get('/check',(_req,res)=>res.type('html').send(read('pages/index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace('</body>',`<script>
         const state={sessionId:'check-tunnel'},historyLog=()=>{},normalizeLocalShortCode=String,escapeHtml=String;
         const getAllFromStore=async()=>[{sessionId:'check-tunnel',shortCode:'12345',remark:'隔离隧道'}];
-        ${themes}\n${menus}\ninitThemeSwitcher();
+        ${themes}\n${menus}\n${controls}\ninitThemeSwitcher();
         document.getElementById('tunnelStartupLoading').remove();document.getElementById('sessionLanding').hidden=true;document.getElementById('appShell').hidden=false;document.getElementById('tunnelTopbar').hidden=false;
         document.getElementById('shortCodeSwitchBtn').onclick=toggleShortCodeSwitchMenu;
         const items=document.createElement('div');items.className='telegram-drive-items';items.dataset.view='list';items.id='feedback-drive';
         items.innerHTML='<div class="telegram-drive-item">第一行</div><div class="telegram-drive-item">第二行</div>';document.getElementById('telegramDriveOverlay').append(items);
+        const remark=document.createElement('div');remark.className='collection-remark';remark.id='remark-check';remark.textContent='多行备注 Track name / Recorded date';document.querySelector('.chat-messages').append(remark);
         </script></body>`)));
     const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
     let browser;const checks=[],check=(name,ok,actual)=>checks.push({name,ok:Boolean(ok),actual});
@@ -26,8 +28,13 @@ async function run(){
         const settle=async theme=>page.evaluate(async theme=>{applyTheme(theme);await new Promise(requestAnimationFrame);await Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));},theme);
         for(const theme of ['lumen','orbit','classic','atelier','social']){
             await settle(theme);await page.reload();
+            await page.locator('#cycleThemeBtn').click();
+            check(theme+': topbar opens menu without changing theme',await page.evaluate(theme=>document.body.dataset.theme===theme&&!document.getElementById('themeQuickMenu').hidden&&document.querySelector('#themeQuickMenu .active')?.dataset.theme===theme,theme));
+            await page.keyboard.press('Escape');
             const selection=await page.evaluate(()=>({theme:document.body.dataset.theme,active:[...document.querySelectorAll('#themeSwitcher .active')].map(b=>b.dataset.theme)}));
             check(theme+': selected theme survives reload',selection.active.length===1&&selection.active[0]===theme,selection);
+            if(theme==='orbit')check('Orbit: record remarks use readable theme ink',await page.locator('#remark-check').evaluate(n=>getComputedStyle(n).color===getComputedStyle(document.body).getPropertyValue('--ui-ink').trim().replace(/^#([a-f\d]{6})$/i,(_,hex)=>'rgb('+hex.match(/../g).map(x=>parseInt(x,16)).join(', ')+')')));
+            if(theme==='orbit')check('Orbit: magnet cache header uses dark theme fill and readable title',await page.locator('.download-cache-header').evaluate(n=>getComputedStyle(n).backgroundImage.includes('rgb(32, 37, 55)')&&getComputedStyle(n.querySelector('h3')).color==='rgb(232, 235, 250)'));
             await page.evaluate(()=>document.getElementById('tunnelSettingsLayer').hidden=false);
             const highlight=await page.evaluate(()=>{const current=document.querySelector('#themeSwitcher .active'),other=[...current.parentElement.children].find(b=>!b.classList.contains('active'));return {current:getComputedStyle(current).backgroundColor,other:getComputedStyle(other).backgroundColor};});
             check(theme+': current theme has visible selected fill',highlight.current!==highlight.other,highlight);
@@ -55,6 +62,10 @@ async function run(){
                 await page.setViewportSize({width:1280,height:900});await settle(theme);await page.screenshot({path:path.join(out,theme+'-desktop.png')});
             }
         }
+        await page.evaluate(()=>applyTheme('lumen'));await page.locator('#cycleThemeBtn').click();await page.locator('#themeQuickMenu [data-theme="orbit"]').click();
+        check('quick menu selection applies theme and closes menu',await page.evaluate(()=>document.body.dataset.theme==='orbit'&&document.getElementById('themeQuickMenu').hidden));
+        await page.evaluate(()=>{const dialog=document.createElement('div');dialog.id='control-check';dialog.innerHTML='<div class="control-center"><div data-control-side="before"></div><div data-control-panel></div><div data-control-side="after"></div></div>';document.body.append(dialog);initTunnelControlCenter(dialog);dialog.querySelector('[data-control-tile="theme"]').click();dialog.remove();});
+        check('control center tile still cycles to the next theme',await page.evaluate(()=>document.body.dataset.theme==='classic'));
         fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(checks,null,2));
         for(const c of checks)console.log((c.ok?'PASS ':'FAIL ')+c.name+' '+JSON.stringify(c.actual));
         assert.equal(checks.filter(c=>!c.ok).length,0,'see '+out);

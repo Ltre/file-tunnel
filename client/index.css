@@ -1841,6 +1841,11 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     outline: 3px solid rgba(102, 126, 234, 0.7);
     outline-offset: 3px;
 }
+.message.resource-focus-flash .message-bubble {
+    border-color: var(--accent, #667eea) !important;
+    background: color-mix(in srgb, var(--accent, #667eea) 26%, var(--panel-bg, #fff)) !important;
+    box-shadow: inset 0 0 0 2px var(--accent, #667eea);
+}
 
 @keyframes resource-focus-flash {
     0%, 35% { outline-color: rgba(102, 126, 234, 0.9); }

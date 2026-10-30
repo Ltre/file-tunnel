@@ -113,7 +113,7 @@
                 await global.DiskClient.upload([file], selected.path ?? '', undefined, { transportContext: selected.transportContext || selected.context || global.DiskClient.context() });
             } });
         return { deviceId, deviceName: () => deps.state.deviceName || deviceId(), tunnels, devices, readTunnel, subscribeVisibilityChanges,
-            currentTunnel: () => deps.state.sessionId, home: deps.home, toast: deps.toast, onMessage: deps.receiveMessage };
+            currentTunnel: () => deps.state.sessionId, home: deps.home, toast: deps.toast, onMessage: deps.receiveMessage, focusRecord:deps.focusRecord };
     }
     global.StreamingAppAdapter = { create };
 })(window);
