@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v106-content-v8-audio-controls-261031';
+const CACHE_NAME = 'instant-tunnel-v107-content-v8-viewer-import-261031-2';
 const APP_SHELL = [
     '/',
     '/index.html',

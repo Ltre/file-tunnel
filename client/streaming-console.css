@@ -155,3 +155,40 @@
 .sc-source-controls>.sc-disk-scope>select{flex:1 1 0;width:0;min-width:0;max-width:100%}
 @media(max-width:767px){.sc-selected-row{grid-template-columns:44px minmax(0,1fr) auto;gap:8px;padding:10px 6px}.sc-selected-row>.sc-source-thumbnail{width:44px;height:38px}.sc-selected-row>button{font-size:12px;padding:7px}.sc-source-controls>.sc-disk-scope>select{padding-inline:5px}}
 @media(max-width:767px){.sc-viewer-page .sc-watch-grid>aside{max-height:min(60dvh,var(--sc-playlist-height,60dvh));overflow:auto}}
+
+/* The viewer title uses one compact cover at every width. */
+.sc-viewer-page{display:block}
+.sc-viewer-page>h1{display:flex;align-items:flex-end;gap:10px}
+.sc-viewer-page>h1>.sc-viewer-title{min-width:0;overflow-wrap:anywhere}
+.sc-viewer-page>h1>.sc-viewer-cover-small{display:block;width:44px;height:44px;flex:none;margin:0}
+.sc-viewer-page .sc-local-controls>.sc-volume-control{flex:1;min-width:70px;flex-wrap:nowrap;gap:4px}
+.sc-viewer-page .sc-local-controls>.sc-background-toggle{flex:0 0 auto;min-width:0;white-space:nowrap;flex-wrap:nowrap;gap:4px;margin:0}
+.sc-viewer-page .sc-local-controls{flex-wrap:wrap}
+.sc-local-preferences{display:flex;align-items:center;gap:4px;flex:1;min-width:min-content;order:1}
+.sc-local-preferences>.sc-volume-control{display:flex;align-items:center;flex:1;min-width:0;flex-wrap:nowrap;gap:4px;margin:0;white-space:nowrap}
+.sc-local-preferences>.sc-background-toggle{flex:none;min-width:0;white-space:nowrap;flex-wrap:nowrap;gap:4px;margin:0}
+.sc-player.sc-media-fullscreen .sc-local-preferences{display:contents}
+.sc-player.sc-media-fullscreen .sc-local-preferences>.sc-volume-control{width:100%;max-width:180px;font-size:0;gap:0}
+.sc-viewer-page .sc-player.sc-media-fullscreen .sc-local-preferences>.sc-background-toggle{grid-column:1/-1;grid-row:2;justify-self:center;width:auto;max-width:none;font-size:12px;color:#eee}
+.sc-viewer-page .sc-player.sc-media-fullscreen .sc-local-controls>.sc-background-toggle{grid-column:1/-1;grid-row:2;justify-self:center;width:auto;max-width:none;font-size:12px;color:#eee}
+#streamingConsole .sc-expand-basic{align-items:center;justify-content:center;gap:7px;padding:9px 12px;border:1px solid color-mix(in srgb,var(--ui-accent,#667eea) 38%,transparent);border-radius:9px;background:color-mix(in srgb,var(--ui-accent,#667eea) 10%,var(--panel-bg,#fff));color:var(--ui-accent,var(--accent-color,#5268b8));font-weight:650;box-shadow:0 2px 7px #26324d0c}
+.sc-expand-basic>svg{width:17px;height:17px;flex:none}
+@media(max-width:700px){#streamingConsole .sc-expand-basic{display:inline-flex}.sc-basic-expanded>.sc-expand-basic{display:none!important}}
+@media(max-width:767px){
+ .sc-main:has(>.sc-viewer-page){padding-bottom:0}
+ .sc-viewer-page>h1{margin:0 0 7px;font-size:20px;line-height:1.3}
+ .sc-viewer-page>.sc-actions{margin:0 0 7px;gap:5px}
+ .sc-viewer-page>.sc-actions>button{padding:6px 9px}
+ .sc-viewer-page>.sc-watch-info{margin:0 0 8px;font-size:12px;line-height:1.4}
+ .sc-viewer-page>.sc-watch-grid{height:var(--sc-view-height,100dvh);grid-template-rows:auto minmax(0,1fr);gap:8px;margin:0;align-items:stretch}
+ .sc-viewer-page .sc-player:not(.sc-media-fullscreen):not(:fullscreen) .sc-stage{max-height:max(64px,calc(var(--sc-view-height,100dvh) - 220px))}
+ .sc-viewer-page>.sc-watch-grid>aside{height:100%;min-height:0;max-height:none;margin:0;padding:10px 0;overflow:auto}
+ .sc-viewer-page .sc-local-controls{margin-top:7px;gap:4px}
+ .sc-viewer-page .sc-local-controls .sc-background-toggle{font-size:11px}
+ .sc-viewer-page .sc-local-controls .sc-background-toggle>input{margin:0;flex:none}
+}
+.sc-main>.sc-import-busy{position:fixed;z-index:30;display:grid;place-items:center;padding:20px;background:color-mix(in srgb,var(--panel-bg,#fff) 96%,transparent);color:var(--text-color,#26324d);cursor:wait;overflow:auto}
+.sc-import-busy-card{display:grid;justify-items:center;gap:14px;max-width:min(420px,100%);padding:28px;text-align:center;border-radius:14px;background:var(--panel-bg,#fff);box-shadow:0 10px 34px #1724421a}
+.sc-import-busy-card>i{display:block;width:36px;height:36px;border:4px solid #8994aa3d;border-top-color:var(--ui-accent,#667eea);border-radius:50%;animation:sc-spin .85s linear infinite}
+.sc-import-busy-card>[data-import-stage]{font-size:16px;line-height:1.5}
+.sc-import-busy-card>[data-import-file]{max-width:100%;overflow-wrap:anywhere;font-size:13px;line-height:1.5;opacity:.75}

@@ -501,8 +501,10 @@
         };
         label.append(input);field.append(label,preview,status,button('移除封面',()=>{version++;const previous=pendingCovers.get(stationId);if(previous)URL.revokeObjectURL(previous.url);pendingCovers.delete(stationId);d.coverId='';delete d.coverPending;preview.src='/client/icons/streaming.png';saveUi();}));
         form.children[0].after(field);
-        const expand=button('展开基本信息',()=>{form.classList.add('sc-basic-expanded');main.classList.add('sc-basic-open');});expand.className='sc-expand-basic';
-        const collapse=button('收起',()=>{form.classList.remove('sc-basic-expanded');main.classList.remove('sc-basic-open');});collapse.className='sc-collapse-basic';form.prepend(expand);form.append(collapse);
+        const expand=button('展开基本信息',()=>{form.classList.add('sc-basic-expanded');main.classList.add('sc-basic-open');expand.setAttribute('aria-expanded','true');});expand.className='sc-expand-basic';expand.setAttribute('aria-expanded','false');
+        const expandIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');expandIcon.setAttribute('viewBox','0 0 24 24');expandIcon.setAttribute('aria-hidden','true');expandIcon.setAttribute('focusable','false');
+        expandIcon.innerHTML='<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M3 3l6 6m12-6-6 6M3 21l6-6m12 6-6-6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>';expand.prepend(expandIcon);
+        const collapse=button('收起',()=>{form.classList.remove('sc-basic-expanded');main.classList.remove('sc-basic-open');expand.setAttribute('aria-expanded','false');});collapse.className='sc-collapse-basic';form.prepend(expand);form.append(collapse);
     }
     function title(text) { const heading = document.createElement('h1'); heading.textContent = t(text); main.append(heading); return heading; }
     function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) if (!smallWindow || smallWindow.hidden) parking.append(player.element); presentPlayers(); }
@@ -863,28 +865,69 @@
             requestAnimationFrame(() => { if (ui.view === 'edit' && ui.stationId === stationId && list.isConnected) focusProgram(focus.ids[0],1000,focus.ids); });
         }
     }
+    function localImportFeedback(current) {
+        const viewport = root.querySelector('.sc-main'), layer = document.createElement('div'); layer.className = 'sc-import-busy'; layer.setAttribute('role', 'status'); layer.setAttribute('aria-live', 'polite');
+        layer.innerHTML = '<div class="sc-import-busy-card"><i aria-hidden="true"></i><strong data-import-stage></strong><span class="message-content" data-import-file></span></div>';
+        const owner = viewport._localImportFeedback ||= { tasks:new Set(), wasInert:main.inert, previousBusy:viewport.getAttribute('aria-busy') };
+        const task = { layer, current }; owner.tasks.add(task); let active = true;
+        viewport.append(layer);
+        const syncBusy = () => {
+            for (const entry of owner.tasks) entry.layer.hidden = !entry.current() || !isOpen();
+            const visible = [...owner.tasks].some(entry => !entry.layer.hidden);
+            main.inert = visible || owner.wasInert;
+            if (visible) viewport.setAttribute('aria-busy', 'true');
+            else if (owner.previousBusy === null) viewport.removeAttribute('aria-busy'); else viewport.setAttribute('aria-busy', owner.previousBusy);
+        };
+        const refresh = () => {
+            if (!active) return;
+            syncBusy();
+            const rect = viewport.getBoundingClientRect(); Object.assign(layer.style, { top:rect.top + 'px', left:rect.left + 'px', width:rect.width + 'px', height:rect.height + 'px' });
+        };
+        const afterClick = () => setTimeout(refresh, 0);
+        global.addEventListener('resize', refresh); global.visualViewport?.addEventListener('resize', refresh); global.addEventListener('streaming-visibility-change', refresh); global.addEventListener('global-account-changed', refresh); root.addEventListener('click', afterClick, true);
+        refresh();
+        return {
+            update(stage, index, total, name = '') { layer.querySelector('[data-import-stage]').textContent = t(stage); layer.querySelector('[data-import-file]').textContent = [total ? index + ' / ' + total : '', name].filter(Boolean).join(' · '); refresh(); },
+            close() { active = false; layer.remove(); owner.tasks.delete(task); syncBusy(); if (!owner.tasks.size) delete viewport._localImportFeedback; global.removeEventListener('resize', refresh); global.visualViewport?.removeEventListener('resize', refresh); global.removeEventListener('streaming-visibility-change', refresh); global.removeEventListener('global-account-changed', refresh); root.removeEventListener('click', afterClick, true); }
+        };
+    }
     async function chooseLocalFile(replace) {
+        const stationId = ui.stationId, actor = account(), device = config.deviceId(), originUi = ui, selection = pending;
+        const current = () => ui === originUi && ui.stationId === stationId && account() === actor && config.deviceId() === device && ui.view === (replace ? 'edit' : 'import') && (replace || pending === selection);
         const remember = async (files, handles = []) => {
-            for (let index = 0; index < files.length; index++) {
-                const file = files[index], kind = kindOf(file); if (!kind) { notice('已忽略不支持的文件类型'); continue; }
+            const feedback = localImportFeedback(current), total = handles.length || files.length; let completed = false;
+            try {
+            if (handles.length) {
+                feedback.update('正在读取所选本机文件…', 0, total, total === 1 ? handles[0].name : '');
+                files = await Promise.all(handles.map(handle => handle.getFile()));
+            }
+            for (let index = 0; index < total; index++) {
+                feedback.update('正在读取所选本机文件…', index + 1, total, files[index]?.name || handles[index]?.name);
+                const file = files[index], kind = kindOf(file); if (!kind) { if (current()) notice('已忽略不支持的文件类型'); continue; }
                 if (replace && (file.name !== replace.name || file.size !== replace.size)) throw Error('STREAM_FILE_MISMATCH');
                 const fileId = replace?.source.fileId || uid(), source = { kind: 'local', fileId, name: file.name, type: file.type, size: file.size };
                 if (global.StreamingCache) {
-                    try { await global.StreamingCache.source(config.deviceId(), fileId, file, ui.stationId); }
+                    feedback.update('正在将本机文件保存到浏览器缓存…', index + 1, total, file.name);
+                    try { await global.StreamingCache.source(device, fileId, file, stationId); }
                     catch(cause) { throw Object.assign(Error('STREAM_LOCAL_CACHE_FAILED'),{cause}); }
-                } else if (!handles[index]) notice('文件引用仅在本次页面会话有效，重开后请重新选择');
+                } else if (!handles[index] && current()) notice('文件引用仅在本次页面会话有效，重开后请重新选择');
                 localFiles.set(fileId, { file, handle: handles[index] });
-                if (replace) { replace.sourceSaved = false; delete replace.duration; replace.durationError = ''; durationJobs.delete(account() + ':' + durationKey(replace)); ensureDuration(replace); }
-                if (handles[index]) await handleStore('put', fileId, handles[index]).catch(() => { if (!global.StreamingCache) notice('文件引用仅在本次页面会话有效，重开后请重新选择'); });
-                if (!replace) { const candidate = { name: file.name, type: file.type, size: file.size, kind, source }; candidates.push(candidate); pending.set(candidateKey(candidate), candidate); }
+                if (replace && current()) { replace.sourceSaved = false; delete replace.duration; replace.durationError = ''; durationJobs.delete(actor + ':' + durationKey(replace)); ensureDuration(replace); }
+                if (handles[index]) { feedback.update('正在保存本机文件引用…', index + 1, total, file.name); await handleStore('put', fileId, handles[index]).catch(() => { if (!global.StreamingCache && current()) notice('文件引用仅在本次页面会话有效，重开后请重新选择'); }); }
+                if (!replace && current()) { const candidate = { name: file.name, type: file.type, size: file.size, kind, source }; candidates.push(candidate); selection.set(candidateKey(candidate), candidate); }
             }
-            saveUi(); if (!replace && ui.view === 'import') importer(); else notice('文件引用已恢复');
+            feedback.update('正在更新已选文件列表…', 0, 0);
+            completed = true;
+            } finally {
+                try { if (current()) { saveUi(); if (!replace) await importer(); else if (completed) notice('文件引用已恢复'); } }
+                finally { feedback.close(); }
+            }
         };
         if (global.showOpenFilePicker) {
-            try { const handles = await global.showOpenFilePicker({ multiple: !replace }); await remember(await Promise.all(handles.map(handle => handle.getFile())), handles); } catch (cause) { if (cause.name !== 'AbortError') throw cause; }
+            try { const handles = await global.showOpenFilePicker({ multiple: !replace }); await remember([], handles); } catch (cause) { if (cause.name !== 'AbortError' && current()) throw cause; }
         } else {
             const input = document.createElement('input'); input.type = 'file'; input.multiple = !replace; input.accept = 'video/*,audio/*,image/*,.md,.markdown,.txt';
-            input.onchange = () => remember([...input.files]).catch(error); input.click();
+            input.onchange = () => remember([...input.files]).catch(cause => { if (current()) error(cause); }); input.click();
         }
     }
     const candidateKey = item => [item.source.kind, item.source.accountId || '', item.source.diskSpace || '', item.source.sessionId || '', item.source.messageId || '', item.source.fileId].join(':');
@@ -1209,6 +1252,8 @@
                 const clip = viewport.getBoundingClientRect(), visual = global.visualViewport;
                 const visibleTop = Math.max(clip.top + viewport.clientTop, visual?.offsetTop || 0);
                 const visibleBottom = Math.min(clip.top + viewport.clientTop + viewport.clientHeight, (visual?.offsetTop || 0) + (visual?.height || innerHeight));
+                const layout = aside.parentElement, height = Math.max(0, viewport.clientHeight);
+                if (layout && layout.style.getPropertyValue('--sc-view-height') !== height + 'px') layout.style.setProperty('--sc-view-height', height + 'px');
                 const available = visibleBottom - Math.max(aside.getBoundingClientRect().top, visibleTop);
                 if (available <= 0) return;
                 if (needsLayout) {
@@ -1234,6 +1279,8 @@
         const relayout = () => { needsLayout = true; schedule(); };
         const observer = global.IntersectionObserver && new global.IntersectionObserver(relayout, { root: viewport });
         const resized = () => { needsLayout = true; if (currentId) pendingId = currentId; schedule(); };
+        const sizeObserver = global.ResizeObserver && new global.ResizeObserver(resized);
+        sizeObserver?.observe(viewport);
         observer?.observe(aside);
         viewport.addEventListener('scroll', relayout, { passive: true });
         global.addEventListener('streaming-visibility-change', relayout);
@@ -1249,7 +1296,7 @@
                 }
                 schedule();
             },
-            close() { cancelAnimationFrame(frame); observer?.disconnect(); viewport.removeEventListener('scroll', relayout); global.removeEventListener('streaming-visibility-change', relayout); global.removeEventListener('resize', resized); }
+            close() { cancelAnimationFrame(frame); observer?.disconnect(); sizeObserver?.disconnect(); viewport.removeEventListener('scroll', relayout); global.removeEventListener('streaming-visibility-change', relayout); global.removeEventListener('resize', resized); }
         };
     }
     async function watcher(version) {
@@ -1279,7 +1326,7 @@
             } else info.append(document.createTextNode(t('无归属')));
         }
         main.append(info); const layout = document.createElement('div'); layout.className = 'sc-watch-grid'; const stage = document.createElement('div'); stage.className = 'sc-player-slot'; const aside = document.createElement('aside'); aside.className = 'sc-card'; layout.append(stage, aside); main.append(layout);
-        if (!controlling) { main.insertBefore(coverImage(snapshot,'sc-viewer-cover'),layout);heading.prepend(coverImage(snapshot,'sc-viewer-cover-small')); }
+        if (!controlling) { const label=document.createElement('span');label.className='sc-viewer-title';label.textContent=heading.textContent;heading.replaceChildren(coverImage(snapshot,'sc-viewer-cover-small'),label); }
         const actions = document.createElement('div'); actions.className = 'sc-actions'; main.append(actions);
         const fixedAccount = account();
         const subscribedLabel = controlling ? '已订阅' : '退订';
@@ -1335,6 +1382,7 @@
             const result = await request('/stations/' + snapshot.id + '/control', 'POST', { action, version: latest.playback.version, ...extra }); player?.apply(result); fillInfo(result);
         }
         const seekControl = async (itemId, position) => { if (itemId !== (player?.snapshot() || snapshot).playback.itemId) await command('select', { itemId }); await command('seek', { position }); };
+        let closeBackgroundLayout = () => {};
         if (snapshot.visibility !== 'offline') {
             if (!player) { player = global.StreamingPlayer.create({ stationId: snapshot.id, watchId: uid(),
                 request: (url, method, data, options) => request(url, method, data, { ...options, accountId: fixedAccount }),
@@ -1346,11 +1394,20 @@
                 onError: cause => { if (ui.stationId === snapshot.id && isOpen()) error(cause); },
                 onRecovery: code => { if (ui.stationId === snapshot.id && banner?.dataset.errorCode === code) { banner.hidden = true; banner.textContent = ''; banner.dataset.errorCode = ''; } } }); players.set(playerKey, player); }
             player.onView = fillInfo; player.onItemView = () => fillInfo(player.snapshot() || snapshot); player.setController?.(controlling ? seekControl : undefined); stage.append(player.element); player.apply(snapshot);
+            const backgroundControl=player.element.querySelector('.sc-background-toggle'),volumeControl=player.element.querySelector('.sc-volume-control');
+            if(backgroundControl && volumeControl){
+                const narrow=global.matchMedia('(max-width:767px)'),placeBackground=()=>{
+                    let group=player.element.querySelector('.sc-local-preferences');
+                    if(!controlling && narrow.matches){if(!group){group=document.createElement('div');group.className='sc-local-preferences';volumeControl.before(group);}group.append(volumeControl,backgroundControl);}
+                    else {if(group){group.before(volumeControl);group.remove();}player.element.append(backgroundControl);}
+                };
+                placeBackground();narrow.addEventListener?.('change',placeBackground);closeBackgroundLayout=()=>narrow.removeEventListener?.('change',placeBackground);
+            }
             actions.append(button('小窗播', () => showSmallWindow(player)));
             const fullscreen = player.element.querySelector('.sc-window-only'); if (fullscreen) fullscreen.textContent = t(controlling ? '媒体全屏' : '全屏');
         } else { fillInfo(snapshot); }
         const stopSchedule = watchSchedule(waitRows, scheduleState, () => ['watch','control'].includes(ui.view) && ui.stationId === snapshot.id && version === renderVersion);
-        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); closeSourceEvents(); if (dialog?.dataset.programSource === snapshot.id && !dialog.sourceNavigating) closeDialog(); };
+        stopWatchSchedule = () => { stopSchedule(); playlistFollow?.close(); closeSourceEvents(); closeBackgroundLayout(); if (dialog?.dataset.programSource === snapshot.id && !dialog.sourceNavigating) closeDialog(); };
         if (snapshot.visibility === 'offline' && snapshot.manageable && (!snapshot.ownerId && snapshot.local || snapshot.ownerId === currentUser?.id)) {
             const online = button('上线', () => navigate('access', snapshot.id), 'sc-online sc-primary'); main.prepend(online);
         }

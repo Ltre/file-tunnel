@@ -48,7 +48,7 @@
         const sound = button('静音', () => { muted = !muted; applyAudioPolicy(); sync(true); update(); });
         localPause.className = 'sc-local-pause'; sound.className = 'sc-sound-toggle';
         localPause.dataset.icon = '❚❚'; sound.dataset.icon = '🔇';
-        const volumeLabel = document.createElement('label'); volumeLabel.textContent = t('本机音量');
+        const volumeLabel = document.createElement('label'); volumeLabel.className = 'sc-volume-control'; volumeLabel.textContent = t('本机音量');
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
         slider.oninput = () => { volume = Number(slider.value); applyAudioPolicy(); update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
         // Resume is also the user gesture for browsers that block audible autoplay.
