@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>隧道三栏 · blamen 主题原型</title><link rel="stylesheet" href="base-notification-center.css"><link rel="stylesheet" href="base-themes-legacy.css"><link rel="stylesheet" href="base-index.css"><link rel="stylesheet" href="base-themes.css"><link rel="stylesheet" href="tunnel-prototype.css"><script src="tunnel-prototype.js" defer></script></head><body data-theme="lumen" data-prototype-skin="reference">
+    <header class="tunnel-topbar" id="tunnelTopbar">
+        <button class="tunnel-topbar-action mobile-force-refresh" id="mobileForceRefreshBtn" type="button" title="强制刷新页面与应用资源" aria-label="强制刷新页面与应用资源">↻</button>
+        <div class="tunnel-topbar-scroll" aria-label="功能按钮（可横向滚动）">
+            <div class="tunnel-topbar-group" id="tunnelTopbarButtonGroup">
+                <button class="tunnel-topbar-action magnet-cache-topbar-btn" id="magnetCacheBtn" type="button" title="打开磁链缓存列表" aria-label="打开磁链缓存列表">⇩</button>
+                <button class="tunnel-topbar-action" id="cycleThemeBtn" type="button" title="切换主题" aria-label="切换主题">◐</button>
+                <button class="tunnel-topbar-action tunnel-settings-btn" id="tunnelSettingsBtn" type="button" title="隧道设置" aria-label="打开隧道设置">⚙</button>
+                <button class="tunnel-topbar-action" id="topbarDiskBtn" type="button" title="恢复 Telegram 网盘" aria-label="恢复 Telegram 网盘" hidden>▤</button>
+                <button class="tunnel-topbar-action" id="topbarWorkshopBtn" type="button" title="恢复网页工坊" aria-label="恢复网页工坊" hidden>🌐</button>
+                <button class="tunnel-topbar-action" id="topbarStreamingBtn" type="button" title="恢复串流控制台" aria-label="恢复串流控制台" hidden><img src="streaming.png" alt="" width="24" height="24"></button>
+                <button class="tunnel-topbar-action topbar-music-btn" id="topbarMusicBtn" type="button" title="正在播放" aria-label="打开音乐播放器" hidden><span class="music-note-live">♪</span></button>
+            </div>
+        </div>
+        <div class="topbar-now-playing-slot" aria-label="当前播放歌曲"><div class="topbar-now-playing" id="topbarNowPlaying" hidden><span></span></div></div>
+        <button class="tunnel-topbar-action leave-tunnel-btn" id="leaveTunnelBtn" type="button" title="暂时离开当前隧道" aria-label="暂时离开当前隧道"><span class="leave-tunnel-eye-pupil" aria-hidden="true"></span></button>
+    </header>
+    <div class="theme-quick-menu" id="themeQuickMenu" role="menu" aria-label="快速选择主题" hidden>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="lumen">Lumen</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="orbit">Orbit</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="classic">Classic</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="atelier">Atelier</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="social">Social</button>
+    </div>
+
+    <aside class="lan-p2p-guide" id="lanP2pGuide" role="dialog" aria-labelledby="lanP2pGuideTitle" hidden>
+        <div class="lan-p2p-guide-header">
+            <strong id="lanP2pGuideTitle">增强局域网 P2P</strong>
+            <button class="lan-p2p-guide-close" type="button" data-dismiss-lan-p2p-guide aria-label="关闭">×</button>
+        </div>
+        <p>检测到同一局域网设备或 Socket.IO 中转。授权站点媒体权限可提高局域网 P2P 直连成功率；音视频不会被上传。</p>
+        <div class="lan-p2p-guide-actions">
+            <button class="btn btn-secondary" type="button" data-dismiss-lan-p2p-guide>稍后</button>
+            <button class="btn btn-primary" id="openLanP2pEnhancementBtn" type="button">前往增强</button>
+        </div>
+    </aside>
+
+    <div class="tunnel-settings-layer" id="tunnelSettingsLayer" hidden>
+        <section class="tunnel-settings-panel" role="dialog" aria-modal="true" aria-labelledby="tunnelSettingsTitle">
+            <header class="tunnel-settings-header">
+                <div><span>隧道设置</span><h2 id="tunnelSettingsTitle">工具与权限</h2></div>
+                <button type="button" id="closeTunnelSettingsBtn" aria-label="关闭设置">×</button>
+            </header>
+            <div class="tunnel-settings-body">
+                <section class="tunnel-settings-section">
+                    <h3>隧道工具</h3>
+                    <div class="session-tools settings-tool-grid" id="settingsToolGrid"></div>
+                </section>
+                <section class="tunnel-settings-section" id="lanP2pEnhancementSection">
+                    <h3>增强局域网 P2P</h3>
+                    <p>Android Chrome 与 VPN 并用时，授予摄像头和麦克风权限可提高局域网直连成功率。媒体设备仅短暂启动并立即停止，不上传音视频。</p>
+                    <div class="lan-p2p-enhancement-row">
+                        <button class="btn btn-secondary" id="grantLanP2pPermissionBtn" type="button">授权增强 P2P</button>
+                        <span class="lan-p2p-status" id="lanP2pPermissionStatus" aria-live="polite">未授权</span>
+                    </div>
+                </section>
+                <section class="tunnel-settings-section call-ringtone-settings">
+                    <h3>设备语音通话铃声</h3>
+                    <p>主叫在接通前播放等待音；被叫使用下方铃声。自定义音频只保存在当前设备浏览器，不上传服务器。</p>
+                    <div class="call-ringtone-row">
+                        <select id="callRingtoneSelect" aria-label="选择来电铃声">
+                            <option value="classic">经典双音铃</option>
+                            <option value="gentle">轻柔提示铃</option>
+                            <option value="digital">数字短促铃</option>
+                            <option value="custom">本地自定义音频</option>
+                        </select>
+                        <button class="btn btn-secondary" id="chooseCallRingtoneBtn" type="button">选择本地文件</button>
+                        <button class="btn btn-secondary" id="previewCallRingtoneBtn" type="button">试听</button>
+                    </div>
+                    <input id="callRingtoneFileInput" type="file" accept="audio/*" hidden>
+                    <span class="call-ringtone-file-status" id="callRingtoneFileStatus">当前使用内置铃声。</span>
+                </section>
+                <section class="tunnel-settings-section tunnel-permission-settings">
+                    <div class="tunnel-permission-heading"><h3>隧道权限</h3><span id="tunnelPermissionOwnerHint"></span></div>
+                    <p>设置新加入设备的全局默认权限。隧道创建者始终保留管理权限。</p>
+                    <div class="tunnel-permission-grid" id="tunnelPermissionGrid"></div>
+                    <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelPermissionsBtn" type="button">保存权限</button></div>
+                </section>
+                <section class="tunnel-settings-section tunnel-admin-settings">
+                    <div class="tunnel-permission-heading"><h3>指定设备管理员</h3><span id="tunnelAdminHint"></span></div>
+                    <p>在这里添加某台设备为管理员，并为它分配独立权限；未添加的设备继续使用上方默认权限。</p>
+                    <div class="tunnel-admin-picker">
+                        <select id="tunnelAdminDeviceSelect" aria-label="选择在线设备"></select>
+                        <input id="tunnelAdminManualId" type="text" placeholder="或粘贴设备 ID" autocomplete="off">
+                        <button class="btn btn-secondary" id="addTunnelAdminBtn" type="button">添加管理员</button>
+                    </div>
+                    <div class="tunnel-admin-list" id="tunnelAdminDeviceList"></div>
+                    <div class="tunnel-settings-actions"><button class="btn btn-primary" id="saveTunnelAdminsBtn" type="button">保存管理员权限</button></div>
+                </section>
+                <section class="tunnel-settings-section theme-settings">
+                    <h3>界面主题</h3>
+                    <div class="theme-switcher" id="themeSwitcher" role="group" aria-label="主题">
+                        <button class="theme-option" type="button" data-theme="lumen">Lumen</button>
+                        <button class="theme-option" type="button" data-theme="orbit">Orbit</button>
+                        <button class="theme-option" type="button" data-theme="classic">Classic</button>
+                        <button class="theme-option" type="button" data-theme="atelier">Atelier</button>
+                        <button class="theme-option" type="button" data-theme="social">Social</button>
+                    </div>
+                </section>
+                <section class="tunnel-settings-section language-settings">
+                    <div class="language-settings-row">
+                        <label for="appLanguageSelect">界面语言</label>
+                        <select class="language-select" id="appLanguageSelect" aria-label="选择界面语言"></select>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </div>
+
+    <div class="container" id="appShell" data-mobile-view="chat">
+        <div class="main-layout">
+            <!-- 左侧：会话信息和设备列表 -->
+            <div class="left-panel">
+                <div class="panel">
+                    <div class="panel-header connection-panel-header">
+                        <span>📱</span>
+                        <span>连接设备</span>
+                        <div class="connection-header-menu-wrap">
+                            <button class="connection-header-menu-btn" id="connectionHeaderMenuBtn" type="button" title="更多" aria-label="连接设备菜单">☰</button>
+                            <div class="connection-header-menu" id="connectionHeaderMenu" hidden>
+                                <button type="button" id="scanTunnelCodeBtn"><span aria-hidden="true">▩</span><span>扫描隧道码</span></button>
+                                <button type="button" id="receiveLightBtn"><span aria-hidden="true">✴↗</span><span>接收光媒</span></button>
+                                <button type="button" id="connectionResourceBrowserBtn"><span aria-hidden="true">ꕡ</span><span>资源浏览器</span></button>
+                                <button type="button" id="webWorkshopBtn"><span aria-hidden="true">🌐</span><span>网页工坊</span></button>
+                                <button type="button" id="streamingConsoleBtn"><img src="streaming.png" alt="" width="22" height="22"><span>串流控制台</span></button>
+                                <button type="button" id="notificationCenterBtn"><span aria-hidden="true">🔔</span><span>通知中心</span> <span data-notification-count hidden></span></button>
+                                <button type="button" id="telegramDriveBtn"><span aria-hidden="true">▤</span><span>Telegram网盘</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-content qr-section">
+                        <div id="qrcode"></div>
+                        <div class="session-info">
+                            <div id="sessionRemarkRow" hidden>隧道名称: <span id="sessionRemark">-</span></div>
+                            <div>会话ID: <span id="sessionId">-</span></div>
+                            <div>设备ID: <span id="deviceId">-</span></div>
+                            <div>在线设备: <span id="onlineCount">1</span> 台</div>
+                        </div>
+                        <div class="short-code-switch">
+                            <span>本隧道暗号:</span>
+                            <button class="short-code-switch-button" id="shortCodeSwitchBtn" type="button" aria-expanded="false" aria-controls="shortCodeSwitchMenu">
+                                <span id="shortCode">-</span>
+                                <span aria-hidden="true">▾</span>
+                            </button>
+                            <div class="short-code-switch-menu" id="shortCodeSwitchMenu" hidden></div>
+                        </div>
+                        <div class="short-code-join">
+                            <input id="shortCodeInput" inputmode="text" autocomplete="off" autocapitalize="characters" maxlength="5" placeholder="输入 5 位隧道暗号">
+                            <button class="session-tool" id="joinShortCodeBtn" title="通过短码加入会话">进入别的隧道</button>
+                        </div>
+                        <div class="session-tools">
+                            <button class="session-tool" id="folderUploadBtn" title="将文件夹打包为 ZIP 后发送">发送文件夹</button>
+                            <button class="session-tool" id="directorySyncBtn" title="实验性目录镜像，需 Chromium 文件系统权限">同步目录</button>
+                            <button class="session-tool" id="clipboardShareBtn" title="读取并共享本机剪贴板文本">启用粘贴板共享</button>
+                            <button class="session-tool" id="garbageCleanupBtn" title="扫描并清理未关联的本地文件缓存">清理垃圾</button>
+                            <button class="session-tool" id="resourceBrowserBtn" title="查看会话文件资源及其引用位置">资源浏览器</button>
+                            <button class="session-tool" id="historyBackupBtn" title="导出或导入传输记录备份">备份/导入</button>
+                            <input id="historyBackupInput" type="file" accept="application/json,.json,.tunnel-backup" hidden>
+                        </div>
+                        <div class="directory-sync-status" id="directorySyncStatus" hidden></div>
+                        <div class="clipboard-notice" id="clipboardNotice" style="display: none;">
+                            <span id="clipboardNoticeText"></span>
+                            <button class="session-tool" id="copySharedClipboardBtn" title="复制收到的剪贴板内容">复制</button>
+                        </div>
+                        <div class="device-list" id="deviceList">
+                            <!-- 动态生成设备列表 -->
+                        </div>
+                        <div class="contacts-panel nearby-panel">
+                            <div class="contacts-panel-header">
+                                <span>附近设备</span>
+                                <button class="session-tool" id="nearbyPreciseBtn" type="button" title="授权位置后可发现不同网络中的附近设备">增强发现</button>
+                            </div>
+                            <div class="contact-list" id="nearbyDeviceList">
+                                <div class="contact-empty">正在发现同网络设备...</div>
+                            </div>
+                        </div>
+                        <div class="contacts-panel">
+                            <div class="contacts-panel-header">
+                                <span>已关注设备</span>
+                                <button class="session-tool" id="refreshContactsBtn" type="button" title="刷新联系人列表">刷新</button>
+                            </div>
+                            <div class="contact-list" id="contactList"></div>
+                        </div>
+                        <div class="media-controls" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px;">
+                            <button class="btn btn-secondary media-control-btn" id="cameraBroadcastBtn" title="摄像头广播">摄像头</button>
+                            <button class="btn btn-secondary media-control-btn" id="voiceChatBtn" title="加入语音聊天">语音聊天</button>
+                            <button class="btn btn-secondary media-control-btn" id="globalIntercomBtn" title="向全部在线设备对讲">全局对讲</button>
+                        </div>
+                        <div id="cameraStage" style="margin-top: 12px; display: none;">
+                            <video id="cameraVideo" autoplay playsinline muted style="width: 100%; max-height: 240px; background: #111; object-fit: contain;"></video>
+                        </div>
+                        <div id="remoteAudio" aria-live="polite"></div>
+                        <div class="tunnel-exit-actions">
+                            <button class="btn leave-tunnel-panel-btn" id="leaveTunnelPanelBtn" type="button" title="暂时离开当前隧道">
+                                <span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>
+                                <span>暂时离开</span>
+                            </button>
+                            <button class="btn exit-tunnel-panel-btn" id="exitTunnelBtn" type="button">退出</button>
+                        </div>
+                    </div>
+                    <aside id="resourceBrowserLayer" class="resource-browser-layer" aria-label="会话资源浏览器" hidden></aside>
+                </div>
+            </div>
+            
+            <!-- 中间：聊天记录 -->
+            <div class="center-panel">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>💬</span>
+                        <span>传输记录</span>
+                        <span class="online-indicator"></span>
+                        <button class="workspace-collab-trigger" id="workspaceCollabOpen" type="button" aria-controls="workspaceCollabPanel" aria-expanded="false"><span>📝</span><span>协同编辑</span></button>
+                    </div>
+                    <div class="panel-content">
+                        <div class="chat-messages-shell" id="chatMessagesShell">
+                            <div class="chat-messages" id="chatMessages">
+                                <div class="empty-state">
+                                    <div style="font-size: 3rem; margin-bottom: 10px;">📭</div>
+                                    <div>暂无消息</div>
+                                    <div style="font-size: 0.85rem; margin-top: 10px;">发送文件或文本来开始对话</div>
+                                </div>
+                            </div>
+                            <button class="chat-jump-btn chat-jump-top" id="chatJumpTopBtn" type="button" title="一键到顶部" aria-label="一键到顶部" aria-hidden="true" tabindex="-1"></button>
+                            <button class="chat-jump-btn chat-jump-bottom" id="chatJumpBottomBtn" type="button" title="一键到底部" aria-label="一键到底部" aria-hidden="true" tabindex="-1"></button>
+                        </div>
+                        <div class="file-upload-composer" id="fileUploadComposer">
+                            <div class="file-upload-area" id="dropZone">
+                                <span>📁拖拽或选择文件</span>
+                            </div>
+                            <button class="paste-image-zone" id="pasteImageZone" type="button" title="将剪贴板中的图片发送到当前隧道" hidden>点此粘贴图片</button>
+                        </div>
+                        <div class="input-area">
+                            <textarea id="textInput" rows="1" placeholder="输入消息..." maxlength="1000" aria-label="输入消息..."></textarea>
+                            <button class="btn btn-secondary" id="sendMarkdownBtn" type="button" title="编写 Markdown 消息" aria-label="编写 Markdown 消息">MD</button>
+                            <button class="btn btn-primary" id="sendTextBtn">
+                                <!-- <span>📤</span> --> <!-- 注释此行代码原因：难看、冗余 -->
+                                <span>发送</span>
+                            </button>
+                        </div>
+                        <input type="file" id="fileInput" multiple>
+                        <input type="file" id="folderInput" webkitdirectory multiple style="display: none;">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 右侧：协同编辑 -->
+            <div class="right-panel" id="workspaceCollabPanel">
+                <div class="panel">
+                    <div class="panel-header">
+                        <span>📝</span>
+                        <span>协同编辑</span>
+                        <span id="collabStatus" style="font-size: 0.8rem; opacity: 0.8;">同步中...</span>
+                        <button class="workspace-collab-close" id="workspaceCollabClose" type="button" aria-label="关闭" title="关闭">×</button>
+                    </div>
+                    <div class="panel-content collab-editor">
+                        <div class="editor-toolbar">
+                            <button class="toolbar-btn" data-cmd="bold" title="粗体"><b>B</b></button>
+                            <button class="toolbar-btn" data-cmd="italic" title="斜体"><i>I</i></button>
+                            <button class="toolbar-btn" data-cmd="underline" title="下划线"><u>U</u></button>
+                            <button class="toolbar-btn" data-cmd="insertUnorderedList" title="列表">☰</button>
+                            <button class="toolbar-btn" id="insertImageBtn" title="插入图片">🖼️</button>
+                            <button class="toolbar-btn" id="insertFileBtn" title="引用文件">📎</button>
+                        </div>
+                        <div class="editor-content" id="editor" contenteditable="true" placeholder="开始协同编辑..."></div>
+                        <div class="editor-actions">
+                            <button class="btn btn-secondary" id="clearEditorBtn">
+                                <span>🗑️</span>
+                                <span>清空</span>
+                            </button>
+                            <button class="btn btn-secondary" id="sendEditorMarkdownBtn" type="button">
+                                <span>发送 Markdown</span>
+                            </button>
+                            <button class="btn btn-primary" id="sendRichBtn">
+                                <!-- <span>📨</span> -->
+                                <span>发送富文本</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <nav class="mobile-workspace-nav" aria-label="移动端工作区切换">
+            <button class="mobile-workspace-button" type="button" data-mobile-view="devices" aria-label="设备连接" aria-pressed="false">
+                <span aria-hidden="true">▣</span><span>连接</span>
+            </button>
+            <button class="mobile-workspace-button active" type="button" data-mobile-view="chat" aria-label="传输记录" aria-pressed="true">
+                <span aria-hidden="true">⇄</span><span>隧道</span>
+            </button>
+            <button class="mobile-workspace-button" type="button" data-mobile-view="editor" aria-label="协同编辑" aria-pressed="false">
+                <span aria-hidden="true">📝</span><span>协同</span>
+            </button>
+        </nav>
+    </div>
+    
+    <!-- 传输进度 -->
+    <div class="transfer-progress" id="transferProgress" style="display: none;">
+        <button class="transfer-progress-toggle" id="progressDrawerToggle" type="button" aria-expanded="true" aria-controls="progressList">
+            <span class="transfer-progress-title">传输进度</span>
+            <span class="transfer-progress-summary" id="progressDrawerSummary"></span>
+            <span class="transfer-progress-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <div id="progressList"></div>
+    </div>
+    
+    <!-- 大文件确认对话框 -->
+    <div class="modal-overlay" id="confirmModal">
+        <div class="modal">
+            <h3>📦 接收文件</h3>
+            <p id="confirmFileInfo"></p>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="rejectFileBtn">稍后接收</button>
+                <button class="btn btn-primary" id="acceptFileBtn">接收</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="fileDetailsViewer">
+        <div class="modal file-details-modal" role="dialog" aria-modal="true" aria-label="文件详情">
+            <h3>文件详情</h3>
+            <dl class="file-details-list" id="fileDetailsList"></dl>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="closeFileDetailsBtn">关闭</button>
+                <button class="btn btn-primary" id="downloadFileDetailsBtn">下载</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="filePreviewViewer">
+        <div class="modal file-preview-modal" role="dialog" aria-modal="true" aria-label="文件预览">
+            <div class="file-preview-header">
+                <h3 id="filePreviewTitle"></h3>
+                <div class="file-preview-header-actions">
+                    <button class="file-preview-remote-btn" id="filePreviewRemoteBtn" type="button" title="在另一台在线设备打开并全屏" aria-label="在另一台在线设备打开并全屏" hidden>#️⃣</button>
+                    <button class="file-preview-music-btn" id="filePreviewMusicBtn" type="button" title="进入音乐播放器" aria-label="进入音乐播放器" hidden><span class="music-note-live">♪</span></button>
+                    <button class="file-preview-light-btn" id="filePreviewLightShareBtn" type="button" title="使用光媒分享" aria-label="使用光媒分享" hidden>✴↗</button>
+                    <button class="file-preview-fullscreen-btn" id="filePreviewFullscreenBtn" type="button" title="全屏预览" aria-label="全屏预览" hidden>『 』</button>
+                    <button class="file-preview-close-btn" id="closeFilePreviewBtn" type="button" title="关闭" aria-label="关闭">×</button>
+                </div>
+            </div>
+            <button class="file-preview-nav file-preview-nav-prev" id="filePreviewPrevBtn" type="button" aria-label="上一个文件" hidden>‹</button>
+            <div class="file-preview-content" id="filePreviewContent"></div>
+            <button class="file-preview-nav file-preview-nav-next" id="filePreviewNextBtn" type="button" aria-label="下一个文件" hidden>›</button>
+            <div class="file-preview-actions" id="filePreviewActions"></div>
+        </div>
+    </div>
+
+    <dialog class="remote-preview-device-layer" id="remotePreviewDeviceModal" aria-labelledby="remotePreviewDeviceTitle">
+        <div class="modal remote-preview-device-modal">
+            <h3 id="remotePreviewDeviceTitle">选择被控设备</h3>
+            <p class="remote-preview-file-name" id="remotePreviewFileName"></p>
+            <div class="remote-preview-device-list" id="remotePreviewDeviceList"></div>
+            <div class="modal-actions"><button class="btn btn-secondary" id="closeRemotePreviewDeviceBtn" type="button">取消</button></div>
+        </div>
+    </dialog>
+
+    <aside class="remote-preview-control-panel" id="remotePreviewControlPanel" aria-label="远程预览控制面板" hidden>
+        <div class="remote-preview-control-topbar">
+            <h3 class="remote-preview-control-heading">远程预览控制</h3>
+            <div class="remote-preview-control-window-actions">
+                <button id="remotePreviewControlMinimizeBtn" type="button" title="最小化" aria-label="最小化远程预览控制面板">_</button>
+                <button id="remotePreviewControlCloseBtn" type="button" title="退出控制" aria-label="退出远程预览控制和目标设备全屏">Ｘ</button>
+            </div>
+        </div>
+        <div class="remote-preview-control-identity">
+            <span class="remote-preview-control-device-logo" id="remotePreviewControlDeviceLogo" aria-hidden="true">📱</span>
+            <div class="remote-preview-control-title" id="remotePreviewControlTitle">目标设备 · 文件预览</div>
+        </div>
+        <div class="remote-preview-control-status" id="remotePreviewControlStatus" role="status" aria-live="polite">已进入全屏</div>
+        <div class="remote-preview-control-nav-actions">
+            <button class="remote-preview-command" id="remotePreviewControlPrevBtn" type="button">上一个</button>
+            <button class="remote-preview-command" id="remotePreviewControlNextBtn" type="button">下一个</button>
+        </div>
+        <div class="remote-preview-control-playback-actions" id="remotePreviewControlPlaybackRow" hidden>
+            <button class="remote-preview-command" id="remotePreviewControlPlaybackBtn" type="button" hidden>播放</button>
+        </div>
+    </aside>
+    <button class="remote-preview-control-bubble" id="remotePreviewControlBubble" type="button" aria-label="恢复远程预览控制面板" hidden>#️⃣</button>
+
+    <div class="media-fullscreen-viewer" id="mediaFullscreenViewer" aria-label="全屏预览" role="dialog" aria-modal="true">
+        <div class="media-fullscreen-topbar">
+            <div class="media-fullscreen-title" id="mediaFullscreenTitle"></div>
+            <div class="media-fullscreen-counter" id="mediaFullscreenCounter"></div>
+            <button class="media-fullscreen-locate" id="mediaFullscreenLocateBtn" type="button" title="定位到传输记录" aria-label="定位到传输记录">🎯</button>
+            <button class="media-fullscreen-close" id="mediaFullscreenCloseBtn" type="button" title="退出全屏" aria-label="退出全屏">×</button>
+        </div>
+        <button class="media-fullscreen-arrow media-fullscreen-arrow-left" id="mediaFullscreenPrevBtn" type="button" aria-label="上一个">‹</button>
+        <div class="media-fullscreen-content" id="mediaFullscreenContent"></div>
+        <button class="media-fullscreen-arrow media-fullscreen-arrow-right" id="mediaFullscreenNextBtn" type="button" aria-label="下一个">›</button>
+        <div class="media-fullscreen-zoom-controls" id="mediaFullscreenZoomControls" hidden>
+            <button id="mediaFullscreenZoomInBtn" type="button" aria-label="放大图片"><img src="/prompts/resources/magnifier-plus.svg" alt=""></button>
+            <button id="mediaFullscreenZoomOutBtn" type="button" aria-label="缩小图片"><img src="/prompts/resources/magnifier-minus.svg" alt=""></button>
+        </div>
+    </div>
+    
+    <!-- 富文本查看器 -->
+    <div class="rich-viewer-overlay" id="richViewer">
+        <div class="rich-viewer">
+            <div class="rich-viewer-header">
+                <h3 style="margin: 0;">📝 富文本内容</h3>
+                <div class="rich-viewer-header-actions">
+                    <button class="btn btn-secondary" id="richHistoryBtn" type="button">修改历史</button>
+                    <button class="btn btn-primary" id="editRichMessageBtn" type="button">编辑</button>
+                    <button class="btn btn-secondary" id="closeRichViewer" type="button">关闭</button>
+                </div>
+            </div>
+            <div class="rich-viewer-content" id="richViewerContent"></div>
+        </div>
+    </div>
+
+    <div class="download-cache-overlay" id="downloadCacheOverlay" hidden>
+        <div class="download-cache-panel" role="dialog" aria-modal="true" aria-label="磁链缓存列表">
+            <div class="download-cache-header">
+                <h3>磁链缓存列表</h3>
+                <button class="btn btn-secondary" id="closeDownloadCacheOverlayBtn" type="button">关闭</button>
+            </div>
+            <iframe id="downloadCacheFrame" title="磁链缓存列表"></iframe>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="deviceProfileModal">
+        <div class="modal device-profile-modal" role="dialog" aria-modal="true" aria-label="设备资料">
+            <div class="profile-modal-body">
+                <div class="device-profile-header">
+                    <div class="profile-qr" id="deviceProfileQr"></div>
+                    <div class="device-profile-title">
+                        <div class="device-profile-name" id="deviceProfileTitle">设备资料</div>
+                    </div>
+                </div>
+                <div class="profile-fields" id="deviceProfileFields"></div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="closeDeviceProfileBtn" type="button">关闭</button>
+                <button class="btn btn-secondary" id="deviceVoiceCallBtn" type="button" hidden>☎ 语音通话</button>
+                <button class="btn btn-primary" id="followDeviceBtn" type="button">关注</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="contact-call-overlay" id="contactCallOverlay" hidden>
+        <div class="contact-call-card">
+            <div class="contact-call-person">
+                <div class="contact-call-avatar" id="contactCallAvatar" aria-hidden="true">☎</div>
+                <div>
+                    <div class="contact-call-state" id="contactCallState">语音通话</div>
+                    <div class="contact-call-title" id="contactCallTitle">联系人通话</div>
+                    <div class="contact-call-subtitle" id="contactCallSubtitle">正在连接...</div>
+                </div>
+            </div>
+            <div class="contact-call-actions" id="contactCallActions"></div>
+        </div>
+    </div>
+
+
+</body></html>

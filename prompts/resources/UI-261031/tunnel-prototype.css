@@ -1,0 +1,155 @@
+/* blamen 原型基于 Lumen，仅覆盖颜色、背景、边框颜色和阴影。 */
+body[data-prototype-skin="reference"][data-theme="lumen"] {
+  --ref-stripes:
+    linear-gradient(126deg,transparent 0 7%,#dcecff99 18%,transparent 30%,#d9e9ff9c 43%,transparent 57%,#e0efff83 70%,transparent 83%),
+    repeating-linear-gradient(126deg,#eef6ff 0,#e8f2ff 50px,#e2efff 98px,#e9f4ff 155px,#eef6ff 220px);
+  --ref-main:#e1e5f2;
+  --ref-heading:linear-gradient(110deg,var(--ref-main) 0%,#eceff8 100%);
+  --ref-panel-heading:#d5d9e6;
+  --ref-topbar-heading:linear-gradient(112deg,var(--ref-main) 76%,#dce1ef);
+  --ui-page:var(--ref-stripes);
+  --ui-bg:#eff6ff;
+  --ui-panel:#f7fbff;
+  --ui-soft:#edf4fc;
+  --ui-line:#dce8f4;
+  --ui-ink:#151b3e;
+  --ui-muted:#7884a3;
+  --ui-accent:#3c29cf;
+  --ui-tint:#e5f0ff;
+  --ui-on:#fff;
+  --ui-header:var(--ref-heading);
+  --ui-primary:linear-gradient(135deg,#7777e8 0%,#5034e1 48%,#3218c5 100%);
+  --ui-shadow:0 5px 16px #9db9de26,0 2px 5px #a4bad21a;
+  --ui-menu:0 14px 32px #728bb44a;
+  --page-bg:var(--ref-stripes);
+  --panel-bg:#f7fbff;
+  --panel-border:#dce8f4;
+  --panel-shadow:var(--ui-shadow);
+  --header-bg:var(--ref-heading);
+  --accent:#3c29cf;
+  --text-main:#151b3e;
+  --text-muted:#7884a3;
+  --surface-soft:#edf4fc;
+  background:var(--ref-stripes);
+}
+
+/* 全局顶栏稍深于原版，按钮配色保持不变。 */
+body[data-prototype-skin="reference"][data-theme="lumen"] #tunnelTopbar {
+  background:var(--ref-topbar-heading);
+  color:#252943;
+  --ui-bg:#f5f7fc; --ui-panel:#fff; --ui-soft:#f5f7ff; --ui-line:#e1e5f2;
+  --ui-ink:#252943; --ui-muted:#6a728a; --ui-accent:#5347e8; --ui-second:#089eae;
+  --ui-tint:#eeedff; --ui-on:#fff;
+  --ui-header:linear-gradient(112deg,#fff 76%,#f2f2ff);
+  --ui-shadow:0 12px 34px #3f44840b,0 1px 3px #3f448408;
+  --ui-menu:0 24px 70px #30367c22,0 1px 5px #30367c0d;
+  --ui-primary:linear-gradient(112deg,#5347e8,#6d60ef); --ui-primary-shadow:0 3px 10px #5347e821;
+  --panel-bg:#fff; --panel-border:#e1e5f2; --text-main:#252943; --text-muted:#6a728a;
+  --accent:#5347e8; --accent-2:#089eae;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] #appShell .panel-header {
+  background:linear-gradient(to bottom,var(--ref-panel-heading) 0%,var(--ref-panel-heading) 65%,#e9edf4 84%,#fff 100%);
+  color:#252943;
+  border-color:#fff;
+  box-shadow:none;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] #appShell .panel-content {
+  background:#f7fbff;
+  color:#151b3e;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] #chatMessages {
+  background:linear-gradient(135deg,#f4f9ff,#eef5ff);
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.session-info,.short-code-switch,.device-item,.contacts-panel,.editor-toolbar) {
+  background:#edf4fc;
+  border-color:#dce8f4;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] .session-info { color:#233055; }
+body[data-prototype-skin="reference"][data-theme="lumen"] .device-item .icon { color:#252943; }
+body[data-prototype-skin="reference"][data-theme="lumen"] .device-item .status { color:#28a745; }
+body[data-prototype-skin="reference"][data-theme="lumen"] #connectionHeaderMenuBtn { color:#252943; }
+body[data-prototype-skin="reference"][data-theme="lumen"] .online-indicator { background:#22c996; }
+body[data-prototype-skin="reference"][data-theme="lumen"] .message-bubble {
+  background:#fff;
+  color:#151b3e;
+  border-color:#e0eaf7;
+  box-shadow:0 4px 11px #91abc630;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] .message.own .message-bubble {
+  background:#e5f0ff;
+  color:#1454d4;
+  border-color:#e5f0ff;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(#textInput,#editor) {
+  background:#fff;
+  color:#151b3e;
+  border-color:#dbe6f0;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] #dropZone {
+  background:#f8fbff;
+  border-color:#c5bef4;
+  color:#151b3e;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(#sendTextBtn,#sendRichBtn) {
+  background:#6a728a;
+  color:#fff;
+  border-color:#6a728a;
+  box-shadow:0 5px 12px #6a728a40;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.short-code-switch-menu,.connection-header-menu,.message-record-action-menu) {
+  background:#fdfdff;
+  border-color:#dce8f4;
+  box-shadow:0 14px 32px #728bb44a;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.short-code-switch-item:hover,.short-code-switch-item.is-current) {
+  background:#eaf2ff;
+  color:#3323af;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header,.resource-browser-header,.transfer-record-details-header,.rich-viewer-header,.notification-center>header) {
+  background:var(--ref-heading);
+  color:#252943;
+  border-color:#d5d9e6;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header h2,.tunnel-settings-header span,.resource-browser-header h3,.transfer-record-details-header h2,.transfer-record-details-kicker,.rich-viewer-header h3,.notification-center>header strong) {
+  color:#252943;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header button,.resource-browser-header button,.transfer-record-details-header button,.rich-viewer-header button,.notification-center>header button) {
+  background:#f6f8fd;
+  color:#252943;
+  border-color:#d4dbea;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.resource-browser-controls,.resource-browser-list,.resource-browser-mounts,.rich-viewer-content,.transfer-record-details-body,.tunnel-settings-body) {
+  background:#f7fbff;
+  color:#151b3e;
+  border-color:#dce8f4;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(.resource-browser-item,.transfer-record-detail-file,.profile-field,.transfer-record-details-summary) {
+  background:#edf4fc;
+  color:#151b3e;
+  border-color:#dce8f4;
+}
+/* 文件预览和全屏预览沿用当前 Lumen 的原始变量，不参与本次换肤。 */
+body[data-prototype-skin="reference"][data-theme="lumen"] :is(#filePreviewViewer,#mediaFullscreenViewer) {
+  --ui-bg:#f5f7fc; --ui-panel:#fff; --ui-soft:#f5f7ff; --ui-line:#e1e5f2;
+  --ui-ink:#252943; --ui-muted:#6a728a; --ui-accent:#5347e8; --ui-second:#089eae;
+  --ui-tint:#eeedff; --ui-on:#fff;
+  --ui-danger:#c12c49; --ui-danger-soft:#fff0f3; --ui-success:#147154; --ui-success-soft:#e5f6ee;
+  --ui-warning:#8b5a16; --ui-warning-soft:#fff5df; --ui-overlay:#1b254866; --ui-media:#101723;
+  --ui-header:linear-gradient(112deg,#fff 76%,#f2f2ff);
+  --ui-shadow:0 12px 34px #3f44840b,0 1px 3px #3f448408;
+  --ui-menu:0 24px 70px #30367c22,0 1px 5px #30367c0d;
+  --ui-primary:linear-gradient(112deg,#5347e8,#6d60ef); --ui-primary-shadow:0 3px 10px #5347e821;
+  --panel-bg:#fff; --panel-border:#e1e5f2; --header-bg:linear-gradient(112deg,#fff 76%,#f2f2ff);
+  --text-main:#252943; --text-muted:#6a728a; --surface-soft:#f5f7ff;
+  --accent:#5347e8; --accent-2:#089eae;
+}
+body[data-prototype-skin="reference"][data-theme="lumen"] #filePreviewViewer { color:#252943; }
+@media (max-width:767px) {
+  body[data-prototype-skin="reference"][data-theme="lumen"] #appShell :is(.left-panel,.right-panel) .panel-header {
+    background:var(--ref-topbar-heading);
+    color:#252943;
+    border-color:transparent;
+    box-shadow:inset 0 -1px 0 #dfe4f0,0 2px 14px #3f448408;
+  }
+  body[data-prototype-skin="reference"][data-theme="lumen"] #connectionHeaderMenuBtn { color:#252943; }
+}
