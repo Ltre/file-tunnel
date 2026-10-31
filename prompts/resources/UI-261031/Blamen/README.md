@@ -1,12 +1,12 @@
 # 隧道首页 Blamen 主题原型
 
-本目录的方案命名为 Blamen，从现有 Lumen 主题派生并作了配色等调整，以 `#e1e5f2` 为主色；目前仅为原型，尚未接入产品主题列表。
+本目录的方案命名为 Blamen，从现有 Lumen 主题派生并作了配色等调整，以 `#e1e5f2` 为主色，背景采用浅灰色条纹；目前仅为原型，尚未接入产品主题列表。
 
 直接用浏览器打开 [tunnel-prototype.html](tunnel-prototype.html)。页面采用当前分支首页的三栏结构和 Lumen 基础样式；[tunnel-prototype.css](tunnel-prototype.css) 只覆盖配色、背景、边框颜色与阴影。
 
 可查看暗号下拉、设置、资源浏览器、记录菜单和详情、设备资料、通知中心、备份、清理及富文本等演示状态。窄屏可切换连接、隧道、协同三页；在隧道页再次点击底部“隧道”可查看控制中心。
 
-`index.jpg` 是最初提供的参考图，保留原样；当前原型的截图集中在 [screenshots](screenshots/) 目录，重新生成时也会同步更新根目录的同名截图。
+原始参考图保存在 [Lusns/index.jpg](../Lusns/index.jpg)，本目录的示例缩略图已内嵌图片；当前原型的截图集中在 [screenshots](screenshots/) 目录，重新生成时也会同步更新根目录的同名截图。
 
 - [桌面首页](screenshots/tunnel-home.png) · [宽屏](screenshots/tunnel-wide.png) · [暗号下拉](screenshots/tunnel-dropdown.png)
 - [设置](screenshots/tunnel-settings.png) · [资源浏览器](screenshots/tunnel-resources.png) · [记录菜单](screenshots/tunnel-record-menu.png) · [记录详情](screenshots/tunnel-details.png)

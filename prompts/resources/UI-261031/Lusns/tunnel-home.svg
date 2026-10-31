@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1538" height="1023" viewBox="0 0 1538 1023"><title>隧道三栏首页 blamen 主题原型</title><foreignObject width="1538" height="1023"><html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" /><title>隧道三栏 · blamen 主题原型</title><style>.notification-center{position:fixed;inset:0;z-index:19000;background:var(--bg-color,#f4f6fa);color:var(--text-color,#243047);display:flex;flex-direction:column}
+<svg xmlns="http://www.w3.org/2000/svg" width="1538" height="1023" viewBox="0 0 1538 1023"><title>隧道三栏首页 Lusns 主题原型</title><foreignObject width="1538" height="1023"><html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" /><title>隧道三栏 · Lusns 主题原型</title><style>.notification-center{position:fixed;inset:0;z-index:19000;background:var(--bg-color,#f4f6fa);color:var(--text-color,#243047);display:flex;flex-direction:column}
 .notification-center[hidden]{display:none}.notification-center&gt;header{display:flex;align-items:center;gap:12px;padding:calc(12px + env(safe-area-inset-top)) 16px 12px;border-bottom:1px solid #a9b6c733;background:color-mix(in srgb,var(--panel-bg,#fff) 92%,transparent);backdrop-filter:blur(16px)}
 .notification-center&gt;header&gt;div{display:flex;align-items:center;gap:8px;flex:1;font-size:1.1rem}.notification-center button{border:1px solid #8aa0bc66;border-radius:10px;background:var(--panel-bg,#fff);color:inherit;padding:8px 12px;cursor:pointer}.notification-center main{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:18px}.notification-center-list{width:min(760px,100%);margin:auto;display:grid;gap:12px}
 .notification-card{border:1px solid #9bacbf55;border-radius:14px;background:var(--panel-bg,#fff);padding:14px;box-shadow:0 8px 24px #14243a12}.notification-card.unread{border-color:#4d91e7}.notification-card-head{display:flex;gap:12px;justify-content:space-between}.notification-card time,.notification-card small{opacity:.62;font-size:.8rem}.notification-card p{white-space:pre-wrap;margin:10px 0}.notification-card-actions{display:flex;gap:10px}.notification-card-actions button:first-child{background:#2d7bd8;color:#fff}.notification-center-empty{text-align:center;opacity:.65;padding:15vh 20px}
@@ -6012,15 +6012,14 @@ body:is([data-theme="lumen"],[data-theme="orbit"])[data-theme-page="light-parts"
 
 
 
-/* blamen 原型基于 Lumen，仅覆盖颜色、背景、边框颜色和阴影。 */
+/* Lusns 原型基于 Lumen，仅覆盖颜色、背景、边框颜色和阴影。 */
 body[data-prototype-skin="reference"][data-theme="lumen"] {
   --ref-stripes:
     linear-gradient(126deg,transparent 0 7%,#dcecff99 18%,transparent 30%,#d9e9ff9c 43%,transparent 57%,#e0efff83 70%,transparent 83%),
     repeating-linear-gradient(126deg,#eef6ff 0,#e8f2ff 50px,#e2efff 98px,#e9f4ff 155px,#eef6ff 220px);
-  --ref-main:#e1e5f2;
-  --ref-heading:linear-gradient(110deg,var(--ref-main) 0%,#eceff8 100%);
-  --ref-panel-heading:#d5d9e6;
-  --ref-topbar-heading:linear-gradient(112deg,var(--ref-main) 76%,#dce1ef);
+  --ref-main:#4133ca;
+  --ref-heading:linear-gradient(110deg,var(--ref-main) 0%,#5545d8 29%,#7168df 62%,#748be8 100%);
+  --ref-topbar-heading:transparent;
   --ui-page:var(--ref-stripes);
   --ui-bg:#eff6ff;
   --ui-panel:#f7fbff;
@@ -6047,7 +6046,7 @@ body[data-prototype-skin="reference"][data-theme="lumen"] {
   background:var(--ref-stripes);
 }
 
-/* 全局顶栏稍深于原版，按钮配色保持不变。 */
+/* 全局顶栏透明，按钮配色保持不变。 */
 body[data-prototype-skin="reference"][data-theme="lumen"] #tunnelTopbar {
   background:var(--ref-topbar-heading);
   color:#252943;
@@ -6062,8 +6061,8 @@ body[data-prototype-skin="reference"][data-theme="lumen"] #tunnelTopbar {
   --accent:#5347e8; --accent-2:#089eae;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] #appShell .panel-header {
-  background:linear-gradient(to bottom,var(--ref-panel-heading) 0%,var(--ref-panel-heading) 65%,#e9edf4 84%,#fff 100%);
-  color:#252943;
+  background:linear-gradient(to bottom,transparent 0%,transparent 68%,#fff 100%),var(--ref-heading);
+  color:#fff;
   border-color:#fff;
   box-shadow:none;
 }
@@ -6079,9 +6078,9 @@ body[data-prototype-skin="reference"][data-theme="lumen"] :is(.session-info,.sho
   border-color:#dce8f4;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] .session-info { color:#233055; }
-body[data-prototype-skin="reference"][data-theme="lumen"] .device-item .icon { color:#252943; }
+body[data-prototype-skin="reference"][data-theme="lumen"] .device-item .icon { color:#fff; }
 body[data-prototype-skin="reference"][data-theme="lumen"] .device-item .status { color:#28a745; }
-body[data-prototype-skin="reference"][data-theme="lumen"] #connectionHeaderMenuBtn { color:#252943; }
+body[data-prototype-skin="reference"][data-theme="lumen"] #connectionHeaderMenuBtn { color:#fff; }
 body[data-prototype-skin="reference"][data-theme="lumen"] .online-indicator { background:#22c996; }
 body[data-prototype-skin="reference"][data-theme="lumen"] .message-bubble {
   background:#fff;
@@ -6105,10 +6104,10 @@ body[data-prototype-skin="reference"][data-theme="lumen"] #dropZone {
   color:#151b3e;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(#sendTextBtn,#sendRichBtn) {
-  background:#6a728a;
+  background:var(--ui-primary);
   color:#fff;
-  border-color:#6a728a;
-  box-shadow:0 5px 12px #6a728a40;
+  border-color:#5545d8;
+  box-shadow:0 5px 12px #5034e140;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(.short-code-switch-menu,.connection-header-menu,.message-record-action-menu) {
   background:#fdfdff;
@@ -6121,16 +6120,16 @@ body[data-prototype-skin="reference"][data-theme="lumen"] :is(.short-code-switch
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header,.resource-browser-header,.transfer-record-details-header,.rich-viewer-header,.notification-center&gt;header) {
   background:var(--ref-heading);
-  color:#252943;
-  border-color:#d5d9e6;
+  color:#fff;
+  border-color:#6f7de0;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header h2,.tunnel-settings-header span,.resource-browser-header h3,.transfer-record-details-header h2,.transfer-record-details-kicker,.rich-viewer-header h3,.notification-center&gt;header strong) {
-  color:#252943;
+  color:#fff;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(.tunnel-settings-header button,.resource-browser-header button,.transfer-record-details-header button,.rich-viewer-header button,.notification-center&gt;header button) {
-  background:#f6f8fd;
-  color:#252943;
-  border-color:#d4dbea;
+  background:#211c8755;
+  color:#fff;
+  border-color:#ffffff59;
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] :is(.resource-browser-controls,.resource-browser-list,.resource-browser-mounts,.rich-viewer-content,.transfer-record-details-body,.tunnel-settings-body) {
   background:#f7fbff;
@@ -6159,6 +6158,9 @@ body[data-prototype-skin="reference"][data-theme="lumen"] :is(#filePreviewViewer
 }
 body[data-prototype-skin="reference"][data-theme="lumen"] #filePreviewViewer { color:#252943; }
 @media (max-width:767px) {
+  body[data-prototype-skin="reference"][data-theme="lumen"] #appShell :is(.left-panel,.right-panel) &gt; .panel {
+    background:transparent;
+  }
   body[data-prototype-skin="reference"][data-theme="lumen"] #appShell :is(.left-panel,.right-panel) .panel-header {
     background:var(--ref-topbar-heading);
     color:#252943;

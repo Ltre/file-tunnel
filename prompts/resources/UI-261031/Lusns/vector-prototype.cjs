@@ -18,6 +18,6 @@ module.exports=async function writeVector(page){
     html.querySelectorAll('[src]').forEach(node=>{const src=node.getAttribute('src');if(maps[src])node.setAttribute('src',maps[src]);});
     return new XMLSerializer().serializeToString(html);
   },{css,maps});
-  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="1538" height="1023" viewBox="0 0 1538 1023"><title>隧道三栏首页 blamen 主题原型</title><foreignObject width="1538" height="1023">'+markup+'</foreignObject></svg>';
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="1538" height="1023" viewBox="0 0 1538 1023"><title>隧道三栏首页 Lusns 主题原型</title><foreignObject width="1538" height="1023">'+markup+'</foreignObject></svg>';
   fs.writeFileSync(path.join(__dirname,'tunnel-home.svg'),svg);
 };

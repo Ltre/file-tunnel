@@ -2,7 +2,7 @@
 // Only files in this directory are written.
 const fs = require('node:fs');
 const path = require('node:path');
-const root = path.resolve(__dirname, '../../..');
+const root = path.resolve(__dirname, '../../../..');
 const source = fs.readFileSync(path.join(root,'pages/index.html'),'utf8');
 const begin = source.indexOf('    <header class="tunnel-topbar"');
 const end = source.indexOf('    <!-- 传输进度 -->', begin);
@@ -18,14 +18,20 @@ for (const [from,to] of [['client/index.css','base-index.css'],['client/themes.c
 }
 const html = '<!doctype html>\n<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>隧道三栏 · blamen 主题原型</title><link rel="stylesheet" href="base-notification-center.css"><link rel="stylesheet" href="base-themes-legacy.css"><link rel="stylesheet" href="base-index.css"><link rel="stylesheet" href="base-themes.css"><link rel="stylesheet" href="tunnel-prototype.css"><script src="tunnel-prototype.js" defer></script></head><body data-theme="lumen" data-prototype-skin="reference">\n' + home + auxiliary + '\n</body></html>';
 fs.writeFileSync(path.join(__dirname,'tunnel-prototype.html'),html);
-const referenceImage = 'data:image/jpeg;base64,' + fs.readFileSync(path.join(__dirname,'index.jpg')).toString('base64');
-for (const [name,viewBox] of [
+const samples = [
   ['sample-document-a.svg','465 132 160 125'],
   ['sample-document-b.svg','625 132 195 125'],
   ['sample-document-c.svg','465 257 160 137'],
   ['sample-document-d.svg','625 257 195 137'],
   ['sample-photo.svg','445 618 226 204']
-]) {
-  fs.writeFileSync(path.join(__dirname,name),'<svg xmlns="http://www.w3.org/2000/svg" viewBox="'+viewBox+'"><image href="'+referenceImage+'" width="1538" height="1023"/></svg>');
+];
+const referencePath = path.join(__dirname,'index.jpg');
+if (fs.existsSync(referencePath)) {
+  const referenceImage = 'data:image/jpeg;base64,' + fs.readFileSync(referencePath).toString('base64');
+  for (const [name,viewBox] of samples) {
+    fs.writeFileSync(path.join(__dirname,name),'<svg xmlns="http://www.w3.org/2000/svg" viewBox="'+viewBox+'"><image href="'+referenceImage+'" width="1538" height="1023"/></svg>');
+  }
+} else if (samples.some(([name])=>!fs.existsSync(path.join(__dirname,name)))) {
+  throw Error('缺少原始参考图和已有示例缩略图，无法重新生成示例素材');
 }
 console.log('已复制当前首页结构和样式到原型目录。');

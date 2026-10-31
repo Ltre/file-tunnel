@@ -12,6 +12,7 @@ const {chromium}=require('C:/Users/Dell/.cache/codex-runtimes/codex-primary-runt
   const report={geometry:[],wide:null,dropdown:null,topbar:[],mobileHeaders:[],mobileFocus:[],controlCenter:null,previewStyles:null,fullscreenStyles:null,errors:[]};
   const open=async(width,height,query='')=>{const p=await browser.newPage({viewport:{width,height},deviceScaleFactor:1});p.on('pageerror',error=>report.errors.push(error.message));await p.goto(url+query);await p.evaluate(()=>document.fonts.ready);await p.waitForTimeout(450);return p;};
   const measure=p=>p.evaluate(()=>({
+    pageBackground:getComputedStyle(document.body).backgroundImage,
     topbar:Array.from(document.querySelectorAll('#tunnelTopbar,#tunnelTopbar *')).map(el=>{const s=getComputedStyle(el);return [s.backgroundColor,s.backgroundImage,s.color,s.borderColor,s.boxShadow];}),
     elements:Array.from(document.querySelectorAll('#tunnelTopbar,#tunnelTopbar *,#appShell,#appShell *')).map((el,index)=>{
       const s=getComputedStyle(el),r=el.getBoundingClientRect();if(s.display==='none'||!r.width||!r.height)return null;
@@ -52,6 +53,7 @@ const {chromium}=require('C:/Users/Dell/.cache/codex-runtimes/codex-primary-runt
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-wide.png')});
       }
       if(width===1538){
+        report.pageBackground=a.pageBackground;
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-home.png')});
         await require('./vector-prototype.cjs')(reference);
         await reference.locator('#shortCodeSwitchBtn').click();
@@ -91,6 +93,7 @@ const {chromium}=require('C:/Users/Dell/.cache/codex-runtimes/codex-primary-runt
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-resources.png')});
         await reference.locator('.resource-browser-close').click();
         await reference.locator('#deviceList .name').click();
+        await reference.locator('#closeDeviceProfileBtn').waitFor({state:'visible'});
         await reference.waitForTimeout(350);
         report.profileButtons=await reference.evaluate(()=>['#closeDeviceProfileBtn','#followDeviceBtn'].map(selector=>{const el=document.querySelector(selector),s=getComputedStyle(el),r=el.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {selector,rect:[r.x,r.y,r.width,r.height],color:s.color,background:s.backgroundColor,visibility:s.visibility,opacity:s.opacity,hit:hit?.id||hit?.className};}));
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-device.png')});
@@ -107,6 +110,7 @@ const {chromium}=require('C:/Users/Dell/.cache/codex-runtimes/codex-primary-runt
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-cleanup.png')});
         await reference.locator('#cancelGarbageCleanup').click();
         await reference.locator('[data-demo-record="rich"] .rich-preview').click();
+        await reference.waitForTimeout(350);
         await reference.screenshot({path:path.join(screenshotDir,'tunnel-rich.png')});
       }
       if(width===390){
@@ -134,7 +138,7 @@ const {chromium}=require('C:/Users/Dell/.cache/codex-runtimes/codex-primary-runt
     await svgPage.goto(pathToFileURL(path.join(__dirname,'tunnel-home.svg')).href);
     await svgPage.waitForTimeout(200);
     await svgPage.screenshot({path:path.join(screenshotDir,'tunnel-home-svg.png')});await svgPage.close();
-    if(report.geometry.some(item=>item.differences)||report.wide.width!==1400||Math.abs(report.wide.left-report.wide.right)>.25||report.topbar.some(item=>!item.backgroundChanged||!item.darkerThanBase||!item.lighterThanPanel||!item.otherStylesSame)||report.mobileHeaders.some(item=>!item.same)||report.mobileFocus.some(item=>!item.radial||!item.fadesToNav)||!report.dropdown.menuVisible||!report.dropdown.sameGeometry||report.dropdown.menuTop<report.dropdown.buttonBottom||report.dropdown.centerOverlayCount||!report.controlCenter.vertical||!report.controlCenter.fullWidth||report.controlCenter.overflow!==report.controlCenter.buttonsVisible||!report.previewStyles||!report.fullscreenStyles||report.errors.length)throw Error('原型几何、配色或交互检查失败');
+    if(report.geometry.some(item=>item.differences)||report.wide.width!==1400||Math.abs(report.wide.left-report.wide.right)>.25||report.topbar.some(item=>!item.backgroundChanged||!item.darkerThanBase||!item.lighterThanPanel||!item.otherStylesSame)||!report.pageBackground.includes('rgb(241, 241, 241)')||!report.pageBackground.includes('rgb(232, 232, 232)')||report.mobileHeaders.some(item=>!item.same)||report.mobileFocus.some(item=>!item.radial||!item.fadesToNav)||!report.dropdown.menuVisible||!report.dropdown.sameGeometry||report.dropdown.menuTop<report.dropdown.buttonBottom||report.dropdown.centerOverlayCount||!report.controlCenter.vertical||!report.controlCenter.fullWidth||report.controlCenter.overflow!==report.controlCenter.buttonsVisible||!report.previewStyles||!report.fullscreenStyles||report.errors.length)throw Error('原型几何、配色或交互检查失败');
     // Keep the generated screenshots separate from the original reference image,
     // then update the previous locations for existing links.
     const screenshots=['tunnel-home.png','tunnel-home-svg.png','tunnel-wide.png','tunnel-dropdown.png','tunnel-settings.png','tunnel-record-menu.png','tunnel-details.png','tunnel-resources.png','tunnel-device.png','tunnel-notifications.png','tunnel-backup.png','tunnel-cleanup.png','tunnel-rich.png','tablet.png','mobile-chat.png','mobile-devices.png','mobile-editor.png','mobile-control-center.png','mobile-details.png','mobile-menu.png','mobile-record-menu.png','mobile-resources.png','mobile-settings.png','mobile-notifications.png'];

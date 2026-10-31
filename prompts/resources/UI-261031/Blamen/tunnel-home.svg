@@ -6015,8 +6015,8 @@ body:is([data-theme="lumen"],[data-theme="orbit"])[data-theme-page="light-parts"
 /* blamen 原型基于 Lumen，仅覆盖颜色、背景、边框颜色和阴影。 */
 body[data-prototype-skin="reference"][data-theme="lumen"] {
   --ref-stripes:
-    linear-gradient(126deg,transparent 0 7%,#dcecff99 18%,transparent 30%,#d9e9ff9c 43%,transparent 57%,#e0efff83 70%,transparent 83%),
-    repeating-linear-gradient(126deg,#eef6ff 0,#e8f2ff 50px,#e2efff 98px,#e9f4ff 155px,#eef6ff 220px);
+    linear-gradient(126deg,transparent 0 7%,#dddddd99 18%,transparent 30%,#d9d9d99c 43%,transparent 57%,#e7e7e783 70%,transparent 83%),
+    repeating-linear-gradient(126deg,#f1f1f1 0,#ededed 50px,#e8e8e8 98px,#f0f0f0 155px,#f1f1f1 220px);
   --ref-main:#e1e5f2;
   --ref-heading:linear-gradient(110deg,var(--ref-main) 0%,#eceff8 100%);
   --ref-panel-heading:#d5d9e6;

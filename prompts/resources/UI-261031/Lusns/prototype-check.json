@@ -67,67 +67,62 @@
       "width": 1920,
       "view": "chat",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 1538,
       "view": "chat",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 1200,
       "view": "chat",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 1024,
       "view": "chat",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 390,
       "view": "chat",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 390,
       "view": "devices",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     },
     {
       "width": 390,
       "view": "editor",
       "backgroundChanged": true,
-      "darkerThanBase": true,
-      "lighterThanPanel": true,
+      "transparent": true,
       "otherStylesSame": true
     }
   ],
   "mobileHeaders": [
     {
       "view": "devices",
-      "same": true
+      "same": true,
+      "panelTransparent": true
     },
     {
       "view": "editor",
-      "same": true
+      "same": true,
+      "panelTransparent": true
     }
   ],
   "mobileFocus": [
@@ -156,6 +151,20 @@
   "previewStyles": true,
   "fullscreenStyles": true,
   "errors": [],
+  "palette": {
+    "headerBackground": "linear-gradient(rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 68%, rgb(255, 255, 255) 100%), linear-gradient(110deg, rgb(65, 51, 202) 0%, rgb(85, 69, 216) 29%, rgb(113, 104, 223) 62%, rgb(116, 139, 232) 100%)",
+    "headerColor": "rgb(255, 255, 255)",
+    "send": [
+      {
+        "background": "linear-gradient(135deg, rgb(119, 119, 232) 0%, rgb(80, 52, 225) 48%, rgb(50, 24, 197) 100%)",
+        "color": "rgb(255, 255, 255)"
+      },
+      {
+        "background": "linear-gradient(135deg, rgb(119, 119, 232) 0%, rgb(80, 52, 225) 48%, rgb(50, 24, 197) 100%)",
+        "color": "rgb(255, 255, 255)"
+      }
+    ]
+  },
   "previewStyleDiff": [],
   "fullscreenStyleDiff": [],
   "profileButtons": [
@@ -186,6 +195,53 @@
       "visibility": "visible",
       "opacity": "1",
       "hit": "followDeviceBtn"
+    }
+  ],
+  "richButtons": [
+    {
+      "selector": "#richHistoryBtn",
+      "display": "flex",
+      "visibility": "visible",
+      "opacity": "1",
+      "color": "rgb(21, 27, 62)",
+      "background": "rgb(237, 244, 252)",
+      "backgroundImage": "none",
+      "rect": [
+        933,
+        436.5,
+        88,
+        37
+      ]
+    },
+    {
+      "selector": "#editRichMessageBtn",
+      "display": "flex",
+      "visibility": "visible",
+      "opacity": "1",
+      "color": "rgb(255, 255, 255)",
+      "background": "rgba(0, 0, 0, 0)",
+      "backgroundImage": "linear-gradient(135deg, rgb(119, 119, 232) 0%, rgb(80, 52, 225) 48%, rgb(50, 24, 197) 100%)",
+      "rect": [
+        1029,
+        436.5,
+        56,
+        37
+      ]
+    },
+    {
+      "selector": "#closeRichViewer",
+      "display": "flex",
+      "visibility": "visible",
+      "opacity": "1",
+      "color": "rgb(21, 27, 62)",
+      "background": "rgb(237, 244, 252)",
+      "backgroundImage": "none",
+      "rect": [
+        1093,
+        436.5,
+        56,
+        37
+      ]
     }
   ],
   "screenshotSync": {

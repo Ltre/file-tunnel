@@ -156,6 +156,7 @@
   "previewStyles": true,
   "fullscreenStyles": true,
   "errors": [],
+  "pageBackground": "linear-gradient(126deg, rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0) 7%, rgba(221, 221, 221, 0.6) 18%, rgba(0, 0, 0, 0) 30%, rgba(217, 217, 217, 0.61) 43%, rgba(0, 0, 0, 0) 57%, rgba(231, 231, 231, 0.514) 70%, rgba(0, 0, 0, 0) 83%), repeating-linear-gradient(126deg, rgb(241, 241, 241) 0px, rgb(237, 237, 237) 50px, rgb(232, 232, 232) 98px, rgb(240, 240, 240) 155px, rgb(241, 241, 241) 220px)",
   "previewStyleDiff": [],
   "fullscreenStyleDiff": [],
   "profileButtons": [
