@@ -1,0 +1,195 @@
+{
+  "geometry": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "view": "chat",
+      "compared": 822,
+      "differences": 0
+    },
+    {
+      "width": 1538,
+      "height": 1023,
+      "view": "chat",
+      "compared": 822,
+      "differences": 0
+    },
+    {
+      "width": 1200,
+      "height": 900,
+      "view": "chat",
+      "compared": 822,
+      "differences": 0
+    },
+    {
+      "width": 1024,
+      "height": 900,
+      "view": "chat",
+      "compared": 799,
+      "differences": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "chat",
+      "compared": 828,
+      "differences": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "devices",
+      "compared": 828,
+      "differences": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "view": "editor",
+      "compared": 828,
+      "differences": 0
+    }
+  ],
+  "wide": {
+    "width": 1400,
+    "left": 260,
+    "right": 260
+  },
+  "dropdown": {
+    "menuVisible": true,
+    "buttonBottom": 499.875,
+    "menuTop": 505.875,
+    "centerOverlayCount": 0,
+    "sameGeometry": true
+  },
+  "topbar": [
+    {
+      "width": 1920,
+      "view": "chat",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 1538,
+      "view": "chat",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 1200,
+      "view": "chat",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 1024,
+      "view": "chat",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 390,
+      "view": "chat",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 390,
+      "view": "devices",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    },
+    {
+      "width": 390,
+      "view": "editor",
+      "backgroundChanged": true,
+      "darkerThanBase": true,
+      "lighterThanPanel": true,
+      "otherStylesSame": true
+    }
+  ],
+  "mobileHeaders": [
+    {
+      "view": "devices",
+      "same": true
+    },
+    {
+      "view": "editor",
+      "same": true
+    }
+  ],
+  "mobileFocus": [
+    {
+      "view": "chat",
+      "radial": true,
+      "fadesToNav": true
+    },
+    {
+      "view": "devices",
+      "radial": true,
+      "fadesToNav": true
+    },
+    {
+      "view": "editor",
+      "radial": true,
+      "fadesToNav": true
+    }
+  ],
+  "controlCenter": {
+    "vertical": true,
+    "fullWidth": true,
+    "overflow": true,
+    "buttonsVisible": true
+  },
+  "previewStyles": true,
+  "fullscreenStyles": true,
+  "errors": [],
+  "previewStyleDiff": [],
+  "fullscreenStyleDiff": [],
+  "profileButtons": [
+    {
+      "selector": "#closeDeviceProfileBtn",
+      "rect": [
+        708,
+        779.5,
+        56,
+        37
+      ],
+      "color": "rgb(21, 27, 62)",
+      "background": "rgb(247, 251, 255)",
+      "visibility": "visible",
+      "opacity": "1",
+      "hit": "closeDeviceProfileBtn"
+    },
+    {
+      "selector": "#followDeviceBtn",
+      "rect": [
+        774,
+        779.5,
+        56,
+        37
+      ],
+      "color": "rgb(255, 255, 255)",
+      "background": "rgba(0, 0, 0, 0)",
+      "visibility": "visible",
+      "opacity": "1",
+      "hit": "followDeviceBtn"
+    }
+  ],
+  "screenshotSync": {
+    "count": 24,
+    "errors": []
+  }
+}
