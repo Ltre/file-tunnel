@@ -9,7 +9,7 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
   const station=f.streaming.service.create(actor,{name:'长标题观看台 · 检查封面与多行标题底部对齐',creationId:'viewer-261031-2'});
   await f.streaming.service.edit(station.id,actor,{configVersion:1,loop:true,items:Array.from({length:30},(_,i)=>({id:'program-'+i,stay:300,source:{kind:'tunnel',sessionId:'fixture-tunnel',messageId:'image-record',fileId:'image-asset',accessGrant:'fixture-proof'}}))});
   f.streaming.service.visibility(station.id,actor,{visibility:'public',version:f.streaming.service.station(station.id).playback.version});
-  f.app.get('/viewer-261031-2',(_req,res)=>res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/client/index.css"><link rel="stylesheet" href="/client/streaming-console.css"><link rel="stylesheet" href="/client/themes.css"><script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script></head><body data-theme="lumen"><script>
+  f.app.get('/viewer-261031-2',(_req,res)=>res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/client/themes-legacy.css"><link rel="stylesheet" href="/client/index.css"><link rel="stylesheet" href="/client/streaming-console.css"><link rel="stylesheet" href="/client/themes.css"><script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script></head><body data-theme="lumen"><script>
   localStorage.setItem('streaming:${actor.deviceId}:key',${JSON.stringify(secret)});localStorage.setItem('streaming:${actor.deviceId}:ui',JSON.stringify({view:'watch',stationId:${JSON.stringify(station.id)},scroll:{},drafts:{}}));
   StreamingConsole.init({deviceId:()=>${JSON.stringify(actor.deviceId)},deviceName:()=> 'Viewer layout',devices:()=>[],tunnels:async()=>[{sessionId:'fixture-tunnel',accessGrant:'fixture-proof'}],toast:()=>{},home:()=>{}});StreamingConsole.open();
   </script></body></html>`));
@@ -41,8 +41,28 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
   await page.locator('.sc-background-toggle input').check();await page.locator('.sc-window-only').click();
   assert.equal(await page.locator('.sc-background-toggle').isVisible(),true);assert.ok(await page.locator('.sc-stage').evaluate(node=>node.getBoundingClientRect().height>innerHeight*.65),'fullscreen stage must use the fullscreen area rather than the ordinary viewer height limit');await page.locator('.sc-exit-fullscreen').click();
   await page.screenshot({path:path.resolve('.npm-cache/viewer-261031-2/viewer-mobile.png')});
+  await page.evaluate(()=>{globalThis.retainedPlayer=document.querySelector('.sc-player');globalThis.retainedBackground=document.querySelector('.sc-background-toggle input');});
+  const commands=[];page.on('request',request=>{if(request.method()==='POST'&&request.url().endsWith('/control'))commands.push(request.url());});
+  await page.getByRole('button',{name:'操控串流台',exact:true}).click();await page.getByRole('button',{name:'以观众视角查看',exact:true}).waitFor();
+  for(const width of [390,1280]){
+   await page.setViewportSize({width,height:844});
+   assert.ok(await page.locator('.sc-background-toggle').evaluate(node=>node.parentElement.matches('.sc-local-controls')),'controller background toggle stays in the control bar at '+width);
+   await page.locator('.sc-background-toggle input').uncheck();assert.equal(await page.evaluate(()=>localStorage.getItem('streaming-background-playback')),'off');await page.locator('.sc-background-toggle input').check();
+   await page.locator('.sc-window-only').click();
+   assert.ok(await page.locator('.sc-background-toggle').evaluate(node=>{const a=node.getBoundingClientRect(),b=node.parentElement.getBoundingClientRect();return parseFloat(getComputedStyle(node).fontSize)>=11&&a.width>40&&a.left>=b.left-1&&a.right<=b.right+1&&a.bottom<=b.bottom+1;}),'controller fullscreen checkbox remains readable within its control bar');
+   await page.locator('.sc-exit-fullscreen').click();
+  }
+  await page.getByRole('button',{name:'以观众视角查看',exact:true}).click();await page.locator('.sc-viewer-page .sc-watch-item').first().waitFor();
+  assert.equal(await page.locator('.sc-global-controls').count(),0,'audience view does not retain global control buttons');
+  assert.ok(await page.evaluate(()=>document.querySelector('.sc-player')===retainedPlayer&&document.querySelector('.sc-background-toggle input')===retainedBackground),'switching perspective reuses the player and its checkbox');assert.deepEqual(commands,[],'view changes do not issue playback commands');
+  await page.setViewportSize({width:390,height:844});
   await page.getByRole('button',{name:'返回列表',exact:true}).click();await page.getByRole('button',{name:'+ 创建',exact:true}).click();await page.locator('.sc-expand-basic').waitFor();
-  assert.equal(await page.locator('.sc-expand-basic>svg').count(),1);await page.locator('.sc-expand-basic').click();assert.equal(await page.locator('.sc-basic-expanded').count(),1);await page.getByRole('button',{name:'收起',exact:true}).click();assert.equal(await page.locator('.sc-basic-expanded').count(),0);
+  assert.equal(await page.locator('.sc-expand-basic>svg').count(),1);await page.locator('.sc-expand-basic').click();assert.equal(await page.locator('.sc-basic-expanded').count(),1);
+  for(const theme of ['lumen','orbit','classic','atelier','social']){
+   await page.evaluate(theme=>document.body.dataset.theme=theme,theme);await page.locator('.sc-collapse-basic').scrollIntoViewIfNeeded();
+   await page.screenshot({path:path.resolve('.npm-cache/viewer-261031-2/collapse-'+theme+'.png')});
+  }
+  await page.getByRole('button',{name:'收起',exact:true}).click();assert.equal(await page.locator('.sc-basic-expanded').count(),0);
   assert.deepEqual(errors,[]);console.log(JSON.stringify({status:'PASS',cases:output}));
  }finally{await browser?.close();await f.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

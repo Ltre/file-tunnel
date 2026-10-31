@@ -1336,6 +1336,7 @@
             snapshot.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? subscribedLabel : '订阅'); notice(result.subscribed ? '已订阅' : '已取消订阅');
         });
         actions.append(subscription, button(controlling ? '复制观看链接' : '复制链接', async () => { await copyText(location.origin + '/?stream=' + snapshot.id); notice('观看链接已复制'); }), button('返回列表', returnToList));
+        if (controlling) actions.append(button('以观众视角查看', () => navigate('watch', snapshot.id)));
         if (controlling && snapshot.owner) actions.append(button('创作者主页', () => { ui.creatorName = snapshot.owner.name; navigate('creator', snapshot.owner.id); }));
         if (!controlling) { main.insertBefore(actions, info); if (snapshot.manageable) actions.append(button('操控串流台', () => navigate('control', snapshot.id))); }
         const playerKey = snapshot.id + ':' + account(); let player = players.get(playerKey);
@@ -1399,7 +1400,7 @@
                 const narrow=global.matchMedia('(max-width:767px)'),placeBackground=()=>{
                     let group=player.element.querySelector('.sc-local-preferences');
                     if(!controlling && narrow.matches){if(!group){group=document.createElement('div');group.className='sc-local-preferences';volumeControl.before(group);}group.append(volumeControl,backgroundControl);}
-                    else {if(group){group.before(volumeControl);group.remove();}player.element.append(backgroundControl);}
+                    else {if(group){group.before(volumeControl);group.remove();}(controlling ? player.element.querySelector('.sc-local-controls') : player.element).append(backgroundControl);}
                 };
                 placeBackground();narrow.addEventListener?.('change',placeBackground);closeBackgroundLayout=()=>narrow.removeEventListener?.('change',placeBackground);
             }
