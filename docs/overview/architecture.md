@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
-> **文档更新时间**：`2026-10-17`
+> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
+> **文档更新时间**：`2026-11-01`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -364,3 +364,21 @@ P2P 历史回归极多，尤其涉及：
 ### 10.4 页面资源结构
 
 主 UI 原大量内联 CSS 已迁到 `client/index.css`，`pages/index.html` 仍提供 DOM，`app.js` 继续编排。业务页面已有独立 `client/media-library.js/.css`、`audio-track-repair.css`、`admin-layout.js/.css` 等资源；部署构建和 Service Worker 的版本/哈希需同步检查，但后台专用页面不应机械塞进前台 app shell。
+
+## 11. 2026-10-17—19：二维码身份、服务端来源转存与恢复
+
+### 11.1 设备加入证明的边界
+
+`server/tunnel-access.js` 当前区分长期成员 grant、历史成员旧码证明和为扫码临时签发的 joinToken：旧码证明通过私有 `.tunnel-access-legacy` 仅为轮换前可信历史成员保留，未知设备仍不得获得 grant。新的 `j1.` 凭据绑定加入用途、session ID 和当前短码；短码轮换立即使它失效，长期 grant 保持有效。已登记设备丢失 grant 时明确用新短码/二维码重新加入，发给新的成员身份，**不自动恢复原 owner/admin 权限**。浏览器持久 `tunnel-authorization:<sessionId>` 保存成员身份与 grant，两者必须保持一致；离线历史读取不能代替在线权限校验。
+
+### 11.2 “后台转存”不再必经浏览器正文
+
+2026-10-19 前，SNS/YouTube 成品待办的文件正文常经浏览器缓存 Blob → `DiskClient.upload` → 网盘 API；**当前新创建的已完成任务转存**使用 `client/disk-pending-save.js` `prepareServer()` 与原生 `POST /task-saves`，由 `server/download-task-source.js` 从有管理员可读权限的 SNS/YouTube 后台任务解析服务端真实完成文件、版本及来源信息，在原生网盘已认证账号/分区/目录作用域内开启文件描述符，直接流入 `server/disk-api.js` 现有 Object Storage/Telegram 内容写入管线。并发上限 20；不依赖上传发起浏览器的源端心跳，不让 HTTP 断开自动取消已经交接的任务。
+
+旧浏览器待办保留首次预约，安全确认之后以固定 `serverTransferId` 进入新链路；在途/未确认结果不能双重发布。来源版本、文件句柄、目标写入权限及 Content 索引均须校验，确认成功后才清理旧缓存 pin。这个操作要求**来源后台管理员授权 + 目标网盘用户写入授权**，不应被描述成公开服务器文件下载 API。
+
+### 11.3 渐进上传的源端活跃租约
+
+与后端转存不同，浏览器发起的渐进上传尚未 finish 交接前有每 30 秒心跳和源活动时间。5 分钟无源活动，由约每分钟运行的检查器标记 `UPLOAD_SOURCE_INTERRUPTED`，中断源等待；只查看 SSE/任务进度不续期。已完成源端交接后，服务器仍可独立处理 Telegram 最终提交，不因浏览器离线自动失败。
+
+当前架构还有独立 `media-library.sqlite`、`disk.sqlite` 和 `infra.sqlite`；这次新增服务端转存并未合并它们，也未将 S3 Gateway 改成通用后端下载入口。关联说明见 [telegram-drive.md](./telegram-drive.md) §31 与 [tunnel-core.md](./tunnel-core.md) §16。
