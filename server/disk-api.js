@@ -1,6 +1,6 @@
 'use strict';
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const rateLimit = require('./request-rate-limit');
 const path = require('path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');

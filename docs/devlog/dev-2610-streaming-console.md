@@ -1029,3 +1029,76 @@ node --test --test-concurrency=2 tests/account-switch-261025-1.test.cjs tests/di
 - 最终发布构建及 `verify` 通过：输出 `.npm-cache/deploy-261101-2-ownership-verified`，构建 ID `txsl-20261101-115531-c0c6b133`。修改脚本语法与 `git diff --check` 通过。以上自动测试使用隔离数据库、合成文件和 Windows Chrome；首次受沙箱阻止的浏览器／子进程测试在获得执行批准后重跑，不将未执行计为通过。
 - Android 原手机／平板上的还原、真实弱网与 STUN 失败情况下的连接表现仍待人工复测。本轮已对提供的正式记录完成只读权限重放及隔离字节传输验证，没有重启正式服务，也没有修改真实凭据、配置或数据库。
 - 额度检查实际返回剩余 **96% → 82% → 71% → 65%**，最新刷新时间为 **2026-11-01 23:56:34（Asia/Singapore）**，没有触发本轮暂停条件。未暂存、提交或执行其它改变 Git 状态的操作，全部修改保留供用户验收。
+
+## 261101-3：主动还原提示、传输抽屉闪烁与 Cloudflare 限流
+
+### 范围、基线与顺序
+
+- 起始只读确认分支为 `dev/2610-s3-BUGBUGBUG-3`，HEAD 为 `c379f6498efb3bca4880c5b4e6163a3391fd9e08`；用户已有 `prompts/dev-prompt-logs/dev-2610.md` 未提交修改，保留不动。本轮未使用子代理。
+- 先建立主动还原和抽屉闪烁的失败回归，再调整提示与进度通知。执行期间追加第 3 项限流日志，用户最终确认实际链路为 **Cloudflare 直接回源到 Node 的 8080 端口，没有 Nginx 等同机反代**，按这一澄清处理。
+
+### 第 1 项：主动还原失败不再弹阻塞式 alert
+
+- 在实际 `renderSingleFilePreviewActions` 的按钮回调中复现：还原 Promise 拒绝为 `Asset not found` 时，会直接弹出 `还原文件失败: Asset not found`。
+- 移除这处阻塞弹窗，改为更新对应记录的“文件暂时不可用”状态，并给出短暂、非阻塞的 `暂未能获取文件，请稍后重试还原` 提示；保留记录 ID、文件 ID 和原始错误的排障日志。
+- 对明确没有可用远程来源的主动还原，也改用非阻塞提示；不宣称文件已恢复。新增提示加入现有国际化目录，保留重试入口和原来的传输保护。
+
+### 第 2 项：缺缓存、等待供源和建链不再唤起传输抽屉
+
+- 失败回归直接组合实际 `FileAssetTransfer` 请求／发现重试与首页队列显示函数。在没有供源和任何进度行时，重复的 `no-online-provider` 发现重试仍会把抽屉设为 `display:block`；同时，1 个真实进度行会被原始意图计数夸大成 `20 个任务 · 进行中 1 · 2 个建链中 · 17 个等待`。
+- 根因是 `activeDownloads` 统计已经发出的文件请求，并不证明供源在线或数据通道已经建立；`downloadQueue` 也包含尚待发现来源的下载意图。原 `showQueuedFileTransfer` 用这些计数直接打开抽屉，遇到来源不可用又被收起，发现退避重试便再次打开，造成周期性闪烁。
+- 保留内部下载意图、发现退避、重试及任务生命周期。队列计数更新只刷新内部快照，不再单独打开抽屉；抽屉摘要只统计已经生成的真实进度行，实际行上的排队状态仍正常计数，不再追加未确认来源／建链的隐藏意图。实际任务开头的 `0%` 摘要改称“准备传输”，并补充动态计数翻译。
+- 多源下载还有一条提前展示路径：刚收到来源清单、尚未接收任何分片开始消息，就上报 `0%`。本轮仅把首次进度通知从清单阶段移至实际接受分片传输开始的位置。`client/file-assets.js` 只有两行进度通知时机变更，没有修改发现、排队、并发、ICE、P2P／Relay 选择、分片大小、超时、重试、缓存写入或 ACK 协议。
+- 对普通 P2P／Relay 已建立的真实传输继续显示进度；缓存写入、正常背压等待和接收确认期间保留任务状态，实际完成后按原流程收起。隐藏空抽屉不会取消或丢弃待还原意图。
+
+### 第 3 项：Cloudflare 直接回源下的限流键
+
+- 当前锁定依赖为 `express-rate-limit 7.5.1`。首页部分旧限流器已关闭转发头校验提示，但串流及部分其它路由仍使用默认键和校验。因此，仅根据提供的堆栈不能确定灰度环境唯一触发接口；隔离 HTTP 中实际串流设备注册可复现两个相同的 `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` 日志，且原请求仍返回 200。
+- 原默认键使用 `req.ip`，在 `trust proxy=false` 时取到 Cloudflare 出口地址；两个访客经同一边缘节点访问，会共用同一限额。失败回归中，第一个访客用满 2 次配额后，另一个访客被误返回 429。[express-rate-limit 官方错误说明](https://express-rate-limit.mintlify.app/reference/error-codes#err-erl-unexpected-x-forwarded-for)
+- 新增小型共享模块 `server/request-rate-limit.js`，只负责限流键。首先检查实际 TCP 对端是否属于 Cloudflare 公布的 IPv4／IPv6 网段，匹配后才接受格式有效的 `CF-Connecting-IP`；缺少该头时，对有效的 `X-Forwarded-For` 链从右向左取最近的非 Cloudflare 地址。头部畸形或来源不可信时，按真实连接地址计数。处理 IPv4 映射地址、IPv6 压缩形式和本机范围标识，避免格式差异造成异常或重复桶。
+- 网段按 2026-11-01 查询的 [Cloudflare IPv4 列表](https://www.cloudflare.com/ips-v4)及 [IPv6 列表](https://www.cloudflare.com/ips-v6)写入代码，不在启动和请求时联网拉取。访客头的含义依据 [Cloudflare HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip)。8080 是用户配置的回源端口，本轮不更改它，也不增加 Nginx 配置要求。
+- 全局、串流、网盘和 S3 的现有限流器改用同一工厂，原窗口、次数、跳过条件、响应及显式自定义键保持。没有全局开启 `trust proxy`；`req.hostname`、`req.protocol`、Origin、账号及凭据流程未改。Express 官方说明该全局设置还会影响 hostname 和 protocol，因此本轮把修复限定在限流键。[Express 代理说明](https://expressjs.com/en/guide/behind-proxies/)
+- HTTP 回归验证同一 Cloudflare 节点的两个访客独立计数，直连客户端更换伪造的 `CF-Connecting-IP`／`X-Forwarded-For` 不能重置配额；真实串流入口不再输出该校验日志。未简单关闭所有限流校验。
+
+### 验证结果、过程与交付边界
+
+- `tests/transfer-feedback-261101-3.test.cjs` 的初始四项回归全部按预期失败；修复后及补充无远程来源用例后 **5/5** 通过。覆盖主动按钮异常、缺缓存反复发现、真实行计数、排队行计数，以及多源清单和实际分片开始的显示差异。
+- `tests/proxy-rate-limit-261101-3.test.cjs` 初始两个 HTTP 用例失败，修复后连同 IPv4／IPv6、CIDR 边界、映射地址、范围标识及畸形头等检查 **3/3** 通过。
+- 最终相关 Node 回归 **325/325 通过，0 失败、取消或跳过**，约 40 秒。命令为 `node --test --test-concurrency=2 tests/transfer-feedback-261101-3.test.cjs tests/proxy-rate-limit-261101-3.test.cjs tests/p2p-connection-regression.test.cjs tests/transfer-origin-analysis-261030.test.cjs tests/disk-cross-tunnel-261025-2.test.cjs tests/file-asset-audit-isolation.test.cjs tests/features-261014-2.test.cjs tests/streaming*.test.cjs tests/disk-api.test.cjs tests/disk-sharing.test.cjs tests/disk-static-resources.test.cjs tests/disk-content-api.test.cjs tests/s3*.test.cjs tests/socketio-security.test.cjs`。结果在 `.npm-cache/regression-261101-3-final.log`，修改前失败证据在 `.npm-cache/transfer-feedback-261101-3-red.log`、`.npm-cache/proxy-rate-limit-261101-3-red.log`。
+- 扩展测试初跑发现旧 `tests/disk-api.test.cjs` 的一条 Telegram 模拟传输用例虽然创建了临时目录，但未向两个 `createDiskTelegram` 调用传入 `dataDir`，因此尝试初始化默认数据库，并因 `database is locked` 中断，尚未进入该用例的模拟上传。已补齐两处隔离目录传参及临时连接关闭，再执行定向 53 项和最终 325 项均通过。没有用修改正式数据库或权限的方式处理此测试错误。
+- `tests/transfer-feedback-261101-3.browser.cjs` 使用隔离 Chrome 和真实首页函数验证：主动点击还原时模拟 HTTP 404 的 `Asset not found`，没有 alert，记录状态和非阻塞提示正常；虚拟时钟推进多次无供源发现重试，DOM 样式从未短暂切成可见；原生双端 WebRTC 传输 512 KiB 合成文件，真实进度可见，保存和接收确认后按原流程收起。记录在 `.npm-cache/transfer-feedback-261101-3-browser.log`。
+- 浏览器夹具初版使用自造尝试编号、非生产格式文件 ID，受到原有过期请求校验拒绝；修正为真实 UUID 和模块生成的请求关联编号后完成传输，没有为通过测试修改原有协议。按分块间隔验证原有 UI 绘制节流，不将这些夹具问题作为用户原现场根因。
+- Service Worker 壳版本更新为 `instant-tunnel-v113-content-v8-transfer-feedback-261101-3`，内容缓存版本仍为 `content-v8`。实际 Worker 更新及四款主题离线重开通过；本轮传输模块、应用脚本和国际化资源均纳入离线读取断言，独立 IndexedDB 哨兵记录保留。结果在 `.npm-cache/offline-261101-3.log`，未清除用户业务缓存。
+- 修改脚本语法和 `git diff --check` 通过。最终 txsl 发布构建及 verify 通过，输出 `.npm-cache/deploy-261101-3-verified`，构建 ID `txsl-20261101-133939-c379f649`，包含新增限流模块。本轮没有安装新依赖，没有修改基础存储模块、服务端文件传输、隧道授权或账号模块。
+- 未连接或部署灰度服务器，Cloudflare 来源地址和请求头的测试通过隔离 HTTP 模拟；线上 8080 回源、实际手机／平板与原网络环境仍待用户部署后复测。未重启正式服务。旧测试隔离错误已如上单列，最终业务测试均使用临时数据和合成内容。
+- 阶段额度查询实际剩余 **61% → 48% → 39%**，刷新时间 **2026-11-01 23:56:34（Asia/Singapore）**，未触发 ≤15% 的暂停条件。全程未暂存、提交或改变分支；用户原有修改保留，本轮修改交由用户验收。
+
+### 网络权限错误中断后的恢复核对
+
+- 用户报告 `Fatal error: application network permission was revoked` 后恢复执行。只读确认分支、HEAD 和修改清单与中断前一致，暂存区为空；已落地的代码及 325 项回归、浏览器传输和离线更新验证记录均完整保留，没有重复实现。
+- 恢复后重新执行最终发布包 `verify`，结果为 `verify ok: txsl txsl-20261101-133939-c379f649`；`git diff --check` 通过。已完成本轮收尾，线上及原设备的人工复测边界仍按上文保留。按用户最新要求，后续不再查询额度。
+
+### 261101-3 二次复核：纠正完成结论并补齐遗漏
+
+- 用户尚未人工测试，要求重新确认当前未提交产物是否真正完成。本次重新核对 HEAD `c379f6498efb3bca4880c5b4e6163a3391fd9e08`、工作区及空暂存区；分支仍为 `dev/2610-s3-BUGBUGBUG-3`，保留用户原有 prompt 日志修改。按 code-review 技能分别执行需求及规范的只读复核，再由主 Agent 重新验证和补漏，没有依赖上一轮通过记录直接宣布完成。
+- **更正上一轮结论：确有未覆盖的遗漏。** 主动还原失败的主按钮已不再弹 `Asset not found` alert；初始无供源及反复发现的空抽屉路径也已处理，但尚不能据此认定两项需求完整闭合。本次需求复核发现 1 项遗漏，规范复核发现 2 项错误，均先建立失败回归后修正。
+
+#### 发现及补修
+
+- **多源供源全部断开后仍保留进度。** 两个分片实际开始后，依次收到 `provider-socket-unavailable`，原 `retryMultiSourceRange` 清空连接状态并等待重试，却不通知 UI 空闲。复现时已没有活动通道，接收行仍留在抽屉内。现在只有在没有任何已确认来源和传输方式的活动分片、且没有同文件整文件接收时，才通知 UI 收起相应接收进度；其它分片仍在传输时保持显示。缓冲、任务、待重试分片均保留；重新发出请求不会打开抽屉，接受新的实际分片开始后才恢复显示。仅补充空闲通知，没有改变分片、连接、超时、供源选择或重试策略。
+- **旧失败覆盖新成功。** 新增的还原按钮 catch 原先无条件标记不可用；先发出的 HTTP 还原迟到失败时，可能覆盖后来已成功的本机缓存显示。现在展示失败前读取最新缓存并校验完整性，已有完整缓存时保留成功显示，同时记录原始失败信息。
+- **新摘要未实际国际化。** 虽已登记“准备传输”的动态翻译，摘要仍拼成一个整文本节点，无法命中分段模板。现在用独立文本节点表达各段及分隔符，沿用现有翻译源记忆机制；不改变可见排版，已验证英语→日语→繁体的实时切换。
+
+#### 本轮重新执行的验证
+
+- 新增上述三项回归后，修正前 **8 项中 5 通过、3 失败**，分别捕捉全部供源断开、摘要语言和旧失败覆盖成功；结果在 `.npm-cache/review-261101-3-added-red.log`。修正后 **8/8 通过**，在 `.npm-cache/review-261101-3-added-green.log`。最初对既有定向集合重新运行 **55/55 通过**仍未暴露这三项遗漏，不能以原集合通过代替缺失场景。
+- 隔离 Chrome 使用真实首页进度回调、显示函数和 FileAssetTransfer：验证主动还原无 alert、无供源发现不闪抽屉、一个供源尚在时保持进度、全部断开后收起且保留任务、原生双端 RTC 传输及持久化／确认后正常收起，以及真实 DOM 摘要实时切换语言。结果在 `.npm-cache/review-261101-3-browser-final.log`。使用合成数据和临时存储，不是原手机弱网端到端复测。
+- 最终相关回归以 `--test-concurrency=1` 串行重新执行，**328/328 通过，0 失败、取消或跳过**，约 71 秒，结果在 `.npm-cache/review-261101-3-regression-final.log`。覆盖范围沿用上文最终回归命令，并包含本次新增三项。
+- Service Worker 壳版本更新为 `instant-tunnel-v114-content-v8-transfer-feedback-review-261101-3`；内容缓存仍为 `content-v8`。实际 Worker 更新与四主题离线重开通过，关联传输及国际化脚本可读，IndexedDB 哨兵保留，结果在 `.npm-cache/review-261101-3-offline.log`。离线初跑未指定外置 Playwright 路径而未执行，补传已安装运行时路径后通过，没有安装依赖。Node／Chrome 首次被沙箱禁止启动时亦未计为通过，获准执行后才报告结果。
+- 修改脚本语法、`git diff --check` 及最终发布包 build／verify 通过；构建 ID `txsl-20261101-150358-c379f649`，输出 `.npm-cache/deploy-261101-3-review-verified`，构建记录 `.npm-cache/review-261101-3-build.log`。本次没有再改限流、账号或服务端传输实现，没有暂存、提交、切换分支或查询额度。原设备及线上环境仍待用户人工验收。
+
+#### 用户追加：服务端几分钟前自行退出
+
+- 用户确认进程已经退出并回到命令提示符，没有看到错误，后补充当时外部正在执行 FFmpeg，怀疑电脑内存耗尽。按报告时间只读查询 Windows 事件：2026-11-01 **22:12:34**、**22:19:05**（Asia/Singapore）均有 System 事件 **2004：虚拟内存不足**；22:22 查询时，系统 `FreeVirtualMemory=711152 KiB`（约 694 MiB）。同阶段还有诊断子进程无法分配内存的现象，因此后续测试串行执行。
+- 最近半小时的 Application 查询没有取得 `node.exe` 对应的 1000／1001 崩溃记录，也没有取得当次退出码。检查了现有代理重启入口、`process.exit`、退出／异常监控及关闭路径；本轮待提交的服务端改动仍只涉及限流工厂与导入，没有新增自行关闭进程的逻辑。
+- **尚不能确认 Node 退出的直接根因。** 系统内存不足和外部 FFmpeg 是本次时间段的线索，不能直接认定 FFmpeg、浏览器、限流变更或其它某一项导致退出。没有把此项写成已修复，也没有以此改动服务端运行／重启策略、关闭其它进程或调整电脑配置。

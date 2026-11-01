@@ -1,6 +1,6 @@
 'use strict';
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const rateLimit = require('./request-rate-limit');
 const crypto = require('node:crypto');
 function waitForDrain(res) {
     return new Promise((resolve, reject) => {

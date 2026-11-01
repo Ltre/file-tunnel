@@ -668,7 +668,6 @@
                 lastProgressAt: Date.now(),
                 watchdogTimer: null
             });
-            this.deps.onProgress(asset.id, asset.name, 0, 'receiving-multi-source');
             this.routeLog('receiver-multi-source-started', {
                 assetId: asset.id,
                 assetName: asset.name,
@@ -773,6 +772,7 @@
             range.pendingChunks = Promise.resolve();
             range.lastActivityAt = Date.now();
             this.resetRangeTimer(assetId, range.transferId);
+            this.reportMultiSourceProgress(transfer);
             this.log('range-receiving', { assetId, transferId: range.transferId, peerDeviceId: deviceId, transport, attemptId });
             return true;
         }
@@ -915,6 +915,11 @@
                 this.deps.onUnavailable(assetId, 'transfer-interrupted');
                 this.log('range-retry-exhausted', { assetId, transferId, providerId, reason, error });
                 return;
+            }
+            const receivingRange = Array.from(transfer.ranges.values()).some(item =>
+                !item.completed && item.active && !item.retryScheduled && item.from && item.transport);
+            if (!receivingRange && !this.transfers.has(assetId)) {
+                this.notifyDownloadIdle(assetId, reason || 'range-waiting-for-provider');
             }
             this.log('range-retry-scheduled', { assetId, transferId, providerId, reason, error, attempts: range.retryCount });
             setTimeout(() => {

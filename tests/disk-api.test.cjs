@@ -226,7 +226,7 @@ test('Telegram transport 按 10 个拆 album，字节进度不含 multipart 头�
     const dataDir = temp(t), filePath = path.join(dataDir, 'test.txt'); fs.writeFileSync(filePath, 'abc');
     const files = Array.from({ length: 11 }, (_, i) => ({ path: filePath, name: i + '.txt', size: 3 }));
     const calls = [], progress = [], captions = [];
-    const telegram = createDiskTelegram({ fetchImpl: async (url, options) => {
+    const telegram = createDiskTelegram({ dataDir, fetchImpl: async (url, options) => {
         const method = url.split('/').at(-1); calls.push(method);
         if (method === 'editMessageCaption') { captions.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ ok: true, result: true }) }; }
         const chunks = []; for await (const chunk of options.body) chunks.push(chunk);
@@ -241,8 +241,9 @@ test('Telegram transport 按 10 个拆 album，字节进度不含 multipart 头�
     assert.ok(captions.every(item => !/(?:^|\n)path:/.test(item.caption)));
     assert.ok(progress.some(item => item.processedBytes === 33));
     assert.ok(progress.every(item => !item.processedBytes || item.processedBytes <= 33));
-    const broken = createDiskTelegram({ fetchImpl: async () => { throw new Error('https://host/bot123:secret'); } });
+    const broken = createDiskTelegram({ dataDir, fetchImpl: async () => { throw new Error('https://host/bot123:secret'); } });
     await assert.rejects(broken.call({ token: 'secret', baseUrl: 'https://api.telegram.org' }, 'getFile', {}), /^Error: TELEGRAM_NETWORK_ERROR$/);
+    openDiskRepository(dataDir).close();
 });
 
 test('管理接口按用户清理旧分片缓存，拒绝错误范围和跨站请求，保留其它目录与用户缓存', async t => {

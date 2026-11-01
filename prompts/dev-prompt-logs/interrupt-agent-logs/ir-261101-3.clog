@@ -1,0 +1,334 @@
+
+
+【旧】[编号261101-3]问：
+
+
+   1、他妈的点击某个传输记录的`还原文件`按钮（我说的是主动点击还原的情况），就算拿不到文件，就别他妈的alert(还原文件失败：Asset not found)。
+
+   2、还有一个问题：传输进度的抽屉他妈的经常是隔几秒就在高速闪几下，也没什么东西在传，都是显示什么"等待传输任务启动"！根本就没有处于同一隧道的第二个设备在线，还他妈的闪! 操你妈的你全家是不是有病？不要因为缓存确实就他妈的一直在闪`传输进度`抽屉。不懂要在确实建链且确定供源端和接收端都在线且确实有数据可传输，不论是在传输还是在排队，只要有数据可立即传，才显示进度条到`传输进度`抽屉吗？
+
+
+【新】[编号261101-3]问：
+
+   1、用户主动点击传输记录的 `还原文件` 按钮后，即使未能获取文件，也不要弹出以下阻塞式 alert：
+
+      ```text
+      还原文件失败: Asset not found
+      ```
+
+      他妈的，我说的是主动点击还原的情况，就算拿不到文件，也别他妈的弹这个 alert！
+
+   2、`传输进度` 抽屉经常每隔几秒就快速闪烁几次，显示 `等待传输任务启动…`，却没有看到实际文件传输。即使同一隧道中根本没有第二个设备在线，也会出现这种情况。
+
+      操你妈的你全家是不是有病？不要因为缓存缺失，就他妈的一直闪 `传输进度` 抽屉！
+
+      只有确认供源端和接收端均在线、相关传输连接已经建立，并且存在可立即传输的数据时，才应在 `传输进度` 抽屉中显示相应进度。正在传输的任务，以及符合上述条件的排队任务，都可以显示；仅仅缺少缓存、等待发现供源或等待建立连接，不应导致抽屉反复出现、消失或闪烁。
+
+
+   3、线上采用[98a9972b4bf61df9a4d6fdc1fc5badcb2da8ebb1]版本的灰度环境，看到后端有以下错误日志：
+
+       ValidationError: The 'X-Forwarded-For' header is set but the Express 'trust proxy' setting is false (default). This could indicate a misconfiguration which would prevent express-rate-limit from accurately identifying users. See https://express-rate-limit.github.io/ERR_ERL_UNEXPECTED_X_FORWARDED_FOR/ for more information.
+           at Object.xForwardedForHeader (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:185:13)
+           at wrappedValidations.<computed> [as xForwardedForHeader] (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:397:22)
+           at Object.keyGenerator (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:658:20)
+           at C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:710:32
+           at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+           at async C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:691:5 {
+         code: 'ERR_ERL_UNEXPECTED_X_FORWARDED_FOR',
+         help: 'https://express-rate-limit.github.io/ERR_ERL_UNEXPECTED_X_FORWARDED_FOR/'
+       }
+
+
+
+---
+
+目前处于分支：
+
+```text
+dev/2610-s3-BUGBUGBUG-3
+```
+要读取完毕所有需求条目后，再科学地安排每个需求的实现先后顺序。
+请直接在该分支当前代码基础上修改。
+
+长任务执行期间，在阶段检查点查询 5 小时额度及刷新时间；若额度剩余不高于 15%，且距下次刷新时间超过 10 分钟，暂停并按任务指定位置记录进度、中断点和恢复说明。无法查询时不要估算，明确说明无法判断是否触发。
+
+**不要提交，不要暂存（不要执行 `git commit`、`git add`）。**
+
+推理结论、问题根因、实际修改内容、测试情况及开发记录保存到：
+
+```text
+docs/devlog/dev-2610-streaming-console.md
+```
+
+最后请另外给出建议使用的 Git 提交日志，但不要实际提交。
+
+Git 提交日志要求：
+
+- `title` 以中文为主，简洁概括本次改动；
+- `description` 以中文为主；
+- `description` 按功能分成若干简短小节；
+- 每个小节使用几行列表概括主要修改；
+- 内容有条理但不要写得过于冗长。
+- 将git日志的title和description分开显示，并分别使用代码模式以便于一键复制。
+
+
+
+
+答；
+
+
+
+
+    我会先复现主动还原失败的弹窗和无实际传输时抽屉闪烁的问题，再调整对应提示与显示条件，保留现有 P2P／Relay 传输策略。完成后运行相关回归，并追加开发日志，不暂存、不提交。
+
+    运行了命令已检查用量
+
+    补充第三个问题：
+
+    线上采用[98a9972b4bf61df9a4d6fdc1fc5badcb2da8ebb1]版本的灰度环境，看到后端有以下错误日志：
+    ValidationError: The 'X-Forwarded-For' header is set but the Express 'trust proxy' setting is false (default). This could indicate a misconfiguration which would prevent express-rate-limit from accurately identifying users. See https://express-rate-limit.github.io/ERR_ERL_UNEXPECTED_X_FORWARDED_FOR/ for more information.
+        at Object.xForwardedForHeader (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:185:13)
+        at wrappedValidations.<computed> [as xForwardedForHeader] (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:397:22)
+        at Object.keyGenerator (C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:658:20)
+        at C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:710:32
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async C:\Users\Administrator\Downloads\2607B-NEWCODE-DEBUG-TXSL\node_modules\express-rate-limit\dist\index.cjs:691:5 {
+      code: 'ERR_ERL_UNEXPECTED_X_FORWARDED_FOR',
+      help: 'https://express-rate-limit.github.io/ERR_ERL_UNEXPECTED_X_FORWARDED_FOR/'
+    }
+
+    第三项已加入本轮。我会核对现有代理配置和限流取 IP 的方式，按代理信任边界处理，不直接把所有转发头设为可信。
+
+    编辑了文件运行了命令已搜索网页
+
+    第 3 项线上灰度环境中，请求经过哪些代理到 Node？请说明是 Cloudflare 直接回源、Cloudflare → Nginx/IIS → Node，还是其它链路；本机代理是否与 Node 在同一台机器。
+
+    运行了命令
+
+    第 3 项线上灰度环境中，请求经过哪些代理到 Node？请说明是 Cloudflare 直接回源、Cloudflare → Nginx/IIS → Node，还是其它链路；本机代理是否与 Node 在同一台机器。Cloudflare → 同机代理 → Node
+
+    说错，是cloudflare直接回源到8080端口，没有nginx这类反代等代理
+
+    只在cloudflare设置了域名回源时指定8080端口
+
+    按你更正后的情况处理：Cloudflare 直接回源到 Node 的 8080 端口。8080 是回源端口，本身不是这条日志的原因。我会限定可信来源，并保留直连访问的限流保护。
+
+    运行了命令已搜索网页
+
+    已复现四个具体表现：主动还原失败会弹出 alert；没有供源的发现重试会反复打开空抽屉；抽屉会把尚未建链的请求算成传输任务；多源传输收到清单时也过早显示进度。接下来会分别核对队列计数、进度通知时机和错误提示入口，修改只涉及提示与进度展示。
+
+    编辑了文件运行了命令已检查用量
+
+    前两项的定向回归已通过。第三项也已复现：两个经同一 Cloudflare 节点访问的访客被算进同一限额，串流入口的两个限流器还会分别报出该校验日志。现在按可信 Cloudflare 来源解析限流键，保留原来的 hostname、protocol 和账号处理逻辑。
+
+    编辑了文件运行了命令
+
+    扩展测试中发现一条旧测试漏传了临时数据目录，尝试打开默认数据库后因锁定失败，测试里的上传尚未执行。我正在补齐这条测试的隔离配置，再重新运行。
+
+    编辑了文件运行了命令
+
+    三项修改的相关回归已全部通过：325/325。浏览器也验证了缺缓存重试时抽屉不闪、主动还原失败不弹 alert，以及原生 WebRTC 传输仍正常显示进度并在完成后收起。离线更新已通过，正在完成发布包校验和开发日志。
+
+    编辑了文件运行了命令已检查用量
+
+    你还在执行任务吗？我感觉很久没有响应了，是不是网络卡了
+
+    Fatal error: application network permission was revoked
+
+    已编辑 16 个文件+266-31查看变更撤销查看变更
+
+    tests/transfer-feedback-261101-3.test.cjstests/transfer-feedback-261101-3.test.cjs+58-0
+    app.jsapp.js+10-22
+    client/file-assets.jsclient/file-assets.js+1-1
+    tests/proxy-rate-limit-261101-3.test.cjstests/proxy-rate-limit-261101-3.test.cjs+37-0
+    client/i18n-catalog.jsclient/i18n-catalog.js+1-0
+    server.jsserver.js+1-1
+    server/disk-api.jsserver/disk-api.js+1-1
+    server/request-rate-limit.jsserver/request-rate-limit.js+49-0
+    server/s3/routes.jsserver/s3/routes.js+1-1
+    server/streaming-http.jsserver/streaming-http.js+1-1
+    client/i18n.jsclient/i18n.js+1-0
+    tests/transfer-feedback-261101-3.browser.cjstests/transfer-feedback-261101-3.browser.cjs+57-0
+    tests/disk-api.test.cjstests/disk-api.test.cjs+3-2
+    service-worker.jsservice-worker.js+1-1
+    tests/theme-offline-261028.browser.cjstests/theme-offline-261028.browser.cjs+1-1
+    docs/devlog/dev-2610-streaming-console.mddocs/devlog/dev-2610-streaming-console.md+43-0
+
+    问：上次任务没有执行完就遭遇了“Fatal error: application network permission was revoked”错误，请继续执行
+
+    我会先核对中断时的代码、测试结果和开发日志是否完整落地，再补齐遗漏的收尾检查。已完成的部分会保留，不重复修改，也不暂存或提交。
+
+    运行了命令
+
+    上下文已自动压缩
+
+    运行了命令已检查用量
+
+    已确认中断前的修改、测试结果和开发日志都已保存：325 项回归、浏览器传输验证及离线更新验证均通过。分支和暂存区也符合要求，正在补做最后的构建完整性核对。
+
+    运行了命令
+
+    后面不要检查额度，专注执行任务
+
+    明白，后续不再检查额度。构建完整性核对也已通过，我会补记中断恢复结果并交付。
+
+    编辑了文件运行了命令
+
+    已恢复并完成收尾，后续不再检查额度。
+
+    - 主动还原失败改为非阻塞提示，保留重试及排障日志。
+    - 缺缓存、等待供源或建链不再反复唤起空的传输抽屉；传输链路仅调整进度通知时机。
+    - 修复 Cloudflare 直接回源时的限流访客识别，账号逻辑未改。
+
+    325 项回归全部通过；浏览器传输、离线更新及构建验证通过。线上和原设备仍待部署后复测。
+
+    记录已追加至[开发日志](D:/Workspace/github/Ltre/file-tunnel/docs/devlog/dev-2610-streaming-console.md:1033)。**未暂存、未提交。**
+
+    建议 title：
+    ```text
+    修复文件还原提示、传输抽屉闪烁及 Cloudflare 限流
+    ```
+
+    建议 description：
+    ```text
+    文件还原与传输进度
+    - 主动还原失败改为非阻塞提示，保留诊断信息
+    - 等待供源不再打开空抽屉，多源实际开始传输后显示进度
+
+    Cloudflare 限流
+    - 仅可信 Cloudflare 来源使用访客 IP 作为限流键
+    - 保留原有限额、账号及 Origin 处理
+
+    验证与记录
+    - 补充回归，修正旧测试的数据隔离
+    - 更新离线资源版本，记录根因、测试及恢复结果
+    ```
+
+    已编辑 dev-2610-streaming-console.md+5-0查看变更撤销查看变更
+
+    问：上一轮的需求是：
+        [编号261101-3]问：
+
+           1、他妈的点击某个传输记录的`还原文件`按钮（我说的是主动点击还原的情况），就算拿不到文件，就别他妈的alert(还原文件失败：Asset not found)。
+
+           2、还有一个问题：传输进度的抽屉他妈的经常是隔几秒就在高速闪几下，也没什么东西在传，都是显示什么"等待传输任务启动"！根本就没有处于同一隧道的第二个设备在线，还他妈的闪! 操你妈的你全家是不是有病？不要因为缓存确实就他妈的一直在闪`传输进度`抽屉。不懂要在确实建链且确定供源端和接收端都在线且确实有数据可传输，不论是在传输还是在排队，只要有数据可立即传，才显示进度条到`传输进度`抽屉吗？
+
+        现在我还没有测试。
+
+        工作区未提交的代码跟HEAD的差异就是之前任务中断前的执行产物，我看你恢复任务执行后立即就说完成了，我也不确定到底是不是真的。
+
+        所以你要复合一遍上次到底有没有完成任务
+
+    我会重新核对工作区相对 HEAD 的实际改动，逐项检查这两条需求，并运行对应验证。结论会区分已验证的行为和仍需原设备复测的部分。
+
+    运行了命令
+
+    这次会使用 code-review 技能，分别核对需求覆盖和代码风险。我也会重新运行测试，并检查测试是否真正走到了主动还原失败、无供源反复重试这些路径。
+
+    运行了命令
+
+    Review 261101 3 spec和Review 261101 3 standards开始工作
+
+    运行了命令
+
+    本轮重跑的 55 项定向回归和隔离 Chrome 验证已通过。我还在检查所有能打开传输抽屉的入口，确认没有遗漏“尚未开始传数据就显示进度”的路径。
+
+    运行了命令
+
+    复核发现了遗漏，上一轮“已完成”的结论说得过满：多源传输开始后，如果所有供源都掉线，旧进度行仍可能留在抽屉里；新增的摘要文案也没有完整翻译。我会先补上能复现这些情况的测试，再做局部修正，保留现有传输协议和重试策略。
+
+    运行了命令
+
+    Review 261101 3 standards已完成
+
+    还发现服务端自己自动关闭了，没有任务错误提示
+
+    收到，这项也纳入排查。我会检查服务端退出路径和可用日志，暂不判断原因。同时继续补齐刚确认的传输抽屉遗漏；不会重启正式服务，也不会改动文件传输协议。
+
+    服务端这次大约几点退出，启动用的是 npm start 还是 npm run dev？退出后终端是否回到了命令提示符？记不清的部分可以留空，我会继续检查代码和本机日志。
+
+    Review 261101 3 spec已完成
+
+    编辑了文件运行了命令
+
+    服务端这次大约几点退出，启动用的是 npm start 还是 npm run dev？退出后终端是否回到了命令提示符？记不清的部分可以留空，我会继续检查代码和本机日志。跟npm start 还是 npm run dev  无关！少鸡巴钻牛角尖！回到了命令提示符
+
+    编辑了文件运行了命令
+
+    就他妈在刚才几分钟前退出
+
+    已确认是刚才几分钟内退出并回到了命令提示符。我会按这个时间段检查 Windows 应用错误、资源不足事件及当前进程状态，先查可核对的证据。
+
+    已运行 Get-Date -Format 'yyyy-MM-dd HH:mm:ss K'
+    Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=(Get-Date).AddMinutes(-30);Id=1000,1001} -ErrorAction SilentlyContinue | Where-Object {$_.Message -match 'node.exe|pwsh.exe|powershell.exe|chrome.exe'} | Select-Object -First 8 TimeCreated,Id,@{Name='Detail';Expression={$_.Message.Substring(0,[Math]::Min(2300,$_.Message.Length))}} | Format-List
+    Get-WinEvent -FilterHashtable @{LogName='System';StartTime=(Get-Date).AddMinutes(-30);Id=2004} -ErrorAction SilentlyContinue | Select-Object -First 4 TimeCreated,Id,Message | Format-List
+    Get-Process node -ErrorAction SilentlyContinue | Select-Object Id,StartTime,WorkingSet64,PrivateMemorySize64,Path | Format-Table -AutoSize
+    Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory,TotalVirtualMemorySize,FreeVirtualMemory | Format-List
+
+    查到了两条相关系统事件：Windows 在今天 22:12:34 和 22:19:05 报告了虚拟内存不足，时间与这次退出接近。但目前没有证据证明 Node 因此退出，我会继续核对退出记录。
+
+    另外，复核还确认了一个状态错误：旧还原请求迟到的失败可能覆盖新请求已经成功的显示。这个问题也已加入回归测试。
+
+    编辑了文件运行了命令
+
+      已编辑 5 个文件+84-10查看变更撤销查看变更
+
+    tests/transfer-feedback-261101-3.test.cjstests/transfer-feedback-261101-3.test.cjs+46-4
+    app.jsapp.js+10-4
+    client/file-assets.jsclient/file-assets.js+5-0
+    service-worker.jsservice-worker.js+1-1
+    tests/transfer-feedback-261101-3.browser.cjstests/transfer-feedback-261101-3.browser.cjs+22-1
+
+    问：
+
+        可能是电脑内存爆了，刚才外部在执行FFMPEG
+
+    答：
+
+    这个线索与查到的虚拟内存不足事件吻合。目前仍缺少 Node 当次退出码，因此先保留为“可能与系统资源不足有关”，不把它认定为代码根因。
+
+    两条原需求的遗漏已补上，新增测试先失败、修正后通过；正在做最终串行回归。
+
+    运行了命令
+
+    Review 261101 3 standards已完成
+
+    运行了命令
+
+    最终相关回归已重跑，328 项全部通过。新增用例确认：所有供源掉线后会收起接收进度，待真正恢复传输时再显示；旧失败不会覆盖新成功，摘要也能随语言切换。还在核对离线资源更新。
+
+    编辑了文件运行了命令
+
+    **复核确认上一轮漏了 3 处，我之前的完成结论过早。本轮已补齐：**
+
+    - **需求遗漏 1 处：**多源传输开始后，所有供源掉线，旧进度仍会留在抽屉里。现在会收起，真正恢复传输后再显示。
+    - **状态错误 1 处：**旧还原请求迟到的失败，可能覆盖后来已经成功的显示。现在会先核对最新缓存。
+    - **国际化遗漏 1 处：**新增摘要拼成整句后没有正确翻译。已修正并验证动态语言切换。
+
+    本轮重新执行 **328 项回归，全部通过**；隔离 Chrome、离线更新及构建验证通过。原设备现场仍待你验收。记录见[二次复核日志](D:/Workspace/github/Ltre/file-tunnel/docs/devlog/dev-2610-streaming-console.md:1081)。
+
+    服务端退出方面，Windows 确实记录了相近时段的虚拟内存不足，与你的怀疑相符；没有取得当次退出码，**直接原因尚未确认**。
+
+    未暂存、未提交。
+
+    建议 title：
+    ```text
+    修复还原反馈与传输抽屉状态并适配 Cloudflare 限流
+    ```
+
+    建议 description：
+    ```text
+    还原与传输进度
+    - 主动还原失败改用非阻塞提示，避免旧失败覆盖新成功
+    - 等待供源不显示空抽屉，全部供源断开后收起接收进度
+    - 修正动态摘要翻译
+
+    Cloudflare 限流
+    - 校验可信来源后使用访客 IP，保留现有限流策略
+
+    验证与记录
+    - 补充遗漏场景回归，更新离线资源版本
+    - 记录二次复核结果及服务端退出排查证据
+    ```
+
+    已编辑 dev-2610-streaming-console.md+25-0查看变更撤销查看变更

@@ -9925,7 +9925,8 @@ async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = 
         return;
     }
     if (!fileInfo?.id || !fileInfo.isAsset || !fileAssetTransfer) {
-        alert('此文件没有可用的远程文件来源，无法还原。');
+        if (fileInfo?.id) updateFileMessageAvailability(fileInfo.id, 'no-known-provider');
+        showAppToast('此文件没有可用的远程文件来源，无法还原。');
         return;
     }
     if (options.force && shouldBlockForceRestore(fileInfo.id)) {
@@ -10104,8 +10105,12 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
         })
         : createFileActionButton(restoreRequested ? '☁↓ 正在还原' : '☁↓ 还原文件', restoreRequested ? '文件正在拉取，点击可重新请求' : '从其它在线设备还原此文件', () => {
             restoreFileCacheByInfo(fileInfo, ownerDeviceId, messageId, { collectionMessageId, force: true })
-                .catch(err => {
-                    alert(`还原文件失败: ${err.message}`);
+                .catch(async err => {
+                    const current = await getFromStore('files', fileInfo.id).catch(() => null);
+                    if (!hasCompleteFileCache(current, fileInfo)) {
+                        updateFileMessageAvailability(fileInfo.id, err.message);
+                        showAppToast('暂未能获取文件，请稍后重试还原');
+                    }
                     historyLog('file-cache-restore-by-info-failed', { messageId, collectionMessageId, fileId: fileInfo.id, error: err.message });
                 });
         });
@@ -18862,16 +18867,8 @@ function showQueuedFileTransfer(fileId, queueLength, activeDownloads) {
     progressQueueSnapshot.activeDownloads = Math.max(0, Number(activeDownloads) || 0);
     progressQueueSnapshot.updatedAt = Date.now();
     scheduleProgressQueueSnapshotExpiry();
-    const list = document.getElementById('progressList');
-    const container = document.getElementById('transferProgress');
-    if (progressQueueSnapshot.activeDownloads <= 0 && (!list || list.children.length === 0)) {
-        updateProgressDrawerSummary();
-        return;
-    }
-    if (container) {
-        container.style.display = 'block';
-        setProgressDrawerCollapsed(progressDrawerCollapsed);
-    }
+    // These counts include discovery and connection attempts, not ready data.
+    // Only actual progress rows may open the drawer.
     updateProgressDrawerSummary();
 }
 
@@ -19010,15 +19007,9 @@ function updateProgressDrawerSummary() {
     const summary = document.getElementById('progressDrawerSummary');
     if (!list || !summary) return;
 
-    const snapshotFresh = Date.now() - progressQueueSnapshot.updatedAt <= PROGRESS_QUEUE_SNAPSHOT_TTL;
-    const queuedSnapshot = snapshotFresh ? progressQueueSnapshot.queueLength : 0;
-    const activeDownloadSnapshot = snapshotFresh ? progressQueueSnapshot.activeDownloads : 0;
-
     const items = Array.from(list.children);
     const taskItems = items;
-    const visibleReceiveItems = taskItems.filter(item => item.dataset.progressDirection === 'receive').length;
-    const hiddenStartingDownloads = Math.max(0, activeDownloadSnapshot - visibleReceiveItems);
-    const count = taskItems.length + queuedSnapshot + hiddenStartingDownloads;
+    const count = taskItems.length;
     if (!count) {
         summary.textContent = '';
         return;
@@ -19026,14 +19017,17 @@ function updateProgressDrawerSummary() {
 
     const moving = taskItems.filter(isProgressItemActivelyMoving).length;
     const stalled = taskItems.filter(item => item.dataset.progressActivity === 'moving' && !isProgressItemActivelyMoving(item)).length;
-    const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length + hiddenStartingDownloads;
-    const queued = queuedSnapshot;
+    const starting = taskItems.filter(item => item.dataset.progressActivity === 'starting').length;
+    const queued = taskItems.filter(item => item.dataset.progressActivity === 'queued').length;
     const parts = [`${count} 个任务`];
     if (moving) parts.push(`进行中 ${moving}`);
     if (stalled) parts.push(`${stalled} 个停滞`);
-    if (starting) parts.push(`${starting} 个建链中`);
+    if (starting) parts.push(`${starting} 个准备传输`);
     if (queued) parts.push(`${queued} 个等待`);
-    summary.textContent = parts.join(' · ');
+    summary.replaceChildren(...parts.flatMap((part, index) => [
+        ...(index ? [document.createTextNode(' · ')] : []),
+        document.createTextNode(part)
+    ]));
 }
 
 function hasActiveTransferTasks() {

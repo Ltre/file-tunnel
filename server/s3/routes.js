@@ -2,7 +2,7 @@
 const express = require('express');
 const crypto = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
-const rateLimit = require('express-rate-limit');
+const rateLimit = require('../request-rate-limit');
 const { verify, decodeAwsChunks, sha256 } = require('./sigv4');
 const { esc, tag, document, errorDocument, deleteRequest } = require('./xml');
 const { createS3Credentials } = require('./credentials');
