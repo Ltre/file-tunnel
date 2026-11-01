@@ -389,3 +389,20 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 ### 开发日志与需求归属
 
 按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）及只有规划图的 `prompts/ideas/streaming-console-QA-261016.md`。**串流控制台多版原型图不是已实现的独立串流子系统。**
+
+## 17. 2026-10-17—19 最新已合入变化的路径索引
+
+| 需求/行为 | 当前源码 | 实际回归与开发日志 |
+|---|---|---|
+| 旧成员旧码证明、二维码凭据 `j1.`、重新加入身份 | `server/tunnel-access.js`、`server.js`、`app.js` | `features-261017-3/4`、`features-261018-1`、`features-261019-1` |
+| 媒体候选截图/Clip 删除、压缩缓存归属、真实尾帧和密集工作片段复用 | `server/media-library/service.js`、`cache.js`、`processing.js`、`client/media-library.js/.css` | `features-261017-3/4`、`media-library-ui-261013-2` |
+| 按会话收藏到 `clips/shots`，稳定重试目录 | `server/media-library/service.js`、`disk-adapter.js`、`database.js` | `features-261018-1` |
+| 网盘分区显示名、预览最小化/底栏恢复 | `server/disk-api.js`、`client/disk-management.js`、`client/disk-ui.js/.css` | `features-261017-3/4`、`disk-preview-history` |
+| 浏览器渐进上传发起端心跳与 5 分钟失联 | `client/disk-client.js`、`server/disk-api.js`、`server/disk-operations.js` | `features-261017-4`、`disk-progressive-api/client` |
+| 传输记录复制文本/文件名、DropZone 单行、输入框 1—4 行 | `app.js`、`pages/index.html`、`client/index.css`、`client/i18n.js` / `i18n-catalog.js` | `features-261017-3/4`、`features-261018-1`、`features-261019-1` |
+| YouTube 自定义手写格式、服务器本地限流来源和任务创建反馈 | `pages/youtube-premium-dl.html`、`server/youtube-premium.js`、`server.js` | `features-261019-1` |
+| SNS/YouTube 成品**服务端直传**、旧待办迁移与目标幂等 | `server/download-task-source.js`（本轮唯一新增 server 源文件）、`server/disk-api.js`、`server/disk-pending-saves.js`、`client/disk-pending-save.js`、`client/disk-ui.js`、两类抓取页 | `features-261019-2.test.cjs`、`features-261019-2-client.test.cjs` |
+
+以上回归文件均位于 `tests/`，完整开发记录在 `docs/devlog/dev-2610-features.md` 261017-3 至 261019-2。仓库根目录新增 `AGENTS.md`，属于协作约定而非新增业务端点。
+
+**范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型属于当前分支**已存的规划材料**；在没有对应已合入的功能代码前，不把串流台 Phase 1/2 记为已实现。

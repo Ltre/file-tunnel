@@ -1,7 +1,7 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`059099607a7aa986d9a66ff386f5fd691c604b78`  
-> **文档更新时间**：`2026-09-26`
+> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
+> **文档更新时间**：`2026-11-01`
 
 ## 1. 为什么本项目尤其依赖回归资料
 
@@ -420,3 +420,19 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 261013—261017 每轮开发日志含不同阶段的全量和聚焦结果；**261017-2 收尾报告 932/932** 全量通过。该结果并非本轮同步文档重新运行测试。相关浏览器为本机/隔离服务的真实前端与合成数据，其中 390px 视口只是窄屏模拟；Telegram 真实撤回、Android 真机键盘/手势、正式数据迁移与真实外部平台仍待分层验收。
 
 如对以上模块改动，应重新执行对应回归，并分别记录“源码/自动化通过、隔离浏览器通过、正式外部服务验证”三种证据。
+
+## 17. 2026-10-17—19：新增回归与故障证据
+
+| 变化 | 主要测试 | 必须保留的限制 |
+|---|---|---|
+| 旧成员换码 HMAC 保护、扫码入会及失去 grant 后重新加入 | `features-261017-3.test.cjs`、`features-261017-4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs` | 不能凭公开设备 ID 恢复 owner/admin；已丢失历史证明的成员必须重新加入；手机相机未现场测试 |
+| 媒体结果单项/批量删除、共享缓存租约和尾帧回退、密集片段复用 | `features-261017-3/4.test.cjs`、`media-library-ui-261013-2.test.cjs`、`media-library-api.test.cjs` | 生产源文件/收藏不能被测试误删；24 帧本机样本不代表真实长片速度 |
+| 收藏按会话分层与旧目录不迁移 | `features-261018-1.test.cjs` | 已确认正式文件不重新移动，授权/稳定目录重试不能越界 |
+| 预览最小化、历史栈和源端失联 | `disk-preview-history.test.cjs`、`disk-progressive-api.test.cjs`、`disk-progressive-client.test.cjs`、`features-261017-4.test.cjs` | SSE 查询不续期，已 finish 的后台任务不因浏览器离开中止 |
+| 多文件名复制、单行 DropZone、1—4 行 textarea | `features-261017-4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs` | 输入法组合与剪贴板的系统权限、真实触摸/窄屏仍需真机 |
+| YouTube 手写格式与 429 错误来源 | `features-261019-1.test.cjs` | 不把本地两级限流等于 YouTube 上游限流；任务已创建不可因刷新失败重复提交 |
+| 服务器端成品直传，旧待办迁移、预约幂等及源文件描述符 | `features-261019-2.test.cjs`、`features-261019-2-client.test.cjs`、`tests/support/pending-save-261012-fixture.cjs` | 管理员源授权与网盘目标授权分开验证；结果未知不重复发 Telegram；真实公网未验收 |
+
+完整原始测试文件还包括 `tests/support/features-261017-3-browser-fixture.cjs`、`features-261018-1-browser-fixture.cjs`、`features-261019-1-browser-fixture.cjs`、`features-261019-2-browser-fixture.cjs`。新增 `tests/support/listen-http.cjs` 帮助隔离 HTTP 测试避开禁用端口等环境因素。
+
+开发记录依次报告全量 942/942（261017-3）、952/952（261017-4）、955/955（261018-1）、963/963（261019-1）、**976/976（261019-2）**。中间还记录了临时服务关闭、Node fetch 禁用端口、隔离媒体探测异常等测试环境失败与修正，不应抹成“从未失败”；最终数字**不是本次 Overview 文档维护重新执行的测试**。

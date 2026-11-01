@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
-> **文档更新时间**：`2026-10-17`
+> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
+> **文档更新时间**：`2026-11-01`
 
 ## 1. 管理后台定位
 
@@ -447,3 +447,10 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 - `server/private-key-file.js` 通过排他创建防止双实例首次启动竞态覆盖认证签名密钥。已存在空密钥或无法解密的配置**失败关闭**，不能当成初次未配置重新绑定。重复同名但不同 Path 的 Cookie 逐条验签，不能被无效项遮盖有效会话；30 天管理会话本身未改。
 - 新增 `server/tunnel-access.js` 的稳定会话签名密钥 `.tunnel-access.key` 和登记账本 `.tunnel-access-members`；两者是持久授权资料，迁移/备份时应一并保留。换短码不撤销已登记用户，不把原短码恢复成公开永久通行凭据。
 - 媒体收藏后台的 `media-library.sqlite` 和其缓存目录有独立授权与清理范围，不得错误并入 `disk.sqlite`、`infra.sqlite` 的备份或清理流程。参见 [media-library.md](./media-library.md)。
+
+## 23. 2026-10-17—19：媒体后端与分区后台辨识
+
+- `/admin/storage-overview` 区分稳定分区路由键 `diskSpace/scopeKey` 与用户可改的 `partitionName`；管理员树按账号/分区实体读显示名，无法恢复的历史 UUID 名称不凭 `p-UUID` 猜测，显示“历史分区（名称未记录）”。名称改变不影响真实存储路由。
+- 隧道短码轮换引入私有 `.tunnel-access-legacy` 证明账本，结合 `.tunnel-access.key` 与 `.tunnel-access-members` 备份；允许已知历史成员在轮换前已记录证明的前提下升级。QR `/api/tunnel-join-links` 必须由有效成员生成，用途/隧道/当前短码绑定签名，**不得把二维码参数等同于管理员 grant**。
+- 服务端 SNS/YouTube 成品转网盘时分别校验**后台管理员能否读取源任务**和**网盘登录用户能否写入目标**；`server/download-task-source.js` 将服务端源路径限制为已完成任务的真实文件，不接收客户端伪造绝对路径，原生 `/task-saves` 不允许挂载/协同/外部 App。日志、响应不暴露原服务器文件系统路径，未知写入不能重传。
+- `AGENTS.md` 新增仓库级协作约定，包含保护现有改动、授权与幂等、数据安全和增量维护规则。它不代表新的业务 API；与 Overview 的源代码基线规则分别维护。

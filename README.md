@@ -12,10 +12,13 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 - Telegram `file_id` 可以作为没有在线供源时的备选恢复来源；
 - 已获得文件副本的浏览器会继续成为其他设备的普通供源者。
 
-**文档基线：** `dev/2607A-NEWCODE` / `Alpha-1.6.5`
+**本 README 核对分支：** `dev/doc-overview` · **核对快照：** `89e2ef3c335f1f232010c41c343a6eabadc0c631`（2026-11-01）  
+**当前业务源码事实终点：** `99283320188a43a4234986f2eaa9d9d9374e2bd3`（2026-10-19）· [功能与架构总览](docs/overview/master.md) · [文档版本维护](docs/overview/VERSION.md)
+
+> README 上次实际修改于 **2026-09-27**（`c2997b3e6e88d8045e7da1ac5c5f485c158c5b7a`）。到本次核对快照为止，该分支累计前进 **256 个 Git Commit**（含代码、测试、文档及设计资料提交），不是 256 个正式 Release。旧文中的 `Alpha-1.6.5` / `dev/2607A-NEWCODE` 已不代表当前分支；`package.json` 的 `version` 字段也不应直接当成最新产品发行代号。
 
 > [!WARNING]
-> 项目仍处于 Alpha 阶段，适合个人、自托管和受控环境测试。当前没有应用层端到端加密，也不能把服务器视为“零接触文件数据”的可信盲中继。
+> 项目仍在快速迭代，适合个人、自托管和受控环境测试；这里的功能状态不代表独立安全审计或真实公网/移动设备全面验收。当前没有应用层端到端加密，服务器不是“零接触文件数据”的盲中继。
 
 ## 核心概念
 
@@ -24,12 +27,13 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 隧道是设备共享传输记录和协同状态的逻辑空间。每个隧道同时拥有：
 
 - 内部会话 ID；
-- 便于输入和分享的 5 位短码；
+- 可轮换的 5 位短码（新设备加入时使用，与长期会话 ID 分离）；
+- 已登记设备的成员身份及签名授权凭据；
 - 可选的隧道备注名；
-- 创建者与默认权限；
+- 创建者、被授权管理员与普通成员及其权限；
 - 在线设备、文件供源和历史记录状态。
 
-用户无需注册账号，可以通过 5 位短码、二维码、完整链接或本机最近隧道列表加入。
+使用普通隧道不要求先注册网盘账号。新设备须凭**当前有效短码**或由已授权成员生成的**签名二维码加入凭据**完成服务端登记；已登记设备用自身的签名授权重连。**仅知道会话 ID、旧短码或普通历史链接，不等于仍有加入权限。** 短码可以轮换，已有合法成员不因此被强制踢出；失去本机授权时重新加入不自动恢复原创建者/管理员身份。
 
 ### 传输记录
 
@@ -61,8 +65,9 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 
 ### 隧道路由与设备连接
 
-- 创建新隧道、输入 5 位短码加入、从本机已加入列表选择；
-- 二维码和完整隧道链接；
+- 创建新隧道、使用当前 5 位短码加入、从本机已加入列表选择；
+- 已授权成员生成签名二维码/加入链接；短码轮换即使旧加入二维码失效；
+- 设备签名成员身份、重新连接与旧成员受限升级；
 - 自动记住最近访问的本机隧道；
 - 隧道切换浮层、隧道备注和切换前传输任务提醒；
 - 多设备同时在线和历史对齐；
@@ -99,7 +104,7 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 - 图片、视频和音频网页内预览；
 - 图片和视频全屏浏览、键盘切换与移动端手势；
 - 文件详情、下载、还原、释放浏览器缓存、删除；
-- 生成磁链并通过内置下载页、缓存列表继续获取文件；
+- 生成仅授予指定文件的磁链，通过内置下载页、缓存列表获取；后台保留分享及下载触发记录；
 - 合辑“下载全部”会等待缓存后统一打包 ZIP，也可提前下载当前已就绪内容；
 - 文件夹打包发送；
 - 本机目录同步；
@@ -111,7 +116,7 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 ### 文件传输与恢复
 
 - WebRTC DataChannel P2P 传输；
-- P2P 不可用时自动回退到 Socket.IO 分块中继；
+- P2P 不可用、连接尚未就绪或文件通道超时等情况下自动回退到 Socket.IO 分块中继；
 - 大文件支持按范围向多个在线供源设备请求；
 - 供源负载选择、传输超时、重试和卡住检测；
 - 小文件优先和手动强制拉取；
@@ -122,6 +127,8 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 - 跨隧道备份导入和转发时重映射文件 ID，避免缓存键串线；
 - 删除、退出和清缓存前保护仍被其他记录或隧道引用的文件；
 - 删除记录后先更新 UI，再在空闲队列中清理孤立缓存，降低大文件数据库扫描造成的卡顿。
+
+网络代理与 WebRTC 的关系需要分层判断：浏览器能经 PAC/全局代理打开页面或完成 Socket.IO 信令，**不代表 WebRTC UDP/ICE 一定能直连**。Android VPN、Origin 的媒体权限、候选对和文件通道等待时序都会影响这一次任务走 P2P 还是应用层 Socket.IO Relay。WebRTC TURN `relay` 候选也不是同一个 Socket.IO Relay。历史 Windows PAC/全局与 Android Igniter 的 48 组对照及复盘见 [P2P_TRANSMISSION_NOTES-260812.md](docs/other/P2P_TRANSMISSION_NOTES-260812.md)。
 
 ### 本机文件句柄
 
@@ -169,6 +176,7 @@ Drop2Tunnel 以“隧道”为协作单元，让多台设备通过浏览器加�
 - 批量分享后可选择合辑或拆分发送；
 - Service Worker 应用壳缓存和强制刷新；
 - 移动端“连接 / 隧道 / 协同”三栏横向跟手切换；
+- PC/平板宽屏独立滚动、移动端返回手势、资源加载阶段和启动性能诊断；
 - 传输记录滚动锚点保存和载入稳定；
 - 文件预览、全屏、合辑和音乐播放器的浏览器返回栈；
 - 系统分享和页面选择文件使用统一的发送准备进度。
@@ -230,6 +238,50 @@ Telegram 不能凭空恢复已经在所有设备、服务器和旧 Bot 中都不
 
 YouTube 视频下载会优先选择 H.264、最高不超过 1080p 的视频轨，并按音频码率优先选择接近 256K、再接近 128K 的 AAC/M4A 音轨；若无 H.264 视频，则降级到 AV1 或其他可用视频轨。`music.youtube.com` 链接只选择音频轨。该能力要求服务端已安装 `ffmpeg` 和包含 `yt-dlp-ejs` 的 `yt-dlp`；通过 pip 安装时应使用 `python -m pip install -U "yt-dlp[default]"`，官方独立可执行文件已内置该组件。
 
+### Telegram 虚拟网盘与第三方 S3 接口
+
+独立于隧道浏览器缓存，`/disk` 提供以 Telegram 存储为基础的用户网盘：
+
+- Telegram OIDC、Passkey 等网盘身份、同一浏览器多账号、账号/分区切换与受权限保护的定位链接；
+- 原生分区、目录树、上传/下载/预览、Range、目录上传、文件改名/移动/跨分区复制、回收站和文本/Markdown/Hex 编辑；
+- 单文件/目录分享、静态签名资源和**协同邀请/协同 Mount**，访问时持续校验受邀范围及成员角色；
+- 共享 Content Object 与 Telegram Anchor 的内容复用、持有证明（PoP）、引用/清理保护、分片缓存和上传任务恢复；
+- 浏览器渐进上传：写入本地服务器暂存的同时，Telegram 可读取已到达的字节；区分源端进度与 Telegram 最终确认，并检测源端失联；
+- 有限的 **S3 Compatible / SigV4** 网关 `/S3API`，支持常见对象读写、列举和部分拷贝/删除；**不等于完整 AWS S3**，没有实现标准 S3 Multipart Upload API；
+- SNS/YouTube 已完成成品可由服务端直接读取、校验后存入用户选定的网盘分区/目录，不必先下载到浏览器再重新上传；失败及结果未知时保留幂等恢复约束。
+
+网盘权威元数据保存在 `.tunnel-data/disk.sqlite`（Node 内置 `node:sqlite`、WAL），旧 JSON 可通过**停服、预检、明确执行**的迁移工具导入。Telegram 消息、上传暂存和实际物理缓存不是一个 SQL 事务。
+
+详见 [网盘能力与限制](docs/overview/telegram-drive.md)、[S3 Compatible 接入](docs/telegram-drive-s3-compatible.md)、[共享 Content Object](docs/telegram-drive-content-objects.md)。
+
+### 网页工坊（网页 ZIP）
+
+- `.html.zip` 包内组织 HTML、JS、CSS 和图片/视频/音频等资源，通过文件树新建多级路径、导入本机/隧道/网盘资源及拖放生成引用；
+- 编辑文件和目录移动/重命名时，保守修正**可确定的包内 HTML 引用**，不对任意 JS/CSS 字符串做危险的全局替换；
+- 包内 `manifest.json` 持久化名称、创建/修改时间和发布运行选项；可独立新标签页运行或在当前应用全屏浮层运行；
+- 支持草稿箱、编辑原文件、另存为、最小化、发布后的原记录定位及两种预览入口（ZIP 默认首页 / 当前编辑文件）；
+- 一键生成包含离线 Markdown 运行依赖的 HTML/MD 页面对；运行包不依赖外部 CDN。
+
+详见 [网页工坊](docs/overview/web-workshop.md)。
+
+### SNS/YouTube 下载、转码与独立媒体收藏
+
+- SNS 与 YouTube Premium 页面支持媒体解析、手动格式表达式、音轨修复、按需下载、后台任务与缓存控制；
+- 转码中心支持自定义 FFmpeg Profile，H.265 内置配置默认 MKV，用户可覆盖任务输出后缀；
+- Telegram 指定目标转发支持多目标选择、后台队列、进度、取消及尽量撤回；未知远端发送结果不会冒充已确认成功；
+- `/media-library` 是**独立管理员媒体工作台**：从本机、网盘或已完成下载任务导入，按真实帧时刻提取截图、逐帧定位、裁切 Clip、建立多种 H.265 压缩版本；
+- 媒体库具有自己的工作区、候选缓存、`media-library.sqlite`、收藏位置授权、人物/标签、候选安全删除与会话目录 `clips/shots`；正式收藏才写入网盘 Content/文件索引。
+
+详见 [下载与转码](docs/overview/download-transcode.md)和[多媒体收藏](docs/overview/media-library.md)。
+
+### 光媒、VClient 与本地化
+
+- **Light Transfer 光媒**：动态二维码分片传递文件或合辑，接收残片/校验与继续扫描存于本设备；可选网络加速，不应视为普通 WebRTC P2P 的替代实现；
+- **VClient**：独立运行的常驻缓存节点，可经授权的 Shell 工具把服务器本机文件推送至指定隧道并等待节点确认；
+- **多语言**：客户端内置 16 种语言的词条、运行时和审计工具；不同设备可使用不同 UI 语言。
+
+详见 [光媒](docs/overview/light-transfer.md)、[VClient](docs/overview/vclient.md)、[本地化](docs/overview/pwa-ui/localization.md)。
+
 ### 设置、权限与管理
 
 - 功能首页顶栏齿轮设置页；
@@ -251,7 +303,7 @@ YouTube 视频下载会优先选择 H.264、最高不超过 1080p 的视频轨�
 - 首次使用 TOTP 配置和管理员会话 Cookie；
 - 管理认证、敏感 API 和 Telegram 配置受到服务端保护。
 
-当前权限模型以“创建者配置普通加入设备的默认权限”为主，尚未完成多管理员和逐设备权限分配。
+权限分为创建者、受授权管理员和普通成员；服务端有管理员设备更新与权限拒绝逻辑。普通成员权限仍通过会话策略控制，具体细粒度授权范围应以 [隧道与权限实现](docs/overview/tunnel-core.md) 和当前服务端代码为准，不能把“尚无完整逐设备矩阵”误写成“没有管理员能力”。
 
 ## 架构
 
@@ -265,7 +317,9 @@ flowchart LR
     B <-->|Socket.IO 信令与中继| S
     C <-->|Socket.IO 信令与中继| S
 
-    S --> I[(infra.sqlite\n短码 / 设备 / 备注 / 权限)]
+    S --> I[(infra.sqlite\n隧道 / 设备 / 管理信息)]
+    S --> DSK[(disk.sqlite WAL\n文件 / 分区 / Content)]
+    S --> ML[(media-library.sqlite WAL\n截图 / Clip / 收藏任务)]
     S <-->|按需获取与重新上传| T[Telegram Bot API]
     S --> D[.tunnel-data\n管理员与 Telegram 配置]
 ```
@@ -295,11 +349,14 @@ flowchart TD
 | PWA 系统分享待发送文件 | 浏览器 IndexedDB `shareQueue` | 页面打开后转入正常发送流程 |
 | 本机目录和文件句柄 | 浏览器 IndexedDB | 依赖 File System Access API 和持续授权 |
 | 活跃隧道、Socket 状态、供源索引 | Node.js 内存 | 服务重启后由浏览器重新加入并协调恢复 |
-| 隧道短码、备注、创建者、权限、设备访问元数据 | `.tunnel-data/infra.sqlite` | 使用 `sql.js` 持久化 |
+| 隧道短码、备注、创建者、权限、设备及磁链记录 | `.tunnel-data/infra.sqlite` | 使用 `sql.js` 持久化 | 
+| 已登记隧道成员授权及旧成员证明 | `.tunnel-data/.tunnel-access.key`、`.tunnel-access-members`、`.tunnel-access-legacy` | 身份签名与受限历史升级，迁移时必须同时保护 |
 | 管理员 TOTP 和会话签名密钥 | `.tunnel-data` | 本机私有文件，需妥善备份和限制权限 |
 | Telegram Bot 配置与聊天绑定 | `.tunnel-data` | Token 不写入 `tunnel.config.json` |
 | Telegram 文件临时缓存和 `file_id` 元数据 | `.tunnel-data/telegram-assets` | 二进制按需下载并尽量在客户端取走后清理 |
-| Telegram 网盘账号、文件、分片与任务元数据 | `.tunnel-data/disk.sqlite` | SQLite WAL；上传暂存与分片缓存字节仍在文件系统 |
+| Telegram 网盘账号、分区、文件、共享 Content、协同与任务元数据 | `.tunnel-data/disk.sqlite` | 原生 SQLite WAL；上传暂存与分片缓存字节仍在文件系统 |
+| S3 网关凭据与 Secret | `.tunnel-data/s3-credentials.json`、`s3-secret.key` | 独立加密存储，非 `disk.sqlite` 的普通行 |
+| 媒体提取与正式收藏的业务状态 | `.tunnel-data/media-library.sqlite` 及其工作缓存 | 独立 SQLite WAL、租约和清理规则，不可当作网盘数据库 |
 | SNS Cookies | `.tunnel-data/*-cookies.txt` | 由 `/sns-cookies` 管理，用于 `yt-dlp` 访问 YouTube、TikTok、X 等平台 |
 | SNS 媒体临时下载 | `.tunnel-data/sns-media-work` | `yt-dlp` 下载过程中的临时输出，成功后登记为 server asset |
 | Socket.IO 中继数据 | 服务器进程 | 中继期间服务器会接触文件分块 |
@@ -310,7 +367,7 @@ flowchart TD
 - WebRTC 成功时文件可直接在浏览器之间传输；
 - Socket.IO 降级和 Telegram 恢复时，服务器会处理中转或临时文件数据；
 - 当前没有额外的应用层端到端加密；
-- 隧道短码应当作为敏感访问信息对待。
+- 隧道当前短码、签名加入凭据、设备 grant 和服务端签名密钥都应作为敏感授权材料对待；只知道历史 ID 不应成为新设备的通行证。
 
 ## 快速开始
 
@@ -345,7 +402,7 @@ node tools/migrate-tgdisk-json-to-sqlite.cjs --data-dir .tunnel-data --apply
 ```bash
 git clone https://github.com/Ltre/file-tunnel.git
 cd file-tunnel
-git checkout dev/2607A-NEWCODE
+git checkout dev/doc-overview
 npm ci
 ```
 
@@ -511,6 +568,8 @@ https://tunnel.example.com/admin
 
 管理员认证文件位于 `.tunnel-data`。迁移服务器时应一并备份，否则需要重新初始化认证。
 
+管理入口还包括 `/admin/devices`、`/admin/magnets` 的独立设备/磁链统计，以及 `/disk-management`、`/s3-management`（受保护的网盘和 S3 凭据配置）。独立媒体后台为 `/media-library`，不是直接暴露给未登录访客的公共文件浏览页。
+
 ## Telegram Bot 配置
 
 完成管理员登录后打开：
@@ -583,9 +642,9 @@ https://tunnel.example.com/sns-cookies
 
 ## 基本使用流程
 
-1. 打开首页，创建新隧道或输入 5 位短码加入；
+1. 打开首页，创建新隧道或输入**当前有效**的 5 位短码加入；
 2. 为当前设备设置易识别的名称；
-3. 通过二维码、短码或链接让其他设备加入；
+3. 已授权成员生成签名二维码，或提供当前短码，帮助新设备明确加入；
 4. 发送文本、富文本、单文件或合辑；
 5. 在其他设备点击“还原文件”获取缺失缓存；
 6. 使用“释放空间”仅删除当前浏览器中的缓存副本，不删除隧道记录；
@@ -610,19 +669,19 @@ https://tunnel.example.com/sns-cookies
 
 ## 当前限制
 
-- 项目仍处于 Alpha 阶段，数据结构和交互可能继续调整；
+- 项目仍持续演进，数据结构和交互可能调整；README 描述核对快照，不等于所有部署环境已升级；
 - 没有应用层端到端加密；
 - Socket.IO 中继时服务器能够接触文件分块；
-- 尚未实现把已接收分片持久化后跨刷新继续的完整断点续传；
-- 页面刷新、网络中断或切换隧道会中止当前活动传输；
+- 普通隧道文件 WebRTC/Socket.IO 的跨刷新断点恢复仍有限制，不能与网盘渐进上传、服务器接管任务或光媒残片续传混为一谈；
+- 刷新、网络中断或切换隧道可能中止浏览器主导的活动传输；**已经交接给服务端**的网盘上传/转存或 Telegram 后台任务则有各自持久化、恢复和取消规则；
 - IndexedDB 容量和清理策略由浏览器决定，大文件缓存可能被系统回收；
 - File System Access 句柄可能因移动、删除、重命名或撤销权限而失效；
 - “30MB 以下文件不使用外部句柄”的策略在部分移动端批量或合辑场景仍有重复授权提示的回归记录；
 - Telegram `file_id` 与 Bot 相关，换 Bot 后必须在仍有文件内容来源时重新上传换绑；
 - 没有任何浏览器缓存、在线设备副本或可用 Telegram 来源时，文件无法被恢复；
-- 当前隧道权限主要是创建者配置的全局默认权限，尚未提供完整的多管理员和逐设备权限矩阵；
+- 已具备 owner/admin/普通成员区分、可轮换短码和签名准入；但不能把它等同于所有业务都拥有完整逐用户细粒度 ACL；
 - 富文本版本编辑器尚未完全复用协同编辑器的全部内容插入能力；
-- 当前界面以简体中文为主，完整多语言支持尚未实现。
+- 已有 **16 种语言**的客户端本地化运行时与审计机制（包括繁体中文、英语、日语等），新增模块仍可能存在词条遗漏或真实设备排版问题；
 
 ## 当前默认限制
 
@@ -639,36 +698,45 @@ https://tunnel.example.com/sns-cookies
 
 ## 目录结构
 
+以下为当前 `dev/doc-overview` 的代表性入口（不是文件总清单）：
+
 ```text
 file-tunnel/
+├── README.md                          # 本文件；按分支代码事实更新
+├── app.js / server.js                 # 首页逻辑、HTTP/Socket.IO 与业务路由
+├── package.json / package-lock.json   # Node >=24.15、依赖与运行脚本
+├── service-worker.js                  # PWA 缓存与 Share Target
+├── tunnel.config.json                 # 服务端端口/FFmpeg/RTC 等配置
 ├── pages/
-│   ├── index.html                     # 主应用页面和响应式 UI
-│   ├── admin.html                     # 管理后台
-│   ├── admin-auth.html                # 管理员 TOTP 初始化与登录
-│   ├── tgbot.html                     # Telegram Bot 配置页
-│   ├── sns-cookies.html               # SNS cookies 配置页
-│   ├── device.html                    # 设备主页
-│   ├── downloader.html                # 磁链下载页
-│   └── downloadList.html              # 磁链缓存列表
-├── app.js                             # 隧道、消息、缓存、预览、设置与交互主逻辑
-├── server.js                          # Express、Socket.IO、隧道、Telegram 和管理 API
-├── service-worker.js                  # PWA 应用壳与 Share Target
-├── tunnel.config.json                 # 服务端端口、调试和 RTC 运行配置
-├── manifest.hosts.json                # 按域名生成 PWA Manifest
+│   ├── index.html                     # 隧道主页面（样式主要在 client/index.css）
+│   ├── admin-layout.html              # 管理后台布局
+│   ├── disk-collaboration.html        # 网盘协同受邀页
+│   ├── s3-management.html             # S3 凭据管理
+│   └── media-library.html             # 独立媒体提取与收藏
 ├── client/
-│   ├── file-assets.js                 # 文件请求、P2P、Relay、多源和重试
-│   ├── folder-archive.js              # 文件夹打包与目录相关逻辑
-│   ├── media.js                       # 对讲机、语音、摄像头和设备通话
-│   └── qrcode-1.0.0.min.js            # 二维码生成
+│   ├── file-assets.js                 # 文件 WebRTC P2P / Socket.IO Relay
+│   ├── disk-ui.js / disk-client.js    # Telegram 网盘界面与请求
+│   ├── disk-pending-save.js           # 下载成品转存待办与恢复
+│   ├── web-workshop.js                # 网页 ZIP 编辑、发布与预览
+│   ├── media-library.js               # 截图、Clip 与收藏交互
+│   └── i18n.js / i18n-catalog.js      # 多语言运行时与词条
 ├── server/
-│   ├── file-assets.js                 # 文件供源索引和 Socket.IO 中继
-│   ├── media-session.js               # 实时媒体信令
-│   ├── infra-store.js                 # SQLite 基础设施元数据
-│   └── admin-auth.js                  # 管理员 TOTP 与会话认证
-├── tools/deploy/                      # 静态资源压缩、发布包生成、远端同步和回滚脚本
-├── docs/devlog/                       # 按开发阶段整理的实现记录
-├── prompts/dev-prompt-logs/           # 需求、排查过程和 Codex 处理记录
-└── .tunnel-data/                      # 运行后生成的服务端持久化数据
+│   ├── tunnel-access.js               # 稳定隧道成员、短码及签名加入
+│   ├── file-assets.js                 # 文件供源与中继
+│   ├── infra-store.js                 # 隧道/后台基础设施 sql.js
+│   ├── disk-repository.js             # 网盘原生 SQLite WAL
+│   ├── disk-api.js / object-storage.js
+│   ├── disk-content-repository.js     # 共享 Content 生命周期
+│   ├── download-task-source.js        # SNS/YouTube 已完成成品后端源
+│   ├── s3/                            # SigV4 / S3 Compatible 子集
+│   └── media-library/                 # 独立媒体数据库、处理、缓存、API
+├── vclient/ / scripts/vclient-push.js  # 常驻节点与 Shell 推送
+├── tools/deploy/                      # 构建、校验、远端发布
+├── tests/                             # 单元、回归及隔离浏览器用例
+├── docs/overview/                     # 当前源码事实、历史与覆盖索引
+├── docs/devlog/                       # 逐阶段开发及测试记录
+├── prompts/                            # 需求、想法及设计材料（不等于已实现）
+└── .tunnel-data/                      # 运行时私有数据；不得提交到仓库
 ```
 
 ## 构建与发布工具
@@ -689,6 +757,8 @@ file-tunnel/
 
 - [`docs/devlog/dev-2606C-features.md`](docs/devlog/dev-2606C-features.md)：历史窗口、合辑、缓存恢复、预览与 Telegram 初期接入；
 - [`docs/devlog/dev-2607A-features.md`](docs/devlog/dev-2607A-features.md)：移动端、音乐播放器、备份、文件句柄、转发、Telegram 可靠性、资源管理器、富文本版本和权限；
+- [`docs/devlog/dev-2609-features.md`](docs/devlog/dev-2609-features.md)：SQLite WAL、S3、网页工坊、协同、上传恢复与 PWA 变动；
+- [`docs/devlog/dev-2610-features.md`](docs/devlog/dev-2610-features.md)：共享 Content、渐进上传、分区、多账号、媒体收藏、隧道鉴权和服务端成品转存；
 - [`prompts/dev-prompt-logs/dev-2607A.md`](prompts/dev-prompt-logs/dev-2607A.md)：本轮需求、测试反馈、根因排查与解决记录；
 - [`prompts/dev-prompt-logs/dev-filecache-ref-260705.md`](prompts/dev-prompt-logs/dev-filecache-ref-260705.md)：跨隧道缓存引用和备份导入隔离；
 - [`prompts/dev-prompt-logs/dev-real-filesystem-handle-260705.md`](prompts/dev-prompt-logs/dev-real-filesystem-handle-260705.md)：文件系统句柄与安全缓存副本；
@@ -697,6 +767,23 @@ file-tunnel/
 - [`prompts/dev-prompt-logs/dev-260710-sns-file-dl.md`](prompts/dev-prompt-logs/dev-260710-sns-file-dl.md)：Telegram 备注中的 SNS 多链接、列表媒体识别和“获取文件内容”链路。
 
 查看各版本的实际差异，请结合 Git 标签、Release 页面和 commit message，不要仅根据旧 README 判断当前能力。
+
+## README 更新跨度：2026-09-27 → 2026-11-01
+
+经 **仅对 `dev/doc-overview` 提交历史**执行按文件的最近修改查询，README 上次变更为 `c2997b3e...`（2026-09-27），与本次核对前分支 HEAD `89e2ef3c...` 相比相差 **256 个 Git Commit**。这 256 个提交同时包含业务代码、测试、文档与尚未实现的原型图，**不能误算成 256 次产品发版**。
+
+为防止 GitHub 单次差异接口的 300 文件上限漏掉后半部分 `server/`、`tests/`，检查按连续提交节点拆分：14 + 26 + 10 + 20 + 48 + 72 + 66 = **256**，大量原型图片的时间段继续拆小确认。代码增量按主题归纳如下：
+
+| 期间（按提交节点） | 主要已合入变化 |
+| --- | --- |
+| 9 月下旬 | S3 Compatible 网关与管理员凭据、Telegram Chat 字典、网盘目录/上传健壮性、PWA 加载改进 |
+| 9 月末—10 月初 | Telegram 渐进上传、真实进度与回滚、共享 Content Object / PoP / GC、Engine.IO 安全更新 |
+| 10 月上旬 | 分区、协同 Mount、静态签名资源、S3 诊断和跨作用域复制 |
+| 10 月 8—13 日 | 回收站、文件夹上传、编辑器、多账号/登录回执、后台待转存、网页工坊 Markdown |
+| 10 月 13—17 日 | 独立媒体提取与收藏、后台拆页、磁链持久化、短码与长期成员授权分离、多目标 Telegram 转发及 PWA UI |
+| 10 月 17—19 日 | 媒体候选安全删除/实帧回退、签名扫码/历史成员升级、消息输入优化、YouTube 手写格式、服务端直接转存 |
+
+**事实与验证边界：** 代码改动以本分支当前实现为准，规划中的串流控制台原型和尚未开发的 R2 缓存方案不在“已实现”清单内。开发日志的 `976/976` 属于 2026-10-19 开发阶段当时的全量测试记录，**本次 README 更新没有重新执行测试**。更完整的模块归属、历史和限制见 [docs/overview](docs/overview/master.md)、[覆盖审计](docs/overview/COVERAGE.md)及 [10 月演进](docs/overview/history/2026-10.md)。
 
 ## 服务端数据备份
 
@@ -717,7 +804,7 @@ manifest.hosts.json
 - 生产环境必须启用 HTTPS；
 - 设置明确的 `ALLOWED_ORIGINS`，不要长期保留 `*`；
 - 保护 `.tunnel-data`，避免泄露 Bot Token、TOTP 和会话签名密钥；
-- 不要公开传播隧道短码和完整隧道链接；
+- 不要公开传播当前隧道短码、签名二维码、成员授权凭据以及 `.tunnel-access.*` 服务端密钥材料；
 - Telegram Bot 使用专用账号、私有群组或频道作为备份目标；
 - SNS cookies 可能包含第三方平台登录态，应限制文件权限并定期轮换；
 - SNS 媒体下载依赖第三方平台规则和 `yt-dlp` 能力，部署者应自行确认合规边界；
