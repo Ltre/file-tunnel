@@ -6,10 +6,10 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`10ebe1000b9bd57097f90e51337a251ba17734f3`
-- 源码提交时间：`2026-10-16T19:18:08Z`
+- 源码 Commit：`99283320188a43a4234986f2eaa9d9d9374e2bd3`
+- 源码提交时间：`2026-10-19T15:50:25Z`
 - 首轮整理日期：2026-09-26
-- 文档更新时间：2026-10-17
+- 文档更新时间：2026-11-01
 
 精确增量锚点见 [VERSION.md](./VERSION.md)。
 
@@ -19,13 +19,13 @@
 
 Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作与传输系统。它已经从网页端即时传输工具扩展为多层系统：
 
-- 隧道路由、设备发现、多设备历史、稳定会话身份、短码与签名成员权限；
+- 隧道路由、设备发现、多设备历史、稳定会话身份、可轮换短码、扫码签名加入和历史成员受限升级；
 - 文本、富文本、文件、合辑、目录；
 - IndexedDB/OPFS/File System Access 与 P2P/Relay/Telegram/VClient 多来源恢复；
 - 文件预览、后台音乐、摄像头、群语音、对讲、联系人通话、远程预览；
 - Telegram Bot、Telegram 内容管理、Telegram 虚拟网盘；
 - Passkey/OIDC、多账号、第三方网盘/S3 API、分区、协同挂载、分享、静态开放、共享 Content 与审核；
-- SNS、YouTube Premium、音轨修复、FFmpeg 转码，以及独立视频画面提取与多媒体收藏；
+- SNS、YouTube Premium、手写格式、音轨修复、FFmpeg 转码、已完成成品的服务器端直接转存，以及独立视频画面提取与多媒体收藏；
 - 网页 ZIP / 网页工坊（含可离线 Markdown 页面）；
 - Light Transfer 光媒；
 - VClient 常驻缓存节点；
@@ -60,13 +60,13 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
   - [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md) — Drop2Tunnel 自定义磁链、种子发现、独立下载器与磁链缓存。
   - [transfer-cache/folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md) — 文件夹 ZIP、合辑打包与 File System Access 目录镜像。
 - [media-player-realtime.md](./media-player-realtime.md) — 图片/视频/音频预览、音乐播放器、摄像头、语音、对讲、联系人呼叫、远程预览。
-- [media-library.md](./media-library.md) — 独立媒体后台、画面抽取、逐帧/Clip/压缩版本、工作区、收藏、网盘授权与恢复。
+- [media-library.md](./media-library.md) — 独立媒体后台、截图/Clip/压缩与安全删除、取帧回退、按会话分目录收藏、网盘授权与恢复。
 - [light-transfer.md](./light-transfer.md) — D2L1 光学二维码文件协议、残片、网络加速、完整性与完成写入。
 
 ### Telegram
 
 - [telegram-bot-content.md](./telegram-bot-content.md) — Telegram Bot、中转、Webhook、指定目标转发、后台 Chat/成员管理。
-- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、上传恢复、Range、缓存、分享、文件/目录协同、审核、第三方 API、已落地 SQLite WAL 与有限 S3 Gateway、Content Object 和当前局限。
+- [telegram-drive.md](./telegram-drive.md) — Telegram 虚拟网盘、身份、目录/文件、分片、渐进上传心跳、服务端转存、预览、Range、分享、协同、审核、有限 S3 Gateway、Content Object 和当前局限。
 
 ### 内容生产与下载处理
 
